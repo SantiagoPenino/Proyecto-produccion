@@ -1,184 +1,302 @@
-/* ─────────────────────────────────────────────── */
-/* CONTENEDOR GENERAL                              */
-/* ─────────────────────────────────────────────── */
-.areaContainer {
-  display: flex;
-  flex-direction: column;
-  width: 100%;
-  height: 100%;
-  background: #f8fafc; /* slate-50 */
-  overflow: hidden;
+/* =========================================
+   1. LAYOUT PRINCIPAL
+   ========================================= */
+.layoutContainer {
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+    width: 100vw;
+    background-color: #f8fafc;
+    overflow: hidden;
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
 }
 
-/* ─────────────────────────────────────────────── */
-/* HEADER SUPERIOR                                 */
-/* ─────────────────────────────────────────────── */
 .headerContainer {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  background: white;
-  padding: 1.2rem 1.5rem;
-  border-bottom: 1px solid #e2e8f0; /* slate-200 */
-  position: sticky;
-  top: 0;
-  z-index: 50;
+    background: white;
+    border-bottom: 1px solid #e2e8f0;
+    display: flex;
+    flex-direction: column;
+    flex-shrink: 0;
+    z-index: 20;
+    width: 100%;
 }
 
-.breadcrumb {
-  font-size: 0.7rem;
-  color: #64748b; /* slate-500 */
-  text-transform: uppercase;
-  letter-spacing: 0.05rem;
+/* =========================================
+   2. FILA SUPERIOR (Título - Nav - Botones)
+   ========================================= */
+.headerTopRow {
+    padding: 12px 25px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 20px;
+    background: white;
+    height: 70px;
 }
 
-.areaTitle {
-  margin-top: 4px;
-  font-size: 1.25rem;
-  font-weight: 700;
-  color: #1e293b; /* slate-800 */
+/* IZQUIERDA: Título */
+.titleGroup {
+    display: flex;
+    align-items: center;
+    gap: 15px;
+    min-width: 220px;
 }
 
-/* ─────────────────────────────────────────────── */
-/* BOTONES HEADER                                  */
-/* ─────────────────────────────────────────────── */
-.headerButtons {
-  display: flex;
-  gap: 0.7rem;
+.backButton {
+    background: #f1f5f9;
+    border: 1px solid #e2e8f0;
+    width: 36px;
+    height: 36px;
+    border-radius: 8px;
+    color: #64748b;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.2s;
+}
+.backButton:hover { background: #e2e8f0; color: #009FE3; border-color: #bae6fd; }
+
+.titles { display: flex; flex-direction: column; }
+.titles h1 { font-size: 1.4rem; font-weight: 800; color: #1e293b; margin: 0; line-height: 1; }
+.breadcrumb { font-size: 0.7rem; font-weight: 700; color: #009FE3; text-transform: uppercase; letter-spacing: 0.05em; margin-top: 4px; }
+
+/* CENTRO: Navegación (Tabs) */
+.navCenter {
+    display: flex;
+    align-items: center;
+    gap: 15px;
+    background: #f8fafc;
+    padding: 5px 15px;
+    border-radius: 10px;
+    border: 1px solid #f1f5f9;
 }
 
-.buttonConfig,
-.buttonInsumos,
-.buttonFalla,
-.buttonNuevaOrden {
-  padding: 0.55rem 1rem;
-  border: none;
-  cursor: pointer;
-  font-size: 0.8rem;
-  font-weight: 600;
-  border-radius: 0.4rem;
-  display: flex;
-  align-items: center;
-  gap: 0.4rem;
-  transition: all 0.2s ease;
+.viewTabs, .filterTabs { display: flex; gap: 5px; align-items: center; }
+.verticalDivider { width: 1px; height: 20px; background: #cbd5e1; margin: 0 5px; }
+
+/* Botones Tabs */
+.viewTab, .filterTab {
+    padding: 6px 12px;
+    border-radius: 6px;
+    font-size: 0.85rem;
+    font-weight: 600;
+    cursor: pointer;
+    border: none;
+    background: transparent;
+    color: #64748b;
+    transition: all 0.2s;
+}
+.viewTab:hover, .filterTab:hover { color: #009FE3; background: rgba(0,0,0,0.02); }
+
+.viewTabActive, .filterTabActive {
+    padding: 6px 12px;
+    border-radius: 6px;
+    font-size: 0.85rem;
+    font-weight: 700;
+    cursor: pointer;
+    border: 1px solid #e2e8f0;
+    background: white;
+    color: #009FE3;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.05);
+}
+.filterTabActive { border: none; background: transparent; text-decoration: underline; text-underline-offset: 4px; }
+
+/* DERECHA: Botones de Acción (Header) */
+.actionButtons {
+    display: flex;
+    align-items: center;
+    gap: 8px;
 }
 
-/* Configuración */
-.buttonConfig {
-  background: #f1f5f9;
-  color: #475569;
-}
-.buttonConfig:hover {
-  background: #e2e8f0;
-}
-
-/* Insumos */
-.buttonInsumos {
-  background: #fff7ed; /* orange-50 */
-  border: 1px solid #fdba74; /* orange-300 */
-  color: #ea580c; /* orange-600 */
-}
-.buttonInsumos:hover {
-  background: #ffedd5;
+/* Estilos Base Botones */
+.btnConfig, .btnInsumos, .btnFalla, .btnNew {
+    height: 38px;
+    padding: 0 16px;
+    border-radius: 8px;
+    font-size: 0.85rem;
+    font-weight: 600;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    transition: all 0.2s;
+    white-space: nowrap;
+    border: 1px solid transparent;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.03);
 }
 
-/* Falla */
-.buttonFalla {
-  background: #fef2f2; /* red-50 */
-  border: 1px solid #fecaca; /* red-200 */
-  color: #dc2626; /* red-600 */
-}
-.buttonFalla:hover {
-  background: #fee2e2;
+/* Variaciones de Color */
+.btnConfig { background: white; border-color: #e2e8f0; color: #475569; }
+.btnConfig:hover { background: #f8fafc; border-color: #cbd5e1; color: #1e293b; }
+
+.btnInsumos { background: #fff7ed; color: #c2410c; border-color: #ffedd5; }
+.btnInsumos:hover { background: #ffedd5; border-color: #fed7aa; }
+
+.btnFalla { background: #fef2f2; color: #dc2626; border-color: #fee2e2; }
+.btnFalla:hover { background: #fee2e2; border-color: #fecaca; }
+
+.btnNew { background: #009FE3; color: white; border: none; box-shadow: 0 4px 6px -1px rgba(0, 159, 227, 0.3); }
+.btnNew:hover { background: #0086bf; transform: translateY(-1px); }
+
+
+/* =========================================
+   3. FILA DE PROCESOS (Process Row)
+   ========================================= */
+.processControlRow {
+    padding: 10px 25px;
+    background: white;
+    border-bottom: 1px solid #f1f5f9;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 20px;
+    height: 60px;
 }
 
-/* Nueva Orden */
-.buttonNuevaOrden {
-  background: #f59e0b; /* amber-500 */
-  color: white;
-  box-shadow: 0 1px 3px rgba(245, 158, 11, 0.35);
-}
-.buttonNuevaOrden:hover {
-  background: #d97706;
+.processActions {
+    display: flex;
+    gap: 10px;
 }
 
-/* ─────────────────────────────────────────────── */
-/* TABS                                             */
-/* ─────────────────────────────────────────────── */
-.tabsContainer {
-  display: flex;
-  background: #f1f5f9; /* slate-100 */
-  padding: 0.35rem;
-  border-radius: 0.4rem;
-  width: fit-content;
-  margin: 1rem 1.5rem;
-  gap: 0.3rem;
+/* Botones Secundarios de Proceso */
+.btnSecondary, .btnRollo {
+    height: 36px;
+    padding: 0 16px;
+    border-radius: 8px;
+    font-size: 0.85rem;
+    font-weight: 600;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: white;
+    border: 1px solid #e2e8f0;
+    color: #475569;
+    transition: all 0.2s;
+}
+.btnSecondary:hover { border-color: #cbd5e1; color: #009FE3; }
+.btnRollo:hover { background: #f0f9ff; color: #009FE3; border-color: #bae6fd; }
+
+/* Botón Carrito */
+.btnCart {
+    height: 36px;
+    padding: 0 16px;
+    border-radius: 8px;
+    font-size: 0.85rem;
+    font-weight: 700;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: #6366f1; /* Índigo */
+    color: white;
+    border: none;
+    position: relative;
+    overflow: visible !important; /* Para el badge */
+}
+.btnCart:hover { background: #4f46e5; box-shadow: 0 4px 6px -1px rgba(99, 102, 241, 0.3); }
+
+/* Badge Rojo */
+.cartBadge {
+    position: absolute; top: -6px; right: -6px;
+    background: #E6007E; color: white;
+    font-size: 0.65rem; font-weight: 800;
+    min-width: 18px; height: 18px; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    border: 2px solid white; box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+    z-index: 10;
 }
 
-.tabButton,
-.tabButtonActive {
-  padding: 0.55rem 0.9rem;
-  font-size: 0.8rem;
-  border-radius: 0.4rem;
-  border: none;
-  cursor: pointer;
-  font-weight: 600;
-  transition: all 0.15s ease;
+/* Filtros Rápidos a la Derecha */
+.quickFilters {
+    display: flex;
+    gap: 10px;
 }
 
-.tabButton {
-  background: transparent;
-  color: #64748b;
+.filterInputGroup {
+    position: relative;
+    display: flex;
+    align-items: center;
+}
+.filterInputGroup i {
+    position: absolute; left: 10px; color: #94a3b8; font-size: 0.8rem; pointer-events: none;
+}
+.filterInputGroup input, .filterInputGroup select {
+    padding: 8px 12px 8px 30px;
+    border: 1px solid #e2e8f0;
+    border-radius: 6px;
+    font-size: 0.85rem;
+    color: #334155;
+    background: white;
+    outline: none;
+    min-width: 160px;
+    height: 36px;
+    transition: border-color 0.2s;
+}
+.filterInputGroup input:focus, .filterInputGroup select:focus {
+    border-color: #009FE3;
+    box-shadow: 0 0 0 2px rgba(0, 159, 227, 0.1);
 }
 
-.tabButton:hover {
-  color: #334155;
+/* =========================================
+   4. FILA DE FILTROS DINÁMICOS (Inferior)
+   ========================================= */
+.headerFilterRow {
+    padding: 10px 25px;
+    background: white;
+    border-top: 1px solid #f8fafc;
+}
+.dynamicFilters { display: flex; gap: 15px; align-items: center; flex-wrap: wrap; }
+
+
+/* =========================================
+   5. CUERPO (Sidebar + Tabla)
+   ========================================= */
+.bodyContainer {
+    display: flex;
+    flex: 1;
+    overflow: hidden;
 }
 
-.tabButtonActive {
-  background: white;
-  color: #1e293b;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+/* Sidebar Izquierdo */
+.sidebarColumn {
+    width: 260px;
+    flex-shrink: 0;
+    background: white;
+    border-right: 1px solid #e2e8f0;
+    height: 100%;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
 }
 
-/* ─────────────────────────────────────────────── */
-/* SELECTOR DE MÁQUINA                              */
-/* ─────────────────────────────────────────────── */
-.machineSelect {
-  margin: 0 1.5rem;
-  padding: 0.5rem 0.75rem;
-  font-size: 0.8rem;
-  font-weight: 600;
-  border: 1px solid #94a3b8; /* slate-400 */
-  border-radius: 0.4rem;
-  background: white;
-  color: #1e293b;
-  cursor: pointer;
-  max-width: 260px;
+/* Switcher del Sidebar */
+.sidebarSwitcher {
+    display: flex;
+    padding: 10px;
+    border-bottom: 1px solid #e2e8f0;
+    background: #f8fafc;
+    gap: 5px;
+}
+.switchBtn {
+    flex: 1; padding: 6px; border: 1px solid transparent; background: transparent;
+    color: #64748b; font-size: 0.8rem; font-weight: 600; cursor: pointer; border-radius: 6px; text-align: center;
+}
+.switchBtn:hover { background: #f1f5f9; }
+
+.switchActive {
+    flex: 1; padding: 6px; background: white; color: #009FE3;
+    font-weight: 700; font-size: 0.8rem; border-radius: 6px; text-align: center;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.05); border: 1px solid #e2e8f0;
 }
 
-.machineSelect:hover {
-  background: #f8fafc;
-}
-
-/* ─────────────────────────────────────────────── */
-/* BARRA DE FILTROS                                */
-/* ─────────────────────────────────────────────── */
-.filtersRow {
-  background: white;
-  padding: 0.8rem 1.5rem;
-  border-bottom: 1px solid #e2e8f0;
-  display: flex;
-  align-items: center;
-  gap: 1rem;
-}
-
-/* ─────────────────────────────────────────────── */
-/* TABLA DE PRODUCCIÓN                             */
-/* ─────────────────────────────────────────────── */
-.tableWrapper {
-  flex: 1;
-  overflow-y: auto;
-  padding: 1rem 1.5rem;
-  background: #f8fafc;
+/* Área Principal */
+.mainContent {
+    flex: 1;
+    background: #f8fafc;
+    padding: 20px;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
 }

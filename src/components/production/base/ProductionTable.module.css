@@ -1,21 +1,113 @@
-/* src/components/production/base/ProductionTable.module.css */
-
+/* CONTENEDOR PRINCIPAL */
 .tableContainer {
-  width: 100%;
-  overflow-x: auto;
+    background: white; /* Fondo blanco para quitar lo "negro" */
+    border-radius: 8px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+    
+    /* Scroll Mágico */
+    overflow: auto; 
+    height: 100%; 
+    width: 100%;
+    max-height: calc(100vh - 140px); /* Ajuste para que no se salga de pantalla */
+    position: relative;
+    border: 1px solid #e2e8f0;
 }
 
-.table {
-  width: 100%;
-  border-collapse: collapse;
+/* --- HEADER (Encabezado) --- */
+.headerRow {
+    display: grid; /* Activa el grid template dinámico */
+    background-color: #f8fafc; /* Gris muy claro */
+    border-bottom: 2px solid #e2e8f0;
+    
+    font-weight: 700;
+    color: #475569; /* Texto gris oscuro */
+    text-transform: uppercase;
+    font-size: 0.7rem;
+    letter-spacing: 0.05em;
+    align-items: center;
+    
+    /* STICKY HEADER: Se queda fijo al bajar */
+    position: sticky;
+    top: 0;
+    z-index: 20;
+    
+    /* Truco para scroll horizontal fluido */
+    width: max-content; 
+    min-width: 100%;
 }
 
-.table th, .table td {
-  padding: 8px 12px;
-  border: 1px solid #ddd;
-  text-align: left;
+.headerCell {
+    padding: 12px 8px;
+    text-align: center;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    border-right: 1px solid #f1f5f9;
 }
 
-.table th {
-  background-color: #f4f4f4;
+/* --- BODY (Cuerpo) --- */
+.tableBody {
+    display: block;
+    width: max-content; /* Sigue al header */
+    min-width: 100%;
+    background-color: white;
+}
+
+.tableRow {
+    display: grid; /* Activa el grid template dinámico */
+    border-bottom: 1px solid #f1f5f9;
+    align-items: center;
+    transition: background-color 0.1s ease;
+    background-color: white;
+    
+    width: max-content;
+    min-width: 100%;
+}
+
+.tableRow:hover {
+    background-color: #f0f9ff; /* Azul muy suave al pasar el mouse */
+}
+
+.selected {
+    background-color: #eff6ff !important; /* Azul claro si está seleccionado */
+    border-left: 3px solid #2563eb;
+}
+
+/* --- CELDAS --- */
+.gridCell, .gridCellCenter {
+    padding: 8px 6px;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    border-right: 1px solid #f8fafc;
+    color: #334155;
+    font-size: 0.85rem;
+}
+
+.gridCellCenter {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    height: 100%;
+}
+
+/* --- ESTADO VACÍO O DE CARGA --- */
+.emptyState {
+    padding: 60px;
+    text-align: center;
+    color: #94a3b8;
+    background: white;
+    
+    /* Para centrarlo aunque haya scroll */
+    position: sticky;
+    left: 0;
+    width: 100%;
+}
+
+.loading {
+    padding: 40px;
+    text-align: center;
+    color: #64748b;
+    font-weight: 600;
+    background: white;
 }

@@ -1,69 +1,50 @@
 import { useState, useEffect } from 'react';
-import { ordersService } from '../../services/ordersService.js';
+import { mockOrders } from '../../data/mockData.js'; // Asegúrate de que esta ruta sea correcta
 
 export const useOrders = (filters = {}) => {
   const [orders, setOrders] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
 
   useEffect(() => {
-    loadOrders();
-  }, [filters]);
+    // Simulamos una carga de API
+    setLoading(true);
+    
+    // FILTRADO CLIENT-SIDE (Temporal hasta tener SQL)
+    const filteredData = mockOrders.filter(order => {
+        let isValid = true;
 
-  const loadOrders = async () => {
-    try {
-      setLoading(true);
-      const data = await ordersService.getByFilters(filters);
-      setOrders(data);
-      setError(null);
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setLoading(false);
-    }
-  };
+        // 1. Filtrar por Área (Crítico: AreaGenerica pasa 'filters.area' usualmente o lo manejamos fuera)
+        // Asumimos que mockOrders tiene propiedad 'area'
+        if (filters.area && order.area !== filters.area) isValid = false;
 
-  const createOrder = async (orderData) => {
-    try {
-      const newOrder = await ordersService.create(orderData);
-      setOrders(prev => [...prev, newOrder]);
-      return newOrder;
-    } catch (err) {
-      setError(err.message);
-      throw err;
-    }
-  };
+        // 2. Filtrar por Impresora (Selector del header)
+        if (isValid && filters.printer && filters.printer !== '') {
+            if (order.printer !== filters.printer) isValid = false;
+        }
 
-  const updateOrder = async (orderId, updates) => {
-    try {
-      const updatedOrder = await ordersService.update(orderId, updates);
-      setOrders(prev => prev.map(order => 
-        order.id === orderId ? updatedOrder : order
-      ));
-      return updatedOrder;
-    } catch (err) {
-      setError(err.message);
-      throw err;
-    }
-  };
+        // 3. Filtro de Estado (AreaFilters)
+        if (isValid && filters.status && filters.status !== '') {
+            if (order.status !== filters.status) isValid = false;
+        }
 
-  const deleteOrder = async (orderId) => {
-    try {
-      await ordersService.delete(orderId);
-      setOrders(prev => prev.filter(order => order.id !== orderId));
-    } catch (err) {
-      setError(err.message);
-      throw err;
-    }
-  };
+        // 4. Búsqueda texto (si implementaste buscador)
+        if (isValid && filters.search) {
+             const term = filters.search.toLowerCase();
+             if (!order.client.toLowerCase().includes(term) && !order.id.includes(term)) {
+                 isValid = false;
+             }
+        }
 
-  return {
-    orders,
-    loading,
-    error,
-    createOrder,
-    updateOrder,
-    deleteOrder,
-    reload: loadOrders
-  };
+        return isValid;
+    });
+
+    // Simulamos un pequeño delay de red
+    setTimeout(() => {
+        setOrders(filteredData);
+        setLoading(false);
+    }, 300);
+
+  }, [filters]); // Se ejecuta cada vez que cambian los filtros
+
+  return { orders, loading };
 };

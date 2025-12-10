@@ -1,0 +1,85 @@
+.sidebar {
+    width: 240px;
+    background-color: white;
+    border-right: 1px solid #e2e8f0;
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    flex-shrink: 0;
+}
+
+.sidebarHeader {
+    padding: 20px 15px 10px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.sidebarHeader h3 {
+    font-size: 0.75rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    color: #64748b;
+    margin: 0;
+    letter-spacing: 0.05em;
+}
+
+.sidebarContent {
+    padding: 10px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+/* Items del Sidebar */
+.rollItem {
+    padding: 10px 15px;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: all 0.2s;
+    display: flex;
+    flex-direction: column;
+    border-left: 4px solid transparent; /* Borde invisible por defecto */
+}
+
+.rollItem:hover {
+    background-color: #f8fafc;
+}
+
+/* ESTADO ACTIVO (Clave para que se vea como la imagen) */
+.active {
+    background-color: #eff6ff; /* Fondo azul muy claro */
+    border-left-color: #3b82f6; /* Borde azul a la izquierda */
+}
+
+.rollHeader {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    width: 100%;
+}
+
+.rollName {
+    font-size: 0.9rem;
+    font-weight: 700;
+    color: #334155;
+}
+
+.active .rollName {
+    color: #1d4ed8; /* Azul más fuerte si está activo */
+}
+
+.orderCount {
+    background-color: #e2e8f0;
+    color: #64748b;
+    font-size: 0.7rem;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-weight: 700;
+}
+
+.active .orderCount {
+    background-color: #dbeafe;
+    color: #1e40af;
+}

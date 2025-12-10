@@ -1,4 +1,33 @@
-/* src/styles/custom.css */
+/* =========================================
+   1. VARIABLES GLOBALES (PALETA)
+   ========================================= */
+:root {
+  /* --- PALETA CORPORATIVA (Basada en tu Logo) --- */
+  --brand-cyan: #009FE3;    /* Acciones principales */
+  --brand-magenta: #E6007E; /* Alertas / Destacados */
+  --brand-yellow: #FFED00;  /* Advertencias */
+  --brand-black: #000000;   /* Textos fuertes */
+  
+  /* --- SISTEMA UI (Clean Interface) --- */
+  --primary: #2563eb;       /* Azul estándar */
+  --indigo: #6366f1;        /* Color logístico */
+  
+  --bg-app: #f8fafc;        /* Fondo general */
+  --bg-card: #ffffff;       /* Fondo blanco */
+  
+  --text-main: #1e293b;     /* Texto principal (Casi negro) */
+  --text-muted: #64748b;    /* Texto secundario (Gris) */
+  
+  --border: #e2e8f0;        /* Bordes sutiles */
+  
+  /* --- SOMBRAS --- */
+  --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.05);
+  --shadow-md: 0 4px 6px -1px rgb(0 0 0 / 0.1);
+}
+
+/* =========================================
+   2. RESET BÁSICO
+   ========================================= */
 * {
   margin: 0;
   padding: 0;
@@ -6,34 +35,46 @@
 }
 
 body {
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
-  background-color: #f8fafc;
-  color: #1e293b;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
+  background-color: var(--bg-app);
+  color: var(--text-main);
+  font-size: 14px; /* Tamaño base legible */
+  -webkit-font-smoothing: antialiased;
 }
 
+/* =========================================
+   3. SCROLLBAR PERSONALIZADO
+   ========================================= */
+/* Firefox */
 .custom-scroll {
   scrollbar-width: thin;
   scrollbar-color: #cbd5e1 #f1f5f9;
 }
 
-.custom-scroll::-webkit-scrollbar {
-  width: 6px;
+/* Chrome, Edge, Safari */
+::-webkit-scrollbar, .custom-scroll::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
 }
 
-.custom-scroll::-webkit-scrollbar-track {
-  background: #f1f5f9;
+::-webkit-scrollbar-track, .custom-scroll::-webkit-scrollbar-track {
+  background: transparent;
 }
 
-.custom-scroll::-webkit-scrollbar-thumb {
+::-webkit-scrollbar-thumb, .custom-scroll::-webkit-scrollbar-thumb {
   background: #cbd5e1;
-  border-radius: 3px;
+  border-radius: 4px;
+  border: 2px solid transparent; /* Crea un margen visual */
+  background-clip: content-box;
 }
 
-.custom-scroll::-webkit-scrollbar-thumb:hover {
-  background: #94a3b8;
+::-webkit-scrollbar-thumb:hover, .custom-scroll::-webkit-scrollbar-thumb:hover {
+  background-color: #94a3b8;
 }
 
-/* Estilos para las tablas */
+/* =========================================
+   4. ELEMENTOS HTML GENERALES
+   ========================================= */
 table {
   border-collapse: collapse;
   width: 100%;
@@ -41,15 +82,22 @@ table {
 
 th, td {
   text-align: left;
-  padding: 8px 16px;
+  padding: 10px 16px; /* Un poco más de aire */
+  color: var(--text-main);
 }
 
-/* Estados de hover básicos */
+button {
+    cursor: pointer;
+    font-family: inherit;
+}
+
 button:hover {
-  opacity: 0.9;
+  opacity: 0.95;
 }
 
-/* Utilidades básicas */
+/* =========================================
+   5. UTILIDADES (Helpers)
+   ========================================= */
 .text-center { text-align: center; }
 .text-left { text-align: left; }
 .text-right { text-align: right; }
@@ -59,11 +107,24 @@ button:hover {
 .items-center { align-items: center; }
 .justify-center { justify-content: center; }
 .justify-between { justify-content: space-between; }
+.gap-2 { gap: 0.5rem; }
+.gap-4 { gap: 1rem; }
 
 .w-full { width: 100%; }
 .h-full { height: 100%; }
 
-/* Para los iconos de FontAwesome */
+/* Iconos FontAwesome: Asegura que hereden tamaño y color correcto */
 .fa-solid, .fa-regular, .fa-brands {
   font-size: inherit;
+  /* line-height: inherit; Evita saltos raros */
+}
+
+/* Animaciones suaves */
+@keyframes fadeIn {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
+
+.fade-in {
+    animation: fadeIn 0.2s ease-in;
 }

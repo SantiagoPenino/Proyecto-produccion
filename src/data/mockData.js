@@ -31,7 +31,7 @@ export const mockMachines = [
 
 export const mockOrders = [
   { 
-    id: "1050", 
+    id: "1088", 
     area: "DTF", 
     entryDate: "2025-11-22T09:30:00",
     client: "Juan Perez", 
@@ -54,7 +54,7 @@ export const mockOrders = [
     area: "DTF", 
     entryDate: "2025-11-22T10:00:00",
     client: "Marca Ropa X", 
-    clientID: "C-20",
+    clientID: "C-99",
     desc: "Etiquetas", 
     priority: "Normal",
     variant: "DTF UV", 

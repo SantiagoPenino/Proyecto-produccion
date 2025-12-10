@@ -1,7 +1,7 @@
 import React from 'react';
-import PlanillaBase from '../PlanillaBase.js';
+import PlanillaBase from '../PlanillaBase.jsx';
 import SettingsModal from '../../modals/SettingsModal.jsx';
-import StockModal from '../../modals/StockModal.jsx';
+//import StockModal from '../../modals/StockModal.jsx';
 import ReportModal from '../../modals/ReportModal.jsx';
 import NewOrderModal from '../../modals/NewOrderModal.jsx';
 

@@ -1,8 +1,11 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
-import App from './App.jsx';
+import './index.css';           // Tus estilos base
+import './styles/custom.css';   // Tus estilos personalizados
+import App from './App.jsx';    // El componente principal (la lógica nueva)
 
-ReactDOM.createRoot(document.getElementById('root')).render(
+const root = ReactDOM.createRoot(document.getElementById('root'));
+root.render(
   <React.StrictMode>
     <App />
   </React.StrictMode>

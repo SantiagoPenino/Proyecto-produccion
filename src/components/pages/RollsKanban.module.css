@@ -1,0 +1,113 @@
+/* ... (Estilos de layout boardContainer, column, etc. se mantienen igual) ... */
+
+.boardContainer {
+    display: flex; height: 100%; width: 100%; gap: 20px; padding: 10px; background-color: #f8fafc; overflow: hidden;
+}
+.loading { display: flex; justify-content: center; align-items: center; height: 100%; color: #64748b; font-weight: 600; }
+
+.column {
+    min-width: 280px; width: 280px; background: #e2e8f0; border-radius: 8px; display: flex; flex-direction: column; height: 100%; border: 1px solid #cbd5e1; flex-shrink: 0;
+}
+.colHeader { padding: 12px 15px; background: #f1f5f9; border-bottom: 1px solid #cbd5e1; border-radius: 8px 8px 0 0; display: flex; justify-content: space-between; align-items: center; }
+.colHeader h3 { margin: 0; font-size: 0.9rem; color: #334155; font-weight: 700; text-transform: uppercase; }
+.countBadge { background: #cbd5e1; color: #475569; padding: 2px 8px; border-radius: 12px; font-size: 0.75rem; font-weight: 700; }
+
+.rollsArea { flex: 1; display: flex; gap: 15px; overflow-x: auto; padding-bottom: 10px; align-items: flex-start; height: 100%; }
+
+.rollColumn {
+    width: 280px; min-width: 280px; background: #f8fafc; border-radius: 8px; display: flex; flex-direction: column; border: 1px solid #e2e8f0; height: 100%; background: white;
+}
+
+.rollHeader { padding: 12px 15px; background: white; border-bottom: 1px solid #f1f5f9; border-top: 4px solid #3b82f6; border-radius: 8px 8px 0 0; }
+.rollTitleRow { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+.rollHeader h3 { margin: 0; font-size: 0.95rem; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 180px; }
+.rollId { font-size: 0.7rem; color: #94a3b8; font-family: monospace; background: #f1f5f9; padding: 2px 4px; border-radius: 4px; }
+
+/* Barra de Progreso */
+.progressContainer { height: 8px; background: #f1f5f9; border-radius: 4px; margin-bottom: 4px; overflow: hidden; border: 1px solid #e2e8f0; }
+.progressBar { height: 100%; transition: width 0.3s ease; border-radius: 4px; }
+.capacityText { font-size: 0.7rem; text-align: right; color: #64748b; font-weight: 600; }
+
+.cardList { flex: 1; padding: 10px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; min-height: 100px; }
+
+/* TARJETA */
+.card {
+    background: white; padding: 12px; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.05); border: 1px solid #e2e8f0; cursor: grab; transition: all 0.2s; position: relative; display: flex; flex-direction: column; gap: 4px;
+}
+.card:hover { transform: translateY(-2px); box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); border-color: #cbd5e1; }
+.card:active { cursor: grabbing; }
+
+.cardHeader { display: flex; justify-content: space-between; margin-bottom: 4px; align-items: center; }
+.orderId { font-family: monospace; font-weight: 700; color: #64748b; font-size: 0.75rem; }
+.clientName { font-size: 0.85rem; color: #1e293b; font-weight: 600; margin-bottom: 2px; }
+.jobDesc { font-size: 0.75rem; color: #64748b; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-bottom: 5px; }
+.cardFooter { display: flex; justify-content: flex-end; margin-top: 5px; }
+.magnitudeBadge { background: #f1f5f9; color: #475569; padding: 2px 6px; border-radius: 4px; font-size: 0.7rem; font-weight: 700; border: 1px solid #e2e8f0; }
+
+/* --- CONTROLES DE MÁQUINA (Botones Arreglados) --- */
+.controlBar {
+    display: flex; align-items: center; justify-content: space-between;
+    background: #f8fafc; padding: 8px; border-radius: 6px; border: 1px solid #f1f5f9; margin-top: 5px;
+}
+
+.statusIndicator { display: flex; align-items: center; gap: 8px; }
+.statusText { font-size: 0.65rem; font-weight: 800; text-transform: uppercase; letter-spacing: 0.05em; }
+
+/* Botones Play / Pause / Check */
+.btnIcon {
+    width: 30px; height: 30px; border-radius: 6px; display: flex; align-items: center; justify-content: center;
+    border: 1px solid transparent; cursor: pointer; transition: all 0.2s; font-size: 0.9rem;
+}
+
+/* VERDE (Play) */
+.btnPlay { background: #dcfce7; color: #166534; border-color: #bbf7d0; }
+.btnPlay:hover { background: #22c55e; color: white; transform: scale(1.05); }
+
+/* ROJO (Stop/Pause) - ¡YA NO ES NEGRO! */
+.btnPause { background: #fee2e2; color: #dc2626; border-color: #fca5a5; }
+.btnPause:hover { background: #ef4444; color: white; transform: scale(1.05); }
+
+/* AZUL (Check/Finalizar) */
+.btnCheck { background: white; color: #3b82f6; border: 1px solid #e2e8f0; }
+.btnCheck:hover { background: #eff6ff; border-color: #bfdbfe; color: #2563eb; }
+
+/* AZUL (Gestión) */
+.btnManage { background: white; color: #64748b; border: 1px solid #e2e8f0; }
+.btnManage:hover { background: #f8fafc; color: #1e293b; border-color: #cbd5e1; }
+
+/* Bolitas */
+.dotGreen { width: 8px; height: 8px; border-radius: 50%; background: #22c55e; box-shadow: 0 0 0 2px rgba(34,197,94,0.2); }
+.dotRed { width: 8px; height: 8px; border-radius: 50%; background: #ef4444; animation: pulse 1.5s infinite; }
+@keyframes pulse { 0% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.7); } 70% { box-shadow: 0 0 0 4px rgba(239, 68, 68, 0); } 100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); } }
+
+/* Info Tiempo */
+.timeInfo {
+    font-size: 0.65rem; color: #64748b; margin-top: 4px; display: flex; gap: 5px; align-items: center;
+}
+.timeIcon { font-size: 0.7rem; color: #94a3b8; }
+
+.emptyState { text-align: center; color: #94a3b8; font-size: 0.8rem; padding: 20px; font-style: italic; }
+.emptyRollState { text-align: center; color: #cbd5e1; font-size: 0.8rem; padding: 20px; border: 2px dashed #f1f5f9; border-radius: 8px; margin-top: 10px; }
+.addRollBtn { min-width: 280px; height: 100px; background: transparent; border: 2px dashed #cbd5e1; border-radius: 8px; color: #94a3b8; cursor: pointer; font-weight: 600; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; transition: all 0.2s; }
+.addRollBtn:hover { border-color: #3b82f6; color: #3b82f6; background: #eff6ff; }
+.addIconCircle { width: 40px; height: 40px; border-radius: 50%; background: #f1f5f9; display: flex; align-items: center; justify-content: center; font-size: 1.2rem; }
+.addRollBtn:hover .addIconCircle { background: #dbeafe; color: #3b82f6; }
+/* ... estilos anteriores ... */
+
+/* TARJETA BLOQUEADA (En Producción) */
+.cardLocked {
+    background-color: #f8fafc; /* Gris muy claro */
+    border-color: #e2e8f0;
+    cursor: not-allowed !important; /* Cursor de prohibido */
+    opacity: 0.8;
+}
+
+.cardLocked:hover {
+    transform: none; /* No se mueve al pasar el mouse */
+    box-shadow: none;
+}
+
+.cardLocked .clientName, 
+.cardLocked .jobDesc {
+    color: #64748b; /* Texto más apagado */
+}

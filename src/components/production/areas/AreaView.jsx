@@ -1,139 +1,266 @@
-// src/components/areas/AreaView.jsx
-import React from "react";
-import AreaFilters from "../components/AreaFilters";
+import React, { useState, useEffect, useMemo } from "react";
 import ProductionTable from "../components/ProductionTable";
+import AreaFilters from "../components/AreaFilters";
 
-// Si quieres que AreaView tenga su propio CSS por defecto,
-// este import se usará si no se pasa `styles` desde AreaGenerica.
-import defaultStyles from "./AreaView.module.css";
+// Panel de Detalle Deslizante
+import OrderDetailPanel from "../../production/components/OrderDetailPanel";
 
-/**
- * AreaView
- * Props esperadas:
- * - areaKey
- * - areaConfig
- * - orders
- * - filters
- * - updateFilter (fn)
- * - views { currentView: 'table' | 'kanban' }
- * - switchView (fn)
- * - styles (opcional) -> CSS module inyectado por AreaGenerica
- */
+// Servicios
+import { ordersService } from '../../../services/api';
+
+// Vistas Alternativas
+import RollsKanban from "../../pages/RollsKanban";
+import ProductionKanban from "../../pages/ProductionKanban";
+
+// Modales
+import NewOrderModal from "../../modals/NewOrderModal";
+import SettingsModal from "../../modals/SettingsModal";
+import ReportFailureModal from "../../modals/ReportFailureModal";
+import StockRequestModal from "../../modals/StockRequestModal";
+import LogisticsCartModal from "../../modals/LogisticsCartModal";
+import RollAssignmentModal from "../../modals/RollAssignmentModal";
+
+// Sidebars
+import SidebarProcesses from "../../layout/SidebarProcesses";
+import RollSidebar from "../../layout/RollSidebar";
+import MatrixSidebar from "../../layout/MatrixSidebar";
+
+import { areaConfigs } from "../../utils/configs/areaConfigs";
+
+import styles from "./AreaView.module.css";
+
 export default function AreaView({
   areaKey,
   areaConfig,
-  orders = [],
   filters = {},
   updateFilter = () => {},
   views = { currentView: "table" },
   switchView = () => {},
-  styles: injectedStyles,
+  onSwitchTab
 }) {
-  // Usar el CSS recibido desde AreaGenerica si existe, si no usar el default.
-  const styles = injectedStyles || defaultStyles;
+  // --- ESTADOS DE NAVEGACIÓN ---
+  const [activeTab, setActiveTab] = useState("todo");
+  const [isKanbanMode, setIsKanbanMode] = useState(false);      // Armado de Lotes
+  const [isProductionMode, setIsProductionMode] = useState(false); // Lote a Producción
 
-  if (!areaConfig) {
-    console.error("❌ AreaView: areaConfig no encontrado para areaKey=", areaKey);
-    return <div style={{ padding: 20 }}>Error: configuración del área no encontrada.</div>;
-  }
+  // --- ESTADOS DE FILTRO ---
+  const [sidebarFilter, setSidebarFilter] = useState("ALL"); 
+  const [sidebarMode, setSidebarMode] = useState("rolls"); 
+  const [clientFilter, setClientFilter] = useState(""); 
+  const [variantFilter, setVariantFilter] = useState("ALL");
 
-  // Seguridad: funciones de filtro pueden estar nombradas de otra forma,
-  // por eso AreaFilters usa onFilterChange. Adaptamos para que no rompa.
-  const onFilterChange = (key, value) => {
-    if (typeof updateFilter === "function") updateFilter(key, value);
-    else console.warn("⚠ updateFilter no es función");
+  // --- DATOS ---
+  const [dbOrders, setDbOrders] = useState([]); 
+  const [loadingOrders, setLoadingOrders] = useState(false);
+
+  // --- SELECCIÓN ---
+  const [selectedOrder, setSelectedOrder] = useState(null);
+  const [selectedOrders, setSelectedOrders] = useState([]);
+
+  // --- MODALES ---
+  const [isNewOrderOpen, setIsNewOrderOpen] = useState(false);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [isFailureOpen, setIsFailureOpen] = useState(false);
+  const [isStockOpen, setIsStockOpen] = useState(false);
+  const [isCartOpen, setIsCartOpen] = useState(false);
+  const [isRollModalOpen, setIsRollModalOpen] = useState(false);
+
+  // 1. CARGAR ÓRDENES
+  const fetchOrders = async () => {
+      setLoadingOrders(true);
+      try {
+          const mode = activeTab === 'todo' ? 'active' : 'history';
+          const data = await ordersService.getByArea(areaKey, mode);
+          setDbOrders(data);
+      } catch (error) {
+          console.error("Error cargando órdenes:", error);
+      } finally {
+          setLoadingOrders(false);
+      }
   };
 
+  useEffect(() => { if (areaKey) fetchOrders(); }, [areaKey, activeTab]);
+  
+  // Resetear al cambiar de área
+  useEffect(() => { 
+      setSidebarFilter("ALL"); 
+      setClientFilter("");
+      setVariantFilter("ALL");
+      setSelectedOrders([]);
+      setSidebarMode("rolls");
+      setIsKanbanMode(false);
+      setIsProductionMode(false);
+  }, [areaKey]);
+
+  useEffect(() => {
+    if (activeTab === "todo") switchView("table");
+    else switchView("history");
+  }, [activeTab]);
+
+  // 2. FILTRADO
+  const filteredOrders = useMemo(() => {
+    let result = dbOrders;
+    
+    if (sidebarFilter !== 'ALL') {
+        if (sidebarMode === 'rolls') result = result.filter(o => o.rollId === sidebarFilter);
+        else if (sidebarMode === 'machines') result = result.filter(o => o.printer === sidebarFilter);
+        
+        if (areaKey === 'BORD' && sidebarMode === 'rolls') result = result.filter(o => o.matrixStatus === sidebarFilter);
+    }
+
+    if (clientFilter) result = result.filter(o => o.client.toLowerCase().includes(clientFilter.toLowerCase()));
+    if (variantFilter !== 'ALL') result = result.filter(o => o.variant === variantFilter);
+    if (filters.printer) result = result.filter(o => o.printer === filters.printer);
+    
+    return result;
+  }, [dbOrders, sidebarFilter, sidebarMode, clientFilter, variantFilter, areaKey, filters]);
+
+  // 3. SIDEBAR (Solo se muestra en vista de tabla)
+  const renderSidebar = () => {
+    if (areaKey === 'DTF' || areaKey === 'SUB' || areaKey === 'DIRECTA') {
+        let sidebarData = dbOrders;
+        if (sidebarMode === 'machines') {
+            sidebarData = dbOrders.map(o => ({ ...o, rollId: o.printer || 'Sin Asignar' }));
+        }
+
+        return (
+            <div style={{display:'flex', flexDirection:'column', height:'100%'}}>
+                <div className={styles.sidebarSwitcher}>
+                    <button className={sidebarMode === 'rolls' ? styles.switchActive : styles.switchBtn} onClick={() => { setSidebarMode('rolls'); setSidebarFilter('ALL'); }}>Lotes</button>
+                    <button className={sidebarMode === 'machines' ? styles.switchActive : styles.switchBtn} onClick={() => { setSidebarMode('machines'); setSidebarFilter('ALL'); }}>Equipos</button>
+                </div>
+                <RollSidebar orders={sidebarData} currentFilter={sidebarFilter} onFilterChange={setSidebarFilter} />
+            </div>
+        );
+    }
+    if (areaKey === 'BORD') return <MatrixSidebar orders={dbOrders} currentFilter={sidebarFilter} onFilterChange={setSidebarFilter} />;
+    return <SidebarProcesses allAreaConfigs={areaConfigs} currentArea={areaKey} onAreaChange={(key) => onSwitchTab(`planilla-${key.toLowerCase()}`)} />;
+  };
+
+  const handleGoBack = () => onSwitchTab && onSwitchTab('dashboard');
+  const handleToggleSelection = (id) => setSelectedOrders(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
+
+  const readyCount = dbOrders.filter(o => o.status === 'Finalizado').length;
+  const uniqueVariants = [...new Set(dbOrders.map(o => o.variant).filter(Boolean))];
+
+  if (!areaConfig) return <div>Cargando configuración...</div>;
+
   return (
-    <div className={styles.areaContainer ?? ""}>
+    <div className={styles.layoutContainer}>
+      
+      {/* MODALES */}
+      <NewOrderModal isOpen={isNewOrderOpen} onClose={() => { setIsNewOrderOpen(false); fetchOrders(); }} areaName={areaConfig.name} areaCode={areaKey} />
+      <SettingsModal isOpen={isSettingsOpen} onClose={() => setIsSettingsOpen(false)} area={areaConfig.name} />
+      <ReportFailureModal isOpen={isFailureOpen} onClose={() => setIsFailureOpen(false)} areaName={areaConfig.name} areaCode={areaKey} />
+      <StockRequestModal isOpen={isStockOpen} onClose={() => setIsStockOpen(false)} areaName={areaConfig.name} areaCode={areaKey} />
+      <LogisticsCartModal isOpen={isCartOpen} onClose={() => setIsCartOpen(false)} areaName={areaConfig.name} areaCode={areaKey} onSuccess={() => { setActiveTab('history'); fetchOrders(); }} />
+      <RollAssignmentModal isOpen={isRollModalOpen} onClose={() => setIsRollModalOpen(false)} selectedIds={selectedOrders} onSuccess={() => { setSelectedOrders([]); fetchOrders(); }} />
 
-      {/* HEADER SUPERIOR */}
-      <div className={styles.headerContainer ?? ""}>
-
-        <div>
-          <div className={styles.breadcrumb ?? ""}>
-            PRODUCCIÓN / {areaConfig.name}
-          </div>
-          <h1 className={styles.areaTitle ?? ""}>{areaConfig.name}</h1>
+      <header className={styles.headerContainer}>
+        <div className={styles.headerTopRow}>
+            <div className={styles.titleGroup}>
+                <button className={styles.backButton} onClick={handleGoBack}><i className="fa-solid fa-arrow-left"></i></button>
+                <div className={styles.titles}><h1>{areaConfig.name}</h1><span className={styles.breadcrumb}>PRODUCCIÓN</span></div>
+            </div>
+            <div className={styles.navCenter}>
+                <div className={styles.viewTabs}>
+                    <button className={views.currentView === "table" ? styles.viewTabActive : styles.viewTab} onClick={() => switchView("table")}>Producción</button>
+                    <button className={views.currentView === "kanban" ? styles.viewTabActive : styles.viewTab} onClick={() => switchView("kanban")}>Logística</button>
+                </div>
+                <div className={styles.verticalDivider}></div>
+                <div className={styles.filterTabs}>
+                    <button className={activeTab === "todo" ? styles.filterTabActive : styles.filterTab} onClick={() => setActiveTab("todo")}>Para Hacer</button>
+                    <button className={activeTab === "all" ? styles.filterTabActive : styles.filterTab} onClick={() => setActiveTab("all")}>Historial</button>
+                </div>
+            </div>
+            <div className={styles.actionButtons}>
+                 <button className={styles.btnConfig} onClick={() => onSwitchTab('config')} title="Configuración"><i className="fa-solid fa-gear"></i></button>
+                 <button className={styles.btnInsumos} onClick={() => setIsStockOpen(true)}><i className="fa-solid fa-boxes-stacked"></i> Insumos</button>
+                 <button className={styles.btnFalla} onClick={() => setIsFailureOpen(true)}><i className="fa-solid fa-triangle-exclamation"></i> Falla</button>
+                 <button className={styles.btnNew} onClick={() => setIsNewOrderOpen(true)}><i className="fa-solid fa-plus"></i> Nueva Orden</button>
+            </div>
         </div>
 
-        <div className={styles.headerButtons ?? ""}>
-          <button className={styles.buttonConfig ?? ""}>⚙ Config.</button>
-          <button className={styles.buttonInsumos ?? ""}>📦 Insumos</button>
-          <button className={styles.buttonFalla ?? ""}>⚠ Falla</button>
-          <button className={styles.buttonNuevaOrden ?? ""}>＋ Nueva Orden</button>
+        {/* FILA DE PROCESOS */}
+        <div className={styles.processControlRow}>
+            <div className={styles.processActions}>
+                {/* Armado de Lotes */}
+                <button 
+                    className={isKanbanMode ? styles.btnPrimary : styles.btnSecondary} 
+                    onClick={() => { setIsKanbanMode(!isKanbanMode); setIsProductionMode(false); }}
+                >
+                    <i className={`fa-solid ${isKanbanMode ? 'fa-table' : 'fa-layer-group'}`}></i> 
+                    {isKanbanMode ? 'Ver Tabla' : 'Armado de Lotes'}
+                </button>
+
+                {/* Lote a Producción */}
+                {(areaKey === 'DTF' || areaKey === 'SUB') && (
+                    <button 
+                        className={isProductionMode ? styles.btnPrimary : styles.btnSecondary} 
+                        onClick={() => { setIsProductionMode(!isProductionMode); setIsKanbanMode(false); }}
+                    >
+                        <i className="fa-solid fa-scroll"></i> 
+                        {isProductionMode ? 'Ver Tabla' : 'Lote a Producción'}
+                    </button>
+                )}
+
+                {/* Entrega */}
+                <button className={styles.btnEntrega} onClick={() => setIsCartOpen(true)}>
+                    <i className="fa-solid fa-cart-shopping" style={{ fontSize: '1.1rem' }}></i>
+                    <span style={{marginLeft:5}}>Entrega</span>
+                    {readyCount > 0 && <span className={styles.cartBadge}>{readyCount > 99 ? '99+' : readyCount}</span>}
+                </button>
+            </div>
+
+            <div className={styles.quickFilters}>
+                <div className={styles.filterInputGroup}>
+                    <i className="fa-solid fa-magnifying-glass"></i>
+                    <input type="text" placeholder="Buscar Cliente..." value={clientFilter} onChange={(e) => setClientFilter(e.target.value)} />
+                </div>
+                <div className={styles.filterInputGroup}>
+                    <i className="fa-solid fa-filter"></i>
+                    <select value={variantFilter} onChange={(e) => setVariantFilter(e.target.value)}>
+                        <option value="ALL">Todas Variantes</option>
+                        {uniqueVariants.map(v => <option key={v} value={v}>{v}</option>)}
+                    </select>
+                </div>
+            </div>
         </div>
-      </div>
+      </header>
 
-      {/* TABS (Producción / Punto Logístico) */}
-      <div className={styles.tabsContainer ?? ""} style={{ marginLeft: "1.5rem", marginTop: "1rem" }}>
-        <button
-          className={views.currentView === "table" ? styles.tabButtonActive ?? "" : styles.tabButton ?? ""}
-          onClick={() => switchView("table")}
-        >
-          Producción
-        </button>
-
-        <button
-          className={views.currentView === "kanban" ? styles.tabButtonActive ?? "" : styles.tabButton ?? ""}
-          onClick={() => switchView("kanban")}
-        >
-          Punto logístico
-        </button>
-      </div>
-
-      {/* BARRA SUPERIOR INTERNA: selector de máquina + filtros rápidos */}
-      <div style={{ display: "flex", alignItems: "center", gap: 16, padding: "0.75rem 1.5rem" }}>
-        {/* Selector de máquinas (si el área tiene printers/machines configuradas) */}
-        {areaConfig.printers && Array.isArray(areaConfig.printers) && (
-          <select
-            className={styles.machineSelect ?? ""}
-            value={filters.printer ?? ""}
-            onChange={(e) => onFilterChange("printer", e.target.value)}
-          >
-            <option value="">Todas las máquinas</option>
-            {areaConfig.printers.map((p) => (
-              <option key={p} value={p}>
-                {p}
-              </option>
-            ))}
-          </select>
+      {/* CUERPO */}
+      <div className={styles.bodyContainer}>
+        {/* Sidebar se oculta en modos Kanban */}
+        {!isKanbanMode && !isProductionMode && (
+            <aside className={styles.sidebarColumn}>
+                {renderSidebar()}
+            </aside>
         )}
-
-        {/* Puedes añadir aquí botones adicionales (tabs de modo) si los quieres */}
-        <div style={{ marginLeft: "auto" }} />
+        
+        <main className={styles.mainContent}>
+            {loadingOrders ? (
+                <div style={{textAlign:'center', padding:40, color:'#64748b'}}>Cargando datos...</div>
+            ) : (
+                <>
+                    {isKanbanMode ? (
+                        <RollsKanban areaCode={areaKey} />
+                    ) : isProductionMode ? (
+                        <ProductionKanban areaCode={areaKey} />
+                    ) : (
+                        <ProductionTable 
+                            areaConfig={areaConfig} 
+                            orders={filteredOrders} 
+                            selectedOrders={selectedOrders}
+                            onToggleSelection={handleToggleSelection}
+                            onRowClick={(order) => setSelectedOrder(order)}
+                        />
+                    )}
+                </>
+            )}
+        </main>
       </div>
 
-      {/* FILTROS: AreaFilters maneja common + unique */}
-      <div className={styles.filtersRow ?? ""}>
-        <AreaFilters
-          areaConfig={areaConfig}
-          filters={filters}
-          onFilterChange={onFilterChange}
-        />
-      </div>
-
-      {/* CONTENEDOR PRINCIPAL: Tabla o Kanban */}
-      <div className={styles.tableWrapper ?? ""}>
-        {views.currentView === "table" ? (
-          <ProductionTable
-            areaConfig={areaConfig}
-            orders={orders}
-            // si tu ProductionTable necesita otras props como selectedOrders,
-            // onToggleSelection, pásalas aquí.
-          />
-        ) : (
-          // Placeholder seguro para Kanban (a reemplazar cuando tengas KanbanView)
-          <div style={{ padding: 24 }}>
-            <h3 style={{ margin: 0 }}>Punto logístico / Kanban</h3>
-            <p style={{ color: "#6b7280" }}>
-              Aún no hay vista Kanban implementada. Puedes integrar tu componente
-              `KanbanView` aquí cuando lo tengas: &nbsp;
-              <code>{`<KanbanView areaConfig={areaConfig} orders={orders} />`}</code>
-            </p>
-          </div>
-        )}
-      </div>
+      <OrderDetailPanel order={selectedOrder} onClose={() => setSelectedOrder(null)} />
     </div>
   );
 }
