@@ -1,0 +1,118 @@
+.container {
+  display: flex; height: 100%; background-color: #f8fafc; overflow: hidden;
+}
+.loadingContainer {
+  display: flex; justify-content: center; align-items: center; height: 100%; color: #64748b;
+}
+
+/* --- PANEL IZQUIERDO --- */
+.leftPanel {
+  /* Ancho fijo menor para dar más espacio a la derecha */
+  width: 55%; 
+  min-width: 600px;
+  max-width: 700px; /* Limite el crecimiento */
+  display: flex; flex-direction: column;
+  border-right: 1px solid #e2e8f0; background: white;
+}
+
+.header {
+  padding: 15px 20px; border-bottom: 1px solid #e2e8f0; background: #fff;
+  display: flex; justify-content: space-between; align-items: center;
+}
+.title h2 { font-size: 1.1rem; color: #1e293b; margin: 0; font-weight: 800; }
+.subtitle { font-size: 0.8rem; color: #64748b; }
+
+.actions { display: flex; gap: 10px; }
+.btnMeasure {
+  background: #6366f1; color: white; border: none; padding: 8px 16px;
+  border-radius: 6px; font-weight: 600; cursor: pointer; display: flex; align-items: center; gap: 8px;
+}
+.btnMeasure:disabled { background: #cbd5e1; cursor: not-allowed; }
+.btnSave {
+  background: #10b981; color: white; border: none; padding: 8px 16px;
+  border-radius: 6px; font-weight: 600; cursor: pointer; display: flex; align-items: center; gap: 8px;
+}
+
+.listContainer { flex: 1; overflow-y: auto; padding: 20px; }
+.emptyList { text-align: center; color: #94a3b8; margin-top: 50px; }
+
+/* Grupo de Orden */
+.orderGroup {
+  background: white; border: 1px solid #e2e8f0; border-radius: 8px;
+  margin-bottom: 15px; overflow: hidden; box-shadow: 0 1px 2px rgba(0,0,0,0.02);
+}
+.orderHeader {
+  padding: 10px 15px; background: #f1f5f9; border-bottom: 1px solid #e2e8f0;
+  display: flex; justify-content: space-between; align-items: center;
+}
+.orderTitle { font-weight: 700; color: #334155; font-size: 0.9rem; }
+.clientName { color: #64748b; font-size: 0.8rem; margin-left: 10px; }
+.btnSelectAll { background: transparent; border: none; color: #6366f1; cursor: pointer; font-size: 0.75rem; font-weight: 600; }
+
+/* Tabla Archivos */
+.fileTable { width: 100%; border-collapse: collapse; }
+.fileTable th { text-align: left; font-size: 0.7rem; color: #94a3b8; padding: 8px 15px; border-bottom: 1px solid #e2e8f0; font-weight: 600; text-transform: uppercase; }
+.fileRow { cursor: pointer; transition: background 0.1s; }
+.fileRow:hover { background: #f8fafc; }
+.fileRow.active { background: #eff6ff; }
+.fileCell { padding: 10px 15px; border-bottom: 1px solid #f1f5f9; font-size: 0.8rem; color: #475569; vertical-align: middle; }
+
+/* Enlace de Archivo */
+.fileName { display: flex; align-items: center; gap: 8px; font-weight: 500; }
+.fileLink { color: #2563eb; text-decoration: none; }
+.fileLink:hover { text-decoration: underline; }
+
+.iconPdf { color: #ef4444; }
+.iconImg { color: #3b82f6; }
+.badgeCopies { background: #f1f5f9; padding: 2px 6px; border-radius: 4px; font-weight: bold; }
+.autoBadge { background: #e0e7ff; color: #4338ca; padding: 2px 6px; border-radius: 4px; font-size: 0.7rem; font-family: monospace; display: inline-block; }
+
+/* --- INPUTS Y CHECKBOXES (ESTILO NEGRO) --- */
+
+/* Checkbox Negro */
+input[type="checkbox"] {
+  accent-color: black; /* Esto hace que el check sea negro */
+  width: 16px; 
+  height: 16px; 
+  cursor: pointer;
+}
+
+/* Input de Medida Mejorado */
+.measureInput {
+  width: 90px; 
+  padding: 6px 10px; 
+  border: 1px solid #cbd5e1; 
+  border-radius: 4px; 
+  font-size: 0.85rem; 
+  text-align: right; 
+  color: #0f172a; 
+  background-color: #fff;
+  font-weight: 600;
+  transition: all 0.2s;
+}
+
+.measureInput:focus { 
+  border-color: #000; /* Borde negro al enfocar */
+  outline: none; 
+  box-shadow: 0 0 0 1px #000;
+}
+
+/* --- PANEL DERECHO --- */
+.rightPanel {
+  flex: 1; /* Ocupa el espacio restante */
+  min-width: 40%;
+  background: #cbd5e1;
+ 
+}
+.previewContainer {
+  width: 100%; height: 100%; background: white; border-radius: 8px;
+  box-shadow: 0 10px 25px rgba(0,0,0,0.1); overflow: hidden;
+  display: flex; align-items: center; justify-content: center; position: relative;
+}
+.previewImage { max-width: 100%; max-height: 100%; object-fit: contain; }
+.previewFrame { width: 100%; height: 100%; border: none; }
+.previewOverlay {
+  position: absolute; bottom: 0; left: 0; right: 0;
+  background: rgba(0,0,0,0.7); color: white; padding: 10px; font-size: 0.8rem;
+}
+.emptyPreview { text-align: center; color: #64748b; }

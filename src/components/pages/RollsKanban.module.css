@@ -1,113 +1,127 @@
-/* ... (Estilos de layout boardContainer, column, etc. se mantienen igual) ... */
+/* src/components/production/pages/RollsKanban.module.css */
 
-.boardContainer {
-    display: flex; height: 100%; width: 100%; gap: 20px; padding: 10px; background-color: #f8fafc; overflow: hidden;
+.kanbanContainer {
+  display: flex; flex-direction: column; height: 100%;
+  background-color: #f1f5f9; overflow: hidden;
 }
-.loading { display: flex; justify-content: center; align-items: center; height: 100%; color: #64748b; font-weight: 600; }
 
+/* --- TOOLBAR --- */
+.toolbar {
+  padding: 10px 15px; background: white; border-bottom: 1px solid #e2e8f0;
+  display: flex; flex-wrap: wrap; gap: 15px; align-items: center;
+}
+.filterGroup { display: flex; align-items: center; gap: 8px; }
+.filterLabel { font-size: 0.7rem; font-weight: 700; color: #64748b; text-transform: uppercase; }
+.buttonGroup { display: flex; gap: 5px; }
+.filterBtn {
+  padding: 4px 10px; border: 1px solid #e2e8f0; background: white;
+  border-radius: 4px; font-size: 0.7rem; color: #475569; cursor: pointer; transition: all 0.1s;
+}
+.filterBtn:hover { background: #f8fafc; }
+.filterBtnActive { background: #eff6ff; color: #2563eb; border-color: #bfdbfe; font-weight: 600; }
+.divider { width: 1px; height: 20px; background: #e2e8f0; }
+
+/* Dropdown Materiales */
+.multiSelectWrapper { position: relative; }
+.multiSelectBtn {
+  display: flex; align-items: center; gap: 5px; padding: 4px 10px;
+  background: white; border: 1px solid #cbd5e1; border-radius: 4px;
+  cursor: pointer; font-size: 0.7rem; color: #334155;
+}
+.dropdownMenu {
+  position: absolute; top: 100%; left: 0; margin-top: 5px;
+  background: white; border: 1px solid #e2e8f0; border-radius: 6px;
+  box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); padding: 5px; z-index: 100;
+  min-width: 250px; max-height: 300px; overflow-y: auto;
+}
+.dropdownItem {
+  display: flex; align-items: center; gap: 8px; padding: 6px;
+  font-size: 0.75rem; color: #475569; cursor: pointer;
+}
+.dropdownItem:hover { background: #f1f5f9; }
+.dropdownSeparator { margin: 4px 0; border-top: 1px solid #e2e8f0; }
+
+/* --- TABLERO --- */
+.board {
+  display: flex; flex: 1; overflow-x: auto; padding: 15px; gap: 15px; align-items: flex-start;
+}
 .column {
-    min-width: 280px; width: 280px; background: #e2e8f0; border-radius: 8px; display: flex; flex-direction: column; height: 100%; border: 1px solid #cbd5e1; flex-shrink: 0;
-}
-.colHeader { padding: 12px 15px; background: #f1f5f9; border-bottom: 1px solid #cbd5e1; border-radius: 8px 8px 0 0; display: flex; justify-content: space-between; align-items: center; }
-.colHeader h3 { margin: 0; font-size: 0.9rem; color: #334155; font-weight: 700; text-transform: uppercase; }
-.countBadge { background: #cbd5e1; color: #475569; padding: 2px 8px; border-radius: 12px; font-size: 0.75rem; font-weight: 700; }
-
-.rollsArea { flex: 1; display: flex; gap: 15px; overflow-x: auto; padding-bottom: 10px; align-items: flex-start; height: 100%; }
-
-.rollColumn {
-    width: 280px; min-width: 280px; background: #f8fafc; border-radius: 8px; display: flex; flex-direction: column; border: 1px solid #e2e8f0; height: 100%; background: white;
+  background: #e2e8f0; border-radius: 8px; width: 340px; min-width: 340px;
+  display: flex; flex-direction: column; max-height: 100%; border: 1px solid #cbd5e1;
 }
 
-.rollHeader { padding: 12px 15px; background: white; border-bottom: 1px solid #f1f5f9; border-top: 4px solid #3b82f6; border-radius: 8px 8px 0 0; }
-.rollTitleRow { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
-.rollHeader h3 { margin: 0; font-size: 0.95rem; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 180px; }
-.rollId { font-size: 0.7rem; color: #94a3b8; font-family: monospace; background: #f1f5f9; padding: 2px 4px; border-radius: 4px; }
+/* HEADER DE COLUMNA (Ajustado para Checkbox a la Izquierda) */
+.columnHeader {
+  padding: 10px 12px; background: #fff; border-bottom: 1px solid #cbd5e1;
+  border-radius: 8px 8px 0 0; display: flex; align-items: center; gap: 10px; /* Gap entre checkbox y titulo */
+}
+.headerCheckbox { display: flex; align-items: center; }
+.headerCheckbox input { width: 16px; height: 16px; cursor: pointer; }
 
-/* Barra de Progreso */
-.progressContainer { height: 8px; background: #f1f5f9; border-radius: 4px; margin-bottom: 4px; overflow: hidden; border: 1px solid #e2e8f0; }
-.progressBar { height: 100%; transition: width 0.3s ease; border-radius: 4px; }
-.capacityText { font-size: 0.7rem; text-align: right; color: #64748b; font-weight: 600; }
+.columnTitle {
+  font-weight: 700; color: #1e293b; font-size: 0.85rem; flex: 1;
+  display: flex; align-items: center; gap: 6px;
+}
+.columnCount {
+  background: #f1f5f9; padding: 1px 6px; border-radius: 10px;
+  font-size: 0.7rem; color: #64748b; border: 1px solid #e2e8f0;
+}
+.droppableArea { padding: 8px; flex: 1; overflow-y: auto; min-height: 150px; }
 
-.cardList { flex: 1; padding: 10px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; min-height: 100px; }
+/* Botón Nuevo Lote */
+.addRollBtn {
+  min-width: 250px; height: 80px; border: 2px dashed #cbd5e1; border-radius: 10px;
+  background: transparent; color: #94a3b8; display: flex; flex-direction: column;
+  align-items: center; justify-content: center; cursor: pointer; font-size: 0.8rem;
+}
+.addRollBtn:hover { border-color: #6366f1; color: #6366f1; background: #e0e7ff; }
 
-/* TARJETA */
+/* --- TARJETA --- */
 .card {
-    background: white; padding: 12px; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.05); border: 1px solid #e2e8f0; cursor: grab; transition: all 0.2s; position: relative; display: flex; flex-direction: column; gap: 4px;
+  background: white; border: 1px solid #e2e8f0; border-left: 4px solid #94a3b8;
+  border-radius: 6px; margin-bottom: 8px; box-shadow: 0 1px 2px rgba(0,0,0,0.05);
+  cursor: grab; position: relative; display: flex; flex-direction: column;
+  transition: transform 0.1s;
+  
+  /* PADDING IZQUIERDO EXTRA PARA EL CHECKBOX */
+  padding-left: 28px; 
 }
-.card:hover { transform: translateY(-2px); box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); border-color: #cbd5e1; }
-.card:active { cursor: grabbing; }
+.card:hover { border-color: #cbd5e1; box-shadow: 0 4px 6px rgba(0,0,0,0.05); }
+.cardSelected { background-color: #f0f9ff; border-color: #3b82f6; border-left-color: #3b82f6; }
 
-.cardHeader { display: flex; justify-content: space-between; margin-bottom: 4px; align-items: center; }
-.orderId { font-family: monospace; font-weight: 700; color: #64748b; font-size: 0.75rem; }
-.clientName { font-size: 0.85rem; color: #1e293b; font-weight: 600; margin-bottom: 2px; }
-.jobDesc { font-size: 0.75rem; color: #64748b; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-bottom: 5px; }
-.cardFooter { display: flex; justify-content: flex-end; margin-top: 5px; }
-.magnitudeBadge { background: #f1f5f9; color: #475569; padding: 2px 6px; border-radius: 4px; font-size: 0.7rem; font-weight: 700; border: 1px solid #e2e8f0; }
-
-/* --- CONTROLES DE MÁQUINA (Botones Arreglados) --- */
-.controlBar {
-    display: flex; align-items: center; justify-content: space-between;
-    background: #f8fafc; padding: 8px; border-radius: 6px; border: 1px solid #f1f5f9; margin-top: 5px;
+/* CHECKBOX FLOTANTE A LA IZQUIERDA */
+.cardCheckbox {
+  position: absolute;
+  top: 10px; /* Alineado con el Top */
+  left: 6px; /* Pegado a la izquierda */
+  z-index: 10;
+  display: flex; align-items: center; justify-content: center;
 }
+.cardCheckbox input { width: 16px; height: 16px; cursor: pointer; }
 
-.statusIndicator { display: flex; align-items: center; gap: 8px; }
-.statusText { font-size: 0.65rem; font-weight: 800; text-transform: uppercase; letter-spacing: 0.05em; }
-
-/* Botones Play / Pause / Check */
-.btnIcon {
-    width: 30px; height: 30px; border-radius: 6px; display: flex; align-items: center; justify-content: center;
-    border: 1px solid transparent; cursor: pointer; transition: all 0.2s; font-size: 0.9rem;
+/* Niveles de la tarjeta */
+.cardTop {
+  padding: 8px 10px 4px 0; /* Padding left 0 porque ya lo tiene el padre */
+  display: flex; justify-content: space-between; align-items: center;
+  border-bottom: 1px solid #f1f5f9;
 }
+.cardCode { font-size: 0.9rem; font-weight: 800; color: #334155; }
+.cardDate { font-size: 0.65rem; color: #94a3b8; display: flex; align-items: center; gap: 4px; }
 
-/* VERDE (Play) */
-.btnPlay { background: #dcfce7; color: #166534; border-color: #bbf7d0; }
-.btnPlay:hover { background: #22c55e; color: white; transform: scale(1.05); }
+.cardBody { display: grid; grid-template-columns: 1.5fr 1fr; gap: 10px; padding: 8px 10px 8px 0; }
+.cardMain { display: flex; flex-direction: column; gap: 2px; overflow: hidden; }
+.cardClient { font-size: 0.75rem; font-weight: 600; color: #475569; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cardJob { font-size: 0.7rem; color: #64748b; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
-/* ROJO (Stop/Pause) - ¡YA NO ES NEGRO! */
-.btnPause { background: #fee2e2; color: #dc2626; border-color: #fca5a5; }
-.btnPause:hover { background: #ef4444; color: white; transform: scale(1.05); }
+.cardMeta { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
+.badgePrio { font-size: 0.6rem; padding: 1px 6px; border-radius: 4px; font-weight: 700; text-transform: uppercase; }
+.prioUrgente { background: #fef2f2; color: #dc2626; border: 1px solid #fecaca; }
+.prioNormal { background: #f8fafc; color: #64748b; border: 1px solid #e2e8f0; }
+.metaItem { font-size: 0.65rem; color: #334155; background: #f1f5f9; padding: 1px 4px; border-radius: 3px; font-family: monospace; }
 
-/* AZUL (Check/Finalizar) */
-.btnCheck { background: white; color: #3b82f6; border: 1px solid #e2e8f0; }
-.btnCheck:hover { background: #eff6ff; border-color: #bfdbfe; color: #2563eb; }
-
-/* AZUL (Gestión) */
-.btnManage { background: white; color: #64748b; border: 1px solid #e2e8f0; }
-.btnManage:hover { background: #f8fafc; color: #1e293b; border-color: #cbd5e1; }
-
-/* Bolitas */
-.dotGreen { width: 8px; height: 8px; border-radius: 50%; background: #22c55e; box-shadow: 0 0 0 2px rgba(34,197,94,0.2); }
-.dotRed { width: 8px; height: 8px; border-radius: 50%; background: #ef4444; animation: pulse 1.5s infinite; }
-@keyframes pulse { 0% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.7); } 70% { box-shadow: 0 0 0 4px rgba(239, 68, 68, 0); } 100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); } }
-
-/* Info Tiempo */
-.timeInfo {
-    font-size: 0.65rem; color: #64748b; margin-top: 4px; display: flex; gap: 5px; align-items: center;
+.cardBottom {
+  padding: 6px 10px 6px 0;
+  background: transparent; /* Quitamos fondo gris para limpieza */
+  border-top: 1px dashed #e2e8f0;
 }
-.timeIcon { font-size: 0.7rem; color: #94a3b8; }
-
-.emptyState { text-align: center; color: #94a3b8; font-size: 0.8rem; padding: 20px; font-style: italic; }
-.emptyRollState { text-align: center; color: #cbd5e1; font-size: 0.8rem; padding: 20px; border: 2px dashed #f1f5f9; border-radius: 8px; margin-top: 10px; }
-.addRollBtn { min-width: 280px; height: 100px; background: transparent; border: 2px dashed #cbd5e1; border-radius: 8px; color: #94a3b8; cursor: pointer; font-weight: 600; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; transition: all 0.2s; }
-.addRollBtn:hover { border-color: #3b82f6; color: #3b82f6; background: #eff6ff; }
-.addIconCircle { width: 40px; height: 40px; border-radius: 50%; background: #f1f5f9; display: flex; align-items: center; justify-content: center; font-size: 1.2rem; }
-.addRollBtn:hover .addIconCircle { background: #dbeafe; color: #3b82f6; }
-/* ... estilos anteriores ... */
-
-/* TARJETA BLOQUEADA (En Producción) */
-.cardLocked {
-    background-color: #f8fafc; /* Gris muy claro */
-    border-color: #e2e8f0;
-    cursor: not-allowed !important; /* Cursor de prohibido */
-    opacity: 0.8;
-}
-
-.cardLocked:hover {
-    transform: none; /* No se mueve al pasar el mouse */
-    box-shadow: none;
-}
-
-.cardLocked .clientName, 
-.cardLocked .jobDesc {
-    color: #64748b; /* Texto más apagado */
-}
+.materialText { font-size: 0.7rem; color: #475569; font-weight: 600; display: block; width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

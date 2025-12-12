@@ -1,0 +1,179 @@
+/* src/components/production/pages/ProductionKanban.module.css */
+
+.kanbanContainer {
+    display: flex;
+    overflow-x: auto; 
+    gap: 20px;
+    padding: 20px;
+    background-color: #f8fafc;
+    height: 100%;
+    align-items: flex-start;
+}
+
+.board {
+    display: flex;
+    gap: 20px;
+    align-items: flex-start;
+}
+
+.column {
+    min-width: 320px;
+    max-width: 350px;
+    flex-shrink: 0;
+    background-color: #ffffff;
+    border-radius: 8px;
+    box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+    display: flex;
+    flex-direction: column;
+    max-height: 100%; 
+    border: 1px solid #e2e8f0;
+}
+
+.columnHeader {
+    padding: 12px 16px;
+    border-bottom: 1px solid #e2eeef;
+    background-color: #ffffff;
+    border-top-left-radius: 8px;
+    border-top-right-radius: 8px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.columnHeader h3 {
+    margin: 0;
+    font-size: 1.1rem;
+    color: #0f172a;
+}
+
+.columnTitle {
+    font-weight: 700;
+    font-size: 0.95rem;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.rollCount {
+    font-size: 0.8rem;
+    color: #64748b;
+    background: #e2e8f0;
+    padding: 2px 8px;
+    border-radius: 12px;
+}
+
+.droppableArea {
+    padding: 10px;
+    overflow-y: auto; 
+    flex-grow: 1;
+    min-height: 150px;
+}
+
+/* --- Roll Card Styling --- */
+.rollCard {
+    background-color: #ffffff;
+    border: 1px solid #e2e8f0;
+    border-radius: 8px;
+    margin-bottom: 10px;
+    padding: 12px;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+}
+
+/* Estado de la tarjeta */
+.Encola { border-left: 4px solid #f97316; } /* Naranja */
+.Imprimiendo { border-left: 4px solid #22c55e; } /* Verde */
+.Pausado { border-left: 4px solid #facc15; } /* Amarillo */
+.Finalizado { border-left: 4px solid #64748b; opacity: 0.7; } /* Gris */
+
+.lockedCard { opacity: 0.6; cursor: not-allowed; }
+
+.rollInfo {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 8px;
+}
+
+.rollCode {
+    font-weight: 800;
+    font-size: 1rem;
+    color: #1e293b;
+}
+
+.statusBadge {
+    font-size: 0.7rem;
+    font-weight: 700;
+    padding: 2px 8px;
+    border-radius: 4px;
+    text-transform: uppercase;
+    background-color: #e2e8f0;
+    color: #475569;
+}
+.statusBadge:global(.Imprimiendo) { background-color: #dcfce7; color: #16a34a; }
+.statusBadge:global(.Encola), .statusBadge:global(.Pausado) { background-color: #fef9c3; color: #a16207; }
+
+
+.detailsRow {
+    display: flex;
+    justify-content: space-between;
+    margin-bottom: 8px;
+    font-size: 0.85rem;
+    color: #475569;
+}
+
+.detailItem strong {
+    color: #0f172a;
+    font-weight: 700;
+}
+
+.timerActive { color: #dc2626 !important; }
+.timerPaused { color: #facc15 !important; }
+
+/* Progress Bar */
+.progressBarContainer {
+    height: 4px;
+    background: #f1f5f9;
+    border-radius: 2px;
+    overflow: hidden;
+    margin-bottom: 10px;
+}
+.progressBar {
+    height: 100%;
+    transition: width 0.3s;
+}
+
+/* --- Controls (Bottom Section) --- */
+.rollControls {
+    display: flex;
+    flex-wrap: wrap; 
+    gap: 6px;
+    padding-top: 10px;
+    border-top: 1px dashed #e2e8f0;
+}
+
+.rollControls button {
+    padding: 8px 10px;
+    border-radius: 6px;
+    font-size: 0.8rem;
+    font-weight: 600;
+    cursor: pointer;
+    border: none;
+    transition: background-color 0.2s;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
+    flex-grow: 1;
+}
+
+.btnStart { background-color: #10b981; color: white; }
+.btnStart:hover { background-color: #059669; }
+
+.btnPause { background-color: #facc15; color: #333; }
+.btnPause:hover { background-color: #eab308; }
+
+.btnFinish { background-color: #ef4444; color: white; }
+.btnFinish:hover { background-color: #dc2626; }
+
+.btnView { background-color: #e2e8f0; color: #475569; flex-grow: 0; min-width: 100px; }
+.btnView:hover { background-color: #cbd5e1; }

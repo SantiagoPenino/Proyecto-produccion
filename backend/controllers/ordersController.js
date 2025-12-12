@@ -291,3 +291,46 @@ exports.getPrioritiesConfig = async (req, res) => {
         res.json(result.recordset);
     } catch (err) { res.status(500).json({ error: err.message }); }
 };
+// Obtener historial con duración calculada
+exports.getOrderHistory = async (req, res) => {
+    const { id } = req.params;
+    try {
+        const pool = await getPool();
+        const result = await pool.request()
+            .input('OrdenID', sql.Int, id)
+            .query(`
+                SELECT 
+                    Estado,
+                    FechaInicio,
+                    FechaFin,
+                    -- Si ya terminó, usa DuracionMinutos. Si sigue activo, calcula tiempo hasta ahora.
+                    ISNULL(DuracionMinutos, DATEDIFF(MINUTE, FechaInicio, GETDATE())) as DuracionMinutos,
+                    Detalle
+                FROM dbo.HistorialOrdenes
+                WHERE OrdenID = @OrdenID
+                ORDER BY FechaInicio DESC
+            `);
+        
+        // Formateamos para el frontend
+        const history = result.recordset.map(h => ({
+            status: h.Estado,
+            start: h.FechaInicio,
+            end: h.FechaFin,
+            duration: formatDuration(h.DuracionMinutos), // Función helper abajo
+            detail: h.Detalle,
+            isActive: !h.FechaFin // Si no tiene fecha fin, es el actual
+        }));
+
+        res.json(history);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+};
+
+// Helper para convertir minutos a "2h 15m"
+function formatDuration(minutes) {
+    if (!minutes) return '0m';
+    const h = Math.floor(minutes / 60);
+    const m = minutes % 60;
+    return h > 0 ? `${h}h ${m}m` : `${m}m`;
+};

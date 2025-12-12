@@ -1,7 +1,7 @@
 const express = require('express');
 const cors = require('cors');
 require('dotenv').config();
-
+const measurementRoutes = require('./routes/measurementRoutes');
 const app = express();
 
 app.use(cors());
@@ -18,5 +18,6 @@ app.use('/api/logistics', require('./routes/logisticsRoutes'));
 app.use('/api/rolls', require('./routes/rollsRoutes'));
 app.use('/api/production', require('./routes/productionRoutes'));
 app.use('/api/import', require('./routes/importRoutes'));
+app.use('/api/measurements', measurementRoutes);  
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => console.log(`🚀 Servidor backend corriendo en puerto ${PORT}`));
