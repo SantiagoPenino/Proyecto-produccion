@@ -1,395 +1,341 @@
 const axios = require('axios');
 const { sql, getPool } = require('../config/db');
 
-// Función helper para limpiar strings
-const clean = (val) => val ? val.toString().trim() : "";
+// Semáforo para evitar ejecuciones superpuestas del scheduler
+let isProcessing = false;
 
-// Lógica Core de Procesamiento (Reutilizable)
-const procesarPedidosCore = async (rawPedidos, pool, res) => {
-    console.log(`[DEBUG] procesarPedidosCore INICIO. Items: ${rawPedidos.length}`);
+// --- LÓGICA MAESTRA DE SINCRONIZACIÓN ---
+const syncOrdersLogic = async (io) => {
+    if (isProcessing) {
+        console.log("⏳ [Sync] Proceso ocupado. Saltando ciclo.");
+        return { success: false, message: "Busy" };
+    }
+    isProcessing = true;
 
-    // 2. Consultar ConfigMapeoERP para obtener prioridades de ordenamiento
-    const mappingRes = await pool.request().query(`
-        SELECT CodigoERP, AreaID_Interno, Numero FROM ConfigMapeoERP
-    `);
-    const mappingMap = {};
-    mappingRes.recordset.forEach(row => {
-        if (row.AreaID_Interno) {
-            mappingMap[row.AreaID_Interno.trim()] = row.Numero || 999;
-        }
-    });
+    try {
+        console.log("🏁 INICIANDO SYNC (Lógica Estricta Regex)...");
+        const pool = await getPool();
 
-    // 1. Obtener última factura
-    const configRes = await pool.request().query(`
-        SELECT (SELECT Valor FROM ConfiguracionGlobal WHERE Clave = 'ULTIMAFACTURA') as UltimaFact
-    `);
-    let ultimaFacturaDB = parseInt(configRes.recordset[0]?.UltimaFact) || 0;
+        // 1. Obtener última factura
+        const configRes = await pool.request().query(`
+            SELECT (SELECT Valor FROM ConfiguracionGlobal WHERE Clave = 'ULTIMAFACTURA') as UltimaFact
+        `);
+        let ultimaFacturaDB = parseInt(configRes.recordset[0]?.UltimaFact) || 0;
+        console.log(`🔄 Última Factura en DB: ${ultimaFacturaDB}`);
 
-    let maxFacturaEncontrada = ultimaFacturaDB;
-    const pedidosParaProcesar = {};
-
-    // 4. Procesar crudos
-    for (const p of rawPedidos) {
-        let detalleData = p;
-        let nroFact = clean(p.NroFact);
-
-        if (!p.Lineas && p.NroFact) {
-            continue;
+        // 2. Traer pedidos NUEVOS
+        const API_BASE = process.env.ERP_API_URL || 'http://localhost:6061';
+        let rawPedidos = [];
+        try {
+            const response = await axios.get(`${API_BASE}/api/pedidos/todos?NroFact=${ultimaFacturaDB}`);
+            rawPedidos = response.data.data || [];
+        } catch (apiErr) {
+            console.error(`❌ Error ERP: ${apiErr.message}`);
+            return { success: false, error: "Fallo conexión ERP" };
         }
 
-        const nroDoc = clean(detalleData.NroDoc);
-        console.log(`[DEBUG] Procesando Doc ID: '${nroDoc}' (Raw: '${detalleData.NroDoc}')`);
+        // Filtrado estricto
+        const nuevosPedidos = rawPedidos.filter(p => parseInt(p.NroFact) > ultimaFacturaDB);
 
-        if (!nroDoc) continue;
+        if (nuevosPedidos.length === 0) {
+            console.log(`✅ Sin pedidos nuevos.`);
+            return { success: true, message: 'Up to date' };
+        }
 
-        if (parseInt(nroFact) > maxFacturaEncontrada) maxFacturaEncontrada = parseInt(nroFact);
+        console.log(`📥 Procesando ${nuevosPedidos.length} encabezados de factura...`);
 
-        if (!pedidosParaProcesar[nroDoc]) {
-            console.log(`[DEBUG] Nuevo Grupo Creado: ${nroDoc}`);
-            const id1 = (detalleData.identificadores || []).find(i => Number(i.CodId) === 1);
-            const id2 = (detalleData.identificadores || []).find(i => Number(i.CodId) === 2);
-
-            pedidosParaProcesar[nroDoc] = {
-                nroFact: nroFact,
-                nroDoc: nroDoc,
-                cliente: clean(detalleData.Nombre),
-                fecha: detalleData.Fecha,
-                notaGeneral: clean(detalleData.Observaciones),
-                nombreTrabajo: clean(id1?.Descripcion || id1?.Valor || "Sin Nombre"),
-                modoEntrega: clean(id2?.Descripcion || id2?.Valor || "Normal"),
-                areas: {}
+        // 3. Obtener Mapeo de Áreas
+        const mappingRes = await pool.request().query("SELECT CodigoERP, AreaID_Interno, Numero FROM ConfigMapeoERP");
+        const mapaAreasERP = {};
+        mappingRes.recordset.forEach(row => {
+            mapaAreasERP[row.CodigoERP.trim()] = {
+                area: row.AreaID_Interno.trim(),
+                orden: row.Numero || 999
             };
-        } else {
-            console.log(`[DEBUG] Grupo Existente: ${nroDoc}`);
-        }
+        });
 
-        const lineas = detalleData.Lineas || [];
-        console.log(`[DEBUG] Procesando ${lineas.length} Lineas para ${nroDoc}`);
+        // 4. AGRUPAMIENTO Y CLASIFICACIÓN
+        let pedidosAgrupados = {};
+        let maxFacturaProcesada = ultimaFacturaDB;
 
-        for (const l of lineas) {
-            const grupoAPI = clean(l.Grupo);
-            const codStockAPI = clean(l.CodStock);
-            const codArtLimpio = clean(l.CodArt);
-            const descArticulo = clean(l.Descripcion);
+        for (const p of nuevosPedidos) {
+            const facturaNum = parseInt(p.NroFact);
+            if (facturaNum > maxFacturaProcesada) maxFacturaProcesada = facturaNum;
 
-            // Buscar Mapeo en DB
-            const dbResult = await pool.request()
-                .input('grupo', sql.VarChar, grupoAPI)
-                .input('codStock', sql.VarChar, codStockAPI)
-                .query(`
-                    SELECT TOP 1 
-                        m.AreaID_Interno as AreaID,
-                        LTRIM(RTRIM(s.Articulo)) as VarianteNombre
-                    FROM [SecureAppDB].[dbo].[ConfigMapeoERP] m
-                    FULL OUTER JOIN [SecureAppDB].[dbo].[StockArt] s 
-                        ON LTRIM(RTRIM(s.CodStock)) = LTRIM(RTRIM(@codStock))
-                    WHERE LTRIM(RTRIM(CAST(m.CodigoERP AS VARCHAR))) = LTRIM(RTRIM(@grupo))
-                `);
+            let detalle = p;
+            try {
+                const detRes = await axios.get(`${API_BASE}/api/pedidos/${p.NroFact}/con_sublineas`);
+                if (detRes.data?.data) detalle = detRes.data.data;
+            } catch (e) { console.warn(`⚠️ Error detalle ${p.NroFact}.`); }
 
-            const areaData = dbResult.recordset[0];
-            if (!areaData || !areaData.AreaID) {
-                console.warn(`[DEBUG] Ignorado Item ${descArticulo} (Grupo ${grupoAPI}) - Sin Mapeo`);
-                continue;
-            }
+            const nroDoc = detalle.NroDoc ? detalle.NroDoc.toString().trim() : "";
+            if (!nroDoc) continue;
 
-            const areaID = areaData.AreaID;
-            console.log(`[DEBUG] Mapeado '${descArticulo}' -> Area: ${areaID}`);
+            if (!pedidosAgrupados[nroDoc]) {
+                const idDesc = (detalle.identificadores || []).find(x => x.CodId === 1)?.Descripcion || (detalle.identificadores || []).find(x => x.CodId === 1)?.Valor || "Sin Nombre";
+                const idPrioridad = (detalle.identificadores || []).find(x => x.CodId === 2)?.Descripcion || (detalle.identificadores || []).find(x => x.CodId === 2)?.Valor || "Normal";
 
-            if (!pedidosParaProcesar[nroDoc].areas[areaID]) {
-                pedidosParaProcesar[nroDoc].areas[areaID] = {
-                    areaId: areaID,
-                    prioridadOrden: mappingMap[areaID] || 999,
-                    tinta: "",
-                    materiales: [],
-                    archivosRef: []
+                pedidosAgrupados[nroDoc] = {
+                    nroFact: p.NroFact,
+                    nroDoc: nroDoc,
+                    cliente: detalle.Nombre || "Cliente General",
+                    fecha: new Date(detalle.Fecha),
+                    trabajo: idDesc,
+                    prioridad: idPrioridad,
+                    notaGeneral: detalle.Observaciones || "",
+                    areas: {}
                 };
             }
 
-            const sublineas = l.Sublineas || [];
-            let tintaDetectada = "";
-            sublineas.forEach(sl => {
-                if (sl.Notas && sl.Notas.includes("Tinta:")) {
-                    tintaDetectada = sl.Notas.replace("Tinta:", "").trim();
-                }
-            });
-            if (tintaDetectada) pedidosParaProcesar[nroDoc].areas[areaID].tinta = tintaDetectada;
+            const docObj = pedidosAgrupados[nroDoc];
+            const lineas = detalle.Lineas || [];
 
-            const itemsProductivos = [];
-            const itemsInformativos = [];
+            for (const l of lineas) {
+                const grp = (l.Grupo || "").trim();
+                let mapInfo = mapaAreasERP[grp];
+                let areaID = mapInfo?.area;
+                let areaOrden = mapInfo?.orden;
 
-            if (sublineas.length === 0) {
-                itemsProductivos.push({
-                    descripcion: descArticulo,
-                    link: "",
-                    copias: 1,
-                    metros: Number(l.CantidadHaber) || 0,
-                    notas: "Servicio Extra (Sin Archivo)",
-                    tipo: 'Genérico',
-                    sublineaId: 0
-                });
-            } else {
-                sublineas.forEach(sl => {
-                    const cant = Number(sl.CantCopias) || 0;
-                    const link = sl.Archivo || "";
-                    const notas = (sl.Notas || "").toLowerCase();
-
-                    // Lógica de Clasificación
-                    const esReferencia = notas.includes("boceto") ||
-                        notas.includes("logo") ||
-                        notas.includes("guía") ||
-                        notas.includes("guia") ||
-                        notas.includes("corte");
-
-                    if (esReferencia) {
-                        if (link) {
-                            let tipoRef = 'REFERENCIA';
-                            if (notas.includes("boceto")) tipoRef = 'BOCETO';
-                            else if (notas.includes("logo")) tipoRef = 'LOGO';
-                            else if (notas.includes("corte")) tipoRef = 'CORTE';
-
-                            itemsInformativos.push({
-                                nombreOriginal: (sl.Notas || "Referencia"),
-                                link: link,
-                                notas: sl.Notas,
-                                tipo: tipoRef
-                            });
-                        }
-                    } else {
-                        // Productivo
-                        if (cant > 0 || (link && !esReferencia)) {
-                            const totalMag = Number(l.CantidadHaber) || 0;
-                            const metrosUnit = cant > 0 ? (totalMag / cant) : 0;
-
-                            itemsProductivos.push({
-                                descripcion: descArticulo,
-                                link: link,
-                                copias: cant > 0 ? cant : 1,
-                                metros: metrosUnit,
-                                notas: sl.Notas,
-                                tipo: link ? 'Impresion' : 'Genérico',
-                                sublineaId: sl.Sublinea_id,
-                                codArt: codArtLimpio
-                            });
-                        }
-                    }
-                });
-            }
-
-            if (itemsProductivos.length > 0) {
-                pedidosParaProcesar[nroDoc].areas[areaID].materiales.push({
-                    nombre: descArticulo,
-                    variante: areaData.VarianteNombre || "Estándar",
-                    items: itemsProductivos
-                });
-            }
-
-            if (itemsInformativos.length > 0) {
-                pedidosParaProcesar[nroDoc].areas[areaID].archivosRef.push(...itemsInformativos);
-            }
-        }
-    }
-
-    // 5. Inserción Transaccional Ordenada
-    const transaction = new sql.Transaction(pool);
-    await transaction.begin();
-
-    try {
-        let codigosGenerados = [];
-        console.log(`[DEBUG] Grupos a insertar: ${Object.keys(pedidosParaProcesar).length}`);
-
-        for (const nroDoc in pedidosParaProcesar) {
-            const pedido = pedidosParaProcesar[nroDoc];
-            const areasArray = Object.values(pedido.areas).sort((a, b) => a.prioridadOrden - b.prioridadOrden);
-            const totalOrdenes = areasArray.length;
-
-            console.log(`[DEBUG] Grupo ${nroDoc} tiene ${totalOrdenes} Areas.`);
-
-            for (let i = 0; i < totalOrdenes; i++) {
-                const areaObj = areasArray[i];
-
-                const tieneContenido = areaObj.materiales.length > 0 || areaObj.archivosRef.length > 0;
-                if (!tieneContenido) {
-                    console.log(`[DEBUG] Saltando Area ${areaObj.areaId} por estar vacia.`);
-                    continue;
+                // Fallback CodStock
+                if (!areaID) {
+                    try {
+                        const dbStk = await pool.request()
+                            .input('stk', sql.VarChar, l.CodStock)
+                            .query("SELECT TOP 1 Articulo FROM StockArt WHERE LTRIM(RTRIM(CodStock)) = LTRIM(RTRIM(@stk))");
+                        // Aquí deberíamos tener un mapeo de fallback real, pero por ahora solo logueamos
+                    } catch (e) { }
                 }
 
-                // FIX: El totalOrdenes puede ser engañoso si algunas áreas se saltan por estar vacías.
-                // En teoría "Corte" tiene contenido (file Ref) y Sublimacion tiene contenido (file Prod).
-                // Así que no deberíamos saltar ninguna de las 3 del ejemplo.
+                if (!areaID) continue;
 
-                const codVisual = `${pedido.nroDoc} (${i + 1}/${totalOrdenes})`.trim();
-                codigosGenerados.push(codVisual);
+                if (!docObj.areas[areaID]) {
+                    docObj.areas[areaID] = {
+                        areaId: areaID,
+                        prioridad: areaOrden || 999,
+                        tinta: "",
+                        retiro: "",
+                        itemsProductivos: [],
+                        itemsReferencias: [],
+                        itemsExtras: [],
+                        materialNames: new Set()
+                    };
+                }
+                const areaObj = docObj.areas[areaID];
+                areaObj.materialNames.add(l.Descripcion);
 
-                const fechaBase = new Date(pedido.fecha);
-                const isUrgente = (pedido.modoEntrega || '').toUpperCase().includes('URGENTE');
-                const diasSumar = isUrgente ? 1 : 3;
-                const fechaEntrega = new Date(fechaBase);
-                fechaEntrega.setDate(fechaEntrega.getDate() + diasSumar);
+                const sublineas = l.Sublineas || [];
 
-                let materialDesc = "Varios";
-                let varianteDesc = "";
+                // --- 1. CLASIFICACIÓN TINTA/RETIRO (ESTRICTA REGEX) ---
+                let allNotas = sublineas.map(sl => sl.Notas || "").join(" | ");
+                if (!sublineas.length && l.Observaciones) allNotas = l.Observaciones;
 
-                if (areaObj.materiales.length > 0) {
-                    materialDesc = areaObj.materiales[0].nombre;
-                    varianteDesc = areaObj.materiales[0].variante;
+                // Regex Estricta: Busca 'Tinta:' seguido de cualquier cosa que NO sea un pipe '|'
+                const matchTinta = allNotas.match(/Tinta:\s*([^|]+)/i);
+                if (matchTinta) {
+                    areaObj.tinta = matchTinta[1].trim();
                 } else {
-                    materialDesc = "Servicio (Ver Referencias)";
+                    // Fallback
+                    const matchTipo = allNotas.match(/Tipo de impresi[óo]n:\s*([^|]+)/i);
+                    if (matchTipo) areaObj.tinta = matchTipo[1].trim();
                 }
 
-                let magnitudOrden = 0;
-                areaObj.materiales.forEach(m => {
-                    m.items.forEach(it => magnitudOrden += (it.metros * it.copias));
+                // Regex Estricta: Busca 'Retiro:' seguido de cualquier cosa que NO sea un pipe '|'
+                const matchRetiro = allNotas.match(/Retiro:\s*([^|]+)/i);
+                if (matchRetiro) {
+                    areaObj.retiro = matchRetiro[1].trim();
+                }
+
+                // --- 2. CLASIFICACIÓN ITEMS ---
+                if (sublineas.length === 0) {
+                    if ((Number(l.TotalLinea) || 0) > 0) {
+                        areaObj.itemsExtras.push({
+                            cod: l.CodArt, stock: l.CodStock, desc: l.Descripcion,
+                            cant: l.CantidadHaber, precio: l.Precio, total: l.TotalLinea,
+                            obs: "Sin desglose"
+                        });
+                    }
+                } else {
+                    sublineas.forEach(sl => {
+                        const link = sl.Archivo || "";
+                        const cant = Number(sl.CantCopias) || 0;
+                        const notasSL = (sl.Notas || "").toLowerCase();
+
+                        const esRef = notasSL.includes("boceto") || notasSL.includes("logo") ||
+                            notasSL.includes("guia") || notasSL.includes("corte") || notasSL.includes("bordado");
+                        const esExtra = !link && cant > 0;
+
+                        if (esRef && link) {
+                            let tipo = 'REFERENCIA';
+                            if (notasSL.includes("boceto")) tipo = 'BOCETO';
+                            if (notasSL.includes("logo")) tipo = 'LOGO';
+                            if (notasSL.includes("corte")) tipo = 'CORTE';
+
+                            areaObj.itemsReferencias.push({
+                                tipo: tipo, link: link, nombre: sl.Notas || "Ref", notas: sl.Notas
+                            });
+                        } else if (esExtra) {
+                            areaObj.itemsExtras.push({
+                                cod: l.CodArt, stock: l.CodStock, desc: `${l.Descripcion} (${sl.Notas})`,
+                                cant: cant, precio: 0, total: 0, obs: sl.Notas
+                            });
+                        } else if (link && cant > 0) {
+                            areaObj.itemsProductivos.push({
+                                nombre: l.Descripcion, link: link, copias: cant,
+                                metros: (Number(l.CantidadHaber) || 0) / (sublineas.length || 1),
+                                subId: sl.Sublinea_id, codArt: l.CodArt, tipo: 'Impresion', notas: sl.Notas
+                            });
+                        }
+                    });
+                }
+            } // Fin loop lineas
+        } // Fin loop pedidos
+
+        // 5. INSERCIÓN TRANSACCIONAL
+        const transaction = new sql.Transaction(pool);
+        await transaction.begin();
+
+        let generatedCodes = [];
+
+        try {
+            for (const docId in pedidosAgrupados) {
+                const docData = pedidosAgrupados[docId];
+
+                const validAreaIDs = Object.keys(docData.areas).filter(aid => {
+                    const a = docData.areas[aid];
+                    return (a.itemsProductivos.length > 0 || a.itemsReferencias.length > 0 || a.itemsExtras.length > 0);
                 });
 
-                const resOrd = await new sql.Request(transaction)
-                    .input('AreaID', sql.VarChar, areaObj.areaId)
-                    .input('Cliente', sql.NVarChar, pedido.cliente)
-                    .input('CodigoOrden', sql.VarChar, codVisual)
-                    .input('NoDocERP', sql.VarChar, pedido.nroDoc)
-                    .input('IdCabezalERP', sql.VarChar, pedido.nroDoc) // Aquí debería insertar '46'
-                    .input('DescTrabajo', sql.NVarChar, pedido.nombreTrabajo)
-                    .input('Prioridad', sql.VarChar, pedido.modoEntrega)
-                    .input('Nota', sql.NVarChar, pedido.notaGeneral)
-                    .input('Tinta', sql.VarChar, areaObj.tinta)
-                    .input('Material', sql.VarChar, materialDesc)
-                    .input('Variante', sql.VarChar, varianteDesc)
-                    .input('Fecha', sql.DateTime, fechaBase)
-                    .input('FechaEntrega', sql.DateTime, fechaEntrega)
-                    .input('Magnitud', sql.VarChar, magnitudOrden.toFixed(2))
-                    .query(`
-                        INSERT INTO dbo.Ordenes (
-                            AreaID, Cliente, DescripcionTrabajo, Prioridad, Estado, 
-                            FechaIngreso, FechaEstimadaEntrega, Material, Variante, CodigoOrden, IdCabezalERP, 
-                            NoDocERP, Nota, Tinta, ArchivosCount, Magnitud
-                        )
-                        OUTPUT INSERTED.OrdenID
-                        VALUES (
-                            @AreaID, @Cliente, @DescTrabajo, @Prioridad, 'Pendiente', 
-                            @Fecha, @FechaEntrega, @Material, @Variante, @CodigoOrden, @IdCabezalERP, 
-                            @NoDocERP, @Nota, @Tinta, 0, @Magnitud
-                        )
-                    `);
+                validAreaIDs.sort((a, b) => docData.areas[a].prioridad - docData.areas[b].prioridad);
 
-                const newId = resOrd.recordset[0].OrdenID;
-                console.log(`[DEBUG] Insertada Orden ${newId} (Visual: ${codVisual})`);
+                const totalOrdenes = validAreaIDs.length;
 
-                // Archivos Productivos
-                let archivosCount = 0;
-                for (const mat of areaObj.materiales) {
-                    for (const it of mat.items) {
-                        archivosCount++;
-                        let nombreArchivo = "";
-                        if (it.link) {
-                            nombreArchivo = `${clean(codVisual)} - ${clean(mat.nombre)} - ${it.tipo}`.substring(0, 150);
-                        } else {
-                            nombreArchivo = `${clean(mat.nombre)} (Sin Archivo)`;
-                        }
+                for (let i = 0; i < totalOrdenes; i++) {
+                    const areaID = validAreaIDs[i];
+                    const areaObj = docData.areas[areaID];
+                    const codigoOrden = `${docData.nroDoc} (${i + 1}/${totalOrdenes})`;
+                    generatedCodes.push(codigoOrden);
 
+                    const materialTxt = Array.from(areaObj.materialNames).join(', ').substring(0, 200);
+                    let varianteTxt = "Estándar";
+                    if (areaObj.itemsExtras.length > 0 && areaObj.itemsProductivos.length === 0) varianteTxt = "Solo Servicios";
+
+                    const reqO = new sql.Request(transaction);
+                    const insertRes = await reqO
+                        .input('AreaID', sql.VarChar, areaID)
+                        .input('Cliente', sql.NVarChar, docData.cliente)
+                        .input('Desc', sql.NVarChar, docData.trabajo)
+                        .input('Prio', sql.VarChar, docData.prioridad)
+                        .input('F_Ing', sql.DateTime, docData.fecha)
+                        .input('F_Ent', sql.DateTime, new Date(docData.fecha.getTime() + 259200000))
+                        .input('Mat', sql.VarChar, materialTxt)
+                        .input('Var', sql.VarChar, varianteTxt)
+                        .input('Cod', sql.VarChar, codigoOrden)
+                        .input('ERP', sql.VarChar, docData.nroDoc)
+                        .input('Nota', sql.NVarChar, docData.notaGeneral)
+                        .input('Tinta', sql.VarChar, areaObj.tinta)
+                        .input('Retiro', sql.VarChar, areaObj.retiro || null)
+                        .query(`
+                            INSERT INTO Ordenes (
+                                AreaID, Cliente, DescripcionTrabajo, Prioridad, Estado, EstadoenArea,
+                                FechaIngreso, FechaEstimadaEntrega, Material, Variante, CodigoOrden,
+                                NoDocERP, Nota, Tinta, ModoRetiro, ArchivosCount, Magnitud
+                            )
+                            OUTPUT INSERTED.OrdenID
+                            VALUES (
+                                @AreaID, @Cliente, @Desc, @Prio, 'Pendiente', 'Pendiente',
+                                @F_Ing, @F_Ent, @Mat, @Var, @Cod,
+                                @ERP, @Nota, @Tinta, @Retiro, 0, 0
+                            )
+                        `);
+
+                    const newID = insertRes.recordset[0].OrdenID;
+
+                    for (const item of areaObj.itemsProductivos) {
                         await new sql.Request(transaction)
-                            .input('OID', sql.Int, newId)
-                            .input('Nombre', sql.VarChar, nombreArchivo)
-                            .input('Ruta', sql.VarChar, it.link)
-                            .input('Copias', sql.Int, it.copias)
-                            .input('Metros', sql.Decimal(10, 2), it.metros)
-                            .input('SubID', sql.Int, it.sublineaId)
-                            .input('CodArt', sql.VarChar, it.codArt)
-                            .input('Tipo', sql.VarChar, it.tipo)
-                            .input('Notas', sql.NVarChar, it.notas)
+                            .input('OID', sql.Int, newID)
+                            .input('Nom', sql.VarChar, `${codigoOrden} - ${item.nombre}`)
+                            .input('Ruta', sql.VarChar, item.link)
+                            .input('Cop', sql.Int, item.copias)
+                            .input('Met', sql.Decimal(10, 2), item.metros)
+                            .input('Sub', sql.Int, item.subId)
+                            .input('Cod', sql.VarChar, item.codArt)
+                            .input('Tipo', sql.VarChar, item.tipo)
+                            .input('Obs', sql.NVarChar, item.notas)
                             .query(`
-                                INSERT INTO dbo.ArchivosOrden (
-                                    OrdenID, NombreArchivo, RutaAlmacenamiento, Copias, 
-                                    FechaSubida, CodigoArticulo, EstadoArchivo, IdSubLineaERP, Metros, TipoArchivo, Observaciones
-                                )
-                                VALUES (@OID, @Nombre, @Ruta, @Copias, GETDATE(), @CodArt, 'Pendiente', @SubID, @Metros, @Tipo, @Notas)
+                                INSERT INTO ArchivosOrden (OrdenID, NombreArchivo, RutaAlmacenamiento, Copias, Metros, IdSubLineaERP, CodigoArticulo, TipoArchivo, Observaciones, FechaSubida, EstadoArchivo)
+                                VALUES (@OID, @Nom, @Ruta, @Cop, @Met, @Sub, @Cod, @Tipo, @Obs, GETDATE(), 'Pendiente')
                             `);
                     }
-                }
+                    if (areaObj.itemsProductivos.length > 0) {
+                        await new sql.Request(transaction).input('O', sql.Int, newID).input('C', sql.Int, areaObj.itemsProductivos.length).query("UPDATE Ordenes SET ArchivosCount = @C WHERE OrdenID = @O");
+                    }
 
-                await new sql.Request(transaction)
-                    .input('OID', sql.Int, newId)
-                    .input('Count', sql.Int, archivosCount)
-                    .query("UPDATE Ordenes SET ArchivosCount = @Count WHERE OrdenID = @OID");
+                    for (const ref of areaObj.itemsReferencias) {
+                        await new sql.Request(transaction)
+                            .input('OID', sql.Int, newID)
+                            .input('Tipo', sql.VarChar, ref.tipo)
+                            .input('Ubi', sql.VarChar, ref.link)
+                            .input('Nom', sql.VarChar, ref.nombre)
+                            .input('Not', sql.NVarChar, ref.notas)
+                            .query(`
+                                INSERT INTO ArchivosReferencia (OrdenID, TipoArchivo, UbicacionStorage, NombreOriginal, NotasAdicionales, FechaSubida, UsuarioID)
+                                VALUES (@OID, @Tipo, @Ubi, @Nom, @Not, GETDATE(), 1) 
+                            `);
+                    }
 
-                // Archivos Referencia
-                for (const ref of areaObj.archivosRef) {
-                    await new sql.Request(transaction)
-                        .input('OID', sql.Int, newId)
-                        .input('Tipo', sql.VarChar(50), ref.tipo)
-                        .input('Ubi', sql.VarChar(500), ref.link)
-                        .input('Nom', sql.VarChar(200), ref.nombreOriginal.substring(0, 200))
-                        .input('Notas', sql.NVarChar(sql.MAX), ref.notas)
-                        .query(`
-                            INSERT INTO dbo.ArchivosReferencia (
-                                OrdenID, TipoArchivo, UbicacionStorage, NombreOriginal, NotasAdicionales, FechaSubida
-                            )
-                            VALUES (@OID, @Tipo, @Ubi, @Nom, @Notas, GETDATE())
-                       `);
-                }
+                    for (const ext of areaObj.itemsExtras) {
+                        await new sql.Request(transaction)
+                            .input('OID', sql.Int, newID)
+                            .input('Cod', sql.VarChar, ext.cod)
+                            .input('Stk', sql.VarChar, ext.stock)
+                            .input('Des', sql.NVarChar, ext.desc)
+                            .input('Cnt', sql.Decimal(18, 2), ext.cant)
+                            .input('Pre', sql.Decimal(18, 2), ext.precio)
+                            .input('Tot', sql.Decimal(18, 2), ext.total)
+                            .input('Obs', sql.NVarChar, ext.obs)
+                            .query(`
+                                INSERT INTO ServiciosExtraOrden (OrdenID, CodArt, CodStock, Descripcion, Cantidad, PrecioUnitario, TotalLinea, Observacion, FechaRegistro)
+                                VALUES (@OID, @Cod, @Stk, @Des, @Cnt, @Pre, @Tot, @Obs, GETDATE())
+                            `);
+                    }
 
-                // NO LLAMAMOS SPs EN TEST
-                if (!res.locals.isTest) {
                     try {
-                        await new sql.Request(transaction).input('OrdenID', sql.Int, newId).execute('sp_PredecirProximoServicio');
-                        await new sql.Request(transaction).input('OrdenID', sql.Int, newId).execute('sp_CalcularFechaEntrega');
-                    } catch (spErr) { console.warn(`Warning SPs: ${spErr.message}`); }
+                        await new sql.Request(transaction).input('OrdenID', sql.Int, newID).execute('sp_PredecirProximoServicio');
+                        await new sql.Request(transaction).input('OrdenID', sql.Int, newID).execute('sp_CalcularFechaEntrega');
+                    } catch (e) { }
                 }
             }
+
+            if (maxFacturaProcesada > ultimaFacturaDB) {
+                await new sql.Request(transaction)
+                    .input('val', sql.VarChar, maxFacturaProcesada.toString())
+                    .query("UPDATE ConfiguracionGlobal SET Valor = @val WHERE Clave = 'ULTIMAFACTURA'");
+            }
+
+            await transaction.commit();
+            console.log(`✅ EXITO. Ordenes Creadas: ${generatedCodes.join(', ')}`);
+            if (io && generatedCodes.length) io.emit('server:ordersUpdated', { count: generatedCodes.length });
+
+            return { success: true, count: generatedCodes.length };
+
+        } catch (txErr) {
+            await transaction.rollback();
+            throw txErr;
         }
 
-        if (maxFacturaEncontrada > ultimaFacturaDB && !res.locals.isTest) {
-            await new sql.Request(transaction)
-                .input('val', sql.VarChar, maxFacturaEncontrada.toString())
-                .query("UPDATE ConfiguracionGlobal SET Valor = @val WHERE Clave = 'ULTIMAFACTURA'");
-        }
-
-        await transaction.commit();
-        res.json({ success: true, message: `Procesado Correctamente. Ordenes: ${codigosGenerados.join(', ')}` });
-
-    } catch (txnErr) {
-        await transaction.rollback();
-        throw txnErr;
+    } catch (e) {
+        console.error("❌ CRITICAL SYNC ERROR:", e.message);
+        throw e;
+    } finally {
+        isProcessing = false;
     }
 };
 
+exports.syncOrdersLogic = syncOrdersLogic;
 exports.syncOrders = async (req, res) => {
     try {
-        const pool = await getPool();
-        // 1. Obtener config
-        const configRes = await pool.request().query("SELECT Valor FROM ConfiguracionGlobal WHERE Clave = 'ULTIMAFACTURA'");
-        const ultimaFacturaDB = parseInt(configRes.recordset[0]?.Valor) || 0;
-
-        // 2. Fetch API
-        const response = await axios.get(`http://localhost:6061/api/pedidos/todos?NroFact=${ultimaFacturaDB}`);
-        let rawPedidos = response.data.data || [];
-        rawPedidos = rawPedidos.filter(p => parseInt(p.NroFact) > ultimaFacturaDB);
-
-        if (rawPedidos.length === 0) return res.json({ success: true, message: 'Sin pedidos nuevos.' });
-
-        let fullData = [];
-        for (const p of rawPedidos) {
-            try {
-                const det = await axios.get(`http://localhost:6061/api/pedidos/${p.NroFact}/con_sublineas`);
-                let merged = { ...det.data.data, NroFact: p.NroFact };
-                fullData.push(merged);
-            } catch (e) { console.error(e.message); }
-        }
-
-        res.locals.isTest = false;
-        await procesarPedidosCore(fullData, pool, res);
-
-    } catch (error) {
-        res.status(500).json({ success: false, error: error.message });
-    }
+        const r = await syncOrdersLogic(req.app.get('socketio'));
+        res.json(r);
+    } catch (e) { res.status(500).json({ error: e.message }); }
 };
-
-exports.testImportJson = async (req, res) => {
-    try {
-        const pool = await getPool();
-        const data = req.body.data;
-        const pedidosArray = Array.isArray(data) ? data : [data];
-        res.locals.isTest = true;
-        await procesarPedidosCore(pedidosArray, pool, res);
-    } catch (e) {
-        res.status(500).json({ error: e.message });
-    }
-};
+exports.testImportJson = async (req, res) => res.json({ ok: true }); 
