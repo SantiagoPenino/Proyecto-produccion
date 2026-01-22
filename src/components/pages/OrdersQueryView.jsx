@@ -28,7 +28,19 @@ const OrdersQueryView = () => {
     const handleSearch = async () => {
         setLoading(true);
         try {
-            const data = await ordersService.advancedSearch(filters);
+            // Transformar filtros de UI al formato del Backend
+            const payload = {
+                filters: {
+                    client: filters.search, // Usamos el campo search para cliente o código (el backend busca ambos si se implementara asi, pero aqui lo mandamos a client/code)
+                    code: filters.search,
+                    status: filters.mode === 'all' ? null : filters.mode.toUpperCase(), // backend espera mayusculas o null
+                    area: filters.areas.length > 0 ? filters.areas[0] : null, // Por ahora el backend soporta 1 area, mandamos la primera o null
+                    dateFrom: filters.fechaDesde,
+                    dateTo: filters.fechaHasta
+                }
+            };
+
+            const data = await ordersService.advancedSearch(payload);
             setResults(data || []);
         } catch (error) {
             console.error("Error buscando:", error);
@@ -87,9 +99,9 @@ const OrdersQueryView = () => {
                                 <select className="w-full text-sm border-gray-300 rounded-lg bg-white"
                                     value={filters.mode} onChange={e => setFilters({ ...filters, mode: e.target.value })}>
                                     <option value="all">Todos</option>
-                                    <option value="active">Activos</option>
-                                    <option value="finished">Finalizados</option>
-                                    <option value="cancelled">Cancelados</option>
+                                    <option value="PENDIENTE">Pendientes</option>
+                                    <option value="FINALIZADO">Finalizados</option>
+                                    <option value="CANCELADO">Cancelados</option>
                                 </select>
                             </div>
 
@@ -140,8 +152,7 @@ const OrdersQueryView = () => {
                                         <th className="px-4 py-3">Área</th>
                                         <th className="px-4 py-3">Ingreso</th>
                                         <th className="px-4 py-3">Estado</th>
-                                        <th className="px-4 py-3">Estado Área</th>
-                                        <th className="px-4 py-3 text-center">Fallas</th>
+                                        <th className="px-4 py-3">Archivos</th>
                                         <th className="px-4 py-3 text-right">Ver</th>
                                     </tr>
                                 </thead>
@@ -150,32 +161,29 @@ const OrdersQueryView = () => {
                                         <tr><td colSpan="8" className="text-center py-10 text-gray-400">Sin resultados.</td></tr>
                                     )}
                                     {results.map(order => (
-                                        <tr key={order.OrdenID} className="hover:bg-blue-50/50 transition-colors">
-                                            <td className="px-4 py-3 font-bold text-slate-700">{order.CodigoOrden}</td>
+                                        <tr key={order.id} className="hover:bg-blue-50/50 transition-colors">
+                                            <td className="px-4 py-3 font-bold text-slate-700">{order.code}</td>
                                             <td className="px-4 py-3 text-slate-600">
-                                                <div className="font-semibold">{order.Cliente}</div>
-                                                <div className="text-xs text-slate-400 truncate max-w-[200px]">{order.DescripcionTrabajo}</div>
+                                                <div className="font-semibold">{order.client}</div>
+                                                <div className="text-xs text-slate-400 truncate max-w-[200px]">{order.desc}</div>
                                             </td>
                                             <td className="px-4 py-3">
-                                                <span className="bg-gray-100 text-gray-600 px-2 py-0.5 rounded text-[10px] font-bold border border-gray-200">{order.AreaID}</span>
+                                                <span className="bg-gray-100 text-gray-600 px-2 py-0.5 rounded text-[10px] font-bold border border-gray-200">{order.area}</span>
                                             </td>
-                                            <td className="px-4 py-3 text-slate-500">{new Date(order.FechaIngreso).toLocaleDateString()}</td>
+                                            <td className="px-4 py-3 text-slate-500">{order.entryDate ? new Date(order.entryDate).toLocaleDateString() : '-'}</td>
                                             <td className="px-4 py-3">
-                                                <span className={`px-2 py-1 rounded text-xs font-bold ${order.Estado === 'FALLA' ? 'bg-red-100 text-red-600' : 'bg-green-100 text-green-600'}`}>
-                                                    {order.Estado}
+                                                <span className={`px-2 py-1 rounded text-xs font-bold ${order.status === 'FALLA' ? 'bg-red-100 text-red-600' : 'bg-green-100 text-green-600'}`}>
+                                                    {order.status}
                                                 </span>
                                             </td>
                                             <td className="px-4 py-3">
                                                 <span className="text-xs text-slate-500 font-medium">
-                                                    {order.EstadoenArea || '-'}
+                                                    {order.filesCount || 0}
                                                 </span>
-                                            </td>
-                                            <td className="px-4 py-3 text-center">
-                                                {order.TotalFallas > 0 ? <span className="bg-red-50 text-red-600 px-2 py-0.5 rounded-full text-xs font-bold">{order.TotalFallas}</span> : <span className="text-gray-300">-</span>}
                                             </td>
                                             <td className="px-4 py-3 text-right">
                                                 <button
-                                                    onClick={() => setSelectedOrder(order.OrdenID)}
+                                                    onClick={() => setSelectedOrder(order.id)}
                                                     className="w-8 h-8 inline-flex items-center justify-center bg-blue-50 text-blue-600 hover:bg-blue-600 hover:text-white rounded-full transition-all"
                                                 >
                                                     <i className="fa-solid fa-eye text-sm"></i>

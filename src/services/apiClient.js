@@ -7,7 +7,7 @@ const getBaseUrl = () => {
         return import.meta.env.VITE_API_URL;
     }
     const { protocol, hostname } = window.location;
-    return `${protocol}//${hostname}:5000/api`;
+    return `${protocol}//${hostname}:5005/api`;
 };
 
 export const API_URL = getBaseUrl();

@@ -40,7 +40,12 @@ router.get('/history/:id', verifyToken, ordersController.getOrderHistory);
 router.put('/file/update', verifyToken, ordersController.updateFile);
 router.post('/file/add', verifyToken, ordersController.addFile);
 router.post('/file/cancel', verifyToken, ordersController.cancelFile);
+router.put('/service/update', verifyToken, ordersController.updateService);
 router.delete('/file/:id', verifyToken, ordersController.deleteFile);
+
+// Extras (Safe Load) - Separados
+router.get('/:id/references', ordersController.getOrderReferences);
+router.get('/:id/services', ordersController.getOrderServices);
 
 router.post('/assign-fabric-bobbin', verifyToken, ordersController.assignFabricBobbin);
 module.exports = router;

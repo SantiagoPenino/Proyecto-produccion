@@ -47,7 +47,6 @@ app.use('/api/clients', require('./routes/clientsRoutes'));
 app.use('/api/workflows', require('./routes/workflowsRoutes'));
 app.use('/api/logistics', require('./routes/logisticsRoutes'));
 app.use('/api/rolls', require('./routes/rollsRoutes'));
-app.use('/api/import', require('./routes/importRoutes'));
 app.use('/api/rest-sync', require('./routes/restSyncRoutes'));
 app.use('/api/measurements', require('./routes/measurementRoutes'));
 app.use('/api/admin', require('./routes/adminRoutes'));
@@ -89,7 +88,7 @@ io.on('connection', (socket) => {
     });
 });
 
-const PORT = process.env.PORT || 5000;
+const PORT = 5005; // HARDCODED FORCE
 
 // FORCED RESTART TRIGGER: 2026-01-01 22:38
 

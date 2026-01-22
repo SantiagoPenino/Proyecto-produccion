@@ -10,19 +10,20 @@ import React from 'react';
  * - onAction: (fileId, action) => void
  * - extraInfo: Objeto opcional { roll, machine } para mostrar contexto extra
  */
-const FileItem = ({ file, readOnly = false, onAction, extraInfo, actions }) => {
+const FileItem = ({ file, readOnly = false, onAction, extraInfo, actions, editingContent }) => {
     // DEBUG: Ver qué llega realmente desde el Backend
-    console.log("FileItem Debug - File Object:", file);
-
+    // console.log("FileItem Debug - File Object:", file);
 
     // Lógica de Estado
     const status = (file.Estado || file.EstadoArchivo || file.EstadoControl || file.status || '').toUpperCase().trim();
     const isControlled = ['OK', 'FINALIZADO', 'FALLA', 'CANCELADO'].includes(status);
 
     // Cálculos
-    const metrosUnit = parseFloat(file.Metros || 0);
-    const copias = parseInt(file.Copias || 1);
-    const metrosTotal = (metrosUnit * copias).toFixed(1);
+    const metrosUnit = parseFloat(file.Metros || file.metros || file.width || 0);
+    const copias = parseInt(file.Copias || file.copias || file.cantidad || 1);
+    const metrosTotal = (metrosUnit * copias).toFixed(2);
+    const anchoRaw = parseFloat(file.Ancho || file.ancho || 0);
+    const altoRaw = parseFloat(file.Alto || file.alto || 0);
 
     // Estilos dinámicos según estado
     const getStatusStyles = () => {
@@ -69,19 +70,6 @@ const FileItem = ({ file, readOnly = false, onAction, extraInfo, actions }) => {
         document.body.appendChild(link);
         link.click();
         document.body.removeChild(link);
-    };
-
-    const downloadFile = (e) => {
-        e.stopPropagation();
-        e.preventDefault();
-        const realUrl = getLiveUrl();
-
-        if (realUrl && realUrl !== '#') {
-            triggerDownload(realUrl, file.name || file.nombre);
-        } else {
-            console.warn("FileItem: No valid URL found in", file);
-            alert("No se encontró un enlace válido para este archivo.");
-        }
     };
 
     // Lógica Icono Estado
@@ -181,44 +169,77 @@ const FileItem = ({ file, readOnly = false, onAction, extraInfo, actions }) => {
                     </div>
                 </div>
 
-                {/* Metadata Row */}
-                <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] font-medium text-slate-400 mt-0.5 leading-tight">
-                    <span>{metrosUnit}m c/u</span>
-                    <span className="font-bold text-slate-500">Total: {metrosTotal}m</span>
+                {/* Metadata Row: Swappable for Editing Content */}
+                {actions && typeof editingContent !== 'undefined' && editingContent ? (
+                    // MODO EDICIÓN INLINE (Inyectado desde fuera)
+                    <div className="mt-1 animate-in fade-in slide-in-from-left-2 duration-200">
+                        {editingContent}
+                    </div>
+                ) : (
+                    // MODO LECTURA HABITUAL
+                    <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] font-medium text-slate-500 mt-1 leading-tight">
 
-                    {file.Material && (
-                        <>
-                            <span className="text-slate-300">•</span>
-                            <span className="truncate max-w-[150px]" title={file.Material}>{file.Material}</span>
-                        </>
-                    )}
+                        <span className="bg-slate-100 px-1.5 py-0.5 rounded border border-slate-200 text-xs font-bold text-slate-700">
+                            {copias} copias
+                        </span>
 
-                    {/* Información Extra (Contexto de visualizador) - ICONOS */}
-                    {extraInfo && (
-                        <div className="flex items-center gap-2 ml-auto lg:ml-2 pl-2 border-l border-slate-200">
-                            {extraInfo.roll && (
-                                <div className="flex items-center gap-1 group/roll cursor-help relative">
-                                    <i className="fa-solid fa-scroll text-indigo-400 hover:text-indigo-600 transition-colors"></i>
-                                    {/* Tooltip */}
-                                    <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1 px-2 py-1 bg-slate-800 text-white text-[9px] rounded opacity-0 group-hover/roll:opacity-100 pointer-events-none whitespace-nowrap z-40 shadow-lg">
-                                        Rollo: {extraInfo.roll}
-                                        <div className="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-slate-800"></div>
-                                    </div>
-                                </div>
-                            )}
-                            {extraInfo.machine && (
-                                <div className="flex items-center gap-1 group/mac cursor-help relative">
-                                    <i className="fa-solid fa-print text-cyan-500 hover:text-cyan-600 transition-colors"></i>
-                                    {/* Tooltip */}
-                                    <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1 px-2 py-1 bg-slate-800 text-white text-[9px] rounded opacity-0 group-hover/mac:opacity-100 pointer-events-none whitespace-nowrap z-40 shadow-lg">
-                                        Eq: {extraInfo.machine}
-                                        <div className="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-slate-800"></div>
-                                    </div>
-                                </div>
-                            )}
+                        {/* Medidas o Cantidad Unitaria */}
+                        {(anchoRaw > 0 && altoRaw > 0) ? (
+                            <div className="flex items-center gap-1 bg-slate-100 px-1.5 py-0.5 rounded border border-slate-200">
+                                <span className="text-[9px] font-bold text-slate-400 uppercase">Medidas:</span>
+                                <span className="font-bold text-slate-700">
+                                    {anchoRaw} x {altoRaw} <span className="text-[9px] text-slate-400">{extraInfo?.um || 'm'}</span>
+                                </span>
+                            </div>
+                        ) : (
+                            <div className="flex items-center gap-1 bg-white px-1.5 py-0.5 rounded border border-slate-100">
+                                <span className="text-[9px] font-bold text-slate-400 uppercase">Cant/Unit:</span>
+                                <span className="font-bold text-slate-700">{metrosUnit} {extraInfo?.um || 'm'}</span>
+                            </div>
+                        )}
+
+                        {/* Total */}
+                        <div className="flex items-center gap-1 ml-2 pl-2 border-l border-slate-200">
+                            <span className="text-slate-400 text-[9px] uppercase font-bold">Total:</span>
+                            <span className="font-black text-blue-600">
+                                {metrosTotal} {extraInfo?.um || 'm'}
+                            </span>
                         </div>
-                    )}
-                </div>
+
+                        {file.Material && (
+                            <>
+                                <span className="text-slate-300 ml-1">•</span>
+                                <span className="truncate max-w-[150px]" title={file.Material}>{file.Material}</span>
+                            </>
+                        )}
+
+                        {/* Información Extra (Contexto de visualizador) - ICONOS */}
+                        {extraInfo && (
+                            <div className="flex items-center gap-2 ml-auto lg:ml-2 pl-2 border-l border-slate-200">
+                                {extraInfo.roll && (
+                                    <div className="flex items-center gap-1 group/roll cursor-help relative">
+                                        <i className="fa-solid fa-scroll text-indigo-400 hover:text-indigo-600 transition-colors"></i>
+                                        {/* Tooltip */}
+                                        <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1 px-2 py-1 bg-slate-800 text-white text-[9px] rounded opacity-0 group-hover/roll:opacity-100 pointer-events-none whitespace-nowrap z-40 shadow-lg">
+                                            Rollo: {extraInfo.roll}
+                                            <div className="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-slate-800"></div>
+                                        </div>
+                                    </div>
+                                )}
+                                {extraInfo.machine && (
+                                    <div className="flex items-center gap-1 group/mac cursor-help relative">
+                                        <i className="fa-solid fa-print text-cyan-500 hover:text-cyan-600 transition-colors"></i>
+                                        {/* Tooltip */}
+                                        <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1 px-2 py-1 bg-slate-800 text-white text-[9px] rounded opacity-0 group-hover/mac:opacity-100 pointer-events-none whitespace-nowrap z-40 shadow-lg">
+                                            Eq: {extraInfo.machine}
+                                            <div className="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-slate-800"></div>
+                                        </div>
+                                    </div>
+                                )}
+                            </div>
+                        )}
+                    </div>
+                )}
             </div>
 
             {/* 3. Acciones o Estado */}
@@ -265,7 +286,8 @@ export const ActionButton = ({ icon, color, onClick, title }) => {
         slate: 'border-slate-200 text-slate-300 hover:bg-slate-100 hover:text-slate-600',
         red: 'border-red-100 text-red-300 hover:bg-red-50 hover:text-red-500 hover:border-red-200',
         emerald: 'border-emerald-100 text-emerald-300 hover:bg-emerald-50 hover:text-emerald-600 hover:border-emerald-200',
-        blue: 'border-blue-100 text-blue-400 hover:bg-blue-50 hover:text-blue-600 hover:border-blue-200'
+        blue: 'border-blue-100 text-blue-400 hover:bg-blue-50 hover:text-blue-600 hover:border-blue-200',
+        amber: 'border-amber-100 text-amber-400 hover:bg-amber-50 hover:text-amber-600 hover:border-amber-200'
     };
     return (
         <button

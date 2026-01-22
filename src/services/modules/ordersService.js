@@ -52,6 +52,10 @@ export const ordersService = {
         const response = await api.put('/orders/file/update', fileData);
         return response.data;
     },
+    updateService: async (serviceData) => {
+        const response = await api.put('/orders/service/update', serviceData);
+        return response.data;
+    },
     addFile: async (fileData) => {
         const response = await api.post('/orders/file/add', fileData);
         return response.data;
@@ -68,6 +72,10 @@ export const ordersService = {
         return Array.isArray(response.data) ? response.data[0] : response.data;
     },
     cancel: async (payload) => {
+        const response = await api.post('/orders/cancel', payload);
+        return response.data;
+    },
+    cancelOrder: async (payload) => { // Alias explícito para evitar error en Modal
         const response = await api.post('/orders/cancel', payload);
         return response.data;
     },
@@ -89,6 +97,14 @@ export const ordersService = {
     },
     getIntegralDetails: async (ref) => {
         const response = await api.get(`/orders/search/integral/${encodeURIComponent(ref)}`);
+        return response.data;
+    },
+    getReferences: async (orderId) => {
+        const response = await api.get(`/orders/${orderId}/references`);
+        return response.data;
+    },
+    getServices: async (orderId) => {
+        const response = await api.get(`/orders/${orderId}/services`);
         return response.data;
     }
 };

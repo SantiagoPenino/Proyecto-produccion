@@ -1,10 +1,11 @@
 const axios = require('axios');
 const { sql, getPool } = require('../config/db');
+const fileProcessingService = require('../services/fileProcessingService');
 
 // Semáforo para evitar ejecuciones superpuestas del scheduler
 let isProcessing = false;
 
-// --- LÓGICA MAESTRA DE SINCRONIZACIÓN ---
+// --- LÓGICA MAESTRA DE SINCRONIZACIÓN (V3 FINAL - APLANADO + LOOKAHEAD AVANZADO) ---
 const syncOrdersLogic = async (io) => {
     if (isProcessing) {
         console.log("⏳ [Sync] Proceso ocupado. Saltando ciclo.");
@@ -13,7 +14,7 @@ const syncOrdersLogic = async (io) => {
     isProcessing = true;
 
     try {
-        console.log("🏁 INICIANDO SYNC (Lógica Estricta Regex)...");
+        console.log("🏁 INICIANDO SYNC (V3 FINAL - DEBUG MODE) - " + new Date().toISOString());
         const pool = await getPool();
 
         // 1. Obtener última factura
@@ -30,16 +31,10 @@ const syncOrdersLogic = async (io) => {
             const response = await axios.get(`${API_BASE}/api/pedidos/todos?NroFact=${ultimaFacturaDB}`);
             rawPedidos = response.data.data || [];
         } catch (apiErr) {
-            console.error(`❌ Error ERP Detallado:`, {
-                message: apiErr.message,
-                code: apiErr.code,
-                status: apiErr.response?.status,
-                url: apiErr.config?.url
-            });
+            console.error(`❌ Error ERP:`, apiErr.message);
             return { success: false, error: "Fallo conexión ERP" };
         }
 
-        // Filtrado estricto
         const nuevosPedidos = rawPedidos.filter(p => parseInt(p.NroFact) > ultimaFacturaDB);
 
         if (nuevosPedidos.length === 0) {
@@ -47,7 +42,7 @@ const syncOrdersLogic = async (io) => {
             return { success: true, message: 'Up to date' };
         }
 
-        console.log(`📥 Procesando ${nuevosPedidos.length} encabezados de factura...`);
+        console.log(`📥 Procesando ${nuevosPedidos.length} encabezados...`);
 
         // 3. Obtener Mapeo de Áreas
         const mappingRes = await pool.request().query("SELECT CodigoERP, AreaID_Interno, Numero FROM ConfigMapeoERP");
@@ -59,7 +54,7 @@ const syncOrdersLogic = async (io) => {
             };
         });
 
-        // 4. AGRUPAMIENTO Y CLASIFICACIÓN
+        // 4. AGRUPAMIENTO INICIAL (Por Documento ERP)
         let pedidosAgrupados = {};
         let maxFacturaProcesada = ultimaFacturaDB;
 
@@ -71,10 +66,14 @@ const syncOrdersLogic = async (io) => {
             try {
                 const detRes = await axios.get(`${API_BASE}/api/pedidos/${p.NroFact}/con_sublineas`);
                 if (detRes.data?.data) detalle = detRes.data.data;
-            } catch (e) { console.warn(`⚠️ Error detalle ${p.NroFact}.`); }
+            } catch (e) {
+                console.warn(`⚠️ Error detalle ${p.NroFact}. Usando cabecera.`);
+            }
 
-            const nroDoc = detalle.NroDoc ? detalle.NroDoc.toString().trim() : "";
-            if (!nroDoc) continue;
+            // Usar NroDoc para agrupar, o NroFact si no hay Doc. Y asegurar TRIM agresivo.
+            let nroDoc = detalle.NroDoc ? detalle.NroDoc.toString().trim() : "";
+            if (!nroDoc) nroDoc = p.NroFact.toString().trim(); // Fallback a Factura si no hay Doc
+
 
             if (!pedidosAgrupados[nroDoc]) {
                 const idDesc = (detalle.identificadores || []).find(x => x.CodId === 1)?.Descripcion || (detalle.identificadores || []).find(x => x.CodId === 1)?.Valor || "Sin Nombre";
@@ -107,7 +106,6 @@ const syncOrdersLogic = async (io) => {
                         const dbStk = await pool.request()
                             .input('stk', sql.VarChar, l.CodStock)
                             .query("SELECT TOP 1 Articulo FROM StockArt WHERE LTRIM(RTRIM(CodStock)) = LTRIM(RTRIM(@stk))");
-                        // Aquí deberíamos tener un mapeo de fallback real, pero por ahora solo logueamos
                     } catch (e) { }
                 }
 
@@ -119,44 +117,51 @@ const syncOrdersLogic = async (io) => {
                         prioridad: areaOrden || 999,
                         tinta: "",
                         retiro: "",
-                        itemsProductivos: [],
-                        itemsReferencias: [],
-                        itemsExtras: [],
-                        materialNames: new Set()
+                        gruposMaterial: {}
                     };
                 }
                 const areaObj = docObj.areas[areaID];
-                areaObj.materialNames.add(l.Descripcion);
+                const codArtKey = (l.CodArt || 'GENERICO').trim();
+
+                if (!areaObj.gruposMaterial[codArtKey]) {
+                    areaObj.gruposMaterial[codArtKey] = {
+                        codArt: codArtKey,
+                        nombreMaterial: l.Descripcion || "Material",
+                        variante: "Estándar",
+                        itemsProductivos: [],
+                        itemsReferencias: [],
+                        itemsExtras: []
+                    };
+                }
+                const currentMatGroup = areaObj.gruposMaterial[codArtKey];
+
+                // --- RECUPERAR DATOS ADICIONALES (STOCKART) ---
+                try {
+                    const varRes = await pool.request()
+                        .input('stk', sql.VarChar, l.CodStock)
+                        .query("SELECT TOP 1 LTRIM(RTRIM(Articulo)) as Variante, LTRIM(RTRIM(UM)) as UnidadMedida FROM StockArt WHERE LTRIM(RTRIM(CodStock)) = LTRIM(RTRIM(@stk))");
+
+                    if (varRes.recordset[0]) {
+                        if (varRes.recordset[0].Variante) currentMatGroup.variante = varRes.recordset[0].Variante;
+                        if (varRes.recordset[0].UnidadMedida) currentMatGroup.unidad = varRes.recordset[0].UnidadMedida;
+                    }
+                } catch (e) { }
 
                 const sublineas = l.Sublineas || [];
-
-                // --- 1. CLASIFICACIÓN TINTA/RETIRO (ESTRICTA REGEX) ---
-                // Concatenamos notas de la línea principal Y de las sublíneas para no perder info (ej. Tinta en la línea madre)
                 let allNotas = (l.Observaciones || "") + " | " + sublineas.map(sl => sl.Notas || "").join(" | ");
 
-                // Regex Estricta: Busca 'Tinta:' seguido de cualquier cosa que NO sea un pipe '|'
                 const matchTinta = allNotas.match(/Tinta:\s*([^|]+)/i);
-                if (matchTinta) {
-                    areaObj.tinta = matchTinta[1].trim();
-                } else {
-                    // Fallback
-                    const matchTipo = allNotas.match(/Tipo de impresi[óo]n:\s*([^|]+)/i);
-                    if (matchTipo) areaObj.tinta = matchTipo[1].trim();
-                }
+                if (matchTinta) areaObj.tinta = matchTinta[1].trim();
 
-                // Regex Estricta: Busca 'Retiro:' seguido de cualquier cosa que NO sea un pipe '|'
                 const matchRetiro = allNotas.match(/Retiro:\s*([^|]+)/i);
-                if (matchRetiro) {
-                    areaObj.retiro = matchRetiro[1].trim();
-                }
+                if (matchRetiro) areaObj.retiro = matchRetiro[1].trim();
 
-                // --- 2. CLASIFICACIÓN ITEMS ---
+                // --- CLASIFICACIÓN DE ITEMS ---
                 if (sublineas.length === 0) {
                     if ((Number(l.TotalLinea) || 0) > 0) {
-                        areaObj.itemsExtras.push({
+                        currentMatGroup.itemsExtras.push({
                             cod: l.CodArt, stock: l.CodStock, desc: l.Descripcion,
-                            cant: l.CantidadHaber, precio: l.Precio, total: l.TotalLinea,
-                            obs: "Sin desglose"
+                            cant: l.CantidadHaber, obs: "Sin desglose"
                         });
                     }
                 } else {
@@ -167,7 +172,7 @@ const syncOrdersLogic = async (io) => {
 
                         const esRef = notasSL.includes("boceto") || notasSL.includes("logo") ||
                             notasSL.includes("guia") || notasSL.includes("corte") || notasSL.includes("bordado");
-                        const esExtra = !link && cant > 0;
+                        const esExtra = !link && cant > 0 && !esRef;
 
                         if (esRef && link) {
                             let tipo = 'REFERENCIA';
@@ -175,55 +180,119 @@ const syncOrdersLogic = async (io) => {
                             if (notasSL.includes("logo")) tipo = 'LOGO';
                             if (notasSL.includes("corte")) tipo = 'CORTE';
 
-                            areaObj.itemsReferencias.push({
+                            currentMatGroup.itemsReferencias.push({
                                 tipo: tipo, link: link, nombre: sl.Notas || "Ref", notas: sl.Notas
                             });
                         } else if (esExtra) {
-                            areaObj.itemsExtras.push({
+                            currentMatGroup.itemsExtras.push({
                                 cod: l.CodArt, stock: l.CodStock, desc: `${l.Descripcion} (${sl.Notas})`,
-                                cant: cant, precio: 0, total: 0, obs: sl.Notas
+                                cant: cant, obs: sl.Notas
                             });
                         } else if (link && cant > 0) {
-                            areaObj.itemsProductivos.push({
+                            currentMatGroup.itemsProductivos.push({
                                 nombre: l.Descripcion, link: link, copias: cant,
-                                metros: (Number(l.CantidadHaber) || 0) / (sublineas.length || 1),
+                                metros: 0,
                                 subId: sl.Sublinea_id, codArt: l.CodArt, tipo: 'Impresion', notas: sl.Notas
                             });
                         }
                     });
                 }
-            } // Fin loop lineas
-        } // Fin loop pedidos
+            }
+        }
 
-        // 5. INSERCIÓN TRANSACCIONAL
+        // 5. INSERCIÓN TRANSACCIONAL (ESTRATEGIA PLANA FINAL)
         const transaction = new sql.Transaction(pool);
         await transaction.begin();
 
         let generatedCodes = [];
+        let createdOrderIds = [];
 
         try {
             for (const docId in pedidosAgrupados) {
                 const docData = pedidosAgrupados[docId];
 
-                const validAreaIDs = Object.keys(docData.areas).filter(aid => {
-                    const a = docData.areas[aid];
-                    return (a.itemsProductivos.length > 0 || a.itemsReferencias.length > 0 || a.itemsExtras.length > 0);
-                });
+                // A. APLANAR TODO EL DOCUMENTO EN UNA LISTA SECUENCIAL
+                const sortedAreaIDs = Object.keys(docData.areas).sort((a, b) => docData.areas[a].prioridad - docData.areas[b].prioridad);
 
-                validAreaIDs.sort((a, b) => docData.areas[a].prioridad - docData.areas[b].prioridad);
+                let ordenesAInsertar = [];
 
-                const totalOrdenes = validAreaIDs.length;
-
-                for (let i = 0; i < totalOrdenes; i++) {
-                    const areaID = validAreaIDs[i];
+                for (const areaID of sortedAreaIDs) {
                     const areaObj = docData.areas[areaID];
-                    const codigoOrden = `${docData.nroDoc} (${i + 1}/${totalOrdenes})`;
+                    const matKeys = Object.keys(areaObj.gruposMaterial);
+
+                    for (const matKey of matKeys) {
+                        const grp = areaObj.gruposMaterial[matKey];
+                        if (grp.itemsProductivos.length > 0 || grp.itemsReferencias.length > 0 || grp.itemsExtras.length > 0) {
+                            ordenesAInsertar.push({
+                                areaID: areaID,
+                                areaObj: areaObj,
+                                matGroup: grp
+                            });
+                        }
+                    }
+                }
+
+                // B. INSERTAR SECUENCIALMENTE
+                const totalDocOrdenes = ordenesAInsertar.length;
+
+                for (let i = 0; i < totalDocOrdenes; i++) {
+                    const ordData = ordenesAInsertar[i];
+                    const { areaID, areaObj, matGroup } = ordData;
+
+                    // 1. Numeración Global
+                    const globalIndex = i + 1;
+                    const codigoOrden = `${docData.nroDoc} (${globalIndex}/${totalDocOrdenes})`;
                     generatedCodes.push(codigoOrden);
 
-                    const materialTxt = Array.from(areaObj.materialNames).join(', ').substring(0, 200);
-                    let varianteTxt = "Estándar";
-                    if (areaObj.itemsExtras.length > 0 && areaObj.itemsProductivos.length === 0) varianteTxt = "Solo Servicios";
+                    // 2. Próximo Servicio (Lookahead Avanzado - Bloques)
+                    let nextService = 'DEPOSITO';
+                    let foundDestino = false;
 
+                    // Escanear hacia adelante saltando hermanos del mismo grupo productivo
+                    for (let k = i + 1; k < totalDocOrdenes; k++) {
+                        const nextOrd = ordenesAInsertar[k];
+                        const nextVar = (nextOrd.matGroup.variante || '').toUpperCase();
+                        const nextMat = (nextOrd.matGroup.nombreMaterial || '').toUpperCase(); // Chequear nombre material también
+
+                        const isNextExtra = nextVar.includes('EXTRA') || nextVar.includes('SERVICIO') ||
+                            nextMat.includes('EXTRA') || nextMat.includes('SERVICIO') || nextMat.includes('MATERIALES');
+
+                        // CONDICIÓN 1: Cambio de Área REAL
+                        if (nextOrd.areaID !== areaID) {
+                            nextService = nextOrd.areaID;
+                            foundDestino = true;
+                            break;
+                        }
+
+                        // CONDICIÓN 2: Mismo Área pero es EXTRA (Terminación)
+                        if (isNextExtra) {
+                            nextService = 'TERMINACION';
+                            foundDestino = true;
+                            break;
+                        }
+                    }
+
+                    if (!foundDestino) {
+                        // Instalación check
+                        if (matGroup.itemsExtras.length > 0) {
+                            const descExt = matGroup.itemsExtras.map(e => e.desc.toUpperCase()).join(' ');
+                            if (descExt.includes('INSTALACION') || descExt.includes('COLOCACION')) nextService = 'INSTALACION';
+                        }
+                    }
+
+                    // 3. Magnitud
+                    let prodMets = matGroup.itemsProductivos.reduce((a, b) => a + ((b.metros || 0) * (b.copias || 1)), 0);
+                    let prodCops = matGroup.itemsProductivos.reduce((a, b) => a + (b.copias || 1), 0);
+                    let servCops = matGroup.itemsExtras.reduce((a, b) => a + (b.cant || 0), 0);
+
+                    const umReal = matGroup.unidad ? matGroup.unidad.trim() : "u";
+                    let magVal = 0;
+                    if (umReal.toUpperCase().startsWith('M')) magVal = prodMets;
+                    else magVal = prodCops + servCops;
+
+                    const magnitudStr = magVal > 0 ? magVal.toFixed(2) : "0";
+
+                    // 4. INSERTAR
                     const reqO = new sql.Request(transaction);
                     const insertRes = await reqO
                         .input('AreaID', sql.VarChar, areaID)
@@ -232,30 +301,35 @@ const syncOrdersLogic = async (io) => {
                         .input('Prio', sql.VarChar, docData.prioridad)
                         .input('F_Ing', sql.DateTime, docData.fecha)
                         .input('F_Ent', sql.DateTime, new Date(docData.fecha.getTime() + 259200000))
-                        .input('Mat', sql.VarChar, materialTxt)
-                        .input('Var', sql.VarChar, varianteTxt)
+                        .input('Mat', sql.VarChar, matGroup.nombreMaterial)
+                        .input('Var', sql.VarChar, matGroup.variante || 'Estándar')
                         .input('Cod', sql.VarChar, codigoOrden)
                         .input('ERP', sql.VarChar, docData.nroDoc)
                         .input('Nota', sql.NVarChar, docData.notaGeneral)
                         .input('Tinta', sql.VarChar, areaObj.tinta)
                         .input('Retiro', sql.VarChar, areaObj.retiro || null)
+                        .input('Prox', sql.VarChar, nextService)
+                        .input('Mag', sql.VarChar, magnitudStr)
+                        .input('UM', sql.VarChar, umReal)
                         .query(`
                             INSERT INTO Ordenes (
                                 AreaID, Cliente, DescripcionTrabajo, Prioridad, Estado, EstadoenArea,
                                 FechaIngreso, FechaEstimadaEntrega, Material, Variante, CodigoOrden,
-                                NoDocERP, Nota, Tinta, ModoRetiro, ArchivosCount, Magnitud
+                                NoDocERP, Nota, Tinta, ModoRetiro, ArchivosCount, Magnitud, ProximoServicio, UM
                             )
                             OUTPUT INSERTED.OrdenID
                             VALUES (
                                 @AreaID, @Cliente, @Desc, @Prio, 'Pendiente', 'Pendiente',
                                 @F_Ing, @F_Ent, @Mat, @Var, @Cod,
-                                @ERP, @Nota, @Tinta, @Retiro, 0, 0
+                                @ERP, @Nota, @Tinta, @Retiro, 0, @Mag, @Prox, @UM
                             )
                         `);
 
                     const newID = insertRes.recordset[0].OrdenID;
+                    createdOrderIds.push(newID);
 
-                    for (const item of areaObj.itemsProductivos) {
+                    // Insert Items
+                    for (const item of matGroup.itemsProductivos) {
                         await new sql.Request(transaction)
                             .input('OID', sql.Int, newID)
                             .input('Nom', sql.VarChar, `${codigoOrden} - ${item.nombre}`)
@@ -266,48 +340,35 @@ const syncOrdersLogic = async (io) => {
                             .input('Cod', sql.VarChar, item.codArt)
                             .input('Tipo', sql.VarChar, item.tipo)
                             .input('Obs', sql.NVarChar, item.notas)
-                            .query(`
-                                INSERT INTO ArchivosOrden (OrdenID, NombreArchivo, RutaAlmacenamiento, Copias, Metros, IdSubLineaERP, CodigoArticulo, TipoArchivo, Observaciones, FechaSubida, EstadoArchivo)
-                                VALUES (@OID, @Nom, @Ruta, @Cop, @Met, @Sub, @Cod, @Tipo, @Obs, GETDATE(), 'Pendiente')
-                            `);
-                    }
-                    if (areaObj.itemsProductivos.length > 0) {
-                        await new sql.Request(transaction).input('O', sql.Int, newID).input('C', sql.Int, areaObj.itemsProductivos.length).query("UPDATE Ordenes SET ArchivosCount = @C WHERE OrdenID = @O");
+                            .query(`INSERT INTO ArchivosOrden (OrdenID, NombreArchivo, RutaAlmacenamiento, Copias, Metros, IdSubLineaERP, CodigoArticulo, TipoArchivo, Observaciones, FechaSubida, EstadoArchivo) VALUES (@OID, @Nom, @Ruta, @Cop, @Met, @Sub, @Cod, @Tipo, @Obs, GETDATE(), 'Pendiente')`);
                     }
 
-                    for (const ref of areaObj.itemsReferencias) {
+                    for (const ref of matGroup.itemsReferencias) {
                         await new sql.Request(transaction)
                             .input('OID', sql.Int, newID)
                             .input('Tipo', sql.VarChar, ref.tipo)
                             .input('Ubi', sql.VarChar, ref.link)
                             .input('Nom', sql.VarChar, ref.nombre)
                             .input('Not', sql.NVarChar, ref.notas)
-                            .query(`
-                                INSERT INTO ArchivosReferencia (OrdenID, TipoArchivo, UbicacionStorage, NombreOriginal, NotasAdicionales, FechaSubida, UsuarioID)
-                                VALUES (@OID, @Tipo, @Ubi, @Nom, @Not, GETDATE(), 1) 
-                            `);
+                            .query(`INSERT INTO ArchivosReferencia (OrdenID, TipoArchivo, UbicacionStorage, NombreOriginal, NotasAdicionales, FechaSubida, UsuarioID) VALUES (@OID, @Tipo, @Ubi, @Nom, @Not, GETDATE(), 1)`);
                     }
 
-                    for (const ext of areaObj.itemsExtras) {
+                    for (const ext of matGroup.itemsExtras) {
                         await new sql.Request(transaction)
                             .input('OID', sql.Int, newID)
                             .input('Cod', sql.VarChar, ext.cod)
                             .input('Stk', sql.VarChar, ext.stock)
                             .input('Des', sql.NVarChar, ext.desc)
                             .input('Cnt', sql.Decimal(18, 2), ext.cant)
-                            .input('Pre', sql.Decimal(18, 2), ext.precio)
-                            .input('Tot', sql.Decimal(18, 2), ext.total)
                             .input('Obs', sql.NVarChar, ext.obs)
-                            .query(`
-                                INSERT INTO ServiciosExtraOrden (OrdenID, CodArt, CodStock, Descripcion, Cantidad, PrecioUnitario, TotalLinea, Observacion, FechaRegistro)
-                                VALUES (@OID, @Cod, @Stk, @Des, @Cnt, @Pre, @Tot, @Obs, GETDATE())
-                            `);
+                            .query(`INSERT INTO ServiciosExtraOrden (OrdenID, CodArt, CodStock, Descripcion, Cantidad, PrecioUnitario, TotalLinea, Observacion, FechaRegistro) VALUES (@OID, @Cod, @Stk, @Des, @Cnt, 0, 0, @Obs, GETDATE())`);
                     }
 
-                    try {
-                        await new sql.Request(transaction).input('OrdenID', sql.Int, newID).execute('sp_PredecirProximoServicio');
-                        await new sql.Request(transaction).input('OrdenID', sql.Int, newID).execute('sp_CalcularFechaEntrega');
-                    } catch (e) { }
+                    if (matGroup.itemsProductivos.length > 0) {
+                        await new sql.Request(transaction).input('O', sql.Int, newID).input('C', sql.Int, matGroup.itemsProductivos.length).query("UPDATE Ordenes SET ArchivosCount = @C WHERE OrdenID = @O");
+                    }
+
+                    try { await new sql.Request(transaction).input('OrdenID', sql.Int, newID).execute('sp_CalcularFechaEntrega'); } catch (e) { }
                 }
             }
 
@@ -318,8 +379,13 @@ const syncOrdersLogic = async (io) => {
             }
 
             await transaction.commit();
-            console.log(`✅ EXITO. Ordenes Creadas: ${generatedCodes.join(', ')}`);
+            console.log(`✅ EXITO SYNC V3. Creadas: ${generatedCodes.length}`);
             if (io && generatedCodes.length) io.emit('server:ordersUpdated', { count: generatedCodes.length });
+
+            // ASYNC
+            if (createdOrderIds.length > 0) {
+                fileProcessingService.processOrderList(createdOrderIds, io);
+            }
 
             return { success: true, count: generatedCodes.length };
 
@@ -343,4 +409,4 @@ exports.syncOrders = async (req, res) => {
         res.json(r);
     } catch (e) { res.status(500).json({ error: e.message }); }
 };
-exports.testImportJson = async (req, res) => res.json({ ok: true }); 
+exports.testImportJson = async (req, res) => res.json({ ok: true });
