@@ -1,47 +1,73 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { useQuery, useMutation } from '@tanstack/react-query';
+import { useMutation, useQuery } from '@tanstack/react-query';
 import { logisticsService } from '../../services/modules/logisticsService';
 import { useAuth } from '../../context/AuthContext';
 import { toast } from 'sonner';
 
-const ReceptionView = () => {
+const ReceptionView = ({ onClose, areaContext, areaFilter }) => {
     const { user } = useAuth();
-    // STATE
-    const [mode, setMode] = useState('SCAN_REMITO'); // 'SCAN_REMITO' | 'CHECKING'
+    const currentArea = areaFilter || areaContext || user?.areaKey || user?.areaId;
+
+    // Steps: 1 = Scan/Select Remito, 2 = Process Items
+    const [step, setStep] = useState(1);
+
+    // Data
     const [remitoCode, setRemitoCode] = useState('');
-    const [scanInput, setScanInput] = useState('');
     const [loadedRemito, setLoadedRemito] = useState(null);
     const [itemMap, setItemMap] = useState({}); // { 'CODE': { ...item, scanned: bool } }
 
-    const inputRef = useRef(null);
+    // UI
+    const [scanInput, setScanInput] = useState('');
+    const [lastScanMsg, setLastScanMsg] = useState(null); // { type: 'success'|'error', text: '' }
+    const [loading, setLoading] = useState(false);
 
-    // 1. QUERY: Fetch Remito Details
-    // Only enabled when we have a confirmed code to search
-    const fetchRemito = async (code) => {
+    // Manual Selection for Batch Processing
+    const [manualSelection, setManualSelection] = useState([]);
+
+    const inputRef = useRef(null);
+    const scannerRef = useRef(null);
+
+    // --- NEW: Incoming Remitos List ---
+    const { data: incomingRemitos, isLoading: loadingIncoming } = useQuery({
+        queryKey: ['remitos', 'incoming', currentArea],
+        queryFn: () => logisticsService.getIncomingRemitos(currentArea),
+        enabled: !!currentArea && currentArea !== 'TODOS',
+        refetchInterval: 15000
+    });
+
+    // --- STEP 1: FETCH REMITO ---
+    const handleSearchRemito = async (e, codeOverride) => {
+        if (e) e.preventDefault();
+        const code = codeOverride || remitoCode.trim();
+        if (!code) return;
+
+        setLoading(true);
         try {
             const data = await logisticsService.getRemitoByCode(code);
 
-            // CHECK STATUS
+            // VALIDATIONS
             if (data.Estado === 'ESPERANDO_RETIRO') {
                 toast.warning('Remito sin validación de transporte');
-                if (!confirm("⚠️ ALERTA DE SEGURIDAD\n\nEste remito aún figura como 'ESPERANDO RETIRO'.\nEl transportista o cadete NO ha escaneado/validado la salida de la mercadería.\n\nEsto podría indicar que el remito nunca salió físicamente o que el cadete olvidó validarlo.\n\n¿Desea FORZAR la recepción de todos modos?")) {
+                if (!confirm("⚠️ ALERTA DE SEGURIDAD\n\nEste remito aún figura como 'ESPERANDO RETIRO'.\nEl transportista o cadete NO ha escaneado/validado la salida de la mercadería.\n\n¿Desea FORZAR la recepción de todos modos?")) {
                     setRemitoCode('');
+                    setLoading(false);
                     return;
                 }
             }
 
-            // CHECK AREA
-            if (user?.areaKey && data.AreaDestinoID !== user.areaKey && user.areaKey !== 'ADMIN') {
-                if (!confirm(`⛔ ALERTA DE AREA INCORRECTA\n\nEste remito está destinado a: ${data.AreaDestinoID}\nTu usuario pertenece a: ${user.areaKey}\n\n¿Estás seguro que deseas recepcionarlo aquí en ${user.areaKey}?`)) {
+            // AREA VALIDATION
+            if (currentArea && data.AreaDestinoID !== currentArea && currentArea !== 'ADMIN' && currentArea !== 'TODOS') {
+                if (!confirm(`⛔ ALERTA DE AREA INCORRECTA\n\nEste remito está destinado a: ${data.AreaDestinoID}\nEstás recepcionando en: ${currentArea}\n\n¿Estás seguro que deseas recepcionarlo aquí?`)) {
                     setRemitoCode('');
+                    setLoading(false);
                     return;
                 }
             }
 
             setLoadedRemito(data);
+            setRemitoCode(code); // Ensure state sync
 
-            // Build Quick Map for scanning O(1)
-            // Backend returns items array
+            // Build Map
             const map = {};
             data.items.forEach(item => {
                 map[item.CodigoEtiqueta] = {
@@ -50,92 +76,40 @@ const ReceptionView = () => {
                 };
             });
             setItemMap(map);
-            setMode('CHECKING');
+            setStep(2);
+            setLastScanMsg(null);
+            setTimeout(() => scannerRef.current?.focus(), 100);
+
         } catch (err) {
-            alert("❌ Remito no encontrado: " + err.message);
+            console.error(err);
+            toast.error("Remito no encontrado: " + err.message);
             setRemitoCode('');
+        } finally {
+            setLoading(false);
         }
     };
 
-    // 2. MUTATION: Reception Item
+    // --- MUTATIONS ---
     const receiveItemMutation = useMutation({
         mutationFn: logisticsService.receiveBulto,
         onSuccess: (_, variables) => {
-            // Update Local State Optimistically
             const code = variables.codigoEtiqueta;
             setItemMap(prev => ({
                 ...prev,
                 [code]: { ...prev[code], scanned: true }
             }));
-            // Play OK Sound (Optional)
+            setLastScanMsg({ type: 'success', text: `RECIBIDO: ${code}` });
+            toast.success(`Bulto ${code} ingresado`);
         },
         onError: (err) => {
-            alert(`⚠️ Error al recepcionar: ${err.message}`);
+            setLastScanMsg({ type: 'error', text: `ERROR: ${err.message}` });
+            toast.error(err.message);
         }
     });
 
-    // EFFECT: Focus management
-    useEffect(() => {
-        if (inputRef.current) inputRef.current.focus();
-    }, [mode, loadedRemito, scanInput]);
-
-    // HANDLER: Master Scanner
-    const handleScan = (e) => {
-        if (e.key === 'Enter') {
-            e.preventDefault();
-            const code = scanInput.trim();
-            if (!code) return;
-
-            if (mode === 'SCAN_REMITO') {
-                // Assuming Remito codes have a prefix or specific format, or just accept any
-                // If code starts with "REM-", it's likely a remito
-                fetchRemito(code);
-                setRemitoCode(code);
-            }
-            else if (mode === 'CHECKING') {
-                // Check against loaded map
-                if (itemMap[code]) {
-                    if (itemMap[code].scanned) {
-                        alert("⚠️ Ya escaneado: " + code);
-                    } else {
-                        // Valid Item -> Call Backend
-                        receiveItemMutation.mutate({
-                            envioId: loadedRemito.EnvioID,
-                            codigoEtiqueta: code,
-                            usuarioId: 1 // TODO: User
-                        });
-                    }
-                } else {
-                    // Item WRONG (No pertenece al remito)
-                    alert("⛔ ALERTA: Este bulto NO pertenece a este remito!\nCódigo: " + code);
-                }
-            }
-            setScanInput('');
-        }
-    };
-
-    const getProgress = () => {
-        if (!itemMap || Object.keys(itemMap).length === 0) return 0;
-        const total = Object.keys(itemMap).length;
-        const scanned = Object.values(itemMap).filter(i => i.scanned).length;
-        return Math.round((scanned / total) * 100);
-    };
-
-    const handleReset = () => {
-        setMode('SCAN_REMITO');
-        setLoadedRemito(null);
-        setItemMap({});
-        setRemitoCode('');
-        setScanInput('');
-    };
-
-    const [manualSelection, setManualSelection] = useState([]);
-
-    // BATCH MUTATION
     const batchReceiveMutation = useMutation({
         mutationFn: logisticsService.receiveDispatchItem,
         onSuccess: (_, variables) => {
-            // Optimistic Update
             const receivedIds = variables.itemsRecibidos.map(i => i.bultoId);
             setItemMap(prev => {
                 const next = { ...prev };
@@ -147,27 +121,46 @@ const ReceptionView = () => {
                 return next;
             });
             setManualSelection([]);
-            toast.success("Confirmado manualmente");
+            toast.success("Recepción manual confirmada");
         },
         onError: (err) => {
-            alert("Error: " + err.message);
+            toast.error("Error batch: " + err.message);
         }
     });
 
-    const handleManualToggle = (bultoId) => {
+    // --- STEP 2: SCANNER LOGIC ---
+    const handleScanItem = (e) => {
+        e.preventDefault();
+        const code = scanInput.trim();
+        if (!code) return;
+
+        if (itemMap[code]) {
+            if (itemMap[code].scanned) {
+                setLastScanMsg({ type: 'warning', text: `YA INGRESADO: ${code}` });
+            } else {
+                receiveItemMutation.mutate({
+                    envioId: loadedRemito.EnvioID,
+                    codigoEtiqueta: code,
+                    usuarioId: user?.id || 1
+                });
+            }
+        } else {
+            setLastScanMsg({ type: 'error', text: `NO PERTENECE: ${code}` });
+            toast.error(`El bulto ${code} no corresponde a este remito`);
+        }
+        setScanInput('');
+    };
+
+    // --- MANUAL ACTIONS ---
+    const handleManualToggle = (code) => {
+        const item = itemMap[code];
+        if (item.scanned) return;
+
+        const bultoId = item.BultoID;
         if (manualSelection.includes(bultoId)) {
             setManualSelection(prev => prev.filter(id => id !== bultoId));
         } else {
             setManualSelection(prev => [...prev, bultoId]);
-        }
-    };
-
-    const handleSelectAll = () => {
-        const unscanned = Object.values(itemMap).filter(i => !i.scanned);
-        if (manualSelection.length === unscanned.length) {
-            setManualSelection([]);
-        } else {
-            setManualSelection(unscanned.map(i => i.BultoID));
         }
     };
 
@@ -177,10 +170,9 @@ const ReceptionView = () => {
 
         const payload = {
             envioId: loadedRemito.EnvioID,
-            usuarioId: 1, // TODO
+            usuarioId: user?.id || 1,
             itemsRecibidos: manualSelection.map(id => ({ bultoId: id, estado: 'ESCANEADO' }))
         };
-
         batchReceiveMutation.mutate(payload);
     };
 
@@ -188,166 +180,213 @@ const ReceptionView = () => {
         const unscanned = Object.values(itemMap).filter(i => !i.scanned);
         if (unscanned.length === 0) return;
 
-        if (confirm(`¿Está seguro que desea cerrar la recepción?\n\nSe marcarán ${unscanned.length} bultos como EXTRAVIADOS/PERDIDOS.\nEsta acción cambiará su estado a PERDIDO.`)) {
+        if (confirm(`¿Cerrar recepción con FALTANTES?\n\nSe marcarán ${unscanned.length} bultos como PERDIDOS/EXTRAVIADOS.\nEsta acción es irreversible.`)) {
             const payload = {
                 envioId: loadedRemito.EnvioID,
-                usuarioId: 1,
+                usuarioId: user?.id || 1,
                 itemsRecibidos: unscanned.map(i => ({ bultoId: i.BultoID, estado: 'PERDIDO' }))
             };
             batchReceiveMutation.mutate(payload);
         }
     };
 
+    // Metrics
+    const totalItems = loadedRemito?.items?.length || 0;
+    const scannedCount = Object.values(itemMap).filter(i => i.scanned).length;
+    const progressColor = scannedCount === totalItems ? 'text-emerald-500' : 'text-blue-600';
+
     return (
-        <div className="flex flex-col h-full bg-gray-50 p-6 max-w-6xl mx-auto space-y-6">
+        <div className="flex h-full bg-slate-100 min-h-screen font-sans">
 
-            {/* TOP BAR / SCANNER */}
-            <div className={`rounded-xl shadow-lg overflow-hidden transition-all duration-300 ${mode === 'SCAN_REMITO' ? 'bg-indigo-600 text-white p-10 text-center' : 'bg-white border text-left p-4 flex items-center justify-between'}`}>
+            {/* LEFT SIDEBAR: INCOMING REMITOS */}
+            <div className="w-1/3 min-w-[320px] max-w-sm bg-white border-r border-slate-200 flex flex-col h-full sticky top-0">
+                <div className="p-4 border-b border-slate-100 bg-slate-50">
+                    <label className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-1 block">
+                        {currentArea && currentArea !== 'TODOS' ? `Envíos llegando a ${currentArea}` : 'Búsqueda de Envíos'}
+                    </label>
+                    <div className="relative">
+                        <i className="fa-solid fa-search absolute left-3 top-3 text-slate-400"></i>
+                        <input
+                            type="text"
+                            className="w-full pl-10 pr-4 py-2 rounded-lg border border-slate-300 focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none transition-all uppercase"
+                            placeholder="Buscar remito manual..."
+                            value={step === 1 ? remitoCode : ''}
+                            onChange={(e) => {
+                                if (step !== 1) {
+                                    setStep(1);
+                                    setLoadedRemito(null);
+                                }
+                                setRemitoCode(e.target.value);
+                            }}
+                            onKeyDown={(e) => {
+                                if (e.key === 'Enter') handleSearchRemito(e);
+                            }}
+                        />
+                    </div>
+                </div>
 
-                {mode === 'SCAN_REMITO' ? (
-                    <div>
-                        <i className="fa-solid fa-qrcode text-6xl mb-4 text-indigo-300"></i>
-                        <h2 className="text-3xl font-bold mb-2">Recepción de Mercadería</h2>
-                        <p className="text-indigo-200 mb-8">Escanee el código QR del REMITO para comenzar la descarga.</p>
+                <div className="flex-1 overflow-y-auto p-2 space-y-2">
+                    {loadingIncoming && <div className="p-4 text-center text-slate-400"><i className="fa-solid fa-circle-notch fa-spin mr-2"></i>Buscando envíos...</div>}
 
-                        <div className="max-w-md mx-auto relative">
-                            <input
-                                ref={inputRef}
-                                type="text"
-                                className="w-full pl-12 pr-4 py-4 rounded-full bg-indigo-800/50 border-2 border-indigo-400 text-white text-xl placeholder-indigo-300 focus:bg-indigo-900 focus:outline-none focus:border-white transition-all font-mono text-center"
-                                placeholder="Escanear Remito..."
-                                value={scanInput}
-                                onChange={e => setScanInput(e.target.value)}
-                                onKeyDown={handleScan}
-                                autoFocus
-                            />
-                            <i className="fa-solid fa-barcode absolute left-5 top-1/2 transform -translate-y-1/2 text-indigo-300 text-xl"></i>
+                    {!loadingIncoming && incomingRemitos?.length === 0 && (
+                        <div className="p-8 text-center text-slate-400 text-sm">
+                            <i className="fa-solid fa-check-circle text-3xl mb-2 opacity-30"></i>
+                            <p>No hay envíos pendientes de recepción.</p>
+                        </div>
+                    )}
+
+                    {incomingRemitos?.map(rem => (
+                        <div
+                            key={rem.EnvioID}
+                            onClick={() => handleSearchRemito(null, rem.CodigoRemito)}
+                            className={`p-4 rounded-xl border cursor-pointer transition-all hover:shadow-md ${loadedRemito?.EnvioID === rem.EnvioID
+                                ? 'bg-indigo-50 border-indigo-200 ring-1 ring-indigo-300'
+                                : 'bg-white border-slate-100 hover:border-slate-300'}`}
+                        >
+                            <div className="flex justify-between items-start mb-2">
+                                <span className="font-bold text-slate-800 font-mono">{rem.CodigoRemito}</span>
+                                <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-blue-100 text-blue-700 uppercase">
+                                    {rem.Estado?.replace('_', ' ')}
+                                </span>
+                            </div>
+                            <div className="flex items-center gap-2 text-xs text-slate-500 mb-1">
+                                <i className="fa-solid fa-arrow-right-long text-slate-300"></i>
+                                <span>Desde: <strong className="text-slate-700">{rem.AreaOrigenID}</strong></span>
+                            </div>
+                            <div className="flex justify-between items-center mt-3">
+                                <span className="text-xs bg-slate-100 text-slate-600 px-2 py-1 rounded font-bold">
+                                    {rem.TotalItems} Bultos
+                                </span>
+                                <span className="text-[10px] text-slate-400">
+                                    {new Date(rem.FechaSalida).toLocaleDateString()}
+                                </span>
+                            </div>
+                        </div>
+                    ))}
+                </div>
+            </div>
+
+            {/* MAIN CONTENT AREA */}
+            <div className="flex-1 flex flex-col h-full overflow-hidden relative">
+
+                {/* Close Button (Floating if viewing detail, or header) */}
+                {onClose && (
+                    <div className="absolute top-4 right-4 z-50">
+                        <button onClick={onClose} className="w-8 h-8 bg-slate-200 rounded-full hover:bg-slate-300 text-slate-600 flex items-center justify-center transition-colors">
+                            <i className="fa-solid fa-xmark"></i>
+                        </button>
+                    </div>
+                )}
+
+                {step === 2 && loadedRemito ? (
+                    <div className="flex-1 overflow-y-auto p-6">
+                        <div className="max-w-6xl mx-auto space-y-6">
+                            {/* HEADER DETAIL */}
+                            <div className="flex justify-between items-center bg-white p-4 rounded-xl shadow-sm border border-slate-200">
+                                <div>
+                                    <h1 className="text-xl font-black text-slate-800 uppercase tracking-tight flex items-center gap-2">
+                                        <i className="fa-solid fa-dolly text-indigo-600"></i>
+                                        {loadedRemito.CodigoRemito}
+                                    </h1>
+                                    <p className="text-slate-500 text-xs font-medium">Validando ingreso desde {loadedRemito.AreaOrigenID}</p>
+                                </div>
+                                <div className="text-right">
+                                    <div className={`text-3xl font-black ${progressColor}`}>
+                                        {scannedCount} <span className="text-slate-300 text-xl">/ {totalItems}</span>
+                                    </div>
+                                    <div className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Ingresados</div>
+                                </div>
+                            </div>
+
+                            {/* GRID LAYOUT */}
+                            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 pb-20">
+                                {/* SCANNER */}
+                                <div className="bg-slate-800 rounded-xl shadow-lg border border-slate-700 p-8 flex flex-col justify-center items-center text-center relative overflow-hidden h-fit">
+                                    <div className="relative z-10 w-full max-w-xs space-y-6">
+                                        <h3 className="text-slate-300 font-bold uppercase tracking-wider text-sm">Escáner de Bultos</h3>
+                                        <form onSubmit={handleScanItem}>
+                                            <input
+                                                ref={scannerRef}
+                                                autoFocus
+                                                type="text"
+                                                value={scanInput}
+                                                onChange={e => setScanInput(e.target.value)}
+                                                className="w-full bg-slate-900 border-2 border-slate-600 rounded-xl py-4 px-6 text-center text-white font-mono text-xl focus:border-indigo-500 focus:ring-4 focus:ring-indigo-500/20 outline-none transition-all placeholder:text-slate-700"
+                                                placeholder="Escanear QR..."
+                                            />
+                                        </form>
+                                        <div className={`min-h-[40px] flex items-center justify-center rounded-lg p-2 font-bold transition-all text-sm ${lastScanMsg?.type === 'success' ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/50' : lastScanMsg?.type === 'error' ? 'bg-red-500/20 text-red-400 border border-red-500/50' : lastScanMsg?.type === 'warning' ? 'bg-yellow-500/20 text-yellow-400 border border-yellow-500/50' : 'bg-transparent'}`}>
+                                            {lastScanMsg ? lastScanMsg.text : <span className="text-slate-600">Esperando lectura...</span>}
+                                        </div>
+                                    </div>
+                                </div>
+
+                                {/* LIST */}
+                                <div className="bg-white rounded-xl shadow-sm border border-slate-200 flex flex-col overflow-hidden max-h-[600px]">
+                                    <div className="p-3 bg-slate-50 border-b border-slate-100 font-bold text-slate-700 text-sm flex justify-between items-center">
+                                        <span>Items ({totalItems})</span>
+                                        {manualSelection.length > 0 && <span className="text-indigo-600">{manualSelection.length} selec.</span>}
+                                    </div>
+                                    <div className="flex-1 overflow-y-auto p-2 space-y-2">
+                                        {Object.values(itemMap).map((item, idx) => {
+                                            const isSelected = manualSelection.includes(item.BultoID);
+                                            return (
+                                                <div
+                                                    key={item.CodigoEtiqueta}
+                                                    onClick={() => handleManualToggle(item.CodigoEtiqueta)}
+                                                    className={`p-2 rounded-lg border flex justify-between items-center transition-all cursor-pointer select-none text-sm ${item.scanned
+                                                        ? 'bg-emerald-50 border-emerald-200 opacity-75'
+                                                        : isSelected
+                                                            ? 'bg-indigo-50 border-indigo-200 ring-1 ring-indigo-200'
+                                                            : 'bg-white border-slate-100 hover:border-slate-300'
+                                                        }`}
+                                                >
+                                                    <div className="flex items-center gap-3">
+                                                        <div className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold ${item.scanned ? 'bg-emerald-500 text-white' : isSelected ? 'bg-indigo-500 text-white' : 'bg-slate-100 text-slate-400'}`}>
+                                                            {item.scanned ? <i className="fa-solid fa-check"></i> : (idx + 1)}
+                                                        </div>
+                                                        <div>
+                                                            <div className="font-bold font-mono text-slate-700">{item.CodigoEtiqueta}</div>
+                                                            <div className="text-[10px] text-slate-500 truncate w-32">{item.Descripcion}</div>
+                                                        </div>
+                                                    </div>
+                                                    {item.scanned && <span className="text-[10px] font-bold text-emerald-600 uppercase">Recibido</span>}
+                                                </div>
+                                            );
+                                        })}
+                                    </div>
+                                    {/* ACTIONS FOOTER */}
+                                    <div className="p-3 border-t border-slate-100 bg-slate-50">
+                                        {manualSelection.length > 0 ? (
+                                            <button onClick={confirmManualSelection} className="w-full bg-indigo-600 text-white py-2 rounded-lg font-bold text-xs hover:bg-indigo-700 transition-colors uppercase">
+                                                Confirmar Selección
+                                            </button>
+                                        ) : (
+                                            scannedCount < totalItems ? (
+                                                <button onClick={handleMarkMissing} className="w-full bg-white border border-red-200 text-red-500 py-2 rounded-lg font-bold text-xs hover:bg-red-50 transition-colors uppercase">
+                                                    Cerrar con Faltantes
+                                                </button>
+                                            ) : (
+                                                <div className="text-center text-emerald-600 font-bold text-xs"><i className="fa-solid fa-check-circle mr-1"></i> Completo</div>
+                                            )
+                                        )}
+                                    </div>
+                                </div>
+                            </div>
                         </div>
                     </div>
                 ) : (
-                    <>
-                        <div className="flex items-center space-x-4">
-                            <div className="p-3 bg-indigo-100 rounded-lg text-indigo-600">
-                                <i className="fa-solid fa-truck-ramp-box text-2xl"></i>
-                            </div>
-                            <div>
-                                <div className="text-xs font-bold text-gray-400 uppercase tracking-widest">Remito en Proceso</div>
-                                <h2 className="text-2xl font-bold text-gray-800 font-mono">{remitoCode}</h2>
-                                <div className="text-xs text-gray-500">Origen: <span className="font-semibold">{loadedRemito?.AreaOrigenID}</span></div>
-                            </div>
+                    <div className="flex flex-col items-center justify-center h-full text-slate-400 p-8">
+                        <div className="w-24 h-24 bg-slate-200 rounded-full flex items-center justify-center mb-6">
+                            <i className="fa-solid fa-truck-ramp-box text-4xl text-slate-300"></i>
                         </div>
-
-                        {/* MINI SCANNER FOR ITEMS */}
-                        <div className="flex-1 max-w-lg mx-6 relative">
-                            <input
-                                ref={inputRef}
-                                type="text"
-                                className="w-full pl-10 pr-4 py-3 rounded-lg border-2 border-indigo-100 bg-indigo-50/50 focus:bg-white focus:border-indigo-500 focus:ring-4 focus:ring-indigo-100 transition-all font-mono font-bold text-gray-700 uppercase"
-                                placeholder="Escanear Bulto..."
-                                value={scanInput}
-                                onChange={e => setScanInput(e.target.value)}
-                                onKeyDown={handleScan}
-                            />
-                            <div className="absolute right-3 top-3 text-xs font-bold text-gray-400 uppercase pointer-events-none">
-                                {receiveItemMutation.isLoading ? <i className="fa-solid fa-spinner fa-spin text-indigo-500"></i> : 'LISTO'}
-                            </div>
-                            <i className="fa-solid fa-barcode absolute left-4 top-1/2 transform -translate-y-1/2 text-gray-400"></i>
-                        </div>
-
-                        <button onClick={handleReset} className="text-gray-400 hover:text-red-500 hover:bg-red-50 p-2 rounded transition-colors text-sm font-semibold">
-                            <i className="fa-solid fa-times mr-1"></i> Cerrar
-                        </button>
-                    </>
+                        <h2 className="text-xl font-bold text-slate-600 mb-2">Centro de Recepción</h2>
+                        <p className="max-w-md text-center text-sm mb-8">
+                            Seleccione un remito entrante del menú izquierdo para validar su ingreso al stock, o escanee un código manualmente.
+                        </p>
+                    </div>
                 )}
             </div>
-
-            {/* CHECKING LIST GRID */}
-            {mode === 'CHECKING' && (
-                <div className="flex-1 flex flex-col space-y-4">
-
-                    {/* ACTIONS BAR */}
-                    <div className="flex justify-between items-center bg-white p-3 rounded-xl border border-gray-200">
-                        <div className="flex items-center space-x-4">
-                            <div className="flex flex-col">
-                                <span className="font-bold text-gray-700 text-sm">Progreso</span>
-                                <span className="text-xl font-bold text-indigo-600">{getProgress()}%</span>
-                            </div>
-                            <div className="w-32 bg-gray-100 rounded-full h-2 overflow-hidden">
-                                <div className="bg-indigo-500 h-2 rounded-full transition-all" style={{ width: `${getProgress()}%` }}></div>
-                            </div>
-                        </div>
-
-                        <div className="flex space-x-2">
-                            <button onClick={handleSelectAll} className="px-3 py-1.5 text-sm font-semibold text-gray-600 hover:bg-gray-100 rounded-lg">
-                                <i className="fa-solid fa-check-double mr-1"></i> Todos
-                            </button>
-                            {manualSelection.length > 0 && (
-                                <button
-                                    onClick={confirmManualSelection}
-                                    className="px-4 py-1.5 text-sm font-bold text-white bg-indigo-600 hover:bg-indigo-700 rounded-lg shadow-sm"
-                                >
-                                    Confirmar ({manualSelection.length})
-                                </button>
-                            )}
-                            {/* Boton Faltantes */}
-                            {manualSelection.length === 0 && getProgress() < 100 && (
-                                <button
-                                    onClick={handleMarkMissing}
-                                    className="px-3 py-1.5 text-sm font-bold text-red-600 hover:bg-red-50 border border-red-200 rounded-lg"
-                                >
-                                    <i className="fa-solid fa-triangle-exclamation mr-1"></i> Finalizar con Faltantes
-                                </button>
-                            )}
-                        </div>
-                    </div>
-
-                    {/* ITEMS GRID */}
-                    <div className="flex-1 bg-white rounded-xl border border-gray-200 shadow-sm p-4 overflow-y-auto">
-                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-                            {Object.values(itemMap).map((item) => {
-                                const isSelected = manualSelection.includes(item.BultoID);
-                                return (
-                                    <div
-                                        key={item.CodigoEtiqueta}
-                                        onClick={() => !item.scanned && handleManualToggle(item.BultoID)}
-                                        className={`relative p-4 rounded-lg border-2 transition-all duration-300 cursor-pointer 
-                                        ${item.scanned
-                                                ? 'border-green-500 bg-green-50 cursor-default'
-                                                : isSelected
-                                                    ? 'border-indigo-500 bg-indigo-50 ring-2 ring-indigo-200'
-                                                    : 'border-gray-100 bg-gray-50 hover:bg-gray-100'}`}
-                                    >
-                                        {item.scanned && (
-                                            <div className="absolute -top-3 -right-3 bg-green-500 text-white w-8 h-8 rounded-full flex items-center justify-center shadow-md animate-bounce">
-                                                <i className="fa-solid fa-check"></i>
-                                            </div>
-                                        )}
-                                        {!item.scanned && isSelected && (
-                                            <div className="absolute -top-2 -right-2 bg-indigo-500 text-white w-6 h-6 rounded-full flex items-center justify-center shadow-sm">
-                                                <i className="fa-solid fa-check text-xs"></i>
-                                            </div>
-                                        )}
-
-                                        <div className="flex items-center mb-2">
-                                            <i className={`fa-solid ${item.Tipocontenido === 'PROD_TERMINADO' ? 'fa-shirt' : 'fa-box'} mr-2 ${item.scanned ? 'text-green-600' : 'text-gray-400'}`}></i>
-                                            <span className={`font-mono font-bold text-sm ${item.scanned ? 'text-green-800' : 'text-gray-500'}`}>{item.CodigoEtiqueta}</span>
-                                        </div>
-                                        <p className="text-xs text-gray-500 line-clamp-2">{item.Descripcion}</p>
-                                    </div>
-                                )
-                            })}
-                        </div>
-                    </div>
-
-                    {getProgress() === 100 && (
-                        <div className="bg-green-100 border border-green-200 text-green-800 p-4 rounded-lg text-center animate-pulse">
-                            <i className="fa-solid fa-check-double text-2xl mb-2 block"></i>
-                            <span className="font-bold text-lg">Recepción Completa</span>
-                            <p className="text-sm">Todo el contenido del remito ha sido verificado.</p>
-                        </div>
-                    )}
-                </div>
-            )}
         </div>
     );
 };

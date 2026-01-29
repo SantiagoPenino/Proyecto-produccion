@@ -2,51 +2,82 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { logisticsService } from '../../services/api';
 import { useAuth } from '../../context/AuthContext';
 import { printLabels as printLabelsUtil } from '../../utils/labelPrinter';
-import CreateDispatchModal from '../modals/CreateDispatchModal';
-import ReceiveDispatchModal from '../modals/ReceiveDispatchModal';
 import DispatchHistoryModal from '../modals/DispatchHistoryModal';
+import ReceptionView from '../logistics/ReceptionView';
+import DispatchView from '../logistics/DispatchView';
 
 const LogisticsView = ({ areaCode }) => {
     const { user } = useAuth();
+
+    // AREAS LIST
+    const AREAS = ['TODOS', 'CORTE', 'IMPRESION', 'CALANDRA', 'CONFECCION', 'TERMINACION', 'LOGISTICA', 'DEPOSITO'];
+    const [globalArea, setGlobalArea] = useState('TODOS');
+
     const [baskets, setBaskets] = useState([]);
     const [selectedBasketId, setSelectedBasketId] = useState(null);
-    const [selectedOrders, setSelectedOrders] = useState([]); // Array of IDs
+    const [selectedOrders, setSelectedOrders] = useState([]);
     const [searchTerm, setSearchTerm] = useState('');
 
-    // Modals & Loading
-    const [isDispatchOpen, setIsDispatchOpen] = useState(false);
-    const [isReceiveOpen, setIsReceiveOpen] = useState(false);
+    // View Mode
+    const [viewMode, setViewMode] = useState('DASHBOARD');
     const [isHistoryOpen, setIsHistoryOpen] = useState(false);
     const [loading, setLoading] = useState(true);
+
+    // Initialize Global Area on Mount
+    useEffect(() => {
+        if (user) {
+            const userArea = areaCode || user.areaKey || user.areaId;
+            if (userArea && AREAS.includes(userArea)) {
+                setGlobalArea(userArea);
+            } else if (userArea) {
+                // If user area not in list but exists, add it or strict filter? 
+                // Let's rely on 'TODOS' for Admins or unknown areas, but try to set it.
+                // If we want to force user to see only their area, we might disable the filter.
+                // Assuming Admin/Supervisor usage for now based on request.
+                // If user is basic user, they might not see the dropdown or it's locked.
+                if (user.rol === 'ADMIN' || user.rol === 'SUPERVISOR') {
+                    // Keep TODOS default or set specific?
+                } else {
+                    setGlobalArea(userArea);
+                }
+            }
+        }
+    }, [user, areaCode]);
 
     useEffect(() => {
         if (user) {
             loadDashboard();
-            const interval = setInterval(loadDashboard, 30000); // Live refresh
+            const interval = setInterval(loadDashboard, 30000);
             return () => clearInterval(interval);
         }
-    }, [user, areaCode]);
+    }, [user, globalArea]); // Reload when Area changes
 
-    // Clear orders when basket selection changes explicitly
+    // Clear orders when basket changes
     useEffect(() => {
         setSelectedOrders([]);
     }, [selectedBasketId]);
 
     const loadDashboard = async () => {
         try {
-            // Data Structure: { fallas: [], incompletos: [], completos: { 'AREA': [] } }
-            const targetArea = areaCode || user?.areaId;
+            // Use Global Filter if not TODOS, else use context or fetch all
+            const targetArea = globalArea === 'TODOS' ? null : globalArea;
+
+            // If targetArea is null, backend presumably returns ALL or we need to handle it.
+            // LogisticsService.getDashboard usually takes an Area param. 
+            // If 'TODOS', we might send 'GENERAL' or undefined. Let's send undefined/null.
             const data = await logisticsService.getDashboard(targetArea);
 
             const newBaskets = [];
 
+            // ... (rest of logic) ...
             // 1. Fallas
             if (data.fallas?.length) {
                 newBaskets.push({
                     id: 'basket_fallas',
                     nombre: 'Fallas / Reposición',
                     tipo: 'falla',
-                    ordenes: data.fallas
+                    ordenes: data.fallas,
+                    areaOrigin: targetArea || 'VARIOUS'
                 });
             }
 
@@ -56,21 +87,23 @@ const LogisticsView = ({ areaCode }) => {
                     id: 'basket_incomplete',
                     nombre: 'Producción Incompleta',
                     tipo: 'incompleto',
-                    ordenes: data.incompletos
+                    ordenes: data.incompletos,
+                    areaOrigin: targetArea || 'VARIOUS'
                 });
             }
 
-            // 3. Completos (Generar canasto por Área)
-            const areas = Object.keys(data.completos || {});
-            areas.forEach(area => {
-                const ords = data.completos[area];
+            // 3. Completos
+            const basketKeys = Object.keys(data.completos || {});
+            basketKeys.forEach(key => {
+                const ords = data.completos[key];
                 if (ords && ords.length > 0) {
+                    const isProcessing = key.includes('En Proceso');
                     newBaskets.push({
-                        id: `basket_complete_${area}`,
-                        nombre: `Listo en ${area}`,
-                        tipo: 'logistica',
+                        id: `basket_${key.replace(/\s+/g, '_').toLowerCase()}`,
+                        nombre: key,
+                        tipo: isProcessing ? 'proceso' : 'logistica',
                         ordenes: ords,
-                        areaOrigin: area
+                        areaOrigin: targetArea || ords[0].area // Use area from data if 'TODOS'
                     });
                 }
             });
@@ -207,19 +240,28 @@ const LogisticsView = ({ areaCode }) => {
 
         // VALIDACIÓN SERVER-SIDE (Integridad Global)
         try {
-            const allBultosIds = selectedObjects.flatMap(o => (o.bultos || []).map(b => b.id));
-            const validation = await logisticsService.validateDispatch(allBultosIds);
+            // Filtrar solo bultos físicos reales para validar
+            // Los virtuales (nuevos) no se validan porque se crearán completos en este acto
+            const physicalBultosIds = selectedObjects
+                .flatMap(o => (o.bultos || []).map(b => b.id))
+                .filter(id => id); // Remove nulls/undefined
 
-            if (!validation.valid) {
-                const list = validation.errors.slice(0, 10).join('\n');
-                alert(`⛔ INTEGRIDAD GLOBAL DE PEDIDO.\n\nAunque las órdenes seleccionadas están listas, existen OTRAS órdenes del mismo pedido en esta área que NO están terminadas:\n\n${list}\n\nDebe completar TODO el pedido antes de generar el remito.`);
-                return;
+            if (physicalBultosIds.length > 0) {
+                const validation = await logisticsService.validateDispatch(physicalBultosIds);
+
+                if (!validation.valid) {
+                    const list = validation.errors.slice(0, 10).join('\n');
+                    alert(`⛔ INTEGRIDAD GLOBAL DE PEDIDO.\n\nAunque las órdenes seleccionadas están listas, existen OTRAS órdenes del mismo pedido en esta área que NO están terminadas:\n\n${list}\n\nDebe completar TODO el pedido antes de generar el remito.`);
+                    return;
+                }
             }
 
-            setIsDispatchOpen(true);
+            setViewMode('DISPATCH');
+
         } catch (error) {
             console.error("Validation error:", error);
-            alert("Error validando requisitos en servidor: " + error.message);
+            // Fallback user friendly
+            alert("Error validando requisitos en servidor: " + (error.response?.data?.error || error.message));
         }
     };
 
@@ -249,6 +291,7 @@ const LogisticsView = ({ areaCode }) => {
     const getBasketIcon = (tipo) => {
         if (tipo === 'falla') return 'fa-triangle-exclamation text-red-500';
         if (tipo === 'incompleto') return 'fa-clock text-amber-500';
+        if (tipo === 'proceso') return 'fa-spinner fa-spin-pulse text-blue-500';
         return 'fa-check-circle text-emerald-500';
     };
 
@@ -279,6 +322,22 @@ const LogisticsView = ({ areaCode }) => {
                     <p className="text-slate-400 text-xs font-medium">Gestión de Canastos y Despachos</p>
                 </div>
                 <div className="flex items-center gap-3">
+                    {/* GLOBAL AREA SELECTOR */}
+                    <div className="relative">
+                        <select
+                            value={globalArea}
+                            onChange={(e) => setGlobalArea(e.target.value)}
+                            className="appearance-none pl-3 pr-8 py-2 bg-white border border-slate-200 rounded-xl text-sm font-bold text-slate-700 focus:outline-none focus:border-indigo-500 shadow-sm cursor-pointer hover:border-slate-300 transition-colors uppercase"
+                        >
+                            {AREAS.map(area => (
+                                <option key={area} value={area}>{area}</option>
+                            ))}
+                        </select>
+                        <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2 text-slate-400">
+                            <i className="fa-solid fa-chevron-down text-[10px]"></i>
+                        </div>
+                    </div>
+
                     <div className="relative">
                         <i className="fa-solid fa-search absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-xs"></i>
                         <input
@@ -296,7 +355,7 @@ const LogisticsView = ({ areaCode }) => {
                         <i className="fa-solid fa-clock-rotate-left mr-2"></i> Historial
                     </button>
                     <button
-                        onClick={() => setIsReceiveOpen(true)}
+                        onClick={() => setViewMode('RECEPTION')}
                         className="px-4 py-2 bg-slate-800 text-white rounded-xl text-xs font-bold uppercase tracking-wide hover:bg-slate-900 transition-colors shadow-lg shadow-slate-200"
                     >
                         <i className="fa-solid fa-barcode mr-2"></i> Recepción WMS
@@ -446,43 +505,30 @@ const LogisticsView = ({ areaCode }) => {
                 <div className="text-[10px] font-bold text-slate-300">LOGISTICS MODULE V3.0</div>
             </footer>
 
-            {/* Modals */}
-            <CreateDispatchModal
-                isOpen={isDispatchOpen}
-                onClose={() => setIsDispatchOpen(false)}
-                selectedOrders={selectedBasket?.ordenes.filter(o => selectedOrders.includes(o.id)) || []}
-                originArea={selectedBasket?.areaOrigin || (selectedBasket?.ordenes?.length > 0 ? selectedBasket.ordenes[0].area : null) || user?.areaId || 'GEN'}
-                // Pass next services found in selected orders
-                nextServices={
-                    [...new Set(
-                        (selectedBasket?.ordenes || [])
-                            .filter(o => selectedOrders.includes(o.id))
-                            .flatMap(o => {
-                                if (o.nextService) return o.nextService.split(',').map(s => s.trim());
-                                if (o.route) {
-                                    // Logic to find next step in route could go here, for now just pass route if simple
-                                    // or maybe user just wants the RAW text.
-                                    // Let's assume nextService is already populated correctly by partial logic or we use route.
-                                    return o.route.split(',').map(s => s.trim());
-                                }
-                                return [];
-                            })
-                            .filter(Boolean)
-                    )]
-                }
-                onSuccess={() => {
-                    loadDashboard();
-                    setSelectedOrders([]);
-                }}
-            />
+            {viewMode === 'RECEPTION' && (
+                <div className="fixed inset-0 z-50 bg-white overflow-auto">
+                    <ReceptionView
+                        onClose={() => setViewMode('DASHBOARD')}
+                        areaContext={areaCode || user?.areaId}
+                    />
+                </div>
+            )}
 
-            <ReceiveDispatchModal
-                isOpen={isReceiveOpen}
-                onClose={() => setIsReceiveOpen(false)}
-                onSuccess={() => {
-                    loadDashboard();
-                }}
-            />
+            {viewMode === 'DISPATCH' && (
+                <div className="fixed inset-0 z-50 bg-white overflow-auto">
+                    <DispatchView
+                        selectedOrders={selectedBasket?.ordenes.filter(o => selectedOrders.includes(o.id)) || []}
+                        originArea={selectedBasket?.areaOrigin || (selectedBasket?.ordenes?.length > 0 ? selectedBasket.ordenes[0].area : null) || user?.areaId || 'GEN'}
+                        onClose={() => setViewMode('DASHBOARD')}
+                        onSuccess={() => {
+                            loadDashboard();
+                            setSelectedOrders([]);
+                            // Optionally stay in success step, but DispatchView handles its own view. 
+                            // Only close if user clicks close inside DispatchView
+                        }}
+                    />
+                </div>
+            )}
 
             <DispatchHistoryModal
                 isOpen={isHistoryOpen}

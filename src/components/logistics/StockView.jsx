@@ -3,23 +3,29 @@ import { logisticsService } from '../../services/modules/logisticsService';
 import { toast } from 'sonner';
 import OrderRequirementsList from './OrderRequirementsList';
 
-const StockView = () => {
+const StockView = ({ areaFilter }) => {
     const [stock, setStock] = useState([]);
     const [loading, setLoading] = useState(false);
-    const [selectedArea, setSelectedArea] = useState('TODOS');
+
+    // If Global Filter exists, use it. Otherwise default to TODOS.
+    const [localArea, setLocalArea] = useState('TODOS');
+
+    // Effective Area: Global takes precedence over Local
+    const effectiveArea = (areaFilter && areaFilter !== 'TODOS') ? areaFilter : localArea;
+
     const [expandedBultoId, setExpandedBultoId] = useState(null);
 
     // Mapped Areas (Ideally fetched from backend, but hardcoded for now or use areasService)
-    const areas = ['TODOS', 'RECEPCION', 'COSTURA', 'CORTE', 'BORDADO', 'ESTAMPADO', 'TERMINCION', 'DEPOSITO'];
+    const areas = ['TODOS', 'RECEPCION', 'COSTURA', 'CORTE', 'BORDADO', 'ESTAMPADO', 'TERMINACION', 'DEPOSITO'];
 
     useEffect(() => {
         loadStock();
-    }, [selectedArea]);
+    }, [effectiveArea]); // Listen to effectiveArea changes
 
     const loadStock = async () => {
         setLoading(true);
         try {
-            const data = await logisticsService.getAreaStock(selectedArea);
+            const data = await logisticsService.getAreaStock(effectiveArea);
             setStock(data);
         } catch (error) {
             console.error(error);
@@ -38,18 +44,27 @@ const StockView = () => {
                         <i className="fa-solid fa-boxes-stacked text-indigo-600"></i>
                         Inventario de Bultos
                     </h2>
-                    <p className="text-xs text-gray-500">Stock actual por Ubicación</p>
+                    <p className="text-xs text-gray-500">
+                        {effectiveArea !== 'TODOS' ? `Stock en ${effectiveArea}` : 'Stock Global'}
+                    </p>
                 </div>
 
                 <div className="flex items-center gap-2">
-                    <span className="text-sm font-bold text-gray-400 uppercase">Filtrar:</span>
-                    <select
-                        className="p-2 border rounded-lg font-bold text-gray-700 focus:ring-2 focus:ring-indigo-100 outline-none"
-                        value={selectedArea}
-                        onChange={e => setSelectedArea(e.target.value)}
-                    >
-                        {areas.map(a => <option key={a} value={a}>{a}</option>)}
-                    </select>
+                    {/* Only show local filter if NO Global Filter is active */}
+                    {(!areaFilter || areaFilter === 'TODOS') && (
+                        <>
+                            <span className="text-sm font-bold text-gray-400 uppercase">Filtrar:</span>
+                            <select
+                                className="p-2 border rounded-lg font-bold text-gray-700 focus:ring-2 focus:ring-indigo-100 outline-none"
+                                value={localArea}
+                                onChange={e => setLocalArea(e.target.value)}
+                            >
+                                {areas.map(a => <option key={a} value={a}>{a}</option>)}
+                            </select>
+                        </>
+                    )}
+
+                    {/* Refresh Button always visible */}
                     <button
                         onClick={loadStock}
                         className="p-2 ml-2 bg-gray-100 hover:bg-gray-200 rounded-lg text-gray-600 transition-colors"

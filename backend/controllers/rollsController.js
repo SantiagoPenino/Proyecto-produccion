@@ -7,10 +7,14 @@ const { getPool, sql } = require('../config/db');
 exports.getBoardData = async (req, res) => {
     let { area } = req.query;
     try {
-        if (area && area.toLowerCase().startsWith('planilla-')) {
+        if (!area) return res.status(400).json({ error: "Area requerida" });
+        if (area.toLowerCase().startsWith('planilla-')) {
             area = area.replace('planilla-', '').toUpperCase();
         }
-        console.log(`[getBoardData] Buscando rollos para Area: '${area}' sin conversión hardcodeada de 'SUB'/'BORD'`);
+        // if (area === 'DF') area = 'DTF'; // DISABLED: User requested no forced conversion
+
+        console.log(`[getBoardData] Buscando rollos para Area: '${area}'`);
+        console.log("[getBoardData] 🔴 EJECUTANDO SQL CON @AreaID =", area);
         // Se asume que area viene limpia (AreaKey) desde el frontend
 
         const pool = await getPool();
@@ -43,9 +47,8 @@ exports.getBoardData = async (req, res) => {
                     (SELECT COUNT(*) FROM dbo.ArchivosOrden WHERE OrdenID = o.OrdenID) AS CantidadArchivos
 
                 FROM dbo.Ordenes o 
-                WHERE o.AreaID = @AreaID 
-                AND (o.RolloID IS NOT NULL OR o.Estado IN ('Pendiente', 'Produccion'))
-                AND o.Estado NOT IN ('Entregado', 'Finalizado', 'Cancelado')
+                WHERE o.AreaID = @AreaID
+                AND o.Estado NOT IN ('Entregado', 'Finalizado', 'Cancelado', 'Pronto')
                 
                 -- Ordenamos por Secuencia para mantener el orden del Drag & Drop
                 ORDER BY ISNULL(o.Secuencia, 999999), o.OrdenID ASC
@@ -189,12 +192,6 @@ exports.moveOrder = async (req, res) => {
                                 ELSE (SELECT MaquinaID FROM dbo.Rollos WHERE RolloID = @RolloID) 
                             END,
 
-                            -- ✅ Heredar BobinaID del nuevo rollo (Sincronización Inventario)
-                            BobinaID = CASE 
-                                WHEN @RolloID IS NULL THEN NULL 
-                                ELSE (SELECT BobinaID FROM dbo.Rollos WHERE RolloID = @RolloID) 
-                            END,
-
                             -- Actualizar estado según el estado del rollo destino
                             Estado = CASE 
                                 WHEN @RolloID IS NULL THEN 'Pendiente'
@@ -243,7 +240,7 @@ exports.moveOrder = async (req, res) => {
 // ==========================================
 exports.createRoll = async (req, res) => {
     let { areaId, name, capacity, color, bobinaId } = req.body;
-    if (areaId === 'DF') areaId = 'DTF';
+    // if (areaId === 'DF') areaId = 'DTF'; // DISABLED: User requested to keep DF
 
     try {
         const pool = await getPool();
@@ -285,8 +282,10 @@ exports.createRoll = async (req, res) => {
                 .input('Color', sql.VarChar(10), color || '#3b82f6')
                 .input('BobinaID', sql.Int, bobinaId || null)
                 .query(`
+                    SET IDENTITY_INSERT dbo.Rollos ON;
                     INSERT INTO dbo.Rollos (RolloID, Nombre, AreaID, CapacidadMaxima, ColorHex, Estado, MaquinaID, FechaCreacion, BobinaID)
-                    VALUES (@RolloID, @Nombre, @AreaID, @Capacidad, @Color, 'Abierto', NULL, GETDATE(), @BobinaID)
+                    VALUES (@RolloID, @Nombre, @AreaID, @Capacidad, @Color, 'Abierto', NULL, GETDATE(), @BobinaID);
+                    SET IDENTITY_INSERT dbo.Rollos OFF;
                 `);
 
             await transaction.commit();
@@ -678,7 +677,6 @@ exports.splitRoll = async (req, res) => {
                 .query(`
                     UPDATE Ordenes 
                     SET RolloID = @NewID,
-                        BobinaID = @NewBob,
                         Estado = 'Pendiente', -- Vuelven a estado inicial del lote nuevo
                         EstadoenArea = 'En Lote',
                         MaquinaID = NULL -- Se desasignan de la máquina actual

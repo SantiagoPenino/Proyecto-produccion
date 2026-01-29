@@ -14,6 +14,10 @@ export const productionService = {
         const response = await api.post('/production-kanban/assign', { rollId, machineId });
         return response.data;
     },
+    assignRolls: async (rollIds, machineId) => {
+        const response = await api.post('/production-kanban/assign', { rollIds, machineId });
+        return response.data;
+    },
     toggleStatus: async (rollId, action, destination) => {
         const response = await api.post('/production/toggle-status', { rollId, action, destination });
         return response.data;

@@ -4,7 +4,7 @@ import { logisticsService } from '../../services/modules/logisticsService';
 import { ordersService } from '../../services/modules/ordersService'; // Reusing for search
 import QRCode from 'react-qr-code';
 
-const PackingView = () => {
+const PackingView = ({ areaFilter }) => {
     const [searchQuery, setSearchQuery] = useState('');
     const [selectedOrder, setSelectedOrder] = useState(null);
     const [parcelDescription, setParcelDescription] = useState('');
@@ -13,9 +13,10 @@ const PackingView = () => {
 
     // 1. Search Active Orders
     const { data: searchResults, isLoading: isSearching } = useQuery({
-        queryKey: ['orders', 'search', searchQuery],
-        queryFn: () => ordersService.getOrdersByArea('admin', { q: searchQuery }), // Reusing admin search
-        enabled: searchQuery.length > 2,
+        queryKey: ['orders', 'search', searchQuery, areaFilter],
+        queryFn: () => ordersService.getOrdersByArea(areaFilter || 'admin', { q: searchQuery }),
+        enabled: !!areaFilter || searchQuery.length > 2,
+        keepPreviousData: true,
         staleTime: 1000 * 60
     });
 
@@ -67,9 +68,11 @@ const PackingView = () => {
             {/* LEFT PANEL: BUSCADOR */}
             <div className="w-1/3 bg-white border-r border-gray-200 flex flex-col">
                 <div className="p-4 border-b border-gray-100 bg-gray-50">
-                    <label className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-1 block">Buscar Orden a Empaquetar</label>
+                    <label className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-1 block">
+                        {areaFilter && areaFilter !== 'TODOS' ? `Pendientes en ${areaFilter}` : 'Buscar Orden'}
+                    </label>
                     <div className="relative">
-                        <i className="fa-solid fa-search absolute left-3 top-3 text-gray-400"></i>
+                        <i className={`fa-solid ${areaFilter ? 'fa-filter' : 'fa-search'} absolute left-3 top-3 text-gray-400`}></i>
                         <input
                             type="text"
                             className="w-full pl-10 pr-4 py-2 rounded-lg border border-gray-300 focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none transition-all"
@@ -100,8 +103,14 @@ const PackingView = () => {
                         </div>
                     ))}
 
-                    {!isSearching && searchResults?.length === 0 && searchQuery.length > 2 && (
-                        <div className="text-center p-8 text-gray-400 text-sm">No se encontraron órdenes active.</div>
+                    {!isSearching && searchResults?.length === 0 && (
+                        <div className="text-center p-8 text-gray-400 text-sm">
+                            {areaFilter ?
+                                (searchQuery ? "No se encontraron resultados." : "👍 Al día! No hay órdenes pendientes.")
+                                :
+                                (searchQuery.length > 2 ? "No se encontraron órdenes." : "Use el buscador para comenzar.")
+                            }
+                        </div>
                     )}
                 </div>
             </div>

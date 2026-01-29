@@ -30,6 +30,16 @@ const logisticsService = {
         return response.data;
     },
 
+    getIncomingRemitos: async (areaId) => {
+        const response = await api.get('/logistics/remitos/incoming', { params: { areaId } });
+        return response.data;
+    },
+
+    getOutgoingRemitos: async (areaId) => {
+        const response = await api.get('/logistics/remitos/outgoing', { params: { areaId } });
+        return response.data;
+    },
+
     // --- RECEPCIÓN ---
     receiveBulto: async (data) => {
         // data: { envioId, codigoEtiqueta, usuarioId }

@@ -1,4 +1,5 @@
 const express = require('express');
+console.log('--- SERVER RESTARTED V32 (NAMING: ARCHIVO X DE Y) AT ' + new Date().toISOString() + ' ---');
 const cors = require('cors');
 const path = require('path');
 require('dotenv').config({ path: path.resolve(__dirname, '.env') });
@@ -57,6 +58,7 @@ app.use('/api/audit', require('./routes/auditRoutes'));
 app.use('/api/auth', require('./routes/authRoutes'));
 app.use('/api/routes-config', require('./routes/routesConfigRoutes'));
 app.use('/api/delivery-times', require('./routes/deliveryTimesRoutes'));
+app.get('/api/debug/reprocess/:id', require('./controllers/debugController').reprocessOrder);
 app.use('/api/insumos', require('./routes/insumosRoutes'));
 app.use('/api/reception', require('./routes/receptionRoutes'));
 app.use('/api/logistics', require('./routes/logisticsRoutes'));
@@ -98,7 +100,7 @@ server.listen(PORT, async () => {
 
     // Iniciamos la sincronización automática después de que el servidor suba
     try {
-        await startAutoSync(io);
+        startAutoSync(io).catch(err => console.error("❌ Scheduler Start Error:", err));
         console.log(`⏱️ Sistema de sincronización automática activado.`);
     } catch (error) {
         console.error("❌ Error al iniciar el Scheduler:", error.message);

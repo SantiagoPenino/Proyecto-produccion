@@ -190,12 +190,10 @@ const PlaneacionTrabajo = ({ AreaID }) => {
     const handleAssignRollsToMachine = async (machineId) => {
         if (!machineId) return;
         try {
-            const promises = selectedRollIds.map(rollId =>
-                productionService.assignRoll(rollId, machineId)
-            );
-            await Promise.all(promises);
+            await productionService.assignRolls(selectedRollIds, machineId);
             setIsMachineModal(false);
             refreshBoard();
+            setSelectedRollIds([]); // Clear selection after assignment
             toast.success("Rollos asignados correctamente");
         } catch (error) {
             console.error("Error asignando rollos:", error);

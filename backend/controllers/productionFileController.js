@@ -478,6 +478,7 @@ const postControlArchivo = async (req, res) => {
                         .input('QR', sql.NVarChar(sql.MAX), qrString)
                         .input('User', sql.VarChar(100), safeUser)
                         .input('Area', sql.VarChar(20), req.body.areaId || req.body.areaCode || 'GEN')
+                        .input('Job', sql.NVarChar(255), safeDesc)
                         .query(`
                         INSERT INTO Etiquetas(OrdenID, NumeroBulto, TotalBultos, CodigoQR, FechaGeneracion, Usuario)
                         VALUES(@OID, @Num, @Tot, @QR, GETDATE(), @User);
@@ -487,6 +488,13 @@ const postControlArchivo = async (req, res) => {
                         -- Append Code to QR
                         DECLARE @FinalQR NVARCHAR(MAX) = @QR + ' $ * ' + @Code;
                         UPDATE Etiquetas SET CodigoEtiqueta = @Code, CodigoQR = @FinalQR WHERE EtiquetaID = @NewID;
+
+                        -- FUSION LOGISTICA: Insertar en Logistica_Bultos
+                        IF NOT EXISTS (SELECT 1 FROM Logistica_Bultos WHERE CodigoEtiqueta = @Code)
+                        BEGIN
+                             INSERT INTO Logistica_Bultos (CodigoEtiqueta, Tipocontenido, OrdenID, Descripcion, UbicacionActual, Estado, UsuarioCreador)
+                             VALUES (@Code, 'PROD_TERMINADO', @OID, @Job, @Area, 'EN_STOCK', 1);
+                        END
                         `);
                 }
             }
@@ -593,6 +601,7 @@ const regenerateEtiquetas = async (req, res) => {
                 .input('QR', sql.NVarChar(sql.MAX), qrString)
                 .input('User', sql.VarChar(100), safeUser)
                 .input('Area', sql.VarChar(20), orderHead.AreaID || 'GEN')
+                .input('UID', sql.Int, req.user?.id || 1) // User ID for Logistics
                 .query(`
                         INSERT INTO Etiquetas(OrdenID, NumeroBulto, TotalBultos, CodigoQR, FechaGeneracion, Usuario)
                         VALUES(@OID, @Num, @Tot, @QR, GETDATE(), @User);
@@ -602,6 +611,14 @@ const regenerateEtiquetas = async (req, res) => {
                         -- Append Code to QR
                         DECLARE @FinalQR NVARCHAR(MAX) = @QR + ' $ * ' + @Code;
                         UPDATE Etiquetas SET CodigoEtiqueta = @Code, CodigoQR = @FinalQR WHERE EtiquetaID = @NewID;
+
+                        -- FUSION LOGISTICA: Insertar en Logistica_Bultos
+                        -- Check if exists first to avoid dupes if re-running
+                        IF NOT EXISTS (SELECT 1 FROM Logistica_Bultos WHERE CodigoEtiqueta = @Code)
+                        BEGIN
+                            INSERT INTO Logistica_Bultos (CodigoEtiqueta, Tipocontenido, OrdenID, Descripcion, UbicacionActual, Estado, UsuarioCreador)
+                            VALUES (@Code, 'PROD_TERMINADO', @OID, 'Generado en Produccion', @Area, 'EN_STOCK', @UID);
+                        END
                         `);
         }
 

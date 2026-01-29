@@ -69,12 +69,30 @@ const CreateDispatchModal = ({ isOpen, onClose, selectedOrders, originArea, next
 
             for (const dest of destinations) {
                 const orders = dispatchGroups[dest];
-                // Extract IDs
-                const bultosIds = orders.flatMap(o => o.bultos ? o.bultos.map(b => b.id) : []);
 
-                if (bultosIds.length === 0) continue;
+                // --- MODIFICATION: Handle Virtual Items (Auto-Create) ---
+                const bultosIds = [];
+                const newBultos = [];
 
-                setLogs(prev => [...prev, `Generando remito para ${dest}...`]);
+                orders.forEach(o => {
+                    if (o.bultos && o.bultos.length > 0) {
+                        o.bultos.forEach(b => {
+                            if (b.isVirtual || !b.id) {
+                                // Add to creation list
+                                newBultos.push({
+                                    ordenId: o.id,
+                                    descripcion: o.desc || 'Bulto generado en despacho'
+                                });
+                            } else {
+                                bultosIds.push(b.id);
+                            }
+                        });
+                    }
+                });
+
+                if (bultosIds.length === 0 && newBultos.length === 0) continue;
+
+                setLogs(prev => [...prev, `Generando remito para ${dest} (${bultosIds.length} items, ${newBultos.length} nuevos)...`]);
 
                 const payload = {
                     codigoRemito: 'AUTO',
@@ -83,6 +101,7 @@ const CreateDispatchModal = ({ isOpen, onClose, selectedOrders, originArea, next
                     usuarioId: authUser.id, // Use Authenticated User ID
                     transportista: authUser.username, // Use Username as 'Transportista' field for record
                     bultosIds: bultosIds,
+                    newBultos: newBultos, // Send new items to create
                     observations: `Remito generado por ${authUser.username} (${authUser.role || 'User'})`
                 };
 
@@ -90,7 +109,7 @@ const CreateDispatchModal = ({ isOpen, onClose, selectedOrders, originArea, next
                 createdParams.push({
                     ...res,
                     destArea: dest,
-                    itemCount: bultosIds.length
+                    itemCount: (bultosIds.length + (res.createdCount || 0))
                 });
             }
 

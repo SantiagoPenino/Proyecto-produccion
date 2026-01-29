@@ -1,0 +1,139 @@
+.clients-integration-container {
+  display: flex;
+  height: calc(100vh - 64px);
+  background: #f8f9fa;
+  font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+  overflow: hidden;
+}
+
+.ci-panel {
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  transition: all 0.3s ease;
+}
+
+.ci-panel.left, .ci-panel.right {
+  width: 25%;
+  background: #ffffff;
+  border-right: 1px solid #e0e0e0;
+  border-left: 1px solid #e0e0e0;
+  box-shadow: 0 0 20px rgba(0,0,0,0.03);
+}
+
+.ci-panel.center {
+  width: 50%;
+  background: #f0f2f5;
+  overflow-y: auto;
+}
+
+.ci-header {
+  margin-bottom: 20px;
+  padding-bottom: 10px;
+  border-bottom: 2px solid #eee;
+}
+
+.ci-header h2 {
+  font-size: 1.2rem;
+  color: #333;
+  font-weight: 600;
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.ci-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  overflow-y: auto;
+  flex: 1;
+  padding-right: 5px;
+}
+
+.ci-card {
+  background: white;
+  border-radius: 8px;
+  padding: 12px;
+  border: 1px solid #eaeaea;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  position: relative;
+}
+
+.ci-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+  border-color: #007bff;
+}
+
+.ci-card.active {
+  background: #e6f0ff;
+  border-color: #007bff;
+}
+
+.ci-card h3 {
+  margin: 0 0 5px 0;
+  font-size: 1rem;
+  color: #2c3e50;
+}
+
+.ci-card p {
+  margin: 0;
+  font-size: 0.85rem;
+  color: #7f8c8d;
+}
+
+/* Center Table Styles */
+.ci-table-wrapper {
+  background: white;
+  border-radius: 12px;
+  box-shadow: 0 4px 20px rgba(0,0,0,0.05);
+  overflow: hidden;
+}
+
+.ci-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.ci-table th {
+  background: #f8f9fa;
+  padding: 15px;
+  text-align: left;
+  font-weight: 600;
+  color: #555;
+  border-bottom: 1px solid #eee;
+}
+
+.ci-table td {
+  padding: 12px 15px;
+  border-bottom: 1px solid #f1f1f1;
+  color: #333;
+}
+
+.ci-status-badge {
+  padding: 4px 8px;
+  border-radius: 12px;
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.status-linked { background: #d4edda; color: #155724; }
+.status-pending { background: #fff3cd; color: #856404; }
+
+.ci-action-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: #007bff;
+  padding: 5px;
+  border-radius: 4px;
+}
+.ci-action-btn:hover { background: #eef2ff; }
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #ccc; border-radius: 3px; }

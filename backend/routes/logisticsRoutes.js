@@ -16,6 +16,8 @@ router.get('/bultos/:label', logisticsController.getBultoByLabel);
 // Remitos (Dispatch)
 router.post('/remitos', logisticsController.createRemito);
 router.post('/remitos/validate', logisticsController.validateDispatch);
+router.get('/remitos/incoming', logisticsController.getIncomingRemitos);
+router.get('/remitos/outgoing', logisticsController.getOutgoingRemitos);
 router.get('/remitos/:code', logisticsController.getRemitoByCode);
 
 // Recepción

@@ -15,27 +15,29 @@ async function registrarAuditoria(transactionOrPool, userId, action, details, ip
     const uid = userId ? parseInt(userId) : null;
 
     try {
+        // Comentamos el SP porque está fallando con 'UsuarioID'. Usamos INSERT directo.
+        /* 
         await request
             .input('UserID', sql.Int, uid)
             .input('Action', sql.NVarChar, action)
             .input('Details', sql.NVarChar, details)
             .input('IPAddress', sql.NVarChar, ip || '')
             .execute('sp_RegistrarAccion');
+        */
+
+        // INSERT Directo (Más seguro dado el error de columna)
+        const fallbackReq = new sql.Request(transactionOrPool);
+
+        await fallbackReq
+            .input('IdUsuario', sql.Int, uid)
+            .input('Accion', sql.NVarChar, action)
+            .input('Detalles', sql.NVarChar, details)
+            .input('DireccionIP', sql.NVarChar, ip || '')
+            .query(`INSERT INTO Auditoria (IdUsuario, Accion, Detalles, DireccionIP, FechaHora) VALUES (@IdUsuario, @Accion, @Detalles, @DireccionIP, GETDATE())`);
+
     } catch (error) {
-        // Si falla el SP, intentamos insert directo como fallback o logueamos el error
         console.error("Error al registrar auditoría:", error.message);
-        // Fallback Query (basado en la estructura proporcionada por el usuario)
-        try {
-            const fallbackReq = new sql.Request(transactionOrPool);
-            await fallbackReq
-                .input('IdUsuario', sql.Int, uid)
-                .input('Accion', sql.NVarChar, action)
-                .input('Detalles', sql.NVarChar, details)
-                .input('DireccionIP', sql.NVarChar, ip || '')
-                .query(`INSERT INTO Auditoria (IdUsuario, Accion, Detalles, DireccionIP, FechaHora) VALUES (@IdUsuario, @Accion, @Detalles, @DireccionIP, GETDATE())`);
-        } catch (e2) {
-            console.error("Fallback auditoria falló:", e2.message);
-        }
+        // No lanzamos error para no tumbar la transacción principal
     }
 }
 

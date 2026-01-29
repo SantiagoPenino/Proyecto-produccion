@@ -46,7 +46,7 @@ exports.createReception = async (req, res) => {
                 .input('Tipo', sql.VarChar(50), tipo)
                 .input('Detalle', sql.NVarChar(sql.MAX), detalle)
                 .input('Bultos', sql.Int, bultos || 1)
-                .input('Ref', sql.NVarChar(sql.MAX), (referencias || []).join(' | '))
+                .input('Ref', sql.NVarChar(sql.MAX), [...(referencias || []), metros ? `Mts:${metros}` : ''].filter(Boolean).join(' | '))
                 .input('Obs', sql.NVarChar(sql.MAX), finalObs)
                 .input('UID', sql.Int, usuario ? usuario.id : 1) // Default to 1
                 .input('Ubi', sql.VarChar(50), 'Recepcion') // Default
@@ -76,10 +76,12 @@ exports.createReception = async (req, res) => {
                 await new sql.Request(transaction)
                     .input('Cod', sql.VarChar, uniqueCode)
                     .input('Det', sql.NVarChar, detalle)
+                    .input('Tipo', sql.VarChar, tipo) // Use actual type
                     .input('UID', sql.Int, usuario ? usuario.id : 1)
+                    .input('RID', sql.Int, newId) // Link to Recepcion Table
                     .query(`
-                        INSERT INTO Logistica_Bultos (CodigoEtiqueta, Tipocontenido, OrdenID, Descripcion, UbicacionActual, Estado, UsuarioCreador)
-                        VALUES (@Cod, 'TELA_CLIENTE', NULL, @Det, 'RECEPCION', 'EN_STOCK', @UID);
+                        INSERT INTO Logistica_Bultos (CodigoEtiqueta, Tipocontenido, OrdenID, RecepcionID, Descripcion, UbicacionActual, Estado, UsuarioCreador)
+                        VALUES (@Cod, @Tipo, NULL, @RID, @Det, 'RECEPCION', 'EN_STOCK', @UID);
                     `);
 
                 // 2. Inventario (Si aplica)

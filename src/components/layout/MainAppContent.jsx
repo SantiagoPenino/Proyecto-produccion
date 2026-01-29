@@ -21,6 +21,7 @@ import ReceptionPage from '../pages/customer-service/ReceptionPage';
 import LogisticsPage from '../pages/customer-service/LogisticsPage'; // Import LogisticsPage
 import ActiveStockPage from '../pages/customer-service/ActiveStockPage';
 import TransportControlPage from '../pages/TransportControlPage';
+import ClientsIntegration from '../pages/ClientsIntegration';
 
 
 
@@ -270,6 +271,7 @@ const MainAppContent = ({ menuItems = [] }) => {
                             <Route path="/area/:areaId/*" element={<DynamicRouter menuItems={menuItems} />} />
                             <Route path="/atencion-cliente/despachos" element={<ActiveStockPage />} />
                             <Route path="/logistica/transporte" element={<TransportControlPage />} />
+                            <Route path="/admin/clientes-integration" element={<ClientsIntegration />} />
                             <Route path="/*" element={<DynamicRouter menuItems={menuItems} />} />
                         </Routes>
                     </div>
@@ -314,6 +316,7 @@ const DynamicRouter = ({ menuItems }) => {
     if (menuItem.Ruta === '/admin/roles') return <RolesPage />;
     if (menuItem.Ruta === '/admin/users') return <UsersPage />;
     if (menuItem.Ruta === '/admin/audit') return <AuditPage />;
+    if (menuItem.Ruta === '/admin/clientes-integration') return <ClientsIntegration />;
     if (menuItem.Ruta === '/logistica' || menuItem.Ruta.toLowerCase() === '/logistica/') return <LogisticsDashboard />;
     if (menuItem.Ruta === '/ops/inventory') return <LogisticsDashboard />;
     if (menuItem.Ruta === '/inventario') return <InventoryPage />;

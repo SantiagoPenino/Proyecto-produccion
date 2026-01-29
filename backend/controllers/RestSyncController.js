@@ -258,26 +258,31 @@ const syncOrdersLogic = async (io) => {
                     let nextService = 'DEPOSITO';
                     let foundDestino = false;
 
+                    // Debug Log
+                    console.log(`[SyncEnum] Ord: ${docData.nroDoc} (${i + 1}/${totalDocOrdenes}) - Area: ${areaID} - Buscando destino...`);
+
                     // Escanear hacia adelante saltando hermanos del mismo grupo productivo
                     for (let k = i + 1; k < totalDocOrdenes; k++) {
                         const nextOrd = ordenesAInsertar[k];
                         const nextVar = (nextOrd.matGroup.variante || '').toUpperCase();
-                        const nextMat = (nextOrd.matGroup.nombreMaterial || '').toUpperCase(); // Chequear nombre material también
-
-                        const isNextExtra = nextVar.includes('EXTRA') || nextVar.includes('SERVICIO') ||
-                            nextMat.includes('EXTRA') || nextMat.includes('SERVICIO') || nextMat.includes('MATERIALES');
+                        const nextMat = (nextOrd.matGroup.nombreMaterial || '').toUpperCase();
 
                         // CONDICIÓN 1: Cambio de Área REAL
                         if (nextOrd.areaID !== areaID) {
                             nextService = nextOrd.areaID;
                             foundDestino = true;
+                            // console.log(`   -> Next Found: ${nextService} (Diff Area)`);
                             break;
                         }
 
                         // CONDICIÓN 2: Mismo Área pero es EXTRA (Terminación)
+                        const isNextExtra = nextVar.includes('EXTRA') || nextVar.includes('SERVICIO') ||
+                            nextMat.includes('EXTRA') || nextMat.includes('SERVICIO') || nextMat.includes('MATERIALES');
+
                         if (isNextExtra) {
                             nextService = 'TERMINACION';
                             foundDestino = true;
+                            // console.log(`   -> Next Found: TERMINACION (Service Extra)`);
                             break;
                         }
                     }
@@ -286,7 +291,10 @@ const syncOrdersLogic = async (io) => {
                         // Instalación check
                         if (matGroup.itemsExtras.length > 0) {
                             const descExt = matGroup.itemsExtras.map(e => e.desc.toUpperCase()).join(' ');
-                            if (descExt.includes('INSTALACION') || descExt.includes('COLOCACION')) nextService = 'INSTALACION';
+                            if (descExt.includes('INSTALACION') || descExt.includes('COLOCACION')) {
+                                nextService = 'INSTALACION';
+                                // console.log(`   -> Next Found: INSTALACION (Item Extra)`);
+                            }
                         }
                     }
 
@@ -296,6 +304,12 @@ const syncOrdersLogic = async (io) => {
                     let servCops = matGroup.itemsExtras.reduce((a, b) => a + (b.cant || 0), 0);
 
                     const umReal = matGroup.unidad ? matGroup.unidad.trim() : "u";
+
+                    // DEBUG UM
+                    if (umReal === 'u' && matGroup.itemsProductivos.length > 0) {
+                        console.warn(`[SyncUM] Aviso: UM es 'u' para items productivos en Orden ${codigoOrden}. StockArt no trajo UM?`);
+                    }
+
                     let magVal = 0;
                     if (umReal.toUpperCase().startsWith('M')) magVal = prodMets;
                     else magVal = prodCops + servCops;
@@ -303,6 +317,7 @@ const syncOrdersLogic = async (io) => {
                     const magnitudStr = magVal > 0 ? magVal.toFixed(2) : "0";
 
                     // 4. INSERTAR
+                    // RESTAURADO: Fecha de entrada SOLO para áreas de impresión/producción inicial
                     const isPrinting = (areaID || "").toUpperCase().match(/IMPRESION|GIG|SUBLIMACION|SB|DF|ECO|UV/);
                     const fechaImp = isPrinting ? new Date() : null;
 
@@ -324,7 +339,7 @@ const syncOrdersLogic = async (io) => {
                         .input('Prox', sql.VarChar, nextService)
                         .input('Mag', sql.VarChar, magnitudStr)
                         .input('UM', sql.VarChar, umReal)
-                        .input('F_EntSec', sql.DateTime, fechaImp) // INPUT NUEVO
+                        .input('F_EntSec', sql.DateTime, fechaImp) // SIEMPRE FECHA ACTUAL
                         .query(`
                             INSERT INTO Ordenes (
                                 AreaID, Cliente, DescripcionTrabajo, Prioridad, Estado, EstadoenArea,
@@ -400,7 +415,10 @@ const syncOrdersLogic = async (io) => {
 
             // ASYNC
             if (createdOrderIds.length > 0) {
+                console.log(`🚀 [RestSync] Enviando ${createdOrderIds.length} órdenes al Procesador de Archivos...`);
                 fileProcessingService.processOrderList(createdOrderIds, io);
+            } else {
+                console.log(`⚠️ [RestSync] No se crearon nuevas órdenes, omitiendo procesamiento de archivos.`);
             }
 
             return { success: true, count: generatedCodes.length };
@@ -412,7 +430,8 @@ const syncOrdersLogic = async (io) => {
 
     } catch (e) {
         console.error("❌ CRITICAL SYNC ERROR:", e.message);
-        throw e;
+        // throw e; // SUPPRESSED to prevent app crash
+        return { success: false, error: e.message };
     } finally {
         isProcessing = false;
     }

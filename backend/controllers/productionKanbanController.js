@@ -1,8 +1,9 @@
 const { getPool, sql } = require('../config/db');
 
 exports.getBoard = async (req, res) => {
-    const { area } = req.query;
+    let { area } = req.query;
     console.log("--- Cargando Tablero para Área:", area);
+    // if (area === 'DF') area = 'DTF'; // DISABLED: User requested no forced conversion
 
     try {
         const POOL = await getPool();
@@ -70,14 +71,21 @@ exports.getBoard = async (req, res) => {
         orders.forEach(order => {
             const roll = allRolls.find(r => String(r.id) === String(order.rollId));
             if (roll) {
-                const mag = parseFloat(order.magnitude || 0);
+                // Mejora robusta para parseo de Magnitud (soporta "2,5 m", "2.5m", "100 u")
+                const rawMag = String(order.magnitude || '0').replace(',', '.');
+                const mag = parseFloat(rawMag.replace(/[^\d.]/g, '')) || 0;
+
                 roll.orders.push({
                     ...order,
-                    desc: order.descr,  // Alias para frontend
-                    magnitude: mag
+                    desc: order.descr,
+                    magnitude: mag // Enviamos el valor numérico limpio al front
                 });
+
                 // Sumamos al uso total del rollo
                 roll.usage += mag;
+
+                // Actualizamos el contador real de órdenes en memoria
+                roll.ordersCount = roll.orders.length;
             }
         });
 
@@ -106,7 +114,13 @@ exports.getBoard = async (req, res) => {
         });
 
         // Rollos que no tienen MaquinaID asignado
-        const pendingRolls = allRolls.filter(r => !r.machineId || r.machineId === 'NULL' || r.machineId === '');
+        // Rollos que no tienen MaquinaID asignado (Mesa de Armado)
+        const pendingRolls = allRolls.filter(r =>
+            !r.machineId ||
+            String(r.machineId).toUpperCase() === 'NULL' ||
+            String(r.machineId).trim() === '' ||
+            String(r.machineId) === '0'
+        );
 
         res.json({ machines: finalMachines, pendingRolls });
 
@@ -121,12 +135,24 @@ const { registrarAuditoria, registrarHistorialOrden } = require('../services/tra
 // ... existing getBoard ...
 
 exports.assignRoll = async (req, res) => {
-    const { rollId, machineId } = req.body;
+    const { rollId, rollIds, machineId } = req.body;
     // Attempt to get user info, fallback to 1 or null
     const userId = req.user ? req.user.id : (req.body.userId || 1);
     const ip = req.ip || req.connection.remoteAddress;
 
-    console.log(`[assignRoll-Kanban] Request received. RollID: ${rollId}, MachineID: ${machineId}`);
+    // Normalize to array
+    let targets = [];
+    if (rollIds && Array.isArray(rollIds)) {
+        targets = rollIds;
+    } else if (rollId) {
+        targets = [rollId];
+    }
+
+    if (targets.length === 0) {
+        return res.status(400).json({ error: "No se indicaron rollos para asignar." });
+    }
+
+    console.log(`[assignRoll-Kanban] Request received. Rolls: [${targets.join(', ')}], MachineID: ${machineId}`);
 
     let transaction;
     try {
@@ -135,36 +161,37 @@ exports.assignRoll = async (req, res) => {
         await transaction.begin();
 
         // 1. Obtener EstadoProceso de la Máquina (aunque por regla ponemos En cola Eq)
-        // ... (Maintain logic for validation if needed) ...
         let machineStatus = 'En cola Eq';
-
         const mid = machineId || null;
 
-        // 2. Actualizar Rollo
-        const reqRoll = new sql.Request(transaction);
-        await reqRoll.input('RID', sql.Int, rollId)
-            .input('MID', sql.Int, mid)
-            .query(`UPDATE dbo.Rollos SET MaquinaID = @MID, Estado = 'En cola' WHERE RolloID = @RID`);
+        for (const currentRollId of targets) {
+            // 2. Actualizar Rollo
+            const reqRoll = new sql.Request(transaction);
+            await reqRoll.input('RID', sql.Int, currentRollId)
+                .input('MID', sql.Int, mid)
+                .query(`UPDATE dbo.Rollos SET MaquinaID = @MID, Estado = 'En cola' WHERE RolloID = @RID`);
 
-        // 3. Obtener Ordenes afectadas para Historial
-        const reqGetOrders = new sql.Request(transaction);
-        const ordersCheck = await reqGetOrders.input('RID', sql.Int, rollId)
-            .query("SELECT OrdenID FROM dbo.Ordenes WHERE RolloID = @RID");
+            // 3. Obtener Ordenes afectadas para Historial
+            const reqGetOrders = new sql.Request(transaction);
+            const ordersCheck = await reqGetOrders.input('RID', sql.Int, currentRollId)
+                .query("SELECT OrdenID FROM dbo.Ordenes WHERE RolloID = @RID");
 
-        const affectedOrderIds = ordersCheck.recordset.map(o => o.OrdenID);
+            const affectedOrderIds = ordersCheck.recordset.map(o => o.OrdenID);
 
-        // 4. Actualizar Ordenes
-        const reqOrders = new sql.Request(transaction);
-        await reqOrders.input('MID', sql.Int, mid)
-            .input('StatusArea', sql.VarChar, machineStatus)
-            .input('RID', sql.Int, rollId)
-            .query(`UPDATE dbo.Ordenes SET MaquinaID = @MID, EstadoenArea = @StatusArea WHERE RolloID = @RID`);
+            // 4. Actualizar Ordenes
+            const reqOrders = new sql.Request(transaction);
+            await reqOrders.input('MID', sql.Int, mid)
+                .input('StatusArea', sql.VarChar, machineStatus)
+                .input('RID', sql.Int, currentRollId)
+                .query(`UPDATE dbo.Ordenes SET MaquinaID = @MID, EstadoenArea = @StatusArea WHERE RolloID = @RID`);
 
-        // 5. Registrar Historial y Auditoria
-        for (const oid of affectedOrderIds) {
-            await registrarHistorialOrden(transaction, oid, machineStatus, userId, `Asignado a Maquina #${machineId}`);
+            // 5. Registrar Historial y Auditoria
+            for (const oid of affectedOrderIds) {
+                await registrarHistorialOrden(transaction, oid, machineStatus, userId, `Asignado a Maquina #${machineId}`);
+            }
         }
-        await registrarAuditoria(transaction, userId, 'ASIGNACION_ROLLO', `Rollo ${rollId} asignado a Maquina ${machineId}`, ip);
+
+        await registrarAuditoria(transaction, userId, 'ASIGNACION_MASIVA', `${targets.length} rollos asignados a Maquina ${machineId}`, ip);
 
         await transaction.commit();
         res.json({ success: true, machineStatus });

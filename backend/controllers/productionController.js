@@ -47,153 +47,161 @@ exports.getProductionBoard = async (req, res) => {
 const { registrarAuditoria, registrarHistorialOrden } = require('../services/trackingService');
 
 exports.toggleRollStatus = async (req, res) => {
-    const { rollId, action, destination } = req.body;
-    const userId = req.user ? req.user.id : (req.body.userId || 1);
-    const ip = req.ip || req.connection.remoteAddress;
-
-    console.log(`[toggleRollStatus] RollID: ${rollId}, Action: ${action}, Dest: ${destination}`);
-
-    // Basic Validation
-    if (!rollId || !action) {
-        return res.status(400).json({ error: "Falta rollId o action en la solicitud." });
-    }
-
-    let transaction;
     try {
-        const pool = await getPool();
-        transaction = new sql.Transaction(pool);
-        await transaction.begin();
-        const request = new sql.Request(transaction);
+        const { rollId, action, destination } = req.body;
+        const userId = req.user ? req.user.id : (req.body.userId || 1);
+        const ip = req.ip || req.connection.remoteAddress;
 
-        // 1. Obtener informacin actual del Rollo y su Maquina
-        // Use logic to handle potential string/int IDs based on usage (Schema usually VarChar or Int, sticking to DB.js usage)
-        // Adjust query to handle flexible ID types.
-        const rollInfo = await request
-            .input('RID_GET', sql.VarChar(50), String(rollId))
-            .query(`SELECT r.RolloID, r.MaquinaID, r.BobinaID, c.EstadoProceso 
+        console.log(`[toggleRollStatus] START - RollID: ${rollId}, Action: ${action}`);
+
+        // Basic Validation
+        if (!rollId || !action) {
+            return res.status(400).json({ error: "Falta rollId o action en la solicitud." });
+        }
+
+        let transaction;
+        try {
+            const pool = await getPool();
+            transaction = new sql.Transaction(pool);
+            await transaction.begin();
+            const request = new sql.Request(transaction);
+
+            // 1. Obtener informacin actual del Rollo y su Maquina
+            // Use logic to handle potential string/int IDs based on usage (Schema usually VarChar or Int, sticking to DB.js usage)
+            // Adjust query to handle flexible ID types.
+            const rollInfo = await request
+                .input('RID_GET', sql.VarChar(50), String(rollId))
+                .query(`SELECT r.RolloID, r.MaquinaID, r.BobinaID, c.EstadoProceso 
                     FROM dbo.Rollos r
                     LEFT JOIN dbo.ConfigEquipos c ON r.MaquinaID = c.EquipoID
                     WHERE CAST(r.RolloID AS VARCHAR(50)) = @RID_GET OR r.Nombre = @RID_GET`);
 
-        if (rollInfo.recordset.length === 0) {
-            await transaction.rollback();
-            return res.status(404).json({ error: "El rollo no existe." });
-        }
-
-        const currentRoll = rollInfo.recordset[0];
-        let machineStatus = 'En Procesamiento';
-        if (currentRoll.EstadoProceso) {
-            machineStatus = currentRoll.EstadoProceso;
-        }
-
-        if (action === 'start') {
-            // === VALIDACIÓN DE BOBINA ===
-            // Es CRITICO que el rollo tenga bobina asignada para descontar inventario luego.
-            if (!currentRoll.BobinaID) {
-                console.warn(`[toggleRollStatus] Roll ${rollId} has no BobinaID. Blocking start.`);
+            if (rollInfo.recordset.length === 0) {
                 await transaction.rollback();
-                return res.status(400).json({ error: "⚠️ Este rollo NO tiene Bobina asignada. Por favor, edita el rollo y selecciona un material del inventario antes de iniciar." });
+                return res.status(404).json({ error: "El rollo no existe." });
             }
-            // ============================
 
-            // === START ===
-            // Roll: Estado -> 'En maquina', FechaInicioProduccion -> Now
-            await new sql.Request(transaction)
-                .input('RID', sql.VarChar(50), currentRoll.RolloID.toString())
-                .query(`UPDATE dbo.Rollos 
+            const currentRoll = rollInfo.recordset[0];
+            let machineStatus = 'En Procesamiento';
+            if (currentRoll.EstadoProceso) {
+                machineStatus = currentRoll.EstadoProceso;
+            }
+
+            if (action === 'start') {
+                // === VALIDACIÓN DE BOBINA ===
+                // Es CRITICO que el rollo tenga bobina asignada para descontar inventario luego.
+                if (!currentRoll.BobinaID) {
+                    console.warn(`[toggleRollStatus] Roll ${rollId} has no BobinaID. Blocking start.`);
+                    await transaction.rollback();
+                    return res.status(400).json({ error: "⚠️ Este rollo NO tiene Bobina asignada. Por favor, edita el rollo y selecciona un material del inventario antes de iniciar." });
+                }
+                // ============================
+
+                // === START ===
+                // Roll: Estado -> 'En maquina', FechaInicioProduccion -> Now
+                await new sql.Request(transaction)
+                    .input('RID', sql.VarChar(50), currentRoll.RolloID.toString())
+                    .query(`UPDATE dbo.Rollos 
                         SET Estado = 'En maquina', 
                             FechaInicioProduccion = GETDATE() 
                         WHERE CAST(RolloID AS VARCHAR(50)) = @RID`);
 
-            // Bitacora Logic
-            const resID = await new sql.Request(transaction).query("SELECT ISNULL(MAX(BitacoraID), 0) + 1 as NewID FROM dbo.BitacoraProduccion");
-            const newBitacoraID = resID.recordset[0].NewID;
+                // Bitacora Logic
+                const resID = await new sql.Request(transaction).query("SELECT ISNULL(MAX(BitacoraID), 0) + 1 as NewID FROM dbo.BitacoraProduccion");
+                const newBitacoraID = resID.recordset[0].NewID;
 
-            await new sql.Request(transaction)
-                .input('BID', sql.Int, newBitacoraID)
-                .input('RID', sql.VarChar(50), currentRoll.RolloID.toString())
-                .input('MID', sql.Int, currentRoll.MaquinaID)
-                .input('UID', sql.Int, userId)
-                .query(`INSERT INTO dbo.BitacoraProduccion (BitacoraID, RolloID, MaquinaID, UsuarioID, FechaInicio) 
+                await new sql.Request(transaction)
+                    .input('BID', sql.Int, newBitacoraID)
+                    .input('RID', sql.VarChar(50), currentRoll.RolloID.toString())
+                    .input('MID', sql.Int, currentRoll.MaquinaID)
+                    .input('UID', sql.Int, userId)
+                    .query(`INSERT INTO dbo.BitacoraProduccion (BitacoraID, RolloID, MaquinaID, UsuarioID, FechaInicio) 
                         VALUES (@BID, @RID, @MID, @UID, GETDATE())`);
 
-            // Update Orders
-            await new sql.Request(transaction)
-                .input('RID', sql.VarChar(50), currentRoll.RolloID.toString())
-                .input('StArea', sql.VarChar(50), machineStatus)
-                .query(`UPDATE dbo.Ordenes SET Estado = 'Produccion', EstadoenArea = @StArea WHERE CAST(RolloID AS VARCHAR(50)) = @RID`);
-
-            await registerHistoryForOrders(transaction, currentRoll.RolloID, 'Produccion', userId, 'Inicio Produccion en Maquina');
-            await registrarAuditoria(transaction, userId, 'INICIO_PRODUCCION', `Rollo ${rollId} iniciado`, ip);
-
-        } else if (action === 'pause') {
-            // === PAUSE ===
-            await new sql.Request(transaction)
-                .input('RID', sql.VarChar(50), currentRoll.RolloID.toString())
-                .query("UPDATE dbo.Rollos SET Estado = 'Pausado' WHERE CAST(RolloID AS VARCHAR(50)) = @RID");
-
-            // Close Bitacora
-            await new sql.Request(transaction)
-                .input('RID', sql.VarChar(50), currentRoll.RolloID.toString())
-                .query("UPDATE dbo.BitacoraProduccion SET FechaFin = GETDATE() WHERE CAST(RolloID AS VARCHAR(50)) = @RID AND FechaFin IS NULL");
-
-            // Update Orders (Back to 'En Cola' or similar?) Keep 'Produccion' but 'En Pausa'?
-            await new sql.Request(transaction)
-                .input('RID', sql.VarChar(50), currentRoll.RolloID.toString())
-                .query(`UPDATE dbo.Ordenes SET EstadoenArea = 'En Cola' WHERE CAST(RolloID AS VARCHAR(50)) = @RID`); // Volver a cola virtual de la maquina
-
-            await registerHistoryForOrders(transaction, currentRoll.RolloID, 'Pausado', userId, 'Produccion Pausada');
-            await registrarAuditoria(transaction, userId, 'PAUSA_PRODUCCION', `Rollo ${rollId} pausado`, ip);
-
-        } else if (action === 'finish') {
-            // === FINISH ===
-
-            // Opción A: Devolver a Producción (No Calidad)
-            if (destination === 'production') {
+                // Update Orders
                 await new sql.Request(transaction)
                     .input('RID', sql.VarChar(50), currentRoll.RolloID.toString())
-                    .query("UPDATE dbo.Rollos SET Estado = 'En Cola', MaquinaID = NULL WHERE CAST(RolloID AS VARCHAR(50)) = @RID"); // Vuelve a la cola general? O se queda asignada? Asumimos liberar maquina.
+                    .input('StArea', sql.VarChar(50), machineStatus)
+                    .query(`UPDATE dbo.Ordenes SET Estado = 'Produccion', EstadoenArea = @StArea WHERE CAST(RolloID AS VARCHAR(50)) = @RID`);
 
-                await new sql.Request(transaction).input('RID', sql.VarChar(50), currentRoll.RolloID.toString())
+                await registerHistoryForOrders(transaction, currentRoll.RolloID, 'Produccion', userId, 'Inicio Produccion en Maquina');
+                await registrarAuditoria(transaction, userId, 'INICIO_PRODUCCION', `Rollo ${rollId} iniciado`, ip);
+
+            } else if (action === 'pause') {
+                // === PAUSE ===
+                await new sql.Request(transaction)
+                    .input('RID', sql.VarChar(50), currentRoll.RolloID.toString())
+                    .query("UPDATE dbo.Rollos SET Estado = 'Pausado' WHERE CAST(RolloID AS VARCHAR(50)) = @RID");
+
+                // Close Bitacora
+                await new sql.Request(transaction)
+                    .input('RID', sql.VarChar(50), currentRoll.RolloID.toString())
                     .query("UPDATE dbo.BitacoraProduccion SET FechaFin = GETDATE() WHERE CAST(RolloID AS VARCHAR(50)) = @RID AND FechaFin IS NULL");
 
+                // Update Orders (Back to 'En Cola' or similar?) Keep 'Produccion' but 'En Pausa'?
                 await new sql.Request(transaction)
                     .input('RID', sql.VarChar(50), currentRoll.RolloID.toString())
-                    .query(`UPDATE dbo.Ordenes SET Estado = 'Produccion', EstadoenArea = 'En Lote', MaquinaID = NULL WHERE CAST(RolloID AS VARCHAR(50)) = @RID`);
+                    .query(`UPDATE dbo.Ordenes SET EstadoenArea = 'En Cola' WHERE CAST(RolloID AS VARCHAR(50)) = @RID`); // Volver a cola virtual de la maquina
 
-                await registerHistoryForOrders(transaction, currentRoll.RolloID, 'En Lote', userId, 'Fin Proceso Maquina - Retorna a Cola');
+                await registerHistoryForOrders(transaction, currentRoll.RolloID, 'Pausado', userId, 'Produccion Pausada');
+                await registrarAuditoria(transaction, userId, 'PAUSA_PRODUCCION', `Rollo ${rollId} pausado`, ip);
 
-            } else {
-                // Opción B: FINALIZAR COMPLETAMENTE (ENVIAR A CALIDAD) - Default
-                await new sql.Request(transaction)
-                    .input('RID', sql.VarChar(50), currentRoll.RolloID.toString())
-                    .query(`UPDATE dbo.Rollos SET Estado = 'Finalizado', MaquinaID = NULL WHERE CAST(RolloID AS VARCHAR(50)) = @RID`);
+            } else if (action === 'finish') {
+                // === FINISH ===
 
-                await new sql.Request(transaction).input('RID', sql.VarChar(50), currentRoll.RolloID.toString())
-                    .query("UPDATE dbo.BitacoraProduccion SET FechaFin = GETDATE() WHERE CAST(RolloID AS VARCHAR(50)) = @RID AND FechaFin IS NULL");
+                // Opción A: Devolver a Producción (No Calidad)
+                if (destination === 'production') {
+                    await new sql.Request(transaction)
+                        .input('RID', sql.VarChar(50), currentRoll.RolloID.toString())
+                        .query("UPDATE dbo.Rollos SET Estado = 'En Cola', MaquinaID = NULL WHERE CAST(RolloID AS VARCHAR(50)) = @RID"); // Vuelve a la cola general? O se queda asignada? Asumimos liberar maquina.
 
-                // Actualizar Ordenes -> Control y Calidad
-                await new sql.Request(transaction)
-                    .input('RID', sql.VarChar(50), currentRoll.RolloID.toString())
-                    .query(`UPDATE dbo.Ordenes 
+                    await new sql.Request(transaction).input('RID', sql.VarChar(50), currentRoll.RolloID.toString())
+                        .query("UPDATE dbo.BitacoraProduccion SET FechaFin = GETDATE() WHERE CAST(RolloID AS VARCHAR(50)) = @RID AND FechaFin IS NULL");
+
+                    await new sql.Request(transaction)
+                        .input('RID', sql.VarChar(50), currentRoll.RolloID.toString())
+                        .query(`UPDATE dbo.Ordenes SET Estado = 'Produccion', EstadoenArea = 'En Lote', MaquinaID = NULL WHERE CAST(RolloID AS VARCHAR(50)) = @RID`);
+
+                    await registerHistoryForOrders(transaction, currentRoll.RolloID, 'En Lote', userId, 'Fin Proceso Maquina - Retorna a Cola');
+
+                } else {
+                    // Opción B: FINALIZAR COMPLETAMENTE (ENVIAR A CALIDAD) - Default
+                    await new sql.Request(transaction)
+                        .input('RID', sql.VarChar(50), currentRoll.RolloID.toString())
+                        .query(`UPDATE dbo.Rollos SET Estado = 'Finalizado', MaquinaID = NULL WHERE CAST(RolloID AS VARCHAR(50)) = @RID`);
+
+                    await new sql.Request(transaction).input('RID', sql.VarChar(50), currentRoll.RolloID.toString())
+                        .query("UPDATE dbo.BitacoraProduccion SET FechaFin = GETDATE() WHERE CAST(RolloID AS VARCHAR(50)) = @RID AND FechaFin IS NULL");
+
+                    // Actualizar Ordenes -> Control y Calidad
+                    await new sql.Request(transaction)
+                        .input('RID', sql.VarChar(50), currentRoll.RolloID.toString())
+                        .query(`UPDATE dbo.Ordenes 
                             SET Estado = 'Produccion', 
                                 EstadoenArea = 'Control y Calidad', 
                                 MaquinaID = NULL 
                             WHERE CAST(RolloID AS VARCHAR(50)) = @RID`);
 
-                await registerHistoryForOrders(transaction, currentRoll.RolloID, 'Control y Calidad', userId, 'Fin Produccion - Enviado a Control');
-                await registrarAuditoria(transaction, userId, 'FIN_PRODUCCION', `Rollo ${rollId} finalizado`, ip);
+                    await registerHistoryForOrders(transaction, currentRoll.RolloID, 'Control y Calidad', userId, 'Fin Produccion - Enviado a Control');
+                    await registrarAuditoria(transaction, userId, 'FIN_PRODUCCION', `Rollo ${rollId} finalizado`, ip);
+                }
             }
+
+            await transaction.commit();
+            res.json({ success: true });
+
+        } catch (err) {
+            if (transaction) await transaction.rollback();
+            console.error("Error toggleRollStatus:", err);
+            // Important: Return JSON error so frontend (Axios) can display it nicely
+            res.status(500).json({ error: err.message });
         }
-
-        await transaction.commit();
-        res.json({ success: true });
-
-    } catch (err) {
-        if (transaction) await transaction.rollback();
-        console.error("Error toggleRollStatus:", err);
-        // Important: Return JSON error so frontend (Axios) can display it nicely
-        res.status(500).json({ error: err.message });
+    } catch (outerErr) {
+        console.error("❌ CRITICAL UNCAUGHT ERROR in toggleRollStatus:", outerErr);
+        // Ensure response is sent if not already
+        if (!res.headersSent) {
+            res.status(500).json({ error: "Critical Error: " + outerErr.message });
+        }
     }
 };
 
@@ -494,8 +502,7 @@ exports.magicSort = async (req, res) => {
                     .input('OID', sql.Int, order.OrdenID)
                     .input('RID', sql.Int, newRollId)
                     .input('Seq', sql.Int, seq)
-                    .input('BID', sql.Int, assignedBobinaId) // ✅
-                    .query(`UPDATE dbo.Ordenes SET RolloID = @RID, BobinaID = @BID, Secuencia = @Seq, Estado = 'Pendiente', EstadoenArea = 'En Lote', MaquinaID = NULL WHERE OrdenID = @OID`);
+                    .query(`UPDATE dbo.Ordenes SET RolloID = @RID, Secuencia = @Seq, Estado = 'Pendiente', EstadoenArea = 'En Lote', MaquinaID = NULL WHERE OrdenID = @OID`);
 
                 await registrarHistorialOrden(transaction, order.OrdenID, 'Pendiente', userId, `Lote Creado Automat. (Rollo ${newRollId})`);
                 seq++;
