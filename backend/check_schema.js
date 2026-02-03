@@ -1,20 +1,31 @@
-const { getPool, sql } = require('./config/db');
+const { getPool } = require('./config/db');
 
-async function checkSchema() {
+async function run() {
     try {
         const pool = await getPool();
-        const result = await pool.request().query(`
-            SELECT TABLE_NAME, COLUMN_NAME, IS_NULLABLE, DATA_TYPE 
+        console.log("🔍 Verificando estructura de PreciosEspeciales...");
+
+        const res = await pool.request().query(`
+            SELECT COLUMN_NAME, DATA_TYPE 
             FROM INFORMATION_SCHEMA.COLUMNS 
-            WHERE TABLE_NAME IN ('BitacoraProduccion', 'Rollos', 'Ordenes', 'ConfigEquipos')
-            ORDER BY TABLE_NAME, COLUMN_NAME
+            WHERE TABLE_NAME = 'PreciosEspeciales'
         `);
-        console.log(JSON.stringify(result.recordset, null, 2));
+
+        console.table(res.recordset);
+
+        console.log("🔍 Verificando estructura de PerfilesPrecios...");
+        const res2 = await pool.request().query(`
+            SELECT COLUMN_NAME, DATA_TYPE 
+            FROM INFORMATION_SCHEMA.COLUMNS 
+            WHERE TABLE_NAME = 'PerfilesPrecios'
+        `);
+        console.table(res2.recordset);
+
         process.exit(0);
-    } catch (err) {
-        console.error("Error:", err);
+    } catch (e) {
+        console.error("❌ Error verificando DB:", e);
         process.exit(1);
     }
 }
 
-checkSchema();
+run();

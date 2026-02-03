@@ -43,7 +43,7 @@ const ClientsIntegration = () => {
 
     const loadReactClients = async () => {
         try {
-            const res = await api.get('/clients/react-list');
+            const res = await api.get(`/clients/react-list?t=${Date.now()}`);
             console.log("React RAW Response:", JSON.stringify(res.data).substring(0, 200)); // Ver texto real
 
             let list = [];
@@ -281,7 +281,10 @@ const ClientsIntegration = () => {
 
             if (res.data.success) {
                 toast.success(res.data.message);
-                loadReactClients(); // Recargar lista externa para ver el nuevo
+                loadReactClients(); // Recargar lista externa
+                if (selectedClient && selectedClient.Nombre) {
+                    loadClients(selectedClient.Nombre); // Recargar lista local para ver vinculación
+                }
             }
         } catch (error) {
             console.error(error);

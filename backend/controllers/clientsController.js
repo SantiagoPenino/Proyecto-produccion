@@ -85,6 +85,7 @@ exports.getAllReactClients = async (req, res) => {
         if (!Array.isArray(response.data)) console.log("Keys:", Object.keys(response.data));
         console.log("-----------------------------------");
 
+        res.set('Cache-Control', 'no-store'); // Disable browser cache
         res.json(response.data);
     } catch (error) {
         console.error("Error Proxy React API:", error.message);
@@ -298,8 +299,8 @@ exports.createReactClient = async (req, res) => {
         // 2. Mapear Datos (Local -> Formato React)
         // Ajustamos los campos según tu esquema local (dbo.Clientes) vs API Externa
         const payload = {
-            CliCodigoCliente: String(client.CodCliente),       // Usamos ID Local como Código Allá
-            CliNombreApellido: client.Nombre,
+            CliCodigoCliente: client.Nombre,                   // SWAP: Nombre Local -> Código React
+            CliNombreApellido: String(client.CodCliente),      // SWAP: Código Local -> Nombre React
             CliCelular: client.TelefonoTrabajo ? String(client.TelefonoTrabajo) : null,
             CliMail: client.Email || null,
             CliNombreEmpresa: client.NombreFantasia || null,
@@ -317,10 +318,23 @@ exports.createReactClient = async (req, res) => {
         });
 
         // 4. AUTOLINK: Actualizar base local con los datos devueltos
-        const createdReactClient = response.data;
-        // Asumimos que la respuesta trae IdCliente y CodigoCliente (ajustar segun respuesta API real)
-        const nuevoCodigoReact = createdReactClient.CodigoCliente || createdReactClient.CliCodigoCliente || createdReactClient.codigoCliente;
-        const nuevoIdReact = createdReactClient.IdCliente || createdReactClient.CliId || createdReactClient.idCliente;
+        let createdReactClient = response.data;
+
+        // Desempaquetar respuesta si viene en { data: ... }
+        if (createdReactClient && createdReactClient.data && !createdReactClient.IdCliente && !createdReactClient.CodigoCliente) {
+            createdReactClient = createdReactClient.data;
+        }
+
+        // Desempaquetar si viene en { cliente: ... }
+        if (createdReactClient && createdReactClient.cliente) {
+            createdReactClient = createdReactClient.cliente;
+        }
+
+        console.log("Respuesta React procesada:", createdReactClient);
+
+        // Buscar ID en los campos posibles, incluyendo CliIdCliente
+        const nuevoCodigoReact = createdReactClient.CodigoCliente || createdReactClient.CliCodigoCliente || createdReactClient.codigoCliente || createdReactClient.CodCliente;
+        const nuevoIdReact = createdReactClient.CliIdCliente || createdReactClient.IdCliente || createdReactClient.CliId || createdReactClient.idCliente;
 
         if (nuevoCodigoReact) {
             const pool = await getPool();

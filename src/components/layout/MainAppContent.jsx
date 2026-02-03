@@ -21,11 +21,14 @@ import ReceptionPage from '../pages/customer-service/ReceptionPage';
 import LogisticsPage from '../pages/customer-service/LogisticsPage'; // Import LogisticsPage
 import ActiveStockPage from '../pages/customer-service/ActiveStockPage';
 import TransportControlPage from '../pages/TransportControlPage';
+import EcoUvFinishing from '../pages/EcoUvFinishing';
 import ClientsIntegration from '../pages/ClientsIntegration';
-
-
-
 import ChatWidget from '../common/ChatWidget';
+import ProductsIntegration from '../pages/ProductsIntegration';
+import SpecialPrices from '../pages/SpecialPrices';
+import BasePrices from '../pages/BasePrices';
+import PriceProfiles from '../pages/PriceProfiles';
+import LabelGenerationPage from '../pages/LabelGenerationPage';
 
 // ============================================
 // 1. COMPONENTE NAVNODE (Mejorado)
@@ -272,6 +275,11 @@ const MainAppContent = ({ menuItems = [] }) => {
                             <Route path="/atencion-cliente/despachos" element={<ActiveStockPage />} />
                             <Route path="/logistica/transporte" element={<TransportControlPage />} />
                             <Route path="/admin/clientes-integration" element={<ClientsIntegration />} />
+                            <Route path="/admin/products-integration" element={<ProductsIntegration />} />
+                            <Route path="/admin/special-prices" element={<SpecialPrices />} />
+                            <Route path="/admin/base-prices" element={<BasePrices />} />
+                            <Route path="/admin/price-profiles" element={<PriceProfiles />} />
+                            <Route path="/produccion/etiquetas" element={<LabelGenerationPage />} />
                             <Route path="/*" element={<DynamicRouter menuItems={menuItems} />} />
                         </Routes>
                     </div>
@@ -316,7 +324,10 @@ const DynamicRouter = ({ menuItems }) => {
     if (menuItem.Ruta === '/admin/roles') return <RolesPage />;
     if (menuItem.Ruta === '/admin/users') return <UsersPage />;
     if (menuItem.Ruta === '/admin/audit') return <AuditPage />;
+    if (menuItem.Ruta === '/produccion/etiquetas') return <LabelGenerationPage />;
     if (menuItem.Ruta === '/admin/clientes-integration') return <ClientsIntegration />;
+    if (menuItem.Ruta === '/admin/products-integration') return <ProductsIntegration />;
+    if (menuItem.Ruta === '/produccion/terminaciones' || menuItem.Ruta === '/area/ecouv/terminaciones') return <EcoUvFinishing />;
     if (menuItem.Ruta === '/logistica' || menuItem.Ruta.toLowerCase() === '/logistica/') return <LogisticsDashboard />;
     if (menuItem.Ruta === '/ops/inventory') return <LogisticsDashboard />;
     if (menuItem.Ruta === '/inventario') return <InventoryPage />;

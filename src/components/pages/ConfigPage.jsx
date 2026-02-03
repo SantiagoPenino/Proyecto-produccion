@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { areasService, externalService } from '../../services/api';
 import { useAuth } from '../../context/AuthContext';
+import { socket } from '../../services/socketService'; // IMPORT SOCKET CORRECTED
 
 // Importa el componente del modal que creamos antes
 import PedidoModal from '../modals/PedidoModal';
@@ -36,6 +37,22 @@ export default function ConfigPage({ onBack }) {
 
     const { user } = useAuth();
     const isAdmin = user?.role === 'admin' || user?.rol === 'admin' || user?.perfil === 'admin' || user?.usuario === 'admin';
+
+    // SOCKET LISTENER FOR LOGS
+    useEffect(() => {
+        if (isLogModalOpen) {
+            const handleLog = (data) => {
+                const icon = data.type === 'error' ? '❌' : data.type === 'success' ? '✅' : data.type === 'warning' ? '⚠️' : 'ℹ️';
+                setLogs(prev => [...prev, `${icon} ${data.message}`]);
+            };
+
+            socket.on('sync:log', handleLog);
+
+            return () => {
+                socket.off('sync:log', handleLog);
+            };
+        }
+    }, [isLogModalOpen]);
 
     useEffect(() => {
         loadAreas();

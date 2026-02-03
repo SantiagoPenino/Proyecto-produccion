@@ -68,6 +68,34 @@ app.use('/api/inventory', require('./routes/inventoryRoutes'));
 app.use('/api/production-kanban', require('./routes/productionKanbanRoutes'));
 app.use('/api/production-file-control', require('./routes/productionFileRoutes'));
 app.use('/api/production', require('./routes/productionRoutes'));
+try {
+    app.use('/api/finishing', require('./routes/ecoUvFinishingRoutes'));
+} catch (e) { console.error("❌ Error loading finishing routes:", e); }
+
+try {
+    app.use('/api/products-integration', require('./routes/productsIntegrationRoutes'));
+} catch (e) { console.error("❌ Error loading product integration routes:", e); }
+
+try {
+    app.use('/api/integration-logs', require('./routes/integrationLogsRoutes'));
+} catch (e) { console.error("❌ Error loading log routes:", e); }
+
+try {
+    app.use('/api/special-prices', require('./routes/specialPricesRoutes'));
+} catch (e) { console.error("❌ Error loading special prices routes:", e); }
+
+try {
+    app.use('/api/prices', require('./routes/pricesRoutes'));
+} catch (e) { console.error("❌ Error loading base prices routes:", e); }
+
+try {
+    app.use('/api/profiles', require('./routes/profilesRoutes'));
+} catch (e) { console.error("❌ Error loading profiles routes:", e); }
+
+try {
+    app.use('/api/clients', require('./routes/clientsRoutes'));
+} catch (e) { console.error("❌ Error loading clients routes:", e); }
+
 app.use('/api/chat', require('./routes/chatRoutes'));
 
 const http = require('http');

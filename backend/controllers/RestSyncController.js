@@ -5,16 +5,25 @@ const fileProcessingService = require('../services/fileProcessingService');
 // Semáforo para evitar ejecuciones superpuestas del scheduler
 let isProcessing = false;
 
+// Helper para emitir logs al socket
+const emitLog = (io, message, type = 'info') => {
+    if (io) {
+        io.emit('sync:log', { message, type, timestamp: new Date() });
+    }
+    const icon = type === 'error' ? '❌' : type === 'success' ? '✅' : 'ℹ️';
+    console.log(`${icon} [Sync] ${message}`);
+};
+
 // --- LÓGICA MAESTRA DE SINCRONIZACIÓN (V3 FINAL - APLANADO + LOOKAHEAD AVANZADO) ---
 const syncOrdersLogic = async (io) => {
     if (isProcessing) {
-        console.log("⏳ [Sync] Proceso ocupado. Saltando ciclo.");
+        emitLog(io, "Proceso ocupado. Saltando ciclo.", 'warning');
         return { success: false, message: "Busy" };
     }
     isProcessing = true;
 
     try {
-        console.log("🏁 INICIANDO SYNC (V4 GOLDEN - DEBUG MODE) - " + new Date().toISOString());
+        emitLog(io, "Iniciando sincronización...", 'info');
         const pool = await getPool();
 
         // 1. Obtener última factura
@@ -22,27 +31,30 @@ const syncOrdersLogic = async (io) => {
             SELECT (SELECT Valor FROM ConfiguracionGlobal WHERE Clave = 'ULTIMAFACTURA') as UltimaFact
         `);
         let ultimaFacturaDB = parseInt(configRes.recordset[0]?.UltimaFact) || 0;
-        console.log(`🔄 Última Factura en DB: ${ultimaFacturaDB}`);
+        emitLog(io, `Última Factura en DB: ${ultimaFacturaDB}`, 'info');
 
         // 2. Traer pedidos NUEVOS
         const API_BASE = process.env.ERP_API_URL || 'http://localhost:6061';
         let rawPedidos = [];
         try {
+            emitLog(io, `Conectando con ERP en ${API_BASE}...`, 'info');
             const response = await axios.get(`${API_BASE}/api/pedidos/todos?NroFact=${ultimaFacturaDB}`);
             rawPedidos = response.data.data || [];
+            emitLog(io, `Conexión ERP exitosa. Recibidos ${rawPedidos.length} registros raw.`, 'success');
         } catch (apiErr) {
-            console.error(`❌ Error ERP:`, apiErr.message);
+            emitLog(io, `Error conectando con ERP: ${apiErr.message}`, 'error');
+            if (apiErr.code === 'ECONNREFUSED') emitLog(io, "El servidor ERP parece estar apagado o inaccesible.", 'error');
             return { success: false, error: "Fallo conexión ERP" };
         }
 
         const nuevosPedidos = rawPedidos.filter(p => parseInt(p.NroFact) > ultimaFacturaDB);
 
         if (nuevosPedidos.length === 0) {
-            console.log(`✅ Sin pedidos nuevos.`);
+            emitLog(io, "No hay pedidos nuevos para importar.", 'info');
             return { success: true, message: 'Up to date' };
         }
 
-        console.log(`📥 Procesando ${nuevosPedidos.length} encabezados...`);
+        emitLog(io, `Procesando ${nuevosPedidos.length} encabezados nuevos...`, 'info');
 
         // 3. Obtener Mapeo de Áreas
         const mappingRes = await pool.request().query("SELECT CodigoERP, AreaID_Interno, Numero FROM ConfigMapeoERP");
@@ -83,6 +95,7 @@ const syncOrdersLogic = async (io) => {
                     nroFact: p.NroFact,
                     nroDoc: nroDoc,
                     cliente: detalle.Nombre || "Cliente General",
+                    codCliente: detalle.CodCliente || detalle.CodigoCliente || detalle.IdCliente || null,
                     fecha: new Date(detalle.Fecha),
                     trabajo: idDesc,
                     prioridad: idPrioridad,
@@ -201,6 +214,73 @@ const syncOrdersLogic = async (io) => {
         }
 
         // 5. INSERCIÓN TRANSACCIONAL (ESTRATEGIA PLANA FINAL)
+
+        // 4.5 Obtener Mapeo de Articulos REACT (Optimización)
+        // 4.5 GARANTIZAR ARTÍCULOS Y MAPEO REACT
+        const { logAlert } = require('../services/alertsService');
+        const allCodArtsParams = new Map(); // Map Cod -> { Desc, Stock (CodStock), Unidad }
+
+        for (const docId in pedidosAgrupados) {
+            const doc = pedidosAgrupados[docId];
+            for (const area in doc.areas) {
+                const grp = doc.areas[area].gruposMaterial;
+                for (const k in grp) {
+                    const cArt = grp[k].codArt;
+                    if (cArt) {
+                        // Guardamos el primero que encontremos para sacar metadata si hay que crearlo
+                        if (!allCodArtsParams.has(cArt)) {
+                            allCodArtsParams.set(cArt, {
+                                Desc: grp[k].nombreMaterial || "Artículo Importado",
+                                Unidad: grp[k].unidad || 'u'
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
+        let mapaReactProducts = {};
+        if (allCodArtsParams.size > 0) {
+            const listaCodigos = Array.from(allCodArtsParams.keys()).map(c => `'${c}'`).join(',');
+
+            // A. Detectar Existentes
+            let existentes = new Set();
+            try {
+                const checkRes = await pool.request().query(`SELECT CodArticulo, IDProdReact FROM Articulos WHERE CodArticulo IN (${listaCodigos})`);
+                checkRes.recordset.forEach(r => {
+                    existentes.add(r.CodArticulo);
+                    if (r.IDProdReact) mapaReactProducts[r.CodArticulo] = r.IDProdReact;
+                });
+            } catch (e) { console.error("Error checking articles", e); }
+
+            // B. Crear Faltantes
+            const codigosParaCrear = Array.from(allCodArtsParams.keys()).filter(c => !existentes.has(c));
+
+            if (codigosParaCrear.length > 0) {
+                console.log(`[SyncAuth] Creando ${codigosParaCrear.length} artículos nuevos automáticamente...`);
+                for (const nuevoCod of codigosParaCrear) {
+                    const data = allCodArtsParams.get(nuevoCod);
+                    try {
+                        await pool.request()
+                            .input('Cod', sql.VarChar, nuevoCod)
+                            .input('Desc', sql.VarChar, data.Desc)
+                            .input('Uni', sql.VarChar, data.Unidad)
+                            .query(`
+                                IF NOT EXISTS (SELECT 1 FROM Articulos WHERE CodArticulo = @Cod)
+                                BEGIN
+                                    INSERT INTO Articulos (CodArticulo, Descripcion, UnidadMedida, SupFlia, Grupo, CodStock)
+                                    VALUES (@Cod, @Desc, @Uni, 'IMPORTADO', 'AUTO', @Cod)
+                                END
+                            `);
+
+                        logAlert('INFO', 'PRODUCTO', 'Artículo creado automáticamente desde importación', nuevoCod, { desc: data.Desc });
+                    } catch (errCrear) {
+                        console.error(`Error creando articulo ${nuevoCod}`, errCrear);
+                    }
+                }
+            }
+        }
+
         const transaction = new sql.Transaction(pool);
         await transaction.begin();
 
@@ -257,6 +337,20 @@ const syncOrdersLogic = async (io) => {
                     // 2. Próximo Servicio (Lookahead Avanzado - Bloques)
                     let nextService = 'DEPOSITO';
                     let foundDestino = false;
+
+                    // A. BUSCAR VINCULACIÓN REACT PRODUCTO
+                    const idProdReact = mapaReactProducts[matGroup.codArt] || null;
+                    if (!idProdReact) {
+                        try {
+                            const { logAlert } = require('../services/alertsService');
+                            // Usar un cache simple para no loguear el mismo articulo 20 veces en un loop
+                            if (!global.loggedArts) global.loggedArts = new Set();
+                            if (!global.loggedArts.has(matGroup.codArt)) {
+                                logAlert('WARN', 'PRODUCTO', 'Orden con artículo sin vincular', matGroup.codArt, { orden: codigoOrden });
+                                global.loggedArts.add(matGroup.codArt);
+                            }
+                        } catch (e) { }
+                    }
 
                     // Debug Log
                     console.log(`[SyncEnum] Ord: ${docData.nroDoc} (${i + 1}/${totalDocOrdenes}) - Area: ${areaID} - Buscando destino...`);
@@ -340,19 +434,21 @@ const syncOrdersLogic = async (io) => {
                         .input('Mag', sql.VarChar, magnitudStr)
                         .input('UM', sql.VarChar, umReal)
                         .input('F_EntSec', sql.DateTime, fechaImp) // SIEMPRE FECHA ACTUAL
+                        .input('IdReact', sql.Int, idProdReact)
+                        .input('CodArt', sql.VarChar, matGroup.codArt) // NUEVO CAMPO
                         .query(`
                             INSERT INTO Ordenes (
                                 AreaID, Cliente, DescripcionTrabajo, Prioridad, Estado, EstadoenArea,
                                 FechaIngreso, FechaEstimadaEntrega, Material, Variante, CodigoOrden,
                                 NoDocERP, Nota, Tinta, ModoRetiro, ArchivosCount, Magnitud, ProximoServicio, UM,
-                                FechaEntradaSector
+                                FechaEntradaSector, IdProductoReact, CodArticulo
                             )
                             OUTPUT INSERTED.OrdenID
                             VALUES (
                                 @AreaID, @Cliente, @Desc, @Prio, 'Pendiente', 'Pendiente',
                                 @F_Ing, @F_Ent, @Mat, @Var, @Cod,
                                 @ERP, @Nota, @Tinta, @Retiro, 0, @Mag, @Prox, @UM,
-                                @F_EntSec
+                                @F_EntSec, @IdReact, @CodArt
                             )
                         `);
 
@@ -410,32 +506,126 @@ const syncOrdersLogic = async (io) => {
             }
 
             await transaction.commit();
+            let committed = true; // BANDERA DE SEGURIDAD
+
             console.log(`✅ EXITO SYNC V3. Creadas: ${generatedCodes.length}`);
             if (io && generatedCodes.length) io.emit('server:ordersUpdated', { count: generatedCodes.length });
 
-            // ASYNC
+            // ASYNC: Procesamiento de Archivos
             if (createdOrderIds.length > 0) {
-                console.log(`🚀 [RestSync] Enviando ${createdOrderIds.length} órdenes al Procesador de Archivos...`);
-                fileProcessingService.processOrderList(createdOrderIds, io);
-            } else {
-                console.log(`⚠️ [RestSync] No se crearon nuevas órdenes, omitiendo procesamiento de archivos.`);
+                console.log(`🚀 [RestSync] Enviando ordenes a Procesador de Archivos...`);
+                // Envolver en try-catch síncrono por si acaso
+                try { fileProcessingService.processOrderList(createdOrderIds, io); } catch (e) { console.error("FileProc Error launch:", e); }
             }
+
+            // ASYNC: Sincronización de Clientes
+            try {
+                processAsyncClientSync(pedidosAgrupados).catch(err => console.error("[AsyncClientSync] Error fatal:", err));
+            } catch (e) { console.error("AsyncClient launch error:", e); }
 
             return { success: true, count: generatedCodes.length };
 
         } catch (txErr) {
-            await transaction.rollback();
+            // Solo rollback si NO se ha comiteado (Fix Transaction has not begun)
+            try {
+                if (transaction && !transaction._aborted && !transaction._committed) {
+                    await transaction.rollback();
+                }
+            } catch (e) { }
             throw txErr;
         }
 
     } catch (e) {
         console.error("❌ CRITICAL SYNC ERROR:", e.message);
-        // throw e; // SUPPRESSED to prevent app crash
         return { success: false, error: e.message };
     } finally {
         isProcessing = false;
     }
 };
+
+// HELPER FUNCTION INTRA-MODULE
+const syncClientsService = require('../services/syncClientsService');
+
+async function processAsyncClientSync(pedidosAgrupados) {
+    console.log("--- INICIO SYNC CLIENTES ASYNC ---");
+    const { getPool, sql } = require('../config/db'); // Ensure scope
+
+    // Iterar documentos únicos
+    for (const docId in pedidosAgrupados) {
+        const doc = pedidosAgrupados[docId];
+        const codCliente = doc.codCliente;
+
+        if (!codCliente) {
+            console.log(`[SyncClient] Orden ${docId} sin CodCliente en JSON. Saltando.`);
+            continue;
+        }
+
+        console.log(`[SyncClient] Procesando Cliente ${codCliente} para Orden ${docId}`);
+
+        try {
+            // 1. Buscar Local
+            let localClient = await syncClientsService.findLocalClient(codCliente);
+            let reactId = null;
+
+            if (localClient) {
+                console.log(`   -> Encontrado Local: ${localClient.Nombre}. IDReact: ${localClient.IDReact || 'NULL'}`);
+
+                // Si ya tiene IDReact, usalo
+                if (localClient.IDReact) {
+                    reactId = localClient.IDReact;
+                } else {
+                    // Si no tiene vinculación, intentar crear/vincular en React
+                    console.log(`   -> Sin IDReact. Intentando exportar...`);
+                    const resReact = await syncClientsService.exportClientToReact(localClient);
+                    if (resReact.success) {
+                        reactId = resReact.reactId;
+                        await syncClientsService.updateLocalLink(codCliente, resReact.reactCode, reactId);
+                    }
+                }
+            } else {
+                // NO existe local -> Crear Local -> Exportar React
+                console.log(`   -> NO EXISTE LOCAL. Creando...`);
+                // Mapear datos minimos del doc
+                const erpData = {
+                    CodCliente: codCliente,
+                    Nombre: doc.cliente,
+                };
+
+                localClient = await syncClientsService.createLocalClientSimple(erpData);
+                if (localClient) {
+                    const resReact = await syncClientsService.exportClientToReact(localClient);
+                    if (resReact.success) {
+                        reactId = resReact.reactId;
+                        await syncClientsService.updateLocalLink(codCliente, resReact.reactCode, reactId);
+                    }
+                }
+            }
+
+            // 2. Actualizar Orden(es)
+            if (reactId || codCliente) {
+                const pool = await getPool();
+                let queryUpdate = `UPDATE Ordenes SET CodCliente = @C`;
+                if (reactId) queryUpdate += `, IdClienteReact = @R`;
+                queryUpdate += ` WHERE NoDocERP = @Doc`;
+
+                const reqUp = pool.request()
+                    .input('C', sql.Int, codCliente)
+                    .input('Doc', sql.VarChar, doc.nroDoc);
+
+                if (reactId) reqUp.input('R', sql.VarChar, String(reactId));
+
+                await reqUp.query(queryUpdate);
+                console.log(`   -> Ordenes actualizadas con CodCliente=${codCliente}, ReactID=${reactId || 'N/A'}`);
+            }
+
+        } catch (errOne) {
+            console.error(`[SyncClient] Error procesando ${codCliente}:`, errOne.message);
+        }
+    }
+    console.log("--- FIN SYNC CLIENTES ASYNC ---");
+}
+
+
 
 exports.syncOrdersLogic = syncOrdersLogic;
 exports.syncOrders = async (req, res) => {

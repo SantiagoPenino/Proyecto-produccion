@@ -463,39 +463,64 @@ const postControlArchivo = async (req, res) => {
                 const jobDesc = orderHead?.DescripcionTrabajo || '';
                 const prioridad = orderHead?.Prioridad || 'Normal';
                 const material = orderHead?.Material || '';
-                const magnitud = orderHead?.Magnitud || '';
+                const magnitudStr = orderHead?.Magnitud || '';
                 const codigoOrdenReal = orderHead?.CodigoOrden || codigoOrden;
+                const proximoServicio = (orderHead?.ProximoServicio || 'DEPOSITO').trim().toUpperCase();
 
-                for (let i = 1; i <= totalBultos; i++) {
-                    const safeDesc = (jobDesc || '').replace(/\$\*/g, ' ');
-                    const safeMat = (material || '').replace(/\$\*/g, ' ');
-                    const qrString = `${codigoOrdenReal} $ * ${i} $ * ${clientName} $ * ${safeDesc} $ * ${prioridad} $ * ${safeMat} $ * ${magnitud} `;
+                // VALIDACIÓN MAGNITUD: Condición necesaria > 0
+                // Parseamos magnitud (puede venir como string "100 mts" o numero)
+                let magnitudValor = 0;
+                if (typeof magnitudStr === 'number') magnitudValor = magnitudStr;
+                else if (magnitudStr) {
+                    const match = magnitudStr.toString().match(/[\d\.]+/);
+                    if (match) magnitudValor = parseFloat(match[0]);
+                }
 
-                    await new sql.Request(transaction)
-                        .input('OID', sql.Int, ordenId)
-                        .input('Num', sql.Int, i)
-                        .input('Tot', sql.Int, totalBultos)
-                        .input('QR', sql.NVarChar(sql.MAX), qrString)
-                        .input('User', sql.VarChar(100), safeUser)
-                        .input('Area', sql.VarChar(20), req.body.areaId || req.body.areaCode || 'GEN')
-                        .input('Job', sql.NVarChar(255), safeDesc)
-                        .query(`
-                        INSERT INTO Etiquetas(OrdenID, NumeroBulto, TotalBultos, CodigoQR, FechaGeneracion, Usuario)
-                        VALUES(@OID, @Num, @Tot, @QR, GETDATE(), @User);
-                        
-                        DECLARE @NewID INT = SCOPE_IDENTITY();
-                        DECLARE @Code NVARCHAR(50) = @Area + FORMAT(GETDATE(), 'MMdd') + '-' + CAST(@NewID AS NVARCHAR);
-                        -- Append Code to QR
-                        DECLARE @FinalQR NVARCHAR(MAX) = @QR + ' $ * ' + @Code;
-                        UPDATE Etiquetas SET CodigoEtiqueta = @Code, CodigoQR = @FinalQR WHERE EtiquetaID = @NewID;
+                if (magnitudValor <= 0) {
+                    console.log(`[postControlArchivo] Orden ${ordenId} completada. Magnitud detectada: ${magnitudValor}. NO se generan etiquetas por ser <= 0.`);
+                } else {
+                    const esUltimoServicio = proximoServicio.includes('DEPOSITO') || proximoServicio === '';
 
-                        -- FUSION LOGISTICA: Insertar en Logistica_Bultos
-                        IF NOT EXISTS (SELECT 1 FROM Logistica_Bultos WHERE CodigoEtiqueta = @Code)
-                        BEGIN
-                             INSERT INTO Logistica_Bultos (CodigoEtiqueta, Tipocontenido, OrdenID, Descripcion, UbicacionActual, Estado, UsuarioCreador)
-                             VALUES (@Code, 'PROD_TERMINADO', @OID, @Job, @Area, 'EN_STOCK', 1);
-                        END
-                        `);
+                    // Determinar Tipo de Bulto según destino
+                    const tipoBulto = esUltimoServicio ? 'PROD_TERMINADO' : 'EN_PROCESO';
+                    const logMsg = esUltimoServicio
+                        ? `Orden ${ordenId} FINALIZADA (Va a Depósito). Generando Etiquetas FINAL (${totalBultos}).`
+                        : `Orden ${ordenId} INTERMEDIA (Va a ${proximoServicio}). Generando Etiquetas PROCESO (${totalBultos}).`;
+
+                    console.log(`[postControlArchivo] ${logMsg}`);
+
+                    for (let i = 1; i <= totalBultos; i++) {
+                        const safeDesc = (jobDesc || '').replace(/\$\*/g, ' ');
+                        const safeMat = (material || '').replace(/\$\*/g, ' ');
+
+                        // QR String
+                        const qrString = `${codigoOrdenReal} $ * ${i} $ * ${clientName} $ * ${safeDesc} $ * ${prioridad} $ * ${safeMat} $ * ${magnitudStr} `;
+
+                        await new sql.Request(transaction)
+                            .input('OID', sql.Int, ordenId)
+                            .input('Num', sql.Int, i)
+                            .input('Tot', sql.Int, totalBultos)
+                            .input('QR', sql.NVarChar(sql.MAX), qrString)
+                            .input('User', sql.VarChar(100), safeUser)
+                            .input('Area', sql.VarChar(20), req.body.areaId || req.body.areaCode || 'GEN')
+                            .input('Job', sql.NVarChar(255), safeDesc)
+                            .input('Tipo', sql.VarChar(50), tipoBulto)
+                            .query(`
+                            INSERT INTO Etiquetas(OrdenID, NumeroBulto, TotalBultos, CodigoQR, FechaGeneracion, Usuario)
+                            VALUES(@OID, @Num, @Tot, @QR, GETDATE(), @User);
+                            
+                            DECLARE @NewID INT = SCOPE_IDENTITY();
+                            DECLARE @Code NVARCHAR(50) = @Area + FORMAT(GETDATE(), 'MMdd') + '-' + CAST(@NewID AS NVARCHAR);
+                            DECLARE @FinalQR NVARCHAR(MAX) = @QR + ' $ * ' + @Code;
+                            UPDATE Etiquetas SET CodigoEtiqueta = @Code, CodigoQR = @FinalQR WHERE EtiquetaID = @NewID;
+    
+                            IF NOT EXISTS (SELECT 1 FROM Logistica_Bultos WHERE CodigoEtiqueta = @Code)
+                            BEGIN
+                                 INSERT INTO Logistica_Bultos (CodigoEtiqueta, Tipocontenido, OrdenID, Descripcion, UbicacionActual, Estado, UsuarioCreador)
+                                 VALUES (@Code, @Tipo, @OID, @Job, @Area, 'EN_STOCK', 1);
+                            END
+                            `);
+                    }
                 }
             }
         }
@@ -551,11 +576,11 @@ const getTiposFalla = async (req, res) => {
 
 const regenerateEtiquetas = async (req, res) => {
     const { ordenId } = req.params;
-    const { cantidad } = req.body;
+    let { cantidad } = req.body;
     let transaction;
 
-    if (!ordenId || !cantidad || cantidad < 1) {
-        return res.status(400).json({ error: 'Datos inválidos' });
+    if (!ordenId) {
+        return res.status(400).json({ error: 'ID de orden requerido' });
     }
 
     try {
@@ -568,7 +593,7 @@ const regenerateEtiquetas = async (req, res) => {
         // 1. Obtener Datos Orden
         const headerRes = await new sql.Request(transaction)
             .input('OID', sql.Int, ordenId)
-            .query("SELECT CodigoOrden, Cliente, Prioridad, DescripcionTrabajo, Material, Magnitud, AreaID FROM Ordenes WHERE OrdenID = @OID");
+            .query("SELECT CodigoOrden, Cliente, Prioridad, DescripcionTrabajo, Material, Magnitud, AreaID, ProximoServicio FROM Ordenes WHERE OrdenID = @OID");
 
         if (headerRes.recordset.length === 0) {
             await transaction.rollback();
@@ -581,17 +606,60 @@ const regenerateEtiquetas = async (req, res) => {
         const jobDesc = orderHead.DescripcionTrabajo || '';
         const prioridad = orderHead.Prioridad || 'Normal';
         const material = orderHead.Material || '';
+        const magnitudStr = orderHead.Magnitud || '';
         const magnitud = orderHead.Magnitud || '';
+        const areaId = orderHead.AreaID || 'GEN';
+        const proximoServicio = (orderHead.ProximoServicio || 'DEPOSITO').trim().toUpperCase();
+
+        // VALIDACIÓN MAGNITUD
+        let magnitudValor = 0;
+        if (typeof magnitudStr === 'number') magnitudValor = magnitudStr;
+        else if (magnitudStr) {
+            const match = magnitudStr.toString().match(/[\d\.]+/);
+            if (match) magnitudValor = parseFloat(match[0]);
+        }
+
+        if (magnitudValor <= 0) {
+            await transaction.rollback();
+            return res.status(400).json({ error: `Orden con magnitud no válida (${magnitudStr}). No se pueden generar etiquetas.` });
+        }
+
+        // AUTO-CALCULO CANTIDAD (Si no viene en body)
+        if (!cantidad || cantidad < 1) {
+            // 1. Config Metros/Bulto
+            const configRes = await new sql.Request(transaction)
+                .input('Clave', sql.VarChar(50), 'METROSBULTOS')
+                .input('AreaID', sql.VarChar(20), areaId)
+                .query(`SELECT TOP 1 Valor FROM ConfiguracionGlobal WHERE Clave = @Clave AND (AreaID = @AreaID OR AreaID = 'ADMIN') ORDER BY CASE WHEN AreaID = @AreaID THEN 1 ELSE 2 END ASC`);
+
+            let metrosPorBulto = 60;
+            if (configRes.recordset.length > 0) metrosPorBulto = parseFloat(configRes.recordset[0].Valor) || 60;
+
+            // 2. Metros Totales (OK/Finalizado)
+            const metrosRes = await new sql.Request(transaction)
+                .input('OID', sql.Int, ordenId)
+                .query(`SELECT SUM(ISNULL(Copias, 1) * ISNULL(Metros, 0)) as TotalMetos FROM ArchivosOrden WHERE OrdenID = @OID AND EstadoArchivo IN ('OK', 'Finalizado')`);
+
+            const totalMetros = metrosRes.recordset[0].TotalMetos || 0;
+            if (totalMetros > 0) cantidad = Math.ceil(totalMetros / metrosPorBulto);
+            else cantidad = 1; // Fallback minimo si no hay archivos pero magnitud ok
+
+            console.log(`[regenerateEtiquetas] Cantidad auto-calculada: ${cantidad} (Metros: ${totalMetros}, Divisor: ${metrosPorBulto})`);
+        }
+
+        const totalBultos = parseInt(cantidad);
 
         // 2. Borrar etiquetas viejas
         await new sql.Request(transaction).input('OID', sql.Int, ordenId).query("DELETE FROM Etiquetas WHERE OrdenID = @OID");
 
+        // DETERMINAR TIPO (Final vs Proceso)
+        const esUltimoServicio = proximoServicio.includes('DEPOSITO') || proximoServicio === '';
+        const tipoBulto = esUltimoServicio ? 'PROD_TERMINADO' : 'EN_PROCESO';
+
         // 3. Crear Nuevas
-        const totalBultos = parseInt(cantidad);
         for (let i = 1; i <= totalBultos; i++) {
             const safeDesc = (jobDesc || '').replace(/\$\*/g, ' ');
             const safeMat = (material || '').replace(/\$\*/g, ' ');
-            // Formato: ORDEN$*BULTO$*CLIENTE$*DESCRIPCION$*PRIORIDAD$*PRODUCTO$*MAGNITUD
             const qrString = `${codigoOrden} $ * ${i} $ * ${clientName} $ * ${safeDesc} $ * ${prioridad} $ * ${safeMat} $ * ${magnitud} `;
 
             await new sql.Request(transaction)
@@ -600,30 +668,29 @@ const regenerateEtiquetas = async (req, res) => {
                 .input('Tot', sql.Int, totalBultos)
                 .input('QR', sql.NVarChar(sql.MAX), qrString)
                 .input('User', sql.VarChar(100), safeUser)
-                .input('Area', sql.VarChar(20), orderHead.AreaID || 'GEN')
-                .input('UID', sql.Int, req.user?.id || 1) // User ID for Logistics
+                .input('Area', sql.VarChar(20), areaId)
+                .input('UID', sql.Int, req.user?.id || 1)
+                .input('Job', sql.NVarChar(255), safeDesc)
+                .input('Tipo', sql.VarChar(50), tipoBulto)
                 .query(`
                         INSERT INTO Etiquetas(OrdenID, NumeroBulto, TotalBultos, CodigoQR, FechaGeneracion, Usuario)
                         VALUES(@OID, @Num, @Tot, @QR, GETDATE(), @User);
 
                         DECLARE @NewID INT = SCOPE_IDENTITY();
                         DECLARE @Code NVARCHAR(50) = @Area + FORMAT(GETDATE(), 'MMdd') + '-' + CAST(@NewID AS NVARCHAR);
-                        -- Append Code to QR
                         DECLARE @FinalQR NVARCHAR(MAX) = @QR + ' $ * ' + @Code;
                         UPDATE Etiquetas SET CodigoEtiqueta = @Code, CodigoQR = @FinalQR WHERE EtiquetaID = @NewID;
 
-                        -- FUSION LOGISTICA: Insertar en Logistica_Bultos
-                        -- Check if exists first to avoid dupes if re-running
                         IF NOT EXISTS (SELECT 1 FROM Logistica_Bultos WHERE CodigoEtiqueta = @Code)
                         BEGIN
                             INSERT INTO Logistica_Bultos (CodigoEtiqueta, Tipocontenido, OrdenID, Descripcion, UbicacionActual, Estado, UsuarioCreador)
-                            VALUES (@Code, 'PROD_TERMINADO', @OID, 'Generado en Produccion', @Area, 'EN_STOCK', @UID);
+                            VALUES (@Code, @Tipo, @OID, @Job, @Area, 'EN_STOCK', @UID);
                         END
                         `);
         }
 
         await transaction.commit();
-        res.json({ success: true, totalBultos });
+        res.json({ success: true, totalBultos, tipoGenerado: tipoBulto });
 
     } catch (error) {
         if (transaction) await transaction.rollback();
