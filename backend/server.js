@@ -19,7 +19,10 @@ const app = express();
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 
-app.use(helmet());
+app.use(helmet({
+    contentSecurityPolicy: false, // Disable CSP for simplicity in this dev environment to allow iframe and inline scripts for QR
+    frameguard: false // Allow framing
+}));
 
 const limiter = rateLimit({
     windowMs: 15 * 60 * 1000,

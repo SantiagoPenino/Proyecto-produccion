@@ -29,6 +29,7 @@ import SpecialPrices from '../pages/SpecialPrices';
 import BasePrices from '../pages/BasePrices';
 import PriceProfiles from '../pages/PriceProfiles';
 import LabelGenerationPage from '../pages/LabelGenerationPage';
+import DepositStockPage from '../logistics/DepositStockPage';
 
 // ============================================
 // 1. COMPONENTE NAVNODE (Mejorado)
@@ -274,6 +275,7 @@ const MainAppContent = ({ menuItems = [] }) => {
                             <Route path="/area/:areaId/*" element={<DynamicRouter menuItems={menuItems} />} />
                             <Route path="/atencion-cliente/despachos" element={<ActiveStockPage />} />
                             <Route path="/logistica/transporte" element={<TransportControlPage />} />
+                            <Route path="/logistica/stock-deposito" element={<DepositStockPage />} />
                             <Route path="/admin/clientes-integration" element={<ClientsIntegration />} />
                             <Route path="/admin/products-integration" element={<ProductsIntegration />} />
                             <Route path="/admin/special-prices" element={<SpecialPrices />} />

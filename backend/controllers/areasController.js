@@ -12,7 +12,7 @@ exports.getAllAreas = async (req, res) => {
 
         // 🛑 CONSULTA MODIFICADA: Devuelve nombres de columna estándar para consistencia
         const { productive, withStock } = req.query;
-        let query = "SELECT DISTINCT a.AreaID, a.Nombre, a.Categoria, a.RenderKey, a.ui_config, a.TieneLogisticaBultos FROM dbo.Areas a";
+        let query = "SELECT DISTINCT a.AreaID, a.Nombre, a.Categoria, a.RenderKey, a.ui_config, a.TieneLogisticaBultos, a.Productiva FROM dbo.Areas a";
 
         const conditions = [];
 

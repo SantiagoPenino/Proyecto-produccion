@@ -226,7 +226,7 @@ class PricingService {
         if (override) {
             txtParts.push(`Base: $${override.valor.toFixed(2)} (${override.desc})`);
         } else {
-            txtParts.push(`Base: $${precioBaseOriginal.toFixed(2)}`);
+            txtParts.push(`Base: $${precioBase.toFixed(2)}`);
         }
 
         // 2. Descuentos

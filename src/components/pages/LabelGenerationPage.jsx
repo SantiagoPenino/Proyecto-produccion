@@ -2,12 +2,48 @@ import React, { useState, useEffect } from 'react';
 import toast, { Toaster } from 'react-hot-toast';
 import api from '../../services/api';
 
+import { useAuth } from '../../context/AuthContext'; // Import Auth
+
 const LabelGenerationPage = () => {
+    const { user } = useAuth(); // Get user
     const [orders, setOrders] = useState([]);
     const [loading, setLoading] = useState(false);
-    const [areaFilter, setAreaFilter] = useState(''); // Default empty (all or auto-detect)
+    const [areaFilter, setAreaFilter] = useState('');
     const [selection, setSelection] = useState([]);
     const [generating, setGenerating] = useState(false);
+    const [areas, setAreas] = useState([]);
+
+    // Modal State
+    const [configOrder, setConfigOrder] = useState(null);
+    const [bultosInput, setBultosInput] = useState(1);
+
+    useEffect(() => {
+        loadProductiveAreas();
+    }, []);
+
+    const loadProductiveAreas = async () => {
+        try {
+            const res = await api.get('/areas');
+            if (Array.isArray(res.data)) {
+                // Filtrar solo áreas productivas: Usar flag Productiva (si existe) o Categoria
+                const productive = res.data.filter(a =>
+                    (a.Productiva === true || a.Productiva === 1 || (a.Categoria || '').toUpperCase().includes('PRODUCC'))
+                    && a.Activa !== false
+                );
+                setAreas(productive);
+
+                // Preseleccionar área del usuario si coincide
+                if (user && user.areaId) {
+                    const found = productive.find(a => a.AreaID === user.areaId);
+                    if (found) {
+                        setAreaFilter(found.AreaID);
+                    }
+                }
+            }
+        } catch (err) {
+            console.error("Error loading areas", err);
+        }
+    };
 
     // Fetch orders on mount or area change
     useEffect(() => {
@@ -17,38 +53,27 @@ const LabelGenerationPage = () => {
     const fetchOrders = async () => {
         setLoading(true);
         try {
-            // Reutilizamos el endpoint existente que trae ordenes con métricas
-            // Podríamos pasar un flag especial o simplemente filtrar en cliente
-            const response = await api.get('/production-files/orders', {
+            // Updated endpoint for Label Dashboard
+            const response = await api.get('/production-file-control/ordenes-labels', {
                 params: {
                     area: areaFilter || undefined,
-                    search: '', // Traer todo
-                    rolloId: 'todo' // Hack para que el backend traiga todo sin filtrar por rollo específico
+                    search: ''
                 }
             });
-
-            // Filtramos en cliente para mostrar solo las que tienen sentido etiquetar
-            // - Magnitud > 0 (Condición necesaria)
-            // - Estado no cancelado
-            // - Quizás priorizar las que ya están "Pronto" o "Produccion" avanzada
-            const candidates = response.data.filter(o => {
-                // Parse Magnitud
-                let magVal = 0;
-                if (o.Magnitud) {
-                    const m = o.Magnitud.toString().match(/[\d\.]+/);
-                    if (m) magVal = parseFloat(m[0]);
-                }
-
-                return magVal > 0 && o.Estado !== 'CANCELADO' && o.Estado !== 'Pendiente';
-            });
-
-            setOrders(candidates);
+            console.log("Orders received (Labels Mode):", response.data.length);
+            setOrders(response.data);
         } catch (error) {
             console.error("Error fetching orders:", error);
             toast.error("Error cargando órdenes");
         } finally {
             setLoading(false);
         }
+    };
+
+    const handlePrintSelected = () => {
+        if (selection.length === 0) return;
+        const ids = selection.join(',');
+        window.open(`http://localhost:5000/api/production-file-control/orden/batch/etiquetas/print?ids=${ids}`, '_blank');
     };
 
     const toggleSelect = (orderId) => {
@@ -63,19 +88,33 @@ const LabelGenerationPage = () => {
         else setSelection(orders.map(o => o.OrdenID));
     };
 
-    const handleGenerate = async () => {
+    const handleGenerateClick = () => {
         if (selection.length === 0) return;
+        if (confirm(`¿Generar etiquetas para ${selection.length} órdenes seleccionadas?\nSe usarán valores automáticos.`)) {
+            processGenerationBatch(selection, null);
+        }
+    };
 
-        if (!confirm(`¿Generar etiquetas para ${selection.length} órdenes seleccionadas?\nSe borrarán las etiquetas anteriores de estas órdenes.`)) return;
+    const openManualConfig = (order) => {
+        let magVal = 0;
+        if (order.Magnitud) {
+            const m = order.Magnitud.toString().match(/[\d\.]+/);
+            if (m) magVal = parseFloat(m[0]);
+        }
+        const propuesto = magVal > 0 ? Math.ceil(magVal / 60) : 1;
+        setBultosInput(propuesto);
+        setConfigOrder(order);
+    };
 
+    const processGenerationBatch = async (ids, fixedQty = null) => {
         setGenerating(true);
         let successCount = 0;
         let failCount = 0;
 
-        for (const orderId of selection) {
+        for (const orderId of ids) {
             try {
-                // Llamamos sin 'cantidad', para que el backend calcule automático
-                await api.post(`/production-files/${orderId}/regenerate-labels`, {});
+                const payload = fixedQty ? { cantidad: fixedQty } : {};
+                await api.post(`/production-file-control/regen-labels/${orderId}`, payload);
                 successCount++;
             } catch (error) {
                 console.error(`Error order ${orderId}:`, error);
@@ -84,160 +123,252 @@ const LabelGenerationPage = () => {
         }
 
         setGenerating(false);
+        setConfigOrder(null);
         toast.success(`Proceso finalizado.\nGeneradas: ${successCount}\nFallos: ${failCount}`);
-        setSelection([]); // Clear selection
-        fetchOrders(); // Refresh data to see new label counts if applicable (backend doesn't return count in list immediately unless updated, but good practice)
+        // Removed setSelection([]) to keep items selected for preview
+
+        // Force refresh of preview
+        setPreviewTimestamp(Date.now());
+
+        fetchOrders(); // Reload to update label counts
     };
 
+    // Preview URL Logic
+    const [previewTimestamp, setPreviewTimestamp] = useState(Date.now());
+
+    // Update preview URL to include timestamp for cache busting/refresh
+    const previewUrl = selection.length > 0
+        ? `http://localhost:5000/api/production-file-control/orden/batch/etiquetas/print?ids=${selection.join(',')}&t=${previewTimestamp}`
+        : null;
+
     return (
-        <div className="p-6 bg-slate-50 min-h-screen">
+        <div className="flex h-screen bg-slate-100 overflow-hidden">
             <Toaster position="top-right" />
 
-            <div className="flexjustify-between items-center mb-6">
-                <div>
-                    <h1 className="text-2xl font-bold text-slate-800">Generador Masivo de Etiquetas</h1>
-                    <p className="text-slate-500">Selecciona las órdenes listas para etiquetar.</p>
+            {/* Left Panel: List */}
+            <div className="w-1/2 flex flex-col border-r border-slate-200 bg-white">
+                <div className="p-4 border-b border-slate-200 bg-slate-50 flex flex-col gap-4">
+                    <div className="flex justify-between items-center">
+                        <div>
+                            <h1 className="text-xl font-bold text-slate-800">Órdenes de Producción</h1>
+                            <p className="text-xs text-slate-500">Gestión de Etiquetas</p>
+                        </div>
+                        <div className="flex gap-2">
+                            <select
+                                value={areaFilter}
+                                onChange={(e) => setAreaFilter(e.target.value)}
+                                className="p-2 border rounded shadow-sm text-sm"
+                            >
+                                <option value="">-- Todas --</option>
+                                {areas.map(area => (
+                                    <option key={area.AreaID} value={area.AreaID}>{area.Nombre}</option>
+                                ))}
+                            </select>
+                            <button onClick={fetchOrders} className="p-2 border rounded bg-white hover:bg-slate-50">
+                                <i className="fa-solid fa-sync text-slate-600"></i>
+                            </button>
+                        </div>
+                    </div>
+
+                    <div className="flex gap-2">
+                        <button
+                            onClick={handleGenerateClick}
+                            disabled={selection.length === 0 || generating}
+                            className={`flex-1 py-2 px-4 rounded font-bold text-sm shadow-sm transition flex items-center justify-center gap-2
+                                ${selection.length > 0 ? 'bg-indigo-600 text-white hover:bg-indigo-700' : 'bg-slate-200 text-slate-400 cursor-not-allowed'}
+                            `}
+                        >
+                            {generating ? <i className="fa-solid fa-spinner fa-spin"></i> : <i className="fa-solid fa-plus-circle"></i>}
+                            Generar Etiquetas
+                        </button>
+                        <button
+                            onClick={handlePrintSelected}
+                            disabled={selection.length === 0}
+                            className={`flex-1 py-2 px-4 rounded font-bold text-sm shadow-sm transition flex items-center justify-center gap-2
+                                ${selection.length > 0 ? 'bg-slate-800 text-white hover:bg-slate-900' : 'bg-slate-200 text-slate-400 cursor-not-allowed'}
+                            `}
+                        >
+                            <i className="fa-solid fa-print"></i>
+                            Imprimir Seleccionadas ({selection.length})
+                        </button>
+                    </div>
                 </div>
 
-                <div className="flex gap-4">
-                    <select
-                        value={areaFilter}
-                        onChange={(e) => setAreaFilter(e.target.value)}
-                        className="p-2 border rounded shadow-sm"
-                    >
-                        <option value="">-- Todas las Áreas --</option>
-                        <option value="IMPRESION">Impresión</option>
-                        <option value="SUBLIMACION">Sublimación</option>
-                        <option value="CONFECCION">Confección</option>
-                        <option value="CALIDAD">Calidad</option>
-                        <option value="DEPOSITO">Depósito</option>
-                    </select>
-
-                    <button
-                        onClick={fetchOrders}
-                        className="bg-white border p-2 rounded shadow-sm hover:bg-slate-100"
-                        title="Recargar"
-                    >
-                        <i className="fa-solid fa-sync text-slate-600"></i>
-                    </button>
-                </div>
-            </div>
-
-            {/* Actions Bar */}
-            {selection.length > 0 && (
-                <div className="bg-indigo-50 border border-indigo-200 p-4 rounded mb-4 flex justify-between items-center animate-fade-in">
-                    <span className="font-bold text-indigo-800">{selection.length} órdenes seleccionadas</span>
-                    <button
-                        onClick={handleGenerate}
-                        disabled={generating}
-                        className={`bg-indigo-600 text-white px-6 py-2 rounded shadow hover:bg-indigo-700 transition flex items-center gap-2 ${generating ? 'opacity-50 cursor-not-allowed' : ''}`}
-                    >
-                        {generating ? <i className="fa-solid fa-spinner fa-spin"></i> : <i className="fa-solid fa-qrcode"></i>}
-                        {generating ? 'Procesando...' : 'Generar Etiquetas'}
-                    </button>
-                </div>
-            )}
-
-            {loading ? (
-                <div className="text-center py-20">
-                    <i className="fa-solid fa-circle-notch fa-spin text-4xl text-slate-300"></i>
-                    <p className="mt-4 text-slate-500">Cargando órdenes...</p>
-                </div>
-            ) : (
-                <div className="bg-white rounded-lg shadow overflow-hidden">
-                    <table className="w-full text-left border-collapse">
-                        <thead>
-                            <tr className="bg-slate-100 text-slate-600 text-sm uppercase tracking-wider">
-                                <th className="p-4 border-b w-12 text-center">
-                                    <input
-                                        type="checkbox"
-                                        checked={selection.length > 0 && selection.length === orders.length}
-                                        onChange={toggleSelectAll}
-                                        className="rounded border-slate-300 transform scale-125 cursor-pointer"
-                                    />
-                                </th>
-                                <th className="p-4 border-b">Orden</th>
-                                <th className="p-4 border-b">Cliente / Trabajo</th>
-                                <th className="p-4 border-b">Área</th>
-                                <th className="p-4 border-b">Magnitud</th>
-                                <th className="p-4 border-b">Próx. Servicio</th>
-                                <th className="p-4 border-b w-24 text-center">Etiquetas</th>
-                                <th className="p-4 border-b w-32 text-center">Estado</th>
-                            </tr>
-                        </thead>
-                        <tbody className="divide-y divide-slate-100">
-                            {orders.length === 0 ? (
-                                <tr>
-                                    <td colSpan="8" className="p-8 text-center text-slate-400 italic">
-                                        No se encontraron órdenes candidatas
-                                    </td>
+                <div className="flex-1 overflow-y-auto">
+                    {loading ? (
+                        <div className="flex justify-center items-center h-40">
+                            <i className="fa-solid fa-circle-notch fa-spin text-2xl text-slate-300"></i>
+                        </div>
+                    ) : (
+                        <table className="w-full text-left border-collapse">
+                            <thead className="bg-slate-50 sticky top-0 z-10 shadow-sm">
+                                <tr className="text-slate-500 text-xs uppercase tracking-wider">
+                                    <th className="p-3 border-b text-center w-10">
+                                        <input
+                                            type="checkbox"
+                                            checked={orders.length > 0 && selection.length === orders.length}
+                                            onChange={toggleSelectAll}
+                                            className="rounded cursor-pointer transform scale-125"
+                                        />
+                                    </th>
+                                    <th className="p-3 border-b">Orden</th>
+                                    <th className="p-3 border-b">Detalle</th>
+                                    <th className="p-3 border-b text-center">Cant.</th>
+                                    <th className="p-3 border-b text-center">Acción</th>
                                 </tr>
-                            ) : (
-                                orders.map(order => {
+                            </thead>
+                            <tbody className="divide-y divide-slate-100 text-sm">
+                                {orders.map(order => {
                                     const isSelected = selection.includes(order.OrdenID);
-                                    // Determinar tipo de etiqueta que se generaria
-                                    const prox = (order.ProximoServicio || 'DEPOSITO').toUpperCase();
-                                    const isFinal = prox.includes('DEPOSITO') || prox === '';
-                                    const labelType = isFinal ? 'FINAL (3 QR)' : 'PROCESO';
-                                    const labelColor = isFinal ? 'text-green-600 bg-green-50 border-green-200' : 'text-amber-600 bg-amber-50 border-amber-200';
-
+                                    const hasLabels = order.CantidadEtiquetas > 0;
                                     return (
-                                        <tr key={order.OrdenID} className={`hover:bg-slate-50 transition border-l-4 ${isSelected ? 'border-l-indigo-500 bg-indigo-50/30' : 'border-l-transparent'}`}>
-                                            <td className="p-4 text-center">
+                                        <tr
+                                            key={order.OrdenID}
+                                            className={`hover:bg-indigo-50/50 transition cursor-pointer ${isSelected ? 'bg-indigo-50 border-l-4 border-l-indigo-500' : 'border-l-4 border-l-transparent'}`}
+                                            onClick={() => toggleSelect(order.OrdenID)}
+                                        >
+                                            <td className="p-3 text-center" onClick={(e) => e.stopPropagation()}>
                                                 <input
                                                     type="checkbox"
                                                     checked={isSelected}
                                                     onChange={() => toggleSelect(order.OrdenID)}
-                                                    className="rounded border-slate-300 transform scale-125 cursor-pointer text-indigo-600 focus:ring-indigo-500"
+                                                    className="rounded cursor-pointer text-indigo-600 focus:ring-indigo-500 transform scale-125"
                                                 />
                                             </td>
-                                            <td className="p-4 font-mono font-bold text-slate-700">
-                                                {order.CodigoOrden}
-                                            </td>
-                                            <td className="p-4">
-                                                <div className="font-bold text-slate-800">{order.Cliente}</div>
-                                                <div className="text-xs text-slate-500 truncate max-w-[200px]" title={order.Descripcion}>{order.Descripcion}</div>
-                                            </td>
-                                            <td className="p-4">
-                                                <span className="bg-slate-100 text-slate-600 px-2 py-1 rounded text-xs font-bold">
-                                                    {order.AreaID}
-                                                </span>
-                                            </td>
-                                            <td className="p-4 font-mono text-sm">
-                                                {order.Magnitud || '-'}
-                                            </td>
-                                            <td className="p-4">
-                                                <div className={`text-xs px-2 py-1 rounded border inline-block font-bold ${labelColor}`}>
-                                                    <i className={`fa-solid ${isFinal ? 'fa-box-open' : 'fa-arrow-right'} mr-1`}></i>
-                                                    {labelType}
-                                                </div>
-                                                <div className="text-[10px] text-slate-400 mt-1 uppercase tracking-wide">
-                                                    Dest: {prox}
-                                                </div>
-                                            </td>
-                                            <td className="p-4 text-center">
-                                                {order.CantidadEtiquetas > 0 ? (
-                                                    <span className="bg-green-100 text-green-700 px-3 py-1 rounded-full text-xs font-bold shadow-sm">
-                                                        {order.CantidadEtiquetas}
-                                                    </span>
-                                                ) : (
-                                                    <span className="text-slate-300 text-xs">-</span>
-                                                )}
-                                            </td>
-                                            <td className="p-4 text-center">
-                                                <span className={`px-2 py-1 rounded-full text-xs font-bold ${order.Estado === 'Pronto' ? 'bg-green-100 text-green-700' :
-                                                        order.Estado === 'Produccion' ? 'bg-blue-100 text-blue-700' :
-                                                            'bg-gray-100 text-gray-500'
-                                                    }`}>
+                                            <td className="p-3">
+                                                <div className="font-bold text-slate-700 font-mono">{order.CodigoOrden}</div>
+                                                <div className={`text-[10px] px-1.5 py-0.5 rounded inline-block font-bold mt-1 ${order.Estado === 'Pronto' ? 'bg-green-100 text-green-700' : 'bg-blue-50 text-blue-600'}`}>
                                                     {order.Estado}
-                                                </span>
+                                                </div>
+                                            </td>
+                                            <td className="p-3 max-w-[180px]">
+                                                <div className="truncate font-medium text-slate-800" title={order.Cliente}>{order.Cliente}</div>
+                                                <div className="truncate text-xs text-slate-500" title={order.Descripcion || order.Material}>{order.Descripcion || order.Material}</div>
+                                                <div className="text-[10px] text-slate-400 mt-0.5">Mag: {order.Magnitud || '-'}</div>
+                                            </td>
+                                            <td className="p-3 text-center">
+                                                {hasLabels ?
+                                                    <span className="bg-green-100 text-green-700 px-2 py-0.5 rounded-full text-xs font-bold">{order.CantidadEtiquetas}</span>
+                                                    : <span className="text-slate-300">-</span>
+                                                }
+                                            </td>
+                                            <td className="p-3 text-center" onClick={(e) => e.stopPropagation()}>
+                                                <button
+                                                    onClick={() => openManualConfig(order)}
+                                                    className="p-1.5 hover:bg-slate-200 text-slate-500 rounded transition"
+                                                    title="Configuración Manual"
+                                                >
+                                                    <i className="fa-solid fa-cog"></i>
+                                                </button>
                                             </td>
                                         </tr>
                                     );
-                                })
-                            )}
-                        </tbody>
-                    </table>
+                                })}
+                            </tbody>
+                        </table>
+                    )}
+                </div>
+            </div>
+
+            {/* Right Panel: Preview */}
+            <div className="w-1/2 bg-slate-200/50 flex flex-col h-full border-l border-slate-300 shadow-inner">
+                <div className="bg-white p-3 border-b border-slate-200 shadow-sm flex justify-between items-center h-[72px]">
+                    <span className="font-bold text-slate-700 flex items-center gap-2">
+                        <i className="fa-solid fa-eye text-slate-400"></i> Vista Previa Seleccionada
+                    </span>
+                    {selection.length > 0 && (
+                        <span className="text-xs font-mono bg-slate-100 px-2 py-1 rounded text-slate-500">
+                            {selection.length} órdenes
+                        </span>
+                    )}
+                </div>
+
+                <div className="flex-1 overflow-hidden relative">
+                    {selection.length === 0 ? (
+                        <div className="flex flex-col items-center justify-center h-full text-slate-400">
+                            <i className="fa-solid fa-arrow-left text-4xl mb-4 opacity-30"></i>
+                            <p className="font-medium">Selecciona órdenes para ver sus etiquetas</p>
+                        </div>
+                    ) : (
+                        <iframe
+                            src={previewUrl}
+                            className="w-full h-full border-0 bg-white"
+                            title="Label Preview"
+                        />
+                    )}
+                </div>
+            </div>
+
+            {/* Configuration Modal */}
+            {configOrder && (
+                <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
+                    <div className="bg-white rounded-xl shadow-2xl max-w-md w-full overflow-hidden animate-fade-in-up">
+                        <div className="bg-indigo-600 p-4 flex justify-between items-center text-white">
+                            <h3 className="font-bold text-lg">Configurar Etiquetas</h3>
+                            <button onClick={() => setConfigOrder(null)} className="hover:bg-indigo-700 p-1 rounded transition">
+                                <i className="fa-solid fa-times"></i>
+                            </button>
+                        </div>
+
+                        <div className="p-6">
+                            <div className="mb-6 bg-slate-50 p-4 rounded-lg border border-slate-100">
+                                <div className="text-xs text-slate-400 uppercase tracking-wide font-bold mb-1">Orden Seleccionada</div>
+                                <div className="text-xl font-bold text-slate-800 mb-1">{configOrder.CodigoOrden}</div>
+                                <div className="text-sm text-slate-600 mb-2">{configOrder.Cliente}</div>
+                                <div className="flex gap-4 mt-3">
+                                    <div>
+                                        <div className="text-xs text-slate-400">Magnitud Detectada</div>
+                                        <div className="font-mono font-bold text-indigo-600">{configOrder.Magnitud || '0'}</div>
+                                    </div>
+                                    <div>
+                                        <div className="text-xs text-slate-400">Tipo</div>
+                                        <div className="font-bold text-slate-700">{configOrder.Material}</div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div className="mb-6">
+                                <label className="block text-sm font-bold text-slate-700 mb-2">Cantidad de Bultos a Generar</label>
+                                <div className="flex items-center gap-3">
+                                    <button
+                                        onClick={() => setBultosInput(Math.max(1, bultosInput - 1))}
+                                        className="w-10 h-10 rounded bg-slate-100 hover:bg-slate-200 text-slate-600 font-bold transition"
+                                    >-</button>
+                                    <input
+                                        type="number"
+                                        min="1"
+                                        value={bultosInput}
+                                        onChange={(e) => setBultosInput(parseInt(e.target.value) || 1)}
+                                        className="flex-1 text-center p-2 border-2 border-indigo-100 rounded-lg font-bold text-lg text-indigo-900 focus:border-indigo-500 outline-none"
+                                    />
+                                    <button
+                                        onClick={() => setBultosInput(bultosInput + 1)}
+                                        className="w-10 h-10 rounded bg-slate-100 hover:bg-slate-200 text-slate-600 font-bold transition"
+                                    >+</button>
+                                </div>
+                                <p className="text-xs text-slate-400 mt-2 text-center">
+                                    Se generarán {bultosInput} etiquetas QR secuenciales.
+                                </p>
+                            </div>
+
+                            <div className="flex gap-3">
+                                <button
+                                    onClick={() => setConfigOrder(null)}
+                                    className="flex-1 py-3 text-slate-600 font-bold hover:bg-slate-50 rounded-lg transition"
+                                >
+                                    Cancelar
+                                </button>
+                                <button
+                                    onClick={() => processGenerationBatch([configOrder.OrdenID], bultosInput)}
+                                    disabled={generating}
+                                    className="flex-1 py-3 bg-indigo-600 text-white font-bold rounded-lg hover:bg-indigo-700 shadow-lg shadow-indigo-200 transition flex justify-center items-center gap-2"
+                                >
+                                    {generating ? <i className="fa-solid fa-spinner fa-spin"></i> : <i className="fa-solid fa-check"></i>}
+                                    Generar
+                                </button>
+                            </div>
+                        </div>
+                    </div>
                 </div>
             )}
         </div>

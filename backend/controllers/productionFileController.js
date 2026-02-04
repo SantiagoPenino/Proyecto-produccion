@@ -1,15 +1,17 @@
 const { sql, getPool } = require('../config/db');
+const PricingService = require('../services/pricingService');
+const LabelGenerationService = require('../services/LabelGenerationService');
 
 /**
  * 1. Obtiene las Órdenes de un Rollo (o todas, o filtradas)
  */
 const getOrdenes = async (req, res) => {
     try {
-        const { search, rolloId, area } = req.query;
+        const { search, rolloId, area, mode } = req.query;
         const pool = await getPool();
 
         // Debug Log
-        console.log(`Getting Ordenes: Search="${search}", Rollo="${rolloId}", Area="${area}"`);
+        console.log(`Getting Ordenes: Search="${search}", Rollo="${rolloId}", Area="${area}", Mode="${mode}"`);
 
         // Limpieza de Parametros
         const cleanRoll = (!rolloId || rolloId === 'undefined' || rolloId === 'null' || rolloId === 'todo')
@@ -49,14 +51,17 @@ const getOrdenes = async (req, res) => {
                     OR 
                     (@Area = '' OR O.AreaID = @Area)
                 )
-                AND (LTRIM(RTRIM(O.Estado)) != 'PRONTO') 
                 AND O.Estado != 'CANCELADO'
-                /* FILTRO CRÍTICO: Mostrar solo si quedan archivos pendientes por controlar (o si no tiene archivos) */
-                /* Si todos los archivos están OK/Falla/Cancelado, la orden desaparecerá de esta lista gracias al NOT EXISTS de pendientes */
                 AND (
-                    EXISTS (SELECT 1 FROM ArchivosOrden AO WHERE AO.OrdenID = O.OrdenID AND (AO.EstadoArchivo = 'Pendiente' OR AO.EstadoArchivo IS NULL))
-                    OR 
-                    NOT EXISTS (SELECT 1 FROM ArchivosOrden AO WHERE AO.OrdenID = O.OrdenID)
+                    @IsLabelMode = 1
+                    OR (
+                        LTRIM(RTRIM(O.Estado)) != 'PRONTO' 
+                        AND (
+                            EXISTS (SELECT 1 FROM ArchivosOrden AO WHERE AO.OrdenID = O.OrdenID AND (AO.EstadoArchivo = 'Pendiente' OR AO.EstadoArchivo IS NULL))
+                            OR 
+                            NOT EXISTS (SELECT 1 FROM ArchivosOrden AO WHERE AO.OrdenID = O.OrdenID)
+                        )
+                    )
                 )
                 AND (
                     @Search IS NULL 
@@ -75,6 +80,7 @@ const getOrdenes = async (req, res) => {
             .input('Search', sql.NVarChar, searchTerm)
             .input('RolloID', sql.NVarChar, cleanRoll)
             .input('Area', sql.NVarChar, cleanArea)
+            .input('IsLabelMode', sql.Bit, mode === 'labels' ? 1 : 0)
             .query(query);
 
         res.json(result.recordset);
@@ -496,46 +502,59 @@ const postControlArchivo = async (req, res) => {
                         // QR String
                         const qrString = `${codigoOrdenReal} $ * ${i} $ * ${clientName} $ * ${safeDesc} $ * ${prioridad} $ * ${safeMat} $ * ${magnitudStr} `;
 
-                        await new sql.Request(transaction)
-                            .input('OID', sql.Int, ordenId)
-                            .input('Num', sql.Int, i)
-                            .input('Tot', sql.Int, totalBultos)
-                            .input('QR', sql.NVarChar(sql.MAX), qrString)
-                            .input('User', sql.VarChar(100), safeUser)
-                            .input('Area', sql.VarChar(20), req.body.areaId || req.body.areaCode || 'GEN')
-                            .input('Job', sql.NVarChar(255), safeDesc)
-                            .input('Tipo', sql.VarChar(50), tipoBulto)
-                            .query(`
-                            INSERT INTO Etiquetas(OrdenID, NumeroBulto, TotalBultos, CodigoQR, FechaGeneracion, Usuario)
-                            VALUES(@OID, @Num, @Tot, @QR, GETDATE(), @User);
-                            
-                            DECLARE @NewID INT = SCOPE_IDENTITY();
-                            DECLARE @Code NVARCHAR(50) = @Area + FORMAT(GETDATE(), 'MMdd') + '-' + CAST(@NewID AS NVARCHAR);
-                            DECLARE @FinalQR NVARCHAR(MAX) = @QR + ' $ * ' + @Code;
-                            UPDATE Etiquetas SET CodigoEtiqueta = @Code, CodigoQR = @FinalQR WHERE EtiquetaID = @NewID;
-    
-                            IF NOT EXISTS (SELECT 1 FROM Logistica_Bultos WHERE CodigoEtiqueta = @Code)
-                            BEGIN
-                                 INSERT INTO Logistica_Bultos (CodigoEtiqueta, Tipocontenido, OrdenID, Descripcion, UbicacionActual, Estado, UsuarioCreador)
-                                 VALUES (@Code, @Tipo, @OID, @Job, @Area, 'EN_STOCK', 1);
-                            END
-                            `);
+                        // Usamos el servicio centralizado para generar etiquetas con el formato correcto v3
+                        // Nota: regenerateLabelsForOrder maneja su propia transacción, pero aquí estamos dentro de una transacción mayor.
+                        // Para evitar conflictos de transacciones anidadas (MSSQL no soporta nested real transactions easily here with the current pool setup),
+                        // DEBEMOS COMMITEAR la transacción actual (que finalizó la orden) ANTES de generar etiquetas.
+                        // O bien, pasar la transaccion al servicio (pero el servicio crea la suya propia).
+
+                        // Estrategia: Commiteamos lo hecho hasta ahora (Orden PRONTA) y luego llamamos al servicio.
+                        // Si el servicio falla, la orden ya quedó PRONTA, pero sin etiquetas (el usuario puede regenerarlas manualmente).
+                        // Esto es seguro y evita deadlocks.
+
+                        console.log(`[postControlArchivo] Orden ${ordenId} COMPLETADA. Commiteando transacción principal y generando etiquetas...`);
                     }
                 }
             }
-        }
 
+            await transaction.commit(); // COMMIT PRINCIPAL
 
-        await transaction.commit();
+            // --- GENERACIÓN DE ETIQUETAS POST-COMMIT (SI CORRESPONDE) ---
+            if (orderCompleted) {
+                try {
+                    // Verificar magnitud de nuevo fuera de transacción (seguridad)
+                    const checkMag = await pool.request().input('OID', sql.Int, ordenId).query("SELECT Magnitud FROM Ordenes WHERE OrdenID = @OID");
+                    const magStr = checkMag.recordset[0]?.Magnitud;
+
+                    // Validación Rápida antes de llamar al servicio (aunque el servicio valida tambien)
+                    let magVal = 0;
+                    if (typeof magStr === 'number') magVal = magStr;
+                    else if (magStr) {
+                        const match = magStr.toString().match(/[\d\.]+/);
+                        if (match) magVal = parseFloat(match[0]);
+                    }
+
+                    if (magVal > 0) {
+                        console.log(`[postControlArchivo] Llamando LabelGenerationService para Orden ${ordenId}...`);
+                        const labelResult = await LabelGenerationService.regenerateLabelsForOrder(ordenId, (req.user?.id || 1), (req.user?.usuario || 'Sistema'));
+                        if (labelResult.success) {
+                            totalBultos = labelResult.totalBultos; // Para devolver en el JSON
+                            console.log(`[postControlArchivo] Etiquetas generadas OK: ${totalBultos}`);
+                        } else {
+                            console.warn(`[postControlArchivo] Fallo generación etiquetas: ${labelResult.error}`);
+                        }
+                    } else {
+                        console.log(`[postControlArchivo] Magnitud 0, saltando etiquetas.`);
+                    }
+                } catch (eLabels) {
+                    console.error(`[postControlArchivo] Error generando etiquetas post-control: ${eLabels.message}`);
+                }
+            }
+        } // This closing brace was missing for the first `if (orderCompleted)` block.
 
         // SOCKET EMIT
-        const io = req.app.get('socketio');
-        if (io) {
-            io.emit('server:order_updated', { orderId: ordenId });
-
-            // Si hubo lógica de desbloqueo de madre, idealmente emitimos para madre también
-            // Pero como no tenemos el ID de la madre aquí fácil (solo codigoMadre dentro del if),
-            // y el Dashboard refresca TODO con cualquier evento, esto es suficiente para los contadores.
+        if (req.app.get('socketio')) {
+            req.app.get('socketio').emit('server:order_updated', { orderId: ordenId });
         }
 
         res.json({ success: true, orderCompleted, totalBultos, nuevoEstado, destinoLogistica, proximoServicio, message: 'Estado actualizado correctamente' });
@@ -575,127 +594,31 @@ const getTiposFalla = async (req, res) => {
 };
 
 const regenerateEtiquetas = async (req, res) => {
-    const { ordenId } = req.params;
-    let { cantidad } = req.body;
-    let transaction;
+    // Extraer OrdenID (puede venir de params :id o de body)
+    const ordenId = req.params.ordenId || req.body.ordenId;
+    const userId = req.user?.id || 1;
+    const userName = req.user?.usuario || 'Sistema';
 
-    if (!ordenId) {
-        return res.status(400).json({ error: 'ID de orden requerido' });
-    }
+    if (!ordenId) return res.status(400).json({ error: 'OrdenID es requerido' });
+
+    console.log(`[regenerateEtiquetas] Iniciando para Orden: ${ordenId} (User: ${userName})`);
 
     try {
-        const pool = await getPool();
-        transaction = new sql.Transaction(pool);
-        await transaction.begin();
+        const result = await LabelGenerationService.regenerateLabelsForOrder(ordenId, userId, userName);
 
-        const safeUser = req.user?.usuario || 'Sistema';
-
-        // 1. Obtener Datos Orden
-        const headerRes = await new sql.Request(transaction)
-            .input('OID', sql.Int, ordenId)
-            .query("SELECT CodigoOrden, Cliente, Prioridad, DescripcionTrabajo, Material, Magnitud, AreaID, ProximoServicio FROM Ordenes WHERE OrdenID = @OID");
-
-        if (headerRes.recordset.length === 0) {
-            await transaction.rollback();
-            return res.status(404).json({ error: 'Orden no encontrada' });
+        if (!result.success) {
+            return res.status(400).json({ error: result.error }); // Return specific validation error
         }
 
-        const orderHead = headerRes.recordset[0];
-        const codigoOrden = orderHead.CodigoOrden;
-        const clientName = orderHead.Cliente || 'Cliente';
-        const jobDesc = orderHead.DescripcionTrabajo || '';
-        const prioridad = orderHead.Prioridad || 'Normal';
-        const material = orderHead.Material || '';
-        const magnitudStr = orderHead.Magnitud || '';
-        const magnitud = orderHead.Magnitud || '';
-        const areaId = orderHead.AreaID || 'GEN';
-        const proximoServicio = (orderHead.ProximoServicio || 'DEPOSITO').trim().toUpperCase();
-
-        // VALIDACIÓN MAGNITUD
-        let magnitudValor = 0;
-        if (typeof magnitudStr === 'number') magnitudValor = magnitudStr;
-        else if (magnitudStr) {
-            const match = magnitudStr.toString().match(/[\d\.]+/);
-            if (match) magnitudValor = parseFloat(match[0]);
-        }
-
-        if (magnitudValor <= 0) {
-            await transaction.rollback();
-            return res.status(400).json({ error: `Orden con magnitud no válida (${magnitudStr}). No se pueden generar etiquetas.` });
-        }
-
-        // AUTO-CALCULO CANTIDAD (Si no viene en body)
-        if (!cantidad || cantidad < 1) {
-            // 1. Config Metros/Bulto
-            const configRes = await new sql.Request(transaction)
-                .input('Clave', sql.VarChar(50), 'METROSBULTOS')
-                .input('AreaID', sql.VarChar(20), areaId)
-                .query(`SELECT TOP 1 Valor FROM ConfiguracionGlobal WHERE Clave = @Clave AND (AreaID = @AreaID OR AreaID = 'ADMIN') ORDER BY CASE WHEN AreaID = @AreaID THEN 1 ELSE 2 END ASC`);
-
-            let metrosPorBulto = 60;
-            if (configRes.recordset.length > 0) metrosPorBulto = parseFloat(configRes.recordset[0].Valor) || 60;
-
-            // 2. Metros Totales (OK/Finalizado)
-            const metrosRes = await new sql.Request(transaction)
-                .input('OID', sql.Int, ordenId)
-                .query(`SELECT SUM(ISNULL(Copias, 1) * ISNULL(Metros, 0)) as TotalMetos FROM ArchivosOrden WHERE OrdenID = @OID AND EstadoArchivo IN ('OK', 'Finalizado')`);
-
-            const totalMetros = metrosRes.recordset[0].TotalMetos || 0;
-            if (totalMetros > 0) cantidad = Math.ceil(totalMetros / metrosPorBulto);
-            else cantidad = 1; // Fallback minimo si no hay archivos pero magnitud ok
-
-            console.log(`[regenerateEtiquetas] Cantidad auto-calculada: ${cantidad} (Metros: ${totalMetros}, Divisor: ${metrosPorBulto})`);
-        }
-
-        const totalBultos = parseInt(cantidad);
-
-        // 2. Borrar etiquetas viejas
-        await new sql.Request(transaction).input('OID', sql.Int, ordenId).query("DELETE FROM Etiquetas WHERE OrdenID = @OID");
-
-        // DETERMINAR TIPO (Final vs Proceso)
-        const esUltimoServicio = proximoServicio.includes('DEPOSITO') || proximoServicio === '';
-        const tipoBulto = esUltimoServicio ? 'PROD_TERMINADO' : 'EN_PROCESO';
-
-        // 3. Crear Nuevas
-        for (let i = 1; i <= totalBultos; i++) {
-            const safeDesc = (jobDesc || '').replace(/\$\*/g, ' ');
-            const safeMat = (material || '').replace(/\$\*/g, ' ');
-            const qrString = `${codigoOrden} $ * ${i} $ * ${clientName} $ * ${safeDesc} $ * ${prioridad} $ * ${safeMat} $ * ${magnitud} `;
-
-            await new sql.Request(transaction)
-                .input('OID', sql.Int, ordenId)
-                .input('Num', sql.Int, i)
-                .input('Tot', sql.Int, totalBultos)
-                .input('QR', sql.NVarChar(sql.MAX), qrString)
-                .input('User', sql.VarChar(100), safeUser)
-                .input('Area', sql.VarChar(20), areaId)
-                .input('UID', sql.Int, req.user?.id || 1)
-                .input('Job', sql.NVarChar(255), safeDesc)
-                .input('Tipo', sql.VarChar(50), tipoBulto)
-                .query(`
-                        INSERT INTO Etiquetas(OrdenID, NumeroBulto, TotalBultos, CodigoQR, FechaGeneracion, Usuario)
-                        VALUES(@OID, @Num, @Tot, @QR, GETDATE(), @User);
-
-                        DECLARE @NewID INT = SCOPE_IDENTITY();
-                        DECLARE @Code NVARCHAR(50) = @Area + FORMAT(GETDATE(), 'MMdd') + '-' + CAST(@NewID AS NVARCHAR);
-                        DECLARE @FinalQR NVARCHAR(MAX) = @QR + ' $ * ' + @Code;
-                        UPDATE Etiquetas SET CodigoEtiqueta = @Code, CodigoQR = @FinalQR WHERE EtiquetaID = @NewID;
-
-                        IF NOT EXISTS (SELECT 1 FROM Logistica_Bultos WHERE CodigoEtiqueta = @Code)
-                        BEGIN
-                            INSERT INTO Logistica_Bultos (CodigoEtiqueta, Tipocontenido, OrdenID, Descripcion, UbicacionActual, Estado, UsuarioCreador)
-                            VALUES (@Code, @Tipo, @OID, @Job, @Area, 'EN_STOCK', @UID);
-                        END
-                        `);
-        }
-
-        await transaction.commit();
-        res.json({ success: true, totalBultos, tipoGenerado: tipoBulto });
+        res.json({
+            success: true,
+            message: `Se han regenerado ${result.totalBultos} etiquetas correctamente.`,
+            details: result
+        });
 
     } catch (error) {
-        if (transaction) await transaction.rollback();
-        console.error("Error regenerando etiquetas:", error);
-        res.status(500).json({ error: error.message });
+        console.error("[regenerateEtiquetas] Error critico:", error);
+        res.status(500).json({ error: "Error interno regenerando etiquetas: " + error.message });
     }
 };
 

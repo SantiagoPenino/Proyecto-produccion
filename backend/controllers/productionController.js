@@ -289,6 +289,9 @@ exports.assignRoll = async (req, res) => {
                                WHERE RolloID = @RID`);
 
         console.log(`[assignRoll] Orders updated. Rows affected: ${orderRes.rowsAffected}`);
+        if (orderRes.rowsAffected[0] === 0) {
+            console.warn(`⚠️ ALERTA: No se actualizaron órdenes para el Rollo ${rollId}. Verificar integridad referencial.`);
+        }
 
         await transaction.commit();
         console.log(`[assignRoll] Transaction committed successfully.`);

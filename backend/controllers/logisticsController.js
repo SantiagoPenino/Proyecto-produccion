@@ -1562,3 +1562,88 @@ exports.recoverItem = async (req, res) => {
         res.status(500).json({ error: err.message });
     }
 };
+
+// --- STOCK DEPOSITO Y SYNC ---
+
+exports.getDepositStock = async (req, res) => {
+    try {
+        const pool = await getPool();
+        // Agrupar por Pedido Base (CodigoQR string V3)
+        // La logica: Bultos en DEPOSITO y EN_STOCK
+        // Usamos el CodigoQR de la etiqueta para agrupar, ya que es el identificador unico del "Pedido V3"
+        const resultGrouped = await pool.request().query(`
+            SELECT 
+                MAX(O.CodigoOrden) as CodigoOrden,
+                MAX(O.Cliente) as Cliente,
+                MAX(O.DescripcionTrabajo) as Descripcion,
+                MAX(O.FechaIngreso) as FechaIngreso,
+                E.CodigoQR as V3String,
+                COUNT(DISTINCT LB.BultoID) as CantidadBultos
+            FROM Logistica_Bultos LB
+            JOIN Etiquetas E ON LB.CodigoEtiqueta = E.CodigoEtiqueta
+            LEFT JOIN Ordenes O ON LB.OrdenID = O.OrdenID
+            WHERE (LB.UbicacionActual = 'DEPOSITO' OR LB.UbicacionActual = 'LOGISTICA')
+              AND LB.Estado = 'EN_STOCK'
+            GROUP BY E.CodigoQR
+        `);
+
+        res.json(resultGrouped.recordset);
+    } catch (err) {
+        console.error("Error getDepositStock:", err);
+        res.status(500).json({ error: err.message });
+    }
+};
+
+exports.syncDepositStock = async (req, res) => {
+    const { items } = req.body; // items: [{ qr: "...", count: N }]
+    const results = [];
+
+    try {
+        // Import axios dynamically just in case, or use fetch if available (Node 18+)
+        let axios;
+        try { axios = require('axios'); } catch (e) { }
+
+        for (const item of items) {
+            try {
+                // El usuario pide "lanzar a esta api con ese codigo qr"
+                // Payload con { qr: "..." }
+                const payload = {
+                    qr: item.qr
+                };
+
+                let responseData;
+                let status;
+
+                if (axios) {
+                    const response = await axios.post('https://administracionuser.uy/api/apiordenes/data', payload);
+                    status = response.status;
+                    responseData = response.data;
+                } else {
+                    // Fallback to fetch
+                    const f = await fetch('https://administracionuser.uy/api/apiordenes/data', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload)
+                    });
+                    status = f.status;
+                    responseData = await f.json();
+                }
+
+                results.push({
+                    qr: item.qr,
+                    success: (status === 200 || status === 201),
+                    data: responseData
+                });
+
+            } catch (apiErr) {
+                console.error("Error syncing item:", item.qr, apiErr.message);
+                results.push({ qr: item.qr, success: false, error: apiErr.message });
+            }
+        }
+        res.json({ results });
+
+    } catch (err) {
+        console.error("Error syncDepositStock:", err);
+        res.status(500).json({ error: err.message });
+    }
+};

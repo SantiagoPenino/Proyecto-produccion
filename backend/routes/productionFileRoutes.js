@@ -28,6 +28,9 @@ router.get('/ordenes', productionFileController.getOrdenes);
 router.get('/orden/:ordenId/archivos', productionFileController.getArchivosPorOrden);
 router.get('/tipos-falla', productionFileController.getTiposFalla);
 router.post('/controlar', productionFileController.postControlArchivo);
+// --- ETIQUETAS y Vista Dividida ---
+router.get('/ordenes-labels', etiquetasController.getOrdersForLabels);
 router.post('/regen-labels/:ordenId', productionFileController.regenerateEtiquetas);
+router.get('/orden/:ordenId/etiquetas/print', etiquetasController.printEtiquetas);
 
 module.exports = router;

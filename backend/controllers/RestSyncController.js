@@ -268,7 +268,7 @@ const syncOrdersLogic = async (io) => {
                             .query(`
                                 IF NOT EXISTS (SELECT 1 FROM Articulos WHERE CodArticulo = @Cod)
                                 BEGIN
-                                    INSERT INTO Articulos (CodArticulo, Descripcion, UnidadMedida, SupFlia, Grupo, CodStock)
+                                    INSERT INTO Articulos (CodArticulo, Descripcion, UM, SupFlia, Grupo, CodStock)
                                     VALUES (@Cod, @Desc, @Uni, 'IMPORTADO', 'AUTO', @Cod)
                                 END
                             `);
@@ -523,6 +523,11 @@ const syncOrdersLogic = async (io) => {
                 processAsyncClientSync(pedidosAgrupados).catch(err => console.error("[AsyncClientSync] Error fatal:", err));
             } catch (e) { console.error("AsyncClient launch error:", e); }
 
+            // ASYNC: Desvinculación/Vinculación de Productos (Robustez)
+            try {
+                processAsyncProductUpdate(createdOrderIds).catch(err => console.error("[AsyncProdSync] Error fatal:", err));
+            } catch (e) { console.error("AsyncProd launch error:", e); }
+
             return { success: true, count: generatedCodes.length };
 
         } catch (txErr) {
@@ -623,6 +628,33 @@ async function processAsyncClientSync(pedidosAgrupados) {
         }
     }
     console.log("--- FIN SYNC CLIENTES ASYNC ---");
+}
+
+async function processAsyncProductUpdate(orderIds) {
+    if (!orderIds || orderIds.length === 0) return;
+    console.log(`[AsyncProd] --- INICIO SYNC PRODUCTOS ASYNC (${orderIds.length} ordenes) ---`);
+    const { getPool } = require('../config/db');
+    try {
+        const pool = await getPool();
+        // Batch simple: update all 
+        const idsStr = orderIds.join(',');
+
+        // Query to update IdProductoReact in Ordenes from Articulos
+        // Using LTRIM/RTRIM for robustness
+        const res = await pool.request().query(`
+            UPDATE Ordenes 
+            SET IdProductoReact = A.IDProdReact
+            FROM Ordenes O
+            INNER JOIN Articulos A ON LTRIM(RTRIM(O.CodArticulo)) = LTRIM(RTRIM(A.CodArticulo))
+            WHERE O.OrdenID IN (${idsStr})
+              AND (O.IdProductoReact IS NULL OR O.IdProductoReact = 0)
+              AND A.IDProdReact IS NOT NULL AND A.IDProdReact <> 0
+        `);
+        console.log(`[AsyncProd] Ordenes actualizadas con IDProdReact: ${res.rowsAffected}`);
+    } catch (e) {
+        console.error("[AsyncProd] Error:", e.message);
+    }
+    console.log("[AsyncProd] --- FIN SYNC PRODUCTOS ASYNC ---");
 }
 
 

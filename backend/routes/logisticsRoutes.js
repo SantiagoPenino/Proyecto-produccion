@@ -38,4 +38,8 @@ router.get('/stock', logisticsController.getAreaStock); // NEW
 router.get('/lost', logisticsController.getLostItems);
 router.post('/recover', logisticsController.recoverItem);
 
+// Stock Deposito & Sync
+router.get('/deposit-stock', logisticsController.getDepositStock);
+router.post('/deposit-sync', logisticsController.syncDepositStock);
+
 module.exports = router;

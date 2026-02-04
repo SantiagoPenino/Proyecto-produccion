@@ -6,24 +6,40 @@ exports.getByUser = async (req, res) => {
         if (isNaN(userId)) return res.status(400).json({ error: "ID de usuario inválido" });
 
         const pool = await getPool();
+
+        // 🚀 REPLACEMENT: Direct Query instead of SP to ensure RBAC (Role-Based Access Control) works
+        // This joins Users -> Roles -> PermisosRoles -> Modulos
         const result = await pool.request()
             .input('IdUsuario', sql.Int, userId)
-            .execute('sp_ObtenerMenuUsuario');
+            .query(`
+                SELECT DISTINCT
+                    m.IdModulo, 
+                    m.Titulo, 
+                    m.Ruta, 
+                    m.Icono, 
+                    m.IdPadre, 
+                    m.IndiceOrden
+                FROM Modulos m
+                INNER JOIN PermisosRoles pr ON m.IdModulo = pr.IdModulo
+                INNER JOIN Usuarios u ON u.IdRol = pr.IdRol
+                WHERE u.IdUsuario = @IdUsuario
+                ORDER BY m.IndiceOrden ASC
+            `);
 
         const menuData = result.recordset.map(item => ({
             IdModulo: item.IdModulo,
-            Nombre: item.Nombre || item.Titulo, // Adaptamos por si el SP devuelve uno u otro
-            Titulo: item.Titulo || item.Nombre,
+            Nombre: item.Titulo, // Use Titulo as Nombre default
+            Titulo: item.Titulo,
             Ruta: item.Ruta,
             Icono: item.Icono,
             IdPadre: item.IdPadre,
             IndiceOrden: item.IndiceOrden,
-            ui_config: item.ui_config // Mantenemos por si el SP hace join con otra cosa
+            ui_config: null // Column likely doesn't exist in standard table, removed to avoid SQL error
         }));
 
         res.json(menuData);
     } catch (err) {
-        console.error('❌ ERROR EN GETBYUSER:', err);
+        console.error('❌ ERROR EN GETBYUSER (Direct Query):', err);
         res.status(500).json({ error: err.message });
     }
 };

@@ -46,6 +46,7 @@ export function AuthProvider({ children }) {
                     id: data.user.userId || data.user.IdUsuario, // Support both new and old formats
                     nombre: data.user.Nombre || data.user.username || data.user.Usuario,
                     rol: data.user.role || data.user.IdRol, // Support both formats
+                    idRol: data.user.idRol || data.user.IdRol, // Explicitly store IdRol
                     usuario: data.user.username || data.user.Usuario,
                     token: receivedToken, // Store the found token
                     areaKey: data.user.AreaKey // Store area key if available

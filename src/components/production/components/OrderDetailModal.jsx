@@ -4,6 +4,7 @@ import FileItem, { ActionButton } from './FileItem';
 import ReferenceItem from './ReferenceItem';
 import { toast } from 'sonner';
 import OrderRequirementsList from '../../logistics/OrderRequirementsList';
+import { printLabelsHelper } from "../../../utils/printHelper";
 
 
 const OrderDetailModal = ({ order, onClose, onOrderUpdated }) => {

@@ -39,6 +39,7 @@ exports.login = async (req, res) => {
                     id: user.UserID,
                     username: user.Username,
                     role: user.RoleName,
+                    idRol: user.IdRol,
                     areaKey: user.AreaUsuario || user.AreaID
                 },
                 JWT_SECRET,
@@ -51,6 +52,7 @@ exports.login = async (req, res) => {
                     userId: user.UserID,
                     username: user.Username,
                     role: user.RoleName,
+                    idRol: user.IdRol,
                     area: user.AreaUsuario
                 },
                 token: token
