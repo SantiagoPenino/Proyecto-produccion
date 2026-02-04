@@ -19,21 +19,43 @@ async function startAutoSync(io) {
         console.log(`⏱️ Sincronización programada cada: ${tiempoStr} (${intervalMs}ms)`);
 
         // Ejecutar inmediatamente al arrancar para no esperar al primer intervalo
+        // Nota: No bloqueamos con isSyncing aquí para permitir arranque, pero sí deberíamos.
+        // Mejor dejar que el intervalo controle, o ejecutar con flag.
         console.log("🔄 Ejecutando primera sincronización al arrancar...");
-        await syncOrdersLogic(io);
+        // Opcional: await syncOrdersLogic(io); 
+        // Si ejecutamos directo aqui, el intervalo podría solaparse si es muy corto.
+        // Mejor lanzarlo "fire and forget" o manejar el flag globalmente.
+
+        checkAndSync(io); // Primera ejecución protegida
 
         // Programar ejecución cíclica
-        setInterval(async () => {
-            try {
-                console.log("🔄 Ejecutando Sync Automática de Pedidos...");
-                await syncOrdersLogic(io);
-            } catch (err) {
-                console.error("⚠️ Error en ciclo automático de Sync (Recuperando...):", err.message);
-            }
+        setInterval(() => { // Usamos lambda wrapper
+            checkAndSync(io);
         }, intervalMs);
 
     } catch (error) {
-        console.error("❌ Error en el Scheduler:", error.message);
+        console.error("❌ Error en el Scheduler Start:", error.message);
+    }
+}
+
+// Control de concurrencia: Evita que se solapen ejecuciones si la BD está lenta
+let isSyncing = false;
+
+async function checkAndSync(io) {
+    if (isSyncing) {
+        console.warn("⚠️ [Sync] Ciclo omitido: La sincronización anterior sigue en curso (Posible lentitud de red/BD).");
+        return;
+    }
+
+    isSyncing = true;
+    try {
+        console.log("🔄 Ejecutando Sync Automática...");
+        await syncOrdersLogic(io);
+    } catch (err) {
+        console.error("⚠️ Error en ciclo automático de Sync:", err.message);
+    } finally {
+        isSyncing = false;
+        // console.log("✅ Ciclo de Sync finalizado. Esperando siguiente turno.");
     }
 }
 
