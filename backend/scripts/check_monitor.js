@@ -1,9 +1,11 @@
+require('dotenv').config();
 const { sql, getPool } = require('../config/db');
 const axios = require('axios');
 
 async function checkMonitor() {
     try {
         console.log("--- DIAGNÓSTICO DEL MONITOR DE ÓRDENES ---");
+        const ERP_API_BASE = process.env.ERP_API_URL || 'http://localhost:6061';
 
         // 1. Check DB
         const pool = await getPool();

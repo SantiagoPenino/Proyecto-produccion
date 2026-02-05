@@ -1,7 +1,7 @@
 const axios = require('axios');
 
 const apiClient = axios.create({
-    baseURL: 'http://localhost:6061/api',
+    baseURL: `${process.env.ERP_API_URL || 'http://localhost:6061'}/api`,
     timeout: 7000,
     headers: { 'Accept': 'application/json' }
 });

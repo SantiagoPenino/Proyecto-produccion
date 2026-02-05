@@ -1,18 +1,20 @@
 const { getPool, sql } = require('../config/db');
 const axios = require('axios'); // Importar axios para el proxy
 
+const ERP_API_BASE = process.env.ERP_API_URL || 'http://localhost:6061';
+
 // Proxy para API Externa (Evita CORS) - Obtener Un Cliente por ID (Legacy/Local)
 exports.getMacrosoftClientData = async (req, res) => {
     const { id } = req.params;
     try {
-        const response = await axios.get(`http://localhost:6061/api/clientes/${id}`);
+        const response = await axios.get(`${ERP_API_BASE}/api/clientes/${id}`);
         res.json(response.data);
     } catch (error) {
         console.log(`[PROXY] Falló búsqueda directa '/${id}'. Intentando buscar en lista completa...`);
 
         // Fallback: Obtener todos y filtrar (según descripción usuario "trae todos")
         try {
-            const listRes = await axios.get(`http://localhost:6061/api/clientes`);
+            const listRes = await axios.get(`${ERP_API_BASE}/api/clientes`);
             let items = listRes.data;
             if (items && items.recordset) items = items.recordset;
 
@@ -32,7 +34,7 @@ exports.getMacrosoftClientData = async (req, res) => {
         } catch (err2) {
             console.log("[PROXY] Falló fallback 1 (/api/clientes). Probando espejo React (dataall)...");
             try {
-                const listRes2 = await axios.get(`http://localhost:6061/api/apicliente/dataall`);
+                const listRes2 = await axios.get(`${ERP_API_BASE}/api/apicliente/dataall`);
                 let items2 = listRes2.data;
                 if (items2 && items2.recordset) items2 = items2.recordset;
 
@@ -401,7 +403,7 @@ exports.searchClientUnified = async (req, res) => {
 
         // Intento 1: Directo (útil si term es ID numérico como '185201')
         try {
-            const r = await axios.get(`http://localhost:6061/api/clientes/${term}`);
+            const r = await axios.get(`${ERP_API_BASE}/api/clientes/${term}`);
             let data = r.data;
             if (data && data.recordset) data = data.recordset;
             if (data && data.data && !Array.isArray(data.data)) data = data.data; // Desempaquetar { data: {...} }
@@ -420,8 +422,8 @@ exports.searchClientUnified = async (req, res) => {
             try {
                 // Intentamos primero la ruta standard, luego la de 'dataall' que nos pegó el usuario
                 let rutasListas = [
-                    'http://localhost:6061/api/apicliente/dataall', // Prioridad según log usuario
-                    'http://localhost:6061/api/clientes'
+                    `${ERP_API_BASE}/api/apicliente/dataall`, // Prioridad según log usuario
+                    `${ERP_API_BASE}/api/clientes`
                 ];
 
                 for (const url of rutasListas) {
