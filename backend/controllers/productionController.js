@@ -232,7 +232,16 @@ exports.getRollAndFiles = async (req, res) => {
             JOIN dbo.Rollos R ON O.RolloID = R.RolloID
             WHERE R.AreaID = @Area AND R.Estado = 'Finalizado'
         `);
-        res.json(result.recordset);
+        const mappedFiles = result.recordset.map(archivo => {
+            if (archivo.RutaAlmacenamiento && archivo.RutaAlmacenamiento.includes('drive.google.com')) {
+                return {
+                    ...archivo,
+                    urlProxy: `/api/production-file-control/view-drive-file?url=${encodeURIComponent(archivo.RutaAlmacenamiento)}`
+                };
+            }
+            return archivo;
+        });
+        res.json(mappedFiles);
     } catch (err) { res.status(500).json({ error: err.message }); }
 };
 
@@ -381,8 +390,18 @@ exports.getOrderDetails = async (req, res) => {
 
         console.log(`[productionController] Archivos encontrados: ${files.recordset.length}`);
 
+        const mappedFiles = files.recordset.map(archivo => {
+            if (archivo.RutaAlmacenamiento && archivo.RutaAlmacenamiento.includes('drive.google.com')) {
+                return {
+                    ...archivo,
+                    urlProxy: `/api/production-file-control/view-drive-file?url=${encodeURIComponent(archivo.RutaAlmacenamiento)}`
+                };
+            }
+            return archivo;
+        });
+
         // Return only the files array
-        res.json(files.recordset);
+        res.json(mappedFiles);
     } catch (err) {
         console.error(`[productionController] Error: ${err.message}`);
         res.status(500).json({ error: err.message });

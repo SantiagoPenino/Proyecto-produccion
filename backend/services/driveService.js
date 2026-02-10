@@ -1,87 +1,190 @@
 const { google } = require('googleapis');
 const path = require('path');
 const fs = require('fs');
+const { Readable } = require('stream');
 
-// Intentar cargar credenciales
-let auth = null;
-const CREDENTIALS_PATH = path.join(__dirname, '../google-credentials.json');
+// Rutas de archivos
+const OAUTH_PATH = path.join(__dirname, '../oauth-credentials.json');
+const TOKEN_PATH = path.join(__dirname, '../token.json');
 
-if (fs.existsSync(CREDENTIALS_PATH)) {
-    try {
-        auth = new google.auth.GoogleAuth({
-            keyFile: CREDENTIALS_PATH,
-            scopes: ['https://www.googleapis.com/auth/drive.readonly'],
-        });
-        console.log("✅ [DriveService] Credenciales cargadas correctamente.");
-    } catch (e) {
-        console.error("❌ [DriveService] Error cargando credenciales:", e);
+let oauth2Client = null;
+
+/**
+ * Inicializa el cliente OAuth2
+ */
+const initOAuth = () => {
+    if (!fs.existsSync(OAUTH_PATH)) {
+        console.error("❌ [DriveService] Falta oauth-credentials.json en el backend.");
+        return null;
     }
-} else {
-    console.warn("⚠️ [DriveService] Faltan credenciales json.");
-}
-
-const drive = google.drive({ version: 'v3', auth });
-
-exports.searchInDrive = async (query, specificFolderId = null) => {
-    if (!auth) return "❌ Error: Faltan credenciales de Google (google-credentials.json).";
 
     try {
-        console.log(`🔎 [DriveService] Buscando: "${query}" (Carpeta: ${specificFolderId || 'GLOBAL'})`);
+        const content = fs.readFileSync(OAUTH_PATH);
+        const credentials = JSON.parse(content);
+        const { client_id, client_secret, redirect_uris } = credentials.installed || credentials.web;
 
-        // ESTRATEGIA "RED AMPLIA": Buscamos en Nombre O Contenido.
-        // Quitamos restricción de tipos para ver si aparecen carpetas o imagenes.
-        let q = `(name contains '${query}' OR fullText contains '${query}') AND trashed = false`;
+        oauth2Client = new google.auth.OAuth2(client_id, client_secret, redirect_uris[0]);
 
-        console.log(`🔎 [DriveService DEBUG] Query AMPLIA enviada a Google: [ ${q} ]`);
+        // Cargar token si ya existe
+        if (fs.existsSync(TOKEN_PATH)) {
+            const token = fs.readFileSync(TOKEN_PATH);
+            oauth2Client.setCredentials(JSON.parse(token));
+            console.log("✅ [DriveService] Sesión de usuario cargada (token.json).");
+        } else {
+            console.warn("⚠️ [DriveService] No hay sesión iniciada. Visita el link de autorización.");
+        }
+        return oauth2Client;
+    } catch (e) {
+        console.error("❌ [DriveService] Error inicializando OAuth:", e);
+        return null;
+    }
+};
+
+oauth2Client = initOAuth();
+const drive = google.drive({ version: 'v3', auth: oauth2Client });
+
+const DRIVE_PARENT_ID = process.env.GOOGLE_DRIVE_PARENT_ID || null;
+const folderCache = {};
+
+/**
+ * Genera la URL para que el usuario autorice la cuenta
+ */
+exports.getAuthUrl = () => {
+    if (!oauth2Client) oauth2Client = initOAuth();
+    if (!oauth2Client) return null;
+
+    console.log("🔗 [OAuth] Generating URL with redirect_uri:", oauth2Client.redirectUri);
+    return oauth2Client.generateAuthUrl({
+        access_type: 'offline',
+        scope: [
+            'https://www.googleapis.com/auth/drive',
+            'https://www.googleapis.com/auth/drive.file'
+        ],
+        prompt: 'consent' // Forzar refreshtoken
+    });
+};
+
+/**
+ * Guarda el token recibido tras la autorización
+ */
+exports.saveToken = async (code) => {
+    try {
+        const { tokens } = await oauth2Client.getToken(code);
+        oauth2Client.setCredentials(tokens);
+        fs.writeFileSync(TOKEN_PATH, JSON.stringify(tokens));
+        console.log("✅ [DriveService] Token guardado correctamente en token.json.");
+        return true;
+    } catch (e) {
+        console.error("❌ Error guardando token:", e);
+        return false;
+    }
+};
+
+const getOrCreateFolder = async (folderName, parentId = null, retries = 3) => {
+    const effectiveParentId = parentId || DRIVE_PARENT_ID;
+    const cacheKey = folderName + (effectiveParentId || 'root');
+    if (folderCache[cacheKey]) return folderCache[cacheKey];
+
+    try {
+        let q = `name = '${folderName}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false`;
+        if (effectiveParentId) q += ` and '${effectiveParentId}' in parents`;
+
+        // Pequeño delay si es un reintento por red
+        if (retries < 3) await new Promise(r => setTimeout(r, 1000));
 
         const res = await drive.files.list({
-            q: q,
-            fields: 'files(id, name, mimeType, webViewLink, description)',
-            pageSize: 10 // Traemos más resultados
+            q, fields: 'files(id, name)',
+            supportsAllDrives: true, includeItemsFromAllDrives: true
+        });
+        const folders = res.data.files;
+        if (folders.length > 0) {
+            folderCache[cacheKey] = folders[0].id;
+            return folders[0].id;
+        }
+
+        const folder = await drive.files.create({
+            resource: { name: folderName, mimeType: 'application/vnd.google-apps.folder', parents: effectiveParentId ? [effectiveParentId] : [] },
+            fields: 'id', supportsAllDrives: true
+        });
+        folderCache[cacheKey] = folder.data.id;
+        return folder.data.id;
+    } catch (error) {
+        // Reintentar si es error de red (ECONNRESET, ETIMEDOUT, etc)
+        if (retries > 0 && (error.code === 'ECONNRESET' || error.code === 'ETIMEDOUT' || error.message.includes('socket'))) {
+            console.warn(`⚠️ [DriveService] Error de red en getOrCreateFolder (${folderName}). Reintentando... (${retries} restantes)`);
+            return getOrCreateFolder(folderName, parentId, retries - 1);
+        }
+        throw error;
+    }
+};
+
+exports.getFileStream = async (fileId) => {
+    if (!fs.existsSync(TOKEN_PATH)) throw new Error("Requiere autorización.");
+    try {
+        // 1. Obtener Metadatos (Nombre y MimeType real)
+        const metaResponse = await drive.files.get({
+            fileId: fileId,
+            fields: 'name, mimeType, size',
+            supportsAllDrives: true
         });
 
-        const files = res.data.files;
-        if (!files || files.length === 0) {
-            return "No encontré documentos relevantes en Drive.";
-        }
+        // 2. Obtener Stream
+        const response = await drive.files.get(
+            { fileId: fileId, alt: 'media', supportsAllDrives: true },
+            { responseType: 'stream' }
+        );
 
-        // 2. Intentar LEER el contenido del primer resultado relevante
-        let detailedContent = "";
-
-        // Tomamos el archivo más relevante
-        const topFile = files[0];
-
-        // Si es un Google Doc, intentamos exportarlo a texto
-        if (topFile.mimeType === 'application/vnd.google-apps.document') {
-            try {
-                const exportRes = await drive.files.export({
-                    fileId: topFile.id,
-                    mimeType: 'text/plain'
-                });
-                // Recortamos a 2000 caracteres para no saturar a la IA
-                const textSnippet = (typeof exportRes.data === 'string' ? exportRes.data : JSON.stringify(exportRes.data)).substring(0, 3000);
-                detailedContent = `\n--- CONTENIDO EXTRAÍDO DE "${topFile.name}" ---\n${textSnippet}\n--- FIN CONTENIDO ---\n`;
-            } catch (readErr) {
-                console.warn("No se pudo leer contenido del Doc:", readErr.message);
-                detailedContent = "(No se pudo extraer texto, solo ver enlace)";
-            }
-        } else {
-            detailedContent = "(Archivo no es Google Doc, no puedo leerlo directamente, ver en enlace)";
-        }
-
-        let summary = `Encontré ${files.length} documentos. El más relevante es **"${topFile.name}"**.\n`;
-        summary += `Link: ${topFile.webViewLink}\n`;
-        summary += detailedContent;
-
-        if (files.length > 1) {
-            summary += `\nOtros resultados:\n`;
-            files.slice(1).forEach(f => summary += `- ${f.name} (${f.webViewLink})\n`);
-        }
-
-        return summary;
-
+        return {
+            stream: response.data,
+            mimeType: metaResponse.data.mimeType || response.headers['content-type'],
+            name: metaResponse.data.name,
+            size: metaResponse.data.size
+        };
     } catch (error) {
-        console.error("Error en Drive API:", error);
-        return `❌ Error técnico de Google: ${error.message}`;
+        console.error("Error getFileStream:", error);
+        throw error;
+    }
+};
+
+exports.uploadToDrive = async (base64Data, fileName, areaName, retries = 2) => {
+    if (!fs.existsSync(TOKEN_PATH)) throw new Error("Requiere autorización. Por favor vincula tu cuenta Google.");
+
+    try {
+        const rootFolderId = await getOrCreateFolder('pedidos WEB');
+        const areaFolderId = await getOrCreateFolder(areaName, rootFolderId);
+
+        const cleanData = base64Data.trim();
+        let mimeType = 'application/octet-stream';
+        let pureBase64 = cleanData;
+
+        // Intentar parsear como Data URL (más robusto)
+        if (cleanData.startsWith('data:')) {
+            const matches = cleanData.match(/^data:([^;]+);base64,(.+)$/s);
+            if (matches && matches.length === 3) {
+                mimeType = matches[1];
+                pureBase64 = matches[2].replace(/\s/g, ''); // Eliminar posibles espacios/saltos intermedios
+            } else {
+                console.error("❌ [DriveService] Falló regex de base64. Longitud:", cleanData.length, "Inicio:", cleanData.substring(0, 50));
+                throw new Error('Formato de archivo inválido (Data URL incorrecto)');
+            }
+        }
+
+        const stream = Readable.from(Buffer.from(pureBase64, 'base64'));
+
+        const file = await drive.files.create({
+            resource: { name: fileName, parents: [areaFolderId] },
+            media: { mimeType, body: stream },
+            fields: 'id, webViewLink',
+            supportsAllDrives: true
+        });
+        return file.data.webViewLink;
+    } catch (error) {
+        // Reintentar si es error de red
+        if (retries > 0 && (error.code === 'ECONNRESET' || error.message.includes('socket'))) {
+            console.warn(`⚠️ [DriveService] Error de red en uploadToDrive. Reintentando... (${retries} restantes)`);
+            return exports.uploadToDrive(base64Data, fileName, areaName, retries - 1);
+        }
+        console.error("Error uploadToDrive:", error);
+        throw error;
     }
 };

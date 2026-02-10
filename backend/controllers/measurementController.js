@@ -1,4 +1,5 @@
 const { getPool, sql } = require('../config/db');
+const driveService = require('../services/driveService');
 const fs = require('fs');
 const path = require('path');
 const sharp = require('sharp');
@@ -66,20 +67,13 @@ exports.getOrdersToMeasure = async (req, res) => {
 // --- 4. PROCESAMIENTO POR LOTES (DESCARGAR + MEDIR) ---
 exports.processBatch = async (req, res) => {
     const { fileIds } = req.body;
-    const targetDir = 'C:\\ORDENES';
-    const results = [];
 
-    if (!fileIds || fileIds.length === 0) return res.status(400).json({ error: "No files provided" });
+    if (!fileIds || fileIds.length === 0) return res.status(400).send("No files provided");
 
     try {
         const pool = await getPool();
 
-        // Asegurar directorio
-        if (!fs.existsSync(targetDir)) {
-            fs.mkdirSync(targetDir, { recursive: true });
-        }
-
-        // Obtener información detallada para renombrado
+        // Obtener metadatos
         const filesQuery = await pool.request().query(`
             SELECT 
                 AO.ArchivoID, AO.RutaAlmacenamiento, AO.NombreArchivo, AO.Copias,
@@ -89,130 +83,84 @@ exports.processBatch = async (req, res) => {
             WHERE AO.ArchivoID IN (${fileIds.join(',')})
         `);
 
+        if (filesQuery.recordset.length === 0) return res.status(404).send("Files not found");
+
+        // Configurar ZIP
+        res.attachment('archivos_seleccionados.zip');
+        const archive = archiver('zip', { zlib: { level: 9 } });
+
+        archive.on('error', function (err) {
+            console.error("Archiver Error:", err);
+            if (!res.headersSent) res.status(500).send({ error: err.message });
+        });
+
+        archive.pipe(res);
+
+        const sanitize = (str) => (str || '').replace(/[<>:"/\\|?*]/g, '_').trim();
+
         for (const file of filesQuery.recordset) {
-            let log = { id: file.ArchivoID, status: 'OK' };
             try {
-                // 1. ORIGEN (Descarga Robusta)
                 const sourcePath = file.RutaAlmacenamiento || '';
                 let tempBuffer = null;
 
+                // 1. Descargar (Auth Drive / HTTP / Local)
                 if (sourcePath.includes('drive.google.com')) {
                     const driveId = getDriveId(sourcePath);
-                    if (!driveId) throw new Error('Link de Drive inválido');
-                    const downloadUrl = `https://drive.google.com/uc?export=download&id=${driveId}`;
-                    // Increase timeout to 5 min
-                    const res = await fetch(downloadUrl, { signal: AbortSignal.timeout(300000) });
-                    if (!res.ok) throw new Error(`Status ${res.status} al descargar de Drive`);
-                    tempBuffer = Buffer.from(await res.arrayBuffer());
+                    if (driveId) {
+                        const { stream } = await driveService.getFileStream(driveId);
+                        const chunks = [];
+                        for await (const chunk of stream) chunks.push(chunk);
+                        tempBuffer = Buffer.concat(chunks);
+                    }
                 } else if (sourcePath.startsWith('http')) {
-                    const res = await fetch(sourcePath);
-                    if (!res.ok) throw new Error(`Status ${res.status} al descargar de Web`);
-                    tempBuffer = Buffer.from(await res.arrayBuffer());
+                    const r = await fetch(sourcePath, { signal: AbortSignal.timeout(300000) });
+                    if (r.ok) tempBuffer = Buffer.from(await r.arrayBuffer());
                 } else if (fs.existsSync(sourcePath)) {
                     tempBuffer = fs.readFileSync(sourcePath);
-                } else {
-                    throw new Error('Archivo origen no encontrado en ruta local ni es URL válida');
                 }
 
-                // VALIDACIÓN BÁSICA DEL CONTENIDO
-                if (!tempBuffer || tempBuffer.length === 0) throw new Error("El archivo descargado está vacío (0 bytes)");
-
-                // Detectar si es HTMLError (común en Drive cuando falla la cuota o auth)
-                const header = tempBuffer.slice(0, 15).toString().trim().toLowerCase();
-                if (header.startsWith('<!doctype html') || header.startsWith('<html')) {
-                    throw new Error("El archivo descargado parece ser una página HTML (posible error de Google Drive o login).");
+                if (!tempBuffer) {
+                    archive.append(`Error descargando ID ${file.ArchivoID}`, { name: `ERRORES/${file.ArchivoID}_error.txt` });
+                    continue;
                 }
 
-                // 2. DESTINO (RENOMBRADO)
-                // Usamos guiones para reemplazar caracteres inválidos
-                const sanitize = (str) => (str || '').replace(/[<>:"/\\|?*]/g, '-').trim();
+                // 2. Detectar Extension y Nombre
+                const origExt = path.extname(file.NombreArchivo || '').toLowerCase();
+                let finalExt = origExt;
+                const magicHex = tempBuffer.toString('hex', 0, 4).toUpperCase();
 
-                const ext = path.extname(file.NombreArchivo || '') || '.pdf';
-                let finalExt = ext;
-                if (!finalExt && tempBuffer.slice(0, 4).toString() === '%PDF') finalExt = '.pdf';
+                if (magicHex.startsWith('25504446')) finalExt = '.pdf';
+                else if (magicHex.startsWith('89504E47')) finalExt = '.png';
+                else if (magicHex.startsWith('FFD8FF')) finalExt = '.jpg';
 
-                // Prioridad: Usar el nombre descriptivo que ya generamos en la base de datos
+                if (!finalExt) finalExt = '.pdf';
+
                 let baseName = file.NombreArchivo;
-
-                // Fallback: Si no hay nombre en BD, lo construimos
                 if (!baseName || baseName.length < 3) {
-                    const partOrder = sanitize(file.CodigoOrden || file.OrdenID.toString());
-                    const partCopies = sanitize((file.Copias || 1).toString());
-                    const partJoB = sanitize(file.DescripcionTrabajo || 'Trabajo');
-                    const partClient = sanitize(file.Cliente || 'Cliente');
-                    baseName = `${partOrder}-${partClient}-${partJoB}-Archivo (x${partCopies})`;
+                    const pOrder = sanitize(file.CodigoOrden || file.OrdenID.toString());
+                    const pClient = sanitize(file.Cliente);
+                    const pJob = sanitize(file.DescripcionTrabajo || 'Trabajo');
+                    baseName = `${pOrder}_${pClient}_${pJob}_ID${file.ArchivoID}`;
                 } else {
                     baseName = sanitize(baseName);
                 }
 
-                // Asegurar extensión
-                if (!baseName.toLowerCase().endsWith(finalExt.toLowerCase())) {
-                    baseName += finalExt;
-                }
+                if (!baseName.toLowerCase().endsWith(finalExt)) baseName += finalExt;
 
-                const newName = baseName;
-                const destPath = path.join(targetDir, newName);
-
-                // Escribir archivo
-                fs.writeFileSync(destPath, tempBuffer);
-                log.savedTo = destPath;
-
-                // 3. MEDICIÓN AUTOMATICA
-                let widthM = 0;
-                let heightM = 0;
-
-                try {
-                    const isPdf = finalExt.toLowerCase() === '.pdf' || (tempBuffer.slice(0, 4).toString() === '%PDF');
-
-                    if (isPdf) {
-                        const pdfDoc = await PDFDocument.load(tempBuffer, { updateMetadata: false });
-                        const pages = pdfDoc.getPages();
-                        if (pages.length > 0) {
-                            const { width, height } = pages[0].getSize();
-                            widthM = cmToM(pointsToCm(width));
-                            heightM = cmToM(pointsToCm(height));
-                        }
-                    } else {
-                        const metadata = await sharp(tempBuffer).metadata();
-                        const density = metadata.density || 72;
-                        widthM = cmToM(pixelsToCm(metadata.width, density));
-                        heightM = cmToM(pixelsToCm(metadata.height, density));
-                    }
-                } catch (measureErr) {
-                    console.error("Error midiendo:", measureErr);
-                    // No fallamos el proceso de descarga, solo avisamos
-                    log.measureError = measureErr.message;
-                }
-
-                log.width = parseFloat(widthM.toFixed(2));
-                log.height = parseFloat(heightM.toFixed(2));
-
-                // 4. GUARDAR EN BD
-                if (log.width > 0 && log.height > 0) {
-                    await new sql.Request(pool)
-                        .input('ID', sql.Int, file.ArchivoID)
-                        .input('M', sql.Decimal(10, 2), log.height)
-                        .input('W', sql.Decimal(10, 2), log.width)
-                        .input('H', sql.Decimal(10, 2), log.height)
-                        .query(`
-                            UPDATE dbo.ArchivosOrden 
-                            SET MedidaConfirmada = @M, Ancho = @W, Alto = @H
-                            WHERE ArchivoID = @ID
-                        `);
-                }
+                // 3. Agregar al ZIP
+                archive.append(tempBuffer, { name: baseName });
 
             } catch (err) {
-                log.status = 'ERROR';
-                log.error = err.message;
+                console.error(`Error processing file ${file.ArchivoID}:`, err);
+                archive.append(`Error: ${err.message}`, { name: `ERRORES/${file.ArchivoID}_ex.txt` });
             }
-            results.push(log);
         }
 
-        res.json({ success: true, results });
+        archive.finalize();
 
     } catch (err) {
-        console.error("Error Batch Process:", err);
-        res.status(500).json({ error: err.message });
+        console.error("Error ProcessBatch Zip:", err);
+        if (!res.headersSent) res.status(500).send(err.message);
     }
 };
 
@@ -289,10 +237,11 @@ exports.processOrdersBatch = async (req, res) => {
                     if (sourcePath.includes('drive.google.com')) {
                         const driveId = getDriveId(sourcePath);
                         if (!driveId) throw new Error('Link de Drive inválido');
-                        const downloadUrl = `https://drive.google.com/uc?export=download&id=${driveId}`;
-                        const res = await fetch(downloadUrl, { signal: AbortSignal.timeout(300000) }); // 5 min
-                        if (!res.ok) throw new Error(`Status ${res.status} al descargar de Drive`);
-                        tempBuffer = Buffer.from(await res.arrayBuffer());
+
+                        const { stream } = await driveService.getFileStream(driveId);
+                        const chunks = [];
+                        for await (const chunk of stream) chunks.push(chunk);
+                        tempBuffer = Buffer.concat(chunks);
                     } else if (sourcePath.startsWith('http')) {
                         const res = await fetch(sourcePath, { signal: AbortSignal.timeout(300000) }); // 5 min
                         if (!res.ok) throw new Error(`Status ${res.status} al descargar de Web`);
@@ -511,15 +460,11 @@ exports.measureFiles = async (req, res) => {
                     const driveId = getDriveId(filePath);
                     if (!driveId) throw new Error('Link de Drive inválido');
 
-                    // Convertimos a link de descarga directa
-                    const downloadUrl = `https://drive.google.com/uc?export=download&id=${driveId}`;
-                    console.log(`⬇️ Descargando para medir: ${file.ArchivoID}`);
-
-                    const response = await fetch(downloadUrl);
-                    if (!response.ok) throw new Error(`Falló descarga Drive (${response.status})`);
-
-                    const arrayBuffer = await response.arrayBuffer();
-                    fileBuffer = Buffer.from(arrayBuffer);
+                    console.log(`⬇️ Descargando para medir (Auth): ${file.ArchivoID}`);
+                    const { stream } = await driveService.getFileStream(driveId);
+                    const chunks = [];
+                    for await (const chunk of stream) chunks.push(chunk);
+                    fileBuffer = Buffer.concat(chunks);
                 }
                 // CASO B: Es un Link Web normal (http...)
                 else if (filePath.startsWith('http')) {
@@ -729,9 +674,16 @@ exports.downloadOrdersZip = async (req, res) => {
                 if (sourcePath.includes('drive.google.com')) {
                     const driveId = getDriveId(sourcePath);
                     if (driveId) {
-                        const downloadUrl = `https://drive.google.com/uc?export=download&id=${driveId}`;
-                        const r = await fetch(downloadUrl, { signal: AbortSignal.timeout(300000) }); // 5 min timeout
-                        if (r.ok) tempBuffer = Buffer.from(await r.arrayBuffer());
+                        try {
+                            const { stream } = await driveService.getFileStream(driveId);
+                            const chunks = [];
+                            for await (const chunk of stream) chunks.push(chunk);
+                            tempBuffer = Buffer.concat(chunks);
+                        } catch (driveErr) {
+                            console.error(`[ZIP] Error downloading from Drive ID ${driveId}:`, driveErr.message);
+                            archive.append(`Error Drive API: ${driveErr.message}`, { name: `ERRORES/${file.ArchivoID}_drive_error.txt` });
+                            continue;
+                        }
                     }
                 } else if (sourcePath.startsWith('http')) {
                     const r = await fetch(sourcePath, { signal: AbortSignal.timeout(300000) }); // 5 min timeout

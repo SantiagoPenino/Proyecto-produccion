@@ -34,13 +34,16 @@ const limiter = rateLimit({
 app.use(limiter);
 
 app.use(cors());
-app.use(express.json({ limit: '10mb' }));
+app.use(express.json({ limit: '200mb' }));
 
 // 🔍 DEBUG: LOG REQUESTS
 app.use((req, res, next) => {
     console.log(`📡 INCOMING: ${req.method} ${req.url}`);
     next();
 });
+
+// --- STATIC FILES ---
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 // --- REGISTRO DE RUTAS ---
 app.use('/api/areas', require('./routes/areasRoutes'));
@@ -59,6 +62,14 @@ app.use('/api/roles', require('./routes/rolesRoutes'));
 app.use('/api/users', require('./routes/usersRoutes'));
 app.use('/api/audit', require('./routes/auditRoutes'));
 app.use('/api/auth', require('./routes/authRoutes'));
+
+const webAuthRoutes = require('./routes/webAuthRoutes');
+const webOrdersRoutes = require('./routes/webOrdersRoutes'); // Nueva ruta Pedidos Web
+const nomenclatorsRoutes = require('./routes/nomenclatorsRoutes');
+
+app.use('/api/web-auth', webAuthRoutes); // RUTAS AUTH CLIENTE WEB
+app.use('/api/web-orders', webOrdersRoutes); // RUTAS PEDIDOS CLIENTE WEB (DTF, Etc)
+app.use('/api/nomenclators', nomenclatorsRoutes);
 app.use('/api/routes-config', require('./routes/routesConfigRoutes'));
 app.use('/api/delivery-times', require('./routes/deliveryTimesRoutes'));
 app.get('/api/debug/reprocess/:id', require('./controllers/debugController').reprocessOrder);
@@ -131,8 +142,9 @@ server.listen(PORT, async () => {
 
     // Iniciamos la sincronización automática después de que el servidor suba
     try {
-        startAutoSync(io).catch(err => console.error("❌ Scheduler Start Error:", err));
-        console.log(`⏱️ Sistema de sincronización automática activado.`);
+        // startAutoSync(io).catch(err => console.error("❌ Scheduler Start Error:", err));
+        // console.log(`⏱️ Sistema de sincronización automática activado.`);
+        console.log(`ℹ️ [Sync] Sincronización con ERP desactivada (Pedidos vía WEB activos).`);
     } catch (error) {
         console.error("❌ Error al iniciar el Scheduler:", error.message);
     }

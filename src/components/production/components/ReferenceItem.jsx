@@ -1,4 +1,5 @@
 import React from 'react';
+import { API_URL } from '../../../services/apiClient';
 
 /**
  * Componente "FileItem" Simplificado para Referencias.
@@ -11,7 +12,15 @@ import React from 'react';
 const ReferenceItem = ({ file }) => {
 
     // Render-time URL (Best effort)
-    const fileUrl = file.link || file.url || file.RutaAlmacenamiento || '#';
+    const getBaseFileUrl = () => {
+        if (file.urlProxy) {
+            const base = API_URL.endsWith('/api') ? API_URL.replace('/api', '') : API_URL;
+            return `${base}${file.urlProxy}`;
+        }
+        return file.link || file.url || file.RutaAlmacenamiento || '#';
+    };
+
+    const fileUrl = getBaseFileUrl();
     const isImage = fileUrl.match(/\.(jpeg|jpg|gif|png|webp|bmp)$/i);
     const isPdf = fileUrl.match(/\.(pdf)$/i);
     const fileName = file.nombre || file.NombreArchivo || 'Referencia';

@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import api from '../../services/api';
 import FileItem from '../production/components/FileItem';
+import JSZip from 'jszip';
 
 const MeasurementView = ({ areaCode }) => {
     const [orders, setOrders] = useState([]);
@@ -32,6 +33,9 @@ const MeasurementView = ({ areaCode }) => {
                     ...f,
                     id: f.id || f.ArchivoID,
                     url: f.url || f.RutaAlmacenamiento || '',
+                    urlProxy: (f.url || f.RutaAlmacenamiento || '').includes('drive.google.com')
+                        ? `/api/production-file-control/view-drive-file?url=${encodeURIComponent(f.url || f.RutaAlmacenamiento || '')}`
+                        : null,
                     confirmed: parseFloat(f.confirmed) || 0,
                     parentOrderId: order.id || order.OrdenID,
 
@@ -168,35 +172,75 @@ const MeasurementView = ({ areaCode }) => {
         }
     };
 
-    // NUEVA FUNCION: Procesar Batch
+    // NUEVA FUNCION: Procesar Batch (Cliente decide carpeta)
     const handleBatchProcess = async () => {
         if (selectedFiles.size === 0) {
-            alert("Por favor selecciona al menos un archivo para procesar.");
+            alert("Por favor selecciona al menos un archivo.");
             return;
         }
 
-        const fileIds = Array.from(selectedFiles);
+        // 1. Selector de Carpeta (Si soporta)
+        const supportsFileSystem = 'showDirectoryPicker' in window;
+        let dirHandle = null;
 
-        if (!confirm(`¿Estás seguro de Descargar, Renombrar y Medir ${fileIds.length} archivos seleccionados a C:/ORDENES?`)) return;
+        if (supportsFileSystem) {
+            try {
+                dirHandle = await window.showDirectoryPicker({ mode: 'readwrite' });
+            } catch (err) {
+                return; // Usuario canceló
+            }
+        } else {
+            if (!confirm("Tu navegador no soporta guardar en carpeta. Se descargará un ZIP.")) return;
+        }
 
         setProcessing(true);
         try {
-            const res = await api.post('/measurements/process-batch', { fileIds });
-            if (res.data.success) {
-                const results = res.data.results || [];
-                const errors = results.filter(r => r.status === 'ERROR');
-                if (errors.length > 0) {
-                    alert(`Proceso finalizado con ${errors.length} errores. Revisa la consola.`);
-                    console.table(errors);
-                } else {
-                    alert(`¡Éxito! ${results.length} archivos procesados y descargados.`);
+            // 2. Obtener ZIP desde Backend
+            const fileIds = Array.from(selectedFiles);
+            const res = await api.post('/measurements/process-batch',
+                { fileIds },
+                { responseType: 'blob' }
+            );
+
+            const blob = res.data;
+
+            if (supportsFileSystem && dirHandle) {
+                // 3. Descomprimir y guardar en carpeta elegida
+                const zip = await JSZip.loadAsync(blob);
+                let count = 0;
+
+                for (const [relativePath, zipEntry] of Object.entries(zip.files)) {
+                    if (zipEntry.dir) continue;
+                    // Aplanar nombre (backend ya renombra, asi que usamos filename directo)
+                    const fileName = relativePath.split('/').pop();
+
+                    try {
+                        const fileHandle = await dirHandle.getFileHandle(fileName, { create: true });
+                        const writable = await fileHandle.createWritable();
+                        const content = await zipEntry.async('blob');
+                        await writable.write(content);
+                        await writable.close();
+                        count++;
+                    } catch (err) {
+                        console.error("Error escribiendo archivo:", fileName, err);
+                    }
                 }
-                fetchData();
-                setSelectedFiles(new Set());
+                alert(`¡Descarga completa! ${count} archivos guardados.`);
+            } else {
+                // Fallback ZIP
+                const url = window.URL.createObjectURL(blob);
+                const link = document.createElement('a');
+                link.href = url;
+                link.download = "Ordenes_Descarga.zip";
+                document.body.appendChild(link);
+                link.click();
+                link.remove();
+                window.URL.revokeObjectURL(url);
             }
+            setSelectedFiles(new Set());
         } catch (e) {
             console.error(e);
-            alert("Error al procesar lote: " + (e.response?.data?.error || e.message));
+            alert("Error al descargar: " + (e.message));
         } finally {
             setProcessing(false);
         }
@@ -224,7 +268,7 @@ const MeasurementView = ({ areaCode }) => {
                                 className="bg-blue-600 hover:bg-blue-700 text-white border-none py-1.5 px-4 rounded-lg text-xs font-bold shadow-md hover:shadow-lg transition-all flex items-center gap-2 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed"
                             >
                                 {processing ? <i className="fa-solid fa-circle-notch fa-spin"></i> : <i className="fa-solid fa-download"></i>}
-                                {selectedFiles.size > 0 ? `DESCARGAR Y MEDIR (${selectedFiles.size})` : 'SELECCIONA ARCHIVOS'}
+                                {selectedFiles.size > 0 ? `DESCARGAR (${selectedFiles.size})` : 'SELECCIONA ARCHIVOS'}
                             </button>
 
                             <button

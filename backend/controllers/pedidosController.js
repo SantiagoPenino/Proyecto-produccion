@@ -67,6 +67,7 @@ const getPedidoMetrics = async (req, res) => {
                     OA.EstadoArchivo as Estado,
                     OA.Copias,
                     OA.Metros,
+                    OA.RutaAlmacenamiento as link,
                     ISNULL(O.MaquinaID, R.MaquinaID) as MaquinaID,
                     R.Nombre as NombreRollo
                 FROM ArchivosOrden OA WITH (NOLOCK)
@@ -75,7 +76,12 @@ const getPedidoMetrics = async (req, res) => {
                 WHERE OA.OrdenID IN (${itemsList})
             `;
             const filesRes = await pool.request().query(filesQuery);
-            allFiles = filesRes.recordset;
+            allFiles = filesRes.recordset.map(f => ({
+                ...f,
+                urlProxy: (f.link && f.link.includes('drive.google.com'))
+                    ? `/api/production-file-control/view-drive-file?url=${encodeURIComponent(f.link)}`
+                    : null
+            }));
         }
 
         const ordersCompleted = globalOrders.filter(o => {

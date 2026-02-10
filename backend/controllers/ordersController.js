@@ -130,7 +130,12 @@ exports.getOrdersByArea = async (req, res) => {
             filesCount: o.ArchivosCount,
             nextService: o.ProximoServicio || '-',
             meta: o.meta_data ? JSON.parse(o.meta_data) : {},
-            filesData: o.files_data ? JSON.parse(o.files_data) : []
+            filesData: o.files_data ? JSON.parse(o.files_data).map(f => ({
+                ...f,
+                urlProxy: (f.link && f.link.includes('drive.google.com'))
+                    ? `/api/production-file-control/view-drive-file?url=${encodeURIComponent(f.link)}`
+                    : null
+            })) : []
         }));
 
         res.json(orders);
@@ -1267,7 +1272,13 @@ exports.getOrderReferences = async (req, res) => {
                    ISNULL(TipoArchivo, 'Referencia') as tipo, NotasAdicionales as notas
             FROM dbo.ArchivosReferencia WHERE OrdenID = @ID
         `);
-        res.json(result.recordset);
+        const mappedData = result.recordset.map(f => ({
+            ...f,
+            urlProxy: (f.link && f.link.includes('drive.google.com'))
+                ? `/api/production-file-control/view-drive-file?url=${encodeURIComponent(f.link)}`
+                : null
+        }));
+        res.json(mappedData);
     } catch (e) {
         // Si la tabla no existe o hay error, devolvemos array vacío para no romper el front
         console.warn("⚠️ Error leyendo Referencias:", e.message);

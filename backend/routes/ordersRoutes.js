@@ -3,9 +3,13 @@ const router = express.Router();
 
 // Importamos el controlador
 const ordersController = require('../controllers/ordersController');
+const clientOrdersController = require('../controllers/clientOrdersController');
 
 // 👇 Importamos Middleware de Autenticación
 const { verifyToken, authorizeAdminOrArea } = require('../middleware/authMiddleware');
+
+// RUTAS CLIENTE WEB
+router.post('/client', verifyToken, clientOrdersController.createClientOrder);
 
 // --- AQUÍ VAN LAS RUTAS DE CONSULTA ESPECÍFICA (Antes de las rutas con :id) ---
 

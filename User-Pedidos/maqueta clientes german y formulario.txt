@@ -1,0 +1,1345 @@
+import React, { useState, useEffect } from 'react';
+import { 
+  User, 
+  Package, 
+  Factory, 
+  Truck, 
+  Crown, 
+  CheckCircle, 
+  AlertCircle,
+  Menu,
+  X,
+  FileText,
+  LogOut,
+  ChevronRight,
+  ChevronDown,
+  Plus,
+  Trash2,
+  Zap,
+  Box,
+  Printer,
+  Scissors,
+  Palette,
+  Layers,
+  Stamp,
+  Image as ImageIcon,
+  CreditCard,
+  MessageSquare,
+  UploadCloud,
+  AlertTriangle,
+  TrendingUp,
+  DollarSign,
+  Calendar,
+  MessageCircle,
+  Phone,
+  Archive
+} from 'lucide-react';
+
+// --- CONFIGURACIÓN MAESTRA DE SERVICIOS ---
+const SERVICES_LIST = [
+  { 
+    id: 'dtf', 
+    label: 'DTF (Direct to Film)', 
+    desc: 'Impresión digital directa sobre film.', 
+    icon: Layers,
+    subtypes: ['DTF Común', 'DTF UV'],
+    materials: ['Film PET 30cm', 'Film PET 60cm', 'Film Glitter', 'Film Fotoluminiscente'],
+    config: {
+      singleMaterial: true, 
+      disableItemNote: true,
+      requiresProductionFiles: true,
+    },
+    complementaryOptions: [
+      { id: 'despuntillado', label: 'Despuntillado' },
+      { id: 'corte_individual', label: 'Corte Individual' },
+    ]
+  },
+  { 
+    id: 'sublimacion', 
+    label: 'Sublimación x Metro', 
+    desc: 'Transferencia de tinta por calor.', 
+    icon: Palette,
+    subtypes: ['Papel', 'Tela Sublimada'],
+    // Agregamos 'Tela Cliente' para activar lógica de stock
+    materials: ['Tela Deportiva (Set)', 'Tela Modal', 'Tela Spun', 'Papel Transfer Premium', 'Tela Cliente'],
+    config: {
+      singleMaterial: false, 
+      disableItemNote: true,
+      requiresProductionFiles: true,
+      stockTriggerMaterial: 'Tela Cliente' // Activa dropdown de stock
+    },
+    complementaryOptions: [
+      { id: 'calandra', label: 'Bajada de Plancha / Calandra' },
+      { id: 'revision', label: 'Revisión de Color (Muestra)' }
+    ]
+  },
+  { 
+    id: 'ecouv', 
+    label: 'Impresión Digital (EcoUV)', 
+    desc: 'Alta resolución y durabilidad.', 
+    icon: ImageIcon,
+    subtypes: ['Etiquetas y Calcomanías', 'Cartelería Rígida', 'Lonas y Pendones'],
+    materials: ['Vinilo Brillante', 'Vinilo Mate', 'Lona Front', 'Lona Blackout', 'PVC Rígido 3mm'],
+    config: { 
+      singleMaterial: true,
+      disableItemNote: true,
+      requiresProductionFiles: true 
+    },
+    complementaryOptions: [
+      { id: 'ojales', label: 'Colocación de Ojales', hasInput: true, inputLabel: 'Cant. / Distancia' },
+      { id: 'refuerzo', label: 'Refuerzo Perimetral' }
+    ]
+  },
+  { 
+    id: 'directa_320', 
+    label: 'Impresión Directa 3.20m', 
+    desc: 'Gigantografía y gran formato.', 
+    icon: Printer,
+    materials: ['Lona Front', 'Lona Blackout', 'Mesh', 'Vinilo'],
+    config: {
+      singleMaterial: true,
+      disableItemNote: true,
+      requiresProductionFiles: true,
+    },
+    complementaryOptions: [
+      { id: 'soldadura', label: 'Soldadura de Paños' },
+      { id: 'bolsillo', label: 'Bolsillos para Caño' }
+    ]
+  },
+  { 
+    id: 'directa_algodon', 
+    label: 'Impresión Directa Algodón', 
+    desc: 'Similar a sublimación pero en algodón.', 
+    icon: Printer,
+    materials: ['Algodón Peinado', 'Algodón Cardado', 'Lienzo'],
+    config: {
+      singleMaterial: false,
+      disableItemNote: true,
+      requiresProductionFiles: true,
+    },
+    complementaryOptions: []
+  },
+  { 
+    id: 'bordado', 
+    label: 'Bordado', 
+    desc: 'Personalización con hilos.', 
+    icon: Scissors,
+    config: {
+      hideMaterial: false, // Ahora mostramos "Prenda"
+      useClientStock: true, // Fuerza a usar stock del cliente
+      materialLabel: 'Seleccionar Prenda (Stock)',
+      requiresProductionFiles: true, 
+      productionFileLabel: 'Archivo de Logo', 
+      disableItemNote: true, 
+      filesAtEnd: true, 
+      extraFiles: [
+        { key: 'sketch', label: 'Boceto / Mockup General' }
+      ],
+      features: ['sample_check'], 
+    },
+    complementaryOptions: [] 
+  },
+  { 
+    id: 'laser', 
+    label: 'Corte Láser y Costura', 
+    desc: 'Corte de precisión y confección.', 
+    icon: Zap,
+    materials: ['MDF 3mm', 'MDF 5.5mm', 'Acrílico', 'Alto Impacto', 'Material Cliente'],
+    config: {
+      requiresProductionFiles: true,
+      productionFileLabel: 'Tizada de Corte (DXF/PDF)',
+      disableItemNote: true,
+      hasFabricTypeSelector: true,
+      filesAtEnd: true,
+      stockTriggerMaterial: 'Material Cliente', // Si elige esto, muestra stock
+      extraFiles: [
+        { key: 'sizes', label: 'Curva de Talles (PDF)' },
+        { key: 'sketch', label: 'Boceto de Piezas' },
+        { key: 'sewing_specs', label: 'Ficha Técnica de Costura (Opcional)' }
+      ]
+    },
+    complementaryOptions: [
+      { id: 'costura', label: 'Servicio de Costura/Confección', hasInput: true, inputLabel: 'Detalles de confección' },
+      { id: 'armado', label: 'Armado de Piezas' },
+      { id: 'limpieza', label: 'Limpieza de Bordes Quemados' }
+    ]
+  },
+  { 
+    id: 'tpu', 
+    label: 'TPU', 
+    desc: 'Aplicaciones en poliuretano.', 
+    icon: Box,
+    materials: ['TPU Standard', 'TPU Relieve 3D', 'TPU Metalizado', 'TPU Holográfico', 'TPU Mate'],
+    materialLabel: 'Tipo de TPU',
+    config: {
+      disableItemNote: true,
+      requiresProductionFiles: true
+    },
+    complementaryOptions: [
+      // CAMBIO: hasFile: true para carga de boceto
+      { id: 'estampado', label: 'Servicio de Estampado', hasFile: true, inputLabel: 'Cargar Boceto de Ubicación' },
+      // Estampado con plancha es complementario de TPU
+      { id: 'plancha', label: 'Estampado con Plancha', hasInput: true, inputLabel: 'Ubicación' }
+    ]
+  },
+];
+
+// Componente Principal
+export default function App() {
+  const [activeTab, setActiveTab] = useState('services-grid'); 
+  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+  const [servicesMenuOpen, setServicesMenuOpen] = useState(true);
+
+  // Datos simulados del usuario + STOCK
+  const user = {
+    name: "Carlos Cliente",
+    company: "Diseños Creativos S.A.",
+    level: "Gold Member",
+    email: "carlos@creative.com",
+    phone: "+54 9 11 1234 5678",
+    avatar: "CC",
+    hasCredit: true,
+    points: 12500,
+    monthlySpend: 450000,
+    advisor: {
+      name: "Juan Pérez",
+      phone: "5491199998888", 
+      role: "Asesor Comercial"
+    },
+    // Stock del cliente simulado
+    stock: [
+      { id: 'S001', name: 'Gorras Trucker Negras (x50)' },
+      { id: 'S002', name: 'Remeras Algodón L (x100)' },
+      { id: 'S003', name: 'MDF 3mm Propio (x20 placas)' },
+      { id: 'S004', name: 'Tela Set Poliéster Blanca (Rollos)' },
+      { id: 'S005', name: 'Chombas Piqué M (x30)' }
+    ]
+  };
+
+  const handleNavClick = (id) => {
+    if (id === 'services') {
+      setServicesMenuOpen(!servicesMenuOpen);
+      setActiveTab('services-grid');
+    } else {
+      setActiveTab(id);
+    }
+    setIsMobileMenuOpen(false);
+  };
+
+  const renderContent = () => {
+    if (SERVICES_LIST.find(s => s.id === activeTab)) {
+      return <ServiceFormView serviceId={activeTab} onBack={() => setActiveTab('services-grid')} userStock={user.stock} />;
+    }
+
+    switch (activeTab) {
+      case 'profile': return <ProfileView user={user} />;
+      case 'services-grid': return <ServicesGridView onSelectService={setActiveTab} />;
+      case 'factory': return <FactoryView />;
+      case 'pickup': return <PickupView user={user} />;
+      case 'club': return <ClubView />;
+      default: return <ServicesGridView onSelectService={setActiveTab} />;
+    }
+  };
+
+  return (
+    // CAMBIO DE COLOR: bg-slate-50 a bg-neutral-50, texto general neutral
+    <div className="flex h-screen bg-neutral-50 font-sans text-neutral-800 overflow-hidden">
+      {/* Sidebar - Desktop - CAMBIO A NEGRO */}
+      <aside className="hidden md:flex flex-col w-64 bg-black text-white shadow-xl z-20 flex-shrink-0">
+        <div className="p-6 border-b border-zinc-800">
+          <h1 className="text-xl font-bold tracking-wider flex items-center gap-2">
+            <Factory className="text-zinc-400" /> PRO-SERVICES
+          </h1>
+          <p className="text-xs text-zinc-500 mt-1">Portal de Clientes</p>
+        </div>
+        
+        <nav className="flex-1 overflow-y-auto py-4 scrollbar-thin scrollbar-thumb-zinc-800">
+          <ul className="space-y-1 px-3">
+            <li>
+              <button onClick={() => setActiveTab('profile')} className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-all ${activeTab === 'profile' ? 'bg-zinc-800 text-white' : 'hover:bg-zinc-900 text-zinc-400'}`}>
+                <User size={20} /> <span className="font-medium">Mi Perfil</span>
+              </button>
+            </li>
+            
+            <li>
+              <button 
+                onClick={() => handleNavClick('services')}
+                className={`w-full flex items-center justify-between px-4 py-3 rounded-lg transition-all ${activeTab.includes('services') || SERVICES_LIST.find(s=>s.id===activeTab) ? 'bg-zinc-800 text-white' : 'hover:bg-zinc-900 text-zinc-400'}`}
+              >
+                <div className="flex items-center gap-3">
+                  <Package size={20} /> <span className="font-medium">Servicios</span>
+                </div>
+                {servicesMenuOpen ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+              </button>
+              
+              {servicesMenuOpen && (
+                <ul className="mt-1 ml-4 border-l-2 border-zinc-800 pl-2 space-y-1">
+                  {SERVICES_LIST.map((service) => (
+                    <li key={service.id}>
+                      <button 
+                        onClick={() => setActiveTab(service.id)}
+                        className={`w-full text-left px-3 py-2 text-sm rounded-md transition-colors ${activeTab === service.id ? 'text-white font-medium bg-zinc-900' : 'text-zinc-500 hover:text-white'}`}
+                      >
+                        {service.label}
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </li>
+
+            <li>
+              <button onClick={() => setActiveTab('factory')} className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-all ${activeTab === 'factory' ? 'bg-zinc-800 text-white' : 'hover:bg-zinc-900 text-zinc-400'}`}>
+                <Factory size={20} /> <span className="font-medium">Fábrica / Estado</span>
+              </button>
+            </li>
+            <li>
+              <button onClick={() => setActiveTab('pickup')} className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-all ${activeTab === 'pickup' ? 'bg-zinc-800 text-white' : 'hover:bg-zinc-900 text-zinc-400'}`}>
+                <Truck size={20} /> <span className="font-medium">Retiro de Pedidos</span>
+              </button>
+            </li>
+            <li>
+              <button onClick={() => setActiveTab('club')} className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-all ${activeTab === 'club' ? 'bg-gradient-to-r from-amber-500 to-yellow-600 text-white shadow-lg' : 'hover:bg-zinc-900 text-zinc-400'}`}>
+                <Crown size={20} className={activeTab !== 'club' ? "text-amber-400" : ""} /> <span className="font-medium tracking-wide">CLUB USER</span>
+              </button>
+            </li>
+          </ul>
+        </nav>
+
+        {/* Botón de Contacto Asesor - Estilo Negro/Verde */}
+        <div className="p-4 bg-zinc-900">
+          <a 
+            href={`https://wa.me/${user.advisor.phone}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="w-full bg-green-600 hover:bg-green-700 text-white py-3 px-4 rounded-lg flex items-center justify-center gap-2 transition-colors group mb-3 shadow-lg"
+          >
+            <MessageCircle size={20} className="group-hover:scale-110 transition-transform" />
+            <div className="text-left leading-tight">
+              <span className="block text-xs font-medium opacity-80">Asesor: {user.advisor.name}</span>
+              <span className="block font-bold text-sm">Contactar Ahora</span>
+            </div>
+          </a>
+        </div>
+
+        <div className="p-4 border-t border-zinc-800">
+          <div className="flex items-center gap-3 mb-4">
+            <div className="w-10 h-10 rounded-full bg-zinc-700 flex items-center justify-center font-bold text-zinc-300">
+              {user.avatar}
+            </div>
+            <div>
+              <p className="text-sm font-medium">{user.name}</p>
+              <p className="text-xs text-zinc-400 flex items-center gap-1">
+                {user.hasCredit ? <span className="text-green-400">● Cta. Corriente</span> : <span className="text-amber-400">● Prepago</span>}
+              </p>
+            </div>
+          </div>
+          <button className="flex items-center gap-2 text-sm text-zinc-400 hover:text-white transition-colors w-full">
+            <LogOut size={16} /> Cerrar Sesión
+          </button>
+        </div>
+      </aside>
+
+      {/* Mobile Header */}
+      <div className="md:hidden fixed top-0 w-full bg-black text-white z-30 p-4 flex justify-between items-center shadow-md">
+        <h1 className="font-bold flex items-center gap-2"><Factory size={20} /> PRO-SERVICES</h1>
+        <button onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}>
+          {isMobileMenuOpen ? <X /> : <Menu />}
+        </button>
+      </div>
+
+      {/* Mobile Menu Overlay */}
+      {isMobileMenuOpen && (
+        <div className="md:hidden fixed inset-0 bg-black z-20 pt-20 px-4">
+           <ul className="space-y-4">
+             <button onClick={() => handleNavClick('services')} className="text-white text-xl font-bold block mb-4">Servicios</button>
+             {SERVICES_LIST.map(s => (
+               <button key={s.id} onClick={() => handleNavClick(s.id)} className="block text-zinc-400 ml-4 py-2">{s.label}</button>
+             ))}
+             <button onClick={() => handleNavClick('profile')} className="text-white text-xl font-bold block">Mi Perfil</button>
+             
+             <a 
+                href={`https://wa.me/${user.advisor.phone}`}
+                className="w-full bg-green-600 text-white py-3 px-4 rounded-lg flex items-center justify-center gap-2 font-bold"
+              >
+                <MessageCircle size={20} /> Contactar Asesor
+              </a>
+
+             <button onClick={() => handleNavClick('pickup')} className="text-white text-xl font-bold block">Retiro</button>
+           </ul>
+        </div>
+      )}
+
+      {/* Main Content Area */}
+      <main className="flex-1 overflow-y-auto pt-16 md:pt-0 bg-neutral-50 relative">
+        <div className="p-4 md:p-8 max-w-6xl mx-auto min-h-full">
+          {renderContent()}
+        </div>
+      </main>
+    </div>
+  );
+}
+
+// 1. VISTA DE FORMULARIO DETALLADO
+function ServiceFormView({ serviceId, onBack, userStock }) {
+  const serviceInfo = SERVICES_LIST.find(s => s.id === serviceId) || SERVICES_LIST[0];
+  const config = serviceInfo.config || {};
+  
+  // States
+  const [jobName, setJobName] = useState('');
+  const [serviceSubType, setServiceSubType] = useState('');
+  const [urgency, setUrgency] = useState('normal');
+  const [generalNote, setGeneralNote] = useState('');
+  const [globalMaterial, setGlobalMaterial] = useState('');
+  const [fabricType, setFabricType] = useState('lisa'); 
+  const [requiresSample, setRequiresSample] = useState(false);
+  const [items, setItems] = useState([]);
+  const [selectedComplementary, setSelectedComplementary] = useState({});
+
+  // Reset completo
+  useEffect(() => {
+    setJobName('');
+    setUrgency('normal');
+    setGeneralNote('');
+    setFabricType('lisa');
+    setRequiresSample(false);
+    setSelectedComplementary({});
+    
+    if (serviceInfo.subtypes?.length > 0) setServiceSubType(serviceInfo.subtypes[0]);
+    else setServiceSubType('');
+    
+    if (serviceInfo.materials?.length > 0) setGlobalMaterial(serviceInfo.materials[0]);
+    else setGlobalMaterial('');
+    
+    setItems([{ id: Date.now(), file: null, fileBack: null, copies: 1, material: '', note: '', doubleSided: false }]);
+  }, [serviceId]);
+
+  const addItem = () => {
+    setItems([...items, { id: Date.now(), file: null, fileBack: null, copies: 1, material: '', note: '', doubleSided: false }]);
+  };
+
+  const removeItem = (id) => {
+    if (items.length > 1) setItems(items.filter(item => item.id !== id));
+  };
+
+  const updateItem = (id, field, value) => {
+    setItems(items.map(item => item.id === id ? { ...item, [field]: value } : item));
+  };
+
+  const toggleComplementary = (id) => {
+    setSelectedComplementary(prev => ({
+      ...prev,
+      [id]: !prev[id] ? { active: true, text: '', file: null } : undefined
+    }));
+  };
+
+  const updateComplementaryText = (id, text) => {
+    setSelectedComplementary(prev => ({
+      ...prev,
+      [id]: { ...prev[id], text }
+    }));
+  };
+
+  // Manejo de archivo en complementario
+  const updateComplementaryFile = (id, fileName) => {
+    setSelectedComplementary(prev => ({
+      ...prev,
+      [id]: { ...prev[id], file: fileName }
+    }));
+  };
+
+  const isBlackoutSelected = serviceId === 'directa_320' && globalMaterial === 'Lona Blackout';
+
+  return (
+    <div className="animate-fade-in pb-12">
+      {/* Header Formulario */}
+      <div className="flex items-center gap-4 mb-6">
+        <button onClick={onBack} className="p-2 hover:bg-zinc-200 rounded-full transition-colors">
+          <ChevronRight className="rotate-180" size={24} />
+        </button>
+        <div>
+          <h2 className="text-2xl font-bold text-neutral-800 flex items-center gap-2">
+            Nuevo Pedido: <span className="text-black">{serviceInfo.label}</span>
+          </h2>
+          <p className="text-sm text-neutral-500">{serviceInfo.desc}</p>
+        </div>
+      </div>
+
+      {config.dependencyWarning && (
+        <div className="bg-amber-50 border-l-4 border-amber-500 p-4 mb-6 rounded-r flex items-start gap-3">
+          <AlertTriangle className="text-amber-500 flex-shrink-0" />
+          <div>
+            <h4 className="font-bold text-amber-800 text-sm">Requisito Previo</h4>
+            <p className="text-sm text-amber-700">{config.dependencyWarning}</p>
+          </div>
+        </div>
+      )}
+
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+        
+        {/* COLUMNA IZQUIERDA: FORMULARIO */}
+        <div className="lg:col-span-2 space-y-6">
+          
+          {/* 1. Datos Generales */}
+          <div className="bg-white p-6 rounded-xl shadow-sm border border-zinc-200">
+            <h3 className="font-bold text-neutral-800 mb-4 pb-2 border-b border-zinc-100">1. Configuración del Trabajo</h3>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              <div className="md:col-span-2">
+                <label className="block text-sm font-medium text-neutral-700 mb-2">Nombre del Proyecto *</label>
+                <input 
+                  type="text" 
+                  value={jobName}
+                  onChange={(e) => setJobName(e.target.value)}
+                  className="w-full p-3 border border-zinc-300 rounded-lg focus:ring-2 focus:ring-black outline-none"
+                  placeholder="Ej: Camisetas Verano 2024"
+                />
+              </div>
+
+              {serviceInfo.subtypes && (
+                <div>
+                   <label className="block text-sm font-medium text-neutral-700 mb-2">Sub-Categoría *</label>
+                   <select 
+                      className="w-full p-3 border border-zinc-300 rounded-lg focus:ring-2 focus:ring-black outline-none bg-white font-medium text-neutral-700"
+                      value={serviceSubType}
+                      onChange={(e) => setServiceSubType(e.target.value)}
+                   >
+                     {serviceInfo.subtypes.map(type => (
+                       <option key={type} value={type}>{type}</option>
+                     ))}
+                   </select>
+                </div>
+              )}
+
+              {/* MODALIDAD */}
+              <div>
+                <label className="block text-sm font-medium text-neutral-700 mb-2">Modalidad *</label>
+                <div className="flex bg-neutral-100 p-1 rounded-lg">
+                  <button 
+                    type="button"
+                    onClick={() => setUrgency('normal')}
+                    className={`flex-1 py-2 px-4 rounded-md text-sm font-medium transition-all ${urgency === 'normal' ? 'bg-white text-black shadow-sm' : 'text-zinc-500'}`}
+                  >
+                    Normal
+                  </button>
+                  <button 
+                    type="button"
+                    onClick={() => setUrgency('urgente')}
+                    className={`flex-1 py-2 px-4 rounded-md text-sm font-medium transition-all flex items-center justify-center gap-2 ${urgency === 'urgente' ? 'bg-amber-100 text-amber-700 shadow-sm' : 'text-zinc-500'}`}
+                  >
+                    <Zap size={14} /> Urgente
+                  </button>
+                </div>
+              </div>
+
+              {/* MATERIAL GLOBAL */}
+              {config.singleMaterial && serviceInfo.materials && (
+                <div className="md:col-span-2">
+                  <label className="block text-sm font-medium text-neutral-700 mb-2">{serviceInfo.materialLabel || 'Material / Soporte (Global)'} *</label>
+                  <select 
+                    className="w-full p-3 border border-zinc-300 rounded-lg focus:ring-2 focus:ring-black outline-none bg-white"
+                    value={globalMaterial}
+                    onChange={(e) => setGlobalMaterial(e.target.value)}
+                  >
+                    {serviceInfo.materials.map(mat => (
+                      <option key={mat} value={mat}>{mat}</option>
+                    ))}
+                  </select>
+                </div>
+              )}
+
+              {/* TIPO DE TELA (LASER) */}
+              {config.hasFabricTypeSelector && (
+                 <div className="md:col-span-2">
+                   <label className="block text-sm font-medium text-neutral-700 mb-2">Configuración de Material</label>
+                   <div className="bg-neutral-50 p-4 rounded-lg border border-zinc-200">
+                     <label className="flex items-center gap-3 cursor-pointer">
+                        <input 
+                          type="checkbox" 
+                          checked={fabricType === 'sublimada'} 
+                          onChange={(e) => setFabricType(e.target.checked ? 'sublimada' : 'lisa')} 
+                          className="w-5 h-5 text-black rounded focus:ring-black"
+                        />
+                        <div>
+                           <span className="font-medium text-neutral-800">Es Tela Sublimada (Requiere Corte con Registro)</span>
+                           <p className="text-xs text-neutral-500">Activa esta opción si la tela tiene impresiones que necesitan calce exacto.</p>
+                        </div>
+                     </label>
+                   </div>
+                 </div>
+              )}
+
+              {/* CHECKBOX MUESTRA */}
+              {config.features?.includes('sample_check') && (
+                <div className="md:col-span-2 bg-neutral-50 p-3 rounded-lg border border-zinc-200">
+                  <label className="flex items-center gap-3 cursor-pointer">
+                    <input 
+                      type="checkbox" 
+                      checked={requiresSample} 
+                      onChange={(e) => setRequiresSample(e.target.checked)}
+                      className="w-5 h-5 text-black rounded focus:ring-black"
+                    />
+                    <div>
+                      <span className="font-medium text-neutral-800">Solicitar Muestra Física Previa</span>
+                      <p className="text-xs text-neutral-500">Esto puede agregar 24-48hs al tiempo de entrega.</p>
+                    </div>
+                  </label>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* 2. Archivos y Producción */}
+          {config.requiresProductionFiles && (
+          <div className="bg-white p-6 rounded-xl shadow-sm border border-zinc-200">
+            <div className="flex justify-between items-center mb-4 pb-2 border-b border-zinc-100">
+              <h3 className="font-bold text-neutral-800">2. Archivos de Producción</h3>
+            </div>
+
+            {/* Archivos Extra al Inicio */}
+            {config.extraFiles && !config.filesAtEnd && (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6 bg-neutral-50 p-4 rounded-xl">
+                 {config.extraFiles.map(extra => (
+                   <div key={extra.key}>
+                     <label className="block text-xs font-bold text-zinc-600 mb-1">{extra.label} *</label>
+                     <div className="flex items-center gap-2 bg-white border border-zinc-300 rounded-lg p-2">
+                       <UploadCloud size={16} className="text-zinc-400" />
+                       <input type="file" className="text-xs w-full text-zinc-500 file:mr-2 file:py-1 file:px-2 file:rounded file:border-0 file:bg-zinc-100 file:text-zinc-600" />
+                     </div>
+                   </div>
+                 ))}
+              </div>
+            )}
+
+            {/* Lista de Items */}
+            <div className="space-y-4">
+              {items.map((item, index) => {
+                // LOGICA DE STOCK: Verificamos si debe mostrar el dropdown de stock
+                const showStockDropdown = config.useClientStock || 
+                                          (config.stockTriggerMaterial && item.material === config.stockTriggerMaterial);
+
+                return (
+                <div key={item.id} className="relative bg-neutral-50 p-5 rounded-xl border border-zinc-200 hover:border-black transition-colors">
+                  <div className="flex justify-between items-start mb-4">
+                    <span className="bg-zinc-200 text-zinc-600 text-xs font-bold px-2 py-1 rounded">
+                      {serviceId === 'bordado' ? `Logo #${index + 1}` : `Ítem #${index + 1}`}
+                    </span>
+                    {items.length > 1 && (
+                      <button onClick={() => removeItem(item.id)} className="text-zinc-400 hover:text-red-500 transition-colors">
+                        <Trash2 size={18} />
+                      </button>
+                    )}
+                  </div>
+                  
+                  <div className="grid grid-cols-1 md:grid-cols-12 gap-4">
+                    
+                    {/* Archivo Principal */}
+                    <div className="md:col-span-5">
+                      <label className="block text-xs font-bold text-zinc-500 mb-1">
+                        {config.productionFileLabel || (isBlackoutSelected ? 'Archivo Frente' : 'Archivo')}
+                      </label>
+                      <input 
+                        type="file" 
+                        className="w-full text-sm text-zinc-500 file:mr-2 file:py-1 file:px-3 file:rounded-lg file:border-0 file:bg-white file:text-black border rounded p-1"
+                        onChange={(e) => updateItem(item.id, 'file', e.target.files[0]?.name)}
+                      />
+                    </div>
+
+                    {/* Archivo Dorso */}
+                    {isBlackoutSelected && (
+                      <div className="md:col-span-5">
+                        <label className="block text-xs font-bold text-zinc-500 mb-1">Archivo Dorso (Blackout)</label>
+                        <input 
+                          type="file" 
+                          className="w-full text-sm text-zinc-500 file:mr-2 file:py-1 file:px-3 file:rounded-lg file:border-0 file:bg-white file:text-black border rounded p-1"
+                          onChange={(e) => updateItem(item.id, 'fileBack', e.target.files[0]?.name)}
+                        />
+                      </div>
+                    )}
+
+                    {/* Copias/Metros */}
+                    <div className="md:col-span-2">
+                       <label className="block text-xs font-bold text-zinc-500 mb-1">Cantidad</label>
+                       <input 
+                        type="number" 
+                        min="1" 
+                        value={item.copies}
+                        onChange={(e) => updateItem(item.id, 'copies', parseInt(e.target.value))}
+                        className="w-full p-2 border border-zinc-300 rounded-lg focus:ring-black outline-none text-sm"
+                      />
+                    </div>
+
+                    {/* Material Individual */}
+                    {!config.singleMaterial && !config.hideMaterial && (
+                       <div className="md:col-span-5">
+                         <label className="block text-xs font-bold text-zinc-500 mb-1">{serviceInfo.materialLabel || 'Material / Soporte'}</label>
+                         <select 
+                          className="w-full p-2 border border-zinc-300 rounded-lg focus:ring-black outline-none text-sm bg-white"
+                          value={item.material}
+                          onChange={(e) => updateItem(item.id, 'material', e.target.value)}
+                         >
+                           <option value="">Seleccionar...</option>
+                           {serviceInfo.materials?.map((mat) => (
+                             <option key={mat} value={mat}>{mat}</option>
+                           ))}
+                           {!serviceInfo.materials && <option value="estandar">Estándar</option>}
+                         </select>
+                       </div>
+                    )}
+
+                    {/* DROPDOWN DE STOCK - SI SE ACTIVA */}
+                    {showStockDropdown && (
+                       <div className="md:col-span-5 animate-fade-in">
+                          <label className="block text-xs font-bold text-zinc-500 mb-1 flex items-center gap-1">
+                            <Archive size={12}/> Seleccionar Stock
+                          </label>
+                          <select className="w-full p-2 border border-green-300 bg-green-50 rounded-lg focus:ring-green-600 outline-none text-sm text-green-800 font-medium">
+                            <option value="">-- Elegir del Inventario --</option>
+                            {userStock.map(stockItem => (
+                              <option key={stockItem.id} value={stockItem.id}>{stockItem.name}</option>
+                            ))}
+                          </select>
+                       </div>
+                    )}
+
+                    {/* Nota Individual */}
+                    {!config.disableItemNote && (
+                      <div className={!config.singleMaterial && !config.hideMaterial ? "md:col-span-7" : "md:col-span-12"}>
+                        <label className="block text-xs font-bold text-zinc-500 mb-1">
+                          {config.customFields?.includes('location') ? 'Ubicación' : 'Nota del Ítem'}
+                        </label>
+                        <input 
+                          type="text" 
+                          className="w-full p-2 border border-zinc-300 rounded-lg text-sm bg-white focus:ring-black outline-none"
+                          value={item.note}
+                          onChange={(e) => updateItem(item.id, 'note', e.target.value)}
+                          placeholder={config.customFields?.includes('location') ? "Ej: Centrado a 10cm del cuello" : "Detalle técnico específico..."}
+                        />
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )})}
+            </div>
+
+            <button 
+              type="button" 
+              onClick={addItem}
+              className="mt-4 w-full py-3 border-2 border-dashed border-zinc-300 text-zinc-600 rounded-xl font-bold hover:bg-neutral-50 hover:border-black transition-all flex items-center justify-center gap-2"
+            >
+              <Plus size={20} /> Agregar otro {serviceId === 'bordado' ? 'Logo' : 'Ítem'}
+            </button>
+          </div>
+          )}
+
+          {/* 3. Finalización */}
+          <div className="bg-white p-6 rounded-xl shadow-sm border border-zinc-200">
+            <h3 className="font-bold text-neutral-800 mb-4 pb-2 border-b border-zinc-100">3. Finalización y Detalles</h3>
+            
+            {/* Archivos Extra al Final */}
+            {config.filesAtEnd && config.extraFiles && (
+              <div className="mb-8 p-4 bg-neutral-50 rounded-xl border border-zinc-200">
+                <h4 className="font-bold text-sm text-neutral-700 mb-3 flex items-center gap-2"><FileText size={16}/> Documentación Requerida</h4>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                   {config.extraFiles.map(extra => (
+                     <div key={extra.key}>
+                       <label className="block text-xs font-bold text-zinc-600 mb-1">{extra.label} *</label>
+                       <div className="flex items-center gap-2 bg-white border border-zinc-300 rounded-lg p-2">
+                         <UploadCloud size={16} className="text-zinc-400" />
+                         <input type="file" className="text-xs w-full text-zinc-500 file:mr-2 file:py-1 file:px-2 file:rounded file:border-0 file:bg-zinc-100 file:text-zinc-600" />
+                       </div>
+                     </div>
+                   ))}
+                </div>
+              </div>
+            )}
+
+            {/* Servicios Complementarios */}
+            {serviceInfo.complementaryOptions?.length > 0 && (
+              <div className="mb-6">
+                <label className="block text-sm font-medium text-neutral-700 mb-3">Servicios Complementarios</label>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  {serviceInfo.complementaryOptions.map((opt) => {
+                    const isSelected = !!selectedComplementary[opt.id];
+                    return (
+                      <div key={opt.id} className={`p-3 rounded-lg border transition-all ${isSelected ? 'border-black bg-neutral-50' : 'border-zinc-200'}`}>
+                        <label className="flex items-center gap-3 cursor-pointer">
+                          <input 
+                            type="checkbox" 
+                            checked={isSelected}
+                            onChange={() => toggleComplementary(opt.id)}
+                            className="w-4 h-4 text-black rounded focus:ring-black"
+                          />
+                          <span className="text-sm font-medium text-neutral-700">{opt.label}</span>
+                        </label>
+                        
+                        {/* Input de texto extra */}
+                        {opt.hasInput && isSelected && (
+                          <div className="mt-2 ml-7">
+                            <input 
+                              type="text"
+                              placeholder={opt.inputLabel || "Especificar detalle..."}
+                              className="w-full text-xs p-2 border border-zinc-200 rounded bg-white focus:ring-1 focus:ring-black outline-none"
+                              value={selectedComplementary[opt.id]?.text || ''}
+                              onChange={(e) => updateComplementaryText(opt.id, e.target.value)}
+                            />
+                          </div>
+                        )}
+
+                        {/* Input de archivo extra (Boceto en Estampado) */}
+                        {opt.hasFile && isSelected && (
+                           <div className="mt-2 ml-7">
+                              <label className="block text-xs font-bold text-zinc-500 mb-1">{opt.inputLabel}</label>
+                              <div className="flex items-center gap-2 bg-white border border-zinc-300 rounded-lg p-1">
+                                <UploadCloud size={14} className="text-zinc-400" />
+                                <input 
+                                  type="file" 
+                                  className="text-xs w-full text-zinc-500 file:mr-1 file:py-0.5 file:px-2 file:rounded file:border-0 file:bg-zinc-100" 
+                                  onChange={(e) => updateComplementaryFile(opt.id, e.target.files[0]?.name)}
+                                />
+                              </div>
+                           </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            <div className="mb-6">
+              <label className="block text-sm font-medium text-neutral-700 mb-2 flex items-center gap-2">
+                <MessageSquare size={16} /> Nota General del Pedido
+              </label>
+              <textarea 
+                rows="3"
+                className="w-full p-3 border border-zinc-300 rounded-lg focus:ring-2 focus:ring-black outline-none"
+                placeholder="Instrucciones de empaquetado, fecha límite, etc..."
+                value={generalNote}
+                onChange={(e) => setGeneralNote(e.target.value)}
+              ></textarea>
+            </div>
+          </div>
+
+          <button className="w-full bg-black hover:bg-zinc-800 text-white text-lg font-bold py-4 px-6 rounded-xl shadow-lg transition-all flex items-center justify-center gap-2">
+            <CheckCircle size={24} /> Confirmar Pedido
+          </button>
+        </div>
+
+        {/* COLUMNA DERECHA: RESUMEN (ESTILO NEGRO) */}
+        <div className="lg:col-span-1 space-y-6">
+          <div className="bg-black text-white p-6 rounded-xl shadow-lg sticky top-6">
+            <h3 className="font-bold text-lg mb-4 flex items-center gap-2">
+              <FileText className="text-zinc-400" /> Resumen
+            </h3>
+            
+            <div className="space-y-4 text-sm text-zinc-300">
+              <div className="flex justify-between border-b border-zinc-700 pb-2">
+                <span>Servicio:</span>
+                <span className="font-medium text-white text-right">{serviceInfo.label}</span>
+              </div>
+              
+              {serviceSubType && (
+                <div className="flex justify-between">
+                  <span>Variante:</span>
+                  <span className="font-medium text-amber-400">{serviceSubType}</span>
+                </div>
+              )}
+              
+               <div className="flex justify-between">
+                  <span>Modalidad:</span>
+                  <span className={`font-bold ${urgency === 'urgente' ? 'text-amber-400' : 'text-white'}`}>
+                    {urgency === 'urgente' ? 'URGENTE (+20%)' : 'Normal'}
+                  </span>
+                </div>
+
+              {config.singleMaterial && globalMaterial && (
+                <div className="flex justify-between">
+                  <span>Material:</span>
+                  <span className="font-medium text-white text-right max-w-[150px] truncate">{globalMaterial}</span>
+                </div>
+              )}
+
+              {config.hasFabricTypeSelector && (
+                 <div className="flex justify-between">
+                   <span>Tela:</span>
+                   <span className="font-medium text-white capitalize">{fabricType}</span>
+                 </div>
+              )}
+
+              <div className="flex justify-between">
+                <span>{serviceId === 'bordado' ? 'Logos' : 'Items'}:</span>
+                <span className="font-medium text-white">{items.length}</span>
+              </div>
+
+              {Object.keys(selectedComplementary).length > 0 && (
+                <div className="pt-2 border-t border-zinc-700">
+                   <span className="block text-xs text-zinc-500 mb-1">Adicionales:</span>
+                   <ul className="list-disc list-inside text-xs text-white">
+                     {Object.keys(selectedComplementary).map(id => {
+                        const opt = serviceInfo.complementaryOptions.find(o => o.id === id);
+                        return <li key={id}>{opt?.label}</li>;
+                     })}
+                   </ul>
+                </div>
+              )}
+            </div>
+            <div className="mt-6 pt-4 border-t border-zinc-700 text-xs text-zinc-400">
+                 El costo final se calculará tras la revisión técnica.
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ServicesGridView({ onSelectService }) {
+  return (
+    <div className="animate-fade-in space-y-6">
+      <div className="mb-8">
+        <h2 className="text-3xl font-bold text-neutral-800">Catálogo de Servicios</h2>
+        <p className="text-neutral-500 mt-2">Selecciona un servicio para comenzar tu orden de producción.</p>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+        {SERVICES_LIST.map((service) => (
+          <button 
+            key={service.id}
+            onClick={() => onSelectService(service.id)}
+            className="group bg-white p-6 rounded-xl shadow-sm border border-zinc-200 hover:shadow-lg hover:border-black transition-all text-left flex flex-col h-full"
+          >
+            <div className="w-12 h-12 bg-neutral-100 rounded-lg flex items-center justify-center text-black mb-4 group-hover:bg-black group-hover:text-white transition-colors">
+              <service.icon size={24} />
+            </div>
+            <h3 className="font-bold text-lg text-neutral-800 mb-2">{service.label}</h3>
+            <p className="text-sm text-neutral-500 mb-4 flex-1">{service.desc}</p>
+            <div className="text-black font-medium text-sm flex items-center gap-1 group-hover:gap-2 transition-all">
+              Configurar Pedido <ChevronRight size={16} />
+            </div>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function FactoryView() {
+  const orders = [
+    { id: '#ORD-8821', service: 'DTF Común', status: 'En Producción', progress: 60, date: '10 Oct, 2023', items: 50 },
+    { id: '#ORD-8825', service: 'DTF Común', status: 'Finalizado', progress: 100, date: '11 Oct, 2023', items: 20 },
+    { id: '#ORD-8845', service: 'Bordado', status: 'Pendiente', progress: 0, date: '12 Oct, 2023', items: 12 },
+    { id: '#ORD-8900', service: 'Sublimación x Metro', status: 'Finalizado', progress: 100, date: '05 Oct, 2023', items: 2 },
+    { id: '#ORD-8910', service: 'Sublimación x Metro', status: 'En Producción', progress: 30, date: '06 Oct, 2023', items: 10 },
+  ];
+
+  // Agrupación simple
+  const groupedOrders = {};
+  orders.forEach(order => {
+    if (!groupedOrders[order.service]) groupedOrders[order.service] = [];
+    groupedOrders[order.service].push(order);
+  });
+
+  return (
+    <div className="space-y-6">
+      <div className="flex justify-between items-center mb-6">
+        <div>
+          <h2 className="text-3xl font-bold text-neutral-800">Estado de Fábrica</h2>
+          <p className="text-neutral-500">Monitorea el progreso de tus órdenes en tiempo real.</p>
+        </div>
+        <button className="bg-white border border-zinc-300 px-4 py-2 rounded-lg text-sm font-medium hover:bg-neutral-50">Actualizar</button>
+      </div>
+      
+      <div className="grid gap-8">
+        {Object.entries(groupedOrders).map(([service, serviceOrders]) => (
+          <div key={service}>
+            <h3 className="text-xl font-bold text-neutral-700 mb-4 pl-2 border-l-4 border-black">{service}</h3>
+            <div className="grid gap-4">
+              {serviceOrders.map((order) => (
+                <div key={order.id} className="bg-white rounded-xl shadow-sm border border-zinc-200 p-6">
+                  <div className="flex justify-between items-center mb-4">
+                    <div>
+                       <h3 className="font-bold text-2xl text-black">{order.id}</h3>
+                       <p className="text-sm text-neutral-500 font-medium">{order.service} • {order.items} Unidades</p>
+                    </div>
+                    <span className={`px-4 py-2 rounded-full text-xs font-bold uppercase tracking-wide ${order.status === 'Finalizado' ? 'bg-green-100 text-green-700' : order.status === 'En Producción' ? 'bg-blue-100 text-blue-700' : 'bg-amber-100 text-amber-700'}`}>
+                      {order.status}
+                    </span>
+                  </div>
+                  <div className="w-full bg-neutral-100 rounded-full h-3">
+                      <div className={`h-3 rounded-full transition-all ${order.status === 'Finalizado' ? 'bg-green-500' : 'bg-blue-600'}`} style={{width: `${order.progress}%`}}></div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ProfileView({ user }) {
+  // Datos simulados más detallados
+  const recentActivity = [
+    { id: 'ORD-8920', date: '20 Oct, 2023', type: 'Corte Láser', status: 'En Producción', amount: 15400 },
+    { id: 'ORD-8915', date: '18 Oct, 2023', type: 'DTF Común', status: 'Finalizado', amount: 8500 },
+    { id: 'ORD-8902', date: '15 Oct, 2023', type: 'Sublimación', status: 'Finalizado', amount: 23000 },
+    { id: 'ORD-8890', date: '10 Oct, 2023', type: 'Bordado', status: 'Finalizado', amount: 12000 },
+  ];
+
+  return (
+    <div className="space-y-6 animate-fade-in">
+      <div className="flex justify-between items-center mb-4">
+        <h2 className="text-3xl font-bold text-neutral-800">Mi Perfil</h2>
+        <span className="bg-amber-100 text-amber-700 px-3 py-1 rounded-full text-sm font-bold border border-amber-200 flex items-center gap-1">
+          <Crown size={14} /> {user.level}
+        </span>
+      </div>
+      
+      {/* KPIs */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+        <div className="bg-white p-6 rounded-xl shadow-sm border border-zinc-200">
+          <div className="flex items-center gap-3 mb-2">
+            <div className="p-2 bg-neutral-100 rounded-lg text-black"><DollarSign size={20} /></div>
+            <p className="text-neutral-500 text-sm font-medium">Gasto Mensual</p>
+          </div>
+          <h3 className="text-2xl font-bold text-neutral-800">${user.monthlySpend.toLocaleString()}</h3>
+          <p className="text-xs text-green-600 flex items-center mt-2"><TrendingUp size={12} className="mr-1" /> +15% vs mes anterior</p>
+        </div>
+        
+        <div className="bg-white p-6 rounded-xl shadow-sm border border-zinc-200">
+          <div className="flex items-center gap-3 mb-2">
+            <div className="p-2 bg-purple-100 rounded-lg text-purple-600"><Crown size={20} /></div>
+            <p className="text-neutral-500 text-sm font-medium">Club Points</p>
+          </div>
+          <h3 className="text-2xl font-bold text-neutral-800">{user.points} pts</h3>
+          <div className="w-full bg-neutral-100 rounded-full h-1.5 mt-3">
+             <div className="bg-purple-500 h-1.5 rounded-full" style={{width: '75%'}}></div>
+          </div>
+          <p className="text-xs text-neutral-400 mt-1">2.500 pts para Nivel Platino</p>
+        </div>
+
+        <div className="bg-white p-6 rounded-xl shadow-sm border border-zinc-200">
+          <div className="flex items-center gap-3 mb-2">
+            <div className="p-2 bg-green-100 rounded-lg text-green-600"><CheckCircle size={20} /></div>
+            <p className="text-neutral-500 text-sm font-medium">Cuenta Corriente</p>
+          </div>
+          <h3 className="text-2xl font-bold text-green-600">Habilitada</h3>
+          <p className="text-xs text-neutral-400 mt-2">Cierre de facturación: 30/Oct</p>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        {/* Datos Personales */}
+        <div className="bg-white p-6 rounded-xl shadow-sm border border-zinc-200">
+           <div className="flex justify-between items-center mb-6">
+             <h3 className="font-bold text-lg text-neutral-800">Datos de Cuenta</h3>
+             <button className="text-black text-sm font-medium hover:underline">Editar</button>
+           </div>
+           <div className="space-y-4">
+             <div className="flex items-center gap-3">
+               <div className="w-10 h-10 rounded-full bg-zinc-200 flex items-center justify-center font-bold text-zinc-500">{user.avatar}</div>
+               <div>
+                 <p className="font-bold text-neutral-800">{user.name}</p>
+                 <p className="text-xs text-neutral-500">{user.company}</p>
+               </div>
+             </div>
+             <div className="pt-4 border-t border-zinc-100 space-y-3 text-sm">
+                <div>
+                  <p className="text-xs text-neutral-400 uppercase font-bold">Email</p>
+                  <p className="text-neutral-700">{user.email}</p>
+                </div>
+                <div>
+                  <p className="text-xs text-neutral-400 uppercase font-bold">Teléfono</p>
+                  <p className="text-neutral-700">{user.phone}</p>
+                </div>
+             </div>
+           </div>
+        </div>
+
+        {/* Últimos Movimientos */}
+        <div className="lg:col-span-2 bg-white rounded-xl shadow-sm border border-zinc-200 overflow-hidden">
+           <div className="p-6 border-b border-zinc-100 flex justify-between items-center">
+             <h3 className="font-bold text-lg text-neutral-800">Últimos Pedidos</h3>
+             <button className="text-neutral-400 hover:text-black text-sm">Ver todos</button>
+           </div>
+           <table className="w-full text-left text-sm">
+             <thead className="bg-neutral-50 text-neutral-500">
+               <tr>
+                 <th className="p-4 font-medium">ID Pedido</th>
+                 <th className="p-4 font-medium">Fecha</th>
+                 <th className="p-4 font-medium">Servicio</th>
+                 <th className="p-4 font-medium">Total</th>
+                 <th className="p-4 font-medium">Estado</th>
+               </tr>
+             </thead>
+             <tbody className="divide-y divide-zinc-100">
+               {recentActivity.map(order => (
+                 <tr key={order.id} className="hover:bg-neutral-50 transition-colors">
+                   <td className="p-4 font-medium text-black">{order.id}</td>
+                   <td className="p-4 text-neutral-500">{order.date}</td>
+                   <td className="p-4 text-neutral-700">{order.type}</td>
+                   <td className="p-4 font-medium text-neutral-800">${order.amount.toLocaleString()}</td>
+                   <td className="p-4">
+                     <span className={`px-2 py-1 rounded-full text-xs font-bold ${
+                       order.status === 'Finalizado' ? 'bg-green-100 text-green-700' : 'bg-blue-100 text-blue-700'
+                     }`}>
+                       {order.status}
+                     </span>
+                   </td>
+                 </tr>
+               ))}
+             </tbody>
+           </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function PickupView({ user }) {
+  const [selectedOrders, setSelectedOrders] = useState([]);
+  const [step, setStep] = useState('selection'); 
+
+  // Mock Data: Órdenes listas para retirar
+  const readyOrders = [
+    { id: 'ORD-8821', desc: 'DTF Común - 15m', amount: 4500, date: '10/10/2023' },
+    { id: 'ORD-8845', desc: 'Bordado Gorras x50', amount: 12500, date: '12/10/2023' },
+    { id: 'ORD-8900', desc: 'Sublimación Tela x 10m', amount: 3200, date: '14/10/2023' },
+  ];
+
+  const handleToggleOrder = (orderId) => {
+    if (selectedOrders.includes(orderId)) {
+      setSelectedOrders(selectedOrders.filter(id => id !== orderId));
+    } else {
+      setSelectedOrders([...selectedOrders, orderId]);
+    }
+  };
+
+  const totalAmount = readyOrders
+    .filter(o => selectedOrders.includes(o.id))
+    .reduce((sum, o) => sum + o.amount, 0);
+
+  const handleProceed = () => {
+    if (user.hasCredit) {
+      setStep('success');
+    } else {
+      setStep('payment');
+    }
+  };
+
+  const handlePayment = (e) => {
+    e.preventDefault();
+    setStep('success'); 
+  };
+
+  if (step === 'success') {
+    return (
+      <div className="max-w-xl mx-auto text-center py-12 bg-white rounded-xl shadow-sm border border-zinc-200 animate-fade-in">
+        <div className="inline-flex p-4 bg-green-100 rounded-full text-green-600 mb-6">
+          <CheckCircle size={64} />
+        </div>
+        <h2 className="text-3xl font-bold text-neutral-800 mb-4">¡Retiro Habilitado!</h2>
+        <p className="text-neutral-600 mb-6">
+          {user.hasCredit 
+            ? "El importe ha sido cargado a tu Cuenta Corriente."
+            : "El pago se ha procesado correctamente."
+          }
+          <br/>Ya puedes pasar por el mostrador de entregas.
+        </p>
+        
+        <div className="bg-black p-6 rounded-xl inline-block shadow-lg mb-8">
+           <div className="text-white text-center">
+             <p className="text-xs uppercase tracking-widest text-zinc-400 mb-2">Código de Retiro</p>
+             <p className="text-4xl font-mono font-bold text-white tracking-wider">RET-{Math.floor(Math.random()*9000)+1000}</p>
+           </div>
+        </div>
+
+        <div>
+          <button onClick={() => {setStep('selection'); setSelectedOrders([]);}} className="text-black font-bold hover:underline">
+            Volver a lista de retiros
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  if (step === 'payment') {
+    return (
+      <div className="max-w-2xl mx-auto animate-fade-in">
+         <button onClick={() => setStep('selection')} className="mb-4 flex items-center text-neutral-500 hover:text-neutral-800">
+           <ChevronRight className="rotate-180" size={20} /> Volver
+         </button>
+         
+         <div className="bg-white rounded-xl shadow-lg border border-zinc-200 overflow-hidden">
+            <div className="p-6 border-b border-zinc-100 bg-neutral-50">
+              <h2 className="text-xl font-bold text-neutral-800 flex items-center gap-2">
+                <CreditCard className="text-black" /> Pasarela de Pago
+              </h2>
+            </div>
+            
+            <div className="p-8 grid grid-cols-1 md:grid-cols-2 gap-8">
+               <div>
+                 <p className="text-sm font-bold text-neutral-500 mb-4 uppercase">Resumen de Pago</p>
+                 <ul className="space-y-2 mb-4">
+                   {readyOrders.filter(o => selectedOrders.includes(o.id)).map(o => (
+                     <li key={o.id} className="flex justify-between text-sm">
+                       <span className="text-neutral-600">{o.desc}</span>
+                       <span className="font-medium">${o.amount}</span>
+                     </li>
+                   ))}
+                 </ul>
+                 <div className="border-t border-zinc-200 pt-3 flex justify-between font-bold text-lg">
+                   <span>Total a Pagar:</span>
+                   <span className="text-black">${totalAmount}</span>
+                 </div>
+               </div>
+
+               <form onSubmit={handlePayment} className="space-y-4">
+                  <div>
+                    <label className="block text-xs font-bold text-neutral-500 mb-1">Número de Tarjeta</label>
+                    <input required type="text" placeholder="0000 0000 0000 0000" className="w-full p-2 border border-zinc-300 rounded focus:ring-2 focus:ring-black outline-none" />
+                  </div>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-xs font-bold text-neutral-500 mb-1">Vencimiento</label>
+                      <input required type="text" placeholder="MM/AA" className="w-full p-2 border border-zinc-300 rounded focus:ring-2 focus:ring-black outline-none" />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-bold text-neutral-500 mb-1">CVC</label>
+                      <input required type="text" placeholder="123" className="w-full p-2 border border-zinc-300 rounded focus:ring-2 focus:ring-black outline-none" />
+                    </div>
+                  </div>
+                  <button type="submit" className="w-full bg-black hover:bg-zinc-800 text-white font-bold py-3 rounded-lg mt-4 shadow-md">
+                    Pagar y Generar Código
+                  </button>
+               </form>
+            </div>
+         </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="animate-fade-in space-y-6">
+      <div className="flex items-center gap-4 mb-2">
+        <div className="p-3 bg-neutral-100 text-black rounded-lg">
+          <Truck size={28} />
+        </div>
+        <div>
+           <h2 className="text-3xl font-bold text-neutral-800">Gestión de Retiros</h2>
+           <p className="text-neutral-500">Selecciona las órdenes que deseas retirar hoy.</p>
+        </div>
+      </div>
+
+      <div className="bg-white rounded-xl shadow-sm border border-zinc-200 overflow-hidden">
+        <div className="overflow-x-auto">
+          <table className="w-full text-left">
+            <thead className="bg-neutral-50 border-b border-zinc-200">
+              <tr>
+                <th className="p-4 w-12 text-center">
+                  <input type="checkbox" className="rounded border-zinc-300" disabled />
+                </th>
+                <th className="p-4 text-sm font-bold text-neutral-600">Orden ID</th>
+                <th className="p-4 text-sm font-bold text-neutral-600">Descripción</th>
+                <th className="p-4 text-sm font-bold text-neutral-600">Fecha Listo</th>
+                <th className="p-4 text-sm font-bold text-neutral-600 text-right">Saldo Pendiente</th>
+                <th className="p-4 text-sm font-bold text-neutral-600 text-center">Estado</th>
+              </tr>
+            </thead>
+            <tbody>
+              {readyOrders.map((order) => (
+                <tr key={order.id} className={`border-b border-zinc-100 hover:bg-neutral-50 transition-colors ${selectedOrders.includes(order.id) ? 'bg-neutral-50' : ''}`}>
+                  <td className="p-4 text-center">
+                    <input 
+                      type="checkbox" 
+                      className="w-5 h-5 rounded border-zinc-300 text-black focus:ring-black cursor-pointer"
+                      checked={selectedOrders.includes(order.id)}
+                      onChange={() => handleToggleOrder(order.id)}
+                    />
+                  </td>
+                  <td className="p-4 font-mono font-medium text-neutral-700">{order.id}</td>
+                  <td className="p-4 text-neutral-600">{order.desc}</td>
+                  <td className="p-4 text-neutral-500 text-sm">{order.date}</td>
+                  <td className="p-4 text-right font-medium text-neutral-800">${order.amount}</td>
+                  <td className="p-4 text-center">
+                    <span className="bg-green-100 text-green-700 text-xs px-2 py-1 rounded-full font-bold border border-green-200">
+                      LISTO
+                    </span>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        
+        <div className="p-6 bg-neutral-50 border-t border-zinc-200 flex flex-col md:flex-row justify-between items-center gap-4">
+           <div className="text-neutral-600">
+             <span className="font-bold text-neutral-800">{selectedOrders.length}</span> órdenes seleccionadas
+           </div>
+           
+           <div className="flex items-center gap-6">
+              <div className="text-right">
+                <p className="text-xs text-neutral-500 uppercase font-bold">Total a Pagar</p>
+                <p className="text-2xl font-bold text-neutral-800">${totalAmount}</p>
+              </div>
+              <button 
+                onClick={handleProceed}
+                disabled={selectedOrders.length === 0}
+                className="bg-black hover:bg-zinc-800 disabled:bg-zinc-300 disabled:cursor-not-allowed text-white font-bold py-3 px-8 rounded-lg shadow-lg transition-all flex items-center gap-2"
+              >
+                {user.hasCredit ? 'Confirmar Retiro' : 'Ir a Pagar'} <ChevronRight size={20} />
+              </button>
+           </div>
+        </div>
+      </div>
+      
+      {/* Aviso de Cuenta Corriente */}
+      {user.hasCredit ? (
+        <div className="flex items-center gap-3 p-4 bg-green-50 text-green-800 rounded-lg border border-green-200">
+          <CheckCircle size={20} />
+          <p className="text-sm">Tu cuenta corriente está habilitada. Puedes retirar sin pago inmediato.</p>
+        </div>
+      ) : (
+         <div className="flex items-center gap-3 p-4 bg-amber-50 text-amber-800 rounded-lg border border-amber-200">
+          <AlertCircle size={20} />
+          <p className="text-sm">Se requiere pago online para generar el código de retiro.</p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ClubView() {
+  return (
+    <div className="relative overflow-hidden rounded-2xl bg-gradient-to-br from-black via-zinc-900 to-black text-white min-h-[500px] p-8 md:p-12">
+      <div className="absolute top-0 right-0 -mr-20 -mt-20 w-96 h-96 bg-amber-500 rounded-full opacity-10 blur-3xl"></div>
+      
+      <div className="relative z-10 max-w-2xl">
+        <div className="inline-flex items-center gap-2 bg-amber-500/20 text-amber-300 px-3 py-1 rounded-full text-sm font-bold border border-amber-500/30 mb-6">
+          <Crown size={16} /> MIEMBRO VIP
+        </div>
+        
+        <h2 className="text-4xl md:text-5xl font-bold mb-6">Club User Exclusivo</h2>
+        <p className="text-zinc-300 text-lg mb-8 leading-relaxed">
+          Como miembro Gold, accedes a beneficios exclusivos diseñados para maximizar tu producción y reducir costos.
+        </p>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
+          <div className="bg-white/5 backdrop-blur-sm p-4 rounded-xl border border-white/10">
+            <h4 className="font-bold text-amber-400 mb-1">15% OFF</h4>
+            <p className="text-sm text-zinc-300">En cortes de alto volumen (+100u)</p>
+          </div>
+          <div className="bg-white/5 backdrop-blur-sm p-4 rounded-xl border border-white/10">
+            <h4 className="font-bold text-amber-400 mb-1">Prioridad Alta</h4>
+            <p className="text-sm text-zinc-300">Tus pedidos pasan primero a fila</p>
+          </div>
+        </div>
+
+        <button className="bg-gradient-to-r from-amber-500 to-yellow-600 text-white font-bold py-4 px-8 rounded-lg shadow-lg hover:shadow-amber-500/25 transition-all transform hover:-translate-y-1">
+          Ver Catálogo Premium
+        </button>
+      </div>
+    </div>
+  );
+}

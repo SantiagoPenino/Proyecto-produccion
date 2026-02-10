@@ -1,4 +1,5 @@
 import React from 'react';
+import { API_URL } from '../../../services/apiClient';
 
 /**
  * Componente "FileItem" Unificado.
@@ -41,10 +42,21 @@ const FileItem = ({ file, readOnly = false, onAction, extraInfo, actions, editin
 
     // Lógica Visual
     // Render-time URL (Best effort para UI)
-    const fileUrl = file.url || file.link || file.RutaAlmacenamiento || file.Link || '#';
+    // PRIORIZAMOS PROXY DE BACKEND PARA DRIVE
+    const getBaseFileUrl = () => {
+        if (file.urlProxy) {
+            // Si el backend envió un proxy, lo usamos inyectando el baseURL si es necesario
+            const base = API_URL.endsWith('/api') ? API_URL.replace('/api', '') : API_URL;
+            return `${base}${file.urlProxy}`;
+        }
+        return file.url || file.link || file.RutaAlmacenamiento || file.Link || '#';
+    };
+
+    const fileUrl = getBaseFileUrl();
 
     // Action-time URL (Evaluación en caliente para evitar problemas de reactividad/mutación)
     const getLiveUrl = () => {
+        if (file.urlProxy) return fileUrl;
         // Prioridad de búsqueda (Ignorando valores títere como '#')
         const candidates = [
             file.url,

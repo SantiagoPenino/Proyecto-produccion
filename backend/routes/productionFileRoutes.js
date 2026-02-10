@@ -26,6 +26,7 @@ router.get('/equipos', equiposController.getEquipos);
 // --- ORDENES Y ARCHIVOS (Producción Diaria) ---
 router.get('/ordenes', productionFileController.getOrdenes);
 router.get('/orden/:ordenId/archivos', productionFileController.getArchivosPorOrden);
+router.get('/view-drive-file', productionFileController.viewDriveFile);
 router.get('/tipos-falla', productionFileController.getTiposFalla);
 router.post('/controlar', productionFileController.postControlArchivo);
 // --- ETIQUETAS y Vista Dividida ---

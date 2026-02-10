@@ -1,6 +1,7 @@
 const { sql, getPool } = require('../config/db');
 const PricingService = require('../services/pricingService');
 const LabelGenerationService = require('../services/LabelGenerationService');
+const driveService = require('../services/driveService');
 
 /**
  * 1. Obtiene las Órdenes de un Rollo (o todas, o filtradas)
@@ -142,7 +143,20 @@ const getArchivosPorOrden = async (req, res) => {
                 ORDER BY AO.NombreArchivo ASC
             `);
 
-        res.json(archivosResult.recordset);
+        // 2. Mapear URLs de Drive a Proxy de Backend si es necesario
+        const mappedArchivos = archivosResult.recordset.map(archivo => {
+            if (archivo.RutaAlmacenamiento && archivo.RutaAlmacenamiento.includes('drive.google.com')) {
+                // Si es un link de Drive, enviamos un link al proxy del backend
+                // El link suele ser https://drive.google.com/open?id=XXXX o https://drive.google.com/file/d/XXXX/view
+                return {
+                    ...archivo,
+                    urlProxy: `/api/production-file-control/view-drive-file?url=${encodeURIComponent(archivo.RutaAlmacenamiento)}`
+                };
+            }
+            return archivo;
+        });
+
+        res.json(mappedArchivos);
 
     } catch (err) {
         console.error("Error en getArchivosPorOrden:", err);
@@ -549,9 +563,80 @@ const regenerateEtiquetas = async (req, res) => {
     }
 };
 
+/**
+ * 5. Proxy de Visualización de archivos en Drive
+ * Utiliza el token del servidor para descargar y servir el archivo sin depender de permisos publicos.
+ */
+const viewDriveFile = async (req, res) => {
+    try {
+        const { url } = req.query;
+        if (!url) return res.status(400).send('Falta URL de Drive');
+
+        // Extraer FileID usando Regex (más robusto)
+        // Soporta: /d/ID/view, /open?id=ID, /file/d/ID, etc.
+        const fileIdMatch = url.match(/[-\w]{25,}/);
+        const fileId = fileIdMatch ? fileIdMatch[0] : null;
+
+        if (!fileId) {
+            console.error("No se pudo identificar el FileID en:", url);
+            return res.status(400).send('No se pudo identificar el FileID de Drive');
+        }
+
+        console.log(`[Proxy] Solicitando archivo a Drive. ID: ${fileId}`);
+
+        // Usamos la versión nueva que trae metadata (nombre, size, mimeType real)
+        const { stream, mimeType, name, size } = await driveService.getFileStream(fileId);
+
+        let finalMimeType = mimeType || 'application/octet-stream';
+
+        // Si Drive nos da un tipo genérico o incorrecto, intentamos adivinar por la extensión del nombre
+        if (name && (finalMimeType === 'application/octet-stream' || finalMimeType === 'application/vnd.google-apps.file')) {
+            const ext = name.split('.').pop().toLowerCase();
+            const mimeMap = {
+                'png': 'image/png',
+                'jpg': 'image/jpeg',
+                'jpeg': 'image/jpeg',
+                'pdf': 'application/pdf',
+                'txt': 'text/plain',
+                'json': 'application/json'
+            };
+            if (mimeMap[ext]) {
+                finalMimeType = mimeMap[ext];
+                console.log(`[Proxy] MIME Type corregido por extensión (.${ext}): ${finalMimeType}`);
+            }
+        }
+
+        res.setHeader('Content-Type', finalMimeType);
+        if (size) res.setHeader('Content-Length', size);
+
+        // Mantener el nombre original si es posible (meta-data opcional)
+        // Usamos 'inline' para que el navegador intente mostrarlo
+        const safeName = (name || 'archivo').replace(/[^\w\.-]/g, '_');
+        res.setHeader('Content-Disposition', `inline; filename="${safeName}"`);
+
+        stream.on('error', (err) => {
+            console.error("Error en stream del proxy:", err);
+            if (!res.headersSent) res.status(500).send('Error durante la transmisión del archivo');
+        });
+
+        stream.pipe(res);
+    } catch (error) {
+        console.error("Error en viewDriveFile proxy:", error);
+
+        if (error.code === 404) {
+            return res.status(404).send('Archivo no encontrado en Drive o falta de permisos (Scope limitado). Por favor re-autoriza el acceso.');
+        }
+
+        if (!res.headersSent) {
+            res.status(500).send('Error al visualizar archivo desde Drive: ' + error.message);
+        }
+    }
+};
+
 module.exports = {
     getOrdenes,
     getArchivosPorOrden,
+    viewDriveFile,
     postControlArchivo,
     getTiposFalla,
     regenerateEtiquetas
