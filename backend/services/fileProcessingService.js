@@ -108,8 +108,9 @@ exports.processOrderList = async (orderIds, io) => {
                     const pArchivo = `Archivo ${file.idxInOrder} de ${file.totalInOrder}`;
                     const pCopias = sanitize((file.Copias || 1).toString());
 
-                    // EJEMPLO: 61 (1-1)_GOAT_trabajo 2_Archivo 1 de 1 (X 1 COPIAS)
-                    let baseName = `${pCodigo}_${pCliente}_${pTrabajo}_${pArchivo}(X ${pCopias} COPIAS)`;
+                    // EJEMPLO: 61 (1-1)_GOAT_trabajo 2 Archivo 1 de 1 (x1 COPIAS)
+                    // UNIFIED FORMAT: {ORDEN}_{CLIENTE}_{TRABAJO} Archivo {Idx} de {Total} (x{Copias} COPIAS)
+                    let baseName = `${pCodigo}_${pCliente}_${pTrabajo} Archivo ${file.idxInOrder} de ${file.totalInOrder} (x${file.Copias || 1} COPIAS)`;
 
                     // Determinar si ya tenemos ruta local válida y el archivo existe
                     let destPath = '';

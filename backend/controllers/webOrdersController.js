@@ -343,13 +343,19 @@ exports.createWebOrder = async (req, res) => {
 
                 if (item.file?.data) {
                     const ext = item.file.name.substring(item.file.name.lastIndexOf('.'));
-                    const renamed = `${exec.codigoOrden}_${pCliente}_${pTrabajo}${pFileMeta}${ext}`;
+                    // UNIFIED FORMAT: ORDEN_CLIENTE_TRABAJO Archivo X de Y (xN COPIAS)
+                    // Sanitize path separators for filename only
+                    const safeCode = exec.codigoOrden.replace(/\//g, '-');
+                    const renamed = `${safeCode}_${pCliente}_${pTrabajo} Archivo ${fileNum} de ${totalFiles} (x${item.copies || 1} COPIAS)${ext}`;
+
                     item.file.driveUrl = await driveService.uploadToDrive(item.file.data, renamed, exec.areaID);
                     item.file.finalName = renamed;
                 }
                 if (item.fileBack?.data) {
                     const ext = item.fileBack.name.substring(item.fileBack.name.lastIndexOf('.'));
-                    const renamedBack = `${exec.codigoOrden}_${pCliente}_${pTrabajo}_DORSO${pFileMeta}${ext}`;
+                    const safeCode = exec.codigoOrden.replace(/\//g, '-');
+                    const renamedBack = `${safeCode}_${pCliente}_${pTrabajo} DORSO Archivo ${fileNum} de ${totalFiles} (x${item.copies || 1} COPIAS)${ext}`;
+
                     item.fileBack.driveUrl = await driveService.uploadToDrive(item.fileBack.data, renamedBack, exec.areaID);
                     item.fileBack.finalName = renamedBack;
                 }

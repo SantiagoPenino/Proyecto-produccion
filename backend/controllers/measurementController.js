@@ -140,7 +140,8 @@ exports.processBatch = async (req, res) => {
                     const pOrder = sanitize(file.CodigoOrden || file.OrdenID.toString());
                     const pClient = sanitize(file.Cliente);
                     const pJob = sanitize(file.DescripcionTrabajo || 'Trabajo');
-                    baseName = `${pOrder}_${pClient}_${pJob}_ID${file.ArchivoID}`;
+                    // Estimation for single batch process
+                    baseName = `${pOrder}_${pClient}_${pJob} Archivo 1 de 1 (x${file.Copias || 1} COPIAS)`;
                 } else {
                     baseName = sanitize(baseName);
                 }
@@ -342,18 +343,18 @@ exports.processOrdersBatch = async (req, res) => {
                 // But let's try to match exactly if possible.
 
                 const pCopias = sanitize((file.Copias || 1).toString());
-
                 // EJEMPLO: 61 (1-1)_GOAT_trabajo 2_Archivo 1 de 1 (X 1 COPIAS)
                 // Note: In fileProcessingService, it calculates idxInOrder. Here we don't have it easily without pre-grouping.
                 // For now, using a generic "Archivo" placeholder or file Name if available as priority.
 
-                // Let's use the exact same detailed logic found in fileProcessingService lines 98-112
+                // EJEMPLO: 61 (1-1)_GOAT_trabajo 2 Archivo 1 de 1 (x1 COPIAS)
+                // UNIFIED FORMAT: {ORDEN}_{CLIENTE}_{TRABAJO} Archivo {Idx} de {Total} (x{Copias} COPIAS)
 
                 // Recalculating index context for correct naming if multiple files per order
                 if (!file.idxInOrder) file.idxInOrder = 1;
                 if (!file.totalInOrder) file.totalInOrder = 1;
 
-                let baseName = `${pCodigo}_${pCliente}_${pTrabajo}_Archivo ${file.idxInOrder} de ${file.totalInOrder} (X ${pCopias} COPIAS)`;
+                let baseName = `${pCodigo}_${pCliente}_${pTrabajo} Archivo ${file.idxInOrder} de ${file.totalInOrder} (x${file.Copias || 1} COPIAS)`;
 
                 if (!baseName.toLowerCase().endsWith(finalExt.toLowerCase())) {
                     baseName += finalExt;
@@ -763,15 +764,13 @@ exports.downloadOrdersZip = async (req, res) => {
 
                 let finalName = "";
 
-                // Preferir Nombre Original Guardado si existe
-                if (file.NombreArchivo && file.NombreArchivo.length > 5) {
+                // Preferir Nombre Original Guardado si existe y tiene longitud razonable
+                if (file.NombreArchivo && file.NombreArchivo.length > 10) {
                     finalName = sanitize(file.NombreArchivo);
                 } else {
-                    // Fallback a Generado
-                    finalName = `${file.CodigoOrden}_${sanitize(file.Cliente)}_${sanitize(file.DescripcionTrabajo)}`;
-                    if (file.totalInOrder > 1) {
-                        finalName += `_(${file.idxInOrder}-${file.totalInOrder})`;
-                    }
+                    // Fallback a Generado UNIFICADO
+                    // {ORDEN}_{CLIENTE}_{TRABAJO} Archivo {Idx} de {Total} (x{Copias} COPIAS)
+                    finalName = `${file.CodigoOrden}_${sanitize(file.Cliente)}_${sanitize(file.DescripcionTrabajo)} Archivo ${file.idxInOrder} de ${file.totalInOrder} (x${file.Copias || 1} COPIAS)`;
                 }
 
                 // Extension Check
