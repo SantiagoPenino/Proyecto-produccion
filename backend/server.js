@@ -136,6 +136,21 @@ const PORT = process.env.PORT || 5000;
 
 // FORCED RESTART TRIGGER: 2026-01-01 22:38
 
+// --- SERVIR FRONTEND EN PRODUCCIÓN ---
+const publicPath = path.join(__dirname, 'public');
+if (require('fs').existsSync(publicPath)) {
+    console.log('📂 Sirviendo archivos estáticos desde:', publicPath);
+    app.use(express.static(publicPath));
+
+    // Cualquier ruta que no sea API, devuelve el index.html (SPA)
+    app.get('*', (req, res) => {
+        if (req.url.startsWith('/api')) return res.status(404).json({ error: 'API route not found' });
+        res.sendFile(path.join(publicPath, 'index.html'));
+    });
+} else {
+    console.log('⚠️ No se encontró la carpeta "public". Ejecuta "npm run build" en el frontend y copia el contenido de "dist" a "backend/public".');
+}
+
 // --- INICIO DEL SERVIDOR Y SCHEDULER ---
 server.listen(PORT, async () => {
     console.log(`🚀 Servidor backend + Socket.io corriendo en puerto ${PORT}`);
