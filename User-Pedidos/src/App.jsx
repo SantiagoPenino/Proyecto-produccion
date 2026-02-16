@@ -6,7 +6,7 @@ import { ProtectedRoute } from './auth/ProtectedRoute';
 import { MainLayout } from './layout/MainLayout';
 import { Dashboard } from './modulos/Dashboard';
 import { ProfileView } from './modulos/ProfileView';
-import { OrderForm } from './modulos/OrderForm';
+import OrderForm from './modulos/OrderForm';
 import { LoginPage } from './modulos/LoginPage';
 import { FactoryView } from './modulos/FactoryView';
 import { PickupView } from './modulos/PickupView';
@@ -16,7 +16,7 @@ function App() {
     return (
         <AuthProvider>
             <ToastProvider>
-                <BrowserRouter>
+                <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
                     <Routes>
                         <Route path="/login" element={<LoginPage />} />
 

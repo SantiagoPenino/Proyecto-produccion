@@ -66,6 +66,15 @@ export const apiClient = {
         return handleResponse(response);
     },
 
+    delete: async (endpoint) => {
+        const requestOptions = {
+            method: 'DELETE',
+            headers: getHeaders(),
+        };
+        const response = await fetch(`${API_BASE_URL}${endpoint}`, requestOptions);
+        return handleResponse(response);
+    },
+
     // Method to upload files
     postFormData: async (endpoint, formData) => {
         const token = localStorage.getItem('auth_token');

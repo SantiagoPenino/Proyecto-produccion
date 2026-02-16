@@ -1,6 +1,7 @@
-import React, { useState } from 'react';
-import { useAuth } from '../auth/AuthContext'; // Assuming user comes from here
-import { CheckCircle, AlertCircle, ChevronRight, Truck, CreditCard } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { useAuth } from '../auth/AuthContext';
+import { apiClient } from '../api/apiClient'; // Assuming user comes from here
+import { CheckCircle, AlertCircle, ChevronRight, Truck, CreditCard, Download } from 'lucide-react';
 import { GlassCard } from '../pautas/GlassCard';
 import { CustomButton } from '../pautas/CustomButton';
 import { FormInput } from '../pautas/FormInput';
@@ -8,15 +9,28 @@ import { FormInput } from '../pautas/FormInput';
 export const PickupView = () => {
     const { user } = useAuth();
     const [selectedOrders, setSelectedOrders] = useState([]);
+    const [readyOrders, setReadyOrders] = useState([]);
+    const [pickupCode, setPickupCode] = useState(null);
     const [step, setStep] = useState('selection');
     const [loading, setLoading] = useState(false);
+    const [fetching, setFetching] = useState(true);
 
-    // Mock Data: Órdenes listas para retirar
-    const readyOrders = [
-        { id: '#ORD-8821', desc: 'DTF Común - 15m', amount: 4500, date: '10/10/2023' },
-        { id: '#ORD-8845', desc: 'Bordado Gorras x50', amount: 12500, date: '12/10/2023' },
-        { id: '#ORD-8900', desc: 'Sublimación Tela x 10m', amount: 3200, date: '14/10/2023' },
-    ];
+    useEffect(() => {
+        const loadPickupOrders = async () => {
+            setFetching(true);
+            try {
+                const res = await apiClient.get('/web-orders/pickup-orders');
+                if (res.success) {
+                    setReadyOrders(res.data);
+                }
+            } catch (error) {
+                console.error("Error loading pickup orders:", error);
+            } finally {
+                setFetching(false);
+            }
+        };
+        loadPickupOrders();
+    }, []);
 
     const handleToggleOrder = (orderId) => {
         if (selectedOrders.includes(orderId)) {
@@ -30,10 +44,91 @@ export const PickupView = () => {
         .filter(o => selectedOrders.includes(o.id))
         .reduce((sum, o) => sum + o.amount, 0);
 
+    const downloadReceipt = async (code) => {
+        try {
+            const token = localStorage.getItem('auth_token');
+            const ordersToPrint = readyOrders.filter(o => selectedOrders.includes(o.id));
+            const total = ordersToPrint.reduce((sum, o) => sum + o.amount, 0).toFixed(2);
+
+            const API_URL = (import.meta.env.VITE_API_URL || 'http://localhost:5000/api').replace(/\/$/, '');
+
+            const response = await fetch(`${API_URL}/web-orders/pickup-orders/pdf`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${token}`
+                },
+                body: JSON.stringify({
+                    receiptId: code || pickupCode,
+                    orders: ordersToPrint,
+                    clientName: user?.name,
+                    total: total
+                })
+            });
+
+            if (response.ok) {
+                const blob = await response.blob();
+                const url = window.URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `retiro-${code || pickupCode}.pdf`;
+                document.body.appendChild(a);
+                a.click();
+                a.remove();
+                window.URL.revokeObjectURL(url);
+            } else {
+                console.error("Error generating PDF");
+            }
+        } catch (error) {
+            console.error("Download error:", error);
+        }
+    };
+
+    const handleCreatePickup = async () => {
+        setLoading(true);
+        try {
+            // Construir payload completo desde frontend
+            const ordersPayload = selectedOrders.map(selId => {
+                const order = readyOrders.find(o => o.id === selId);
+                if (!order) return null;
+                // Usar el ID visible (ej: "TWD-6253" o "67") en lugar del ID interno
+                const orderNum = order.id.replace('#', '');
+                return {
+                    orderNumber: orderNum,
+                    meters: order.quantity,
+                    costWithCurrency: `${order.currency} ${typeof order.amount === 'number' ? order.amount.toFixed(2) : '0.00'}`,
+                    estado: order.originalStatus
+                };
+            }).filter(Boolean);
+
+            const payload = {
+                lugarRetiro: "5",
+                orders: ordersPayload
+            };
+
+            const res = await apiClient.post('/web-orders/pickup-orders/create', payload);
+
+            if (res.success) {
+                // Priorizar OReIdOrdenRetiro de la respuesta externa
+                const code = res.data?.OReIdOrdenRetiro || res.data?.codigoRetiro || `RET-${Math.floor(Math.random() * 9000) + 1000}`;
+                setPickupCode(code);
+                setStep('success');
+                // Auto download receipt
+                setTimeout(() => downloadReceipt(code), 1000);
+            } else {
+                alert(res.error || "Error al crear retiro");
+            }
+        } catch (error) {
+            console.error(error);
+            alert("Error al conectar con el servidor: " + error.message);
+        } finally {
+            setLoading(false);
+        }
+    };
+
     const handleProceed = () => {
-        // If user has credit (simulated), skip payment
         if (user?.hasCredit) {
-            setStep('success');
+            handleCreatePickup();
         } else {
             setStep('payment');
         }
@@ -41,11 +136,7 @@ export const PickupView = () => {
 
     const handlePayment = (e) => {
         e.preventDefault();
-        setLoading(true);
-        setTimeout(() => {
-            setLoading(false);
-            setStep('success');
-        }, 1500);
+        handleCreatePickup();
     };
 
     if (step === 'success') {
@@ -67,8 +158,14 @@ export const PickupView = () => {
                     <div className="bg-black p-6 rounded-xl inline-block shadow-lg mb-8 w-full max-w-sm">
                         <div className="text-white text-center">
                             <p className="text-xs uppercase tracking-widest text-zinc-400 mb-2">Código de Retiro</p>
-                            <p className="text-4xl font-mono font-bold text-white tracking-wider">RET-{Math.floor(Math.random() * 9000) + 1000}</p>
+                            <p className="text-4xl font-mono font-bold text-white tracking-wider">{pickupCode}</p>
                         </div>
+                    </div>
+
+                    <div className="mb-8">
+                        <CustomButton onClick={() => downloadReceipt(pickupCode)} variant="secondary" icon={Download}>
+                            Descargar Comprobante
+                        </CustomButton>
                     </div>
 
                     <div>
@@ -124,6 +221,15 @@ export const PickupView = () => {
                         </form>
                     </div>
                 </GlassCard>
+            </div>
+        );
+    }
+
+    if (fetching) {
+        return (
+            <div className="flex flex-col justify-center items-center py-20 animate-pulse">
+                <Truck className="text-zinc-300 mb-4" size={48} />
+                <span className="text-zinc-400 font-bold text-lg">Buscando órdenes listas...</span>
             </div>
         );
     }
@@ -199,6 +305,16 @@ export const PickupView = () => {
                             className="py-3 px-6"
                         >
                             {user?.hasCredit ? 'Confirmar Retiro' : 'Ir a Pagar'}
+                        </CustomButton>
+
+                        <CustomButton
+                            onClick={handleCreatePickup}
+                            disabled={selectedOrders.length === 0 || loading}
+                            variant="secondary"
+                            className="py-3 px-6 ml-2 bg-zinc-200 text-zinc-600 hover:bg-zinc-300 border border-zinc-200"
+                            title="Generar retiro directamente (Solo Pruebas)"
+                        >
+                            🛠️
                         </CustomButton>
                     </div>
                 </div>

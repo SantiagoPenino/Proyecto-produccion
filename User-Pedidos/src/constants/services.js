@@ -10,208 +10,253 @@ import {
 
 export const SERVICES_LIST = [
     {
-        id: 'DF',
-        label: 'DTF (Direct to Film)',
-        desc: 'Impresión digital directa sobre film.',
-        icon: Layers,
-        // Removed hardcoded subtypes/materials to rely on DB
-        subtypes: [],
-        materials: ['DTF Textil (Film)', 'DTF UV (Film)'],
+        // 1.1 SB - Sublimacion
+        id: 'sublimacion',
+        dbId: '1.1',
+        areaId: 'SB',
+        codOrden: 'SB',
+        label: 'Sublimación x Metro',
+        desc: 'Transferencia de tinta por calor en telas poliéster.',
+        icon: Palette,
+
+        // Configuration
         config: {
-            singleMaterial: false,
-            hideMaterial: true,
-            disableItemNote: true,
-            requiresProductionFiles: true,
+            // Variant Config
+            variantMode: 'select', // User selects from dropdown (fetched from DB: SB)
+            defaultVariant: 'Tela Sublimada', // Default selection if available
+
+            // Material Config
+            materialMode: 'multiple', // multiple = per item, single = global
+            allowClientStock: true,   // Enables "Tela Cliente" logic
+            stockTriggerMaterial: 'Tela Cliente', // Specific material that triggers stock logic
+
+            // Workflow Config
+            hasCuttingWorkflow: true, // Enables Corte (TWC) and Costura (TWT) accordions
+            requiresProductionFiles: true, // Show "Archivos de Producción" section
+            disableItemNote: true, // Hide individual note per item
+
+            // UI Helpers
+            templateButtons: [
+                { label: 'DESCARGAR PLANILLA DE PEDIDO ROPA', url: 'https://drive.google.com/uc?export=download&id=1_u6vdtCQJZxjM-DgH6RhsamqV4EhtoHw' },
+                { label: 'DESCARGAR PLANILLA DE PEDIDO VARIOS', url: 'https://drive.google.com/uc?export=download&id=1yKe8DbrUyGKm2_Je6dOc3or67BDotnjl' }
+            ]
         },
+
         complementaryOptions: [
-            {
-                id: 'EST',
-                label: 'Estampado (Planchado en USER)',
-                hasFile: true,
-                fullWidth: true,
-                fields: [
-                    { name: 'cantidadPrendas', label: 'Cantidad de Prendas', type: 'number', placeholder: '0' },
-                    { name: 'cantidadEstampados', label: 'Cantidad de estampados por Prenda', type: 'number', placeholder: '1' },
-                    { name: 'origenPrendas', label: 'Origen de las Prendas', type: 'select', options: ['Prendas del Cliente', 'Stock User'] },
-
-
-                ]
-            },
+            // These are logically handled by workflows if active, but kept for reference
+            { id: 'TWC', label: 'Corte Láser / Tizada', hasFile: false, fullWidth: true },
+            { id: 'TWT', label: 'Confección / Costura', hasInput: false, fullWidth: true },
+            // Extra services
+            { id: 'EMB', label: 'Servicio de Bordado', hasFile: true, fullWidth: true, inputLabel: 'Adjuntar Ponchado/Logo' },
+            { id: 'EST', label: 'Estampado (Planchado en USER)', fullWidth: true }
         ]
     },
     {
-        id: 'sublimacion',
-        label: 'Sublimación x Metro',
-        desc: 'Transferencia de tinta por calor.',
-        icon: Palette,
-        subtypes: ['Papel', 'Tela Sublimada'],
-        // Agregamos 'Tela Cliente' para activar lógica de stock
-        materials: ['Tela Deportiva (Set)', 'Tela Modal', 'Tela Spun', 'Papel Transfer Premium', 'Tela Cliente'],
+        // 1.2 DF - DTF
+        id: 'DF',
+        dbId: '1.2',
+        areaId: 'DF',
+        codOrden: 'DF',
+        label: 'DTF (Direct to Film)',
+        desc: 'Impresión digital directa sobre film para transferencia.',
+        icon: Layers,
+
         config: {
-            singleMaterial: false,
-            disableItemNote: true,
+            variantMode: 'select', // User selects from dropdown (fetched from DF: DF)
+            materialMode: 'single', // Usually one material (Film) for the whole order
             requiresProductionFiles: true,
-            hasCuttingWorkflow: true, // Integrar flujo de moldes/costura
-            stockTriggerMaterial: 'Tela Cliente',
+            disableItemNote: true,
+            hasCuttingWorkflow: false,
+        },
+
+        complementaryOptions: [
+            { id: 'EST', label: 'Estampado (Planchado en USER)', fullWidth: true },
+        ]
+    },
+    {
+        // 1.3 ECOUV - ECOUV (VisibleWeb: False in table, but we keep config here just in case)
+        id: 'ecouv',
+        dbId: '1.3',
+        areaId: 'ECOUV',
+        codOrden: 'ECOUV',
+        label: 'Impresión Digital (EcoUV)',
+        desc: 'Alta resolución y durabilidad UV.',
+        icon: ImageIcon,
+
+        config: {
+            variantMode: 'fixed',
+            fixedVariant: 'Impresion Gran Formato',
+            materialMode: 'single', // Material de impresión
+            requiresProductionFiles: true,
+            disableItemNote: false, // Permitir notas por archivo
+        },
+
+        complementaryOptions: [
+            {
+                id: 'terminaciones_ecouv',
+                label: 'Terminaciones ECOUV (Materiales Extra)',
+                fullWidth: true,
+                // Custom UI logic will be handled in OrderForm based on this ID
+            }
+        ]
+    },
+    {
+        // 1.4 EMB - Bordado
+        id: 'bordado',
+        dbId: '1.4',
+        areaId: 'EMB',
+        codOrden: 'EMB',
+        label: 'Bordado',
+        desc: 'Personalización con hilos.',
+        icon: Scissors,
+
+        config: {
+            variantMode: 'select', // Enable variant fetch
+            materialMode: 'single', // Enable material fetch
+            allowClientStock: true, // Use client stock logic
+
+            requiresProductionFiles: false, // Uses specialized UI instead or integrated files
+            filesAtEnd: true,
+            features: ['sample_check'], // Special flag for sample checkbox
+        },
+
+        complementaryOptions: [
+            { id: 'EST', label: 'Servicio de Estampado' }
+        ]
+    },
+    {
+        // 1.5 EST - Estampado
+        id: 'estampado',
+        dbId: '1.5',
+        areaId: 'EST',
+        codOrden: 'EST',
+        label: 'Servicio de Estampado',
+        desc: 'Aplicación de estampas con plancha.',
+        icon: Layers,
+
+        config: {
+            variantMode: 'select', // Enable variant fetch
+            materialMode: 'single', // Enable material fetch
+            requiresProductionFiles: false, // Uses custom specialized UI
+            defaultCodArt: '110',      // <--- CENTRALIZADO AQUÍ
+            defaultCodStock: '1.1.5.1' // <--- CENTRALIZADO AQUÍ
+        },
+        complementaryOptions: [
+            { id: 'EMB', label: 'Servicio de Bordado', hasFile: true, fullWidth: true, inputLabel: 'Adjuntar Ponchado/Logo' }
+        ]
+    },
+    {
+        // 1.6 TWC - Corte (Usually a complementary service but can be standalone?)
+        // Table says visible: True. Mapped as 'corte' usually.
+        id: 'corte', // Standalone Corte Page
+        dbId: '1.6',
+        areaId: 'TWC', // Group Internal: TWC
+        codOrden: 'TWC', // Corrected per user feedback
+        label: 'Servicio de Corte',
+        desc: 'Corte láser o tizada manual.',
+        icon: Zap,
+
+        config: {
+            variantMode: 'fixed', // Fixed to Corte
+            fixedVariant: 'Corte',
+            materialMode: 'fixed', // Generic
+            requiresProductionFiles: false, // Specialized UI
+            hasCuttingWorkflow: true, // Its own workflow
             templateButtons: [
                 { label: 'DESCARGAR PLANILLA DE PEDIDO ROPA', url: 'https://drive.google.com/uc?export=download&id=1_u6vdtCQJZxjM-DgH6RhsamqV4EhtoHw' },
                 { label: 'DESCARGAR PLANILLA DE PEDIDO VARIOS', url: 'https://drive.google.com/uc?export=download&id=1yKe8DbrUyGKm2_Je6dOc3or67BDotnjl' }
             ]
         },
         complementaryOptions: [
-            {
-                id: 'TWC', // Corte Laser
-                label: 'Corte Láser / Tizada',
-                hasFile: false, // We'll use the specialized UI instead
-                fullWidth: true
-            },
-            {
-                id: 'TWT', // Costura
-                label: 'Confección / Costura',
-                hasInput: false, // We'll use the specialized UI instead
-                fullWidth: true
-            },
-            {
-                id: 'EMB', // Bordado
-                label: 'Servicio de Bordado',
-                hasFile: true,
-                fullWidth: true,
-                inputLabel: 'Adjuntar Ponchado/Logo'
-            },
-            {
-                id: 'EST',
-                label: 'Estampado (Planchado en USER)',
-                hasFile: true,
-                fullWidth: true,
-                fields: [
-                    { name: 'cantidadPrendas', label: 'Cantidad de Prendas', type: 'number', placeholder: '0' },
-                    { name: 'cantidadEstampados', label: 'Cantidad de estampados por Prenda', type: 'number', placeholder: '1' },
-                    { name: 'origenPrendas', label: 'Origen de las Prendas', type: 'select', options: ['Prendas del Cliente', 'Stock User'] },
-                ]
-            }
+            { id: 'EMB', label: 'Servicio de Bordado', hasFile: true, fullWidth: true, inputLabel: 'Adjuntar Ponchado/Logo' },
+            { id: 'EST', label: 'Servicio de Estampado' }
         ]
     },
     {
-        id: 'ecouv',
-        label: 'Impresión Digital (EcoUV)',
-        desc: 'Alta resolución y durabilidad.',
-        icon: ImageIcon,
-        subtypes: ['Etiquetas y Calcomanías', 'Cartelería Rígida', 'Lonas y Pendones'],
-        materials: ['Vinilo Brillante', 'Vinilo Mate', 'Lona Front', 'Lona Blackout', 'PVC Rígido 3mm'],
+        // 1.10 TPU
+        id: 'tpu',
+        dbId: '1.10',
+        areaId: 'TPU',
+        codOrden: 'TPU',
+        label: 'TPU',
+        desc: 'Aplicaciones en poliuretano.',
+        icon: Box,
+
         config: {
-            singleMaterial: true,
+            variantMode: 'fixed',
+            fixedVariant: 'TPU',
+            materialMode: 'single',
+            materialLabel: 'Tipo de TPU',
+            requiresProductionFiles: true,
             disableItemNote: true,
-            requiresProductionFiles: true
+            minCopies: 30,
         },
+        materials: [
+            { Material: 'ETIQUETAS OFICIALES HASTA 4X4' },
+            { Material: 'TPU STANDARD' }
+        ],
+
         complementaryOptions: [
-            { id: 'ojales', label: 'Colocación de Ojales', hasInput: true, inputLabel: 'Cant. / Distancia' },
-            { id: 'refuerzo', label: 'Refuerzo Perimetral' }
+            { id: 'EST', label: 'Servicio de Estampado' }
         ]
     },
     {
+        // 1.11 DIRECTA 3.20
         id: 'directa_320',
+        dbId: '1.11',
+        areaId: 'DIRECTA',
+        codOrden: 'IMD',
         label: 'Impresión Directa 3.20m',
         desc: 'Gigantografía y gran formato.',
         icon: Printer,
-        materials: ['Lona Front', 'Lona Blackout', 'Mesh', 'Vinilo'],
+
         config: {
-            singleMaterial: true,
-            disableItemNote: true,
+            variantMode: 'fixed',
+            fixedVariant: '1.1.11.1',
+            materialMode: 'single',
             requiresProductionFiles: true,
-        },
-        complementaryOptions: [
-            { id: 'soldadura', label: 'Soldadura de Paños' },
-            { id: 'bolsillo', label: 'Bolsillos para Caño' }
-        ]
-    },
-    {
-        id: 'directa_algodon',
-        label: 'Impresión Directa Algodón',
-        desc: 'Similar a sublimación pero en algodón.',
-        icon: Printer,
-        materials: ['Algodón Peinado', 'Algodón Cardado', 'Lienzo'],
-        config: {
-            singleMaterial: false,
             disableItemNote: true,
-            requiresProductionFiles: true,
-        },
-        complementaryOptions: []
-    },
-    {
-        id: 'bordado',
-        label: 'Bordado',
-        desc: 'Personalización con hilos.',
-        icon: Scissors,
-        config: {
-            singleMaterial: true, // Filosofía de sublimación: Material global
-            hideMaterial: false,
-            useClientStock: true,
-            materialLabel: 'Seleccionar Prenda (Stock)',
-            requiresProductionFiles: false, // Fusionado en sección técnica
-            disableItemNote: true,
-            filesAtEnd: true,
-            features: ['sample_check'],
-        },
-        complementaryOptions: []
-    },
-    {
-        id: 'corte-confeccion',
-        label: 'Corte y Confección',
-        desc: 'Servicio integral de corte laser, moldes y armado de prendas.',
-        icon: Scissors,
-        materials: ['Material Cliente', 'Tela Stock User', 'MDF 3mm', 'Acrílico'],
-        config: {
-            requiresProductionFiles: false,
-            areaID: 'TWT',
-            disableItemNote: true,
-            filesAtEnd: true,
             hasCuttingWorkflow: true,
             templateButtons: [
                 { label: 'DESCARGAR PLANILLA DE PEDIDO ROPA', url: 'https://drive.google.com/uc?export=download&id=1_u6vdtCQJZxjM-DgH6RhsamqV4EhtoHw' },
                 { label: 'DESCARGAR PLANILLA DE PEDIDO VARIOS', url: 'https://drive.google.com/uc?export=download&id=1yKe8DbrUyGKm2_Je6dOc3or67BDotnjl' }
-            ],
-            extraFiles: [
-                { key: 'boceto', label: 'Cargar Archivo del Boceto', type: 'BOCETO' },
-                { key: 'tizada', label: 'Cargar Archivo Tizada (Si aplica)', type: 'TIZADA' }
             ]
         },
+
         complementaryOptions: [
-            {
-                id: 'EST',
-                label: 'Estampado (Planchado en USER)',
-                hasFile: true,
-                fullWidth: true,
-                fields: [
-                    { name: 'cantidadPrendas', label: 'Cantidad de Prendas', type: 'number', placeholder: '0' },
-                    { name: 'cantidadEstampados', label: 'Cantidad de estampados por Prenda', type: 'number', placeholder: '1' },
-                    { name: 'origenPrendas', label: 'Origen de las Prendas', type: 'select', options: ['Prendas del Cliente', 'Stock User'] },
-                ]
-            },
-            {
-                id: 'EMB',
-                label: 'Servicio de Bordado',
-                hasFile: true,
-                fullWidth: true,
-                inputLabel: 'Adjuntar Ponchado/Logo'
-            }
+            { id: 'TWC', label: 'Corte Láser / Tizada', hasFile: false, fullWidth: true },
+            { id: 'TWT', label: 'Confección / Costura', hasInput: false, fullWidth: true },
+            { id: 'EMB', label: 'Servicio de Bordado', hasFile: true, fullWidth: true, inputLabel: 'Adjuntar Ponchado/Logo' },
+            { id: 'EST', label: 'Estampado (Planchado en USER)', fullWidth: true }
         ]
     },
     {
-        id: 'tpu',
-        label: 'TPU',
-        desc: 'Aplicaciones en poliuretano.',
-        icon: Box,
-        materials: ['TPU Standard', 'TPU Relieve 3D', 'TPU Metalizado', 'TPU Holográfico', 'TPU Mate'],
-        materialLabel: 'Tipo de TPU',
+        // 1.12 DIRECTA ALGODON
+        id: 'directa_algodon',
+        dbId: '1.12',
+        areaId: 'DIRECTA',
+        codOrden: 'IMD',
+        label: 'Impresión Directa Algodón',
+        desc: 'Impresión sobre tela de algodón.',
+        icon: Printer,
+
         config: {
+            variantMode: 'fixed',
+            fixedVariant: '1.1.12.1',
+            materialMode: 'single',
+            requiresProductionFiles: true,
             disableItemNote: true,
-            requiresProductionFiles: true
+            hasCuttingWorkflow: true,
+            templateButtons: [
+                { label: 'DESCARGAR PLANILLA DE PEDIDO ROPA', url: 'https://drive.google.com/uc?export=download&id=1_u6vdtCQJZxjM-DgH6RhsamqV4EhtoHw' },
+                { label: 'DESCARGAR PLANILLA DE PEDIDO VARIOS', url: 'https://drive.google.com/uc?export=download&id=1yKe8DbrUyGKm2_Je6dOc3or67BDotnjl' }
+            ]
         },
         complementaryOptions: [
-            // CAMBIO: hasFile: true para carga de boceto
-            { id: 'estampado', label: 'Servicio de Estampado', hasFile: true, inputLabel: 'Cargar Boceto de Ubicación' },
-            // Estampado con plancha es complementario de TPU
-            { id: 'plancha', label: 'Estampado con Plancha', hasInput: true, inputLabel: 'Ubicación' }
+            { id: 'TWC', label: 'Corte Láser / Tizada', hasFile: false, fullWidth: true },
+            { id: 'TWT', label: 'Confección / Costura', hasInput: false, fullWidth: true },
+            { id: 'EMB', label: 'Servicio de Bordado', hasFile: true, fullWidth: true, inputLabel: 'Adjuntar Ponchado/Logo' },
+            { id: 'EST', label: 'Estampado (Planchado en USER)', fullWidth: true }
         ]
-    },
+    }
 ];
