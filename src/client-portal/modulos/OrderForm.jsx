@@ -774,7 +774,7 @@ const OrderForm = ({ serviceId: propServiceId }) => {
             )}
 
             <div className="flex items-center gap-4 mb-6">
-                <CustomButton variant="ghost" onClick={() => navigate('/')} icon={ArrowLeft}>Volver</CustomButton>
+                <CustomButton variant="ghost" onClick={() => navigate('/portal')} icon={ArrowLeft}>Volver</CustomButton>
                 <div>
                     <h2 className="text-2xl font-bold text-neutral-800 flex items-center gap-2">Nuevo Pedido: <span className="text-black">{serviceInfo?.label}</span></h2>
                     <p className="text-sm text-neutral-500">{serviceInfo?.desc}</p>
@@ -1195,7 +1195,7 @@ const OrderForm = ({ serviceId: propServiceId }) => {
                             <div className="flex flex-wrap justify-center gap-2">{createdOrderIds.map(id => <span key={id} className="bg-white border border-zinc-200 rounded-2xl py-3 px-6 font-bold shadow-sm text-zinc-900">{id}</span>)}</div>
                         </div>
                         <div className="flex flex-col gap-4">
-                            <CustomButton variant="primary" className="w-full py-5 rounded-2xl font-bold text-lg" onClick={() => navigate('/factory')}>Ver mis pedidos</CustomButton>
+                            <CustomButton variant="primary" className="w-full py-5 rounded-2xl font-bold text-lg" onClick={() => navigate('/portal/factory')}>Ver mis pedidos</CustomButton>
                             <button onClick={() => window.location.reload()} className="text-zinc-400 text-sm font-bold uppercase tracking-widest">+ Crear Otro</button>
                         </div>
                     </div>

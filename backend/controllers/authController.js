@@ -11,16 +11,22 @@ exports.login = async (req, res) => {
 
     try {
         const pool = await getPool();
+
+        // -----------------------------------------------------------------
+        // 1. INTENTO DE LOGIN COMO ADMIN / USUARIO INTERNO
+        // -----------------------------------------------------------------
         const result = await pool.request()
             .input('Username', sql.NVarChar, username)
-            // .input('Password', sql.NVarChar, password) // Si el SP valida password internamente
             .execute('sp_AutenticarUsuario');
 
         if (result.recordset.length > 0) {
             const user = result.recordset[0];
 
-            // Validación manual de contraseña si el SP retorna el hash (como vimos antes)
+            // Validación manual (si aplica)
             if (user.PasswordHash && password !== user.PasswordHash) {
+                // Contraseña incorrecta para usuario existente -> Fallar aquí (no probar cliente)
+                // O probar cliente SOLO si el username coincide con un IDCliente
+                // Por seguridad, si existe el usuario interno, asumimos que es ese
                 return res.status(401).json({ success: false, message: 'Credenciales inválidas.' });
             }
 
@@ -32,25 +38,26 @@ exports.login = async (req, res) => {
                     .input('Details', sql.NVarChar, 'Success')
                     .input('IPAddress', sql.NVarChar, req.ip)
                     .execute('sp_RegistrarAccion');
-            } catch (logErr) {
-                console.warn("Error logging login action:", logErr.message);
-            }
+            } catch (logErr) { console.warn("Error logging login:", logErr.message); }
 
-            // GENERATE REAL JWT
+            // GENERATE TOKEN (ADMIN)
             const token = jwt.sign(
                 {
                     id: user.UserID,
                     username: user.Username,
                     role: user.RoleName,
                     idRol: user.IdRol,
-                    areaKey: user.AreaUsuario || user.AreaID
+                    areaKey: user.AreaUsuario || user.AreaID,
+                    userType: 'INTERNAL' // Flag para distinguir
                 },
                 JWT_SECRET,
                 { expiresIn: '24h' }
             );
 
-            res.json({
+            return res.json({
                 success: true,
+                userType: 'INTERNAL',
+                redirectUrl: '/', // Admin Dashboard
                 user: {
                     userId: user.UserID,
                     username: user.Username,
@@ -58,16 +65,188 @@ exports.login = async (req, res) => {
                     idRol: user.IdRol,
                     area: user.AreaUsuario,
                     areaKey: user.AreaUsuario,
-                    avatar: user.Avatar || null // Agregamos avatar si existe
+                    avatar: user.Avatar || null,
+                    token: token // Enviamos token dentro de user por compatibilidad
                 },
                 token: token
             });
-        } else {
-            res.status(401).json({ success: false, message: 'Credenciales inválidas o usuario inactivo.' });
         }
+
+        // -----------------------------------------------------------------
+        // 2. SI NO ES ADMIN, INTENTO COMO CLIENTE (WEB PORTAL)
+        // -----------------------------------------------------------------
+        const clientResult = await pool.request()
+            .input('Val', sql.NVarChar, username.trim()) // Username input es el IDCliente
+            .query(`
+                SELECT CodCliente, IDCliente, Nombre, WebPasswordHash, WebActive, Email, NombreFantasia, WebResetPassword 
+                FROM Clientes
+                WHERE LTRIM(RTRIM(IDCliente)) = @Val
+            `);
+
+        if (clientResult.recordset.length > 0) {
+            const client = clientResult.recordset[0];
+            let isValid = false;
+            let isFirstTime = false;
+
+            // Lógica Password Cliente
+            if (!client.WebPasswordHash || client.WebPasswordHash === '') {
+                if (password && password.length > 0) {
+                    isFirstTime = true;
+                    isValid = true;
+                } else {
+                    return res.status(401).json({ success: false, message: 'Debe ingresar una contraseña.' });
+                }
+            } else if (client.WebPasswordHash === password) {
+                isValid = true;
+            }
+
+            if (!isValid) {
+                return res.status(401).json({ success: false, message: 'Credenciales inválidas.' });
+            }
+
+            // Update Password if first time
+            if (isFirstTime) {
+                await pool.request()
+                    .input('ID', sql.Int, client.CodCliente)
+                    .input('Pass', sql.NVarChar, password)
+                    .query("UPDATE Clientes SET WebPasswordHash = @Pass, WebResetPassword = 0, WebActive = 1 WHERE CodCliente = @ID");
+                client.WebResetPassword = false;
+            }
+
+            // GENERATE TOKEN (CLIENT)
+            const token = jwt.sign(
+                {
+                    id: client.CodCliente,
+                    email: client.Email,
+                    name: client.Nombre,
+                    role: 'WEB_CLIENT',
+                    codCliente: client.CodCliente,
+                    requireReset: client.WebResetPassword,
+                    userType: 'CLIENT'
+                },
+                JWT_SECRET,
+                { expiresIn: '30d' }
+            );
+
+            // Log Client Access
+            await pool.request()
+                .input('ID', sql.Int, client.CodCliente)
+                .query("UPDATE Clientes SET WebLastLogin = GETDATE() WHERE CodCliente = @ID");
+
+            return res.json({
+                success: true,
+                userType: 'CLIENT',
+                redirectUrl: '/portal', // Client Portal
+                user: {
+                    id: client.CodCliente,
+                    userId: client.CodCliente, // Polyfill for Admin context compatibility if needed
+                    email: client.Email,
+                    name: client.Nombre,
+                    company: client.NombreFantasia,
+                    role: 'WEB_CLIENT',
+                    idRol: 99, // Dummy ID for client role
+                    codCliente: client.CodCliente,
+                    requireReset: client.WebResetPassword,
+                    token: token
+                },
+                token: token
+            });
+        }
+
+        // -----------------------------------------------------------------
+        // 3. NO ENCONTRADO EN NINGUNO
+        // -----------------------------------------------------------------
+        res.status(401).json({ success: false, message: 'Credenciales inválidas o usuario inexistente.' });
+
     } catch (err) {
         console.error('[LOGIN ERROR] SQL Error:', err);
         res.status(500).send({ message: err.message });
+    }
+};
+
+// =====================================================================
+// 1b. GOOGLE LOGIN
+// =====================================================================
+exports.googleLogin = async (req, res) => {
+    const { credential } = req.body; // Google ID token from frontend
+
+    if (!credential) {
+        return res.status(400).json({ success: false, message: 'Token de Google no proporcionado.' });
+    }
+
+    try {
+        const { OAuth2Client } = require('google-auth-library');
+        const client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
+
+        const ticket = await client.verifyIdToken({
+            idToken: credential,
+            audience: process.env.GOOGLE_CLIENT_ID,
+        });
+
+        const payload = ticket.getPayload();
+        const googleEmail = payload.email;
+
+        console.log(`[GOOGLE LOGIN] Email: ${googleEmail}`);
+
+        const pool = await getPool();
+
+        // Buscar en Clientes por email
+        const clientResult = await pool.request()
+            .input('Email', sql.NVarChar, googleEmail)
+            .query(`
+                SELECT CodCliente, IDCliente, Nombre, Email, NombreFantasia, WebPasswordHash, WebResetPassword
+                FROM Clientes
+                WHERE LTRIM(RTRIM(Email)) = @Email
+            `);
+
+        if (clientResult.recordset.length > 0) {
+            const cl = clientResult.recordset[0];
+
+            const token = jwt.sign(
+                {
+                    id: cl.CodCliente,
+                    email: cl.Email,
+                    name: cl.Nombre,
+                    role: 'WEB_CLIENT',
+                    codCliente: cl.CodCliente,
+                    userType: 'CLIENT'
+                },
+                JWT_SECRET,
+                { expiresIn: '30d' }
+            );
+
+            await pool.request()
+                .input('ID', sql.Int, cl.CodCliente)
+                .query("UPDATE Clientes SET WebLastLogin = GETDATE(), WebActive = 1 WHERE CodCliente = @ID");
+
+            return res.json({
+                success: true,
+                userType: 'CLIENT',
+                redirectUrl: '/portal',
+                user: {
+                    id: cl.CodCliente,
+                    userId: cl.CodCliente,
+                    email: cl.Email,
+                    name: cl.Nombre,
+                    company: cl.NombreFantasia,
+                    role: 'WEB_CLIENT',
+                    idRol: 99,
+                    codCliente: cl.CodCliente,
+                    token: token
+                },
+                token: token
+            });
+        }
+
+        // No encontrado
+        res.status(401).json({
+            success: false,
+            message: `No se encontró un cliente registrado con el email ${googleEmail}`
+        });
+
+    } catch (err) {
+        console.error('[GOOGLE LOGIN ERROR]', err);
+        res.status(500).json({ success: false, message: 'Error al verificar cuenta de Google.' });
     }
 };
 

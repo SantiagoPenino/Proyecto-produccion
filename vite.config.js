@@ -21,6 +21,11 @@ export default defineConfig({
         ws: true,
         changeOrigin: true,
         secure: false
+      },
+      '/uploads': {
+        target: 'http://localhost:5000',
+        changeOrigin: true,
+        secure: false
       }
     }
   },
@@ -37,6 +42,11 @@ export default defineConfig({
       '/socket.io': {
         target: 'http://localhost:5000',
         ws: true,
+        changeOrigin: true,
+        secure: false
+      },
+      '/uploads': {
+        target: 'http://localhost:5000',
         changeOrigin: true,
         secure: false
       }

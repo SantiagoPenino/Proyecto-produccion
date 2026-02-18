@@ -1,4 +1,4 @@
-@import "tailwindcss";
+/* @import "tailwindcss"; Removed for unification compatibility */
 
 :root {
   --color-zinc-50: #fafafa;

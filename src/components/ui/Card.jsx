@@ -1,5 +1,3 @@
-import React from 'react';
-
 export const Card = ({ children, className = '', title }) => {
     return (
         <div className={`bg-white rounded-xl border border-slate-200 shadow-sm p-6 overflow-hidden ${className}`}>

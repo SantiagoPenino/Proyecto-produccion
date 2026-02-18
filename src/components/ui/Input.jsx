@@ -1,5 +1,3 @@
-import React from 'react';
-
 export const Input = ({ label, error, icon, endIcon, onEndIconClick, className = '', ...props }) => {
     return (
         <div className="w-full mb-4">

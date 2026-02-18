@@ -19,19 +19,57 @@ export const AuthProvider = ({ children }) => {
     }, []);
 
     const checkSession = async () => {
-        const token = localStorage.getItem('auth_token');
+        // 1. Check URL for token (SSO style fallback)
+        const params = new URLSearchParams(window.location.search);
+        const urlToken = params.get('t');
+
+        if (urlToken) {
+            localStorage.setItem('auth_token', urlToken);
+            window.history.replaceState({}, document.title, window.location.pathname);
+        }
+
+        let token = localStorage.getItem('auth_token');
+
+        // Fallback: Check if Main App logged us in
+        if (!token) {
+            const mainAppUser = localStorage.getItem('user');
+            if (mainAppUser) {
+                try {
+                    const parsed = JSON.parse(mainAppUser);
+                    if (parsed.token) {
+                        token = parsed.token;
+                        localStorage.setItem('auth_token', token);
+                    }
+                } catch (e) { console.error("Error syncing token from main app", e); }
+            }
+        }
+
         if (token) {
+            // Fast path: if we have cached user_session, use it immediately
+            const cachedSession = localStorage.getItem('user_session');
+            if (cachedSession) {
+                try {
+                    const cached = JSON.parse(cachedSession);
+                    if (cached.codCliente || cached.role === 'WEB_CLIENT') {
+                        setUser(cached);
+                        setIsLoggedIn(true);
+                        setLoading(false);
+                        return; // Skip API call - already have valid data
+                    }
+                } catch (e) { /* ignore, will verify via API */ }
+            }
+
+            // Slow path: verify with API
             try {
-                // Verify token and get latest user data
                 const userData = await apiClient.get('/web-auth/me');
-                // Assumes backend returns the User object directly or { user: ... }
-                // Adjust based on actual backend response structure
                 const user = userData.user || userData;
                 setUser(user);
                 setIsLoggedIn(true);
             } catch (err) {
-                console.error('Session validation failed:', err);
-                logout();
+                console.error('❌ [PortalAuth] Session validation failed:', err);
+                setUser(null);
+                setIsLoggedIn(false);
+                localStorage.removeItem('auth_token');
             }
         }
         setLoading(false);
@@ -86,7 +124,8 @@ export const AuthProvider = ({ children }) => {
         setIsLoggedIn(false);
         localStorage.removeItem('user_session');
         localStorage.removeItem('auth_token');
-        // Optional: Call functionality to invalidate token on server
+        localStorage.removeItem('user');
+        window.location.href = '/login';
     };
 
     const updateProfile = async (updates) => {

@@ -73,7 +73,7 @@ export const Dashboard = () => {
                         <GlassCard
                             key={service.id}
                             className="group cursor-pointer hover:border-amber-400/50 transition-all duration-300 hover:shadow-xl"
-                            onClick={() => navigate(`/order/${service.id}`)}
+                            onClick={() => navigate(`/portal/order/${service.id}`)}
                             whileHover={{ y: -5 }}
                         >
                             <div className="mb-4 p-3 bg-zinc-100 rounded-xl w-fit group-hover:bg-amber-100 group-hover:text-amber-600 transition-colors">

@@ -1,7 +1,6 @@
-import React, { useState } from 'react';
+import { useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
-import logo from '../../assets/logo.jpg';
 
 const Navbar = ({ onSwitchTab, currentView }) => {
   const { user, logout } = useAuth();

@@ -16,7 +16,7 @@ import {
 import { motion, AnimatePresence } from 'framer-motion';
 import { SERVICES_LIST } from '../constants/services';
 
-const BASE_URL = import.meta.env.VITE_API_URL ? import.meta.env.VITE_API_URL.replace(/\/api\/?$/, '') : 'http://localhost:5000';
+const BASE_URL = import.meta.env.VITE_API_URL ? import.meta.env.VITE_API_URL.replace(/\/api\/?$/, '') : '';
 
 const getImageUrl = (url) => {
     if (!url) return '';
@@ -109,7 +109,7 @@ export const MainLayout = ({ children }) => {
 
                 <nav className="flex-1 overflow-y-auto p-4 space-y-2 scrollbar-hide">
                     {/* 1. Mi Perfil (Primero según maqueta) */}
-                    <NavItem to="/profile" icon={User} label="Mi Perfil" />
+                    <NavItem to="/portal/profile" icon={User} label="Mi Perfil" />
 
                     {/* 2. Servicios (Collapsible) */}
                     <div className="space-y-1">
@@ -140,9 +140,9 @@ export const MainLayout = ({ children }) => {
                                 >
                                     <div className="pl-4 space-y-1 border-l-2 border-zinc-800 ml-4 mt-1">
                                         <Link
-                                            to="/"
+                                            to="/portal"
                                             onClick={() => setIsMobileMenuOpen(false)}
-                                            className={`block w-full text-left px-3 py-2 text-sm rounded-lg transition-colors ${location.pathname === '/' ? 'text-amber-400 bg-zinc-800/50 font-medium' : 'text-zinc-500 hover:text-zinc-300'
+                                            className={`block w-full text-left px-3 py-2 text-sm rounded-lg transition-colors ${location.pathname === '/portal' ? 'text-amber-400 bg-zinc-800/50 font-medium' : 'text-zinc-500 hover:text-zinc-300'
                                                 }`}
                                         >
                                             Ver Catálogo Completo
@@ -154,9 +154,9 @@ export const MainLayout = ({ children }) => {
                                             return (
                                                 <Link
                                                     key={service.id}
-                                                    to={`/order/${service.id}`}
+                                                    to={`/portal/order/${service.id}`}
                                                     onClick={() => setIsMobileMenuOpen(false)}
-                                                    className={`block w-full text-left px-3 py-2 text-sm rounded-lg transition-colors ${location.pathname === `/order/${service.id}`
+                                                    className={`block w-full text-left px-3 py-2 text-sm rounded-lg transition-colors ${location.pathname === `/portal/order/${service.id}`
                                                         ? 'text-white bg-zinc-800 font-medium'
                                                         : 'text-zinc-500 hover:text-zinc-300'
                                                         }`}
@@ -171,13 +171,13 @@ export const MainLayout = ({ children }) => {
                         </AnimatePresence>
                     </div>
 
-                    <NavItem to="/factory" icon={Factory} label="Fábrica / Estado" />
-                    <NavItem to="/pickup" icon={Truck} label="Retiro de Pedidos" />
+                    <NavItem to="/portal/factory" icon={Factory} label="Fábrica / Estado" />
+                    <NavItem to="/portal/pickup" icon={Truck} label="Retiro de Pedidos" />
 
                     <div className="pt-4 mt-4 border-t border-zinc-800">
-                        <Link to="/club">
-                            <button className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${isActive('/club') ? 'bg-amber-500 text-white shadow-lg' : 'bg-gradient-to-r from-amber-500/20 to-yellow-600/20 border border-amber-500/30 text-amber-400 hover:text-amber-300'}`}>
-                                <Crown size={20} className={isActive('/club') ? "text-white" : "text-amber-400"} />
+                        <Link to="/portal/club">
+                            <button className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${isActive('/portal/club') ? 'bg-amber-500 text-white shadow-lg' : 'bg-gradient-to-r from-amber-500/20 to-yellow-600/20 border border-amber-500/30 text-amber-400 hover:text-amber-300'}`}>
+                                <Crown size={20} className={isActive('/portal/club') ? "text-white" : "text-amber-400"} />
                                 <span className="font-bold">CLUB MEMBER</span>
                             </button>
                         </Link>
@@ -224,11 +224,11 @@ export const MainLayout = ({ children }) => {
                         className="md:hidden fixed inset-0 bg-zinc-900 z-20 pt-20 px-4 pb-4 overflow-y-auto"
                     >
                         <div className="flex flex-col gap-2">
-                            <NavItem to="/" icon={Package} label="Servicios" />
-                            <NavItem to="/profile" icon={User} label="Mi Perfil" />
-                            <NavItem to="/factory" icon={Factory} label="Fábrica / Estado" />
-                            <NavItem to="/pickup" icon={Truck} label="Retiro de Pedidos" />
-                            <NavItem to="/club" icon={Crown} label="Club Member" />
+                            <NavItem to="/portal" icon={Package} label="Servicios" />
+                            <NavItem to="/portal/profile" icon={User} label="Mi Perfil" />
+                            <NavItem to="/portal/factory" icon={Factory} label="Fábrica / Estado" />
+                            <NavItem to="/portal/pickup" icon={Truck} label="Retiro de Pedidos" />
+                            <NavItem to="/portal/club" icon={Crown} label="Club Member" />
 
                             <button onClick={logout} className="mt-8 flex items-center gap-3 px-4 py-3 text-red-400">
                                 <LogOut size={20} /> Cerrar Sesión

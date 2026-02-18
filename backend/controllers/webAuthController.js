@@ -177,11 +177,11 @@ exports.register = async (req, res) => {
                 .query(`
                     INSERT INTO Clientes (
                         CodCliente, IDCliente, Nombre, NombreFantasia, Email, TelefonoTrabajo, CliDireccion, CioRuc, 
-                        Localidad, Agencia, FechaAlta, WebPasswordHash, WebActive, WebResetPassword
+                        Localidad, Agencia, WebPasswordHash, WebActive, WebResetPassword
                     )
                     VALUES (
                         @CC, @IDC, @Nom, @Fant, @Email, @Tel, @Dir, @Ruc, 
-                        @Loc, @Age, GETDATE(), @Pass, 1, 0
+                        @Loc, @Age, @Pass, 1, 0
                     )
                 `);
 
