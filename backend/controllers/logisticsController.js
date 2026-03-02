@@ -1,6 +1,7 @@
 const { getPool, sql } = require('../config/db');
-const PricingService = require('../services/pricingService');
-const axios = require('axios');
+const REACT_API_URL = process.env.REACT_API_URL;
+const REACT_API_KEY = process.env.REACT_API_KEY;
+
 
 // Helper para registrar movimientos históricos
 const registrarMovimiento = async (transaction, { codigoBulto, tipo, area, usuario, obs, estAnt, estNew, esRecep }) => {
@@ -1614,8 +1615,8 @@ exports.getDepositStock = async (req, res) => {
 async function getExternalToken() {
     try {
         const axios = require('axios');
-        const tokenRes = await axios.post('https://administracionuser.uy/api/apilogin/generate-token', {
-            apiKey: "api_key_google_123sadas12513_user"
+        const tokenRes = await axios.post(`${REACT_API_URL}/apilogin/generate-token`, {
+            apiKey: REACT_API_KEY
         });
         return tokenRes.data.token || tokenRes.data.accessToken || tokenRes.data;
     } catch (e) {
@@ -1705,8 +1706,8 @@ exports.syncDepositStock = async (req, res) => {
                     const docId = orderInfo.recordset[0].NoDocERP.toString().trim();
                     console.log(`[SyncLogistics] Documento encontrado: ${docId} para código: ${code}`);
                     const existing = docsToSync.get(docId) || { bultoCode: null, notes: '', price: null, quantity: null, profile: null, reactPayload: null, erpPayload: null };
-                    
-                    docsToSync.set(docId, { 
+
+                    docsToSync.set(docId, {
                         bultoCode: bultoRef || existing.bultoCode,
                         notes: item.notes || existing.notes,
                         price: item.price !== undefined ? item.price : existing.price,
@@ -1727,8 +1728,8 @@ exports.syncDepositStock = async (req, res) => {
         for (const [doc, data] of docsToSync.entries()) {
             try {
                 console.log(`[SyncLogistics] Ejecutando Sync Integral para Doc: ${doc} ${data.bultoCode ? '(Bulto: ' + data.bultoCode + ')' : ''}`);
-                
-                const syncRes = await ERPSyncService.syncFinalOrderIntegration(doc, req.user?.id || 1, req.user?.usuario || 'Sistema', data.bultoCode, { 
+
+                const syncRes = await ERPSyncService.syncFinalOrderIntegration(doc, req.user?.id || 1, req.user?.usuario || 'Sistema', data.bultoCode, {
                     userNotes: data.notes,
                     priceOverride: data.price,
                     quantityOverride: data.quantity,
@@ -1794,18 +1795,18 @@ exports.recalculateDepositStockPrices = async (req, res) => {
 
             if (orderInfo.recordset.length > 0 && orderInfo.recordset[0].NoDocERP) {
                 const docId = orderInfo.recordset[0].NoDocERP.toString().trim();
-                const syncRes = await ERPSyncService.syncFinalOrderIntegration(docId, req.user?.id || 1, req.user?.usuario || 'Sistema', null, { 
+                const syncRes = await ERPSyncService.syncFinalOrderIntegration(docId, req.user?.id || 1, req.user?.usuario || 'Sistema', null, {
                     onlyCalculate: true,
                     priceOverride: item.price,
                     quantityOverride: item.quantity,
                     profileOverride: item.profile
                 });
 
-                results.push({ 
+                results.push({
                     qr: item.qr,
-                    document: docId, 
-                    success: syncRes.success, 
-                    total: syncRes.totalPriceSum, 
+                    document: docId,
+                    success: syncRes.success,
+                    total: syncRes.totalPriceSum,
                     currency: syncRes.targetCurrency,
                     reactPayload: syncRes.reactPayload,
                     erpPayload: syncRes.erpPayload

@@ -1,8 +1,9 @@
 const { sql, getPool } = require('../config/db');
 const driveService = require('../services/driveService');
-const fileProcessingService = require('../services/fileProcessingService');
 const axios = require('axios');
 const { PDFDocument, StandardFonts, rgb } = require('pdf-lib');
+const REACT_API_URL = process.env.REACT_API_URL;
+const REACT_API_KEY = process.env.REACT_API_KEY;
 
 // --- CONSTANTES Y MAPEOS ---
 const SERVICE_TO_AREA_MAP = {
@@ -1184,8 +1185,8 @@ exports.updateAreaVisibility = async (req, res) => {
 // --- HELPER TOKEN EXTERNO ---
 async function getExternalToken() {
     try {
-        const tokenRes = await axios.post('https://administracionuser.uy/api/apilogin/generate-token', {
-            apiKey: "api_key_google_123sadas12513_user"
+        const tokenRes = await axios.post(`${REACT_API_URL}/apilogin/generate-token`, {
+            apiKey: REACT_API_KEY
         });
         return tokenRes.data.token || tokenRes.data.accessToken || tokenRes.data;
     } catch (e) {
@@ -1214,9 +1215,12 @@ exports.getPickupOrders = async (req, res) => {
 
         // 2. Llamar API Externa
         // Estados: Avisado, Ingresado, Para avisar
-        const url = `https://administracionuser.uy/api/apiordenes/datafilter?codigoCliente=${encodeURIComponent(idClienteString)}&estado=Avisado&estado=Ingresado&estado=Para+avisar`;
+        const url = `${REACT_API_URL}/apiordenes/datafilter?codigoCliente=${encodeURIComponent(idClienteString)}&estado=Avisado&estado=Ingresado&estado=Para+avisar`;
 
-        const response = await axios.get(url);
+        const token = await getExternalToken();
+        const response = await axios.get(url, {
+            headers: { Authorization: `Bearer ${token}` }
+        });
         const externalOrders = response.data;
 
         if (!Array.isArray(externalOrders) || externalOrders.length === 0) {
@@ -1318,11 +1322,11 @@ exports.createPickupOrder = async (req, res) => {
         if (!codCliente) return res.status(401).json({ error: "Usuario no identificado." });
 
         // 5. POST to External API with Token
-        const tokenRes = await axios.post('https://administracionuser.uy/api/apilogin/generate-token', {
-            apiKey: "api_key_google_123sadas12513_user"
+        const tokenRes = await axios.post(`${REACT_API_URL}/apilogin/generate-token`, {
+            apiKey: REACT_API_KEY
         });
         const token = tokenRes.data.token;
-        const createUrl = 'https://administracionuser.uy/api/apiordenesRetiro/crear';
+        const createUrl = `${REACT_API_URL}/apiordenesRetiro/crear`;
 
         // Si el frontend ya envió las 'orders' formateadas
         if (orders && Array.isArray(orders) && orders.length > 0) {
@@ -1342,7 +1346,7 @@ exports.createPickupOrder = async (req, res) => {
             const idClienteString = clientRes.recordset[0].IDCliente;
 
             // Fetch external
-            const url = `https://administracionuser.uy/api/apiordenes/datafilter?codigoCliente=${encodeURIComponent(idClienteString)}&estado=Avisado&estado=Ingresado&estado=Para+avisar`;
+            const url = `${REACT_API_URL}/apiordenes/datafilter?codigoCliente=${encodeURIComponent(idClienteString)}&estado=Avisado&estado=Ingresado&estado=Para+avisar`;
             const response = await axios.get(url);
             const externalOrders = response.data || [];
 
@@ -1386,10 +1390,10 @@ exports.createPickupOrder = async (req, res) => {
 
         // The external API responds with a nested object or direct property (OReIdOrdenRetiro)
         const responseData = createRes.data;
-        
+
         // Extraemos el identificador generado externamente
         let ordIdRetiro = responseData?.data?.OrdIdOrdenRetiro || responseData?.OReIdOrdenRetiro || responseData?.OrdIdRetiro || responseData?.id;
-        
+
         // Formateador: Asegurar que siempre inicie con 'R-' para la base local
         if (ordIdRetiro && !String(ordIdRetiro).startsWith('R-')) {
             ordIdRetiro = `R-${ordIdRetiro}`;
@@ -1403,16 +1407,16 @@ exports.createPickupOrder = async (req, res) => {
                 if (moneda) {
                     targetCurrency = moneda;
                 } else if (payload.orders && payload.orders.length > 0) {
-                     // Try to infer from first order if not explicitly sent
-                     const firstCost = payload.orders[0].costWithCurrency || '';
-                     if (firstCost.includes('USD') || firstCost.includes('U$S')) targetCurrency = 'USD';
+                    // Try to infer from first order if not explicitly sent
+                    const firstCost = payload.orders[0].costWithCurrency || '';
+                    if (firstCost.includes('USD') || firstCost.includes('U$S')) targetCurrency = 'USD';
                 }
 
                 const pool = await getPool();
                 await pool.request()
                     .input('Ord', sql.NVarChar, String(ordIdRetiro))
-                    .input('Monto', sql.Decimal(18,2), payload.totalCost || 0)
-                    .input('Moneda', sql.NVarChar, targetCurrency) 
+                    .input('Monto', sql.Decimal(18, 2), payload.totalCost || 0)
+                    .input('Moneda', sql.NVarChar, targetCurrency)
                     .input('Ref', sql.NVarChar, null)     // Sin pago inicial
                     .input('Est', sql.Int, 1)             // 1 = Ingresado
                     .input('CodCliente', sql.VarChar, String(codCliente)) // clientName se pasa aquí

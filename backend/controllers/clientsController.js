@@ -1,7 +1,8 @@
 const { getPool, sql } = require('../config/db');
 const axios = require('axios'); // Importar axios para el proxy
-
-const ERP_API_BASE = process.env.ERP_API_URL || 'http://localhost:6061';
+const ERP_API_BASE = process.env.ERP_API_URL;
+const REACT_API_URL = process.env.REACT_API_URL;
+const REACT_API_KEY = process.env.REACT_API_KEY;
 
 // Cache para el Token de la API Macrosoft
 let macrosoftAuthToken = null;
@@ -114,8 +115,8 @@ exports.getMacrosoftClientData = async (req, res) => {
 exports.getAllReactClients = async (req, res) => {
     try {
         // 1. Obtener Token
-        const tokenRes = await axios.post('https://administracionuser.uy/api/apilogin/generate-token', {
-            apiKey: "api_key_google_123sadas12513_user"
+        const tokenRes = await axios.post(`${REACT_API_URL}/apilogin/generate-token`, {
+            apiKey: REACT_API_KEY
         });
 
         const token = tokenRes.data.token || tokenRes.data.accessToken || tokenRes.data; // Ajustar según respuesta real
@@ -123,7 +124,7 @@ exports.getAllReactClients = async (req, res) => {
         if (!token) throw new Error("No se recibió token de autenticación");
 
         // 2. Obtener Datos usando Token
-        const response = await axios.get('https://administracionuser.uy/api/apicliente/dataall', {
+        const response = await axios.get(`${REACT_API_URL}/apicliente/dataall`, {
             headers: { Authorization: `Bearer ${token}` }
         });
 
@@ -401,8 +402,8 @@ exports.importReactClient = async (req, res) => {
 
 // Helper para obtener token (Reutilizable)
 async function getExternalToken() {
-    const tokenRes = await axios.post('https://administracionuser.uy/api/apilogin/generate-token', {
-        apiKey: "api_key_google_123sadas12513_user"
+    const tokenRes = await axios.post(`${REACT_API_URL}/apilogin/generate-token`, {
+        apiKey: REACT_API_KEY
     });
     return tokenRes.data.token || tokenRes.data.accessToken || tokenRes.data;
 }
@@ -434,7 +435,7 @@ exports.createReactClient = async (req, res) => {
         console.log("Enviando Payload a React:", payload);
 
         // 3. Enviar a API Externa
-        const response = await axios.post('https://administracionuser.uy/api/apicliente/create', payload, {
+        const response = await axios.post(`${REACT_API_URL}/apicliente/create`, payload, {
             headers: { Authorization: `Bearer ${token}` }
         });
 

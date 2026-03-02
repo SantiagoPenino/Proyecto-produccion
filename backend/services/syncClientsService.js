@@ -1,11 +1,13 @@
 const axios = require('axios');
 const { sql, getPool } = require('../config/db');
+const REACT_API_URL = process.env.REACT_API_URL;
+const REACT_API_KEY = process.env.REACT_API_KEY;
 
 // --- HELPER TOKEN ---
 async function getExternalToken() {
     try {
-        const tokenRes = await axios.post('https://administracionuser.uy/api/apilogin/generate-token', {
-            apiKey: "api_key_google_123sadas12513_user"
+        const tokenRes = await axios.post(`${REACT_API_URL}/apilogin/generate-token`, {
+            apiKey: REACT_API_KEY
         });
         return tokenRes.data.token || tokenRes.data.accessToken || tokenRes.data;
     } catch (e) {
@@ -35,7 +37,7 @@ exports.exportClientToReact = async (clientData) => {
             TClIdTipoCliente: 1
         };
 
-        const response = await axios.post('https://administracionuser.uy/api/apicliente/create', payload, {
+        const response = await axios.post(`${REACT_API_URL}/apicliente/create`, payload, {
             headers: { Authorization: `Bearer ${token}` }
         });
 

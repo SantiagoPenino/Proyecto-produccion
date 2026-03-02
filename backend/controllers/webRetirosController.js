@@ -1,7 +1,7 @@
 const { getPool, sql } = require('../config/db');
 const axios = require('axios');
-
-const API_BASE_URL = 'https://administracionuser.uy/api';
+const REACT_API_URL = process.env.REACT_API_URL;
+const REACT_API_KEY = process.env.REACT_API_KEY;
 
 /**
  * Endpoint nativo para recibir y registrar directamente un retiro web
@@ -63,7 +63,7 @@ const runSyncRetirosCore = async () => {
     const pool = await getPool();
     const transaction = new sql.Transaction(pool);
 
-    const response = await axios.get(`${API_BASE_URL}/apiordenesRetiro/estados?estados=Ingresado,Abonado,Abonado%20de%20antemano,Empaquetado%20sin%20abonar,Empaquetado%20y%20abonado,Entregado,Cancelar`);
+    const response = await axios.get(`${REACT_API_URL}/apiordenesRetiro/estados?estados=Ingresado,Abonado,Abonado%20de%20antemano,Empaquetado%20sin%20abonar,Empaquetado%20y%20abonado,Entregado,Cancelar`);
     const retirosExternos = response.data;
 
     await transaction.begin();
@@ -153,7 +153,7 @@ exports.reportarPagoRetiro = async (req, res) => {
             orderNumbers
         };
 
-        const responseApi = await axios.post(`${API_BASE_URL}/apipagos/realizarPago`, payloadPago);
+        const responseApi = await axios.post(`${REACT_API_URL}/apipagos/realizarPago`, payloadPago);
 
         if (responseApi.status === 200 || responseApi.data.success || responseApi.data.exitoso) {
             await pool.request()
@@ -407,8 +407,8 @@ exports.asignarRetiroAEstante = async (req, res) => {
                 const ordenLimpia = ordenRetiro.startsWith('R-') ? ordenRetiro.substring(2) : ordenRetiro;
 
                 console.log(`[MARCAR PRONTO] Preparando llamado para orden: ${ordenRetiro} (limpia: ${ordenLimpia})`);
-                const tokenRes = await axios.post(`${API_BASE_URL}/apilogin/generate-token`, {
-                    apiKey: "api_key_google_123sadas12513_user"
+                const tokenRes = await axios.post(`${REACT_API_URL}/apilogin/generate-token`, {
+                    apiKey: REACT_API_KEY
                 });
 
                 // Generar versiones con padding para lidiar con el tipado CHAR(20) o CHAR(50) 
@@ -429,7 +429,7 @@ exports.asignarRetiroAEstante = async (req, res) => {
                 };
                 console.log(`[MARCAR PRONTO] Payload a enviar:`, JSON.stringify(payloadPronto, null, 2));
 
-                const responsePronto = await axios.post(`${API_BASE_URL}/apiordenesRetiro/marcarpronto`, payloadPronto, {
+                const responsePronto = await axios.post(`${REACT_API_URL}/apiordenesRetiro/marcarpronto`, payloadPronto, {
                     headers: { 'Authorization': `Bearer ${tokenRes.data.token}` }
                 });
                 console.log(`[MARCAR PRONTO] Respuesta de central exitosa:`, responsePronto.data);
@@ -500,8 +500,8 @@ exports.marcarRetiroEntregado = async (req, res) => {
                 const ordenLimpia = ordenDeRetiro.startsWith('R-') ? ordenDeRetiro.substring(2) : ordenDeRetiro;
 
                 console.log(`[MARCAR ENTREGADO] Preparando llamado para orden: ${ordenDeRetiro} (limpia: ${ordenLimpia})`);
-                const tokenRes = await axios.post(`${API_BASE_URL}/apilogin/generate-token`, {
-                    apiKey: "api_key_google_123sadas12513_user"
+                const tokenRes = await axios.post(`${REACT_API_URL}/apilogin/generate-token`, {
+                    apiKey: REACT_API_KEY
                 });
 
                 const payloadEntregado = {
@@ -509,7 +509,7 @@ exports.marcarRetiroEntregado = async (req, res) => {
                 };
                 console.log(`[MARCAR ENTREGADO] Payload a enviar:`, JSON.stringify(payloadEntregado, null, 2));
 
-                const responseEntregada = await axios.post(`${API_BASE_URL}/apiordenesRetiro/marcarOrdenEntregada`, payloadEntregado, {
+                const responseEntregada = await axios.post(`${REACT_API_URL}/apiordenesRetiro/marcarOrdenEntregada`, payloadEntregado, {
                     headers: { 'Authorization': `Bearer ${tokenRes.data.token}` }
                 });
                 console.log(`[MARCAR ENTREGADO] Respuesta de central exitosa:`, responseEntregada.data);
