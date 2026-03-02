@@ -43,10 +43,10 @@ export default function CancelledOrdersCard() {
         <div className="relative bg-white rounded-2xl p-6 border border-slate-100 shadow-lg hover:shadow-xl transition-all duration-300 overflow-hidden group">
             <div className="relative z-10">
                 <div className="flex items-center mb-4">
-                    <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-red-500 to-pink-600 shadow-lg flex items-center justify-center text-white text-2xl mr-3">
+                    <div className="w-12 h-12 rounded-xl bg-red-600 shadow-lg flex items-center justify-center text-white text-2xl mr-3">
                         <i className="fa-solid fa-ban" />
                     </div>
-                    <h4 className="text-3xl font-black text-slate-800">Órdenes Canceladas</h4>
+                    <h4 className="text-xl font-black text-slate-800 uppercase">Órdenes Canceladas</h4>
                 </div>
                 <p className="text-4xl font-bold text-slate-800 mb-2">
                     {loading ? <i className="fa-solid fa-spinner fa-spin text-2xl text-red-500"></i> : displaySummary.totalGeneral}

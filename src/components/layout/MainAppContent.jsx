@@ -36,7 +36,7 @@ const IntegralOrderView = lazy(() => import('../pages/IntegralOrderView'));
 // ============================================
 // 1. COMPONENTE NAVNODE (Mejorado)
 // ============================================
-const NavNode = ({ item, openMenus, toggleMenu, navigate, location, level = 0, isCollapsed }) => {
+const NavNode = ({ item, openMenus, toggleMenu, navigate, location, level = 0, isCollapsed, setIsCollapsed }) => {
     const hasChildren = item.children && item.children.length > 0;
     const isOpen = openMenus[item.IdModulo];
     const isSelected = location.pathname === item.Ruta;
@@ -59,7 +59,10 @@ const NavNode = ({ item, openMenus, toggleMenu, navigate, location, level = 0, i
                     paddingLeft: !isCollapsed ? paddingLeft : undefined,
                 }}
                 onClick={() => {
-                    if (hasChildren) toggleMenu(item.IdModulo);
+                    if (hasChildren) {
+                        if (isCollapsed) setIsCollapsed(false);
+                        toggleMenu(item.IdModulo);
+                    }
                     else if (item.Ruta) navigate(item.Ruta);
                 }}
                 title={isCollapsed ? item.Nombre : ''}
@@ -93,7 +96,13 @@ const NavNode = ({ item, openMenus, toggleMenu, navigate, location, level = 0, i
 
             </div>
 
-            <div className={`overflow-hidden ${hasChildren && isOpen && !isCollapsed ? '' : 'hidden'}`}>
+            <div
+                className="overflow-hidden transition-all duration-300 ease-in-out"
+                style={{
+                    maxHeight: hasChildren && isOpen && !isCollapsed ? '500px' : '0px',
+                    opacity: hasChildren && isOpen && !isCollapsed ? 1 : 0,
+                }}
+            >
                 {hasChildren && (
                     <div className="mt-1">
                         {item.children.map(child => (
@@ -106,6 +115,7 @@ const NavNode = ({ item, openMenus, toggleMenu, navigate, location, level = 0, i
                                 location={location}
                                 level={level + 1}
                                 isCollapsed={isCollapsed}
+                                setIsCollapsed={setIsCollapsed}
                             />
                         ))}
                     </div>
@@ -243,6 +253,7 @@ const MainAppContent = ({ menuItems = [] }) => {
                                 navigate={navigate}
                                 location={location}
                                 isCollapsed={isCollapsed}
+                                setIsCollapsed={setIsCollapsed}
                             />
                         ))}
                     </nav>
