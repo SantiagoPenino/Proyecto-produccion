@@ -420,9 +420,9 @@ const WebRetirosPage = () => {
                     <CheckCircle size={16} /> Listos para Estantería (Abonados)
                   </h3>
                   <div className="space-y-3">
-                    {apiOrders.filter(o => o.pagorealizado === 1 && (o.ordenDeRetiro.toLowerCase().includes(searchTerm.toLowerCase()) || o.idcliente.toLowerCase().includes(searchTerm.toLowerCase()))).length === 0 ? (
+                    {apiOrders.filter(o => o.pagorealizado === 1 && (String(o.ordenDeRetiro).toLowerCase().includes(searchTerm.toLowerCase()) || String(o.idcliente || '').toLowerCase().includes(searchTerm.toLowerCase()))).length === 0 ? (
                       <div className="p-4 text-center text-sm text-slate-400 bg-slate-50 rounded-xl border border-dashed border-slate-200">No hay retiros pagos pendientes.</div>
-                    ) : apiOrders.filter(o => o.pagorealizado === 1 && (o.ordenDeRetiro.toLowerCase().includes(searchTerm.toLowerCase()) || o.idcliente.toLowerCase().includes(searchTerm.toLowerCase()))).map(o => (
+                    ) : apiOrders.filter(o => o.pagorealizado === 1 && (String(o.ordenDeRetiro).toLowerCase().includes(searchTerm.toLowerCase()) || String(o.idcliente || '').toLowerCase().includes(searchTerm.toLowerCase()))).map(o => (
                       <button key={o.ordenDeRetiro} onClick={() => handleSelectRetiro(o)} className="w-full p-4 bg-slate-50 rounded-xl border border-slate-200 text-left hover:border-blue-400 hover:bg-white hover:shadow-md transition-all flex items-center justify-between group">
                         <div className="flex-1">
                           <div className="text-lg font-black text-slate-800">{o.ordenDeRetiro.replace('R-', 'PW-')}</div>
@@ -442,9 +442,9 @@ const WebRetirosPage = () => {
                     <Clock size={16} /> Pendientes de Pago
                   </h3>
                   <div className="space-y-3 opacity-70">
-                    {apiOrders.filter(o => o.pagorealizado === 0 && (o.ordenDeRetiro.toLowerCase().includes(searchTerm.toLowerCase()) || o.idcliente.toLowerCase().includes(searchTerm.toLowerCase()))).length === 0 ? (
+                    {apiOrders.filter(o => o.pagorealizado === 0 && (String(o.ordenDeRetiro).toLowerCase().includes(searchTerm.toLowerCase()) || String(o.idcliente || '').toLowerCase().includes(searchTerm.toLowerCase()))).length === 0 ? (
                       <div className="p-4 text-center text-sm text-slate-400 bg-slate-50 rounded-xl border border-dashed border-slate-200">No hay retiros impagos en cola.</div>
-                    ) : apiOrders.filter(o => o.pagorealizado === 0 && (o.ordenDeRetiro.toLowerCase().includes(searchTerm.toLowerCase()) || o.idcliente.toLowerCase().includes(searchTerm.toLowerCase()))).map(o => (
+                    ) : apiOrders.filter(o => o.pagorealizado === 0 && (String(o.ordenDeRetiro).toLowerCase().includes(searchTerm.toLowerCase()) || String(o.idcliente || '').toLowerCase().includes(searchTerm.toLowerCase()))).map(o => (
                       <button key={o.ordenDeRetiro} onClick={() => handleSelectRetiro(o)} className="w-full p-4 bg-slate-50 rounded-xl border border-slate-200 text-left hover:border-orange-400 hover:bg-white hover:shadow-md transition-all flex items-center justify-between opacity-80 hover:opacity-100 group">
                         <div className="flex-1">
                           <div className="text-lg font-bold text-slate-600 group-hover:text-orange-600 transition-colors">{o.ordenDeRetiro}</div>

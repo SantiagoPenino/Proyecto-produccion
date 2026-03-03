@@ -460,16 +460,6 @@ export const PickupView = () => {
                         >
                             {user?.hasCredit || totalAmount === 0 ? 'Confirmar Retiro' : 'Ir a Pagar'}
                         </CustomButton>
-
-                        <CustomButton
-                            onClick={handleCreatePickup}
-                            disabled={selectedOrders.length === 0 || loading}
-                            variant="secondary"
-                            className="py-3 px-6 ml-2 bg-zinc-200 text-zinc-600 hover:bg-zinc-300 border border-zinc-200"
-                            title="Generar retiro directamente (Solo Pruebas)"
-                        >
-                            🛠️
-                        </CustomButton>
                     </div>
                 </div>
             </GlassCard>
