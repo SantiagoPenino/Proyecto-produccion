@@ -257,7 +257,7 @@ const WebRetirosPage = () => {
           </button>
           <div className="text-right">
             <span className="text-[10px] font-bold text-blue-500 tracking-wider uppercase">Detalle Envio Web</span>
-            <h2 className="text-3xl font-black text-slate-800 mt-1">{selectedRetiro.ordenDeRetiro}</h2>
+            <h2 className="text-3xl font-black text-slate-800 mt-1">{selectedRetiro.pagorealizado === 1 ? selectedRetiro.ordenDeRetiro.replace('R-', 'PW-') : selectedRetiro.ordenDeRetiro}</h2>
             <p className="text-slate-400 font-medium uppercase text-sm mt-1">{selectedRetiro.idcliente}</p>
           </div>
         </div>
@@ -317,7 +317,7 @@ const WebRetirosPage = () => {
       <div className="flex items-center justify-between mb-8">
         <div>
           <h2 className="text-2xl font-black text-slate-800">Mapa del Depósito</h2>
-          <p className="text-slate-500 font-medium text-sm mt-1">Haga click en un casillero vacío para ubicar la orden <strong className="text-blue-600">{selectedRetiro.ordenDeRetiro}</strong></p>
+          <p className="text-slate-500 font-medium text-sm mt-1">Haga click en un casillero vacío para ubicar la orden <strong className="text-blue-600">{selectedRetiro.pagorealizado === 1 ? selectedRetiro.ordenDeRetiro.replace('R-', 'PW-') : selectedRetiro.ordenDeRetiro}</strong></p>
         </div>
         <button onClick={() => setUbicationMode(false)} className="px-6 py-2.5 bg-white border border-slate-200 rounded-lg font-bold text-slate-500 shadow-sm hover:bg-slate-50 text-sm">Atrás</button>
       </div>
@@ -591,7 +591,7 @@ const WebRetirosPage = () => {
           <div className="bg-white rounded-3xl p-8 max-w-lg w-full shadow-2xl animate-in fade-in zoom-in-95">
             <h3 className="text-2xl font-black text-slate-800 mb-2 tracking-tight">Confirmar Entrega</h3>
             <p className="text-slate-500 mb-6 font-medium">
-              Vas a entregar la orden <strong className="text-blue-600">{confirmDelivery.data.OrdenRetiro}</strong> del estante <strong className="text-blue-600">{confirmDelivery.id}</strong>.
+              Vas a entregar la orden <strong className="text-blue-600">{confirmDelivery.data.Pagado ? confirmDelivery.data.OrdenRetiro.replace('R-', 'PW-') : confirmDelivery.data.OrdenRetiro}</strong> del estante <strong className="text-blue-600">{confirmDelivery.id}</strong>.
             </p>
 
             <form onSubmit={(e) => {
