@@ -558,12 +558,12 @@ exports.marcarRetiroEntregado = async (req, res) => {
 exports.getPaymentMethods = async (req, res) => {
     try {
         console.log(`[PAYMENT METHODS] Solicitando token a la central...`);
-        const tokenRes = await axios.post(`${API_BASE_URL}/apilogin/generate-token`, {
+        const tokenRes = await axios.post(`${REACT_API_URL}/apilogin/generate-token`, {
             apiKey: "api_key_google_123sadas12513_user"
         });
 
         console.log(`[PAYMENT METHODS] Solicitando métodos de pago a la central...`);
-        const response = await axios.get(`${API_BASE_URL}/apipagos/metodos`, {
+        const response = await axios.get(`${REACT_API_URL}/apipagos/metodos`, {
             headers: { 'Authorization': `Bearer ${tokenRes.data.token}` }
         });
 
@@ -579,11 +579,11 @@ exports.getPaymentMethods = async (req, res) => {
  */
 exports.getCajaOrdenes = async (req, res) => {
     try {
-        const tokenRes = await axios.post(`${API_BASE_URL}/apilogin/generate-token`, {
+        const tokenRes = await axios.post(`${REACT_API_URL}/apilogin/generate-token`, {
             apiKey: "api_key_google_123sadas12513_user"
         });
 
-        const response = await axios.get(`${API_BASE_URL}/apiordenesretiro/caja`, {
+        const response = await axios.get(`${REACT_API_URL}/apiordenesretiro/caja`, {
             headers: { 'Authorization': `Bearer ${tokenRes.data.token}` }
         });
         res.json(response.data);
@@ -598,7 +598,7 @@ exports.getCajaOrdenes = async (req, res) => {
  */
 exports.getCotizacion = async (req, res) => {
     try {
-        const response = await axios.get(`${API_BASE_URL}/apicotizaciones/hoy`);
+        const response = await axios.get(`${REACT_API_URL}/apicotizaciones/hoy`);
         res.json(response.data);
     } catch (err) {
         console.error("[COTIZACION] Error al obtener cotización:", err.response?.data || err.message);
@@ -614,7 +614,7 @@ exports.marcarPasarPorCaja = async (req, res) => {
         const { ordenDeRetiro } = req.body;
         if (!ordenDeRetiro) return res.status(400).json({ error: "No se proporcionó orden de retiro" });
 
-        const tokenRes = await axios.post(`${API_BASE_URL}/apilogin/generate-token`, {
+        const tokenRes = await axios.post(`${REACT_API_URL}/apilogin/generate-token`, {
             apiKey: "api_key_google_123sadas12513_user"
         });
 
@@ -622,7 +622,7 @@ exports.marcarPasarPorCaja = async (req, res) => {
 
         // Asumiendo que el ID de usuario es 1 para Caja en la URL
         // o quizás el endpoint no exige un ID dinámico (el usuario dijo /marcarpasarporcaja/1)
-        const response = await axios.post(`${API_BASE_URL}/apiordenesretiro/marcarpasarporcaja/1`, payload, {
+        const response = await axios.post(`${REACT_API_URL}/apiordenesretiro/marcarpasarporcaja/1`, payload, {
             headers: { 'Authorization': `Bearer ${tokenRes.data.token}` }
         });
 
