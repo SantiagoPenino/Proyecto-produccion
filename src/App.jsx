@@ -7,6 +7,7 @@ import RegisterPage from './components/pages/RegisterPage';
 import ForgotPasswordPage from './components/pages/ForgotPasswordPage';
 import { ClientPortalApp } from './client-portal/ClientPortalApp';
 import MainAppContent from './components/layout/MainAppContent'; // ESTE ES EL IMPORT
+import PaymentResult from './components/pages/PaymentResult';
 import { menuService } from './services/api';
 
 function App() {
@@ -41,6 +42,7 @@ function App() {
         <Route path="/register" element={<RegisterPage />} />
         <Route path="/forgot-password" element={<ForgotPasswordPage />} />
         <Route path="/portal/*" element={<ClientPortalApp />} />
+        <Route path="/payment-status" element={<PaymentResult />} />
         <Route path="*" element={<Navigate to="/login" replace />} />
       </Routes>
     );
@@ -52,8 +54,9 @@ function App() {
     return (
       <Routes>
         <Route path="/portal/*" element={<ClientPortalApp />} />
+        <Route path="/payment-status" element={<PaymentResult />} />
         {/* Redirect any other route to portal */}
-        <Route path="*" element={<Navigate to="/portal/pickup" replace />} />
+        <Route path="*" element={<Navigate to="/portal/profile" replace />} />
       </Routes>
     );
   }

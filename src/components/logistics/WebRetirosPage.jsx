@@ -257,7 +257,7 @@ const WebRetirosPage = () => {
           </button>
           <div className="text-right">
             <span className="text-[10px] font-bold text-blue-500 tracking-wider uppercase">Detalle Envio Web</span>
-            <h2 className="text-3xl font-black text-slate-800 mt-1">{selectedRetiro.ordenDeRetiro}</h2>
+            <h2 className="text-3xl font-black text-slate-800 mt-1">{selectedRetiro.pagorealizado === 1 ? selectedRetiro.ordenDeRetiro.replace('R-', 'PW-') : selectedRetiro.ordenDeRetiro}</h2>
             <p className="text-slate-400 font-medium uppercase text-sm mt-1">{selectedRetiro.idcliente}</p>
           </div>
         </div>
@@ -317,7 +317,7 @@ const WebRetirosPage = () => {
       <div className="flex items-center justify-between mb-8">
         <div>
           <h2 className="text-2xl font-black text-slate-800">Mapa del Depósito</h2>
-          <p className="text-slate-500 font-medium text-sm mt-1">Haga click en un casillero vacío para ubicar la orden <strong className="text-blue-600">{selectedRetiro.ordenDeRetiro}</strong></p>
+          <p className="text-slate-500 font-medium text-sm mt-1">Haga click en un casillero vacío para ubicar la orden <strong className="text-blue-600">{selectedRetiro.pagorealizado === 1 ? selectedRetiro.ordenDeRetiro.replace('R-', 'PW-') : selectedRetiro.ordenDeRetiro}</strong></p>
         </div>
         <button onClick={() => setUbicationMode(false)} className="px-6 py-2.5 bg-white border border-slate-200 rounded-lg font-bold text-slate-500 shadow-sm hover:bg-slate-50 text-sm">Atrás</button>
       </div>
@@ -349,7 +349,7 @@ const WebRetirosPage = () => {
                           className={`h-24 rounded-xl border-2 transition-all flex flex-col items-center justify-center gap-1.5 ${data ? 'bg-indigo-600 border-indigo-700 cursor-not-allowed opacity-90' : 'bg-white border-dashed border-slate-300 hover:border-blue-500 hover:bg-blue-50 group shadow-sm'}`}
                         >
                           <span className={`text-[10px] font-bold ${data ? 'text-indigo-200' : 'text-slate-400 uppercase group-hover:text-blue-600'}`}>{id}</span>
-                          {data && <span className="text-[11px] font-black text-white px-2 py-0.5 rounded border border-indigo-500 truncate max-w-[90%]">{data.OrdenRetiro}</span>}
+                          {data && <span className="text-[11px] font-black text-white px-2 py-0.5 rounded border border-indigo-500 truncate max-w-[90%]">{data.Pagado ? data.OrdenRetiro.replace('R-', 'PW-') : data.OrdenRetiro}</span>}
                           {data && <span className="text-[9px] font-bold text-indigo-100 px-1 truncate max-w-[90%]">{data.CodigoCliente || 'Cliente'}</span>}
                           {!data && <div className="w-1.5 h-1.5 rounded-full bg-slate-200 group-hover:bg-blue-400 mt-1 transition-colors" />}
                         </button>
@@ -425,7 +425,7 @@ const WebRetirosPage = () => {
                     ) : apiOrders.filter(o => o.pagorealizado === 1 && (o.ordenDeRetiro.toLowerCase().includes(searchTerm.toLowerCase()) || o.idcliente.toLowerCase().includes(searchTerm.toLowerCase()))).map(o => (
                       <button key={o.ordenDeRetiro} onClick={() => handleSelectRetiro(o)} className="w-full p-4 bg-slate-50 rounded-xl border border-slate-200 text-left hover:border-blue-400 hover:bg-white hover:shadow-md transition-all flex items-center justify-between group">
                         <div className="flex-1">
-                          <div className="text-lg font-black text-slate-800">{o.ordenDeRetiro}</div>
+                          <div className="text-lg font-black text-slate-800">{o.ordenDeRetiro.replace('R-', 'PW-')}</div>
                           <div className="flex items-center gap-2 mt-1">
                             <span className="px-2 py-0.5 bg-slate-200 text-slate-600 rounded text-xs font-bold uppercase">{o.idcliente}</span>
                             <span className="text-sm font-black text-emerald-600">{o.moneda} {o.monto.toFixed(2)}</span>
@@ -548,7 +548,7 @@ const WebRetirosPage = () => {
                                   {data ? (
                                     <>
                                       <span className={`font-black tracking-widest ${isMatched ? 'text-white text-xl drop-shadow-md bg-green-700/50 px-3 py-1 rounded-lg mb-1' : 'text-indigo-200 text-[10px]'}`}>{id}</span>
-                                      <span className={`text-sm font-black italic uppercase truncate px-2 ${isMatched ? 'text-white' : 'text-white'}`}>{data.OrdenRetiro}</span>
+                                      <span className={`text-sm font-black italic uppercase truncate px-2 ${isMatched ? 'text-white' : 'text-white'}`}>{data.Pagado ? data.OrdenRetiro.replace('R-', 'PW-') : data.OrdenRetiro}</span>
                                       <span className={`text-[10px] font-bold truncate px-2 max-w-[90%] bg-black/20 rounded-md py-0.5 mt-0.5 ${isMatched ? 'text-green-100' : 'text-indigo-100'}`}>
                                         {data.ClientName || data.CodigoCliente || 'Cliente'}
                                       </span>
@@ -591,7 +591,7 @@ const WebRetirosPage = () => {
           <div className="bg-white rounded-3xl p-8 max-w-lg w-full shadow-2xl animate-in fade-in zoom-in-95">
             <h3 className="text-2xl font-black text-slate-800 mb-2 tracking-tight">Confirmar Entrega</h3>
             <p className="text-slate-500 mb-6 font-medium">
-              Vas a entregar la orden <strong className="text-blue-600">{confirmDelivery.data.OrdenRetiro}</strong> del estante <strong className="text-blue-600">{confirmDelivery.id}</strong>.
+              Vas a entregar la orden <strong className="text-blue-600">{confirmDelivery.data.Pagado ? confirmDelivery.data.OrdenRetiro.replace('R-', 'PW-') : confirmDelivery.data.OrdenRetiro}</strong> del estante <strong className="text-blue-600">{confirmDelivery.id}</strong>.
             </p>
 
             <form onSubmit={(e) => {

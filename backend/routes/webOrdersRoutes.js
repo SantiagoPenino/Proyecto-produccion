@@ -44,6 +44,9 @@ router.post('/handy-refund', verifyToken, webOrdersController.createHandyRefund)
 // POST /api/web-orders/handy-refund-webhook (Webhook Callback de Devolución)
 router.post('/handy-refund-webhook', webOrdersController.handyRefundWebhook);
 
+// GET /api/web-orders/payment-status/:transactionId (Consultar estado de pago)
+router.get('/payment-status/:transactionId', webOrdersController.getPaymentStatus);
+
 // PUT /api/web-orders/area-mapping/:codOrden (Toggle Visibility)
 router.put('/area-mapping/:codOrden', verifyToken, webOrdersController.updateAreaVisibility);
 

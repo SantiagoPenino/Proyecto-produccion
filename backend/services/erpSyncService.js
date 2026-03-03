@@ -1,6 +1,8 @@
 const axios = require('axios');
 const { sql, getPool } = require('../config/db');
 const PricingService = require('./pricingService');
+const REACT_API_URL = process.env.REACT_API_URL;
+const REACT_API_KEY = process.env.REACT_API_KEY;
 
 class ERPSyncService {
 
@@ -175,10 +177,10 @@ class ERPSyncService {
         const qrCliente = first.IdClienteReact || '0';
         const qrTrabajo = (first.DescripcionTrabajo || '').trim();
         const qrUrgencia = (first.Prioridad && (first.Prioridad.toLowerCase().includes('urgente') || first.Prioridad.toLowerCase().includes('alta'))) ? '2' : '1';
-        
+
         // CORRECCIÓN: Usar IDProdReact del artículo si existe, sino fallback a genérico
         const qrProducto = first.ArtIdReact || first.IdProductoReact || (targetCurrency === 'USD' ? '150' : '82');
-        
+
         const qrCantidad = totalMagnitudeSum || '1';
         const qrImporte = totalPriceSum.toFixed(2);
 
@@ -198,10 +200,10 @@ class ERPSyncService {
                 Lineas: Object.entries(lineasAgrupadas).map(([cod, qty]) => ({ CodArticulo: cod, Cantidad: qty.toString() }))
             };
 
-            return { 
-                success: true, 
-                totalPriceSum, 
-                detallesCobranza, 
+            return {
+                success: true,
+                totalPriceSum,
+                detallesCobranza,
                 targetCurrency,
                 reactPayload: { ordenString: reactCode, estado: "Ingresado" },
                 erpPayload: erpPayload
@@ -210,9 +212,9 @@ class ERPSyncService {
 
         // 5.5 Guardar Detalle para Etiquetas (Validación visual de costos)
         const textBreakdown = detallesCobranza.map(d => `- ${d.CodArticulo}: ${d.Cantidad} x ${d.PrecioUnitario} = ${d.Subtotal} (${d.LogPrecioAplicado})`).join('\n');
-        
+
         console.log(`\n======================================================\n[ERPSync] DESGLOSE DE PRECIOS CALCULADOS PARA ${noDocERP}\n${textBreakdown}\n======================================================\n`);
-        
+
         await pool.request()
             .input('Break', sql.NVarChar(sql.MAX), textBreakdown)
             .input('OID', sql.Int, siblings[0].OrdenID)
@@ -240,45 +242,45 @@ class ERPSyncService {
                     finalReactPayload = { ordenString: reactCode, estado: "Ingresado" };
                 }
 
-                console.log(`[ERPSync] --> ENVIANDO A REACT API (administracionuser.uy)...`, JSON.stringify(finalReactPayload));
-                
+                console.log(`[ERPSync] --> ENVIANDO A REACT API...`, JSON.stringify(finalReactPayload));
+
                 try {
                     const reactToken = await this.getExternalToken();
                     if (reactToken) {
-                    const reactRes = await axios.post('https://administracionuser.uy/api/apiordenes/data', finalReactPayload, { 
-                        headers: { Authorization: `Bearer ${reactToken}`, 'Content-Type': 'application/json' } 
-                    });
-                    
-                    console.log(`[ERPSync] <-- RESPUESTA REACT: Status ${reactRes.status}`, JSON.stringify(reactRes.data));
+                        const reactRes = await axios.post(`${REACT_API_URL}/apiordenes/data`, finalReactPayload, {
+                            headers: { Authorization: `Bearer ${reactToken}`, 'Content-Type': 'application/json' }
+                        });
 
-                if ((reactRes.status === 200 || reactRes.status === 201) && reactRes.data?.success !== false && !reactRes.data?.error) {
-                    reactSuccess = true;
-                    console.log(`[ERPSync] OK React para ${noDocERP}`);
+                        console.log(`[ERPSync] <-- RESPUESTA REACT: Status ${reactRes.status}`, JSON.stringify(reactRes.data));
+
+                        if ((reactRes.status === 200 || reactRes.status === 201) && reactRes.data?.success !== false && !reactRes.data?.error) {
+                            reactSuccess = true;
+                            console.log(`[ERPSync] OK React para ${noDocERP}`);
+                            await pool.request()
+                                .input('Doc', sql.NVarChar, noDocERP)
+                                .input('P', sql.NVarChar(sql.MAX), JSON.stringify(finalReactPayload))
+                                .query("UPDATE PedidosCobranza SET EstadoSyncReact = 'Enviado_OK', ObsReact = @P WHERE NoDocERP = @Doc");
+                        } else {
+                            throw new Error(reactRes.data?.error || reactRes.data?.message || JSON.stringify(reactRes.data));
+                        }
+                    } else {
+                        throw new Error("No se pudo obtener el token de React.");
+                    }
+                } catch (eReact) {
+                    const errLog = eReact.response?.data || { error: eReact.message };
+                    console.error(`[ERPSync] Error al enviar a React:`, eReact.message);
                     await pool.request()
                         .input('Doc', sql.NVarChar, noDocERP)
-                        .input('P', sql.NVarChar(sql.MAX), JSON.stringify(finalReactPayload))
-                        .query("UPDATE PedidosCobranza SET EstadoSyncReact = 'Enviado_OK', ObsReact = @P WHERE NoDocERP = @Doc");
-                } else {
-                    throw new Error(reactRes.data?.error || reactRes.data?.message || JSON.stringify(reactRes.data));
+                        .input('E', sql.NVarChar(sql.MAX), JSON.stringify(errLog))
+                        .query("UPDATE PedidosCobranza SET EstadoSyncReact = 'Error', ObsReact = @E WHERE NoDocERP = @Doc");
                 }
-                } else {
-                    throw new Error("No se pudo obtener el token de React.");
-                }
-            } catch (eReact) {
-                const errLog = eReact.response?.data || { error: eReact.message };
-                console.error(`[ERPSync] Error al enviar a React:`, eReact.message);
-                await pool.request()
-                    .input('Doc', sql.NVarChar, noDocERP)
-                    .input('E', sql.NVarChar(sql.MAX), JSON.stringify(errLog))
-                    .query("UPDATE PedidosCobranza SET EstadoSyncReact = 'Error', ObsReact = @E WHERE NoDocERP = @Doc");
             }
+        } else {
+            console.log(`[ERPSync] Omite REACT por filtro de target: ${syncTarget}`);
+            // Recuperar estado actual de DB si omitimos para el response final
+            const current = await pool.request().input('Doc', sql.NVarChar, noDocERP).query("SELECT EstadoSyncReact FROM PedidosCobranza WHERE NoDocERP = @Doc");
+            if (current.recordset[0]?.EstadoSyncReact === 'Enviado_OK') reactSuccess = true;
         }
-    } else {
-        console.log(`[ERPSync] Omite REACT por filtro de target: ${syncTarget}`);
-        // Recuperar estado actual de DB si omitimos para el response final
-        const current = await pool.request().input('Doc', sql.NVarChar, noDocERP).query("SELECT EstadoSyncReact FROM PedidosCobranza WHERE NoDocERP = @Doc");
-        if (current.recordset[0]?.EstadoSyncReact === 'Enviado_OK') reactSuccess = true;
-    }
 
         // 7. Enviar a ERP (Dev Macrosoft)
         let erpSuccess = false;
@@ -298,38 +300,38 @@ class ERPSyncService {
                 try {
                     const erpToken = await this.getMacrosoftToken();
                     if (erpToken) {
-                    if (!erpPayload) {
-                        // Agrupar por CodArticulo
-                        const lineasAgrupadas = {};
-                        detallesCobranza.forEach(d => {
-                            const cod = (d.CodArticulo || 'VAR').toString().trim();
-                            lineasAgrupadas[cod] = (lineasAgrupadas[cod] || 0) + parseFloat(d.Cantidad);
+                        if (!erpPayload) {
+                            // Agrupar por CodArticulo
+                            const lineasAgrupadas = {};
+                            detallesCobranza.forEach(d => {
+                                const cod = (d.CodArticulo || 'VAR').toString().trim();
+                                lineasAgrupadas[cod] = (lineasAgrupadas[cod] || 0) + parseFloat(d.Cantidad);
+                            });
+
+                            erpPayload = {
+                                CodCliente: first.CodCliente ? first.CodCliente.toString() : "100101",
+                                Documento: "11",
+                                Lineas: Object.entries(lineasAgrupadas).map(([cod, qty]) => ({ CodArticulo: cod, Cantidad: qty.toString() }))
+                            };
+                        }
+
+                        const erpRes = await axios.post('https://api-user.devmacrosoft.com/pedido', erpPayload, {
+                            headers: { 'Authorization': `Bearer ${erpToken}`, 'Content-Type': 'application/json' }
                         });
-        
-                        erpPayload = {
-                            CodCliente: first.CodCliente ? first.CodCliente.toString() : "100101",
-                            Documento: "11",
-                            Lineas: Object.entries(lineasAgrupadas).map(([cod, qty]) => ({ CodArticulo: cod, Cantidad: qty.toString() }))
-                        };
+
+                        console.log(`[ERPSync] <-- RESPUESTA ERP Macrosoft: Status ${erpRes.status}`, erpRes.data);
+
+                        if ((erpRes.status === 200 || erpRes.status === 201) && erpRes.data?.success !== false && !erpRes.data?.error) {
+                            erpSuccess = true;
+                            console.log(`[ERPSync] OK ERP Macrosoft para ${noDocERP}`);
+                            await pool.request()
+                                .input('Doc', sql.NVarChar, noDocERP)
+                                .input('P', sql.NVarChar(sql.MAX), JSON.stringify(erpPayload))
+                                .query("UPDATE PedidosCobranza SET EstadoSyncERP = 'Enviado_OK', ObsERP = @P WHERE NoDocERP = @Doc");
+                        } else {
+                            throw new Error(erpRes.data?.error || erpRes.data?.message || JSON.stringify(erpRes.data));
+                        }
                     }
-
-                const erpRes = await axios.post('https://api-user.devmacrosoft.com/pedido', erpPayload, {
-                    headers: { 'Authorization': `Bearer ${erpToken}`, 'Content-Type': 'application/json' }
-                });
-
-                console.log(`[ERPSync] <-- RESPUESTA ERP Macrosoft: Status ${erpRes.status}`, erpRes.data);
-
-                if ((erpRes.status === 200 || erpRes.status === 201) && erpRes.data?.success !== false && !erpRes.data?.error) {
-                    erpSuccess = true;
-                    console.log(`[ERPSync] OK ERP Macrosoft para ${noDocERP}`);
-                    await pool.request()
-                        .input('Doc', sql.NVarChar, noDocERP)
-                        .input('P', sql.NVarChar(sql.MAX), JSON.stringify(erpPayload))
-                        .query("UPDATE PedidosCobranza SET EstadoSyncERP = 'Enviado_OK', ObsERP = @P WHERE NoDocERP = @Doc");
-                } else {
-                    throw new Error(erpRes.data?.error || erpRes.data?.message || JSON.stringify(erpRes.data));
-                }
-            }
                 } catch (eErp) {
                     const errLog = eErp.response?.data || { error: eErp.message };
                     console.error(`[ERPSync] Error al enviar a ERP Macrosoft:`, eErp.message);
@@ -348,12 +350,12 @@ class ERPSyncService {
         // 8. Marcar Órdenes como Sincronizadas
         // Ya no se actualizan columnas obsoletas en Ordenes, el estado "Enviado_OK" de PedidosCobranza es la fuente de verdad.
 
-        return { 
-            success: (syncTarget === 'REACT' ? reactSuccess : (syncTarget === 'ERP' ? erpSuccess : (reactSuccess && erpSuccess))), 
-            totalPriceSum, 
-            reactSuccess, 
-            erpSuccess, 
-            reactCode 
+        return {
+            success: (syncTarget === 'REACT' ? reactSuccess : (syncTarget === 'ERP' ? erpSuccess : (reactSuccess && erpSuccess))),
+            totalPriceSum,
+            reactSuccess,
+            erpSuccess,
+            reactCode
         };
     }
 
@@ -389,13 +391,13 @@ class ERPSyncService {
 
     static async getExternalToken() {
         try {
-            const res = await axios.post('https://administracionuser.uy/api/apilogin/generate-token', {
-                apiKey: "api_key_google_123sadas12513_user"
+            const res = await axios.post(`${REACT_API_URL}/apilogin/generate-token`, {
+                apiKey: REACT_API_KEY
             });
             return res.data?.token || res.data?.accessToken || res.data;
-        } catch (e) { 
+        } catch (e) {
             console.error("[ERPSync] Error Token:", e.message);
-            return null; 
+            return null;
         }
     }
 

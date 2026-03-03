@@ -154,36 +154,80 @@ export const PickupView = () => {
         if (user?.hasCredit || totalAmount === 0) {
             handleCreatePickup();
         } else {
-            // Flujo Handy
+            // Flujo Handy: 1) Crear retiro → 2) Crear link de pago con datos del retiro
             setLoading(true);
             try {
-                // Reconstruir los detalles de los pedidos tal cual necesita el backend
-                const ordersPayload = selectedOrders.map(selId => {
+                // 1. Primero crear el retiro en React (igual que handleCreatePickup)
+                const ordersForRetiro = selectedOrders.map(selId => {
                     const order = readyOrders.find(o => o.id === selId);
                     if (!order) return null;
                     const orderNum = order.id.replace('#', '');
                     return {
+                        OrdIdOrden: order.rawId,
+                        orderNumber: orderNum,
+                        ordNombreTrabajo: order.desc.split(' - ').pop() || order.desc,
+                        meters: String(order.quantityStr || ""),
+                        MonSimbolo: order.currency === 'USD' ? 'USD' : '$',
+                        costo: Number(Number(order.amount || 0).toFixed(2)),
+                        estado: order.originalStatus,
+                        tipodecliente: order.clientType || "Comun",
+                        pago: 'No realizado',
+                        checked: true,
+                        clientId: order.clientId || 'N/A',
+                        contact: order.contact || '',
+                        costWithCurrency: `${order.currency === 'USD' ? 'USD' : '$'} ${typeof order.amount === 'number' ? order.amount.toFixed(2) : '0.00'}`
+                    };
+                }).filter(Boolean);
+
+                const retiroRes = await apiClient.post('/web-orders/pickup-orders/create', {
+                    orders: ordersForRetiro,
+                    totalCost: Number((totalAmount || 0).toFixed(2)),
+                    lugarRetiro: 5
+                });
+
+                if (!retiroRes.success) {
+                    alert(retiroRes.error || "Error al crear retiro");
+                    setLoading(false);
+                    return;
+                }
+
+                const ordenRetiro = retiroRes.data?.OReIdOrdenRetiro || retiroRes.data?.codigoRetiro;
+                const reactOrderNumbers = retiroRes.data?.orderNumbers || ordersForRetiro.map(o => o.OrdIdOrden).filter(Boolean);
+
+                console.log('[PickupView] Retiro creado:', ordenRetiro, 'OrderNumbers:', reactOrderNumbers);
+
+                // 2. Crear link de pago Handy con datos del retiro
+                // Usa el mismo endpoint que UnpaidPickupsView para consistencia
+                const ordersPayload = selectedOrders.map(selId => {
+                    const order = readyOrders.find(o => o.id === selId);
+                    if (!order) return null;
+                    return {
                         id: order.id,
                         rawId: order.rawId,
-                        orderNumber: orderNum,
+                        orderNumber: order.id.replace('#', ''),
                         desc: order.desc,
                         amount: order.amount,
                     };
                 }).filter(Boolean);
 
                 const payload = {
-                    orders: ordersPayload,
+                    ordenRetiro: ordenRetiro,
                     totalAmount: totalAmount,
-                    activeCurrency: activeCurrency
+                    activeCurrency: activeCurrency,
+                    bultosJSON: JSON.stringify(ordersPayload)
                 };
 
-                const res = await apiClient.post('/web-orders/pickup-orders/handy-payment', payload);
+                const res = await apiClient.post('/web-retiros/payment', payload);
 
                 if (res.success && res.url) {
-                    // Redirigir al cliente a la ventana de pago de Handy
-                    window.location.href = res.url;
+                    // Abrir Handy en nueva pestaña y redirigir esta pestaña a payment-status
+                    window.open(res.url, '_blank');
+                    window.location.href = `/payment-status?txId=${res.transactionId}`;
                 } else {
-                    alert(res.error || "No se pudo generar el link de pago.");
+                    // Retiro ya creado pero falló Handy — mostrar éxito del retiro
+                    setPickupCode(ordenRetiro || 'ERROR');
+                    setStep('success');
+                    alert("El retiro se creó pero no se pudo generar el link de pago: " + (res.error || ""));
                 }
             } catch (err) {
                 console.error("Error al ir a pagar:", err);

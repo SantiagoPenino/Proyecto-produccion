@@ -29,7 +29,7 @@ export const MainLayout = ({ children }) => {
     const { user, logout } = useAuth();
     const location = useLocation();
     const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
-    const [isServicesOpen, setIsServicesOpen] = useState(true);
+    const [isServicesOpen, setIsServicesOpen] = useState(false);
     const [visibleConfig, setVisibleConfig] = useState(null);
     const [webContent, setWebContent] = useState({ sidebar: [], popup: [] });
     const [showPopup, setShowPopup] = useState(false);
@@ -110,10 +110,10 @@ export const MainLayout = ({ children }) => {
 
                 <nav className="flex-1 overflow-y-auto p-4 space-y-2 scrollbar-hide">
                     {/* 1. Mi Perfil (Primero según maqueta) */}
-                    {/*<NavItem to="/portal/profile" icon={User} label="Mi Perfil" />*/}
+                    <NavItem to="/portal/profile" icon={User} label="Mi Perfil" />
 
                     {/* 2. Servicios (Collapsible) */}
-                    {/*<div className="space-y-1">
+                    <div className="space-y-1">
                         <button
                             onClick={() => setIsServicesOpen(!isServicesOpen)}
                             className={`w-full flex items-center justify-between px-4 py-3 rounded-xl transition-all ${location.pathname.includes('/order') || location.pathname === '/'
@@ -172,16 +172,16 @@ export const MainLayout = ({ children }) => {
                         </AnimatePresence>
                     </div>
 
-                    {/* <NavItem to="/portal/factory" icon={Factory} label="Fábrica / Estado" /> */}
+                    <NavItem to="/portal/factory" icon={Factory} label="Fábrica / Estado" />
                     <NavItem to="/portal/pickup" icon={Truck} label="Retiro de Pedidos" />
                     <NavItem to="/portal/payments" icon={CreditCard} label="Pagos Pendientes" />
 
                     <div className="pt-4 mt-4 border-t border-zinc-800">
                         <Link to="/portal/club">
-                            {/*<button className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${isActive('/portal/club') ? 'bg-amber-500 text-white shadow-lg' : 'bg-gradient-to-r from-amber-500/20 to-yellow-600/20 border border-amber-500/30 text-amber-400 hover:text-amber-300'}`}>
+                            <button className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${isActive('/portal/club') ? 'bg-amber-500 text-white shadow-lg' : 'bg-gradient-to-r from-amber-500/20 to-yellow-600/20 border border-amber-500/30 text-amber-400 hover:text-amber-300'}`}>
                                 <Crown size={20} className={isActive('/portal/club') ? "text-white" : "text-amber-400"} />
                                 <span className="font-bold">CLUB MEMBER</span>
-                            </button>*/}
+                            </button>
                         </Link>
                     </div>
                 </nav>
@@ -226,12 +226,12 @@ export const MainLayout = ({ children }) => {
                         className="md:hidden fixed inset-0 bg-zinc-900 z-20 pt-20 px-4 pb-4 overflow-y-auto"
                     >
                         <div className="flex flex-col gap-2">
-                            {/*<NavItem to="/portal" icon={Package} label="Servicios" />*/}
-                            {/*<NavItem to="/portal/profile" icon={User} label="Mi Perfil" />*/}
-                            {/*<NavItem to="/portal/factory" icon={Factory} label="Fábrica / Estado" />*/}
+                            <NavItem to="/portal" icon={Package} label="Servicios" />
+                            <NavItem to="/portal/profile" icon={User} label="Mi Perfil" />
+                            <NavItem to="/portal/factory" icon={Factory} label="Fábrica / Estado" />
                             <NavItem to="/portal/pickup" icon={Truck} label="Retiro de Pedidos" />
                             <NavItem to="/portal/payments" icon={CreditCard} label="Pagos Pendientes" />
-                            {/*<NavItem to="/portal/club" icon={Crown} label="Club Member" />*/}
+                            <NavItem to="/portal/club" icon={Crown} label="Club Member" />
 
                             <button onClick={logout} className="mt-8 flex items-center gap-3 px-4 py-3 text-red-400">
                                 <LogOut size={20} /> Cerrar Sesión

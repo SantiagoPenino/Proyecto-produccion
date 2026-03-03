@@ -1,8 +1,9 @@
 const { sql, getPool } = require('../config/db');
 const driveService = require('../services/driveService');
-const fileProcessingService = require('../services/fileProcessingService');
 const axios = require('axios');
 const { PDFDocument, StandardFonts, rgb } = require('pdf-lib');
+const REACT_API_URL = process.env.REACT_API_URL;
+const REACT_API_KEY = process.env.REACT_API_KEY;
 
 // --- CONSTANTES Y MAPEOS ---
 const SERVICE_TO_AREA_MAP = {
@@ -1184,8 +1185,8 @@ exports.updateAreaVisibility = async (req, res) => {
 // --- HELPER TOKEN EXTERNO ---
 async function getExternalToken() {
     try {
-        const tokenRes = await axios.post('https://administracionuser.uy/api/apilogin/generate-token', {
-            apiKey: "api_key_google_123sadas12513_user"
+        const tokenRes = await axios.post(`${REACT_API_URL}/apilogin/generate-token`, {
+            apiKey: REACT_API_KEY
         });
         return tokenRes.data.token || tokenRes.data.accessToken || tokenRes.data;
     } catch (e) {
@@ -1214,9 +1215,12 @@ exports.getPickupOrders = async (req, res) => {
 
         // 2. Llamar API Externa
         // Estados: Avisado, Ingresado, Para avisar
-        const url = `https://administracionuser.uy/api/apiordenes/datafilter?codigoCliente=${encodeURIComponent(idClienteString)}&estado=Avisado&estado=Ingresado&estado=Para+avisar`;
+        const url = `${REACT_API_URL}/apiordenes/datafilter?codigoCliente=${encodeURIComponent(idClienteString)}&estado=Avisado&estado=Ingresado&estado=Para+avisar`;
 
-        const response = await axios.get(url);
+        const token = await getExternalToken();
+        const response = await axios.get(url, {
+            headers: { Authorization: `Bearer ${token}` }
+        });
         const externalOrders = response.data;
 
         if (!Array.isArray(externalOrders) || externalOrders.length === 0) {
@@ -1318,11 +1322,11 @@ exports.createPickupOrder = async (req, res) => {
         if (!codCliente) return res.status(401).json({ error: "Usuario no identificado." });
 
         // 5. POST to External API with Token
-        const tokenRes = await axios.post('https://administracionuser.uy/api/apilogin/generate-token', {
-            apiKey: "api_key_google_123sadas12513_user"
+        const tokenRes = await axios.post(`${REACT_API_URL}/apilogin/generate-token`, {
+            apiKey: REACT_API_KEY
         });
         const token = tokenRes.data.token;
-        const createUrl = 'https://administracionuser.uy/api/apiordenesRetiro/crear';
+        const createUrl = `${REACT_API_URL}/apiordenesRetiro/crear`;
 
         // Si el frontend ya envió las 'orders' formateadas
         if (orders && Array.isArray(orders) && orders.length > 0) {
@@ -1342,7 +1346,7 @@ exports.createPickupOrder = async (req, res) => {
             const idClienteString = clientRes.recordset[0].IDCliente;
 
             // Fetch external
-            const url = `https://administracionuser.uy/api/apiordenes/datafilter?codigoCliente=${encodeURIComponent(idClienteString)}&estado=Avisado&estado=Ingresado&estado=Para+avisar`;
+            const url = `${REACT_API_URL}/apiordenes/datafilter?codigoCliente=${encodeURIComponent(idClienteString)}&estado=Avisado&estado=Ingresado&estado=Para+avisar`;
             const response = await axios.get(url);
             const externalOrders = response.data || [];
 
@@ -1386,10 +1390,10 @@ exports.createPickupOrder = async (req, res) => {
 
         // The external API responds with a nested object or direct property (OReIdOrdenRetiro)
         const responseData = createRes.data;
-        
+
         // Extraemos el identificador generado externamente
         let ordIdRetiro = responseData?.data?.OrdIdOrdenRetiro || responseData?.OReIdOrdenRetiro || responseData?.OrdIdRetiro || responseData?.id;
-        
+
         // Formateador: Asegurar que siempre inicie con 'R-' para la base local
         if (ordIdRetiro && !String(ordIdRetiro).startsWith('R-')) {
             ordIdRetiro = `R-${ordIdRetiro}`;
@@ -1403,16 +1407,16 @@ exports.createPickupOrder = async (req, res) => {
                 if (moneda) {
                     targetCurrency = moneda;
                 } else if (payload.orders && payload.orders.length > 0) {
-                     // Try to infer from first order if not explicitly sent
-                     const firstCost = payload.orders[0].costWithCurrency || '';
-                     if (firstCost.includes('USD') || firstCost.includes('U$S')) targetCurrency = 'USD';
+                    // Try to infer from first order if not explicitly sent
+                    const firstCost = payload.orders[0].costWithCurrency || '';
+                    if (firstCost.includes('USD') || firstCost.includes('U$S')) targetCurrency = 'USD';
                 }
 
                 const pool = await getPool();
                 await pool.request()
                     .input('Ord', sql.NVarChar, String(ordIdRetiro))
-                    .input('Monto', sql.Decimal(18,2), payload.totalCost || 0)
-                    .input('Moneda', sql.NVarChar, targetCurrency) 
+                    .input('Monto', sql.Decimal(18, 2), payload.totalCost || 0)
+                    .input('Moneda', sql.NVarChar, targetCurrency)
                     .input('Ref', sql.NVarChar, null)     // Sin pago inicial
                     .input('Est', sql.Int, 1)             // 1 = Ingresado
                     .input('CodCliente', sql.VarChar, String(codCliente)) // clientName se pasa aquí
@@ -1513,97 +1517,45 @@ exports.generatePickupReceipt = async (req, res) => {
 // --- HANDY PAYMENT ---
 exports.createHandyPaymentLink = async (req, res) => {
     try {
-        const { orders, totalAmount, activeCurrency } = req.body;
+        const { orders, totalAmount, activeCurrency, ordenRetiro, orderNumbers: reactOrderNumbers } = req.body;
 
         if (!orders || orders.length === 0) {
             return res.status(400).json({ error: "No orders provided for payment." });
         }
 
-        // Moneda ISO 4217: 840 = USD, 858 = UYU
-        let currencyCode = 858;
-        if (activeCurrency === 'USD') {
-            currencyCode = 840;
-        }
+        const currencyCode = activeCurrency === 'USD' ? 840 : 858;
 
-        // URLs dinámicas según entorno
-        const isProduction = process.env.HANDY_ENVIRONMENT === 'production';
-        const handySecret = process.env.HANDY_MERCHANT_SECRET;
-        const handyUrl = isProduction
-            ? 'https://api.payments.handy.uy/api/v2/payments'
-            : 'https://api.payments.arriba.uy/api/v2/payments';
-        const siteUrl = process.env.SITE_URL || 'https://user.com.uy';
-        const callbackUrl = `${siteUrl}/api/web-orders/handy-webhook`;
-
-        // Construir la lista de productos para Handy (PascalCase según documentación oficial)
+        // Construir productos para Handy
         const products = orders.map(o => {
             const amt = Number(Number(o.amount || 0).toFixed(2));
-            const taxed = Number((amt / 1.22).toFixed(2)); // Base gravada sin IVA 22%
             return {
                 Name: o.desc ? o.desc.substring(0, 50) : o.id,
                 Quantity: 1,
                 Amount: amt,
-                TaxedAmount: taxed
+                TaxedAmount: Number((amt / 1.22).toFixed(2))
             };
         });
 
-        // Transaction ID único (GUID)
-        const { v4: uuidv4 } = require('uuid');
-        const transactionId = uuidv4();
-        const invoiceNumber = Math.floor(Math.random() * 90000) + 10000;
-
-        // PascalCase — según documentación oficial de Handy API V2.0
-        const handyPayload = {
-            Cart: {
-                Currency: currencyCode,
-                TotalAmount: Number(Number(totalAmount).toFixed(2)),
-                TaxedAmount: Number((Number(totalAmount) / 1.22).toFixed(2)),
-                Products: products,
-                InvoiceNumber: invoiceNumber,
-                LinkImageUrl: "https://user.com.uy/assets/images/logo.png",
-                TransactionExternalId: transactionId
+        const { createPaymentLink } = require('../services/handyService');
+        const result = await createPaymentLink({
+            products,
+            totalAmount,
+            currencyCode,
+            commerceName: 'USER',
+            ordersData: {
+                orders: orders.map(o => ({ id: o.id, rawId: o.rawId, desc: o.desc, amount: o.amount })),
+                ordenRetiro: ordenRetiro || null,
+                reactOrderNumbers: reactOrderNumbers || []
             },
-            Client: {
-                CommerceName: "USER",
-                SiteUrl: siteUrl
-            },
-            CallbackURL: callbackUrl,
-            ResponseType: "Json"
-        };
-
-        console.log(`[HANDY] Creando link de pago (${isProduction ? 'PRODUCCIÓN' : 'TESTING'})...`);
-        console.log("[HANDY] Payload:", JSON.stringify(handyPayload));
-
-        const response = await axios.post(handyUrl, handyPayload, {
-            headers: {
-                'merchant-secret-key': handySecret
-            }
+            codCliente: req.user?.codCliente || 0,
+            logPrefix: '[HANDY]'
         });
 
-        const paymentUrl = response.data.url;
-        console.log("[HANDY] Link generado:", paymentUrl);
-
-        // Guardar transactionId en la BD para reconciliar con el webhook
-        try {
-            const pool = await getPool();
-            const orderIdsJson = JSON.stringify(orders.map(o => ({ id: o.id, rawId: o.rawId, desc: o.desc, amount: o.amount })));
-            await pool.request()
-                .input('txId', sql.VarChar(100), transactionId)
-                .input('payUrl', sql.VarChar(500), paymentUrl)
-                .input('amount', sql.Decimal(18, 2), totalAmount)
-                .input('currency', sql.Int, currencyCode)
-                .input('ordersJson', sql.NVarChar(sql.MAX), orderIdsJson)
-                .input('codCliente', sql.Int, req.user?.codCliente || 0)
-                .query(`
-                    INSERT INTO HandyTransactions (TransactionId, PaymentUrl, TotalAmount, Currency, OrdersJson, CodCliente, Status, CreatedAt)
-                    VALUES (@txId, @payUrl, @amount, @currency, @ordersJson, @codCliente, 'Creado', GETDATE())
-                `);
-            console.log(`[HANDY] TransactionId ${transactionId} guardado en HandyTransactions.`);
-        } catch (dbErr) {
-            // No falla el pago si no puede guardar el ID, solo loguea
-            console.warn("[HANDY] No se pudo guardar TransactionId en BD:", dbErr.message);
+        if (!result.success) {
+            return res.status(500).json({ error: result.error });
         }
 
-        res.json({ success: true, url: paymentUrl, transactionId });
+        res.json({ success: true, url: result.url, transactionId: result.transactionId });
 
     } catch (error) {
         console.error("[HANDY ERROR] Fallo al crear link de pago:", error.message);
@@ -1664,8 +1616,105 @@ exports.handyWebhook = async (req, res) => {
         const emoji = { 0: '🔄', 1: '✅', 2: '❌', 3: '⏳' };
         console.log(`[HANDY WEBHOOK] ${emoji[status] || '❓'} ${statusLabel} — ${result.rowsAffected[0]} fila(s) actualizadas.`);
 
+        // --- NOTIFICAR A API REACT CUANDO EL PAGO ES EXITOSO ---
+        if (status === 1) {
+            try {
+                // Obtener datos de la transacción para saber qué órdenes se pagaron
+                const txData = await pool.request()
+                    .input('txId2', sql.VarChar(100), transactionId)
+                    .query('SELECT OrdersJson, CodCliente, TotalAmount, Currency FROM HandyTransactions WHERE TransactionId = @txId2');
+
+                if (txData.recordset.length > 0) {
+                    const tx = txData.recordset[0];
+                    const storedData = JSON.parse(tx.OrdersJson || '{}');
+
+                    // Extraer datos: formato nuevo (con ordenRetiro) o legacy (array plano)
+                    const storedOrdenRetiro = storedData.ordenRetiro;
+                    const orders = storedData.orders || (Array.isArray(storedData) ? storedData : []);
+
+                    // Moneda: 858 = UYU (monedaId 1), 840 = USD (monedaId 2)
+                    const monedaId = tx.Currency === 840 ? 2 : 1;
+
+                    // orderNumbers: si hay retiro → número del retiro, si no → IDs de órdenes
+                    let orderNumbers = [];
+                    if (storedOrdenRetiro) {
+                        const retiroNum = Number(String(storedOrdenRetiro).replace(/\D/g, ''));
+                        if (retiroNum) orderNumbers = [retiroNum];
+                    } else {
+                        orderNumbers = orders.map(o => o.rawId || o.id).filter(Boolean);
+                    }
+
+                    const payloadPago = {
+                        metodoPagoId: 9,
+                        monedaId: monedaId,
+                        monto: tx.TotalAmount,
+                        ordenRetiro: storedOrdenRetiro ? String(storedOrdenRetiro) : (orders[0]?.id || transactionId),
+                        orderNumbers: orderNumbers
+                    };
+
+                    console.log('[HANDY WEBHOOK] Notificando pago a API React...', JSON.stringify(payloadPago));
+
+                    const token = await getExternalToken();
+                    if (token) {
+                        const reactRes = await axios.post(`${REACT_API_URL}/apipagos/realizarPago`, payloadPago, {
+                            headers: { Authorization: `Bearer ${token}` }
+                        });
+                        console.log('[HANDY WEBHOOK] ✅ API React notificada:', reactRes.data);
+                    } else {
+                        console.error('[HANDY WEBHOOK] No se pudo obtener token para notificar a React');
+                    }
+                } else {
+                    console.warn(`[HANDY WEBHOOK] No se encontró transacción ${transactionId} en HandyTransactions`);
+                }
+            } catch (reactErr) {
+                console.error('[HANDY WEBHOOK] Error notificando a API React:', reactErr.response?.data || reactErr.message);
+            }
+        }
+
     } catch (e) {
         console.error("[HANDY WEBHOOK] Error procesando evento:", e.message);
+    }
+};
+
+// --- PAYMENT STATUS ---
+// Consultar el estado de un pago por TransactionId (para la página de resultado)
+exports.getPaymentStatus = async (req, res) => {
+    try {
+        const { transactionId } = req.params;
+        if (!transactionId) return res.status(400).json({ error: 'TransactionId requerido' });
+
+        const pool = await getPool();
+        const result = await pool.request()
+            .input('txId', sql.VarChar(100), transactionId)
+            .query('SELECT TransactionId, TotalAmount, Currency, OrdersJson, Status, IssuerName, CreatedAt, PaidAt FROM HandyTransactions WHERE TransactionId = @txId');
+
+        if (result.recordset.length === 0) {
+            return res.status(404).json({ error: 'Transacción no encontrada' });
+        }
+
+        const tx = result.recordset[0];
+        const storedData = JSON.parse(tx.OrdersJson || '{}');
+        const orders = storedData.orders || (Array.isArray(storedData) ? storedData : []);
+
+        res.json({
+            transactionId: tx.TransactionId,
+            status: tx.Status,
+            totalAmount: tx.TotalAmount,
+            currency: tx.Currency === 840 ? 'USD' : 'UYU',
+            currencySymbol: tx.Currency === 840 ? 'US$' : '$',
+            ordenRetiro: storedData.ordenRetiro || null,
+            orders: orders.map(o => ({
+                id: o.id,
+                desc: o.desc,
+                amount: o.amount
+            })),
+            paymentMethod: tx.IssuerName || null,
+            createdAt: tx.CreatedAt,
+            paidAt: tx.PaidAt
+        });
+    } catch (e) {
+        console.error('[PAYMENT STATUS] Error:', e.message);
+        res.status(500).json({ error: e.message });
     }
 };
 

@@ -71,7 +71,7 @@ const nomenclatorsRoutes = require('./routes/nomenclatorsRoutes');
 
 app.use('/api/web-auth', webAuthRoutes); // RUTAS AUTH CLIENTE WEB
 app.use('/api/web-orders', webOrdersRoutes); // RUTAS PEDIDOS CLIENTE WEB (DTF, Etc)
-app.use('/api/web-retiros', webRetirosRoutes); 
+app.use('/api/web-retiros', webRetirosRoutes);
 app.use('/api/web-content', require('./routes/webContentRoutes')); // RUTAS CONTENIDO WEB (Sidebar/Popup)
 app.use('/api/nomenclators', nomenclatorsRoutes);
 app.use('/api/routes-config', require('./routes/routesConfigRoutes'));
@@ -129,9 +129,7 @@ try {
 } catch (e) { console.error("❌ Error loading clients routes:", e); }
 
 app.use('/api/chat', require('./routes/chatRoutes'));
-try {
-    app.use('/api/checkout', require('./routes/checkoutRoutes'));
-} catch (e) { console.error("❌ Error loading checkout routes:", e); }
+// checkout routes deshabilitado por ahora
 
 const http = require('http');
 const { Server } = require('socket.io');

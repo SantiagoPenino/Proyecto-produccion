@@ -2,6 +2,7 @@ const { sql, getPool } = require('../config/db');
 const axios = require('axios');
 const https = require('https');
 const { logAlert } = require('../services/alertsService');
+const REACT_API_URL = process.env.REACT_API_URL;
 
 // 1. Obtener Articulos Locales (Izquierda)
 const getLocalArticles = async (req, res) => {
@@ -32,7 +33,7 @@ const getRemoteProducts = async (req, res) => {
         });
 
         // Fetch directo a la API externa
-        const response = await axios.get('https://administracionuser.uy/api/apiproducto/data', {
+        const response = await axios.get(`${REACT_API_URL}/apiproducto/data`, {
             httpsAgent: agent,
             timeout: 10000 // 10 segundos timeout
         });
