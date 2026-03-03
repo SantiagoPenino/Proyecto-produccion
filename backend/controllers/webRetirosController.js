@@ -269,49 +269,51 @@ exports.createHandyPaymentLinkForRetiro = async (req, res) => {
             }];
         }
 
-        const { v4: uuidv4 } = require('uuid');
-        const transactionId = uuidv4();
-        const invoiceNumber = Math.floor(Math.random() * 90000) + 10000;
+        const { createPaymentLink } = require('../services/handyService');
 
-        const handyPayload = {
-            cart: {
-                currency: currencyCode,
-                totalAmount: Number(Number(totalAmount).toFixed(2)),
-                taxedAmount: 0,
-                products: products,
-                invoiceNumber: invoiceNumber,
-                transactionExternalId: `RETIRO-${ordenRetiro}-${transactionId}`
+        // Construir ordersData para guardar en HandyTransactions
+        let parsedBultos = [];
+        try { parsedBultos = JSON.parse(bultosJSON || '[]'); } catch (e) { }
+
+        const result = await createPaymentLink({
+            products: products.map(p => ({
+                Name: (p.name || 'Pedido').substring(0, 50),
+                Quantity: p.quantity || 1,
+                Amount: p.amount || 0,
+                TaxedAmount: p.taxedAmount || 0
+            })),
+            totalAmount,
+            currencyCode,
+            commerceName: 'USER - Retiros',
+            ordersData: {
+                orders: parsedBultos.map(b => ({
+                    id: b.orderNumber || b.id || ordenRetiro,
+                    desc: b.desc || b.orderNumber || 'Pedido',
+                    amount: b.amount || 0
+                })),
+                ordenRetiro: ordenRetiro,
+                reactOrderNumbers: parsedBultos.map(b => b.orderId || b.id).filter(Boolean)
             },
-            client: {
-                commerceName: "USER - Retiros",
-                siteUrl: "http://localhost:5173"
-            },
-            callbackUrl: "https://webhook.site/72ee5914-012a-478d-a2fd-3801d3561230",
-            responseType: "Json"
-        };
-
-        const handySecret = 'c80c2dca-ee4f-4cec-ace0-850747a5dcfa'; // Testing
-        const handyUrl = 'https://api.payments.arriba.uy/api/v2/payments';
-
-        console.log("[HANDY RETIRO] Creando link...", JSON.stringify(handyPayload));
-
-        const response = await axios.post(handyUrl, handyPayload, {
-            headers: { 'merchant-secret-key': handySecret }
+            codCliente: req.user?.codCliente || 0,
+            logPrefix: '[HANDY RETIRO]'
         });
 
-        if (response.data && response.data.url) {
+        if (!result.success) {
+            return res.status(500).json({ error: result.error });
+        }
 
-            // Actualizar la ReferenciaPago en la Base de Datos para guardarlo como intento de pago
+        // Actualizar la ReferenciaPago en RetirosWeb (específico de retiros)
+        try {
             const pool = await getPool();
             await pool.request()
                 .input('Ord', sql.VarChar, ordenRetiro)
-                .input('Ref', sql.VarChar, `RETIRO-${ordenRetiro}-${transactionId}`)
+                .input('Ref', sql.VarChar, result.transactionId)
                 .query(`UPDATE RetirosWeb SET ReferenciaPago = @Ref WHERE OrdIdRetiro = @Ord`);
-
-            return res.json({ success: true, url: response.data.url });
-        } else {
-            return res.status(500).json({ error: "La pasarela no devolvió una URL válida." });
+        } catch (dbErr) {
+            console.warn("[HANDY RETIRO] No se pudo actualizar ReferenciaPago:", dbErr.message);
         }
+
+        return res.json({ success: true, url: result.url, transactionId: result.transactionId });
 
     } catch (err) {
         console.error("Error creating Handy link for Retiro:", err.response?.data || err.message);

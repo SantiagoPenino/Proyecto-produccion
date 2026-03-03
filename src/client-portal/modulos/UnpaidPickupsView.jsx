@@ -44,10 +44,15 @@ export const UnpaidPickupsView = () => {
             };
 
             const res = await apiClient.post('/web-retiros/pay-link', payload);
-            if (res && res.url) {
-                window.location.href = res.url;
-            } else if (res && res.success && res.data?.url) {
-                window.location.href = res.data.url;
+            const url = res?.url || res?.data?.url;
+            const txId = res?.transactionId || res?.data?.transactionId;
+
+            if (url) {
+                // Abrir Handy en nueva pestaña y redirigir esta a payment-status
+                window.open(url, '_blank');
+                if (txId) {
+                    window.location.href = `/payment-status?txId=${txId}`;
+                }
             } else {
                 alert("No se pudo obtener el link de pago.");
             }
