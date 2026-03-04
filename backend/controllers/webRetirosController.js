@@ -379,15 +379,8 @@ exports.asignarRetiroAEstante = async (req, res) => {
         await transaction.begin();
 
         try {
-            const checkQuery = await new sql.Request(transaction)
-                .input('e', sql.Char, estanteId)
-                .input('s', sql.Int, seccion)
-                .input('p', sql.Int, posicion)
-                .query('SELECT 1 FROM OcupacionEstantes WHERE EstanteID = @e AND Seccion = @s AND Posicion = @p');
-
-            if (checkQuery.recordset.length > 0) {
-                throw new Error('La ubicación ya se encuentra ocupada por otro pedido.');
-            }
+            // Eliminamos la comprobación de ocupación única para permitir múltiple
+            // const checkQuery = ...
 
             await new sql.Request(transaction)
                 .input('e', sql.Char, estanteId)
@@ -410,9 +403,12 @@ exports.asignarRetiroAEstante = async (req, res) => {
                 .input('Est', sql.Int, nuevoEstado)
                 .input('Ubi', sql.VarChar, ubicacionString)
                 .query(`
-                    UPDATE RetirosWeb 
-                    SET Estado = @Est, UbicacionEstante = @Ubi 
-                    WHERE OrdIdRetiro = @Ord
+                    IF EXISTS (SELECT 1 FROM RetirosWeb WHERE OrdIdRetiro = @Ord)
+                    BEGIN
+                        UPDATE RetirosWeb 
+                        SET Estado = @Est, UbicacionEstante = @Ubi 
+                        WHERE OrdIdRetiro = @Ord
+                    END
                 `);
 
             await transaction.commit();
@@ -488,49 +484,46 @@ exports.marcarRetiroEntregado = async (req, res) => {
             return res.status(404).json({ error: "Ubicación no encontrada" });
         }
 
-        const ordenDeRetiro = ubiRes.recordset[0].OrdenRetiro;
+        const ordenesDeRetiro = ubiRes.recordset.map(row => row.OrdenRetiro);
 
         const transaction = new sql.Transaction(pool);
         await transaction.begin();
 
         try {
-            // 1. Liberar el Estante Físico
+            // 1. Liberar el Estante Físico (eliminará todas las filas con ese UbicacionID)
             await new sql.Request(transaction)
                 .input('id', sql.VarChar, ubicacionId)
                 .query('DELETE FROM OcupacionEstantes WHERE UbicacionID = @id');
 
             // 2. Marcar RetirosWeb como Entregada (Estado 5)
-            await new sql.Request(transaction)
-                .input('Ord', sql.VarChar, ordenDeRetiro)
-                .query('UPDATE RetirosWeb SET Estado = 5 WHERE OrdIdRetiro = @Ord');
+            for (const ord of ordenesDeRetiro) {
+                await new sql.Request(transaction)
+                    .input('Ord', sql.VarChar, ord)
+                    .query('UPDATE RetirosWeb SET Estado = 5 WHERE OrdIdRetiro = @Ord');
+            }
 
-            // 3. Notificar a tu API externa 
+            // 3. Notificar a tu API externa para cada orden
             try {
-                // Removemos la "R-" si la API central lo necesita sin prefijo
-                const ordenLimpia = ordenDeRetiro.startsWith('R-') ? ordenDeRetiro.substring(2) : ordenDeRetiro;
-
-                console.log(`[ENTREGADO] ${ordenDeRetiro} -> ${ordenLimpia}`);
                 const tokenRes = await axios.post(`${REACT_API_URL}/apilogin/generate-token`, {
                     apiKey: REACT_API_KEY
                 });
 
-                const payloadEntregado = {
-                    ordenDeRetiro: String(ordenLimpia) // MANDAMOS LA LIMPIA SIN R- Y COMO STRING
-                };
+                for (const ord of ordenesDeRetiro) {
+                    const ordenLimpia = ord.startsWith('R-') ? ord.substring(2) : ord;
+                    console.log(`[ENTREGADO MULTIPLE] ${ord} -> ${ordenLimpia}`);
 
+                    const payloadEntregado = {
+                        ordenDeRetiro: String(ordenLimpia)
+                    };
 
-                const responseEntregada = await axios.post(`${REACT_API_URL}/apiordenesRetiro/marcarOrdenEntregada`, payloadEntregado, {
-                    headers: { 'Authorization': `Bearer ${tokenRes.data.token}` }
-                });
-                console.log(`[MARCAR ENTREGADO] Respuesta de central exitosa:`, responseEntregada.data);
-            } catch (extErr) {
-                console.error(`[MARCAR ENTREGADO] ERROR de central para orden ${ordenDeRetiro}:`);
-                if (extErr.response) {
-                    console.error("Status:", extErr.response.status);
-                    console.error("Data:", JSON.stringify(extErr.response.data, null, 2));
-                } else {
-                    console.error("Mensaje:", extErr.message);
+                    await axios.post(`${REACT_API_URL}/apiordenesRetiro/marcarOrdenEntregada`, payloadEntregado, {
+                        headers: { 'Authorization': `Bearer ${tokenRes.data.token}` }
+                    }).catch(err => {
+                        console.error(`Error al marcar entregada en central para ${ord}: ${err.message}`);
+                    });
                 }
+            } catch (extErr) {
+                console.error(`[MARCAR ENTREGADO] ERROR general de central:`, extErr.message);
             }
 
             await transaction.commit();
@@ -549,6 +542,83 @@ exports.marcarRetiroEntregado = async (req, res) => {
     } catch (err) {
         console.error("Error al entregar:", err);
         res.status(500).json({ error: "Fallo en la entrega general", details: err.message });
+    }
+};
+
+/**
+ * ENTREGAR AL CLIENTE MULTIPLES SELECCIONES DE UN CASILLERO
+ */
+exports.marcarRetiroEntregadoMultiple = async (req, res) => {
+    const { ubicacionId, ordenesParaEntregar } = req.body;
+
+    if (!ubicacionId || !Array.isArray(ordenesParaEntregar) || ordenesParaEntregar.length === 0) {
+        return res.status(400).json({ error: 'Faltan parámetros o no se seleccionó ninguna orden.' });
+    }
+
+    try {
+        const pool = await getPool();
+        const transaction = new sql.Transaction(pool);
+        await transaction.begin();
+
+        try {
+            // 1. Liberar del Estante Físico SÓLO las especificadas
+            for (const ord of ordenesParaEntregar) {
+                await new sql.Request(transaction)
+                    .input('id', sql.VarChar, ubicacionId)
+                    .input('Ord', sql.VarChar, ord)
+                    .query('DELETE FROM OcupacionEstantes WHERE UbicacionID = @id AND OrdenRetiro = @Ord');
+
+                // 2. Marcar RetirosWeb como Entregada (Estado 5) solamente si existe (es web)
+                await new sql.Request(transaction)
+                    .input('Ord', sql.VarChar, ord)
+                    .query(`
+                        IF EXISTS (SELECT 1 FROM RetirosWeb WHERE OrdIdRetiro = @Ord)
+                        BEGIN
+                            UPDATE RetirosWeb SET Estado = 5 WHERE OrdIdRetiro = @Ord
+                        END
+                    `);
+            }
+
+            // 3. Notificar a tu API externa para cada orden
+            try {
+                const tokenRes = await axios.post(`${REACT_API_URL}/apilogin/generate-token`, {
+                    apiKey: REACT_API_KEY
+                });
+
+                for (const ord of ordenesParaEntregar) {
+                    const ordenLimpia = ord.startsWith('R-') ? ord.substring(2) : ord;
+                    console.log(`[ENTREGADO MULTIPLE SELECCIÓN] ${ord} -> ${ordenLimpia}`);
+
+                    const payloadEntregado = {
+                        ordenDeRetiro: String(ordenLimpia)
+                    };
+
+                    await axios.post(`${REACT_API_URL}/apiordenesRetiro/marcarOrdenEntregada`, payloadEntregado, {
+                        headers: { 'Authorization': `Bearer ${tokenRes.data.token}` }
+                    }).catch(err => {
+                        console.error(`Error al marcar entregada en central para ${ord}: ${err.message}`);
+                    });
+                }
+            } catch (extErr) {
+                console.error(`[MARCAR ENTREGADO] ERROR general de central:`, extErr.message);
+            }
+
+            await transaction.commit();
+
+            // EMITIR EVENTO SOCKET.IO
+            const io = req.app.get('socketio');
+            if (io) io.emit('retiros:update');
+
+            res.json({ success: true, message: 'Órdenes seleccionadas entregadas exitosamente.' });
+
+        } catch (innerErr) {
+            await transaction.rollback();
+            throw innerErr;
+        }
+
+    } catch (err) {
+        console.error("Error al entregar selección múltiple:", err);
+        res.status(500).json({ error: "Fallo en la entrega múltiple", details: err.message });
     }
 };
 
@@ -630,5 +700,120 @@ exports.marcarPasarPorCaja = async (req, res) => {
     } catch (err) {
         console.error("[MARCAR CAJA] Error al marcar por caja:", err.response?.data || err.message);
         res.status(500).json({ error: "Fallo al marcar pasar por caja", details: err.message });
+    }
+};
+
+/**
+ * Traer Transacciones de Handy
+ */
+exports.getPagosOnline = async (req, res) => {
+    try {
+        const pool = await getPool();
+        const { startDate, endDate, clientFilter, orderFilter } = req.query;
+
+        let queryStr = `
+            SELECT TOP (1000) 
+                h.Id,
+                h.TransactionId,
+                h.PaymentUrl,
+                h.TotalAmount,
+                h.Currency,
+                h.OrdersJson,
+                h.CodCliente,
+                h.Status,
+                h.IssuerName,
+                h.PaidAt,
+                h.WebhookReceivedAt,
+                h.CreatedAt,
+                c.Nombre as NombreCliente
+            FROM HandyTransactions h
+            LEFT JOIN Clientes c ON CAST(h.CodCliente AS VARCHAR) = CAST(c.CodCliente AS VARCHAR)
+            WHERE 1=1
+        `;
+
+        const request = pool.request();
+
+        if (startDate) {
+            queryStr += ` AND CAST(h.CreatedAt AS DATE) >= @StartDate`;
+            request.input('StartDate', sql.Date, startDate);
+        }
+
+        if (endDate) {
+            queryStr += ` AND CAST(h.CreatedAt AS DATE) <= @EndDate`;
+            request.input('EndDate', sql.Date, endDate);
+        }
+
+        if (clientFilter) {
+            queryStr += ` AND (c.Nombre LIKE '%' + @ClientFilter + '%' OR CAST(h.CodCliente AS VARCHAR) LIKE '%' + @ClientFilter + '%')`;
+            request.input('ClientFilter', sql.NVarChar, clientFilter);
+        }
+
+        if (orderFilter) {
+            let cleanFilter = orderFilter.trim();
+            // Si el usuario busca "R-60174", limpiamos el "R-" para buscar "60174" dentro del JSON.
+            let numFilter = cleanFilter.toUpperCase().startsWith('R-') ? cleanFilter.substring(2) : cleanFilter;
+
+            queryStr += ` AND (h.OrdersJson LIKE '%' + @OrderFilter + '%' OR h.OrdersJson LIKE '%' + @NumFilter + '%' OR h.TransactionId LIKE '%' + @OrderFilter + '%')`;
+            request.input('OrderFilter', sql.NVarChar, cleanFilter);
+            request.input('NumFilter', sql.NVarChar, numFilter);
+        }
+
+        queryStr += ` ORDER BY h.CreatedAt DESC`;
+
+        const result = await request.query(queryStr);
+        res.json(result.recordset);
+    } catch (err) {
+        console.error("[PAGOS ONLINE] Error fetching Handy Transactions:", err);
+        res.status(500).json({ error: "Fallo al traer pagos online", details: err.message });
+    }
+};
+
+/**
+ * Traer otras OTs (Semanales, Rollos por adelantado, etc) para Caja
+ */
+exports.getCajaOtros = async (req, res) => {
+    try {
+        const tokenRes = await axios.post(`${REACT_API_URL}/apilogin/generate-token`, {
+            apiKey: "api_key_google_123sadas12513_user"
+        });
+
+        const url = `${REACT_API_URL}/apiordenesRetiro/estados?estados=Ingresado,Abonado,Abonado%20de%20antemano,Empaquetado%20sin%20abonar`;
+        const response = await axios.get(url, {
+            headers: { 'Authorization': `Bearer ${tokenRes.data.token}` }
+        });
+        res.json(response.data);
+    } catch (err) {
+        console.error("[CAJA OTROS] Error al obtener órdenes de caja (otros):", err.response?.data || err.message);
+        res.status(500).json({ error: "Fallo al obtener otras órdenes de caja", details: err.message });
+    }
+};
+
+/**
+ * Guardar retiro excepcional (con deuda) en la tabla local
+ */
+exports.marcarExcepcional = async (req, res) => {
+    try {
+        const { ordenRetiro, codigoCliente, monto, password } = req.body;
+
+        if (!password || password.trim() === '') {
+            return res.status(401).json({ error: "Contraseña requerida para autorizar este retiro." });
+        }
+
+        if (password !== process.env.CONTRAAUTORIZO) {
+            return res.status(403).json({ error: "Contraseña incorrecta." });
+        }
+
+        const pool = await sql.connect();
+        await pool.request()
+            .input('orden', sql.VarChar, ordenRetiro)
+            .input('cliente', sql.VarChar, codigoCliente)
+            .input('monto', sql.VarChar, String(monto))
+            .input('pwd', sql.VarChar, password)
+            .query(`INSERT INTO RetirosConDeuda (OrdenRetiro, CodigoCliente, Monto, UsuarioAutorizador) VALUES (@orden, @cliente, @monto, @pwd)`);
+
+        res.json({ message: "Retiro registrado como deuda y autorizado exitosamente." });
+    } catch (err) {
+        console.error("[EXCEPCIONAL] Error al guardar retiro excepcional:", err);
+        res.status(500).json({ error: "Fallo al registrar retiro excepcional", details: err.message });
     }
 };

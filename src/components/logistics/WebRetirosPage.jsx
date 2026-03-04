@@ -13,6 +13,7 @@ const WebRetirosPage = () => {
   const [apiOrders, setApiOrders] = useState([]);
   const [estantesConfigArr, setEstantesConfigArr] = useState([]); // Array extraido del server
   const [ocupacionEstantes, setOcupacionEstantes] = useState({});
+  const [otrosRetiros, setOtrosRetiros] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [selectedRetiro, setSelectedRetiro] = useState(null);
@@ -20,9 +21,14 @@ const WebRetirosPage = () => {
   const [ubicationMode, setUbicationMode] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
   const [filterEstante, setFilterEstante] = useState('ALL');
+  const [filtroOtros, setFiltroOtros] = useState('ALL');
+  const [filtroLugarRetiro, setFiltroLugarRetiro] = useState('ALL');
   const [confirmDelivery, setConfirmDelivery] = useState(null);
+  const [excepcionDelivery, setExcepcionDelivery] = useState(null);
+  const [adminPassword, setAdminPassword] = useState('');
   const [deliveryScannedBultos, setDeliveryScannedBultos] = useState({});
   const [deliveryBarcodeInput, setDeliveryBarcodeInput] = useState('');
+  const [deliverySelectedOrders, setDeliverySelectedOrders] = useState({});
 
   // 1. Conexión WebSocket para Tiempo Real
   useEffect(() => {
@@ -68,7 +74,8 @@ const WebRetirosPage = () => {
 
       estantesData.forEach(item => {
         if (item.OrdenRetiro) {
-          estantesMap[item.UbicacionID] = item;
+          if (!estantesMap[item.UbicacionID]) estantesMap[item.UbicacionID] = [];
+          estantesMap[item.UbicacionID].push(item);
         }
 
         if (!configMap[item.EstanteID]) {
@@ -88,6 +95,16 @@ const WebRetirosPage = () => {
 
       setEstantesConfigArr(confArr);
       setOcupacionEstantes(estantesMap);
+
+      // 2.5 Traer "Resto de Retiros" (otros retiros)
+      try {
+        const { data: otrosData } = await api.get('/web-retiros/caja-otros');
+        if (Array.isArray(otrosData)) {
+          const ocupadasSet = new Set(estantesData.map(e => e.OrdenRetiro));
+          const filtrados = otrosData.filter(o => !ocupadasSet.has(o.ordenDeRetiro));
+          setOtrosRetiros(filtrados);
+        }
+      } catch (e) { console.error(e) }
 
       // 3. Lanzar sincronización pesada en segundo plano si aplica (sin bloquear UI)
       if (backgroundSync) {
@@ -137,15 +154,19 @@ const WebRetirosPage = () => {
     const retiroParaAsignar = selectedRetiro; // Capturamos para optimismo
 
     // === OPTIMISMO UI: Actualizamos visualmente al instante ===
-    setOcupacionEstantes(prev => ({
-      ...prev,
-      [ubicacionId]: {
-        OrdenRetiro: retiroParaAsignar.ordenDeRetiro,
-        CodigoCliente: retiroParaAsignar.idcliente,
-        ClientName: retiroParaAsignar.idcliente
-      }
-    }));
+    setOcupacionEstantes(prev => {
+      const currentList = prev[ubicacionId] || [];
+      return {
+        ...prev,
+        [ubicacionId]: [...currentList, {
+          OrdenRetiro: retiroParaAsignar.ordenDeRetiro,
+          CodigoCliente: retiroParaAsignar.idcliente,
+          ClientName: retiroParaAsignar.idcliente
+        }]
+      };
+    });
     setApiOrders(prev => prev.filter(o => o.ordenDeRetiro !== retiroParaAsignar.ordenDeRetiro));
+    setOtrosRetiros(prev => prev.filter(o => o.ordenDeRetiro !== retiroParaAsignar.ordenDeRetiro));
 
     setSelectedRetiro(null);
     setScannedBultos({});
@@ -179,27 +200,126 @@ const WebRetirosPage = () => {
     }
   };
 
-  const triggerEntregar = (id, data) => {
-    setConfirmDelivery({ id, data });
+  const triggerEntregar = (id, dataOrDataList) => {
+    const list = Array.isArray(dataOrDataList) ? dataOrDataList : [dataOrDataList];
+
+    // Find if ANY order in the list is unauthorized
+    let exceptionItem = null;
+    let exceptionItemRaw = null;
+
+    for (const item of list) {
+      const ordenStr = item.OrdenRetiro || item.ordenDeRetiro;
+      const retiroFull = apiOrders.find(o => o.ordenDeRetiro === ordenStr) || otrosRetiros.find(o => o.ordenDeRetiro === ordenStr);
+      let isAuthorized = false;
+
+      if (retiroFull) {
+        const desc = (retiroFull.TClDescripcion || '').toLowerCase();
+        const estadoReal = typeof retiroFull.estado === 'string' ? retiroFull.estado.toLowerCase() : '';
+        const isPagado = retiroFull.pagorealizado === 1;
+
+        if (isPagado || estadoReal.includes('abonado')) isAuthorized = true;
+        if (desc.includes('semanal') || desc.includes('rollo')) isAuthorized = true;
+      } else {
+        if (item.Pagado) isAuthorized = true;
+      }
+
+      if (!isAuthorized) {
+        exceptionItem = item;
+        exceptionItemRaw = retiroFull;
+        break; // Stop at first unauthorized
+      }
+    }
+
+    if (exceptionItem) {
+      // Si hay aunque sea uno sin abonar, pedimos excepcion global
+      setExcepcionDelivery({ id, data: exceptionItem, raw: exceptionItemRaw, blockList: list });
+      return;
+    }
+
+    setConfirmDelivery({ id, dataList: list });
     setDeliveryScannedBultos({});
     setDeliveryBarcodeInput('');
+
+    // Select all orders by default for delivery
+    const sel = {};
+    list.forEach(o => sel[o.OrdenRetiro || o.ordenDeRetiro] = true);
+    setDeliverySelectedOrders(sel);
+  };
+
+  const handleExcepcionSubmit = async (e) => {
+    e.preventDefault();
+    if (!adminPassword) return;
+
+    try {
+      const retiro = excepcionDelivery.raw || excepcionDelivery.data;
+      await api.post('/web-retiros/excepcional', {
+        ordenRetiro: retiro.ordenDeRetiro || retiro.OrdenRetiro,
+        codigoCliente: retiro.idcliente || retiro.CliCodigoCliente || retiro.CodigoCliente || 'Desconocido',
+        monto: retiro.monto || retiro.totalCost || retiro.montopagorealizado || 0,
+        password: adminPassword
+      });
+
+      // Si fue éxito, autorizamos la entrega
+      const blockList = excepcionDelivery.blockList || [excepcionDelivery.data];
+      const id = excepcionDelivery.id;
+      setExcepcionDelivery(null);
+      setAdminPassword('');
+      setConfirmDelivery({ id, dataList: blockList });
+      setDeliveryScannedBultos({});
+      setDeliveryBarcodeInput('');
+
+      const sel = {};
+      blockList.forEach(o => sel[o.OrdenRetiro || o.ordenDeRetiro] = true);
+      setDeliverySelectedOrders(sel);
+    } catch (err) {
+      alert(err.response?.data?.error || 'Error al autorizar excepcion');
+    }
   };
 
   const handleEntregar = async () => {
     if (!confirmDelivery) return;
-    const { id: ubicacionId } = confirmDelivery;
+    const { id: ubicacionId, dataList } = confirmDelivery;
+
+    // Obtener los seleccionados de la lista de confirmDelivery 
+    let ordenesSeleccionadas = [];
+    if (ubicacionId === 'FUERA DE ESTANTE') {
+      ordenesSeleccionadas = [dataList[0].ordenDeRetiro || dataList[0].OrdenRetiro];
+    } else {
+      ordenesSeleccionadas = dataList
+        .map(item => item.OrdenRetiro || item.ordenDeRetiro)
+        .filter(ord => deliverySelectedOrders[ord]);
+    }
+
+    if (ordenesSeleccionadas.length === 0) return; // Nada seleccionado
 
     // === OPTIMISMO UI: Liberar el casillero visualmente de inmediato ===
     setOcupacionEstantes(prev => {
       const next = { ...prev };
-      delete next[ubicacionId];
+      // Si seleccionaron TODO, eliminamos la ubicación entera. Si no, sólo retiramos de la UI las seleccionadas
+      if (next[ubicacionId]) {
+        const remaining = next[ubicacionId].filter(item => !ordenesSeleccionadas.includes(item.OrdenRetiro || item.ordenDeRetiro));
+        if (remaining.length === 0) {
+          delete next[ubicacionId];
+        } else {
+          next[ubicacionId] = remaining;
+        }
+      }
       return next;
     });
 
     setConfirmDelivery(null);
 
     try {
-      await api.delete(`/web-retiros/estantes/liberar/${ubicacionId}`);
+      if (ubicacionId === 'FUERA DE ESTANTE') {
+        // TODO handle Fuera de estante which needs direct API central contact
+        // Normally we just did an api request to our own backend to mark it depending on what we mapped
+        // Para fuera de estante, enviemos la info a eliminar si aplica
+      }
+
+      await api.post(`/web-retiros/estantes/liberar-multiple`, {
+        ubicacionId,
+        ordenesParaEntregar: ordenesSeleccionadas
+      });
       // El fetch vendrá por socket 
     } catch (err) {
       setError(err.response?.data?.error || err.message || 'Error al liberar el estante');
@@ -340,18 +460,39 @@ const WebRetirosPage = () => {
                   <div className="grid grid-cols-4 flex-1 gap-2">
                     {[...Array(est.posiciones)].map((_, p) => {
                       const id = `${est.id}-${s + 1}-${p + 1}`;
-                      const data = ocupacionEstantes[id];
+                      const dataList = ocupacionEstantes[id] || [];
+                      const isOccupied = dataList.length > 0;
+                      const firstData = dataList[0];
                       return (
                         <button
                           key={p}
-                          disabled={!!data}
                           onClick={() => handleAsignarUbicacion(est.id, s + 1, p + 1)}
-                          className={`h-24 rounded-xl border-2 transition-all flex flex-col items-center justify-center gap-1.5 ${data ? 'bg-indigo-600 border-indigo-700 cursor-not-allowed opacity-90' : 'bg-white border-dashed border-slate-300 hover:border-blue-500 hover:bg-blue-50 group shadow-sm'}`}
+                          className={`relative h-24 rounded-xl border-2 transition-all flex flex-col items-center justify-center gap-1.5 cursor-pointer shadow-sm overflow-hidden ${isOccupied ? 'bg-indigo-600 border-indigo-700 hover:bg-indigo-500 hover:border-indigo-400 opacity-90' : 'bg-white border-dashed border-slate-300 hover:border-blue-500 hover:bg-blue-50 group'}`}
                         >
-                          <span className={`text-[10px] font-bold ${data ? 'text-indigo-200' : 'text-slate-400 uppercase group-hover:text-blue-600'}`}>{id}</span>
-                          {data && <span className="text-[11px] font-black text-white px-2 py-0.5 rounded border border-indigo-500 truncate max-w-[90%]">{data.Pagado ? data.OrdenRetiro.replace('R-', 'PW-') : data.OrdenRetiro}</span>}
-                          {data && <span className="text-[9px] font-bold text-indigo-100 px-1 truncate max-w-[90%]">{data.CodigoCliente || 'Cliente'}</span>}
-                          {!data && <div className="w-1.5 h-1.5 rounded-full bg-slate-200 group-hover:bg-blue-400 mt-1 transition-colors" />}
+                          <div className="absolute top-1 left-2">
+                            <span className={`text-[10px] font-bold ${isOccupied ? 'text-indigo-200' : 'text-slate-400 uppercase group-hover:text-blue-600'}`}>{id}</span>
+                          </div>
+                          {isOccupied && dataList.length > 1 && (
+                            <div className="absolute top-1 right-1 bg-rose-500 text-white text-[8px] font-bold px-1.5 py-0.5 rounded-full z-10">
+                              {dataList.length}
+                            </div>
+                          )}
+
+                          {isOccupied ? (
+                            <div className="flex flex-col gap-1 w-full max-h-full overflow-y-auto mt-4 px-1" style={{ scrollbarWidth: 'none' }}>
+                              {dataList.map((data, idx) => (
+                                <div key={idx} className="flex flex-col items-center bg-indigo-500/50 rounded flex-shrink-0 w-full border border-indigo-400/50 py-0.5">
+                                  <span className="text-[9px] font-black text-white px-1 truncate max-w-full">{data.Pagado ? data.OrdenRetiro.replace('R-', 'PW-') : data.OrdenRetiro}</span>
+                                  <span className="text-[7px] font-bold text-indigo-100 px-1 truncate max-w-[90%]">{data.CodigoCliente || data.ClientName || 'Cliente'}</span>
+                                </div>
+                              ))}
+                            </div>
+                          ) : (
+                            <>
+                              <span className="text-[10px] font-bold text-slate-400 uppercase group-hover:text-blue-600 mb-1">{id}</span>
+                              <div className="w-1.5 h-1.5 rounded-full bg-slate-200 group-hover:bg-blue-400 transition-colors" />
+                            </>
+                          )}
                         </button>
                       );
                     })}
@@ -364,6 +505,168 @@ const WebRetirosPage = () => {
       </div>
     </div>
   );
+
+  const handlePrintLocal = (retiro, copias = 2) => {
+    const clienteNombre = retiro.orders && retiro.orders[0] ? retiro.orders[0].cliente?.nombreApellido || retiro.CliCodigoCliente : retiro.CliCodigoCliente;
+    let content = '';
+    for (let i = 0; i < copias; i++) {
+      content += `
+              <div style="font-family: Arial, sans-serif; padding: 20px; border: 2px dashed #000; margin-bottom: 20px; width: 300px;">
+                  <h2 style="text-align: center; margin: 0 0 10px 0;">ORDEN DE RETIRO</h2>
+                  <h3 style="text-align: center; margin: 0 0 20px 0; font-size: 24px;">${retiro.ordenDeRetiro}</h3>
+                  <p><strong>Cliente:</strong> ${clienteNombre || 'N/A'}</p>
+                  <p><strong>Lugar:</strong> ${retiro.lugarRetiro || '-'}</p>
+                  <p><strong>Estado:</strong> ${retiro.estado || retiro.estadoRetiro || '-'}</p>
+                  <p><strong>Total:</strong> ${retiro.totalCost && retiro.totalCost !== 'NaN' ? retiro.totalCost : retiro.montopagorealizado || '-'}</p>
+                  <hr/>
+                  <p style="font-size: 10px; text-align: center;">Copia ${i + 1} de ${copias}</p>
+              </div>
+          `;
+    }
+
+    const win = window.open('', '', 'width=400,height=600');
+    win.document.write(`<html><body style="margin: 0;">${content}</body></html>`);
+    win.document.close();
+    win.focus();
+    setTimeout(() => {
+      win.print();
+      win.close();
+    }, 500);
+  };
+
+  const determineColorByDescAndStatus = (retiro) => {
+    const desc = (retiro.TClDescripcion || '').toLowerCase();
+    const pagado = retiro.pagorealizado === 1;
+
+    if (desc.includes('semanal')) {
+      return { bg: 'bg-indigo-50', border: 'border-indigo-200', text: 'text-indigo-800' };
+    }
+    if (desc.includes('rollo')) {
+      return { bg: 'bg-amber-50', border: 'border-amber-200', text: 'text-amber-800' };
+    }
+    if (pagado) {
+      return { bg: 'bg-emerald-50', border: 'border-emerald-200', text: 'text-emerald-800' };
+    }
+    // Pendiente de pago
+    return { bg: 'bg-rose-50', border: 'border-rose-200', text: 'text-rose-800' };
+  };
+
+  const OtrosRetirosGrid = () => {
+    const uniqueLugaresRetiro = React.useMemo(() => {
+      const lugares = new Set();
+      otrosRetiros.forEach(o => {
+        if (o.lugarRetiro) lugares.add(o.lugarRetiro);
+      });
+      return Array.from(lugares).filter(Boolean).sort();
+    }, [otrosRetiros]);
+
+    return (
+      <div className="mt-8 pt-8 border-t-2 border-slate-100">
+        <h3 className="text-xl font-black text-slate-800 mb-6">Resto de Retiros (No web)</h3>
+
+        {/* Filtros por Categoría */}
+        <div className="flex flex-col gap-4 mb-6">
+          <div className="flex flex-wrap gap-4 text-xs font-bold uppercase tracking-wider">
+            <button onClick={() => setFiltroOtros('ALL')} className={`px-4 py-2 rounded-xl border flex items-center gap-2 transition-all ${filtroOtros === 'ALL' ? 'bg-slate-800 text-white shadow-md' : 'bg-white text-slate-500 hover:bg-slate-50'}`}>Todos</button>
+            <button onClick={() => setFiltroOtros('SEMANAL')} className={`px-4 py-2 rounded-xl border flex items-center gap-2 transition-all ${filtroOtros === 'SEMANAL' ? 'bg-indigo-600 border-indigo-600 text-white shadow-md shadow-indigo-200' : 'bg-indigo-50 border-indigo-200 text-indigo-800 hover:bg-indigo-100'}`}><div className={`w-2 h-2 rounded-full ${filtroOtros === 'SEMANAL' ? 'bg-white' : 'bg-indigo-500'}`}></div>Semanales</button>
+            <button onClick={() => setFiltroOtros('ROLLO')} className={`px-4 py-2 rounded-xl border flex items-center gap-2 transition-all ${filtroOtros === 'ROLLO' ? 'bg-amber-500 border-amber-500 text-white shadow-md shadow-amber-200' : 'bg-amber-50 border-amber-200 text-amber-800 hover:bg-amber-100'}`}><div className={`w-2 h-2 rounded-full ${filtroOtros === 'ROLLO' ? 'bg-white' : 'bg-amber-500'}`}></div>Rollos por adelantado</button>
+            <button onClick={() => setFiltroOtros('PAGADO')} className={`px-4 py-2 rounded-xl border flex items-center gap-2 transition-all ${filtroOtros === 'PAGADO' ? 'bg-emerald-500 border-emerald-500 text-white shadow-md shadow-emerald-200' : 'bg-emerald-50 border-emerald-200 text-emerald-800 hover:bg-emerald-100'}`}><div className={`w-2 h-2 rounded-full ${filtroOtros === 'PAGADO' ? 'bg-white' : 'bg-emerald-500'}`}></div>Pagados</button>
+            <button onClick={() => setFiltroOtros('PENDIENTE')} className={`px-4 py-2 rounded-xl border flex items-center gap-2 transition-all ${filtroOtros === 'PENDIENTE' ? 'bg-rose-500 border-rose-500 text-white shadow-md shadow-rose-200' : 'bg-rose-50 border-rose-200 text-rose-800 hover:bg-rose-100'}`}><div className={`w-2 h-2 rounded-full ${filtroOtros === 'PENDIENTE' ? 'bg-white' : 'bg-rose-500'}`}></div>Pendientes de Pago</button>
+          </div>
+
+          {/* Filtro por Lugar de Retiro */}
+          <div className="flex flex-wrap gap-3 text-xs font-bold uppercase tracking-wider items-center">
+            <span className="py-2 text-slate-400">Local de recogida:</span>
+            <button onClick={() => setFiltroLugarRetiro('ALL')} className={`px-4 py-2 rounded-xl border transition-all ${filtroLugarRetiro === 'ALL' ? 'bg-blue-600 text-white border-blue-600' : 'bg-slate-50 text-slate-500 hover:bg-slate-100'}`}>Cualquiera</button>
+            {uniqueLugaresRetiro.map((lugar, idx) => (
+              <button key={idx} onClick={() => setFiltroLugarRetiro(lugar)} className={`px-4 py-2 rounded-xl border transition-all ${filtroLugarRetiro === lugar ? 'bg-blue-600 text-white border-blue-600' : 'bg-slate-50 text-slate-500 hover:bg-slate-100'}`}>{lugar}</button>
+            ))}
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+          {otrosRetiros.filter(o => {
+            const desc = (o.TClDescripcion || '').toLowerCase();
+            const pagado = o.pagorealizado === 1;
+
+            if (filtroOtros === 'SEMANAL' && !desc.includes('semanal')) return false;
+            if (filtroOtros === 'ROLLO' && !desc.includes('rollo')) return false;
+            if (filtroOtros === 'PAGADO' && (desc.includes('semanal') || desc.includes('rollo') || !pagado)) return false;
+            if (filtroOtros === 'PENDIENTE' && (desc.includes('semanal') || desc.includes('rollo') || pagado)) return false;
+
+            if (filtroLugarRetiro !== 'ALL' && o.lugarRetiro !== filtroLugarRetiro) return false;
+
+            if (!searchTerm) return true;
+            const term = searchTerm.toLowerCase();
+            if (o.ordenDeRetiro && o.ordenDeRetiro.toLowerCase().includes(term)) return true;
+            if (o.CliCodigoCliente && o.CliCodigoCliente.toLowerCase().includes(term)) return true;
+            return false;
+          }).map((retiro, idx) => {
+            const colorSet = determineColorByDescAndStatus(retiro);
+
+            return (
+              <div key={`${retiro.ordenDeRetiro}-${idx}`} className={`p-5 rounded-2xl shadow-sm border ${colorSet.bg} ${colorSet.border} flex flex-col justify-between transition-transform hover:-translate-y-1 hover:shadow-md cursor-pointer`}
+                onClick={() => {
+                  const convertedRetiro = {
+                    ordenDeRetiro: retiro.ordenDeRetiro,
+                    idcliente: retiro.CliCodigoCliente,
+                    monto: parseFloat(retiro.totalCost) || parseFloat(retiro.montopagorealizado?.replace('$ ', '').replace('USD ', '')) || 0,
+                    moneda: 'UYU', // Default
+                    pagorealizado: retiro.pagorealizado,
+                    orders: (retiro.orders || []).map(sub => ({
+                      orderNumber: sub.orderNumber || sub.codigoOrden,
+                      orderId: sub.orderId
+                    }))
+                  };
+
+                  if (view === 'empaque') {
+                    handleSelectRetiro(convertedRetiro);
+                  } else {
+                    triggerEntregar('FUERA DE ESTANTE', convertedRetiro);
+                  }
+                }}
+              >
+                <div>
+                  <div className="flex justify-between items-start mb-2">
+                    <h4 className={`text-xl font-black ${colorSet.text}`}>{retiro.ordenDeRetiro}</h4>
+                    <button
+                      title="Imprimir Etiquetas (2 copias)"
+                      onClick={(e) => { e.stopPropagation(); handlePrintLocal(retiro, 2); }}
+                      className="p-2 bg-white/50 rounded-lg hover:bg-white text-slate-700 transition"
+                    >
+                      <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16">
+                        <path d="M2.5 8a.5.5 0 1 0 0-1 .5.5 0 0 0 0 1" />
+                        <path d="M5 1a2 2 0 0 0-2 2v2H2a2 2 0 0 0-2 2v3a2 2 0 0 0 2 2h1v1a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2v-1h1a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-1V3a2 2 0 0 0-2-2zM4 3a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2H4zm1 5a2 2 0 0 0-2 2v1H2a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h12a1 1 0 0 1 1 1v3a1 1 0 0 1-1 1h-1v-1a2 2 0 0 0-2-2zm7 2v3a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1v-3a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1" />
+                      </svg>
+                    </button>
+                  </div>
+                  <p className={`text-xs font-bold ${colorSet.text} opacity-80 mb-3 uppercase tracking-wider`}>
+                    {retiro.TClDescripcion || 'SIN DESC'}
+                  </p>
+                  <p className="text-slate-700 text-sm mb-1 truncate">
+                    <span className="font-semibold">Fecha:</span> {retiro.fechaAlta ? new Date(retiro.fechaAlta).toLocaleDateString() : '-'}
+                  </p>
+                  <p className="text-slate-700 text-sm mb-1 truncate">
+                    <span className="font-semibold">Cliente:</span> {retiro.CliCodigoCliente}
+                  </p>
+
+                  <p className="text-slate-700 text-sm mb-1 line-clamp-1">
+                    <span className="font-semibold">Estado:</span> {retiro.estado}
+                  </p>
+                  <p className="text-slate-700 text-sm">
+                    <span className="font-semibold">Ubicación:</span> {retiro.lugarRetiro}
+                  </p>
+                </div>
+                <div className="mt-4 pt-3 border-t border-black/5">
+                  <span className={`text-sm font-black ${colorSet.text}`}>Total: {retiro.totalCost && retiro.totalCost !== 'NaN' ? retiro.totalCost : retiro.montopagorealizado || '-'}</span>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    );
+  };
 
   return (
     <div className="p-6 h-full overflow-y-auto">
@@ -462,6 +765,8 @@ const WebRetirosPage = () => {
                   </div>
                 </div>
               </div>
+
+              <OtrosRetirosGrid />
             </div>
           ) : (
             ubicationMode ? <UbicationGrid /> : <OrderDetail />
@@ -493,6 +798,12 @@ const WebRetirosPage = () => {
                   >
                     Ver Todo
                   </button>
+                  <button
+                    onClick={() => setFilterEstante('FUERA')}
+                    className={`px-6 py-2.5 rounded-2xl font-bold text-xs uppercase tracking-widest transition-all border ${filterEstante === 'FUERA' ? 'bg-blue-600 text-white border-blue-600 shadow-md shadow-blue-200' : 'bg-transparent text-slate-500 border-transparent hover:bg-slate-50'}`}
+                  >
+                    Fuera de Estante
+                  </button>
                   {estantesConfigArr.map(est => (
                     <button
                       key={est.id}
@@ -506,80 +817,102 @@ const WebRetirosPage = () => {
               </div>
 
               {/* MAPA VISUAL DE ESTANTES */}
-              <div className="grid gap-8">
-                {estantesConfigArr.filter(est => filterEstante === 'ALL' || filterEstante === est.id).map(est => (
-                  <div key={est.id} className="bg-white p-8 rounded-[32px] border border-slate-100 shadow-sm">
-                    <div className="flex items-center gap-4 mb-8">
-                      <div className="w-12 h-12 bg-blue-600 rounded-xl flex items-center justify-center text-white font-black text-xl italic shadow-md shadow-blue-200">{est.id}</div>
-                      <span className="text-xl font-black text-slate-800 uppercase italic tracking-tighter">Bloque {est.id}</span>
-                    </div>
+              {filterEstante !== 'FUERA' && (
+                <div className="grid gap-8">
+                  {estantesConfigArr.filter(est => filterEstante === 'ALL' || filterEstante === est.id).map(est => (
+                    <div key={est.id} className="bg-white p-8 rounded-[32px] border border-slate-100 shadow-sm">
+                      <div className="flex items-center gap-4 mb-8">
+                        <div className="w-12 h-12 bg-blue-600 rounded-xl flex items-center justify-center text-white font-black text-xl italic shadow-md shadow-blue-200">{est.id}</div>
+                        <span className="text-xl font-black text-slate-800 uppercase italic tracking-tighter">Bloque {est.id}</span>
+                      </div>
 
-                    <div className="space-y-6">
-                      {[...Array(est.secciones)].map((_, s) => (
-                        <div key={s} className="flex gap-6 items-center">
-                          <div className="w-16 h-16 flex flex-col items-center justify-center bg-slate-50/50 rounded-[20px] border border-slate-100">
-                            <span className="text-[10px] font-black text-slate-400 uppercase">Sec</span>
-                            <span className="text-xl font-black text-blue-600">{s + 1}</span>
-                          </div>
-                          <div className="grid grid-cols-4 flex-1 gap-4">
-                            {[...Array(est.posiciones)].map((_, p) => {
-                              const id = `${est.id}-${s + 1}-${p + 1}`;
-                              const data = ocupacionEstantes[id];
+                      <div className="space-y-6">
+                        {[...Array(est.secciones)].map((_, s) => (
+                          <div key={s} className="flex gap-6 items-center">
+                            <div className="w-16 h-16 flex flex-col items-center justify-center bg-slate-50/50 rounded-[20px] border border-slate-100">
+                              <span className="text-[10px] font-black text-slate-400 uppercase">Sec</span>
+                              <span className="text-xl font-black text-blue-600">{s + 1}</span>
+                            </div>
+                            <div className="grid grid-cols-4 flex-1 gap-4">
+                              {[...Array(est.posiciones)].map((_, p) => {
+                                const id = `${est.id}-${s + 1}-${p + 1}`;
+                                const dataList = ocupacionEstantes[id] || [];
+                                const isOccupied = dataList.length > 0;
+                                const firstData = dataList[0];
 
-                              const term = searchTerm.toLowerCase();
-                              const matchesSearch = data && (
-                                (data.OrdenRetiro && data.OrdenRetiro.toLowerCase().includes(term)) ||
-                                (data.CodigoCliente && data.CodigoCliente.toLowerCase().includes(term)) ||
-                                (data.ClientName && data.ClientName.toLowerCase().includes(term))
-                              );
-                              const isMismatched = searchTerm && data && !matchesSearch;
-                              const isMatched = searchTerm && data && matchesSearch;
+                                const term = searchTerm.toLowerCase();
+                                const matchesSearch = isOccupied && dataList.some(item => (
+                                  (item.OrdenRetiro && item.OrdenRetiro.toLowerCase().includes(term)) ||
+                                  (item.CodigoCliente && item.CodigoCliente.toLowerCase().includes(term)) ||
+                                  (item.ClientName && item.ClientName.toLowerCase().includes(term))
+                                ));
+                                const isMismatched = searchTerm && isOccupied && !matchesSearch;
+                                const isMatched = searchTerm && isOccupied && matchesSearch;
 
-                              return (
-                                <div
-                                  id={`box-${id}`}
-                                  key={p}
-                                  className={`h-28 rounded-[24px] border-2 transition-all flex flex-col items-center justify-center gap-2 relative group overflow-hidden 
-                                        ${data ? 'bg-indigo-600 border-indigo-700 shadow-md shadow-indigo-300' : 'bg-white border-dashed border-slate-200'}
+                                return (
+                                  <div
+                                    id={`box-${id}`}
+                                    key={p}
+                                    className={`h-28 rounded-[24px] border-2 transition-all flex flex-col items-center justify-center gap-2 relative group overflow-hidden 
+                                        ${isOccupied ? 'bg-indigo-600 border-indigo-700 shadow-md shadow-indigo-300' : 'bg-white border-dashed border-slate-200'}
                                         ${isMismatched ? 'opacity-20 grayscale' : ''}
                                         ${isMatched ? 'ring-4 ring-green-400 border-green-500 bg-green-600 scale-[1.02] shadow-lg shadow-green-200/50' : ''}
                                       `}
-                                >
-                                  {data ? (
-                                    <>
-                                      <span className={`font-black tracking-widest ${isMatched ? 'text-white text-xl drop-shadow-md bg-green-700/50 px-3 py-1 rounded-lg mb-1' : 'text-indigo-200 text-[10px]'}`}>{id}</span>
-                                      <span className={`text-sm font-black italic uppercase truncate px-2 ${isMatched ? 'text-white' : 'text-white'}`}>{data.Pagado ? data.OrdenRetiro.replace('R-', 'PW-') : data.OrdenRetiro}</span>
-                                      <span className={`text-[10px] font-bold truncate px-2 max-w-[90%] bg-black/20 rounded-md py-0.5 mt-0.5 ${isMatched ? 'text-green-100' : 'text-indigo-100'}`}>
-                                        {data.ClientName || data.CodigoCliente || 'Cliente'}
-                                      </span>
+                                  >
+                                    {isOccupied ? (
+                                      <>
+                                        {dataList.length > 1 && (
+                                          <div className="absolute top-2 right-2 bg-rose-500 text-white text-[10px] font-bold px-2 py-0.5 rounded-full z-10 animate-bounce">
+                                            {dataList.length} retiros
+                                          </div>
+                                        )}
+                                        <span className={`font-black tracking-widest absolute top-2 left-3 ${isMatched ? 'text-white text-[10px] drop-shadow-md bg-green-700/50 px-2 py-0.5 rounded mb-1' : 'text-indigo-200 text-[10px]'}`}>{id}</span>
 
-                                      {isMatched && (
-                                        <div className="absolute inset-0 bg-blue-600/95 flex flex-col items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
-                                          <button
-                                            onClick={() => triggerEntregar(id, data)}
-                                            className="px-6 py-2 bg-white text-blue-600 rounded-xl font-black text-xs uppercase shadow-xl hover:scale-105 transition-transform flex items-center gap-2"
-                                          >
-                                            <Check size={16} /> ENTREGAR
-                                          </button>
+                                        <div className="flex flex-col gap-1 w-full max-h-full overflow-y-auto mt-6 px-2" style={{ scrollbarWidth: 'none' }}>
+                                          {dataList.map((data, idx) => (
+                                            <div key={idx} className={`flex flex-col items-center rounded flex-shrink-0 w-full border py-0.5 ${isMatched ? 'bg-green-700/50 border-green-400' : 'bg-indigo-500/50 border-indigo-400/50'}`}>
+                                              <span className={`text-[11px] font-black italic uppercase truncate px-2 ${isMatched ? 'text-white' : 'text-white'}`}>
+                                                {data.Pagado ? data.OrdenRetiro.replace('R-', 'PW-') : data.OrdenRetiro}
+                                              </span>
+                                              <span className={`text-[9px] font-bold truncate px-2 max-w-[90%] bg-black/20 rounded-md py-[1px] mt-[1px] ${isMatched ? 'text-green-100' : 'text-indigo-100'}`}>
+                                                {data.ClientName || data.CodigoCliente || 'Cliente'}
+                                              </span>
+                                            </div>
+                                          ))}
                                         </div>
-                                      )}
-                                    </>
-                                  ) : (
-                                    <>
-                                      <span className="text-[12px] font-black text-slate-300">P{p + 1}</span>
-                                      <div className="w-1.5 h-1.5 rounded-full bg-slate-200" />
-                                    </>
-                                  )}
-                                </div>
-                              );
-                            })}
+
+                                        {isMatched && (
+                                          <div className="absolute inset-0 bg-blue-600/95 flex flex-col items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
+                                            <button
+                                              onClick={() => triggerEntregar(id, dataList)}
+                                              className="px-6 py-2 bg-white text-blue-600 rounded-xl font-black text-xs uppercase shadow-xl hover:scale-105 transition-transform flex items-center gap-2"
+                                            >
+                                              <Check size={16} /> ENTREGAR
+                                            </button>
+                                          </div>
+                                        )}
+                                      </>
+                                    ) : (
+                                      <>
+                                        <span className="text-[12px] font-black text-slate-300">P{p + 1}</span>
+                                        <div className="w-1.5 h-1.5 rounded-full bg-slate-200" />
+                                      </>
+                                    )}
+                                  </div>
+                                );
+                              })}
+                            </div>
                           </div>
-                        </div>
-                      ))}
+                        ))}
+                      </div>
                     </div>
-                  </div>
-                ))}
-              </div>
+                  ))}
+                </div>
+              )}
+
+              {(filterEstante === 'ALL' || filterEstante === 'FUERA') && (
+                <OtrosRetirosGrid />
+              )}
             </div>
           </div>
         )
@@ -590,17 +923,44 @@ const WebRetirosPage = () => {
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm px-4">
           <div className="bg-white rounded-3xl p-8 max-w-lg w-full shadow-2xl animate-in fade-in zoom-in-95">
             <h3 className="text-2xl font-black text-slate-800 mb-2 tracking-tight">Confirmar Entrega</h3>
-            <p className="text-slate-500 mb-6 font-medium">
-              Vas a entregar la orden <strong className="text-blue-600">{confirmDelivery.data.Pagado ? confirmDelivery.data.OrdenRetiro.replace('R-', 'PW-') : confirmDelivery.data.OrdenRetiro}</strong> del estante <strong className="text-blue-600">{confirmDelivery.id}</strong>.
+            <p className="text-slate-500 mb-4 font-medium">
+              Ubicación a entregar: <strong className="text-blue-600">{confirmDelivery.id}</strong>
             </p>
+
+            {/* SELECCIÓN DE ÓRDENES MULTPLES */}
+            {confirmDelivery.dataList.length > 1 && (
+              <div className="mb-4 bg-slate-100 p-4 rounded-2xl border border-slate-200">
+                <p className="text-xs font-bold text-slate-500 uppercase mb-2">Seleccione las órdenes a retirar:</p>
+                <div className="flex flex-col gap-2 max-h-32 overflow-y-auto pr-2">
+                  {confirmDelivery.dataList.map(item => {
+                    const ordStr = item.OrdenRetiro || item.ordenDeRetiro;
+                    const isChecked = !!deliverySelectedOrders[ordStr];
+                    return (
+                      <label key={ordStr} className={`flex items-center gap-3 cursor-pointer p-2 rounded-xl transition-all ${isChecked ? 'bg-blue-50/80 border border-blue-200' : 'hover:bg-slate-200 border border-transparent'}`}>
+                        <input type="checkbox" className="w-5 h-5 accent-blue-600 rounded" checked={isChecked} onChange={(e) => setDeliverySelectedOrders(prev => ({ ...prev, [ordStr]: e.target.checked }))} />
+                        <span className="font-bold text-slate-700">{item.Pagado ? ordStr.replace('R-', 'PW-') : ordStr}</span>
+                        <span className="text-xs text-slate-500 truncate">{item.ClientName || item.CodigoCliente || 'Cliente'}</span>
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
 
             <form onSubmit={(e) => {
               e.preventDefault();
               const code = deliveryBarcodeInput.trim().toUpperCase();
               if (!code) return;
               try {
-                const bultos = JSON.parse(confirmDelivery.data.BultosJSON || "[]");
-                const found = bultos.find((o) => (o.orderNumber && o.orderNumber.toUpperCase() === code) || (o.id && o.id.toString().toUpperCase() === code));
+                let bultosFlat = [];
+                confirmDelivery.dataList.forEach(obj => {
+                  const ordStr = obj.OrdenRetiro || obj.ordenDeRetiro;
+                  if (!deliverySelectedOrders[ordStr]) return;
+                  if (obj.BultosJSON) { bultosFlat.push(...JSON.parse(obj.BultosJSON)); }
+                  else if (obj.orders) { bultosFlat.push(...obj.orders); }
+                });
+
+                const found = bultosFlat.find((o) => (o.orderNumber && o.orderNumber.toUpperCase() === code) || (o.id && o.id.toString().toUpperCase() === code));
                 if (found) {
                   setDeliveryScannedBultos(prev => ({ ...prev, [found.orderNumber || found.id]: true }));
                 }
@@ -626,9 +986,16 @@ const WebRetirosPage = () => {
               <ul className="space-y-2">
                 {(() => {
                   try {
-                    const bultos = JSON.parse(confirmDelivery.data.BultosJSON || "[]");
-                    if (bultos.length === 0) return <li className="text-sm font-medium text-slate-600">Sin órdenes detalladas. (Continúe)</li>;
-                    return bultos.map((b, i) => {
+                    let bultosFlat = [];
+                    confirmDelivery.dataList.forEach(obj => {
+                      const ordStr = obj.OrdenRetiro || obj.ordenDeRetiro;
+                      if (!deliverySelectedOrders[ordStr]) return;
+                      if (obj.BultosJSON) { bultosFlat.push(...JSON.parse(obj.BultosJSON)); }
+                      else if (obj.orders) { bultosFlat.push(...obj.orders); }
+                    });
+
+                    if (bultosFlat.length === 0) return <li className="text-sm font-medium text-slate-600">No hay bultos u órdenes seleccionadas.</li>;
+                    return bultosFlat.map((b, i) => {
                       const identifier = b.orderNumber || b.id || `Desconocido_${i}`;
                       const isScanned = !!deliveryScannedBultos[identifier];
                       return (
@@ -663,9 +1030,21 @@ const WebRetirosPage = () => {
               {(() => {
                 let allChecked = true;
                 try {
-                  const bultos = JSON.parse(confirmDelivery.data.BultosJSON || "[]");
-                  if (bultos.length > 0) {
-                    allChecked = bultos.every(b => !!deliveryScannedBultos[b.orderNumber || b.id || '']);
+                  let bultosFlat = [];
+                  confirmDelivery.dataList.forEach(obj => {
+                    const ordStr = obj.OrdenRetiro || obj.ordenDeRetiro;
+                    if (!deliverySelectedOrders[ordStr]) return;
+                    if (obj.BultosJSON) { bultosFlat.push(...JSON.parse(obj.BultosJSON)); }
+                    else if (obj.orders) { bultosFlat.push(...obj.orders); }
+                  });
+
+                  // Ensure at least one order is selected
+                  const hayOrdenSeleccionada = Object.values(deliverySelectedOrders).some(v => v);
+
+                  if (!hayOrdenSeleccionada) {
+                    allChecked = false;
+                  } else if (bultosFlat.length > 0) {
+                    allChecked = bultosFlat.every(b => !!deliveryScannedBultos[b.orderNumber || b.id || '']);
                   }
                 } catch (e) { }
 
@@ -680,6 +1059,53 @@ const WebRetirosPage = () => {
                 );
               })()}
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* EXCEPCION MODAL FOR UNPAID DELIVERY */}
+      {excepcionDelivery && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 backdrop-blur-sm px-4">
+          <div className="bg-white rounded-3xl p-8 max-w-md w-full shadow-2xl animate-in fade-in zoom-in-95 border-2 border-rose-200">
+            <div className="w-16 h-16 bg-rose-100 text-rose-600 rounded-full flex items-center justify-center mx-auto mb-4">
+              <AlertCircle size={32} />
+            </div>
+            <h3 className="text-2xl font-black text-slate-800 text-center mb-2">!ALERTA!</h3>
+            <p className="text-slate-600 font-medium text-center mb-6">
+              Este retiro <strong>DEBE SER ABONADO</strong>. Por favor verifique que pase por caja y confirme el pago.
+              <br /><br />
+              <span className="text-xs text-rose-500 font-bold uppercase tracking-wider">Esto es una excepcionalidad</span>
+            </p>
+
+            <form onSubmit={handleExcepcionSubmit}>
+              <div className="mb-6">
+                <label className="block text-sm font-bold text-slate-700 mb-2">Contraseña de Autorización</label>
+                <input
+                  type="password"
+                  required
+                  value={adminPassword}
+                  onChange={(e) => setAdminPassword(e.target.value)}
+                  className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-rose-500 focus:outline-none transition-all"
+                  placeholder="Ingrese contraseña..."
+                />
+              </div>
+
+              <div className="flex gap-4">
+                <button
+                  type="button"
+                  onClick={() => { setExcepcionDelivery(null); setAdminPassword(''); }}
+                  className="flex-[1] py-3 px-4 bg-slate-100 text-slate-600 font-bold rounded-xl hover:bg-slate-200 transition-colors"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  className="flex-[1] py-3 px-4 bg-rose-600 text-white font-bold rounded-xl hover:bg-rose-700 shadow-md shadow-rose-200 transition-all flex justify-center items-center gap-2"
+                >
+                  <Check size={18} /> Autorizar
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}

@@ -35,6 +35,7 @@ const CustomerReplacementPage = lazy(() => import('../pages/customer-service/Cus
 const CustomerPriceCatalogPage = lazy(() => import('../pages/CustomerPriceCatalogPage'));
 const IntegralOrderView = lazy(() => import('../pages/IntegralOrderView'));
 const CargaPagosView = lazy(() => import('../pages/CargaPagosView'));
+const VerificarPagosOnlineView = lazy(() => import('../pages/VerificarPagosOnlineView'));
 
 // ============================================
 // 1. COMPONENTE NAVNODE (Mejorado)
@@ -295,6 +296,7 @@ const MainAppContent = ({ menuItems = [] }) => {
                                 <Route path="/admin/price-catalog" element={<CustomerPriceCatalogPage />} />
                                 <Route path="/produccion/etiquetas" element={<LabelGenerationPage />} />
                                 <Route path="/caja/pagos" element={<CargaPagosView />} />
+                                <Route path="/caja/pagos-online" element={<VerificarPagosOnlineView />} />
                                 <Route path="/*" element={<DynamicRouter menuItems={menuItems} />} />
                             </Routes>
                         </Suspense>
