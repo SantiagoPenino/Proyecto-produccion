@@ -61,6 +61,7 @@ const WebRetirosPage = () => {
           monto: r.Monto || 0,
           moneda: r.Moneda || 'UYU',
           pagorealizado: r.Estado === 3 || r.Estado === 8 ? 1 : 0,
+          pagoHandy: !!r.ReferenciaPago,
           orders: r.BultosJSON ? JSON.parse(r.BultosJSON) : [
             { orderNumber: `P-${r.OrdIdRetiro.split('-')[1] || '0'}`, orderId: r.IdRetWeb }
           ]
@@ -102,7 +103,8 @@ const WebRetirosPage = () => {
         const { data: otrosData } = await api.get('/web-retiros/caja-otros');
         if (Array.isArray(otrosData)) {
           const ocupadasSet = new Set(estantesData.map(e => e.OrdenRetiro));
-          const filtrados = otrosData.filter(o => !ocupadasSet.has(o.ordenDeRetiro));
+          const apiOrdersSet = new Set(formattedRetiros.map(o => o.ordenDeRetiro));
+          const filtrados = otrosData.filter(o => !ocupadasSet.has(o.ordenDeRetiro) && !apiOrdersSet.has(o.ordenDeRetiro));
           setOtrosRetiros(filtrados);
         }
       } catch (e) { console.error(e) }
@@ -120,6 +122,7 @@ const WebRetirosPage = () => {
                 monto: r.Monto || 0,
                 moneda: r.Moneda || 'UYU',
                 pagorealizado: r.Estado === 3 || r.Estado === 8 ? 1 : 0,
+                pagoHandy: !!r.ReferenciaPago,
                 orders: r.BultosJSON ? JSON.parse(r.BultosJSON) : [
                   { orderNumber: `P-${r.OrdIdRetiro.split('-')[1] || '0'}`, orderId: r.IdRetWeb }
                 ]
@@ -395,7 +398,7 @@ const WebRetirosPage = () => {
           </button>
           <div className="text-right">
             <span className="text-[10px] font-bold text-blue-500 tracking-wider uppercase">Detalle Envio Web</span>
-            <h2 className="text-3xl font-black text-slate-800 mt-1">{selectedRetiro.pagorealizado === 1 ? selectedRetiro.ordenDeRetiro.replace('R-', 'PW-') : selectedRetiro.ordenDeRetiro}</h2>
+            <h2 className="text-3xl font-black text-slate-800 mt-1">{selectedRetiro.pagoHandy ? selectedRetiro.ordenDeRetiro.replace('R-', 'PW-') : selectedRetiro.ordenDeRetiro}</h2>
             <p className="text-slate-400 font-medium uppercase text-sm mt-1">{selectedRetiro.idcliente}</p>
           </div>
         </div>
@@ -455,7 +458,7 @@ const WebRetirosPage = () => {
       <div className="flex items-center justify-between mb-8">
         <div>
           <h2 className="text-2xl font-black text-slate-800">Mapa del Depósito</h2>
-          <p className="text-slate-500 font-medium text-sm mt-1">Haga click en un casillero vacío para ubicar la orden <strong className="text-blue-600">{selectedRetiro.pagorealizado === 1 ? selectedRetiro.ordenDeRetiro.replace('R-', 'PW-') : selectedRetiro.ordenDeRetiro}</strong></p>
+          <p className="text-slate-500 font-medium text-sm mt-1">Haga click en un casillero vacío para ubicar la orden <strong className="text-blue-600">{selectedRetiro.pagoHandy ? selectedRetiro.ordenDeRetiro.replace('R-', 'PW-') : selectedRetiro.ordenDeRetiro}</strong></p>
         </div>
         <button onClick={() => setUbicationMode(false)} className="px-6 py-2.5 bg-white border border-slate-200 rounded-lg font-bold text-slate-500 shadow-sm hover:bg-slate-50 text-sm">Atrás</button>
       </div>
@@ -516,7 +519,7 @@ const WebRetirosPage = () => {
                             <div className="flex flex-col gap-1 w-full max-h-full overflow-y-auto mt-4 px-1" style={{ scrollbarWidth: 'none' }}>
                               {dataList.map((data, idx) => (
                                 <div key={idx} className="flex flex-col items-center bg-indigo-500/50 rounded flex-shrink-0 w-full border border-indigo-400/50 py-0.5">
-                                  <span className="text-[9px] font-black text-white px-1 truncate max-w-full">{data.Pagado ? data.OrdenRetiro.replace('R-', 'PW-') : data.OrdenRetiro}</span>
+                                  <span className="text-[9px] font-black text-white px-1 truncate max-w-full">{data.PagoHandy ? data.OrdenRetiro.replace('R-', 'PW-') : data.OrdenRetiro}</span>
                                   <span className="text-[7px] font-bold text-indigo-100 px-1 truncate max-w-[90%]">{data.CodigoCliente || data.ClientName || 'Cliente'}</span>
                                 </div>
                               ))}
@@ -763,7 +766,7 @@ const WebRetirosPage = () => {
                     ) : apiOrders.filter(o => o.pagorealizado === 1 && (String(o.ordenDeRetiro).toLowerCase().includes(searchTerm.toLowerCase()) || String(o.idcliente || '').toLowerCase().includes(searchTerm.toLowerCase()))).map(o => (
                       <button key={o.ordenDeRetiro} onClick={() => handleSelectRetiro(o)} className="w-full p-4 bg-slate-50 rounded-xl border border-slate-200 text-left hover:border-blue-400 hover:bg-white hover:shadow-md transition-all flex items-center justify-between group">
                         <div className="flex-1">
-                          <div className="text-lg font-black text-slate-800">{o.ordenDeRetiro.replace('R-', 'PW-')}</div>
+                          <div className="text-lg font-black text-slate-800">{o.pagoHandy ? o.ordenDeRetiro.replace('R-', 'PW-') : o.ordenDeRetiro}</div>
                           <div className="flex items-center gap-2 mt-1">
                             <span className="px-2 py-0.5 bg-slate-200 text-slate-600 rounded text-xs font-bold uppercase">{o.idcliente}</span>
                             <span className="text-sm font-black text-emerald-600">{o.moneda} {o.monto.toFixed(2)}</span>
@@ -907,7 +910,7 @@ const WebRetirosPage = () => {
                                           {dataList.map((data, idx) => (
                                             <div key={idx} className={`flex flex-col items-center rounded flex-shrink-0 w-full border py-0.5 ${isMatched ? 'bg-green-700/50 border-green-400' : 'bg-indigo-500/50 border-indigo-400/50'}`}>
                                               <span className={`text-[11px] font-black italic uppercase truncate px-2 ${isMatched ? 'text-white' : 'text-white'}`}>
-                                                {data.Pagado ? data.OrdenRetiro.replace('R-', 'PW-') : data.OrdenRetiro}
+                                                {data.PagoHandy ? data.OrdenRetiro.replace('R-', 'PW-') : data.OrdenRetiro}
                                               </span>
                                               <span className={`text-[9px] font-bold truncate px-2 max-w-[90%] bg-black/20 rounded-md py-[1px] mt-[1px] ${isMatched ? 'text-green-100' : 'text-indigo-100'}`}>
                                                 {data.CodigoCliente || data.ClientName || 'Cliente'}
@@ -973,7 +976,7 @@ const WebRetirosPage = () => {
                     return (
                       <label key={ordStr} className={`flex items-center gap-3 cursor-pointer p-2 rounded-xl transition-all ${isChecked ? 'bg-blue-50/80 border border-blue-200' : 'hover:bg-slate-200 border border-transparent'}`}>
                         <input type="checkbox" className="w-5 h-5 accent-blue-600 rounded" checked={isChecked} onChange={(e) => setDeliverySelectedOrders(prev => ({ ...prev, [ordStr]: e.target.checked }))} />
-                        <span className="font-bold text-slate-700">{item.Pagado ? ordStr.replace('R-', 'PW-') : ordStr}</span>
+                        <span className="font-bold text-slate-700">{item.PagoHandy ? ordStr.replace('R-', 'PW-') : ordStr}</span>
                         <span className="text-xs text-slate-500 truncate">{item.ClientName || item.CodigoCliente || 'Cliente'}</span>
                       </label>
                     );

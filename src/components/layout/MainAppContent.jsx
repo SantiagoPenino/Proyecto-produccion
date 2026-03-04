@@ -44,7 +44,8 @@ const ExcepcionesDeudaView = lazy(() => import('../pages/ExcepcionesDeudaView'))
 const NavNode = ({ item, openMenus, toggleMenu, navigate, location, level = 0, isCollapsed, setIsCollapsed }) => {
     const hasChildren = item.children && item.children.length > 0;
     const isOpen = openMenus[item.IdModulo];
-    const isSelected = location.pathname === item.Ruta;
+    const isChildActive = hasChildren && item.children.some(c => location.pathname === c.Ruta || (c.Ruta && location.pathname.startsWith(c.Ruta + '/')));
+    const isSelected = location.pathname === item.Ruta || (hasChildren && isChildActive);
 
     const baseClasses = "flex items-center mx-2 mb-2 rounded-lg cursor-pointer select-none transition-all duration-200 group relative";
     const paddingLeft = isCollapsed ? '12px' : `${12 + (level * 12)}px`;
@@ -66,9 +67,13 @@ const NavNode = ({ item, openMenus, toggleMenu, navigate, location, level = 0, i
                 onClick={() => {
                     if (hasChildren) {
                         if (isCollapsed) setIsCollapsed(false);
+                        const wasOpen = openMenus[item.IdModulo];
                         toggleMenu(item.IdModulo);
-                    }
-                    else if (item.Ruta) navigate(item.Ruta);
+                        if (!wasOpen) {
+                            const firstChild = item.children.find(c => c.Ruta);
+                            if (firstChild) navigate(firstChild.Ruta);
+                        }
+                    } else if (item.Ruta) navigate(item.Ruta);
                 }}
                 title={isCollapsed ? item.Nombre : ''}
             >
@@ -104,7 +109,7 @@ const NavNode = ({ item, openMenus, toggleMenu, navigate, location, level = 0, i
             <div
                 className="overflow-hidden transition-all duration-300 ease-in-out"
                 style={{
-                    maxHeight: hasChildren && isOpen && !isCollapsed ? '500px' : '0px',
+                    maxHeight: hasChildren && isOpen && !isCollapsed ? '1000px' : '0px',
                     opacity: hasChildren && isOpen && !isCollapsed ? 1 : 0,
                 }}
             >
@@ -142,7 +147,23 @@ const MainAppContent = ({ menuItems = [] }) => {
 
     console.log(`[MainAppContent] Render! Path: ${location.pathname}, Key: ${location.key}`);
 
-    const toggleMenu = (id) => setOpenMenus(prev => ({ ...prev, [id]: !prev[id] }));
+    const toggleMenu = (id) => setOpenMenus(prev => {
+        const wasOpen = prev[id];
+        if (!wasOpen) {
+            // Encontrar hermanos (mismo padre) para cerrarlos
+            const item = menuItems.find(m => m.IdModulo === id);
+            const siblings = menuItems.filter(m => m.IdPadre === (item?.IdPadre || null) && m.IdModulo !== id);
+            const siblingIds = new Set(siblings.map(s => s.IdModulo));
+            const next = {};
+            // Mantener ancestros abiertos, cerrar hermanos
+            Object.entries(prev).forEach(([k, v]) => {
+                if (v && !siblingIds.has(Number(k) || k)) next[k] = true;
+            });
+            next[id] = true;
+            return next;
+        }
+        return { ...prev, [id]: false };
+    });
 
     const menuTree = useMemo(() => {
         const map = {};
@@ -224,11 +245,11 @@ const MainAppContent = ({ menuItems = [] }) => {
                         {!isCollapsed && (
                             <div className="flex px-2 items-center justify-between">
                                 <button
-                                    onClick={() => Object.keys(openMenus).length > 0 ? collapseAll() : expandAll()}
+                                    onClick={() => Object.values(openMenus).some(v => v) ? collapseAll() : expandAll()}
                                     className="rounded-md text-slate-100 hover:text-blue-500 transition-colors"
-                                    title={Object.keys(openMenus).length > 0 ? "Colapsar todo" : "Expandir todo"}
+                                    title={Object.values(openMenus).some(v => v) ? "Colapsar todo" : "Expandir todo"}
                                 >
-                                    <i className={`fa-solid ${Object.keys(openMenus).length > 0 ? 'fa-angles-up' : 'fa-angles-down'} `}></i>
+                                    <i className={`fa-solid ${Object.values(openMenus).some(v => v) ? 'fa-angles-up' : 'fa-angles-down'} `}></i>
                                 </button>
                             </div>
 
@@ -305,7 +326,7 @@ const MainAppContent = ({ menuItems = [] }) => {
                     </div>
                 </main>
             </div>
-            <ChatWidget />
+            {/* <ChatWidget /> */}
         </div>
     );
 };

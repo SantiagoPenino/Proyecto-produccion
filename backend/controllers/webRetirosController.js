@@ -353,11 +353,13 @@ exports.obtenerMapaEstantes = async (req, res) => {
                 cli.Nombre as ClientName,
                 o.BultosJSON,
                 o.Pagado,
+                CASE WHEN rw.ReferenciaPago IS NOT NULL AND rw.ReferenciaPago <> '' THEN 1 ELSE 0 END AS PagoHandy,
                 o.FechaUbicacion
             FROM ConfiguracionEstantes c
             LEFT JOIN OcupacionEstantes o 
                 ON c.EstanteID = o.EstanteID AND c.Seccion = o.Seccion AND c.Posicion = o.Posicion
             LEFT JOIN Clientes cli ON CAST(o.CodigoCliente AS VARCHAR) = CAST(cli.CodCliente AS VARCHAR)
+            LEFT JOIN RetirosWeb rw ON o.OrdenRetiro = rw.OrdIdRetiro
             WHERE c.Activo = 1
             ORDER BY c.EstanteID, c.Seccion, c.Posicion
         `);
