@@ -1,7 +1,7 @@
-const express = require('express');
-const cors = require('cors');
+const express = require('express');// -ok
+const cors = require('cors');// -ok
 require('dotenv').config();
-const path = require('path');
+const path = require('path');// -ok
 const http = require('http');
 const { init } = require('./socket'); // Importar la configuración de WebSocket
 const { loadCache } = require('./cacheLoader'); // Importa la función de carga de caché
@@ -33,9 +33,9 @@ init(server);
 
 // Configurar middleware
 app.use(cors({
-    origin: 'http://administracionuser.uy', 
-    methods: ['GET', 'POST', 'PUT', 'DELETE'],
-  }));
+  origin: 'http://administracionuser.uy',
+  methods: ['GET', 'POST', 'PUT', 'DELETE'],
+}));
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
@@ -72,13 +72,13 @@ app.use('/apiserver', getwayServer);
 
 // Manejo de excepciones no capturadas
 process.on('uncaughtException', (err) => {
-    console.error('Excepción no capturada:', err.message);
-    console.error(err.stack);
+  console.error('Excepción no capturada:', err.message);
+  console.error(err.stack);
 });
-  
+
 // Manejo de promesas rechazadas no manejadas
 process.on('unhandledRejection', (reason, promise) => {
-    console.error('Promesa rechazada no manejada:', reason);
+  console.error('Promesa rechazada no manejada:', reason);
 });
 
 // Manejo de errores global
