@@ -100,7 +100,7 @@ const WebRetirosPage = () => {
 
       // 2.5 Traer "Resto de Retiros" (otros retiros)
       try {
-        const { data: otrosData } = await api.get('/web-retiros/caja-otros');
+        const { data: otrosData } = await api.get('/apiordenesRetiro/estados?estados=1,3,4');
         if (Array.isArray(otrosData)) {
           const ocupadasSet = new Set(estantesData.map(e => e.OrdenRetiro));
           const apiOrdersSet = new Set(formattedRetiros.map(o => o.ordenDeRetiro));

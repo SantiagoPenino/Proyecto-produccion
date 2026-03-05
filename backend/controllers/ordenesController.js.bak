@@ -1,0 +1,912 @@
+// ordenesController.js
+const sql = require('mssql');
+const { poolPromise } = require('../config/db');
+const cache = require('../cache'); // Importa la caché
+const { updateCache } = require('../cacheManager'); // Importar la función para manejar la cola asíncrona
+
+
+// Importar el servidor de WebSocket
+const { getIO } = require('../socket');
+
+// Controlador para obtener las órdenes
+const getOrdenesByFilter = async (req, res) => {
+  try {
+    const pool = await poolPromise;
+    const {
+      codigoCliente,
+      estado,
+      fechaDesde,
+      fechaHasta,
+      codigoOrden,
+      subMarca
+    } = req.query;
+
+    // Armamos la consulta base con JOINs para traer la información relacionada
+    let query = `
+      SELECT
+        o.OrdIdOrden AS IdOrden,
+        o.OrdCodigoOrden AS CodigoOrden,
+        sm.SMaNombreSubMarca AS SubMarca,
+        c.CliCodigoCliente AS IdCliente,
+        c.CliCelular AS Celular,
+        tc.TClDescripcion AS TipoCliente,
+        o.OrdNombreTrabajo AS NombreTrabajo,
+        CONCAT(p.ProNombreProducto, 
+          CASE WHEN p.ProDetalleProducto IS NOT NULL THEN ' ' + p.ProDetalleProducto ELSE '' END
+        ) AS Producto,
+        ISNULL(p.ProCodigoOdooProducto, '') AS CodigoOdoo,
+        o.OrdExportadoOdoo AS ExportadoOdoo,
+        eo.EOrNombreEstado AS Estado,
+        o.OrdFechaEstadoActual AS FechaEstado,
+        CONCAT(CAST(o.OrdCantidad AS NVARCHAR(50)), ' ', uni.UniNotación) AS Cantidad,
+        mon.MonSimbolo AS MonSimbolo,
+        CAST(p.ProPrecioActual AS DECIMAL(10,2)) AS PrecioUnitario,
+        CAST(o.OrdCostoFinal AS DECIMAL(10,2)) AS CostoFinal,
+        CONCAT(CAST(o.OrdDescuentoAplicado * 100 AS INT), '%') AS DescuentoAplicado,
+        mo.MOrNombreModo AS Modo,
+        lr.LReNombreLugar AS LugarRetiro,
+        o.OrdFechaIngresoOrden AS FechaIngresoOrden,
+        o.OrdNotaCliente AS OrdNotaCliente
+      FROM [User].dbo.OrdenesDeposito o WITH(NOLOCK)
+      LEFT JOIN [User].dbo.Clientes c WITH(NOLOCK) ON o.CliIdCliente = c.CliIdCliente
+      LEFT JOIN [User].dbo.TiposClientes tc WITH(NOLOCK) ON c.TClIdTipoCliente = tc.TClIdTipoCliente
+      LEFT JOIN [User].dbo.Productos p WITH(NOLOCK) ON o.ProIdProducto = p.ProIdProducto
+      LEFT JOIN [User].dbo.SubMarcas sm WITH(NOLOCK) ON p.SMaIdSubMarca = sm.SMaIdSubMarca
+      LEFT JOIN [User].dbo.EstadosOrdenes eo WITH(NOLOCK) ON o.OrdEstadoActual = eo.EOrIdEstadoOrden
+      LEFT JOIN [User].dbo.Unidades uni WITH(NOLOCK) ON p.UniIdUnidad = uni.UniIdUnidad
+      LEFT JOIN [User].dbo.Monedas mon WITH(NOLOCK) ON p.MonIdMoneda = mon.MonIdMoneda
+      LEFT JOIN [User].dbo.ModosOrdenes mo WITH(NOLOCK) ON o.MOrIdModoOrden = mo.MOrIdModoOrden
+      LEFT JOIN [User].dbo.LugaresRetiro lr WITH(NOLOCK) ON o.LReIdLugarRetiro = lr.LReIdLugarRetiro
+      WHERE 1 = 1
+    `;
+
+    // Inicializamos el request para agregar parámetros
+    const request = pool.request();
+
+    // Agregar condiciones dinámicamente según los filtros enviados
+    if (codigoCliente) {
+      query += ` AND c.CliCodigoCliente = @codigoCliente`;
+      request.input("codigoCliente", codigoCliente);
+    }
+
+    if (codigoOrden) {
+      query += ` AND o.OrdCodigoOrden LIKE '%' + @codigoOrden + '%'`;
+      request.input("codigoOrden", codigoOrden);
+    }
+
+    if (fechaDesde) {
+      query += ` AND o.OrdFechaIngresoOrden >= @fechaDesde`;
+      request.input("fechaDesde", fechaDesde);
+    }
+
+    if (fechaHasta) {
+      query += ` AND o.OrdFechaIngresoOrden <= @fechaHasta`;
+      request.input("fechaHasta", fechaHasta);
+    }
+
+    if (estado) {
+      if (Array.isArray(estado)) {
+        query += ` AND eo.EOrNombreEstado IN (${estado.map((_, i) => `@estado${i}`).join(',')})`;
+        estado.forEach((est, i) => request.input(`estado${i}`, est));
+      } else {
+        query += ` AND eo.EOrNombreEstado = @estado`;
+        request.input("estado", estado);
+      }
+    }
+
+    if (subMarca) {
+      if (Array.isArray(subMarca)) {
+        query += ` AND sm.SMaIdSubMarca IN (${subMarca.map((_, i) => `@subMarca${i}`).join(',')})`;
+        subMarca.forEach((marca, i) => request.input(`subMarca${i}`, marca));
+      } else {
+        query += ` AND sm.SMaIdSubMarca = @subMarca`;
+        request.input("subMarca", subMarca);
+      }
+    }
+
+    // Ordenar los resultados (por ejemplo, en forma descendente por IdOrden)
+    query += ` ORDER BY o.OrdIdOrden DESC`;
+
+    // Ejecutar la consulta
+    const result = await request.query(query);
+
+    // Opcional: Formatear la fecha de ingreso según la zona horaria deseada
+    const orders = result.recordset.map(order => {
+      order.FechaIngresoOrden = new Date(order.FechaIngresoOrden).toLocaleString('en-US', {
+        timeZone: 'America/Montevideo',
+      });
+      return order;
+    });
+
+    console.log('Órdenes filtradas servidas directamente desde la base de datos.');
+    res.json(orders);
+  } catch (err) {
+    console.error('Error al obtener los datos:', err);
+    res.status(500).json({ error: 'Error al obtener los datos' });
+  }
+};
+
+
+// Nuevo controlador para obtener una orden por número
+const getOrdenByCodigo = async (req, res) => {
+  const { orderNumber } = req.params;
+
+  try {
+    const pool = await poolPromise;
+
+    // Verificar y cargar las cachés necesarias
+    const requiredCaches = ['ordenes', 'clientes', 'tiposClientes', 'monedas', 'estadosOrdenes', 'pagos'];
+    for (const cacheName of requiredCaches) {
+      if (!cache.get(cacheName)) {
+        console.log(`Cargando caché de ${cacheName} desde la base de datos...`);
+        const queryMap = {
+          ordenes: 'SELECT * FROM [User].dbo.OrdenesDeposito WITH(NOLOCK) WHERE cast(dateadd(d,-7,getdate()) as date) <= cast(OrdFechaIngresoOrden as date) OR OrdEstadoActual NOT IN (9,10)',
+          clientes: 'SELECT * FROM [User].dbo.Clientes WITH(NOLOCK)',
+          tiposClientes: 'SELECT * FROM [User].dbo.TiposClientes WITH(NOLOCK)',
+          monedas: 'SELECT * FROM [User].dbo.Monedas WITH(NOLOCK)',
+          estadosOrdenes: 'SELECT * FROM [User].dbo.EstadosOrdenes WITH(NOLOCK)',
+          pagos: 'SELECT * FROM [User].dbo.Pagos WITH(NOLOCK)',
+        };
+        const result = await pool.request().query(queryMap[cacheName]);
+        cache.set(cacheName, result.recordset);
+      }
+    }
+
+    // Obtener datos desde la caché
+    const ordenes = cache.get('OrdenesDeposito);
+    const clientes = cache.get('clientes');
+    const tiposClientes = cache.get('tiposClientes');
+    const monedas = cache.get('monedas');
+    const estadosOrdenes = cache.get('estadosOrdenes');
+    const pagos = cache.get('pagos');
+
+    // Buscar la orden en la caché
+    const orden = ordenes.find(o => o.OrdCodigoOrden === orderNumber);
+
+    if (!orden) {
+      return res.status(404).json({ error: 'Orden no encontrada' });
+    }
+
+    // Enriquecer la información de la orden usando las cachés
+    const cliente = clientes.find(cli => cli.CliIdCliente === orden.CliIdCliente) || {};
+    const tipoCliente = tiposClientes.find(tc => tc.TClIdTipoCliente === cliente.TClIdTipoCliente) || {};
+    const moneda = monedas.find(mon => mon.OrdenesMonIdMoneda === orden.MonIdMoneda) || { MonSimbolo: 'Desconocido' };
+    const estadoOrden = estadosOrdenes.find(eo => eo.EOrIdEstadoOrden === orden.OrdEstadoActual) || {};
+    const pagoRealizado = pagos.some(pag => pag.PagIdPago === orden.PagIdPago);
+
+    // Preparar la respuesta con los datos requeridos
+    const orderData = {
+      OrdIdOrden: orden.OrdIdOrden,
+      OrdCodigoOrden: orden.OrdCodigoOrden,
+      OrdCantidad: orden.OrdCantidad,
+      OrdPagoRealizado: pagoRealizado ? 1 : 0,
+      EOrNombreEstado: estadoOrden.EOrNombreEstado,
+      CliCodigoCliente: cliente.CliCodigoCliente,
+      CliCelular: cliente.CliCelular,
+      TCLDescripcion: tipoCliente.TClDescripcion,
+      MonSimbolo: moneda.MonSimbolo,
+      CostoFinal: parseFloat(orden.OrdCostoFinal).toFixed(2), // Redondeo a 2 decimales
+      FechaIngresoOrden: orden.OrdFechaIngresoOrden,
+    };
+
+    res.json(orderData);
+  } catch (err) {
+    console.error('Error al obtener la orden:', err);
+    res.status(500).json({ error: 'Error al obtener la orden' });
+  }
+};
+
+
+
+// Controlador para insertar una nueva orden
+const createOrden = async (req, res) => {
+  const { ordenString } = req.body;
+  const UsuarioAlta = req.user.id; // Obtener el ID del usuario autenticado
+  console.log(ordenString);
+  try {
+    const [
+      CodigoOrden,
+      CodigoCliente,
+      NombreTrabajo,
+      IdModo,
+      IdProducto,
+      Cantidad,
+      CostoFinal,
+    ] = ordenString.split('$*');
+
+    // Convertir coma a punto en los valores decimales
+    let cantidadDecimal = parseFloat(Cantidad.toString().replace(',', '.'));
+    let costoFinalDecimal = parseFloat(CostoFinal.toString().replace(',', '.'));
+
+    // Verificar y cargar las cachés necesarias
+    const requiredCaches = ['ordenes', 'clientes', 'productos', 'ordenesRetiro'];
+    for (const cacheName of requiredCaches) {
+      if (!cache.get(cacheName)) {
+        console.log(`Cargando caché de ${cacheName} desde la base de datos...`);
+        const pool = await poolPromise;
+        const queryMap = {
+          ordenes: 'SELECT * FROM [User].dbo.OrdenesDeposito WITH(NOLOCK) WHERE cast(dateadd(d,-7,getdate()) as date) <= cast(OrdFechaIngresoOrden as date) OR OrdEstadoActual NOT IN (9,10)',
+          clientes: 'SELECT * FROM [User].dbo.Clientes WITH(NOLOCK)',
+          productos: 'SELECT * FROM [User].dbo.Productos WITH(NOLOCK)',
+          ordenesRetiro: 'SELECT * FROM [User].dbo.OrdenesRetiro WITH(NOLOCK) WHERE cast(dateadd(d,-7,getdate()) as date) <= cast(OReFechaAlta as date) OR OreEstadoActual NOT IN (5,6)',
+        };
+        const result = await pool.request().query(queryMap[cacheName]);
+        cache.set(cacheName, result.recordset);
+      }
+    }
+
+    // Obtener datos desde la caché
+    const ordenes = cache.get('ordenesOrdenesDeposito');
+    const clientes = cache.get('clientes');
+    const productos = cache.get('productos');
+    const ordenesRetiro = cache.get('ordenesRetiro');
+
+    // Verificar si el CódigoOrden ya existe en la caché
+    const existingOrden = ordenes.find(o => o.OrdCodigoOrden === CodigoOrden);
+    if (existingOrden) {
+      const estadoActual = existingOrden.OrdEstadoActual;
+
+      // Verificar la condición adicional
+      const ordenRetiro = ordenesRetiro.find(o => o.OReIdOrdenRetiro === existingOrden.OReIdOrdenRetiro);
+
+      // SI NO TIENE ORDENES DE RETIRO SE PUEDE ACTUALIZAR 
+      if (!ordenRetiro) {
+        // Actualizar todos los datos de la orden existente
+        const pool = await poolPromise;
+        console.log(IdModo);
+        console.log()
+        await pool.request()
+          .input('CodigoOrden', sql.VarChar(100), CodigoOrden)
+          .input('CodigoCliente', sql.Int, CodigoCliente)
+          .input('NombreTrabajo', sql.VarChar(255), NombreTrabajo)
+          .input('IdModo', sql.Int, IdModo)
+          .input('IdProducto', sql.Int, IdProducto)
+          .input('Cantidad', sql.Int, cantidadDecimal)
+          .input('CostoFinal', sql.Float, costoFinalDecimal)
+          .input('UsuarioAlta', sql.Int, UsuarioAlta)
+          .query(`
+            UPDATE [User].dbo.OrdenesDeposito
+            SET 
+              CliIdCliente = @CodigoCliente,
+              OrdNombreTrabajo = @NombreTrabajo,
+              MOrIdModoOrden = @IdModo,
+              ProIdProducto = @IdProducto,
+              OrdCantidad = @Cantidad,
+              OrdCostoFinal = @CostoFinal,
+              OrdFechaEstadoActual = GETDATE(),
+              OrdUsuarioAlta = @UsuarioAlta
+            WHERE OrdCodigoOrden = @CodigoOrden
+          `);
+
+        // Actualizar la caché con los nuevos datos
+        await updateCache('ordenes', (currentData) => {
+          return currentData.map(orden =>
+            orden.OrdCodigoOrden === CodigoOrden
+              ? {
+                ...orden,
+                CliIdCliente: parseInt(CodigoCliente, 10),
+                OrdNombreTrabajo: NombreTrabajo,
+                MOrIdModoOrden: parseInt(IdModo, 10),
+                ProIdProducto: parseInt(IdProducto, 10),
+                OrdCantidad: cantidadDecimal,
+                OrdCostoFinal: costoFinalDecimal,
+                OrdFechaEstadoActual: new Date(),
+              }
+              : orden
+          );
+        });
+
+        res.status(200).json({
+          message: 'Orden actualizada correctamente',
+        });
+        return;
+      } else {
+        const isNotFoundInDeposito =
+          estadoActual !== 9 &&
+          ordenRetiro &&
+          ordenRetiro.OReIdOrdenRetiro === 5 &&
+          new Date(existingOrden.OrdFechaEstadoActual) < new Date(ordenRetiro.OReFechaEstadoActual);
+
+        if (isNotFoundInDeposito) {
+          // Actualizar el estado de la orden
+          existingOrden.OrdEstadoActual = 1;
+          existingOrden.OrdFechaEstadoActual = new Date();
+
+          const pool = await poolPromise;
+          await pool.request()
+            .input('CodigoOrden', sql.VarChar(100), CodigoOrden)
+            .query(`
+            UPDATE [User].dbo.OrdenesDeposito
+            SET OrdEstadoActual = 1,
+                OrdFechaEstadoActual = GETDATE()
+            WHERE OrdCodigoOrden = @CodigoOrden
+          `);
+
+          // Insertar el nuevo estado en `HistoricoEstadosOrdenes`
+          await pool.request()
+            .input('OrdIdOrden', sql.Int, existingOrden.OrdIdOrden)
+            .input('EOrIdEstadoOrden', sql.Int, 1) // Estado: Ingresado
+            .input('HEOFechaEstado', sql.DateTime, new Date())
+            .input('UsuarioAlta', sql.Int, UsuarioAlta)
+            .query(`
+            INSERT INTO [User].dbo.HistoricoEstadosOrdenes (
+              OrdIdOrden,			
+              EOrIdEstadoOrden,	
+              HEOFechaEstado,		
+              HEOUsuarioAlta		
+            )
+            VALUES (
+              @OrdIdOrden,
+              @EOrIdEstadoOrden,
+              @HEOFechaEstado,
+              @UsuarioAlta
+            )
+          `);
+
+          // Actualizar la caché de órdenes usando `updateCache`
+          await updateCache('ordenes', (currentData) => {
+            return currentData.map(orden =>
+              orden.OrdCodigoOrden === CodigoOrden
+                ? {
+                  ...orden,
+                  OrdFechaEstadoActual: new Date(),
+                  OrdEstadoActual: 1, // Estado: Ingresado
+                }
+                : orden
+            );
+          });
+
+          res.status(202).json({
+            message: 'Se actualiza el estado de la orden pues ya habia sido ingresada pero no se encontraba en depósito. ',
+          });
+          return;
+        } else {
+          return res
+            .status(400)
+            .json({ error: 'ESTA ORDEN YA FUE MARCADA COMO ENTREGADA.' });
+        }
+      }
+    }
+
+    if (!CodigoCliente || CodigoCliente === '') {
+      return res.status(403).json({ error: 'Falta campo de cliente en la etiqueta.' });
+    }
+
+    // Insertar la nueva orden si no existe duplicado
+    const cliente = clientes.find(c => c.CliIdCliente === parseInt(CodigoCliente, 10) || c.CliCodigoCliente === CodigoCliente);
+    if (!cliente) {
+      return res.status(404).json({ error: 'Cliente no encontrado.' });
+    }
+
+    const producto = productos.find(p => p.ProIdProducto === parseInt(IdProducto, 10));
+    if (!producto) {
+      return res.status(405).json({ error: 'Producto no encontrado.' });
+    }
+
+    const pool = await poolPromise;
+    const result = await pool.request()
+      .input('CodigoOrden', sql.VarChar(100), CodigoOrden)
+      .input('Cantidad', sql.Float, cantidadDecimal)
+      .input('CodigoCliente', sql.Int, cliente.CliIdCliente)
+      .input('NombreTrabajo', sql.VarChar(100), NombreTrabajo)
+      .input('IdModo', sql.Int, IdModo)
+      .input('IdProducto', sql.Int, IdProducto)
+      .input('CostoFinal', sql.Float, costoFinalDecimal)
+      .input('FechaIngresoOrden', sql.DateTime, new Date())
+      .input('UsuarioAlta', sql.Int, UsuarioAlta)
+      .input('OrdEstadoActual', sql.Int, 1)
+      .input('OrdFechaEstadoActual', sql.DateTime, new Date())
+      .query(`
+        DECLARE @newOrdIdOrden TABLE (Codigo INT);
+
+        INSERT INTO [User].dbo.Ordenes (
+          OrdCodigoOrden,
+          OrdCantidad,
+          CliIdCliente,
+          OrdNombreTrabajo,
+          MOrIdModoOrden,
+          ProIdProducto,
+          MonIdMoneda,
+          OrdCostoFinal,
+          OrdFechaIngresoOrden,
+          OrdUsuarioAlta,
+          OrdEstadoActual,
+          OrdFechaEstadoActual
+        )
+        OUTPUT INSERTED.OrdIdOrden INTO @newOrdIdOrden
+        VALUES (
+          @CodigoOrden, @Cantidad, @CodigoCliente,
+          @NombreTrabajo, @IdModo, @IdProducto,
+          (SELECT MonIdMoneda FROM [User].dbo.Productos WHERE ProIdProducto = @IdProducto),
+          @CostoFinal, @FechaIngresoOrden, @UsuarioAlta, @OrdEstadoActual, @OrdFechaEstadoActual
+        );
+
+        SELECT Codigo AS NewOrderId FROM @newOrdIdOrden;
+      `);
+
+    const newOrderId = result.recordset[0].NewOrderId;
+
+    // Insertar el estado inicial en `HistoricoEstadosOrdenes`
+    await pool.request()
+      .input('NewOrderId', sql.Int, newOrderId)
+      .input('EOrIdEstadoOrden', sql.Int, 1) // Estado: Ingresado
+      .input('HEOFechaEstado', sql.DateTime, new Date())
+      .input('UsuarioAlta', sql.Int, UsuarioAlta)
+      .query(`
+        INSERT INTO [User].dbo.HistoricoEstadosOrdenes (
+          OrdIdOrden,			
+          EOrIdEstadoOrden,	
+          HEOFechaEstado,		
+          HEOUsuarioAlta		
+        )
+        VALUES (
+          @NewOrderId,
+          @EOrIdEstadoOrden,
+          @HEOFechaEstado,
+          @UsuarioAlta
+        )
+      `);
+
+    // Actualizar la caché de órdenes con la nueva orden
+    await updateCache('ordenes', (currentData) => {
+      // Actualizar la caché de órdenes
+      const newOrden = {
+        OrdIdOrden: newOrderId,
+        OrdCodigoOrden: CodigoOrden,
+        CliIdCliente: cliente.CliIdCliente,
+        OrdNombreTrabajo: NombreTrabajo,
+        MOrIdModoOrden: parseInt(IdModo, 10),
+        OrdCantidadArchivosOrden: null,
+        OrdNotaCliente: null,
+        ProIdProducto: parseInt(IdProducto, 10),
+        OrdCantidad: parseFloat(cantidadDecimal.toString().replace(',', '.')),
+        MonIdMoneda: producto.MonIdMoneda,
+        OrdCostoFinal: parseFloat(costoFinalDecimal.toString().replace(',', '.')),
+        OrdDescuentoAplicado: 0,
+        PagIdPago: null,
+        LReIdLugarRetiro: null,
+        OrdFechaIngresoOrden: new Date(),
+        OrdUsuarioAlta: UsuarioAlta,
+        OrdExportaOdoo: false,
+        OrdEstadoActual: 1,
+        OrdFechaEstadoActual: new Date(),
+        OReIdOrdenRetiro: null
+      };
+      return [...currentData, newOrden];
+    });
+
+    res.status(201).json({ message: 'Orden creada correctamente' });
+
+    const io = getIO();
+    io.emit('actualizado', { type: 'actualizacion' });
+  } catch (err) {
+    console.error('Error al crear la orden:', err);
+    res.status(500).json({ error: 'Error al crear la orden' });
+  }
+};
+
+
+// Controlador para obtener órdenes por múltiples estados
+const getOrdenesEstado = async (req, res) => {
+  const estados = req.query.estados.split(',');
+
+  try {
+    // Verificar y cargar las cachés necesarias
+    const requiredCaches = ['ordenes', 'clientes', 'productos', 'submarcas', 'estadosOrdenes', 'modosOrdenes', 'monedas', 'lugaresRetiro'];
+    for (const cacheName of requiredCaches) {
+      if (!cache.get(cacheName)) {
+        console.log(`Cargando caché de ${cacheName} desde la base de datos...`);
+        const pool = await poolPromise;
+        const queryMap = {
+          ordenes: 'SELECT * FROM [User].dbo.Ordenes WITH(NOLOCK) WHERE cast(dateadd(d,-7,getdate()) as date) <= cast(OrdFechaIngresoOrden as date) OR OrdEstadoActual NOT IN (9,10)',
+          clientes: 'SELECT * FROM [User].dbo.Clientes WITH(NOLOCK)',
+          productos: 'SELECT * FROM [User].dbo.Productos WITH(NOLOCK)',
+          submarcas: 'SELECT * FROM [User].dbo.SubMarcas WITH(NOLOCK)',
+          estadosOrdenes: 'SELECT * FROM [User].dbo.EstadosOrdenes WITH(NOLOCK)',
+          modosOrdenes: 'SELECT * FROM [User].dbo.ModosOrdenes WITH(NOLOCK)',
+          monedas: 'SELECT * FROM [User].dbo.Monedas WITH(NOLOCK)',
+          lugaresRetiro: 'SELECT * FROM [User].dbo.LugaresRetiro WITH(NOLOCK)',
+        };
+        const result = await pool.request().query(queryMap[cacheName]);
+        cache.set(cacheName, result.recordset);
+      }
+    }
+
+    // Obtener datos desde la caché
+    const ordenes = cache.get('ordenes');
+    const clientes = cache.get('clientes');
+    const productos = cache.get('productos');
+    const submarcas = cache.get('submarcas');
+    const estadosOrdenes = cache.get('estadosOrdenes');
+    const modosOrdenes = cache.get('modosOrdenes');
+    const monedas = cache.get('monedas');
+    const lugaresRetiro = cache.get('lugaresRetiro');
+
+    // Filtrar las órdenes por estado solicitado
+    const filteredOrdenes = ordenes.filter(orden =>
+      estadosOrdenes.some(
+        estado =>
+          estado.EOrIdEstadoOrden === orden.OrdEstadoActual &&
+          estados.includes(estado.EOrNombreEstado)
+      )
+    );
+
+    // Construir las órdenes con los datos necesarios
+    const orders = filteredOrdenes.map(orden => {
+      const cliente = clientes.find(c => c.CliIdCliente === orden.CliIdCliente) || {};
+      const producto = productos.find(p => p.ProIdProducto === orden.ProIdProducto) || {};
+      const submarca = submarcas.find(s => s.SMaIdSubMarca === producto.SMaIdSubMarca) || {};
+      const estadoOrden = estadosOrdenes.find(e => e.EOrIdEstadoOrden === orden.OrdEstadoActual) || {};
+      const modoOrden = modosOrdenes.find(m => m.MOrIdModoOrden === orden.MOrIdModoOrden) || {};
+      const moneda = monedas.find(m => m.MonIdMoneda === producto.MonIdMoneda) || {};
+      const lugarRetiro = lugaresRetiro.find(l => l.LReIdLugarRetiro === orden.LReIdLugarRetiro) || {};
+
+      return {
+        IdOrden: orden.OrdIdOrden,
+        CodigoOrden: orden.OrdCodigoOrden,
+        SubMarca: submarca.SMaNombreSubMarca || 'Desconocido',
+        IdCliente: cliente.CliCodigoCliente || 'Desconocido',
+        Celular: cliente.CliCelular || 'Desconocido',
+        TipoCliente: cliente.TClDescripcion || 'Desconocido',
+        NombreTrabajo: orden.OrdNombreTrabajo,
+        Producto: `${producto.ProNombreProducto || 'Desconocido'} ${producto.ProDetalleProducto || ''}`.trim(),
+        Estado: estadoOrden.EOrNombreEstado || 'Desconocido',
+        FechaEstado: orden.OrdFechaEstadoActual,
+        Cantidad: `${orden.OrdCantidad} ${producto.UniNotación || ''}`.trim(),
+        MonSimbolo: moneda.MonSimbolo || 'Desconocido',
+        PrecioUnitario: parseFloat(producto.ProPrecioActual || 0).toFixed(2),
+        CostoFinal: parseFloat(orden.OrdCostoFinal || 0).toFixed(2),
+        DescuentoAplicado: `${parseFloat(orden.OrdDescuentoAplicado || 0) * 100}%`,
+        Modo: modoOrden.MOrNombreModo || 'Desconocido',
+        LugarRetiro: lugarRetiro.LReNombreLugar || 'Desconocido',
+        FechaIngresoOrden: orden.OrdFechaIngresoOrden,
+        CliBloqueadoBy: cliente.CliBloqueadoBy || null,
+      };
+    });
+
+    console.log('Ordenes con estados servidas desde la caché.');
+
+    res.json(orders);
+  } catch (err) {
+    console.error('Error al obtener las órdenes por estados:', err);
+    res.status(500).json({ error: 'Error al obtener las órdenes por estados' });
+  }
+};
+
+const updateOrdenEstado = async (req, res) => {
+  const { orderIds, nuevoEstado } = req.body;
+  const UsuarioAlta = req.user.id; // Obtener el ID del usuario autenticado
+  const pool = await poolPromise;
+  let transaction;
+
+  try {
+
+    // Verificar si la caché de estados de órdenes está disponible
+    let estadosOrdenesCache = cache.get('estadosOrdenes');
+    if (!estadosOrdenesCache) {
+      console.log('Cargando caché de estados de órdenes desde la base de datos...');
+      const estadosResult = await pool.request().query('SELECT * FROM [User].dbo.EstadosOrdenes WITH(NOLOCK)');
+      estadosOrdenesCache = estadosResult.recordset;
+      cache.set('estadosOrdenes', estadosOrdenesCache);
+    }
+
+    // Obtener el ID del nuevo estado desde la caché
+    const estado = estadosOrdenesCache.find(e => e.EOrNombreEstado === nuevoEstado);
+    if (!estado) {
+      throw new Error(`Estado "${nuevoEstado}" no encontrado`);
+    }
+    const estadoId = estado.EOrIdEstadoOrden;
+
+    // Verificar si la caché de órdenes está disponible
+    let ordenesCache = cache.get('ordenes');
+    if (!ordenesCache) {
+      console.log('Cargando caché de órdenes desde la base de datos...');
+      const ordenesResult = await pool.request().query('SELECT * FROM [User].dbo.Ordenes WITH(NOLOCK) WHERE cast(dateadd(d,-7,getdate()) as date) <= cast(OrdFechaIngresoOrden as date) OR OrdEstadoActual NOT IN (9,10)');
+      ordenesCache = ordenesResult.recordset;
+      cache.set('ordenes', ordenesCache);
+    }
+
+    transaction = await pool.transaction();
+    await transaction.begin();
+
+    // Actualizar el estado de las órdenes y registrar en histórico
+    const fechaActual = new Date();
+    for (const orderId of orderIds) {
+      await transaction.request()
+        .input('orderId', sql.Int, orderId)
+        .input('estadoId', sql.Int, estadoId)
+        .input('fecha', sql.DateTime, fechaActual)
+        .input('usuario', sql.Int, UsuarioAlta)
+        .query(`
+          UPDATE [User].dbo.Ordenes
+          SET OrdEstadoActual = @estadoId,
+              OrdFechaEstadoActual = @fecha
+          WHERE OrdIdOrden = @orderId;
+
+          INSERT INTO [User].dbo.HistoricoEstadosOrdenes (OrdIdOrden, EOrIdEstadoOrden, HEOFechaEstado, HEOUsuarioAlta)
+          VALUES (@orderId, @estadoId, @fecha, @usuario);
+        `);
+
+      // Actualizar la caché de órdenes
+      ordenesCache = ordenesCache.map(orden =>
+        orden.OrdIdOrden === orderId
+          ? { ...orden, OrdEstadoActual: estadoId, OrdFechaEstadoActual: fechaActual }
+          : orden
+      );
+    }
+
+    await transaction.commit();
+
+    // Actualizar la caché de órdenes después de los cambios
+    cache.set('ordenes', ordenesCache);
+
+    const io = getIO();
+    io.emit('actualizado', { type: 'actualizacion' });
+
+    res.status(200).json({ message: 'Órdenes actualizadas al nuevo estado' });
+  } catch (err) {
+    console.error('Error al actualizar el estado de las órdenes:', err);
+
+    if (transaction) {
+      try {
+        await transaction.rollback();
+        console.log("🔄 Rollback ejecutado correctamente.");
+      } catch (rollbackError) {
+        console.error("⚠ Error en rollback:", rollbackError);
+
+        const ordenesResult = await pool.request().query('SELECT * FROM [User].dbo.Ordenes WITH(NOLOCK) WHERE cast(dateadd(d,-7,getdate()) as date) <= cast(OrdFechaIngresoOrden as date) OR OrdEstadoActual NOT IN (9,10)');
+        cache.set('ordenes', ordenesResult.recordset);
+
+        // Emitir el evento de nueva orden a través de WebSocket
+        const io = getIO();
+        io.emit('actualizado', { type: 'actualizacion' });
+      }
+    }
+
+    res.status(500).json({ error: 'Error al actualizar el estado de las órdenes' });
+  }
+  finally {
+    transaction = null;
+  }
+};
+
+
+// Obtiene las ordenes por clientes en estado avisado
+const getOrdenesClienteByOrden = async (req, res) => {
+  const { idOrden } = req.params;
+  console.log('Buscando ordenes del cliente a partir de una orden:', idOrden); // Log para depuración
+
+  // Listado de cachés a verificar
+  const cachesToCheck = [
+    { name: 'ordenes', query: `SELECT * FROM [User].[dbo].Ordenes` },
+    { name: 'clientes', query: `SELECT * FROM [User].[dbo].Clientes` },
+    { name: 'estadosOrdenes', query: `SELECT * FROM [User].[dbo].EstadosOrdenes` },
+    { name: 'monedas', query: `SELECT * FROM [User].[dbo].Monedas` },
+    { name: 'tiposClientes', query: `SELECT * FROM [User].[dbo].TiposClientes` },
+    { name: 'productos', query: `SELECT * FROM [User].[dbo].Productos` },
+    { name: 'subMarcas', query: `SELECT * FROM [User].[dbo].SubMarcas` }
+  ];
+
+  try {
+    // Verificar cachés y cargar si es necesario
+    for (const { name, query } of cachesToCheck) {
+      let cacheData = cache.get(name);
+      if (!cacheData) {
+        console.log(`Cargando caché de ${name} desde la base de datos...`);
+        const pool = await poolPromise;
+        const result = await pool.request().query(query);
+        cacheData = result.recordset;
+        cache.set(name, cacheData);
+      }
+    }
+
+    // Obtener los datos de las cachés
+    const ordenesCache = cache.get('ordenes');
+    const clientesCache = cache.get('clientes');
+    const estadosOrdenesCache = cache.get('estadosOrdenes');
+    const monedasCache = cache.get('monedas');
+    const tiposClientesCache = cache.get('tiposClientes');
+    const productosCache = cache.get('productos');
+    const subMarcasCache = cache.get('subMarcas');
+
+    // Filtrar las órdenes del cliente desde la caché
+    // Identifico al cliente de la orden ingresada
+    console.log(idOrden);
+    const orderConsulta = ordenesCache.find(order => order.OrdCodigoOrden === idOrden);
+    if (orderConsulta.length === 0) {
+      return res.status(404).json({ error: 'Orden no encontrada' });
+    }
+
+    const orders = ordenesCache.filter(order => order.CliIdCliente === orderConsulta.CliIdCliente && (order.OrdEstadoActual === 1 || order.OrdEstadoActual === 6));
+
+    // Unir los datos de las cachés con los campos correspondientes
+    const enrichedOrders = orders.map(order => {
+      // Obtener información de los clientes
+      const cliente = clientesCache.find(client => client.CliIdCliente === order.CliIdCliente);
+
+      // Obtener estado de la orden
+      const estado = estadosOrdenesCache.find(estado => estado.EOrIdEstadoOrden === order.OrdEstadoActual);
+
+      // Obtener la moneda
+      const moneda = monedasCache.find(moneda => moneda.MonIdMoneda === order.MonIdMoneda);
+
+      // Obtener el tipo de cliente
+      const tipoCliente = tiposClientesCache.find(tipo => tipo.TClIdTipoCliente === cliente.TClIdTipoCliente);
+
+      // Obtener el producto y submarca
+      const producto = productosCache.find(product => product.ProIdProducto === order.ProIdProducto);
+      const subMarca = subMarcasCache.find(subMarca => subMarca.SMaIdSubMarca === producto.SMaIdSubMarca);
+
+      // Crear el objeto enriquecido con la información
+      return {
+        OrdIdOrden: order.OrdIdOrden,
+        OrdCodigoOrden: order.OrdCodigoOrden,
+        OrdNombreTrabajo: order.OrdNombreTrabajo,
+        OrdCantidad: order.OrdCantidad,
+        OrdPagoRealizado: order.PagIdPago ? 1 : 0,
+        EOrNombreEstado: estado ? estado.EOrNombreEstado : 'Desconocido',
+        CliCodigoCliente: cliente ? cliente.CliCodigoCliente : 'Desconocido',
+        CliCelular: cliente ? cliente.CliCelular : 'Desconocido',
+        CliNombreApellido: cliente ? cliente.CliNombreApellido : 'Desconocido',
+        CliLocalidad: cliente ? cliente.CliLocalidad : 'Desconocido',
+        CliDireccion: cliente ? cliente.CliDireccion : 'Desconocido',
+        CliAgencia: cliente ? cliente.CliAgencia : 'Desconocido',
+        TipoCliente: tipoCliente ? tipoCliente.TClDescripcion : 'Desconocido',
+        MonSimbolo: moneda ? moneda.MonSimbolo : 'Desconocido',
+        OrdCostoFinal: order.OrdCostoFinal,
+        OrdFechaIngresoOrden: order.OrdFechaIngresoOrden,
+        Producto: producto ? `${producto.ProNombreProducto} ${producto.ProDetalleProducto || ''}` : 'Desconocido',
+        SubMarca: subMarca ? subMarca.SMaNombreSubMarca : 'Desconocido'
+      };
+    });
+
+    console.log('Ordenes del clente servida por caché');
+
+    // Responder con las órdenes enriquecidas
+    res.json(enrichedOrders);
+
+  } catch (err) {
+    console.error('Error al obtener las órdenes por cliente:', err);
+    res.status(500).json({ error: 'Error al obtener las órdenes por cliente' });
+  }
+};
+
+
+const getEstadosOrdenes = async (req, res) => {
+  try {
+    // Verificar si los datos están en la caché
+    let estadosOrdenes = cache.get('estadosOrdenes');
+    if (estadosOrdenes) {
+      console.log('Estados de órdenes servidos desde la caché.');
+    } else {
+      console.log('Estados de órdenes no encontrados en la caché. Consultando la base de datos...');
+
+      // Si no están en la caché, consultar la base de datos con SELECT *
+      const pool = await poolPromise;
+      const result = await pool.request().query(`
+        SELECT * 
+        FROM [User].dbo.EstadosOrdenes WITH(NOLOCK)
+        ORDER BY EOrIdEstadoOrden
+      `);
+
+      // Filtrar los campos necesarios
+      estadosOrdenes = result.recordset.map((estado) => ({
+        EOrIdEstadoOrden: estado.EOrIdEstadoOrden,
+        EOrNombreEstado: estado.EOrNombreEstado,
+      }));
+
+      // Guardar en la caché el resultado filtrado
+      cache.set('estadosOrdenes', estadosOrdenes);
+      console.log('Estados de órdenes consultados desde la base de datos y almacenados en la caché.');
+    }
+
+    // Devolver los estados de órdenes desde la caché
+    res.json(estadosOrdenes);
+  } catch (err) {
+    console.error('Error al obtener estados de órdenes:', err);
+    res.status(500).json({ error: 'Error al obtener estados de órdenes' });
+  }
+};
+
+
+const updateExportacion = async (req, res) => {
+  const { orderIds } = req.body;
+
+  if (!orderIds || !Array.isArray(orderIds) || orderIds.length === 0) {
+    return res.status(400).json({ message: 'No se enviaron órdenes para actualizar.' });
+  }
+
+  try {
+    const pool = await poolPromise;
+
+    // Actualizar la base de datos
+    await pool.request().query(`
+      UPDATE [User].dbo.Ordenes
+      SET OrdExportadoOdoo = 1
+      WHERE OrdIdOrden IN (${orderIds.join(',')})
+    `);
+
+    // Actualizar la caché
+    const currentCache = cache.get('ordenes') || [];
+    const updatedCache = currentCache.map((order) => {
+      if (orderIds.includes(order.OrdIdOrden)) {
+        return { ...order, OrdExportadoOdoo: true };
+      }
+      return order;
+    });
+
+    cache.set('ordenes', updatedCache);
+
+    const io = getIO();
+    io.emit('actualizado', { type: 'actualizacion' });
+
+    res.json({ message: 'Órdenes actualizadas correctamente.' });
+  } catch (error) {
+    console.error('Error al actualizar las órdenes exportadas:', error);
+    res.status(500).json({ message: 'Error al actualizar las órdenes exportadas.' });
+  }
+};
+
+const eliminarOrdenes = async (req, res) => {
+  const { orderIds } = req.body;
+  const UsuarioAlta = req.user.id; // ID del usuario autenticado
+  const pool = await poolPromise;
+  let transaction;
+
+  try {
+    if (!orderIds || orderIds.length === 0) {
+      return res.status(400).json({ message: "No se proporcionaron órdenes para eliminar." });
+    }
+
+    // Convertimos los IDs a una lista de parámetros SQL seguros
+    const orderIdsList = orderIds.map(id => `'${id}'`).join(',');
+
+    transaction = await pool.transaction();
+    await transaction.begin();
+
+    // Eliminar las relaciones en RelOrdenesRetiroOrdenes
+    await transaction.request()
+      .query(`DELETE FROM [User].dbo.RelOrdenesRetiroOrdenes WHERE OrdIdOrden IN (${orderIdsList})`);
+
+    // Eliminar las órdenes en Ordenes
+    await transaction.request()
+      .query(`DELETE FROM [User].dbo.Ordenes WHERE OrdIdOrden IN (${orderIdsList})`);
+
+    await transaction.commit();
+
+    // Actualizar la caché eliminando las órdenes eliminadas
+    let ordenesCache = cache.get("ordenes") || [];
+    ordenesCache = ordenesCache.filter(orden => !orderIds.includes(orden.OrdIdOrden));
+    cache.set("ordenes", ordenesCache);
+
+    const io = getIO();
+    io.emit("actualizado", { type: "eliminacion" });
+
+    res.status(200).json({ message: "Órdenes eliminadas correctamente" });
+  } catch (err) {
+    console.error("Error al eliminar órdenes:", err);
+
+    if (transaction) {
+      try {
+        await transaction.rollback();
+        console.log("🔄 Rollback ejecutado correctamente.");
+      } catch (rollbackError) {
+        console.error("⚠ Error en rollback:", rollbackError);
+
+        const ordenesResult = await pool.request().query('SELECT * FROM [User].dbo.Ordenes WITH(NOLOCK) WHERE cast(dateadd(d,-7,getdate()) as date) <= cast(OrdFechaIngresoOrden as date) OR OrdEstadoActual NOT IN (9,10)');
+        cache.set('ordenes', ordenesResult.recordset);
+
+        // Emitir el evento de nueva orden a través de WebSocket
+        const io = getIO();
+        io.emit('actualizado', { type: 'actualizacion' });
+      }
+    }
+
+    res.status(500).json({ error: "Error al eliminar las órdenes" });
+  } finally {
+    transaction = null; //
+  }
+};
+
+
+module.exports = { getOrdenesByFilter, createOrden, getOrdenByCodigo, getOrdenesClienteByOrden, getOrdenesEstado, updateOrdenEstado, getEstadosOrdenes, updateExportacion, eliminarOrdenes };

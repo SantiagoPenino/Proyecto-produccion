@@ -83,6 +83,13 @@ app.use('/api/logistics', require('./routes/logisticsRoutes'));
 app.use('/api/inventory', require('./routes/inventoryRoutes'));
 app.use('/api/configuraciones', require('./routes/configuracionesRoutes'));
 
+// --- RUTAS INTEGRADAS DEL SISTEMA REACT ---
+app.use('/api/apicotizaciones', require('./routes/getwayCotizaciones'));
+app.use('/api/apilugaresRetiro', require('./routes/getwayLugaresRetiro'));
+app.use('/api/apiordenes', require('./routes/getwayOrdenes'));
+app.use('/api/apiordenesRetiro', require('./routes/getwayOrdenesRetiro'));
+app.use('/api/apipagos', require('./routes/getwayPagos'));
+
 // HEALTH CHECK (lightweight, no auth)
 app.get('/api/health', async (req, res) => {
     try {

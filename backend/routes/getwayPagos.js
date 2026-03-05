@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { authenticateToken } = require('../middleware/authMiddleware');
+const { verifyToken } = require('../middleware/authMiddleware');
 const { obtenerMetodosPago, realizarPago, subirComprobante } = require('../controllers/pagosController');
 const upload = require('../middleware/multerConfig'); // Importar configuración de multer
 
@@ -8,9 +8,9 @@ const upload = require('../middleware/multerConfig'); // Importar configuración
 router.get('/metodos', obtenerMetodosPago);
 
 // Ruta para realizar un pago
-router.post('/realizarPago', authenticateToken, realizarPago);
+router.post('/realizarPago', verifyToken, realizarPago);
 
 // Ruta para subir un comprobante
-router.post('/uploadComprobante', authenticateToken, upload.single('comprobante'), subirComprobante);
+router.post('/uploadComprobante', verifyToken, upload.single('comprobante'), subirComprobante);
 
 module.exports = router;

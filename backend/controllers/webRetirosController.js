@@ -63,7 +63,7 @@ const runSyncRetirosCore = async () => {
     const pool = await getPool();
     const transaction = new sql.Transaction(pool);
 
-    const response = await axios.get(`${REACT_API_URL}/apiordenesRetiro/estados?estados=Ingresado,Abonado,Abonado%20de%20antemano,Empaquetado%20sin%20abonar,Empaquetado%20y%20abonado,Entregado,Cancelar`);
+    const response = await axios.get(`${REACT_API_URL}/apiordenesRetiro/estados?estados=1,3,4,7,8,5,6`);
     const retirosExternos = response.data;
 
     await transaction.begin();
