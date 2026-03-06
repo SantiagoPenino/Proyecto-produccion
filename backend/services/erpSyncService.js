@@ -1,8 +1,6 @@
 const axios = require('axios');
 const { sql, getPool } = require('../config/db');
 const PricingService = require('./pricingService');
-const REACT_API_URL = process.env.REACT_API_URL;
-const REACT_API_KEY = process.env.REACT_API_KEY;
 
 class ERPSyncService {
 
@@ -222,62 +220,144 @@ class ERPSyncService {
 
         console.log(`[ERPSync] React Code ($*): ${reactCode}`);
 
-        // 6. Enviar a REACT
+        // 6. Escribir en OrdenesDeposito directamente (migrado de API React)
         let reactSuccess = false;
         if (!syncTarget || syncTarget === 'REACT') {
             if (options.isReactEnabledGlobal === false) {
                 console.log(`[ERPSync] BYPASS REACT por configuración global (Desactivado).`);
                 reactSuccess = true;
-                const pool = await getPool();
                 await pool.request()
                     .input('N', sql.VarChar, noDocERP.toString())
                     .input('D', sql.NVarChar(sql.MAX), JSON.stringify({ bypassed: true }))
                     .query("UPDATE PedidosCobranza SET EstadoSyncReact = 'Enviado_OK', ObsReact = @D WHERE NoDocERP = @N");
             } else {
-                // Normalizar Payload para React
-                let finalReactPayload = forcedReactPayload;
-                if (typeof forcedReactPayload === 'string') {
-                    finalReactPayload = { ordenString: forcedReactPayload, estado: "Ingresado" };
+                // Resolver el string QR para parsear
+                let ordenString = forcedReactPayload;
+                if (typeof forcedReactPayload === 'object' && forcedReactPayload?.ordenString) {
+                    ordenString = forcedReactPayload.ordenString;
                 } else if (!forcedReactPayload) {
-                    finalReactPayload = { ordenString: reactCode, estado: "Ingresado" };
+                    ordenString = reactCode;
                 }
 
-                console.log(`[ERPSync] --> ENVIANDO A REACT API...`, JSON.stringify(finalReactPayload));
+                console.log(`[ERPSync] --> INSERTANDO EN OrdenesDeposito directamente...`, ordenString);
 
                 try {
-                    const reactToken = await this.getExternalToken();
-                    if (reactToken) {
-                        const reactRes = await axios.post(`${REACT_API_URL}/apiordenes/data`, finalReactPayload, {
-                            headers: { Authorization: `Bearer ${reactToken}`, 'Content-Type': 'application/json' }
-                        });
+                    // Parsear el string QR: $CodigoOrden$*CodigoCliente$*NombreTrabajo$*IdModo$*IdProducto$*Cantidad$*CostoFinal
+                    const parts = ordenString.split('$*');
+                    const CodigoOrden = parts[0] || '';
+                    const CodigoCliente = parseInt(parts[1]) || 0;
+                    const NombreTrabajo = parts[2] || '';
+                    const IdModo = parseInt(parts[3]) || 1;
+                    const IdProducto = parseInt(parts[4]) || 0;
+                    const cantidadDecimal = parseFloat((parts[5] || '0').toString().replace(',', '.'));
+                    const costoFinalDecimal = parseFloat((parts[6] || '0').toString().replace(',', '.'));
 
-                        console.log(`[ERPSync] <-- RESPUESTA REACT: Status ${reactRes.status}`, JSON.stringify(reactRes.data));
+                    // Verificar si la orden ya existe
+                    const existCheck = await pool.request()
+                        .input('Cod', sql.VarChar(100), CodigoOrden)
+                        .query('SELECT OrdIdOrden, OrdEstadoActual, OReIdOrdenRetiro FROM OrdenesDeposito WITH(NOLOCK) WHERE OrdCodigoOrden = @Cod');
 
-                        if ((reactRes.status === 200 || reactRes.status === 201) && reactRes.data?.success !== false && !reactRes.data?.error) {
-                            reactSuccess = true;
-                            console.log(`[ERPSync] OK React para ${noDocERP}`);
+                    if (existCheck.recordset.length > 0) {
+                        const existing = existCheck.recordset[0];
+
+                        // Si NO tiene orden de retiro, actualizar datos
+                        if (!existing.OReIdOrdenRetiro) {
                             await pool.request()
-                                .input('Doc', sql.NVarChar, noDocERP)
-                                .input('P', sql.NVarChar(sql.MAX), JSON.stringify(finalReactPayload))
-                                .query("UPDATE PedidosCobranza SET EstadoSyncReact = 'Enviado_OK', ObsReact = @P WHERE NoDocERP = @Doc");
+                                .input('Cod', sql.VarChar(100), CodigoOrden)
+                                .input('Cli', sql.Int, CodigoCliente)
+                                .input('Trab', sql.VarChar(255), NombreTrabajo)
+                                .input('Modo', sql.Int, IdModo)
+                                .input('Prod', sql.Int, IdProducto)
+                                .input('Cant', sql.Float, cantidadDecimal)
+                                .input('Costo', sql.Float, costoFinalDecimal)
+                                .input('Usr', sql.Int, userId)
+                                .query(`
+                                    UPDATE OrdenesDeposito SET
+                                        CliIdCliente = @Cli, OrdNombreTrabajo = @Trab, MOrIdModoOrden = @Modo,
+                                        ProIdProducto = @Prod, OrdCantidad = @Cant, OrdCostoFinal = @Costo,
+                                        OrdFechaEstadoActual = GETDATE(), OrdUsuarioAlta = @Usr
+                                    WHERE OrdCodigoOrden = @Cod
+                                `);
+                            console.log(`[ERPSync] Orden existente actualizada: ${CodigoOrden}`);
                         } else {
-                            throw new Error(reactRes.data?.error || reactRes.data?.message || JSON.stringify(reactRes.data));
+                            // Tiene orden de retiro, verificar si fue entregada para re-ingresar
+                            const retiroCheck = await pool.request()
+                                .input('RID', sql.Int, existing.OReIdOrdenRetiro)
+                                .query('SELECT OReEstadoActual, OReFechaEstadoActual FROM OrdenesRetiro WITH(NOLOCK) WHERE OReIdOrdenRetiro = @RID');
+
+                            if (retiroCheck.recordset.length > 0 && retiroCheck.recordset[0].OReEstadoActual === 5) {
+                                // Re-ingresar la orden
+                                await pool.request()
+                                    .input('Cod', sql.VarChar(100), CodigoOrden)
+                                    .query('UPDATE OrdenesDeposito SET OrdEstadoActual = 1, OrdFechaEstadoActual = GETDATE() WHERE OrdCodigoOrden = @Cod');
+
+                                await pool.request()
+                                    .input('OID', sql.Int, existing.OrdIdOrden)
+                                    .input('Usr', sql.Int, userId)
+                                    .query(`INSERT INTO HistoricoEstadosOrdenes (OrdIdOrden, EOrIdEstadoOrden, HEOFechaEstado, HEOUsuarioAlta) VALUES (@OID, 1, GETDATE(), @Usr)`);
+
+                                console.log(`[ERPSync] Orden re-ingresada: ${CodigoOrden}`);
+                            } else {
+                                console.log(`[ERPSync] Orden ${CodigoOrden} ya existe con retiro activo, omitiendo.`);
+                            }
                         }
                     } else {
-                        throw new Error("No se pudo obtener el token de React.");
+                        // Orden nueva: INSERT
+                        // Resolver MonIdMoneda del producto
+                        const prodRes = await pool.request()
+                            .input('PID', sql.Int, IdProducto)
+                            .query('SELECT MonIdMoneda FROM Productos WITH(NOLOCK) WHERE ProIdProducto = @PID');
+                        const monedaId = prodRes.recordset[0]?.MonIdMoneda || 1;
+
+                        const insertResult = await pool.request()
+                            .input('Cod', sql.VarChar(100), CodigoOrden)
+                            .input('Cant', sql.Float, cantidadDecimal)
+                            .input('Cli', sql.Int, CodigoCliente)
+                            .input('Trab', sql.VarChar(255), NombreTrabajo)
+                            .input('Modo', sql.Int, IdModo)
+                            .input('Prod', sql.Int, IdProducto)
+                            .input('Mon', sql.Int, monedaId)
+                            .input('Costo', sql.Float, costoFinalDecimal)
+                            .input('Usr', sql.Int, userId)
+                            .query(`
+                                INSERT INTO OrdenesDeposito (
+                                    OrdCodigoOrden, OrdCantidad, CliIdCliente, OrdNombreTrabajo,
+                                    MOrIdModoOrden, ProIdProducto, MonIdMoneda, OrdCostoFinal,
+                                    OrdFechaIngresoOrden, OrdUsuarioAlta, OrdEstadoActual, OrdFechaEstadoActual
+                                )
+                                OUTPUT INSERTED.OrdIdOrden
+                                VALUES (
+                                    @Cod, @Cant, @Cli, @Trab, @Modo, @Prod, @Mon, @Costo,
+                                    GETDATE(), @Usr, 1, GETDATE()
+                                )
+                            `);
+
+                        const newOrderId = insertResult.recordset[0]?.OrdIdOrden;
+                        if (newOrderId) {
+                            await pool.request()
+                                .input('OID', sql.Int, newOrderId)
+                                .input('Usr', sql.Int, userId)
+                                .query(`INSERT INTO HistoricoEstadosOrdenes (OrdIdOrden, EOrIdEstadoOrden, HEOFechaEstado, HEOUsuarioAlta) VALUES (@OID, 1, GETDATE(), @Usr)`);
+                        }
+                        console.log(`[ERPSync] Orden nueva creada: ${CodigoOrden} (ID: ${newOrderId})`);
                     }
-                } catch (eReact) {
-                    const errLog = eReact.response?.data || { error: eReact.message };
-                    console.error(`[ERPSync] Error al enviar a React:`, eReact.message);
+
+                    reactSuccess = true;
                     await pool.request()
                         .input('Doc', sql.NVarChar, noDocERP)
-                        .input('E', sql.NVarChar(sql.MAX), JSON.stringify(errLog))
+                        .input('P', sql.NVarChar(sql.MAX), JSON.stringify({ ordenString, direct: true }))
+                        .query("UPDATE PedidosCobranza SET EstadoSyncReact = 'Enviado_OK', ObsReact = @P WHERE NoDocERP = @Doc");
+
+                } catch (eReact) {
+                    console.error(`[ERPSync] Error al insertar en OrdenesDeposito:`, eReact.message);
+                    await pool.request()
+                        .input('Doc', sql.NVarChar, noDocERP)
+                        .input('E', sql.NVarChar(sql.MAX), JSON.stringify({ error: eReact.message }))
                         .query("UPDATE PedidosCobranza SET EstadoSyncReact = 'Error', ObsReact = @E WHERE NoDocERP = @Doc");
                 }
             }
         } else {
             console.log(`[ERPSync] Omite REACT por filtro de target: ${syncTarget}`);
-            // Recuperar estado actual de DB si omitimos para el response final
             const current = await pool.request().input('Doc', sql.NVarChar, noDocERP).query("SELECT EstadoSyncReact FROM PedidosCobranza WHERE NoDocERP = @Doc");
             if (current.recordset[0]?.EstadoSyncReact === 'Enviado_OK') reactSuccess = true;
         }
@@ -389,17 +469,7 @@ class ERPSyncService {
         }
     }
 
-    static async getExternalToken() {
-        try {
-            const res = await axios.post(`${REACT_API_URL}/apilogin/generate-token`, {
-                apiKey: REACT_API_KEY
-            });
-            return res.data?.token || res.data?.accessToken || res.data;
-        } catch (e) {
-            console.error("[ERPSync] Error Token:", e.message);
-            return null;
-        }
-    }
+    // getExternalToken removido - ya no se necesita, se escribe directo en DB
 
     static async getMacrosoftToken() {
         try {

@@ -1,8 +1,6 @@
 const { getPool, sql } = require('../config/db');
 const axios = require('axios'); // Importar axios para el proxy
 const ERP_API_BASE = process.env.ERP_API_URL;
-const REACT_API_URL = process.env.REACT_API_URL;
-const REACT_API_KEY = process.env.REACT_API_KEY;
 
 // Cache para el Token de la API Macrosoft
 let macrosoftAuthToken = null;
@@ -111,40 +109,26 @@ exports.getMacrosoftClientData = async (req, res) => {
     }
 };
 
-// Proxy para obtener TODOS los clientes del sistema React (Nueva API con Auth)
+// Obtener TODOS los clientes del sistema (query directa a DB local)
 exports.getAllReactClients = async (req, res) => {
     try {
-        // 1. Obtener Token
-        const tokenRes = await axios.post(`${REACT_API_URL}/apilogin/generate-token`, {
-            apiKey: REACT_API_KEY
-        });
+        const pool = await getPool();
+        const result = await pool.request().query(`
+            SELECT 
+                CliIdCliente, CodCliente, Nombre, NombreFantasia, TelefonoTrabajo,
+                CioRuc, Email, CodigoReact, IDReact, Tipo, CliDireccion,
+                Localidad, Agencia, IDCliente, Cedula, IDClientePlanilla,
+                WebActive, ESTADO, VendedorID, FechaRegistro
+            FROM dbo.Clientes WITH(NOLOCK)
+            ORDER BY Nombre ASC
+        `);
 
-        const token = tokenRes.data.token || tokenRes.data.accessToken || tokenRes.data; // Ajustar según respuesta real
-
-        if (!token) throw new Error("No se recibió token de autenticación");
-
-        // 2. Obtener Datos usando Token
-        const response = await axios.get(`${REACT_API_URL}/apicliente/dataall`, {
-            headers: { Authorization: `Bearer ${token}` }
-        });
-
-        console.log("--- RESPUESTA API REACT DATAALL ---");
-        // console.log(JSON.stringify(response.data, null, 2).substring(0, 500) + "..."); // Ver primeros caracteres
-        console.log("Tipo:", typeof response.data);
-        console.log("Es Array:", Array.isArray(response.data));
-        if (!Array.isArray(response.data)) console.log("Keys:", Object.keys(response.data));
-        console.log("-----------------------------------");
-
-        res.set('Cache-Control', 'no-store'); // Disable browser cache
-        res.json(response.data);
+        console.log(`[getAllReactClients] Devolviendo ${result.recordset.length} clientes desde DB local`);
+        res.set('Cache-Control', 'no-store');
+        res.json(result.recordset);
     } catch (error) {
-        console.error("Error Proxy React API:", error.message);
-        if (error.response) {
-            console.error("Detalle Error:", error.response.data);
-            res.status(error.response.status).json(error.response.data);
-        } else {
-            res.status(502).json({ error: "Fallo conexión con API externa Auth/Data" });
-        }
+        console.error("Error getAllReactClients:", error.message);
+        res.status(500).json({ error: "Error al obtener clientes: " + error.message });
     }
 };
 
@@ -400,90 +384,53 @@ exports.importReactClient = async (req, res) => {
     }
 };
 
-// Helper para obtener token (Reutilizable)
-async function getExternalToken() {
-    const tokenRes = await axios.post(`${REACT_API_URL}/apilogin/generate-token`, {
-        apiKey: REACT_API_KEY
-    });
-    return tokenRes.data.token || tokenRes.data.accessToken || tokenRes.data;
-}
-
+// createReactClient removido - ya no se necesita exportar a legacy
+// La creación de clientes se hace directamente en la DB local via createClient
 exports.createReactClient = async (req, res) => {
-    const client = req.body; // Datos del cliente local
-
+    const client = req.body;
     try {
-        console.log("Iniciando exportación a React:", client.Nombre);
+        console.log("[createReactClient] Creando cliente directamente en DB local:", client.Nombre);
+        const pool = await getPool();
+        const safeString = (val) => (val !== undefined && val !== null && val !== '') ? String(val) : null;
 
-        // 1. Obtener Token
-        const token = await getExternalToken();
-        if (!token) throw new Error("No se pudo obtener token de API Externa");
+        // Verificar si ya existe
+        const check = await pool.request()
+            .input('Nom', sql.NVarChar(200), client.Nombre)
+            .query("SELECT CodCliente FROM dbo.Clientes WHERE Nombre = @Nom");
 
-        // 2. Mapear Datos (Local -> Formato React)
-        // Ajustamos los campos según tu esquema local (dbo.Clientes) vs API Externa
-        const payload = {
-            CliCodigoCliente: client.Nombre,                   // SWAP: Nombre Local -> Código React
-            CliNombreApellido: String(client.CodCliente),      // SWAP: Código Local -> Nombre React
-            CliCelular: client.TelefonoTrabajo ? String(client.TelefonoTrabajo) : null,
-            CliMail: client.Email || null,
-            CliNombreEmpresa: client.NombreFantasia || null,
-            CliDocumento: client.CioRuc || null,
-            CliLocalidad: client.Ciudad || "Montevideo", // Valor por defecto si falta
-            CliDireccion: client.Direccion || null,
-            TClIdTipoCliente: 1 // Hardcoded según requerimiento
-        };
-
-        console.log("Enviando Payload a React:", payload);
-
-        // 3. Enviar a API Externa
-        const response = await axios.post(`${REACT_API_URL}/apicliente/create`, payload, {
-            headers: { Authorization: `Bearer ${token}` }
-        });
-
-        // 4. AUTOLINK: Actualizar base local con los datos devueltos
-        let createdReactClient = response.data;
-
-        // Desempaquetar respuesta si viene en { data: ... }
-        if (createdReactClient && createdReactClient.data && !createdReactClient.IdCliente && !createdReactClient.CodigoCliente) {
-            createdReactClient = createdReactClient.data;
+        if (check.recordset.length > 0) {
+            return res.json({
+                success: true,
+                message: "Cliente ya existe en DB local",
+                data: { CodCliente: check.recordset[0].CodCliente }
+            });
         }
 
-        // Desempaquetar si viene en { cliente: ... }
-        if (createdReactClient && createdReactClient.cliente) {
-            createdReactClient = createdReactClient.cliente;
-        }
+        // Insertar
+        const result = await pool.request()
+            .input('Nom', sql.NVarChar(200), safeString(client.Nombre))
+            .input('Fan', sql.NVarChar(200), safeString(client.NombreFantasia))
+            .input('Tel', sql.NVarChar(50), safeString(client.TelefonoTrabajo))
+            .input('Mail', sql.NVarChar(200), safeString(client.Email))
+            .input('Ruc', sql.NVarChar(50), safeString(client.CioRuc))
+            .input('Dir', sql.NVarChar(500), safeString(client.CliDireccion || client.Direccion))
+            .query(`
+                INSERT INTO dbo.Clientes (Nombre, NombreFantasia, TelefonoTrabajo, Email, CioRuc, CliDireccion)
+                OUTPUT INSERTED.*
+                VALUES (@Nom, @Fan, @Tel, @Mail, @Ruc, @Dir)
+            `);
 
-        console.log("Respuesta React procesada:", createdReactClient);
-
-        // Buscar ID en los campos posibles, incluyendo CliIdCliente
-        const nuevoCodigoReact = createdReactClient.CodigoCliente || createdReactClient.CliCodigoCliente || createdReactClient.codigoCliente || createdReactClient.CodCliente;
-        const nuevoIdReact = createdReactClient.CliIdCliente || createdReactClient.IdCliente || createdReactClient.CliId || createdReactClient.idCliente;
-
-        if (nuevoCodigoReact) {
-            const pool = await getPool();
-            await pool.request()
-                .input('CC', sql.Int, client.CodCliente)
-                .input('CR', sql.NVarChar(50), String(nuevoCodigoReact).trim())
-                .input('IR', sql.NVarChar(50), nuevoIdReact ? String(nuevoIdReact).trim() : null)
-                .query(`UPDATE dbo.Clientes SET CodigoReact = @CR, IDReact = @IR WHERE CodCliente = @CC`);
-            console.log(`Autovínculo completado: Local ${client.CodCliente} <-> React ${nuevoCodigoReact}`);
-        } else {
-            console.warn("WARN: No se encontró ID en respuesta React para autovincular:", createdReactClient);
-        }
+        const created = result.recordset[0];
+        console.log(`[createReactClient] Cliente creado: CodCliente=${created.CodCliente}`);
 
         res.json({
             success: true,
-            data: response.data,
-            message: "Cliente creado y VINCULADO automáticamente"
+            data: created,
+            message: "Cliente creado en DB local"
         });
-
     } catch (error) {
-        console.error("Error creando cliente en React:", error.message);
-        if (error.response) {
-            console.error("Detalle Error API:", error.response.data);
-            res.status(error.response.status).json(error.response.data);
-        } else {
-            res.status(500).json({ error: "Error interno al exportar cliente" });
-        }
+        console.error("Error createReactClient:", error.message);
+        res.status(500).json({ error: "Error interno al crear cliente: " + error.message });
     }
 };
 

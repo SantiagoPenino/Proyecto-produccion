@@ -29,6 +29,15 @@ router.get('/pickup-orders', verifyToken, webOrdersController.getPickupOrders);
 // POST /api/web-orders/pickup-orders/create (Generar Orden de Retiro)
 router.post('/pickup-orders/create', verifyToken, webOrdersController.createPickupOrder);
 
+// GET /api/web-orders/shipping-data (Datos para confirmación de retiro)
+router.get('/shipping-data', verifyToken, webOrdersController.getShippingData);
+
+// POST /api/web-orders/saved-addresses (Guardar dirección)
+router.post('/saved-addresses', verifyToken, webOrdersController.saveAddress);
+
+// DELETE /api/web-orders/saved-addresses/:id (Eliminar dirección)
+router.delete('/saved-addresses/:id', verifyToken, webOrdersController.deleteAddress);
+
 // POST /api/web-orders/pickup-orders/pdf (Generar PDF)
 router.post('/pickup-orders/pdf', verifyToken, webOrdersController.generatePickupReceipt);
 

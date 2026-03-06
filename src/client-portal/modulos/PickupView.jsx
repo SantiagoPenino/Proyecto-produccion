@@ -1,19 +1,51 @@
 import React, { useState, useEffect } from 'react';
+import { useSearchParams } from 'react-router-dom';
+import Swal from 'sweetalert2';
+import Lottie from 'lottie-react';
+import loadingAnim from '../../assets/animations/loading.json';
 import { useAuth } from '../auth/AuthContext';
 import { apiClient } from '../api/apiClient'; // Assuming user comes from here
-import { CheckCircle, AlertCircle, ChevronRight, Truck, CreditCard, Download } from 'lucide-react';
+import { CheckCircle, AlertCircle, ChevronRight, Truck, CreditCard, Download, MapPin, Package, Trash2, Plus } from 'lucide-react';
 import { GlassCard } from '../pautas/GlassCard';
 import { CustomButton } from '../pautas/CustomButton';
 import { FormInput } from '../pautas/FormInput';
 
 export const PickupView = () => {
     const { user } = useAuth();
-    const [selectedOrders, setSelectedOrders] = useState([]);
+    const [selectedOrders, setSelectedOrders] = useState(() => {
+        try {
+            const saved = sessionStorage.getItem('pickup_selected');
+            return saved ? JSON.parse(saved) : [];
+        } catch { return []; }
+    });
     const [readyOrders, setReadyOrders] = useState([]);
-    const [pickupCode, setPickupCode] = useState(null);
-    const [step, setStep] = useState('selection');
+    const [pickupCode, setPickupCode] = useState(() => {
+        return sessionStorage.getItem('pickup_code') || null;
+    });
+    const [searchParams, setSearchParams] = useSearchParams();
+    const step = searchParams.get('step') || 'selection';
+    const setStep = (newStep) => {
+        if (newStep === 'selection') {
+            searchParams.delete('step');
+        } else {
+            searchParams.set('step', newStep);
+        }
+        setSearchParams(searchParams, { replace: true });
+    };
     const [loading, setLoading] = useState(false);
     const [fetching, setFetching] = useState(true);
+
+    // Shipping/confirmation state
+    const [shippingData, setShippingData] = useState(null);
+    const [selectedFormaEnvio, setSelectedFormaEnvio] = useState(null);
+    const [selectedAgencia, setSelectedAgencia] = useState(null);
+    const [selectedDireccion, setSelectedDireccion] = useState('');
+    const [showAddAddress, setShowAddAddress] = useState(false);
+    const [newAlias, setNewAlias] = useState('');
+    const [newDireccion, setNewDireccion] = useState('');
+    const [newCiudad, setNewCiudad] = useState('');
+    const [newLocalidad, setNewLocalidad] = useState('');
+    const [loadingShipping, setLoadingShipping] = useState(false);
 
     useEffect(() => {
         const loadPickupOrders = async () => {
@@ -22,6 +54,15 @@ export const PickupView = () => {
                 const res = await apiClient.get('/web-orders/pickup-orders');
                 if (res.success) {
                     setReadyOrders(res.data);
+                    // Limpiar seleccionadas que ya no existen
+                    const validIds = new Set(res.data.map(o => o.id));
+                    setSelectedOrders(prev => {
+                        const filtered = prev.filter(id => validIds.has(id));
+                        if (filtered.length !== prev.length) {
+                            sessionStorage.setItem('pickup_selected', JSON.stringify(filtered));
+                        }
+                        return filtered;
+                    });
                 }
             } catch (error) {
                 console.error("Error loading pickup orders:", error);
@@ -31,6 +72,30 @@ export const PickupView = () => {
         };
         loadPickupOrders();
     }, []);
+
+    // Persist selected orders in sessionStorage
+    useEffect(() => {
+        sessionStorage.setItem('pickup_selected', JSON.stringify(selectedOrders));
+    }, [selectedOrders]);
+
+    // Auto-load shipping data when on confirmation step (e.g. after refresh)
+    useEffect(() => {
+        if (step === 'confirmation' && !shippingData) {
+            (async () => {
+                setLoadingShipping(true);
+                try {
+                    const res = await apiClient.get('/web-orders/shipping-data');
+                    if (res.success) {
+                        setShippingData(res.data);
+                        setSelectedFormaEnvio(res.data.defaultFormaEnvioID || res.data.formasEnvio[0]?.ID);
+                        setSelectedAgencia(res.data.defaultAgenciaID || res.data.agencias[0]?.ID);
+                        setSelectedDireccion(res.data.defaultDireccion || '');
+                    }
+                } catch (e) { console.error('Error cargando datos de envío:', e); }
+                setLoadingShipping(false);
+            })();
+        }
+    }, [step]);
 
     const handleToggleOrder = (orderId) => {
         if (selectedOrders.includes(orderId)) {
@@ -100,16 +165,14 @@ export const PickupView = () => {
     const handleCreatePickup = async () => {
         setLoading(true);
         try {
-            // Construir payload completo desde frontend
             const ordersPayload = selectedOrders.map(selId => {
                 const order = readyOrders.find(o => o.id === selId);
                 if (!order) return null;
-                // Usar el ID visible (ej: "TWD-6253" o "67") en lugar del ID interno
                 const orderNum = order.id.replace('#', '');
                 return {
                     OrdIdOrden: order.rawId,
                     orderNumber: orderNum,
-                    ordNombreTrabajo: order.desc.split(' - ').pop() || order.desc, // Extraemos el nombre si está concatenado
+                    ordNombreTrabajo: order.desc.split(' - ').pop() || order.desc,
                     meters: String(order.quantityStr || ""),
                     MonSimbolo: order.currency === 'USD' ? 'USD' : '$',
                     costo: Number(Number(order.amount || 0).toFixed(2)),
@@ -119,7 +182,6 @@ export const PickupView = () => {
                     checked: true,
                     clientId: order.clientId || 'N/A',
                     contact: order.contact || '',
-                    // Keep old fields for backward compatibility just in case
                     costWithCurrency: `${order.currency === 'USD' ? 'USD' : '$'} ${typeof order.amount === 'number' ? order.amount.toFixed(2) : '0.00'}`
                 };
             }).filter(Boolean);
@@ -133,108 +195,63 @@ export const PickupView = () => {
             const res = await apiClient.post('/web-orders/pickup-orders/create', payload);
 
             if (res.success) {
-                // Priorizar OReIdOrdenRetiro de la respuesta externa
                 const code = res.data?.OReIdOrdenRetiro || res.data?.codigoRetiro || `RET-${Math.floor(Math.random() * 9000) + 1000}`;
                 setPickupCode(code);
-                setStep('success');
-                // Auto download receipt
-                setTimeout(() => downloadReceipt(code), 1000);
+                sessionStorage.setItem('pickup_code', String(code));
+                return code;
             } else {
                 alert(res.error || "Error al crear retiro");
+                return null;
             }
         } catch (error) {
             console.error(error);
             alert("Error al conectar con el servidor: " + error.message);
+            return null;
         } finally {
             setLoading(false);
         }
     };
 
     const handleProceed = async () => {
-        if (user?.hasCredit || totalAmount === 0) {
-            handleCreatePickup();
-        } else {
-            // Flujo Handy: 1) Crear retiro → 2) Crear link de pago con datos del retiro
-            setLoading(true);
-            try {
-                // 1. Primero crear el retiro en React (igual que handleCreatePickup)
-                const ordersForRetiro = selectedOrders.map(selId => {
-                    const order = readyOrders.find(o => o.id === selId);
-                    if (!order) return null;
-                    const orderNum = order.id.replace('#', '');
-                    return {
-                        OrdIdOrden: order.rawId,
-                        orderNumber: orderNum,
-                        ordNombreTrabajo: order.desc.split(' - ').pop() || order.desc,
-                        meters: String(order.quantityStr || ""),
-                        MonSimbolo: order.currency === 'USD' ? 'USD' : '$',
-                        costo: Number(Number(order.amount || 0).toFixed(2)),
-                        estado: order.originalStatus,
-                        tipodecliente: order.clientType || "Comun",
-                        pago: 'No realizado',
-                        checked: true,
-                        clientId: order.clientId || 'N/A',
-                        contact: order.contact || '',
-                        costWithCurrency: `${order.currency === 'USD' ? 'USD' : '$'} ${typeof order.amount === 'number' ? order.amount.toFixed(2) : '0.00'}`
-                    };
-                }).filter(Boolean);
-
-                const retiroRes = await apiClient.post('/web-orders/pickup-orders/create', {
-                    orders: ordersForRetiro,
-                    totalCost: Number((totalAmount || 0).toFixed(2)),
-                    lugarRetiro: 5
-                });
-
-                if (!retiroRes.success) {
-                    alert(retiroRes.error || "Error al crear retiro");
-                    setLoading(false);
-                    return;
-                }
-
-                const ordenRetiro = retiroRes.data?.OReIdOrdenRetiro || retiroRes.data?.codigoRetiro;
-                const reactOrderNumbers = retiroRes.data?.orderNumbers || ordersForRetiro.map(o => o.OrdIdOrden).filter(Boolean);
-
-                console.log('[PickupView] Retiro creado:', ordenRetiro, 'OrderNumbers:', reactOrderNumbers);
-
-                // 2. Crear link de pago Handy con datos del retiro
-                // Usa el mismo endpoint que UnpaidPickupsView para consistencia
-                const ordersPayload = selectedOrders.map(selId => {
-                    const order = readyOrders.find(o => o.id === selId);
-                    if (!order) return null;
-                    return {
-                        id: order.id,
-                        rawId: order.rawId,
-                        orderNumber: order.id.replace('#', ''),
-                        desc: order.desc,
-                        amount: order.amount,
-                    };
-                }).filter(Boolean);
-
-                const payload = {
-                    ordenRetiro: ordenRetiro,
-                    totalAmount: totalAmount,
-                    activeCurrency: activeCurrency,
-                    bultosJSON: JSON.stringify(ordersPayload)
+        // Flujo Handy: crear link de pago con datos del retiro ya creado
+        if (!pickupCode) {
+            alert('No hay retiro creado.');
+            return;
+        }
+        setLoading(true);
+        try {
+            const ordersPayload = selectedOrders.map(selId => {
+                const order = readyOrders.find(o => o.id === selId);
+                if (!order) return null;
+                return {
+                    id: order.id,
+                    rawId: order.rawId,
+                    orderNumber: order.id.replace('#', ''),
+                    desc: order.desc,
+                    amount: order.amount,
                 };
+            }).filter(Boolean);
 
-                const res = await apiClient.post('/web-retiros/payment', payload);
+            const payload = {
+                ordenRetiro: pickupCode,
+                totalAmount: totalAmount,
+                activeCurrency: activeCurrency,
+                bultosJSON: JSON.stringify(ordersPayload)
+            };
 
-                if (res.success && res.url) {
-                    // Abrir Handy en nueva pestaña y redirigir esta pestaña a payment-status
-                    window.open(res.url, '_blank');
-                    window.location.href = `/payment-status?txId=${res.transactionId}`;
-                } else {
-                    // Retiro ya creado pero falló Handy — mostrar éxito del retiro
-                    setPickupCode(ordenRetiro || 'ERROR');
-                    setStep('success');
-                    alert("El retiro se creó pero no se pudo generar el link de pago: " + (res.error || ""));
-                }
-            } catch (err) {
-                console.error("Error al ir a pagar:", err);
-                alert("Ocurrió un error al contactar la pasarela de pagos.");
-            } finally {
-                setLoading(false);
+            const res = await apiClient.post('/web-retiros/payment', payload);
+
+            if (res.success && res.url) {
+                window.open(res.url, '_blank');
+                window.location.href = `/payment-status?txId=${res.transactionId}`;
+            } else {
+                alert("No se pudo generar el link de pago: " + (res.error || ""));
             }
+        } catch (err) {
+            console.error("Error al ir a pagar:", err);
+            alert("Ocurrió un error al contactar la pasarela de pagos.");
+        } finally {
+            setLoading(false);
         }
     };
 
@@ -331,13 +348,304 @@ export const PickupView = () => {
 
     if (fetching) {
         return (
-            <div className="flex flex-col justify-center items-center py-20 animate-pulse">
-                <Truck className="text-zinc-300 mb-4" size={48} />
-                <span className="text-zinc-400 font-bold text-lg">Buscando órdenes listas...</span>
+            <div className="flex flex-col justify-center items-center min-h-[60vh]">
+                <Lottie animationData={loadingAnim} loop style={{ width: 250, height: 250 }} />
+                <span className="font-bold uppercase -mt-20 animate-pulse">Buscando órdenes listas...</span>
             </div>
         );
     }
 
+    // ========================
+    // STEP: CONFIRMATION
+    // ========================
+    const selectedOrdersData = readyOrders.filter(o => selectedOrders.includes(o.id));
+    const isEncomienda = shippingData?.formasEnvio?.find(f => f.ID === selectedFormaEnvio)?.Nombre?.toLowerCase().includes('encomienda');
+
+    const handleAddAddress = async () => {
+        if (!newDireccion.trim()) return;
+        try {
+            const res = await apiClient.post('/web-orders/saved-addresses', {
+                alias: newAlias.trim(),
+                direccion: newDireccion.trim(),
+                agenciaID: selectedAgencia,
+                ciudad: newCiudad.trim(),
+                localidad: newLocalidad.trim()
+            });
+            if (res.success) {
+                setShippingData(prev => ({
+                    ...prev,
+                    direccionesGuardadas: [...(prev.direccionesGuardadas || []), res.data]
+                }));
+                setSelectedDireccion(res.data.Direccion);
+                setNewAlias('');
+                setNewDireccion('');
+                setNewCiudad('');
+                setNewLocalidad('');
+                setShowAddAddress(false);
+            } else {
+                alert(res.error || 'Error al guardar');
+            }
+        } catch (e) { alert('Error al guardar dirección'); }
+    };
+
+    const handleDeleteAddress = async (id) => {
+        const result = await Swal.fire({
+            title: '¿Eliminar dirección?',
+            theme: 'dark',
+            showCancelButton: true,
+            confirmButtonColor: '#ff0000',
+            cancelButtonColor: '#71717a',
+            confirmButtonText: 'ELIMINAR',
+            cancelButtonText: 'Cancelar'
+        });
+        if (!result.isConfirmed) return;
+        try {
+            const res = await apiClient.delete(`/web-orders/saved-addresses/${id}`);
+            if (res.success) {
+                setShippingData(prev => ({
+                    ...prev,
+                    direccionesGuardadas: prev.direccionesGuardadas.filter(d => d.ID !== id)
+                }));
+            }
+        } catch (e) { console.error(e); }
+    };
+
+    if (step === 'confirmation') return (
+        <div className="animate-fade-in space-y-6">
+            <button onClick={() => { setSelectedOrders([]); sessionStorage.removeItem('pickup_selected'); setStep('selection'); }} className="mb-2 flex items-center text-zinc-500 hover:text-black transition-colors">
+                <ChevronRight className="rotate-180" size={20} /> Volver
+            </button>
+
+            {/* Header */}
+            <div className="flex items-center gap-4 mb-2">
+                <div className="p-3 bg-white border border-zinc-200 text-black rounded-xl shadow-sm">
+                    <Package size={28} />
+                </div>
+                <div>
+                    <h2 className="text-3xl font-bold text-neutral-800 tracking-tight">Retiro R-{pickupCode}</h2>
+                    <p className="text-zinc-500 font-medium">Retiro creado. Revisá los datos y elegí forma de envío.</p>
+                </div>
+            </div>
+
+            {/* Resumen de órdenes */}
+            <GlassCard noPadding className="overflow-hidden">
+                <div className="p-5 border-b border-zinc-200 bg-zinc-50/50">
+                    <h3 className="font-bold text-zinc-800">Órdenes Seleccionadas</h3>
+                </div>
+                <div className="divide-y divide-zinc-100">
+                    {selectedOrdersData.map(o => (
+                        <div key={o.id} className="p-4 flex justify-between items-center">
+                            <div>
+                                <span className="font-mono font-bold text-zinc-700">{o.id}</span>
+                                <p className="text-sm text-zinc-500 mt-0.5">{o.desc}</p>
+                            </div>
+                            <span className="font-bold text-zinc-800">
+                                {o.currency === 'USD' ? 'US$' : '$'} {(o.amount || 0).toFixed(2)}
+                            </span>
+                        </div>
+                    ))}
+                </div>
+                <div className="p-5 border-t border-zinc-200 bg-zinc-50/50 flex justify-between items-center">
+                    <span className="font-bold text-zinc-600 uppercase text-sm">Total</span>
+                    <span className="text-2xl font-black text-black">
+                        {activeCurrency === 'USD' ? 'US$' : '$'} {(totalAmount || 0).toFixed(2)}
+                    </span>
+                </div>
+            </GlassCard>
+
+            {/* Forma de envío */}
+            {shippingData && (
+                <GlassCard className="space-y-5">
+                    <h3 className="font-bold text-zinc-800 flex items-center gap-2">
+                        <Truck size={20} /> Forma de Envío
+                    </h3>
+
+                    <select
+                        value={selectedFormaEnvio || ''}
+                        onChange={e => setSelectedFormaEnvio(Number(e.target.value))}
+                        className="w-full p-3 border border-zinc-300 rounded-xl bg-white text-zinc-800 font-medium focus:outline-none focus:ring-2 focus:ring-black/10"
+                    >
+                        {shippingData.formasEnvio.map(f => (
+                            <option key={f.ID} value={f.ID}>{f.Nombre}</option>
+                        ))}
+                    </select>
+
+                    {/* Si es encomienda: agencia + dirección */}
+                    {isEncomienda && (
+                        <div className="space-y-4 pt-2">
+                            {/* Agencia */}
+                            <div>
+                                <label className="block text-sm font-bold text-zinc-600 mb-2 uppercase">Agencia</label>
+                                <select
+                                    value={selectedAgencia || ''}
+                                    onChange={e => setSelectedAgencia(Number(e.target.value))}
+                                    className="w-full p-3 border border-zinc-300 rounded-xl bg-white text-zinc-800 font-medium focus:outline-none focus:ring-2 focus:ring-black/10"
+                                >
+                                    {shippingData.agencias.map(a => (
+                                        <option key={a.ID} value={a.ID}>{a.Nombre}</option>
+                                    ))}
+                                </select>
+                            </div>
+
+                            {/* Dirección */}
+                            <div>
+                                <label className="block text-sm font-bold text-zinc-600 mb-2 uppercase">Dirección de Envío</label>
+                                {(shippingData.defaultDireccion || shippingData.direccionesGuardadas?.length > 0) ? (
+                                    <div className="space-y-2">
+                                        {/* Dirección principal */}
+                                        {shippingData.defaultDireccion && (
+                                            <label
+                                                className={`flex items-center justify-between p-3 rounded-xl border cursor-pointer transition-all ${selectedDireccion === shippingData.defaultDireccion ? 'border-black bg-zinc-50 ring-1 ring-black' : 'border-zinc-200 hover:border-zinc-400'}`}
+                                                onClick={() => setSelectedDireccion(shippingData.defaultDireccion)}
+                                            >
+                                                <div className="flex items-center gap-3">
+                                                    <div className={`w-4 h-4 rounded-full border-2 flex items-center justify-center ${selectedDireccion === shippingData.defaultDireccion ? 'border-black' : 'border-zinc-300'}`}>
+                                                        {selectedDireccion === shippingData.defaultDireccion && <div className="w-2 h-2 rounded-full bg-black" />}
+                                                    </div>
+                                                    <div>
+                                                        <span className="text-sm font-bold text-zinc-800">📍 Principal</span>
+                                                        <p className="text-sm text-zinc-600">{shippingData.defaultDireccion}</p>
+                                                    </div>
+                                                </div>
+                                            </label>
+                                        )}
+
+                                        {/* Direcciones guardadas */}
+                                        {shippingData.direccionesGuardadas?.map((d, idx) => (
+                                            <div
+                                                key={d.ID}
+                                                className={`flex items-center justify-between p-3 rounded-xl border cursor-pointer transition-all ${selectedDireccion === d.Direccion ? 'border-black bg-zinc-50 ring-1 ring-black' : 'border-zinc-200 hover:border-zinc-400'}`}
+                                                onClick={() => setSelectedDireccion(d.Direccion)}
+                                            >
+                                                <div className="flex items-center gap-3">
+                                                    <div className={`w-4 h-4 rounded-full border-2 flex items-center justify-center flex-shrink-0 ${selectedDireccion === d.Direccion ? 'border-black' : 'border-zinc-300'}`}>
+                                                        {selectedDireccion === d.Direccion && <div className="w-2 h-2 rounded-full bg-black" />}
+                                                    </div>
+                                                    <div>
+                                                        <span className="text-sm font-bold text-zinc-800">{d.Alias || 'Dirección guardada'}</span>
+                                                        <p className="text-sm text-zinc-600">
+                                                            {d.Direccion}
+                                                            {d.Ciudad ? `, ${d.Ciudad}` : ''}
+                                                            {d.Localidad ? ` (${d.Localidad})` : ''}
+                                                        </p>
+                                                    </div>
+                                                </div>
+                                                {/* No permitir eliminar la primera dirección si no hay dirección principal */}
+                                                {(idx > 0 || shippingData.defaultDireccion) && (
+                                                    <button
+                                                        onClick={(e) => { e.preventDefault(); e.stopPropagation(); handleDeleteAddress(d.ID); }}
+                                                        className="text-zinc-400 hover:text-red-500 transition-colors p-1"
+                                                    >
+                                                        <Trash2 size={16} />
+                                                    </button>
+                                                )}
+                                            </div>
+                                        ))}
+                                    </div>
+                                ) : (
+                                    <p className="text-sm text-zinc-500 italic">No tenés direcciones guardadas. Agregá una abajo.</p>
+                                )}
+                            </div>
+
+                            {/* Agregar nueva dirección */}
+                            {(shippingData.direccionesGuardadas?.length || 0) < 3 && (
+                                <div>
+                                    {!showAddAddress ? (
+                                        <button
+                                            onClick={() => setShowAddAddress(true)}
+                                            className="flex items-center gap-2 text-sm font-bold text-zinc-500 hover:text-black transition-colors"
+                                        >
+                                            <Plus size={16} /> Agregar nueva dirección
+                                        </button>
+                                    ) : (
+                                        <div className="space-y-3 p-4 bg-zinc-50 rounded-xl border border-zinc-200">
+                                            <input
+                                                type="text"
+                                                placeholder='Alias (ej: "Oficina")'
+                                                value={newAlias}
+                                                onChange={e => setNewAlias(e.target.value)}
+                                                className="w-full p-2.5 border border-zinc-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-black/10"
+                                            />
+                                            <input
+                                                type="text"
+                                                placeholder="Dirección completa"
+                                                value={newDireccion}
+                                                onChange={e => setNewDireccion(e.target.value)}
+                                                className="w-full p-2.5 border border-zinc-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-black/10"
+                                            />
+                                            <div className="grid grid-cols-2 gap-3">
+                                                <select
+                                                    value={newCiudad}
+                                                    onChange={e => { setNewCiudad(e.target.value); setNewLocalidad(''); }}
+                                                    className="w-full p-2.5 border border-zinc-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-black/10 bg-white"
+                                                >
+                                                    <option value="">Departamento...</option>
+                                                    {shippingData.departamentos?.map(d => (
+                                                        <option key={d.ID} value={d.Nombre}>{d.Nombre}</option>
+                                                    ))}
+                                                </select>
+                                                <select
+                                                    value={newLocalidad}
+                                                    onChange={e => setNewLocalidad(e.target.value)}
+                                                    className="w-full p-2.5 border border-zinc-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-black/10 bg-white"
+                                                    disabled={!newCiudad}
+                                                >
+                                                    <option value="">Localidad...</option>
+                                                    {(() => {
+                                                        const dept = shippingData.departamentos?.find(d => d.Nombre === newCiudad);
+                                                        if (!dept) return null;
+                                                        return shippingData.localidades?.filter(l => l.DepartamentoID === dept.ID).map(l => (
+                                                            <option key={l.ID} value={l.Nombre}>{l.Nombre}</option>
+                                                        ));
+                                                    })()}
+                                                </select>
+                                            </div>
+                                            <div className="flex gap-2">
+                                                <CustomButton onClick={handleAddAddress} variant="primary" className="text-sm py-2 px-4">
+                                                    Guardar
+                                                </CustomButton>
+                                                <button onClick={() => { setShowAddAddress(false); setNewAlias(''); setNewDireccion(''); setNewCiudad(''); setNewLocalidad(''); }} className="text-sm text-zinc-500 hover:text-black">
+                                                    Cancelar
+                                                </button>
+                                            </div>
+                                        </div>
+                                    )}
+                                </div>
+                            )}
+                        </div>
+                    )}
+                </GlassCard>
+            )}
+
+            {/* Botones finales */}
+            <div className="flex justify-between items-center">
+                <CustomButton
+                    onClick={() => downloadReceipt(pickupCode)}
+                    variant="secondary"
+                    icon={Download}
+                    className="py-3 px-6"
+                >
+                    Descargar Comprobante
+                </CustomButton>
+
+                {!user?.hasCredit && totalAmount > 0 && (
+                    <CustomButton
+                        onClick={handleProceed}
+                        isLoading={loading}
+                        variant="primary"
+                        icon={CreditCard}
+                        className="py-3 px-8 text-lg"
+                    >
+                        Ir a Pagar
+                    </CustomButton>
+                )}
+            </div>
+        </div>
+    );
+
+    // ========================
+    // STEP: SELECTION (default)
+    // ========================
     return (
         <div className="animate-fade-in space-y-6">
             <div className="flex items-center gap-4 mb-2">
@@ -368,13 +676,17 @@ export const PickupView = () => {
                         </thead>
                         <tbody>
                             {readyOrders.map((order, idx) => (
-                                <tr key={`${order.id}-${idx}`} className={`border-b border-zinc-100 hover:bg-zinc-50/50 transition-colors ${selectedOrders.includes(order.id) ? 'bg-zinc-50' : ''}`}>
+                                <tr
+                                    key={`${order.id}-${idx}`}
+                                    onClick={() => handleToggleOrder(order.id)}
+                                    className={`border-b border-zinc-100 hover:bg-zinc-50/50 transition-colors cursor-pointer ${selectedOrders.includes(order.id) ? 'bg-zinc-50' : ''}`}
+                                >
                                     <td className="p-4 text-center">
                                         <input
                                             type="checkbox"
                                             className="w-5 h-5 rounded border-zinc-300 text-black focus:ring-black cursor-pointer accent-black"
                                             checked={selectedOrders.includes(order.id)}
-                                            onChange={() => handleToggleOrder(order.id)}
+                                            readOnly
                                         />
                                     </td>
                                     <td className="p-4 font-mono font-medium text-zinc-700">{order.id}</td>
@@ -452,13 +764,37 @@ export const PickupView = () => {
                             </p>
                         </div>
                         <CustomButton
-                            onClick={handleProceed}
+                            onClick={async () => {
+                                // 1. Crear retiro
+                                const code = await handleCreatePickup();
+                                if (!code) return;
+
+                                // 2. Cargar datos de envío
+                                setLoadingShipping(true);
+                                try {
+                                    const res = await apiClient.get('/web-orders/shipping-data');
+                                    if (res.success) {
+                                        setShippingData(res.data);
+                                        setSelectedFormaEnvio(res.data.defaultFormaEnvioID || res.data.formasEnvio[0]?.ID);
+                                        setSelectedAgencia(res.data.defaultAgenciaID || res.data.agencias[0]?.ID);
+                                        setSelectedDireccion(res.data.defaultDireccion || '');
+                                    }
+                                } catch (e) {
+                                    console.error('Error cargando datos de envío:', e);
+                                }
+                                setLoadingShipping(false);
+
+                                // 3. Ir a confirmación
+                                setStep('confirmation');
+                                window.scrollTo({ top: 0, behavior: 'smooth' });
+                            }}
                             disabled={selectedOrders.length === 0}
+                            isLoading={loading || loadingShipping}
                             variant="primary"
                             icon={ChevronRight}
                             className="py-3 px-6"
                         >
-                            {user?.hasCredit || totalAmount === 0 ? 'Confirmar Retiro' : 'Ir a Pagar'}
+                            Confirmar Retiro
                         </CustomButton>
                     </div>
                 </div>

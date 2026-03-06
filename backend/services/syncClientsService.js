@@ -1,60 +1,45 @@
-const axios = require('axios');
 const { sql, getPool } = require('../config/db');
-const REACT_API_URL = process.env.REACT_API_URL;
-const REACT_API_KEY = process.env.REACT_API_KEY;
 
-// --- HELPER TOKEN ---
-async function getExternalToken() {
-    try {
-        const tokenRes = await axios.post(`${REACT_API_URL}/apilogin/generate-token`, {
-            apiKey: REACT_API_KEY
-        });
-        return tokenRes.data.token || tokenRes.data.accessToken || tokenRes.data;
-    } catch (e) {
-        console.error("[SyncClient] Error Token:", e.message);
-        return null;
-    }
-}
-
-// --- EXPORTAR A REACT ---
+// --- EXPORTAR/CREAR CLIENTE EN DB LOCAL ---
 // Retorna { success: true, reactId: '...', reactCode: '...' } o { success: false }
 exports.exportClientToReact = async (clientData) => {
     // clientData debe tener: Nombre, CodCliente, TelefonoTrabajo, Email, NombreFantasia, CioRuc, Direccion
     try {
-        console.log("[SyncClient] Exportando a React:", clientData.Nombre);
-        const token = await getExternalToken();
-        if (!token) throw new Error("No se pudo obtener token");
+        console.log("[SyncClient] Creando cliente en DB local:", clientData.Nombre);
+        const pool = await getPool();
 
-        const payload = {
-            CliCodigoCliente: clientData.Nombre,                   // SWAP: Nombre Local -> Código React
-            CliNombreApellido: String(clientData.CodCliente),      // SWAP: Código Local -> Nombre React
-            CliCelular: clientData.TelefonoTrabajo ? String(clientData.TelefonoTrabajo) : null,
-            CliMail: clientData.Email || null,
-            CliNombreEmpresa: clientData.NombreFantasia || null,
-            CliDocumento: clientData.CioRuc || null,
-            CliLocalidad: clientData.Ciudad || "Montevideo",
-            CliDireccion: clientData.Direccion || null,
-            TClIdTipoCliente: 1
-        };
+        // Verificar si ya existe
+        const check = await pool.request()
+            .input('Nom', sql.NVarChar(200), clientData.Nombre)
+            .query("SELECT CodCliente, CodigoReact, IDReact FROM dbo.Clientes WHERE Nombre = @Nom");
 
-        const response = await axios.post(`${REACT_API_URL}/apicliente/create`, payload, {
-            headers: { Authorization: `Bearer ${token}` }
-        });
+        if (check.recordset.length > 0) {
+            const existing = check.recordset[0];
+            console.log(`[SyncClient] Cliente ya existe: CodCliente=${existing.CodCliente}`);
+            return { success: true, reactCode: existing.CodigoReact || String(existing.CodCliente), reactId: existing.IDReact || String(existing.CodCliente), fullRes: existing };
+        }
 
-        // PARSEO RESPUESTA
-        let created = response.data;
-        if (created && created.data && !created.IdCliente) created = created.data;
-        if (created && created.cliente) created = created.cliente;
+        // Insertar nuevo
+        const safeStr = (val) => (val !== undefined && val !== null && val !== '') ? String(val) : null;
+        const result = await pool.request()
+            .input('Nom', sql.NVarChar(200), safeStr(clientData.Nombre))
+            .input('Fan', sql.NVarChar(200), safeStr(clientData.NombreFantasia))
+            .input('Tel', sql.NVarChar(50), safeStr(clientData.TelefonoTrabajo))
+            .input('Mail', sql.NVarChar(200), safeStr(clientData.Email))
+            .input('Ruc', sql.NVarChar(50), safeStr(clientData.CioRuc))
+            .input('Dir', sql.NVarChar(500), safeStr(clientData.Direccion || clientData.CliDireccion))
+            .query(`
+                INSERT INTO dbo.Clientes (Nombre, NombreFantasia, TelefonoTrabajo, Email, CioRuc, CliDireccion)
+                OUTPUT INSERTED.*
+                VALUES (@Nom, @Fan, @Tel, @Mail, @Ruc, @Dir)
+            `);
 
-        const nuevoCodigoReact = created.CodigoCliente || created.CliCodigoCliente || created.codigoCliente || created.CodCliente;
-        const nuevoIdReact = created.CliIdCliente || created.IdCliente || created.CliId || created.idCliente;
-
-        console.log(`[SyncClient] Creado en React. ID: ${nuevoIdReact}`);
-        return { success: true, reactCode: nuevoCodigoReact, reactId: nuevoIdReact, fullRes: created };
+        const created = result.recordset[0];
+        console.log(`[SyncClient] Creado en DB local. CodCliente: ${created.CodCliente}`);
+        return { success: true, reactCode: String(created.CodCliente), reactId: String(created.CodCliente), fullRes: created };
 
     } catch (error) {
         console.error("[SyncClient] Export Error:", error.message);
-        if (error.response) console.error("API Error Detail:", error.response.data);
         return { success: false, error: error.message };
     }
 };

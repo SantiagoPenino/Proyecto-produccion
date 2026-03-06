@@ -1,6 +1,5 @@
 const { getPool, sql } = require('../config/db');
-const REACT_API_URL = process.env.REACT_API_URL;
-const REACT_API_KEY = process.env.REACT_API_KEY;
+
 
 
 // Helper para registrar movimientos históricos
@@ -1611,19 +1610,7 @@ exports.getDepositStock = async (req, res) => {
     }
 };
 
-// Helper para Token Externo (copiado de syncClientsService para autonomia)
-async function getExternalToken() {
-    try {
-        const axios = require('axios');
-        const tokenRes = await axios.post(`${REACT_API_URL}/apilogin/generate-token`, {
-            apiKey: REACT_API_KEY
-        });
-        return tokenRes.data.token || tokenRes.data.accessToken || tokenRes.data;
-    } catch (e) {
-        console.error("[SyncLogistics] Error Token:", e.message);
-        return null;
-    }
-}
+// getExternalToken removido - erpSyncService maneja la escritura directa en DB
 
 const ERPSyncService = require('../services/erpSyncService');
 

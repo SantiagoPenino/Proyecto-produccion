@@ -1,9 +1,7 @@
 const { sql, getPool } = require('../config/db');
 const driveService = require('../services/driveService');
 const axios = require('axios');
-const { PDFDocument, StandardFonts, rgb } = require('pdf-lib');
-const REACT_API_URL = process.env.REACT_API_URL;
-const REACT_API_KEY = process.env.REACT_API_KEY;
+const { PDFDocument, StandardFonts, rgb } = require('pdf-lib')
 
 // --- CONSTANTES Y MAPEOS ---
 const SERVICE_TO_AREA_MAP = {
@@ -1182,20 +1180,9 @@ exports.updateAreaVisibility = async (req, res) => {
     }
 };
 
-// --- HELPER TOKEN EXTERNO ---
-async function getExternalToken() {
-    try {
-        const tokenRes = await axios.post(`${REACT_API_URL}/apilogin/generate-token`, {
-            apiKey: REACT_API_KEY
-        });
-        return tokenRes.data.token || tokenRes.data.accessToken || tokenRes.data;
-    } catch (e) {
-        console.error("Error obteniendo token externo:", e.message);
-        return null;
-    }
-}
+// getExternalToken removido - ya no se usa, los pagos se registran directamente en DB
 
-// --- NUEVO: OBTENER ÓRDENES PARA RETIRO (API EXTERNA) ---
+// --- OBTENER ÓRDENES PARA RETIRO (QUERY DIRECTA A DB) ---
 exports.getPickupOrders = async (req, res) => {
     try {
         const user = req.user;
@@ -1213,21 +1200,37 @@ exports.getPickupOrders = async (req, res) => {
 
         const idClienteString = clientRes.recordset[0].IDCliente;
 
-        // 2. Llamar API Externa
-        // Estados: Avisado, Ingresado, Para avisar
-        const url = `${REACT_API_URL}/apiordenes/datafilter?codigoCliente=${encodeURIComponent(idClienteString)}&estado=Avisado&estado=Ingresado&estado=Para+avisar`;
+        // 2. Query directa a OrdenesDeposito (reemplaza legacy API)
+        const ordersResult = await pool.request()
+            .input('idCliente', sql.VarChar, idClienteString)
+            .query(`
+                SELECT 
+                    o.OrdIdOrden AS IdOrden,
+                    o.OrdCodigoOrden AS CodigoOrden,
+                    o.OrdNombreTrabajo AS NombreTrabajo,
+                    o.OrdCantidad AS Cantidad,
+                    o.OrdCostoFinal AS CostoFinal,
+                    o.OrdFechaEstadoActual AS FechaEstado,
+                    e.EOrNombreEstado AS Estado,
+                    c.IDCliente AS IdCliente,
+                    c.TelefonoTrabajo AS Celular,
+                    c.Tipo AS TipoCliente,
+                    m.MonSimbolo
+                FROM OrdenesDeposito o WITH(NOLOCK)
+                LEFT JOIN EstadosOrdenes e WITH(NOLOCK) ON e.EOrIdEstadoOrden = o.OrdEstadoActual
+                LEFT JOIN Clientes c WITH(NOLOCK) ON c.CliIdCliente = o.CliIdCliente
+                LEFT JOIN Monedas m WITH(NOLOCK) ON m.MonIdMoneda = o.MonIdMoneda
+                WHERE c.IDCliente = @idCliente
+                AND e.EOrNombreEstado IN ('Avisado', 'Ingresado', 'Para avisar')
+            `);
 
-        const token = await getExternalToken();
-        const response = await axios.get(url, {
-            headers: { Authorization: `Bearer ${token}` }
-        });
-        const externalOrders = response.data;
+        const externalOrders = ordersResult.recordset;
 
-        if (!Array.isArray(externalOrders) || externalOrders.length === 0) {
+        if (!externalOrders || externalOrders.length === 0) {
             return res.json({ success: true, data: [] });
         }
 
-        // Cruzar con nuestros precios congelados y estado de pago en PedidosCobranza
+        // 3. Cruzar con precios congelados y estado de pago en PedidosCobranza
         const codigosList = externalOrders.map(o => o.CodigoOrden).filter(Boolean);
         let cobranzasMap = {};
         if (codigosList.length > 0) {
@@ -1255,19 +1258,18 @@ exports.getPickupOrders = async (req, res) => {
             return match ? parseFloat(match[1]) : 1;
         };
 
-        // 3. Mapear respuesta al formato frontend
+        // 4. Mapear respuesta al formato frontend
         const pickupOrders = externalOrders.map(o => {
             const docId = o.CodigoOrden || `#${o.IdOrden}`;
             const cob = cobranzasMap[docId];
 
-            // Si está congelado en la BD interna toma ese Monto, si no, primero el CostoFinal total (en vez de PrecioUnitario)
-            let finalAmount = cob ? parseFloat(cob.MontoTotal) : (parseFloat(o.CostoFinal) || parseFloat(o.PrecioUnitario) || 0);
+            let finalAmount = cob ? parseFloat(cob.MontoTotal) : (parseFloat(o.CostoFinal) || 0);
             let isPaid = cob ? cob.EstadoCobro === 'Pagado' : false;
 
             return {
                 id: docId,
-                rawId: o.IdOrden, // ID numérico puro para operaciones posteriores
-                desc: `${o.Producto} - ${o.NombreTrabajo}`,
+                rawId: o.IdOrden,
+                desc: o.NombreTrabajo || 'Pedido',
                 amount: finalAmount,
                 date: o.FechaEstado ? new Date(o.FechaEstado).toLocaleDateString('es-UY') : 'N/A',
                 status: isPaid ? 'PAGADO' : 'LISTO',
@@ -1275,10 +1277,10 @@ exports.getPickupOrders = async (req, res) => {
                 isPaid: isPaid,
                 currency: cob ? cob.Moneda : (o.MonSimbolo || '$'),
                 quantity: parseQuantity(o.Cantidad),
-                quantityStr: o.Cantidad || '1',
+                quantityStr: o.Cantidad ? String(o.Cantidad) : '1',
                 clientId: o.IdCliente || 'N/A',
-                contact: o.Celular || '',
-                clientType: o.TipoCliente || 'Comun'
+                contact: o.Celular ? o.Celular.trim() : '',
+                clientType: o.TipoCliente ? o.TipoCliente.trim() : 'Comun'
             };
         });
 
@@ -1306,141 +1308,180 @@ const parseAmount = (amt) => {
     return match ? parseFloat(match[1]) : 0;
 };
 
-// --- NUEVO: CREAR ORDEN DE RETIRO (API EXTERNA) ---
+// --- CREAR ORDEN DE RETIRO (QUERY DIRECTA A DB) ---
 exports.createPickupOrder = async (req, res) => {
-    const { selectedOrderIds, orders, totalCost, clientName, moneda } = req.body; // orders desde frontend (opcional)
-    let payload = null;
+    const { selectedOrderIds, orders, totalCost, clientName, moneda } = req.body;
 
-    // Si no hay orders ni IDs, error.
     if ((!selectedOrderIds || !selectedOrderIds.length) && (!orders || !orders.length)) {
         return res.status(400).json({ error: "No hay órdenes seleccionadas." });
     }
 
     try {
         const user = req.user;
-        const codCliente = clientName || (user ? user.codCliente : null); // Usamos el nombre real del cliente si viene
+        const codCliente = clientName || (user ? user.codCliente : null);
         if (!codCliente) return res.status(401).json({ error: "Usuario no identificado." });
 
-        // 5. POST to External API with Token
-        const tokenRes = await axios.post(`${REACT_API_URL}/apilogin/generate-token`, {
-            apiKey: REACT_API_KEY
-        });
-        const token = tokenRes.data.token;
-        const createUrl = `${REACT_API_URL}/apiordenesRetiro/crear`;
+        const pool = await getPool();
+        const UsuarioAlta = user?.id || 70;
+        const lugarRetiro = req.body.lugarRetiro || 5;
 
-        // Si el frontend ya envió las 'orders' formateadas
+        // Determinar las órdenes a incluir
+        let orderNumbers = [];
+        let rawOrderIds = [];
         if (orders && Array.isArray(orders) && orders.length > 0) {
-            payload = {
-                lugarRetiro: req.body.lugarRetiro || 5, // Debe ser NUMERO obligatoriamente
-                totalCost: req.body.totalCost || 0,     // Total a nivel de raiz
-                orders: orders
-            };
-        } else {
-            // Lógica anterior: Fetch datafilter
-            const pool = await getPool();
+            orderNumbers = orders.map(o => o.orderNumber);
+            rawOrderIds = orders.map(o => parseInt(o.OrdIdOrden, 10)).filter(id => !isNaN(id));
+        } else if (selectedOrderIds && selectedOrderIds.length > 0) {
+            // Buscar en OrdenesDeposito por los IDs seleccionados
             const clientRes = await pool.request()
                 .input('cod', sql.Int, user ? user.codCliente : 0)
                 .query("SELECT IDCliente FROM Clientes WHERE CodCliente = @cod");
-
             if (!clientRes.recordset.length) return res.status(404).json({ error: "Cliente no encontrado" });
             const idClienteString = clientRes.recordset[0].IDCliente;
 
-            // Fetch external
-            const url = `${REACT_API_URL}/apiordenes/datafilter?codigoCliente=${encodeURIComponent(idClienteString)}&estado=Avisado&estado=Ingresado&estado=Para+avisar`;
-            const response = await axios.get(url);
-            const externalOrders = response.data || [];
+            const ordersResult = await pool.request()
+                .input('idCliente', sql.VarChar, idClienteString)
+                .query(`
+                    SELECT o.OrdIdOrden, o.OrdCodigoOrden, o.OrdCostoFinal, m.MonSimbolo
+                    FROM OrdenesDeposito o WITH(NOLOCK)
+                    LEFT JOIN EstadosOrdenes e WITH(NOLOCK) ON e.EOrIdEstadoOrden = o.OrdEstadoActual
+                    LEFT JOIN Clientes c WITH(NOLOCK) ON c.CliIdCliente = o.CliIdCliente
+                    LEFT JOIN Monedas m WITH(NOLOCK) ON m.MonIdMoneda = o.MonIdMoneda
+                    WHERE c.IDCliente = @idCliente
+                    AND e.EOrNombreEstado IN ('Avisado', 'Ingresado', 'Para avisar')
+                `);
 
-            const payloadOrders = [];
-
-            // Helper local (duplicado pero seguro)
-            const parseQuantity = (qtyStr) => {
-                if (!qtyStr) return 1;
-                if (typeof qtyStr === 'number') return qtyStr;
-                const match = qtyStr.toString().match(/([\d\.]+)/);
-                return match ? parseFloat(match[1]) : 1;
-            };
-
-            for (const o of externalOrders) {
-                const orderIdFormatted = o.CodigoOrden || `#${o.IdOrden}`;
-                if (selectedOrderIds.includes(orderIdFormatted) || selectedOrderIds.includes(o.CodigoOrden) || selectedOrderIds.includes(o.IdOrden)) {
-                    const rawAmount = o.PrecioUnitario || o.CostoFinal || 0;
-                    const amount = parseAmount(rawAmount);
-                    const currency = o.MonSimbolo || '$';
-
-                    payloadOrders.push({
-                        orderNumber: String(o.IdOrden),
-                        meters: parseQuantity(o.Cantidad),
-                        costWithCurrency: `${currency} ${amount.toFixed(2)}`,
-                        estado: o.Estado
-                    });
+            for (const o of ordersResult.recordset) {
+                const docId = o.OrdCodigoOrden || `#${o.OrdIdOrden}`;
+                if (selectedOrderIds.includes(docId) || selectedOrderIds.includes(o.OrdCodigoOrden) || selectedOrderIds.includes(o.OrdIdOrden)) {
+                    orderNumbers.push(String(o.OrdIdOrden));
+                    rawOrderIds.push(o.OrdIdOrden);
                 }
             }
-
-            if (payloadOrders.length === 0) return res.status(400).json({ error: "Órdenes no encontradas en origen." });
-
-            payload = {
-                lugarRetiro: "5",
-                orders: payloadOrders
-            };
         }
 
-        const createRes = await axios.post(createUrl, payload, {
-            headers: { 'Authorization': `Bearer ${token}` }
-        });
+        if (orderNumbers.length === 0) return res.status(400).json({ error: "Órdenes no encontradas." });
 
-        // The external API responds with a nested object or direct property (OReIdOrdenRetiro)
-        const responseData = createRes.data;
+        // Validar orden y obtener tipo de cliente (usar ID numérico)
+        const firstRawId = rawOrderIds.length > 0 ? rawOrderIds[0] : parseInt(orderNumbers[0], 10);
+        const clientResult = await pool.request()
+            .input('OrderId', sql.Int, firstRawId)
+            .query(`
+                SELECT o.CliIdCliente, c.Tipo 
+                FROM OrdenesDeposito o WITH(NOLOCK)
+                JOIN Clientes c WITH(NOLOCK) ON c.CliIdCliente = o.CliIdCliente
+                WHERE o.OrdIdOrden = @OrderId
+            `);
 
-        // Extraemos el identificador generado externamente
-        let ordIdRetiro = responseData?.data?.OrdIdOrdenRetiro || responseData?.OReIdOrdenRetiro || responseData?.OrdIdRetiro || responseData?.id;
-
-        // Formateador: Asegurar que siempre inicie con 'R-' para la base local
-        if (ordIdRetiro && !String(ordIdRetiro).startsWith('R-')) {
-            ordIdRetiro = `R-${ordIdRetiro}`;
+        if (clientResult.recordset.length === 0) {
+            return res.status(404).json({ error: 'Orden o cliente no encontrado.' });
         }
 
-        // 6. NUEVO: Insertar en la tabla local (RetirosWeb)
-        if (ordIdRetiro) {
+        const clienteTipo = (clientResult.recordset[0].Tipo || '').trim();
+        // Tipo C=Comun, E=Especial, S=Semanal
+        let estadoOrdenRetiro = (clienteTipo === 'E' || clienteTipo === 'S') ? 4 : 1;
+
+        // Crear la orden de retiro en una transacción
+        const transaction = new sql.Transaction(pool);
+        await transaction.begin();
+
+        try {
+            // OReIdOrdenRetiro no es IDENTITY, generar manualmente
+            const maxIdRes = await transaction.request().query('SELECT ISNULL(MAX(OReIdOrdenRetiro), 0) + 1 AS NextId FROM OrdenesRetiro');
+            const OReIdOrdenRetiro = maxIdRes.recordset[0].NextId;
+
+            await transaction.request()
+                .input('OReId', sql.Int, OReIdOrdenRetiro)
+                .input('CostoTotal', sql.Float, totalCost || 0)
+                .input('LugarRetiro', sql.Int, lugarRetiro)
+                .input('FechaAlta', sql.DateTime, new Date())
+                .input('UsuarioAlta', sql.Int, UsuarioAlta)
+                .input('Estado', sql.Int, estadoOrdenRetiro)
+                .query(`
+                    INSERT INTO OrdenesRetiro (OReIdOrdenRetiro, OReCostoTotalOrden, LReIdLugarRetiro, OReFechaAlta, OReUsuarioAlta, OReEstadoActual, OReFechaEstadoActual)
+                    VALUES (@OReId, @CostoTotal, @LugarRetiro, @FechaAlta, @UsuarioAlta, @Estado, GETDATE());
+                `);
+
+            // Insertar histórico de estado
+            await transaction.request()
+                .input('OReId', sql.Int, OReIdOrdenRetiro)
+                .input('Estado', sql.Int, estadoOrdenRetiro)
+                .input('Fecha', sql.DateTime, new Date())
+                .input('Usuario', sql.Int, UsuarioAlta)
+                .query(`
+                    INSERT INTO HistoricoEstadosOrdenesRetiro (OReIdOrdenRetiro, EORIdEstadoOrden, HEOFechaEstado, HEOUsuarioAlta)
+                    VALUES (@OReId, @Estado, @Fecha, @Usuario);
+                `);
+
+            // Buscar IDs de las órdenes (usar rawOrderIds numéricos)
+            const idsToLink = rawOrderIds.length > 0 ? rawOrderIds : orderNumbers.map(n => parseInt(n, 10)).filter(id => !isNaN(id));
+            const orderIdParams = idsToLink.map((n, i) => `@oid${i}`).join(',');
+            const orderIdReq = transaction.request();
+            idsToLink.forEach((n, i) => orderIdReq.input(`oid${i}`, sql.Int, n));
+            const orderIdResults = await orderIdReq.query(`
+                SELECT OrdIdOrden FROM OrdenesDeposito WITH(NOLOCK) WHERE OrdIdOrden IN (${orderIdParams})
+            `);
+
+            // Insertar relaciones (RORIdOrdenRetiroOrden no es IDENTITY)
+            if (orderIdResults.recordset.length > 0) {
+                const maxRelRes = await transaction.request().query('SELECT ISNULL(MAX(RORIdOrdenRetiroOrden), 0) AS maxId FROM RelOrdenesRetiroOrdenes');
+                let nextRelId = maxRelRes.recordset[0].maxId + 1;
+                const relValues = orderIdResults.recordset.map(r => `(${nextRelId++}, ${OReIdOrdenRetiro}, ${r.OrdIdOrden})`).join(',');
+                await transaction.request().query(`INSERT INTO RelOrdenesRetiroOrdenes (RORIdOrdenRetiroOrden, OReIdOrdenRetiro, OrdIdOrden) VALUES ${relValues}`);
+
+                // Actualizar estado de las órdenes
+                const ordIds = orderIdResults.recordset.map(r => r.OrdIdOrden).join(',');
+                await transaction.request()
+                    .input('LugarRetiro', sql.Int, lugarRetiro)
+                    .input('OReId', sql.Int, OReIdOrdenRetiro)
+                    .query(`
+                        UPDATE OrdenesDeposito SET LReIdLugarRetiro = @LugarRetiro, OReIdOrdenRetiro = @OReId, OrdEstadoActual = 4, OrdFechaEstadoActual = GETDATE()
+                        WHERE OrdIdOrden IN (${ordIds});
+
+                        INSERT INTO HistoricoEstadosOrdenes (OrdIdOrden, EOrIdEstadoOrden, HEOFechaEstado, HEOUsuarioAlta)
+                        SELECT OrdIdOrden, 4, GETDATE(), ${UsuarioAlta} FROM OrdenesDeposito WHERE OrdIdOrden IN (${ordIds});
+                    `);
+            }
+
+            await transaction.commit();
+
+            const ordIdRetiro = `R-${OReIdOrdenRetiro}`;
+
+            // Insertar en RetirosWeb (replica local)
             try {
-                // Determinar moneda provista o por defecto "UYU"
-                let targetCurrency = "UYU";
-                if (moneda) {
-                    targetCurrency = moneda;
-                } else if (payload.orders && payload.orders.length > 0) {
-                    // Try to infer from first order if not explicitly sent
-                    const firstCost = payload.orders[0].costWithCurrency || '';
+                let targetCurrency = moneda || "UYU";
+                if (!moneda && orders && orders.length > 0) {
+                    const firstCost = orders[0].costWithCurrency || '';
                     if (firstCost.includes('USD') || firstCost.includes('U$S')) targetCurrency = 'USD';
                 }
 
-                const pool = await getPool();
                 await pool.request()
-                    .input('Ord', sql.NVarChar, String(ordIdRetiro))
-                    .input('Monto', sql.Decimal(18, 2), payload.totalCost || 0)
+                    .input('Ord', sql.NVarChar, ordIdRetiro)
+                    .input('Monto', sql.Decimal(18, 2), totalCost || 0)
                     .input('Moneda', sql.NVarChar, targetCurrency)
-                    .input('Ref', sql.NVarChar, null)     // Sin pago inicial
-                    .input('Est', sql.Int, 1)             // 1 = Ingresado
-                    .input('CodCliente', sql.VarChar, String(codCliente)) // clientName se pasa aquí
-                    .input('BultosJSON', sql.NVarChar, JSON.stringify(payload.orders || []))
-                    .query(`
-                        INSERT INTO RetirosWeb (OrdIdRetiro, Monto, Moneda, ReferenciaPago, Estado, CodCliente, BultosJSON)
-                        VALUES (@Ord, @Monto, @Moneda, @Ref, @Est, @CodCliente, @BultosJSON)
-                    `);
+                    .input('Ref', sql.NVarChar, null)
+                    .input('Est', sql.Int, 1)
+                    .input('CodCliente', sql.VarChar, String(codCliente))
+                    .input('BultosJSON', sql.NVarChar, JSON.stringify(orders || []))
+                    .query(`INSERT INTO RetirosWeb (OrdIdRetiro, Monto, Moneda, ReferenciaPago, Estado, CodCliente, BultosJSON) VALUES (@Ord, @Monto, @Moneda, @Ref, @Est, @CodCliente, @BultosJSON)`);
             } catch (dbErr) {
-                console.error("Advertencia: No se pudo replicar localmente en RetirosWeb:", dbErr.message);
-                // No hacemos 'throw' para no deshacer la compra que ya se procesó en el proveedor.
+                console.error("Advertencia: No se pudo replicar en RetirosWeb:", dbErr.message);
             }
-        }
 
-        res.json({ success: true, data: responseData, ordIdGenerada: ordIdRetiro });
+            // Emitir socket
+            const io = req.app.get('socketio');
+            if (io) io.emit('actualizado', { type: 'actualizacion' });
+
+            res.json({ success: true, data: { OReIdOrdenRetiro }, ordIdGenerada: ordIdRetiro });
+
+        } catch (txErr) {
+            try { await transaction.rollback(); } catch (e) { }
+            throw txErr;
+        }
 
     } catch (error) {
         console.error("Error creating pickup order:", error);
-        // The external API returns text/HTML on error sometimes, or a JSON snippet
-        let detail = error.message;
-        if (error.response && error.response.data) {
-            detail = typeof error.response.data === 'object' ? JSON.stringify(error.response.data) : error.response.data;
-        }
-        res.status(500).json({ error: "Error al generar la orden de retiro externa. Detalle: " + detail });
+        res.status(500).json({ error: "Error al generar la orden de retiro. Detalle: " + error.message });
     }
 };
 
@@ -1652,17 +1693,68 @@ exports.handyWebhook = async (req, res) => {
                         orderNumbers: orderNumbers
                     };
 
-                    console.log('[HANDY WEBHOOK] Notificando pago a API React...', JSON.stringify(payloadPago));
+                    console.log('[HANDY WEBHOOK] Registrando pago directamente en DB...', JSON.stringify(payloadPago));
 
-                    const token = await getExternalToken();
-                    if (token) {
-                        const reactRes = await axios.post(`${REACT_API_URL}/apipagos/realizarPago`, payloadPago, {
-                            headers: { Authorization: `Bearer ${token}` }
-                        });
-                        console.log('[HANDY WEBHOOK] ✅ API React notificada:', reactRes.data);
+                    // --- MIGRACIÓN: Escribir directamente en DB en vez de llamar a API React ---
+                    const ordenRetiroId = parseInt(String(payloadPago.ordenRetiro).replace(/^R-0*/, ''), 10);
+                    if (!isNaN(ordenRetiroId)) {
+                        // Determinar nuevo estado de la orden de retiro
+                        const retiroState = await pool.request()
+                            .input('RID', sql.Int, ordenRetiroId)
+                            .query('SELECT OReEstadoActual FROM OrdenesRetiro WITH(NOLOCK) WHERE OReIdOrdenRetiro = @RID');
+
+                        const estadoActual = retiroState.recordset[0]?.OReEstadoActual || 1;
+                        const nuevoEstado = estadoActual === 1 ? 3 : 8; // 1→3 (Ingresado→Abonado), otro→8 (Abonado de antemano)
+                        const usuarioId = 70; // PRODUCCION user
+
+                        // 1. INSERT Pago
+                        const pagoResult = await pool.request()
+                            .input('MetodoPago', sql.Int, payloadPago.metodoPagoId)
+                            .input('Moneda', sql.Int, payloadPago.monedaId)
+                            .input('Monto', sql.Float, payloadPago.monto)
+                            .input('Usr', sql.Int, usuarioId)
+                            .query(`
+                                INSERT INTO Pagos (MPaIdMetodoPago, PagIdMonedaPago, PagMontoPago, PagFechaPago, PagUsuarioAlta)
+                                OUTPUT INSERTED.PagIdPago
+                                VALUES (@MetodoPago, @Moneda, @Monto, GETDATE(), @Usr)
+                            `);
+                        const pagoId = pagoResult.recordset[0].PagIdPago;
+
+                        // 2. UPDATE OrdenesRetiro
+                        await pool.request()
+                            .input('RID', sql.Int, ordenRetiroId)
+                            .input('Estado', sql.Int, nuevoEstado)
+                            .input('PagoId', sql.Int, pagoId)
+                            .query(`
+                                UPDATE OrdenesRetiro SET PagIdPago = @PagoId, OReEstadoActual = @Estado, OReFechaEstadoActual = GETDATE(), ORePasarPorCaja = 0
+                                WHERE OReIdOrdenRetiro = @RID
+                            `);
+
+                        // 3. INSERT Historico Retiro
+                        await pool.request()
+                            .input('RID', sql.Int, ordenRetiroId)
+                            .input('Estado', sql.Int, nuevoEstado)
+                            .input('Usr', sql.Int, usuarioId)
+                            .query(`INSERT INTO HistoricoEstadosOrdenesRetiro (OReIdOrdenRetiro, EORIdEstadoOrden, HEOFechaEstado, HEOUsuarioAlta) VALUES (@RID, @Estado, GETDATE(), @Usr)`);
+
+                        // 4. UPDATE Ordenes + Historico
+                        if (payloadPago.orderNumbers && payloadPago.orderNumbers.length > 0) {
+                            const safeIds = payloadPago.orderNumbers.filter(n => Number.isInteger(n) && n > 0);
+                            if (safeIds.length > 0) {
+                                await pool.request()
+                                    .input('PagoId', sql.Int, pagoId)
+                                    .query(`UPDATE OrdenesDeposito SET PagIdPago = @PagoId, OrdEstadoActual = 7, OrdFechaEstadoActual = GETDATE() WHERE OrdIdOrden IN (${safeIds.join(',')})`);
+
+                                const histValues = safeIds.map(id => `(${id}, 7, GETDATE(), ${usuarioId})`).join(', ');
+                                await pool.request().query(`INSERT INTO HistoricoEstadosOrdenes (OrdIdOrden, EOrIdEstadoOrden, HEOFechaEstado, HEOUsuarioAlta) VALUES ${histValues}`);
+                            }
+                        }
+
+                        console.log(`[HANDY WEBHOOK] ✅ Pago registrado en DB: PagoId=${pagoId}, OrdenRetiro=${ordenRetiroId}`);
                     } else {
-                        console.error('[HANDY WEBHOOK] No se pudo obtener token para notificar a React');
+                        console.warn('[HANDY WEBHOOK] No se pudo parsear ordenRetiroId:', payloadPago.ordenRetiro);
                     }
+
                 } else {
                     console.warn(`[HANDY WEBHOOK] No se encontró transacción ${transactionId} en HandyTransactions`);
                 }
@@ -1849,5 +1941,144 @@ exports.handyRefundWebhook = async (req, res) => {
 
     } catch (e) {
         console.error("[HANDY REFUND WEBHOOK] Error procesando evento:", e.message);
+    }
+};
+
+// --- SHIPPING DATA (para página de confirmación de retiro) ---
+exports.getShippingData = async (req, res) => {
+    try {
+        const user = req.user;
+        const codCliente = user ? user.codCliente : null;
+        if (!codCliente) return res.status(401).json({ error: "Usuario no identificado." });
+
+        const pool = await getPool();
+
+        // 1. Datos del cliente (dirección default, forma envío, agencia)
+        const clientRes = await pool.request()
+            .input('cod', sql.Int, codCliente)
+            .query(`
+                SELECT CliIdCliente, CliDireccion, FormaEnvioID, AgenciaID, Nombre
+                FROM Clientes WHERE CodCliente = @cod
+            `);
+
+        if (!clientRes.recordset.length) return res.status(404).json({ error: "Cliente no encontrado" });
+        const cliente = clientRes.recordset[0];
+
+        // 2. Formas de envío
+        const formasRes = await pool.request().query('SELECT ID, Nombre FROM FormasEnvio WHERE ID IN (1, 2) ORDER BY ID');
+
+        // 3. Agencias
+        const agenciasRes = await pool.request().query('SELECT ID, Nombre FROM Agencias ORDER BY Nombre');
+
+        // 4. Direcciones guardadas del cliente (max 3)
+        const direccionesRes = await pool.request()
+            .input('cliId', sql.Int, cliente.CliIdCliente)
+            .query('SELECT ID, Alias, Direccion, AgenciaID, Ciudad, Localidad FROM DireccionesEnvioCliente WHERE CliIdCliente = @cliId ORDER BY FechaCreacion');
+
+        // 5. Departamentos y Localidades
+        const deptosRes = await pool.request().query('SELECT ID, Nombre FROM Departamentos ORDER BY Nombre');
+        const localidadesRes = await pool.request().query('SELECT ID, DepartamentoID, Nombre FROM Localidades ORDER BY Nombre');
+
+        res.json({
+            success: true,
+            data: {
+                formasEnvio: formasRes.recordset,
+                agencias: agenciasRes.recordset,
+                defaultFormaEnvioID: cliente.FormaEnvioID,
+                defaultAgenciaID: cliente.AgenciaID,
+                defaultDireccion: (cliente.CliDireccion || '').trim(),
+                direccionesGuardadas: direccionesRes.recordset,
+                departamentos: deptosRes.recordset,
+                localidades: localidadesRes.recordset
+            }
+        });
+    } catch (err) {
+        console.error("Error en getShippingData:", err.message);
+        res.status(500).json({ error: "Error al obtener datos de envío." });
+    }
+};
+
+// --- GUARDAR DIRECCIÓN ---
+exports.saveAddress = async (req, res) => {
+    try {
+        const user = req.user;
+        const codCliente = user ? user.codCliente : null;
+        if (!codCliente) return res.status(401).json({ error: "Usuario no identificado." });
+
+        const { alias, direccion, agenciaID, ciudad, localidad } = req.body;
+        if (!direccion || !direccion.trim()) return res.status(400).json({ error: "La dirección es obligatoria." });
+
+        const pool = await getPool();
+
+        // Obtener CliIdCliente
+        const clientRes = await pool.request()
+            .input('cod', sql.Int, codCliente)
+            .query('SELECT CliIdCliente FROM Clientes WHERE CodCliente = @cod');
+        if (!clientRes.recordset.length) return res.status(404).json({ error: "Cliente no encontrado" });
+        const cliId = clientRes.recordset[0].CliIdCliente;
+
+        // Verificar que no tenga más de 3
+        const countRes = await pool.request()
+            .input('cliId', sql.Int, cliId)
+            .query('SELECT COUNT(*) AS total FROM DireccionesEnvioCliente WHERE CliIdCliente = @cliId');
+
+        if (countRes.recordset[0].total >= 3) {
+            return res.status(400).json({ error: "Ya tienes el máximo de 3 direcciones guardadas." });
+        }
+
+        // Insertar
+        const insertRes = await pool.request()
+            .input('cliId', sql.Int, cliId)
+            .input('alias', sql.NVarChar(50), (alias || '').trim().substring(0, 50))
+            .input('direccion', sql.NVarChar(200), direccion.trim().substring(0, 200))
+            .input('agenciaID', sql.Int, agenciaID || null)
+            .input('ciudad', sql.NVarChar(100), (ciudad || '').trim().substring(0, 100))
+            .input('localidad', sql.NVarChar(100), (localidad || '').trim().substring(0, 100))
+            .query(`
+                INSERT INTO DireccionesEnvioCliente (CliIdCliente, Alias, Direccion, AgenciaID, Ciudad, Localidad)
+                OUTPUT INSERTED.ID, INSERTED.Alias, INSERTED.Direccion, INSERTED.AgenciaID, INSERTED.Ciudad, INSERTED.Localidad
+                VALUES (@cliId, @alias, @direccion, @agenciaID, @ciudad, @localidad)
+            `);
+
+        res.json({ success: true, data: insertRes.recordset[0] });
+    } catch (err) {
+        console.error("Error en saveAddress:", err.message);
+        res.status(500).json({ error: "Error al guardar dirección." });
+    }
+};
+
+// --- ELIMINAR DIRECCIÓN ---
+exports.deleteAddress = async (req, res) => {
+    try {
+        const user = req.user;
+        const codCliente = user ? user.codCliente : null;
+        if (!codCliente) return res.status(401).json({ error: "Usuario no identificado." });
+
+        const addressId = parseInt(req.params.id, 10);
+        if (!addressId) return res.status(400).json({ error: "ID de dirección inválido." });
+
+        const pool = await getPool();
+
+        // Obtener CliIdCliente
+        const clientRes = await pool.request()
+            .input('cod', sql.Int, codCliente)
+            .query('SELECT CliIdCliente FROM Clientes WHERE CodCliente = @cod');
+        if (!clientRes.recordset.length) return res.status(404).json({ error: "Cliente no encontrado" });
+        const cliId = clientRes.recordset[0].CliIdCliente;
+
+        // Eliminar (solo si pertenece al cliente)
+        const delRes = await pool.request()
+            .input('id', sql.Int, addressId)
+            .input('cliId', sql.Int, cliId)
+            .query('DELETE FROM DireccionesEnvioCliente WHERE ID = @id AND CliIdCliente = @cliId');
+
+        if (delRes.rowsAffected[0] === 0) {
+            return res.status(404).json({ error: "Dirección no encontrada." });
+        }
+
+        res.json({ success: true });
+    } catch (err) {
+        console.error("Error en deleteAddress:", err.message);
+        res.status(500).json({ error: "Error al eliminar dirección." });
     }
 };

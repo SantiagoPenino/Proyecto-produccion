@@ -1,4 +1,6 @@
 import React, { useState, useEffect } from 'react';
+import Lottie from 'lottie-react';
+import loadingAnim from '../../assets/animations/loading.json';
 import { useAuth } from '../auth/AuthContext';
 import { apiClient } from '../api/apiClient';
 import { CreditCard, AlertCircle, ChevronRight, CheckCircle, Package } from 'lucide-react';
@@ -66,9 +68,9 @@ export const UnpaidPickupsView = () => {
 
     if (loading) {
         return (
-            <div className="flex flex-col justify-center items-center py-20 animate-pulse">
-                <CreditCard className="text-zinc-300 mb-4" size={48} />
-                <span className="text-zinc-400 font-bold text-lg">Buscando pagos pendientes...</span>
+            <div className="flex flex-col justify-center items-center min-h-[60vh]">
+                <Lottie animationData={loadingAnim} loop style={{ width: 250, height: 250 }} />
+                <span className="font-bold uppercase -mt-20 animate-pulse">Buscando pagos pendientes...</span>
             </div>
         );
     }

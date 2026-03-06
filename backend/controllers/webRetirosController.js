@@ -1,7 +1,9 @@
 const { getPool, sql } = require('../config/db');
 const axios = require('axios');
-const REACT_API_URL = process.env.REACT_API_URL;
-const REACT_API_KEY = process.env.REACT_API_KEY;
+const moment = require('moment-timezone');
+
+// Importar funciones del controller de órdenes de retiro local
+const ordenesRetiroController = require('./ordenesRetiroController');
 
 /**
  * Endpoint nativo para recibir y registrar directamente un retiro web
@@ -63,8 +65,69 @@ const runSyncRetirosCore = async () => {
     const pool = await getPool();
     const transaction = new sql.Transaction(pool);
 
-    const response = await axios.get(`${REACT_API_URL}/apiordenesRetiro/estados?estados=1,3,4,7,8,5,6`);
-    const retirosExternos = response.data;
+    // Query directa a DB en vez de llamar al legacy API
+    const queryResult = await pool.request().query(`
+        SELECT 
+            r.OReIdOrdenRetiro, r.OReCostoTotalOrden, r.OReFechaAlta, r.OReUsuarioAlta,
+            r.OReEstadoActual, r.PagIdPago, r.ORePasarPorCaja,
+            lr.LReNombreLugar AS lugarRetiro,
+            er.EORNombreEstado AS estado,
+            o.OrdIdOrden AS orderId, o.OrdCodigoOrden AS orderNumber,
+            o.OrdEstadoActual AS orderEstado, o.OrdCostoFinal as costoFinal,
+            monOrden.MonSimbolo AS orderMonedaSimbolo,
+            p.MPaIdMetodoPago AS orderIdMetodoPago,
+            mp.MPaDescripcionMetodo AS orderMetodoPago,
+            monPago.MonSimbolo AS monetPagoSimbolo,
+            p.PagMontoPago AS orderMontoPago, p.PagFechaPago AS orderFechaPago,
+            p.PagRutaComprobante AS comprobante,
+            c.CodigoReact AS CliCodigoCliente, c.Tipo AS TClDescripcion
+        FROM OrdenesRetiro r WITH(NOLOCK)
+        LEFT JOIN LugaresRetiro lr WITH(NOLOCK) ON lr.LReIdLugarRetiro = r.LReIdLugarRetiro
+        LEFT JOIN EstadosOrdenesRetiro er WITH(NOLOCK) ON er.EORIdEstadoOrden = r.OReEstadoActual
+        LEFT JOIN OrdenesDeposito o WITH(NOLOCK) ON o.OReIdOrdenRetiro = r.OReIdOrdenRetiro
+        LEFT JOIN Monedas monOrden WITH(NOLOCK) ON monOrden.MonIdMoneda = o.MonIdMoneda
+        LEFT JOIN Pagos p WITH(NOLOCK) ON p.PagIdPago = o.PagIdPago
+        LEFT JOIN Monedas monPago WITH(NOLOCK) ON monPago.MonIdMoneda = p.PagIdMonedaPago
+        LEFT JOIN MetodosPagos mp WITH(NOLOCK) ON mp.MPaIdMetodoPago = p.MPaIdMetodoPago
+        LEFT JOIN Clientes c WITH(NOLOCK) ON c.CliIdCliente = o.CliIdCliente
+        WHERE r.OReEstadoActual IN (1,3,4,7,8,5,6)
+        AND (CAST(DATEADD(d,-7,GETDATE()) AS DATE) <= CAST(r.OReFechaAlta AS DATE) OR r.OReEstadoActual NOT IN (5,6))
+    `);
+
+    // Procesar filas igual que ordenesRetiroController
+    const map = {};
+    for (const row of queryResult.recordset) {
+        if (!map[row.OReIdOrdenRetiro]) {
+            map[row.OReIdOrdenRetiro] = {
+                ordenDeRetiro: `R-${String(row.OReIdOrdenRetiro).padStart(4, '0')}`,
+                totalCost: parseFloat(row.OReCostoTotalOrden).toFixed(2),
+                lugarRetiro: row.lugarRetiro || 'Desconocido',
+                fechaAlta: row.OReFechaAlta,
+                usuarioAlta: row.OReUsuarioAlta,
+                estado: row.estado || 'Desconocido',
+                pagorealizado: row.PagIdPago ? 1 : 0,
+                metodoPago: row.orderMetodoPago,
+                montopagorealizado: row.PagIdPago ? `${row.monetPagoSimbolo || ''} ${parseFloat(row.orderMontoPago || 0).toFixed(2)}` : null,
+                fechapagooden: row.orderFechaPago,
+                comprobante: row.comprobante,
+                CliCodigoCliente: row.CliCodigoCliente || 'Desconocido',
+                TClDescripcion: row.TClDescripcion || 'Desconocido',
+                orders: []
+            };
+        }
+        if (row.orderId) {
+            map[row.OReIdOrdenRetiro].orders.push({
+                orderNumber: row.orderNumber, orderId: row.orderId,
+                orderEstado: row.orderEstado,
+                orderCosto: row.orderMonedaSimbolo ? `${row.orderMonedaSimbolo} ${parseFloat(row.costoFinal).toFixed(2)}` : null,
+                orderIdMetodoPago: row.orderIdMetodoPago,
+                orderMetodoPago: row.orderMetodoPago,
+                orderPago: row.monetPagoSimbolo ? `${row.monetPagoSimbolo} ${parseFloat(row.orderMontoPago).toFixed(2)}` : null,
+                orderFechaPago: row.orderFechaPago
+            });
+        }
+    }
+    const retirosExternos = Object.values(map);
 
     await transaction.begin();
 
@@ -143,46 +206,105 @@ exports.reportarPagoRetiro = async (req, res) => {
     const { ordenRetiro, monto, monedaId, metodoPagoId, orderNumbers } = req.body;
 
     try {
-        console.log(`[REPORTAR PAGO] Solicitando token a la central...`);
-        const tokenRes = await axios.post(`${API_BASE_URL}/apilogin/generate-token`, {
-            apiKey: "api_key_google_123sadas12513_user"
-        });
-
         const pool = await getPool();
+        const ordenRetiroId = parseInt(ordenRetiro.replace(/^R-0*/, ''), 10);
+        if (isNaN(ordenRetiroId)) return res.status(400).json({ error: "ordenRetiro inválido" });
 
-        const payloadPago = {
-            metodoPagoId,
-            monedaId,
-            monto,
-            ordenRetiro,
-            orderNumbers
-        };
+        console.log(`[REPORTAR PAGO] Procesando pago directo para ${ordenRetiro} (ID: ${ordenRetiroId})`);
 
-        console.log(`[REPORTAR PAGO] Ejecutando apipagos/realizarPago para ${ordenRetiro}`);
-        const responseApi = await axios.post(`${REACT_API_URL}/apipagos/realizarPago`, payloadPago, {
-            headers: { 'Authorization': `Bearer ${tokenRes.data.token}` }
-        });
+        // Validar que exista la orden
+        const ordRetResult = await pool.request()
+            .input('ID', sql.Int, ordenRetiroId)
+            .query('SELECT OReEstadoActual FROM OrdenesRetiro WITH(NOLOCK) WHERE OReIdOrdenRetiro = @ID');
 
-        if (responseApi.status === 200 || responseApi.data?.success || responseApi.data?.exitoso) {
-            try {
-                // Actualizar DB local (opcional/silencioso si falla)
-                await pool.request()
-                    .input('Ord', sql.NVarChar, ordenRetiro)
-                    .input('Est', sql.Int, 3) // 3 = Abonado
-                    .query(`UPDATE RetirosWeb SET Estado = @Est WHERE OrdIdRetiro = @Ord`);
-            } catch (errDb) {
-                console.error("Aviso: no se pudo actualizar bbdd local:", errDb);
+        if (ordRetResult.recordset.length === 0) throw new Error(`Orden de retiro ${ordenRetiroId} no encontrada`);
+
+        const estadoActual = ordRetResult.recordset[0].OReEstadoActual;
+        const nuevoEstado = estadoActual === 1 ? 3 : 8;
+        const usuarioId = req.user?.id || 70;
+
+        const transaction = new sql.Transaction(pool);
+        await transaction.begin();
+
+        try {
+            // Insertar pago
+            const pagoResult = await new sql.Request(transaction)
+                .input('metodoPagoId', sql.Int, metodoPagoId)
+                .input('monedaId', sql.Int, monedaId)
+                .input('monto', sql.Float, monto)
+                .input('fecha', sql.DateTime, new Date())
+                .input('usuarioId', sql.Int, usuarioId)
+                .query(`
+                    INSERT INTO Pagos (MPaIdMetodoPago, PagIdMonedaPago, PagMontoPago, PagFechaPago, PagUsuarioAlta)
+                    OUTPUT INSERTED.PagIdPago
+                    VALUES (@metodoPagoId, @monedaId, @monto, @fecha, @usuarioId)
+                `);
+
+            const pagoId = pagoResult.recordset[0].PagIdPago;
+
+            // Actualizar orden de retiro
+            await new sql.Request(transaction)
+                .input('ordenRetiroId', sql.Int, ordenRetiroId)
+                .input('nuevoEstado', sql.Int, nuevoEstado)
+                .input('pagoId', sql.Int, pagoId)
+                .query(`
+                    UPDATE OrdenesRetiro 
+                    SET PagIdPago = @pagoId, OReEstadoActual = @nuevoEstado, OReFechaEstadoActual = GETDATE(), ORePasarPorCaja = 0
+                    WHERE OReIdOrdenRetiro = @ordenRetiroId;
+                `);
+
+            // Histórico
+            await new sql.Request(transaction)
+                .input('ordenRetiroId', sql.Int, ordenRetiroId)
+                .input('nuevoEstado', sql.Int, nuevoEstado)
+                .input('usuarioId', sql.Int, usuarioId)
+                .query(`
+                    INSERT INTO HistoricoEstadosOrdenesRetiro (OReIdOrdenRetiro, EORIdEstadoOrden, HEOFechaEstado, HEOUsuarioAlta)
+                    VALUES (@ordenRetiroId, @nuevoEstado, GETDATE(), @usuarioId);
+                `);
+
+            // Actualizar órdenes individuales si hay orderNumbers
+            if (orderNumbers && orderNumbers.length > 0) {
+                const orderIdsList = orderNumbers.join(', ');
+                await new sql.Request(transaction)
+                    .input('pagoId', sql.Int, pagoId)
+                    .query(`
+                        UPDATE OrdenesDeposito SET PagIdPago = @pagoId, OrdEstadoActual = 7, OrdFechaEstadoActual = GETDATE()
+                        WHERE OrdIdOrden IN (${orderIdsList});
+                    `);
+
+                const historicoValues = orderNumbers.map(oid => `(${oid}, 7, GETDATE(), ${usuarioId})`).join(', ');
+                await new sql.Request(transaction).query(`
+                    INSERT INTO HistoricoEstadosOrdenes (OrdIdOrden, EOrIdEstadoOrden, HEOFechaEstado, HEOUsuarioAlta)
+                    VALUES ${historicoValues};
+                `);
             }
 
-            res.json({ success: true, message: 'Pago registrado correctamente en destino.', data: responseApi.data });
-        } else {
-            console.error("Respuesta no satisfactoria realizarPago:", responseApi.data);
-            throw new Error("Respuesta no satisfactoria de la API de Pagos");
+            await transaction.commit();
+
+            // Actualizar RetirosWeb local
+            try {
+                await pool.request()
+                    .input('Ord', sql.NVarChar, ordenRetiro)
+                    .input('Est', sql.Int, 3)
+                    .query(`UPDATE RetirosWeb SET Estado = @Est WHERE OrdIdRetiro = @Ord`);
+            } catch (errDb) {
+                console.error("Aviso: no se pudo actualizar RetirosWeb:", errDb.message);
+            }
+
+            const io = req.app.get('socketio');
+            if (io) io.emit('actualizado', { type: 'actualizacion' });
+
+            res.json({ success: true, message: 'Pago registrado correctamente.', pagoId });
+
+        } catch (txErr) {
+            try { await transaction.rollback(); } catch (e) { }
+            throw txErr;
         }
 
     } catch (err) {
         console.error("Error al reportar pago:", err);
-        res.status(500).json({ error: "Fallo al procesar el pago externo", details: err.message });
+        res.status(500).json({ error: "Fallo al procesar el pago", details: err.message });
     }
 };
 
@@ -415,41 +537,47 @@ exports.asignarRetiroAEstante = async (req, res) => {
 
             await transaction.commit();
 
-            // 4. NUEVO: Llamar a la API central "marcarpronto"
+            // 4. Marcar pronto en DB directamente (reemplaza llamada a API central)
             try {
-                // Sacamos la R- del ordenRetiro
-                const ordenLimpia = ordenRetiro.startsWith('R-') ? ordenRetiro.substring(2) : ordenRetiro;
+                const OReIdOrdenRetiro = parseInt(ordenRetiro.replace(/^R-0*/, ''), 10);
+                const fechaPronto = moment().tz('America/Montevideo').format('YYYY-MM-DD HH:mm:ss');
+                const UsuarioAlta = req.user?.id || 70;
 
-                console.log(`[PRONTO] ${ordenRetiro} -> ${ordenLimpia}`);
-                const tokenRes = await axios.post(`${REACT_API_URL}/apilogin/generate-token`, {
-                    apiKey: REACT_API_KEY
-                });
+                // Generar lista de códigos de órdenes escaneadas
+                const bultosLimpios = (scannedValues || []).filter(val => val && val.trim() !== '');
+                if (bultosLimpios.length > 0) {
+                    const inClause = bultosLimpios.map(v => `'${v.trim()}'`).join(',');
 
-                // Generar versiones con padding para lidiar con el tipado CHAR(20) o CHAR(50) 
-                // con espacios en blanco a la derecha que la base remota suele retornar.
-                const bultosLimpios = (scannedValues || []).filter(val => val && val.trim() !== "");
-                const bultosPadded = [];
-                bultosLimpios.forEach(b => {
-                    const trimmed = b.trim();
-                    bultosPadded.push(trimmed);
-                    for (let i = 1; i <= 30; i++) {
-                        bultosPadded.push(trimmed + " ".repeat(i));
-                    }
-                });
+                    await pool.request().query(`
+                        INSERT INTO HistoricoEstadosOrdenes (OrdIdOrden, EOrIdEstadoOrden, HEOFechaEstado, HEOUsuarioAlta)
+                        SELECT OrdIdOrden, 7, '${fechaPronto}', ${UsuarioAlta}
+                        FROM OrdenesDeposito WHERE OrdCodigoOrden IN (${inClause});
+                        
+                        UPDATE OrdenesDeposito SET OrdEstadoActual = 7, OrdFechaEstadoActual = '${fechaPronto}' WHERE OrdCodigoOrden IN (${inClause});
+                    `);
+                }
 
-                const payloadPronto = {
-                    ordenDeRetiro: String(ordenLimpia), // Enviar SIEMPRE como string para evitar crash de .replace
-                    scannedValues: bultosPadded
-                };
+                // Actualizar estado de la orden de retiro
+                const retRes = await pool.request()
+                    .input('ID', sql.Int, OReIdOrdenRetiro)
+                    .query('SELECT OReEstadoActual FROM OrdenesRetiro WITH(NOLOCK) WHERE OReIdOrdenRetiro = @ID');
 
+                if (retRes.recordset.length > 0) {
+                    const nuevoEstado = retRes.recordset[0].OReEstadoActual === 1 ? 7 : 8;
+                    await pool.request()
+                        .input('ID', sql.Int, OReIdOrdenRetiro)
+                        .input('EstID', sql.Int, nuevoEstado)
+                        .input('Fec', sql.DateTime, new Date(fechaPronto))
+                        .input('Usr', sql.Int, UsuarioAlta)
+                        .query(`
+                            UPDATE OrdenesRetiro SET OReEstadoActual = @EstID, OReFechaEstadoActual = @Fec WHERE OReIdOrdenRetiro = @ID;
+                            INSERT INTO HistoricoEstadosOrdenesRetiro (OReIdOrdenRetiro, EORIdEstadoOrden, HEOFechaEstado, HEOUsuarioAlta) VALUES (@ID, @EstID, @Fec, @Usr);
+                        `);
+                }
 
-                const responsePronto = await axios.post(`${REACT_API_URL}/apiordenesRetiro/marcarpronto`, payloadPronto, {
-                    headers: { 'Authorization': `Bearer ${tokenRes.data.token}` }
-                });
-                console.log(`[PRONTO] OK`, responsePronto.data?.message || '');
+                console.log(`[PRONTO] OK ${ordenRetiro}`);
             } catch (extErr) {
-                console.error(`[PRONTO] ERROR ${ordenRetiro}:`, extErr.response?.status || '', extErr.response?.data?.message || extErr.message);
-                // No abortamos la transacción local porque ya se guardó correctamente.
+                console.error(`[PRONTO] ERROR ${ordenRetiro}:`, extErr.message);
             }
 
             // EMITIR EVENTO SOCKET.IO
@@ -504,28 +632,30 @@ exports.marcarRetiroEntregado = async (req, res) => {
                     .query('UPDATE RetirosWeb SET Estado = 5 WHERE OrdIdRetiro = @Ord');
             }
 
-            // 3. Notificar a tu API externa para cada orden
+            // 3. Marcar entregadas en DB directamente
             try {
-                const tokenRes = await axios.post(`${REACT_API_URL}/apilogin/generate-token`, {
-                    apiKey: REACT_API_KEY
-                });
+                const fechaEntrega = moment().tz('America/Montevideo').format('YYYY-MM-DD HH:mm:ss');
+                const UsuarioAlta = req.user?.id || 70;
 
                 for (const ord of ordenesDeRetiro) {
-                    const ordenLimpia = ord.startsWith('R-') ? ord.substring(2) : ord;
-                    console.log(`[ENTREGADO MULTIPLE] ${ord} -> ${ordenLimpia}`);
+                    const OReId = parseInt(ord.replace(/^R-0*/, ''), 10);
+                    if (isNaN(OReId)) continue;
+                    console.log(`[ENTREGADO MULTIPLE] ${ord} -> ${OReId}`);
 
-                    const payloadEntregado = {
-                        ordenDeRetiro: String(ordenLimpia)
-                    };
-
-                    await axios.post(`${REACT_API_URL}/apiordenesRetiro/marcarOrdenEntregada`, payloadEntregado, {
-                        headers: { 'Authorization': `Bearer ${tokenRes.data.token}` }
-                    }).catch(err => {
-                        console.error(`Error al marcar entregada en central para ${ord}: ${err.message}`);
-                    });
+                    await new sql.Request(transaction)
+                        .input('ID', sql.Int, OReId)
+                        .input('Fec', sql.DateTime, new Date(fechaEntrega))
+                        .input('Usr', sql.Int, UsuarioAlta)
+                        .query(`
+                            INSERT INTO HistoricoEstadosOrdenes (OrdIdOrden, EOrIdEstadoOrden, HEOFechaEstado, HEOUsuarioAlta)
+                            SELECT OrdIdOrden, 9, @Fec, @Usr FROM OrdenesDeposito WHERE OReIdOrdenRetiro = @ID;
+                            UPDATE OrdenesDeposito SET OrdEstadoActual = 9, OrdFechaEstadoActual = @Fec WHERE OReIdOrdenRetiro = @ID;
+                            UPDATE OrdenesRetiro SET OReEstadoActual = 5, ORePasarPorCaja = 0, OReFechaEstadoActual = @Fec WHERE OReIdOrdenRetiro = @ID;
+                            INSERT INTO HistoricoEstadosOrdenesRetiro (OReIdOrdenRetiro, EORIdEstadoOrden, HEOFechaEstado, HEOUsuarioAlta) VALUES (@ID, 5, @Fec, @Usr);
+                        `);
                 }
             } catch (extErr) {
-                console.error(`[MARCAR ENTREGADO] ERROR general de central:`, extErr.message);
+                console.error(`[MARCAR ENTREGADO] ERROR:`, extErr.message);
             }
 
             await transaction.commit();
@@ -581,28 +711,30 @@ exports.marcarRetiroEntregadoMultiple = async (req, res) => {
                     `);
             }
 
-            // 3. Notificar a tu API externa para cada orden
+            // 3. Marcar entregadas en DB directamente
             try {
-                const tokenRes = await axios.post(`${REACT_API_URL}/apilogin/generate-token`, {
-                    apiKey: REACT_API_KEY
-                });
+                const fechaEntrega = moment().tz('America/Montevideo').format('YYYY-MM-DD HH:mm:ss');
+                const UsuarioAlta = req.user?.id || 70;
 
                 for (const ord of ordenesParaEntregar) {
-                    const ordenLimpia = ord.startsWith('R-') ? ord.substring(2) : ord;
-                    console.log(`[ENTREGADO MULTIPLE SELECCIÓN] ${ord} -> ${ordenLimpia}`);
+                    const OReId = parseInt(ord.replace(/^R-0*/, ''), 10);
+                    if (isNaN(OReId)) continue;
+                    console.log(`[ENTREGADO MULTIPLE SELECCIÓN] ${ord} -> ${OReId}`);
 
-                    const payloadEntregado = {
-                        ordenDeRetiro: String(ordenLimpia)
-                    };
-
-                    await axios.post(`${REACT_API_URL}/apiordenesRetiro/marcarOrdenEntregada`, payloadEntregado, {
-                        headers: { 'Authorization': `Bearer ${tokenRes.data.token}` }
-                    }).catch(err => {
-                        console.error(`Error al marcar entregada en central para ${ord}: ${err.message}`);
-                    });
+                    await new sql.Request(transaction)
+                        .input('ID', sql.Int, OReId)
+                        .input('Fec', sql.DateTime, new Date(fechaEntrega))
+                        .input('Usr', sql.Int, UsuarioAlta)
+                        .query(`
+                            INSERT INTO HistoricoEstadosOrdenes (OrdIdOrden, EOrIdEstadoOrden, HEOFechaEstado, HEOUsuarioAlta)
+                            SELECT OrdIdOrden, 9, @Fec, @Usr FROM OrdenesDeposito WHERE OReIdOrdenRetiro = @ID;
+                            UPDATE OrdenesDeposito SET OrdEstadoActual = 9, OrdFechaEstadoActual = @Fec WHERE OReIdOrdenRetiro = @ID;
+                            UPDATE OrdenesRetiro SET OReEstadoActual = 5, ORePasarPorCaja = 0, OReFechaEstadoActual = @Fec WHERE OReIdOrdenRetiro = @ID;
+                            INSERT INTO HistoricoEstadosOrdenesRetiro (OReIdOrdenRetiro, EORIdEstadoOrden, HEOFechaEstado, HEOUsuarioAlta) VALUES (@ID, 5, @Fec, @Usr);
+                        `);
                 }
             } catch (extErr) {
-                console.error(`[MARCAR ENTREGADO] ERROR general de central:`, extErr.message);
+                console.error(`[MARCAR ENTREGADO] ERROR:`, extErr.message);
             }
 
             await transaction.commit();
@@ -626,7 +758,7 @@ exports.marcarRetiroEntregadoMultiple = async (req, res) => {
 
 /**
  * Traer lista de métodos de pago desde la API central
- */
+ 
 exports.getPaymentMethods = async (req, res) => {
     try {
         console.log(`[PAYMENT METHODS] Solicitando token a la central...`);
@@ -644,11 +776,11 @@ exports.getPaymentMethods = async (req, res) => {
         console.error("[PAYMENT METHODS] Error al obtener métodos de pago:", err.response?.data || err.message);
         res.status(500).json({ error: "Fallo al obtener métodos de pago desde la API central", details: err.message });
     }
-};
+};*/
 
 /**
  * Traer órdenes para Caja
- */
+ 
 exports.getCajaOrdenes = async (req, res) => {
     try {
         const tokenRes = await axios.post(`${REACT_API_URL}/apilogin/generate-token`, {
@@ -663,11 +795,11 @@ exports.getCajaOrdenes = async (req, res) => {
         console.error("[CAJA ORDENES] Error al obtener órdenes de caja:", err.response?.data || err.message);
         res.status(500).json({ error: "Fallo al obtener órdenes de caja", details: err.message });
     }
-};
+};*/
 
 /**
  * Obtener cotización
- */
+ 
 exports.getCotizacion = async (req, res) => {
     try {
         const response = await axios.get(`${REACT_API_URL}/apicotizaciones/hoy`);
@@ -676,11 +808,11 @@ exports.getCotizacion = async (req, res) => {
         console.error("[COTIZACION] Error al obtener cotización:", err.response?.data || err.message);
         res.status(500).json({ error: "Fallo al obtener cotización", details: err.message });
     }
-};
+};*/
 
 /**
  * Marcar pasar por caja
- */
+ 
 exports.marcarPasarPorCaja = async (req, res) => {
     try {
         const { ordenDeRetiro } = req.body;
@@ -703,7 +835,7 @@ exports.marcarPasarPorCaja = async (req, res) => {
         console.error("[MARCAR CAJA] Error al marcar por caja:", err.response?.data || err.message);
         res.status(500).json({ error: "Fallo al marcar pasar por caja", details: err.message });
     }
-};
+};*/
 
 /**
  * Traer Transacciones de Handy
@@ -772,7 +904,7 @@ exports.getPagosOnline = async (req, res) => {
 
 /**
  * Traer otras OTs (Semanales, Rollos por adelantado, etc) para Caja
- */
+ 
 exports.getCajaOtros = async (req, res) => {
     try {
         const tokenRes = await axios.post(`${REACT_API_URL}/apilogin/generate-token`, {
@@ -788,7 +920,7 @@ exports.getCajaOtros = async (req, res) => {
         console.error("[CAJA OTROS] Error al obtener órdenes de caja (otros):", err.response?.data || err.message);
         res.status(500).json({ error: "Fallo al obtener otras órdenes de caja", details: err.message });
     }
-};
+};*/
 
 /**
  * Guardar retiro excepcional (con deuda) en la tabla local

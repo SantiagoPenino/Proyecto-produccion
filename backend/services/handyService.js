@@ -24,7 +24,7 @@ async function createPaymentLink({
     totalAmount,
     currencyCode,
     commerceName = 'USER',
-    imageUrl = 'https://user.com.uy/assets/images/logo.png',
+    imageUrl = 'https://user.com.uy/assets/images/logo.jpg',
     ordersData = {},
     codCliente = 0,
     logPrefix = '[HANDY]'

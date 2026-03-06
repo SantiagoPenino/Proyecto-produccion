@@ -2,7 +2,6 @@ const { sql, getPool } = require('../config/db');
 const axios = require('axios');
 const https = require('https');
 const { logAlert } = require('../services/alertsService');
-const REACT_API_URL = process.env.REACT_API_URL;
 
 // 1. Obtener Articulos Locales (Izquierda)
 const getLocalArticles = async (req, res) => {
@@ -24,28 +23,28 @@ const getLocalArticles = async (req, res) => {
     }
 };
 
-// 2. Obtener Productos Remotos (Derecha - Proxy)
+// 2. Obtener Productos (query directa a DB local)
 const getRemoteProducts = async (req, res) => {
     try {
-        // Agente para ignorar errores SSL (Self-signed o intermedios faltantes)
-        const agent = new https.Agent({
-            rejectUnauthorized: false
-        });
-
-        // Fetch directo a la API externa
-        const response = await axios.get(`${REACT_API_URL}/apiproducto/data`, {
-            httpsAgent: agent,
-            timeout: 10000 // 10 segundos timeout
-        });
-
-        res.json(response.data);
+        const pool = await getPool();
+        const result = await pool.request().query(`
+            SELECT 
+                p.ProIdProducto, p.ProCodigoOdooProducto, p.ProNombreProducto,
+                p.ProDetalleProducto, p.SMaIdSubMarca, p.UniIdUnidad,
+                p.ProVigente, p.MonIdMoneda, p.ProPrecioActual,
+                sm.SMaNombreSubMarca AS SubMarca,
+                u.UniNotación AS Unidad,
+                m.MonSimbolo AS Moneda
+            FROM Productos p WITH(NOLOCK)
+            LEFT JOIN SubMarcas sm WITH(NOLOCK) ON sm.SMaIdSubMarca = p.SMaIdSubMarca
+            LEFT JOIN Unidades u WITH(NOLOCK) ON u.UniIdUnidad = p.UniIdUnidad
+            LEFT JOIN Monedas m WITH(NOLOCK) ON m.MonIdMoneda = p.MonIdMoneda
+            ORDER BY p.ProNombreProducto
+        `);
+        res.json(result.recordset);
     } catch (e) {
-        console.error("Error getRemoteProducts DETAILED:", e.message);
-        if (e.response) {
-            console.error("Remote Status:", e.response.status);
-            console.error("Remote Data:", JSON.stringify(e.response.data).substring(0, 200));
-        }
-        res.status(502).json({ error: "Error conectando con API Externa", details: e.message });
+        console.error("Error getRemoteProducts:", e.message);
+        res.status(500).json({ error: "Error al obtener productos", details: e.message });
     }
 };
 
