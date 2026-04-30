@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom';
 import api from '../../services/api';
 import { logisticsService } from '../../services/modules/logisticsService';
 import { toast } from 'sonner';
-import { motion, AnimatePresence } from 'framer-motion';
+
 import {
     Truck, RefreshCw, Search, Tag, Clock, Printer,
     ListChecks, Navigation, History, FileDown, FileImage,
@@ -43,14 +43,13 @@ const TransportView = () => {
         setLoading(true);
         try {
             const details = await logisticsService.getRemitoByCode(transport.CodigoRemito);
-            setModalData({ transport, items: details.items });
-
             const initialMap = {};
             details.items.forEach(i => {
                 if (i.BultoEstado !== 'ENTREGADO') {
                     initialMap[i.BultoID] = { checked: false, file: null };
                 }
             });
+            setModalData({ transport, items: details.items });
             setBultoMappings(initialMap);
             setIsModalOpen(true);
         } catch (err) {
@@ -388,23 +387,14 @@ const TransportView = () => {
 
             {/* UPLOAD PROOF MODAL */}
             {typeof document !== 'undefined' && createPortal(
-                <AnimatePresence>
+                <>
                 {isModalOpen && modalData && (
-                    <motion.div
-                        key="modal-backdrop"
-                        className="fixed inset-0 z-[9999] flex items-end sm:items-center justify-center p-0 sm:p-4"
-                        initial={{ opacity: 0 }}
-                        animate={{ opacity: 1 }}
-                        exit={{ opacity: 0 }}
-                        transition={{ duration: 0.3 }}
+                    <div
+                        className="fixed inset-0 z-[9999] flex items-end sm:items-center justify-center p-0 sm:p-4 animate-in fade-in duration-200"
                     >
                         <div className="absolute inset-0 bg-slate-900/80" onClick={() => setIsModalOpen(false)} />
-                        <motion.div
-                            className="relative bg-white rounded-t-2xl sm:rounded-2xl shadow-2xl w-full max-w-3xl overflow-hidden flex flex-col max-h-[92vh] sm:max-h-[90vh]"
-                            initial={{ y: '100%', opacity: 0, scale: 0.95 }}
-                            animate={{ y: 0, opacity: 1, scale: 1 }}
-                            exit={{ y: '100%', opacity: 0, scale: 0.95 }}
-                            transition={{ type: 'spring', stiffness: 350, damping: 30, mass: 0.8 }}
+                        <div
+                            className="relative bg-white rounded-t-2xl sm:rounded-2xl shadow-2xl w-full max-w-3xl overflow-hidden flex flex-col max-h-[92vh] sm:max-h-[90vh] animate-in fade-in slide-in-from-bottom-8 duration-250"
                         >
 
                         {/* Header */}
@@ -429,136 +419,138 @@ const TransportView = () => {
                         {/* Body */}
                         <div className="flex-1 overflow-y-auto p-4 md:p-5">
 
-                            {/* HISTORIAL DE ARCHIVOS YA SUBIDOS */}
-                            {(() => {
-                                const prevPaths = Array.from(new Set(modalData.items.filter(i => i.ComprobantePath).map(i => i.ComprobantePath)));
-                                if (prevPaths.length === 0) return null;
-                                return (
-                                    <div className="mb-5 bg-brand-cyan/5 p-4 rounded-xl border border-brand-cyan/20">
-                                        <h4 className="font-bold text-brand-cyan text-xs uppercase tracking-wider mb-3 flex items-center gap-1.5">
-                                            <History size={13} /> Comprobantes ya subidos en este remito
-                                        </h4>
-                                        <div className="flex flex-wrap gap-2">
-                                            {prevPaths.map(path => {
-                                                const fileName = path.split('/').pop();
-                                                const bultosAsociados = modalData.items.filter(i => i.ComprobantePath === path);
-                                                return (
-                                                    <div key={path} className="bg-white p-2.5 flex-1 min-w-[220px] rounded-lg border border-brand-cyan/20 shadow-sm">
-                                                        <a href={import.meta.env.VITE_COMPROBANTES_ENCOMIENDAS_PATH ? `${import.meta.env.VITE_COMPROBANTES_ENCOMIENDAS_PATH}/${path.split('/').pop()}` : `${import.meta.env.VITE_API_URL ? import.meta.env.VITE_API_URL.replace('/api', '') : ''}${path}`} target="_blank" rel="noreferrer"
-                                                            className="text-xs font-bold text-brand-cyan hover:opacity-80 truncate flex items-center gap-1 bg-brand-cyan/5 p-1.5 rounded mb-2" title={fileName}>
-                                                            <FileDown size={12} /> {fileName}
-                                                        </a>
-                                                        <div className="flex flex-wrap gap-1">
-                                                            {bultosAsociados.map(b => (
-                                                                <span key={b.BultoID} className="bg-brand-cyan/10 border border-brand-cyan/20 text-brand-cyan text-[10px] px-1.5 py-0.5 rounded font-bold">{b.RetiroAsociado || b.CodigoEtiqueta}</span>
-                                                            ))}
-                                                        </div>
-                                                    </div>
-                                                )
-                                            })}
-                                        </div>
-                                    </div>
-                                )
-                            })()}
-
-                            {/* Instrucción */}
-                            <div className="mb-4">
-                                <h4 className="font-black text-slate-800 text-base">Bultos de esta tanda</h4>
-                                <p className="text-sm text-slate-500 mt-0.5">Seleccioná los bultos entregados. Doble click para adjuntar foto de comprobante.</p>
-                            </div>
-
-                            {/* HIDDEN CAMERA INPUT */}
-                            <input
-                                type="file"
-                                ref={hiddenFileInputRef}
-                                style={{ display: 'none' }}
-                                accept="image/*,application/pdf"
-                                capture="environment"
-                                onChange={handleFileSelected}
-                            />
-
-                            {/* BULTO CARDS */}
-                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                                {modalData.items.map(item => {
-                                    const isDelivered = item.BultoEstado === 'ENTREGADO';
-
-                                    if (isDelivered) {
-                                        const fname = item.ComprobantePath ? item.ComprobantePath.split('/').pop() : 'Sin archivo';
+                            <>
+                                    {/* HISTORIAL DE ARCHIVOS YA SUBIDOS */}
+                                    {(() => {
+                                        const prevPaths = Array.from(new Set(modalData.items.filter(i => i.ComprobantePath).map(i => i.ComprobantePath)));
+                                        if (prevPaths.length === 0) return null;
                                         return (
-                                            <div key={item.BultoID} className="flex flex-col justify-between p-4 rounded-xl border border-slate-200 bg-slate-50 opacity-60">
-                                                <div>
-                                                    <p className="font-bold text-slate-500 text-sm">{item.RetiroAsociado || item.CodigoEtiqueta}</p>
-                                                    <p className="text-xs text-slate-400">{item.Descripcion || 'Sin desc'}</p>
-                                                </div>
-                                                <div className="flex flex-col items-start mt-2 gap-1">
-                                                    <span className="text-[10px] font-bold bg-emerald-100 text-emerald-700 px-2 py-0.5 rounded-full uppercase">Ya Entregado</span>
-                                                    <span className="text-[11px] text-slate-400 font-bold break-all flex items-center gap-1" title={fname}><File size={11} /> {fname}</span>
+                                            <div className="mb-5 bg-brand-cyan/5 p-4 rounded-xl border border-brand-cyan/20">
+                                                <h4 className="font-bold text-brand-cyan text-xs uppercase tracking-wider mb-3 flex items-center gap-1.5">
+                                                    <History size={13} /> Comprobantes ya subidos en este remito
+                                                </h4>
+                                                <div className="flex flex-wrap gap-2">
+                                                    {prevPaths.map(path => {
+                                                        const fileName = path.split('/').pop();
+                                                        const bultosAsociados = modalData.items.filter(i => i.ComprobantePath === path);
+                                                        return (
+                                                            <div key={path} className="bg-white p-2.5 flex-1 min-w-[220px] rounded-lg border border-brand-cyan/20 shadow-sm">
+                                                                <a href={import.meta.env.VITE_COMPROBANTES_ENCOMIENDAS_PATH ? `${import.meta.env.VITE_COMPROBANTES_ENCOMIENDAS_PATH}/${path.split('/').pop()}` : `${import.meta.env.VITE_API_URL ? import.meta.env.VITE_API_URL.replace('/api', '') : ''}${path}`} target="_blank" rel="noreferrer"
+                                                                    className="text-xs font-bold text-brand-cyan hover:opacity-80 truncate flex items-center gap-1 bg-brand-cyan/5 p-1.5 rounded mb-2" title={fileName}>
+                                                                    <FileDown size={12} /> {fileName}
+                                                                </a>
+                                                                <div className="flex flex-wrap gap-1">
+                                                                    {bultosAsociados.map(b => (
+                                                                        <span key={b.BultoID} className="bg-brand-cyan/10 border border-brand-cyan/20 text-brand-cyan text-[10px] px-1.5 py-0.5 rounded font-bold">{b.RetiroAsociado || b.CodigoEtiqueta}</span>
+                                                                    ))}
+                                                                </div>
+                                                            </div>
+                                                        )
+                                                    })}
                                                 </div>
                                             </div>
-                                        );
-                                    }
+                                        )
+                                    })()}
 
-                                    const map = bultoMappings[item.BultoID] || { checked: false, file: null };
+                                    {/* Instrucción */}
+                                    <div className="mb-4">
+                                        <h4 className="font-black text-slate-800 text-base">Bultos de esta tanda</h4>
+                                        <p className="text-sm text-slate-500 mt-0.5">Seleccioná los bultos entregados. Doble click para adjuntar foto de comprobante.</p>
+                                    </div>
 
-                                    return (
-                                        <div
-                                            key={item.BultoID}
-                                            onDoubleClick={() => {
-                                                setActiveBultoId(item.BultoID);
-                                                hiddenFileInputRef.current?.click();
-                                            }}
-                                            className={`flex flex-col justify-between p-4 rounded-xl border transition-all cursor-pointer
-                                                ${map.checked
-                                                    ? 'border-brand-cyan bg-brand-cyan/5 shadow-md ring-1 ring-brand-cyan/30'
-                                                    : 'bg-white border-slate-200 hover:border-brand-cyan/30 shadow-sm'}`}
-                                        >
-                                            <label className="flex items-center gap-3 cursor-pointer">
-                                                <input
-                                                    type="checkbox"
-                                                    checked={map.checked}
-                                                    onChange={(e) => {
-                                                        const isChecked = e.target.checked;
-                                                        setBultoMappings(prev => ({
-                                                            ...prev,
-                                                            [item.BultoID]: { ...map, checked: isChecked }
-                                                        }));
-                                                    }}
-                                                    className="w-5 h-5 rounded accent-brand-cyan border-slate-300"
-                                                />
-                                                <div>
-                                                    <p className={`font-black text-base leading-tight ${map.checked ? 'text-brand-cyan' : 'text-slate-700'}`}>{item.RetiroAsociado || item.CodigoEtiqueta}</p>
-                                                    <p className="text-xs text-slate-500">{item.Descripcion || 'Sin desc'}</p>
-                                                </div>
-                                            </label>
+                                    {/* HIDDEN CAMERA INPUT */}
+                                    <input
+                                        type="file"
+                                        ref={hiddenFileInputRef}
+                                        style={{ display: 'none' }}
+                                        accept="image/*,application/pdf"
+                                        capture="environment"
+                                        onChange={handleFileSelected}
+                                    />
 
-                                            <div className="mt-3 pt-3 border-t border-slate-100 flex items-center justify-between gap-2">
-                                                {map.file ? (
-                                                    <div className="flex items-center gap-1.5 min-w-0">
-                                                        <FileImage size={14} className="text-brand-cyan shrink-0" />
-                                                        <span className="text-xs font-bold text-brand-cyan truncate">{map.file.name}</span>
+                                    {/* BULTO CARDS */}
+                                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                        {modalData.items.map(item => {
+                                            const isDelivered = item.BultoEstado === 'ENTREGADO';
+
+                                            if (isDelivered) {
+                                                const fname = item.ComprobantePath ? item.ComprobantePath.split('/').pop() : 'Sin archivo';
+                                                return (
+                                                    <div key={item.BultoID} className="flex flex-col justify-between p-4 rounded-xl border border-slate-200 bg-slate-50 opacity-60">
+                                                        <div>
+                                                            <p className="font-bold text-slate-500 text-sm">{item.RetiroAsociado || item.CodigoEtiqueta}</p>
+                                                            <p className="text-xs text-slate-400">{item.Descripcion || 'Sin desc'}</p>
+                                                        </div>
+                                                        <div className="flex flex-col items-start mt-2 gap-1">
+                                                            <span className="text-[10px] font-bold bg-emerald-100 text-emerald-700 px-2 py-0.5 rounded-full uppercase">Ya Entregado</span>
+                                                            <span className="text-[11px] text-slate-400 font-bold break-all flex items-center gap-1" title={fname}><File size={11} /> {fname}</span>
+                                                        </div>
                                                     </div>
-                                                ) : (
-                                                    <span className="text-xs text-slate-400">Sin foto adjunta</span>
-                                                )}
-                                                <button
-                                                    onClick={(e) => {
-                                                        e.stopPropagation();
+                                                );
+                                            }
+
+                                            const map = bultoMappings[item.BultoID] || { checked: false, file: null };
+
+                                            return (
+                                                <div
+                                                    key={item.BultoID}
+                                                    onDoubleClick={() => {
                                                         setActiveBultoId(item.BultoID);
                                                         hiddenFileInputRef.current?.click();
                                                     }}
-                                                    className={`shrink-0 text-xs px-3 py-1.5 rounded-lg font-bold transition-colors flex items-center gap-1.5
-                                                        ${map.file
-                                                            ? 'bg-brand-cyan/10 hover:bg-brand-cyan/20 text-brand-cyan'
-                                                            : 'bg-slate-100 hover:bg-slate-200 text-slate-600'}}`}
+                                                    className={`flex flex-col justify-between p-4 rounded-xl border transition-all cursor-pointer
+                                                        ${map.checked
+                                                            ? 'border-brand-cyan bg-brand-cyan/5 shadow-md ring-1 ring-brand-cyan/30'
+                                                            : 'bg-white border-slate-200 hover:border-brand-cyan/30 shadow-sm'}`}
                                                 >
-                                                    {map.file ? <RefreshCw size={12} /> : <Camera size={12} />}
-                                                    {map.file ? 'Cambiar' : 'Foto'}
-                                                </button>
-                                            </div>
-                                        </div>
-                                    );
-                                })}
-                            </div>
+                                                    <label className="flex items-center gap-3 cursor-pointer">
+                                                        <input
+                                                            type="checkbox"
+                                                            checked={map.checked}
+                                                            onChange={(e) => {
+                                                                const isChecked = e.target.checked;
+                                                                setBultoMappings(prev => ({
+                                                                    ...prev,
+                                                                    [item.BultoID]: { ...map, checked: isChecked }
+                                                                }));
+                                                            }}
+                                                            className="w-5 h-5 rounded accent-brand-cyan border-slate-300"
+                                                        />
+                                                        <div>
+                                                            <p className={`font-black text-base leading-tight ${map.checked ? 'text-brand-cyan' : 'text-slate-700'}`}>{item.RetiroAsociado || item.CodigoEtiqueta}</p>
+                                                            <p className="text-xs text-slate-500">{item.Descripcion || 'Sin desc'}</p>
+                                                        </div>
+                                                    </label>
+
+                                                    <div className="mt-3 pt-3 border-t border-slate-100 flex items-center justify-between gap-2">
+                                                        {map.file ? (
+                                                            <div className="flex items-center gap-1.5 min-w-0">
+                                                                <FileImage size={14} className="text-brand-cyan shrink-0" />
+                                                                <span className="text-xs font-bold text-brand-cyan truncate">{map.file.name}</span>
+                                                            </div>
+                                                        ) : (
+                                                            <span className="text-xs text-slate-400">Sin foto adjunta</span>
+                                                        )}
+                                                        <button
+                                                            onClick={(e) => {
+                                                                e.stopPropagation();
+                                                                setActiveBultoId(item.BultoID);
+                                                                hiddenFileInputRef.current?.click();
+                                                            }}
+                                                            className={`shrink-0 text-xs px-3 py-1.5 rounded-lg font-bold transition-colors flex items-center gap-1.5
+                                                                ${map.file
+                                                                    ? 'bg-brand-cyan/10 hover:bg-brand-cyan/20 text-brand-cyan'
+                                                                    : 'bg-slate-100 hover:bg-slate-200 text-slate-600'}}`}
+                                                        >
+                                                            {map.file ? <RefreshCw size={12} /> : <Camera size={12} />}
+                                                            {map.file ? 'Cambiar' : 'Foto'}
+                                                        </button>
+                                                    </div>
+                                                </div>
+                                            );
+                                        })}
+                                    </div>
+                                </>
                         </div>
 
                         {/* Footer */}
@@ -575,10 +567,10 @@ const TransportView = () => {
                                 Procesar {Object.values(bultoMappings).filter(m => m.checked).length > 0 ? `(${Object.values(bultoMappings).filter(m => m.checked).length})` : ''}
                             </button>
                         </div>
-                        </motion.div>
-                    </motion.div>
+                        </div>
+                    </div>
                 )}
-                </AnimatePresence>
+                </>
             , document.body)}
 
         </div>

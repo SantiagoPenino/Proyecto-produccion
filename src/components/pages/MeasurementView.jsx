@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import api from '../../services/api';
 import FileItem from '../production/components/FileItem';
-import JSZip from 'jszip';
+// JSZip se carga dinámicamente al usarse para evitar conflictos de chunking con RollDetailsModal
 
 const MeasurementView = ({ areaCode }) => {
     const [orders, setOrders] = useState([]);
@@ -206,6 +206,7 @@ const MeasurementView = ({ areaCode }) => {
 
             if (supportsFileSystem && dirHandle) {
                 // 3. Descomprimir y guardar en carpeta elegida
+                const { default: JSZip } = await import('jszip');
                 const zip = await JSZip.loadAsync(blob);
                 let count = 0;
 
@@ -299,6 +300,7 @@ const MeasurementView = ({ areaCode }) => {
             const blob = resZip.data;
 
             if (supportsFileSystem && dirHandle) {
+                const { default: JSZip } = await import('jszip');
                 const zip = await JSZip.loadAsync(blob);
                 let count = 0;
                 let targetHandle = dirHandle;

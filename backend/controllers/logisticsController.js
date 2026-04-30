@@ -1518,7 +1518,7 @@ exports.confirmRemitoDelivery = async (req, res) => {
                 await new sql.Request(transaction).query("ALTER TABLE Logistica_Bultos ADD ComprobantePath NVARCHAR(MAX) NULL");
             } catch (e) { /* Ignore */ }
 
-            const comprobanteUrl = file ? `/comprobantesPagos/${file.filename}` : null;
+            const comprobanteUrl = file ? `/comprobantesEncomiendas/${file.filename}` : null;
             const idsList = idsArray.join(',');
 
             // 1. Update Bultos inside this Envio

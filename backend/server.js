@@ -60,6 +60,9 @@ app.use(requestLogger);
 
 // --- STATIC FILES ---
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+// Comprobantes de entrega de encomiendas (logística transporte)
+const encomiendasFolder = process.env.COMPROBANTES_ENCOMIENDAS_PATH || path.join(__dirname, 'comprobantesEncomiendas');
+app.use('/comprobantesEncomiendas', express.static(encomiendasFolder));
 
 // --- REGISTRO DE RUTAS ---
 app.use('/api/areas', require('./routes/areasRoutes'));

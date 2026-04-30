@@ -22,8 +22,8 @@ const lazyWithRetry = (importFn) => lazy(() =>
 );
 
 const MachineDetailView = lazyWithRetry(() => import('../pages/MachineDetailView'));
-import Dashboard from '../pages/Dashboard';
-import AreaView from '../production/areas/AreaView';
+const Dashboard = lazyWithRetry(() => import('../pages/Dashboard'));
+const AreaView = lazyWithRetry(() => import('../production/areas/AreaView'));
 const ConfigPage = lazyWithRetry(() => import('../pages/ConfigPage'));
 const LogisticsDashboard = lazyWithRetry(() => import('../logistics/LogisticsDashboard'));
 const OrdersQueryView = lazyWithRetry(() => import('../pages/OrdersQueryView'));

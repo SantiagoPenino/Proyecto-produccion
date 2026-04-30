@@ -10,6 +10,17 @@ export default defineConfig({
   build: {
     outDir: 'backend/public',
     emptyOutDir: true,
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          // Vendors que nunca cambian entre deploys → el browser los cachea
+          'vendor-react':  ['react', 'react-dom', 'react-router-dom'],
+          'vendor-motion': ['framer-motion'],
+          'vendor-icons':  ['lucide-react'],
+          'vendor-ui':     ['sonner'],
+        },
+      },
+    },
   },
   esbuild: {
     drop: ['console', 'debugger'],
