@@ -8,7 +8,7 @@ import mpLogo from '../../assets/images/pasarelas/mercadopago.svg';
 import { useSearchParams } from 'react-router-dom';
 import Swal from 'sweetalert2';
 import Lottie from 'lottie-react';
-import loadingAnim from '../../assets/animations/loading.json';
+import loadingAnim from '../../assets/animations/Loading.json';
 import { useAuth } from '../auth/AuthContext';
 import { apiClient } from '../api/apiClient'; // Assuming user comes from here
 import { CheckCircle, AlertCircle, ChevronRight, Truck, CreditCard, Download, MapPin, MapPinCheck, Package, PackageCheck, PackageOpen, Trash2, Plus, ArrowLeft, X } from 'lucide-react';

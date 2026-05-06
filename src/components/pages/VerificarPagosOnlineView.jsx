@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import api from '../../services/apiClient';
 import Lottie from 'lottie-react';
-import loadingAnim from '../../assets/animations/loading.json';
+import loadingAnim from '../../assets/animations/Loading.json';
 import {
     CreditCard, Wifi, WifiOff, Search, Calendar, RefreshCw,
     ChevronDown, ChevronRight, Package, X, AlertTriangle,

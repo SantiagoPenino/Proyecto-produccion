@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import Lottie from 'lottie-react';
-import loadingAnim from '../../assets/animations/loading.json';
+import loadingAnim from '../../assets/animations/Loading.json';
 import { useAuth } from '../auth/AuthContext';
 import { apiClient } from '../api/apiClient';
 import { CreditCard, AlertCircle, ChevronRight, CheckCircle, Package } from 'lucide-react';
