@@ -100,34 +100,34 @@ const ConfigStatusesModal = ({ isOpen, onClose, areaCode, initialStatuses }) => 
     };
 
     return (
-        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[1100] flex items-center justify-center p-4 animate-in fade-in duration-200">
+        <div className="fixed inset-0 bg-zinc-900/60 backdrop-blur-sm z-[1100] flex items-center justify-center p-4 animate-in fade-in duration-200">
             <div className="bg-white rounded-xl shadow-2xl w-full max-w-5xl max-h-[90vh] flex flex-col overflow-hidden animate-in zoom-in-95 duration-300">
 
                 {/* Header */}
-                <div className="px-6 py-4 border-b border-slate-100 flex justify-between items-center bg-white shrink-0">
-                    <h3 className="text-lg font-black text-slate-800 flex items-center gap-2">
+                <div className="px-6 py-4 border-b border-zinc-100 flex justify-between items-center bg-white shrink-0">
+                    <h3 className="text-lg font-black text-zinc-800 flex items-center gap-2">
                         <i className="fa-solid fa-list-check text-emerald-500 bg-emerald-100 p-1.5 rounded-lg text-sm"></i>
                         Configurar Estados: <span className="text-emerald-600">{areaCode}</span>
                     </h3>
-                    <button onClick={onClose} className="w-8 h-8 rounded-full flex items-center justify-center text-slate-400 hover:bg-slate-100 hover:text-red-500 transition-colors">
+                    <button onClick={onClose} className="w-8 h-8 rounded-full flex items-center justify-center text-zinc-400 hover:bg-zinc-100 hover:text-red-500 transition-colors">
                         <i className="fa-solid fa-xmark text-lg"></i>
                     </button>
                 </div>
 
-                <div className="p-6 overflow-y-auto flex-1 bg-slate-50/50">
+                <div className="p-6 overflow-y-auto flex-1 bg-zinc-50/50">
 
                     {/* FORM AGREGAR */}
-                    <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm mb-6">
-                        <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">Nuevo Estado</h4>
+                    <div className="bg-white p-4 rounded-xl border border-zinc-200 shadow-sm mb-6">
+                        <h4 className="text-xs font-bold text-zinc-500 uppercase tracking-wider mb-2">Nuevo Estado</h4>
                         <div className="grid grid-cols-1 md:grid-cols-6 gap-3 items-end">
                             <div className="md:col-span-2">
-                                <label className="text-[10px] uppercase font-bold text-slate-400 mb-1 block">Nombre</label>
-                                <input type="text" className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm font-semibold text-slate-700 outline-none focus:border-emerald-500"
+                                <label className="text-[10px] uppercase font-bold text-zinc-400 mb-1 block">Nombre</label>
+                                <input type="text" className="w-full px-3 py-2 bg-zinc-50 border border-zinc-200 rounded-lg text-sm font-semibold text-zinc-700 outline-none focus:border-emerald-500"
                                     value={newStatus.nombre} onChange={e => setNewStatus({ ...newStatus, nombre: e.target.value })} placeholder="Ej: EN PROCESO" />
                             </div>
                             <div>
-                                <label className="text-[10px] uppercase font-bold text-slate-400 mb-1 block">Tipo</label>
-                                <select className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm font-semibold text-slate-700 outline-none"
+                                <label className="text-[10px] uppercase font-bold text-zinc-400 mb-1 block">Tipo</label>
+                                <select className="w-full px-3 py-2 bg-zinc-50 border border-zinc-200 rounded-lg text-sm font-semibold text-zinc-700 outline-none"
                                     value={newStatus.tipoEstado} onChange={e => setNewStatus({ ...newStatus, tipoEstado: e.target.value })}>
                                     <option value="ESTADOENAREA">ESTADOENAREA</option>
                                     <option value="ESTADO">ESTADO</option>
@@ -135,18 +135,18 @@ const ConfigStatusesModal = ({ isOpen, onClose, areaCode, initialStatuses }) => 
                                 </select>
                             </div>
                             <div>
-                                <label className="text-[10px] uppercase font-bold text-slate-400 mb-1 block">Color</label>
+                                <label className="text-[10px] uppercase font-bold text-zinc-400 mb-1 block">Color</label>
                                 <div className="flex gap-2">
                                     <input type="color" className="w-8 h-[38px] rounded cursor-pointer border-none"
                                         value={newStatus.color} onChange={e => setNewStatus({ ...newStatus, color: e.target.value })} />
-                                    <input type="text" className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm font-mono text-slate-600 outline-none"
+                                    <input type="text" className="w-full px-3 py-2 bg-zinc-50 border border-zinc-200 rounded-lg text-sm font-mono text-zinc-600 outline-none"
                                         value={newStatus.color} onChange={e => setNewStatus({ ...newStatus, color: e.target.value })} />
                                 </div>
                             </div>
                             <div className="flex items-center gap-2 pb-3">
                                 <input type="checkbox" className="w-4 h-4 text-emerald-600 rounded"
                                     checked={newStatus.esFinal} onChange={e => setNewStatus({ ...newStatus, esFinal: e.target.checked })} />
-                                <label className="text-xs font-bold text-slate-600">¿Es Final?</label>
+                                <label className="text-xs font-bold text-zinc-600">¿Es Final?</label>
                             </div>
 
                             <button onClick={handleAdd} disabled={loading} className="px-4 py-2 bg-emerald-600 text-white text-sm font-bold rounded-lg shadow-md hover:bg-emerald-700 h-[38px] flex items-center justify-center gap-2">
@@ -156,9 +156,9 @@ const ConfigStatusesModal = ({ isOpen, onClose, areaCode, initialStatuses }) => 
                     </div>
 
                     {/* TABLA */}
-                    <div className="bg-white border border-slate-200 rounded-xl overflow-hidden shadow-sm">
+                    <div className="bg-white border border-zinc-200 rounded-xl overflow-hidden shadow-sm">
                         <table className="w-full text-sm text-left">
-                            <thead className="text-xs text-slate-500 uppercase bg-slate-50 border-b border-slate-100">
+                            <thead className="text-xs text-zinc-500 uppercase bg-zinc-50 border-b border-zinc-100">
                                 <tr>
                                     <th className="px-4 py-3 font-bold text-center w-16">Ord.</th>
                                     <th className="px-4 py-3 font-bold">Nombre</th>
@@ -168,21 +168,21 @@ const ConfigStatusesModal = ({ isOpen, onClose, areaCode, initialStatuses }) => 
                                     <th className="px-4 py-3 font-bold text-center w-28">Acción</th>
                                 </tr>
                             </thead>
-                            <tbody className="divide-y divide-slate-100">
+                            <tbody className="divide-y divide-zinc-100">
                                 {statusList.length === 0 ? (
-                                    <tr><td colSpan="6" className="py-8 text-center text-slate-400 italic">No hay estados configurados.</td></tr>
+                                    <tr><td colSpan="6" className="py-8 text-center text-zinc-400 italic">No hay estados configurados.</td></tr>
                                 ) : (
                                     statusList.map((st) => {
                                         const isEditing = editingId === st.EstadoID;
                                         return (
-                                            <tr key={st.EstadoID || Math.random()} className={isEditing ? "bg-emerald-50/50" : "hover:bg-slate-50"}>
+                                            <tr key={st.EstadoID || Math.random()} className={isEditing ? "bg-emerald-50/50" : "hover:bg-zinc-50"}>
                                                 {/* ORDEN */}
                                                 <td className="px-4 py-3 text-center">
                                                     {isEditing ? (
                                                         <input type="number" className="w-full px-1 py-1 text-center bg-white border border-emerald-300 rounded"
                                                             value={editForm.orden} onChange={e => setEditForm({ ...editForm, orden: parseInt(e.target.value) })} />
                                                     ) : (
-                                                        <span className="font-mono font-bold text-slate-400">#{st.Orden}</span>
+                                                        <span className="font-mono font-bold text-zinc-400">#{st.Orden}</span>
                                                     )}
                                                 </td>
                                                 {/* NOMBRE */}
@@ -191,7 +191,7 @@ const ConfigStatusesModal = ({ isOpen, onClose, areaCode, initialStatuses }) => 
                                                         <input type="text" className="w-full px-2 py-1 bg-white border border-emerald-300 rounded focus:outline-none"
                                                             value={editForm.nombre} onChange={e => setEditForm({ ...editForm, nombre: e.target.value })} />
                                                     ) : (
-                                                        <span className="font-bold text-slate-700">{st.Nombre}</span>
+                                                        <span className="font-bold text-zinc-700">{st.Nombre}</span>
                                                     )}
                                                 </td>
                                                 {/* TIPO */}
@@ -207,7 +207,7 @@ const ConfigStatusesModal = ({ isOpen, onClose, areaCode, initialStatuses }) => 
                                                         <span className={`text-[10px] font-bold px-2 py-0.5 rounded uppercase border ${st.TipoEstado === 'ESTADO' ? 'bg-blue-50 text-blue-600 border-blue-200' :
                                                             st.TipoEstado === 'ESTADOENAREA' ? 'bg-emerald-50 text-emerald-600 border-emerald-200' :
                                                                 st.TipoEstado === 'ESTADOLOGISTICA' ? 'bg-amber-50 text-amber-600 border-amber-200' :
-                                                                    'bg-slate-50 text-slate-500 border-slate-200'
+                                                                    'bg-zinc-50 text-zinc-500 border-zinc-200'
                                                             }`}>{st.TipoEstado || 'ESTADOENAREA'}</span>
                                                     )}
                                                 </td>
@@ -218,8 +218,8 @@ const ConfigStatusesModal = ({ isOpen, onClose, areaCode, initialStatuses }) => 
                                                             value={editForm.color} onChange={e => setEditForm({ ...editForm, color: e.target.value })} />
                                                     ) : (
                                                         <div className="flex items-center justify-center gap-2">
-                                                            <div className="w-4 h-4 rounded-full border border-slate-200 shadow-sm" style={{ backgroundColor: st.ColorHex }}></div>
-                                                            <span className="text-xs font-mono text-slate-400">{st.ColorHex}</span>
+                                                            <div className="w-4 h-4 rounded-full border border-zinc-200 shadow-sm" style={{ backgroundColor: st.ColorHex }}></div>
+                                                            <span className="text-xs font-mono text-zinc-400">{st.ColorHex}</span>
                                                         </div>
                                                     )}
                                                 </td>
@@ -229,7 +229,7 @@ const ConfigStatusesModal = ({ isOpen, onClose, areaCode, initialStatuses }) => 
                                                         <input type="checkbox" className="w-4 h-4 text-emerald-600"
                                                             checked={editForm.esFinal} onChange={e => setEditForm({ ...editForm, esFinal: e.target.checked })} />
                                                     ) : (
-                                                        st.EsFinal ? <i className="fa-solid fa-flag-checkered text-emerald-500"></i> : <span className="text-slate-300">-</span>
+                                                        st.EsFinal ? <i className="fa-solid fa-flag-checkered text-emerald-500"></i> : <span className="text-zinc-300">-</span>
                                                     )}
                                                 </td>
                                                 {/* ACCIONES */}
@@ -245,10 +245,10 @@ const ConfigStatusesModal = ({ isOpen, onClose, areaCode, initialStatuses }) => 
                                                         </div>
                                                     ) : (
                                                         <div className="flex gap-1 justify-center">
-                                                            <button onClick={() => startEdit(st)} className="w-7 h-7 flex items-center justify-center rounded text-slate-400 hover:bg-slate-100 hover:text-emerald-500">
+                                                            <button onClick={() => startEdit(st)} className="w-7 h-7 flex items-center justify-center rounded text-zinc-400 hover:bg-zinc-100 hover:text-emerald-500">
                                                                 <i className="fa-solid fa-pen-to-square"></i>
                                                             </button>
-                                                            <button onClick={() => handleDelete(st.EstadoID)} className="w-7 h-7 flex items-center justify-center rounded text-slate-400 hover:bg-red-50 hover:text-red-500">
+                                                            <button onClick={() => handleDelete(st.EstadoID)} className="w-7 h-7 flex items-center justify-center rounded text-zinc-400 hover:bg-red-50 hover:text-red-500">
                                                                 <i className="fa-solid fa-trash-can"></i>
                                                             </button>
                                                         </div>
@@ -264,8 +264,8 @@ const ConfigStatusesModal = ({ isOpen, onClose, areaCode, initialStatuses }) => 
 
                 </div>
 
-                <div className="px-6 py-4 bg-slate-50 border-t border-slate-100 flex justify-end shrink-0">
-                    <button onClick={onClose} className="px-4 py-2 bg-white border border-slate-200 text-slate-600 rounded-lg text-sm font-bold hover:bg-slate-100">
+                <div className="px-6 py-4 bg-zinc-50 border-t border-zinc-100 flex justify-end shrink-0">
+                    <button onClick={onClose} className="px-4 py-2 bg-white border border-zinc-200 text-zinc-600 rounded-lg text-sm font-bold hover:bg-zinc-100">
                         Cerrar config
                     </button>
                 </div>

@@ -146,12 +146,25 @@ async function crearRetiro(transaction, { ordIds, totalCost, lugarRetiro, usuari
     const ordDataReq = transaction.request();
     ordIds.forEach((id, i) => ordDataReq.input(`ord${i}`, sql.Int, id));
     const ordDataRes = await ordDataReq.query(`
-        SELECT OrdIdOrden, ProIdProducto, OrdCantidad, PagIdPago
+        SELECT OrdIdOrden, ProIdProducto, OrdCantidad, PagIdPago, MonIdMoneda
         FROM   dbo.OrdenesDeposito WITH(NOLOCK)
         WHERE  OrdIdOrden IN (${ordParamsClause})
     `);
     const ordenesData  = ordDataRes.recordset;
     const pagoExistenteId = ordenesData.find(o => o.PagIdPago)?.PagIdPago || null;
+
+    // ── AUTO-DETECCIÓN DE MONEDA REAL DESDE LAS ÓRDENES ─────────────────────
+    // Si ALGUNA orden hija es USD (MonIdMoneda=2), el retiro entero es en USD.
+    // Las órdenes hijas son fuente de verdad: usan FK entero a Monedas (1=UYU, 2=USD).
+    // El parámetro `moneda` del frontend es solo sugerencia y puede estar equivocado.
+    const tieneOrdenUSD = ordenesData.some(o => o.MonIdMoneda === 2);
+    // Lógica con paréntesis explícitos para evitar bugs de precedencia de operadores:
+    // USD si → alguna orden hija es USD, O el caller envió explícitamente 'USD'
+    // UYU en cualquier otro caso
+    const monedaFinal = (tieneOrdenUSD || (moneda && moneda.toUpperCase() === 'USD')) ? 'USD' : (moneda || 'UYU');
+    if (monedaFinal !== moneda) {
+        logger.warn(`[crearRetiro] Moneda corregida: parámetro='${moneda}' → detectada='${monedaFinal}' (tieneOrdenUSD=${tieneOrdenUSD})`);
+    }
 
     // ── ESTADO DEL RETIRO: evaluar CADA orden individualmente ───────────────────
     //
@@ -228,7 +241,7 @@ async function crearRetiro(transaction, { ordIds, totalCost, lugarRetiro, usuari
         .input('Usr', sql.Int, usuarioAlta)
         .input('FormaRetiro', sql.VarChar(2), formaRetiro || 'RL')
         .input('CodCliente', sql.Int, finalCodCliente)
-        .input('Moneda', sql.VarChar(10), moneda || null)
+        .input('Moneda', sql.VarChar(10), monedaFinal)
         .input('Dir', sql.NVarChar(500), direccion || null)
         .input('Depto', sql.NVarChar(200), departamento || null)
         .input('Loc', sql.NVarChar(200), localidad || null)

@@ -1,4 +1,6 @@
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useMemo, Fragment } from 'react';
+import { Listbox, ListboxButton, ListboxOptions, ListboxOption, Transition } from '@headlessui/react';
+import { Check, ChevronsUpDown } from 'lucide-react';
 import { useAuth } from "../../context/AuthContext";
 import { fileControlService, ordersService } from "../../services/api";
 import KPICard from '../common/KPICard';
@@ -18,7 +20,7 @@ const SmallRollMetrics = ({ roll, metrics }) => {
   const metersText = metrics?.stats ? `${currentMeters}/${totalMeters}m` : `${totalMeters}m`;
 
   return (
-    <div className="bg-white rounded-xl border border-slate-200 px-4 py-3 shadow-sm flex flex-col mb-4 w-full">
+    <div className="bg-white px-4 py-3 flex flex-col w-full">
       <div className="flex items-center gap-6 justify-between">
         <div className="flex items-center gap-3">
           <div className="text-right">
@@ -382,20 +384,57 @@ const FilePrintControl = ({ areaCode }) => {
           </div>
 
           {/* Lote Selector */}
-          <div className="relative mb-2">
-            <select
-              className="w-full pl-3 pr-8 py-2 bg-slate-800 text-white rounded-xl font-bold text-xs outline-none appearance-none cursor-pointer hover:bg-slate-700 transition-colors shadow-lg shadow-slate-300"
-              value={activeRoll?.id || ''}
-              onChange={(e) => {
-                const val = e.target.value;
-                if (!val) setActiveRoll(null);
-                else setActiveRoll(rollos.find(x => x.id === (val.startsWith('R') ? val : parseInt(val))) || rollos.find(x => x.id == val));
+          <div className="relative mb-2 z-[100]">
+            <Listbox 
+              value={activeRoll} 
+              onChange={(val) => {
+                setActiveRoll(val);
               }}
             >
-              <option value="">Seleccione Lote...</option>
-              {rollos.map(r => <option key={r.id} value={r.id}>Lote #{r.id} - {r.nombre}</option>)}
-            </select>
-            <i className="fa-solid fa-chevron-down absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none text-xs"></i>
+              <div className="relative">
+                <ListboxButton className="w-full pl-3 pr-8 py-2 bg-white text-slate-700 border border-slate-200 rounded-xl font-bold text-xs outline-none text-left flex items-center justify-between cursor-pointer hover:bg-slate-50 transition-colors shadow-sm">
+                  <span className="truncate">{activeRoll ? `Lote #${activeRoll.id} - ${activeRoll.nombre}` : 'Seleccione Lote...'}</span>
+                  <ChevronsUpDown size={14} className="text-slate-400 shrink-0 absolute right-3" />
+                </ListboxButton>
+                <Transition
+                  as={Fragment}
+                  leave="transition ease-in duration-100"
+                  leaveFrom="opacity-100"
+                  leaveTo="opacity-0"
+                >
+                  <ListboxOptions className="absolute z-50 mt-1.5 w-full bg-white border border-slate-200 rounded-xl shadow-xl overflow-hidden focus:outline-none">
+                    <div className="max-h-52 overflow-y-auto p-1 custom-scrollbar">
+                      <ListboxOption
+                        value={null}
+                        className={({ active }) => `flex items-center px-3 py-2 rounded-lg cursor-pointer text-xs transition-colors ${active ? 'bg-slate-100 text-slate-700' : 'text-slate-500'}`}
+                      >
+                        <span className="truncate italic">Seleccione Lote...</span>
+                      </ListboxOption>
+                      {rollos.map((r) => (
+                        <ListboxOption
+                          key={r.id}
+                          value={r}
+                          className={({ active, selected }) =>
+                            `flex items-center gap-2 px-3 py-2.5 rounded-lg cursor-pointer text-xs transition-colors ${
+                              selected ? 'bg-cyan-50 text-cyan-600 font-bold' : active ? 'bg-slate-50 text-slate-800 font-medium' : 'text-slate-600 font-medium'
+                            }`
+                          }
+                        >
+                          {({ selected }) => (
+                            <>
+                              <div className={`w-3.5 h-3.5 rounded-[4px] border flex items-center justify-center shrink-0 transition-colors ${selected ? 'bg-cyan-500 border-cyan-500' : 'border-slate-300'}`}>
+                                {selected && <Check size={10} className="text-white" strokeWidth={3} />}
+                              </div>
+                              <span className="truncate">Lote #{r.id} - {r.nombre}</span>
+                            </>
+                          )}
+                        </ListboxOption>
+                      ))}
+                    </div>
+                  </ListboxOptions>
+                </Transition>
+              </div>
+            </Listbox>
           </div>
 
           {/* Search and Sort */}
@@ -422,13 +461,13 @@ const FilePrintControl = ({ areaCode }) => {
           {/* Auto Advance Toggle (Moved to Header) */}
           <div className="mt-3 flex items-center justify-between bg-slate-50 border border-slate-200 rounded-xl px-3 py-2">
             <div className="flex items-center gap-2">
-              <i className={`fa-solid fa-forward text-xs ${autoAdvance ? 'text-emerald-500' : 'text-slate-400'}`}></i>
+              <i className={`fa-solid fa-forward text-xs ${autoAdvance ? 'text-brand-cyan' : 'text-slate-400'}`}></i>
               <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Auto-Siguiente</span>
             </div>
 
             <div
               onClick={() => setAutoAdvance(!autoAdvance)}
-              className={`w-8 h-4 flex items-center rounded-full p-0.5 cursor-pointer transition-colors duration-200 ${autoAdvance ? 'bg-emerald-500' : 'bg-slate-300'}`}
+              className={`w-8 h-4 flex items-center rounded-full p-0.5 cursor-pointer transition-colors duration-200 ${autoAdvance ? 'bg-brand-cyan' : 'bg-slate-300'}`}
               title="Avanzar automáticamente al siguiente pedido cuando se completa el actual"
             >
               <div className={`bg-white w-3 h-3 rounded-full shadow-sm transform transition-transform duration-200 ${autoAdvance ? 'translate-x-4' : 'translate-x-0'}`}></div>
@@ -437,10 +476,10 @@ const FilePrintControl = ({ areaCode }) => {
         </div>
 
         {/* Metrics */}
-        {activeRoll && <div className="p-4 border-b border-slate-100"><SmallRollMetrics roll={activeRoll} metrics={activeRollMetrics} /></div>}
+        {activeRoll && <div className="border-b border-slate-200"><SmallRollMetrics roll={activeRoll} metrics={activeRollMetrics} /></div>}
 
         {/* List */}
-        <div className="flex-1 overflow-y-auto custom-scrollbar p-2 space-y-2 bg-slate-50/30">
+        <div className="flex-1 overflow-y-auto custom-scrollbar flex flex-col bg-slate-50">
           {loadingOrders ? (
             <div className="py-8 text-center text-cyan-500"><i className="fa-solid fa-circle-notch fa-spin"></i></div>
           ) : sortedOrders.length === 0 ? (
@@ -470,102 +509,92 @@ const FilePrintControl = ({ areaCode }) => {
       </aside>
 
       {/* --- MAIN CONTENT (SELECTED ORDER DETAILS) --- */}
-      <main className="flex-1 overflow-y-auto bg-slate-50 p-6 flex flex-col">
+      <main className="flex-1 overflow-y-auto bg-white flex flex-col">
         {selectedOrder ? (
-          <div className="max-w-5xl mx-auto w-full pb-20">
-
+          <div className="w-full pb-20">
             {/* ORDER HEADER */}
-            <div className="bg-white rounded-3xl border border-slate-200 shadow-sm p-6 mb-6 relative overflow-hidden">
-              <div className="absolute top-0 right-0 p-4 opacity-10 pointer-events-none">
-                <i className="fa-solid fa-box-open text-9xl text-slate-800"></i>
-              </div>
-
-              <div className="flex justify-between items-start relative z-10 mb-6">
-                <div>
-                  <div className="flex items-center gap-2 mb-2">
-                    <span className="px-2 py-0.5 rounded-md bg-slate-100 text-slate-500 text-[10px] font-black uppercase tracking-widest border border-slate-200">
-                      ORDEN
+            <div className="bg-white border-b border-slate-200 px-4 py-2.5">
+              <div className="flex justify-between items-center min-h-[40px]">
+                
+                {/* Left Side: Order Info & Stepper */}
+                <div className="flex items-center gap-4">
+                  <div className="flex items-center gap-3">
+                    <span className="px-1.5 py-0.5 rounded bg-slate-100 text-slate-500 text-[10px] font-black uppercase tracking-widest border border-slate-200">
+                      ORD
                     </span>
-                    {selectedOrder.status === 'PRONTO' && <span className="px-2 py-0.5 rounded-md bg-emerald-100 text-emerald-600 text-[10px] font-black uppercase tracking-widest">COMPLETA</span>}
-                    {/* Sequence Badge */}
-                    <span className="px-2 py-0.5 rounded-md bg-blue-50 text-blue-600 text-[10px] font-black uppercase tracking-widest border border-blue-100">
+                    <h1 className="text-[22px] font-black text-slate-800 tracking-tight leading-none">
+                      {selectedOrder.code || selectedOrder.id}
+                    </h1>
+                    <div className="text-sm font-bold text-slate-400 truncate max-w-[200px]">
+                      {selectedOrder.client}
+                    </div>
+                    <span className="px-2 py-0.5 rounded bg-brand-cyan/10 text-brand-cyan text-[10px] font-black uppercase tracking-widest border border-brand-cyan/20">
                       SEC: {selectedOrder.sequence || '-'}
                     </span>
+                    {selectedOrder.status === 'PRONTO' && <span className="px-2 py-0.5 rounded bg-brand-cyan text-white text-[10px] font-black uppercase tracking-widest">COMPLETA</span>}
                   </div>
-                  <h1 className="text-4xl font-black text-slate-800 tracking-tight leading-none mb-1">
-                    {selectedOrder.code || selectedOrder.id}
-                  </h1>
-                  <div className="text-lg font-medium text-slate-500">
-                    {selectedOrder.client}
+
+                  {/* STEPPER (Ruta) INLINE */}
+                  <div className="flex items-center gap-3 ml-2 pl-4 border-l border-slate-200 overflow-x-auto overflow-y-hidden [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none] max-w-[500px]">
+                    <div className="text-[10px] font-black text-slate-400 uppercase tracking-widest shrink-0 mr-3">Ruta:</div>
+                    {pedidoMetrics && pedidoMetrics.ruta ? pedidoMetrics.ruta.map((r, idx) => {
+                      const isDone = r.estado === 'FINALIZADO' || r.estado === 'PRONTO' || r.estado === 'COMPLETADO';
+                      const isActive = r.estado === 'EN PROCESO';
+                      let bgClass = 'bg-slate-100 text-slate-400 border-slate-200';
+                      if (isDone) bgClass = 'bg-brand-cyan text-white border-brand-cyan';
+                      else if (isActive) bgClass = 'bg-amber-400 text-white border-amber-400 animate-pulse';
+
+                      return (
+                        <React.Fragment key={idx}>
+                          <div className="flex flex-col items-center gap-1 group relative shrink-0">
+                            <div className={`w-10 h-10 rounded-full border-2 flex items-center justify-center text-xs font-black transition-all ${bgClass} cursor-help`}>
+                              {r.area.substring(0, 2)}
+                            </div>
+                            <div className="absolute top-full mt-1 bg-slate-800 text-white text-[10px] px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap z-20 pointer-events-none">
+                              {r.area} - {r.estado}
+                            </div>
+                          </div>
+                          {idx < pedidoMetrics.ruta.length - 1 && (
+                            <div className={`h-0.5 w-8 rounded-full ${isDone ? 'bg-brand-cyan/50' : 'bg-slate-200'}`}></div>
+                          )}
+                        </React.Fragment>
+                      )
+                    }) : <span className="text-[10px] text-slate-300 italic">Cargando...</span>}
                   </div>
                 </div>
 
+                {/* Right Side: Etiquetas & Progreso */}
                 <div className="flex items-center gap-6">
-
                   {/* Label Button (Etiquetas) */}
                   <div
-                    className={`flex items-center gap-2 group ${selectedOrder.hasLabels > 0 ? 'opacity-100 cursor-pointer hover:bg-slate-50 rounded-lg p-2 transition-all border border-transparent hover:border-slate-100' : 'opacity-40 pointer-events-none'}`}
+                    className={`flex items-center gap-3 group ${selectedOrder.hasLabels > 0 ? 'opacity-100 cursor-pointer hover:bg-slate-50 rounded-lg px-2 py-1.5 transition-all border border-transparent hover:border-slate-100' : 'opacity-40 pointer-events-none'}`}
                     onClick={selectedOrder.hasLabels > 0 ? handlePrintLabels : undefined}
                     title="Reimprimir etiquetas"
                   >
-                    <div className={`w-10 h-10 rounded-full flex items-center justify-center transition-colors ${selectedOrder.hasLabels > 0 ? 'bg-emerald-100 text-emerald-500 group-hover:bg-emerald-200' : 'bg-slate-100 text-slate-300'}`}>
-                      <i className="fa-solid fa-tags text-lg"></i>
+                    <div className={`w-8 h-8 rounded-full flex items-center justify-center transition-colors ${selectedOrder.hasLabels > 0 ? 'bg-brand-cyan/10 text-brand-cyan group-hover:bg-brand-cyan/30' : 'bg-slate-100 text-slate-300'}`}>
+                      <i className="fa-solid fa-tags text-sm"></i>
                     </div>
-                    <div className="text-right">
-                      <div className="text-[9px] font-bold text-slate-400 uppercase">Etiquetas</div>
-                      <div className={`text-xs font-bold ${selectedOrder.hasLabels > 0 ? 'text-emerald-600' : 'text-slate-600'}`}>
+                    <div className="text-right hidden sm:block">
+                      <div className="text-[10px] font-bold text-slate-400 uppercase leading-none mb-1">Etiquetas</div>
+                      <div className={`text-xs font-bold leading-none ${selectedOrder.hasLabels > 0 ? 'text-brand-cyan' : 'text-slate-600'}`}>
                         {selectedOrder.hasLabels > 0 ? 'OK' : 'PEND'}
                       </div>
                     </div>
                   </div>
 
                   {/* Big Counter */}
-                  <div className="text-right pl-6 border-l border-slate-100">
-                    <div className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">PROGRESO</div>
-                    <div className="text-4xl font-black text-slate-800 leading-none">
+                  <div className="text-right pl-5 border-l border-slate-100 flex flex-col justify-center">
+                    <div className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-0.5">PROGRESO</div>
+                    <div className="text-3xl font-black text-slate-800 leading-none">
                       {orderMetrics.done}<span className="text-xl text-slate-300">/{orderMetrics.total}</span>
                     </div>
                   </div>
                 </div>
               </div>
-
-              {/* STEPPER (Ruta) */}
-              <div className="mt-6 pt-6 border-t border-slate-100">
-                <div className="flex items-center gap-2 overflow-x-auto pb-2 scrollbar-hide">
-                  <div className="mr-2 shrink-0">
-                    <div className="w-8 h-8 rounded-full bg-slate-50 flex items-center justify-center text-slate-300">
-                      <i className="fa-solid fa-route"></i>
-                    </div>
-                  </div>
-                  {pedidoMetrics && pedidoMetrics.ruta ? pedidoMetrics.ruta.map((r, idx) => {
-                    const isDone = r.estado === 'FINALIZADO' || r.estado === 'PRONTO' || r.estado === 'COMPLETADO';
-                    const isActive = r.estado === 'EN PROCESO';
-                    let bgClass = 'bg-slate-100 text-slate-400 border-slate-200';
-                    if (isDone) bgClass = 'bg-emerald-500 text-white border-emerald-500 shadow-md shadow-emerald-200';
-                    else if (isActive) bgClass = 'bg-amber-400 text-white border-amber-400 shadow-md shadow-amber-200 animate-pulse';
-
-                    return (
-                      <React.Fragment key={idx}>
-                        <div className="flex flex-col items-center gap-1 group relative shrink-0">
-                          <div className={`w-8 h-8 rounded-full border-2 flex items-center justify-center text-[10px] font-black transition-all ${bgClass} cursor-help`}>
-                            {r.area.substring(0, 2)}
-                          </div>
-                          <div className="absolute top-full mt-2 bg-slate-800 text-white text-[9px] px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap z-20 pointer-events-none">
-                            {r.area} - {r.estado}
-                          </div>
-                        </div>
-                        {idx < pedidoMetrics.ruta.length - 1 && (
-                          <div className={`h-1 w-8 rounded-full ${isDone ? 'bg-emerald-300' : 'bg-slate-200'}`}></div>
-                        )}
-                      </React.Fragment>
-                    )
-                  }) : <span className="text-xs text-slate-300 italic ml-2">Cargando ruta...</span>}
-                </div>
-              </div>
             </div>
 
             {/* FILES LIST (CONTAINER) */}
-            <div className="space-y-4">
+            <div className="w-full bg-slate-50">
               {loadingFiles ? (
                 <div className="py-20 text-center text-slate-400">
                   <i className="fa-solid fa-circle-notch fa-spin text-3xl mb-2"></i>
@@ -576,9 +605,9 @@ const FilePrintControl = ({ areaCode }) => {
                   Sin archivos de producción
                 </div>
               ) : (
-                <div className="flex flex-col gap-4">
-                  <div className="flex items-center justify-between px-2">
-                    <div className="text-xs font-black text-slate-400 uppercase tracking-widest">
+                <div className="flex flex-col overflow-hidden border-b border-slate-200 divide-y divide-slate-200">
+                  <div className="flex items-center justify-between px-4 py-3 bg-slate-50">
+                    <div className="text-xs font-black text-slate-500 uppercase tracking-widest">
                       {files.length} ARCHIVOS EN ORDEN
                     </div>
                   </div>
@@ -598,11 +627,11 @@ const FilePrintControl = ({ areaCode }) => {
             {/* BOTTOM COMPLETION BAR */}
             {orderMetrics.done === orderMetrics.total && orderMetrics.total > 0 && selectedOrder.status !== 'PRONTO' && (
               <div className="fixed bottom-6 right-6 z-50 animate-in slide-in-from-bottom duration-500">
-                <div className="bg-emerald-500 text-white px-6 py-4 rounded-2xl shadow-2xl shadow-emerald-500/40 flex items-center gap-4">
+                <div className="bg-brand-cyan text-white px-6 py-4 rounded-2xl shadow-2xl shadow-brand-cyan/40 flex items-center gap-4">
                   <i className="fa-solid fa-check-circle text-2xl"></i>
                   <div>
                     <div className="font-black text-lg">ORDEN COMPLETA</div>
-                    <div className="text-xs opacity-90">Verificando cierre automática...</div>
+                    <div className="text-xs opacity-90">Verificando cierre automático...</div>
                   </div>
                 </div>
               </div>
@@ -694,9 +723,9 @@ const FilePrintControl = ({ areaCode }) => {
       {/* 2. Completed Order Modal (Pronto Sector) */}
       {completedOrderData && (
         <div className="fixed inset-0 z-[1600] bg-black/70 backdrop-blur-sm flex items-center justify-center p-6 animate-in fade-in duration-300">
-          <div className="bg-white w-full max-w-md rounded-3xl shadow-2xl overflow-hidden animate-in zoom-in-95 duration-300 border-4 border-emerald-400">
+          <div className="bg-white w-full max-w-md rounded-3xl shadow-2xl overflow-hidden animate-in zoom-in-95 duration-300 border-4 border-brand-cyan">
 
-            <div className="bg-emerald-500 p-8 flex flex-col items-center justify-center text-white relative overflow-hidden">
+            <div className="bg-brand-cyan p-8 flex flex-col items-center justify-center text-white relative overflow-hidden">
               <div className="absolute top-0 left-0 w-full h-full bg-[url('https://www.transparenttextures.com/patterns/cubes.png')] opacity-20"></div>
               <i className="fa-solid fa-clipboard-check text-7xl mb-4 relative z-10 animate-[bounce_1s_infinite]"></i>
               <h2 className="text-3xl font-black uppercase tracking-widest relative z-10">¡ORDEN PRONTA!</h2>
@@ -719,7 +748,7 @@ const FilePrintControl = ({ areaCode }) => {
               </div>
 
               <div className="space-y-3 w-full">
-                <button onClick={() => { setCompletedOrderData(null); handlePrintLabels(); }} className="w-full py-3 rounded-xl bg-emerald-500 text-white font-black text-lg shadow-lg shadow-emerald-200 hover:bg-emerald-600 hover:scale-[1.02] transition-all active:scale-95">
+                <button onClick={() => { setCompletedOrderData(null); handlePrintLabels(); }} className="w-full py-3 rounded-xl bg-brand-cyan text-white font-black text-lg shadow-lg shadow-brand-cyan/30 hover:bg-brand-cyan hover:scale-[1.02] transition-all active:scale-95">
                   <i className="fa-solid fa-print mr-2"></i> IMPRIMIR ETIQUETAS
                 </button>
                 <div className="flex gap-2">

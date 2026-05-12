@@ -61,6 +61,9 @@ exports.getOrdersByArea = async (req, res) => {
                 o.CodigoOrden,      -- <--- NUEVO: Código Visual (UV-14 1/3)
                 o.IdCabezalERP,
                 o.Cliente,
+                o.CodCliente,
+                o.IdClienteReact,
+                c.IDCliente as IDClienteStr, -- <--- NUEVO: El verdadero IDCliente alfanumérico
                 o.DescripcionTrabajo,
                 o.AreaID,
                 o.Estado,
@@ -104,6 +107,7 @@ exports.getOrdersByArea = async (req, res) => {
 
             FROM dbo.Ordenes o
             LEFT JOIN dbo.ConfigEquipos m ON o.MaquinaID = m.EquipoID
+            LEFT JOIN dbo.Clientes c ON o.IdClienteReact = c.IDReact
             WHERE o.AreaID = @Area 
         `;
 
@@ -134,6 +138,9 @@ exports.getOrdersByArea = async (req, res) => {
             code: o.CodigoOrden,
             erpId: o.IdCabezalERP,
             client: o.Cliente,
+            codCliente: o.CodCliente,
+            idClienteReact: o.IdClienteReact,
+            idClienteStr: o.IDClienteStr, // <--- MAPEAMOS EL STRING ID (Ej: GERMANLF, MARKETING)
             desc: o.DescripcionTrabajo,
             area: o.AreaID,
             status: o.Estado,

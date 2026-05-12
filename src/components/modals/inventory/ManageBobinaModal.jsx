@@ -133,34 +133,34 @@ const ManageBobinaModal = ({ bobina, insumoName, onClose, onSuccess }) => {
             <div className="bg-white rounded-lg shadow-xl w-full max-w-lg overflow-hidden flex flex-col max-h-[90vh]">
 
                 {/* HEADER */}
-                <div className="p-4 border-b bg-slate-50 flex justify-between items-start">
+                <div className="p-4 border-b bg-zinc-50 flex justify-between items-start">
                     <div>
-                        <h2 className="text-lg font-bold text-slate-800">{insumoName}</h2>
-                        <div className="flex gap-2 text-xs text-slate-500 mt-1">
+                        <h2 className="text-lg font-bold text-zinc-800">{insumoName}</h2>
+                        <div className="flex gap-2 text-xs text-zinc-500 mt-1">
                             <span className="font-mono bg-white px-1 border rounded">{bobina.CodigoEtiqueta}</span>
                             <span>Restante Actual: <strong>{bobina.MetrosRestantes} m</strong></span>
                         </div>
                     </div>
-                    <button onClick={onClose}><X className="w-5 h-5 text-slate-400 hover:text-red-500" /></button>
+                    <button onClick={onClose}><X className="w-5 h-5 text-zinc-400 hover:text-red-500" /></button>
                 </div>
 
                 {/* TABS */}
                 <div className="flex border-b">
                     <button
                         onClick={() => setActiveTab('adjust')}
-                        className={`flex-1 py-3 text-sm font-medium border-b-2 transition-colors ${activeTab === 'adjust' ? 'border-blue-600 text-blue-600 bg-blue-50/50' : 'border-transparent text-slate-500 hover:text-slate-700'}`}
+                        className={`flex-1 py-3 text-sm font-medium border-b-2 transition-colors ${activeTab === 'adjust' ? 'border-blue-600 text-blue-600 bg-blue-50/50' : 'border-transparent text-zinc-500 hover:text-zinc-700'}`}
                     >
                         Ajustar / Rebajar
                     </button>
                     <button
                         onClick={() => setActiveTab('close')}
-                        className={`flex-1 py-3 text-sm font-medium border-b-2 transition-colors ${activeTab === 'close' ? 'border-red-600 text-red-600 bg-red-50/50' : 'border-transparent text-slate-500 hover:text-slate-700'}`}
+                        className={`flex-1 py-3 text-sm font-medium border-b-2 transition-colors ${activeTab === 'close' ? 'border-red-600 text-red-600 bg-red-50/50' : 'border-transparent text-zinc-500 hover:text-zinc-700'}`}
                     >
                         Cerrar / Terminar
                     </button>
                     <button
                         onClick={() => setActiveTab('history')}
-                        className={`flex-1 py-3 text-sm font-medium border-b-2 transition-colors ${activeTab === 'history' ? 'border-indigo-600 text-indigo-600 bg-indigo-50/50' : 'border-transparent text-slate-500 hover:text-slate-700'}`}
+                        className={`flex-1 py-3 text-sm font-medium border-b-2 transition-colors ${activeTab === 'history' ? 'border-indigo-600 text-indigo-600 bg-indigo-50/50' : 'border-transparent text-zinc-500 hover:text-zinc-700'}`}
                     >
                         Historial
                     </button>
@@ -172,51 +172,51 @@ const ManageBobinaModal = ({ bobina, insumoName, onClose, onSuccess }) => {
                     {/* --- TAB: ADJUST --- */}
                     {activeTab === 'adjust' && (
                         <form onSubmit={handleAdjustSubmit} className="space-y-5 animate-in fade-in slide-in-from-left-4 duration-200">
-                            <div className="flex gap-4 p-1 bg-slate-100 rounded-lg">
+                            <div className="flex gap-4 p-1 bg-zinc-100 rounded-lg">
                                 <button
                                     type="button"
                                     onClick={() => setAdjustType('subtract')}
-                                    className={`flex-1 py-1.5 text-sm rounded-md transition-all ${adjustType === 'subtract' ? 'bg-white shadow text-slate-800' : 'text-slate-500'}`}
+                                    className={`flex-1 py-1.5 text-sm rounded-md transition-all ${adjustType === 'subtract' ? 'bg-white shadow text-zinc-800' : 'text-zinc-500'}`}
                                 >
                                     Rebajar (Consumo)
                                 </button>
                                 <button
                                     type="button"
                                     onClick={() => setAdjustType('correction')}
-                                    className={`flex-1 py-1.5 text-sm rounded-md transition-all ${adjustType === 'correction' ? 'bg-white shadow text-slate-800' : 'text-slate-500'}`}
+                                    className={`flex-1 py-1.5 text-sm rounded-md transition-all ${adjustType === 'correction' ? 'bg-white shadow text-zinc-800' : 'text-zinc-500'}`}
                                 >
                                     Corrección (Fijar)
                                 </button>
                             </div>
 
                             <div>
-                                <label className="block text-sm font-medium text-slate-700 mb-1">
+                                <label className="block text-sm font-medium text-zinc-700 mb-1">
                                     {adjustType === 'subtract' ? 'Cantidad a Rebajar (Metros)' : 'Nuevo Valor Real (Metros)'}
                                 </label>
                                 <input
                                     type="number" step="0.01" min="0"
-                                    className="w-full border rounded p-2 text-lg font-semibold text-slate-700"
+                                    className="w-full border rounded p-2 text-lg font-semibold text-zinc-700"
                                     value={amount}
                                     onChange={e => setAmount(e.target.value)}
                                     placeholder="0.00"
                                     autoFocus
                                 />
                                 {adjustType === 'subtract' && amount && (
-                                    <p className="text-xs text-slate-400 mt-1">
+                                    <p className="text-xs text-zinc-400 mt-1">
                                         Quedarán: {(bobina.MetrosRestantes - parseFloat(amount || 0)).toFixed(2)} m
                                     </p>
                                 )}
                             </div>
 
                             <div>
-                                <label className="block text-sm font-medium text-slate-700 mb-1">Concepto / Motivo</label>
+                                <label className="block text-sm font-medium text-zinc-700 mb-1">Concepto / Motivo</label>
                                 <div className="grid grid-cols-2 gap-2 mb-2">
                                     {concepts.map(c => (
                                         <button
                                             key={c}
                                             type="button"
                                             onClick={() => { setConcept(c); setCustomConcept(''); }}
-                                            className={`text-xs p-2 rounded border text-left transition-colors ${concept === c && !customConcept ? 'bg-blue-50 border-blue-300 text-blue-700' : 'border-slate-200 hover:bg-slate-50'}`}
+                                            className={`text-xs p-2 rounded border text-left transition-colors ${concept === c && !customConcept ? 'bg-blue-50 border-blue-300 text-blue-700' : 'border-zinc-200 hover:bg-zinc-50'}`}
                                         >
                                             {c}
                                         </button>
@@ -263,7 +263,7 @@ const ManageBobinaModal = ({ bobina, insumoName, onClose, onSuccess }) => {
                                     onBlur={handleCalculateWaste}
                                     required
                                 />
-                                <p className="text-xs text-slate-500 mt-1">Lo que queda físicamente (generalmente 0 o pocos metros de merma).</p>
+                                <p className="text-xs text-zinc-500 mt-1">Lo que queda físicamente (generalmente 0 o pocos metros de merma).</p>
                             </div>
 
                             {calculatedWaste !== null && (
@@ -294,7 +294,7 @@ const ManageBobinaModal = ({ bobina, insumoName, onClose, onSuccess }) => {
                                     onChange={(e) => setFinish(e.target.checked)}
                                     className="w-4 h-4 text-red-600 rounded cursor-pointer"
                                 />
-                                <label htmlFor="finishCheck" className="text-sm text-slate-700 font-medium cursor-pointer">
+                                <label htmlFor="finishCheck" className="text-sm text-zinc-700 font-medium cursor-pointer">
                                     Sacar de inventario (Agotado)
                                 </label>
                             </div>
@@ -311,23 +311,23 @@ const ManageBobinaModal = ({ bobina, insumoName, onClose, onSuccess }) => {
                     {activeTab === 'history' && (
                         <div className="space-y-4 animate-in fade-in duration-300">
                             {loadingHistory ? (
-                                <div className="text-center py-10 text-slate-400">Cargando movimientos...</div>
+                                <div className="text-center py-10 text-zinc-400">Cargando movimientos...</div>
                             ) : history.length === 0 ? (
-                                <div className="text-center py-10 text-slate-400">No hay historial registrado.</div>
+                                <div className="text-center py-10 text-zinc-400">No hay historial registrado.</div>
                             ) : (
                                 <div className="space-y-3">
                                     {history.map((mov, idx) => (
-                                        <div key={idx} className="flex gap-3 items-start border-b border-slate-100 pb-3 last:border-0">
+                                        <div key={idx} className="flex gap-3 items-start border-b border-zinc-100 pb-3 last:border-0">
                                             <div className={`mt-1 w-2 h-2 rounded-full shrink-0 ${mov.Cantidad > 0 ? 'bg-green-500' : 'bg-red-500'}`}></div>
                                             <div className="flex-1">
                                                 <div className="flex justify-between">
-                                                    <span className="font-medium text-slate-700 text-sm">{mov.TipoMovimiento}</span>
+                                                    <span className="font-medium text-zinc-700 text-sm">{mov.TipoMovimiento}</span>
                                                     <span className={`font-mono text-sm ${mov.Cantidad > 0 ? 'text-green-600' : 'text-red-600'}`}>
                                                         {mov.Cantidad > 0 ? '+' : ''}{mov.Cantidad}m
                                                     </span>
                                                 </div>
-                                                <p className="text-xs text-slate-500 mt-1">{mov.Referencia}</p>
-                                                <div className="text-[10px] text-slate-400 mt-1 flex justify-between">
+                                                <p className="text-xs text-zinc-500 mt-1">{mov.Referencia}</p>
+                                                <div className="text-[10px] text-zinc-400 mt-1 flex justify-between">
                                                     <span>{new Date(mov.Fecha).toLocaleString()}</span>
                                                     <span>{mov.Usuario || 'Sistema'}</span>
                                                 </div>
@@ -346,3 +346,4 @@ const ManageBobinaModal = ({ bobina, insumoName, onClose, onSuccess }) => {
 };
 
 export default ManageBobinaModal;
+

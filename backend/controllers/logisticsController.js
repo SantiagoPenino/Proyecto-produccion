@@ -1244,30 +1244,37 @@ exports.getDashboard = async (req, res) => {
     try {
         const pool = await getPool();
 
-        // 1. Existing Bultos
-        const r = await pool.request().input('A', sql.VarChar, areaId)
-            .query(`
-                SELECT 
-                    b.BultoID, b.CodigoEtiqueta, b.Descripcion, b.Estado, b.UbicacionActual, b.Tipocontenido,
-                    b.OrdenID,
-                    o.CodigoOrden, o.Cliente, o.DescripcionTrabajo, o.ProximoServicio,
-                    (SELECT COUNT(*) FROM Logistica_Bultos WHERE OrdenID = b.OrdenID) as TotalBultosOrden
-                FROM Logistica_Bultos b
-                LEFT JOIN Ordenes o ON b.OrdenID = o.OrdenID
-                WHERE b.UbicacionActual = @A 
-                AND b.Estado NOT IN ('PERDIDO', 'DESPACHADO', 'EN_TRANSITO')
-            `);
+        // Ejecutar ambas queries EN PARALELO para reducir tiempo de respuesta
+        const [r, rPending] = await Promise.all([
+            // 1. Bultos existentes en el área
+            pool.request().input('A', sql.VarChar, areaId)
+                .query(`
+                    SELECT 
+                        b.BultoID, b.CodigoEtiqueta, b.Descripcion, b.Estado, b.UbicacionActual, b.Tipocontenido,
+                        b.OrdenID,
+                        o.CodigoOrden, o.Cliente, o.DescripcionTrabajo, o.ProximoServicio,
+                        (SELECT COUNT(*) FROM Logistica_Bultos WITH(NOLOCK) WHERE OrdenID = b.OrdenID) as TotalBultosOrden
+                    FROM Logistica_Bultos b WITH(NOLOCK)
+                    LEFT JOIN Ordenes o WITH(NOLOCK) ON b.OrdenID = o.OrdenID
+                    WHERE b.UbicacionActual = @A 
+                    AND b.Estado NOT IN ('PERDIDO', 'DESPACHADO', 'EN_TRANSITO')
+                `),
 
-        // 2. Pending Orders (Ready but No Bultos yet)
-        const rPending = await pool.request().input('A', sql.VarChar, areaId)
-            .query(`
-                SELECT 
-                   o.OrdenID, o.CodigoOrden, o.Cliente, o.DescripcionTrabajo, o.Estado, o.AreaID, o.EstadoLogistica
-                FROM Ordenes o
-                WHERE o.AreaID = @A
-                AND o.Estado NOT IN ('Entregado', 'Finalizado', 'Cancelado', 'Pendiente') -- Solo en proceso activo
-                AND o.OrdenID NOT IN (SELECT DISTINCT OrdenID FROM Logistica_Bultos WHERE OrdenID IS NOT NULL)
-            `);
+            // 2. Órdenes pendientes sin bultos aún
+            // OPTIMIZACIÓN: LEFT JOIN en lugar de NOT IN (subquery) — mucho más eficiente con índices
+            pool.request().input('A', sql.VarChar, areaId)
+                .query(`
+                    SELECT 
+                        o.OrdenID, o.CodigoOrden, o.Cliente, o.DescripcionTrabajo, o.Estado, o.AreaID, o.EstadoLogistica
+                    FROM Ordenes o WITH(NOLOCK)
+                    LEFT JOIN (
+                        SELECT DISTINCT OrdenID FROM Logistica_Bultos WITH(NOLOCK) WHERE OrdenID IS NOT NULL
+                    ) lb ON o.OrdenID = lb.OrdenID
+                    WHERE o.AreaID = @A
+                    AND o.Estado NOT IN ('Entregado', 'Finalizado', 'Cancelado', 'Pendiente')
+                    AND lb.OrdenID IS NULL
+                `)
+        ]);
 
         // Estructuras de retorno
         const fallas = [];

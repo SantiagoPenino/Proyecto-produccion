@@ -1,7 +1,9 @@
 import React, { useState, useEffect, useMemo } from 'react';
+import { flushSync } from 'react-dom';
 import { useNavigate } from 'react-router-dom';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner'; // Importar Toast
+import Swal from 'sweetalert2';
 import { rollsService, productionService } from '../../services/api';
 import OrderCard from '../production/components/OrderCard';
 import RollCard from '../production/components/RollCard';
@@ -10,9 +12,14 @@ import RollAssignmentModal from '../modals/RollAssignmentModal';
 import RollDetailsModal from '../modals/RollDetailsModal';
 import ConfirmationModal from '../modals/ConfirmationModal'; // Importar Modal
 import MachineControl from '../production/components/MachineControl';
+import { Layers, Printer, Plus } from 'lucide-react';
+import { DragDropContext, Droppable, Draggable } from '@hello-pangea/dnd';
+import { motion } from 'framer-motion';
+import { Listbox, Transition } from '@headlessui/react';
 
 const PlaneacionTrabajo = ({ AreaID }) => {
     const navigate = useNavigate();
+    const queryClient = useQueryClient();
     const areaCode = AreaID; // Internal alias for compatibility
     // ESTADOS DE INTERACCIÓN
     const [selectedOrderIds, setSelectedOrderIds] = useState([]);
@@ -164,11 +171,18 @@ const PlaneacionTrabajo = ({ AreaID }) => {
         refetchInterval: 30000
     });
 
+    const [localBoardData, setLocalBoardData] = useState({ machines: [], pendingRolls: [] });
+    useEffect(() => {
+        if (prodData) {
+            setLocalBoardData(prodData);
+        }
+    }, [prodData]);
+
     // Derived State and Helpers
     const backlogOrders = rollsData?.pendingOrders || [];
     const activeRolls = rollsData?.rolls || [];
-    const machines = prodData?.machines || [];
-    const pendingRolls = prodData?.pendingRolls || [];
+    const machines = localBoardData.machines || [];
+    const pendingRolls = localBoardData.pendingRolls || [];
     const loading = loadingRolls || loadingProd;
 
     const refreshBoard = () => {
@@ -200,6 +214,108 @@ const PlaneacionTrabajo = ({ AreaID }) => {
             const msg = error.response?.data?.error || error.message || "Error desconocido";
             toast.error(`Error al asignar algunos rollos: ${msg}`);
         }
+    };
+
+    const handleDragEnd = (result) => {
+        const { source, destination, draggableId } = result;
+        if (!destination) return;
+        if (source.droppableId === destination.droppableId && source.index === destination.index) return;
+
+        const rollId = draggableId;
+        const pureRollId = rollId.startsWith('assigned-') ? rollId.replace('assigned-', '') : rollId;
+
+        // Cancelar consultas en vuelo para evitar que reescriban nuestro estado optimista
+        queryClient.cancelQueries({ queryKey: ['productionBoard', areaCode] });
+
+        // Calculamos el nuevo estado basado en el estado local actual
+        const oldData = localBoardData;
+        const newData = { 
+            ...oldData, 
+            pendingRolls: [...(oldData.pendingRolls || [])], 
+            machines: (oldData.machines || []).map(m => ({...m, rolls: [...m.rolls]})) 
+        };
+        
+        // Encontrar el rollo
+        let rollToMove = newData.pendingRolls.find(r => String(r.id) === String(pureRollId));
+        if (!rollToMove) {
+            for (const m of newData.machines) {
+                const r = m.rolls.find(r => String(r.id) === String(pureRollId));
+                if (r) {
+                    rollToMove = r;
+                    break;
+                }
+            }
+        }
+        
+        if (!rollToMove) return;
+
+        // Remover del origen
+        if (source.droppableId === 'mesa-armado') {
+            newData.pendingRolls = newData.pendingRolls.filter(r => String(r.id) !== String(pureRollId));
+        } else {
+            const sourceMachine = newData.machines.find(m => String(m.id) === String(source.droppableId));
+            if (sourceMachine) {
+                sourceMachine.rolls = sourceMachine.rolls.filter(r => String(r.id) !== String(pureRollId));
+            }
+        }
+
+        // Agregar al destino
+        if (destination.droppableId === 'mesa-armado') {
+            newData.pendingRolls.splice(destination.index, 0, rollToMove);
+        } else {
+            const destMachine = newData.machines.find(m => String(m.id) === String(destination.droppableId));
+            if (destMachine) {
+                destMachine.rolls.splice(destination.index, 0, rollToMove);
+            }
+        }
+
+        // Optimistic UI Update síncrono
+        flushSync(() => {
+            setLocalBoardData(newData);
+            queryClient.setQueryData(['productionBoard', areaCode], newData);
+        });
+
+        // Async API calls
+        const executeApiCall = async () => {
+            if (source.droppableId === 'mesa-armado' && destination.droppableId !== 'mesa-armado') {
+                const machineId = destination.droppableId;
+                try {
+                    await productionService.assignRolls([pureRollId], machineId);
+                    setTimeout(() => refreshBoard(), 1000);
+                    Swal.fire({ toast: true, position: 'top-end', showConfirmButton: false, timer: 3000, timerProgressBar: true, icon: 'success', title: 'Lote asignado por arrastre', customClass: { container: 'z-[9999]' } });
+                } catch (error) {
+                    refreshBoard();
+                    console.error("Error asignando lote:", error);
+                    const msg = error.response?.data?.error || error.message || "Error desconocido";
+                    Swal.fire({ toast: true, position: 'top-end', showConfirmButton: false, timer: 4000, timerProgressBar: true, icon: 'error', title: `Error al asignar: ${msg}`, customClass: { container: 'z-[9999]' } });
+                }
+            } else if (source.droppableId !== 'mesa-armado' && destination.droppableId === 'mesa-armado') {
+                try {
+                    await productionService.unassignRoll(pureRollId);
+                    setTimeout(() => refreshBoard(), 1000);
+                    Swal.fire({ toast: true, position: 'top-end', showConfirmButton: false, timer: 3000, timerProgressBar: true, icon: 'success', title: 'Lote desmontado por arrastre', customClass: { container: 'z-[9999]' } });
+                } catch (error) {
+                    refreshBoard();
+                    console.error("Error desmontando lote:", error);
+                    const msg = error.response?.data?.error || error.message || "Error desconocido";
+                    Swal.fire({ toast: true, position: 'top-end', showConfirmButton: false, timer: 4000, timerProgressBar: true, icon: 'error', title: `Error al desmontar: ${msg}`, customClass: { container: 'z-[9999]' } });
+                }
+            } else if (source.droppableId !== 'mesa-armado' && destination.droppableId !== 'mesa-armado') {
+                const machineId = destination.droppableId;
+                try {
+                    await productionService.assignRolls([pureRollId], machineId);
+                    setTimeout(() => refreshBoard(), 1000);
+                    Swal.fire({ toast: true, position: 'top-end', showConfirmButton: false, timer: 3000, timerProgressBar: true, icon: 'success', title: 'Lote movido entre máquinas', customClass: { container: 'z-[9999]' } });
+                } catch (error) {
+                    refreshBoard();
+                    console.error("Error moviendo lote:", error);
+                    const msg = error.response?.data?.error || error.message || "Error desconocido";
+                    Swal.fire({ toast: true, position: 'top-end', showConfirmButton: false, timer: 4000, timerProgressBar: true, icon: 'error', title: `Error al mover: ${msg}`, customClass: { container: 'z-[9999]' } });
+                }
+            }
+        };
+
+        executeApiCall();
     };
 
     // ... (Filtros Logic - Machine, Priority, etc. kept same, unrelated blocks omitted for brevity if possible, keeping main logic)
@@ -300,380 +416,265 @@ const PlaneacionTrabajo = ({ AreaID }) => {
             } else {
                 console.error("Error cambiando estado:", error);
             }
-            toast.error(msg);
+            Swal.fire({
+                toast: true,
+                position: 'top-end',
+                showConfirmButton: false,
+                timer: 4000,
+                timerProgressBar: true,
+                icon: 'error',
+                title: msg,
+                customClass: { container: 'z-[9999]' }
+            });
         }
     };
 
     // ... UI RENDER ...
     return (
-        <div className="flex flex-col h-full bg-slate-100 font-sans overflow-hidden">
+        <DragDropContext onDragEnd={handleDragEnd}>
+        <div className="flex flex-col h-full bg-white font-sans overflow-hidden">
 
-            {/* Toolbar */}
-            <div className="bg-white border-b border-slate-200 shadow-sm z-[100] px-4 py-2 flex flex-wrap gap-3 items-center sticky top-0">
 
-                <span className="text-slate-400 mr-1"><i className="fa-solid fa-filter"></i></span>
 
-                {/* Prioridad */}
-                <div className="flex items-center gap-1">
-                    {availablePriorities.map(p => (
-                        <button key={p} onClick={() => setPriorityFilter(p)}
-                            className={`px-2 py-0.5 rounded text-[10px] uppercase font-bold border transition-all ${priorityFilter === p ? (['Urgente', 'Reposición', 'Falla'].includes(p) ? 'bg-red-500 text-white border-red-500' : 'bg-slate-700 text-white border-slate-700') : 'bg-white text-slate-500 border-slate-200 hover:border-slate-300'}`}>
-                            {p === 'ALL' ? 'Prior: Todas' : p}
-                        </button>
-                    ))}
-                </div>
+                <div className="flex-1 flex flex-col overflow-hidden">
 
-                <div className="w-px h-4 bg-slate-200"></div>
-
-                {/* Estado */}
-                <div className="flex items-center gap-1">
-                    {availableStatuses.map(s => (
-                        <button key={s} onClick={() => setStatusFilter(s)}
-                            className={`px-2 py-0.5 rounded text-[10px] uppercase font-bold border transition-all ${statusFilter === s ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-slate-500 border-slate-200 hover:border-slate-300'}`}>
-                            {s === 'ALL' ? 'Est: Todos' : s}
-                        </button>
-                    ))}
-                </div>
-
-                <div className="w-px h-4 bg-slate-200"></div>
-
-                {/* Variante */}
-                {uniqueVariants.length > 0 && (
-                    <div className="flex items-center gap-2 bg-slate-50 border border-slate-200 rounded-lg px-2 py-1 h-[26px]">
-                        <span className="text-[9px] font-black text-slate-400 uppercase">Var:</span>
-                        <select
-                            value={variantFilter}
-                            onChange={(e) => setVariantFilter(e.target.value)}
-                            className="bg-transparent text-[10px] uppercase font-bold text-slate-600 outline-none cursor-pointer max-w-[100px]"
-                        >
-                            <option value="ALL">Todas</option>
-                            {uniqueVariants.map(v => <option key={v} value={v}>{v}</option>)}
-                        </select>
-                        <div className="h-4 w-px bg-slate-200 mx-1"></div>
-                    </div>
-                )}
-
-                {/* Filtro Tinta */}
-                {uniqueInks.length > 0 && (
-                    <div className="flex items-center gap-2 bg-purple-50 border border-purple-200 rounded-lg px-2 py-1 h-[26px]">
-                        <span className="text-[9px] font-black text-purple-400 uppercase">Tinta:</span>
-                        <select
-                            value={inkFilter}
-                            onChange={(e) => setInkFilter(e.target.value)}
-                            className="bg-transparent text-[10px] uppercase font-bold text-purple-600 outline-none cursor-pointer max-w-[100px]"
-                        >
-                            <option value="ALL">Todas</option>
-                            {uniqueInks.map(v => <option key={v} value={v}>{v}</option>)}
-                        </select>
-                        <div className="h-4 w-px bg-purple-200 mx-1"></div>
-                    </div>
-                )}
-
-                {/* Material Filter */}
-                {uniqueMaterials.length > 0 && (
-                    <div className="relative">
-                        <button
-                            onClick={() => setIsMaterialOpen(!isMaterialOpen)}
-                            className={`px-3 py-1 bg-white border rounded-lg text-xs font-bold flex items-center gap-2 transition-all h-[26px] ${materialFilter.length > 0 ? 'border-blue-500 text-blue-600 bg-blue-50' : 'border-slate-200 text-slate-600 hover:border-slate-300'}`}
-                        >
-                            <i className="fa-solid fa-layer-group text-slate-400"></i>
-                            <span className="truncate max-w-[100px]">{materialFilter.length === 0 ? 'Materiales' : `(${materialFilter.length})`}</span>
-                            <i className="fa-solid fa-chevron-down text-[10px]"></i>
-                        </button>
-
-                        {isMaterialOpen && (
-                            <>
-                                <div className="fixed inset-0 z-[110]" onClick={() => setIsMaterialOpen(false)}></div>
-                                <div className="absolute top-full left-0 mt-1 w-64 bg-white border border-slate-200 rounded-xl shadow-xl z-[120] p-2 max-h-60 overflow-y-auto animate-in fade-in zoom-in-95 duration-100">
-                                    <div className="flex justify-between items-center mb-2 px-1 border-b border-slate-100 pb-2">
-                                        <span className="text-[10px] font-bold text-slate-400 uppercase">Seleccionar Materiales</span>
-                                        {materialFilter.length > 0 && (
-                                            <button onClick={() => setMaterialFilter([])} className="text-[10px] text-blue-500 hover:underline">Limpiar</button>
-                                        )}
-                                    </div>
-                                    <div className="space-y-1">
-                                        {uniqueMaterials.map(mat => (
-                                            <label key={mat} className="flex items-start gap-2 p-1.5 hover:bg-slate-50 rounded cursor-pointer transition-colors">
-                                                <input
-                                                    type="checkbox"
-                                                    checked={materialFilter.includes(mat)}
-                                                    onChange={() => toggleMaterial(mat)}
-                                                    className="mt-0.5 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
-                                                />
-                                                <span className={`text-xs leading-tight ${materialFilter.includes(mat) ? 'text-blue-600 font-bold' : 'text-slate-600'}`}>{mat}</span>
-                                            </label>
-                                        ))}
-                                    </div>
-                                </div>
-                            </>
-                        )}
-                    </div>
-                )}
-
-                <div className="flex-1"></div>
-
-                {/* FILTRO DE MÁQUINAS (Multi-select) */}
-                <div className="relative">
-                    <button
-                        onClick={() => setIsMachineFilterOpen(!isMachineFilterOpen)}
-                        className={`px-3 py-1 bg-white border rounded-lg text-xs font-bold flex items-center gap-2 transition-all h-[26px] ${filterMachineIds.length > 0 ? 'border-indigo-500 text-indigo-600 bg-indigo-50' : 'border-slate-200 text-slate-600 hover:border-slate-300'}`}
-                    >
-                        <i className="fa-solid fa-print text-slate-400"></i>
-                        <span className="truncate max-w-[100px]">{filterMachineIds.length === 0 ? 'Todos los Equipos' : `Equipos (${filterMachineIds.length})`}</span>
-                        <i className="fa-solid fa-chevron-down text-[10px]"></i>
-                    </button>
-
-                    {isMachineFilterOpen && (
-                        <>
-                            <div className="fixed inset-0 z-[110]" onClick={() => setIsMachineFilterOpen(false)}></div>
-                            <div className="absolute top-full right-0 mt-1 w-64 bg-white border border-slate-200 rounded-xl shadow-xl z-[120] p-2 max-h-60 overflow-y-auto animate-in fade-in zoom-in-95 duration-100">
-                                <div className="flex justify-between items-center mb-2 px-1 border-b border-slate-100 pb-2">
-                                    <span className="text-[10px] font-bold text-slate-400 uppercase">Filtrar Equipos</span>
-                                    {filterMachineIds.length > 0 && (
-                                        <button onClick={() => setFilterMachineIds([])} className="text-[10px] text-indigo-500 hover:underline">Limpiar</button>
-                                    )}
-                                </div>
-                                <div className="space-y-1">
-                                    {machines.map(m => (
-                                        <label key={m.id} className="flex items-start gap-2 p-1.5 hover:bg-slate-50 rounded cursor-pointer transition-colors">
-                                            <input
-                                                type="checkbox"
-                                                checked={filterMachineIds.includes(String(m.id))}
-                                                onChange={() => toggleMachineFilter(m.id)}
-                                                className="mt-0.5 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
-                                            />
-                                            <span className={`text-xs leading-tight ${filterMachineIds.includes(String(m.id)) ? 'text-indigo-600 font-bold' : 'text-slate-600'}`}>{m.name}</span>
-                                        </label>
-                                    ))}
-                                </div>
-                            </div>
-                        </>
-                    )}
-                </div>
-
-                {/* Magic Sort Button & Progress */}
-                <div className="flex items-center gap-2">
-                    {magicSortProgress ? (
-                        <div className={`px-3 py-1 rounded-lg text-xs font-bold flex items-center gap-2 transition-all ${magicSortProgress.status === 'error' ? 'bg-red-100 text-red-600 border border-red-200' :
-                            magicSortProgress.status === 'success' ? 'bg-green-100 text-green-600 border border-green-200' :
-                                'bg-purple-50 text-purple-600 border border-purple-200'
-                            }`}>
-                            {magicSortProgress.status === 'loading' && <i className="fa-solid fa-spinner fa-spin"></i>}
-                            {magicSortProgress.status === 'success' && <i className="fa-solid fa-check"></i>}
-                            {magicSortProgress.status === 'error' && <i className="fa-solid fa-triangle-exclamation"></i>}
-                            <span>{magicSortProgress.step}</span>
-                        </div>
-                    ) : (
-                        <button
-                            onClick={() => {
-                                const code = (areaCode || '').toUpperCase();
-                                // Support DF (DTF) and ECOUV
-                                const isSupported = code.includes('DTF') || code === 'DF' || code.includes('ECOUV');
-
-                                if (!isSupported) {
-                                    toast.info(`🚧 Proceso en construcción para esta área (${areaCode || 'N/A'}).`);
-                                    return;
-                                }
-
-                                if (selectedOrderIds.length > 0) {
-                                    handleMagicSortCheck();
-                                } else {
-                                    // CHEQUEO INTELIGENTE: Si hay filtros activos, sugerir agrupar lo visible
-                                    if (filteredBacklogOrders.length < backlogOrders.length && filteredBacklogOrders.length > 0) {
-                                        setConfirmModal({
-                                            isOpen: true,
-                                            title: "Armado Mágico Filtrado",
-                                            message: `🎯 Tienes filtros activos.\n\n¿Deseas aplicar la varita mágica SOLAMENTE a las ${filteredBacklogOrders.length} órdenes visibles en este momento?`,
-                                            onConfirm: () => {
-                                                const visibleIds = filteredBacklogOrders.map(o => o.id);
-                                                executeMagicSort(visibleIds);
-                                            }
-                                        });
-                                    } else {
-                                        // SI NO HAY FILTROS, SUGERIR GLOBAL
-                                        setConfirmModal({
-                                            isOpen: true,
-                                            title: "Armado Mágico Global",
-                                            message: "🪄 No hay selección ni filtros.\n\n¿Ejecutar Armado Mágico GLOBAL?\n\nEsto agrupará TODAS las órdenes pendientes por Variante y Material, creando lotes individuales automáticamente.",
-                                            onConfirm: () => {
-                                                setMagicSortProgress({ step: 'Iniciando magia global...', status: 'loading' });
-                                                rollsService.magicAssignment(areaCode)
-                                                    .then(res => {
-                                                        if (res.success) {
-                                                            setMagicSortProgress({ step: res.message, status: 'success' });
-                                                            toast.success(res.message);
-                                                            refreshBoard();
-                                                        } else {
-                                                            setMagicSortProgress({ step: "Error: " + res.message, status: 'error' });
-                                                            toast.error(res.message);
-                                                        }
-                                                        setTimeout(() => setMagicSortProgress(null), 4000);
-                                                    })
-                                                    .catch(err => {
-                                                        console.error(err);
-                                                        setMagicSortProgress({ step: "Error en magia", status: 'error' });
-                                                        toast.error("Error al ejecutar armado mágico global.");
-                                                        setTimeout(() => setMagicSortProgress(null), 4000);
-                                                    });
-                                            }
-                                        });
-                                    }
-                                }
-                            }}
-                            className="px-3 py-1 bg-gradient-to-r from-purple-500 to-pink-500 text-white rounded-lg text-xs font-bold shadow-md hover:opacity-90 transition-all flex items-center gap-2"
-                            title={selectedOrderIds.length > 0 ? "Agrupar seleccionadas" : "Agrupar TODO automáticamente"}
-                        >
-                            <i className="fa-solid fa-wand-magic-sparkles"></i>
-                            <span className="hidden sm:inline">{selectedOrderIds.length > 0 ? 'Agrupar Sel.' : 'Armado Mágico'}</span>
-                        </button>
-                    )}
-                </div>
-
-                <div className="h-6 w-px bg-slate-200 mx-1"></div>
-
-                <button onClick={refreshBoard} className="px-3 py-1 bg-white border border-slate-300 text-blue-600 text-xs font-bold rounded hover:bg-slate-50 h-[26px]">
-                    <i className="fa-solid fa-rotate-right"></i>
-                </button>
-            </div>
-
-            {/* Same Body Content */}
-            {loading ? (
-                <div className="flex-1 flex items-center justify-center text-slate-400 gap-3">
-                    <i className="fa-solid fa-circle-notch fa-spin text-3xl text-blue-500"></i>
-                    <span className="font-bold">Cargando Tablero...</span>
-                </div>
-            ) : (
-                <div className="flex-1 flex overflow-hidden p-4 gap-4">
-
-                    {/* COLUMNA 1: BACKLOG */}
-                    <div className="w-80 flex flex-col bg-slate-50 rounded-xl border border-slate-200 shadow-sm shrink-0 overflow-hidden">
-                        <div className="p-3 border-b border-slate-200 bg-white flex justify-between items-center shrink-0">
-                            <div className="flex items-center gap-2">
-                                <input
-                                    type="checkbox"
-                                    className="w-4 h-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
-                                    checked={filteredBacklogOrders.length > 0 && selectedOrderIds.length === filteredBacklogOrders.length}
-                                    onChange={() => {
-                                        if (selectedOrderIds.length === filteredBacklogOrders.length) setSelectedOrderIds([]);
-                                        else setSelectedOrderIds(filteredBacklogOrders.map(o => o.id));
-                                    }}
-                                />
-                                <h3 className="font-bold text-slate-700 text-sm">Pendientes ({filteredBacklogOrders.length})</h3>
-                            </div>
-
-                            {selectedOrderIds.length > 0 && (
-                                <button
-                                    onClick={() => setIsAssignModal(true)}
-                                    className="bg-blue-600 text-white text-[10px] font-bold px-3 py-1 rounded-full shadow-lg shadow-blue-200 hover:bg-blue-700 animate-in zoom-in duration-200"
-                                >
-                                    AGRUPAR ({selectedOrderIds.length})
-                                </button>
-                            )}
-                        </div>
-
-                        <div className="flex-1 overflow-y-auto p-2 space-y-2 bg-slate-50/50 scrollbar-thin">
-                            {filteredBacklogOrders.map(order => (
-                                <OrderCard
-                                    key={order.id}
-                                    order={order}
-                                    onViewDetails={handleViewOrder}
-                                    minimal={true}
-                                    isSelected={selectedOrderIds.includes(order.id)}
-                                    onToggleSelect={handleToggleOrder}
-                                />
-                            ))}
-                            {filteredBacklogOrders.length === 0 && (
-                                <div className="text-center py-10 text-slate-400 italic text-xs">No hay órdenes pendientes con los filtros actuales.</div>
-                            )}
-                        </div>
-                    </div>
-
-                    {/* COLUMNA 2: MESA DE ARMADO */}
-                    <div className="w-96 flex flex-col bg-indigo-50/30 rounded-xl border border-indigo-100 shadow-sm shrink-0 relative overflow-hidden">
-                        <div className="absolute inset-0 border-2 border-dashed border-indigo-200 rounded-xl pointer-events-none m-1"></div>
-
-                        <div className="p-3 border-b border-indigo-100 bg-indigo-50 flex justify-between items-center z-10 shrink-0">
-                            <h3 className="font-bold text-indigo-800 text-sm flex items-center gap-2">
-                                <i className="fa-solid fa-layer-group"></i> Mesa de Armado
+                    {/* HEADERS ROW — spans full width */}
+                    <div className="flex border-b border-zinc-200 shrink-0">
+                        {/* Mesa de Armado header */}
+                        <div className="w-80 shrink-0 px-4 py-3 flex justify-between items-center border-r border-zinc-200 bg-white overflow-hidden gap-2">
+                            <h3 className="font-black text-zinc-700 text-sm flex items-center gap-2 shrink-0">
+                                <Layers size={15} className="text-brand-cyan" />
+                                Mesa de Armado
                             </h3>
+                            <span className="h-6 flex items-center bg-brand-cyan/10 text-brand-cyan px-2 rounded-md text-xs font-bold shrink-0">{pendingRolls.length}</span>
+                        </div>
+                        {/* Equipos header */}
+                        <div className="flex-1 px-4 py-3 flex items-center gap-2 bg-white">
+                            <Printer size={15} className="text-brand-cyan" />
+                            <h3 className="font-black text-zinc-700 text-sm">Equipos</h3>
+                            {visibleMachines.length > 0 && <span className="bg-brand-cyan/10 text-brand-cyan px-2 py-0.5 rounded-md text-xs font-bold">{visibleMachines.length}</span>}
+                            
+                            <div className="flex-1"></div>
+                            
+                            {/* CSS Hover Dropdown for Machine Filter */}
+                                <div className="w-auto relative z-[100] group">
+                                    <div className="relative w-full cursor-pointer rounded-lg bg-white py-1.5 pl-3 pr-8 text-left border border-slate-200 group-hover:border-slate-300 outline-none sm:text-xs font-bold text-slate-700 shadow-sm transition-all flex items-center justify-between">
+                                        <span className="block whitespace-nowrap">
+                                            Todos los Equipos
+                                        </span>
+                                        <span className="absolute inset-y-0 right-0 flex items-center pr-2">
+                                            <i className="fa-solid fa-chevron-down text-[10px] text-slate-400"></i>
+                                        </span>
+                                    </div>
+                                    
+                                    {/* Dropdown Menu (Hidden by default, shown on hover) */}
+                                    <div className="absolute top-full right-0 pt-1 w-full hidden group-hover:block transition-all duration-200 origin-top z-[101]">
+                                        <div className="max-h-60 w-full overflow-auto rounded-xl bg-white py-1 text-base shadow-lg ring-1 ring-black/5 sm:text-xs border border-slate-100">
+                                        {machines.length === 0 ? (
+                                            <div className="relative cursor-default select-none py-2 px-4 text-slate-500 italic text-center">
+                                                No hay equipos
+                                            </div>
+                                        ) : (
+                                            machines.map((machine) => {
+                                                const selected = filterMachineIds.includes(String(machine.id));
+                                                return (
+                                                    <label
+                                                        key={machine.id}
+                                                        className={`relative cursor-pointer select-none py-2 px-3 transition-colors flex items-center w-full ${selected ? 'bg-brand-cyan/5 text-brand-cyan font-bold' : 'text-slate-600 font-medium hover:bg-slate-50'}`}
+                                                    >
+                                                        <input 
+                                                            type="checkbox" 
+                                                            className="mr-2 h-3.5 w-3.5 rounded border-slate-300 text-brand-cyan focus:ring-brand-cyan accent-brand-cyan cursor-pointer" 
+                                                            checked={selected} 
+                                                            onChange={(e) => {
+                                                                const strId = String(machine.id);
+                                                                if (e.target.checked) {
+                                                                    setFilterMachineIds([...filterMachineIds, strId]);
+                                                                } else {
+                                                                    setFilterMachineIds(filterMachineIds.filter(id => id !== strId));
+                                                                }
+                                                            }} 
+                                                        />
+                                                        <span className="block truncate">
+                                                            {machine.name}
+                                                        </span>
+                                                    </label>
+                                                );
+                                            })
+                                        )}
+                                        </div>
+                                    </div>
+                                </div>
+                        </div>
+                    </div>
 
-                            {selectedRollIds.length > 0 ? (
-                                <button
-                                    onClick={() => setIsMachineModal(true)}
-                                    className="bg-indigo-600 text-white text-[10px] font-bold px-3 py-1 rounded-full shadow-lg shadow-indigo-200 hover:bg-indigo-700 animate-in zoom-in duration-200"
-                                >
-                                    ASIGNAR MÁQUINA ({selectedRollIds.length})
-                                </button>
-                            ) : (
-                                <span className="bg-white text-indigo-600 px-2 py-0.5 rounded-full text-xs font-bold shadow-sm">{pendingRolls.length}</span>
-                            )}
+                    {/* BODY ROW */}
+                    <div className="flex-1 flex overflow-hidden">
+
+                        {/* MESA DE ARMADO body */}
+                        <div className="w-80 shrink-0 flex flex-col border-r border-zinc-200 bg-white overflow-hidden">
+                            <Droppable droppableId="mesa-armado">
+                                {(provided, snapshot) => (
+                                    <div 
+                                        ref={provided.innerRef} 
+                                        {...provided.droppableProps}
+                                        className={`flex-1 overflow-y-auto p-0 flex flex-col -space-y-px custom-scrollbar transition-colors ${snapshot.isDraggingOver ? 'bg-brand-cyan/5' : 'bg-zinc-50/30'}`}
+                                    >
+                                        {pendingRolls.map((roll, index) => (
+                                            <Draggable key={roll.id} draggableId={String(roll.id)} index={index}>
+                                                {(provided, snapshot) => (
+                                                    <div
+                                                        ref={provided.innerRef}
+                                                        {...provided.draggableProps}
+                                                        {...provided.dragHandleProps}
+                                                        style={{
+                                                            ...provided.draggableProps.style,
+                                                            opacity: snapshot.isDragging ? 0.8 : 1,
+                                                        }}
+                                                    >
+                                                        <RollCard
+                                                            roll={roll}
+                                                            onViewDetails={(r) => setInspectingRollId(r.id)}
+                                                            isSelected={selectedRollIds.includes(roll.id)}
+                                                            onToggleSelect={handleToggleRoll}
+                                                        />
+                                                    </div>
+                                                )}
+                                            </Draggable>
+                                        ))}
+                                        {provided.placeholder}
+                                    </div>
+                                )}
+                            </Droppable>
                         </div>
 
-                        <div className="flex-1 overflow-y-auto p-3 space-y-3 z-10 scrollbar-thin">
-                            {pendingRolls.map(roll => (
-                                <RollCard
-                                    key={roll.id}
-                                    roll={roll}
-                                    onViewDetails={(r) => setInspectingRollId(r.id)}
-                                    isSelected={selectedRollIds.includes(roll.id)}
-                                    onToggleSelect={handleToggleRoll}
-                                />
-                            ))}
-                            <div
-                                onClick={() => { setSelectedOrderIds([]); setIsAssignModal(true); }}
-                                className="p-4 text-center border-2 border-dashed border-indigo-200 rounded-lg bg-white/50 text-indigo-400 text-xs font-bold cursor-pointer hover:bg-indigo-50 hover:border-indigo-300 transition-all"
-                            >
-                                <i className="fa-solid fa-plus text-lg mb-1 block"></i>
-                                Crear Lote Manual
+                        {/* EQUIPOS body */}
+                        <div className="flex-1 flex flex-col bg-zinc-50 overflow-hidden">
+                            <div className="flex-1 overflow-x-auto p-4 custom-scrollbar">
+                                <div className="grid gap-4 h-full" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))' }}>
+                                {visibleMachines.map(machine => (
+                                    <MachineControl
+                                        key={machine.id}
+                                        machine={machine}
+                                        pendingRolls={pendingRolls}
+                                        onAssign={async (rollId) => {
+                                            // Optimistic update
+                                            queryClient.cancelQueries({ queryKey: ['productionBoard', areaCode] });
+                                            flushSync(() => {
+                                                const oldData = localBoardData;
+                                                if (!oldData) return;
+                                                const newData = { ...oldData, pendingRolls: [...oldData.pendingRolls], machines: oldData.machines.map(m => ({...m, rolls: [...m.rolls]})) };
+                                                const rIndex = newData.pendingRolls.findIndex(r => String(r.id) === String(rollId));
+                                                if(rIndex !== -1) {
+                                                    const rollToMove = newData.pendingRolls.splice(rIndex, 1)[0];
+                                                    const m = newData.machines.find(m => String(m.id) === String(machine.id));
+                                                    if (m) m.rolls.push(rollToMove);
+                                                }
+                                                setLocalBoardData(newData);
+                                                queryClient.setQueryData(['productionBoard', areaCode], newData);
+                                            });
+
+                                            try {
+                                                await productionService.assignRolls([rollId], machine.id);
+                                                setTimeout(() => refreshBoard(), 1000);
+                                                Swal.fire({
+                                                    toast: true,
+                                                    position: 'top-end',
+                                                    showConfirmButton: false,
+                                                    timer: 3000,
+                                                    timerProgressBar: true,
+                                                    icon: 'success',
+                                                    title: 'Lote asignado correctamente',
+                                                    customClass: { container: 'z-[9999]' }
+                                                });
+                                            } catch (e) {
+                                                console.error(e);
+                                                Swal.fire({
+                                                    toast: true,
+                                                    position: 'top-end',
+                                                    showConfirmButton: false,
+                                                    timer: 4000,
+                                                    timerProgressBar: true,
+                                                    icon: 'error',
+                                                    title: 'Error al asignar el lote',
+                                                    customClass: { container: 'z-[9999]' }
+                                                });
+                                            }
+                                        }}
+                                        onToggleStatus={handleToggleMachineStatus}
+                                        onUnassign={(rollId, callback) => {
+                                            setConfirmModal({
+                                                isOpen: true,
+                                                title: '¿Desmontar rollo?',
+                                                message: 'El rollo volverá a la mesa de armado.',
+                                                isDestructive: true,
+                                                onConfirm: async () => {
+                                                    if (callback) callback();
+                                                    setTimeout(async () => {
+                                                        queryClient.cancelQueries({ queryKey: ['productionBoard', areaCode] });
+                                                        const oldData = localBoardData;
+                                                        if (!oldData) return;
+                                                        const newData = { ...oldData, pendingRolls: [...oldData.pendingRolls], machines: oldData.machines.map(m => ({...m, rolls: [...m.rolls]})) };
+                                                        let rollToMove = null;
+                                                        for (const m of newData.machines) {
+                                                            const rIndex = m.rolls.findIndex(r => String(r.id) === String(rollId));
+                                                            if (rIndex !== -1) {
+                                                                rollToMove = m.rolls.splice(rIndex, 1)[0];
+                                                                break;
+                                                            }
+                                                        }
+                                                        if (rollToMove) {
+                                                            newData.pendingRolls.unshift(rollToMove);
+                                                        }
+                                                        setLocalBoardData(newData);
+                                                        queryClient.setQueryData(['productionBoard', areaCode], newData);
+                                                        try {
+                                                            await productionService.unassignRoll(rollId);
+                                                            refreshBoard();
+                                                            Swal.fire({
+                                                                toast: true,
+                                                                position: 'top-end',
+                                                                showConfirmButton: false,
+                                                                timer: 3000,
+                                                                timerProgressBar: true,
+                                                                icon: 'success',
+                                                                title: 'Rollo desmontado correctamente',
+                                                                customClass: { container: 'z-[9999]' }
+                                                            });
+                                                        } catch (e) {
+                                                            console.error(e);
+                                                            Swal.fire({
+                                                                toast: true,
+                                                                position: 'top-end',
+                                                                showConfirmButton: false,
+                                                                timer: 3000,
+                                                                timerProgressBar: true,
+                                                                icon: 'error',
+                                                                title: 'Error al desmontar el rollo',
+                                                                customClass: { container: 'z-[9999]' }
+                                                            });
+                                                        }
+                                                    }, 300);
+                                                }
+                                            });
+                                        }}
+                                        onViewDetails={(item) => {
+                                            if (item.rolls) {
+                                                navigate(`/production/machine/${areaCode}/${item.id}`);
+                                            } else {
+                                                setInspectingRollId(item.id);
+                                            }
+                                        }}
+                                    />
+                                ))}
+                                </div>
                             </div>
                         </div>
-                    </div>
 
-                    {/* COLUMNA 3: EQUIPOS (Estilo Kanban) */}
-                    <div className="flex-1 flex flex-col bg-slate-50/50 rounded-xl border border-dashed border-slate-300 overflow-hidden relative">
-                        <div className="absolute top-2 right-2 z-0 opacity-10 pointer-events-none">
-                            <i className="fa-solid fa-print text-6xl"></i>
-                        </div>
-
-                        <div className="flex-1 overflow-x-auto p-4 flex gap-6 align-start">
-                            {visibleMachines.map(machine => (
-                                <MachineControl
-                                    key={machine.id}
-                                    machine={machine}
-                                    onAssign={() => { }}
-                                    onToggleStatus={handleToggleMachineStatus}
-                                    onUnassign={async (rollId) => {
-                                        setConfirmModal({
-                                            isOpen: true,
-                                            isDestructive: true,
-                                            title: "Desmontar Rollo",
-                                            message: '¿Desmontar este rollo de la máquina? Volverá a la Mesa de Armado.',
-                                            onConfirm: async () => {
-                                                try {
-                                                    await productionService.unassignRoll(rollId);
-                                                    refreshBoard();
-                                                    toast.success("Rollo desmontado correctamente");
-                                                } catch (e) {
-                                                    console.error(e);
-                                                    toast.error("Error al desmontar el rollo");
-                                                }
-                                            }
-                                        });
-                                    }}
-                                    onViewDetails={(item) => {
-                                        if (item.rolls) {
-                                            // Ir a Vista Detallada de Máquina
-                                            navigate(`/production/machine/${areaCode}/${item.id}`);
-                                        } else {
-                                            setInspectingRollId(item.id);
-                                        }
-                                    }}
-                                />
-                            ))}
-                        </div>
                     </div>
                 </div>
-            )}
+
+
 
             {/* --- MODALES --- */}
 
@@ -833,6 +834,7 @@ const PlaneacionTrabajo = ({ AreaID }) => {
             )}
 
         </div>
+        </DragDropContext>
     );
 };
 export default PlaneacionTrabajo;

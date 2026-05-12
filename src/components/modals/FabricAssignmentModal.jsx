@@ -73,7 +73,7 @@ const FabricAssignmentModal = ({ isOpen, onClose, materialName, orderId, onAssig
     );
 
     return (
-        <div className="fixed inset-0 z-[2000] flex items-center justify-center p-4 bg-slate-900/80 backdrop-blur-sm animate-in fade-in duration-200">
+        <div className="fixed inset-0 z-[2000] flex items-center justify-center p-4 bg-zinc-900/80 backdrop-blur-sm animate-in fade-in duration-200">
             <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden border-2 border-indigo-500 animate-in zoom-in-95 duration-200">
 
                 {/* Header Warning */}
@@ -91,18 +91,18 @@ const FabricAssignmentModal = ({ isOpen, onClose, materialName, orderId, onAssig
                 </div>
 
                 <div className="p-6">
-                    <label className="block text-xs font-bold text-slate-500 uppercase mb-2">
+                    <label className="block text-xs font-bold text-zinc-500 uppercase mb-2">
                         Escanea o Selecciona la Bobina de Tela
                     </label>
 
                     {/* Search Input (Autofocus for scanner) */}
                     <div className="relative mb-4">
-                        <i className="fa-solid fa-barcode absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"></i>
+                        <i className="fa-solid fa-barcode absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400"></i>
                         <input
                             autoFocus
                             type="text"
                             placeholder="Escanear Etiqueta..."
-                            className="w-full pl-10 pr-4 py-3 bg-slate-50 border-2 border-slate-200 rounded-xl outline-none focus:border-indigo-500 font-mono text-lg font-bold text-slate-700"
+                            className="w-full pl-10 pr-4 py-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl outline-none focus:border-indigo-500 font-mono text-lg font-bold text-zinc-700"
                             value={searchTerm}
                             onChange={e => setSearchTerm(e.target.value)}
                             onKeyDown={e => {
@@ -114,32 +114,32 @@ const FabricAssignmentModal = ({ isOpen, onClose, materialName, orderId, onAssig
                     </div>
 
                     {/* Bobbin List */}
-                    <div className="max-h-[200px] overflow-y-auto custom-scrollbar border border-slate-100 rounded-xl mb-4">
+                    <div className="max-h-[200px] overflow-y-auto custom-scrollbar border border-zinc-100 rounded-xl mb-4">
                         {loading ? (
-                            <div className="p-4 text-center text-slate-400">
+                            <div className="p-4 text-center text-zinc-400">
                                 <i className="fa-solid fa-circle-notch fa-spin mr-2"></i> Buscando inventario...
                             </div>
                         ) : filteredBobbins.length === 0 ? (
-                            <div className="p-4 text-center text-slate-400 italic bg-slate-50">
+                            <div className="p-4 text-center text-zinc-400 italic bg-zinc-50">
                                 No se encontraron bobinas compatibles.
                             </div>
                         ) : (
-                            <div className="divide-y divide-slate-50">
+                            <div className="divide-y divide-zinc-50">
                                 {filteredBobbins.map(b => (
                                     <div
                                         key={b.BobinaID}
                                         onClick={() => setSelectedBobbin(b)}
                                         className={`p-3 cursor-pointer transition-colors flex justify-between items-center
-                                            ${selectedBobbin?.BobinaID === b.BobinaID ? 'bg-indigo-50 border-l-4 border-indigo-500' : 'hover:bg-slate-50 border-l-4 border-transparent'}
+                                            ${selectedBobbin?.BobinaID === b.BobinaID ? 'bg-indigo-50 border-l-4 border-indigo-500' : 'hover:bg-zinc-50 border-l-4 border-transparent'}
                                         `}
                                     >
                                         <div>
-                                            <div className="font-bold text-slate-700 text-sm">Bobina #{b.BobinaID}</div>
-                                            <div className="text-[10px] text-slate-500">{b.Codigo}</div>
+                                            <div className="font-bold text-zinc-700 text-sm">Bobina #{b.BobinaID}</div>
+                                            <div className="text-[10px] text-zinc-500">{b.Codigo}</div>
                                         </div>
                                         <div className="text-right">
                                             <div className="font-mono font-bold text-indigo-600">{b.MetrosRestantes}m</div>
-                                            <div className="text-[9px] text-slate-400 uppercase">Disponible</div>
+                                            <div className="text-[9px] text-zinc-400 uppercase">Disponible</div>
                                         </div>
                                     </div>
                                 ))}
@@ -151,7 +151,7 @@ const FabricAssignmentModal = ({ isOpen, onClose, materialName, orderId, onAssig
                         onClick={handleConfirm}
                         disabled={!selectedBobbin}
                         className={`w-full py-3 rounded-xl font-bold text-white shadow-lg transition-all flex items-center justify-center gap-2
-                            ${selectedBobbin ? 'bg-indigo-600 hover:bg-indigo-700 hover:scale-[1.02]' : 'bg-slate-300 cursor-not-allowed'}
+                            ${selectedBobbin ? 'bg-indigo-600 hover:bg-indigo-700 hover:scale-[1.02]' : 'bg-zinc-300 cursor-not-allowed'}
                         `}
                     >
                         <i className="fa-solid fa-check-circle"></i> Confirmar Asignación
@@ -159,7 +159,7 @@ const FabricAssignmentModal = ({ isOpen, onClose, materialName, orderId, onAssig
 
                     <button
                         onClick={onClose}
-                        className="w-full mt-3 py-2 text-slate-400 font-bold text-xs hover:text-slate-600"
+                        className="w-full mt-3 py-2 text-zinc-400 font-bold text-xs hover:text-zinc-600"
                     >
                         Cancelar (Saltar Asignación)
                     </button>
@@ -170,3 +170,5 @@ const FabricAssignmentModal = ({ isOpen, onClose, materialName, orderId, onAssig
 };
 
 export default FabricAssignmentModal;
+
+

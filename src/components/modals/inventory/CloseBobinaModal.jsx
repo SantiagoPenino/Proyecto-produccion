@@ -44,7 +44,7 @@ const CloseBobinaModal = ({ bobina, insumoName, onClose, onSuccess }) => {
     return (
         <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
             <div className="bg-white rounded-lg shadow-xl w-full max-w-md p-6">
-                <h2 className="text-xl font-bold text-slate-800 mb-2">Cerrar Bobina</h2>
+                <h2 className="text-xl font-bold text-zinc-800 mb-2">Cerrar Bobina</h2>
 
                 <div className="bg-blue-50 p-4 rounded mb-4">
                     <p className="text-sm font-semibold text-blue-800">{insumoName}</p>
@@ -67,7 +67,7 @@ const CloseBobinaModal = ({ bobina, insumoName, onClose, onSuccess }) => {
                             onBlur={handleCalculate}
                             required
                         />
-                        <p className="text-xs text-slate-500 mt-1">Mida lo que queda físicamente en el rollo.</p>
+                        <p className="text-xs text-zinc-500 mt-1">Mida lo que queda físicamente en el rollo.</p>
                     </div>
 
                     {calculatedWaste !== null && (
@@ -90,7 +90,7 @@ const CloseBobinaModal = ({ bobina, insumoName, onClose, onSuccess }) => {
                         </select>
                     </div>
 
-                    <div className="flex items-center gap-2 pt-2 bg-slate-50 p-2 rounded border border-slate-100">
+                    <div className="flex items-center gap-2 pt-2 bg-zinc-50 p-2 rounded border border-zinc-100">
                         <input
                             type="checkbox"
                             id="finishCheck"
@@ -98,7 +98,7 @@ const CloseBobinaModal = ({ bobina, insumoName, onClose, onSuccess }) => {
                             onChange={(e) => setFinish(e.target.checked)}
                             className="w-4 h-4 text-blue-600 rounded cursor-pointer"
                         />
-                        <label htmlFor="finishCheck" className="text-sm text-slate-700 font-medium select-none cursor-pointer">
+                        <label htmlFor="finishCheck" className="text-sm text-zinc-700 font-medium select-none cursor-pointer">
                             Dar de baja (Sacar de Inventario Activo)
                         </label>
                     </div>
@@ -116,3 +116,4 @@ const CloseBobinaModal = ({ bobina, insumoName, onClose, onSuccess }) => {
 };
 
 export default CloseBobinaModal;
+

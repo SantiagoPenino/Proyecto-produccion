@@ -69,10 +69,10 @@ const AlertaAutorizacionModal = ({
                 </div>
 
                 {/* Título */}
-                <h2 className="text-2xl font-black text-slate-800 text-center">{titulo}</h2>
+                <h2 className="text-2xl font-black text-zinc-800 text-center">{titulo}</h2>
 
                 {/* Subtítulo */}
-                <p className="text-slate-600 text-center text-sm leading-relaxed">{subtitulo}</p>
+                <p className="text-zinc-600 text-center text-sm leading-relaxed">{subtitulo}</p>
 
                 {/* Leyenda badge */}
                 <span className="text-rose-600 font-black text-xs tracking-widest uppercase">{leyenda}</span>
@@ -80,34 +80,34 @@ const AlertaAutorizacionModal = ({
                 {/* Campos */}
                 <div className="w-full flex flex-col gap-3 mt-2">
                     <div>
-                        <label className="block text-sm font-bold text-slate-700 mb-1">
+                        <label className="block text-sm font-bold text-zinc-700 mb-1">
                             Contraseña de Autorización
                         </label>
                         <div className="relative">
-                            <Lock className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
+                            <Lock className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400" size={16} />
                             <input
                                 ref={passRef}
                                 type="password"
                                 value={password}
                                 onChange={e => setPassword(e.target.value)}
                                 placeholder="••••••••"
-                                className="w-full pl-9 pr-4 py-2.5 border border-slate-300 rounded-xl outline-none focus:ring-2 focus:ring-rose-400 focus:border-rose-400 text-slate-800 font-bold"
+                                className="w-full pl-9 pr-4 py-2.5 border border-zinc-300 rounded-xl outline-none focus:ring-2 focus:ring-rose-400 focus:border-rose-400 text-zinc-800 font-bold"
                             />
                         </div>
                     </div>
 
                     <div>
-                        <label className="block text-sm font-bold text-slate-700 mb-1">
+                        <label className="block text-sm font-bold text-zinc-700 mb-1">
                             Explicación o Detalle <span className="text-rose-500">(Requerido)</span>
                         </label>
                         <div className="relative">
-                            <FileText className="absolute left-3 top-3 text-slate-400" size={16} />
+                            <FileText className="absolute left-3 top-3 text-zinc-400" size={16} />
                             <textarea
                                 value={obs}
                                 onChange={e => setObs(e.target.value)}
                                 placeholder="Ej: Cliente acuerda pago al retiro, cuota pendiente..."
                                 rows={3}
-                                className="w-full pl-9 pr-4 py-2.5 border border-slate-300 rounded-xl outline-none focus:ring-2 focus:ring-rose-400 focus:border-rose-400 text-slate-700 resize-none"
+                                className="w-full pl-9 pr-4 py-2.5 border border-zinc-300 rounded-xl outline-none focus:ring-2 focus:ring-rose-400 focus:border-rose-400 text-zinc-700 resize-none"
                             />
                         </div>
                     </div>
@@ -124,7 +124,7 @@ const AlertaAutorizacionModal = ({
                     <button
                         onClick={onCancel}
                         disabled={loading}
-                        className="flex-1 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold py-3 rounded-2xl transition-colors flex items-center justify-center gap-2"
+                        className="flex-1 bg-zinc-100 hover:bg-zinc-200 text-zinc-700 font-bold py-3 rounded-2xl transition-colors flex items-center justify-center gap-2"
                     >
                         <XCircle size={18} /> Cancelar
                     </button>
@@ -138,10 +138,12 @@ const AlertaAutorizacionModal = ({
                     </button>
                 </div>
 
-                <p className="text-xs text-slate-400 text-center">Ctrl+Enter para confirmar · Esc para cancelar</p>
+                <p className="text-xs text-zinc-400 text-center">Ctrl+Enter para confirmar · Esc para cancelar</p>
             </div>
         </div>
     );
 };
 
 export default AlertaAutorizacionModal;
+
+

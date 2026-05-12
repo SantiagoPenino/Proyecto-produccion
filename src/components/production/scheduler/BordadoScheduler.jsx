@@ -88,7 +88,7 @@ const BordadoScheduler = ({ orders }) => {
       case 'Alta': return 'bg-red-100 text-red-700';
       case 'Media': return 'bg-amber-100 text-amber-700';
       case 'Baja': return 'bg-emerald-100 text-emerald-700';
-      default: return 'bg-slate-100 text-slate-700';
+      default: return 'bg-zinc-100 text-zinc-700';
     }
   };
 
@@ -99,18 +99,18 @@ const BordadoScheduler = ({ orders }) => {
   }
 
   return (
-    <div className="flex-1 flex flex-col bg-slate-50 p-6 overflow-hidden">
+    <div className="flex-1 flex flex-col bg-zinc-50 p-6 overflow-hidden">
       <div className="flex justify-between items-end mb-6">
         <div>
-          <h2 className="text-xl font-bold text-slate-800 flex items-center gap-2">
+          <h2 className="text-xl font-bold text-zinc-800 flex items-center gap-2">
             <i className="fa-solid fa-wand-magic-sparkles text-pink-500"></i>
             Planificador de Bordado
           </h2>
-          <p className="text-sm text-slate-500 font-medium">Optimización de carga por IA</p>
+          <p className="text-sm text-zinc-500 font-medium">Optimización de carga por IA</p>
         </div>
 
         <button
-          className="bg-pink-600 hover:bg-pink-700 text-white px-5 py-2 rounded-lg font-bold shadow-lg shadow-pink-500/30 transition-all active:scale-95 flex items-center gap-2 disabled:bg-slate-400 disabled:cursor-not-allowed disabled:shadow-none"
+          className="bg-pink-600 hover:bg-pink-700 text-white px-5 py-2 rounded-lg font-bold shadow-lg shadow-pink-500/30 transition-all active:scale-95 flex items-center gap-2 disabled:bg-zinc-400 disabled:cursor-not-allowed disabled:shadow-none"
           onClick={runAutoScheduler}
           disabled={isLoading}
         >
@@ -122,33 +122,33 @@ const BordadoScheduler = ({ orders }) => {
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 h-full overflow-hidden">
 
         {/* Columna 1: Cola de Espera */}
-        <div className="bg-white rounded-xl shadow-sm border border-slate-200 flex flex-col overflow-hidden h-full">
-          <div className="p-4 bg-slate-50 border-b border-slate-200 font-bold text-slate-700 text-sm flex items-center gap-2">
-            <i className="fa-solid fa-list-ul text-slate-400"></i>
+        <div className="bg-white rounded-xl shadow-sm border border-zinc-200 flex flex-col overflow-hidden h-full">
+          <div className="p-4 bg-zinc-50 border-b border-zinc-200 font-bold text-zinc-700 text-sm flex items-center gap-2">
+            <i className="fa-solid fa-list-ul text-zinc-400"></i>
             Cola de Espera
-            <span className="ml-auto bg-slate-200 text-slate-600 px-2 py-0.5 rounded-full text-xs">{pendingOrders.length}</span>
+            <span className="ml-auto bg-zinc-200 text-zinc-600 px-2 py-0.5 rounded-full text-xs">{pendingOrders.length}</span>
           </div>
           <div className="flex-1 overflow-y-auto p-4 space-y-3 custom-scrollbar">
             {pendingOrders.length === 0 ? (
-              <div className="text-center py-8 text-slate-400">
+              <div className="text-center py-8 text-zinc-400">
                 <i className="fa-solid fa-check-circle text-emerald-400 text-3xl mb-2"></i>
                 <p className="text-sm">Sin órdenes pendientes</p>
               </div>
             ) : (
               pendingOrders.map(order => (
-                <div key={order.id} className="bg-white border border-slate-200 rounded-lg p-3 hover:shadow-md transition-all cursor-pointer group hover:border-blue-300">
+                <div key={order.id} className="bg-white border border-zinc-200 rounded-lg p-3 hover:shadow-md transition-all cursor-pointer group hover:border-blue-300">
                   <div className="flex justify-between items-center mb-2">
-                    <span className="font-bold text-slate-800 text-sm">Orden No.: {order.id}</span>
-                    <span className="text-xs text-slate-500 font-medium truncate max-w-[120px]" title={order.client}>{order.client}</span>
+                    <span className="font-bold text-zinc-800 text-sm">Orden No.: {order.id}</span>
+                    <span className="text-xs text-zinc-500 font-medium truncate max-w-[120px]" title={order.client}>{order.client}</span>
                   </div>
-                  <p className="text-xs text-slate-600 mb-3 line-clamp-2" title={order.desc}>{order.desc}</p>
-                  <div className="flex justify-between text-xs text-slate-500 border-t border-slate-100 pt-2">
+                  <p className="text-xs text-zinc-600 mb-3 line-clamp-2" title={order.desc}>{order.desc}</p>
+                  <div className="flex justify-between text-xs text-zinc-500 border-t border-zinc-100 pt-2">
                     <span className="flex items-center gap-1 font-mono">
-                      <i className="fa-solid fa-thread text-slate-400"></i>
+                      <i className="fa-solid fa-thread text-zinc-400"></i>
                       {order.stitches ? order.stitches.toLocaleString() : '0'} pts
                     </span>
                     <span className="flex items-center gap-1 font-bold">
-                      <i className="fa-solid fa-hashtag text-slate-400"></i>
+                      <i className="fa-solid fa-hashtag text-zinc-400"></i>
                       {order.quantity || 1}u
                     </span>
                   </div>
@@ -197,10 +197,10 @@ const BordadoScheduler = ({ orders }) => {
                     </span>
                   </div>
 
-                  <p className="font-bold text-slate-700 text-xs mb-1">{suggestion.client}</p>
-                  <p className="text-xs text-slate-500 mb-3 line-clamp-1">{suggestion.description}</p>
+                  <p className="font-bold text-zinc-700 text-xs mb-1">{suggestion.client}</p>
+                  <p className="text-xs text-zinc-500 mb-3 line-clamp-1">{suggestion.description}</p>
 
-                  <div className="grid grid-cols-2 gap-2 text-xs text-slate-600 mb-3 bg-slate-50 p-2 rounded-lg border border-slate-100">
+                  <div className="grid grid-cols-2 gap-2 text-xs text-zinc-600 mb-3 bg-zinc-50 p-2 rounded-lg border border-zinc-100">
                     <div className="flex items-center gap-2">
                       <i className="fa-solid fa-robot text-pink-500"></i>
                       <span className="font-bold">{suggestion.recommendedMachine}</span>
@@ -234,46 +234,46 @@ const BordadoScheduler = ({ orders }) => {
         </div>
 
         {/* Columna 3: Carga de Máquinas */}
-        <div className="bg-white rounded-xl shadow-sm border border-slate-200 flex flex-col overflow-hidden h-full">
-          <div className="p-4 bg-slate-50 border-b border-slate-200 font-bold text-slate-700 text-sm flex items-center gap-2">
-            <i className="fa-solid fa-industry text-slate-400"></i>
+        <div className="bg-white rounded-xl shadow-sm border border-zinc-200 flex flex-col overflow-hidden h-full">
+          <div className="p-4 bg-zinc-50 border-b border-zinc-200 font-bold text-zinc-700 text-sm flex items-center gap-2">
+            <i className="fa-solid fa-industry text-zinc-400"></i>
             Estado de Planta
           </div>
           <div className="flex-1 overflow-y-auto p-4 space-y-4 custom-scrollbar">
             {machineLoad.map(machine => (
-              <div key={machine.id} className="bg-white border border-slate-200 rounded-xl p-4 hover:border-blue-200 transition-colors">
+              <div key={machine.id} className="bg-white border border-zinc-200 rounded-xl p-4 hover:border-blue-200 transition-colors">
                 <div className="flex justify-between items-center mb-3">
-                  <span className="font-bold text-slate-700 text-sm">{machine.name}</span>
+                  <span className="font-bold text-zinc-700 text-sm">{machine.name}</span>
                   <span className="text-[10px] bg-blue-50 text-blue-600 px-2 py-0.5 rounded font-bold border border-blue-100">
                     {machine.heads} cabezales
                   </span>
                 </div>
 
                 <div className="flex items-center gap-3 mb-3">
-                  <div className="flex-1 bg-slate-100 rounded-full h-2 overflow-hidden">
+                  <div className="flex-1 bg-zinc-100 rounded-full h-2 overflow-hidden">
                     <div
                       className={`h-full rounded-full transition-all duration-500 ${getLoadColor(machine.currentLoad)}`}
                       style={{ width: `${machine.currentLoad}%` }}
                     ></div>
                   </div>
-                  <span className="text-xs font-bold text-slate-600 w-8 text-right">
+                  <span className="text-xs font-bold text-zinc-600 w-8 text-right">
                     {machine.currentLoad}%
                   </span>
                 </div>
 
-                <div className="flex justify-between text-xs text-slate-500 mb-2 font-medium">
+                <div className="flex justify-between text-xs text-zinc-500 mb-2 font-medium">
                   <div className="flex items-center gap-1.5">
-                    <i className="fa-solid fa-gauge-high text-slate-400"></i>
+                    <i className="fa-solid fa-gauge-high text-zinc-400"></i>
                     <span>{machine.speed} rpm</span>
                   </div>
                   <div className="flex items-center gap-1.5">
-                    <i className="fa-solid fa-flag-checkered text-slate-400"></i>
+                    <i className="fa-solid fa-flag-checkered text-zinc-400"></i>
                     <span>{machine.estimatedCompletion}</span>
                   </div>
                 </div>
 
-                <div className="text-[10px] text-center text-slate-400 border-t border-slate-50 pt-2 mt-2">
-                  Capacidad: <span className="font-mono text-slate-500">{machine.capacity.toLocaleString()}</span> pts/día
+                <div className="text-[10px] text-center text-zinc-400 border-t border-zinc-50 pt-2 mt-2">
+                  Capacidad: <span className="font-mono text-zinc-500">{machine.capacity.toLocaleString()}</span> pts/día
                 </div>
               </div>
             ))}

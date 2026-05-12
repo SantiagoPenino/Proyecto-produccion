@@ -41,14 +41,14 @@ const ReferenceItem = ({ file }) => {
     };
 
     return (
-        <div className="flex items-center gap-3 p-3 bg-white border border-slate-200 rounded-xl hover:shadow-sm hover:border-slate-300 transition-all group">
+        <div className="flex items-center gap-3 p-3 bg-white border border-zinc-200 rounded-xl hover:shadow-sm hover:border-zinc-300 transition-all group">
 
             {/* 1. Icono / Miniatura */}
-            <div className="w-12 h-12 bg-slate-50 border border-slate-100 rounded-lg flex items-center justify-center overflow-hidden shrink-0 relative">
+            <div className="w-12 h-12 bg-zinc-50 border border-zinc-100 rounded-lg flex items-center justify-center overflow-hidden shrink-0 relative">
                 {isImage ? (
                     <img src={fileUrl} alt="ref" className="w-full h-full object-cover opacity-90 group-hover:opacity-100 transition-opacity" />
                 ) : (
-                    <i className={`fa-regular ${isPdf ? 'fa-file-pdf text-red-400' : 'fa-image text-slate-400'} text-xl`}></i>
+                    <i className={`fa-regular ${isPdf ? 'fa-file-pdf text-red-400' : 'fa-image text-zinc-400'} text-xl`}></i>
                 )}
 
                 {/* Overlay Hover Zoom */}
@@ -66,17 +66,17 @@ const ReferenceItem = ({ file }) => {
                     onClick={(e) => { if (!fileUrl) { e.preventDefault(); alert("Este archivo no tiene enlace válido."); } }}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="font-bold text-sm text-slate-700 hover:text-blue-600 truncate block transition-colors"
+                    className="font-bold text-sm text-zinc-700 hover:text-blue-600 truncate block transition-colors"
                     title={fileName}
                 >
                     {fileName}
                 </a>
                 <div className="flex items-center gap-2 mt-0.5">
-                    <span className="text-[10px] font-bold text-slate-400 bg-slate-100 px-1.5 py-0.5 rounded border border-slate-200 uppercase tracking-wide">
+                    <span className="text-[10px] font-bold text-zinc-400 bg-zinc-100 px-1.5 py-0.5 rounded border border-zinc-200 uppercase tracking-wide">
                         {file.tipo || 'ADJUNTO'}
                     </span>
                     {file.notas && (
-                        <span className="text-[10px] text-slate-400 truncate max-w-[200px]" title={file.notas}>
+                        <span className="text-[10px] text-zinc-400 truncate max-w-[200px]" title={file.notas}>
                             {file.notas}
                         </span>
                     )}
@@ -86,7 +86,7 @@ const ReferenceItem = ({ file }) => {
             {/* 3. Acciones (Descargar) */}
             <button
                 onClick={triggerDownload}
-                className="w-8 h-8 flex items-center justify-center rounded-lg bg-slate-50 text-slate-400 hover:bg-white hover:text-blue-500 hover:shadow border border-transparent hover:border-blue-100 transition-all"
+                className="w-8 h-8 flex items-center justify-center rounded-lg bg-zinc-50 text-zinc-400 hover:bg-white hover:text-blue-500 hover:shadow border border-transparent hover:border-blue-100 transition-all"
                 title="Descargar Original"
             >
                 <i className="fa-solid fa-download text-xs"></i>
@@ -96,3 +96,4 @@ const ReferenceItem = ({ file }) => {
 };
 
 export default ReferenceItem;
+

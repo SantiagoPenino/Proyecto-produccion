@@ -269,13 +269,16 @@ exports.createHandyPaymentLinkForRetiro = async (req, res) => {
         let currencyCode = activeCurrency === 'USD' ? 840 : 858;
 
         // --- INICIO FIX DE MONEDA ---
-        // Verificar la moneda real en la base de datos para no cobrar en pesos lo que es en dólares
+        // Verificar la moneda real en la base de datos para no cobrar en pesos lo que es en dólares.
+        // Fuente 1: OrdenesRetiro.MonIdMoneda
+        // Fuente 2 (fallback): OrdenesDeposito hijas — más confiable porque usan FK entero a Monedas
         try {
             const pool = await getPool();
             const numMatch = String(ordenRetiro).match(/(\d+)$/);
             const OReIdOrdenRetiro = numMatch ? parseInt(numMatch[1], 10) : NaN;
             
             if (!isNaN(OReIdOrdenRetiro)) {
+                // --- Fuente 1: cabecera del retiro ---
                 const resMon = await pool.request()
                     .input('ID', sql.Int, OReIdOrdenRetiro)
                     .query('SELECT MonIdMoneda FROM OrdenesRetiro WITH(NOLOCK) WHERE OReIdOrdenRetiro = @ID');
@@ -287,6 +290,24 @@ exports.createHandyPaymentLinkForRetiro = async (req, res) => {
                         currencyCode = 840; // USD para Handy
                     } else if (dbMoneda === 1 || dbMoneda === 858 || dbMoneda === 'UYU') {
                         currencyCode = 858; // UYU para Handy
+                    }
+                }
+
+                // --- Fuente 2: órdenes hijas (override si alguna es USD) ---
+                // Si la cabecera dice UYU pero las órdenes hijas tienen MonIdMoneda=2 (USD),
+                // la cabecera quedó mal guardada → forzar USD.
+                if (currencyCode !== 840) {
+                    const resOrdenes = await pool.request()
+                        .input('ID', sql.Int, OReIdOrdenRetiro)
+                        .query(`
+                            SELECT COUNT(*) AS totalUSD
+                            FROM OrdenesDeposito WITH(NOLOCK)
+                            WHERE OReIdOrdenRetiro = @ID AND MonIdMoneda = 2
+                        `);
+                    const totalUSD = resOrdenes.recordset[0]?.totalUSD || 0;
+                    if (totalUSD > 0) {
+                        logger.warn(`[HANDY RETIRO] Cabecera decía UYU pero ${totalUSD} orden(es) hija(s) son USD → forzando currencyCode=840 para ${ordenRetiro}`);
+                        currencyCode = 840; // USD
                     }
                 }
             }

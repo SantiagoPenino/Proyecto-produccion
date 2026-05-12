@@ -93,46 +93,46 @@ const ConfigInsumosModal = ({ isOpen, onClose, areaCode, insumos }) => {
     const filteredCrud = allInsumos.filter(i => i.Nombre?.toLowerCase().includes(crudSearch.toLowerCase()));
 
     return (
-        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[1100] flex items-center justify-center p-4 animate-in fade-in duration-200">
+        <div className="fixed inset-0 bg-zinc-900/60 backdrop-blur-sm z-[1100] flex items-center justify-center p-4 animate-in fade-in duration-200">
             <div className={`bg-white rounded-xl shadow-2xl w-full ${activeTab === 'manage' ? 'max-w-4xl' : 'max-w-md'} flex flex-col overflow-hidden animate-in zoom-in-95 duration-300 max-h-[85vh] transition-all`}>
 
                 {/* Header */}
-                <div className="px-5 py-4 border-b border-slate-100 flex justify-between items-center bg-white shrink-0">
-                    <h3 className="text-base font-black text-slate-800 flex items-center gap-2">
+                <div className="px-5 py-4 border-b border-zinc-100 flex justify-between items-center bg-white shrink-0">
+                    <h3 className="text-base font-black text-zinc-800 flex items-center gap-2">
                         <i className="fa-solid fa-boxes-packing text-amber-500 bg-amber-100 p-1.5 rounded-lg text-sm"></i>
                         Insumos
                     </h3>
-                    <div className="flex bg-slate-100 p-1 rounded-lg">
-                        <button onClick={() => setActiveTab('assign')} className={`px-3 py-1 text-xs font-bold rounded-md transition-all ${activeTab === 'assign' ? 'bg-white text-amber-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>
+                    <div className="flex bg-zinc-100 p-1 rounded-lg">
+                        <button onClick={() => setActiveTab('assign')} className={`px-3 py-1 text-xs font-bold rounded-md transition-all ${activeTab === 'assign' ? 'bg-white text-amber-600 shadow-sm' : 'text-zinc-500 hover:text-zinc-700'}`}>
                             Asignar a Área
                         </button>
-                        <button onClick={() => setActiveTab('manage')} className={`px-3 py-1 text-xs font-bold rounded-md transition-all ${activeTab === 'manage' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>
+                        <button onClick={() => setActiveTab('manage')} className={`px-3 py-1 text-xs font-bold rounded-md transition-all ${activeTab === 'manage' ? 'bg-white text-indigo-600 shadow-sm' : 'text-zinc-500 hover:text-zinc-700'}`}>
                             Gestionar Todos
                         </button>
                     </div>
-                    <button onClick={onClose} className="w-8 h-8 rounded-full flex items-center justify-center text-slate-400 hover:bg-slate-100 hover:text-red-500 transition-colors">
+                    <button onClick={onClose} className="w-8 h-8 rounded-full flex items-center justify-center text-zinc-400 hover:bg-zinc-100 hover:text-red-500 transition-colors">
                         <i className="fa-solid fa-xmark"></i>
                     </button>
                 </div>
 
                 {activeTab === 'assign' ? (
                     <>
-                        <div className="p-4 bg-slate-50 border-b border-slate-200">
-                            <p className="text-xs text-slate-500 mb-3 font-medium">Marca los materiales disponibles para <span className="font-bold text-slate-700">{areaCode}</span>.</p>
+                        <div className="p-4 bg-zinc-50 border-b border-zinc-200">
+                            <p className="text-xs text-zinc-500 mb-3 font-medium">Marca los materiales disponibles para <span className="font-bold text-zinc-700">{areaCode}</span>.</p>
                             <div className="relative">
-                                <i className="fa-solid fa-search absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-xs"></i>
-                                <input type="text" className="w-full pl-9 pr-3 py-2 bg-white border border-slate-300 rounded-lg text-xs font-semibold focus:outline-none focus:border-amber-500" placeholder="Buscar..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} />
+                                <i className="fa-solid fa-search absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400 text-xs"></i>
+                                <input type="text" className="w-full pl-9 pr-3 py-2 bg-white border border-zinc-300 rounded-lg text-xs font-semibold focus:outline-none focus:border-amber-500" placeholder="Buscar..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} />
                             </div>
                         </div>
                         <div className="flex-1 overflow-y-auto bg-white p-2">
-                            {filteredList.length === 0 ? <div className="py-8 text-center text-slate-400 text-xs italic">Sin resultados.</div> :
+                            {filteredList.length === 0 ? <div className="py-8 text-center text-zinc-400 text-xs italic">Sin resultados.</div> :
                                 <div className="space-y-1">
                                     {filteredList.map(item => (
-                                        <label key={item.InsumoID} className={`flex items-center p-3 rounded-lg border cursor-pointer ${item.Asignado ? 'bg-amber-50 border-amber-200' : 'bg-white hover:bg-slate-50'}`}>
+                                        <label key={item.InsumoID} className={`flex items-center p-3 rounded-lg border cursor-pointer ${item.Asignado ? 'bg-amber-50 border-amber-200' : 'bg-white hover:bg-zinc-50'}`}>
                                             <input type="checkbox" checked={!!item.Asignado} onChange={() => toggleInsumo(item)} className="w-4 h-4 text-amber-600 rounded focus:ring-amber-500" />
                                             <div className="ml-3 flex-1">
-                                                <div className="text-sm font-bold text-slate-700">{item.Nombre}</div>
-                                                <div className="text-[10px] text-slate-400">{item.UnidadDefault}</div>
+                                                <div className="text-sm font-bold text-zinc-700">{item.Nombre}</div>
+                                                <div className="text-[10px] text-zinc-400">{item.UnidadDefault}</div>
                                             </div>
                                         </label>
                                     ))}
@@ -141,15 +141,15 @@ const ConfigInsumosModal = ({ isOpen, onClose, areaCode, insumos }) => {
                         </div>
                     </>
                 ) : (
-                    <div className="flex-1 flex flex-col overflow-hidden bg-slate-50">
+                    <div className="flex-1 flex flex-col overflow-hidden bg-zinc-50">
                         {/* FORM ADD */}
-                        <div className="p-4 bg-white border-b border-slate-200 shrink-0">
-                            <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">Crear Nuevo Insumo</h4>
+                        <div className="p-4 bg-white border-b border-zinc-200 shrink-0">
+                            <h4 className="text-xs font-bold text-zinc-500 uppercase tracking-wider mb-2">Crear Nuevo Insumo</h4>
                             <div className="grid grid-cols-1 md:grid-cols-5 gap-2 items-end">
                                 <input type="text" placeholder="Nombre" className="px-3 py-2 border rounded text-xs w-full" value={newInsumo.nombre} onChange={e => setNewInsumo({ ...newInsumo, nombre: e.target.value })} />
                                 <input type="text" placeholder="Unidad (Ej: KG, MTS)" className="px-3 py-2 border rounded text-xs w-full" value={newInsumo.unidad} onChange={e => setNewInsumo({ ...newInsumo, unidad: e.target.value })} />
                                 <input type="text" placeholder="Categoría" className="px-3 py-2 border rounded text-xs w-full" value={newInsumo.categoria} onChange={e => setNewInsumo({ ...newInsumo, categoria: e.target.value })} />
-                                <label className="flex items-center gap-2 px-2 py-2 text-xs font-bold text-slate-600 bg-slate-100 rounded cursor-pointer border border-transparent hover:border-slate-300">
+                                <label className="flex items-center gap-2 px-2 py-2 text-xs font-bold text-zinc-600 bg-zinc-100 rounded cursor-pointer border border-transparent hover:border-zinc-300">
                                     <input type="checkbox" checked={newInsumo.productivo} onChange={e => setNewInsumo({ ...newInsumo, productivo: e.target.checked })} />
                                     Es Productivo
                                 </label>
@@ -158,9 +158,9 @@ const ConfigInsumosModal = ({ isOpen, onClose, areaCode, insumos }) => {
                         </div>
                         {/* TABLE */}
                         <div className="flex-1 overflow-y-auto p-4">
-                            <div className="bg-white border border-slate-200 rounded-xl overflow-hidden shadow-sm">
+                            <div className="bg-white border border-zinc-200 rounded-xl overflow-hidden shadow-sm">
                                 <table className="w-full text-sm text-left">
-                                    <thead className="text-xs text-slate-500 uppercase bg-slate-50 border-b border-slate-100">
+                                    <thead className="text-xs text-zinc-500 uppercase bg-zinc-50 border-b border-zinc-100">
                                         <tr>
                                             <th className="px-4 py-3">Nombre</th>
                                             <th className="px-4 py-3 text-center">Unidad</th>
@@ -169,13 +169,13 @@ const ConfigInsumosModal = ({ isOpen, onClose, areaCode, insumos }) => {
                                             <th className="px-4 py-3 text-center">Acciones</th>
                                         </tr>
                                     </thead>
-                                    <tbody className="divide-y divide-slate-100">
+                                    <tbody className="divide-y divide-zinc-100">
                                         {filteredCrud.map(i => {
                                             const isEditing = editingId === i.InsumoID;
                                             return (
-                                                <tr key={i.InsumoID} className={isEditing ? 'bg-indigo-50/50' : 'hover:bg-slate-50'}>
+                                                <tr key={i.InsumoID} className={isEditing ? 'bg-indigo-50/50' : 'hover:bg-zinc-50'}>
                                                     <td className="px-4 py-2">
-                                                        {isEditing ? <input className="border rounded px-1 w-full text-xs" value={editForm.nombre} onChange={e => setEditForm({ ...editForm, nombre: e.target.value })} /> : <span className="font-bold text-slate-700">{i.Nombre}</span>}
+                                                        {isEditing ? <input className="border rounded px-1 w-full text-xs" value={editForm.nombre} onChange={e => setEditForm({ ...editForm, nombre: e.target.value })} /> : <span className="font-bold text-zinc-700">{i.Nombre}</span>}
                                                     </td>
                                                     <td className="px-4 py-2 text-center text-xs">
                                                         {isEditing ? <input className="border rounded px-1 w-16 text-center" value={editForm.unidad} onChange={e => setEditForm({ ...editForm, unidad: e.target.value })} /> : i.UnidadDefault}
@@ -184,18 +184,18 @@ const ConfigInsumosModal = ({ isOpen, onClose, areaCode, insumos }) => {
                                                         {isEditing ? <input className="border rounded px-1 w-24 text-center" value={editForm.categoria} onChange={e => setEditForm({ ...editForm, categoria: e.target.value })} /> : i.Categoria}
                                                     </td>
                                                     <td className="px-4 py-2 text-center">
-                                                        {isEditing ? <input type="checkbox" checked={editForm.productivo} onChange={e => setEditForm({ ...editForm, productivo: e.target.checked })} /> : (i.EsProductivo ? <i className="fa-solid fa-check text-emerald-500"></i> : <span className="text-slate-300">-</span>)}
+                                                        {isEditing ? <input type="checkbox" checked={editForm.productivo} onChange={e => setEditForm({ ...editForm, productivo: e.target.checked })} /> : (i.EsProductivo ? <i className="fa-solid fa-check text-emerald-500"></i> : <span className="text-zinc-300">-</span>)}
                                                     </td>
                                                     <td className="px-4 py-2 text-center">
                                                         {isEditing ? (
                                                             <div className="flex justify-center gap-1">
                                                                 <button onClick={() => saveEdit(i.InsumoID)} className="w-6 h-6 rounded bg-emerald-100 text-emerald-600"><i className="fa-solid fa-check text-xs"></i></button>
-                                                                <button onClick={() => setEditingId(null)} className="w-6 h-6 rounded bg-slate-100 text-slate-500"><i className="fa-solid fa-xmark text-xs"></i></button>
+                                                                <button onClick={() => setEditingId(null)} className="w-6 h-6 rounded bg-zinc-100 text-zinc-500"><i className="fa-solid fa-xmark text-xs"></i></button>
                                                             </div>
                                                         ) : (
                                                             <div className="flex justify-center gap-1">
-                                                                <button onClick={() => startEdit(i)} className="w-6 h-6 rounded text-slate-400 hover:text-indigo-500"><i className="fa-solid fa-pen-to-square"></i></button>
-                                                                <button onClick={() => handleDelete(i.InsumoID)} className="w-6 h-6 rounded text-slate-400 hover:text-red-500"><i className="fa-solid fa-trash-can"></i></button>
+                                                                <button onClick={() => startEdit(i)} className="w-6 h-6 rounded text-zinc-400 hover:text-indigo-500"><i className="fa-solid fa-pen-to-square"></i></button>
+                                                                <button onClick={() => handleDelete(i.InsumoID)} className="w-6 h-6 rounded text-zinc-400 hover:text-red-500"><i className="fa-solid fa-trash-can"></i></button>
                                                             </div>
                                                         )}
                                                     </td>
@@ -214,3 +214,4 @@ const ConfigInsumosModal = ({ isOpen, onClose, areaCode, insumos }) => {
 };
 
 export default ConfigInsumosModal;
+

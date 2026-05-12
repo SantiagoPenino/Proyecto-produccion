@@ -131,14 +131,14 @@ const WebContentList = ({ type }) => {
     return (
         <div className="space-y-8 animate-fade-in">
             {/* Add New */}
-            <div className="bg-slate-100 p-4 rounded-xl border border-slate-200">
-                <h4 className="text-xs font-bold uppercase text-slate-500 mb-3">Agregar Nuevo {type === 'SIDEBAR' ? 'Banner' : 'Popup'}</h4>
+            <div className="bg-zinc-100 p-4 rounded-xl border border-zinc-200">
+                <h4 className="text-xs font-bold uppercase text-zinc-500 mb-3">Agregar Nuevo {type === 'SIDEBAR' ? 'Banner' : 'Popup'}</h4>
                 <div className="flex gap-4 items-start">
-                    <div className="w-24 h-24 bg-white rounded-lg border-2 border-dashed border-slate-300 flex items-center justify-center shrink-0 relative overflow-hidden group cursor-pointer" onClick={() => fileInputRef.current.click()}>
+                    <div className="w-24 h-24 bg-white rounded-lg border-2 border-dashed border-zinc-300 flex items-center justify-center shrink-0 relative overflow-hidden group cursor-pointer" onClick={() => fileInputRef.current.click()}>
                         {newItem.preview ? (
                             <img src={newItem.preview} className="absolute inset-0 w-full h-full object-cover" />
                         ) : (
-                            <i className="fa-solid fa-plus text-slate-300 text-2xl group-hover:text-indigo-400 transition-colors"></i>
+                            <i className="fa-solid fa-plus text-zinc-300 text-2xl group-hover:text-indigo-400 transition-colors"></i>
                         )}
                         <input type="file" ref={fileInputRef} className="hidden" accept="image/*" onChange={(e) => {
                             const f = e.target.files[0];
@@ -146,8 +146,8 @@ const WebContentList = ({ type }) => {
                         }} />
                     </div>
                     <div className="flex-1 space-y-2">
-                        <input type="text" placeholder="Título (Opcional)" className="w-full text-sm p-2 rounded border border-slate-300" value={newItem.title} onChange={e => setNewItem({ ...newItem, title: e.target.value })} />
-                        <input type="text" placeholder="Link Destino (Opcional, ej: https://...)" className="w-full text-sm p-2 rounded border border-slate-300" value={newItem.link} onChange={e => setNewItem({ ...newItem, link: e.target.value })} />
+                        <input type="text" placeholder="Título (Opcional)" className="w-full text-sm p-2 rounded border border-zinc-300" value={newItem.title} onChange={e => setNewItem({ ...newItem, title: e.target.value })} />
+                        <input type="text" placeholder="Link Destino (Opcional, ej: https://...)" className="w-full text-sm p-2 rounded border border-zinc-300" value={newItem.link} onChange={e => setNewItem({ ...newItem, link: e.target.value })} />
                         <button onClick={handleAddItem} disabled={uploading || !newItem.image} className="bg-indigo-600 text-white text-xs font-bold px-4 py-2 rounded hover:bg-indigo-700 disabled:opacity-50">
                             {uploading ? <i className="fa-solid fa-spinner fa-spin"></i> : 'AGREGAR'}
                         </button>
@@ -157,18 +157,18 @@ const WebContentList = ({ type }) => {
 
             {/* List */}
             <div className="space-y-3">
-                {items.length === 0 && <p className="text-center text-slate-400 py-4 italic">No hay contenido activo.</p>}
+                {items.length === 0 && <p className="text-center text-zinc-400 py-4 italic">No hay contenido activo.</p>}
 
                 {items.map((item, idx) => (
-                    <div key={item.ID} className={`flex items-center gap-4 bg-white p-3 rounded-xl border ${item.Activo ? 'border-indigo-100' : 'border-slate-200 opacity-60'}`}>
-                        <div className="w-16 h-16 bg-slate-100 rounded border border-slate-200 shrink-0 overflow-hidden">
+                    <div key={item.ID} className={`flex items-center gap-4 bg-white p-3 rounded-xl border ${item.Activo ? 'border-indigo-100' : 'border-zinc-200 opacity-60'}`}>
+                        <div className="w-16 h-16 bg-zinc-100 rounded border border-zinc-200 shrink-0 overflow-hidden">
                             <img src={getImageUrl(item.ImagenUrl)} className="w-full h-full object-cover" onError={(e) => e.target.src = 'https://placehold.co/100?text=?'} />
                         </div>
                         <div className="flex-1 overflow-hidden">
-                            <h5 className="text-sm font-bold text-slate-800 truncate">{item.Titulo || 'Sin Título'}</h5>
-                            <p className="text-xs text-slate-400 truncate">{item.LinkDestino || 'Sin Link'}</p>
+                            <h5 className="text-sm font-bold text-zinc-800 truncate">{item.Titulo || 'Sin Título'}</h5>
+                            <p className="text-xs text-zinc-400 truncate">{item.LinkDestino || 'Sin Link'}</p>
                             <div className="flex items-center gap-2 mt-1">
-                                <span className={`text-[10px] font-black uppercase px-1.5 py-0.5 rounded ${item.Activo ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-500'}`}>
+                                <span className={`text-[10px] font-black uppercase px-1.5 py-0.5 rounded ${item.Activo ? 'bg-emerald-100 text-emerald-700' : 'bg-zinc-100 text-zinc-500'}`}>
                                     {item.Activo ? 'ACTIVO' : 'INACTIVO'}
                                 </span>
                             </div>
@@ -177,10 +177,10 @@ const WebContentList = ({ type }) => {
                         {/* Actions */}
                         <div className="flex items-center gap-2">
                             <div className="flex flex-col gap-1">
-                                <button onClick={() => moveItem(idx, 'up')} className="w-6 h-6 flex items-center justify-center bg-slate-50 hover:bg-indigo-50 text-slate-400 hover:text-indigo-600 rounded" disabled={idx === 0}><i className="fa-solid fa-chevron-up text-xs"></i></button>
-                                <button onClick={() => moveItem(idx, 'down')} className="w-6 h-6 flex items-center justify-center bg-slate-50 hover:bg-indigo-50 text-slate-400 hover:text-indigo-600 rounded" disabled={idx === items.length - 1}><i className="fa-solid fa-chevron-down text-xs"></i></button>
+                                <button onClick={() => moveItem(idx, 'up')} className="w-6 h-6 flex items-center justify-center bg-zinc-50 hover:bg-indigo-50 text-zinc-400 hover:text-indigo-600 rounded" disabled={idx === 0}><i className="fa-solid fa-chevron-up text-xs"></i></button>
+                                <button onClick={() => moveItem(idx, 'down')} className="w-6 h-6 flex items-center justify-center bg-zinc-50 hover:bg-indigo-50 text-zinc-400 hover:text-indigo-600 rounded" disabled={idx === items.length - 1}><i className="fa-solid fa-chevron-down text-xs"></i></button>
                             </div>
-                            <button onClick={() => handleUpdate(item.ID, { activo: !item.Activo })} className={`w-8 h-8 rounded-full flex items-center justify-center transition-colors ${item.Activo ? 'bg-indigo-100 text-indigo-600 hover:bg-indigo-200' : 'bg-slate-100 text-slate-400 hover:bg-slate-200'}`} title={item.Activo ? "Desactivar" : "Activar"}>
+                            <button onClick={() => handleUpdate(item.ID, { activo: !item.Activo })} className={`w-8 h-8 rounded-full flex items-center justify-center transition-colors ${item.Activo ? 'bg-indigo-100 text-indigo-600 hover:bg-indigo-200' : 'bg-zinc-100 text-zinc-400 hover:bg-zinc-200'}`} title={item.Activo ? "Desactivar" : "Activar"}>
                                 <i className={`fa-solid ${item.Activo ? 'fa-eye' : 'fa-eye-slash'}`}></i>
                             </button>
                             <button onClick={() => handleDelete(item.ID)} className="w-8 h-8 rounded-full flex items-center justify-center bg-red-50 text-red-500 hover:bg-red-100 transition-colors" title="Eliminar">
@@ -195,3 +195,4 @@ const WebContentList = ({ type }) => {
 };
 
 export default WebContentList;
+

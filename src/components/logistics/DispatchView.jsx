@@ -385,7 +385,7 @@ const DispatchView = ({ selectedOrders: initialOrders = [], areaFilter, originAr
                             <div className="relative flex-1">
                                 <i className="fa-solid fa-search absolute left-4 top-3.5 text-slate-400"></i>
                                 <input
-                                    className="w-full bg-slate-100 border-none rounded-xl pl-12 pr-4 py-3 text-sm font-bold focus:ring-2 focus:ring-indigo-200 outline-none transition-all placeholder:font-normal"
+                                    className="w-full bg-slate-100 border-none rounded-xl pl-12 pr-4 py-3 text-sm font-bold focus:ring-2 focus:ring-cyan-200 outline-none transition-all placeholder:font-normal"
                                     placeholder="Escanear etiqueta o buscar cliente..."
                                     value={stockSearch}
                                     onChange={e => setStockSearch(e.target.value)}
@@ -396,7 +396,7 @@ const DispatchView = ({ selectedOrders: initialOrders = [], areaFilter, originAr
                             <button
                                 disabled={selectedStockItems.length === 0}
                                 onClick={handleDirectSubmit}
-                                className="px-8 bg-emerald-500 text-white font-bold rounded-xl shadow-lg shadow-emerald-200 hover:bg-emerald-600 disabled:opacity-50 disabled:shadow-none transition-all flex items-center gap-2"
+                                className="px-8 bg-brand-cyan text-white font-bold rounded-xl shadow-lg hover:brightness-110 disabled:opacity-50 disabled:shadow-none transition-all flex items-center gap-2"
                             >
                                 <i className="fa-solid fa-truck-fast"></i> Generar Remito
                                 {selectedStockItems.length > 0 && <span className="ml-1 bg-white/20 px-2 py-0.5 rounded text-xs">{selectedStockItems.length}</span>}
@@ -426,23 +426,21 @@ const DispatchView = ({ selectedOrders: initialOrders = [], areaFilter, originAr
                                     </thead>
                                     <tbody className="divide-y divide-slate-100 text-sm">
                                         {stockRows.map(row => {
-                                            // Check selection by ID directly (Flat Mode)
                                             const isSelected = selectedStockItems.some(s => s.BultoID === row.BultoID);
-
                                             return (
                                                 <tr
                                                     key={row.rowId}
                                                     onClick={() => toggleRow(row)}
-                                                    className={`hover:bg-slate-50 transition-colors cursor-pointer group ${isSelected ? 'bg-indigo-50/50' : ''}`}
+                                                    className={`hover:bg-slate-50 transition-colors cursor-pointer group ${isSelected ? 'bg-brand-cyan/5' : ''}`}
                                                 >
                                                     <td className="p-4 text-center">
-                                                        <div className={`w-5 h-5 rounded border flex items-center justify-center transition-all ${isSelected ? 'bg-indigo-500 border-indigo-500 text-white' : 'bg-white border-slate-300 text-transparent group-hover:border-indigo-300'}`}>
+                                                        <div className={`w-5 h-5 rounded border flex items-center justify-center transition-all ${isSelected ? 'bg-brand-cyan border-brand-cyan text-white' : 'bg-white border-slate-300 text-transparent group-hover:border-brand-cyan/50'}`}>
                                                             <i className="fa-solid fa-check text-xs"></i>
                                                         </div>
                                                     </td>
                                                     <td className="p-4">
                                                         <div className="font-bold font-mono text-slate-800">{row.displayCode}</div>
-                                                        {row.orderCode && <div className="text-xs text-indigo-600 font-bold">{row.orderCode}</div>}
+                                                        {row.orderCode && <div className="text-xs text-brand-cyan font-bold">{row.orderCode}</div>}
                                                     </td>
                                                     <td className="p-4 font-bold text-slate-600 uppercase">
                                                         {row.client && row.client !== '-' ? row.client : <span className="text-slate-400 italic font-normal">S/D</span>}
@@ -452,7 +450,7 @@ const DispatchView = ({ selectedOrders: initialOrders = [], areaFilter, originAr
                                                     </td>
                                                     <td className="p-4">
                                                         {row.nextService && row.nextService !== 'LOGISTICA' ? (
-                                                            <div className="px-2 py-1 bg-indigo-100 text-indigo-700 rounded font-bold text-xs inline-flex items-center gap-1 border border-indigo-200">
+                                                            <div className="px-2 py-1 bg-brand-cyan/10 text-brand-cyan rounded font-bold text-xs inline-flex items-center gap-1 border border-brand-cyan/20">
                                                                 <i className="fa-solid fa-arrow-right text-[10px]"></i> {row.nextService}
                                                             </div>
                                                         ) : (
@@ -463,7 +461,7 @@ const DispatchView = ({ selectedOrders: initialOrders = [], areaFilter, originAr
                                                         {row.date ? new Date(row.date).toLocaleDateString() : '-'}
                                                     </td>
                                                     <td className="p-4 text-right">
-                                                        <span className="bg-emerald-100 text-emerald-700 px-3 py-1 rounded-full text-[10px] font-bold uppercase border border-emerald-200">
+                                                        <span className="bg-brand-cyan/10 text-brand-cyan px-3 py-1 rounded-full text-[10px] font-bold uppercase border border-brand-cyan/20">
                                                             EN STOCK
                                                         </span>
                                                     </td>
@@ -482,25 +480,30 @@ const DispatchView = ({ selectedOrders: initialOrders = [], areaFilter, originAr
             )}
 
             {step === 1 && (
-                <div className="flex flex-col h-full bg-slate-50">
-                    <div className="p-6 grid grid-cols-1 lg:grid-cols-3 gap-6 flex-1 overflow-hidden">
-                        <div className="space-y-4">
-                            <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
-                                <div className="text-xs font-bold text-slate-400 uppercase mb-1">Total a Despachar</div>
-                                <div className="text-4xl font-black text-slate-800">{totalBultos}</div>
-                                <div className="text-sm text-slate-500 font-bold">Bultos</div>
+                <div className="flex flex-col h-full">
+                    <div className="flex flex-1 overflow-hidden">
+                        {/* Panel izquierdo - Destinos */}
+                        <div className="w-72 border-r border-slate-200 bg-white flex flex-col">
+                            <div className="px-5 py-4 border-b border-slate-100">
+                                <div className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Total a Despachar</div>
+                                <div className="text-5xl font-black text-slate-800 leading-none">{totalBultos}</div>
+                                <div className="text-xs text-slate-500 font-bold mt-1 uppercase">Bultos</div>
                             </div>
-                            <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
-                                <div className="text-xs font-bold text-indigo-500 uppercase mb-3">Destinos</div>
-                                <div className="space-y-3">
+                            <div className="px-5 py-4 flex-1 overflow-y-auto">
+                                <div className="text-[10px] font-black text-brand-cyan uppercase tracking-widest mb-3">Destinos</div>
+                                <div className="space-y-2">
                                     {Object.keys(dispatchGroups).map(key => (
                                         <div key={key} className="p-3 bg-slate-50 rounded-lg border border-slate-100">
                                             <div className="flex justify-between items-center mb-2">
                                                 <span className="text-xs font-bold text-slate-600">Grupo: {key}</span>
-                                                <span className="text-xs font-bold bg-slate-200 px-2 py-0.5 rounded">{dispatchGroups[key].length} Ordenes</span>
+                                                <span className="text-[10px] font-bold bg-slate-200 text-slate-600 px-2 py-0.5 rounded">{dispatchGroups[key].length} Ordenes</span>
                                             </div>
                                             {key === 'LOGISTICA' && (
-                                                <select className="w-full text-sm p-2 border rounded font-bold text-slate-700" value={targetDestinations[key] || ''} onChange={e => setTargetDestinations({ ...targetDestinations, [key]: e.target.value })}>
+                                                <select
+                                                    className="w-full text-sm p-2 border border-slate-200 rounded-lg font-bold text-slate-700 focus:ring-2 focus:ring-cyan-300 outline-none"
+                                                    value={targetDestinations[key] || ''}
+                                                    onChange={e => setTargetDestinations({ ...targetDestinations, [key]: e.target.value })}
+                                                >
                                                     <option value="">Seleccionar Destino Real...</option>
                                                     {['CORTE', 'COSTURA', 'ESTAMPADO', 'BORDADO', 'TERMINACION', 'DEPOSITO'].map(a => <option key={a} value={a}>{a}</option>)}
                                                 </select>
@@ -510,24 +513,26 @@ const DispatchView = ({ selectedOrders: initialOrders = [], areaFilter, originAr
                                 </div>
                             </div>
                         </div>
-                        <div className="lg:col-span-2 bg-white rounded-2xl shadow-sm border border-slate-200 flex flex-col overflow-hidden">
-                            <div className="p-4 border-b border-slate-100 font-bold text-slate-600 text-sm">Review Items</div>
-                            <div className="flex-1 overflow-y-auto p-4 space-y-2">
+                        {/* Panel derecho - Review */}
+                        <div className="flex-1 flex flex-col overflow-hidden bg-slate-50">
+                            <div className="px-6 py-3 border-b border-slate-200 bg-white text-xs font-black text-slate-400 uppercase tracking-widest">Review Items</div>
+                            <div className="flex-1 overflow-y-auto">
                                 {selectedOrders.map((o, i) => (
-                                    <div key={i} className="p-3 border rounded-lg flex justify-between items-center">
+                                    <div key={i} className="px-6 py-4 border-b border-slate-100 bg-white flex justify-between items-center hover:bg-slate-50 transition-colors">
                                         <div>
                                             <div className="font-bold text-slate-800 text-sm">{o.code}</div>
-                                            <div className="text-xs text-slate-500">{o.desc}</div>
+                                            <div className="text-xs text-slate-400 mt-0.5">{o.desc}</div>
                                         </div>
-                                        <div className="text-right"><span className="text-xs font-bold bg-slate-100 px-2 py-1 rounded">{o.bultos.length} Bultos</span></div>
+                                        <span className="text-xs font-bold bg-slate-100 text-slate-600 px-3 py-1 rounded border border-slate-200">{o.bultos.length} Bultos</span>
                                     </div>
                                 ))}
                             </div>
                         </div>
                     </div>
-                    <div className="p-6 border-t border-slate-200 bg-white flex justify-end gap-3 sticky bottom-0">
-                        <button onClick={() => setStep(0)} className="px-6 py-3 border rounded-xl font-bold text-slate-500 hover:bg-slate-50">Atrás</button>
-                        <button onClick={handleCreateBatch} disabled={loading} className="px-8 py-3 bg-emerald-600 text-white rounded-xl font-bold shadow-lg shadow-emerald-200 flex gap-2 items-center">
+                    {/* Footer */}
+                    <div className="px-6 py-4 border-t border-slate-200 bg-white flex justify-end gap-3">
+                        <button onClick={() => setStep(0)} className="px-6 py-2.5 border border-slate-200 rounded-lg font-bold text-slate-500 hover:bg-slate-50 text-sm transition-colors">Atrás</button>
+                        <button onClick={handleCreateBatch} disabled={loading} className="px-8 py-2.5 bg-brand-cyan text-white rounded-lg font-bold hover:brightness-110 shadow-md flex gap-2 items-center text-sm disabled:opacity-50 transition-all">
                             {loading ? <i className="fa-solid fa-circle-notch fa-spin"></i> : <><i className="fa-solid fa-truck-fast"></i> Confirmar Salida</>}
                         </button>
                     </div>
@@ -543,7 +548,7 @@ const DispatchView = ({ selectedOrders: initialOrders = [], areaFilter, originAr
                         </div>
                         <div className="px-8 pb-8 space-y-4">
                             {logs.length > 0 && <div className="p-3 bg-slate-900 text-emerald-400 text-xs rounded-lg font-mono text-center">{logs[logs.length - 1]}</div>}
-                            <button onClick={handleCreateBatch} disabled={loading} className="w-full py-4 bg-emerald-500 text-white rounded-xl font-bold hover:bg-emerald-600 transition-colors shadow-lg shadow-emerald-200 text-lg flex justify-center items-center gap-2">
+                            <button onClick={handleCreateBatch} disabled={loading} className="w-full py-4 bg-brand-cyan text-white rounded-xl font-bold hover:brightness-110 transition-all shadow-md text-lg flex justify-center items-center gap-2">
                                 {loading ? <i className="fa-solid fa-circle-notch fa-spin"></i> : <><i className="fa-solid fa-truck-fast"></i> Confirmar Salida</>}
                             </button>
                             <button onClick={() => setStep(step === 2 && initialOrders.length > 0 ? 1 : 1)} disabled={loading} className="w-full py-3 bg-slate-100 text-slate-500 rounded-xl font-bold hover:bg-slate-200 transition-colors">
@@ -639,11 +644,11 @@ const DispatchView = ({ selectedOrders: initialOrders = [], areaFilter, originAr
                             <div
                                 key={rem.EnvioID}
                                 onClick={() => handleSelectHistory(rem.CodigoRemito)}
-                                className={`p-4 rounded-xl border cursor-pointer transition-all hover:shadow-md ${selectedHistoryCode === rem.CodigoRemito ? 'bg-indigo-50 border-indigo-200 ring-1 ring-indigo-300' : 'bg-white border-slate-100 hover:border-slate-300'}`}
+                                className={`p-4 rounded-xl border cursor-pointer transition-all hover:shadow-md ${selectedHistoryCode === rem.CodigoRemito ? 'bg-brand-cyan/5 border-brand-cyan ring-1 ring-brand-cyan/30' : 'bg-white border-slate-100 hover:border-slate-300'}`}
                             >
                                 <div className="flex justify-between items-start mb-2">
                                     <span className="font-bold text-slate-800 font-mono text-lg">{rem.CodigoRemito}</span>
-                                    <span className={`text-[10px] font-bold px-2 py-0.5 rounded uppercase ${rem.Estado === 'ENTREGADO' ? 'bg-emerald-100 text-emerald-700' : 'bg-blue-100 text-blue-700'}`}>{rem.Estado?.replace('_', ' ')}</span>
+                                    <span className={`text-[10px] font-bold px-2 py-0.5 rounded uppercase ${rem.Estado === 'ENTREGADO' ? 'bg-brand-cyan/10 text-brand-cyan' : 'bg-slate-100 text-slate-600'}`}>{rem.Estado?.replace('_', ' ')}</span>
                                 </div>
                                 <div className="flex items-center gap-2 text-xs text-slate-500 mb-2">
                                     <i className="fa-solid fa-arrow-right-long text-slate-300"></i>

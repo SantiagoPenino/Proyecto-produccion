@@ -131,16 +131,16 @@ const CreateDispatchModal = ({ isOpen, onClose, selectedOrders, originArea, next
     };
 
     return (
-        <div className="fixed inset-0 bg-slate-900/80 backdrop-blur-sm flex items-center justify-center p-4 z-[1400] print:p-0 print:bg-white">
+        <div className="fixed inset-0 bg-zinc-900/80 backdrop-blur-sm flex items-center justify-center p-4 z-[1400] print:p-0 print:bg-white">
             <div className={`bg-white rounded-2xl shadow-2xl w-full max-w-2xl overflow-hidden flex flex-col max-h-[90vh] print:shadow-none print:w-full print:max-w-none print:h-full print:max-h-none print:rounded-none transition-all`}>
 
                 {/* HEADER */}
-                <div className="px-6 py-4 border-b border-slate-100 flex justify-between items-center bg-slate-50 print:hidden">
-                    <h3 className="text-lg font-black text-slate-800 flex items-center gap-2">
+                <div className="px-6 py-4 border-b border-zinc-100 flex justify-between items-center bg-zinc-50 print:hidden">
+                    <h3 className="text-lg font-black text-zinc-800 flex items-center gap-2">
                         <i className="fa-solid fa-truck-ramp-box text-blue-600"></i>
                         {step === 1 ? 'Autorizar Salida de Mercadería' : 'Remitos Generados'}
                     </h3>
-                    <button onClick={onClose} className="text-slate-400 hover:text-red-500 w-8 h-8 flex items-center justify-center rounded-full hover:bg-slate-100 transition-colors">
+                    <button onClick={onClose} className="text-zinc-400 hover:text-red-500 w-8 h-8 flex items-center justify-center rounded-full hover:bg-zinc-100 transition-colors">
                         <i className="fa-solid fa-xmark text-xl"></i>
                     </button>
                 </div>
@@ -151,53 +151,53 @@ const CreateDispatchModal = ({ isOpen, onClose, selectedOrders, originArea, next
 
                         {/* Summary Section */}
                         <div className="space-y-3">
-                            <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wider">Detalle del Envío</h4>
+                            <h4 className="text-xs font-bold text-zinc-500 uppercase tracking-wider">Detalle del Envío</h4>
                             {Object.entries(dispatchGroups).map(([dest, orders]) => (
-                                <div key={dest} className="flex justify-between items-center p-3 border border-slate-200 rounded-lg bg-slate-50">
+                                <div key={dest} className="flex justify-between items-center p-3 border border-zinc-200 rounded-lg bg-zinc-50">
                                     <div className="flex items-center gap-3">
                                         <div className="w-8 h-8 rounded bg-indigo-100 text-indigo-600 flex items-center justify-center font-bold text-sm">
                                             {orders.reduce((acc, o) => acc + (o.bultos?.length || 0), 0)}
                                         </div>
                                         <div>
-                                            <div className="font-bold text-slate-800 text-sm">Hacia: {dest}</div>
-                                            <div className="text-[10px] text-slate-500">{orders.length} lotes</div>
+                                            <div className="font-bold text-zinc-800 text-sm">Hacia: {dest}</div>
+                                            <div className="text-[10px] text-zinc-500">{orders.length} lotes</div>
                                         </div>
                                     </div>
                                 </div>
                             ))}
                         </div>
 
-                        <hr className="border-slate-100" />
+                        <hr className="border-zinc-100" />
 
                         {/* AUTHENTICATION FORM */}
                         <form id="auth-form" onSubmit={(e) => { e.preventDefault(); handleCreateBatch(); }} className="space-y-4">
-                            <div className="flex items-center gap-2 text-slate-800 font-bold">
+                            <div className="flex items-center gap-2 text-zinc-800 font-bold">
                                 <i className="fa-solid fa-user-shield text-blue-600"></i>
                                 Autenticación de Responsable
                             </div>
-                            <p className="text-xs text-slate-500">Ingrese sus credenciales para firmar digitalmente la salida de estos materiales.</p>
+                            <p className="text-xs text-zinc-500">Ingrese sus credenciales para firmar digitalmente la salida de estos materiales.</p>
 
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-4 bg-blue-50/50 p-4 rounded-xl border border-blue-100">
                                 <div>
-                                    <label className="block text-xs font-bold text-slate-600 uppercase mb-1">Usuario</label>
+                                    <label className="block text-xs font-bold text-zinc-600 uppercase mb-1">Usuario</label>
                                     <input
                                         type="text"
                                         name="username"
                                         autoFocus
                                         autoComplete="username"
-                                        className="w-full p-2.5 rounded-lg border border-slate-300 focus:ring-2 focus:ring-blue-500 outline-none font-bold text-slate-700"
+                                        className="w-full p-2.5 rounded-lg border border-zinc-300 focus:ring-2 focus:ring-blue-500 outline-none font-bold text-zinc-700"
                                         placeholder="ej: juan.perez"
                                         value={credentials.username}
                                         onChange={e => setCredentials({ ...credentials, username: e.target.value })}
                                     />
                                 </div>
                                 <div>
-                                    <label className="block text-xs font-bold text-slate-600 uppercase mb-1">Contraseña</label>
+                                    <label className="block text-xs font-bold text-zinc-600 uppercase mb-1">Contraseña</label>
                                     <input
                                         type="password"
                                         name="password"
                                         autoComplete="current-password"
-                                        className="w-full p-2.5 rounded-lg border border-slate-300 focus:ring-2 focus:ring-blue-500 outline-none font-bold text-slate-700"
+                                        className="w-full p-2.5 rounded-lg border border-zinc-300 focus:ring-2 focus:ring-blue-500 outline-none font-bold text-zinc-700"
                                         placeholder="••••••••"
                                         value={credentials.password}
                                         onChange={e => setCredentials({ ...credentials, password: e.target.value })}
@@ -209,7 +209,7 @@ const CreateDispatchModal = ({ isOpen, onClose, selectedOrders, originArea, next
                         </form>
 
                         {logs.length > 0 && (
-                            <div className="p-3 bg-slate-800 text-emerald-400 font-mono text-xs rounded-lg mt-2">
+                            <div className="p-3 bg-zinc-800 text-emerald-400 font-mono text-xs rounded-lg mt-2">
                                 {logs.map((l, i) => <div key={i}>{l}</div>)}
                             </div>
                         )}
@@ -220,24 +220,24 @@ const CreateDispatchModal = ({ isOpen, onClose, selectedOrders, originArea, next
                 {step === 2 && (
                     <div className="p-8 flex flex-col items-center gap-8 overflow-y-auto print:p-0">
                         {results.map((res, idx) => (
-                            <div key={idx} className="w-full border-2 border-dashed border-slate-800 p-6 rounded-xl bg-white text-center print:border-4 print:border-black print:rounded-none page-break-after-always">
-                                <div className="flex justify-between items-end border-b-2 border-slate-900 pb-4 mb-6">
-                                    <h1 className="text-4xl font-black uppercase text-slate-900 tracking-tighter">REMITO</h1>
+                            <div key={idx} className="w-full border-2 border-dashed border-zinc-800 p-6 rounded-xl bg-white text-center print:border-4 print:border-black print:rounded-none page-break-after-always">
+                                <div className="flex justify-between items-end border-b-2 border-zinc-900 pb-4 mb-6">
+                                    <h1 className="text-4xl font-black uppercase text-zinc-900 tracking-tighter">REMITO</h1>
                                     <div className="text-right">
-                                        <div className="text-xs font-bold text-slate-500">FECHA</div>
+                                        <div className="text-xs font-bold text-zinc-500">FECHA</div>
                                         <div className="font-mono font-bold">{new Date().toLocaleDateString()}</div>
                                     </div>
                                 </div>
 
-                                <div className="flex justify-between items-center bg-slate-100 p-3 rounded mb-6 print:bg-slate-100 print:print-color-adjust-exact">
+                                <div className="flex justify-between items-center bg-zinc-100 p-3 rounded mb-6 print:bg-zinc-100 print:print-color-adjust-exact">
                                     <div className="text-left">
-                                        <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">ORIGEN</div>
-                                        <div className="font-black text-xl text-slate-800">{originArea || 'PRODUCCION'}</div>
+                                        <div className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider">ORIGEN</div>
+                                        <div className="font-black text-xl text-zinc-800">{originArea || 'PRODUCCION'}</div>
                                     </div>
-                                    <div className="text-2xl text-slate-300"><i className="fa-solid fa-arrow-right"></i></div>
+                                    <div className="text-2xl text-zinc-300"><i className="fa-solid fa-arrow-right"></i></div>
                                     <div className="text-right">
-                                        <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">DESTINO</div>
-                                        <div className="font-black text-xl text-slate-800">{res.destArea}</div>
+                                        <div className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider">DESTINO</div>
+                                        <div className="font-black text-xl text-zinc-800">{res.destArea}</div>
                                     </div>
                                 </div>
 
@@ -245,11 +245,11 @@ const CreateDispatchModal = ({ isOpen, onClose, selectedOrders, originArea, next
                                     <QRCode value={res.dispatchCode} size={150} />
                                 </div>
 
-                                <div className="text-3xl font-black font-mono tracking-widest text-slate-900 mb-6 select-all border-b border-t border-slate-200 py-4">
+                                <div className="text-3xl font-black font-mono tracking-widest text-zinc-900 mb-6 select-all border-b border-t border-zinc-200 py-4">
                                     {res.dispatchCode}
                                 </div>
 
-                                <div className="text-sm font-bold text-slate-500">
+                                <div className="text-sm font-bold text-zinc-500">
                                     {res.itemCount} Bultos | {res.observations}
                                 </div>
                             </div>
@@ -263,24 +263,24 @@ const CreateDispatchModal = ({ isOpen, onClose, selectedOrders, originArea, next
                 )}
 
                 {/* FOOTER */}
-                <div className="px-6 py-4 border-t border-slate-100 flex justify-end gap-3 bg-slate-50 print:hidden">
+                <div className="px-6 py-4 border-t border-zinc-100 flex justify-end gap-3 bg-zinc-50 print:hidden">
                     {step === 1 ? (
                         <>
-                            <button onClick={onClose} className="px-5 py-2.5 rounded-xl border border-slate-200 text-slate-600 font-bold text-sm hover:bg-white transition-colors">Cancelar</button>
+                            <button onClick={onClose} className="px-5 py-2.5 rounded-xl border border-zinc-200 text-zinc-600 font-bold text-sm hover:bg-white transition-colors">Cancelar</button>
                             <button
                                 onClick={handleCreateBatch}
                                 disabled={loading || !credentials.username || !credentials.password}
-                                className="px-6 py-2.5 rounded-xl bg-slate-900 text-white font-bold text-sm shadow-lg shadow-slate-300 hover:bg-slate-800 active:scale-95 transition-all disabled:opacity-50 disabled:shadow-none"
+                                className="px-6 py-2.5 rounded-xl bg-zinc-900 text-white font-bold text-sm shadow-lg shadow-zinc-300 hover:bg-zinc-800 active:scale-95 transition-all disabled:opacity-50 disabled:shadow-none"
                             >
                                 {loading ? <i className="fa-solid fa-circle-notch fa-spin"></i> : <><i className="fa-solid fa-signature mr-2"></i> Firmar y Generar</>}
                             </button>
                         </>
                     ) : (
                         <>
-                            <button onClick={onClose} className="px-5 py-2.5 rounded-xl border border-slate-200 text-slate-600 font-bold text-sm hover:bg-white transition-colors">Cerrar</button>
+                            <button onClick={onClose} className="px-5 py-2.5 rounded-xl border border-zinc-200 text-zinc-600 font-bold text-sm hover:bg-white transition-colors">Cerrar</button>
                             <button
                                 onClick={handlePrint}
-                                className="px-6 py-2.5 rounded-xl bg-slate-800 text-white font-bold text-sm shadow-lg hover:bg-slate-900 active:scale-95 transition-all"
+                                className="px-6 py-2.5 rounded-xl bg-zinc-800 text-white font-bold text-sm shadow-lg hover:bg-zinc-900 active:scale-95 transition-all"
                             >
                                 <i className="fa-solid fa-print mr-2"></i> Imprimir Todo
                             </button>
@@ -305,3 +305,4 @@ const CreateDispatchModal = ({ isOpen, onClose, selectedOrders, originArea, next
 };
 
 export default CreateDispatchModal;
+

@@ -500,42 +500,42 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated }) => {
                     <div className="flex items-center gap-1 bg-white border border-blue-300 rounded px-1 shadow-sm focus-within:ring-2 focus-within:ring-blue-100">
                         <label className="text-[9px] font-bold text-blue-400 uppercase">Copias:</label>
                         <input
-                            type="number" className="w-10 text-center font-bold text-xs outline-none text-slate-700 bg-transparent h-6"
+                            type="number" className="w-10 text-center font-bold text-xs outline-none text-zinc-700 bg-transparent h-6"
                             value={editValues.copias}
                             onChange={e => setEditValues({ ...editValues, copias: e.target.value })}
                             autoFocus
                         />
                     </div>
 
-                    <span className="text-slate-300 text-xs font-light">x</span>
+                    <span className="text-zinc-300 text-xs font-light">x</span>
 
                     {/* 2. ANCHO */}
                     <div className="flex items-center gap-1 bg-white border border-blue-300 rounded px-1 shadow-sm focus-within:ring-2 focus-within:ring-blue-100">
                         <label className="text-[9px] font-bold text-blue-400 uppercase">Ancho:</label>
                         <input
-                            type="number" step="0.01" className="w-12 text-center font-bold text-xs outline-none text-slate-700 bg-transparent h-6"
+                            type="number" step="0.01" className="w-12 text-center font-bold text-xs outline-none text-zinc-700 bg-transparent h-6"
                             value={editValues.ancho}
                             onChange={e => handleChange('ancho', e.target.value)}
                         />
                     </div>
 
-                    <span className="text-slate-300 text-xs font-light">x</span>
+                    <span className="text-zinc-300 text-xs font-light">x</span>
 
                     {/* 3. ALTO / LARGO */}
                     <div className="flex items-center gap-1 bg-white border border-blue-300 rounded px-1 shadow-sm focus-within:ring-2 focus-within:ring-blue-100">
                         <label className="text-[9px] font-bold text-blue-400 uppercase">Alto:</label>
                         <input
-                            type="number" step="0.01" className="w-12 text-center font-bold text-xs outline-none text-slate-700 bg-transparent h-6"
+                            type="number" step="0.01" className="w-12 text-center font-bold text-xs outline-none text-zinc-700 bg-transparent h-6"
                             value={editValues.alto}
                             onChange={e => handleChange('alto', e.target.value)}
                         />
                     </div>
 
-                    <div className="w-px bg-slate-200 h-4 mx-1"></div>
+                    <div className="w-px bg-zinc-200 h-4 mx-1"></div>
 
                     {/* RESULTADO (Calculado) */}
-                    <div className="flex items-center gap-1 bg-slate-100/50 px-2 py-0.5 rounded border border-slate-200">
-                        <label className="text-[9px] font-bold text-slate-400 uppercase">Total:</label>
+                    <div className="flex items-center gap-1 bg-zinc-100/50 px-2 py-0.5 rounded border border-zinc-200">
+                        <label className="text-[9px] font-bold text-zinc-400 uppercase">Total:</label>
                         <div className="text-xs font-black text-blue-600">
                             {editValues.metros} {currentOrder.UM || 'm'}
                         </div>
@@ -551,7 +551,7 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated }) => {
                     ${rawStatus === 'OK' || rawStatus === 'FINALIZADO' ? 'bg-emerald-50 text-emerald-600 border-emerald-100' :
                         rawStatus === 'FALLA' ? 'bg-orange-50 text-orange-600 border-orange-100' :
                             rawStatus === 'CANCELADO' ? 'bg-red-50 text-red-600 border-red-100' :
-                                'bg-slate-50 text-slate-400 border-slate-100'
+                                'bg-zinc-50 text-zinc-400 border-zinc-100'
                     }`}>
                     {rawStatus}
                 </div>
@@ -559,7 +559,7 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated }) => {
                 {isEditing ? (
                     <div className="flex gap-1 animate-in zoom-in-95 duration-200">
                         <ActionButton icon="fa-check" color="emerald" onClick={saveEditing} title="Guardar Cambios" />
-                        <ActionButton icon="fa-xmark" color="slate" onClick={() => setEditingFileId(null)} title="Cancelar" />
+                        <ActionButton icon="fa-xmark" color="zinc" onClick={() => setEditingFileId(null)} title="Cancelar" />
                     </div>
                 ) : (
                     !isCancelled && !isOrderCancelled && (
@@ -589,16 +589,16 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated }) => {
         <div className="fixed inset-0 z-[2000] flex items-start justify-center p-4 overflow-y-auto">
 
             <div
-                className="absolute inset-0 bg-slate-900/60 transition-opacity"
+                className="absolute inset-0 bg-zinc-900/60 transition-opacity"
                 onClick={onClose}
             ></div>
 
-            <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-4xl flex flex-col animate-in zoom-in-95 duration-200 border border-slate-200 my-8">
+            <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-4xl flex flex-col animate-in zoom-in-95 duration-200 border border-zinc-200 my-8">
 
-                <div className="px-6 py-4 bg-slate-50 border-b border-slate-200 flex justify-between items-start shrink-0">
+                <div className="px-6 py-4 bg-zinc-50 border-b border-zinc-200 flex justify-between items-start shrink-0">
                     <div>
                         <div className="flex items-center gap-3 mb-1">
-                            <span className="font-mono bg-slate-200 px-2 py-0.5 rounded text-slate-600 font-bold text-xs border border-slate-300">
+                            <span className="font-mono bg-zinc-200 px-2 py-0.5 rounded text-zinc-600 font-bold text-xs border border-zinc-300">
                                 Orden No.: {currentOrder.code || currentOrder.id}
                             </span>
                             {labels.length > 0 && (
@@ -613,13 +613,13 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated }) => {
                                 <span className="text-xs font-bold text-white bg-red-500 px-2 py-0.5 rounded uppercase tracking-wider">CANCELADA</span>
                             )}
                         </div>
-                        <h2 className="text-xl font-bold text-slate-800 leading-tight">{currentOrder.client}</h2>
-                        <p className="text-sm text-slate-500 mt-1 max-w-2xl truncate">{currentOrder.desc}</p>
+                        <h2 className="text-xl font-bold text-zinc-800 leading-tight">{currentOrder.client}</h2>
+                        <p className="text-sm text-zinc-500 mt-1 max-w-2xl truncate">{currentOrder.desc}</p>
                     </div>
 
                     <button
                         onClick={onClose}
-                        className="w-8 h-8 rounded-full bg-white border border-slate-200 text-slate-400 hover:text-red-500 hover:bg-red-50 hover:border-red-200 transition-all flex items-center justify-center shadow-sm"
+                        className="w-8 h-8 rounded-full bg-white border border-zinc-200 text-zinc-400 hover:text-red-500 hover:bg-red-50 hover:border-red-200 transition-all flex items-center justify-center shadow-sm"
                     >
                         <i className="fa-solid fa-xmark text-lg"></i>
                     </button>
@@ -630,9 +630,9 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated }) => {
                     {/* Campos de Estado Editables */}
                     <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-3 bg-indigo-50/50 p-4 rounded-xl border border-indigo-100 shadow-sm">
                         <div className="lg:col-span-2">
-                            <label className="text-[10px] uppercase font-bold text-slate-500 block mb-1"><i className="fa-solid fa-flag text-indigo-400 mr-1"></i> Estado General</label>
+                            <label className="text-[10px] uppercase font-bold text-zinc-500 block mb-1"><i className="fa-solid fa-flag text-indigo-400 mr-1"></i> Estado General</label>
                             <select 
-                                className="w-full text-sm font-bold text-slate-700 border border-slate-300 rounded px-2 py-1.5 outline-none focus:border-blue-500 bg-white shadow-sm"
+                                className="w-full text-sm font-bold text-zinc-700 border border-zinc-300 rounded px-2 py-1.5 outline-none focus:border-blue-500 bg-white shadow-sm"
                                 value={currentOrder.status || 'Pendiente'}
                                 onChange={(e) => handleUpdateOrderStatus(e.target.value)}
                             >
@@ -651,11 +651,11 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated }) => {
                             </select>
                         </div>
                         <div className="lg:col-span-2">
-                            <label className="text-[10px] uppercase font-bold text-slate-500 block mb-1"><i className="fa-solid fa-layer-group text-indigo-400 mr-1"></i> Estado en su Área</label>
-                            <div className="flex bg-white rounded shadow-sm border border-slate-300 focus-within:border-blue-500 overflow-hidden pr-1">
+                            <label className="text-[10px] uppercase font-bold text-zinc-500 block mb-1"><i className="fa-solid fa-layer-group text-indigo-400 mr-1"></i> Estado en su Área</label>
+                            <div className="flex bg-white rounded shadow-sm border border-zinc-300 focus-within:border-blue-500 overflow-hidden pr-1">
                                 <input 
                                     type="text"
-                                    className="w-full text-sm font-bold text-slate-700 px-2 py-1.5 outline-none bg-transparent"
+                                    className="w-full text-sm font-bold text-zinc-700 px-2 py-1.5 outline-none bg-transparent"
                                     value={currentOrder.areaStatus || ''}
                                     placeholder="Ej. En Costura..."
                                     onChange={(e) => setCurrentOrder({ ...currentOrder, areaStatus: e.target.value })}
@@ -666,7 +666,7 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated }) => {
                                     }}
                                     onBlur={(e) => handleUpdateAreaStatus(e.target.value)}
                                 />
-                                <div className="text-[10px] text-slate-400 flex items-center shrink-0">
+                                <div className="text-[10px] text-zinc-400 flex items-center shrink-0">
                                     <i className="fa-solid fa-pen" title="Editar y click afuera para guardar"></i>
                                 </div>
                             </div>
@@ -674,15 +674,15 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated }) => {
                     </div>
 
                     {/* Header Grid: Datos Clave */}
-                    <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3 mb-6 bg-slate-50 p-4 rounded-xl border border-slate-100 shadow-sm">
+                    <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3 mb-6 bg-zinc-50 p-4 rounded-xl border border-zinc-100 shadow-sm">
 
                         <div className="md:col-span-2 lg:col-span-2">
-                            <label className="text-[10px] uppercase font-bold text-slate-400 block mb-1">Material / Sustrato</label>
-                            <div className="font-semibold text-slate-700 text-sm leading-tight">{currentOrder.variant || currentOrder.material || '-'}</div>
+                            <label className="text-[10px] uppercase font-bold text-zinc-400 block mb-1">Material / Sustrato</label>
+                            <div className="font-semibold text-zinc-700 text-sm leading-tight">{currentOrder.variant || currentOrder.material || '-'}</div>
                         </div>
 
                         <div>
-                            <label className="text-[10px] uppercase font-bold text-slate-400 block mb-1">Magnitud Global</label>
+                            <label className="text-[10px] uppercase font-bold text-zinc-400 block mb-1">Magnitud Global</label>
                             <div className="font-black text-blue-600 text-lg leading-none">
                                 {(() => {
                                     // 1. Suma de Producción
@@ -702,33 +702,33 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated }) => {
                                     // Si hay total calculado lo mostramos, si no mostramos la magnitud estática
                                     return totalMag > 0 ? totalMag.toFixed(2) : (currentOrder.magnitude || '0');
                                 })()}
-                                <span className="text-xs font-bold text-slate-500 ml-1">{currentOrder.UM || currentOrder.unit || ''}</span>
+                                <span className="text-xs font-bold text-zinc-500 ml-1">{currentOrder.UM || currentOrder.unit || ''}</span>
                             </div>
                         </div>
 
                         <div>
-                            <label className="text-[10px] uppercase font-bold text-slate-400 block mb-1">Prioridad</label>
-                            <div className={`font-bold text-sm ${currentOrder.priority === 'Urgente' ? 'text-red-600' : 'text-slate-600'}`}>
+                            <label className="text-[10px] uppercase font-bold text-zinc-400 block mb-1">Prioridad</label>
+                            <div className={`font-bold text-sm ${currentOrder.priority === 'Urgente' ? 'text-red-600' : 'text-zinc-600'}`}>
                                 {currentOrder.priority || 'Normal'}
                             </div>
                         </div>
 
                         <div>
-                            <label className="text-[10px] uppercase font-bold text-slate-400 block mb-1">Tinta</label>
-                            <div className="font-mono text-slate-700 text-sm font-bold bg-white border border-slate-200 px-2 py-0.5 rounded inline-block">
+                            <label className="text-[10px] uppercase font-bold text-zinc-400 block mb-1">Tinta</label>
+                            <div className="font-mono text-zinc-700 text-sm font-bold bg-white border border-zinc-200 px-2 py-0.5 rounded inline-block">
                                 {currentOrder.ink || '-'}
                             </div>
                         </div>
 
                         <div>
-                            <label className="text-[10px] uppercase font-bold text-slate-400 block mb-1">Modo Retiro</label>
-                            <div className="font-bold text-slate-700 text-sm">
+                            <label className="text-[10px] uppercase font-bold text-zinc-400 block mb-1">Modo Retiro</label>
+                            <div className="font-bold text-zinc-700 text-sm">
                                 {currentOrder.retiro || '-'}
                             </div>
                         </div>
 
                         <div>
-                            <label className="text-[10px] uppercase font-bold text-slate-400 block mb-1">Próximo Area</label>
+                            <label className="text-[10px] uppercase font-bold text-zinc-400 block mb-1">Próximo Area</label>
                             <div className="font-bold text-indigo-600 text-sm flex items-center gap-1">
                                 <i className="fa-solid fa-arrow-right text-[10px]"></i> {currentOrder.nextService || '-'}
                             </div>
@@ -736,7 +736,7 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated }) => {
                     </div>
 
                     {currentOrder.rollId && (
-                        <div className="mb-4 flex items-center gap-2 text-xs font-mono text-slate-500 bg-slate-100 px-3 py-1.5 rounded-lg w-fit">
+                        <div className="mb-4 flex items-center gap-2 text-xs font-mono text-zinc-500 bg-zinc-100 px-3 py-1.5 rounded-lg w-fit">
                             <i className="fa-solid fa-scroll"></i>
                             Asignado a Rollo/Lote: <b>{currentOrder.rollId}</b>
                         </div>
@@ -754,7 +754,7 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated }) => {
 
                     {/* TABS DE NAVEGACIÓN */}
                     <div>
-                        <div className="flex gap-1 border-b border-slate-200 mb-6 overflow-x-auto">
+                        <div className="flex gap-1 border-b border-zinc-200 mb-6 overflow-x-auto">
                             {[
                                 { id: 'files', label: 'Archivos de Impresión', count: productionFiles.length, icon: 'fa-layer-group' },
                                 { id: 'refs', label: 'Archivos de Referencia', count: referenceFiles.length, icon: 'fa-paperclip' },
@@ -768,13 +768,13 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated }) => {
                                     className={`px-4 py-3 font-bold text-sm border-b-2 transition-all flex items-center gap-2 whitespace-nowrap
                                         ${activeTab === tab.id
                                             ? 'border-blue-500 text-blue-600 bg-blue-50/50'
-                                            : 'border-transparent text-slate-400 hover:text-slate-600 hover:bg-slate-50'
+                                            : 'border-transparent text-zinc-400 hover:text-zinc-600 hover:bg-zinc-50'
                                         }`}
                                 >
-                                    <i className={`fa-solid ${tab.icon} ${activeTab === tab.id ? 'text-blue-500' : 'text-slate-300'}`}></i>
+                                    <i className={`fa-solid ${tab.icon} ${activeTab === tab.id ? 'text-blue-500' : 'text-zinc-300'}`}></i>
                                     {tab.label}
                                     {tab.count > 0 && (
-                                        <span className={`text-[10px] px-1.5 py-0.5 rounded-full ${activeTab === tab.id ? 'bg-blue-100 text-blue-700' : 'bg-slate-100 text-slate-500'}`}>
+                                        <span className={`text-[10px] px-1.5 py-0.5 rounded-full ${activeTab === tab.id ? 'bg-blue-100 text-blue-700' : 'bg-zinc-100 text-zinc-500'}`}>
                                             {tab.count}
                                         </span>
                                     )}
@@ -807,7 +807,7 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated }) => {
                             {activeTab === 'files' && (
                                 <div className="space-y-2 pr-1 custom-scrollbar">
                                     {productionFiles.length === 0 ? (
-                                        <div className="py-12 text-center text-slate-400 italic bg-slate-50 rounded-xl border border-dashed border-slate-200">
+                                        <div className="py-12 text-center text-zinc-400 italic bg-zinc-50 rounded-xl border border-dashed border-zinc-200">
                                             No hay archivos de impresión cargados.
                                         </div>
                                     ) : (
@@ -831,8 +831,8 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated }) => {
                                     )}
                                     {/* Footer Totales */}
                                     {productionFiles.length > 0 && (
-                                        <div className="mt-4 pt-3 border-t border-slate-100 flex justify-between items-center text-sm px-2">
-                                            <span className="font-bold text-slate-400 uppercase text-xs tracking-wider">Metraje Total Estimado</span>
+                                        <div className="mt-4 pt-3 border-t border-zinc-100 flex justify-between items-center text-sm px-2">
+                                            <span className="font-bold text-zinc-400 uppercase text-xs tracking-wider">Metraje Total Estimado</span>
                                             <span className="font-black text-blue-600 text-xl font-mono">
                                                 {productionFiles.reduce((acc, f) => {
                                                     if ((f.Estado || '').toUpperCase() === 'CANCELADO') return acc;
@@ -848,7 +848,7 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated }) => {
                             {activeTab === 'refs' && (
                                 <div className="space-y-2">
                                     {referenceFiles.length === 0 ? (
-                                        <div className="py-8 text-center text-slate-400 bg-slate-50 rounded-lg border border-dashed border-slate-200">
+                                        <div className="py-8 text-center text-zinc-400 bg-zinc-50 rounded-lg border border-dashed border-zinc-200">
                                             <i className="fa-regular fa-image text-2xl mb-2 block opacity-50"></i>
                                             Sin imágenes de referencia o guías.
                                         </div>
@@ -884,7 +884,7 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated }) => {
                                                 <select
                                                     value={newService.name}
                                                     onChange={e => setNewService({ ...newService, name: e.target.value })}
-                                                    className="w-full text-sm border border-slate-300 px-3 py-2 rounded outline-none focus:border-amber-500 focus:ring-1 focus:ring-amber-200 bg-white"
+                                                    className="w-full text-sm border border-zinc-300 px-3 py-2 rounded outline-none focus:border-amber-500 focus:ring-1 focus:ring-amber-200 bg-white"
                                                     autoFocus
                                                 >
                                                     <option value="">-- Seleccione un producto --</option>
@@ -903,7 +903,7 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated }) => {
                                                     onChange={e => setNewService({ ...newService, quantity: parseInt(e.target.value) || 1 })}
                                                     min="1"
                                                     step="1"
-                                                    className="w-full text-sm border border-slate-300 px-3 py-2 rounded outline-none focus:border-amber-500 text-center"
+                                                    className="w-full text-sm border border-zinc-300 px-3 py-2 rounded outline-none focus:border-amber-500 text-center"
                                                 />
                                             </div>
 
@@ -953,7 +953,7 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated }) => {
                                     )}
 
                                     {serviceFiles.length === 0 ? (
-                                        <div className="py-8 text-center text-slate-400 bg-slate-50 rounded-lg border border-dashed border-slate-200">
+                                        <div className="py-8 text-center text-zinc-400 bg-zinc-50 rounded-lg border border-dashed border-zinc-200">
                                             <i className="fa-solid fa-box-open text-2xl mb-2 block opacity-50"></i>
                                             No hay productos para cotizar en esta orden.
                                         </div>
@@ -963,11 +963,11 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated }) => {
                                             const isEditing = editingFileId === fileId;
 
                                             return (
-                                                <div key={idx} className={`p-3 border rounded-lg flex justify-between items-center transition-all ${isEditing ? 'bg-indigo-50 border-indigo-200 ring-2 ring-indigo-100 shadow-md' : (f.Estado === 'OK' ? 'bg-emerald-50/50 border-emerald-100' : 'bg-white border-slate-200 shadow-sm hover:shadow-md')}`}>
+                                                <div key={idx} className={`p-3 border rounded-lg flex justify-between items-center transition-all ${isEditing ? 'bg-indigo-50 border-indigo-200 ring-2 ring-indigo-100 shadow-md' : (f.Estado === 'OK' ? 'bg-emerald-50/50 border-emerald-100' : 'bg-white border-zinc-200 shadow-sm hover:shadow-md')}`}>
                                                     <div className="flex-1">
                                                         <div className={`flex items-center gap-3 ${isEditing ? 'hidden' : ''}`}>
                                                             <div className="flex flex-col">
-                                                                <span className="font-bold text-sm text-slate-800 flex items-center gap-2">
+                                                                <span className="font-bold text-sm text-zinc-800 flex items-center gap-2">
                                                                     {f.nombre}
                                                                     {f.Estado && f.Estado !== 'PENDIENTE' && (
                                                                         <span className={`text-[9px] px-1.5 py-0.5 rounded border uppercase font-black ${f.Estado === 'OK' ? 'bg-emerald-100 text-emerald-700 border-emerald-200' : 'bg-red-100 text-red-700 border-red-200'}`}>
@@ -976,12 +976,12 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated }) => {
                                                                     )}
                                                                 </span>
                                                                 {f.UsuarioControl && (
-                                                                    <span className="text-[10px] text-slate-400 italic">
+                                                                    <span className="text-[10px] text-zinc-400 italic">
                                                                         Control: {f.UsuarioControl} - {new Date(f.FechaControl).toLocaleDateString()}
                                                                     </span>
                                                                 )}
                                                             </div>
-                                                            <span className="text-[11px] bg-slate-100 text-slate-600 px-2 py-0.5 rounded-full border border-slate-200 font-bold tracking-wide shadow-sm">
+                                                            <span className="text-[11px] bg-zinc-100 text-zinc-600 px-2 py-0.5 rounded-full border border-zinc-200 font-bold tracking-wide shadow-sm">
                                                                 Cant: <b className="text-blue-600 text-xs">{f.copias || f.Cantidad || 1}</b>
                                                             </span>
 
@@ -1001,11 +1001,11 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated }) => {
                                                         {isEditing && (
                                                             <div className="flex flex-col gap-2 animate-in fade-in zoom-in-95 duration-200 w-full bg-white p-2 rounded border border-indigo-100 shadow-inner">
                                                                 <div className="flex items-center gap-2">
-                                                                    <label className="text-[10px] font-bold uppercase text-slate-500 w-16">Producto:</label>
+                                                                    <label className="text-[10px] font-bold uppercase text-zinc-500 w-16">Producto:</label>
                                                                     <select
                                                                         value={editValues.nombre}
                                                                         onChange={e => setEditValues({ ...editValues, nombre: e.target.value })}
-                                                                        className="flex-1 px-2 py-1 border border-slate-300 rounded text-xs focus:border-indigo-500 outline-none"
+                                                                        className="flex-1 px-2 py-1 border border-zinc-300 rounded text-xs focus:border-indigo-500 outline-none"
                                                                     >
                                                                         {articlesList.some(a => (a.Descripcion || '').trim() === editValues.nombre) ? null : <option value={f.nombre}>{f.nombre}</option>}
                                                                         {articlesList.map(a => (
@@ -1016,21 +1016,21 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated }) => {
                                                                     </select>
                                                                 </div>
                                                                 <div className="flex items-center gap-2">
-                                                                    <label className="text-[10px] font-bold uppercase text-slate-500 w-16">Cantidad:</label>
+                                                                    <label className="text-[10px] font-bold uppercase text-zinc-500 w-16">Cantidad:</label>
                                                                     <input
                                                                         type="number"
                                                                         step="1"
                                                                         min="1"
-                                                                        className="w-20 px-2 py-1 text-center font-bold border border-slate-300 rounded text-sm focus:border-indigo-500 focus:ring-1 focus:ring-indigo-200 outline-none"
+                                                                        className="w-20 px-2 py-1 text-center font-bold border border-zinc-300 rounded text-sm focus:border-indigo-500 focus:ring-1 focus:ring-indigo-200 outline-none"
                                                                         value={editValues.copias}
                                                                         onChange={e => setEditValues({ ...editValues, copias: parseInt(e.target.value) || 1 })}
                                                                     />
                                                                 </div>
                                                                 <div className="flex items-center gap-2">
-                                                                    <label className="text-[10px] font-bold uppercase text-slate-500 w-16">Obs:</label>
+                                                                    <label className="text-[10px] font-bold uppercase text-zinc-500 w-16">Obs:</label>
                                                                     <input
                                                                         type="text"
-                                                                        className="flex-1 px-2 py-1 border border-slate-300 rounded text-xs focus:border-indigo-500 outline-none"
+                                                                        className="flex-1 px-2 py-1 border border-zinc-300 rounded text-xs focus:border-indigo-500 outline-none"
                                                                         value={editValues.observaciones || ''}
                                                                         onChange={e => setEditValues({ ...editValues, observaciones: e.target.value })}
                                                                         placeholder="Observaciones adicionales..."
@@ -1039,7 +1039,7 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated }) => {
 
                                                                 {/* CAMPOS TÉCNICOS CONDICIONALES */}
                                                                 {currentOrder.area === 'EMB' && (
-                                                                    <div className="flex items-center gap-2 pt-1 border-t border-slate-50">
+                                                                    <div className="flex items-center gap-2 pt-1 border-t border-zinc-50">
                                                                         <label className="text-[10px] font-bold uppercase text-indigo-600 w-16">Puntadas:</label>
                                                                         <input
                                                                             type="number"
@@ -1051,7 +1051,7 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated }) => {
                                                                 )}
 
                                                                 {currentOrder.area === 'EST' && (
-                                                                    <div className="flex flex-col gap-2 pt-1 border-t border-slate-50">
+                                                                    <div className="flex flex-col gap-2 pt-1 border-t border-zinc-50">
                                                                         <div className="flex items-center gap-2">
                                                                             <label className="text-[10px] font-bold uppercase text-orange-600 w-16">Bajadas:</label>
                                                                             <input
@@ -1080,13 +1080,13 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated }) => {
                                                         {isEditing ? (
                                                             <div className="flex gap-1">
                                                                 <ActionButton icon="fa-check" color="emerald" onClick={saveEditing} title="Confirmar" />
-                                                                <ActionButton icon="fa-xmark" color="slate" onClick={() => setEditingFileId(null)} title="Cancelar" />
+                                                                <ActionButton icon="fa-xmark" color="zinc" onClick={() => setEditingFileId(null)} title="Cancelar" />
                                                             </div>
                                                         ) : (
                                                             <div className="flex gap-1 items-center">
                                                                 {/* CONTROLES DE PRODUCCIÓN PARA SERVICIO */}
                                                                 {f.Estado === 'PENDIENTE' && (
-                                                                    <div className="flex gap-1 mr-2 pr-2 border-r border-slate-200">
+                                                                    <div className="flex gap-1 mr-2 pr-2 border-r border-zinc-200">
                                                                         <ActionButton
                                                                             icon="fa-circle-check"
                                                                             color="emerald"
@@ -1149,15 +1149,15 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated }) => {
                                         </div>
                                     </div>
                                     {/* ... Logic de mapeo de labels (mantenida igual) ... */}
-                                    {loadingLabels ? <div className="py-12 text-center text-slate-400"><i className="fa-solid fa-circle-notch fa-spin text-2xl mb-2"></i><br />Cargando...</div> : labels.length === 0 ? <div className="py-8 text-center text-slate-400 italic">No hay etiquetas generadas.</div> :
+                                    {loadingLabels ? <div className="py-12 text-center text-zinc-400"><i className="fa-solid fa-circle-notch fa-spin text-2xl mb-2"></i><br />Cargando...</div> : labels.length === 0 ? <div className="py-8 text-center text-zinc-400 italic">No hay etiquetas generadas.</div> :
                                         <div className="grid grid-cols-1 md:grid-cols-2 gap-3 max-h-[350px] overflow-y-auto custom-scrollbar p-1">
                                             {labels.map(l => (
-                                                <div key={l.EtiquetaID} className="bg-white border border-slate-200 rounded-lg p-3 flex justify-between items-center shadow-sm hover:shadow-md transition group">
+                                                <div key={l.EtiquetaID} className="bg-white border border-zinc-200 rounded-lg p-3 flex justify-between items-center shadow-sm hover:shadow-md transition group">
                                                     <div className="flex items-center gap-3">
-                                                        <div className="w-10 h-10 bg-slate-100 rounded flex items-center justify-center text-slate-500 font-bold text-lg border border-slate-200">{l.NumeroBulto}</div>
-                                                        <div><div className="font-bold text-slate-700 text-sm">Bulto {l.NumeroBulto}/{l.TotalBultos}</div><div className="text-[10px] text-slate-400 font-mono tracking-widest">{l.CodigoEtiqueta || '---'}</div></div>
+                                                        <div className="w-10 h-10 bg-zinc-100 rounded flex items-center justify-center text-zinc-500 font-bold text-lg border border-zinc-200">{l.NumeroBulto}</div>
+                                                        <div><div className="font-bold text-zinc-700 text-sm">Bulto {l.NumeroBulto}/{l.TotalBultos}</div><div className="text-[10px] text-zinc-400 font-mono tracking-widest">{l.CodigoEtiqueta || '---'}</div></div>
                                                     </div>
-                                                    <button onClick={() => handleDeleteLabel(l.EtiquetaID)} className="w-7 h-7 rounded bg-white text-slate-300 hover:text-red-500 hover:bg-red-50 border border-transparent hover:border-red-100 transition"><i className="fa-solid fa-trash-can text-xs"></i></button>
+                                                    <button onClick={() => handleDeleteLabel(l.EtiquetaID)} className="w-7 h-7 rounded bg-white text-zinc-300 hover:text-red-500 hover:bg-red-50 border border-transparent hover:border-red-100 transition"><i className="fa-solid fa-trash-can text-xs"></i></button>
                                                 </div>
                                             ))}
                                         </div>
@@ -1171,22 +1171,22 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated }) => {
                 </div>
 
                 {/* FOOTER ACCIONES CONSOLIDADO */}
-                <div className="px-6 py-4 bg-slate-50 border-t border-slate-200 flex justify-between items-center gap-3 shrink-0">
+                <div className="px-6 py-4 bg-zinc-50 border-t border-zinc-200 flex justify-between items-center gap-3 shrink-0">
                     <div className="flex items-center gap-2">
                         {/* Grupo de Botones Peligrosos */}
-                        <div className="flex bg-white rounded-lg border border-slate-200 p-1 shadow-sm">
+                        <div className="flex bg-white rounded-lg border border-zinc-200 p-1 shadow-sm">
                             <button
                                 onClick={() => { setCancelType('ORDER'); setCancelModalOpen(true); }}
-                                className={`px-3 py-1.5 rounded text-xs font-bold transition flex items-center gap-2 hover:bg-red-50 text-slate-500 hover:text-red-600`}
+                                className={`px-3 py-1.5 rounded text-xs font-bold transition flex items-center gap-2 hover:bg-red-50 text-zinc-500 hover:text-red-600`}
                                 disabled={currentOrder.status === 'CANCELADO'}
                                 title="Cancelar solo esta orden del área"
                             >
                                 <i className="fa-solid fa-ban"></i> Cancelar Orden
                             </button>
-                            <div className="w-px bg-slate-200 my-1"></div>
+                            <div className="w-px bg-zinc-200 my-1"></div>
                             <button
                                 onClick={() => { setCancelType('REQUEST'); setCancelModalOpen(true); }}
-                                className={`px-3 py-1.5 rounded text-xs font-bold transition flex items-center gap-2 hover:bg-red-50 text-slate-500 hover:text-red-700`}
+                                className={`px-3 py-1.5 rounded text-xs font-bold transition flex items-center gap-2 hover:bg-red-50 text-zinc-500 hover:text-red-700`}
                                 disabled={currentOrder.status === 'CANCELADO'}
                                 title="Cancelar todo el pedido (todas las áreas)"
                             >
@@ -1197,7 +1197,7 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated }) => {
 
                     <button
                         onClick={onClose}
-                        className="px-6 py-2 bg-slate-800 text-white font-bold rounded-lg hover:bg-slate-700 transition shadow-lg shadow-slate-200 active:scale-95"
+                        className="px-6 py-2 bg-zinc-800 text-white font-bold rounded-lg hover:bg-zinc-700 transition shadow-lg shadow-zinc-200 active:scale-95"
                     >
                         Cerrar
                     </button>
@@ -1217,7 +1217,7 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated }) => {
                             </h3>
                         </div>
 
-                        <p className="text-slate-600 text-sm mb-4">
+                        <p className="text-zinc-600 text-sm mb-4">
                             {cancelType === 'REQUEST' ? (
                                 <>
                                     Se cancelarán <b>TODAS las órdenes</b> del pedido <b>{currentOrder.code.split('(')[0]}</b> en <b>TODAS las áreas</b>.
@@ -1238,9 +1238,9 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated }) => {
                         </p>
 
                         <div className="mb-6">
-                            <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Motivo de Cancelación</label>
+                            <label className="block text-xs font-bold text-zinc-500 uppercase mb-2">Motivo de Cancelación</label>
                             <textarea
-                                className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:border-red-400 min-h-[100px] text-sm font-medium text-slate-700 resize-none"
+                                className="w-full p-3 bg-zinc-50 border border-zinc-200 rounded-xl outline-none focus:border-red-400 min-h-[100px] text-sm font-medium text-zinc-700 resize-none"
                                 placeholder="Indique un motivo..."
                                 value={cancelReason}
                                 onChange={(e) => setCancelReason(e.target.value)}
@@ -1250,7 +1250,7 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated }) => {
                         <div className="flex gap-3 justify-end">
                             <button
                                 onClick={() => { setCancelModalOpen(false); setCancelType(null); setFileToCancel(null); }}
-                                className="px-4 py-2 text-slate-500 font-bold hover:bg-slate-50 rounded-lg transition"
+                                className="px-4 py-2 text-zinc-500 font-bold hover:bg-zinc-50 rounded-lg transition"
                             >
                                 Volver
                             </button>
@@ -1269,3 +1269,4 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated }) => {
 };
 
 export default OrderDetailModal;
+

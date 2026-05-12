@@ -16,7 +16,7 @@ const OrderCard = ({ order, isSelected, onClick }) => {
         flex flex-col gap-2 group
         ${isSelected
                     ? 'bg-brand-600 border-brand-500 shadow-lg shadow-brand-500/30 translate-x-1'
-                    : 'bg-white border-slate-100 hover:border-brand-200 hover:shadow-md'
+                    : 'bg-white border-zinc-100 hover:border-brand-200 hover:shadow-md'
                 }
       `}
         >
@@ -33,7 +33,7 @@ const OrderCard = ({ order, isSelected, onClick }) => {
                 </div>
                 <div className={`
           text-[10px] font-bold uppercase
-          ${isSelected ? 'text-white/60' : 'text-slate-400'}
+          ${isSelected ? 'text-white/60' : 'text-zinc-400'}
         `}>
                     ROLLER {order.NombreRollo}
                 </div>
@@ -42,7 +42,7 @@ const OrderCard = ({ order, isSelected, onClick }) => {
             {/* Client Name */}
             <div className={`
         text-xs font-bold truncate
-        ${isSelected ? 'text-white' : 'text-slate-700'}
+        ${isSelected ? 'text-white' : 'text-zinc-700'}
       `}>
                 {order.ClienteNombre}
             </div>
@@ -50,7 +50,7 @@ const OrderCard = ({ order, isSelected, onClick }) => {
             {/* Material (Main Focus) */}
             <div className={`
         text-sm font-black uppercase leading-tight
-        ${isSelected ? 'text-white' : 'text-slate-800'}
+        ${isSelected ? 'text-white' : 'text-zinc-800'}
       `}>
                 {order.Material}
             </div>
@@ -58,7 +58,7 @@ const OrderCard = ({ order, isSelected, onClick }) => {
             {/* Description */}
             <div className={`
         text-[10px] font-semibold italic uppercase truncate
-        ${isSelected ? 'text-white/70' : 'text-slate-400'}
+        ${isSelected ? 'text-white/70' : 'text-zinc-400'}
       `}>
                 {order.DescripcionTrabajo || 'Sin descripción'}
             </div>
@@ -72,3 +72,5 @@ const OrderCard = ({ order, isSelected, onClick }) => {
 };
 
 export default OrderCard;
+
+

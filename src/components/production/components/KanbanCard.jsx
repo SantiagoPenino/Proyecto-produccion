@@ -42,9 +42,9 @@ const KanbanCard = memo(({ order, index, isSelected, onToggle, isReadOnly, showS
                         group relative bg-white border mb-2 rounded-lg p-3 shadow-sm transition-all will-change-transform
                         ${isSelected
                             ? 'bg-blue-50 border-blue-400 ring-1 ring-blue-400 z-10'
-                            : (isRepo ? 'bg-red-50 border-red-300 hover:border-red-400' : 'border-slate-200 hover:border-blue-300')
+                            : (isRepo ? 'bg-red-50 border-red-300 hover:border-red-400' : 'border-zinc-200 hover:border-blue-300')
                         }
-                        ${isRepo ? 'border-l-[4px] border-l-red-600 shadow-sm' : (isUrgent ? 'border-l-[4px] border-l-red-500' : 'border-l-[4px] border-l-slate-300')}
+                        ${isRepo ? 'border-l-[4px] border-l-red-600 shadow-sm' : (isUrgent ? 'border-l-[4px] border-l-red-500' : 'border-l-[4px] border-l-zinc-300')}
                         ${snapshot.isDragging ? 'shadow-2xl rotate-2 scale-105 z-50 ring-2 ring-blue-500/20' : ''}
                         ${isReadOnly ? 'opacity-90' : 'cursor-grab active:cursor-grabbing'}
                     `}
@@ -65,7 +65,7 @@ const KanbanCard = memo(({ order, index, isSelected, onToggle, isReadOnly, showS
                                 type="checkbox"
                                 checked={isSelected}
                                 onChange={onToggle}
-                                className="w-4 h-4 text-blue-600 border-slate-300 rounded focus:ring-blue-500 cursor-pointer shadow-sm"
+                                className="w-4 h-4 text-blue-600 border-zinc-300 rounded focus:ring-blue-500 cursor-pointer shadow-sm"
                             />
                         </div>
                     )}
@@ -80,19 +80,19 @@ const KanbanCard = memo(({ order, index, isSelected, onToggle, isReadOnly, showS
                     <div className="flex flex-col gap-1.5">
 
                         {/* Top Row: ID y Fecha */}
-                        <div className="flex justify-between items-start border-b border-slate-100 pb-1.5 border-dashed">
+                        <div className="flex justify-between items-start border-b border-zinc-100 pb-1.5 border-dashed">
                             <div className="flex items-center gap-1.5 overflow-hidden">
                                 {showSequence && (
-                                    <span className="text-[10px] font-black bg-slate-100 text-slate-500 px-1.5 py-0.5 rounded shadow-sm">
+                                    <span className="text-[10px] font-black bg-zinc-100 text-zinc-500 px-1.5 py-0.5 rounded shadow-sm">
                                         #{index + 1}
                                     </span>
                                 )}
                                 {isRepo && <i className="fa-solid fa-triangle-exclamation text-red-600 text-xs animate-pulse" title="Reposición por Falla"></i>}
-                                <span className="text-sm font-black text-slate-800 tracking-tight truncate" title={code}>
+                                <span className="text-sm font-black text-zinc-800 tracking-tight truncate" title={code}>
                                     {code}
                                 </span>
                             </div>
-                            <span className="text-[9px] font-bold text-slate-400 flex items-center gap-1 shrink-0 bg-slate-50 px-1.5 py-0.5 rounded">
+                            <span className="text-[9px] font-bold text-zinc-400 flex items-center gap-1 shrink-0 bg-zinc-50 px-1.5 py-0.5 rounded">
                                 <i className="fa-regular fa-calendar"></i> {date}
                             </span>
                         </div>
@@ -108,10 +108,10 @@ const KanbanCard = memo(({ order, index, isSelected, onToggle, isReadOnly, showS
 
                         {/* Middle: Client & Desc */}
                         <div className="flex flex-col">
-                            <span className="text-xs font-bold text-slate-700 truncate" title={client}>
+                            <span className="text-xs font-bold text-zinc-700 truncate" title={client}>
                                 {client}
                             </span>
-                            <span className="text-[10px] text-slate-500 truncate italic font-medium" title={desc}>
+                            <span className="text-[10px] text-zinc-500 truncate italic font-medium" title={desc}>
                                 {desc}
                             </span>
                         </div>
@@ -122,7 +122,7 @@ const KanbanCard = memo(({ order, index, isSelected, onToggle, isReadOnly, showS
                                 <span className={`text-[9px] font-black px-1.5 py-0.5 rounded uppercase border
                                     ${isUrgent
                                         ? 'bg-red-50 text-red-600 border-red-100 animate-pulse'
-                                        : 'bg-slate-50 text-slate-500 border-slate-100'}`}>
+                                        : 'bg-zinc-50 text-zinc-500 border-zinc-100'}`}>
                                     {priority}
                                 </span>
                                 {variant && (
@@ -139,8 +139,8 @@ const KanbanCard = memo(({ order, index, isSelected, onToggle, isReadOnly, showS
                                     </span>
                                 )}
                                 {magnitude && (
-                                    <span className="text-[9px] font-black text-slate-700 bg-slate-100 px-1.5 py-0.5 rounded border border-slate-200 flex items-center gap-1" title="Magnitud / Metros">
-                                        <i className="fa-solid fa-ruler-horizontal text-slate-400 text-[8px]"></i> {magnitude}
+                                    <span className="text-[9px] font-black text-zinc-700 bg-zinc-100 px-1.5 py-0.5 rounded border border-zinc-200 flex items-center gap-1" title="Magnitud / Metros">
+                                        <i className="fa-solid fa-ruler-horizontal text-zinc-400 text-[8px]"></i> {magnitude}
                                     </span>
                                 )}
                             </div>
@@ -148,9 +148,9 @@ const KanbanCard = memo(({ order, index, isSelected, onToggle, isReadOnly, showS
 
                         {/* Footer: Material */}
                         {material && (
-                            <div className="border-t border-slate-100 pt-1.5 mt-0.5 flex items-center gap-1">
-                                <i className="fa-solid fa-layer-group text-[9px] text-slate-300"></i>
-                                <span className="text-[10px] font-bold text-slate-600 truncate uppercase" title={material}>
+                            <div className="border-t border-zinc-100 pt-1.5 mt-0.5 flex items-center gap-1">
+                                <i className="fa-solid fa-layer-group text-[9px] text-zinc-300"></i>
+                                <span className="text-[10px] font-bold text-zinc-600 truncate uppercase" title={material}>
                                     {material}
                                 </span>
                             </div>
@@ -174,3 +174,4 @@ const KanbanCard = memo(({ order, index, isSelected, onToggle, isReadOnly, showS
 });
 
 export default KanbanCard;
+

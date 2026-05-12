@@ -34,7 +34,7 @@ const FileItem = ({ file, readOnly = false, onAction, extraInfo, actions, editin
             case 'FALLA': return { container: 'bg-red-50/50 border-red-100', text: 'text-red-500', dot: 'bg-red-500' };
             case 'CANCELADO': return { container: 'bg-red-50 border-red-200 opacity-75', text: 'text-red-500', dot: 'bg-red-500' };
             case 'EN PROCESO': return { container: 'bg-blue-50 border-blue-100', text: 'text-blue-600', dot: 'bg-blue-500 animate-pulse' };
-            default: return { container: 'bg-white border-slate-100 hover:border-blue-200', text: 'text-slate-500', dot: 'bg-slate-300' };
+            default: return { container: 'bg-white border-zinc-100 hover:border-blue-200', text: 'text-zinc-500', dot: 'bg-zinc-300' };
         }
     };
 
@@ -111,7 +111,7 @@ const FileItem = ({ file, readOnly = false, onAction, extraInfo, actions, editin
                         const realUrl = getLiveUrl();
                         if (realUrl && realUrl !== '#') triggerDownload(realUrl, file.name || file.nombre);
                     }}
-                    className="w-10 h-10 rounded-lg bg-white border border-slate-200 shadow-sm flex items-center justify-center text-slate-400 font-bold overflow-hidden cursor-pointer hover:border-blue-300 transition-colors block relative"
+                    className="w-10 h-10 rounded-lg bg-white border border-zinc-200 shadow-sm flex items-center justify-center text-zinc-400 font-bold overflow-hidden cursor-pointer hover:border-blue-300 transition-colors block relative"
                 >
                     {isImage ? (
                         <img src={fileUrl} alt="prev" className="w-full h-full object-cover opacity-80" />
@@ -120,7 +120,7 @@ const FileItem = ({ file, readOnly = false, onAction, extraInfo, actions, editin
                     )}
 
                     {/* Badge Copias */}
-                    <div className="absolute top-0 right-0 bg-slate-800 text-white text-[9px] font-bold px-1 rounded-bl-md shadow-sm z-20">
+                    <div className="absolute top-0 right-0 bg-zinc-800 text-white text-[9px] font-bold px-1 rounded-bl-md shadow-sm z-20">
                         {copias}x
                     </div>
                 </a>
@@ -133,24 +133,24 @@ const FileItem = ({ file, readOnly = false, onAction, extraInfo, actions, editin
                         </div>
 
                         {/* Tooltip Observaciones */}
-                        <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1 w-max max-w-[150px] px-2 py-1 bg-slate-800 text-white text-[9px] rounded opacity-0 group-hover/status:opacity-100 pointer-events-none transition-opacity z-50 text-center shadow-lg">
+                        <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1 w-max max-w-[150px] px-2 py-1 bg-zinc-800 text-white text-[9px] rounded opacity-0 group-hover/status:opacity-100 pointer-events-none transition-opacity z-50 text-center shadow-lg">
                             <span className="font-bold block uppercase mb-0.5 opacity-75">{status}</span>
                             {file.Observaciones || file.MotivoFalla || 'Sin observaciones'}
-                            <div className="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-slate-800"></div>
+                            <div className="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-zinc-800"></div>
                         </div>
                     </div>
                 )}
 
                 {/* HOVER PREVIEW POPUP */}
                 <div className="absolute bottom-full left-0 mb-2 invisible group-hover/preview:visible opacity-0 group-hover/preview:opacity-100 transition-all duration-200 z-50">
-                    <div className="w-48 bg-white rounded-xl shadow-2xl border border-slate-100 p-2 transform origin-bottom-left">
-                        <div className="rounded-lg overflow-hidden bg-slate-100 border border-slate-200 mb-2 flex items-center justify-center min-h-[100px]">
+                    <div className="w-48 bg-white rounded-xl shadow-2xl border border-zinc-100 p-2 transform origin-bottom-left">
+                        <div className="rounded-lg overflow-hidden bg-zinc-100 border border-zinc-200 mb-2 flex items-center justify-center min-h-[100px]">
                             {isImage ? (
                                 <img src={fileUrl} className="w-full h-auto" alt="preview" />
                             ) : (
                                 <div className="text-center py-4">
-                                    <i className={`fa-solid ${isPdf ? 'fa-file-pdf text-red-400' : 'fa-file-arrow-down text-slate-300'} text-3xl mb-2`}></i>
-                                    <div className="text-[10px] text-slate-400">Clic para abrir</div>
+                                    <i className={`fa-solid ${isPdf ? 'fa-file-pdf text-red-400' : 'fa-file-arrow-down text-zinc-300'} text-3xl mb-2`}></i>
+                                    <div className="text-[10px] text-zinc-400">Clic para abrir</div>
                                 </div>
                             )}
                         </div>
@@ -165,7 +165,7 @@ const FileItem = ({ file, readOnly = false, onAction, extraInfo, actions, editin
                                     alert(`No hay archivo válido asociado. (Link: "${fileUrl}")`);
                                 }
                             }}
-                            className="w-full py-1 bg-slate-800 text-white text-[10px] font-bold rounded hover:bg-slate-700 flex items-center justify-center gap-2"
+                            className="w-full py-1 bg-zinc-800 text-white text-[10px] font-bold rounded hover:bg-zinc-700 flex items-center justify-center gap-2"
                         >
                             <i className="fa-solid fa-download"></i> Descargar / Ver
                         </a>
@@ -194,30 +194,30 @@ const FileItem = ({ file, readOnly = false, onAction, extraInfo, actions, editin
                     </div>
                 ) : (
                     // MODO LECTURA HABITUAL
-                    <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] font-medium text-slate-500 mt-1 leading-tight">
+                    <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] font-medium text-zinc-500 mt-1 leading-tight">
 
-                        <span className="bg-slate-100 px-1.5 py-0.5 rounded border border-slate-200 text-xs font-bold text-slate-700">
+                        <span className="bg-zinc-100 px-1.5 py-0.5 rounded border border-zinc-200 text-xs font-bold text-zinc-700">
                             {copias} copias
                         </span>
 
                         {/* Medidas o Cantidad Unitaria */}
                         {(anchoRaw > 0 && altoRaw > 0) ? (
-                            <div className="flex items-center gap-1 bg-slate-100 px-1.5 py-0.5 rounded border border-slate-200">
-                                <span className="text-[9px] font-bold text-slate-400 uppercase">Medidas:</span>
-                                <span className="font-bold text-slate-700">
-                                    {anchoRaw} x {altoRaw} <span className="text-[9px] text-slate-400">{extraInfo?.um || 'm'}</span>
+                            <div className="flex items-center gap-1 bg-zinc-100 px-1.5 py-0.5 rounded border border-zinc-200">
+                                <span className="text-[9px] font-bold text-zinc-400 uppercase">Medidas:</span>
+                                <span className="font-bold text-zinc-700">
+                                    {anchoRaw} x {altoRaw} <span className="text-[9px] text-zinc-400">{extraInfo?.um || 'm'}</span>
                                 </span>
                             </div>
                         ) : (
-                            <div className="flex items-center gap-1 bg-white px-1.5 py-0.5 rounded border border-slate-100">
-                                <span className="text-[9px] font-bold text-slate-400 uppercase">Cant/Unit:</span>
-                                <span className="font-bold text-slate-700">{metrosUnit} {extraInfo?.um || 'm'}</span>
+                            <div className="flex items-center gap-1 bg-white px-1.5 py-0.5 rounded border border-zinc-100">
+                                <span className="text-[9px] font-bold text-zinc-400 uppercase">Cant/Unit:</span>
+                                <span className="font-bold text-zinc-700">{metrosUnit} {extraInfo?.um || 'm'}</span>
                             </div>
                         )}
 
                         {/* Total */}
-                        <div className="flex items-center gap-1 ml-2 pl-2 border-l border-slate-200">
-                            <span className="text-slate-400 text-[9px] uppercase font-bold">Total:</span>
+                        <div className="flex items-center gap-1 ml-2 pl-2 border-l border-zinc-200">
+                            <span className="text-zinc-400 text-[9px] uppercase font-bold">Total:</span>
                             <span className="font-black text-blue-600">
                                 {metrosTotal} {extraInfo?.um || 'm'}
                             </span>
@@ -225,21 +225,21 @@ const FileItem = ({ file, readOnly = false, onAction, extraInfo, actions, editin
 
                         {file.Material && (
                             <>
-                                <span className="text-slate-300 ml-1">•</span>
+                                <span className="text-zinc-300 ml-1">•</span>
                                 <span className="truncate max-w-[150px]" title={file.Material}>{file.Material}</span>
                             </>
                         )}
 
                         {/* Información Extra (Contexto de visualizador) - ICONOS */}
                         {extraInfo && (
-                            <div className="flex items-center gap-2 ml-auto lg:ml-2 pl-2 border-l border-slate-200">
+                            <div className="flex items-center gap-2 ml-auto lg:ml-2 pl-2 border-l border-zinc-200">
                                 {extraInfo.roll && (
                                     <div className="flex items-center gap-1 group/roll cursor-help relative">
                                         <i className="fa-solid fa-scroll text-indigo-400 hover:text-indigo-600 transition-colors"></i>
                                         {/* Tooltip */}
-                                        <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1 px-2 py-1 bg-slate-800 text-white text-[9px] rounded opacity-0 group-hover/roll:opacity-100 pointer-events-none whitespace-nowrap z-40 shadow-lg">
+                                        <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1 px-2 py-1 bg-zinc-800 text-white text-[9px] rounded opacity-0 group-hover/roll:opacity-100 pointer-events-none whitespace-nowrap z-40 shadow-lg">
                                             Rollo: {extraInfo.roll}
-                                            <div className="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-slate-800"></div>
+                                            <div className="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-zinc-800"></div>
                                         </div>
                                     </div>
                                 )}
@@ -247,9 +247,9 @@ const FileItem = ({ file, readOnly = false, onAction, extraInfo, actions, editin
                                     <div className="flex items-center gap-1 group/mac cursor-help relative">
                                         <i className="fa-solid fa-print text-cyan-500 hover:text-cyan-600 transition-colors"></i>
                                         {/* Tooltip */}
-                                        <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1 px-2 py-1 bg-slate-800 text-white text-[9px] rounded opacity-0 group-hover/mac:opacity-100 pointer-events-none whitespace-nowrap z-40 shadow-lg">
+                                        <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1 px-2 py-1 bg-zinc-800 text-white text-[9px] rounded opacity-0 group-hover/mac:opacity-100 pointer-events-none whitespace-nowrap z-40 shadow-lg">
                                             Eq: {extraInfo.machine}
-                                            <div className="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-slate-800"></div>
+                                            <div className="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-zinc-800"></div>
                                         </div>
                                     </div>
                                 )}
@@ -260,14 +260,14 @@ const FileItem = ({ file, readOnly = false, onAction, extraInfo, actions, editin
             </div>
 
             {/* 3. Acciones o Estado */}
-            <div className="shrink-0 flex items-center gap-2 pl-2 border-l border-slate-100/50">
+            <div className="shrink-0 flex items-center gap-2 pl-2 border-l border-zinc-100/50">
                 {actions ? actions : (
                     !readOnly && !isControlled ? (
                         // MODO INTERACTIVO (Botones)
                         <div className="flex gap-1.5">
                             <ActionButton
                                 icon="fa-ban"
-                                color="slate"
+                                color="zinc"
                                 onClick={() => onAction(file, 'CANCELADO')}
                                 title="Cancelar / No Imprimir"
                             />
@@ -300,7 +300,7 @@ const FileItem = ({ file, readOnly = false, onAction, extraInfo, actions, editin
 // Accion Button Helper
 export const ActionButton = ({ icon, color, onClick, title }) => {
     const colors = {
-        slate: 'border-slate-200 text-slate-300 hover:bg-slate-100 hover:text-slate-600',
+        zinc: 'border-zinc-200 text-zinc-300 hover:bg-zinc-100 hover:text-zinc-600',
         red: 'border-red-100 text-red-300 hover:bg-red-50 hover:text-red-500 hover:border-red-200',
         emerald: 'border-emerald-100 text-emerald-300 hover:bg-emerald-50 hover:text-emerald-600 hover:border-emerald-200',
         blue: 'border-blue-100 text-blue-400 hover:bg-blue-50 hover:text-blue-600 hover:border-blue-200',
@@ -309,7 +309,7 @@ export const ActionButton = ({ icon, color, onClick, title }) => {
     return (
         <button
             onClick={(e) => { e.stopPropagation(); onClick(); }}
-            className={`w-7 h-7 rounded-lg border flex items-center justify-center transition-all bg-white shadow-sm hover:shadow-md hover:-translate-y-0.5 ${colors[color] || colors.slate}`}
+            className={`w-7 h-7 rounded-lg border flex items-center justify-center transition-all bg-white shadow-sm hover:shadow-md hover:-translate-y-0.5 ${colors[color] || colors.zinc}`}
             title={title}
         >
             <i className={`fa-solid ${icon} text-xs`}></i>
@@ -318,3 +318,5 @@ export const ActionButton = ({ icon, color, onClick, title }) => {
 };
 
 export default FileItem;
+
+

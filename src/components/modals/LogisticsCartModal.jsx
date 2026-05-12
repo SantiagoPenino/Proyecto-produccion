@@ -66,11 +66,11 @@ const LogisticsCartModal = ({ isOpen, onClose, areaName, areaCode, onSuccess }) 
     if (!isOpen) return null;
 
     // Tailwind Clases
-    const inputClass = "w-full px-3 py-2 border border-slate-300 rounded-lg text-sm text-slate-800 bg-white outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/10 transition-all placeholder:text-slate-400";
-    const labelClass = "block mb-1.5 text-xs font-bold text-slate-500 uppercase tracking-wide";
+    const inputClass = "w-full px-3 py-2 border border-zinc-300 rounded-lg text-sm text-zinc-800 bg-white outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/10 transition-all placeholder:text-zinc-400";
+    const labelClass = "block mb-1.5 text-xs font-bold text-zinc-500 uppercase tracking-wide";
 
     return (
-        <div className="fixed inset-0 z-[1200] flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4 animate-in fade-in duration-200">
+        <div className="fixed inset-0 z-[1200] flex items-center justify-center bg-zinc-900/60 backdrop-blur-sm p-4 animate-in fade-in duration-200">
             <div className="bg-white rounded-xl shadow-2xl w-full max-w-4xl max-h-[90vh] flex flex-col overflow-hidden animate-in slide-in-from-bottom-4 duration-300">
 
                 {/* HEADER ÍNDIGO */}
@@ -90,42 +90,42 @@ const LogisticsCartModal = ({ isOpen, onClose, areaName, areaCode, onSuccess }) 
                         <div className="flex-1 max-w-md">
                             <label className={labelClass}>Responsable / Cadete</label>
                             <div className="relative">
-                                <i className="fa-solid fa-user-tag absolute left-3 top-2.5 text-slate-400"></i>
+                                <i className="fa-solid fa-user-tag absolute left-3 top-2.5 text-zinc-400"></i>
                                 <input type="text" className={`${inputClass} pl-9 font-semibold`} placeholder="¿Quién retira?" value={cadete} onChange={e => setCadete(e.target.value)} autoFocus />
                             </div>
                         </div>
                         <div className="text-right">
-                            <div className="text-xs font-bold text-slate-500 uppercase tracking-wide mb-1">Total a Enviar</div>
-                            <div className="text-3xl font-black text-slate-800 leading-none">
-                                {selected.length} <span className="text-lg font-semibold text-slate-400">/ {orders.length}</span>
+                            <div className="text-xs font-bold text-zinc-500 uppercase tracking-wide mb-1">Total a Enviar</div>
+                            <div className="text-3xl font-black text-zinc-800 leading-none">
+                                {selected.length} <span className="text-lg font-semibold text-zinc-400">/ {orders.length}</span>
                             </div>
                         </div>
                     </div>
 
                     {/* TABLA */}
-                    <div className="flex-1 border border-slate-200 rounded-lg overflow-hidden bg-white shadow-sm flex flex-col">
+                    <div className="flex-1 border border-zinc-200 rounded-lg overflow-hidden bg-white shadow-sm flex flex-col">
                         <div className="overflow-y-auto flex-1">
                             <table className="w-full text-sm text-left">
-                                <thead className="bg-slate-50 text-slate-500 font-semibold border-b border-slate-200 text-xs uppercase tracking-wide sticky top-0 z-10">
+                                <thead className="bg-zinc-50 text-zinc-500 font-semibold border-b border-zinc-200 text-xs uppercase tracking-wide sticky top-0 z-10">
                                     <tr>
-                                        <th className="p-3 text-center w-10 bg-slate-50">
+                                        <th className="p-3 text-center w-10 bg-zinc-50">
                                             <input type="checkbox" onChange={toggleAll} checked={orders.length > 0 && selected.length === orders.length} className="w-4 h-4 rounded text-indigo-600 focus:ring-indigo-500 border-gray-300 cursor-pointer" />
                                         </th>
-                                        <th className="p-3 bg-slate-50">Orden</th>
-                                        <th className="p-3 bg-slate-50">Cliente</th>
-                                        <th className="p-3 bg-slate-50">Trabajo</th>
-                                        <th className="p-3 text-center bg-slate-50 w-20">Acción</th>
+                                        <th className="p-3 bg-zinc-50">Orden</th>
+                                        <th className="p-3 bg-zinc-50">Cliente</th>
+                                        <th className="p-3 bg-zinc-50">Trabajo</th>
+                                        <th className="p-3 text-center bg-zinc-50 w-20">Acción</th>
                                     </tr>
                                 </thead>
-                                <tbody className="divide-y divide-slate-100">
+                                <tbody className="divide-y divide-zinc-100">
                                     {orders.map(o => (
-                                        <tr key={o.id} className={`hover:bg-slate-50 transition-colors ${selected.includes(o.id) ? 'bg-indigo-50/50' : ''}`}>
+                                        <tr key={o.id} className={`hover:bg-zinc-50 transition-colors ${selected.includes(o.id) ? 'bg-indigo-50/50' : ''}`}>
                                             <td className="p-3 text-center">
                                                 <input type="checkbox" checked={selected.includes(o.id)} onChange={() => toggleSelect(o.id)} className="w-4 h-4 rounded text-indigo-600 focus:ring-indigo-500 border-gray-300 cursor-pointer" />
                                             </td>
-                                            <td className="p-3 font-bold text-slate-700">#{o.id}</td>
-                                            <td className="p-3 text-slate-600 font-medium">{o.client}</td>
-                                            <td className="p-3 text-slate-500 italic">{o.description}</td>
+                                            <td className="p-3 font-bold text-zinc-700">#{o.id}</td>
+                                            <td className="p-3 text-zinc-600 font-medium">{o.client}</td>
+                                            <td className="p-3 text-zinc-500 italic">{o.description}</td>
 
                                             {/* BOTÓN DEVOLVER */}
                                             <td className="p-3 text-center">
@@ -140,7 +140,7 @@ const LogisticsCartModal = ({ isOpen, onClose, areaName, areaCode, onSuccess }) 
                                         </tr>
                                     ))}
                                     {orders.length === 0 && !loading && (
-                                        <tr><td colSpan="5" className="p-10 text-center text-slate-400 italic">El carrito está vacío.</td></tr>
+                                        <tr><td colSpan="5" className="p-10 text-center text-zinc-400 italic">El carrito está vacío.</td></tr>
                                     )}
                                 </tbody>
                             </table>
@@ -149,8 +149,8 @@ const LogisticsCartModal = ({ isOpen, onClose, areaName, areaCode, onSuccess }) 
                 </div>
 
                 {/* FOOTER */}
-                <div className="px-6 py-4 bg-slate-50 border-t border-slate-200 flex justify-end items-center gap-3 shrink-0">
-                    <button onClick={onClose} className="px-4 py-2 text-slate-500 hover:text-slate-800 font-semibold transition-colors">Cancelar</button>
+                <div className="px-6 py-4 bg-zinc-50 border-t border-zinc-200 flex justify-end items-center gap-3 shrink-0">
+                    <button onClick={onClose} className="px-4 py-2 text-zinc-500 hover:text-zinc-800 font-semibold transition-colors">Cancelar</button>
                     <button
                         onClick={handleDispatch}
                         className={`px-6 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-lg shadow-lg shadow-indigo-500/30 transition-all flex items-center gap-2 ${loading || selected.length === 0 ? 'opacity-50 cursor-not-allowed grayscale' : ''}`}

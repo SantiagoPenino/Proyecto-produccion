@@ -45,6 +45,28 @@ const FileControlCard = ({ file, refreshOrder, onAction }) => {
         }
     };
 
+    const handleUndo = async (e) => {
+        e.stopPropagation();
+        if (loading || isFailed || isCancelled || controlCount === 0) return;
+        setLoading(true);
+        try {
+            const nextCount = controlCount - 1;
+            setControlCount(nextCount); // Optimistic
+
+            const res = await fileControlService.updateFileCopyCount(file.ArchivoID, nextCount, file.isService);
+            if (res.success) {
+                setControlCount(res.newCount);
+                setStatus(res.newStatus);
+                refreshOrder(); // Refresh parent to update global metrics
+            }
+        } catch (error) {
+            console.error(error);
+            setControlCount(controlCount); // Revert
+        } finally {
+            setLoading(false);
+        }
+    };
+
     // --- Helpers ---
     const getBaseFileUrl = () => {
         if (file.urlProxy) {
@@ -69,8 +91,8 @@ const FileControlCard = ({ file, refreshOrder, onAction }) => {
 
     return (
         <div
-            className={`relative group bg-white rounded-xl border transition-all duration-200 overflow-hidden
-                ${isCompleted ? 'border-emerald-500/50 shadow-emerald-100' : (isFailed ? 'border-red-200 bg-red-50' : 'border-slate-200 hover:border-blue-300 shadow-sm hover:shadow-md')}
+            className={`relative group bg-white transition-all duration-200
+                ${isCompleted ? 'border border-brand-cyan/50 bg-brand-cyan/5 z-10' : (isFailed ? 'border border-red-200 bg-red-50 z-10' : 'hover:bg-slate-50 z-0 hover:z-10')}
             `}
             onMouseEnter={() => setIsHovered(true)}
             onMouseLeave={() => setIsHovered(false)}
@@ -78,86 +100,90 @@ const FileControlCard = ({ file, refreshOrder, onAction }) => {
             {/* Background "Fill" effect for progress (Subtle) */}
             {!isFailed && !isCancelled && (
                 <div
-                    className={`absolute bottom-0 left-0 h-1 transition-all duration-500 ease-out z-10 
-                    ${isCompleted ? 'bg-emerald-500' : 'bg-blue-500'}`}
+                    className="absolute bottom-0 left-0 h-1 transition-all duration-500 ease-out z-10 bg-brand-cyan"
                     style={{ width: `${progress}%` }}
                 />
             )}
 
-            <div className="flex items-center p-3 gap-4">
+            <div className="flex flex-col sm:flex-row items-center p-3 gap-4 relative z-10">
 
                 {/* 1. THUMBNAIL */}
                 <a
                     href={fileUrl}
                     target="_blank"
                     rel="noreferrer"
-                    className="relative w-16 h-16 shrink-0 rounded-lg bg-slate-100 border border-slate-100 overflow-hidden cursor-zoom-in group-hover:shadow-sm transition-all"
+                    className="relative w-16 h-16 shrink-0 rounded-lg bg-zinc-100 border border-zinc-100 overflow-hidden cursor-zoom-in group-hover:shadow-sm transition-all"
                 >
                     {isImage ? (
                         <img src={fileUrl} alt="Preview" className="w-full h-full object-cover transform group-hover:scale-110 transition-transform duration-500" />
                     ) : (
-                        <div className="w-full h-full flex flex-col items-center justify-center text-slate-400">
+                        <div className="w-full h-full flex flex-col items-center justify-center text-zinc-400">
                             <i className={`fa-solid ${file.isService ? 'fa-screwdriver-wrench' : (isPdf ? 'fa-regular fa-file-pdf' : 'fa-regular fa-file')} text-xl mb-1`}></i>
                             <span className="text-[8px] font-bold">{file.isService ? 'SERVICIO' : ext}</span>
                         </div>
                     )}
                     {/* Badge Copies on Thumb */}
-                    <div className="absolute top-0 right-0 bg-slate-900/80 text-white text-[9px] font-bold px-1.5 py-0.5 rounded-bl-lg backdrop-blur-[2px]">
+                    <div className="absolute top-0 right-0 bg-zinc-900/80 text-white text-[9px] font-bold px-1.5 py-0.5 rounded-bl-lg backdrop-blur-[2px]">
                         x{totalCopies}
                     </div>
                 </a>
 
                 {/* 2. INFO */}
-                <div className="flex-1 min-w-0 flex flex-col justify-center gap-1">
+                <div className="flex-1 w-full min-w-0 flex flex-col justify-center gap-1">
                     <div className="flex items-center justify-between">
-                        <div className="font-bold text-slate-700 text-sm truncate pr-2" title={file.NombreArchivo}>
+                        <div className="font-bold text-zinc-700 text-sm truncate pr-2" title={file.NombreArchivo}>
                             {file.NombreArchivo}
                         </div>
                         {/* Status Label (If special) */}
                         {isFailed && <span className="text-[9px] font-black uppercase bg-red-100 text-red-600 px-2 py-0.5 rounded">FALLA</span>}
-                        {isCancelled && <span className="text-[9px] font-black uppercase bg-slate-100 text-slate-500 px-2 py-0.5 rounded">CANCELADO</span>}
+                        {isCancelled && <span className="text-[9px] font-black uppercase bg-zinc-100 text-zinc-500 px-2 py-0.5 rounded">CANCELADO</span>}
                     </div>
 
-                    <div className="flex flex-wrap items-center gap-2 text-[10px] font-medium text-slate-500">
+                    <div className="flex flex-wrap items-center gap-2 text-[10px] font-medium text-zinc-500">
                         {hasDims && (
-                            <div className="flex items-center px-1.5 py-0.5 rounded bg-slate-100 border border-slate-200">
+                            <div className="flex items-center px-1.5 py-0.5 rounded bg-zinc-100 border border-zinc-200">
                                 <span>{w} x {h} m</span>
                             </div>
                         )}
                         {file.Material && (
-                            <span className="truncate max-w-[150px] text-slate-400" title={file.Material}>{file.Material}</span>
+                            <span className="truncate max-w-[150px] text-zinc-400" title={file.Material}>{file.Material}</span>
                         )}
-                        {area > 0 && <span className="text-blue-400 font-bold ml-auto">{parseFloat(area).toFixed(2)} m²</span>}
+                        {area > 0 && <span className="text-brand-cyan font-bold ml-auto">{parseFloat(area).toFixed(2)} m²</span>}
                     </div>
                 </div>
 
                 {/* 3. ACTIONS (Counter + Button) */}
-                <div className="flex items-center gap-4 pl-4 border-l border-slate-50">
+                <div className="flex items-center justify-between sm:justify-end gap-4 pl-0 sm:pl-4 border-l-0 sm:border-l border-zinc-50 w-full sm:w-auto">
 
                     {/* Counter */}
                     <div className="text-right flex flex-col justify-center">
-                        <span className="text-[9px] font-black text-slate-300 uppercase leading-none mb-0.5 tracking-wider">COPIAS</span>
-                        <div className={`text-xl font-black leading-none ${isCompleted ? 'text-emerald-500' : (isFailed ? 'text-red-500' : 'text-slate-700')}`}>
-                            {controlCount}<span className="text-sm text-slate-300 font-bold">/{totalCopies}</span>
+                        <span className="text-[9px] font-black text-zinc-300 uppercase leading-none mb-0.5 tracking-wider">COPIAS</span>
+                        <div className={`text-xl font-black leading-none ${isCompleted ? 'text-brand-cyan' : (isFailed ? 'text-red-500' : 'text-zinc-700')}`}>
+                            {controlCount}<span className="text-sm text-zinc-300 font-bold">/{totalCopies}</span>
                         </div>
                     </div>
 
                     {/* Button */}
                     <div className="w-12 h-12 shrink-0 relative group/btn">
                         {isCompleted ? (
-                            <div className="w-full h-full rounded-2xl bg-emerald-100 text-emerald-600 flex items-center justify-center animate-in zoom-in duration-300">
-                                <i className="fa-solid fa-check text-xl"></i>
-                            </div>
+                            <button
+                                onClick={handleUndo}
+                                disabled={loading}
+                                title="Deshacer (restar copia)"
+                                className="w-full h-full rounded-full bg-brand-cyan/10 text-brand-cyan flex items-center justify-center hover:bg-brand-cyan hover:text-white transition-colors active:scale-95 group-hover/btn:shadow-md animate-in zoom-in duration-300"
+                            >
+                                {loading ? <i className="fa-solid fa-circle-notch fa-spin"></i> : <i className="fa-solid fa-check text-xl"></i>}
+                            </button>
                         ) : isFailed ? (
-                            <div className="w-full h-full rounded-2xl bg-red-100 text-red-600 flex items-center justify-center">
+                            <div className="w-full h-full rounded-full bg-red-100 text-red-600 flex items-center justify-center">
                                 <i className="fa-solid fa-triangle-exclamation text-xl"></i>
                             </div>
                         ) : (
                             <button
                                 onClick={handleIncrement}
                                 disabled={loading || isCancelled}
-                                className={`w-full h-full rounded-2xl flex items-center justify-center shadow-lg transition-all active:scale-90
-                                    ${loading ? 'bg-slate-100 text-slate-400' : 'bg-blue-600 hover:bg-blue-500 text-white shadow-blue-200 hover:shadow-blue-300'}
+                                className={`w-full h-full rounded-full flex items-center justify-center shadow-sm transition-all active:scale-95 font-bold
+                                    ${loading ? 'bg-zinc-100 text-zinc-400' : 'bg-brand-cyan hover:bg-[#005a7a] text-white shadow-brand-cyan/20'}
                                 `}
                             >
                                 {loading ? (
@@ -171,23 +197,19 @@ const FileControlCard = ({ file, refreshOrder, onAction }) => {
 
                     {/* Report Falla (Warning Icon) */}
                     <button
-                        className="w-8 h-8 rounded-full flex items-center justify-center text-slate-300 hover:text-red-500 hover:bg-red-50 transition-colors"
+                        className="w-12 h-12 rounded-full flex items-center justify-center text-zinc-300 hover:text-brand-magenta hover:bg-brand-magenta/10 transition-colors"
                         onClick={(e) => { e.stopPropagation(); onAction(file, 'FALLA'); }}
                         title="Reportar Falla"
                     >
-                        <i className="fa-solid fa-triangle-exclamation"></i>
+                        <i className="fa-solid fa-triangle-exclamation text-2xl"></i>
                     </button>
 
                 </div>
 
             </div>
-
-            {/* Completed Overlay Hint */}
-            {isCompleted && (
-                <div className="absolute inset-0 bg-emerald-500/5 pointer-events-none z-0"></div>
-            )}
         </div>
     );
 };
 
 export default FileControlCard;
+

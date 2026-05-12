@@ -42,7 +42,7 @@ const StockModal = ({ isOpen, onClose, areaName, areaCode }) => {
   };
 
   return (
-    <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[1300] flex items-center justify-center p-4 animate-in fade-in duration-200" onClick={onClose}>
+    <div className="fixed inset-0 bg-zinc-900/60 backdrop-blur-sm z-[1300] flex items-center justify-center p-4 animate-in fade-in duration-200" onClick={onClose}>
       <div
         className="bg-white rounded-xl shadow-2xl w-full max-w-md overflow-hidden animate-in zoom-in-95 duration-300"
         onClick={e => e.stopPropagation()}
@@ -70,7 +70,7 @@ const StockModal = ({ isOpen, onClose, areaName, areaCode }) => {
               name="item"
               type="text"
               placeholder="Ej: Tinta Magenta, Papel..."
-              className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm font-semibold text-slate-700 focus:outline-none focus:ring-2 focus:ring-amber-500/20 focus:border-amber-500 transition-all placeholder:text-slate-400"
+              className="w-full px-4 py-2 bg-zinc-50 border border-zinc-200 rounded-lg text-sm font-semibold text-zinc-700 focus:outline-none focus:ring-2 focus:ring-amber-500/20 focus:border-amber-500 transition-all placeholder:text-zinc-400"
               value={formData.item}
               onChange={handleChange}
               autoFocus
@@ -84,7 +84,7 @@ const StockModal = ({ isOpen, onClose, areaName, areaCode }) => {
                 name="cantidad"
                 type="number"
                 placeholder="0"
-                className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm font-semibold text-slate-700 focus:outline-none focus:ring-2 focus:ring-amber-500/20 focus:border-amber-500 transition-all placeholder:text-slate-400"
+                className="w-full px-4 py-2 bg-zinc-50 border border-zinc-200 rounded-lg text-sm font-semibold text-zinc-700 focus:outline-none focus:ring-2 focus:ring-amber-500/20 focus:border-amber-500 transition-all placeholder:text-zinc-400"
                 value={formData.cantidad}
                 onChange={handleChange}
               />
@@ -93,7 +93,7 @@ const StockModal = ({ isOpen, onClose, areaName, areaCode }) => {
               <label className="text-xs font-bold text-amber-700 uppercase tracking-wider">Unidad</label>
               <select
                 name="unidad"
-                className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm font-semibold text-slate-700 focus:outline-none focus:ring-2 focus:ring-amber-500/20 focus:border-amber-500 transition-all appearance-none cursor-pointer"
+                className="w-full px-4 py-2 bg-zinc-50 border border-zinc-200 rounded-lg text-sm font-semibold text-zinc-700 focus:outline-none focus:ring-2 focus:ring-amber-500/20 focus:border-amber-500 transition-all appearance-none cursor-pointer"
                 value={formData.unidad}
                 onChange={handleChange}
               >
@@ -110,7 +110,7 @@ const StockModal = ({ isOpen, onClose, areaName, areaCode }) => {
             <label className="text-xs font-bold text-amber-700 uppercase tracking-wider">Prioridad</label>
             <select
               name="prioridad"
-              className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm font-semibold text-slate-700 focus:outline-none focus:ring-2 focus:ring-amber-500/20 focus:border-amber-500 transition-all cursor-pointer"
+              className="w-full px-4 py-2 bg-zinc-50 border border-zinc-200 rounded-lg text-sm font-semibold text-zinc-700 focus:outline-none focus:ring-2 focus:ring-amber-500/20 focus:border-amber-500 transition-all cursor-pointer"
               value={formData.prioridad}
               onChange={handleChange}
             >
@@ -123,10 +123,10 @@ const StockModal = ({ isOpen, onClose, areaName, areaCode }) => {
         </div>
 
         {/* Footer */}
-        <div className="px-6 py-4 bg-slate-50 border-t border-slate-100 flex justify-end gap-3 text-sm font-bold">
+        <div className="px-6 py-4 bg-zinc-50 border-t border-zinc-100 flex justify-end gap-3 text-sm font-bold">
           <button
             onClick={onClose}
-            className="px-4 py-2 bg-white border border-slate-200 text-slate-600 rounded-lg hover:bg-slate-100 transition-colors"
+            className="px-4 py-2 bg-white border border-zinc-200 text-zinc-600 rounded-lg hover:bg-zinc-100 transition-colors"
             disabled={loading}
           >
             Cancelar

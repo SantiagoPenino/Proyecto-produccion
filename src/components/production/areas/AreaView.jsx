@@ -2,14 +2,16 @@ import React, { useState, useEffect, useMemo, useCallback } from "react";
 import { Routes, Route, useNavigate, useLocation, Navigate } from "react-router-dom";
 import { io } from "socket.io-client";
 import { useQuery } from "@tanstack/react-query";
-
+import { CirclePile, AlertTriangle } from "lucide-react";
+import { LayoutGrid, CalendarCheck, ScanLine, Truck } from "lucide-react";
+import Tippy from '@tippyjs/react';
+import 'tippy.js/dist/tippy.css';
 // Componentes de Vistas
 import ProductionTable from "../../production/components/ProductionTable"; // Restored
 // import OrderCard from "../../production/components/OrderCard"; // Grid components commented out
 import OrderDetailModal from "../../production/components/OrderDetailModal";
 import RollsKanban from "../../pages/RollsKanban";
 import ProductionKanban from "../../pages/ProductionKanban";
-import MeasurementView from "../../pages/MeasurementView";
 import FilePrintControl from "../../pages/FilePrintControl";
 import LogisticsView from "../../pages/LogisticsView";
 import PlaneacionTrabajo from "../../pages/PlaneacionTrabajo";
@@ -200,180 +202,172 @@ export default function AreaView({ areaKey, areaConfig, onSwitchTab }) {
         return result;
     }, [dbOrders, sidebarFilter, sidebarMode, clientFilter, variantFilter, areaKey, statusFilter, priorityFilter]);
 
-    const renderSidebar = () => {
-        if (isActive('logistica')) return null; // No sidebar en Logística
-        if (!isActive('') || !isSidebarOpen) return null;
-        if (areaKey === 'BORD') {
-            return <MatrixSidebar orders={dbOrders} currentFilter={sidebarFilter} onFilterChange={setSidebarFilter} onClose={() => setIsSidebarOpen(false)} />;
-        }
-        let sidebarData = sidebarMode === 'machines' ? dbOrders.map(o => ({ ...o, rollId: o.printer })) : dbOrders;
-        return (
-            <div className="flex flex-col h-full bg-white border-r border-slate-200">
-                <div className="flex p-2 gap-2 bg-slate-50 border-b border-slate-200">
-                    <button
-                        className={`flex-1 py-1.5 text-xs font-bold rounded-lg transition-all ${sidebarMode === 'rolls' ? 'bg-white text-blue-600 shadow-sm border border-slate-200' : 'text-slate-500 hover:bg-slate-200'}`}
-                        onClick={() => setSidebarMode('rolls')}
-                    >
-                        Lotes
-                    </button>
-                    <button
-                        className={`flex-1 py-1.5 text-xs font-bold rounded-lg transition-all ${sidebarMode === 'machines' ? 'bg-white text-blue-600 shadow-sm border border-slate-200' : 'text-slate-500 hover:bg-slate-200'}`}
-                        onClick={() => setSidebarMode('machines')}
-                    >
-                        Equipos
-                    </button>
-                </div>
-                <RollSidebar orders={sidebarData} currentFilter={sidebarFilter} onFilterChange={setSidebarFilter} onClose={() => setIsSidebarOpen(false)} title={sidebarMode === 'rolls' ? 'LOTES' : 'EQUIPOS'} />
-            </div>
-        );
-    };
+    const renderSidebar = () => null;
 
-    if (!areaConfig) return <div className="p-10 text-center text-slate-400">Cargando configuración...</div>;
+    if (!areaConfig) return <div className="p-10 text-center text-zinc-400">Cargando configuración...</div>;
 
     const btnBaseClass = "h-9 px-4 rounded-lg text-sm font-bold flex items-center gap-2 transition-all shadow-sm";
-    const btnSecondaryClass = "bg-white border border-slate-200 text-slate-600 hover:border-slate-300 hover:text-blue-500 hover:bg-slate-50";
-    const btnPrimaryClass = "bg-blue-50 border border-blue-200 text-blue-600";
+    const btnSecondaryClass = "bg-white border border-zinc-200 text-zinc-600 hover:border-zinc-300 hover:text-brand-cyan hover:bg-zinc-50";
+    const btnPrimaryClass = "bg-brand-cyan text-white shadow-sm";
 
     console.log("🔍 [AreaView] Render - Props:", { areaKey, areaConfigName: areaConfig?.name, isRollModalOpen });
 
+    const tableToolbar = (
+        <div className="flex flex-nowrap gap-3 items-center">
+            <button
+                className="flex items-center gap-2 px-3 py-1.5 text-xs font-bold bg-white border border-zinc-200 rounded-lg text-zinc-600 hover:bg-zinc-50 hover:text-brand-cyan hover:border-brand-cyan/30 transition-colors shadow-sm capitalize"
+                onClick={() => navigate('/consultas/rollos', { state: { areaFilter: areaKey } })}
+            >
+                <i className="fa-solid fa-clock-rotate-left"></i> Historial
+            </button>
+
+            <div className="w-px h-5 bg-zinc-200 mx-1"></div>
+
+            {/* Prioridad */}
+            <div className="flex items-center gap-2">
+                <span className="text-[10px] uppercase font-black text-zinc-400 tracking-wider mr-1">Prioridad:</span>
+                {availablePriorities.map(p => {
+                    const isSelected = priorityFilter === p;
+                    const isUrgent = ['Urgente', 'Reposición', 'Falla'].includes(p);
+                    
+                    let selectedClass = isUrgent 
+                        ? 'bg-brand-magenta text-white border-brand-magenta shadow-sm' 
+                        : 'bg-zinc-700 text-white border-zinc-700 shadow-sm';
+                        
+                    let unselectedClass = 'bg-white text-zinc-600 border-zinc-200 hover:bg-zinc-50 hover:text-brand-cyan hover:border-brand-cyan/30 shadow-sm';
+
+                    return (
+                        <button
+                            key={p}
+                            onClick={() => setPriorityFilter(p)}
+                            className={`flex items-center px-3 py-1.5 text-xs font-bold border rounded-lg transition-colors capitalize ${isSelected ? selectedClass : unselectedClass}`}
+                        >
+                            {p === 'ALL' ? 'Todas' : p}
+                        </button>
+                    );
+                })}
+            </div>
+
+            <div className="w-px h-5 bg-zinc-200 mx-1"></div>
+
+            {/* Estado */}
+            <div className="flex items-center gap-2 overflow-x-auto no-scrollbar">
+                <span className="text-[10px] uppercase font-black text-zinc-400 tracking-wider mr-1">Estado:</span>
+                {availableStatuses.map(s => {
+                    const isSelected = statusFilter === s;
+                    let selectedClass = 'bg-brand-cyan text-white border-brand-cyan shadow-sm';
+                    let unselectedClass = 'bg-white text-zinc-600 border-zinc-200 hover:bg-zinc-50 hover:text-brand-cyan hover:border-brand-cyan/30 shadow-sm';
+
+                    return (
+                        <button
+                            key={s}
+                            onClick={() => setStatusFilter(s)}
+                            className={`flex items-center px-3 py-1.5 text-xs font-bold border rounded-lg transition-colors capitalize whitespace-nowrap ${isSelected ? selectedClass : unselectedClass}`}
+                        >
+                            {s === 'ALL' ? 'Todos' : s}
+                        </button>
+                    );
+                })}
+            </div>
+
+            <div className="w-px h-5 bg-zinc-200 mx-1"></div>
+
+            {/* Asignar Lote */}
+            <div className="flex items-center gap-1">
+                <button
+                    disabled={selectedIds.length === 0}
+                    onClick={() => setIsRollModalOpen(true)}
+                    className={`h-[30px] flex items-center gap-2 px-3 text-xs font-bold border rounded-lg transition-colors shadow-sm whitespace-nowrap ${
+                        selectedIds.length > 0
+                            ? 'bg-brand-cyan text-white border-brand-cyan hover:bg-[#005a7a]'
+                            : 'bg-zinc-100 text-zinc-400 border-zinc-200 cursor-not-allowed opacity-80'
+                    }`}
+                >
+                    <i className="fa-solid fa-layer-group"></i>
+                    Asignar a Lote
+                    {selectedIds.length > 0 && (
+                        <span className="ml-1 px-1.5 h-4 flex items-center justify-center bg-white/20 rounded-md text-[10px] leading-none">
+                            {selectedIds.length}
+                        </span>
+                    )}
+                </button>
+                {selectedIds.length > 0 ? (
+                    <button onClick={() => setSelectedIds([])} title="Desmarcar todo" className="flex items-center justify-center w-[30px] h-[30px] rounded-lg bg-white border border-zinc-200 text-zinc-400 hover:text-brand-magenta hover:bg-brand-magenta/5 hover:border-brand-magenta/30 transition-colors shadow-sm shrink-0">
+                        <i className="fa-solid fa-xmark text-xs"></i>
+                    </button>
+                ) : (
+                    <div className="w-[30px] h-[30px]"></div>
+                )}
+            </div>
+        </div>
+    );
+
     return (
-        <div className="flex flex-col h-screen w-full bg-slate-50 overflow-hidden font-sans text-slate-800">
+        <div className="absolute inset-0 flex flex-col bg-zinc-50 overflow-hidden font-sans text-zinc-800 z-10">
             <StockRequestModal isOpen={isStockOpen} onClose={() => setIsStockOpen(false)} areaName={areaConfig.name} areaCode={areaKey} />
-            <NewOrderModal isOpen={isNewOrderOpen} onClose={() => { setIsNewOrderOpen(false); fetchOrders(); }} areaName={areaConfig.name} areaCode={areaKey} />
+            <NewOrderModal isOpen={isNewOrderOpen} onClose={() => { setIsNewOrderOpen(false); refetch(); }} areaName={areaConfig.name} areaCode={areaKey} />
             <ReportFailureModal isOpen={isFailureOpen} onClose={() => setIsFailureOpen(false)} areaName={areaConfig.name} areaCode={areaKey} />
-            <LogisticsCartModal isOpen={isCartOpen} onClose={() => setIsCartOpen(false)} areaName={areaConfig.name} areaCode={areaKey} onSuccess={() => fetchOrders()} />
-            <RollAssignmentModal isOpen={isRollModalOpen} onClose={() => setIsRollModalOpen(false)} selectedIds={selectedIds} areaCode={areaKey} onSuccess={() => { setSelectedIds([]); fetchOrders(); }} />
+            <LogisticsCartModal isOpen={isCartOpen} onClose={() => setIsCartOpen(false)} areaName={areaConfig.name} areaCode={areaKey} onSuccess={() => refetch()} />
+            <RollAssignmentModal isOpen={isRollModalOpen} onClose={() => setIsRollModalOpen(false)} selectedIds={selectedIds} areaCode={areaKey} onSuccess={() => { setSelectedIds([]); refetch(); }} />
 
-            <header className="bg-white border-b border-slate-200 flex flex-col shrink-0 z-20 w-full shadow-sm">
-                <div className="px-4 py-2 flex items-center justify-between gap-4 bg-white min-h-[56px]">
+            <header className="bg-white border-b border-zinc-200 flex flex-col shrink-0 z-20 w-full shadow-sm relative">
+                <div className="px-4 py-2 flex items-center justify-between bg-white min-h-[56px] relative w-full overflow-hidden">
 
-                    {/* LEFTSIDE: Navegación y Título */}
-                    <div className="flex items-center gap-3 shrink-0">
-                        <button className="bg-slate-50 border border-slate-200 w-8 h-8 rounded-lg text-slate-500 flex items-center justify-center transition hover:bg-slate-100 hover:text-blue-500 hover:border-blue-200 shadow-sm" onClick={() => navigate('/')}>
-                            <i className="fa-solid fa-arrow-left"></i>
-                        </button>
-                        <div className="flex flex-col justify-center">
-                            <h1 className="text-lg font-black text-slate-800 leading-none whitespace-nowrap">{areaConfig.name}</h1>
-                            <span className="text-[9px] font-bold text-blue-500 uppercase tracking-widest">Producción</span>
-                        </div>
-                        <div className="h-8 w-px bg-slate-200 mx-2"></div>
+                    {/* CENTRO ABSOLUTO: Tabs de Navegación (Siempre en el centro exacto de la pantalla) */}
+                    <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 flex items-center gap-1 z-30 pointer-events-auto">
+                        <button className={`${btnBaseClass} px-3 h-8 text-xs ${isActive('') ? btnPrimaryClass : btnSecondaryClass}`} onClick={() => goTo('')}><LayoutGrid size={14} /> Planilla</button>
+                        <button className={`${btnBaseClass} px-3 h-8 text-xs ${isActive('planeacion') ? btnPrimaryClass : btnSecondaryClass}`} onClick={() => goTo('planeacion')}><CalendarCheck size={14} /> Planeación</button>
+                        <button className={`${btnBaseClass} px-3 h-8 text-xs ${isActive('control') ? btnPrimaryClass : btnSecondaryClass}`} onClick={() => goTo('control')}><ScanLine size={14} /> Control</button>
+                        <button className={`${btnBaseClass} px-3 h-8 text-xs ${isActive('logistica') ? btnPrimaryClass : btnSecondaryClass}`} onClick={() => goTo('logistica')}><Truck size={14} /> Logística</button>
                     </div>
 
-                    {/* CENTER: Tabs de Navegación */}
-                    <div className="flex items-center gap-1 overflow-x-auto no-scrollbar">
-                        <button className={`${btnBaseClass} px-3 h-8 text-xs ${isActive('') ? btnPrimaryClass : btnSecondaryClass}`} onClick={() => goTo('')}><i className="fa-solid fa-table"></i> Planilla</button>
-                        <button className={`${btnBaseClass} px-3 h-8 text-xs ${isActive('planeacion') ? btnPrimaryClass : btnSecondaryClass}`} onClick={() => goTo('planeacion')}><i className="fa-regular fa-calendar-check"></i> Planeación</button>
-                        <button className={`${btnBaseClass} px-3 h-8 text-xs ${isActive('medicion') ? btnPrimaryClass : btnSecondaryClass}`} onClick={() => goTo('medicion')}><i className="fa-solid fa-ruler-combined"></i> Medición</button>
-                        <button className={`${btnBaseClass} px-3 h-8 text-xs ${isActive('control') ? btnPrimaryClass : btnSecondaryClass}`} onClick={() => goTo('control')}><i className="fa-solid fa-check-double"></i> Control</button>
-                        <button className={`${btnBaseClass} px-3 h-8 text-xs ${isActive('logistica') ? btnPrimaryClass : btnSecondaryClass}`} onClick={() => goTo('logistica')}><i className="fa-solid fa-truck-ramp-box"></i> Logística</button>
-                    </div>
-
-                    {/* RIGHT: Acciones Globales */}
-                    <div className="flex items-center gap-2 shrink-0">
-
-                        {/* Selected Actions */}
-                        {selectedIds.length > 0 && (
-                            <div className="flex items-center gap-2 mr-2 bg-blue-50 px-2 py-1 rounded-lg border border-blue-100 animate-in fade-in slide-in-from-top-2">
-                                <span className="text-[10px] font-bold text-blue-600 whitespace-nowrap">{selectedIds.length} Sel.</span>
-                                <button
-                                    onClick={() => setIsRollModalOpen(true)}
-                                    className="text-[10px] bg-blue-600 text-white px-2 py-0.5 rounded hover:bg-blue-700 transition whitespace-nowrap"
-                                >
-                                    Asignar
-                                </button>
-                                <button onClick={() => setSelectedIds([])} className="text-slate-400 hover:text-red-500 ml-1">
-                                    <i className="fa-solid fa-xmark"></i>
-                                </button>
+                    {/* LADO IZQUIERDO (Mitad de la pantalla menos un margen protector para las tabs) */}
+                    <div className="flex w-1/2 items-center pr-64 pointer-events-auto">
+                        {/* BLOQUE 1: Título */}
+                        <div className="flex items-center gap-3 shrink-0">
+                            <div className="flex flex-col justify-center shrink-0">
+                                <h1 className="text-xl font-black text-zinc-800 leading-none whitespace-nowrap">{areaConfig.name}</h1>
+                                <span className="text-[10px] font-bold text-brand-cyan uppercase tracking-widest">Producción</span>
                             </div>
-                        )}
+                            <div className="h-8 w-px bg-zinc-200 mx-1 shrink-0"></div>
+                        </div>
 
-                        <button className={`${btnBaseClass} px-3 h-8 text-xs bg-orange-50 text-orange-700 border border-orange-100 hover:bg-orange-100 hover:border-orange-200`} onClick={() => setIsStockOpen(true)}>
-                            <i className="fa-solid fa-boxes-stacked"></i> Insumos
-                        </button>
-                        <button className={`${btnBaseClass} px-3 h-8 text-xs bg-red-50 text-red-600 border border-red-50 hover:bg-red-100 hover:border-red-200`} onClick={() => setIsFailureOpen(true)}>
-                            <i className="fa-solid fa-triangle-exclamation"></i> Falla Equipamiento
-                        </button>
+                        {/* BLOQUE 2: Asignar Lote (Movido al toolbar) */}
+                        <div className="flex-1 flex justify-center min-w-0"></div>
                     </div>
+
+                    {/* LADO DERECHO (Mitad de la pantalla menos el margen protector) */}
+                    <div className="flex w-1/2 items-center justify-end pl-64 z-20 pointer-events-auto">
+                        {/* BLOQUE 4: Acciones Globales */}
+                        <div className="flex items-center gap-2 shrink-0">
+                            <Tippy content="Pedir Insumos">
+                                <button className="w-9 h-9 rounded-lg flex items-center justify-center transition-all shadow-sm bg-brand-gold/10 text-brand-gold border border-brand-gold/20 hover:bg-brand-gold/20" onClick={() => setIsStockOpen(true)}>
+                                    <CirclePile size={24} />
+                                </button>
+                            </Tippy>
+                            <Tippy content="Reportar Falla">
+                                <button className="w-9 h-9 rounded-lg flex items-center justify-center transition-all shadow-sm bg-brand-magenta/10 text-brand-magenta border border-brand-magenta/20 hover:bg-brand-magenta/20" onClick={() => setIsFailureOpen(true)}>
+                                    <AlertTriangle size={24} />
+                                </button>
+                            </Tippy>
+                        </div>
+                    </div>
+
                 </div>
             </header>
 
-            {/* Filter Toolbar (Solo en vista Tabla) */}
-            {isActive('') && (
-                <div className="px-6 py-2 bg-slate-50 border-b border-slate-200 flex flex-wrap gap-4 items-center shrink-0 animate-in slide-in-from-top-2 z-10 transition-all">
 
-                    <button
-                        className="h-7 px-3 text-[10px] font-bold bg-white text-slate-600 border border-slate-200 rounded-lg hover:bg-slate-100 hover:text-blue-600 hover:border-blue-300 flex items-center gap-2 shadow-sm uppercase tracking-wide"
-                        onClick={() => navigate('/consultas/rollos', { state: { areaFilter: areaKey } })}
-                    >
-                        <i className="fa-solid fa-clock-rotate-left"></i> Historial
-                    </button>
-
-                    <div className="w-px h-4 bg-slate-300 mx-1"></div>
-
-                    {/* Prioridad */}
-                    <div className="flex items-center gap-2">
-                        <span className="text-[10px] uppercase font-black text-slate-400 tracking-wider mr-1">Prioridad:</span>
-                        {availablePriorities.map(p => (
-                            <button
-                                key={p}
-                                onClick={() => setPriorityFilter(p)}
-                                className={`px-3 py-1 rounded-full text-[10px] uppercase font-bold transition-all border ${priorityFilter === p
-                                    ? (['Urgente', 'Reposición', 'Falla'].includes(p) ? 'bg-red-500 text-white border-red-500 shadow-md shadow-red-500/20' : 'bg-slate-700 text-white border-slate-700 shadow-lg')
-                                    : 'bg-white text-slate-500 border-slate-200 hover:border-slate-300'
-                                    }`}
-                            >
-                                {p === 'ALL' ? 'Todas' : p}
-                            </button>
-                        ))}
-                    </div>
-
-                    <div className="w-px h-4 bg-slate-300 mx-2"></div>
-
-                    {/* Estado */}
-                    <div className="flex items-center gap-2 overflow-x-auto pb-1 no-scrollbar">
-                        <span className="text-[10px] uppercase font-black text-slate-400 tracking-wider mr-1">Estado:</span>
-                        {availableStatuses.map(s => (
-                            <button
-                                key={s}
-                                onClick={() => setStatusFilter(s)}
-                                className={`px-3 py-1 rounded-full text-[10px] uppercase font-bold transition-all border whitespace-nowrap ${statusFilter === s
-                                    ? 'bg-blue-600 text-white border-blue-600 shadow-md shadow-blue-500/20'
-                                    : 'bg-white text-slate-500 border-slate-200 hover:border-slate-300'
-                                    }`}
-                            >
-                                {s === 'ALL' ? 'Todos' : s}
-                            </button>
-                        ))}
-                    </div>
-                </div>
-            )}
 
             <div className="flex flex-1 overflow-hidden">
-                {renderSidebar()}
 
-                {/* Botón para re-abrir sidebar si está cerrado */}
-                {isActive('') && !isSidebarOpen && !isActive('logistica') && (
-                    <div
-                        className="w-10 shrink-0 bg-white border-r border-slate-200 flex flex-col items-center py-4 gap-4 cursor-pointer hover:bg-slate-50 transition-colors z-10"
-                        onClick={() => setIsSidebarOpen(true)}
-                        title="Abrir Filtros"
-                    >
-                        <button className="w-6 h-6 rounded-full bg-white border border-slate-200 shadow-sm text-slate-400 flex items-center justify-center hover:text-blue-600 hover:border-blue-300">
-                            <i className="fa-solid fa-chevron-right text-[10px]"></i>
-                        </button>
-                        <span className="text-[10px] uppercase font-bold text-slate-400 [writing-mode:vertical-rl] rotate-180 tracking-widest">
-                            Filtros
-                        </span>
-                    </div>
-                )}
 
-                <main className="flex-1 bg-slate-50 p-6 overflow-hidden flex flex-col h-full items-stretch">
+                <main className={`flex-1 bg-zinc-50 overflow-hidden flex flex-col h-full items-stretch ${isActive('') || isActive('tabla') || isActive('planeacion') || isActive('control') ? 'p-0' : 'p-6'}`}>
                     <Routes>
-                        <Route index element={<ProductionTable rowData={filteredOrders} onRowSelected={setSelectedIds} onRowClick={setSelectedOrder} columnDefs={areaConfig.defaultColDefs} />} />
-                        <Route path="tabla" element={<ProductionTable rowData={filteredOrders} onRowSelected={setSelectedIds} onRowClick={setSelectedOrder} columnDefs={areaConfig.defaultColDefs} />} />
+                        <Route index element={<ProductionTable rowData={filteredOrders} onRowSelected={setSelectedIds} selectedRowIds={selectedIds} onRowClick={setSelectedOrder} columnDefs={areaConfig.defaultColDefs} toolbarContent={tableToolbar} />} />
+                        <Route path="tabla" element={<ProductionTable rowData={filteredOrders} onRowSelected={setSelectedIds} selectedRowIds={selectedIds} onRowClick={setSelectedOrder} columnDefs={areaConfig.defaultColDefs} toolbarContent={tableToolbar} />} />
 
                         <Route path="lotes" element={<RollsKanban areaCode={areaKey} />} />
-                        <Route path="medicion" element={<MeasurementView areaCode={areaKey} />} />
+
                         <Route path="produccion" element={<ProductionKanban areaCode={areaKey} />} />
                         <Route path="control" element={<FilePrintControl areaCode={areaKey} />} />
                         <Route path="planeacion" element={<PlaneacionTrabajo AreaID={areaKey} />} />
@@ -388,3 +382,4 @@ export default function AreaView({ areaKey, areaConfig, onSwitchTab }) {
         </div>
     );
 }
+

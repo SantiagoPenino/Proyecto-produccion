@@ -53,27 +53,27 @@ export default function ConfigSyncModal({ isOpen, onClose }) {
     if (!isOpen) return null;
 
     return (
-        <div className="fixed inset-0 z-[999] flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4 animate-in fade-in duration-200">
-            <div className="bg-white rounded-3xl shadow-xl w-full max-w-3xl overflow-hidden border border-slate-200 flex flex-col max-h-[90vh]">
+        <div className="fixed inset-0 z-[999] flex items-center justify-center bg-zinc-900/60 backdrop-blur-sm p-4 animate-in fade-in duration-200">
+            <div className="bg-white rounded-3xl shadow-xl w-full max-w-3xl overflow-hidden border border-zinc-200 flex flex-col max-h-[90vh]">
 
                 {/* Header */}
-                <div className="bg-slate-50 px-8 py-6 border-b border-slate-100 flex justify-between items-center shrink-0">
+                <div className="bg-zinc-50 px-8 py-6 border-b border-zinc-100 flex justify-between items-center shrink-0">
                     <div className="flex items-center gap-4">
                         <div className="w-12 h-12 bg-indigo-100 text-indigo-600 rounded-2xl flex justify-center items-center shadow-inner">
                             <RefreshCw className="w-6 h-6" />
                         </div>
                         <div>
-                            <h2 className="text-2xl font-black text-slate-800 tracking-tight">Procesos de Sincronización</h2>
-                            <p className="text-slate-500 font-medium text-sm">Control centralizado de tareas automáticas</p>
+                            <h2 className="text-2xl font-black text-zinc-800 tracking-tight">Procesos de Sincronización</h2>
+                            <p className="text-zinc-500 font-medium text-sm">Control centralizado de tareas automáticas</p>
                         </div>
                     </div>
-                    <button onClick={onClose} className="p-2 text-slate-400 hover:text-slate-600 transition-colors">
+                    <button onClick={onClose} className="p-2 text-zinc-400 hover:text-zinc-600 transition-colors">
                         <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"></path></svg>
                     </button>
                 </div>
 
                 {/* Body */}
-                <div className="p-8 overflow-y-auto bg-slate-50 flex-1">
+                <div className="p-8 overflow-y-auto bg-zinc-50 flex-1">
 
                     <div className="mb-6 flex items-center gap-3 p-4 bg-blue-50/50 border border-blue-100 rounded-2xl text-blue-800 text-sm">
                         <AlertCircle className="w-5 h-5 text-blue-500 shrink-0" />
@@ -87,20 +87,20 @@ export default function ConfigSyncModal({ isOpen, onClose }) {
                     ) : (
                         <div className="grid gap-4">
                             {configs.map(config => (
-                                <div key={config.ID} className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm hover:shadow-md transition-shadow">
+                                <div key={config.ID} className="bg-white p-5 rounded-2xl border border-zinc-200 shadow-sm hover:shadow-md transition-shadow">
                                     <div className="flex flex-col md:flex-row justify-between items-center gap-4">
                                         <div className="flex-1">
                                             <div className="flex items-center gap-3 mb-1">
-                                                <h3 className="font-bold text-slate-800 text-lg">{config.NombreProceso}</h3>
-                                                <span className="text-[10px] uppercase font-black tracking-wider text-slate-400 bg-slate-100 px-2 py-0.5 rounded-md">
+                                                <h3 className="font-bold text-zinc-800 text-lg">{config.NombreProceso}</h3>
+                                                <span className="text-[10px] uppercase font-black tracking-wider text-zinc-400 bg-zinc-100 px-2 py-0.5 rounded-md">
                                                     {config.ProcesoID}
                                                 </span>
                                             </div>
-                                            <p className="text-slate-500 text-sm">{config.Descripcion}</p>
+                                            <p className="text-zinc-500 text-sm">{config.Descripcion}</p>
 
                                             {/* Estado de Última Ejecución */}
                                             <div className="mt-3 flex gap-4 text-xs font-semibold">
-                                                <div className="flex items-center gap-1 text-slate-500">
+                                                <div className="flex items-center gap-1 text-zinc-500">
                                                     <span className="uppercase tracking-widest text-[9px]">Última Ejecución:</span>
                                                     {config.UltimaEjecucion ? new Date(config.UltimaEjecucion).toLocaleString() : 'Nunca'}
                                                 </div>
@@ -125,7 +125,7 @@ export default function ConfigSyncModal({ isOpen, onClose }) {
                                                 disabled={toggling === config.ProcesoID}
                                                 className={`
                                                     relative inline-flex h-10 w-20 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2
-                                                    ${config.Activo ? 'bg-indigo-500' : 'bg-slate-300'}
+                                                    ${config.Activo ? 'bg-indigo-500' : 'bg-zinc-300'}
                                                     ${toggling === config.ProcesoID ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer hover:shadow-inner'}
                                                 `}
                                             >
@@ -134,7 +134,7 @@ export default function ConfigSyncModal({ isOpen, onClose }) {
                                                 {/* Icon Track */}
                                                 <div className="absolute inset-0 flex justify-between px-3 self-center items-center pointer-events-none text-white font-bold text-[10px]">
                                                     <span>ON</span>
-                                                    <span className="text-slate-500">OFF</span>
+                                                    <span className="text-zinc-500">OFF</span>
                                                 </div>
 
                                                 <span
@@ -146,7 +146,7 @@ export default function ConfigSyncModal({ isOpen, onClose }) {
                                                     {toggling === config.ProcesoID ? (
                                                         <Loader2 className="w-4 h-4 text-indigo-500 animate-spin" />
                                                     ) : (
-                                                        <Power className={`w-4 h-4 ${config.Activo ? 'text-indigo-500' : 'text-slate-400'}`} />
+                                                        <Power className={`w-4 h-4 ${config.Activo ? 'text-indigo-500' : 'text-zinc-400'}`} />
                                                     )}
                                                 </span>
                                             </button>
@@ -164,7 +164,7 @@ export default function ConfigSyncModal({ isOpen, onClose }) {
                             ))}
 
                             {configs.length === 0 && (
-                                <div className="text-center py-10 text-slate-400">
+                                <div className="text-center py-10 text-zinc-400">
                                     No se encontraron procesos registrados.
                                 </div>
                             )}
@@ -237,9 +237,9 @@ function ManualPlanillaControl({ procesoID, onSuccess }) {
     };
 
     return (
-        <div className="mt-4 pt-4 border-t border-slate-100 flex flex-col md:flex-row items-center justify-between gap-4">
-            <div className="text-xs text-slate-500">
-                <strong className="text-slate-700 block mb-1">Control Manual Restricto de Planilla</strong>
+        <div className="mt-4 pt-4 border-t border-zinc-100 flex flex-col md:flex-row items-center justify-between gap-4">
+            <div className="text-xs text-zinc-500">
+                <strong className="text-zinc-700 block mb-1">Control Manual Restricto de Planilla</strong>
                 Sobrescribe la propiedad global (<code>{propName}</code>) en Google Apps Script para forzar relectura desde un número específico de fila.
             </div>
             <div className="flex items-center gap-4 w-full md:w-auto">
@@ -266,7 +266,7 @@ function ManualPlanillaControl({ procesoID, onSuccess }) {
                     <button
                         type="submit"
                         disabled={updatingRow || loadingRow}
-                        className="bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-300 transition-colors font-bold text-white text-sm px-6 rounded-xl whitespace-nowrap shadow-md hover:shadow-lg active:scale-95 flex items-center gap-2"
+                        className="bg-indigo-600 hover:bg-indigo-700 disabled:bg-zinc-300 transition-colors font-bold text-white text-sm px-6 rounded-xl whitespace-nowrap shadow-md hover:shadow-lg active:scale-95 flex items-center gap-2"
                     >
                         {updatingRow ? (
                             <>
@@ -282,3 +282,5 @@ function ManualPlanillaControl({ procesoID, onSuccess }) {
         </div>
     );
 }
+
+

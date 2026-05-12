@@ -128,12 +128,12 @@ const ReportFailureModal = ({ isOpen, onClose, areaName, areaCode }) => {
     if (!isOpen) return null;
 
     // -- Clases Reutilizables --
-    const inputClass = "w-full px-3 py-2 border border-red-200 rounded-lg text-sm text-slate-800 bg-white outline-none focus:border-red-500 focus:ring-2 focus:ring-red-500/10 transition-all placeholder:text-slate-400";
-    const labelClass = "block mb-1.5 text-xs font-bold text-slate-500 uppercase tracking-wide";
-    const tabBtnClass = (active) => `px-4 py-2 text-sm font-semibold border-b-2 transition-colors ${active ? 'text-red-600 border-red-600 bg-red-50/50' : 'text-slate-500 border-transparent hover:text-slate-700 hover:bg-slate-50'}`;
+    const inputClass = "w-full px-3 py-2 border border-red-200 rounded-lg text-sm text-zinc-800 bg-white outline-none focus:border-red-500 focus:ring-2 focus:ring-red-500/10 transition-all placeholder:text-zinc-400";
+    const labelClass = "block mb-1.5 text-xs font-bold text-zinc-500 uppercase tracking-wide";
+    const tabBtnClass = (active) => `px-4 py-2 text-sm font-semibold border-b-2 transition-colors ${active ? 'text-red-600 border-red-600 bg-red-50/50' : 'text-zinc-500 border-transparent hover:text-zinc-700 hover:bg-zinc-50'}`;
 
     return (
-        <div className="fixed inset-0 z-[1100] flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4 animate-in fade-in duration-200">
+        <div className="fixed inset-0 z-[1100] flex items-center justify-center bg-zinc-900/60 p-4 animate-in fade-in duration-200">
             <div className="bg-white rounded-xl shadow-2xl w-full max-w-2xl max-h-[90vh] flex flex-col overflow-hidden animate-in zoom-in-95 duration-200 border-t-4 border-red-500">
 
                 {/* HEADER ROJO */}
@@ -185,14 +185,14 @@ const ReportFailureModal = ({ isOpen, onClose, areaName, areaCode }) => {
                                         onFocus={() => { loadSuggestions(formData.titulo); setShowDropdown(true); }}
                                         autoComplete="off"
                                     />
-                                    <i className="fa-solid fa-chevron-down absolute right-3 top-2.5 text-slate-400 pointer-events-none"></i>
+                                    <i className="fa-solid fa-chevron-down absolute right-3 top-2.5 text-zinc-400 pointer-events-none"></i>
                                 </div>
 
                                 {showDropdown && (
-                                    <ul className="absolute top-[105%] left-0 w-full bg-white border border-slate-200 rounded-lg shadow-xl z-50 max-h-48 overflow-y-auto divide-y divide-slate-50 animate-in slide-in-from-top-1">
+                                    <ul className="absolute top-[105%] left-0 w-full bg-white border border-zinc-200 rounded-lg shadow-xl z-50 max-h-48 overflow-y-auto divide-y divide-zinc-50 animate-in slide-in-from-top-1">
                                         {suggestions.length > 0 ? (
                                             suggestions.map((s, i) => (
-                                                <li key={i} onClick={() => selectTitle(s.Titulo)} className="px-4 py-3 cursor-pointer hover:bg-red-50 flex justify-between items-center text-sm text-slate-700 transition-colors">
+                                                <li key={i} onClick={() => selectTitle(s.Titulo)} className="px-4 py-3 cursor-pointer hover:bg-red-50 flex justify-between items-center text-sm text-zinc-700 transition-colors">
                                                     <span className="font-semibold">{s.Titulo}</span>
                                                     {/* Badge opcional para frecuentes */}
                                                     {s.EsFrecuente && <span className="text-[10px] font-bold bg-red-100 text-red-600 px-2 py-0.5 rounded-full uppercase tracking-wider">Común</span>}
@@ -216,7 +216,7 @@ const ReportFailureModal = ({ isOpen, onClose, areaName, areaCode }) => {
                             {/* 3. PRIORIDAD (Stepper Visual) */}
                             <div>
                                 <label className={labelClass}>Prioridad</label>
-                                <div className="flex bg-slate-100 p-1 rounded-lg gap-1">
+                                <div className="flex bg-zinc-100 p-1 rounded-lg gap-1">
                                     {['Baja', 'Media', 'Alta', 'Crítica'].map((prio, idx) => (
                                         <div
                                             key={prio}
@@ -225,7 +225,7 @@ const ReportFailureModal = ({ isOpen, onClose, areaName, areaCode }) => {
                                                         prio === 'Alta' ? 'bg-red-500 text-white shadow-md' :
                                                             prio === 'Media' ? 'bg-yellow-500 text-white shadow-md' :
                                                                 'bg-green-500 text-white shadow-md')
-                                                    : 'text-slate-400 hover:bg-white/50'
+                                                    : 'text-zinc-400 hover:bg-white/50'
                                                 }`}
                                             onClick={() => setFormData({ ...formData, prioridad: prio })}
                                         >
@@ -241,8 +241,8 @@ const ReportFailureModal = ({ isOpen, onClose, areaName, areaCode }) => {
                                 <textarea className={`${inputClass} min-h-[80px]`} placeholder="Detalles específicos para el técnico..." value={formData.descripcion} onChange={(e) => setFormData({ ...formData, descripcion: e.target.value })}></textarea>
                             </div>
 
-                            <div className="flex justify-end pt-4 border-t border-slate-100">
-                                <button onClick={onClose} className="px-4 py-2 mr-2 text-slate-500 hover:text-slate-800 font-semibold transition-colors">Cancelar</button>
+                            <div className="flex justify-end pt-4 border-t border-zinc-100">
+                                <button onClick={onClose} className="px-4 py-2 mr-2 text-zinc-500 hover:text-zinc-800 font-semibold transition-colors">Cancelar</button>
                                 <button className="px-6 py-2 bg-red-600 hover:bg-red-700 text-white font-bold rounded-lg shadow-lg shadow-red-500/30 transition-all flex items-center gap-2" onClick={handleSubmit} disabled={loading}>
                                     {loading ? 'Procesando...' : <><i className="fa-solid fa-triangle-exclamation"></i> Crear Ticket</>}
                                 </button>
@@ -252,24 +252,24 @@ const ReportFailureModal = ({ isOpen, onClose, areaName, areaCode }) => {
 
                     {/* VISTA HISTORIAL */}
                     {activeTab === 'history' && (
-                        <div className="border border-slate-200 rounded-lg overflow-hidden">
+                        <div className="border border-zinc-200 rounded-lg overflow-hidden">
                             <table className="w-full text-sm text-left">
-                                <thead className="bg-slate-50 text-slate-500 font-semibold border-b border-slate-200 text-xs uppercase tracking-wide">
+                                <thead className="bg-zinc-50 text-zinc-500 font-semibold border-b border-zinc-200 text-xs uppercase tracking-wide">
                                     <tr><th className="p-3">Fecha</th><th className="p-3">Falla / Equipo</th><th className="p-3">Estado</th></tr>
                                 </thead>
-                                <tbody className="divide-y divide-slate-100">
+                                <tbody className="divide-y divide-zinc-100">
                                     {history.length === 0 ? (
-                                        <tr><td colSpan="3" className="p-8 text-center text-slate-400 italic">Sin historial reciente.</td></tr>
+                                        <tr><td colSpan="3" className="p-8 text-center text-zinc-400 italic">Sin historial reciente.</td></tr>
                                     ) : (
                                         history.map(t => (
-                                            <tr key={t.TicketID} className="hover:bg-slate-50 transition-colors">
-                                                <td className="p-3 text-slate-500">{new Date(t.FechaReporte).toLocaleDateString()}</td>
+                                            <tr key={t.TicketID} className="hover:bg-zinc-50 transition-colors">
+                                                <td className="p-3 text-zinc-500">{new Date(t.FechaReporte).toLocaleDateString()}</td>
                                                 <td className="p-3">
-                                                    <div className="font-bold text-slate-800">{t.Titulo}</div>
-                                                    <div className="text-xs text-slate-500 flex items-center gap-1"><i className="fa-solid fa-server text-[10px]"></i> {t.MaquinaNombre}</div>
+                                                    <div className="font-bold text-zinc-800">{t.Titulo}</div>
+                                                    <div className="text-xs text-zinc-500 flex items-center gap-1"><i className="fa-solid fa-server text-[10px]"></i> {t.MaquinaNombre}</div>
                                                 </td>
                                                 <td className="p-3">
-                                                    <span className={`px-2 py-1 rounded-full text-[10px] font-bold uppercase tracking-wide border ${t.Estado === 'Abierto' ? 'bg-red-50 text-red-600 border-red-100' : 'bg-slate-100 text-slate-500 border-slate-200'
+                                                    <span className={`px-2 py-1 rounded-full text-[10px] font-bold uppercase tracking-wide border ${t.Estado === 'Abierto' ? 'bg-red-50 text-red-600 border-red-100' : 'bg-zinc-100 text-zinc-500 border-zinc-200'
                                                         }`}>
                                                         {t.Estado}
                                                     </span>

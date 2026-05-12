@@ -1,31 +1,65 @@
-import React, { useMemo, useCallback } from 'react';
-import { AgGridReact } from 'ag-grid-react';
-import { ModuleRegistry, AllCommunityModule } from 'ag-grid-community';
+import React, { useState, useMemo, useEffect } from 'react';
+import { Eye } from 'lucide-react';
+import {
+    useReactTable,
+    getCoreRowModel,
+    getPaginationRowModel,
+    getSortedRowModel,
+    getFilteredRowModel,
+    flexRender
+} from '@tanstack/react-table';
 
-ModuleRegistry.registerModules([AllCommunityModule]);
+export default function ProductionTable({ rowData = [], onRowSelected, selectedRowIds, onRowClick, columnDefs: propColumnDefs, toolbarContent }) {
 
-// Imports de estilos eliminados para evitar conflictos con AG Grid v33 Theming API
+    const [rowSelection, setRowSelection] = useState({});
+    const [columnVisibility, setColumnVisibility] = useState({});
 
-const AG_GRID_LOCALE_ES = {
-    filterOoo: 'Filtrar...', equals: 'Igual', notEqual: 'Diferente', contains: 'Contiene', notContains: 'No contiene', startsWith: 'Empieza con', endsWith: 'Termina con', blank: 'Vacío', notBlank: 'No vacío', andCondition: 'Y', orCondition: 'O', loadingOoo: 'Cargando...', noRowsToShow: 'No hay datos', selectAll: 'Seleccionar Todo', searchOoo: 'Buscar órdenes...',
-};
+    // Sincronizar estado interno de selección hacia arriba (prop onRowSelected)
+    useEffect(() => {
+        if (onRowSelected) {
+            const selectedIds = Object.keys(rowSelection).filter(k => rowSelection[k]).map(id => parseInt(id, 10));
+            // Evitamos un loop verificando que haya cambiado realmente respecto al prop (si existe)
+            if (!selectedRowIds || selectedRowIds.length !== selectedIds.length || !selectedIds.every(id => selectedRowIds.includes(id))) {
+                onRowSelected(selectedIds);
+            }
+        }
+    }, [rowSelection]);
 
-const ProductionTable = ({ rowData, onRowSelected, onRowClick, columnDefs: propColumnDefs }) => {
+    // Sincronizar desde arriba hacia el estado interno (si el padre limpia la selección)
+    useEffect(() => {
+        if (selectedRowIds !== undefined) {
+            setRowSelection(prev => {
+                const newSelection = {};
+                selectedRowIds.forEach(id => newSelection[id] = true);
+                
+                const prevKeys = Object.keys(prev).filter(k => prev[k]);
+                const newKeys = Object.keys(newSelection);
+                
+                if (prevKeys.length !== newKeys.length || !prevKeys.every(k => newSelection[k])) {
+                    return newSelection;
+                }
+                return prev;
+            });
+        }
+    }, [selectedRowIds]);
 
-    // --- RENDERIZADORES ---
+    // Limpiar selección cuando cambian los datos drásticamente (opcional)
+    useEffect(() => {
+        setRowSelection({});
+    }, [rowData]);
+
+    // Renderizadores internos para cuando no hay propColumnDefs
     const StatusRenderer = (params) => {
         const status = params.value || 'Pendiente';
-
-        let colorClass = "bg-slate-100 text-slate-500 border-slate-200";
+        let colorClass = "text-zinc-500";
         const s = status.toLowerCase();
 
-        if (s.includes('imprimiendo') || s.includes('proceso')) colorClass = "bg-blue-50 text-blue-600 border-blue-200";
-        else if (s.includes('detenido') || s.includes('falla')) colorClass = "bg-red-50 text-red-600 border-red-200";
-        else if (s.includes('finalizado') || s.includes('entregado') || s.includes('ok')) colorClass = "bg-emerald-50 text-emerald-600 border-emerald-200";
-        else if (s.includes('pendiente')) colorClass = "bg-slate-50 text-slate-500 border-slate-200";
+        if (s.includes('imprimiendo') || s.includes('proceso')) colorClass = "text-blue-600";
+        else if (s.includes('detenido') || s.includes('falla')) colorClass = "text-red-600";
+        else if (s.includes('finalizado') || s.includes('entregado') || s.includes('ok')) colorClass = "text-emerald-600";
 
         return (
-            <span className={`px-2 py-0.5 rounded-full text-[10px] uppercase font-bold border ${colorClass} inline-block text-center min-w-[80px]`}>
+            <span className={`text-xs font-bold uppercase tracking-wide ${colorClass}`}>
                 {status}
             </span>
         );
@@ -33,138 +67,377 @@ const ProductionTable = ({ rowData, onRowSelected, onRowClick, columnDefs: propC
 
     const ActionsRenderer = (params) => (
         <div onClick={(e) => { e.stopPropagation(); if (onRowClick) onRowClick(params.data); }}
-            className="flex items-center justify-center h-full cursor-pointer text-slate-400 hover:text-blue-500 transition-colors group">
-            <i className="fa-regular fa-eye group-hover:scale-110 transition-transform"></i>
+            className="flex items-center justify-center h-full cursor-pointer text-zinc-400 hover:text-brand-cyan transition-colors group">
+            <Eye size={15} className="group-hover:scale-110 transition-transform" />
         </div>
     );
 
     const PriorityRenderer = (params) => {
         if (params.value === 'Urgente') {
-            return <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-red-100 text-red-600 border border-red-200 uppercase tracking-wide">URGENTE</span>;
+            return <span className="text-xs font-bold text-brand-magenta uppercase tracking-wide">URGENTE</span>;
         }
-        return <span className="text-xs text-slate-500 font-medium">Normal</span>;
+        return <span className="text-xs text-zinc-500 font-medium">Normal</span>;
     };
 
     const BatchRenderer = (params) => {
-        if (!params.value) return <span className="text-slate-300">-</span>;
+        if (!params.value) return <span className="text-zinc-300">-</span>;
         return (
-            <span className="px-2 py-0.5 rounded-lg text-[10px] font-bold bg-indigo-50 text-indigo-600 border border-indigo-100">
+            <span className="text-xs font-bold text-brand-cyan">
                 {params.value}
             </span>
         );
     };
 
-    const FilesRenderer = (params) => (
-        <div className="flex items-center h-full text-slate-600 gap-1.5">
-            <i className="fa-regular fa-file-image text-slate-400"></i>
-            <b className="text-xs">{params.value || 0}</b>
-        </div>
-    );
+    const FilesRenderer = (params) => {
+        const val = params.value;
+        const displayVal = val !== undefined && val !== null && val !== '' ? val : 0;
+        return <span className="text-xs font-bold text-zinc-600">{displayVal}</span>;
+    };
 
     const DateRenderer = (params) => {
-        if (!params.value) return '-';
+        if (!params.value) return null;
         const date = new Date(params.value);
         return (
-            <div className="flex flex-col justify-center h-full leading-tight">
-                <span className="text-xs font-mono text-slate-700">{date.toLocaleDateString('es-ES', { day: '2-digit', month: '2-digit', year: '2-digit' })}</span>
-                <span className="text-[10px] text-slate-400 font-medium">{date.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' })}</span>
+            <div className="flex flex-col leading-tight">
+                <span className="text-xs font-bold text-zinc-700">{date.toLocaleDateString('es-ES', { day: '2-digit', month: '2-digit', year: '2-digit' })}</span>
+                <span className="text-[10px] text-zinc-400 font-medium">{date.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' })}</span>
             </div>
         );
     };
 
-    // --- CONFIGURACIÓN DE SELECCIÓN ---
-    const rowSelection = useMemo(() => ({
-        mode: 'multiRow',
-        checkboxes: true,
-        headerCheckbox: true,
-        enableClickSelection: false
-    }), []);
-
-    // --- COLUMNAS ---
     const internalColumnDefs = useMemo(() => [
-        {
-            headerName: '',
-            width: 50,
-            pinned: 'left',
-            cellRenderer: ActionsRenderer,
-            lockPosition: true,
-            suppressHeaderMenuButton: true,
-            cellClass: 'flex items-center justify-center'
-        },
-        { field: 'entryDate', headerName: 'Fecha', width: 90, cellRenderer: DateRenderer },
-        { field: 'priority', headerName: 'Prio.', width: 100, cellRenderer: PriorityRenderer },
-        { field: 'code', headerName: 'Orden', width: 130, cellClass: 'font-bold text-slate-700' },
-        { field: 'client', headerName: 'Cliente', width: 150, filter: 'agTextColumnFilter', cellClass: 'font-semibold text-slate-600' },
-        { field: 'desc', headerName: 'Trabajo', width: 180, filter: 'agTextColumnFilter', cellClass: 'italic text-slate-500 text-xs' },
-
-        { field: 'material', headerName: 'Material', flex: 1, minWidth: 250, wrapText: true, autoHeight: true, cellClass: 'leading-tight py-2 font-medium text-slate-700' },
-
-        { field: 'variantCode', headerName: 'Var.', width: 100, cellClass: 'font-mono text-xs text-slate-400' },
-        { field: 'magnitude', headerName: 'Cant.', width: 80, cellClass: 'font-bold text-slate-800' },
-
-        { field: 'status', headerName: 'Estado', width: 120, cellRenderer: StatusRenderer, cellClass: 'flex items-center' },
-        { field: 'areaStatus', headerName: 'Est. Área', width: 100, cellClass: 'text-[10px] font-bold text-slate-600 uppercase flex items-center tracking-tight' },
-
-        { field: 'filesCount', headerName: 'Arch.', width: 80, cellRenderer: FilesRenderer },
-        { field: 'rollId', headerName: 'Lote', width: 120, cellRenderer: BatchRenderer, cellClass: 'flex items-center' },
-        { field: 'printer', headerName: 'Máquina', width: 120, cellClass: 'text-xs text-slate-500' },
-        { field: 'ink', headerName: 'Tinta', width: 100, filter: true, cellClass: 'text-[10px] font-bold text-purple-600 uppercase tracking-wide' }, // NEW
-        { field: 'note', headerName: 'Nota', width: 100, tooltipField: 'note', cellClass: 'text-xs italic text-amber-600' },
-        { field: 'observations', headerName: 'Observaciones', width: 200, tooltipField: 'observations', cellClass: 'text-xs italic text-slate-500' }
+        { headerName: '', width: 40, cellRenderer: ActionsRenderer },
+        { field: 'entryDate', headerName: 'Fecha', width: 85, cellRenderer: DateRenderer },
+        { field: 'priority', headerName: 'Prioridad', width: 90, cellRenderer: PriorityRenderer },
+        { field: 'code', headerName: 'Orden', width: 130 },
+        { field: 'client', headerName: 'Cliente', width: 150 },
+        { field: 'desc', headerName: 'Trabajo', width: 180 },
+        { field: 'material', headerName: 'Material', minWidth: 250 },
+        { field: 'variantCode', headerName: 'Variante', width: 110 },
+        { field: 'magnitude', headerName: 'Cantidad', width: 100 },
+        { field: 'status', headerName: 'Estado', width: 100, cellRenderer: StatusRenderer },
+        { field: 'areaStatus', headerName: 'Estado Área', width: 120 },
+        { field: 'filesCount', headerName: 'Archivos', width: 80, cellRenderer: FilesRenderer },
+        { field: 'rollId', headerName: 'Lote', width: 100, cellRenderer: BatchRenderer },
+        { field: 'printer', headerName: 'Máquina', width: 120 },
+        { field: 'ink', headerName: 'Tinta', width: 100 },
+        { field: 'note', headerName: 'Nota', width: 100 },
+        { field: 'observations', headerName: 'Observaciones', width: 200 }
     ], [onRowClick]);
 
-    const defaultColDef = useMemo(() => ({
-        sortable: true,
-        filter: true,
-        resizable: true,
-        headerClass: 'bg-slate-50 text-slate-500 text-[10px] font-bold uppercase tracking-wider border-b border-slate-200',
-        cellClass: 'text-sm text-slate-700 border-b border-slate-50 flex items-center'
-    }), []);
+    // Adaptador mágico: Convierte el array viejo de AG Grid al nuevo formato de TanStack Table
+    const columns = useMemo(() => {
+        const sourceCols = propColumnDefs || internalColumnDefs;
+        return sourceCols.map((col, index) => {
+            const isFirstActionCol = index === 0 && !col.field;
+            
+            // --- CÁLCULO DE ANCHO DINÁMICO (Auto-Fit) ---
+            let computedSize = 100;
+            if (isFirstActionCol) {
+                computedSize = 50;
+            } else if (col.field && rowData && rowData.length > 0) {
+                let maxChars = col.headerName ? col.headerName.length : 0;
+                rowData.slice(0, 20).forEach(row => {
+                    const val = row[col.field];
+                    if (val !== null && val !== undefined) {
+                        let strVal = typeof val === 'string' ? val.trim() : String(val);
+                        // Mockear longitud para columnas con UI especial para no romper el cálculo
+                        if (col.field === 'entryDate') strVal = '10/10/26'; // 8 caracteres
+                        
+                        const len = strVal.length;
+                        if (len > maxChars) maxChars = len;
+                    }
+                });
+                // Cálculo escalonado para textos:
+                // Textos cortos (<= 15) necesitan más px por letra.
+                // Textos largos (> 15) suelen tener minúsculas/espacios, usamos menos px extra para no inflar la columna.
+                let textWidth = maxChars * 8;
+                if (maxChars > 15) {
+                    textWidth = (15 * 8) + ((maxChars - 15) * 5.5);
+                }
+                
+                const minHeaderWidth = col.headerName ? Math.max(col.headerName.length * 9 + 24, 45) : 45;
+                // Ajuste preciso con 24px de colchón para absorber los px-2 (16px de padding total + 8px margen).
+                // Cap reducido a 200px: el texto más largo se trunca con ellipsis de todas formas.
+                computedSize = Math.min(Math.max(textWidth + 24, minHeaderWidth), 200);
+            } else {
+                computedSize = col.width || col.minWidth || 150;
+            }
 
-    const onSelectionChanged = useCallback((event) => {
-        const selectedRows = event.api.getSelectedRows();
-        const selectedIds = selectedRows.map(r => r.id);
-        if (onRowSelected) onRowSelected(selectedIds);
-    }, [onRowSelected]);
+            return {
+                id: col.field || `col_${index}`,
+                accessorKey: col.field,
+                header: isFirstActionCol 
+                    ? ({ table }) => (
+                        <input
+                            type="checkbox"
+                            checked={table.getIsAllRowsSelected()}
+                            ref={input => {
+                                if (input) input.indeterminate = table.getIsSomeRowsSelected() && !table.getIsAllRowsSelected();
+                            }}
+                            onChange={table.getToggleAllRowsSelectedHandler()}
+                            className="w-4 h-4 cursor-pointer accent-brand-cyan rounded border-zinc-300 block mx-auto"
+                            title="Seleccionar todo"
+                        />
+                    )
+                    : col.headerName || '',
+                size: computedSize,
+                minSize: col.headerName ? Math.max(col.headerName.length * 8 + 24, 40) : 40,
+                cell: (info) => {
+                    if (col.cellRenderer) {
+                        const Renderer = col.cellRenderer;
+                        return <div className="flex justify-center w-full"><Renderer value={info.getValue()} data={info.row.original} /></div>;
+                    }
+                    if (col.field === 'code') {
+                        return <span className="text-xs font-bold text-brand-cyan">{info.getValue() || '-'}</span>;
+                    }
+                    if (col.field === 'client') {
+                        let finalDisplay = info.row.original.idClienteStr;
+                        if (!finalDisplay) {
+                            finalDisplay = info.getValue() || '-';
+                        }
+                        
+                        // Limpieza extrema para mostrar solo UN DATO:
+                        if (typeof finalDisplay === 'string') {
+                            if (finalDisplay.includes(' - ')) {
+                                finalDisplay = finalDisplay.split(' - ')[0].trim();
+                            } else {
+                                const matchParenthesis = finalDisplay.match(/^\(([^)]+)\)/);
+                                if (matchParenthesis) {
+                                    finalDisplay = matchParenthesis[1].trim();
+                                } else if (finalDisplay.includes('-')) {
+                                    finalDisplay = finalDisplay.split('-')[0].trim();
+                                }
+                            }
+                        }
 
-    // Debug
-    console.log("📊 [ProductionTable] Rendering with rows:", rowData?.length);
+                        return (
+                            <span className="text-xs font-bold text-zinc-700 truncate block w-full text-center">
+                                {finalDisplay}
+                            </span>
+                        );
+                    }
+                    return <span className="text-xs font-medium text-zinc-700">{info.getValue() || '-'}</span>;
+                }
+            };
+        });
+    }, [propColumnDefs, internalColumnDefs, rowData]);
+
+    // Cálculo de columnas vacías por defecto
+    const emptyColumns = useMemo(() => {
+        const empty = {};
+        const sourceCols = propColumnDefs || internalColumnDefs;
+        if (!rowData || rowData.length === 0) return empty;
+
+        sourceCols.forEach(col => {
+            if (!col.field) return; // Saltamos columnas sin campo (ej. acciones)
+            
+            const isAllEmpty = rowData.every(row => {
+                const val = row[col.field];
+                return val === null || val === undefined || String(val).trim() === '' || String(val).trim() === '-';
+            });
+            
+            if (isAllEmpty) {
+                empty[col.field] = false;
+            }
+        });
+        
+        return empty;
+    }, [rowData, propColumnDefs, internalColumnDefs]);
+
+    const table = useReactTable({
+        data: rowData,
+        columns,
+        state: {
+            rowSelection,
+            columnVisibility: { ...emptyColumns, ...columnVisibility }
+        },
+        enableRowSelection: true,
+        onRowSelectionChange: setRowSelection,
+        onColumnVisibilityChange: setColumnVisibility,
+        getRowId: row => row.id, // Usar el ID real de la base de datos
+        getCoreRowModel: getCoreRowModel(),
+        getPaginationRowModel: getPaginationRowModel(),
+        getSortedRowModel: getSortedRowModel(),
+        getFilteredRowModel: getFilteredRowModel(),
+        columnResizeMode: 'onChange',
+        initialState: {
+            pagination: { pageSize: 20 }
+        }
+    });
 
     return (
-        <div
-            className="ag-theme-quartz w-full shadow-sm rounded-lg overflow-hidden border border-slate-200 bg-white"
-            style={{ height: 'calc(100vh - 180px)', minHeight: '400px' }}
-        >
-            {/* INYECTAMOS ESTILOS GLOBALES PARA AG-GRID Y TAILWIND MIX */}
-            <style>{`
-                .ag-theme-quartz .ag-root-wrapper { border: none; }
-                .ag-theme-quartz .ag-header { background-color: #f8fafc; border-bottom: 1px solid #e2e8f0; height: 48px !important; min-height: 48px !important; }
-                .ag-theme-quartz .ag-header-cell { padding-left: 12px; padding-right: 12px; }
-                .ag-theme-quartz .ag-row { border-bottom: 1px solid #f1f5f9; }
-                .ag-theme-quartz .ag-row-hover { background-color: #f8fafc; }
-                .ag-theme-quartz .ag-row-selected { background-color: #eff6ff !important; }
-                
-                /* Custom Scrollbar */
-                .ag-body-viewport::-webkit-scrollbar { width: 8px; height: 8px; }
-                .ag-body-viewport::-webkit-scrollbar-track { background: transparent; }
-                .ag-body-viewport::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
-                .ag-body-viewport::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
-            `}</style>
+        <div className="flex flex-col h-full w-full bg-white overflow-hidden animate-in fade-in duration-300 relative border-t border-zinc-200">
+            
+            {/* Toolbar Superior */}
+            {rowData.length > 0 && <div className="px-4 py-2 border-b-2 border-zinc-200 bg-zinc-50 flex justify-between items-center shrink-0 z-20">
+                {/* Contenido Dinámico (Filtros, Historial, etc) */}
+                <div className="flex-1 flex items-center overflow-x-auto no-scrollbar">
+                    {toolbarContent}
+                </div>
 
-            <AgGridReact
-                rowData={rowData}
-                columnDefs={propColumnDefs || internalColumnDefs}
-                defaultColDef={defaultColDef}
-                rowSelection={rowSelection}
-                pagination={true}
-                paginationPageSize={20}
-                onSelectionChanged={onSelectionChanged}
-                localeText={AG_GRID_LOCALE_ES}
-                rowHeight={48}
-                headerHeight={48}
-            />
+                {/* Controles Nativos de la Tabla (Ocultar Columnas) */}
+                <div className="relative group shrink-0 ml-4">
+                    <button className="flex items-center gap-2 px-3 py-1.5 text-xs font-bold bg-white border border-zinc-200 rounded-lg text-zinc-600 hover:bg-brand-cyan/5 hover:text-brand-cyan hover:border-brand-cyan/30 transition-colors shadow-sm">
+                        <i className="fa-solid fa-table-columns"></i> Columnas
+                    </button>
+                    {/* Dropdown Menu */}
+                    <div className="absolute right-0 top-full pt-1 w-56 opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all pointer-events-none group-hover:pointer-events-auto z-50">
+                        <div className="bg-white border border-zinc-200 rounded-xl shadow-xl overflow-hidden">
+                        <div className="p-2 flex flex-col gap-0.5">
+                            <div className="px-2 py-1 mb-1 text-[10px] font-black text-zinc-400 uppercase tracking-widest border-b border-zinc-100">Visibilidad de Columnas</div>
+                            {table.getAllLeafColumns().map(column => {
+                                if (column.id === 'col_0' || column.id === 'select') return null; // No ocultar la primera columna
+                                return (
+                                    <label key={column.id} className="flex items-center gap-3 px-2 py-1.5 hover:bg-zinc-50 rounded-lg cursor-pointer text-xs font-semibold text-zinc-700 transition-colors">
+                                        <input
+                                            type="checkbox"
+                                            checked={column.getIsVisible()}
+                                            onChange={column.getToggleVisibilityHandler()}
+                                            className="w-3.5 h-3.5 accent-brand-cyan rounded border-zinc-300"
+                                        />
+                                        {typeof column.columnDef.header === 'string' ? column.columnDef.header : column.id}
+                                    </label>
+                                );
+                            })}
+                        </div>
+                        </div>
+                    </div>
+                </div>
+            </div>}
+
+            {/* Contenedor de la tabla scrollable */}
+            {table.getRowModel().rows.length === 0 ? (
+                <div className="flex-1 flex flex-col items-center justify-center gap-3 text-zinc-400 bg-zinc-50">
+                    <i className="fa-solid fa-inbox text-5xl text-zinc-200"></i>
+                    <span className="text-sm font-medium">No hay órdenes para mostrar</span>
+                </div>
+            ) : (
+                <div className="flex-1 overflow-auto bg-zinc-50 relative custom-scrollbar z-10">
+                    <table 
+                        className="text-left border-collapse overflow-hidden"
+                        style={{ 
+                            tableLayout: 'fixed',
+                            width: '100%'
+                        }}
+                    >
+                        <thead className="bg-zinc-100/90 backdrop-blur-md sticky top-0 z-20 border-b-2 border-zinc-200 shadow-sm">
+                            {table.getHeaderGroups().map(headerGroup => (
+                                <tr key={headerGroup.id}>
+                                    {headerGroup.headers.map((header, index) => (
+                                    <th
+                                        key={header.id}
+                                        className="py-3 px-2 text-[10px] font-black text-zinc-600 uppercase tracking-widest whitespace-nowrap bg-transparent relative group select-none border-r border-zinc-200/50 last:border-r-0 text-center first:border-l-4 first:border-transparent"
+                                        style={{ 
+                                            width: header.getSize(), 
+                                            minWidth: header.column.columnDef.minSize || 50 
+                                        }}
+                                    >
+                                        <div className="flex items-center justify-center gap-2 w-full overflow-hidden">
+                                            <span className="truncate block w-full text-center">{flexRender(header.column.columnDef.header, header.getContext())}</span>
+                                        </div>
+                                        {/* Agarrador para redimensionar centrado sobre el borde real */}
+                                        {header.column.getCanResize() && (
+                                            <div
+                                                onMouseDown={header.getResizeHandler()}
+                                                onTouchStart={header.getResizeHandler()}
+                                                className={`absolute right-0 top-0 h-full w-[6px] translate-x-[50%] cursor-col-resize touch-none z-20 transition-colors ${
+                                                    header.column.getIsResizing() ? 'bg-brand-cyan' : 'hover:bg-brand-cyan/40'
+                                                }`}
+                                            />
+                                        )}
+                                    </th>
+                                ))}
+                            </tr>
+                        ))}
+                    </thead>
+                    <tbody className="bg-white">
+                        {table.getRowModel().rows.length > 0 ? (
+                            table.getRowModel().rows.map((row, rowIndex) => {
+                                const isSelected = row.getIsSelected();
+                                return (
+                                    <tr
+                                        key={row.id}
+                                        onClick={() => row.toggleSelected()}
+                                        className={`
+                                            cursor-pointer transition-all border-b border-zinc-100 group row-appear
+                                            ${isSelected 
+                                                ? 'bg-custom-cyan/40 hover:bg-custom-cyan/50' 
+                                                : 'bg-white hover:bg-zinc-50'}
+                                        `}
+                                        style={{ animationDelay: `${Math.min(rowIndex, 20) * 30}ms` }}
+                                    >
+                                        {row.getVisibleCells().map(cell => (
+                                            <td key={cell.id} className={`py-2 px-2 align-middle border-r border-zinc-200/40 last:border-r-0 text-center overflow-hidden whitespace-nowrap text-ellipsis max-w-[0px]`}>
+                                                {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                                            </td>
+                                        ))}
+                                    </tr>
+                                );
+                            })
+                        ) : null}
+                    </tbody>
+                </table>
+            </div>
+            )}
+
+            {/* Paginación Moderna */}
+            {rowData.length > 0 && <div className="px-6 py-3.5 bg-white border-t border-zinc-200 flex items-center justify-between shrink-0">
+                <span className="text-xs font-bold text-zinc-500 flex items-center gap-2">
+                    <span className="bg-zinc-100 text-zinc-600 px-2 py-1 rounded-md">
+                        Página {table.getState().pagination.pageIndex + 1} de {table.getPageCount() || 1}
+                    </span>
+                    <span className="font-medium text-zinc-400">({rowData.length} órdenes en total)</span>
+                </span>
+                
+                <div className="flex items-center gap-2">
+                    <button
+                        onClick={() => table.setPageIndex(0)}
+                        disabled={!table.getCanPreviousPage()}
+                        className="w-8 h-8 flex items-center justify-center text-xs font-bold bg-white text-zinc-500 border border-zinc-200 rounded-lg transition-colors disabled:opacity-40 disabled:cursor-not-allowed hover:enabled:bg-zinc-50 hover:enabled:text-brand-cyan hover:enabled:border-brand-cyan/30"
+                        title="Primera página"
+                    >
+                        <i className="fa-solid fa-angles-left"></i>
+                    </button>
+                    <button
+                        onClick={() => table.previousPage()}
+                        disabled={!table.getCanPreviousPage()}
+                        className="px-3 h-8 flex items-center gap-1.5 text-xs font-bold bg-white text-zinc-600 border border-zinc-200 rounded-lg transition-colors shadow-sm disabled:opacity-40 disabled:cursor-not-allowed hover:enabled:bg-zinc-50 hover:enabled:text-brand-cyan hover:enabled:border-brand-cyan/30"
+                    >
+                        <i className="fa-solid fa-angle-left"></i> Anterior
+                    </button>
+                    <button
+                        onClick={() => table.nextPage()}
+                        disabled={!table.getCanNextPage()}
+                        className="px-3 h-8 flex items-center gap-1.5 text-xs font-bold bg-white text-zinc-600 border border-zinc-200 rounded-lg transition-colors shadow-sm disabled:opacity-40 disabled:cursor-not-allowed hover:enabled:bg-zinc-50 hover:enabled:text-brand-cyan hover:enabled:border-brand-cyan/30"
+                    >
+                        Siguiente <i className="fa-solid fa-angle-right"></i>
+                    </button>
+                    <button
+                        onClick={() => table.setPageIndex(table.getPageCount() - 1)}
+                        disabled={!table.getCanNextPage()}
+                        className="w-8 h-8 flex items-center justify-center text-xs font-bold bg-white text-zinc-500 border border-zinc-200 rounded-lg transition-colors disabled:opacity-40 disabled:cursor-not-allowed hover:enabled:bg-zinc-50 hover:enabled:text-brand-cyan hover:enabled:border-brand-cyan/30"
+                        title="Última página"
+                    >
+                        <i className="fa-solid fa-angles-right"></i>
+                    </button>
+                </div>
+            </div>}
+            
+            <style>{`
+                .custom-scrollbar::-webkit-scrollbar { width: 8px; height: 8px; }
+                .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
+                .custom-scrollbar::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
+                .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+                @keyframes rowAppear {
+                    from { opacity: 0; transform: translateY(6px); }
+                    to   { opacity: 1; transform: translateY(0); }
+                }
+                .row-appear {
+                    animation: rowAppear 0.25s ease both;
+                }
+            `}</style>
         </div>
     );
-};
+}
 
-export default ProductionTable;

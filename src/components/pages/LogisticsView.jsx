@@ -1,4 +1,12 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
+import { createPortal } from 'react-dom';
+import { Warehouse, Truck } from 'lucide-react';
+import {
+    useReactTable,
+    getCoreRowModel,
+    flexRender,
+    createColumnHelper,
+} from '@tanstack/react-table';
 import { logisticsService } from '../../services/api';
 import { useAuth } from '../../context/AuthContext';
 import { printLabels as printLabelsUtil } from '../../utils/labelPrinter';
@@ -44,12 +52,25 @@ const LogisticsView = ({ areaCode }) => {
         }
     }, [user, areaCode]);
 
+    const debounceRef = useRef(null);
+    const loadingRef = useRef(false); // Evita fetches solapados
+
     useEffect(() => {
-        if (user) {
+        if (!user) return;
+
+        // Cancelar el debounce anterior si el área cambió rápido
+        if (debounceRef.current) clearTimeout(debounceRef.current);
+
+        debounceRef.current = setTimeout(() => {
             loadDashboard();
-            const interval = setInterval(loadDashboard, 30000);
-            return () => clearInterval(interval);
-        }
+        }, 300); // 300ms de debounce al cambiar área
+
+        // Polling cada 30s (sin debounce, ya es un intervalo)
+        const interval = setInterval(loadDashboard, 30000);
+        return () => {
+            clearTimeout(debounceRef.current);
+            clearInterval(interval);
+        };
     }, [user, globalArea]); // Reload when Area changes
 
     // Clear orders when basket changes
@@ -58,6 +79,9 @@ const LogisticsView = ({ areaCode }) => {
     }, [selectedBasketId]);
 
     const loadDashboard = async () => {
+        // Evitar fetches solapados
+        if (loadingRef.current) return;
+        loadingRef.current = true;
         try {
             // Use Global Filter if not TODOS, else use context or fetch all
             const targetArea = globalArea === 'TODOS' ? null : globalArea;
@@ -66,6 +90,7 @@ const LogisticsView = ({ areaCode }) => {
             // LogisticsService.getDashboard usually takes an Area param. 
             // If 'TODOS', we might send 'GENERAL' or undefined. Let's send undefined/null.
             const data = await logisticsService.getDashboard(targetArea);
+            console.log("🚀 [DEBUG] Dashboard response data:", data);
 
             const newBaskets = [];
 
@@ -114,6 +139,7 @@ const LogisticsView = ({ areaCode }) => {
             console.error('Error loading dashboard:', error);
         } finally {
             setLoading(false);
+            loadingRef.current = false;
         }
     };
 
@@ -295,16 +321,16 @@ const LogisticsView = ({ areaCode }) => {
 
     // Helper para íconos
     const getBasketIcon = (tipo) => {
-        if (tipo === 'falla') return 'fa-triangle-exclamation text-red-500';
-        if (tipo === 'incompleto') return 'fa-clock text-amber-500';
-        if (tipo === 'proceso') return 'fa-spinner fa-spin-pulse text-blue-500';
-        return 'fa-check-circle text-emerald-500';
+        if (tipo === 'falla') return 'fa-triangle-exclamation text-brand-magenta';
+        if (tipo === 'incompleto') return 'fa-clock text-brand-gold';
+        if (tipo === 'proceso') return 'fa-spinner fa-spin-pulse text-brand-cyan';
+        return 'fa-check-circle text-brand-cyan';
     };
 
     const BasketCard = ({ basket, isSelected, onClick }) => (
         <div
             onClick={onClick}
-            className={`cursor-pointer p-4 rounded-xl border transition-all ${isSelected ? 'bg-white border-blue-500 shadow-md ring-2 ring-blue-100' : 'bg-white border-slate-200 hover:border-blue-300 hover:shadow-sm'}`}
+            className={`cursor-pointer p-4 rounded-xl border transition-all ${isSelected ? 'bg-white border-brand-cyan shadow-md ring-2 ring-brand-cyan/20' : 'bg-white border-slate-200 hover:border-brand-cyan/50 hover:shadow-sm'}`}
         >
             <div className="flex justify-between items-start mb-2">
                 <div className={`w-8 h-8 rounded-lg flex items-center justify-center bg-slate-50 border border-slate-100`}>
@@ -323,15 +349,23 @@ const LogisticsView = ({ areaCode }) => {
             <div className="px-6 py-4 bg-white border-b border-slate-200 flex justify-between items-center shrink-0">
                 <div>
                     <h1 className="text-xl font-black text-slate-800 flex items-center gap-2">
-                        <i className="fa-solid fa-warehouse text-indigo-600"></i> Centro de Control Logístico
+                        <Warehouse size={22} className="text-brand-cyan" /> Centro de Control Logístico
                     </h1>
                     <p className="text-slate-400 text-xs font-medium">Gestión de Canastos y Despachos</p>
                 </div>
                 <div className="flex items-center gap-3">
                     {/* GLOBAL AREA SELECTOR */}
-
-
-                    <div className="relative">
+                    {(user?.rol === 'ADMIN' || user?.rol === 'SUPERVISOR') && (
+                        <select
+                            className="bg-white border border-slate-200 text-slate-700 text-sm font-bold rounded-xl px-4 py-2 focus:outline-none focus:border-indigo-500 transition-colors shadow-sm"
+                            value={globalArea}
+                            onChange={(e) => setGlobalArea(e.target.value)}
+                        >
+                            {AREAS.map(area => (
+                                <option key={area} value={area}>{area}</option>
+                            ))}
+                        </select>
+                    )}                    <div className="relative">
                         <i className="fa-solid fa-search absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-xs"></i>
                         <input
                             type="text"
@@ -380,83 +414,32 @@ const LogisticsView = ({ areaCode }) => {
                             <div className="px-6 py-3 border-b border-slate-100 flex justify-between items-center bg-slate-50/50">
                                 <div className="flex items-center gap-3">
                                     <h2 className="text-lg font-bold text-slate-800">{selectedBasket.nombre}</h2>
-                                    <span className="bg-indigo-50 text-indigo-600 px-2 py-0.5 rounded-md text-xs font-bold border border-indigo-100">
+                                    <span className="bg-brand-cyan/10 text-brand-cyan px-2 py-0.5 rounded-md text-xs font-bold border border-brand-cyan/20">
                                         {displayLabels.length} Bultos Visibles
                                     </span>
                                 </div>
 
                                 <div className="flex gap-2">
-                                    {/* Action Buttons */}
                                     {selectedBasket.tipo === 'logistica' && (
                                         <button
                                             onClick={handleGenerateRemito}
                                             disabled={selectedOrders.length === 0}
-                                            className="px-4 py-1.5 bg-emerald-500 text-white rounded-lg text-xs font-bold uppercase tracking-wide hover:bg-emerald-600 disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-md shadow-emerald-200 flex items-center"
+                                            className="px-4 py-1.5 bg-brand-cyan text-white rounded-lg text-xs font-bold uppercase tracking-wide hover:brightness-110 disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-md flex items-center gap-2"
                                         >
-                                            <i className="fa-solid fa-truck-fast mr-2"></i> Generar Remito
+                                            <Truck size={14} /> Generar Remito
                                         </button>
                                     )}
-
-
                                 </div>
                             </div>
 
-                            {/* Table */}
-                            <div className="flex-1 overflow-auto custom-scrollbar p-0">
-                                {displayLabels.length > 0 ? (
-                                    <table className="w-full text-left border-collapse">
-                                        <thead className="bg-slate-50 sticky top-0 z-10 shadow-sm text-[10px] font-black uppercase text-slate-400 tracking-wider">
-                                            <tr>
-                                                <th className="px-6 py-3 border-b border-slate-200 w-10 text-center">
-                                                    <i className="fa-regular fa-square-check"></i>
-                                                </th>
-                                                <th className="px-6 py-3 border-b border-slate-200">Orden</th>
-                                                <th className="px-6 py-3 border-b border-slate-200">Cliente</th>
-                                                <th className="px-6 py-3 border-b border-slate-200">Detalle Trabajo</th>
-                                                <th className="px-6 py-3 border-b border-slate-200">Bulto #</th>
-                                                <th className="px-6 py-3 border-b border-slate-200">Código Etiqueta</th>
-                                                <th className="px-6 py-3 border-b border-slate-200 text-right">Estado</th>
-                                            </tr>
-                                        </thead>
-                                        <tbody className="divide-y divide-slate-100 text-sm bg-white">
-                                            {displayLabels.map((lbl, idx) => (
-                                                <tr
-                                                    key={`${lbl.id}_${idx}`}
-                                                    onClick={() => handleToggleOrder(lbl.orderId)}
-                                                    className={`cursor-pointer transition-colors border-l-4 ${lbl.isSelected ? 'bg-indigo-50 border-indigo-500' : 'hover:bg-slate-50 border-transparent'}`}
-                                                >
-                                                    <td className="px-6 py-3 text-center">
-                                                        <div className={`w-4 h-4 rounded border flex items-center justify-center transition-all ${lbl.isSelected ? 'bg-indigo-500 border-indigo-500' : 'bg-white border-slate-300'}`}>
-                                                            {lbl.isSelected && <i className="fa-solid fa-check text-white text-[10px]"></i>}
-                                                        </div>
-                                                    </td>
-                                                    <td className="px-6 py-3 font-bold text-slate-700">{lbl.orderCode}</td>
-                                                    <td className="px-6 py-3 text-slate-600 truncate max-w-[150px]" title={lbl.client}>{lbl.client}</td>
-                                                    <td className="px-6 py-3 text-slate-500 truncate max-w-[200px]" title={lbl.desc}>{lbl.desc}</td>
-                                                    <td className="px-6 py-3">
-                                                        <span className="bg-slate-100 text-slate-600 px-2 py-0.5 rounded text-xs font-bold border border-slate-200">
-                                                            {lbl.num}/{lbl.total}
-                                                        </span>
-                                                    </td>
-                                                    <td className="px-6 py-3 font-mono text-xs text-slate-400">{lbl.code || '-'}</td>
-                                                    <td className="px-6 py-3 text-right">
-                                                        <span className={`text-[10px] uppercase font-bold px-2 py-0.5 rounded border ${lbl.status === 'Retenido' ? 'bg-red-50 text-red-600 border-red-100' :
-                                                            selectedBasket.tipo === 'logistica' ? 'bg-emerald-50 text-emerald-600 border-emerald-100' : 'bg-amber-50 text-amber-600 border-amber-100'
-                                                            }`}>
-                                                            {lbl.logStatus || lbl.status}
-                                                        </span>
-                                                    </td>
-                                                </tr>
-                                            ))}
-                                        </tbody>
-                                    </table>
-                                ) : (
-                                    <div className="flex flex-col items-center justify-center h-64 text-slate-300">
-                                        <i className="fa-solid fa-tags text-4xl mb-4 opacity-20"></i>
-                                        <p className="text-sm font-bold">No hay etiquetas para mostrar en este canasto</p>
-                                    </div>
-                                )}
-                            </div>
+                            <BasketTable
+                                data={displayLabels}
+                                basketTipo={selectedBasket.tipo}
+                                onToggle={handleToggleOrder}
+                                onSelectAll={handleSelectAll}
+                                allSelected={selectedBasket.ordenes.length > 0 && selectedBasket.ordenes.every(o => selectedOrders.includes(o.id))}
+                                someSelected={selectedOrders.length > 0 && !selectedBasket.ordenes.every(o => selectedOrders.includes(o.id))}
+                            />
                         </>
                     ) : (
                         <div className="flex flex-col items-center justify-center h-full text-slate-300 bg-slate-50/30">
@@ -472,24 +455,25 @@ const LogisticsView = ({ areaCode }) => {
             {/* Footer */}
             <footer className="h-8 border-t border-slate-200 flex items-center justify-between px-6 bg-white shrink-0">
                 <div className="flex gap-6 text-[10px] font-bold uppercase text-slate-400 tracking-wider">
-                    <div className="flex items-center gap-1.5"><div className="w-2 h-2 bg-red-400 rounded-full"></div> Falla</div>
-                    <div className="flex items-center gap-1.5"><div className="w-2 h-2 bg-amber-400 rounded-full"></div> Incompleto</div>
-                    <div className="flex items-center gap-1.5"><div className="w-2 h-2 bg-emerald-400 rounded-full"></div> Logística</div>
+                    <div className="flex items-center gap-1.5"><div className="w-2 h-2 bg-brand-magenta rounded-full"></div> Falla</div>
+                    <div className="flex items-center gap-1.5"><div className="w-2 h-2 bg-brand-gold rounded-full"></div> Incompleto</div>
+                    <div className="flex items-center gap-1.5"><div className="w-2 h-2 bg-brand-cyan rounded-full"></div> Logística</div>
                 </div>
                 <div className="text-[10px] font-bold text-slate-300">LOGISTICS MODULE V3.0</div>
             </footer>
 
-            {viewMode === 'RECEPTION' && (
-                <div className="fixed inset-0 z-50 bg-white overflow-auto">
+            {viewMode === 'RECEPTION' && createPortal(
+                <div className="fixed inset-0 z-[9999] bg-white overflow-auto">
                     <ReceptionView
                         onClose={() => setViewMode('DASHBOARD')}
                         areaContext={areaCode || user?.areaId}
                     />
-                </div>
+                </div>,
+                document.body
             )}
 
-            {viewMode === 'DISPATCH' && (
-                <div className="fixed inset-0 z-50 bg-white overflow-auto">
+            {viewMode === 'DISPATCH' && createPortal(
+                <div className="fixed inset-0 z-[9999] bg-white overflow-auto">
                     <DispatchView
                         selectedOrders={selectedBasket?.ordenes.filter(o => selectedOrders.includes(o.id)) || []}
                         originArea={selectedBasket?.areaOrigin || (selectedBasket?.ordenes?.length > 0 ? selectedBasket.ordenes[0].area : null) || user?.areaId || 'GEN'}
@@ -497,11 +481,10 @@ const LogisticsView = ({ areaCode }) => {
                         onSuccess={() => {
                             loadDashboard();
                             setSelectedOrders([]);
-                            // Optionally stay in success step, but DispatchView handles its own view. 
-                            // Only close if user clicks close inside DispatchView
                         }}
                     />
-                </div>
+                </div>,
+                document.body
             )}
 
             <DispatchHistoryModal
@@ -512,5 +495,161 @@ const LogisticsView = ({ areaCode }) => {
         </div>
     );
 };
+
+// ─── BasketTable (TanStack Table v8) ───────────────────────────────────────
+const columnHelper = createColumnHelper();
+
+function BasketTable({ data, basketTipo, onToggle, onSelectAll, allSelected, someSelected }) {
+    const selectAllRef = React.useRef(null);
+
+    React.useEffect(() => {
+        if (selectAllRef.current) {
+            selectAllRef.current.indeterminate = someSelected;
+        }
+    }, [someSelected]);
+    const columns = useMemo(() => [
+        columnHelper.display({
+            id: 'select',
+            size: 1,
+            header: ({ table: t }) => (
+                <div
+                    className={`w-4 h-4 rounded border flex items-center justify-center transition-all mx-auto cursor-pointer ${
+                        allSelected ? 'bg-brand-cyan border-brand-cyan' : someSelected ? 'bg-brand-cyan/40 border-brand-cyan' : 'bg-white border-slate-300 hover:border-brand-cyan'
+                    }`}
+                    onClick={onSelectAll}
+                    ref={selectAllRef}
+                >
+                    {allSelected && <i className="fa-solid fa-check text-white text-[10px]"></i>}
+                    {someSelected && !allSelected && <i className="fa-solid fa-minus text-white text-[10px]"></i>}
+                </div>
+            ),
+            cell: ({ row }) => {
+                const lbl = row.original;
+                return (
+                    <div className={`w-4 h-4 rounded border flex items-center justify-center transition-all mx-auto ${
+                        lbl.isSelected ? 'bg-brand-cyan border-brand-cyan' : 'bg-white border-slate-300'
+                    }`}>
+                        {lbl.isSelected && <i className="fa-solid fa-check text-white text-[10px]"></i>}
+                    </div>
+                );
+            },
+        }),
+        columnHelper.accessor('orderCode', {
+            header: 'Orden',
+            size: 1,
+            cell: info => <span className="font-bold text-slate-700">{info.getValue()}</span>,
+        }),
+        columnHelper.accessor('client', {
+            header: 'Cliente',
+            size: 1,
+            cell: info => (
+                <span className="text-slate-600 truncate block" title={info.getValue()}>
+                    {info.getValue()}
+                </span>
+            ),
+        }),
+        columnHelper.accessor('desc', {
+            header: 'Detalle Trabajo',
+            size: 1,
+            cell: info => (
+                <span className="text-slate-500 truncate block" title={info.getValue()}>
+                    {info.getValue()}
+                </span>
+            ),
+        }),
+        columnHelper.display({
+            id: 'bulto',
+            header: 'Bulto #',
+            size: 1,
+            cell: ({ row }) => {
+                const { num, total } = row.original;
+                return (
+                    <span className="bg-slate-100 text-slate-600 px-2 py-0.5 rounded text-xs font-bold border border-slate-200">
+                        {num}/{total}
+                    </span>
+                );
+            },
+        }),
+        columnHelper.accessor('code', {
+            header: 'Código Etiqueta',
+            size: 1,
+            cell: info => <span className="font-mono text-xs text-slate-400">{info.getValue() || '-'}</span>,
+        }),
+        columnHelper.display({
+            id: 'estado',
+            header: () => <span className="block text-right">Estado</span>,
+            size: 1,
+            cell: ({ row }) => {
+                const lbl = row.original;
+                const cls = lbl.status === 'Retenido'
+                    ? 'bg-brand-magenta/10 text-brand-magenta border-brand-magenta/20'
+                    : basketTipo === 'logistica'
+                        ? 'bg-brand-cyan/10 text-brand-cyan border-brand-cyan/20'
+                        : 'bg-brand-gold/10 text-brand-gold border-brand-gold/20';
+                return (
+                    <div className="text-right">
+                        <span className={`text-[10px] uppercase font-bold px-2 py-0.5 rounded border ${cls}`}>
+                            {lbl.logStatus || lbl.status}
+                        </span>
+                    </div>
+                );
+            },
+        }),
+    ], [basketTipo]);
+
+    const table = useReactTable({
+        data,
+        columns,
+        getCoreRowModel: getCoreRowModel(),
+    });
+
+    if (!data.length) return (
+        <div className="flex flex-col items-center justify-center h-64 text-slate-300">
+            <i className="fa-solid fa-tags text-4xl mb-4 opacity-20"></i>
+            <p className="text-sm font-bold">No hay etiquetas para mostrar en este canasto</p>
+        </div>
+    );
+
+    return (
+        <div className="flex-1 overflow-auto">
+            <table className="w-full table-fixed text-left border-collapse text-sm">
+                <thead className="bg-slate-50 sticky top-0 z-10 shadow-sm">
+                    {table.getHeaderGroups().map(hg => (
+                        <tr key={hg.id}>
+                            {hg.headers.map(header => (
+                                <th
+                                    key={header.id}
+                                    className="px-6 py-3 border-b border-slate-200 text-[10px] font-black uppercase text-slate-400 tracking-wider"
+                                >
+                                    {flexRender(header.column.columnDef.header, header.getContext())}
+                                </th>
+                            ))}
+                        </tr>
+                    ))}
+                </thead>
+                <tbody className="divide-y divide-slate-100 bg-white">
+                    {table.getRowModel().rows.map(row => {
+                        const lbl = row.original;
+                        return (
+                            <tr
+                                key={row.id}
+                                onClick={() => onToggle(lbl.orderId)}
+                                className={`cursor-pointer transition-colors border-l-4 ${
+                                    lbl.isSelected ? 'bg-brand-cyan/5 border-brand-cyan' : 'hover:bg-slate-50 border-transparent'
+                                }`}
+                            >
+                                {row.getVisibleCells().map(cell => (
+                                    <td key={cell.id} className="px-6 py-3">
+                                        {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                                    </td>
+                                ))}
+                            </tr>
+                        );
+                    })}
+                </tbody>
+            </table>
+        </div>
+    );
+}
 
 export default LogisticsView;

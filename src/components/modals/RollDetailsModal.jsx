@@ -84,35 +84,35 @@ const BobinaAssignmentModal = ({ isOpen, onClose, onSelect, currentMetros, areaC
     return (
         <div className="fixed inset-0 z-[1600] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4 animate-in fade-in duration-200">
             <div className="bg-white rounded-xl shadow-2xl w-full max-w-2xl overflow-hidden flex flex-col max-h-[80vh]">
-                <div className="px-5 py-4 bg-slate-50 border-b border-slate-200 flex justify-between items-center">
-                    <h3 className="font-bold text-slate-800 flex items-center gap-2">
+                <div className="px-5 py-4 bg-zinc-50 border-b border-zinc-200 flex justify-between items-center">
+                    <h3 className="font-bold text-zinc-800 flex items-center gap-2">
                         <i className="fa-solid fa-barcode"></i> Asignar Bobina
                     </h3>
-                    <button onClick={onClose} className="text-slate-400 hover:text-red-500"><i className="fa-solid fa-xmark text-xl"></i></button>
+                    <button onClick={onClose} className="text-zinc-400 hover:text-red-500"><i className="fa-solid fa-xmark text-xl"></i></button>
                 </div>
 
-                <div className="p-4 border-b border-slate-100 bg-white sticky top-0 z-10">
+                <div className="p-4 border-b border-zinc-100 bg-white sticky top-0 z-10">
                     <div className="relative">
-                        <i className="fa-solid fa-magnifying-glass absolute left-3 top-3 text-slate-400"></i>
+                        <i className="fa-solid fa-magnifying-glass absolute left-3 top-3 text-zinc-400"></i>
                         <input
                             ref={searchInputRef}
                             autoFocus
                             type="text"
                             placeholder="Escanear etiqueta o buscar material..."
-                            className="w-full pl-10 pr-4 py-2 border border-blue-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none text-lg font-bold text-slate-700"
+                            className="w-full pl-10 pr-4 py-2 border border-blue-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none text-lg font-bold text-zinc-700"
                             value={search}
                             onChange={e => setSearch(e.target.value)}
                             onKeyDown={handleKeyDown}
                         />
                     </div>
-                    <p className="text-xs text-slate-400 mt-2 ml-1">
+                    <p className="text-xs text-zinc-400 mt-2 ml-1">
                         Mostrando {filteredBobinas.length} bobinas disponibles. Escanea el código para selección rápida.
                     </p>
                 </div>
 
-                <div className="flex-1 overflow-y-auto p-4 bg-slate-50 space-y-2">
+                <div className="flex-1 overflow-y-auto p-4 bg-zinc-50 space-y-2">
                     {loading ? (
-                        <div className="text-center py-10 text-slate-400"><i className="fa-solid fa-circle-notch fa-spin text-2xl"></i> Cargando inventario...</div>
+                        <div className="text-center py-10 text-zinc-400"><i className="fa-solid fa-circle-notch fa-spin text-2xl"></i> Cargando inventario...</div>
                     ) : (
                         filteredBobinas.map(b => (
                             <div
@@ -121,14 +121,14 @@ const BobinaAssignmentModal = ({ isOpen, onClose, onSelect, currentMetros, areaC
                                 className={`p-3 rounded-lg border cursor-pointer transition-all flex justify-between items-center group
                                     ${b.MetrosRestantes < currentMetros
                                         ? 'bg-amber-50 border-amber-200 hover:border-amber-400'
-                                        : 'bg-white border-slate-200 hover:border-blue-400 hover:shadow-md'}`}
+                                        : 'bg-white border-zinc-200 hover:border-blue-400 hover:shadow-md'}`}
                             >
                                 <div className="flex-1">
                                     <div className="flex items-center gap-2 mb-1">
-                                        <span className="font-black text-slate-700 text-sm">{b.MaterialName}</span>
-                                        <span className="text-[10px] bg-slate-100 text-slate-500 px-1.5 rounded border border-slate-200">{b.CodigoEtiqueta || `ID:${b.BobinaID}`}</span>
+                                        <span className="font-black text-zinc-700 text-sm">{b.MaterialName}</span>
+                                        <span className="text-[10px] bg-zinc-100 text-zinc-500 px-1.5 rounded border border-zinc-200">{b.CodigoEtiqueta || `ID:${b.BobinaID}`}</span>
                                     </div>
-                                    <div className="text-xs text-slate-500 flex gap-4">
+                                    <div className="text-xs text-zinc-500 flex gap-4">
                                         <span><i className="fa-regular fa-calendar mr-1"></i> {new Date(b.FechaIngreso).toLocaleDateString()}</span>
                                         <span><i className="fa-solid fa-box mr-1"></i> Lote Prov: {b.LoteProveedor || 'N/A'}</span>
                                     </div>
@@ -138,16 +138,16 @@ const BobinaAssignmentModal = ({ isOpen, onClose, onSelect, currentMetros, areaC
                                     <div className={`text-lg font-black ${b.MetrosRestantes < currentMetros ? 'text-amber-600' : 'text-emerald-600'}`}>
                                         {b.MetrosRestantes.toFixed(1)} m
                                     </div>
-                                    <div className="text-[10px] uppercase font-bold text-slate-400">{b.Estado}</div>
+                                    <div className="text-[10px] uppercase font-bold text-zinc-400">{b.Estado}</div>
                                 </div>
-                                <i className="fa-solid fa-chevron-right text-slate-300 ml-3 group-hover:text-blue-500"></i>
+                                <i className="fa-solid fa-chevron-right text-zinc-300 ml-3 group-hover:text-blue-500"></i>
                             </div>
                         ))
                     )}
                     {!loading && filteredBobinas.length === 0 && (
                         <div className="text-center py-10 opacity-50">
-                            <i className="fa-solid fa-box-open text-4xl text-slate-300 mb-2"></i>
-                            <p className="text-sm text-slate-500">No se encontraron bobinas.</p>
+                            <i className="fa-solid fa-box-open text-4xl text-zinc-300 mb-2"></i>
+                            <p className="text-sm text-zinc-500">No se encontraron bobinas.</p>
                         </div>
                     )}
                 </div>
@@ -193,11 +193,11 @@ const SwapConfigDialog = ({ isOpen, onClose, onConfirm, bobinaId }) => {
     return (
         <div className="fixed inset-0 z-[1700] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-in fade-in duration-200">
             <div className="bg-white rounded-xl shadow-2xl w-full max-w-md overflow-hidden animate-in zoom-in-95">
-                <div className="px-5 py-4 bg-slate-50 border-b border-slate-200 flex justify-between items-center">
-                    <h3 className="font-bold text-slate-800 flex items-center gap-2">
+                <div className="px-5 py-4 bg-zinc-50 border-b border-zinc-200 flex justify-between items-center">
+                    <h3 className="font-bold text-zinc-800 flex items-center gap-2">
                         <i className="fa-solid fa-rotate"></i> Cambio de Bobina
                     </h3>
-                    <button onClick={onClose} className="text-slate-400 hover:text-red-500"><i className="fa-solid fa-xmark text-xl"></i></button>
+                    <button onClick={onClose} className="text-zinc-400 hover:text-red-500"><i className="fa-solid fa-xmark text-xl"></i></button>
                 </div>
 
                 <div className="p-6 space-y-6">
@@ -205,32 +205,32 @@ const SwapConfigDialog = ({ isOpen, onClose, onConfirm, bobinaId }) => {
                         <i className="fa-solid fa-tape text-blue-500 text-xl"></i>
                         <div>
                             <div className="text-xs text-blue-400 font-bold uppercase">Bobina Saliente</div>
-                            <div className="font-black text-slate-700">ID: {bobinaId}</div>
+                            <div className="font-black text-zinc-700">ID: {bobinaId}</div>
                         </div>
                     </div>
 
                     {/* Estado Bobina Saliente */}
                     <div>
-                        <label className="block text-sm font-bold text-slate-700 mb-3">¿En qué estado queda la bobina?</label>
+                        <label className="block text-sm font-bold text-zinc-700 mb-3">¿En qué estado queda la bobina?</label>
                         <div className="grid grid-cols-2 gap-3">
-                            <label className={`cursor-pointer border-2 rounded-lg p-3 flex flex-col items-center gap-2 transition-all ${action === 'exhausted' ? 'border-red-500 bg-red-50' : 'border-slate-200 hover:border-red-200'}`}>
+                            <label className={`cursor-pointer border-2 rounded-lg p-3 flex flex-col items-center gap-2 transition-all ${action === 'exhausted' ? 'border-red-500 bg-red-50' : 'border-zinc-200 hover:border-red-200'}`}>
                                 <input type="radio" name="swapAction" className="hidden" value="exhausted" checked={action === 'exhausted'} onChange={() => setAction('exhausted')} />
-                                <i className={`fa-solid fa-skull-crossbones text-2xl ${action === 'exhausted' ? 'text-red-600' : 'text-slate-300'}`}></i>
-                                <span className={`text-xs font-bold ${action === 'exhausted' ? 'text-red-700' : 'text-slate-500'}`}>Se Terminó</span>
+                                <i className={`fa-solid fa-skull-crossbones text-2xl ${action === 'exhausted' ? 'text-red-600' : 'text-zinc-300'}`}></i>
+                                <span className={`text-xs font-bold ${action === 'exhausted' ? 'text-red-700' : 'text-zinc-500'}`}>Se Terminó</span>
                             </label>
-                            <label className={`cursor-pointer border-2 rounded-lg p-3 flex flex-col items-center gap-2 transition-all ${action === 'return' ? 'border-emerald-500 bg-emerald-50' : 'border-slate-200 hover:border-emerald-200'}`}>
+                            <label className={`cursor-pointer border-2 rounded-lg p-3 flex flex-col items-center gap-2 transition-all ${action === 'return' ? 'border-emerald-500 bg-emerald-50' : 'border-zinc-200 hover:border-emerald-200'}`}>
                                 <input type="radio" name="swapAction" className="hidden" value="return" checked={action === 'return'} onChange={() => setAction('return')} />
-                                <i className={`fa-solid fa-recycle text-2xl ${action === 'return' ? 'text-emerald-600' : 'text-slate-300'}`}></i>
-                                <span className={`text-xs font-bold ${action === 'return' ? 'text-emerald-700' : 'text-slate-500'}`}>Retorna al Stock</span>
+                                <i className={`fa-solid fa-recycle text-2xl ${action === 'return' ? 'text-emerald-600' : 'text-zinc-300'}`}></i>
+                                <span className={`text-xs font-bold ${action === 'return' ? 'text-emerald-700' : 'text-zinc-500'}`}>Retorna al Stock</span>
                             </label>
                         </div>
                     </div>
 
                     {/* Reporte de Merma */}
-                    <div className="border-t border-slate-100 pt-4">
+                    <div className="border-t border-zinc-100 pt-4">
                         <label className="flex items-center gap-2 cursor-pointer mb-3 select-none">
                             <input type="checkbox" className="w-4 h-4 text-orange-500 focus:ring-orange-500 rounded" checked={hasWaste} onChange={e => setHasWaste(e.target.checked)} />
-                            <span className="text-sm font-bold text-slate-700">Hubo Desperdicio / Fallo de Material</span>
+                            <span className="text-sm font-bold text-zinc-700">Hubo Desperdicio / Fallo de Material</span>
                         </label>
 
                         {hasWaste && (
@@ -240,7 +240,7 @@ const SwapConfigDialog = ({ isOpen, onClose, onConfirm, bobinaId }) => {
                                     <div className="relative">
                                         <input
                                             type="number"
-                                            className="w-full pl-3 pr-8 py-2 border border-orange-200 rounded focus:ring-2 focus:ring-orange-300 outline-none text-slate-700 font-bold"
+                                            className="w-full pl-3 pr-8 py-2 border border-orange-200 rounded focus:ring-2 focus:ring-orange-300 outline-none text-zinc-700 font-bold"
                                             placeholder="0.00"
                                             value={wasteMeters}
                                             onChange={e => setWasteMeters(e.target.value)}
@@ -253,7 +253,7 @@ const SwapConfigDialog = ({ isOpen, onClose, onConfirm, bobinaId }) => {
                                     <label className="block text-xs font-bold text-orange-700 mb-1">Motivo / Causa</label>
                                     <input
                                         type="text"
-                                        className="w-full px-3 py-2 border border-orange-200 rounded focus:ring-2 focus:ring-orange-300 outline-none text-slate-700 text-sm"
+                                        className="w-full px-3 py-2 border border-orange-200 rounded focus:ring-2 focus:ring-orange-300 outline-none text-zinc-700 text-sm"
                                         placeholder="Ej: Material arrugado, mancha, rotura..."
                                         value={wasteReason}
                                         onChange={e => setWasteReason(e.target.value)}
@@ -264,8 +264,8 @@ const SwapConfigDialog = ({ isOpen, onClose, onConfirm, bobinaId }) => {
                     </div>
                 </div>
 
-                <div className="px-6 py-4 bg-slate-50 border-t border-slate-200 flex justify-end gap-3">
-                    <button onClick={onClose} className="px-4 py-2 text-slate-500 font-bold hover:bg-slate-200 rounded-lg text-sm">Cancelar</button>
+                <div className="px-6 py-4 bg-zinc-50 border-t border-zinc-200 flex justify-end gap-3">
+                    <button onClick={onClose} className="px-4 py-2 text-zinc-500 font-bold hover:bg-zinc-200 rounded-lg text-sm">Cancelar</button>
                     <button onClick={handleSubmit} className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-lg text-sm shadow-md shadow-blue-500/20">Continuar <i className="fa-solid fa-arrow-right ml-1"></i></button>
                 </div>
             </div>
@@ -692,7 +692,7 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { } }) 
 
     return (
         <>
-            <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[1400] flex items-center justify-center p-4 animate-in fade-in duration-200" onClick={onClose}>
+            <div className="fixed inset-0 bg-zinc-900/60 backdrop-blur-sm z-[1400] flex items-center justify-center p-4 animate-in fade-in duration-200" onClick={onClose}>
                 <div
                     ref={modalRef}
                     className="bg-white rounded-xl shadow-2xl w-full max-w-[95vw] h-[90vh] flex flex-col overflow-hidden animate-in zoom-in-95 slide-in-from-bottom-4 duration-300"
@@ -700,12 +700,12 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { } }) 
                 >
 
                     {/* Header */}
-                    <div className="px-6 py-4 border-b border-slate-100 flex justify-between items-center bg-white shrink-0">
+                    <div className="px-6 py-4 border-b border-zinc-100 flex justify-between items-center bg-white shrink-0">
                         <div className="flex flex-col">
-                            <h3 className="text-xl font-black text-slate-800 flex items-center gap-2">
+                            <h3 className="text-xl font-black text-zinc-800 flex items-center gap-2">
                                 <i className="fa-solid fa-scroll text-blue-500"></i>
                                 {loading ? 'Cargando...' : freshRoll.name}
-                                {loading && <i className="fa-solid fa-spinner fa-spin text-sm text-slate-400 ml-2"></i>}
+                                {loading && <i className="fa-solid fa-spinner fa-spin text-sm text-zinc-400 ml-2"></i>}
                             </h3>
                             <div className="flex items-center gap-2 mt-1">
                                 {freshRoll.id && String(freshRoll.id).startsWith('R-') && (
@@ -717,40 +717,40 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { } }) 
                         </div>
                         <button
                             onClick={onClose}
-                            className="w-8 h-8 rounded-full flex items-center justify-center text-slate-400 hover:bg-slate-100 hover:text-red-500 transition-colors"
+                            className="w-8 h-8 rounded-full flex items-center justify-center text-zinc-400 hover:bg-zinc-100 hover:text-red-500 transition-colors"
                         >
                             <i className="fa-solid fa-xmark text-xl"></i>
                         </button>
                     </div>
 
                     {/* Stats Bar */}
-                    <div className="px-6 py-5 bg-slate-50 border-b border-slate-200 flex gap-8 items-center flex-wrap shrink-0">
+                    <div className="px-6 py-5 bg-zinc-50 border-b border-zinc-200 flex gap-8 items-center flex-wrap shrink-0">
                         <div className="flex flex-col items-start min-w-[80px]">
-                            <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Órdenes</span>
-                            <span className="text-3xl font-black text-slate-700 leading-none">{totalOrders}</span>
+                            <span className="text-[10px] font-black text-zinc-400 uppercase tracking-widest mb-1">Órdenes</span>
+                            <span className="text-3xl font-black text-zinc-700 leading-none">{totalOrders}</span>
                         </div>
 
-                        <div className="w-px h-10 bg-slate-200"></div>
+                        <div className="w-px h-10 bg-zinc-200"></div>
 
                         <div className="flex flex-col items-start min-w-[80px]">
-                            <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Archivos</span>
-                            <span className={`text-3xl font-black leading-none flex items-center gap-1 ${totalFiles > 0 ? 'text-blue-500' : 'text-slate-300'}`}>
+                            <span className="text-[10px] font-black text-zinc-400 uppercase tracking-widest mb-1">Archivos</span>
+                            <span className={`text-3xl font-black leading-none flex items-center gap-1 ${totalFiles > 0 ? 'text-blue-500' : 'text-zinc-300'}`}>
                                 {totalFiles} <i className="fa-solid fa-paperclip text-sm opacity-40 -mt-2"></i>
                             </span>
                         </div>
 
-                        <div className="w-px h-10 bg-slate-200"></div>
+                        <div className="w-px h-10 bg-zinc-200"></div>
 
                         {/* SECCIÓN BOBINA / MATERIAL */}
                         <div className="flex flex-col items-start min-w-[200px]">
-                            <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Bobina Asignada</span>
+                            <span className="text-[10px] font-black text-zinc-400 uppercase tracking-widest mb-1">Bobina Asignada</span>
                             {freshRoll.BobinaID ? (
                                 <div className="flex items-center gap-2">
                                     <span className="bg-green-100 text-green-700 px-3 py-1 rounded font-bold text-sm border border-green-200 shadow-sm flex items-center cursor-pointer hover:bg-green-200" onClick={startSwapProcess} title="Clic para cambiar/agotar bobina">
                                         <i className="fa-solid fa-check-circle mr-2"></i>
                                         ID: {freshRoll.CodeBobina || freshRoll.BobinaID}
                                     </span>
-                                    <button onClick={startSwapProcess} className="text-slate-400 hover:text-blue-500 w-6 h-6 flex items-center justify-center rounded hover:bg-slate-100" title="Cambiar Bobina"><i className="fa-solid fa-rotate"></i></button>
+                                    <button onClick={startSwapProcess} className="text-zinc-400 hover:text-blue-500 w-6 h-6 flex items-center justify-center rounded hover:bg-zinc-100" title="Cambiar Bobina"><i className="fa-solid fa-rotate"></i></button>
                                 </div>
                             ) : (
                                 <div className="flex items-center gap-2">
@@ -765,27 +765,27 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { } }) 
                                     </button>
                                 </div>
                             )}
-                            <div className="mt-1 text-[10px] text-slate-400 truncate max-w-[200px]" title={orders[0]?.material}>
+                            <div className="mt-1 text-[10px] text-zinc-400 truncate max-w-[200px]" title={orders[0]?.material}>
                                 Mat: {orders[0]?.material || 'N/A'}
                             </div>
                         </div>
 
-                        <div className="w-px h-10 bg-slate-200"></div>
+                        <div className="w-px h-10 bg-zinc-200"></div>
 
                         <div className="flex flex-col items-start min-w-[80px]">
-                            <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Total Metros</span>
+                            <span className="text-[10px] font-black text-zinc-400 uppercase tracking-widest mb-1">Total Metros</span>
                             <div className="flex items-baseline gap-1">
-                                <span className="text-3xl font-black text-slate-700 leading-none">{totalMeters.toFixed(2)}</span>
-                                <span className="text-xs font-bold text-slate-400">m</span>
+                                <span className="text-3xl font-black text-zinc-700 leading-none">{totalMeters.toFixed(2)}</span>
+                                <span className="text-xs font-bold text-zinc-400">m</span>
                             </div>
                         </div>
 
                         <div className="flex-1 flex flex-col justify-end items-end min-w-[140px] ml-auto">
-                            <div className="text-xs font-bold text-slate-500 mb-2 flex justify-between w-full">
+                            <div className="text-xs font-bold text-zinc-500 mb-2 flex justify-between w-full">
                                 <span className="uppercase tracking-wide text-[10px]">Capacidad</span>
-                                <span><span className="text-slate-800">{freshRoll.currentUsage?.toFixed(1)}</span> <span className="text-slate-400">/ {freshRoll.capacity}m</span></span>
+                                <span><span className="text-zinc-800">{freshRoll.currentUsage?.toFixed(1)}</span> <span className="text-zinc-400">/ {freshRoll.capacity}m</span></span>
                             </div>
-                            <div className="w-full h-3 bg-slate-200 rounded-full overflow-hidden shadow-inner">
+                            <div className="w-full h-3 bg-zinc-200 rounded-full overflow-hidden shadow-inner">
                                 <div
                                     className="h-full transition-all duration-700 ease-out relative overflow-hidden"
                                     style={{
@@ -800,20 +800,20 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { } }) 
                     </div>
 
                     {/* Body Table */}
-                    <div className="flex-1 overflow-y-auto bg-slate-50/30 p-6 min-h-[300px]">
-                        <div className="bg-white border border-slate-200 rounded-xl overflow-hidden shadow-sm overflow-x-auto">
+                    <div className="flex-1 overflow-y-auto bg-zinc-50/30 p-6 min-h-[300px]">
+                        <div className="bg-white border border-zinc-200 rounded-xl overflow-hidden shadow-sm overflow-x-auto">
                             <table className="w-full text-sm text-left min-w-[800px]">
-                                <thead className="text-xs text-slate-500 uppercase bg-slate-50 border-b border-slate-200 font-bold tracking-wider sticky top-0 z-10">
+                                <thead className="text-xs text-zinc-500 uppercase bg-zinc-50 border-b border-zinc-200 font-bold tracking-wider sticky top-0 z-10">
                                     <tr>
                                         <th className="px-4 py-3 w-10 text-center">
                                             <input
                                                 type="checkbox"
-                                                className="w-4 h-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
+                                                className="w-4 h-4 rounded border-zinc-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
                                                 checked={orders.length > 0 && selectedOrderIds.length === orders.length}
                                                 onChange={handleToggleAll}
                                             />
                                         </th>
-                                        <th className="px-4 py-3 w-12 text-center text-slate-300">#</th>
+                                        <th className="px-4 py-3 w-12 text-center text-zinc-300">#</th>
                                         <th className="px-4 py-3">Orden</th>
                                         <th className="px-4 py-3">Cliente / Trabajo</th>
                                         <th className="px-4 py-3">Material</th>
@@ -824,25 +824,25 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { } }) 
                                         <th className="px-4 py-3 w-24 text-center">Acciones</th>
                                     </tr>
                                 </thead>
-                                <tbody className="divide-y divide-slate-100">
+                                <tbody className="divide-y divide-zinc-100">
                                     {orders.map((o, idx) => (
                                         <tr key={o.id} className={`transition-colors group ${selectedOrderIds.includes(o.id) ? 'bg-blue-50/60' : 'hover:bg-blue-50/40'}`}>
                                             <td className="px-4 py-3 text-center">
                                                 <input
                                                     type="checkbox"
-                                                    className="w-4 h-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
+                                                    className="w-4 h-4 rounded border-zinc-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
                                                     checked={selectedOrderIds.includes(o.id)}
                                                     onChange={() => handleToggleOne(o.id)}
                                                 />
                                             </td>
-                                            <td className="px-4 py-3 text-center text-slate-300 font-mono text-xs">{idx + 1}</td>
-                                            <td className="px-4 py-3 font-bold text-slate-700 min-w-[120px]">Orden No.: {o.code || o.CodigoOrden}</td>
+                                            <td className="px-4 py-3 text-center text-zinc-300 font-mono text-xs">{idx + 1}</td>
+                                            <td className="px-4 py-3 font-bold text-zinc-700 min-w-[120px]">Orden No.: {o.code || o.CodigoOrden}</td>
                                             <td className="px-4 py-3 max-w-[240px]">
-                                                <div className="font-bold text-slate-700 truncate">{o.client || o.Cliente}</div>
-                                                <div className="text-xs text-slate-400 truncate italic">{o.desc || o.DescripcionTrabajo}</div>
+                                                <div className="font-bold text-zinc-700 truncate">{o.client || o.Cliente}</div>
+                                                <div className="text-xs text-zinc-400 truncate italic">{o.desc || o.DescripcionTrabajo}</div>
                                             </td>
                                             <td className="px-4 py-3">
-                                                <div className="text-slate-600 font-medium truncate uppercase text-xs">{o.material || o.Material || '-'}</div>
+                                                <div className="text-zinc-600 font-medium truncate uppercase text-xs">{o.material || o.Material || '-'}</div>
                                                 {o.variantCode && (
                                                     <div className="inline-block px-1.5 py-0.5 rounded text-[9px] font-bold text-indigo-500 bg-indigo-50 mt-1 border border-indigo-100">
                                                         {o.variantCode}
@@ -855,17 +855,17 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { } }) 
                                                         {o.fileCount}
                                                     </span>
                                                 ) : (
-                                                    <span className="text-slate-200 text-xs">-</span>
+                                                    <span className="text-zinc-200 text-xs">-</span>
                                                 )}
                                             </td>
-                                            <td className="px-4 py-3 text-center font-mono font-bold text-slate-700">
-                                                {o.magnitude || 0}<span className="text-[10px] text-slate-400 ml-0.5">m</span>
+                                            <td className="px-4 py-3 text-center font-mono font-bold text-zinc-700">
+                                                {o.magnitude || 0}<span className="text-[10px] text-zinc-400 ml-0.5">m</span>
                                             </td>
                                             <td className="px-4 py-3 text-center">
                                                 <span className={`px-2 py-1 rounded text-[10px] font-bold border uppercase tracking-wide
                                                     ${o.priority === 'Urgente'
                                                         ? 'bg-red-50 text-red-600 border-red-100'
-                                                        : 'bg-slate-50 text-slate-500 border-slate-100'}`}>
+                                                        : 'bg-zinc-50 text-zinc-500 border-zinc-100'}`}>
                                                     {(o.priority || 'Normal')}
                                                 </span>
                                             </td>
@@ -873,9 +873,9 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { } }) 
                                                 {o.note && o.note.trim() !== '' && (
                                                     <div className="group/note relative flex justify-center">
                                                         <i className="fa-solid fa-message text-amber-500 text-lg cursor-help"></i>
-                                                        <div className="absolute bottom-full mb-2 hidden group-hover/note:block z-50 w-48 p-2 bg-slate-800 text-white text-xs rounded shadow-lg">
+                                                        <div className="absolute bottom-full mb-2 hidden group-hover/note:block z-50 w-48 p-2 bg-zinc-800 text-white text-xs rounded shadow-lg">
                                                             {o.note}
-                                                            <div className="absolute top-full left-1/2 -ml-1 border-4 border-transparent border-t-slate-800"></div>
+                                                            <div className="absolute top-full left-1/2 -ml-1 border-4 border-transparent border-t-zinc-800"></div>
                                                         </div>
                                                     </div>
                                                 )}
@@ -884,14 +884,14 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { } }) 
                                                 <div className="flex items-center justify-center gap-2">
                                                     <button
                                                         onClick={() => onViewOrder && onViewOrder(o)}
-                                                        className="w-7 h-7 flex items-center justify-center rounded-full text-slate-400 hover:text-blue-600 hover:bg-blue-50 transition-all"
+                                                        className="w-7 h-7 flex items-center justify-center rounded-full text-zinc-400 hover:text-blue-600 hover:bg-blue-50 transition-all"
                                                         title="Ver detalle orden"
                                                     >
                                                         <i className="fa-regular fa-eye"></i>
                                                     </button>
                                                     <button
                                                         onClick={() => handleUnassign(o)}
-                                                        className="w-7 h-7 flex items-center justify-center rounded-full text-slate-400 hover:text-red-600 hover:bg-red-50 transition-all"
+                                                        className="w-7 h-7 flex items-center justify-center rounded-full text-zinc-400 hover:text-red-600 hover:bg-red-50 transition-all"
                                                         title="Sacar del Rollo (Deshacer)"
                                                     >
                                                         <i className="fa-solid fa-rotate-left"></i>
@@ -904,8 +904,8 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { } }) 
                                         <tr>
                                             <td colSpan="8" className="text-center py-12">
                                                 <div className="flex flex-col items-center justify-center opacity-40">
-                                                    <i className="fa-solid fa-folder-open text-4xl mb-2 text-slate-300"></i>
-                                                    <span className="text-slate-500 italic">No hay órdenes en este lote.</span>
+                                                    <i className="fa-solid fa-folder-open text-4xl mb-2 text-zinc-300"></i>
+                                                    <span className="text-zinc-500 italic">No hay órdenes en este lote.</span>
                                                 </div>
                                             </td>
                                         </tr>
@@ -916,7 +916,7 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { } }) 
                     </div>
 
                     {/* Footer */}
-                    <div className="px-6 py-4 border-t border-slate-100 bg-white flex justify-end gap-3 z-10 shrink-0">
+                    <div className="px-6 py-4 border-t border-zinc-100 bg-white flex justify-end gap-3 z-10 shrink-0">
                         {selectedOrderIds.length > 0 && (
                             <button
                                 className="px-4 py-2 bg-red-500 hover:bg-red-600 text-white rounded-lg text-sm font-bold flex items-center gap-2 transition-all shadow-md shadow-red-500/20 active:scale-95 mr-auto animate-in fade-in"
@@ -959,7 +959,7 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { } }) 
                             {freshRoll.labelsCount > 0 ? 'Imprimir Etiquetas Existentes' : 'Generar Etiquetas'}
                         </button>
                         <button
-                            className="px-6 py-2 border border-slate-200 hover:bg-slate-50 text-slate-600 rounded-lg text-sm font-bold transition-colors active:scale-95"
+                            className="px-6 py-2 border border-zinc-200 hover:bg-zinc-50 text-zinc-600 rounded-lg text-sm font-bold transition-colors active:scale-95"
                             onClick={onClose}
                         >
                             Cerrar
@@ -989,3 +989,4 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { } }) 
 };
 
 export default RollDetailsModal;
+

@@ -52,15 +52,15 @@ const RollSplitModal = ({ isOpen, onClose, roll, areaId }) => {
     return (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
             <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl overflow-hidden animate-in fade-in zoom-in duration-200">
-                <div className="p-6 border-b border-slate-100 flex justify-between items-center bg-slate-50">
+                <div className="p-6 border-b border-zinc-100 flex justify-between items-center bg-zinc-50">
                     <div>
-                        <h2 className="text-xl font-bold text-slate-800 flex items-center gap-2">
+                        <h2 className="text-xl font-bold text-zinc-800 flex items-center gap-2">
                             <i className="fa-solid fa-scissors text-amber-500"></i>
                             Corte de Bobina / Finalizado Parcial
                         </h2>
-                        <p className="text-xs text-slate-500 mt-1">Lote: {roll.name}</p>
+                        <p className="text-xs text-zinc-500 mt-1">Lote: {roll.name}</p>
                     </div>
-                    <button onClick={onClose} className="w-8 h-8 rounded-full bg-white hover:bg-slate-100 flex items-center justify-center text-slate-400 hover:text-red-500 transition-colors">
+                    <button onClick={onClose} className="w-8 h-8 rounded-full bg-white hover:bg-zinc-100 flex items-center justify-center text-zinc-400 hover:text-red-500 transition-colors">
                         <i className="fa-solid fa-times"></i>
                     </button>
                 </div>
@@ -81,19 +81,19 @@ const RollSplitModal = ({ isOpen, onClose, roll, areaId }) => {
                                     <div
                                         key={order.id}
                                         onClick={() => setSelectedOrderId(order.id)}
-                                        className={`p-3 rounded-lg border cursor-pointer transition-all flex items-center justify-between ${selectedOrderId === order.id ? 'bg-blue-50 border-blue-500 ring-1 ring-blue-500 shadow-sm' : 'bg-white border-slate-200 hover:border-blue-300'}`}
+                                        className={`p-3 rounded-lg border cursor-pointer transition-all flex items-center justify-between ${selectedOrderId === order.id ? 'bg-blue-50 border-blue-500 ring-1 ring-blue-500 shadow-sm' : 'bg-white border-zinc-200 hover:border-blue-300'}`}
                                     >
                                         <div className="flex items-center gap-3">
-                                            <span className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold ${selectedOrderId === order.id ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-500'}`}>
+                                            <span className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold ${selectedOrderId === order.id ? 'bg-blue-600 text-white' : 'bg-zinc-100 text-zinc-500'}`}>
                                                 {idx + 1}
                                             </span>
                                             <div>
-                                                <p className="font-bold text-slate-700 text-sm">{order.code} - {order.client}</p>
-                                                <p className="text-xs text-slate-500 max-w-[300px] truncate">{order.desc}</p>
+                                                <p className="font-bold text-zinc-700 text-sm">{order.code} - {order.client}</p>
+                                                <p className="text-xs text-zinc-500 max-w-[300px] truncate">{order.desc}</p>
                                             </div>
                                         </div>
                                         <div className="text-right">
-                                            <span className="text-xs font-bold text-slate-600 bg-slate-100 px-2 py-1 rounded">
+                                            <span className="text-xs font-bold text-zinc-600 bg-zinc-100 px-2 py-1 rounded">
                                                 {order.magnitudeStr || 'N/A'}
                                             </span>
                                         </div>
@@ -116,13 +116,13 @@ const RollSplitModal = ({ isOpen, onClose, roll, areaId }) => {
                     {step === 2 && (
                         <div>
                             <div className="mb-6">
-                                <label className="block text-sm font-bold text-slate-700 mb-2">Bobina para el Restante (Opcional)</label>
-                                <p className="text-xs text-slate-500 mb-3">Si ya montaste la nueva bobina, selecciónala aquí para asignarla al nuevo lote automáticamente.</p>
+                                <label className="block text-sm font-bold text-zinc-700 mb-2">Bobina para el Restante (Opcional)</label>
+                                <p className="text-xs text-zinc-500 mb-3">Si ya montaste la nueva bobina, selecciónala aquí para asignarla al nuevo lote automáticamente.</p>
 
                                 <select
                                     value={newBobinaId}
                                     onChange={(e) => setNewBobinaId(e.target.value)}
-                                    className="w-full p-3 bg-slate-50 border border-slate-200 rounded-lg text-sm font-medium focus:ring-2 focus:ring-blue-500 outline-none"
+                                    className="w-full p-3 bg-zinc-50 border border-zinc-200 rounded-lg text-sm font-medium focus:ring-2 focus:ring-blue-500 outline-none"
                                 >
                                     <option value="">-- Dejar nueva bobina pendiente (Solo crear Lote) --</option>
                                     {availableBobinas.map(b => (
@@ -133,10 +133,10 @@ const RollSplitModal = ({ isOpen, onClose, roll, areaId }) => {
                                 </select>
                             </div>
 
-                            <div className="flex items-center gap-4 pt-6 border-t border-slate-100">
+                            <div className="flex items-center gap-4 pt-6 border-t border-zinc-100">
                                 <button
                                     onClick={() => setStep(1)}
-                                    className="px-4 py-2 text-slate-500 hover:text-slate-800 font-bold"
+                                    className="px-4 py-2 text-zinc-500 hover:text-zinc-800 font-bold"
                                 >
                                     Atrás
                                 </button>
@@ -158,3 +158,4 @@ const RollSplitModal = ({ isOpen, onClose, roll, areaId }) => {
 };
 
 export default RollSplitModal;
+

@@ -63,40 +63,40 @@ const ActiveRollModal = ({ isOpen, onClose, roll, onSuccess }) => {
 
     return (
         <>
-            <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[1400] flex items-center justify-center p-4 animate-in fade-in duration-200" onClick={onClose}>
+            <div className="fixed inset-0 bg-zinc-900/60 backdrop-blur-sm z-[1400] flex items-center justify-center p-4 animate-in fade-in duration-200" onClick={onClose}>
                 <div
                     className="bg-white rounded-xl shadow-2xl w-full max-w-4xl max-h-[90vh] flex flex-col overflow-hidden animate-in zoom-in-95 duration-300"
                     onClick={e => e.stopPropagation()}
                 >
                     {/* Header */}
-                    <div className="px-6 py-4 border-b border-slate-100 flex justify-between items-center bg-white shrink-0">
-                        <h3 className="text-xl font-black text-slate-800 flex items-center gap-3">
-                            <i className="fa-solid fa-print p-2 rounded-lg bg-slate-100 shadow-sm" style={{ color: roll.color }}></i>
-                            Gestión de Producción <span className="text-slate-400 font-bold mx-1">/</span> {roll.name}
+                    <div className="px-6 py-4 border-b border-zinc-100 flex justify-between items-center bg-white shrink-0">
+                        <h3 className="text-xl font-black text-zinc-800 flex items-center gap-3">
+                            <i className="fa-solid fa-print p-2 rounded-lg bg-zinc-100 shadow-sm" style={{ color: roll.color }}></i>
+                            Gestión de Producción <span className="text-zinc-400 font-bold mx-1">/</span> {roll.name}
                         </h3>
                         <button
                             onClick={onClose}
-                            className="w-8 h-8 rounded-full flex items-center justify-center text-slate-400 hover:bg-slate-100 hover:text-red-500 transition-colors"
+                            className="w-8 h-8 rounded-full flex items-center justify-center text-zinc-400 hover:bg-zinc-100 hover:text-red-500 transition-colors"
                         >
                             <i className="fa-solid fa-xmark text-xl"></i>
                         </button>
                     </div>
 
-                    <div className="p-6 flex flex-col gap-6 overflow-hidden flex-1 bg-slate-50/50">
+                    <div className="p-6 flex flex-col gap-6 overflow-hidden flex-1 bg-zinc-50/50">
 
                         {/* ACCIONES DEL ROLLO */}
-                        <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm flex justify-between items-center flex-wrap gap-4">
+                        <div className="bg-white p-5 rounded-xl border border-zinc-200 shadow-sm flex justify-between items-center flex-wrap gap-4">
                             <div className="flex flex-col">
-                                <span className="text-[10px] uppercase font-black tracking-widest text-slate-400 mb-1">Progreso Actual</span>
+                                <span className="text-[10px] uppercase font-black tracking-widest text-zinc-400 mb-1">Progreso Actual</span>
                                 <div className="flex items-baseline gap-2">
                                     <h2 className="text-2xl font-black" style={{ color: roll.color }}>{roll.usage}</h2>
-                                    <span className="text-slate-400 font-bold text-sm">/ {roll.capacity}m</span>
+                                    <span className="text-zinc-400 font-bold text-sm">/ {roll.capacity}m</span>
                                 </div>
                             </div>
                             <div className="flex gap-3">
                                 <button
                                     onClick={generateManifest}
-                                    className="px-4 py-2 bg-slate-700 text-white text-sm font-bold rounded-lg shadow hover:bg-slate-800 hover:shadow-lg transition-all active:scale-95 flex items-center gap-2"
+                                    className="px-4 py-2 bg-zinc-700 text-white text-sm font-bold rounded-lg shadow hover:bg-zinc-800 hover:shadow-lg transition-all active:scale-95 flex items-center gap-2"
                                 >
                                     <i className="fa-solid fa-qrcode"></i> Imprimir QR / PDF
                                 </button>
@@ -113,16 +113,16 @@ const ActiveRollModal = ({ isOpen, onClose, roll, onSuccess }) => {
                         </div>
 
                         {/* LISTA DE ÓRDENES EN EL ROLLO */}
-                        <div className="flex flex-col flex-1 overflow-hidden bg-white border border-slate-200 rounded-xl shadow-sm">
-                            <div className="px-4 py-3 border-b border-slate-100 bg-slate-50">
-                                <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wider flex items-center gap-2">
+                        <div className="flex flex-col flex-1 overflow-hidden bg-white border border-zinc-200 rounded-xl shadow-sm">
+                            <div className="px-4 py-3 border-b border-zinc-100 bg-zinc-50">
+                                <h4 className="text-xs font-bold text-zinc-500 uppercase tracking-wider flex items-center gap-2">
                                     <i className="fa-solid fa-list-ul"></i> Órdenes en Cola de Impresión
                                 </h4>
                             </div>
 
                             <div className="overflow-y-auto flex-1">
                                 <table className="w-full text-sm text-left">
-                                    <thead className="text-xs text-slate-500 uppercase bg-white border-b border-slate-200 sticky top-0">
+                                    <thead className="text-xs text-zinc-500 uppercase bg-white border-b border-zinc-200 sticky top-0">
                                         <tr>
                                             <th className="px-4 py-3 font-bold">ID</th>
                                             <th className="px-4 py-3 font-bold">Cliente</th>
@@ -132,20 +132,20 @@ const ActiveRollModal = ({ isOpen, onClose, roll, onSuccess }) => {
                                             <th className="px-4 py-3 font-bold text-center w-32">Acción</th>
                                         </tr>
                                     </thead>
-                                    <tbody className="divide-y divide-slate-100">
+                                    <tbody className="divide-y divide-zinc-100">
                                         {roll.orders.map((order, idx) => (
-                                            <tr key={order.id} className="hover:bg-slate-50 transition-colors">
-                                                <td className="px-4 py-3 font-mono font-bold text-slate-700 min-w-[120px]">
+                                            <tr key={order.id} className="hover:bg-zinc-50 transition-colors">
+                                                <td className="px-4 py-3 font-mono font-bold text-zinc-700 min-w-[120px]">
                                                     {order.code || order.id}
                                                 </td>
-                                                <td className="px-4 py-3 font-semibold text-slate-600 truncate max-w-[150px]">{order.client}</td>
-                                                <td className="px-4 py-3 text-slate-500 truncate max-w-[200px]">{order.desc}</td>
+                                                <td className="px-4 py-3 font-semibold text-zinc-600 truncate max-w-[150px]">{order.client}</td>
+                                                <td className="px-4 py-3 text-zinc-500 truncate max-w-[200px]">{order.desc}</td>
                                                 <td className="px-4 py-3">
                                                     <span className="bg-indigo-50 text-indigo-700 px-2 py-0.5 rounded text-[10px] uppercase font-bold border border-indigo-100">
                                                         {order.variant || order.material || 'N/A'}
                                                     </span>
                                                 </td>
-                                                <td className="px-4 py-3 font-bold text-slate-800">{order.magnitude}m</td>
+                                                <td className="px-4 py-3 font-bold text-zinc-800">{order.magnitude}m</td>
                                                 <td className="px-4 py-3 text-center">
                                                     <button
                                                         onClick={() => {
@@ -168,7 +168,7 @@ const ActiveRollModal = ({ isOpen, onClose, roll, onSuccess }) => {
                                         ))}
                                         {roll.orders.length === 0 && (
                                             <tr>
-                                                <td colSpan="6" className="py-12 text-center text-slate-400 italic">
+                                                <td colSpan="6" className="py-12 text-center text-zinc-400 italic">
                                                     Lote vacío. No hay órdenes asignadas.
                                                 </td>
                                             </tr>
@@ -186,3 +186,4 @@ const ActiveRollModal = ({ isOpen, onClose, roll, onSuccess }) => {
 };
 
 export default ActiveRollModal;
+

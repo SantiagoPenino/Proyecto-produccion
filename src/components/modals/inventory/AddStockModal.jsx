@@ -70,18 +70,18 @@ const AddStockModal = ({ isOpen, onClose, areas = [], onSuccess }) => {
         <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
             <div className="bg-white rounded-lg shadow-xl w-full max-w-md">
                 <div className="flex justify-between items-center p-4 border-b">
-                    <h2 className="text-lg font-bold text-slate-800">Ingreso de Material</h2>
-                    <button onClick={onClose}><X className="w-5 h-5 text-slate-500" /></button>
+                    <h2 className="text-lg font-bold text-zinc-800">Ingreso de Material</h2>
+                    <button onClick={onClose}><X className="w-5 h-5 text-zinc-500" /></button>
                 </div>
 
                 <form onSubmit={handleSubmit} className="p-6 space-y-4">
 
                     {/* AREA SELECTION */}
                     <div>
-                        <label className="block text-sm font-medium text-slate-700 mb-1">Área Destino</label>
+                        <label className="block text-sm font-medium text-zinc-700 mb-1">Área Destino</label>
                         {areas.length > 1 ? (
                             <select
-                                className="w-full border rounded p-2 bg-slate-50"
+                                className="w-full border rounded p-2 bg-zinc-50"
                                 value={targetArea}
                                 onChange={e => setTargetArea(e.target.value)}
                                 required
@@ -97,16 +97,16 @@ const AddStockModal = ({ isOpen, onClose, areas = [], onSuccess }) => {
                                 type="text"
                                 value={areas[0]?.name || areas[0]?.Nombre || targetArea}
                                 disabled
-                                className="w-full border rounded p-2 bg-slate-100 text-slate-500"
+                                className="w-full border rounded p-2 bg-zinc-100 text-zinc-500"
                             />
                         )}
                     </div>
 
                     {/* SELECT INSUMO */}
                     <div>
-                        <label className="block text-sm font-medium text-slate-700 mb-1">Insumo / Material</label>
+                        <label className="block text-sm font-medium text-zinc-700 mb-1">Insumo / Material</label>
                         <select
-                            className="w-full border rounded p-2 bg-slate-50"
+                            className="w-full border rounded p-2 bg-zinc-50"
                             value={selectedInsumo}
                             onChange={e => setSelectedInsumo(e.target.value)}
                             required
@@ -124,12 +124,12 @@ const AddStockModal = ({ isOpen, onClose, areas = [], onSuccess }) => {
                                 </option>
                             ))}
                         </select>
-                        <p className="text-xs text-slate-400 mt-1">¿No encuentra el insumo? Contácte a Administración.</p>
+                        <p className="text-xs text-zinc-400 mt-1">¿No encuentra el insumo? Contácte a Administración.</p>
                     </div>
 
                     <div className="grid grid-cols-2 gap-4">
                         <div>
-                            <label className="block text-sm font-medium text-slate-700 mb-1">Metros por Bobina</label>
+                            <label className="block text-sm font-medium text-zinc-700 mb-1">Metros por Bobina</label>
                             <input
                                 type="number" step="0.01" min="1"
                                 className="w-full border rounded p-2"
@@ -139,7 +139,7 @@ const AddStockModal = ({ isOpen, onClose, areas = [], onSuccess }) => {
                             />
                         </div>
                         <div>
-                            <label className="block text-sm font-medium text-slate-700 mb-1">Cantidad de Bobinas</label>
+                            <label className="block text-sm font-medium text-zinc-700 mb-1">Cantidad de Bobinas</label>
                             <input
                                 type="number" min="1" max="100"
                                 className="w-full border rounded p-2"
@@ -151,7 +151,7 @@ const AddStockModal = ({ isOpen, onClose, areas = [], onSuccess }) => {
                     </div>
 
                     <div>
-                        <label className="block text-sm font-medium text-slate-700 mb-1">Lote Proveedor (Opcional)</label>
+                        <label className="block text-sm font-medium text-zinc-700 mb-1">Lote Proveedor (Opcional)</label>
                         <input
                             type="text"
                             className="w-full border rounded p-2 uppercase"
@@ -179,3 +179,4 @@ const AddStockModal = ({ isOpen, onClose, areas = [], onSuccess }) => {
 };
 
 export default AddStockModal;
+

@@ -4,7 +4,7 @@ import axios from 'axios';
 
 // Componente botón Drive
 const DriveButton = () => (
-    <button type="button" className="flex items-center gap-2 px-3 py-2 bg-white border border-slate-300 rounded-lg text-slate-600 text-sm font-semibold hover:bg-slate-50 hover:text-green-600 hover:border-green-500 transition-all" onClick={() => window.open('https://drive.google.com', '_blank')}>
+    <button type="button" className="flex items-center gap-2 px-3 py-2 bg-white border border-zinc-300 rounded-lg text-zinc-600 text-sm font-semibold hover:bg-zinc-50 hover:text-green-600 hover:border-green-500 transition-all" onClick={() => window.open('https://drive.google.com', '_blank')}>
         <i className="fa-brands fa-google-drive text-lg text-green-500"></i> Abrir Drive
     </button>
 );
@@ -153,18 +153,18 @@ const NewOrderModal = ({ isOpen, onClose, areaName, areaCode }) => {
     if (!isOpen) return null;
 
     // -- Clases Tailwind Reutilizables --
-    const inputClass = "w-full px-3 py-2 border border-slate-300 rounded-lg text-sm text-slate-800 bg-white outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/10 transition-all placeholder:text-slate-400";
-    const labelClass = "block mb-1.5 text-xs font-bold text-slate-500 uppercase tracking-wide";
-    const tabBtnClass = (active) => `px-4 py-2 text-sm font-semibold border-b-2 transition-colors ${active ? 'text-blue-600 border-blue-600 bg-blue-50/50' : 'text-slate-500 border-transparent hover:text-slate-700 hover:bg-slate-50'}`;
+    const inputClass = "w-full px-3 py-2 border border-zinc-300 rounded-lg text-sm text-zinc-800 bg-white outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/10 transition-all placeholder:text-zinc-400";
+    const labelClass = "block mb-1.5 text-xs font-bold text-zinc-500 uppercase tracking-wide";
+    const tabBtnClass = (active) => `px-4 py-2 text-sm font-semibold border-b-2 transition-colors ${active ? 'text-blue-600 border-blue-600 bg-blue-50/50' : 'text-zinc-500 border-transparent hover:text-zinc-700 hover:bg-zinc-50'}`;
 
     return (
-        <div className="fixed inset-0 z-[1100] flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4 animate-in fade-in duration-200">
+        <div className="fixed inset-0 z-[1100] flex items-center justify-center bg-zinc-900/60 backdrop-blur-sm p-4 animate-in fade-in duration-200">
             <div className="bg-white rounded-xl shadow-2xl w-full max-w-4xl max-h-[90vh] flex flex-col overflow-hidden animate-in slide-in-from-bottom-4 duration-300">
 
                 {/* HEADER */}
-                <div className="px-6 py-4 bg-slate-50 border-b border-slate-200 flex justify-between items-center shrink-0">
+                <div className="px-6 py-4 bg-zinc-50 border-b border-zinc-200 flex justify-between items-center shrink-0">
                     <div className="flex flex-col">
-                        <h2 className="text-lg font-bold text-slate-800 flex items-center gap-2">
+                        <h2 className="text-lg font-bold text-zinc-800 flex items-center gap-2">
                             <i className="fa-solid fa-plus-circle text-blue-500"></i> Nueva Orden: {areaName}
                         </h2>
                         <div className="flex gap-1 mt-3 -mb-4">
@@ -175,7 +175,7 @@ const NewOrderModal = ({ isOpen, onClose, areaName, areaCode }) => {
                             <button className={tabBtnClass(activeTab === 'mats')} onClick={() => setActiveTab('mats')}>Materiales</button>
                         </div>
                     </div>
-                    <button onClick={onClose} className="w-8 h-8 rounded-lg flex items-center justify-center text-slate-400 hover:bg-red-50 hover:text-red-500 transition-colors">
+                    <button onClick={onClose} className="w-8 h-8 rounded-lg flex items-center justify-center text-zinc-400 hover:bg-red-50 hover:text-red-500 transition-colors">
                         <i className="fa-solid fa-xmark text-lg"></i>
                     </button>
                 </div>
@@ -190,7 +190,7 @@ const NewOrderModal = ({ isOpen, onClose, areaName, areaCode }) => {
                                 <div className="flex-[2]">
                                     <label className={labelClass}>Cliente</label>
                                     <div className="relative">
-                                        <i className="fa-solid fa-user absolute left-3 top-2.5 text-slate-400"></i>
+                                        <i className="fa-solid fa-user absolute left-3 top-2.5 text-zinc-400"></i>
                                         <input type="text" className={`${inputClass} pl-9 font-bold`} placeholder="Buscar cliente..."
                                             value={orderData.cliente} onChange={(e) => handleClientSearch(e.target.value)} autoFocus />
                                     </div>
@@ -213,21 +213,21 @@ const NewOrderModal = ({ isOpen, onClose, areaName, areaCode }) => {
                             <div>
                                 <label className={labelClass}>Material</label>
                                 <div className="relative">
-                                    <i className="fa-solid fa-layer-group absolute left-3 top-2.5 text-slate-400"></i>
+                                    <i className="fa-solid fa-layer-group absolute left-3 top-2.5 text-zinc-400"></i>
                                     <input type="text" className={`${inputClass} pl-9`} placeholder="Ej: DTF UV, DryFit..." value={orderData.material} onChange={e => setOrderData({ ...orderData, material: e.target.value })} />
                                 </div>
                             </div>
 
                             <div>
                                 <label className={labelClass}>Prioridad</label>
-                                <div className="flex bg-slate-100 p-1 rounded-lg gap-1">
+                                <div className="flex bg-zinc-100 p-1 rounded-lg gap-1">
                                     {['Normal', 'Alta', 'Urgente'].map((prio) => (
                                         <div key={prio}
                                             className={`flex-1 text-center py-2 rounded-md text-sm font-bold cursor-pointer transition-all ${orderData.prioridad === prio
                                                     ? (prio === 'Urgente' ? 'bg-red-500 text-white shadow-md shadow-red-500/30' :
                                                         prio === 'Alta' ? 'bg-orange-500 text-white shadow-md shadow-orange-500/30' :
-                                                            'bg-white text-slate-700 shadow-sm')
-                                                    : 'text-slate-500 hover:bg-white/50'
+                                                            'bg-white text-zinc-700 shadow-sm')
+                                                    : 'text-zinc-500 hover:bg-white/50'
                                                 }`}
                                             onClick={() => setOrderData({ ...orderData, prioridad: prio })}
                                         >
@@ -248,22 +248,22 @@ const NewOrderModal = ({ isOpen, onClose, areaName, areaCode }) => {
                     {activeTab === 'files' && (
                         <div className="flex flex-col h-full">
 
-                            <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 mb-6 relative overflow-hidden">
+                            <div className="bg-zinc-50 border border-zinc-200 rounded-xl p-4 mb-6 relative overflow-hidden">
                                 <div className="absolute top-0 left-0 w-1 h-full bg-blue-500"></div>
-                                <h4 className="text-sm font-bold text-slate-700 mb-3 flex items-center gap-2">
+                                <h4 className="text-sm font-bold text-zinc-700 mb-3 flex items-center gap-2">
                                     <span className="w-5 h-5 rounded-full bg-blue-100 text-blue-600 flex items-center justify-center text-xs"><i className="fa-solid fa-plus"></i></span>
                                     Agregar Archivo
                                 </h4>
 
                                 <div className="flex gap-3 mb-3">
                                     <div className="flex-[2]">
-                                        <label className="text-[10px] font-bold text-slate-500 uppercase mb-1 block">Nombre Archivo</label>
+                                        <label className="text-[10px] font-bold text-zinc-500 uppercase mb-1 block">Nombre Archivo</label>
                                         <input type="text" className={inputClass} placeholder="Ej: logo_final.pdf"
                                             value={newFile.nombre} onChange={e => setNewFile({ ...newFile, nombre: e.target.value })}
                                         />
                                     </div>
                                     <div className="flex-1">
-                                        <label className="text-[10px] font-bold text-slate-500 uppercase mb-1 block">Tipo</label>
+                                        <label className="text-[10px] font-bold text-zinc-500 uppercase mb-1 block">Tipo</label>
                                         <select className={inputClass} value={newFile.tipo} onChange={e => setNewFile({ ...newFile, tipo: e.target.value })}>
                                             {fileReqs.map(req => <option key={req.type} value={req.type}>{req.type}</option>)}
                                             <option value="General">General</option>
@@ -272,7 +272,7 @@ const NewOrderModal = ({ isOpen, onClose, areaName, areaCode }) => {
                                 </div>
 
                                 <div className="mb-3">
-                                    <label className="text-[10px] font-bold text-slate-500 uppercase mb-1 block">Enlace (Drive/Nube)</label>
+                                    <label className="text-[10px] font-bold text-zinc-500 uppercase mb-1 block">Enlace (Drive/Nube)</label>
                                     <div className="flex gap-2">
                                         <input type="text" className={inputClass} placeholder="Pegar enlace de Google Drive o Dropbox..."
                                             value={newFile.link} onChange={e => setNewFile({ ...newFile, link: e.target.value })}
@@ -283,7 +283,7 @@ const NewOrderModal = ({ isOpen, onClose, areaName, areaCode }) => {
 
                                 <div className="flex items-end gap-3">
                                     <div className="w-24">
-                                        <label className="text-[10px] font-bold text-slate-500 uppercase mb-1 block">Copias</label>
+                                        <label className="text-[10px] font-bold text-zinc-500 uppercase mb-1 block">Copias</label>
                                         <input type="number" min="1" className={`${inputClass} text-center font-bold`} value={newFile.copias} onChange={e => setNewFile({ ...newFile, copias: e.target.value })} />
                                     </div>
                                     <div className="w-32">
@@ -293,7 +293,7 @@ const NewOrderModal = ({ isOpen, onClose, areaName, areaCode }) => {
                                             value={newFile.metros} onChange={e => setNewFile({ ...newFile, metros: e.target.value })}
                                         />
                                     </div>
-                                    <div className="flex-1 pb-2 pl-2 text-xs font-bold text-slate-500">
+                                    <div className="flex-1 pb-2 pl-2 text-xs font-bold text-zinc-500">
                                         Subtotal: <span className="text-blue-600">{(newFile.copias * newFile.metros).toFixed(2)}m</span>
                                     </div>
                                     <button className="px-6 py-2.5 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-lg shadow-lg shadow-blue-500/30 transition-all flex items-center gap-2 mb-[1px]" onClick={addFileToList}>
@@ -302,9 +302,9 @@ const NewOrderModal = ({ isOpen, onClose, areaName, areaCode }) => {
                                 </div>
                             </div>
 
-                            <div className="flex-1 border border-slate-200 rounded-lg overflow-hidden bg-white shadow-sm">
+                            <div className="flex-1 border border-zinc-200 rounded-lg overflow-hidden bg-white shadow-sm">
                                 <table className="w-full text-sm text-left">
-                                    <thead className="bg-slate-50 text-slate-500 font-semibold border-b border-slate-200 text-xs uppercase tracking-wide">
+                                    <thead className="bg-zinc-50 text-zinc-500 font-semibold border-b border-zinc-200 text-xs uppercase tracking-wide">
                                         <tr>
                                             <th className="p-3">Archivo</th>
                                             <th className="p-3">Tipo</th>
@@ -314,24 +314,24 @@ const NewOrderModal = ({ isOpen, onClose, areaName, areaCode }) => {
                                             <th className="p-3 w-10"></th>
                                         </tr>
                                     </thead>
-                                    <tbody className="divide-y divide-slate-100">
+                                    <tbody className="divide-y divide-zinc-100">
                                         {files.map(f => (
-                                            <tr key={f.id} className="hover:bg-slate-50/80 transition-colors">
-                                                <td className="p-3 font-semibold text-slate-700">{f.nombre}</td>
-                                                <td className="p-3"><span className="px-2 py-1 rounded text-xs font-bold bg-slate-100 text-slate-500 border border-slate-200">{f.tipo}</span></td>
-                                                <td className="p-3 text-center font-medium text-slate-600">{f.copias}</td>
-                                                <td className="p-3 text-center text-slate-500">{f.metros}m</td>
+                                            <tr key={f.id} className="hover:bg-zinc-50/80 transition-colors">
+                                                <td className="p-3 font-semibold text-zinc-700">{f.nombre}</td>
+                                                <td className="p-3"><span className="px-2 py-1 rounded text-xs font-bold bg-zinc-100 text-zinc-500 border border-zinc-200">{f.tipo}</span></td>
+                                                <td className="p-3 text-center font-medium text-zinc-600">{f.copias}</td>
+                                                <td className="p-3 text-center text-zinc-500">{f.metros}m</td>
                                                 <td className="p-3 text-right font-bold text-blue-600">
                                                     {(f.copias * f.metros).toFixed(2)}m
                                                 </td>
                                                 <td className="p-3 text-center">
-                                                    <button onClick={() => removeFile(f.id)} className="w-8 h-8 rounded hover:bg-red-50 text-slate-400 hover:text-red-500 transition-colors"><i className="fa-solid fa-trash"></i></button>
+                                                    <button onClick={() => removeFile(f.id)} className="w-8 h-8 rounded hover:bg-red-50 text-zinc-400 hover:text-red-500 transition-colors"><i className="fa-solid fa-trash"></i></button>
                                                 </td>
                                             </tr>
                                         ))}
                                         {files.length === 0 && (
                                             <tr>
-                                                <td colSpan="6" className="p-8 text-center text-slate-400 italic">
+                                                <td colSpan="6" className="p-8 text-center text-zinc-400 italic">
                                                     <div className="mb-2 text-2xl opacity-20"><i className="fa-solid fa-file-circle-plus"></i></div>
                                                     Agrega archivos para calcular el total.
                                                 </td>
@@ -345,7 +345,7 @@ const NewOrderModal = ({ isOpen, onClose, areaName, areaCode }) => {
 
                     {/* TAB 3: MATERIALES */}
                     {activeTab === 'mats' && (
-                        <div className="flex flex-col items-center justify-center h-40 text-slate-400">
+                        <div className="flex flex-col items-center justify-center h-40 text-zinc-400">
                             <i className="fa-solid fa-box-open text-3xl mb-3 opacity-30"></i>
                             <p>Funcionalidad de materiales ya implementada anteriormente.</p>
                         </div>
@@ -354,16 +354,16 @@ const NewOrderModal = ({ isOpen, onClose, areaName, areaCode }) => {
                 </div>
 
                 {/* FOOTER */}
-                <div className="px-6 py-4 bg-slate-50 border-t border-slate-200 flex justify-end items-center gap-4 shrink-0">
-                    <div className="mr-auto font-bold text-slate-500 text-sm">
+                <div className="px-6 py-4 bg-zinc-50 border-t border-zinc-200 flex justify-end items-center gap-4 shrink-0">
+                    <div className="mr-auto font-bold text-zinc-500 text-sm">
                         Total Orden: <span className="text-xl text-blue-600 ml-2">{orderData.magnitud}</span>
                     </div>
 
-                    <button onClick={onClose} className="px-5 py-2.5 rounded-lg border border-slate-300 text-slate-600 font-bold hover:bg-slate-100 transition-colors">
+                    <button onClick={onClose} className="px-5 py-2.5 rounded-lg border border-zinc-300 text-zinc-600 font-bold hover:bg-zinc-100 transition-colors">
                         Cancelar
                     </button>
                     <button
-                        className={`px-6 py-2.5 rounded-lg font-bold text-white shadow-lg transition-all flex items-center gap-2 ${loading ? 'bg-slate-400 cursor-not-allowed' : 'bg-blue-600 hover:bg-blue-700 hover:-translate-y-0.5 shadow-blue-500/30'}`}
+                        className={`px-6 py-2.5 rounded-lg font-bold text-white shadow-lg transition-all flex items-center gap-2 ${loading ? 'bg-zinc-400 cursor-not-allowed' : 'bg-blue-600 hover:bg-blue-700 hover:-translate-y-0.5 shadow-blue-500/30'}`}
                         onClick={handleSubmit}
                         disabled={loading}
                     >
@@ -381,3 +381,4 @@ const NewOrderModal = ({ isOpen, onClose, areaName, areaCode }) => {
 };
 
 export default NewOrderModal;
+
