@@ -131,11 +131,7 @@ const CreateDispatchModal = ({ isOpen, onClose, selectedOrders, originArea, next
     };
 
     return (
-<<<<<<< HEAD
-        <div className="fixed inset-0 bg-slate-900/80  flex items-center justify-center p-4 z-[1400] print:p-0 print:bg-white">
-=======
         <div className="fixed inset-0 bg-zinc-900/80 backdrop-blur-sm flex items-center justify-center p-4 z-[1400] print:p-0 print:bg-white">
->>>>>>> main
             <div className={`bg-white rounded-2xl shadow-2xl w-full max-w-2xl overflow-hidden flex flex-col max-h-[90vh] print:shadow-none print:w-full print:max-w-none print:h-full print:max-h-none print:rounded-none transition-all`}>
 
                 {/* HEADER */}
