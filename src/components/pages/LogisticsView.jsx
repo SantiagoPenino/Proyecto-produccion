@@ -487,9 +487,6 @@ const LogisticsView = ({ areaCode }) => {
     );
 };
 
-<<<<<<< HEAD
-export default LogisticsView;
-=======
 // ─── BasketTable (TanStack Table v8) ───────────────────────────────────────
 const columnHelper = createColumnHelper();
 
@@ -659,4 +656,3 @@ function BasketTable({ data, basketTipo, onToggle, onSelectAll, allSelected, som
 }
 
 export default LogisticsView;
->>>>>>> main

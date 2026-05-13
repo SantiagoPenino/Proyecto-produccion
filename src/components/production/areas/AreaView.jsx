@@ -239,13 +239,8 @@ export default function AreaView({ areaKey, areaConfig, onSwitchTab }) {
     if (!areaConfig) return <div className="p-10 text-center text-zinc-400">Cargando configuración...</div>;
 
     const btnBaseClass = "h-9 px-4 rounded-lg text-sm font-bold flex items-center gap-2 transition-all shadow-sm";
-<<<<<<< HEAD
-    const btnSecondaryClass = "bg-white border border-slate-200 text-slate-600 hover:border-brand-cyan/40 hover:text-brand-cyan hover:bg-brand-cyan/5";
-    const btnPrimaryClass = "bg-brand-cyan/10 border border-brand-cyan/30 text-brand-cyan";
-=======
     const btnSecondaryClass = "bg-white border border-zinc-200 text-zinc-600 hover:border-zinc-300 hover:text-brand-cyan hover:bg-zinc-50";
     const btnPrimaryClass = "bg-brand-cyan text-white shadow-sm";
->>>>>>> main
 
     console.log("🔍 [AreaView] Render - Props:", { areaKey, areaConfigName: areaConfig?.name, isRollModalOpen });
 
@@ -346,29 +341,6 @@ export default function AreaView({ areaKey, areaConfig, onSwitchTab }) {
             <ReportFailureModal isOpen={isFailureOpen} onClose={() => setIsFailureOpen(false)} areaName={areaConfig.name} areaCode={areaKey} />
             <LogisticsCartModal isOpen={isCartOpen} onClose={() => setIsCartOpen(false)} areaName={areaConfig.name} areaCode={areaKey} onSuccess={() => refetch()} />
             <RollAssignmentModal isOpen={isRollModalOpen} onClose={() => setIsRollModalOpen(false)} selectedIds={selectedIds} areaCode={areaKey} onSuccess={() => { setSelectedIds([]); refetch(); }} />
-<<<<<<< HEAD
-            
-            {isImportModalOpen && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40  animate-fade-in">
-                    <div className="bg-white w-full max-w-7xl max-h-[95vh] rounded-xl overflow-hidden shadow-2xl flex flex-col relative">
-                        <button 
-                            className="absolute top-4 right-6 text-slate-500 hover:text-slate-800 z-10 bg-white hover:bg-slate-200 p-2 rounded-full transition"
-                            onClick={() => setIsImportModalOpen(false)}
-                        >
-                            <i className="fa-solid fa-xmark text-xl"></i>
-                        </button>
-                        <div className="overflow-y-auto flex-1 p-0">
-                            <ImportadorManualView 
-                                isModal={true} 
-                                onClose={() => setIsImportModalOpen(false)} 
-                                onImportSuccess={() => refetch()} 
-                            />
-                        </div>
-                    </div>
-                </div>
-            )}
-=======
->>>>>>> main
 
             <header className="bg-white flex flex-col shrink-0 z-20 w-full relative">
                 <div className="px-4 py-2 flex items-center justify-between bg-white min-h-[56px] relative w-full overflow-hidden">
@@ -381,41 +353,6 @@ export default function AreaView({ areaKey, areaConfig, onSwitchTab }) {
                         <button className={`${btnBaseClass} px-3 h-8 text-xs ${isActive('logistica') ? btnPrimaryClass : btnSecondaryClass}`} onClick={() => goTo('logistica')}><Truck size={14} /> Logística</button>
                     </div>
 
-<<<<<<< HEAD
-                    {/* CENTER: Tabs de Navegación */}
-                    <div className="flex items-center gap-1 overflow-x-auto no-scrollbar">
-                        {!hideImportar && (
-                            <button 
-                                className={`${btnBaseClass} px-3 h-8 text-xs ${isActive('importar') ? btnPrimaryClass : btnSecondaryClass}`}
-                                onClick={() => setIsImportModalOpen(true)}
-                            >
-                                <i className="fa-solid fa-file-import"></i> Importar Orden
-                            </button>
-                        )}
-                        <button className={`${btnBaseClass} px-3 h-8 text-xs ${isActive('') ? btnPrimaryClass : btnSecondaryClass}`} onClick={() => goTo('')}><i className="fa-solid fa-table"></i> Planilla</button>
-                        <button className={`${btnBaseClass} px-3 h-8 text-xs ${isActive('planeacion') ? btnPrimaryClass : btnSecondaryClass}`} onClick={() => goTo('planeacion')}><i className="fa-regular fa-calendar-check"></i> Planeación</button>
-                        {/* Botón Medición oculto */}
-                        <button className={`${btnBaseClass} px-3 h-8 text-xs ${isActive('control') ? btnPrimaryClass : btnSecondaryClass}`} onClick={() => goTo('control')}><i className="fa-solid fa-check-double"></i> Control</button>
-                        <button className={`${btnBaseClass} px-3 h-8 text-xs ${isActive('logistica') ? btnPrimaryClass : btnSecondaryClass}`} onClick={() => goTo('logistica')}><i className="fa-solid fa-truck-ramp-box"></i> Logística</button>
-                    </div>
-
-                    {/* RIGHT: Acciones Globales */}
-                    <div className="flex items-center gap-2 shrink-0">
-
-                        {/* Selected Actions */}
-                        {selectedIds.length > 0 && (
-                            <div className="flex items-center gap-2 mr-2 bg-blue-50 px-2 py-1 rounded-lg border border-blue-100 animate-in fade-in slide-in-from-top-2">
-                                <span className="text-[10px] font-bold text-blue-600 whitespace-nowrap">{selectedIds.length} Sel.</span>
-                                <button
-                                    onClick={() => setIsRollModalOpen(true)}
-                                    className="text-[10px] bg-blue-600 text-white px-2 py-0.5 rounded hover:bg-blue-700 transition whitespace-nowrap"
-                                >
-                                    Asignar
-                                </button>
-                                <button onClick={() => setSelectedIds([])} className="text-slate-400 hover:text-red-500 ml-1">
-                                    <i className="fa-solid fa-xmark"></i>
-                                </button>
-=======
                     {/* LADO IZQUIERDO (Mitad de la pantalla menos un margen protector para las tabs) */}
                     <div className="flex w-1/2 items-center pr-64 pointer-events-auto">
                         {/* BLOQUE 1: Título */}
@@ -423,7 +360,6 @@ export default function AreaView({ areaKey, areaConfig, onSwitchTab }) {
                             <div className="flex flex-col justify-center shrink-0">
                                 <h1 className="text-xl font-black text-zinc-800 leading-none whitespace-nowrap">{areaConfig.name}</h1>
                                 <span className="text-[10px] font-bold text-brand-cyan uppercase tracking-widest">Producción</span>
->>>>>>> main
                             </div>
                             <div className="h-8 w-px bg-zinc-200 mx-1 shrink-0"></div>
                         </div>
@@ -478,8 +414,3 @@ export default function AreaView({ areaKey, areaConfig, onSwitchTab }) {
         </div>
     );
 }
-<<<<<<< HEAD
-// Force Vite reload
-=======
-
->>>>>>> main
