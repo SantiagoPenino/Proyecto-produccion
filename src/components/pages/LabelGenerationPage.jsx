@@ -6,11 +6,11 @@ import { useAuth } from '../../context/AuthContext'; // Import Auth
 import { logisticsService } from '../../services/modules/logisticsService';
 import DispatchView from '../logistics/DispatchView';
 
-const LabelGenerationPage = () => {
+const LabelGenerationPage = ({ initialArea = '' }) => {
     const { user } = useAuth(); // Get user
     const [orders, setOrders] = useState([]);
     const [loading, setLoading] = useState(false);
-    const [areaFilter, setAreaFilter] = useState('');
+    const [areaFilter, setAreaFilter] = useState(initialArea);
     const [searchFilter, setSearchFilter] = useState('');
     const [batchFilter, setBatchFilter] = useState('');
     const [statusFilter, setStatusFilter] = useState('all'); // all, generable, blocked
@@ -58,8 +58,10 @@ const LabelGenerationPage = () => {
 
                 setAreas(productive);
 
-                // Preseleccionar área
-                if (productive.length > 0) {
+                // Preseleccionar área: si viene initialArea (desde producción), usarla directo
+                if (initialArea) {
+                    setAreaFilter(initialArea);
+                } else if (productive.length > 0) {
                     if (productive.length === 1) {
                         setAreaFilter(productive[0].AreaID.trim());
                     } else if (user) {
@@ -114,6 +116,11 @@ const LabelGenerationPage = () => {
 
     // Helper to check validity
     const isOrderBlocked = (order) => {
+        // Cantidad de la cotización: si existe y es > 0, la orden tiene productos cargados
+        const importeCot = parseFloat(order.ImporteCotizacion) || 0;
+        const hasCotizacion = importeCot > 0;
+
+        // Magnitud (metros) como fallback cuando no hay cotización
         let mag = 0;
         if (typeof order.Magnitud === 'number') mag = order.Magnitud;
         else if (order.Magnitud) {
@@ -121,7 +128,8 @@ const LabelGenerationPage = () => {
             mag = parseFloat(clean) || 0;
         }
 
-        const isZero = mag <= 0;
+        // Bloqueado si: no tiene cotización Y Magnitud es 0
+        const isZero = !hasCotizacion && mag <= 0;
         const hasError = order.ValidacionOBS && order.ValidacionOBS.trim() !== '';
 
         // REGLA: No en producción o cancelada
@@ -132,7 +140,11 @@ const LabelGenerationPage = () => {
             isBlocked: isZero || hasError || notInProd,
             isZero,
             notInProd,
-            message: notInProd ? `Orden en estado: ${(order.Estado || 'Desconocido').toUpperCase()}` : (hasError ? (order.ValidacionOBS || 'Error de validación') : "Metros en 0")
+            message: notInProd
+                ? `Orden en estado: ${(order.Estado || 'Desconocido').toUpperCase()}`
+                : hasError
+                    ? (order.ValidacionOBS || 'Error de validación')
+                    : 'Sin cotización ni magnitud registrada'
         };
     };
 
@@ -367,31 +379,10 @@ const LabelGenerationPage = () => {
                             {generating ? <i className="fa-solid fa-spinner fa-spin"></i> : <i className="fa-solid fa-plus-circle"></i>}
                             Generar Etiquetas
                         </button>
-                        <button
-                            onClick={handlePrintSelected}
-                            disabled={selection.length === 0}
-                            className={`flex-1 py-2 px-4 rounded font-bold text-sm shadow-sm transition flex items-center justify-center gap-2
-                                ${selection.length > 0 ? 'bg-slate-800 text-white hover:bg-slate-900' : 'bg-slate-200 text-slate-400 cursor-not-allowed'}
-                            `}
-                        >
-                            <i className="fa-solid fa-print"></i>
-                            Imprimir Seleccionadas ({selection.length})
-                        </button>
                     </div>
                 </div>
 
-                <div className="flex gap-2 mt-2 px-6">
-                    <button
-                        onClick={() => setShowRemitoModal(true)}
-                        disabled={selection.length === 0}
-                        className={`flex-1 py-3 px-4 rounded-lg font-bold text-sm shadow-md transition flex items-center justify-center gap-2 border-2
-                            ${selection.length > 0 ? 'bg-white text-emerald-600 border-emerald-600 hover:bg-emerald-50' : 'bg-slate-50 text-slate-400 border-slate-200 cursor-not-allowed'}
-                        `}
-                    >
-                        <i className="fa-solid fa-truck-fast"></i>
-                        Crear Remito en Lote ({selection.length})
-                    </button>
-                </div>
+
 
                 <div className="flex-1 overflow-y-auto mt-4 px-6 md:px-0">
                     {loading ? (
@@ -415,6 +406,7 @@ const LabelGenerationPage = () => {
                                     <th className="p-3 border-b">Orden</th>
                                     <th className="p-3 border-b">Rollo</th>
                                     <th className="p-3 border-b">Detalle</th>
+                                    <th className="p-3 border-b text-right">Importe</th>
                                     <th className="p-3 border-b text-center">Bultos</th>
                                     <th className="p-3 border-b text-center">Acción</th>
                                 </tr>
@@ -466,10 +458,24 @@ const LabelGenerationPage = () => {
                                                     {order.NombreRollo || order.RolloID || 'N/A'}
                                                 </div>
                                             </td>
-                                            <td className="p-3 max-w-[180px]">
+                                            <td className="p-3 max-w-[160px]">
                                                 <div className="truncate font-medium text-slate-800" title={order.Cliente}>{order.Cliente}</div>
                                                 <div className="truncate text-xs text-slate-500" title={order.Descripcion || order.Material}>{order.Descripcion || order.Material}</div>
                                                 <div className="text-[10px] text-slate-400 mt-0.5">Mag: {order.Magnitud || '-'}</div>
+                                            </td>
+                                            <td className="p-3 text-right">
+                                                {order.ImporteCotizacion != null ? (
+                                                    <div className="flex flex-col items-end">
+                                                        <span className="font-bold text-slate-700 text-sm">
+                                                            {parseFloat(order.ImporteCotizacion).toLocaleString('es-UY', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                                        </span>
+                                                        {order.MonedaCotizacion && (
+                                                            <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-blue-50 text-blue-600 border border-blue-100 mt-0.5">{order.MonedaCotizacion}</span>
+                                                        )}
+                                                    </div>
+                                                ) : (
+                                                    <span className="text-slate-300 text-xs">—</span>
+                                                )}
                                             </td>
                                             <td className="p-3 text-center">
                                                 {hasLabels ?

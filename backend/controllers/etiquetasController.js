@@ -154,7 +154,13 @@ const getOrdersForLabels = async (req, res) => {
                 O.RolloID,
                 O.CostoTotal,
                 R.Nombre as NombreRollo,
-                (SELECT COUNT(*) FROM Etiquetas E WITH (NOLOCK) WHERE E.OrdenID = O.OrdenID) as CantidadEtiquetas
+                (SELECT COUNT(*) FROM Etiquetas E WITH (NOLOCK) WHERE E.OrdenID = O.OrdenID) as CantidadEtiquetas,
+                (SELECT TOP 1 PC.Moneda FROM PedidosCobranzaDetalle PCD WITH (NOLOCK)
+                    JOIN PedidosCobranza PC WITH (NOLOCK) ON PCD.PedidoCobranzaID = PC.ID
+                    WHERE PCD.OrdenID = O.OrdenID ORDER BY PC.ID DESC) AS MonedaCotizacion,
+                (SELECT TOP 1 PC2.MontoTotal FROM PedidosCobranzaDetalle PCD2 WITH (NOLOCK)
+                    JOIN PedidosCobranza PC2 WITH (NOLOCK) ON PCD2.PedidoCobranzaID = PC2.ID
+                    WHERE PCD2.OrdenID = O.OrdenID ORDER BY PC2.ID DESC) AS ImporteCotizacion
             FROM Ordenes O WITH (NOLOCK)
             LEFT JOIN Rollos R ON O.RolloID = R.RolloID
             WHERE 

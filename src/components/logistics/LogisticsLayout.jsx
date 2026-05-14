@@ -12,7 +12,7 @@ const LogisticsLayout = ({ children, activeTab, setActiveTab, globalArea, setGlo
     ];
 
     if (isAreaContext) {
-        tabs = tabs.filter(t => !['import', 'quotation', 'labels'].includes(t.id));
+        tabs = tabs.filter(t => !['import', 'quotation'].includes(t.id));
     }
 
 

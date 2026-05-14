@@ -342,11 +342,39 @@ export default function AreaView({ areaKey, areaConfig, onSwitchTab }) {
             <LogisticsCartModal isOpen={isCartOpen} onClose={() => setIsCartOpen(false)} areaName={areaConfig.name} areaCode={areaKey} onSuccess={() => refetch()} />
             <RollAssignmentModal isOpen={isRollModalOpen} onClose={() => setIsRollModalOpen(false)} selectedIds={selectedIds} areaCode={areaKey} onSuccess={() => { setSelectedIds([]); refetch(); }} />
 
+            {isImportModalOpen && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 animate-fade-in">
+                    <div className="bg-white w-full max-w-7xl max-h-[95vh] rounded-xl overflow-hidden shadow-2xl flex flex-col relative">
+                        <button
+                            className="absolute top-4 right-6 text-slate-500 hover:text-slate-800 z-10 bg-white hover:bg-slate-200 p-2 rounded-full transition"
+                            onClick={() => setIsImportModalOpen(false)}
+                        >
+                            <i className="fa-solid fa-xmark text-xl"></i>
+                        </button>
+                        <div className="overflow-y-auto flex-1 p-0">
+                            <ImportadorManualView
+                                isModal={true}
+                                onClose={() => setIsImportModalOpen(false)}
+                                onImportSuccess={() => refetch()}
+                            />
+                        </div>
+                    </div>
+                </div>
+            )}
+
             <header className="bg-white flex flex-col shrink-0 z-20 w-full relative">
                 <div className="px-4 py-2 flex items-center justify-between bg-white min-h-[56px] relative w-full overflow-hidden">
 
                     {/* CENTRO ABSOLUTO: Tabs de Navegación (Siempre en el centro exacto de la pantalla) */}
                     <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 flex items-center gap-1 z-30 pointer-events-auto">
+                        {!hideImportar && (
+                            <button
+                                className={`${btnBaseClass} px-3 h-8 text-xs ${btnSecondaryClass}`}
+                                onClick={() => setIsImportModalOpen(true)}
+                            >
+                                <i className="fa-solid fa-file-import"></i> Importar Orden
+                            </button>
+                        )}
                         <button className={`${btnBaseClass} px-3 h-8 text-xs ${isActive('') ? btnPrimaryClass : btnSecondaryClass}`} onClick={() => goTo('')}><LayoutGrid size={14} /> Planilla</button>
                         <button className={`${btnBaseClass} px-3 h-8 text-xs ${isActive('planeacion') ? btnPrimaryClass : btnSecondaryClass}`} onClick={() => goTo('planeacion')}><CalendarCheck size={14} /> Planeación</button>
                         <button className={`${btnBaseClass} px-3 h-8 text-xs ${isActive('control') ? btnPrimaryClass : btnSecondaryClass}`} onClick={() => goTo('control')}><ScanLine size={14} /> Control</button>

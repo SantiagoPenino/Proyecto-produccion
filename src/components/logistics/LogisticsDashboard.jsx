@@ -110,7 +110,7 @@ const LogisticsDashboard = ({ areaCode }) => {
             case 'quotation':
                 return <div className="absolute inset-0"><QuotationView {...commonProps} /></div>;
             case 'labels':
-                return <div className="absolute inset-0"><LabelGenerationPage embedded={true} /></div>;
+                return <div className="absolute inset-0"><LabelGenerationPage initialArea={globalArea !== 'TODOS' ? globalArea : ''} /></div>;
 
             case 'dashboard':
                 return <DepositoDashboard />;

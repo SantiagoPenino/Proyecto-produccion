@@ -413,8 +413,30 @@ const DispatchView = ({ selectedOrders: initialOrders = [], areaFilter, originAr
                                     <thead className="bg-slate-50 text-xs font-bold text-slate-400 uppercase tracking-wider">
                                         <tr>
                                             <th className="p-4 w-12 text-center">
-                                                {/* Global Checkbox logic could go here */}
-                                                <i className="fa-regular fa-square"></i>
+                                                <div
+                                                    onClick={() => {
+                                                        const allSelected = stockRows.length > 0 && stockRows.every(r => selectedStockItems.some(s => s.BultoID === r.BultoID));
+                                                        if (allSelected) {
+                                                            setSelectedStockItems([]);
+                                                        } else {
+                                                            const newItems = stockRows.filter(r => !selectedStockItems.some(s => s.BultoID === r.BultoID));
+                                                            setSelectedStockItems(prev => [...prev, ...newItems]);
+                                                        }
+                                                    }}
+                                                    className="w-5 h-5 rounded border flex items-center justify-center transition-all cursor-pointer mx-auto"
+                                                    style={{
+                                                        background: stockRows.length > 0 && stockRows.every(r => selectedStockItems.some(s => s.BultoID === r.BultoID)) ? 'var(--brand-cyan, #0097b2)' : 'white',
+                                                        borderColor: stockRows.length > 0 && stockRows.some(r => selectedStockItems.some(s => s.BultoID === r.BultoID)) ? 'var(--brand-cyan, #0097b2)' : '#cbd5e1',
+                                                        color: 'white'
+                                                    }}
+                                                >
+                                                    {stockRows.length > 0 && stockRows.every(r => selectedStockItems.some(s => s.BultoID === r.BultoID))
+                                                        ? <i className="fa-solid fa-check text-xs"></i>
+                                                        : stockRows.length > 0 && stockRows.some(r => selectedStockItems.some(s => s.BultoID === r.BultoID))
+                                                            ? <i className="fa-solid fa-minus text-xs" style={{color:'#0097b2'}}></i>
+                                                            : null
+                                                    }
+                                                </div>
                                             </th>
                                             <th className="p-4">Código</th>
                                             <th className="p-4">Cliente</th>
