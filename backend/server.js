@@ -105,6 +105,7 @@ app.use('/api/insumos', require('./routes/insumosRoutes'));
 app.use('/api/reception', require('./routes/receptionRoutes'));
 app.use('/api/inventory', require('./routes/inventoryRoutes'));
 app.use('/api/configuraciones', require('./routes/configuracionesRoutes'));
+app.use('/api/sincro', require('./routes/sincroRoutes'));
 app.use('/api/quotation', require('./routes/quotationRoutes'));
 
 try {

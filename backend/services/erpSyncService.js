@@ -418,7 +418,9 @@ class ERPSyncService {
                 logger.info(`[ERPSync] Verificación de Cuenta/Ciclo Contable ejecutada para Cliente ${first.Cli_CliIdCliente} en ${targetCurrency}.`);
             }
         } catch (ePed) {
-            logger.error(`[ERPSync] ❌ Error al procesar PedidosCobranza o Ciclo Contable para ${noDocERP}:`, ePed.message);
+            logger.error(`[ERPSync] ❌ Error al procesar PedidosCobranza o Ciclo Contable para ${noDocERP}: ${ePed?.message || JSON.stringify(ePed)}`);
+            logger.error(`[ERPSync] Stack: ${ePed?.stack || '(sin stack)'}`);
+            logger.error(`[ERPSync] DetallesCobranza al momento del error:`, JSON.stringify(detallesCobranza.map(d => ({ OID: d.OrdenID, CodArt: d.CodArticulo, PU: d.PrecioUnitario, ST: d.Subtotal, Mon: d.Moneda, MonOrig: d.MonedaOriginal }))));
         }
 
         if (onlyCalculate) {
@@ -698,9 +700,9 @@ class ERPSyncService {
                 .input('QRCa', sql.NVarChar, qrData && qrData.qrCantidad != null ? String(qrData.qrCantidad) : null)
                 .input('QRI', sql.NVarChar, qrData && qrData.qrImporte != null ? String(qrData.qrImporte) : null)
                 .input('QRS', sql.NVarChar(sql.MAX), qrData ? qrData.qrString : null)
-                .input('DC', sql.NVarChar(sql.MAX), textBreakdown)
-                .input('PP', sql.NVarChar(sql.MAX), perfilesUnicos)
-                .query(`INSERT INTO PedidosCobranza 
+                                .input('DC', sql.NVarChar(sql.MAX), textBreakdown)
+                                .input('PP', sql.NVarChar(sql.MAX), perfilesUnicos)
+                                .query(`INSERT INTO PedidosCobranza 
                     (NoDocERP, ClienteID, MontoTotal, Moneda, FechaGeneracion, QR_Pedido, QR_Cliente, QR_Trabajo, QR_Urgencia, QR_Producto, QR_Cantidad, QR_Importe, QR_String, DetalleCostos, PerfilesPrecio) 
                     OUTPUT INSERTED.ID 
                     VALUES (@Doc, @Cli, @M, @Mon, GETDATE(), @QRP, @QRC, @QRT, @QRU, @QRPr, @QRCa, @QRI, @QRS, @DC, @PP)`);
@@ -708,22 +710,39 @@ class ERPSyncService {
         }
 
         for (const d of detalles) {
-            await pool.request()
-                .input('Pid', sql.Int, id)
-                .input('OID', sql.Int, d.OrdenID)
-                .input('ProdID', sql.Int, d.ProIdProducto)
-                .input('Cant', sql.Decimal(18, 2), d.Cantidad)
-                .input('PU', sql.Decimal(18, 2), d.PrecioUnitario)
-                .input('ST', sql.Decimal(18, 2), d.Subtotal)
-                .input('Log', sql.NVarChar, d.LogPrecioAplicado)
-                .input('Mon', sql.VarChar, targetCurrency)
-                .input('Perfil', sql.NVarChar(sql.MAX), d.Perfiles || null)
-                .input('Trace', sql.NVarChar(sql.MAX), d.LogPrecioAplicado || null)
-                .input('MonOrig', sql.VarChar(10), d.MonedaOriginal)
-                .input('PUOrig', sql.Decimal(18, 4), d.PrecioUnitarioOriginal)
-                .input('STOrig', sql.Decimal(18, 4), d.SubtotalOriginal)
-                .query("INSERT INTO PedidosCobranzaDetalle (PedidoCobranzaID, OrdenID, ProIdProducto, Cantidad, PrecioUnitario, Subtotal, LogPrecioAplicado, Moneda, PerfilAplicado, PricingTrace, MonedaOriginal, PrecioUnitarioOriginal, SubtotalOriginal) VALUES (@Pid, @OID, @ProdID, @Cant, @PU, @ST, @Log, @Mon, @Perfil, @Trace, @MonOrig, @PUOrig, @STOrig)");
+            try {
+                // Sanitizar valores que pueden venir undefined/null y romper el tipo de dato SQL
+                const monOrig = (d.MonedaOriginal || targetCurrency || 'UYU').toString().substring(0, 10);
+                const puOrig  = parseFloat(d.PrecioUnitarioOriginal) || 0;
+                const stOrig  = parseFloat(d.SubtotalOriginal)       || 0;
+                const logStr  = (d.LogPrecioAplicado || 'Sin detalle').toString();
+                const codArt  = (d.CodArticulo || '').toString().trim(); // NOT NULL en DB
+                const prodId  = d.ProIdProducto ? parseInt(d.ProIdProducto) : null;
+                const cant    = parseFloat(d.Cantidad)      || 0;
+                const pu      = parseFloat(d.PrecioUnitario) || 0;
+                const st      = parseFloat(d.Subtotal)       || 0;
+
+                await pool.request()
+                    .input('Pid',    sql.Int,              id)
+                    .input('OID',    sql.Int,              d.OrdenID)
+                    .input('CodArt', sql.NVarChar(50),     codArt)
+                    .input('ProdID', sql.Int,              prodId)
+                    .input('Cant',   sql.Decimal(18, 2),   cant)
+                    .input('PU',     sql.Decimal(18, 2),   pu)
+                    .input('ST',     sql.Decimal(18, 2),   st)
+                    .input('Log',    sql.NVarChar(sql.MAX), logStr)
+                    .input('Mon',    sql.VarChar(10),       targetCurrency)
+                    .input('Perfil', sql.NVarChar(sql.MAX), d.Perfiles || null)
+                    .input('Trace',  sql.NVarChar(sql.MAX), logStr)
+                    .input('MonOrig',sql.VarChar(10),       monOrig)
+                    .input('PUOrig', sql.Decimal(18, 4),    puOrig)
+                    .input('STOrig', sql.Decimal(18, 4),    stOrig)
+                    .query("INSERT INTO PedidosCobranzaDetalle (PedidoCobranzaID, OrdenID, CodArticulo, ProIdProducto, Cantidad, PrecioUnitario, Subtotal, LogPrecioAplicado, Moneda, PerfilAplicado, PricingTrace, MonedaOriginal, PrecioUnitarioOriginal, SubtotalOriginal) VALUES (@Pid, @OID, @CodArt, @ProdID, @Cant, @PU, @ST, @Log, @Mon, @Perfil, @Trace, @MonOrig, @PUOrig, @STOrig)");
+            } catch (eRow) {
+                logger.error(`[ERPSync] ❌ Error insertando detalle cobranza para OrdenID=${d.OrdenID}: ${eRow?.message || eRow}`);
+            }
         }
+
     }
 
     // getExternalToken removido - ya no se necesita, se escribe directo en DB

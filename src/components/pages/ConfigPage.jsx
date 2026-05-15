@@ -15,6 +15,7 @@ import ConfigRouteRulesModal from '../modals/config/ConfigRouteRulesModal';
 import ConfigDeliveryTimesModal from '../modals/config/ConfigDeliveryTimesModal';
 import ConfigWebServicesModal from '../modals/config/ConfigWebServicesModal';
 import ConfigSyncModal from '../modals/config/ConfigSyncModal';
+import ConfigSincroArticulosModal from '../modals/config/ConfigSincroArticulosModal';
 
 export default function ConfigPage({ onBack }) {
     const navigate = useNavigate();
@@ -269,6 +270,13 @@ export default function ConfigPage({ onBack }) {
                             colorClass="from-rose-500 to-red-600"
                             onClick={() => setActiveModal('syncs')}
                         />
+                        <ConfigCard
+                            title="SINCRO Artículos"
+                            subtitle="Mapeo ERP → Sistema"
+                            icon="fa-database"
+                            colorClass="from-violet-500 to-indigo-600"
+                            onClick={() => setActiveModal('sincro-articulos')}
+                        />
                     </div>
                 </div>
             )}
@@ -325,6 +333,7 @@ export default function ConfigPage({ onBack }) {
             {activeModal === 'statuses' && <ConfigStatusesModal isOpen={true} onClose={() => { setActiveModal(null); loadAreaDetails(selectedAreaId); }} areaCode={selectedAreaId} initialStatuses={details.estados} areas={areas} />}
             {activeModal === 'webservices' && <ConfigWebServicesModal isOpen={true} onClose={() => setActiveModal(null)} />}
             {activeModal === 'syncs' && <ConfigSyncModal isOpen={true} onClose={() => setActiveModal(null)} />}
+            {activeModal === 'sincro-articulos' && <ConfigSincroArticulosModal isOpen={true} onClose={() => setActiveModal(null)} />}
 
             <ImportLogModal
                 isOpen={isLogModalOpen}

@@ -245,7 +245,7 @@ class PricingService {
             .input('ResolvedGrupo', sql.VarChar, resolvedGrupo)
             .query(`
                 -- Reglas por Perfil (Cliente, Globales y Extras)
-                SELECT DISTINCT PI.ID as PerfilItemID, PI.PerfilID, PI.ProIdProducto, PI.CodGrupo, PI.Valor, CASE WHEN PI.MonIdMoneda = 1 THEN 'UYU' ELSE 'USD' END AS Moneda, PI.TipoRegla, PI.CantidadMinima, 
+                SELECT DISTINCT PI.ID as PerfilItemID, PI.PerfilID, PI.ProIdProducto, PI.CodGrupo, PI.CodArticulo, PI.Valor, CASE WHEN PI.MonIdMoneda = 1 THEN 'UYU' ELSE 'USD' END AS Moneda, PI.TipoRegla, PI.CantidadMinima, 
                        PP.Nombre as NombrePerfil, CASE WHEN PI.CodGrupo IS NOT NULL THEN 1 ELSE 0 END as PrioridadPerfil
                 FROM PerfilesItems PI
                 INNER JOIN PerfilesPrecios PP ON PI.PerfilID = PP.ID
@@ -266,7 +266,7 @@ class PricingService {
                 UNION ALL
 
                 -- Reglas Directas (Excepciones) por Cliente
-                SELECT ItemID as PerfilItemID, PEI.CliIdCliente as PerfilID, PEI.ProIdProducto, PEI.CodGrupo, PEI.Valor, CASE WHEN PEI.MonIdMoneda = 1 THEN 'UYU' ELSE 'USD' END AS Moneda, PEI.TipoRegla, PEI.MinCantidad as CantidadMinima, 
+                SELECT ItemID as PerfilItemID, PEI.CliIdCliente as PerfilID, PEI.ProIdProducto, PEI.CodGrupo, PEI.CodArticulo, PEI.Valor, CASE WHEN PEI.MonIdMoneda = 1 THEN 'UYU' ELSE 'USD' END AS Moneda, PEI.TipoRegla, PEI.MinCantidad as CantidadMinima, 
                        'Excepción Cliente' as NombrePerfil, CASE WHEN PEI.CodGrupo IS NOT NULL THEN 998 ELSE 999 END as PrioridadPerfil
                 FROM PreciosEspecialesItems PEI
                 WHERE (PEI.CliIdCliente IN (${possibleClientIds.length > 0 ? possibleClientIds.join(',') : '0'}))
@@ -339,7 +339,11 @@ class PricingService {
         let discFinalVal = optionA_DiscVal;
         let appliedFixed = false;
 
-        if (bestFixed && optionB_Price < optionA_Price) {
+        // Guardia: un precio fijo de 0 solo aplica si es una Excepción Cliente explícita.
+        // Reglas de perfiles globales con Valor=0 son plantillas vacías, no deben ganar.
+        const fixedIsValid = bestFixed && (optionB_Price > 0 || bestFixed.NombrePerfil === 'Excepción Cliente');
+
+        if (fixedIsValid && optionB_Price < optionA_Price) {
             traceDecision += `  => RESULTADO COMPETENCIA: GANA PRECIO FIJO porque (${optionB_Price.toFixed(2)}) es mejor (más bajo) que aplicar dto (${optionA_Price.toFixed(2)})\n`;
             precioFinalBase = optionB_Price;
             discFinalVal = 0;
