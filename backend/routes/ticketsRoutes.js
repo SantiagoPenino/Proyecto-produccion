@@ -1,11 +1,29 @@
 const express = require('express');
 const router = express.Router();
+const path = require('path');
+const fs = require('fs');
 const ticketsController = require('../controllers/ticketsController');
 const { verifyToken } = require('../middleware/authMiddleware');
-const upload = require('../middleware/multerConfig');
+const { uploadTickets, getTicketFolder } = require('../middleware/multerTicketsConfig');
 
 // Todo el módulo de tickets es privado (ya sea web_client o admin)
 router.use(verifyToken);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SERVIR ADJUNTOS DE TICKETS (autenticado)
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /tickets/adjunto/:ticketId/:filename
+router.get('/adjunto/:ticketId/:filename', (req, res) => {
+    const filename = path.basename(req.params.filename); // Sanitizar
+    const ticketFolder = getTicketFolder(req.params.ticketId);
+    const filePath = path.join(ticketFolder, filename);
+
+    if (!fs.existsSync(filePath)) {
+        return res.status(404).json({ error: 'Adjunto no encontrado.' });
+    }
+
+    res.sendFile(filePath);
+});
 
 // ─────────────────────────────────────────────────────────────────────────────
 // RUTAS COMPARTIDAS (Web Client y Admins)
@@ -18,7 +36,7 @@ router.get('/:id', ticketsController.getTicketDetails);
 
 // Responder a un ticket (enviar mensaje) -> req.files.evidencia opcional
 // Admins pueden enviar esNotaInterna en el body.
-router.post('/:id/responder', upload.array('evidencia', 5), ticketsController.replyToTicket);
+router.post('/:id/responder', uploadTickets.array('evidencia', 5), ticketsController.replyToTicket);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // RUTAS CLIENTES WEB 
@@ -27,7 +45,7 @@ router.post('/:id/responder', upload.array('evidencia', 5), ticketsController.re
 router.get('/', ticketsController.getTickets);
 
 // Crear nuevo ticket
-router.post('/', upload.array('evidencia', 5), ticketsController.createTicket);
+router.post('/', uploadTickets.array('evidencia', 5), ticketsController.createTicket);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // RUTAS ADICIONALES ADMINS

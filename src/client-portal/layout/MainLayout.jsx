@@ -315,9 +315,11 @@ export const MainLayout = ({ children }) => {
                 </div>
             </aside>
 
-            {/* Main Content */}
-            <main className="flex-1 overflow-y-auto relative scrollbar-thin bg-zinc-900 z-0">
-                <div className="p-4 pt-[90px] pb-20 md:p-8 md:pt-[90px] md:pb-8 max-w-7xl mx-auto min-h-full">
+            <main className="flex-1 overflow-y-auto relative scrollbar-thin bg-zinc-900">
+                <div className={location.pathname.match(/^\/portal\/soporte\/\d+/)
+                    ? "p-4 pt-[90px] pb-4 md:p-6 md:pt-[90px] md:pb-6 w-full min-h-full"
+                    : "p-4 pt-[90px] pb-6 md:p-8 md:pt-[90px] md:pb-8 max-w-7xl mx-auto min-h-full"
+                }>
                     {children}
                 </div>
             </main>

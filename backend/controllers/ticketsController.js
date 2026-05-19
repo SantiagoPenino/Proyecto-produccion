@@ -2,6 +2,7 @@ const { sql, getPool } = require('../config/db');
 const logger = require('../utils/logger');
 const fs = require('fs');
 const path = require('path');
+const { moverArchivosATicket } = require('../middleware/multerTicketsConfig');
 
 // ─────────────────────────────────────────────────────────────────────────────
 // DEPARTAMENTOS / CATEGORIAS (Ruteo Dinámico)
@@ -30,6 +31,8 @@ exports.getCategorias = async (req, res) => {
             const result = await pool.request().query(query);
             if (result.recordset.length > 0) {
                 return res.json({ success: true, data: result.recordset });
+            } else {
+                return res.json({ success: true, data: [] });
             }
         } catch (e) {
             // Fallback si la tabla aún no fue creada
@@ -109,8 +112,11 @@ exports.createTicket = async (req, res) => {
             const mensajeId = msgResult.recordset[0].TMenIdMensaje;
 
             // 3. Insertar Evidencia (Si hay archivos adjuntos vía Multer)
-            if (req.files && req.files.length > 0) {
-                for (const file of req.files) {
+            // Primero movemos los archivos de temp/ a tickets/{ticketId}/
+            const archivosMovidos = moverArchivosATicket(req.files, ticketId);
+
+            if (archivosMovidos.length > 0) {
+                for (const file of archivosMovidos) {
                     await transaction.request()
                         .input('MsgId', sql.Int, mensajeId)
                         .input('Ruta', sql.VarChar(500), file.filename)
@@ -152,7 +158,7 @@ exports.getTickets = async (req, res) => {
 
         let query = `
             SELECT 
-                T.TicIdTicket, T.TicAsunto, T.TicPrioridad, T.TicEstado, T.TicFechaActualizacion,
+                T.TicIdTicket, T.TicAsunto, T.TicPrioridad, T.TicEstado, T.TicFechaActualizacion, T.DepIdDepartamento, T.OrdIdOrden,
                 D.DepNombre as Departamento,
                 (SELECT COUNT(*) FROM Tickets_Mensajes M WHERE M.TicIdTicket = T.TicIdTicket) as TotalMensajes
             FROM Tickets T
@@ -269,7 +275,12 @@ exports.replyToTicket = async (req, res) => {
         // Los clientes nunca pueden postear notas internas, forzamos false
         const notaInternaFlag = isClient ? 0 : (esNotaInterna === 'true' || esNotaInterna === true ? 1 : 0);
 
-        if (!texto) return res.status(400).json({ error: 'Mensaje vacío.' });
+        const mensajeTexto = texto || '';
+        const hasFiles = req.files && req.files.length > 0;
+
+        if (!mensajeTexto.trim() && !hasFiles) {
+            return res.status(400).json({ error: 'El mensaje debe contener texto o al menos un archivo adjunto.' });
+        }
 
         const pool = await getPool();
         const transaction = new sql.Transaction(pool);
@@ -282,7 +293,7 @@ exports.replyToTicket = async (req, res) => {
                 .input('Usr', sql.Int, usrIdAutor)
                 .input('Cli', sql.Int, cliIdAutor)
                 .input('Interna', sql.Bit, notaInternaFlag)
-                .input('Txt', sql.NVarChar(sql.MAX), texto)
+                .input('Txt', sql.NVarChar(sql.MAX), mensajeTexto)
                 .query(`
                     INSERT INTO Tickets_Mensajes (TicIdTicket, UsrIdAutor, CliIdAutor, TMenEsNotaInterna, TMenTexto, TMenFecha)
                     OUTPUT INSERTED.TMenIdMensaje

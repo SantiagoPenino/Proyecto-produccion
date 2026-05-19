@@ -663,7 +663,7 @@ const MainAppContent = ({ menuItems = [] }) => {
                 </aside>
 
                 <main className="flex-1 overflow-hidden relative bg-slate-100 w-full">
-                    <div className={`absolute inset-0 overflow-y-auto scroll-smooth ${['/caja/transaccion', '/contabilidad/caja-admin'].includes(location.pathname) ? 'p-0' : 'p-0 md:p-6'}`}>
+                    <div className={`absolute inset-0 overflow-y-auto scroll-smooth ${['/caja/transaccion', '/contabilidad/caja-admin', '/admin/helpdesk', '/atencion-cliente/helpdesk'].includes(location.pathname) ? 'p-0' : 'p-0 md:p-6'}`}>
                         <AnimatePresence mode="wait">
                             <motion.div
                                 key={location.pathname}

@@ -68,28 +68,34 @@ export function CustomSelect({ value, onChange, options, placeholder, disabled, 
                     leaveFrom="opacity-100 translate-y-0 scale-100"
                     leaveTo={`opacity-0 scale-[0.98] ${direction === 'up' ? 'translate-y-1' : '-translate-y-1'}`}
                 >
-                    <Listbox.Options className={`absolute z-50 max-h-56 w-full overflow-auto rounded-xl border ${dropdownColors} focus:outline-none scrollbar-thin ${direction === 'up' ? 'bottom-full mb-1.5' : 'mt-1.5'}`}>
-                        {options.map((option) => (
-                            <Listbox.Option
-                                key={option.value}
-                                value={option.value}
-                                className={({ active, selected }) =>
-                                    `relative cursor-pointer select-none py-2.5 pl-10 pr-4 transition-colors duration-100
-                                    ${optionColors(active, selected)}`
-                                }
-                            >
-                                {({ selected }) => (
-                                    <>
-                                        <span className="block truncate">{option.label}</span>
-                                        {selected && (
-                                            <span className={`absolute inset-y-0 left-0 flex items-center pl-3 ${checkColor}`}>
-                                                <Check size={16} />
-                                            </span>
-                                        )}
-                                    </>
-                                )}
-                            </Listbox.Option>
-                        ))}
+                    <Listbox.Options className={`absolute z-50 max-h-80 w-full overflow-auto rounded-xl border ${dropdownColors} focus:outline-none scrollbar-thin ${direction === 'up' ? 'bottom-full mb-1.5' : 'mt-1.5'}`}>
+                        {options.length === 0 ? (
+                            <div className="py-3 px-4 text-sm text-zinc-500 text-center">
+                                Sin opciones
+                            </div>
+                        ) : (
+                            options.map((option) => (
+                                <Listbox.Option
+                                    key={option.value}
+                                    value={option.value}
+                                    className={({ active, selected }) =>
+                                        `relative cursor-pointer select-none py-2.5 pl-10 pr-4 transition-colors duration-100
+                                        ${optionColors(active, selected)}`
+                                    }
+                                >
+                                    {({ selected }) => (
+                                        <>
+                                            <span className="block truncate">{option.label}</span>
+                                            {selected && (
+                                                <span className={`absolute inset-y-0 left-0 flex items-center pl-3 ${checkColor}`}>
+                                                    <Check size={16} />
+                                                </span>
+                                            )}
+                                        </>
+                                    )}
+                                </Listbox.Option>
+                            ))
+                        )}
                     </Listbox.Options>
                 </Transition>
             </div>
