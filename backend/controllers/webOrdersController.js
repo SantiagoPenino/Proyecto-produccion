@@ -2410,91 +2410,52 @@ exports.handyWebhook = async (req, res) => {
                         }
                     }
 
-                    // --- MIGRACIÓN: Escribir directamente en DB en vez de llamar a API React ---
+                    // --- FLUJO DE PAGO UNIFICADO (igual que Caja) ---
                     const ordenRetiroId = parseInt(String(payloadPago.ordenRetiro).replace(/^[A-Za-z]+-0*/, ''), 10);
                     if (!isNaN(ordenRetiroId)) {
-                        // Determinar nuevo estado de la orden de retiro
+                        // Guard de idempotencia: si ya tiene PagIdPago → webhook duplicado
                         const retiroState = await pool.request()
                             .input('RID', sql.Int, ordenRetiroId)
                             .query('SELECT OReEstadoActual, PagIdPago FROM OrdenesRetiro WITH(NOLOCK) WHERE OReIdOrdenRetiro = @RID');
 
                         if (retiroState.recordset.length > 0 && retiroState.recordset[0].PagIdPago) {
-                            logger.info(`[HANDY WEBHOOK] La orden de retiro ${ordenRetiroId} ya tiene un pago asignado (PagIdPago: ${retiroState.recordset[0].PagIdPago}). Ignorando webhook duplicado de pago exitoso.`);
-                            return; // IMPORTANTE: Idempotencia para evitar duplicar pagos y cambios de estado
+                            logger.info(`[HANDY WEBHOOK] Retiro ${ordenRetiroId} ya pagado. Ignorando webhook duplicado.`);
+                            return;
                         }
 
-                        const estadoActual = retiroState.recordset[0]?.OReEstadoActual || 1;
-                        const nuevoEstado = estadoActual === 1 ? 3 : 8; // 1→3 (Ingresado→Abonado), otro→8 (Abonado de antemano)
-                        const usuarioId = 70; // PRODUCCION user
+                        const usuarioId = 70;
+                        const monedaId  = tx.Currency === 840 ? 2 : 1;
+                        const moneda    = monedaId === 2 ? 'USD' : 'UYU';
 
-                        // 1. INSERT Pago
-                        const pagoResult = await pool.request()
-                            .input('MetodoPago', sql.Int, payloadPago.metodoPagoId)
-                            .input('Moneda', sql.Int, payloadPago.monedaId)
-                            .input('Monto', sql.Float, payloadPago.monto)
-                            .input('Usr', sql.Int, usuarioId)
-                            .query(`
-                                INSERT INTO Pagos (MPaIdMetodoPago, PagIdMonedaPago, PagMontoPago, PagFechaPago, PagUsuarioAlta)
-                                OUTPUT INSERTED.PagIdPago
-                                VALUES (@MetodoPago, @Moneda, @Monto, GETDATE(), @Usr)
-                            `);
-                        const pagoId = pagoResult.recordset[0].PagIdPago;
+                        // Resolver CliIdCliente desde CodCliente
+                        const cliRes = await pool.request()
+                            .input('CodCli', sql.Int, tx.CodCliente)
+                            .query('SELECT CliIdCliente FROM Clientes WITH(NOLOCK) WHERE CodCliente = @CodCli');
+                        const CliIdCliente = cliRes.recordset[0]?.CliIdCliente;
 
-                        // 2. UPDATE OrdenesRetiro
-                        await pool.request()
-                            .input('RID', sql.Int, ordenRetiroId)
-                            .input('Estado', sql.Int, nuevoEstado)
-                            .input('PagoId', sql.Int, pagoId)
-                            .query(`
-                                UPDATE OrdenesRetiro SET PagIdPago = @PagoId, OReEstadoActual = @Estado, OReFechaEstadoActual = GETDATE(), ORePasarPorCaja = 0
-                                WHERE OReIdOrdenRetiro = @RID
-                            `);
+                        // ── Pago completo igual que Caja (imputa deudas, crea TCA, asiento) ──
+                        const { registrarPagoCompleto } = require('../services/pagoService');
+                        const result = await registrarPagoCompleto({
+                            clienteId:     CliIdCliente,
+                            ordenRetiroId: ordenRetiroId,
+                            ordIds:        [],          // el servicio los resuelve desde el retiro
+                            pagos:         [{ metodoPagoId: 9, monedaId, monto: tx.TotalAmount, cotizacion: 1 }],
+                            totalMonto:    tx.TotalAmount,
+                            moneda,
+                            monedaId,
+                            usuarioId,
+                            observaciones: `Cobro Handy (Tx: ${transactionId})`,
+                            handyTxId:     transactionId,
+                            issuerName:    issuerName,
+                        });
 
-                        // 3. INSERT Historico Retiro
-                        await pool.request()
-                            .input('RID', sql.Int, ordenRetiroId)
-                            .input('Estado', sql.Int, nuevoEstado)
-                            .input('Usr', sql.Int, usuarioId)
-                            .query(`INSERT INTO HistoricoEstadosOrdenesRetiro (OReIdOrdenRetiro, EORIdEstadoOrden, HEOFechaEstado, HEOUsuarioAlta) VALUES (@RID, @Estado, GETDATE(), @Usr)`);
+                        const pagoId = result.pagoId;
+                        logger.info(`[HANDY WEBHOOK] ✅ Pago completo: PagoId=${pagoId} TcaId=${result.tcaId} Imputado=${result.totalImputado} Retiro=${ordenRetiroId}`);
 
-                        // 4. UPDATE Ordenes + Historico (buscar hijas del retiro)
-                        const hijasResult = await pool.request()
-                            .input('RID2', sql.Int, ordenRetiroId)
-                            .query('SELECT OrdIdOrden FROM OrdenesDeposito WHERE OReIdOrdenRetiro = @RID2');
-                        const hijasIds = hijasResult.recordset.map(r => r.OrdIdOrden).filter(id => id > 0);
 
-                        if (hijasIds.length > 0) {
-                            await pool.request()
-                                .input('PagoId', sql.Int, pagoId)
-                                .query(`UPDATE OrdenesDeposito SET PagIdPago = @PagoId, OrdEstadoActual = 7, OrdFechaEstadoActual = GETDATE() WHERE OrdIdOrden IN (${hijasIds.join(',')})`);
+                        // (submayor, asiento contable e imputación de DeudaDocumento ya procesados por pagoService)
 
-                            const histValues = hijasIds.map(id => `(${id}, 7, GETDATE(), ${usuarioId})`).join(', ');
-                            await pool.request().query(`INSERT INTO HistoricoEstadosOrdenes (OrdIdOrden, EOrIdEstadoOrden, HEOFechaEstado, HEOUsuarioAlta) VALUES ${histValues}`);
-                        }
 
-                        logger.info(`[HANDY WEBHOOK] ✅ Pago registrado en DB: PagoId=${pagoId}, OrdenRetiro=${ordenRetiroId}`);
-
-                        // --- INYECCIÓN CONTABLE HANDY (Motor Unificado) ---
-                        try {
-                            const cliRes = await pool.request()
-                                .input('CodCli', sql.Int, tx.CodCliente)
-                                .query('SELECT CliIdCliente FROM Clientes WITH(NOLOCK) WHERE CodCliente = @CodCli');
-                            if (cliRes.recordset.length > 0) {
-                                const CliIdCliente = cliRes.recordset[0].CliIdCliente;
-                                await contabilidadService.procesarEventoContable('COBRO_CTA', {
-                                    PagIdPago: pagoId,
-                                    CliIdCliente: CliIdCliente,
-                                    Importe: payloadPago.monto,
-                                    MonIdMoneda: payloadPago.monedaId,
-                                    UsuarioAlta: usuarioId,
-                                    ConceptoGlobal: `Cobro Online Handy (Tx: ${transactionId})`
-                                });
-                                logger.info(`[CONTABILIDAD] Cobro Handy procesado en Motor Unificado para Tx=${transactionId}`);
-                            }
-                        } catch (errContabil) {
-                            logger.error(`[CONTABILIDAD] Error al contabilizar pago de Handy: ${errContabil.message}`);
-                        }
-                        // --- FIN INYECCIÓN CONTABLE HANDY ---
 
                         // Generar comprobante PDF y guardarlo en disco
                         generateHandyReceipt({
@@ -3081,72 +3042,57 @@ exports.mpWebhook = async (req, res) => {
             }
         }
 
-        // Asentar el pago en la BD (mismo flujo in-line que Handy webhook)
+        // ── FLUJO DE PAGO UNIFICADO (igual que Caja) ──────────────────────────
         const ordenRetiroId = parseInt(String(storedOrdenRetiro || '').replace(/^[A-Za-z]+-0*/,''), 10);
         if (isNaN(ordenRetiroId)) {
             logger.warn('[MP WEBHOOK] No se pudo parsear ordenRetiroId:', storedOrdenRetiro);
             return;
         }
 
+        // Guard de idempotencia
         const retiroState = await pool.request()
             .input('RID', sql.Int, ordenRetiroId)
-            .query('SELECT OReEstadoActual FROM OrdenesRetiro WITH(NOLOCK) WHERE OReIdOrdenRetiro = @RID');
-
-        const estadoActual = retiroState.recordset[0]?.OReEstadoActual || 1;
-        const nuevoEstado = estadoActual === 1 ? 3 : 8;
-        const usuarioId = 70;
-
-        // 1. INSERT Pago (MPaIdMetodoPago=10 = Pago en Línea MercadoPago)
-        const pagoResult = await pool.request()
-            .input('MetodoPago', sql.Int,   10)
-            .input('Moneda',     sql.Int,   currencyCode)
-            .input('Monto',      sql.Float, totalAmountPaid)
-            .input('Usr',        sql.Int,   usuarioId)
-            .query(`
-                INSERT INTO Pagos (MPaIdMetodoPago, PagIdMonedaPago, PagMontoPago, PagFechaPago, PagUsuarioAlta)
-                OUTPUT INSERTED.PagIdPago
-                VALUES (@MetodoPago, @Moneda, @Monto, GETDATE(), @Usr)
-            `);
-        const pagoId = pagoResult.recordset[0].PagIdPago;
-
-        // 2. UPDATE OrdenesRetiro
-        await pool.request()
-            .input('RID',    sql.Int, ordenRetiroId)
-            .input('Estado', sql.Int, nuevoEstado)
-            .input('PagoId', sql.Int, pagoId)
-            .input('Ref',    sql.VarChar(200), externalRef)
-            .query(`
-                UPDATE OrdenesRetiro SET 
-                    PagIdPago = @PagoId, 
-                    ReferenciaPagoOnline = @Ref,
-                    OReEstadoActual = @Estado,
-                    OReFechaEstadoActual = GETDATE(), 
-                    ORePasarPorCaja = 0
-                WHERE OReIdOrdenRetiro = @RID
-            `);
-
-        // 3. INSERT Historico Retiro
-        await pool.request()
-            .input('RID',    sql.Int, ordenRetiroId)
-            .input('Estado', sql.Int, nuevoEstado)
-            .input('Usr',    sql.Int, usuarioId)
-            .query(`INSERT INTO HistoricoEstadosOrdenesRetiro (OReIdOrdenRetiro, EORIdEstadoOrden, HEOFechaEstado, HEOUsuarioAlta) VALUES (@RID, @Estado, GETDATE(), @Usr)`);
-
-        // 4. UPDATE Ordenes hijas
-        const hijasResult = await pool.request()
-            .input('RID2', sql.Int, ordenRetiroId)
-            .query('SELECT OrdIdOrden FROM OrdenesDeposito WHERE OReIdOrdenRetiro = @RID2');
-        const hijasIds = hijasResult.recordset.map(r => r.OrdIdOrden).filter(id => id > 0);
-
-        if (hijasIds.length > 0) {
-            await pool.request()
-                .input('PagoId', sql.Int, pagoId)
-                .query(`UPDATE OrdenesDeposito SET PagIdPago = @PagoId, OrdEstadoActual = 7, OrdFechaEstadoActual = GETDATE() WHERE OrdIdOrden IN (${hijasIds.join(',')})`);
-            const histValues = hijasIds.map(id => `(${id}, 7, GETDATE(), ${usuarioId})`).join(', ');
-            await pool.request().query(`INSERT INTO HistoricoEstadosOrdenes (OrdIdOrden, EOrIdEstadoOrden, HEOFechaEstado, HEOUsuarioAlta) VALUES ${histValues}`);
+            .query('SELECT OReEstadoActual, PagIdPago FROM OrdenesRetiro WITH(NOLOCK) WHERE OReIdOrdenRetiro = @RID');
+        if (retiroState.recordset[0]?.PagIdPago) {
+            logger.warn(`[MP WEBHOOK] Retiro ${ordenRetiroId} ya pagado. Ignorando duplicado.`);
+            return;
         }
 
-        logger.info(`[MP WEBHOOK] ✅ Pago registrado en DB: PagoId=${pagoId}, OrdenRetiro=${ordenRetiroId}`);
+        const usuarioId = 70;
+        const moneda    = paymentData.currency_id === 'USD' ? 'USD' : 'UYU';
+        const monedaId  = moneda === 'USD' ? 2 : 1;
+
+        // Resolver CliIdCliente
+        const cliRes2 = await pool.request()
+            .input('CodCli', sql.Int, tx.CodCliente)
+            .query('SELECT CliIdCliente FROM Clientes WITH(NOLOCK) WHERE CodCliente = @CodCli');
+        const CliIdCliente = cliRes2.recordset[0]?.CliIdCliente;
+
+        const { registrarPagoCompleto } = require('../services/pagoService');
+        const mpResult = await registrarPagoCompleto({
+            clienteId:     CliIdCliente,
+            ordenRetiroId: ordenRetiroId,
+            ordIds:        [],
+            pagos:         [{ metodoPagoId: 10, monedaId, monto: totalAmountPaid, cotizacion: 1 }],
+            totalMonto:    totalAmountPaid,
+            moneda,
+            monedaId,
+            usuarioId,
+            observaciones: `Cobro MercadoPago (Tx: ${externalRef})`,
+            mpTxId:        externalRef,
+            issuerName:    'MercadoPago',
+        });
+
+        const pagoId = mpResult.pagoId;
+        logger.info(`[MP WEBHOOK] ✅ Pago completo: PagoId=${pagoId} TcaId=${mpResult.tcaId} Imputado=${mpResult.totalImputado} Retiro=${ordenRetiroId}`);
+
+        // Guardar también ReferenciaPagoOnline en OrdenesRetiro
+        await pool.request()
+            .input('RID', sql.Int, ordenRetiroId)
+            .input('Ref', sql.VarChar(200), externalRef)
+            .query(`UPDATE OrdenesRetiro SET ReferenciaPagoOnline = @Ref WHERE OReIdOrdenRetiro = @RID`);
+
+
 
         // Generar comprobante PDF (igual que Handy)
         const originalCurrCode = storedData.moneda === 'USD' ? 840 : 858;

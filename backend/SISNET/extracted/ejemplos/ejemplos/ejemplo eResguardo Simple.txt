@@ -1,0 +1,53 @@
+﻿<S:Envelope xmlns:S="http://schemas.xmlsoap.org/soap/envelope/">
+   <S:Header/>
+   <S:Body>
+      <ns2:recepcionCFESimple xmlns:ns2="http://webServices.sitioWeb.crp.com/">
+         <tipoCFE>182</tipoCFE>
+         <claveUnicaCaja>1/TEST</claveUnicaCaja>
+         <wsVarios>
+            <comprobanteTipo>182</comprobanteTipo>
+            <fchEmis>12/04/2017</fchEmis>
+         </wsVarios>
+         <wsReceptor>
+            <ciudadRecep>Ciudad</ciudadRecep>
+            <deptoRecep>Departamento</deptoRecep>
+            <dirRecep>Dirección</dirRecep>
+            <rznSocRecep>Razon Social o Nombre</rznSocRecep>
+            <tipoDocRecep>4</tipoDocRecep>
+            <docRecep>1111</docRecep>
+            <codPaisRecep>UY</codPaisRecep>
+         </wsReceptor>
+         <wsTotales>
+            <cantLinDet>1</cantLinDet>
+            <mntTotCredFisc>0.00</mntTotCredFisc>
+            <mntTotRetenido>1000.00</mntTotRetenido>
+            <tpoMoneda>UYU</tpoMoneda>
+            <tpoCambio>1</tpoCambio>
+         </wsTotales>
+         <listaWsItems>
+            <nroLinDet>1</nroLinDet>
+            <indFact>1</indFact>                           // NOTA --> valor=1 en la emisión de un Comprobante de Resguardo nuevo, valor=9 para anular un resguardo y agregarle las referencias
+            <listaWsItemRetencPercep>
+               <codRet>1146171</codRet>                    // NOTA --> Codificación de Retenciones y/o Percepciones según tabla adjunta en planilla excel, con los códigos según DGI para facturación Electrónica
+               <mntSujetoaRet>9523.81</mntSujetoaRet>
+               <tasa>10.50</tasa>
+               <valRetPerc>1000.00</valRetPerc>
+            </listaWsItemRetencPercep>
+         </listaWsItems>
+         <listaWsAdendas>
+            <ordinal>1</ordinal>
+            <etiqueta>Numerador Interno</etiqueta>
+            <valor> 111-A-210421 Nro Cliente 296</valor>
+         </listaWsAdendas>
+         <listaWsRetencPercep>
+            <codRet>1146171</codRet>
+            <valRetPerc>1000.00</valRetPerc>
+         </listaWsRetencPercep>
+         <impresionImprimirSiNo>N</impresionImprimirSiNo>
+         <impresionImpresora>FACTURA</impresionImpresora>
+         <impresionFormato>STANDARDA4ResFull</impresionFormato>
+         <impresionNumeroVias>1</impresionNumeroVias>
+         <simular>0</simular>
+      </ns2:recepcionCFE>
+   </S:Body>
+</S:Envelope>

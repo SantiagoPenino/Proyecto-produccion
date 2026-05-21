@@ -176,6 +176,29 @@ export const areaConfigs = {
     renderRowCells: renderPrintRow
   },
 
+  // --- NUEVA ÁREA: IMD / XMD ---
+  'IMD': {
+    name: "Impresión Digital",
+    fileRequirements: [{ type: 'Impresión', label: 'Archivo de Impresión', required: true }],
+    gridTemplate: FLEXIBLE_GRID,
+    headers: FLEXIBLE_HEADERS,
+    renderRowCells: renderPrintRow
+  },
+  'XMD': {
+    name: "Impresión Digital",
+    fileRequirements: [{ type: 'Impresión', label: 'Archivo de Impresión', required: true }],
+    gridTemplate: FLEXIBLE_GRID,
+    headers: FLEXIBLE_HEADERS,
+    renderRowCells: renderPrintRow
+  },
+  'planilla-imd': {
+    name: "Impresión Digital",
+    fileRequirements: [{ type: 'Impresión', label: 'Archivo de Impresión', required: true }],
+    gridTemplate: FLEXIBLE_GRID,
+    headers: FLEXIBLE_HEADERS,
+    renderRowCells: renderPrintRow
+  },
+
   'ECOUV': {
     name: "Impresión EcoUV",
     fileRequirements: [{ type: 'Impresión', label: 'Archivo de Impresión', required: true }],

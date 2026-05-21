@@ -1,0 +1,78 @@
+<S:Envelope xmlns:S="http://schemas.xmlsoap.org/soap/envelope/">
+   <S:Header/>
+   <S:Body>
+      <ns2:recepcionCFE xmlns:ns2="http://webServices.sitioWeb.crp.com/">
+         <wsCAE>
+           <errorDes/>
+            <hayError>false</hayError>
+            <idInterno>45502</idInterno>
+            <numero>2</numero>
+            <numeroAutorizacion>90260001220</numeroAutorizacion>
+            <serie>B</serie>
+         </wsCAE>
+         <wsVarios>
+            <viaTransp>1</viaTransp>
+            <clauVenta>FOB</clauVenta>
+            <comprobanteTipo>122</comprobanteTipo>
+            <fchEmis>26/01/2026</fchEmis>
+            <fchVenc>26/01/2026</fchVenc>
+            <fmaPago>1</fmaPago>
+            <mntBruto>1</mntBruto>
+            <nro>27530</nro>
+            <nroReferencia>90160001010</nroReferencia>
+            <serie>B</serie>
+         </wsVarios>
+         <wsReceptor>
+            <ciudadRecep>MVD</ciudadRecep>
+            <codPaisRecep>UY</codPaisRecep>
+            <deptoRecep>MVD</deptoRecep>
+            <dirRecep>LA DE HERRERA Y ECHEVARRIARZA</dirRecep>
+            <docRecep>211962820014</docRecep>
+            <rznSocRecep>JUAN PEREZ</rznSocRecep>
+            <tipoDocRecep>2</tipoDocRecep>
+         </wsReceptor>
+         <wsTotales>
+            <cantLinDet>1</cantLinDet>
+            <mntExpoyAsim>100</mntExpoyAsim>
+            <mntPagar>100</mntPagar>
+            <mntTotal>100</mntTotal>
+            <montoNF>0</montoNF>
+            <tpoMoneda>UYU</tpoMoneda>
+         </wsTotales>
+         <listaWsItems>
+            <cantidad>1</cantidad>
+            <indFact>10</indFact>
+            <NCM>X</NCM>	
+            <montoItem>100</montoItem>
+            <nomItem>ITEM 1</nomItem>
+            <nroLinDet>1</nroLinDet>
+            <precioUnitario>100</precioUnitario>
+            <uniMed>N/A</uniMed>
+         </listaWsItems>
+		 <listaWsReferencias>
+		  <tpoDocRef>e_Factura_Exportacion</tpoDocRef>
+            <fechaCFEref>2026-01-22</fechaCFEref>
+            <indicadorReferenciaGlobal>0</indicadorReferenciaGlobal>
+	        <mntCFEref>5</mntCFEref>
+            <nroCFERef>2</nroCFERef>
+            <nroLinRef>1</nroLinRef>
+            <serie>B</serie>
+	    <tpoMonedaRef>UYU</tpoMonedaRef>
+         </listaWsReferencias>
+         <listaWsAdendas>
+            <ordinal>1</ordinal>
+            <etiqueta>TIPOYNUMERO</etiqueta>
+            <valor>NUMERO INTERNO : AAA / 1234</valor>
+         </listaWsAdendas>
+         <listaWsAdendas>
+            <ordinal>2</ordinal>
+            <etiqueta>OBSERVACION</etiqueta>
+            <valor>OBSERVACION : Wservice Sisnet Ejemplo NC EF</valor>
+         </listaWsAdendas>
+         <impresionImprimirSiNo>N</impresionImprimirSiNo>
+         <impresionImpresora/>
+         <impresionFormato/>
+         <impresionNumeroVias>0</impresionNumeroVias>
+      </ns2:recepcionCFE>
+   </S:Body>
+</S:Envelope>

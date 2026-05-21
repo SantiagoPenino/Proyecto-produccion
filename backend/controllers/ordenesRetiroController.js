@@ -117,7 +117,8 @@ const getOrdenesRetiroQueryBase = `
     r.ReceptorNombre,
     r.LReIdLugarRetiro,
     (SELECT TOP 1 b.ComprobantePath FROM Logistica_Bultos b WITH(NOLOCK) WHERE b.OrdenID = r.OReIdOrdenRetiro AND b.ComprobantePath IS NOT NULL ORDER BY b.BultoID DESC) AS comprobanteEntrega,
-    art.Descripcion AS articuloDescripcion
+    art.Descripcion AS articuloDescripcion,
+    o.OrdNombreTrabajo AS orderNombreTrabajo
   FROM OrdenesRetiro r WITH(NOLOCK)
   LEFT JOIN FormasEnvio fe WITH(NOLOCK) ON fe.ID = r.LReIdLugarRetiro
   LEFT JOIN EstadosOrdenesRetiro er WITH(NOLOCK) ON er.EORIdEstadoOrden = r.OReEstadoActual
@@ -173,6 +174,8 @@ const processRetirosRows = (rows) => {
       map[row.OReIdOrdenRetiro].orders.push({
         orderNumber: row.orderNumber,
         orderId: row.orderId,
+        orderNombreTrabajo: row.orderNombreTrabajo || null,
+        orderMaterial: row.articuloDescripcion ? row.articuloDescripcion.trim() : null,
         orderEstado: row.orderEstadoNombre || row.orderEstado,
         orderCosto: row.costoFinal != null ? `${row.orderMonedaId === 2 ? 'US$' : '$'} ${parseFloat(row.costoFinal).toFixed(2)}` : null,
         orderCantidad: row.orderCantidad != null ? parseFloat(row.orderCantidad) : null,

@@ -1,0 +1,71 @@
+<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:web="http://webServices.sitioWeb.crp.com/">
+    <soapenv:Header/>
+    <soapenv:Body>
+        <web:recepcionCFE> 
+            <wsCAE> 
+                <numero>1403</numero> 
+                <serie>A</serie> 
+                <numeroAutorizacion>90150022986</numeroAutorizacion> 
+                <idInterno>115357</idInterno> 
+                <hayError>false</hayError> 
+                <errorDes/> 
+            </wsCAE> 
+            <wsVarios> 
+                <fchEmis>05/02/2016</fchEmis> 
+                <fhcVenc>05/02/2016</fhcVenc> 
+                <fmaPago>2</fmaPago> 
+                <comprobanteTipo>112</comprobanteTipo> 
+                <mntBruto>0</mntBruto> 
+                <textoObservacion/> 
+            </wsVarios> 
+            <wsReceptor> 
+                <tipoDocRecep>2</tipoDocRecep> 
+                <docRecep>215939820014</docRecep> 
+                <codPaisRecep>UY</codPaisRecep> 
+                <rznSocRecep>RAZON SOCIAL S.A.</rznSocRecep> 
+                <dirRecep>DIRECCION DEL RECEPTOR</dirRecep> 
+                <ciudadRecep>CIUDAD</ciudadRecep> 
+                <deptoRecep/> 
+            </wsReceptor> 
+            <listaWsItems> 
+                <nroLinDet>1</nroLinDet> 
+                <indFact>1</indFact> 
+                <nomItem>POR SERVICIOS TASA EXENTA</nomItem> 
+                <cantidad>1</cantidad> 
+                <uniMed>N/A</uniMed> 
+                <precioUnitario>800</precioUnitario> 
+                <montoItem>800</montoItem> 
+                <descuentoMonto>0.00</descuentoMonto> 
+                <descAdicional>PEPE GONZALEZ: Fecha de salida: 10 MARZO 2016</descAdicional> 
+            </listaWsItems> 
+            <listaWsReferencias> 
+                <indicadorReferenciaGlobal/> 
+                <nroCFERef>17446</nroCFERef> 
+                <serie>A</serie> 
+                <tpoDocRef>e_Factura</tpoDocRef> 
+                <nroLinRef>1</nroLinRef> 
+                <fechaCFEref>2016-01-26</fechaCFEref> 
+            </listaWsReferencias> 
+            <wsTotales> 
+                <tpoMoneda>USD</tpoMoneda> 
+                <tpoCambio>31.186</tpoCambio> 
+                <mntNoGrv>800.00</mntNoGrv> 
+                <mntNetoIvaTasaBasica>0.00</mntNetoIvaTasaBasica> 
+                <iVATasaBas>tasa_basica</iVATasaBas> 
+                <mntIVATasaBas>0.00</mntIVATasaBas> 
+                <mntNetoIvaTasaMin>0.00</mntNetoIvaTasaMin> 
+                <iVATasaMin>tasa_Minima</iVATasaMin> 
+                <mntIVATasaMin>0.00</mntIVATasaMin> 
+                <mntTotal>800.00</mntTotal> 
+                <cantLinDet>1</cantLinDet> 
+                <montoNF>0.00</montoNF> 
+                <mntPagar>800.00</mntPagar> 
+            </wsTotales> 
+            <impresionImprimirSiNo>N</impresionImprimirSiNo> 
+            <impresionImpresora/> 
+            <impresionFormato/> 
+            <impresionNumeroVias>0</impresionNumeroVias> 
+        </web:recepcionCFE>
+    </soapenv:Body>
+</soapenv:Envelope>
+	

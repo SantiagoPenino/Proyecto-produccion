@@ -29,7 +29,12 @@ export default function CierreCicloPreviewModal({
 
   // Tipo Documento
   const tieneRUT = cliente?.CioRuc && String(cliente.CioRuc).replace(/\D/g, '').length === 12;
-  const [tipoDocumento, setTipoDocumento] = useState(tieneRUT ? 'E-FACTURA CREDITO' : 'E-TICKET CREDITO');
+  const isAnticipo = ciclo?.CicIdCiclo === 'ANTICIPO';
+  const [tipoDocumento, setTipoDocumento] = useState(
+    isAnticipo
+      ? (tieneRUT ? 'E-FACTURA CONTADO' : 'E-TICKET CONTADO')
+      : (tieneRUT ? 'E-FACTURA CREDITO' : 'E-TICKET CREDITO')
+  );
   
   // Datos DGI Consumidor Final (si supera umbral)
   const [cliDgiNombre, setCliDgiNombre] = useState(cliente?.Nombre || cliente?.NombreFantasia || '');
@@ -430,9 +435,19 @@ export default function CierreCicloPreviewModal({
               onChange={e => setTipoDocumento(e.target.value)}
               className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm font-bold text-slate-700 outline-none focus:ring-2 focus:ring-indigo-500/50 transition-shadow"
             >
-              <option value="E-FACTURA CREDITO">e-Factura Crédito</option>
-              <option value="E-TICKET CREDITO">e-Ticket Crédito</option>
-              <option value="FACTURA">Factura Manual</option>
+              {isAnticipo ? (
+                <>
+                  <option value="E-FACTURA CONTADO">e-Factura Contado</option>
+                  <option value="E-TICKET CONTADO">e-Ticket Contado</option>
+                  <option value="FACTURA">Factura Manual</option>
+                </>
+              ) : (
+                <>
+                  <option value="E-FACTURA CREDITO">e-Factura Crédito</option>
+                  <option value="E-TICKET CREDITO">e-Ticket CREDITO</option>
+                  <option value="FACTURA">Factura Manual</option>
+                </>
+              )}
             </select>
 
             <div className="flex items-center gap-2">

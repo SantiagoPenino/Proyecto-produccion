@@ -1,5 +1,6 @@
 const { getPool, sql } = require('../config/db');
 const logger = require('../utils/logger');
+const { calcularSaldoEfectivo, aplicarAnticipoAOrden } = require('../services/anticipoService');
 
 /**
  * POST /api/audit-deposito/check
@@ -193,8 +194,11 @@ exports.performAction = async (req, res) => {
           )
         `);
 
+        await tran.commit();
+        return res.json({ success: true, message: `${codigos.length} órdenes entregadas con éxito.` });
+
       } else if (accion === 'A_DEPOSITO') {
-        // OrdenesDeposito -> 7 (Pronto para entregar)
+        // ── 1. Actualizar OrdenesDeposito → estado 7 ────────────────────────────
         await tran.request().query(`
           UPDATE dbo.OrdenesDeposito
           SET OrdEstadoActual = 7, OrdFechaEstadoActual = GETDATE()
@@ -206,7 +210,7 @@ exports.performAction = async (req, res) => {
           FROM dbo.OrdenesDeposito WHERE OrdCodigoOrden IN (${sqlCodes})
         `);
 
-        // OrdenesRetiro -> 8 (Empaquetado y abonado) si tiene pago, 7 (Empaquetado sin abonar) si no tiene pago.
+        // ── 2. OrdenesRetiro: estado provisional según si ya tenía pago ──────────
         await tran.request().query(`
           UPDATE r
           SET r.OReEstadoActual = CASE WHEN r.PagIdPago IS NOT NULL THEN 8 ELSE 7 END,
@@ -222,12 +226,85 @@ exports.performAction = async (req, res) => {
           INNER JOIN dbo.OrdenesRetiro r ON d.OReIdOrdenRetiro = r.OReIdOrdenRetiro
           WHERE d.OrdCodigoOrden IN (${sqlCodes})
         `);
+
+        // ── 3. AUTO-APROBACIÓN POR ANTICIPO ─────────────────────────────────────
+        // Para cada OrdenRetiro sin pago, verificar si el cliente tiene saldo
+        // efectivo suficiente y, de ser así, imputarlo automáticamente.
+        const retirosSinPago = await tran.request().query(`
+          SELECT DISTINCT
+            r.OReIdOrdenRetiro,
+            r.OReCostoTotalOrden,
+            o.CliIdCliente,
+            o.MonIdMoneda
+          FROM dbo.OrdenesRetiro r WITH(NOLOCK)
+          INNER JOIN dbo.OrdenesDeposito o WITH(NOLOCK)
+                  ON o.OReIdOrdenRetiro = r.OReIdOrdenRetiro
+          WHERE o.OrdCodigoOrden IN (${sqlCodes})
+            AND r.PagIdPago IS NULL
+            AND (r.ReferenciaPagoOnline IS NULL OR r.ReferenciaPagoOnline != 'ANTICIPO')
+            AND o.CliIdCliente IS NOT NULL
+        `);
+
+        const resumenAnticipo = { aprobadas: [], pendientesCaja: [] };
+
+        for (const retiro of retirosSinPago.recordset) {
+          const { OReIdOrdenRetiro, OReCostoTotalOrden, CliIdCliente, MonIdMoneda } = retiro;
+          const monto    = parseFloat(OReCostoTotalOrden) || 0;
+          const monedaId = MonIdMoneda || 1;
+          if (monto <= 0 || !CliIdCliente) continue;
+
+          try {
+            // Calcular saldo efectivo (descontando órdenes ya comprometidas)
+            const pool = await getPool();
+            const { cuentaId, saldoEfectivo } = await calcularSaldoEfectivo(CliIdCliente, monedaId, pool);
+
+            if (cuentaId && saldoEfectivo >= monto) {
+              // ✅ Saldo suficiente → imputar anticipo
+              const { pagIdPago } = await aplicarAnticipoAOrden({
+                oReId:     OReIdOrdenRetiro,
+                cliId:     CliIdCliente,
+                cuentaId,
+                monto,
+                monedaId,
+                usuarioId,
+                tran,
+              });
+              resumenAnticipo.aprobadas.push({
+                oReId: OReIdOrdenRetiro,
+                monto,
+                pagIdPago,
+                saldoRestante: parseFloat((saldoEfectivo - monto).toFixed(2)),
+              });
+              logger.info(`[AUDIT-DEPOSITO] ✅ Anticipo auto-aprobado: OReId=${OReIdOrdenRetiro} Monto=${monto} PagId=${pagIdPago}`);
+            } else {
+              // ❌ Saldo insuficiente → queda en caja
+              resumenAnticipo.pendientesCaja.push({
+                oReId:            OReIdOrdenRetiro,
+                monto,
+                saldoDisponible:  parseFloat((saldoEfectivo || 0).toFixed(2)),
+                faltante:         parseFloat((monto - (saldoEfectivo || 0)).toFixed(2)),
+              });
+              // Asegurarse de que ORePasarPorCaja = 1
+              await tran.request()
+                .input('OReId', sql.Int, OReIdOrdenRetiro)
+                .query('UPDATE dbo.OrdenesRetiro SET ORePasarPorCaja = 1 WHERE OReIdOrdenRetiro = @OReId');
+            }
+          } catch (eAnt) {
+            logger.warn(`[AUDIT-DEPOSITO] Error al evaluar anticipo para OReId=${OReIdOrdenRetiro}: ${eAnt.message}`);
+            resumenAnticipo.pendientesCaja.push({ oReId: OReIdOrdenRetiro, monto, error: eAnt.message });
+          }
+        }
+
+        await tran.commit();
+        return res.json({
+          success: true,
+          message: `${codigos.length} órdenes actualizadas.`,
+          resumenAnticipo,
+        });
+
       } else {
         throw new Error('Accin invlida.');
       }
-
-      await tran.commit();
-      res.json({ success: true, message: `${codigos.length} rdenes actualizadas con xito.` });
     } catch (txErr) {
       await tran.rollback();
       throw txErr;

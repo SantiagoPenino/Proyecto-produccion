@@ -1,0 +1,1 @@
+import{ag as s}from"./index--jJ3GfxL.js";const r={getAll:async()=>(await s.get("/insumos")).data,create:async e=>(await s.post("/insumos",e)).data,update:async(e,a)=>(await s.put(`/insumos/${e}`,a)).data,delete:async e=>(await s.delete(`/insumos/${e}`)).data,getInventoryByArea:async e=>(await s.get(`/inventory/area?areaId=${e}`)).data};export{r as i};

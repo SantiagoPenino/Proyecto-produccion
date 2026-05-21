@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { toast } from 'sonner';
 import {
   Search, CheckCircle, FileMinus, CreditCard, X, CheckSquare, Square,
-  ArrowDownCircle, User, AlertTriangle
+  ArrowDownCircle, User, AlertTriangle, AlertCircle
 } from 'lucide-react';
 import api from '../../services/apiClient';
 import CajaPanelPago from './CajaPanelPago';
@@ -92,8 +92,30 @@ export default function CajaPagoDeudaTab({ sesion, metodosPago = [], cotizacion 
   }, [deudas, qCliente]);
 
   // ─── Toggle selección ─────────────────────────────────────────────────────
-  const toggleDeuda = (id) =>
-    setSeleccionadas(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
+  const toggleDeuda = (id) => {
+    setSeleccionadas(prev => {
+      if (prev.includes(id)) return prev.filter(x => x !== id);
+
+      const deudaNueva = deudas.find(d => d.DDeIdDocumento === id);
+      if (prev.length > 0) {
+        const deudaExistente = deudas.find(d => d.DDeIdDocumento === prev[0]);
+        
+        if (deudaNueva.CliIdCliente !== deudaExistente.CliIdCliente) {
+          toast.warning('No puedes seleccionar deudas de diferentes clientes al mismo tiempo.');
+          return prev;
+        }
+
+        const monedaNueva = (deudaNueva.MonSimbolo || '').includes('US') || deudaNueva.CueTipo === 'DINERO_USD' ? 'USD' : 'UYU';
+        const monedaExistente = (deudaExistente.MonSimbolo || '').includes('US') || deudaExistente.CueTipo === 'DINERO_USD' ? 'USD' : 'UYU';
+
+        if (monedaNueva !== monedaExistente) {
+          toast.warning('No puedes mezclar deudas en Pesos y en Dólares. Cóbralas por separado.');
+          return prev;
+        }
+      }
+      return [...prev, id];
+    });
+  };
 
   const toggleTodas = () => {
     const validas = deudasFiltradas.map(d => d.DDeIdDocumento);
@@ -103,8 +125,31 @@ export default function CajaPagoDeudaTab({ sesion, metodosPago = [], cotizacion 
       // Desmarcar las de la vista actual
       setSeleccionadas(prev => prev.filter(id => !validas.includes(id)));
     } else {
-      // Marcar todas las de la vista actual sumado a lo que ya había
-      setSeleccionadas(prev => Array.from(new Set([...prev, ...validas])));
+      // Marcar todas, pero respetando moneda y cliente de la primera
+      setSeleccionadas(prev => {
+        let baseCliente = prev.length > 0 ? deudas.find(d => d.DDeIdDocumento === prev[0])?.CliIdCliente : deudasFiltradas[0]?.CliIdCliente;
+        let baseMoneda = '';
+        
+        if (prev.length > 0) {
+          const dEx = deudas.find(d => d.DDeIdDocumento === prev[0]);
+          baseMoneda = (dEx.MonSimbolo || '').includes('US') || dEx.CueTipo === 'DINERO_USD' ? 'USD' : 'UYU';
+        } else if (deudasFiltradas.length > 0) {
+          const dNueva = deudasFiltradas[0];
+          baseMoneda = (dNueva.MonSimbolo || '').includes('US') || dNueva.CueTipo === 'DINERO_USD' ? 'USD' : 'UYU';
+        }
+
+        const nuevasValidas = deudasFiltradas.filter(d => {
+          if (d.CliIdCliente !== baseCliente) return false;
+          const mon = (d.MonSimbolo || '').includes('US') || d.CueTipo === 'DINERO_USD' ? 'USD' : 'UYU';
+          return mon === baseMoneda;
+        }).map(d => d.DDeIdDocumento);
+
+        if (nuevasValidas.length < deudasFiltradas.length) {
+          toast.info('Se seleccionaron solo las deudas que coinciden en cliente y moneda.');
+        }
+
+        return Array.from(new Set([...prev, ...nuevasValidas]));
+      });
     }
   };
 
@@ -356,30 +401,53 @@ export default function CajaPagoDeudaTab({ sesion, metodosPago = [], cotizacion 
                   const badge = badgeEstado(d);
                   return (
                     <div key={d.DDeIdDocumento}
-                      className="flex justify-between items-center px-4 py-3 rounded-2xl border gap-4 bg-white border-slate-200">
-                      <div className="flex items-center gap-3 min-w-0">
-                        <FileMinus size={16} className="text-brand-cyan/70 shrink-0" />
-                        <div className="min-w-0">
-                          <p className="font-black text-slate-800 text-sm truncate">
-                            {d.NombreTrabajo || d.CodigoOrden || `Deuda #${d.DDeIdDocumento}`}
-                          </p>
-                          <div className="flex items-center gap-2 mt-1">
-                            <User size={10} className="text-slate-400"/>
-                            <span className="text-[10px] text-slate-500 font-bold truncate max-w-[120px]">{d.ClienteNombre}</span>
-                            <span className="text-slate-300">•</span>
-                            <span className={`text-[9px] font-black px-1.5 py-0.5 rounded-md border ${badge.cls}`}>{badge.label}</span>
+                      className="flex flex-col gap-0 rounded-3xl border border-slate-200 overflow-hidden bg-white shadow-sm">
+                      <div className="flex justify-between items-start p-5 bg-white border-b border-slate-100">
+                        <div className="flex items-center gap-4 min-w-0">
+                          <div className="w-10 h-10 rounded-xl bg-brand-cyan/5 border-2 border-brand-cyan/10 flex items-center justify-center shrink-0">
+                            <FileMinus size={20} className="text-brand-cyan/70" />
+                          </div>
+                          <div className="min-w-0">
+                            <p className="font-black text-slate-800 text-base truncate tracking-tight">
+                              {d.NombreTrabajo || d.CodigoOrden || `Deuda #${d.DDeIdDocumento}`}
+                            </p>
+                            <div className="flex items-center gap-2 mt-1">
+                              <span className="text-[10px] text-slate-500 font-bold bg-slate-50 px-2 py-0.5 rounded-lg border border-slate-200 uppercase tracking-widest truncate max-w-[150px]"><span className="text-slate-400">ID: {d.ClienteCodigo || '-'}</span> {d.ClienteNombre}</span>
+                              <span className={`text-[9px] font-black px-2 py-0.5 rounded-md border uppercase tracking-widest ${badge.cls}`}>{badge.label}</span>
+                            </div>
                           </div>
                         </div>
+                        <div className="flex items-end flex-col gap-1 shrink-0 ml-4">
+                          <span className="text-[9px] text-slate-400 font-black uppercase tracking-widest">Saldo Base</span>
+                          <span className="font-black text-slate-800 text-lg leading-none">
+                            {d.MonSimbolo || '$'} {fmt(d.DDeImportePendiente)}
+                          </span>
+                          <button onClick={e => { e.stopPropagation(); toggleDeuda(d.DDeIdDocumento); }}
+                            className="text-slate-300 hover:text-rose-500 hover:bg-rose-50 rounded-lg transition-colors p-1 mt-1 flex items-center gap-1 text-[9px] font-black uppercase tracking-widest">
+                            <X size={12} /> Quitar
+                          </button>
+                        </div>
                       </div>
-                      <div className="flex items-center gap-3 shrink-0">
-                        <span className="font-black text-slate-800 text-base min-w-[80px] text-right">
-                          {d.MonSimbolo || '$'} {fmt(d.DDeImportePendiente)}
-                        </span>
-                        <button onClick={e => { e.stopPropagation(); toggleDeuda(d.DDeIdDocumento); }}
-                          className="text-slate-300 hover:text-rose-500 hover:bg-rose-50 rounded-lg transition-colors p-1.5">
-                          <X size={16} />
-                        </button>
-                      </div>
+
+                      {/* Sub-órdenes al estilo CajaTransaccionView */}
+                      {d.SubOrdenes && d.SubOrdenes.length > 0 && (
+                        <div className="flex flex-col gap-2 p-5 bg-slate-50/50">
+                          {d.SubOrdenes.map(sub => (
+                            <div key={sub.OrdIdOrden || sub.CodigoOrden || Math.random()} 
+                              className="flex justify-between items-center px-4 py-3 rounded-2xl border gap-4 bg-white border-slate-200">
+                              <div className="flex items-center gap-4 w-full truncate text-xs">
+                                <AlertCircle size={14} className="shrink-0 text-brand-cyan/50" />
+                                <span className="font-black text-slate-400 shrink-0 text-[10px]">#{sub.CodigoOrden}</span>
+                                <span className="font-bold text-slate-800 truncate">Trabajo: {sub.Concepto || 'Impreso'}</span>
+                              </div>
+                              <div className="flex items-center gap-4 shrink-0">
+                                <span className="font-black text-slate-800 min-w-[80px] text-right">{d.MonSimbolo || '$'} {fmt(sub.Importe)}</span>
+                                <span className="w-20 text-center px-2 py-1 bg-brand-magenta/10 text-brand-magenta text-[9px] font-black rounded-lg border border-brand-magenta/20 uppercase tracking-widest">Pendiente</span>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   );
                 })}

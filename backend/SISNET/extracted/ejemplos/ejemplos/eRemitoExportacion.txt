@@ -1,0 +1,67 @@
+<soapenv:Envelope
+    xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/"
+    xmlns:web="http://webServices.sitioWeb.crp.com/">
+
+  <soapenv:Header/>
+
+  <soapenv:Body>
+    <web:recepcionCFE>
+    	<wsCAE>
+		<errorDes/>
+            <hayError>false</hayError>
+            <idInterno>46502</idInterno>
+            <numero>2</numero>
+            <numeroAutorizacion>90260001240</numeroAutorizacion>
+            <serie>B</serie>
+	</wsCAE>
+         <wsVarios>
+            <clauVenta>CIF</clauVenta>
+            <fchEmis>26/01/2026</fchEmis>
+            <fmaPago>0</fmaPago>
+            <mntBruto>0.0</mntBruto>
+            <modVenta>2</modVenta>
+            <tipoTraslado>1</tipoTraslado>
+            <viaTransp>1</viaTransp>
+         </wsVarios>
+         <wsReceptor>
+            <ciudadRecep>San Pablo</ciudadRecep>
+            <codPaisRecep>BR</codPaisRecep>
+            <deptoRecep>MontevideoDepto</deptoRecep>
+            <dirRecep>Avda. Río de Janeiro 999</dirRecep>
+            <docRecep>FE1234567890</docRecep>
+            <rznSocRecep>BRASIL S.A.</rznSocRecep>
+            <tipoDocRecep>4</tipoDocRecep>
+         </wsReceptor>
+         <wsTotales>
+            <cantLinDet>1</cantLinDet>
+            <mntExpoyAsim>240000.0</mntExpoyAsim>
+            <mntIVATasaBas>0.0</mntIVATasaBas>
+            <mntIVATasaMin>0.0</mntIVATasaMin>
+            <mntNetoIvaTasaBasica>0.0</mntNetoIvaTasaBasica>
+            <mntNetoIvaTasaMin>0.0</mntNetoIvaTasaMin>
+            <mntNoGrv>0.0</mntNoGrv>
+            <mntPagar>0.0</mntPagar>
+            <mntTotCredFisc>0.0</mntTotCredFisc>
+            <mntTotRetenido>0.0</mntTotRetenido>
+            <mntTotal>240000.0</mntTotal>
+            <montoNF>0.0</montoNF>
+            <tpoMoneda>UYU</tpoMoneda>
+         </wsTotales>
+         <listaWsItems>
+            <cantidad>200.0</cantidad>
+            <indFact>0</indFact>
+            <montoItem>240000.0</montoItem>
+            <nomItem>mno</nomItem>
+            <nroLinDet>1</nroLinDet>
+            <precioUnitario>1200.0</precioUnitario>
+            <uniMed>unid</uniMed>
+         </listaWsItems>
+         <impresionImprimirSiNo>n</impresionImprimirSiNo>
+         <impresionImpresora>BROTHER</impresionImpresora>
+         <impresionFormato>FacNorImpGeneralV16Cab</impresionFormato>
+         <impresionNumeroVias>2</impresionNumeroVias>
+         <simular>2</simular>
+         <emailCuerpo/>
+   </web:recepcionCFE>
+  </soapenv:Body>
+</soapenv:Envelope>

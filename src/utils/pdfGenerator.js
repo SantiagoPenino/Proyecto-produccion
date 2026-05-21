@@ -1,12 +1,88 @@
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
+import QRCode from 'qrcode';
 
 // Configuración visual compartida
 const COLOR_PRIMARY = [30, 58, 138]; // blue-900
 const COLOR_SECONDARY = [100, 116, 139]; // slate-500
 const COLOR_BORDER = [226, 232, 240]; // slate-200
 
-export const generarPdfFacturaDGI = (doc, detalles) => {
+// ─── Importe en letras (es-UY) ─────────────────────────────────────────────
+const UNIDADES = ['','UNO','DOS','TRES','CUATRO','CINCO','SEIS','SIETE','OCHO','NUEVE',
+    'DIEZ','ONCE','DOCE','TRECE','CATORCE','QUINCE','DIECISEIS','DIECISIETE','DIECIOCHO','DIECINUEVE'];
+const DECENAS = ['','DIEZ','VEINTE','TREINTA','CUARENTA','CINCUENTA','SESENTA','SETENTA','OCHENTA','NOVENTA'];
+const CENTENAS = ['','CIEN','DOSCIENTOS','TRESCIENTOS','CUATROCIENTOS','QUINIENTOS','SEISCIENTOS','SETECIENTOS','OCHOCIENTOS','NOVECIENTOS'];
+
+function _centenas(n) {
+    if (n === 0) return '';
+    if (n < 20) return UNIDADES[n];
+    if (n === 100) return 'CIEN';
+    const c = Math.floor(n / 100);
+    const resto = n % 100;
+    const cStr = c > 0 ? CENTENAS[c] : '';
+    if (resto === 0) return cStr;
+    if (n < 100) {
+        const d = Math.floor(n / 10), u = n % 10;
+        return (u === 0 ? DECENAS[d] : `${DECENAS[d]} Y ${UNIDADES[u]}`);
+    }
+    return `${cStr} ${_centenas(resto)}`.trim();
+}
+
+function _miles(n) {
+    if (n < 1000) return _centenas(n);
+    const miles = Math.floor(n / 1000);
+    const resto = n % 1000;
+    const mStr = miles === 1 ? 'MIL' : `${_centenas(miles)} MIL`;
+    return `${mStr}${resto > 0 ? ' ' + _centenas(resto) : ''}`.trim();
+}
+
+function numeroALetras(monto) {
+    if (monto == null || isNaN(monto)) return '';
+    const abs = Math.abs(Number(monto));
+    const entero = Math.floor(abs);
+    const centavos = Math.round((abs - entero) * 100);
+    const letras = entero === 0 ? 'CERO' : _miles(entero);
+    return `${letras} CON ${String(centavos).padStart(2, '0')}/100`;
+}
+// ───────────────────────────────────────────────────────────────────────────
+
+export const generarPdfFacturaDGI = async (doc, detalles) => {
+    // Parse SISNET DGI fields from our DB fields if they exist
+    if (doc.CfeUrlImpresion && doc.CfeUrlImpresion.includes('?')) {
+        try {
+            const qrParts = doc.CfeUrlImpresion.split('?')[1].split(',');
+            if (qrParts.length >= 7) {
+                doc.DocSerie = qrParts[2];
+                doc.DocNumero = qrParts[3];
+                doc.DocCodSeguridad = decodeURIComponent(qrParts[6]).substring(0, 6);
+            }
+        } catch(e) {}
+    }
+    
+    if (doc.CfeNumeroOficial && doc.CfeNumeroOficial.includes('CAE')) {
+        const matches = doc.CfeNumeroOficial.match(/CAE\s*(\d+)/i);
+        if (matches && matches[1]) doc.DocCaeNumero = matches[1];
+        
+        const rangoMatches = doc.CfeNumeroOficial.match(/Serie.*$/i);
+        if (rangoMatches) {
+            const parts = rangoMatches[0].split('/');
+            if (parts.length === 2) {
+                doc.SecRangoDesde = parts[0].replace(/\D/g, '');
+                doc.SecRangoHasta = parts[1].replace(/\D/g, '');
+            }
+        }
+    }
+
+    if (!doc.SecFechaVencimientoCAE && doc.CfeCAE) {
+        const vtoMatch = doc.CfeCAE.match(/(\d{2}\/\d{2}\/\d{4})/);
+        if (vtoMatch) {
+            // Convert DD/MM/YYYY to MM/DD/YYYY for Date parsing
+            const parts = vtoMatch[1].split('/');
+            if (parts.length === 3) {
+                doc.SecFechaVencimientoCAE = `${parts[1]}/${parts[0]}/${parts[2]}`;
+            }
+        }
+    }
     const pdf = new jsPDF({ format: 'a4' });
     const esUYU = doc.MonIdMoneda === 1;
     const monedaStr = esUYU ? 'Peso Uruguayo' : 'Dólar estadounidense';
@@ -62,7 +138,14 @@ export const generarPdfFacturaDGI = (doc, detalles) => {
     pdf.text("TIPO DE DOCUMENTO", rightX + boxW * 0.75, 19, { align: 'center' });
     pdf.setFontSize(10);
     pdf.text("218973270018", rightX + boxW / 4, 24, { align: 'center' });
-    pdf.text(doc.DocTipo || "e-Factura", rightX + boxW * 0.75, 24, { align: 'center' });
+    const DOC_TIPO_LABEL_PDF = {
+      '07': 'E-Ticket Contado', '08': 'E-Ticket Crédito', '10': 'N.Crédito E-Ticket',
+      '01': 'E-Factura Contado', '02': 'E-Factura Crédito', '04': 'N.Crédito E-Factura',
+      '107': 'E-Ticket Contado', '108': 'E-Ticket Crédito', '101': 'E-Factura Contado', '102': 'E-Factura Crédito',
+      'PedidoCaja': 'Pedido Caja', 'PC': 'Pedido Caja',
+    };
+    const docTipoDisplay = doc.DocTipo ? (DOC_TIPO_LABEL_PDF[doc.DocTipo.trim()] || doc.DocTipo.trim()) : 'e-Factura';
+    pdf.text(docTipoDisplay, rightX + boxW * 0.75, 24, { align: 'center' });
 
     // Caja 2: SERIE | NUMERO | FORMA
     pdf.rect(rightX, 28, boxW, 10);
@@ -172,14 +255,14 @@ export const generarPdfFacturaDGI = (doc, detalles) => {
             const puNeto = pUnitario - (descBruto / Number(d.DcdCantidad));
 
             return [
-                index + 1, // Codigo generico si no hay
+                index + 1,
                 d.DcdNomItem + (d.DcdDscItem ? `\n${d.DcdDscItem}` : ''),
-                '22%', // IVA
-                fmtNum(pUnitario), // P. Unitario
-                fmtNum(d.DcdCantidad), // Cantidad
-                descuentoStr, // Descuentos
-                fmtNum(puNeto), // P.U. Neto
-                fmtNum(d.DcdSubtotal) // Importe
+                '22%',
+                fmtNum(pUnitario),        // P. Unitario (bruto con IVA)
+                fmtNum(d.DcdCantidad),    // Cantidad exacta
+                descuentoStr,             // Descuentos
+                fmtNum(puNeto),           // P.U. Neto (bruto - descuento)
+                fmtNum(d.DcdTotal != null ? d.DcdTotal : d.DcdSubtotal)        // Importe = total línea con IVA incluido
             ];
         });
     } else {
@@ -256,19 +339,176 @@ export const generarPdfFacturaDGI = (doc, detalles) => {
         pdf.text(obsLines, 15, finalY + 5);
     }
 
-    // Marca de agua para BORRADOR
-    if (doc.CfeEstado === 'PENDIENTE') {
-        pdf.setFontSize(40);
-        pdf.setTextColor(200, 200, 200);
-        pdf.text("BORRADOR", 105, 250, { align: 'center', angle: 45 });
+    // ==========================================
+    // FOOTER CFE / DGI
+    // ==========================================
+    // El footer CFE arranca después del bloque de totales.
+    // finalY + 18 es donde termina el TOTAL en negrita; sumamos margen de 15.
+    const footerY = finalY + 30;
+
+    // Línea separadora
+    pdf.setLineWidth(0.3);
+    pdf.setDrawColor(180, 180, 180);
+    pdf.line(15, footerY, 195, footerY);
+
+    // --- Bloque izquierdo: QR (placeholder hasta integración DGI) ---
+    const qrY = footerY + 4;
+    if (doc.CfeUrlImpresion) {
+        try {
+            const qrDataUrl = await QRCode.toDataURL(doc.CfeUrlImpresion, { errorCorrectionLevel: 'M', margin: 0 });
+            pdf.addImage(qrDataUrl, 'PNG', 15, qrY, 28, 28);
+        } catch(e) {
+            console.error("Error generating QR", e);
+        }
+    } else if (doc.DocCaeNumero) {
+        // Cuando haya CAE real pero no URL (fallback)
+        pdf.setFillColor(240, 240, 240);
+        pdf.rect(15, qrY, 28, 28, 'F');
+        pdf.setFontSize(5);
+        pdf.setTextColor(100, 100, 100);
+        pdf.text('QR', 29, qrY + 14, { align: 'center' });
+    } else {
+        pdf.setFillColor(245, 245, 245);
+        pdf.rect(15, qrY, 28, 28, 'F');
+        pdf.setFontSize(5);
+        pdf.setTextColor(150, 150, 150);
+        pdf.text('PENDIENTE DGI', 29, qrY + 14, { align: 'center' });
     }
 
-    // Descargar
+    // --- Bloque central: datos DGI ---
+    const dgiX = 47;
+    pdf.setFontSize(8);
+    pdf.setFont('helvetica', 'normal');
+    pdf.setTextColor(180, 0, 0); // rojo DGI
+
+    let dgiY = qrY + 4;
+
+    const resNro = doc.SecNroResolucion || '06/08/2023';
+    pdf.text(`Res. Nro.  ${resNro}`, dgiX, dgiY);
+    dgiY += 5;
+
+    const urlVerif = doc.CfeUrlVerificacion || 'https://www.efactura.dgi.gub.uy/principal/verificacioncfe';
+    pdf.text(`Puede verificar el comprobante en  ${urlVerif}`, dgiX, dgiY);
+    dgiY += 5;
+
+    const ivaDia = doc.CfeTextoIvaDia || 'Iva al día';
+    pdf.text(ivaDia, dgiX, dgiY);
+    dgiY += 5;
+
+    if (doc.DocCaeNumero) {
+        pdf.text(`Nro. CAE:  ${doc.DocCaeNumero}`, dgiX, dgiY);
+        dgiY += 5;
+    } else {
+        pdf.setTextColor(200, 100, 0);
+        pdf.text('Nro. CAE:  PENDIENTE - No enviado a DGI', dgiX, dgiY);
+        dgiY += 5;
+    }
+
+    pdf.setTextColor(180, 0, 0);
+    if (doc.SecRangoDesde && doc.SecRangoHasta) {
+        pdf.text(`Rango:  Serie ${doc.DocSerie || 'A'} del N° ${doc.SecRangoDesde} al ${doc.SecRangoHasta}`, dgiX, dgiY);
+        dgiY += 5;
+    }
+
+    // --- Bloque derecho: Fecha Vencimiento CAE ---
+    if (doc.SecFechaVencimientoCAE) {
+        let fmtFechaVenc = doc.SecFechaVencimientoCAE;
+        try {
+            const parsed = new Date(doc.SecFechaVencimientoCAE);
+            if (!isNaN(parsed.getTime())) {
+                fmtFechaVenc = parsed.toLocaleDateString('es-UY', { timeZone: 'UTC' });
+            }
+        } catch(e) {}
+        pdf.setDrawColor(0, 0, 0);
+        pdf.setLineWidth(0.3);
+        pdf.rect(148, qrY, 47, 10);
+        pdf.setFontSize(8);
+        pdf.setTextColor(0, 0, 0);
+        pdf.text(`Fecha de Vencimiento: ${fmtFechaVenc}`, 171, qrY + 6, { align: 'center' });
+    }
+
+    // Código de seguridad y página
+    pdf.setFontSize(7);
+    pdf.setTextColor(60, 60, 60);
+    const codSeg = doc.DocCodSeguridad ? `Código de Seguridad: ${doc.DocCodSeguridad}` : '';
+    if (codSeg) pdf.text(codSeg, 15, qrY + 33);
+    pdf.text('Página 1 de 1', 195, qrY + 33, { align: 'right' });
+
+    // ==========================================
+    // ADENDA
+    // ==========================================
+    const adendaY = qrY + 38;
+    pdf.setFillColor(230, 230, 230);
+    pdf.rect(15, adendaY, 180, 6, 'F');
+    pdf.setFontSize(8);
+    pdf.setFont('helvetica', 'bold');
+    pdf.setTextColor(0, 0, 0);
+    pdf.text('Adenda', 105, adendaY + 4, { align: 'center' });
+
+    pdf.setFont('helvetica', 'normal');
+    pdf.setFontSize(8);
+    let adY = adendaY + 9;
+
+    // Tipo + número documento
+    const tipoNum = `${doc.DocTipo || ''} Nº ${doc.DocNumero || ''}`.trim();
+    if (tipoNum.length > 3) {
+        pdf.setFont('helvetica', 'bold');
+        pdf.text(tipoNum, 15, adY);
+        pdf.setFont('helvetica', 'normal');
+        adY += 5;
+    }
+
+    // Importe en letras
+    const importeLetras = numeroALetras(doc.DocTotal || 0);
+    if (importeLetras) {
+        pdf.setTextColor(180, 0, 0);
+        pdf.text(`Importe:${importeLetras}`, 15, adY);
+        pdf.setTextColor(0, 0, 0);
+        adY += 5;
+    }
+
+    // Cliente + teléfono + familia
+    const cliId  = (doc.StringIDCliente || doc.CliIdCliente || '').toString().trim();
+    const cliNom = (doc.DocCliNombre || doc.CliNombreFantasia || '').toString().trim();
+    const cliTel = doc.CliTelefono ? ` Tel:${doc.CliTelefono.toString().trim()}` : '';
+    const cliFam = doc.CliFamilia   ? `  Familia: ${doc.CliFamilia}` : '';
+    if (cliId || cliNom) {
+        pdf.text(`Cliente:        ${cliId} (${cliNom})${cliTel}${cliFam}`, 15, adY);
+        adY += 5;
+    }
+
+    // Plan de financiación (crédito)
+    if (!doc.DocPagado && doc.DocDiasVencimiento) {
+        pdf.text(`Plan de Financiacion:${doc.DocDiasVencimiento} Dias x ${fmtNum(doc.DocTotal)}`, 15, adY);
+        adY += 5;
+    }
+
+    pdf.setDrawColor(180, 180, 180);
+    pdf.line(15, adY, 105, adY);
+    adY += 4;
+
+    // Vendedor
+    if (doc.VendedorNombre || doc.VendedorId) {
+        pdf.text(`Vendedor: ${doc.VendedorId || ''} ${doc.VendedorNombre || ''}`.trim(), 15, adY);
+        adY += 5;
+    }
+
+    // Unidades totales
+    if (doc.DocTotalUnidades != null) {
+        pdf.text(`Unidades:        ${fmtNum(doc.DocTotalUnidades)}`, 15, adY);
+    }
+
+    // Visualizar en nueva pestaña
     const safeNum = doc.DocNumero || 'Borrador';
-    pdf.save(`Factura_${doc.DocSerie || 'A'}_${safeNum}.pdf`);
+    pdf.setProperties({
+        title: `Factura_${doc.DocSerie || 'A'}_${safeNum}`
+    });
+    const blob = pdf.output('blob');
+    const url = URL.createObjectURL(blob);
+    window.open(url, '_blank');
 };
 
-export const generarPdfEstadoCuenta = (cliente, cuentas, secciones, planes) => {
+export const generarPdfEstadoCuenta = (cliente, cuentas, secciones, planes, desde, hasta) => {
     const pdf = new jsPDF({ format: 'a4' });
     const fmtNum = (n) => new Intl.NumberFormat('es-UY', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(n);
     const fmtFecha = (dateString) => new Date(dateString).toLocaleDateString('es-UY', { timeZone: 'UTC' });
@@ -281,32 +521,49 @@ export const generarPdfEstadoCuenta = (cliente, cuentas, secciones, planes) => {
     // Título
     pdf.text("ESTADO DE CUENTA", 14, 20);
 
+    // Fechas del filtro si existen
+    if (desde && hasta) {
+        pdf.setFontSize(9);
+        pdf.setFont('helvetica', 'bold');
+        pdf.setTextColor(...COLOR_SECONDARY);
+        const fmtFiltroFecha = (str) => {
+            if (!str) return '—';
+            const parts = str.split('-');
+            if (parts.length === 3) return `${parts[2]}/${parts[1]}/${parts[0]}`;
+            return str;
+        };
+        pdf.text(`Período: ${fmtFiltroFecha(desde)} al ${fmtFiltroFecha(hasta)}`, 14, 25);
+    }
+
     // Datos Cliente
     pdf.setFontSize(14);
-    pdf.text(cliente.Nombre || 'Cliente Consumidor', 14, 30);
+    pdf.setTextColor(...COLOR_PRIMARY);
+    pdf.text(cliente.Nombre || 'Cliente Consumidor', 14, 34);
     pdf.setFont('helvetica', 'normal');
     pdf.setFontSize(10);
     pdf.setTextColor(...COLOR_SECONDARY);
-    if (cliente.NombreFantasia) pdf.text(cliente.NombreFantasia, 14, 35);
-    pdf.text(`ID: ${cliente.CliIdCliente} | RUT/CI: ${cliente.CodCliente || '-'}`, 14, 40);
-    pdf.text(`Generado: ${new Date().toLocaleDateString('es-UY')} ${new Date().toLocaleTimeString('es-UY')}`, 14, 45);
+    let nameOffset = 39;
+    if (cliente.NombreFantasia) {
+        pdf.text(cliente.NombreFantasia, 14, nameOffset);
+        nameOffset += 5;
+    }
+    pdf.text(`ID: ${cliente.CliIdCliente} | RUT/CI: ${cliente.CodCliente || '-'}`, 14, nameOffset);
+    pdf.text(`Generado: ${new Date().toLocaleDateString('es-UY')} ${new Date().toLocaleTimeString('es-UY')}`, 14, nameOffset + 5);
 
-    let currentY = 55;
+    let currentY = nameOffset + 15;
 
     // Iterar todas las cuentas y generar tabla por cada una
     const TIPOS_MONETARIOS = ['USD', 'UYU', 'ARS', 'EUR', 'PYG', 'BRL', 'CORRIENTE', 'CREDITO', 'DEBITO', 'CAJA', 'DINERO_USD', 'DINERO_UYU'];
 
     cuentas.forEach(c => {
         // Control de salto de página antes de imprimir la cabecera de la nueva cuenta
-        if (currentY > 260) {
+        if (currentY > 250) {
             pdf.addPage();
             currentY = 20;
         }
 
         const sec = secciones[c.CueIdCuenta];
         const movs = sec?.movs || [];
-        // Saldo de arrastre: suma de todos los movimientos ANTERIORES al período filtrado.
-        // Si no hay filtro de fecha, el backend devuelve 0.
         const arrastre = Number(sec?.saldoArrastre ?? 0);
         const saldo = Number(c.CueSaldoActual || 0);
 
@@ -345,27 +602,46 @@ export const generarPdfEstadoCuenta = (cliente, cuentas, secciones, planes) => {
         }
 
         // Body de la tabla — calculamos saldos inicial/final acumulando desde el arrastre
-        // Procesamos en orden cronológico (ASC) para acumular correctamente
         const movsAsc = [...movs].reverse();
         let runningSaldo = arrastre;
 
         const tableBody = movsAsc.map(m => {
             const importe = Number(m.MovImporte);
-            const isCredit = ['PAGO', 'ANTICIPO', 'NOTA_CREDITO', 'AJUSTE_POS', 'DEVOLUCION', 'SALDO_INICIAL'].includes(m.MovTipo);
-            const importeNumStr = fmtNum(Math.abs(importe));
 
-            const importeStr = esRecurso
-                ? `${isCredit ? '+' : '-'}${importeNumStr} ${unidadLabel}`
-                : `${isCredit ? '+' : '-'}${importeNumStr}`;
+            // Debe (debits / charges) are negative importes
+            const debeVal = importe < 0 ? Math.abs(importe) : 0;
+            // Haber (credits / payments) are positive importes
+            const haberVal = importe > 0 ? importe : 0;
 
-            // Saldo antes de este movimiento
             const saldoAntesNum = runningSaldo;
             runningSaldo += importe;
             const saldoDespuesNum = runningSaldo;
 
+            const DOC_TIPO_LABEL_PDF2 = {
+              '07': 'E-TICKET', '08': 'E-TICKET CRED.', '10': 'N.CRÉDITO ET',
+              '01': 'E-FACTURA', '02': 'E-FACTURA CRED.', '04': 'N.CRÉDITO EF',
+              '107': 'E-TICKET', '101': 'E-FACTURA', 'PedidoCaja': 'PEDIDO CAJA',
+            };
+            const dTipoLabel2 = m.DocTipo ? (DOC_TIPO_LABEL_PDF2[m.DocTipo.trim()] || m.DocTipo.trim()) : null;
+            const docFull = dTipoLabel2
+                ? `${dTipoLabel2} ${m.DocSerie || ''}-${m.DocNumero || ''}`
+                : (m.CodigoOrdenStr 
+                    ? m.CodigoOrdenStr 
+                    : (m.OReIdOrdenRetiro 
+                        ? `RET: ${m.OReIdOrdenRetiro}` 
+                        : (m.OrdCodigoOrden ? m.OrdCodigoOrden : '—')));
+
             const saldoIniStr = esRecurso
                 ? `${fmtNum(saldoAntesNum)} ${unidadLabel}`
                 : `${fmtNum(saldoAntesNum)}`;
+
+            const debeStr = debeVal > 0
+                ? (esRecurso ? `${fmtNum(debeVal)} ${unidadLabel}` : `${fmtNum(debeVal)}`)
+                : '—';
+
+            const haberStr = haberVal > 0
+                ? (esRecurso ? `${fmtNum(haberVal)} ${unidadLabel}` : `${fmtNum(haberVal)}`)
+                : '—';
 
             const saldoFinStr = esRecurso
                 ? `${fmtNum(saldoDespuesNum)} ${unidadLabel}`
@@ -374,16 +650,18 @@ export const generarPdfEstadoCuenta = (cliente, cuentas, secciones, planes) => {
             return [
                 fmtFecha(m.MovFecha),
                 m.MovTipo,
-                m.MovConcepto || '-',
+                docFull,
+                m.MovConcepto || '—',
                 saldoIniStr,
-                importeStr,
+                debeStr,
+                haberStr,
                 saldoFinStr
             ];
         });
 
         autoTable(pdf, {
             startY: currentY,
-            head: [['Fecha', 'Tipo', 'Concepto', 'Saldo Inicial', 'Importe', 'Saldo Final']],
+            head: [['Fecha', 'Tipo', 'Documento', 'Concepto', 'Saldo Inicial', 'Debe', 'Haber', 'Saldo Final']],
             body: tableBody,
             theme: 'grid',
             headStyles: {
@@ -397,12 +675,14 @@ export const generarPdfEstadoCuenta = (cliente, cuentas, secciones, planes) => {
                 cellPadding: 3
             },
             columnStyles: {
-                0: { cellWidth: 20 },
-                1: { cellWidth: 25 },
-                2: { cellWidth: 'auto' },
-                3: { cellWidth: 28, halign: 'right' },
-                4: { cellWidth: 28, halign: 'right' },
-                5: { cellWidth: 28, halign: 'right' }
+                0: { cellWidth: 16 },
+                1: { cellWidth: 18 },
+                2: { cellWidth: 32 },
+                3: { cellWidth: 'auto' },
+                4: { cellWidth: 22, halign: 'right' },
+                5: { cellWidth: 20, halign: 'right' },
+                6: { cellWidth: 20, halign: 'right' },
+                7: { cellWidth: 22, halign: 'right' }
             }
         });
 
@@ -415,7 +695,13 @@ export const generarPdfEstadoCuenta = (cliente, cuentas, secciones, planes) => {
     pdf.setTextColor(...COLOR_SECONDARY);
     pdf.text("Documento generado por Macrosoft Sistema", 105, 280, { align: 'center' });
 
-    pdf.save(`Estado_Cuenta_${cliente.Nombre.replace(/\s+/g, '_')}.pdf`);
+    const filename = `Estado_Cuenta_${cliente.Nombre.replace(/\s+/g, '_')}`;
+    pdf.setProperties({
+        title: filename
+    });
+    const blob = pdf.output('blob');
+    const url = URL.createObjectURL(blob);
+    window.open(url, '_blank');
 };
 
 export const generarPdfPrefactura = (ciclo, movs, excluidos, cuenta, cliente, esFinal = false) => {
@@ -617,8 +903,14 @@ export const generarPdfPrefactura = (ciclo, movs, excluidos, cuenta, cliente, es
         pdf.text("DOCUMENTO BORRADOR - NO VÁLIDO COMO FACTURA", 105, 285, { align: 'center' });
     }
 
-    // Descargar
+    // Visualizar en nueva pestaña
     const prefix = esFinal ? "Factura" : "Prefactura";
-    pdf.save(`${prefix}_Ciclo_${cliente.Nombre.replace(/\s+/g, '_')}.pdf`);
+    const filename = `${prefix}_Ciclo_${cliente.Nombre.replace(/\s+/g, '_')}`;
+    pdf.setProperties({
+        title: filename
+    });
+    const blob = pdf.output('blob');
+    const url = URL.createObjectURL(blob);
+    window.open(url, '_blank');
 };
 

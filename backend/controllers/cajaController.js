@@ -554,6 +554,20 @@ const registrarEgreso = async (req, res) => {
       `);
     const docId = docR.recordset[0].DocIdDocumento;
 
+    // Insertar en DocumentosContablesDetalle
+    await transaction.request()
+      .input('DocId',    sql.Int,           docId)
+      .input('Nom',      sql.VarChar(200),  `Egreso de caja: ${cuentaGastoNombre}`.substring(0, 200))
+      .input('Desc',     sql.VarChar(500),  `${proveedor || ''} - ${observaciones || ''}`.trim().substring(0, 500))
+      .input('Monto',    sql.Decimal(18,2), montoNum)
+      .query(`
+        INSERT INTO dbo.DocumentosContablesDetalle
+          (DocIdDocumento, DcdNomItem, DcdDscItem, DcdCantidad, DcdPrecioUnitario, DcdSubtotal, DcdImpuestos, DcdTotal)
+        VALUES
+          (@DocId, @Nom, @Desc, 1.0, @Monto, @Monto, 0.0, @Monto)
+      `);
+
+
     // Vincular DocIdDocumento de vuelta en EgresosCaja
     await transaction.request()
       .input('EgrId', sql.Int, idEgreso)
@@ -938,6 +952,19 @@ const registrarOperacionManual = async (req, res) => {
                   OUTPUT INSERTED.DocIdDocumento
                   VALUES (@Cta,@Cli,'${evtCodigo}',CAST(@Tca AS VARCHAR),@Serie,@Tot,@Tot,0,0,@MonId,GETDATE(),'PENDIENTE',@Usr)`);
         docId = rDoc.recordset[0].DocIdDocumento;
+
+        // Insertar detalle del documento
+        await transaction.request()
+          .input('DocId',    sql.Int,           docId)
+          .input('Nom',      sql.VarChar(200),  `${evento.EvtNombre}`.substring(0, 200))
+          .input('Desc',     sql.VarChar(500),  `${observaciones || ''}`.substring(0, 500))
+          .input('Monto',    sql.Decimal(18,2), montoNum)
+          .query(`
+            INSERT INTO dbo.DocumentosContablesDetalle
+              (DocIdDocumento, DcdNomItem, DcdDscItem, DcdCantidad, DcdPrecioUnitario, DcdSubtotal, DcdImpuestos, DcdTotal)
+            VALUES
+              (@DocId, @Nom, @Desc, 1.0, @Monto, @Monto, 0.0, @Monto)
+          `);
       }
 
       await transaction.request()
@@ -1356,6 +1383,55 @@ const procesarPagoDeuda = async (req, res) => {
         }
       }
 
+      // ── Actualizar OrdenesRetiro + Historico (si viene ordenRetiroId en el header) ──
+      const oreId = header.ordenRetiroId ? parseInt(header.ordenRetiroId, 10) : null;
+      if (oreId && !isNaN(oreId)) {
+        // Buscar primer PagIdPago creado en esta transacción
+        const primerPagoRes = await transaction.request()
+          .input('TcaId', sql.Int, tcaIdPago)
+          .query('SELECT TOP 1 PagIdPago FROM dbo.Pagos WHERE PagTcaIdTransaccion = @TcaId ORDER BY PagIdPago ASC');
+        const primerPagoId = primerPagoRes.recordset[0]?.PagIdPago || null;
+
+        const retRes = await transaction.request()
+          .input('RID', sql.Int, oreId)
+          .query('SELECT OReEstadoActual FROM dbo.OrdenesRetiro WHERE OReIdOrdenRetiro = @RID');
+        if (retRes.recordset.length) {
+          const nuevoEst = retRes.recordset[0].OReEstadoActual === 1 ? 3 : 8;
+          await transaction.request()
+            .input('RID',    sql.Int, oreId)
+            .input('PagId',  sql.Int, primerPagoId)
+            .input('Estado', sql.Int, nuevoEst)
+            .query(`
+              UPDATE dbo.OrdenesRetiro
+              SET PagIdPago = @PagId, OReEstadoActual = @Estado,
+                  OReFechaEstadoActual = GETDATE(), ORePasarPorCaja = 0
+              WHERE OReIdOrdenRetiro = @RID;
+
+              INSERT INTO dbo.HistoricoEstadosOrdenesRetiro
+                (OReIdOrdenRetiro, EORIdEstadoOrden, HEOFechaEstado, HEOUsuarioAlta)
+              VALUES (@RID, @Estado, GETDATE(), ${usuarioId});
+            `);
+          logger.info(`[PAGO-DEUDA] OrdenRetiro ${oreId} → estado ${nuevoEst}, PagId=${primerPagoId}`);
+        }
+
+        // Vincular HandyTransactions si viene handyTxId
+        if (header.handyTxId) {
+          await transaction.request()
+            .input('txId',  sql.VarChar(100), header.handyTxId)
+            .input('PagId', sql.Int, primerPagoId)
+            .input('TcaId', sql.Int, tcaIdPago)
+            .query(`UPDATE dbo.HandyTransactions SET PagIdPago=@PagId, TcaIdTransaccion=@TcaId WHERE TransactionId=@txId`);
+        }
+        // Vincular MercadoPagoTransactions si viene mpTxId
+        if (header.mpTxId) {
+          await transaction.request()
+            .input('txId',  sql.VarChar(100), header.mpTxId)
+            .input('PagId', sql.Int, primerPagoId)
+            .input('TcaId', sql.Int, tcaIdPago)
+            .query(`UPDATE dbo.MercadoPagoTransactions SET PagIdPago=@PagId, TcaIdTransaccion=@TcaId WHERE TransactionId=@txId`);
+        }
+      }
+
       await transaction.commit();
       logger.info(`[PAGO-DEUDA] Cli=${header.clienteId} — ${aplicaciones.length} deuda(s) — Total: ${totalImputado}`);
 
@@ -1563,8 +1639,8 @@ const registrarPagoAnticipo = async (req, res) => {
   const usuarioId = req.user?.id || 70;
   try {
     const { clienteId, cuentaId, importe, metodoPagoId, monedaId, concepto, admin } = req.body;
-    if (!clienteId || !cuentaId || !importe)
-      return res.status(400).json({ error: 'Faltan parámetros: clienteId, cuentaId, importe' });
+    if (!clienteId || !importe)
+      return res.status(400).json({ error: 'Faltan parámetros: clienteId, importe' });
     const montoNum = Number(importe);
     if (montoNum <= 0) return res.status(400).json({ error: 'El importe debe ser mayor a 0' });
 
@@ -1574,11 +1650,39 @@ const registrarPagoAnticipo = async (req, res) => {
     try {
       const monId  = parseInt(monedaId) || 1;
       const monStr = monId === 2 ? 'USD' : 'UYU';
-      const cueId  = parseInt(cuentaId);
       const cliId  = parseInt(clienteId);
       const conceptoFull = concepto || 'Pago anticipado cuenta corriente';
 
+      // ── 0. Resolver cuentaId si no viene del front (buscar cuenta DINERO_xxx del cliente) ──
+      let cueId = cuentaId ? parseInt(cuentaId) : null;
+      if (!cueId) {
+        const tipoCuenta = monStr === 'USD' ? 'DINERO_USD' : 'DINERO_UYU';
+        const cueR = await transaction.request()
+          .input('Cli', sql.Int, cliId)
+          .input('Tipo', sql.VarChar(20), tipoCuenta)
+          .query(`SELECT TOP 1 CueIdCuenta FROM dbo.CuentasCliente WHERE CliIdCliente=@Cli AND CueTipo=@Tipo AND CueActiva=1`);
+        if (cueR.recordset.length) {
+          cueId = cueR.recordset[0].CueIdCuenta;
+        } else {
+          // Crear la cuenta si no existe
+          const newCue = await transaction.request()
+            .input('Cli',   sql.Int,          cliId)
+            .input('Tipo',  sql.VarChar(20),  tipoCuenta)
+            .input('MonId', sql.Int,          monId)
+            .input('Usr',   sql.Int,          usuarioId)
+            .query(`INSERT INTO dbo.CuentasCliente
+                      (CliIdCliente, CPaIdCondicion, CueTipo, MonIdMoneda,
+                       CueSaldoActual, CueLimiteCredito, CuePuedeNegativo,
+                       CueCicloActivo, CueActiva, CueFechaAlta, CueUsuarioAlta)
+                    OUTPUT INSERTED.CueIdCuenta
+                    VALUES(@Cli, 1, @Tipo, @MonId, 0, 0, 0, 0, 1, GETDATE(), @Usr)`);
+          cueId = newCue.recordset[0].CueIdCuenta;
+          logger.info(`[ANTICIPO] Cuenta ${tipoCuenta} creada automáticamente (CueId=${cueId}) para Cli=${cliId}`);
+        }
+      }
+
       // ── 1. Buscar sesión activa de caja (si no es administrativa) ──────────
+
       let sesionId = null;
       if (!admin) {
         try {
@@ -1637,12 +1741,25 @@ const registrarPagoAnticipo = async (req, res) => {
           if (metR.recordset.length) metodoNombre = metR.recordset[0].MPaDescripcionMetodo;
         }
 
+        // Obtener secuencia propia del Recibo de Anticipo (serie 'RC', independiente de CFE)
+        const seqAnticipo = await transaction.request()
+          .query(`
+            IF NOT EXISTS (SELECT 1 FROM dbo.SecuenciaDocumentos WHERE SecTipoDoc = 'RECIBO_ANTICIPO' AND SecSerie = 'RC')
+              INSERT INTO dbo.SecuenciaDocumentos (SecTipoDoc, SecSerie, SecPrefijo, SecDigitos, SecUltimoNumero, SecActivo)
+              VALUES ('RECIBO_ANTICIPO', 'RC', 'RC-', 5, 0, 1);
+            UPDATE dbo.SecuenciaDocumentos
+            SET SecUltimoNumero = SecUltimoNumero + 1
+            OUTPUT INSERTED.SecUltimoNumero
+            WHERE SecTipoDoc = 'RECIBO_ANTICIPO' AND SecSerie = 'RC';
+          `);
+        const numAnticipo = seqAnticipo.recordset[0]?.SecUltimoNumero || parseInt(tcaNum) || 1;
+
         const docR = await transaction.request()
           .input('Cta', sql.Int, cueCaja)
           .input('Cli', sql.Int, cliId)
           .input('Tipo', sql.VarChar(50), 'RECIBO ANTICIPO')
-          .input('Num', sql.VarChar(20), tcaNum)
-          .input('Serie', sql.VarChar(5), 'A')
+          .input('Num', sql.VarChar(20), String(numAnticipo))
+          .input('Serie', sql.VarChar(5), 'RC')
           .input('Tot', sql.Decimal(18,2), montoNum)
           .input('MonId', sql.Int, monId)
           .input('Usr', sql.Int, usuarioId)
@@ -1684,7 +1801,7 @@ const registrarPagoAnticipo = async (req, res) => {
         if (metR2.recordset.length) metodoDesc = ` (${metR2.recordset[0].MPaDescripcionMetodo})`;
       }
 
-      await transaction.request()
+      const movResult = await transaction.request()
         .input('Cue',sql.Int,cueId)
         .input('Imp',sql.Decimal(18,4),montoNum)
         .input('Usr',sql.Int,usuarioId)
@@ -1694,7 +1811,9 @@ const registrarPagoAnticipo = async (req, res) => {
                 UPDATE dbo.CuentasCliente SET CueSaldoActual=CueSaldoActual+@Imp WHERE CueIdCuenta=@Cue;
                 SELECT @SP=CueSaldoActual FROM dbo.CuentasCliente WHERE CueIdCuenta=@Cue;
                 INSERT INTO dbo.MovimientosCuenta(CueIdCuenta,MovTipo,MovImporte,MovConcepto,MovSaldoPosterior,MovFecha,MovUsuarioAlta,DocIdDocumento)
+                OUTPUT INSERTED.MovIdMovimiento
                 VALUES(@Cue,'ANTICIPO',@Imp,@Obs,@SP,GETDATE(),@Usr,@DocId)`);
+      const movId = movResult.recordset[0]?.MovIdMovimiento || null;
 
       // ── 6. Asiento contable en Libro Mayor ─────────────────────────────────
       // DEBE: Caja (dinero que entra)
@@ -1772,7 +1891,7 @@ const registrarPagoAnticipo = async (req, res) => {
       logger.info(`[ANTICIPO] Cli=${cliId} Cue=${cueId} Monto=${montoNum} DocId=${docId} TcaId=${tcaId}${msgImputado}`);
       const s = io(req); if (s) s.emit('actualizado', { type: 'anticipo' });
       return res.status(201).json({
-        success: true, tcaId, docId,
+        success: true, tcaId, docId, movId,
         message: `Anticipo ${monStr} ${montoNum.toFixed(2)} registrado correctamente.${msgImputado}`
       });
     } catch (errTx) { await transaction.rollback(); throw errTx; }
@@ -1879,9 +1998,10 @@ const anularFactura = async (req, res) => {
         const cicloActivoR = await transaction.request()
           .input('Cue', sql.Int, cueId)
           .input('CicAnulado', sql.Int, parseInt(cicId))
-          .query(`SELECT TOP 1 CicIdCiclo FROM dbo.CiclosCredito
-                  WHERE CueIdCuenta=@Cue AND CicEstado='ABIERTO' AND CicIdCiclo<>@CicAnulado
-                  ORDER BY CicFechaInicio DESC`);
+        .input('CicAnulado', sql.Int, parseInt(cicId))
+        .query(`SELECT TOP 1 CicIdCiclo FROM dbo.CiclosCredito
+                WHERE CueIdCuenta=@Cue AND CicEstado='ABIERTO' AND CicIdCiclo<>@CicAnulado
+                ORDER BY CicFechaInicio DESC`);
 
         if (cicloActivoR.recordset.length) {
           const nuevoCicId = cicloActivoR.recordset[0].CicIdCiclo;
@@ -1941,3 +2061,76 @@ module.exports = {
   // Operaciones desde Estado de Cuenta (Caja Administrativa)
   generarNotaCredito, reversarDocumento, registrarPagoAnticipo, anularFactura,
 };
+
+
+// ── IMPUTAR ANTICIPO EXISTENTE A DEUDA ESPECÍFICA ───────────────────────────
+/**
+ * POST /contabilidad/caja/imputar-anticipo-deuda
+ * Usa el saldo a favor que ya tiene el cliente para cancelar una deuda específica.
+ * NO ingresa plata nueva — solo mueve el saldo existente.
+ */
+async function imputarAnticipoADeuda(req, res) {
+  const { cuentaId, ddeIdDocumento, monto, clienteId } = req.body;
+  const usuarioId = req.user?.id || req.user?.UsrIdUsuario || 1;
+  if (!cuentaId || !ddeIdDocumento) return res.status(400).json({ error: 'cuentaId y ddeIdDocumento son requeridos.' });
+  const pool = await getPool();
+  const transaction = pool.transaction();
+  await transaction.begin();
+  try {
+    const cuentaR = await transaction.request()
+      .input('CueId', sql.Int, cuentaId)
+      .query('SELECT CueSaldoActual, MonIdMoneda FROM dbo.CuentasCliente WITH(UPDLOCK) WHERE CueIdCuenta=@CueId');
+    if (!cuentaR.recordset.length) throw new Error('Cuenta no encontrada.');
+    const saldoActual = Number(cuentaR.recordset[0].CueSaldoActual);
+    const monedaId = cuentaR.recordset[0].MonIdMoneda;
+    if (saldoActual <= 0) throw new Error(`El cliente no tiene saldo a favor (saldo actual: ${saldoActual.toFixed(2)}).`);
+
+    const deudaR = await transaction.request()
+      .input('DdeId', sql.Int, ddeIdDocumento)
+      .input('CueId', sql.Int, cuentaId)
+      .query('SELECT DDeImportePendiente, DDeEstado, DocIdDocumento FROM dbo.DeudaDocumento WITH(UPDLOCK) WHERE DDeIdDocumento=@DdeId AND CueIdCuenta=@CueId');
+    if (!deudaR.recordset.length) throw new Error('Deuda no encontrada para esta cuenta.');
+    const deuda = deudaR.recordset[0];
+    if (!['PENDIENTE','PARCIAL'].includes(deuda.DDeEstado)) throw new Error(`La deuda ya está en estado: ${deuda.DDeEstado}`);
+
+    const pendiente = Number(deuda.DDeImportePendiente);
+    const montoAplicar = monto ? Math.min(Number(monto), pendiente, saldoActual) : Math.min(pendiente, saldoActual);
+    if (montoAplicar <= 0.009) throw new Error('Monto a imputar debe ser mayor a 0.');
+    const monStr = monedaId === 2 ? 'U$S' : '$';
+
+    await transaction.request()
+      .input('CueId', sql.Int, cuentaId).input('Monto', sql.Decimal(18,4), montoAplicar)
+      .query('UPDATE dbo.CuentasCliente SET CueSaldoActual=CueSaldoActual-@Monto WHERE CueIdCuenta=@CueId');
+    const saldoR = await transaction.request().input('CueId', sql.Int, cuentaId)
+      .query('SELECT CueSaldoActual FROM dbo.CuentasCliente WHERE CueIdCuenta=@CueId');
+    const saldoPosterior = Number(saldoR.recordset[0].CueSaldoActual);
+
+    const nuevoPendiente = Math.max(0, pendiente - montoAplicar);
+    const nuevoEstado = nuevoPendiente < 0.01 ? 'COBRADO' : 'PARCIAL';
+    await transaction.request()
+      .input('DdeId', sql.Int, ddeIdDocumento).input('Pend', sql.Decimal(18,4), nuevoPendiente).input('Estado', sql.VarChar(20), nuevoEstado)
+      .query('UPDATE dbo.DeudaDocumento SET DDeImportePendiente=@Pend, DDeEstado=@Estado, DDeFechaCobro=CASE WHEN @Estado=\'COBRADO\' THEN GETDATE() ELSE DDeFechaCobro END WHERE DDeIdDocumento=@DdeId');
+
+    if (nuevoEstado === 'COBRADO' && deuda.DocIdDocumento) {
+      await transaction.request().input('DocId', sql.Int, deuda.DocIdDocumento)
+        .query('UPDATE dbo.DocumentosContables SET DocPagado=1 WHERE DocIdDocumento=@DocId');
+    }
+
+    await transaction.request()
+      .input('CueId', sql.Int, cuentaId).input('Monto', sql.Decimal(18,4), montoAplicar)
+      .input('Saldo', sql.Decimal(18,4), saldoPosterior).input('Usr', sql.Int, usuarioId)
+      .input('DocId', sql.Int, deuda.DocIdDocumento || null)
+      .input('Obs', sql.NVarChar(300), `Imputación anticipo a deuda #${ddeIdDocumento}`)
+      .query('INSERT INTO dbo.MovimientosCuenta(CueIdCuenta,MovTipo,MovImporte,MovConcepto,MovSaldoPosterior,MovFecha,MovUsuarioAlta,DocIdDocumento) VALUES(@CueId,\'PAGO\',-@Monto,@Obs,@Saldo,GETDATE(),@Usr,@DocId)');
+
+    await transaction.commit();
+    logger.info(`[IMPUTAR-ANT] Cue=${cuentaId} Deuda=${ddeIdDocumento} Aplicado=${montoAplicar} SaldoRestante=${saldoPosterior}`);
+    return res.json({ success: true, montoAplicado: montoAplicar, nuevoEstado, saldoRestante: saldoPosterior,
+      message: `${monStr} ${montoAplicar.toFixed(2)} imputados. Deuda: ${nuevoEstado}. Saldo restante: ${monStr} ${saldoPosterior.toFixed(2)}` });
+  } catch (err) {
+    try { await transaction.rollback(); } catch(_) {}
+    logger.error(`[IMPUTAR-ANT] ${err.message}`);
+    return res.status(400).json({ error: err.message });
+  }
+}
+module.exports.imputarAnticipoADeuda = imputarAnticipoADeuda;

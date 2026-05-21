@@ -87,12 +87,13 @@ export default function CajaPanelPago({
   numDoc,
   notas = '',
   onNotas,
-    onConfirmar,
+  onConfirmar,
   procesando = false,
   labelBoton,
   disabledExtra = false,
   tiposDocDisponibles = [],
   containerClassName = "w-[400px] shrink-0 border-l border-zinc-200 bg-white flex flex-col h-full overflow-y-auto",
+  lockMoneda = null,   // Si viene 'UYU' o 'USD', oculta el selector de moneda por línea
 }) {
   const esEgreso = mode === 'EGRESO';
   const tiposDoc = tiposDocDisponibles.length > 0
@@ -245,25 +246,27 @@ export default function CajaPanelPago({
                   />
                 </div>
 
-                {/* Moneda */}
-                <select
-                  value={p.moneda}
-                  onChange={(e) => {
-                    const newMoneda = e.target.value;
-                    if (pagos.length === 1 && totalACubrir > 0) {
-                      let fill = totalACubrir;
-                      if (moneda === 'UYU' && newMoneda === 'USD') fill = totalACubrir / (cotizacion || 1);
-                      if (moneda === 'USD' && newMoneda === 'UYU') fill = totalACubrir * (cotizacion || 1);
-                      onPagosChange([{ ...p, moneda: newMoneda, monto: fill.toFixed(2) }]);
-                    } else {
-                      updatePago(p.id, 'moneda', newMoneda);
-                    }
-                  }}
-                  className="w-16 bg-slate-50 border border-slate-100 rounded-xl px-2 py-2 text-xs font-black text-slate-600 outline-none text-center"
-                >
-                  <option value="UYU">$</option>
-                  <option value="USD">U$</option>
-                </select>
+                {/* Moneda — oculto si lockMoneda está definido */}
+                {!lockMoneda && (
+                  <select
+                    value={p.moneda}
+                    onChange={(e) => {
+                      const newMoneda = e.target.value;
+                      if (pagos.length === 1 && totalACubrir > 0) {
+                        let fill = totalACubrir;
+                        if (moneda === 'UYU' && newMoneda === 'USD') fill = totalACubrir / (cotizacion || 1);
+                        if (moneda === 'USD' && newMoneda === 'UYU') fill = totalACubrir * (cotizacion || 1);
+                        onPagosChange([{ ...p, moneda: newMoneda, monto: fill.toFixed(2) }]);
+                      } else {
+                        updatePago(p.id, 'moneda', newMoneda);
+                      }
+                    }}
+                    className="w-16 bg-slate-50 border border-slate-100 rounded-xl px-2 py-2 text-xs font-black text-slate-600 outline-none text-center"
+                  >
+                    <option value="UYU">$</option>
+                    <option value="USD">U$</option>
+                  </select>
+                )}
 
                 {/* Monto */}
                 <input

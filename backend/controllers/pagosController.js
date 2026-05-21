@@ -1,7 +1,8 @@
 const { getPool, sql }   = require('../config/db');
 const logger              = require('../utils/logger');
 const contabilidadService = require('../services/contabilidadService');
-const contabilidadCore = require('../services/contabilidadCore');
+const contabilidadCore    = require('../services/contabilidadCore');
+const { generarCFEDesdeOrdenesDirectas } = require('../services/cajaService');
 
 // Controlador para obtener métodos de pago
 const obtenerMetodosPago = async (req, res) => {
@@ -181,9 +182,8 @@ const realizarPago = async (req, res) => {
 
     res.status(200).json({ message: 'Pago registrado correctamente', pagoId });
 
-    // ── MOTOR DE CONTABILIDAD UNIFICADO ──────────────────────────────────────
-    // Reemplazamos toda la lógica manual de asiento y hooks por el procesador del Motor.
-    // Buscamos el CliIdCliente para el contexto contable.
+    // ── MOTOR DE CONTABILIDAD + GENERACIÓN CFE ───────────────────────────────
+    // Replicamos el mismo flujo que Caja: contabilidad + E-Ticket (CFE).
     if (orderNumbers && orderNumbers.length > 0) {
        const cliPool = await getPool();
        const cliRes = await cliPool.request()
@@ -192,6 +192,8 @@ const realizarPago = async (req, res) => {
           
        if (cliRes.recordset.length > 0) {
           const { CliIdCliente } = cliRes.recordset[0];
+
+          // 1. Motor contable (movimientos cuenta corriente)
           contabilidadService.procesarEventoContable('PAGO', {
              PagIdPago: pagoId,
              CliIdCliente,
@@ -200,6 +202,16 @@ const realizarPago = async (req, res) => {
              UsuarioAlta: usuarioId,
              OReIdOrdenRetiro: ordenRetiroId
           }).catch(e => logger.error(`[CONTABILIDAD] Error motor en pago ${pagoId}: ${e.message}`));
+
+          // 2. Generar CFE (DocumentosContables) — igual que Caja Paso 5.6
+          generarCFEDesdeOrdenesDirectas({
+             orderIds:  orderNumbers.map(Number),
+             clienteId: CliIdCliente,
+             monto,
+             monedaId,
+             pagoId,
+             usuarioId
+          }).catch(e => logger.error(`[CFE-MOSTRADOR] Error generando CFE para pago ${pagoId}: ${e.message}`));
        }
     }
     // ─────────────────────────────────────────────────────────────────────────

@@ -1,0 +1,84 @@
+<soapenv:Envelope
+    xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/"
+    xmlns:web="http://webServices.sitioWeb.crp.com/">
+
+  <soapenv:Header/>
+
+  <soapenv:Body>
+    <web:recepcionCFE>
+
+      <!-- ================= CAE ================= -->
+      <wsCAE>
+        <errorDes/>
+            <errorDes/>
+            <hayError>false</hayError>
+            <idInterno>51503</idInterno>
+            <numero>3</numero>
+            <numeroAutorizacion>90260001520</numeroAutorizacion>
+            <serie>B</serie>
+      </wsCAE>
+
+      <!-- ================= VARIOS ================= -->
+      <wsVarios>
+        <comprobanteTipo>NC_e_Boleta</comprobanteTipo>
+        <fchEmis>25/01/2026</fchEmis>
+        <fchValor>25/01/2026</fchValor>
+        <fchVenc>25/01/2027</fchVenc>
+        <fmaPago>1</fmaPago>
+        <mntBruto>1</mntBruto>
+      </wsVarios>
+
+      <!-- ================= RECEPTOR ================= -->
+      <wsReceptor>
+        <tipoDocRecep>3</tipoDocRecep>
+        <docRecep>51546483</docRecep>
+        <codPaisRecep>UY</codPaisRecep>
+        <rznSocRecep>TEST WS NC EBOLETA</rznSocRecep>
+        <dirRecep>Luis alberto de herrera</dirRecep>
+        <ciudadRecep>-</ciudadRecep>
+        <deptoRecep>-</deptoRecep>
+      </wsReceptor>
+
+      <wsTotales>
+            <cantLinDet>1</cantLinDet>
+            <mntIVATasaBas>0</mntIVATasaBas>
+            <mntIVATasaMin>0</mntIVATasaMin>
+            <mntNetoIvaTasaBasica>0</mntNetoIvaTasaBasica>
+            <mntNetoIvaTasaMin>0</mntNetoIvaTasaMin>
+            <mntNoGrv>100</mntNoGrv>
+            <mntPagar>100</mntPagar>
+            <mntTotal>100</mntTotal>
+            <montoNF>0</montoNF>
+            <tpoMoneda>UYU</tpoMoneda>
+            <iVATasaBas>tasa_basica</iVATasaBas>
+            <iVATasaMin>tasa_Minima</iVATasaMin>
+           
+         </wsTotales>
+         <listaWsItems>
+            <cantidad>1</cantidad> 
+            <indFact>13</indFact>  <!-- (No contribuyente) -->
+            <montoItem>100</montoItem>
+            <nomItem>ITEM 1</nomItem>
+            <nroLinDet>1</nroLinDet>
+            <precioUnitario>100</precioUnitario>
+            <uniMed>N/A</uniMed>
+         </listaWsItems>
+
+         <listaWsReferencias>
+		  <tpoDocRef>e_Boleta_Entrada</tpoDocRef>
+            <fechaCFEref>2026-01-21</fechaCFEref>
+            <indicadorReferenciaGlobal>0</indicadorReferenciaGlobal>
+	        <mntCFEref>21</mntCFEref>
+            <nroCFERef>3</nroCFERef>
+            <nroLinRef>1</nroLinRef>
+            <serie>B</serie>
+	    <tpoMonedaRef>UYU</tpoMonedaRef>
+         </listaWsReferencias>
+         
+      <impresionImprimirSiNo>1</impresionImprimirSiNo>
+      <impresionNumeroVias>1</impresionNumeroVias>
+      <simular>0</simular>
+
+    </web:recepcionCFE>
+  </soapenv:Body>
+</soapenv:Envelope>

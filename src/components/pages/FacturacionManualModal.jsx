@@ -5,19 +5,53 @@ import { toast } from 'sonner';
 
 
 
-export default function FacturacionManualModal({ onClose, onSuccess }) {
+export default function FacturacionManualModal({ onClose, onSuccess, initialData }) {
   const [clientes, setClientes] = useState([]);
   const [tiposDocs, setTiposDocs] = useState([]);
   const [monedas, setMonedas] = useState([]);
   const [loading, setLoading] = useState(false);
 
-  const [formData, setFormData] = useState({
-    DocTipo: 'FACTURA',
-    MonIdMoneda: 1, // 1 = UYU, 2 = USD
-    CliIdCliente: '',
-    Lineas: [
-      { id: Date.now(), concepto: '', cantidad: 1, precioUnitario: '', iva: 22 }
-    ]
+  const [formData, setFormData] = useState(() => {
+    if (initialData) {
+      return {
+        DocTipo: initialData.DocTipo || 'FACTURA',
+        MonIdMoneda: initialData.MonIdMoneda || 1,
+        CliIdCliente: initialData.CliIdCliente || '',
+        Lineas: (initialData.lineas || []).map((l, idx) => {
+          const qty = parseFloat(l.DcdCantidad) || 1;
+          const sub = parseFloat(l.DcdSubtotal) || 0;
+          const imp = parseFloat(l.DcdImpuestos) || 0;
+          
+          // Calcular el precio unitario neto real facturado
+          const unitPrice = qty > 0 ? (sub / qty) : (parseFloat(l.DcdPrecioUnitario) || 0);
+          
+          // Calcular la tasa de IVA aproximada (22%, 10%, o 0%)
+          let ivaRate = 22;
+          if (sub > 0) {
+            const ratio = (imp / sub) * 100;
+            if (ratio < 2) ivaRate = 0;
+            else if (ratio < 15) ivaRate = 10;
+            else ivaRate = 22;
+          }
+
+          return {
+            id: Date.now() + idx,
+            concepto: (l.DcdNomItem || '').trim(),
+            cantidad: qty,
+            precioUnitario: parseFloat(unitPrice.toFixed(4)),
+            iva: ivaRate
+          };
+        })
+      };
+    }
+    return {
+      DocTipo: 'FACTURA',
+      MonIdMoneda: 1, // 1 = UYU, 2 = USD
+      CliIdCliente: '',
+      Lineas: [
+        { id: Date.now(), concepto: '', cantidad: 1, precioUnitario: '', iva: 22 }
+      ]
+    };
   });
 
   useEffect(() => {
@@ -35,7 +69,7 @@ export default function FacturacionManualModal({ onClose, onSuccess }) {
         const tDocs = resNomencladores.data.tiposDocumentos || [];
         setTiposDocs(tDocs);
         setMonedas(resNomencladores.data.monedas || []);
-        if (tDocs.length > 0) {
+        if (tDocs.length > 0 && !initialData) {
           setFormData(prev => ({ ...prev, DocTipo: tDocs[0].value }));
         }
       }
@@ -242,7 +276,7 @@ export default function FacturacionManualModal({ onClose, onSuccess }) {
                           <td className="p-2">
                             <input 
                               type="number" 
-                              required min="1" step="0.01"
+                              required min="0" step="0.01"
                               className="w-full bg-white border border-slate-200 rounded-lg px-2 py-1 text-sm outline-none focus:border-blue-500"
                               value={line.cantidad}
                               onChange={(e) => updateLinea(line.id, 'cantidad', e.target.value)}

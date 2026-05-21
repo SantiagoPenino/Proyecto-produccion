@@ -13,7 +13,7 @@ const getClients = async (req, res) => {
                 C.IDCliente,
                 (SELECT COUNT(*) FROM PreciosEspecialesItems WHERE CliIdCliente = PE.CliIdCliente) as CantReglas
             FROM PreciosEspeciales PE
-            LEFT JOIN Clientes C ON C.CliIdCliente = PE.CliIdCliente
+            LEFT JOIN Clientes C ON C.CodCliente = PE.CliIdCliente OR C.CliIdCliente = PE.CliIdCliente
             ORDER BY COALESCE(C.Nombre, CAST(PE.CliIdCliente AS VARCHAR))
         `);
         res.json(result.recordset);
@@ -41,27 +41,36 @@ const getClientRules = async (req, res) => {
         const itemsRes = await pool.request()
             .input('CID', sql.Int, clientId)
             .query(`
-                SELECT COALESCE(PI.CodGrupo, A.CodArticulo, CASE WHEN PI.ProIdProducto = 0 THEN 'TOTAL' ELSE CAST(PI.ProIdProducto AS VARCHAR) END) as CodArticulo, 
+                SELECT LTRIM(RTRIM(COALESCE(PI.CodGrupo, A.CodArticulo, CASE WHEN PI.ProIdProducto = 0 THEN 'TOTAL' ELSE CAST(PI.ProIdProducto AS VARCHAR) END))) as CodArticulo, 
                        PI.ProIdProducto, PI.CodGrupo, PI.TipoRegla, PI.Valor, PI.MonIdMoneda as Moneda, PI.MinCantidad as CantidadMinima 
                 FROM PreciosEspecialesItems PI
                 LEFT JOIN Articulos A ON PI.ProIdProducto = A.ProIdProducto
-                WHERE PI.CliIdCliente = @CID
+                WHERE PI.CliIdCliente = @CID OR PI.ClienteID = @CID
             `);
 
-        // 3. Obtener Perfiles Generales Asignados (Para info del usuario en la UI)
-        const perfilesRes = await pool.request()
-            .input('CID', sql.Int, clientId)
-            .query(`
-                SELECT P.NombrePerfil, P.Global, CP.FechaAsignacion
-                FROM ClientePerfil CP
-                JOIN Perfiles P ON CP.PerfilID = P.PerfilID
-                WHERE CP.ClienteID = @CID AND CP.Activo = 1 AND P.Activo = 1
-            `);
+        // 3. Obtener Perfiles Generales Asignados (Manejo seguro si la tabla no existe en la migración)
+        let profiles = [];
+        try {
+            const perfilesRes = await pool.request()
+                .input('CID', sql.Int, clientId)
+                .query(`
+                    IF OBJECT_ID('ClientePerfil', 'U') IS NOT NULL AND OBJECT_ID('Perfiles', 'U') IS NOT NULL
+                    BEGIN
+                        SELECT P.NombrePerfil, P.Global, CP.FechaAsignacion
+                        FROM ClientePerfil CP
+                        JOIN Perfiles P ON CP.PerfilID = P.PerfilID
+                        WHERE CP.ClienteID = @CID AND CP.Activo = 1 AND P.Activo = 1
+                    END
+                `);
+            profiles = perfilesRes.recordset || [];
+        } catch(e) {
+            // Ignorar si las tablas de perfiles no están migradas
+        }
 
         res.json({
             client: clientRes.recordset[0] || { CliIdCliente: clientId },
             rules: itemsRes.recordset,
-            profiles: perfilesRes.recordset
+            profiles: profiles
         });
     } catch (e) {
         logger.error("Error getting client rules:", e);
@@ -83,14 +92,18 @@ const saveClientProfile = async (req, res) => {
         const headerReq = new sql.Request(transaction);
         await headerReq
             .input('CliId', sql.Int, clientId)
+            .input('Nombre', sql.NVarChar, nombre || '')
             .query(`
-                IF NOT EXISTS (SELECT 1 FROM PreciosEspeciales WHERE CliIdCliente = @CliId)
+                IF NOT EXISTS (SELECT 1 FROM PreciosEspeciales WHERE CliIdCliente = @CliId OR ClienteID = @CliId)
                 BEGIN
-                    INSERT INTO PreciosEspeciales (CliIdCliente) VALUES (@CliId)
+                    INSERT INTO PreciosEspeciales (CliIdCliente, ClienteID, NombreCliente) 
+                    VALUES (@CliId, @CliId, @Nombre)
                 END
                 ELSE
                 BEGIN
-                    UPDATE PreciosEspeciales SET UltimaActualizacion = GETDATE() WHERE CliIdCliente = @CliId
+                    UPDATE PreciosEspeciales 
+                    SET UltimaActualizacion = GETDATE(), NombreCliente = @Nombre 
+                    WHERE CliIdCliente = @CliId OR ClienteID = @CliId
                 END
             `);
 
@@ -119,14 +132,15 @@ const saveClientProfile = async (req, res) => {
                     await itemReq
                         .input('CliId', sql.Int, clientId)
                         .input('ProId', sql.Int, finalProIdProducto)
+                        .input('CodArt', sql.NVarChar, codArtStr)
                         .input('Grupo', sql.VarChar, finalCodGrupo)
                         .input('Tipo', sql.NVarChar, rule.TipoRegla || 'fixed')
                         .input('Val', sql.Decimal(18, 4), rule.Valor || 0)
                         .input('MonIdMoneda', sql.Int, (rule.MonIdMoneda === 'USD' || rule.MonIdMoneda === 2 || rule.Moneda === 'USD') ? 2 : 1)
                         .input('Min', sql.Decimal(18, 2), rule.MinCantidad || 0)
                         .query(`
-                            INSERT INTO PreciosEspecialesItems (CliIdCliente, ProIdProducto, CodGrupo, TipoRegla, Valor, MonIdMoneda, MinCantidad)
-                            VALUES (@CliId, @ProId, @Grupo, @Tipo, @Val, @MonIdMoneda, @Min)
+                            INSERT INTO PreciosEspecialesItems (CliIdCliente, ClienteID, CodArticulo, ProIdProducto, CodGrupo, TipoRegla, Valor, MonIdMoneda, MinCantidad)
+                            VALUES (@CliId, @CliId, @CodArt, @ProId, @Grupo, @Tipo, @Val, @MonIdMoneda, @Min)
                         `);
                 }
             }

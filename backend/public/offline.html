@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>USER — Sin conexión</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: #0a0a0a;
+            color: #fafafa;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            text-align: center;
+            padding: 2rem;
+        }
+        .container { max-width: 360px; }
+        .icon { font-size: 3rem; margin-bottom: 1.5rem; opacity: 0.7; }
+        h1 { font-size: 1.25rem; font-weight: 600; margin-bottom: 0.5rem; }
+        p { font-size: 0.875rem; color: #a1a1aa; line-height: 1.6; margin-bottom: 2rem; }
+        button {
+            padding: 0.75rem 2rem;
+            background: #27272a;
+            color: #fafafa;
+            border: 1px solid #3f3f46;
+            border-radius: 12px;
+            font-size: 0.875rem;
+            font-weight: 500;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+        button:hover { background: #3f3f46; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="icon">📡</div>
+        <h1>Sin conexión</h1>
+        <p>No hay conexión a internet. Verificá tu red y volvé a intentar.</p>
+        <button onclick="location.reload()">Reintentar</button>
+    </div>
+</body>
+</html>

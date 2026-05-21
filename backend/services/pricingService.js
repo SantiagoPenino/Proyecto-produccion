@@ -239,10 +239,17 @@ class PricingService {
         }
         possibleClientIds = [...new Set(possibleClientIds.filter(Boolean))];
 
+        let resolvedCategoria = resolvedAreaId;
+        if (resolvedAreaId === 'DF') resolvedCategoria = 'DTF';
+        if (resolvedAreaId === 'EST') resolvedCategoria = 'Estampados';
+
         const rulesRes = await pool.request()
             .input('ProId', sql.Int, resolvedProId || -1)
+            .input('CleanCod', sql.VarChar, cleanCod || '')
             .input('Qty', sql.Decimal(18, 2), volumeForRules) // <--- USAMOS EL VOLUMEN TÉCNICO SI APLICA
             .input('ResolvedGrupo', sql.VarChar, resolvedGrupo)
+            .input('ResolvedAreaId', sql.VarChar, resolvedAreaId || '')
+            .input('ResolvedCategoria', sql.VarChar, resolvedCategoria || '')
             .query(`
                 -- Reglas por Perfil (Cliente, Globales y Extras)
                 SELECT DISTINCT PI.ID as PerfilItemID, PI.PerfilID, PI.ProIdProducto, PI.CodGrupo, PI.CodArticulo, PI.Valor, CASE WHEN PI.MonIdMoneda = 1 THEN 'UYU' ELSE 'USD' END AS Moneda, PI.TipoRegla, PI.CantidadMinima, 
@@ -254,14 +261,16 @@ class PricingService {
                     EXISTS (SELECT 1 FROM STRING_SPLIT(CAST(PE.PerfilesIDs AS VARCHAR(MAX)), ',') WHERE value = CAST(PP.ID AS VARCHAR(10)))
                 )
                 WHERE (PE.CliIdCliente IN (${possibleClientIds.length > 0 ? possibleClientIds.join(',') : '0'})
-                       OR PP.EsGlobal = 1 
+                       OR (PP.EsGlobal = 1 AND (ISNULL(PP.Categoria, 'Todos') = 'Todos' OR PP.Categoria = '' OR PP.Categoria = @ResolvedAreaId OR PP.Categoria = @ResolvedCategoria))
                        OR PP.ID IN (${cleanedProfiles.length > 0 ? cleanedProfiles.join(',') : '0'}))
                 -- Filtro de volumen
                   AND (PI.CantidadMinima <= @Qty OR PI.CantidadMinima = 1)
-                  AND (PI.ProIdProducto = @ProId AND @ProId > 0 
-                       OR PI.CodGrupo = @ResolvedGrupo AND @ResolvedGrupo IS NOT NULL
-                       OR PI.ProIdProducto = 0
-                       OR (PI.ProIdProducto IS NULL AND PI.CodGrupo IS NULL))
+                  AND (
+                       (PI.ProIdProducto = @ProId AND @ProId > 0)
+                       OR (LTRIM(RTRIM(PI.CodArticulo)) = @CleanCod AND @CleanCod <> '')
+                       OR (PI.CodGrupo = @ResolvedGrupo AND @ResolvedGrupo IS NOT NULL)
+                       OR (ISNULL(PI.ProIdProducto, 0) = 0 AND (NULLIF(LTRIM(RTRIM(PI.CodArticulo)), '') IS NULL OR LTRIM(RTRIM(PI.CodArticulo)) = 'TOTAL') AND NULLIF(LTRIM(RTRIM(PI.CodGrupo)), '') IS NULL)
+                  )
                 
                 UNION ALL
 
@@ -271,10 +280,12 @@ class PricingService {
                 FROM PreciosEspecialesItems PEI
                 WHERE (PEI.CliIdCliente IN (${possibleClientIds.length > 0 ? possibleClientIds.join(',') : '0'}))
                   AND (PEI.MinCantidad <= @Qty OR PEI.MinCantidad = 1)
-                  AND (PEI.ProIdProducto = @ProId AND @ProId > 0 
-                       OR PEI.CodGrupo = @ResolvedGrupo AND @ResolvedGrupo IS NOT NULL
-                       OR PEI.ProIdProducto = 0
-                       OR (PEI.ProIdProducto IS NULL AND PEI.CodGrupo IS NULL))
+                  AND (
+                       (PEI.ProIdProducto = @ProId AND @ProId > 0)
+                       OR (LTRIM(RTRIM(PEI.CodArticulo)) = @CleanCod AND @CleanCod <> '')
+                       OR (PEI.CodGrupo = @ResolvedGrupo AND @ResolvedGrupo IS NOT NULL)
+                       OR (ISNULL(PEI.ProIdProducto, 0) = 0 AND (NULLIF(LTRIM(RTRIM(PEI.CodArticulo)), '') IS NULL OR LTRIM(RTRIM(PEI.CodArticulo)) = 'TOTAL') AND NULLIF(LTRIM(RTRIM(PEI.CodGrupo)), '') IS NULL)
+                  )
                 
                 ORDER BY PrioridadPerfil DESC, CantidadMinima DESC
             `);

@@ -95,7 +95,7 @@ exports.getMetodosPago = async (req, res) => {
         MPaIdMetodoPago       AS MetodoPagoId,
         MPaDescripcionMetodo  AS MetNombre
       FROM   dbo.MetodosPagos WITH(NOLOCK)
-      ORDER  BY MPaDescripcionMetodo
+      ORDER  BY MPaIdMetodoPago
     `);
     res.json({ success: true, data: result.recordset });
   } catch (err) {
@@ -676,6 +676,22 @@ exports.crearPlan = async (req, res) => {
              GETDATE(), @UsuarioAlta)
         `);
       DocIdDocumento = docRes.recordset[0].DocIdDocumento;
+
+      // Insertar en DocumentosContablesDetalle
+      await pool.request()
+        .input('DocId',    sql.Int,           DocIdDocumento)
+        .input('Nom',      sql.VarChar(200),  `Adquisición de Plan de Recursos #${PlaIdPlan}`.substring(0, 200))
+        .input('Desc',     sql.VarChar(500),  `${PlaDescripcion || ''}`.substring(0, 500))
+        .input('Cant',     sql.Decimal(18,4), parseFloat(PlaCantidadTotal) || 1.0)
+        .input('PUnit',    sql.Decimal(18,4), PlaPrecioUnitario ? parseFloat(PlaPrecioUnitario) : (PlaImportePagado ? parseFloat(PlaImportePagado)/parseFloat(PlaCantidadTotal) : 0.0))
+        .input('Monto',    sql.Decimal(18,2), importe)
+        .query(`
+          INSERT INTO dbo.DocumentosContablesDetalle
+            (DocIdDocumento, DcdNomItem, DcdDscItem, DcdCantidad, DcdPrecioUnitario, DcdSubtotal, DcdImpuestos, DcdTotal)
+          VALUES
+            (@DocId, @Nom, @Desc, @Cant, @PUnit, @Monto, 0.0, @Monto)
+        `);
+
 
       if (DocTipo === 'FACTURA') {
         if (importe > 0) {
@@ -1939,6 +1955,130 @@ exports.deleteTipoMovimiento = async (req, res) => {
     res.json({ success: true, message: "Tipo de movimiento eliminado." });
   } catch (err) {
     if (err.number === 547) return res.status(400).json({ success: false, error: "No se puede eliminar porque está en uso (tiene registros asociados)." });
+    res.status(500).json({ success: false, error: err.message });
+  }
+};
+
+/**
+ * GET /api/contabilidad/clientes/:CliIdCliente/ordenes-anticipo
+ */
+exports.getOrdenesAnticipo = async (req, res) => {
+  try {
+    const { CliIdCliente } = req.params;
+    const pool = await getPool();
+
+      const result = await pool.request()
+      .input('Cli', sql.Int, CliIdCliente)
+      .query(`
+        SELECT m.MovIdMovimiento, m.CueIdCuenta, m.MovTipo, m.MovConcepto, m.MovImporte, m.MovFecha,
+               m.OrdIdOrden, m.OReIdOrdenRetiro, m.PagIdPago, m.MovObservaciones, m.DocIdDocumento,
+               COALESCE(od.OrdCodigoOrden, erp.CodigoOrden) AS OrdCodigoOrden,
+               COALESCE(od.OrdNombreTrabajo, erp.DescripcionTrabajo) AS OrdNombreTrabajo,
+               ISNULL(od.OrdCantidad, 1) AS OrdCantidad,
+               ISNULL(od.OrdDescuentoAplicado, 0) AS OrdDescuentoAplicado,
+               od.OrdMaterialPlanilla,
+               p.Descripcion AS ProNombre,
+               s.Articulo AS ProSubFamilia,
+               s.CodStock AS ProCodStock,
+                (
+                   SELECT d.ID AS DetalleID, a.CodArticulo, d.Cantidad, d.PrecioUnitario, d.Subtotal, d.LogPrecioAplicado, a.Descripcion, pc.Moneda, a.CodStock, sa.Articulo AS ArticuloNombre
+                   FROM dbo.PedidosCobranza pc WITH(NOLOCK)
+                   JOIN dbo.PedidosCobranzaDetalle d WITH(NOLOCK) ON pc.ID = d.PedidoCobranzaID
+                   LEFT JOIN dbo.Articulos a WITH(NOLOCK) ON a.ProIdProducto = d.ProIdProducto
+                   LEFT JOIN dbo.StockArt sa WITH(NOLOCK) ON a.CodStock = sa.CodStock
+                   WHERE LTRIM(RTRIM(pc.NoDocERP)) = COALESCE(od.OrdCodigoOrden, erp.CodigoOrden)
+                   FOR JSON PATH
+                ) AS DetallesJSON
+        FROM dbo.MovimientosCuenta m WITH(NOLOCK)
+        LEFT JOIN dbo.OrdenesDeposito od WITH(NOLOCK) ON m.OrdIdOrden = od.OrdIdOrden
+        LEFT JOIN dbo.Ordenes erp WITH(NOLOCK) ON erp.OrdenID = m.OrdIdOrden
+        LEFT JOIN dbo.Articulos p WITH(NOLOCK) ON od.ProIdProducto = p.ProIdProducto
+        LEFT JOIN dbo.StockArt s WITH(NOLOCK) ON p.CodStock = s.CodStock
+        WHERE m.CueIdCuenta IN (SELECT CueIdCuenta FROM dbo.CuentasCliente WHERE CliIdCliente = @Cli)
+          AND m.MovTipo = 'ORDEN'
+          AND m.DocIdDocumento IS NULL
+      `);
+
+    res.json({ success: true, data: result.recordset });
+  } catch (err) {
+    logger.error('Error getOrdenesAnticipo:', err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+};
+
+/**
+ * POST /api/contabilidad/clientes/:CliIdCliente/emitir-factura-anticipo
+ */
+exports.emitirFacturaAnticipo = async (req, res) => {
+  try {
+    const { CliIdCliente } = req.params;
+    const UsuarioAlta = req.user?.id || 1;
+    const pool = await getPool();
+
+    const { 
+      ordenesIds, 
+      monedaFactura, cotDolar, descuentoTipo, descuentoValorBase, montoDescuentoCalculado,
+      detallesEditados, detallesParaPDF, tipoDocumento, observaciones,
+      cliDgiNombre, cliDgiDocumento, cliDgiDireccion, cliDgiCiudad, actualizarCliente 
+    } = req.body;
+
+    if (!ordenesIds || !ordenesIds.length) {
+      return res.status(400).json({ success: false, error: "No se seleccionaron órdenes." });
+    }
+
+    const targetCueTipo = (monedaFactura === 'USD') ? 'DINERO_USD' : 'DINERO_UYU';
+    const cueRes = await pool.request()
+      .input('Cli', sql.Int, CliIdCliente)
+      .input('Tipo', sql.VarChar, targetCueTipo)
+      .query(`SELECT TOP 1 CueIdCuenta FROM dbo.CuentasCliente WHERE CliIdCliente = @Cli AND CueTipo = @Tipo`);
+    if (!cueRes.recordset.length) throw new Error(`Cliente no tiene cuenta en ${monedaFactura === 'USD' ? 'USD' : 'UYU'}`);
+    const CueIdCuenta = cueRes.recordset[0].CueIdCuenta;
+
+    let cicRes = await pool.request()
+      .input('Cue', sql.Int, CueIdCuenta)
+      .query(`SELECT TOP 1 CicIdCiclo FROM dbo.CiclosCredito WHERE CueIdCuenta = @Cue AND CicEstado = 'ABIERTO'`);
+    
+    let CicIdCiclo;
+    const svc = require('../services/contabilidadService');
+    if (cicRes.recordset.length) {
+      CicIdCiclo = cicRes.recordset[0].CicIdCiclo;
+    } else {
+      const nuevoCiclo = await svc.abrirCicloPorCuenta({ CueIdCuenta, CliIdCliente, UsuarioAlta });
+      CicIdCiclo = nuevoCiclo.CicIdCiclo;
+    }
+
+    const inClause = ordenesIds.map(id => parseInt(id, 10)).join(',');
+    await pool.request()
+      .input('Cic', sql.Int, CicIdCiclo)
+      .query(`
+        UPDATE dbo.MovimientosCuenta
+        SET CicIdCiclo = @Cic
+        WHERE OrdIdOrden IN (${inClause})
+          AND MovTipo IN ('ORDEN', 'ORDEN_ANTICIPO')
+          AND DocIdDocumento IS NULL
+      `);
+
+    const saldo = await pool.request().input('Cic', sql.Int, CicIdCiclo).query(`
+      SELECT ISNULL(SUM(ABS(MovImporte)), 0) as Tot
+      FROM dbo.MovimientosCuenta WHERE CicIdCiclo = @Cic AND MovTipo IN ('ORDEN', 'ORDEN_ANTICIPO') AND MovAnulado = 0
+    `);
+    const totOrd = saldo.recordset[0].Tot;
+
+    await pool.request().input('Cic', sql.Int, CicIdCiclo).input('Tot', sql.Decimal(18,2), totOrd).query(`
+      UPDATE dbo.CiclosCredito SET CicTotalOrdenes = @Tot WHERE CicIdCiclo = @Cic
+    `);
+
+    const result = await svc.cerrarCicloCompleto({ 
+      CicIdCiclo, 
+      UsuarioAlta,
+      monedaFactura, cotDolar, descuentoTipo, descuentoValorBase, montoDescuentoCalculado,
+      detallesEditados, detallesParaPDF, tipoDocumento, observaciones,
+      cliDgiNombre, cliDgiDocumento, cliDgiDireccion, cliDgiCiudad, actualizarCliente
+    });
+    
+    res.json({ success: true, data: result });
+  } catch (err) {
+    logger.error('Error emitirFacturaAnticipo:', err);
     res.status(500).json({ success: false, error: err.message });
   }
 };

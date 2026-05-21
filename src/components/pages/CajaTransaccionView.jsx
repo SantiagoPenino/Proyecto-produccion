@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { createPortal } from 'react-dom';
 import { io } from 'socket.io-client';
 import api, { SOCKET_URL } from '../../services/apiClient';
 import { toast } from 'sonner';
@@ -14,6 +15,8 @@ import {
 import CajaArqueoModal from './CajaArqueoModal';
 import CajaVentaDirectaTab from './CajaVentaDirectaTab';
 import CajaCobroLibreTab from './CajaCobroLibreTab';
+import CajaSaldoAnticipoTab from './CajaSaldoAnticipoTab';
+
 import CajaPagoDeudaTab from './CajaPagoDeudaTab';
 import CajaOtrosIngresosTab from './CajaOtrosIngresosTab';
 import CajaPanelPago from './CajaPanelPago';
@@ -106,18 +109,18 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
   const [filtroTipo, setFiltroTipo] = useState('1');
   const [seleccionados, setSeleccionados] = useState([]);
   const [ajustes, setAjustes] = useState({});
-  const [carritosPago, setCarritosPago] = useState([{ id: Date.now(), metodoPagoId: '', moneda: 'UYU', monedaId: 1, monto: '' }]);
+  const [carritosPago, setCarritosPago] = useState([{ id: Date.now(), metodoPagoId: 1, moneda: 'UYU', monedaId: 1, monto: '' }]);
   const [tipoDocCobro, setTipoDocCobro] = useState('07');
   const [serieDocCobro, setSerieDocCobro] = useState('A');
   const [numDocCobro, setNumDocCobro] = useState('');
   const [numDocCobroPredict, setNumDocCobroPredict] = useState('');
   const [obsCobro, setObsCobro] = useState('');
   const [procesandoCobro, setProcesandoCobro] = useState(false);
-  const [motorPagos, setMotorPagos] = useState([{ id: Date.now(), metodoPagoId: '', moneda: 'UYU', monedaId: 1, monto: '' }]);
+  const [motorPagos, setMotorPagos] = useState([{ id: Date.now(), metodoPagoId: 1, moneda: 'UYU', monedaId: 1, monto: '' }]);
   const [motorTipoDoc, setMotorTipoDoc] = useState('07');
   const [motorSerieDoc, setMotorSerieDoc] = useState('A');
 
-  const [ventaPagos, setVentaPagos] = useState([{ id: Date.now(), metodoPagoId: '', moneda: 'UYU', monedaId: 1, monto: '' }]);
+  const [ventaPagos, setVentaPagos] = useState([{ id: Date.now(), metodoPagoId: 1, moneda: 'UYU', monedaId: 1, monto: '' }]);
   const [ventaTipoDoc, setVentaTipoDoc] = useState('07');
   const [ventaSerieDoc, setVentaSerieDoc] = useState('A');
   const [ventaObs, setVentaObs] = useState('');
@@ -378,16 +381,16 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
         });
       });
       const apps = seleccionados.map(s => {
-        const montoBaseUYU = calcularMontoPorMoneda(s.retiro, 'UYU');
+        const montoEnMonedaSeleccionada = calcularMontoPorMoneda(s.retiro, monedaExhibicion);
         return {
-          tipo: 'ORDEN_RETIRO', referenciaId: s.retiroId, codigoRef: s.codigoRef, descripcion: s.descripcion, montoOriginal: montoBaseUYU,
-          ajuste: (monedaExhibicion === 'USD' && cotizacion) ? (parseFloat(ajustes[s.retiroId]?.ajuste || 0) || 0) * cotizacion : (parseFloat(ajustes[s.retiroId]?.ajuste || 0) || 0),
+          tipo: 'ORDEN_RETIRO', referenciaId: s.retiroId, codigoRef: s.codigoRef, descripcion: s.descripcion, montoOriginal: montoEnMonedaSeleccionada,
+          ajuste: parseFloat(ajustes[s.retiroId]?.ajuste || 0) || 0,
           tipoAjuste: ajustes[s.retiroId]?.tipoAjuste || null, orderNumbers: s.ordenesIds
         };
       });
-      const pags = carritosPago.map(p => ({ metodoPagoId: parseInt(p.metodoPagoId), moneda: p.moneda, monedaId: p.monedaId, montoOriginal: parseFloat(p.monto), cotizacion: p.moneda === 'USD' ? cotizacion : null }));
+      const pags = carritosPago.map(p => ({ metodoPagoId: parseInt(p.metodoPagoId), moneda: p.moneda, monedaId: p.moneda === 'USD' ? 2 : 1, montoOriginal: parseFloat(p.monto), cotizacion: p.moneda === 'USD' ? cotizacion : null }));
       const res = await api.post('/contabilidad/caja/transaccion', {
-        header: { clienteId: seleccionados[0]?.retiro?.CliIdCliente, tipoDocumento: tipoDocCobro, serieDoc: serieDocCobro, numeroDoc: numDocCobro || null, observaciones: obsCobro, deudaPuraUSD, deudaPuraUYU, admin: isAdminCaja },
+        header: { clienteId: seleccionados[0]?.retiro?.CliIdCliente, tipoDocumento: tipoDocCobro, serieDoc: serieDocCobro, numeroDoc: numDocCobro || null, observaciones: obsCobro, deudaPuraUSD, deudaPuraUYU, admin: isAdminCaja, moneda: monedaExhibicion, cotizacion: cotizacion },
         aplicaciones: apps, pagos: pags
       });
 
@@ -419,7 +422,7 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
 
       toast.success(`Cobro registrado (${res.data?.numeroDoc || 'OK'})`);
       setSeleccionados([]); setAjustes({});
-      setCarritosPago([{ id: Date.now(), metodoPagoId: '', moneda: 'UYU', monedaId: 1, monto: '' }]);
+      setCarritosPago([{ id: Date.now(), metodoPagoId: 1, moneda: 'UYU', monedaId: 1, monto: '' }]);
       setObsCobro(''); fetchRetiros();
     } catch (e) { toast.error(e.response?.data?.error || 'Error al cobrar'); }
     finally { setProcesandoCobro(false); }
@@ -547,10 +550,12 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
 
   return (
     <>
-      <div style={{ visibility: 'hidden', position: 'fixed', top: 0, left: 0, height: 0, overflow: 'hidden', pointerEvents: 'none' }}>
-        <TicketImpresion ref={ticketRef} data={ticketData} />
-      </div>
-
+      {createPortal(
+        <div style={{ position: 'fixed', top: '-9999px', left: '-9999px', width: '80mm', pointerEvents: 'none', zIndex: -1 }}>
+          <TicketImpresion ref={ticketRef} data={ticketData} />
+        </div>,
+        document.body
+      )}
 
       <div className="min-h-full bg-[#0f1117] text-slate-200 font-sans flex flex-col h-full overflow-hidden">
         <div className="border-b border-zinc-200 bg-zinc-50 shrink-0">
@@ -638,8 +643,7 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
                   { id: 'VENTA_DIRECTA', label: 'Venta Libre', icon: Tag },
                   { id: 'SALDO_FAVOR', label: 'Ingreso de Saldo Anticipado', icon: Wallet },
                   { id: 'OTROS_INGRESOS', label: 'Otros Ingresos', icon: ArrowDownCircle },
-                  { id: 'PAGO_DEUDAS', label: 'Pago de Deudas', icon: FileMinus },
-                  { id: 'AUTORIZAR', label: 'Autorizar Entrega', icon: ShieldCheck }
+                  { id: 'PAGO_DEUDAS', label: 'Pago de Deudas', icon: FileMinus }
                 ].map(st => (
                   <button key={st.id} onClick={() => setSubTabIngreso(st.id)}
                     className={`flex-1 flex items-center justify-center gap-2 px-3 py-1.5 rounded-xl font-black font-archivo text-[10px] uppercase tracking-widest transition-all border whitespace-nowrap ${subTabIngreso === st.id ? 'bg-brand-cyan border-brand-cyan text-white' : 'bg-transparent border-transparent text-zinc-400 hover:text-zinc-800'}`}>
@@ -914,7 +918,7 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
                             setTicketData(ventaTicket);
                             setTimeout(() => { if (ticketRef.current) window.print(); }, 300);
 
-                            fetchRetiros(); setVentaPagos([{ id: Date.now(), metodoPagoId: '', moneda: 'UYU', monedaId: 1, monto: '' }]); setVentaObs(''); setVentaTotalACubrir(0); setVentaMoneda('UYU');
+                            fetchRetiros(); setVentaPagos([{ id: Date.now(), metodoPagoId: 1, moneda: 'UYU', monedaId: 1, monto: '' }]); setVentaObs(''); setVentaTotalACubrir(0); setVentaMoneda('UYU');
                           } catch (e) { toast.error(e.response?.data?.error || 'Error al procesar venta'); }
                           finally { setProcesandoVenta(false); }
                         }}
@@ -949,7 +953,7 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
                             const ventaPayload = { ...payload, pagos: ventaPagos.filter(p => p.monto && p.metodoPagoId).map(p => ({ metodoPagoId: parseInt(p.metodoPagoId), montoOriginal: parseFloat(p.monto), monedaId: p.moneda === 'USD' ? 2 : 1, cotizacion: p.moneda === 'USD' ? cotizacion : null, referenciaNumero: '' })) };
                             const res = await api.post('/contabilidad/caja/venta-directa', ventaPayload);
                             toast.success('Venta procesada');
-                            fetchRetiros(); setVentaPagos([{ id: Date.now(), metodoPagoId: '', moneda: 'UYU', monedaId: 1, monto: '' }]); setVentaObs(''); setVentaTotalACubrir(0); setVentaMoneda('UYU');
+                            fetchRetiros(); setVentaPagos([{ id: Date.now(), metodoPagoId: 1, moneda: 'UYU', monedaId: 1, monto: '' }]); setVentaObs(''); setVentaTotalACubrir(0); setVentaMoneda('UYU');
                           } catch (e) { toast.error('Error al procesar venta'); }
                           finally { setProcesandoVenta(false); }
                         }}
@@ -958,26 +962,11 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
                     </div>
                   )}
                   {subTabIngreso === 'SALDO_FAVOR' && (
-                    <CajaCobroLibreTab
+                    <CajaSaldoAnticipoTab
                       sesion={sesion}
                       metodosPago={metodosPago}
                       cotizacion={cotizacion}
-                      tiposDocDisponibles={tiposDocumentos.length > 0 ? tiposDocumentos : TIPOS_DOC}
-                      onCobroCompletado={(res) => {
-                        const tick = {
-                          title: 'RECIBO DE CAJA / POS',
-                          empresa: 'MACROSOFT LTDA',
-                          fecha: new Date().toLocaleString('es-UY'),
-                          comprobante: res.numeroDocFormato || `TCA-${res.tcaIdTransaccion}`,
-                          cajero: sesion?.usrLogin || 'Sistema',
-                          cliente: res.clienteInfo || 'Cliente',
-                          items: [{ descripcion: 'Venta Libre / Saldo a Favor', cantidad: 1, importe: res.totalBruto }],
-                          totales: { subtotal: res.totalBruto, total: res.totalBruto, moneda: '$' },
-                          pagos: res.pagosCreados || []
-                        };
-                        setTicketData(tick);
-                        setTimeout(() => { if (ticketRef.current) window.print(); }, 300);
-                      }}
+                      onCobroCompletado={() => {}}
                     />
                   )}
                   {subTabIngreso === 'OTROS_INGRESOS' && (

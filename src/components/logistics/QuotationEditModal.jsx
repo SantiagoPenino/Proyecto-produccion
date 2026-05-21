@@ -136,7 +136,7 @@ function ProductSearchPanel({ onSelect, onCancel, isAdmin, userArea, forceArea }
 }
 
 // ─── Fila de datos existente ────────────────────────────────────────────────
-function LineRow({ line, userArea, isAdmin, areaFilter, cotizacion, monedaFinal, onChange, onDelete, onRecalculate, allProducts, onProductChange, showTechnicalData }) {
+function LineRow({ line, userArea, isAdmin, areaFilter, cotizacion, monedaFinal, onChange, onDelete, onRecalculate, allProducts, onProductChange, showTechnicalData, showOrderColumn }) {
     const isFiltered = areaFilter && areaFilter !== 'TODOS';
     const areaTag = line.AreaIDInterna || line.AreaID || '';
     const currentCod = line.CodArticulo ? String(line.CodArticulo).trim() : '';
@@ -216,6 +216,14 @@ function LineRow({ line, userArea, isAdmin, areaFilter, cotizacion, monedaFinal,
                     </div>
                 )}
             </td>
+            {/* Orden */}
+            {showOrderColumn && (
+                <td className="px-3 py-2.5">
+                    <div className="text-xs font-mono font-bold text-slate-500 whitespace-nowrap">
+                        {line.CodigoOrden || line.OrdenID || '-'}
+                    </div>
+                </td>
+            )}
             {/* Cantidad */}
             <td className="px-3 py-2.5 w-24 text-right">
                 <input type="number" min="0" step="0.01"
@@ -570,7 +578,9 @@ export default function QuotationEditModal({ noDocERP, onClose, onSaved, current
                                         <th className="px-3 py-3 text-xs font-bold text-slate-400 uppercase">Producto</th>
                                         <th className="px-3 py-3 text-xs font-bold text-slate-400 uppercase">Orden</th>
                                         <th className="px-3 py-3 text-xs font-bold text-slate-400 uppercase text-right w-24">Cantidad</th>
-                                        <th className="px-2 py-3 text-xs font-bold text-slate-400 uppercase text-right w-24 line-clamp-1" title="Dato Técnico">Dato Téc.</th>
+                                        {showTechnicalData && (
+                                            <th className="px-2 py-3 text-xs font-bold text-slate-400 uppercase text-right w-24 line-clamp-1" title="Dato Técnico">Dato Téc.</th>
+                                        )}
                                         <th className="px-2 py-3 text-xs font-bold text-slate-400 uppercase text-center w-20">Moneda</th>
                                         <th className="px-2 py-3 text-xs font-bold text-slate-400 uppercase text-right w-24">Precio U.</th>
                                         <th className="px-3 py-3 text-xs font-bold text-slate-400 uppercase text-right w-24">Subtotal</th>
@@ -594,6 +604,8 @@ export default function QuotationEditModal({ noDocERP, onClose, onSaved, current
                                             onRecalculate={handleRecalculateLine}
                                             allProducts={allProducts}
                                             onProductChange={handlePickProductInline}
+                                            showTechnicalData={showTechnicalData}
+                                            showOrderColumn={true}
                                         />
                                     ))}
 
@@ -657,7 +669,7 @@ export default function QuotationEditModal({ noDocERP, onClose, onSaved, current
 
     return (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60  p-4">
-            <div className="bg-white w-full max-w-7xl rounded-2xl shadow-2xl flex flex-col max-h-[90vh] overflow-hidden">
+            <div className="bg-white w-full max-w-[95vw] rounded-2xl shadow-2xl flex flex-col max-h-[90vh] overflow-hidden">
 
                 {/* Header */}
                 <div className="flex items-center justify-between px-6 py-4 border-b bg-gradient-to-r from-indigo-50 to-white shrink-0">
@@ -748,6 +760,8 @@ export default function QuotationEditModal({ noDocERP, onClose, onSaved, current
                                             onRecalculate={handleRecalculateLine}
                                             allProducts={allProducts}
                                             onProductChange={handlePickProductInline}
+                                            showTechnicalData={showTechnicalData}
+                                            showOrderColumn={false}
                                         />
                                     ))}
 

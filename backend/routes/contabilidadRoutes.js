@@ -31,6 +31,8 @@ router.get('/ciclos/:CicIdCiclo/movimientos', ctrl.getCicloMovimientos);
 router.post('/ciclos', ctrl.abrirCiclo);
 router.post('/ciclos/cerrar-vencidos', ctrl.cerrarCiclosVencidos);
 router.post('/ciclos/:CicIdCiclo/cerrar', ctrl.cerrarCiclo);
+router.get('/clientes/:CliIdCliente/ordenes-anticipo', ctrl.getOrdenesAnticipo);
+router.post('/clientes/:CliIdCliente/emitir-factura-anticipo', ctrl.emitirFacturaAnticipo);
 router.get('/planes/:CliIdCliente', ctrl.getPlanesCliente);
 router.post('/planes', ctrl.crearPlan);
 router.post('/planes/:PlaIdPlan/recargar', ctrl.recargarPlan);
@@ -113,8 +115,9 @@ router.post('/caja/operacion-manual', caja.registrarOperacionManual);
 // ── OPERACIONES DESDE ESTADO DE CUENTA (Caja Administrativa) ──────────────────
 router.post('/caja/nota-credito',      caja.generarNotaCredito);      // Nota de crédito sobre doc existente
 router.post('/caja/reversar-doc',      caja.reversarDocumento);       // Reverso: contado→egreso/crédito→NC
-router.post('/caja/pago-anticipo',     caja.registrarPagoAnticipo);   // Anticipo directo a cuenta
+router.post('/caja/pago-anticipo',     caja.registrarPagoAnticipo);   // Anticipo directo a cuenta (nuevo dinero)
 router.post('/caja/anular-factura',    caja.anularFactura);           // Anular factura no enviada a DGI → reabre ciclo
+router.post('/caja/imputar-anticipo-deuda', caja.imputarAnticipoADeuda); // Imputar saldo existente a una deuda específica
 
 // ── CFE (Facturación Electrónica) ──────────────────────────────────────────
 const cfeCtrl = require('../controllers/cfeController');

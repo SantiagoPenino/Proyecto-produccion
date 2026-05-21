@@ -153,6 +153,10 @@ export default function AreaView({ areaKey, areaConfig, onSwitchTab }) {
                 extraData = await ordersService.getByArea('SB', 'active');
             } else if (upperArea === 'SB') {
                 extraData = await ordersService.getByArea('SUB', 'active');
+            } else if (upperArea === 'DIRECTA' || upperArea === 'IMD') {
+                const imdData = await ordersService.getByArea('IMD', 'active') || [];
+                const xmdData = await ordersService.getByArea('XMD', 'active') || [];
+                extraData = [...imdData, ...xmdData];
             }
             
             if (extraData && extraData.length > 0) {

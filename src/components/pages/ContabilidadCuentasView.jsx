@@ -92,7 +92,12 @@ const handleDescargarRecibo = async (e, m) => {
       const res = await api.get(`/contabilidad/movimientos/${m.MovIdMovimiento}/recibo/pdf`, { responseType: 'blob' });
       const blob = new Blob([res.data], { type: 'application/pdf' });
       const url = URL.createObjectURL(blob);
-      window.open(url, '_blank');
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `Recibo-${m.MovIdMovimiento}.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
       setTimeout(() => URL.revokeObjectURL(url), 10000);
       toast.dismiss(toastId);
     } catch (err) {
@@ -107,6 +112,84 @@ const handleDescargarRecibo = async (e, m) => {
   }
 };
 
+
+// ── Modal Imputar Anticipo a Deuda específica ────────────────────────────────
+const ModalImputarAnticipo = ({ mov, cuenta, onClose, onSuccess }) => {
+  const importeDeuda  = Math.abs(Number(mov.DDeImportePendiente || mov.visualImporte || mov.MovImporte || 0));
+  const saldoDisponible = Number(cuenta?.CueSaldoActual || 0);
+  const monStr = cuenta?.MonIdMoneda === 2 ? 'U$S' : '$';
+  const [monto, setMonto] = useState(Math.min(importeDeuda, Math.max(0, saldoDisponible)).toFixed(2));
+  const [saving, setSaving] = useState(false);
+
+  const submit = async (e) => {
+    e.preventDefault();
+    if (Number(monto) <= 0) return toast.error('Monto inválido');
+    if (Number(monto) > saldoDisponible) return toast.error(`Saldo insuficiente (${monStr} ${fmtNum(saldoDisponible)})`);
+    if (!mov.DDeIdDocumento && !mov.ddeId) return toast.error('No se pudo identificar la deuda. Actualizá la pantalla.');
+    setSaving(true);
+    try {
+      const r = await fetchAPI('/api/contabilidad/caja/imputar-anticipo-deuda', {
+        method: 'POST',
+        body: JSON.stringify({
+          cuentaId:      cuenta.CueIdCuenta,
+          ddeIdDocumento: mov.DDeIdDocumento || mov.ddeId,
+          monto:         Number(monto),
+        }),
+      });
+      toast.success(r.message || '✅ Imputación realizada');
+      onSuccess?.();
+      onClose();
+    } catch(err) { toast.error(err.message); }
+    finally { setSaving(false); }
+  };
+
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 backdrop-blur-sm" onClick={e=>e.target===e.currentTarget&&onClose()}>
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md mx-4">
+        <div className="px-6 py-4 bg-teal-50 border-b border-teal-200 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <ArrowUpCircle size={17} className="text-teal-600"/>
+            <h2 className="font-bold text-teal-800">Imputar Anticipo a Deuda</h2>
+          </div>
+          <button onClick={onClose}><X size={15} className="text-slate-400"/></button>
+        </div>
+        <form onSubmit={submit} className="px-6 py-5 space-y-4">
+          <div className="grid grid-cols-2 gap-3">
+            <div className="bg-rose-50 border border-rose-200 rounded-xl p-3 text-center">
+              <p className="text-[10px] font-black uppercase text-rose-500 mb-1">Deuda Pendiente</p>
+              <p className="text-lg font-black text-rose-700">{monStr} {fmtNum(importeDeuda)}</p>
+            </div>
+            <div className={`${saldoDisponible >= importeDeuda ? 'bg-teal-50 border-teal-200' : 'bg-amber-50 border-amber-200'} border rounded-xl p-3 text-center`}>
+              <p className="text-[10px] font-black uppercase text-teal-600 mb-1">Saldo Disponible</p>
+              <p className={`text-lg font-black ${saldoDisponible >= importeDeuda ? 'text-teal-700' : 'text-amber-700'}`}>{monStr} {fmtNum(saldoDisponible)}</p>
+            </div>
+          </div>
+          {saldoDisponible <= 0 && (
+            <p className="text-xs bg-rose-50 border border-rose-200 rounded-xl p-3 text-rose-700 font-semibold">
+              ⚠️ El cliente no tiene saldo a favor. Primero debés registrar un pago anticipado.
+            </p>
+          )}
+          <div>
+            <label className="block text-xs font-semibold text-slate-600 mb-1">Monto a imputar ({monStr})</label>
+            <input type="number" min="0.01" step="0.01" required
+              value={monto} onChange={e=>setMonto(e.target.value)}
+              max={Math.min(importeDeuda, saldoDisponible)}
+              className="w-full px-3 py-2.5 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-teal-400/30"
+            />
+            <p className="text-[10px] text-slate-400 mt-1">Máximo: {monStr} {fmtNum(Math.min(importeDeuda, saldoDisponible))}</p>
+          </div>
+          <div className="flex gap-3 pt-1">
+            <button type="button" onClick={onClose} className="flex-1 py-2.5 border border-slate-200 rounded-lg text-sm text-slate-600">Cancelar</button>
+            <button type="submit" disabled={saving || saldoDisponible <= 0}
+              className="flex-1 py-2.5 bg-teal-600 hover:bg-teal-700 text-white rounded-lg text-sm font-bold disabled:opacity-50 flex items-center justify-center gap-2">
+              {saving?<RefreshCw size={13} className="animate-spin"/>:<ArrowUpCircle size={13}/>} Imputar
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+};
 
 // ── Modales de operaciones de cuenta ─────────────────────────────────────────
 const ModalNotaCredito = ({ mov, cuenta, cliente, onClose, onSuccess }) => {
@@ -364,8 +447,9 @@ const MenuAccionesDoc = ({ m, cuenta, cliente, onRefresh, onPrint, onCobrar }) =
   const acciones  = [];
 
   // ── Cobrar deuda pendiente ──────────────────────────────────────────────
-  if (!anulado && m.EsPendientePago === 1 && onCobrar) {
-    acciones.push({id:'cobrar',label:'Cobrar deuda',icon:<DollarSign size={13}/>,cls:'text-emerald-700 hover:bg-emerald-50'});
+  if (!anulado && m.EsPendientePago === 1) {
+    acciones.push({id:'cobrar',   label:'Cobrar deuda',     icon:<DollarSign size={13}/>,    cls:'text-emerald-700 hover:bg-emerald-50'});
+    acciones.push({id:'imp-ant',  label:'Imputar anticipo', icon:<ArrowUpCircle size={13}/>, cls:'text-teal-700 hover:bg-teal-50'});
   }
 
   // ── Registrar Pago / Anticipo (siempre disponible) ─────────────────────
@@ -433,6 +517,7 @@ const MenuAccionesDoc = ({ m, cuenta, cliente, onRefresh, onPrint, onCobrar }) =
       {modal==='reversar'  && <ModalReversarDoc   mov={m} conta={cuenta} cuenta={cuenta} cliente={cliente} onClose={()=>setModal(null)} onSuccess={onRefresh}/>}
       {modal==='anticipo'  && <ModalAnticipo      conta={cuenta} cuenta={cuenta} cliente={cliente} onClose={()=>setModal(null)} onSuccess={onRefresh}/>}
       {modal==='anular-fac'&& <ModalAnularFactura mov={m} conta={cuenta} cuenta={cuenta} cliente={cliente} onClose={()=>setModal(null)} onSuccess={onRefresh}/>}
+      {modal==='imp-ant'   && <ModalImputarAnticipo mov={m} cuenta={cuenta} onClose={()=>setModal(null)} onSuccess={onRefresh}/>}
     </div>
   );
 };
@@ -905,7 +990,16 @@ const MovimientosPanel = ({ CueIdCuenta, simbolo = '$', onClose, cuenta, onRegis
                     const esDebe  = importe < 0;
                     const info = ciclosInfo[m.CicIdCiclo];
                     const isFacturado = m.CicIdCiclo && info && info.CicEstado !== 'ABIERTO';
-                    let docFull = m.DocTipo ? `${m.DocTipo} ${m.DocSerie}-${m.DocNumero}` : (m.CodigoOrdenStr ? m.CodigoOrdenStr : (m.OReIdOrdenRetiro ? `RET: ${m.OReIdOrdenRetiro}` : 'N/D'));
+                    // Mapa de códigos DGI → nombres legibles
+                    const DOC_TIPO_LABEL = {
+                      '07': 'E-TICKET', '08': 'E-TICKET CRED.', '10': 'N.CRÉDITO ET',
+                      '01': 'E-FACTURA', '02': 'E-FACTURA CRED.', '04': 'N.CRÉDITO EF',
+                      '107': 'E-TICKET', '108': 'E-TICKET CRED.', '101': 'E-FACTURA', '102': 'E-FACTURA CRED.',
+                      'PedidoCaja': 'PEDIDO CAJA', 'PC': 'PEDIDO CAJA',
+                      'E-Ticket Contado': 'E-TICKET', 'E-Factura Contado': 'E-FACTURA',
+                    };
+                    const docTipoLabel = m.DocTipo ? (DOC_TIPO_LABEL[m.DocTipo.trim()] || m.DocTipo.trim()) : null;
+                    let docFull = docTipoLabel ? `${docTipoLabel} ${m.DocSerie}-${m.DocNumero}` : (m.CodigoOrdenStr ? m.CodigoOrdenStr : (m.OReIdOrdenRetiro ? `RET: ${m.OReIdOrdenRetiro}` : 'N/D'));
                     if (['ORDEN','ENTREGA'].includes(m.MovTipo)) {
                         if (m.CicIdCiclo) {
                             docFull = isFacturado ? `Facturado (${info.CicNumeroFactura || 'En proc.'})` : 'Pendiente de facturar (Ciclo)';
@@ -932,8 +1026,17 @@ const MovimientosPanel = ({ CueIdCuenta, simbolo = '$', onClose, cuenta, onRegis
                         displayTipo = 'E-TICKET';
                     }
 
+                    const esPago = ['PAGO','ANTICIPO','COBRO','SALDO_INICIAL'].includes(m.MovTipo);
+                    const esVenta = ['VTA_CAJA','CIERRE_CICLO'].includes(m.MovTipo);
+                    const facturaPaga    = esVenta && m.DocPagado === 1 && m.EsPendientePago !== 1;
+                    const facturaDeuda   = esVenta && m.EsPendientePago === 1;
+
                     return (
-                        <tr key={`ec-${m.MovIdMovimiento}`} className={`hover:bg-slate-50/80 transition-colors group ${anulado ? 'bg-rose-50/40 text-slate-400' : ''}`}>
+                        <tr key={`ec-${m.MovIdMovimiento}`} className={`hover:bg-slate-50/80 transition-colors group
+                            ${anulado ? 'bg-rose-50/40 text-slate-400' : ''}
+                            ${facturaPaga && !anulado ? 'bg-emerald-50/30' : ''}
+                            ${facturaDeuda && !anulado ? 'bg-amber-50/30' : ''}
+                        `}>
                             <td className={`px-4 py-3 font-medium whitespace-nowrap ${anulado ? 'text-slate-400 line-through decoration-rose-300' : 'text-slate-500'}`}>{fmtFecha(m.MovFecha)}</td>
                             <td className="px-4 py-3">
                                 <span className={`font-black px-2 py-1 rounded-md text-[9px] uppercase tracking-wider border ${m.MovAnulado ? 'bg-slate-100 text-slate-400 border-slate-200' : 'bg-slate-50 text-slate-600 border-slate-200'}`}>
@@ -948,8 +1051,14 @@ const MovimientosPanel = ({ CueIdCuenta, simbolo = '$', onClose, cuenta, onRegis
                                         m.DocTipo ? (m.EsPendientePago ? <Unlock size={12} className="text-emerald-500" title="Pendiente de pago" /> : <Lock size={12} className="text-rose-500" title="Pagado / Cerrado" />) : null
                                     )}
                                     <span className="font-bold text-slate-700 block">{docFull}</span>
-                                    {m.EsPendientePago === 1 && (
-                                        <span className="bg-rose-100 text-rose-600 text-[8px] font-black px-1.5 py-0.5 rounded uppercase tracking-widest border border-rose-200">Pendiente Pago</span>
+                                    {facturaPaga && !anulado && (
+                                        <span className="inline-flex items-center gap-1 bg-emerald-100 text-emerald-700 text-[8px] font-black px-1.5 py-0.5 rounded-full uppercase tracking-widest border border-emerald-300">
+                                            <svg width="8" height="8" viewBox="0 0 12 12" fill="none"><path d="M2 6l3 3 5-5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                                            Pagada
+                                        </span>
+                                    )}
+                                    {facturaDeuda && !anulado && (
+                                        <span className="bg-rose-100 text-rose-600 text-[8px] font-black px-1.5 py-0.5 rounded-full uppercase tracking-widest border border-rose-200">Pendiente</span>
                                     )}
                                 </div>
                                 {m.CfeEstado && (
@@ -1749,7 +1858,7 @@ const ETIQUETA_TIPO = {
   REPOSICION:   'Reposición',
 };
 
-const ModalEstadoCuenta = ({ cliente, cuentas, onClose, globalDesde, globalHasta }) => {
+const ModalEstadoCuenta = ({ cliente, cuentas, onClose, globalDesde, globalHasta, onRegistrarPago }) => {
   const [secciones, setSecciones] = useState({});  // { CueIdCuenta: { movs, loading } }
   const [planes, setPlanes]       = useState([]);
   const [expandidos, setExpandidos] = useState({});
@@ -1794,6 +1903,18 @@ const ModalEstadoCuenta = ({ cliente, cuentas, onClose, globalDesde, globalHasta
 
   const toggle = (id) => setExpandidos(p => ({ ...p, [id]: !p[id] }));
 
+  const handleFacturarAnticipoConfirm = async (payload) => {
+    try {
+      await api.post(`/contabilidad/clientes/${cliente.CliIdCliente}/emitir-factura-anticipo`, payload);
+      toast.success('Factura de anticipo emitida correctamente.');
+      setShowFacturarAnticipo(false);
+      cargar(); // recargar movimientos
+    } catch (err) {
+      toast.error(err.response?.data?.error || err.message || 'Error al facturar anticipo');
+      throw err;
+    }
+  };
+
   const TIPOS_MONETARIOS = ['USD','UYU','ARS','EUR','PYG','BRL','CORRIENTE','CREDITO','DEBITO','CAJA','DINERO_USD','DINERO_UYU'];
   const cuentasRecursos   = cuentas.filter(c => c.ProIdProducto != null || !TIPOS_MONETARIOS.includes(c.CueTipo?.toUpperCase()));
   const cuentasMonetarias = cuentas.filter(c => !cuentasRecursos.includes(c));
@@ -1818,7 +1939,7 @@ const ModalEstadoCuenta = ({ cliente, cuentas, onClose, globalDesde, globalHasta
               {cliente.NombreFantasia && <p className="text-xs text-slate-500">{cliente.NombreFantasia}</p>}
             </div>
             <div className="flex gap-2">
-              <button onClick={() => generarPdfEstadoCuenta(cliente, cuentas, secciones, planes)} className="flex items-center gap-2 p-2 hover:bg-blue-50 hover:text-blue-600 rounded-lg text-slate-500 text-xs font-bold transition-colors">
+              <button onClick={() => generarPdfEstadoCuenta(cliente, cuentas, secciones, planes, desde, hasta)} className="flex items-center gap-2 p-2 hover:bg-blue-50 hover:text-blue-600 rounded-lg text-slate-500 text-xs font-bold transition-colors">
                 <Printer size={16} /> Descargar PDF
               </button>
               <button onClick={onClose} className="p-2 hover:bg-slate-700/50 rounded-lg text-slate-500"><X size={16} /></button>
@@ -1929,7 +2050,7 @@ const ModalEstadoCuenta = ({ cliente, cuentas, onClose, globalDesde, globalHasta
                                         m={m}
                                         cuenta={c}
                                         cliente={cliente}
-                                        onRefresh={V}
+                                        onRefresh={cargar}
                                         onPrint={handleDescargarRecibo}
                                         onCobrar={onRegistrarPago}
                                       />
@@ -2177,8 +2298,10 @@ export default function ContabilidadCuentasView() {
   const [loadingCuentas, setLoadingCuentas]   = useState(false);
   const [paneles, setPaneles]                 = useState({});
   const [modalPago, setModalPago]             = useState(null);
-  const [modalEstado, setModalEstado]         = useState(false);
   const [tabCuentas, setTabCuentas]           = useState('SALDOS');
+
+  const [ordenesAnticipo, setOrdenesAnticipo] = useState([]);
+  const [showFacturarAnticipo, setShowFacturarAnticipo] = useState(false);
 
   const [globalDesde, setGlobalDesde] = useState(() => { const d = new Date(); d.setMonth(d.getMonth() - 1); return d.toISOString().split('T')[0]; });
   const [globalHasta, setGlobalHasta] = useState(() => new Date().toISOString().split('T')[0]);
@@ -2206,10 +2329,15 @@ export default function ContabilidadCuentasView() {
     if (clienteSel?.CliIdCliente === cli.CliIdCliente) { setClienteSel(null); return; }
     setClienteSel(cli);
     setLoadingCuentas(true);
+    setOrdenesAnticipo([]);
     try {
-      const data = await fetchAPI(`/api/contabilidad/cuentas/${cli.CliIdCliente}`);
+      const [data, anticiposRes] = await Promise.all([
+         fetchAPI(`/api/contabilidad/cuentas/${cli.CliIdCliente}`),
+         fetchAPI(`/api/contabilidad/clientes/${cli.CliIdCliente}/ordenes-anticipo`).catch(() => ({ data: [] }))
+      ]);
       const cuents = data.data || [];
       setCuentas(cuents);
+      setOrdenesAnticipo(anticiposRes.data || []);
       const nuevosPaneles = {};
       cuents.forEach(c => nuevosPaneles[c.CueIdCuenta] = 'mov');
       setPaneles(nuevosPaneles);
@@ -2221,15 +2349,75 @@ export default function ContabilidadCuentasView() {
     if (!clienteSel) return;
     setLoadingCuentas(true);
     try {
-      const data = await fetchAPI(`/api/contabilidad/cuentas/${clienteSel.CliIdCliente}`);
+      const [data, anticiposRes] = await Promise.all([
+         fetchAPI(`/api/contabilidad/cuentas/${clienteSel.CliIdCliente}`),
+         fetchAPI(`/api/contabilidad/clientes/${clienteSel.CliIdCliente}/ordenes-anticipo`).catch(() => ({ data: [] }))
+      ]);
       setCuentas(data.data || []);
+      setOrdenesAnticipo(anticiposRes.data || []);
       await cargarClientesActivos(busqueda);
     } catch (e) { toast.error(e.message); }
     finally { setLoadingCuentas(false); }
   };
 
+  const handleFacturarAnticipoConfirm = async (cicloId, payload) => {
+    try {
+      // Usamos el payload completo que nos da CierreCicloPreviewModal (que incluye monedaFactura, detallesEditados, descuentoValorBase, etc)
+      // Agregamos las ordenes al payload usando movsOriginales o lo que haya en la vista (ordenesAnticipo)
+      const payloadCompleto = {
+        ...payload,
+        ordenesIds: ordenesFiltradas.map(o => o.OrdIdOrden || o.MovIdMovimiento), // dependiendo de cómo devolvió la tabla
+      };
+
+      await api.post(`/contabilidad/clientes/${clienteSel.CliIdCliente}/emitir-factura-anticipo`, payloadCompleto);
+      toast.success('Factura de anticipo emitida correctamente.');
+      setShowFacturarAnticipo(false);
+      recargarCuentas(); 
+    } catch (err) {
+      toast.error(err.response?.data?.error || err.message || 'Error al facturar anticipo');
+      throw err;
+    }
+  };
+
   const togglePanel = (cueId, tipo) =>
     setPaneles(prev => ({ ...prev, [cueId]: prev[cueId] === tipo ? null : tipo }));
+
+  const [generandoPdf, setGenerandoPdf] = useState(false);
+
+  const handleImprimirEstadoCuenta = async () => {
+    if (!clienteSel || cuentas.length === 0) return;
+    setGenerandoPdf(true);
+    const toastId = toast.loading('Generando PDF del Estado de Cuenta...');
+    try {
+      const p = new URLSearchParams({ top: 300 });
+      if (globalDesde) p.append('desde', globalDesde);
+      if (globalHasta) p.append('hasta', globalHasta);
+
+      // Fetch planes and movements in parallel
+      const [planesRes, ...movsRes] = await Promise.all([
+        fetchAPI(`/api/contabilidad/planes/${clienteSel.CliIdCliente}`).catch(() => ({ data: [] })),
+        ...cuentas.map(c =>
+          fetchAPI(`/api/contabilidad/cuentas/${c.CueIdCuenta}/movimientos?${p}`)
+            .then(d => ({ cue: c, movs: d.data || [], saldoArrastre: d.saldoArrastre ?? 0 }))
+            .catch(() => ({ cue: c, movs: [], saldoArrastre: 0 }))
+        ),
+      ]);
+
+      const planes = planesRes.data || [];
+      const secciones = {};
+      movsRes.forEach(({ cue, movs, saldoArrastre }) => {
+        secciones[cue.CueIdCuenta] = { cue, movs, saldoArrastre: saldoArrastre ?? 0 };
+      });
+
+      await generarPdfEstadoCuenta(clienteSel, cuentas, secciones, planes, globalDesde, globalHasta);
+      toast.success('PDF descargado con éxito.', { id: toastId });
+    } catch (e) {
+      console.error(e);
+      toast.error('Error al generar el PDF: ' + e.message, { id: toastId });
+    } finally {
+      setGenerandoPdf(false);
+    }
+  };
 
   const saldoTotal   = cuentas.reduce((s, c) => s + Number(c.CueSaldoActual ?? 0), 0);
   const deudaTotal   = cuentas.reduce((s, c) => s + Number(c.DeudaPendienteTotal ?? 0), 0);
@@ -2259,6 +2447,11 @@ export default function ContabilidadCuentasView() {
     });
   }, [cuentas, tabCuentas]);
 
+  const ordenesFiltradas = useMemo(() => {
+    if (!cuentaActiva) return [];
+    return ordenesAnticipo.filter(o => o.CueIdCuenta === cuentaActiva.CueIdCuenta);
+  }, [ordenesAnticipo, cuentaActiva]);
+
   return (
     <>
       {/* Modal pago */}
@@ -2270,16 +2463,7 @@ export default function ContabilidadCuentasView() {
         />
       )}
 
-      {/* Modal estado de cuenta */}
-      {modalEstado && clienteSel && (
-        <ModalEstadoCuenta
-          cliente={clienteSel}
-          cuentas={cuentas}
-          onClose={() => setModalEstado(false)}
-          globalDesde={globalDesde}
-          globalHasta={globalHasta}
-        />
-      )}
+
 
       <div className="h-full bg-[#f1f5f9] p-2 sm:p-4 overflow-y-auto text-slate-700 font-sans custom-scrollbar"><div className="flex gap-6 h-full min-h-0 max-w-[1500px] mx-auto w-full" style={{ maxHeight: 'calc(100vh - 50px)' }}>
 
@@ -2417,11 +2601,11 @@ export default function ContabilidadCuentasView() {
 
                     <div className="flex items-center gap-1">
                       <button
-                        onClick={() => setModalEstado(true)}
+                        onClick={handleImprimirEstadoCuenta}
                         title="Imprimir Estado de Cuenta"
-                        disabled={cuentas.length === 0}
+                        disabled={cuentas.length === 0 || generandoPdf}
                         className="p-2.5 bg-slate-50 hover:bg-slate-700 hover:text-white text-slate-600 rounded-lg transition-colors disabled:opacity-40 border border-slate-200">
-                        <Printer size={16} />
+                        {generandoPdf ? <RefreshCw size={16} className="animate-spin" /> : <Printer size={16} />}
                       </button>
                       <button onClick={recargarCuentas} disabled={loadingCuentas} title="Actualizar"
                         className="p-2.5 hover:bg-slate-100 rounded-lg transition-colors text-slate-500 border border-transparent hover:border-slate-200">
@@ -2454,6 +2638,49 @@ export default function ContabilidadCuentasView() {
                 </div>
               ) : (
                 <>
+                  {/* Panel de Órdenes Pendientes de Facturar */}
+                  {ordenesFiltradas.length > 0 && (
+                    <div className="mb-4 rounded-xl border border-emerald-200 overflow-hidden shadow-sm animate-in fade-in duration-300">
+                      <div className="flex items-center justify-between px-4 py-3 bg-emerald-600 text-white">
+                        <div className="flex items-center gap-2">
+                          <i className="fa-solid fa-file-invoice-dollar text-sm"></i>
+                          <span className="text-sm font-semibold">Órdenes Pendientes de Facturar (Anticipos)</span>
+                          <span className="bg-white/20 text-white text-[10px] font-bold px-2 py-0.5 rounded-full animate-pulse">
+                            ● {ordenesFiltradas.length} PENDIENTE{ordenesFiltradas.length > 1 ? 'S' : ''}
+                          </span>
+                        </div>
+                      </div>
+                      <div className="px-4 py-3 bg-emerald-50/50">
+                        <div className="flex items-start justify-between gap-4">
+                          <div className="grid grid-cols-3 gap-4 flex-1">
+                            <div>
+                              <p className="text-[10px] text-slate-400 uppercase tracking-wide">Concepto</p>
+                              <p className="text-xs font-bold text-slate-700">Órdenes cobradas por Anticipo</p>
+                            </div>
+                            <div>
+                              <p className="text-[10px] text-slate-400 uppercase tracking-wide">Comprobantes</p>
+                              <p className="text-xs font-bold text-slate-700">{ordenesFiltradas.length} orden(es) auto-pagadas</p>
+                            </div>
+                            <div>
+                              <p className="text-[10px] text-slate-400 uppercase tracking-wide">Total a Facturar</p>
+                              <p className="text-sm font-bold text-emerald-700">
+                                {cuentaActiva?.MonSimbolo || '$'} {new Intl.NumberFormat('es-UY', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(ordenesFiltradas.reduce((sum, o) => sum + Math.abs(o.MovImporte), 0))}
+                              </p>
+                            </div>
+                          </div>
+                          <div className="shrink-0 flex items-center h-full pt-1">
+                            <button 
+                              onClick={() => setShowFacturarAnticipo(true)}
+                              className="flex items-center gap-1.5 text-xs px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg transition-colors font-bold shadow-sm">
+                              <i className="fa-solid fa-file-invoice-dollar"></i>
+                              Revisar y Facturar
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
                   {tabCuentas !== 'RECURSOS' && cuentaActiva && (
                     <div className="animate-in fade-in duration-300">
                       {clienteSel.TClIdTipoCliente === 2 && (
@@ -2520,8 +2747,22 @@ export default function ContabilidadCuentasView() {
             </>
           )}
         </div>
+        </div>
       </div>
-      </div>
+
+      {showFacturarAnticipo && (
+        <CierreCicloPreviewModal 
+          ciclo={{ CicIdCiclo: 'ANTICIPO', CicFechaInicio: new Date().toISOString(), CicFechaCierre: new Date().toISOString() }}
+          cliente={clienteSel}
+          cuenta={cuentaActiva || cuentas[0]}
+          movsOriginales={ordenesFiltradas.map(m => ({
+            ...m,
+            MovImporte: m.MovImporte < 0 ? m.MovImporte : -Math.abs(m.MovImporte) // Asegurar que sea negativo para que el modal lo tome como deuda
+          }))}
+          onClose={() => setShowFacturarAnticipo(false)}
+          onConfirm={handleFacturarAnticipoConfirm}
+        />
+      )}
     </>
   );
 }

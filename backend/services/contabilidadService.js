@@ -1008,7 +1008,10 @@ async function getMovimientos(CueIdCuenta, FechaDesde = null, FechaHasta = null,
     let isVisible = false;
     let importeVirtual = 0;
 
-    if (m.MovTipo === 'CIERRE_CICLO') {
+    if (m.MovAnulado) {
+      isVisible = true;
+      importeVirtual = 0;
+    } else if (m.MovTipo === 'CIERRE_CICLO') {
       isVisible = true;
       const realImporte = Number(m.MovImporte);
       if (realImporte !== 0) {
@@ -1193,7 +1196,11 @@ async function getDeudasPorCliente(CliIdCliente, modo = 'TODO') {
          FROM dbo.MovimientosCuenta m WITH(NOLOCK)
          LEFT JOIN dbo.OrdenesDeposito od WITH(NOLOCK) ON od.OrdIdOrden = m.OrdIdOrden
          LEFT JOIN dbo.Ordenes erp WITH(NOLOCK) ON erp.OrdenID = m.OrdIdOrden
-         WHERE m.CicIdCiclo = (SELECT CicIdCiclo FROM dbo.DocumentosContables dc WITH(NOLOCK) WHERE dc.DocIdDocumento = d.DocIdDocumento)
+         WHERE (
+            (d.DocIdDocumento IS NOT NULL AND m.CicIdCiclo = (SELECT CicIdCiclo FROM dbo.DocumentosContables dc WITH(NOLOCK) WHERE dc.DocIdDocumento = d.DocIdDocumento))
+            OR
+            (d.DocIdDocumento IS NULL AND m.OrdIdOrden = d.OrdIdOrden)
+         )
            AND m.MovTipo = 'ORDEN' AND m.MovAnulado = 0
          FOR JSON PATH) AS SubOrdenesJSON
       FROM dbo.DeudaDocumento d WITH(NOLOCK)
@@ -1256,7 +1263,22 @@ async function getTodasLasDeudasVivas() {
         DATEDIFF(DAY, d.DDeFechaVencimiento, GETDATE()) AS DiasVencido,
         cli.CliIdCliente,
         cli.Nombre AS ClienteNombre,
-        cli.CodCliente AS ClienteCodigo
+        cli.CodCliente AS ClienteCodigo,
+        (SELECT 
+            m.OrdIdOrden,
+            ISNULL(od.OrdCodigoOrden, erp.CodigoOrden) as CodigoOrden,
+            ABS(m.MovImporte) as Importe,
+            m.MovConcepto as Concepto
+         FROM dbo.MovimientosCuenta m WITH(NOLOCK)
+         LEFT JOIN dbo.OrdenesDeposito od WITH(NOLOCK) ON od.OrdIdOrden = m.OrdIdOrden
+         LEFT JOIN dbo.Ordenes erp WITH(NOLOCK) ON erp.OrdenID = m.OrdIdOrden
+         WHERE (
+            (d.DocIdDocumento IS NOT NULL AND m.CicIdCiclo = (SELECT CicIdCiclo FROM dbo.DocumentosContables dc WITH(NOLOCK) WHERE dc.DocIdDocumento = d.DocIdDocumento))
+            OR
+            (d.DocIdDocumento IS NULL AND m.OrdIdOrden = d.OrdIdOrden)
+         )
+           AND m.MovTipo = 'ORDEN' AND m.MovAnulado = 0
+         FOR JSON PATH) AS SubOrdenesJSON
       FROM dbo.DeudaDocumento d WITH(NOLOCK)
       JOIN dbo.CuentasCliente cc WITH(NOLOCK) ON cc.CueIdCuenta = d.CueIdCuenta
       JOIN dbo.Clientes cli WITH(NOLOCK) ON cli.CliIdCliente = cc.CliIdCliente
@@ -1268,7 +1290,10 @@ async function getTodasLasDeudasVivas() {
       ORDER BY cli.Nombre ASC, d.DDeFechaVencimiento ASC
     `);
 
-  return result.recordset;
+  return result.recordset.map(r => ({
+    ...r,
+    SubOrdenes: r.SubOrdenesJSON ? JSON.parse(r.SubOrdenesJSON) : []
+  }));
 }
 
 
@@ -1759,22 +1784,35 @@ async function cerrarCicloCompleto({
         .input('DocCliDocumento', sql.NVarChar(50), cliDgiDocumento)
         .input('DocCliDireccion', sql.NVarChar(255), cliDgiDireccion)
         .input('DocCliCiudad', sql.NVarChar(100), cliDgiCiudad)
+        .input('DocPagado', sql.TinyInt, tipoDocumento.toUpperCase().includes('CONTADO') ? 1 : 0)
         .query(`
           INSERT INTO dbo.DocumentosContables
             (CueIdCuenta, CliIdCliente, DocTipo, DocNumero, DocSerie,
              DocFechaDesde, DocFechaHasta, DocSubtotal, DocImpuestos, DocTotal,
-             MonIdMoneda, CicIdCiclo, DocEstado,
+             MonIdMoneda, CicIdCiclo, DocEstado, CfeEstado,
              DocFechaEmision, DocUsuarioAlta, DocTotalDescuentos, DocTotalRecargos, DocObservaciones,
              DocCliNombre, DocCliDocumento, DocCliDireccion, DocCliCiudad, DocPagado)
           OUTPUT INSERTED.DocIdDocumento
           VALUES
             (@CueIdCuenta, @CliIdCliente, @DocTipo, @DocNumero, 'A',
              @FechaDesde, @FechaHasta, @DocSubtotal, @DocImpuestos, @DocTotal,
-             @MonIdMoneda, @CicIdCiclo, 'EMITIDO',
+             @MonIdMoneda, @CicIdCiclo, 'EMITIDO', 'PENDIENTE',
              GETDATE(), @UsuarioAlta, @DocTotalDescuentos, 0, @DocObservaciones,
-             @DocCliNombre, @DocCliDocumento, @DocCliDireccion, @DocCliCiudad, 0)
+             @DocCliNombre, @DocCliDocumento, @DocCliDireccion, @DocCliCiudad, @DocPagado)
         `);
     DocIdDocumento = docRes.recordset[0].DocIdDocumento;
+
+    // Vincular el documento generado a los movimientos del ciclo facturado para que dejen de estar pendientes
+    await pool.request()
+      .input('DocId', sql.Int, DocIdDocumento)
+      .input('CicIdCiclo', sql.Int, CicIdCiclo)
+      .query(`
+        UPDATE dbo.MovimientosCuenta
+        SET DocIdDocumento = @DocId
+        WHERE CicIdCiclo = @CicIdCiclo
+          AND MovAnulado = 0
+          AND DocIdDocumento IS NULL
+      `);
 
 
   // 4. Insertar detalles para el PDF
@@ -2190,9 +2228,10 @@ async function procesarEventoContable(evtCodigo, data) {
          }
       }
 
+      let cueId = null; // declarado aquí para ser visible en la imputación de pago (paso 4)
       if (!saltarDinero) {
         const cueTipo = MonIdMoneda === 2 ? 'DINERO_USD' : 'DINERO_UYU';
-        const cueId = await obtenerOCrearCuenta(CliIdCliente, cueTipo, { MonIdMoneda, UsuarioAlta });
+        cueId = await obtenerOCrearCuenta(CliIdCliente, cueTipo, { MonIdMoneda, UsuarioAlta });
         
         // Registrar en historial de movimientos
         // Buscar ciclo activo ANTES de registrar el movimiento
@@ -2280,9 +2319,11 @@ async function procesarEventoContable(evtCodigo, data) {
               }
            }
         } else if (cicloActivoEvt && evt.EvtGeneraDeuda) {
-          // El saldo no bajó de 0 (tenía fondos), pero tiene ciclo → acumular igual
-          await acumularEnCiclo(cicloActivoEvt.CicIdCiclo, 'ORDEN', Math.abs(Importe));
-          logger.info(`[CICLO] ${evtCodigo}: Orden ${CodigoOrden} con saldo suficiente acumulada en ciclo CicId=${cicloActivoEvt.CicIdCiclo}.`);
+          // SaldoResultante >= 0: el saldo a favor cubrió la orden completamente.
+          // El saldo a favor funciona igual que los metros prepagados: ya fue pagado,
+          // no se vuelve a acumular en el ciclo para no facturar dos veces.
+          resSubmayor.cubiertoPorSaldo = true;
+          logger.info(`[CICLO] ${evtCodigo}: Orden ${CodigoOrden} cubierta por saldo a favor (cliente semanal). NO se acumula en ciclo CicId=${cicloActivoEvt.CicIdCiclo}.`);
         } else if (evt.EvtGeneraDeuda) {
            // Si el evento genera deuda pero SaldoResultante >= 0 y sin ciclo: cubierto por saldo
            resSubmayor.cubiertoPorSaldo = true;
@@ -2319,11 +2360,11 @@ async function procesarEventoContable(evtCodigo, data) {
     }
 
     // 4. LÓGICA DE IMPUTACIÓN (SOLO PARA PAGOS)
-    if (PagIdPago && cueIdCta) {
+    if (PagIdPago && cueId) {
        await imputarPago({
           PagIdPago,
           MontoDisponible: Math.abs(Importe),
-          CueIdCuenta: cueIdCta,
+          CueIdCuenta: cueId,
           UsuarioAlta
        });
        logger.info(`[MOTOR] Pago ${PagIdPago} imputado automáticamente.`);

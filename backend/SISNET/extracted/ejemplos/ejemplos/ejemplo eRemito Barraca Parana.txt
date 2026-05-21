@@ -1,0 +1,241 @@
+<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+	<soapenv:Header/>
+	<soapenv:Body>
+		<recepcionCFEConCae xmlns="http://webServices.sitioWeb.crp.com/">
+			<tipoCFE xmlns="" xsi:type="xsd:int">181</tipoCFE>
+			<serieCFE xmlns="" xsi:type="xsd:string">A</serieCFE>
+			<nroCFE xmlns="" xsi:type="xsd:int">31001</nroCFE>
+			<claveUnicaCaja xmlns="" xsi:type="xsd:string">Centro3</claveUnicaCaja>
+			<wsVarios xmlns="">
+				<fchEmis>30/07/2018</fchEmis>
+				<fchVenc>30/07/2018</fchVenc>
+				<fmaPago>0</fmaPago>
+				<infoAdicionalDoc/>
+				<infoAdicionalEmisor/>
+				<mntBruto>0.0</mntBruto>
+				<tipoTraslado>2</tipoTraslado>
+			</wsVarios>
+			<wsReceptor xmlns="">
+				<ciudadRecep>Montevideo</ciudadRecep>
+				<codPaisRecep>UY</codPaisRecep>
+				<deptoRecep>MONTEVIDEO</deptoRecep>
+				<dirRecep>SAMUEL BLIXEN 4257</dirRecep>
+				<docRecep>40222577</docRecep>
+				<infoAdicional/>
+				<rznSocRecep>6245 - GONZALO SIMONS</rznSocRecep>
+				<tipoDocRecep>3</tipoDocRecep>
+			</wsReceptor>
+			<wsTotales xmlns="">
+				<cantLinDet>14</cantLinDet>
+			</wsTotales>
+			<listaWsItems xmlns="" xmlns:ns1="http://webServices.sitioWeb.crp.com/" xsi:type="ns1:wsItem">
+				<cantidad xsi:type="xsd:double">1.0</cantidad>
+				<cod xsi:type="xsd:string">CCC305 </cod>
+				<descAdicional xsi:type="xsd:string">0@@0@@0@@0.00@@</descAdicional>
+				<descuentoMonto xsi:type="xsd:double">0.0</descuentoMonto>
+				<indFact xsi:type="xsd:int">0</indFact>
+				<montoItem xsi:type="xsd:double">0.0</montoItem>
+				<nomItem xsi:type="xsd:string">CANTONERA C/CINTA 3.05 m. </nomItem>
+				<nroLinDet xsi:type="xsd:int">1</nroLinDet>
+				<precioUnitario xsi:type="xsd:double">0.0</precioUnitario>
+				<uniMed xsi:type="xsd:string">UNID</uniMed>
+			</listaWsItems>
+			<listaWsItems xmlns="" xmlns:ns2="http://webServices.sitioWeb.crp.com/" xsi:type="ns2:wsItem">
+				<cantidad xsi:type="xsd:double">1.0</cantidad>
+				<cod xsi:type="xsd:string">CJT76 </cod>
+				<descAdicional xsi:type="xsd:string">0@@0@@0@@0.00@@</descAdicional>
+				<descuentoMonto xsi:type="xsd:double">0.0</descuentoMonto>
+				<indFact xsi:type="xsd:int">0</indFact>
+				<montoItem xsi:type="xsd:double">0.0</montoItem>
+				<nomItem xsi:type="xsd:string">CINTA JOINT TAPE 2 x 76 m. </nomItem>
+				<nroLinDet xsi:type="xsd:int">2</nroLinDet>
+				<precioUnitario xsi:type="xsd:double">0.0</precioUnitario>
+				<uniMed xsi:type="xsd:string">UNID</uniMed>
+			</listaWsItems>
+			<listaWsItems xmlns="" xmlns:ns3="http://webServices.sitioWeb.crp.com/" xsi:type="ns3:wsItem">
+				<cantidad xsi:type="xsd:double">1.0</cantidad>
+				<cod xsi:type="xsd:string">MASSM20 </cod>
+				<descAdicional xsi:type="xsd:string">0@@0@@0@@0.00@@</descAdicional>
+				<descuentoMonto xsi:type="xsd:double">0.0</descuentoMonto>
+				<indFact xsi:type="xsd:int">0</indFact>
+				<montoItem xsi:type="xsd:double">0.0</montoItem>
+				<nomItem xsi:type="xsd:string">MASILLA SUPERMASTICK LISTA PARA USAR CAJA X 20 KGS </nomItem>
+				<nroLinDet xsi:type="xsd:int">3</nroLinDet>
+				<precioUnitario xsi:type="xsd:double">0.0</precioUnitario>
+				<uniMed xsi:type="xsd:string">UNID</uniMed>
+			</listaWsItems>
+			<listaWsItems xmlns="" xmlns:ns4="http://webServices.sitioWeb.crp.com/" xsi:type="ns4:wsItem">
+				<cantidad xsi:type="xsd:double">6.0</cantidad>
+				<cod xsi:type="xsd:string">MON353026TA </cod>
+				<descAdicional xsi:type="xsd:string">0@@0@@0@@0.00@@</descAdicional>
+				<descuentoMonto xsi:type="xsd:double">0.0</descuentoMonto>
+				<indFact xsi:type="xsd:int">0</indFact>
+				<montoItem xsi:type="xsd:double">0.0</montoItem>
+				<nomItem xsi:type="xsd:string">MONTANTE 35 x 3.00 m. cal.26 (0.39 mm) </nomItem>
+				<nroLinDet xsi:type="xsd:int">4</nroLinDet>
+				<precioUnitario xsi:type="xsd:double">0.0</precioUnitario>
+				<uniMed xsi:type="xsd:string">UNID</uniMed>
+			</listaWsItems>
+			<listaWsItems xmlns="" xmlns:ns5="http://webServices.sitioWeb.crp.com/" xsi:type="ns5:wsItem">
+				<cantidad xsi:type="xsd:double">16.0</cantidad>
+				<cod xsi:type="xsd:string">MON703026TA </cod>
+				<descAdicional xsi:type="xsd:string">0@@0@@0@@0.00@@</descAdicional>
+				<descuentoMonto xsi:type="xsd:double">0.0</descuentoMonto>
+				<indFact xsi:type="xsd:int">0</indFact>
+				<montoItem xsi:type="xsd:double">0.0</montoItem>
+				<nomItem xsi:type="xsd:string">MONTANTE 70 x 3.00 m. cal.26 (0.39 mm) </nomItem>
+				<nroLinDet xsi:type="xsd:int">5</nroLinDet>
+				<precioUnitario xsi:type="xsd:double">0.0</precioUnitario>
+				<uniMed xsi:type="xsd:string">UNID</uniMed>
+			</listaWsItems>
+			<listaWsItems xmlns="" xmlns:ns6="http://webServices.sitioWeb.crp.com/" xsi:type="ns6:wsItem">
+				<cantidad xsi:type="xsd:double">8.0</cantidad>
+				<cod xsi:type="xsd:string">PD125 </cod>
+				<descAdicional xsi:type="xsd:string">0@@0@@0@@0.00@@</descAdicional>
+				<descuentoMonto xsi:type="xsd:double">0.0</descuentoMonto>
+				<indFact xsi:type="xsd:int">0</indFact>
+				<montoItem xsi:type="xsd:double">0.0</montoItem>
+				<nomItem xsi:type="xsd:string">PLACA YESO DURLOCK 12.5mm 1.20x2.40 </nomItem>
+				<nroLinDet xsi:type="xsd:int">6</nroLinDet>
+				<precioUnitario xsi:type="xsd:double">0.0</precioUnitario>
+				<uniMed xsi:type="xsd:string">UNID</uniMed>
+			</listaWsItems>
+			<listaWsItems xmlns="" xmlns:ns7="http://webServices.sitioWeb.crp.com/" xsi:type="ns7:wsItem">
+				<cantidad xsi:type="xsd:double">2.0</cantidad>
+				<cod xsi:type="xsd:string">PD07 </cod>
+				<descAdicional xsi:type="xsd:string">0@@0@@0@@0.00@@</descAdicional>
+				<descuentoMonto xsi:type="xsd:double">0.0</descuentoMonto>
+				<indFact xsi:type="xsd:int">0</indFact>
+				<montoItem xsi:type="xsd:double">0.0</montoItem>
+				<nomItem xsi:type="xsd:string">PLACA YESO DURLOCK 7mm 1.20x2.40 </nomItem>
+				<nroLinDet xsi:type="xsd:int">7</nroLinDet>
+				<precioUnitario xsi:type="xsd:double">0.0</precioUnitario>
+				<uniMed xsi:type="xsd:string">UNID</uniMed>
+			</listaWsItems>
+			<listaWsItems xmlns="" xmlns:ns8="http://webServices.sitioWeb.crp.com/" xsi:type="ns8:wsItem">
+				<cantidad xsi:type="xsd:double">3.0</cantidad>
+				<cod xsi:type="xsd:string">PDW125 </cod>
+				<descAdicional xsi:type="xsd:string">0@@0@@0@@0.00@@</descAdicional>
+				<descuentoMonto xsi:type="xsd:double">0.0</descuentoMonto>
+				<indFact xsi:type="xsd:int">0</indFact>
+				<montoItem xsi:type="xsd:double">0.0</montoItem>
+				<nomItem xsi:type="xsd:string">PLACA YESO DURLOCK W.RESIST 12.5mm 1.20x2.40 </nomItem>
+				<nroLinDet xsi:type="xsd:int">8</nroLinDet>
+				<precioUnitario xsi:type="xsd:double">0.0</precioUnitario>
+				<uniMed xsi:type="xsd:string">UNID</uniMed>
+			</listaWsItems>
+			<listaWsItems xmlns="" xmlns:ns9="http://webServices.sitioWeb.crp.com/" xsi:type="ns9:wsItem">
+				<cantidad xsi:type="xsd:double">4.0</cantidad>
+				<cod xsi:type="xsd:string">SOL353026TA </cod>
+				<descAdicional xsi:type="xsd:string">0@@0@@0@@0.00@@</descAdicional>
+				<descuentoMonto xsi:type="xsd:double">0.0</descuentoMonto>
+				<indFact xsi:type="xsd:int">0</indFact>
+				<montoItem xsi:type="xsd:double">0.0</montoItem>
+				<nomItem xsi:type="xsd:string">SOLERA 35 x 3.00 m. cal.26 (0.39 mm) </nomItem>
+				<nroLinDet xsi:type="xsd:int">9</nroLinDet>
+				<precioUnitario xsi:type="xsd:double">0.0</precioUnitario>
+				<uniMed xsi:type="xsd:string">UNID</uniMed>
+			</listaWsItems>
+			<listaWsItems xmlns="" xmlns:ns10="http://webServices.sitioWeb.crp.com/" xsi:type="ns10:wsItem">
+				<cantidad xsi:type="xsd:double">10.0</cantidad>
+				<cod xsi:type="xsd:string">SOL703026TA </cod>
+				<descAdicional xsi:type="xsd:string">0@@0@@0@@0.00@@</descAdicional>
+				<descuentoMonto xsi:type="xsd:double">0.0</descuentoMonto>
+				<indFact xsi:type="xsd:int">0</indFact>
+				<montoItem xsi:type="xsd:double">0.0</montoItem>
+				<nomItem xsi:type="xsd:string">SOLERA 70 x 3.00 m. cal.26 (0.39mm) </nomItem>
+				<nroLinDet xsi:type="xsd:int">10</nroLinDet>
+				<precioUnitario xsi:type="xsd:double">0.0</precioUnitario>
+				<uniMed xsi:type="xsd:string">UNID</uniMed>
+			</listaWsItems>
+			<listaWsItems xmlns="" xmlns:ns11="http://webServices.sitioWeb.crp.com/" xsi:type="ns11:wsItem">
+				<cantidad xsi:type="xsd:double">1.0</cantidad>
+				<cod xsi:type="xsd:string">TAR8C </cod>
+				<descAdicional xsi:type="xsd:string">0@@0@@0@@0.00@@</descAdicional>
+				<descuentoMonto xsi:type="xsd:double">0.0</descuentoMonto>
+				<indFact xsi:type="xsd:int">0</indFact>
+				<montoItem xsi:type="xsd:double">0.0</montoItem>
+				<nomItem xsi:type="xsd:string">TARUGO 8 C/TOPE x 100 uni </nomItem>
+				<nroLinDet xsi:type="xsd:int">11</nroLinDet>
+				<precioUnitario xsi:type="xsd:double">0.0</precioUnitario>
+				<uniMed xsi:type="xsd:string">UNID</uniMed>
+			</listaWsItems>
+			<listaWsItems xmlns="" xmlns:ns12="http://webServices.sitioWeb.crp.com/" xsi:type="ns12:wsItem">
+				<cantidad xsi:type="xsd:double">1.0</cantidad>
+				<cod xsi:type="xsd:string">TKDF102/1 </cod>
+				<descAdicional xsi:type="xsd:string">0@@0@@0@@0.00@@</descAdicional>
+				<descuentoMonto xsi:type="xsd:double">0.0</descuentoMonto>
+				<indFact xsi:type="xsd:int">0</indFact>
+				<montoItem xsi:type="xsd:double">0.0</montoItem>
+				<nomItem xsi:type="xsd:string">TORNILLO KD FIX 10x2 (5 x 50) x100 Unid </nomItem>
+				<nroLinDet xsi:type="xsd:int">12</nroLinDet>
+				<precioUnitario xsi:type="xsd:double">0.0</precioUnitario>
+				<uniMed xsi:type="xsd:string">UNID</uniMed>
+			</listaWsItems>
+			<listaWsItems xmlns="" xmlns:ns13="http://webServices.sitioWeb.crp.com/" xsi:type="ns13:wsItem">
+				<cantidad xsi:type="xsd:double">2.0</cantidad>
+				<cod xsi:type="xsd:string">TOR1P </cod>
+				<descAdicional xsi:type="xsd:string">0@@0@@0@@0.00@@</descAdicional>
+				<descuentoMonto xsi:type="xsd:double">0.0</descuentoMonto>
+				<indFact xsi:type="xsd:int">0</indFact>
+				<montoItem xsi:type="xsd:double">0.0</montoItem>
+				<nomItem xsi:type="xsd:string">TORNILLO T.1 PUNTA AGUJA (Bolsa 100 Uni) </nomItem>
+				<nroLinDet xsi:type="xsd:int">13</nroLinDet>
+				<precioUnitario xsi:type="xsd:double">0.0</precioUnitario>
+				<uniMed xsi:type="xsd:string">UNID</uniMed>
+			</listaWsItems>
+			<listaWsItems xmlns="" xmlns:ns14="http://webServices.sitioWeb.crp.com/" xsi:type="ns14:wsItem">
+				<cantidad xsi:type="xsd:double">3.0</cantidad>
+				<cod xsi:type="xsd:string">TOR2P </cod>
+				<descAdicional xsi:type="xsd:string">0@@0@@0@@0.00@@</descAdicional>
+				<descuentoMonto xsi:type="xsd:double">0.0</descuentoMonto>
+				<indFact xsi:type="xsd:int">0</indFact>
+				<montoItem xsi:type="xsd:double">0.0</montoItem>
+				<nomItem xsi:type="xsd:string">TORNILLO T.2 PUNTA AGUJA (Bolsa 100 Uni) </nomItem>
+				<nroLinDet xsi:type="xsd:int">14</nroLinDet>
+				<precioUnitario xsi:type="xsd:double">0.0</precioUnitario>
+				<uniMed xsi:type="xsd:string">UNID</uniMed>
+			</listaWsItems>
+			<listaWsAdendas xmlns="" xmlns:ns15="http://webServices.sitioWeb.crp.com/" xsi:type="ns15:wsAdenda">
+				<etiqueta xsi:type="xsd:string">Observaciones</etiqueta>
+				<ordinal xsi:type="xsd:int">0</ordinal>
+				<valor xsi:type="xsd:string">--</valor>
+			</listaWsAdendas>
+			<listaWsAdendas xmlns="" xmlns:ns16="http://webServices.sitioWeb.crp.com/" xsi:type="ns16:wsAdenda">
+				<etiqueta xsi:type="xsd:string">Vendedor</etiqueta>
+				<ordinal xsi:type="xsd:int">1</ordinal>
+				<valor xsi:type="xsd:string">VEN40</valor>
+			</listaWsAdendas>
+			<listaWsAdendas xmlns="" xmlns:ns17="http://webServices.sitioWeb.crp.com/" xsi:type="ns17:wsAdenda">
+				<etiqueta xsi:type="xsd:string">FormaEntrega</etiqueta>
+				<ordinal xsi:type="xsd:int">3</ordinal>
+				<valor xsi:type="xsd:string">Retira</valor>
+			</listaWsAdendas>
+			<listaWsAdendas xmlns="" xmlns:ns18="http://webServices.sitioWeb.crp.com/" xsi:type="ns18:wsAdenda">
+				<etiqueta xsi:type="xsd:string">LugarEntrega</etiqueta>
+				<ordinal xsi:type="xsd:int">4</ordinal>
+				<valor xsi:type="xsd:string">SENAQUE 3585 ESQ KOCH - 094 571 522 - Montevideo </valor>
+			</listaWsAdendas>
+			<listaWsAdendas xmlns="" xmlns:ns19="http://webServices.sitioWeb.crp.com/" xsi:type="ns19:wsAdenda">
+				<etiqueta xsi:type="xsd:string">CentroImpresion</etiqueta>
+				<ordinal xsi:type="xsd:int">5</ordinal>
+				<valor xsi:type="xsd:string">S03</valor>
+			</listaWsAdendas>
+			<listaWsAdendas xmlns="" xmlns:ns20="http://webServices.sitioWeb.crp.com/" xsi:type="ns20:wsAdenda">
+				<etiqueta xsi:type="xsd:string">Usuario</etiqueta>
+				<ordinal xsi:type="xsd:int">6</ordinal>
+				<valor xsi:type="xsd:string">MPATIÑO</valor>
+			</listaWsAdendas>
+			<listaWsAdendas xmlns="" xmlns:ns21="http://webServices.sitioWeb.crp.com/" xsi:type="ns21:wsAdenda">
+				<etiqueta xsi:type="xsd:string">DocumentoInterno</etiqueta>
+				<ordinal xsi:type="xsd:int">7</ordinal>
+				<valor xsi:type="xsd:string">34768</valor>
+			</listaWsAdendas>
+			<impresionImprimirSiNo xmlns="">S</impresionImprimirSiNo>
+			<impresionImpresora xmlns="">Centro3mostrador</impresionImpresora>
+			<impresionFormato xmlns="">FacNorImpGeneralV2</impresionFormato>
+			<impresionNumeroVias xmlns="">2</impresionNumeroVias>
+			<simular xmlns="">0</simular>
+		</recepcionCFEConCae>
+	</soapenv:Body>
+</soapenv:Envelope>

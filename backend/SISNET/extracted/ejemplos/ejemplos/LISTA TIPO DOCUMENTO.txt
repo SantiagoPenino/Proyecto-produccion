@@ -1,0 +1,52 @@
+e_Ticket(101, "e-Ticket"),
+    nc_e_Ticket(102, "Nota de Crédito de e-Ticket"),
+    nd_e_Ticket(103, "Nota de Débito de e-Ticket"),
+    //
+    e_Factura(111, "e-Factura"),
+    nc_e_Factura(112, "Nota de Crédito de e-Factura"),
+    nd_e_Factura(113, "Nota de Débito de e-Factura"),
+    //
+    e_Factura_Exportacion(121, "e-Factura Exportación"),
+    nc_e_Factura_Exportacion(122, "Nota de Crédito de e-Factura Exportación"),
+    nd_e_Factura_Exportacion(123, "Nota de Débito de e-Factura Exportación"),
+    e_Remito_Exportacion(124, "e-Remito Exportación"),
+    //
+    e_Boleta_Entrada(151, "e-Boleta de Entrada"),
+    nc_e_Boleta_Entrada(152, "NC e-Boleta de Entrada"),
+    nd_e_Boleta_Entrada(153, "ND e-Boleta de Entrada"),
+    //    
+    e_Remito(181, "e-Remito"),
+    e_Resguardo(182, "e-Resguardo"),
+    //
+    con_e_Ticket(201, "e-Ticket de Contingencia"),
+    con_nc_e_Ticket(202, "NC e-Ticket de Contingencia"),
+    con_nd_e_Ticket(203, "ND e-Ticket de Contingencia"),
+    //
+    con_e_Factura(211, "e-Factura de Contingencia"),
+    con_nc_e_Factura(212, "NC e-Factura de Contingencia"),
+    con_nd_e_Factura(213, "ND e-Factura de Contingencia"),
+    //
+    con_e_Factura_Exportacion(221, "e-Factura Exportación Contingencia"),
+    con_nc_e_Factura_Exportacion(222, "Nota de Crédito de e-Factura Exportación Contingencia"),
+    con_nd_e_Factura_Exportacion(223, "Nota de Débito de e-Factura Exportación Contingencia"),
+    con_e_Remito_Exportacion(224, "e-Remito Exportación Contingencia"),
+    //
+    con_e_Remito(281, "e-Remito Contingencia"),
+    con_e_Resguardo(282, "e-Resguardo Contingencia"),
+    //
+    e_Ticket_cta_ajena(131, "e-Ticket Venta por Cuenta Ajena"),
+    con_e_Ticket_cta_ajena(231, "e-Ticket Venta por Cuenta Ajena Contingencia"),
+    nc_e_Ticket_cta_ajena(132, "Nota de Crédito de e-Ticket Venta por Cuenta Ajena"),
+    con_nc_e_Ticket_cta_ajena(232, "Nota de Crédito de e-Ticket Venta por Cuenta Ajena Contingencia"),
+    nd_e_Ticket_cta_ajena(133, "Nota de Débito de e-Ticket Venta por Cuenta Ajena"),
+    con_nd_e_Ticket_cta_ajena(233, "Nota de Débito de e-Ticket Venta por Cuenta Ajena Contingencia"),
+    e_Factura_cta_ajena(141, "e-Factura Venta por Cuenta Ajena"),
+    con_e_Factura_cta_ajena(241, "e-Factura Venta por Cuenta Ajena Contingencia"),
+    nc_e_Factura_cta_ajena(142, "Nota de Crédito de e-Factura Venta por Cuenta Ajena"),
+    con_nc_e_Factura_cta_ajena(242, "Nota de Crédito de e-Factura Venta por Cuenta Ajena Contingencia"),
+    nd_e_Factura_cta_ajena(143, "Nota de Débito de e-Factura Venta por Cuenta Ajena"),
+    con_nd_e_Factura_cta_ajena(243, "Nota de Débito de e-Factura Venta por Cuenta Ajena Contingencia"),
+    //
+    con_e_Boleta_Entrada(251, "e-Boleta de Entrada Contingencia"),
+    con_nc_e_Boleta_Entrada(252, "NC e-Boleta de Entrada Contingencia"),
+    con_nd_e_Boleta_Entrada(253, "ND e-Boleta de Entrada Contingencia");

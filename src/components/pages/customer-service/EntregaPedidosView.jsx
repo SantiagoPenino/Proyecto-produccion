@@ -736,7 +736,11 @@ const EntregaPedidosView = () => {
                 return a + (esUSD(o) && cotizacion ? val * cotizacion : val);
             }, 0);
         }
-        setFormaPago('');
+        // Default: buscar Transferencia entre los métodos cargados
+        const defMetodo = metodosPago.find(m =>
+            m.MPaDescripcionMetodo?.toLowerCase().includes('transferencia')
+        );
+        setFormaPago(defMetodo ? String(defMetodo.MPaIdMetodoPago) : '');
         setMonedaPago(monedaInicial);
         setMontoPago(total.toFixed(2));
         setFileComprobante(null);

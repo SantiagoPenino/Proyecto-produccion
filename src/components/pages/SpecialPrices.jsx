@@ -536,21 +536,38 @@ const SpecialPrices = () => {
                     <button onClick={() => setShowAddClient(true)} className="text-indigo-600 hover:bg-indigo-50 px-2 py-1 rounded font-bold border border-indigo-200 transition-colors">+ Añadir</button>
                 </div>
                 <div className="p-3 border-b border-slate-100 bg-white">
-                    <div className="relative">
-                        <i className="fa-solid fa-search absolute left-3 top-2.5 text-slate-400"></i>
-                        <input
-                            className="w-full pl-9 pr-3 py-2 bg-slate-50 border border-slate-200 rounded outline-none focus:border-indigo-400 focus:ring-1 focus:ring-indigo-100 transition-all"
-                            placeholder="Buscar cliente..."
-                            value={filterClient}
-                            onChange={e => setFilterClient(e.target.value)}
-                        />
+                    <div className="flex gap-2">
+                        <div className="relative flex-1">
+                            <i className="fa-solid fa-filter absolute left-3 top-2.5 text-slate-400"></i>
+                            <input
+                                className="w-full pl-9 pr-3 py-2 bg-slate-50 border border-slate-200 rounded outline-none focus:border-indigo-400 focus:ring-1 focus:ring-indigo-100 transition-all text-xs"
+                                placeholder="Filtrar lista..."
+                                value={filterClient}
+                                onChange={e => setFilterClient(e.target.value)}
+                            />
+                        </div>
+                        <button 
+                            onClick={() => setShowAddClient(true)}
+                            className="bg-indigo-600 hover:bg-indigo-700 text-white px-3 py-2 rounded font-bold shadow-sm flex items-center gap-2 text-xs transition-colors shrink-0"
+                            title="Buscar cliente en la base de datos completa"
+                        >
+                            <i className="fa-solid fa-search"></i> Buscar
+                        </button>
                     </div>
                 </div>
                 <div className="flex-1 overflow-y-auto p-2 space-y-1.5 custom-scrollbar">
                     {loading ? (
                         <div className="p-4 text-slate-400 text-center"><i className="fa-solid fa-circle-notch fa-spin mr-2"></i>Cargando...</div>
                     ) : filteredClients.length === 0 ? (
-                        <div className="p-4 text-slate-400 text-center">Sin resultados</div>
+                        <div className="p-4 flex flex-col items-center justify-center text-center mt-4">
+                            <span className="text-slate-400 mb-3 text-sm">No está en esta lista.</span>
+                            <button 
+                                onClick={() => setShowAddClient(true)} 
+                                className="w-full bg-indigo-50 text-indigo-600 hover:bg-indigo-600 hover:text-white border border-indigo-200 py-2 rounded-lg font-bold transition-all shadow-sm flex items-center justify-center gap-2"
+                            >
+                                <i className="fa-solid fa-database"></i> Buscar en Base de Datos
+                            </button>
+                        </div>
                     ) : (
                         filteredClients.map(c => {
                             const isSelected = selClientId === c.ClienteID;
@@ -572,7 +589,7 @@ const SpecialPrices = () => {
                                         <div className="flex-1 min-w-0">
                                             <div className="font-bold text-slate-800 truncate" title={displayName}>{displayName}</div>
                                             <div className="flex gap-2 mt-1 text-[10px] font-mono">
-                                                <span className="text-slate-400">ID: {c.ClienteID}</span>
+                                                <span className="text-slate-400" title="Código numérico y IDCliente">ID: {c.ClienteID} {c.IDCliente && c.IDCliente !== String(c.ClienteID) ? `- ${c.IDCliente}` : ''}</span>
                                                 {c.CantReglas > 0 && <span className="text-emerald-600 font-bold bg-emerald-50 px-1 rounded">{c.CantReglas} reglas</span>}
                                             </div>
                                         </div>
@@ -631,11 +648,16 @@ const SpecialPrices = () => {
                                     <select 
                                         value={filterCategory} 
                                         onChange={(e)=>setFilterCategory(e.target.value)}
-                                        className="bg-white border border-slate-300 rounded px-3 py-1.5 font-medium text-slate-700 outline-none focus:ring-2 focus:ring-indigo-100"
+                                        className="bg-white border border-slate-300 rounded px-3 py-1.5 font-medium text-slate-700 outline-none focus:ring-2 focus:ring-indigo-100 max-w-sm truncate"
                                     >
-                                        {categoriasDropdown.map(cat => (
-                                            <option key={cat} value={cat}>{cat === "ACTIVAS" ? "⭐ VER SOLO CON REGLAS" : `Familia: ${cat}`}</option>
-                                        ))}
+                                        {categoriasDropdown.map(cat => {
+                                            if (cat === "TODAS" || cat === "ACTIVAS") {
+                                                return <option key={cat} value={cat}>{cat === "ACTIVAS" ? "⭐ VER SOLO CON REGLAS" : `Familia: ${cat}`}</option>;
+                                            }
+                                            const groupProd = baseProducts.find(p => p.CodArticulo === `GRUPO:${cat}`);
+                                            const desc = groupProd ? groupProd.Descripcion : cat;
+                                            return <option key={cat} value={cat}>Familia: {desc}</option>;
+                                        })}
                                     </select>
                                     
                                     <div className="relative w-64">

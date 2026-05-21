@@ -651,7 +651,7 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated }) => {
                 onClick={onClose}
             ></div>
 
-            <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-4xl flex flex-col animate-in zoom-in-95 duration-200 border border-zinc-200 my-8">
+            <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-[95vw] lg:max-w-7xl flex flex-col animate-in zoom-in-95 duration-200 border border-zinc-200 my-8">
 
                 <div className="px-6 py-4 bg-zinc-50 border-b border-zinc-200 flex justify-between items-start shrink-0">
                     <div>

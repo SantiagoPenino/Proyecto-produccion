@@ -1,0 +1,10 @@
+
+<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:web="http://webServices.sitioWeb.crp.com/">
+    <soapenv:Header/>
+    <soapenv:Body>
+        <web:obtenerCAE>
+            <tipoCFE>111</tipoCFE>
+            <claveUnicaCaja>1/TEST</claveUnicaCaja>
+        </web:obtenerCAE>
+    </soapenv:Body>
+</soapenv:Envelope>

@@ -107,6 +107,7 @@ app.use('/api/inventory', require('./routes/inventoryRoutes'));
 app.use('/api/configuraciones', require('./routes/configuracionesRoutes'));
 app.use('/api/sincro', require('./routes/sincroRoutes'));
 app.use('/api/quotation', require('./routes/quotationRoutes'));
+app.use('/api/sisnet', require('./routes/sisnetRoutes'));
 
 try {
     app.use('/api/contabilidad', require('./routes/contabilidadRoutes'));
