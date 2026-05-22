@@ -25,6 +25,7 @@ router.post('/movimientos/ajuste', ctrl.registrarAjusteManual);
 router.post('/movimientos/pago-anticipado', ctrl.registrarPagoAnticipado);
 router.post('/movimientos/pago-cruzado', ctrl.registrarPagoCruzado);
 router.get('/movimientos/:MovIdMovimiento/recibo/pdf', ctrl.generarReciboPdf);
+router.post('/movimientos/:MovIdMovimiento/anular-orden', ctrl.anularOrdenPendiente);
 router.get('/cuentas/:CueIdCuenta/deudas', ctrl.getDeudas);
 router.get('/ciclos/:CliIdCliente', ctrl.getCiclosCliente);
 router.get('/ciclos/:CicIdCiclo/movimientos', ctrl.getCicloMovimientos);

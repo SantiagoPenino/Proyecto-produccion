@@ -577,7 +577,8 @@ export const generarPdfEstadoCuenta = (cliente, cuentas, secciones, planes, desd
         pdf.setFont('helvetica', 'bold');
         pdf.setFontSize(12);
         pdf.setTextColor(0, 0, 0);
-        pdf.text(`Cuenta: ${c.UnidadLabel || c.CueTipo} - Saldo Actual: ${saldoStr}`, 14, currentY);
+        const suffix = saldo > 0 ? ' (Saldo a favor)' : (saldo < 0 ? ' (Deuda)' : '');
+        pdf.text(`Cuenta: ${c.UnidadLabel || c.CueTipo} - Saldo Actual: ${saldoStr}${suffix}`, 14, currentY);
         currentY += 6;
 
         if (movs.length === 0) {

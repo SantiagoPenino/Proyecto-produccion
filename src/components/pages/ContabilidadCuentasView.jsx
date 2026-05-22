@@ -13,6 +13,7 @@ import {
   Lock, Unlock
 } from 'lucide-react';
 import { toast } from 'sonner';
+import { useLocation } from 'react-router-dom';
 
 import api from '../../services/api';
 import { generarPdfEstadoCuenta, generarPdfPrefactura, generarPdfFacturaDGI } from '../../utils/pdfGenerator';
@@ -935,7 +936,29 @@ const MovimientosPanel = ({ CueIdCuenta, simbolo = '$', onClose, cuenta, onRegis
             <BarChart3 size={16} />
             <span className="text-sm font-black tracking-widest uppercase">Historial de Movimientos</span>
         </div>
-        <div className="flex items-center gap-1 bg-indigo-800/40 p-1 rounded-lg border border-indigo-500/30">
+        <div className="flex items-center gap-2">
+          <button 
+            title={`Imprimir Estado de Cuenta (${cuenta?.MonSimbolo || simbolo})`}
+            onClick={async () => {
+              try {
+                const t = toast.loading('Generando PDF...');
+                const p = new URLSearchParams({ top: 500 });
+                if (desde) p.append('desde', desde);
+                if (hasta) p.append('hasta', hasta);
+                const resp = await fetchAPI(`/api/contabilidad/cuentas/${CueIdCuenta}/movimientos?${p}`);
+                const planesRes = await fetchAPI(`/api/contabilidad/planes/${CliIdCliente}`).catch(() => ({ data: [] }));
+                const sec = { [CueIdCuenta]: { cue: cuenta, movs: resp.data || [], saldoArrastre: Number(resp.saldoArrastre ?? 0) } };
+                generarPdfEstadoCuenta(cliente, [cuenta], sec, planesRes.data || [], desde, hasta);
+                toast.success('PDF descargado', { id: t });
+              } catch (err) {
+                toast.error('Error al generar PDF: ' + err.message);
+              }
+            }}
+            className="p-1.5 bg-indigo-500/50 hover:bg-white/20 rounded-lg transition-colors"
+          >
+            <Printer size={14} />
+          </button>
+          <div className="flex items-center gap-1 bg-indigo-800/40 p-1 rounded-lg border border-indigo-500/30">
             <button 
                 onClick={() => setViewMode('HISTORIAL')} 
                 className={`px-4 py-1.5 text-[10px] uppercase tracking-widest font-black rounded-md transition-all ${viewMode === 'HISTORIAL' ? 'bg-white text-indigo-700 shadow-sm' : 'text-indigo-100 hover:bg-indigo-700/50'}`}
@@ -957,6 +980,7 @@ const MovimientosPanel = ({ CueIdCuenta, simbolo = '$', onClose, cuenta, onRegis
                     Solo Deudas Vivas
                 </button>
             )}
+          </div>
         </div>
       </div>
       {loading ? (
@@ -1451,248 +1475,80 @@ const CiclosPanel = ({ cuenta, CliIdCliente, cliente, onClose, onCicloChanged })
 };
 
 // ── Panel planes de recursos (Metros / KG) ─────────────────────────────
-const PlanesPanel = ({ cuenta, CliIdCliente, onClose, onChanged }) => {
+const PlanesPanel = ({ cuenta, CliIdCliente, cliente, desde, hasta, onClose, onChanged }) => {
   const [planes, setPlanes]       = useState([]);
   const [loading, setLoading]     = useState(false);
   const [working, setWorking]     = useState(false);
-  const [showForm, setShowForm]   = useState(false);
-  const [monedas, setMonedas]     = useState([]);
-  const [metodos, setMetodos]     = useState([]);
-  const [movsAbiertos, setMovsAbiertos] = useState({});
   const [movsPlan, setMovsPlan]   = useState({});  // { [planId]: [] }
-  const [loadMovs, setLoadMovs]   = useState({});
-
-  const formVacio = { PlaCantidadTotal: '', PlaImportePagado: '', MonedaPagoId: '', MetodoPagoId: '', PlaFechaVencimiento: '', PlaDescripcion: '', DocTipo: 'FACTURA' };
-  const [form, setForm]           = useState(formVacio);
-  const [formRecarga, setFormRecarga] = useState({});
 
   const unidadLabel = cuenta.UnidadLabel || cuenta.CueTipo || '';
-  const uniSimbolo  = cuenta.UniSimbolo  || unidadLabel;
 
   const cargar = useCallback(async () => {
     setLoading(true);
     try {
-      const data = await fetchAPI(`/api/contabilidad/planes/${CliIdCliente}`);
-      // ── FIX: filtrar solo los planes de ESTA cuenta ──
-      const todos = data.data || [];
-      const deCuenta = todos.filter(p =>
+      // 1. Fetch planes
+      const dataPlanes = await fetchAPI(`/api/contabilidad/planes/${CliIdCliente}`);
+      const todosPlanes = dataPlanes.data || [];
+      const deCuenta = todosPlanes.filter(p =>
         !p.CueIdCuenta || String(p.CueIdCuenta) === String(cuenta.CueIdCuenta)
       );
       setPlanes(deCuenta);
+
+      // 2. Fetch all movements for the account
+      const dataMovs = await fetchAPI(`/api/contabilidad/cuentas/${cuenta.CueIdCuenta}/movimientos?top=200`);
+      const todosMovs = dataMovs.data || [];
+
+      // 3. Group movements per plan
+      const grouped = {};
+      deCuenta.forEach(p => {
+        const id = p.PlaIdPlan;
+        grouped[id] = todosMovs.filter(m =>
+          m.MovConcepto?.includes(`(Plan ${id})`) ||
+          m.MovConcepto?.includes(`Plan #${id}`) ||
+          m.MovConcepto?.includes(`plan ${id}`) ||
+          m.MovConcepto?.toLowerCase().includes(`plan${id}`) ||
+          m.MovObservaciones?.includes(`Plan #${id}`) ||
+          m.MovObservaciones?.includes(`plan ${id}`)
+        );
+      });
+      setMovsPlan(grouped);
     } catch (e) { toast.error(e.message); }
     finally { setLoading(false); }
   }, [CliIdCliente, cuenta.CueIdCuenta]);
 
   useEffect(() => { cargar(); }, [cargar]);
-  useEffect(() => {
-    fetchAPI('/api/contabilidad/monedas').then(d => {
-      const list = d.data || [];
-      setMonedas(list);
-      if (list.length > 0) setForm(f => ({ ...f, MonedaPagoId: String(list[0].MonIdMoneda) }));
-    }).catch(() => {});
-    fetchAPI('/api/contabilidad/metodos-pago').then(d => {
-      const list = d.data || [];
-      setMetodos(list);
-      if (list.length > 0) setForm(f => ({ ...f, MetodoPagoId: String(list[0].MetodoPagoId) }));
-    }).catch(() => {});
-  }, []);
-
-  // ── Toggle movimientos de un plan ──────────────────────────────────────
-  const toggleMovs = async (plan) => {
-    const id = plan.PlaIdPlan;
-    if (movsAbiertos[id]) {
-      setMovsAbiertos(p => ({ ...p, [id]: false }));
-      return;
-    }
-    setMovsAbiertos(p => ({ ...p, [id]: true }));
-    if (movsPlan[id]) return;  // ya cargados
-
-    setLoadMovs(p => ({ ...p, [id]: true }));
-    try {
-      const data = await fetchAPI(`/api/contabilidad/cuentas/${cuenta.CueIdCuenta}/movimientos?top=200`);
-      const todos = data.data || [];
-      // Filtrar los que pertenecen a este plan por el texto del concepto u observaciones
-      const delPlan = todos.filter(m =>
-        m.MovConcepto?.includes(`(Plan ${id})`) ||
-        m.MovConcepto?.includes(`Plan #${id}`) ||
-        m.MovConcepto?.includes(`plan ${id}`) ||
-        m.MovConcepto?.toLowerCase().includes(`plan${id}`) ||
-        m.MovObservaciones?.includes(`Plan #${id}`) ||
-        m.MovObservaciones?.includes(`plan ${id}`)
-      );
-      setMovsPlan(p => ({ ...p, [id]: delPlan }));
-    } catch (e) { toast.error(e.message); }
-    finally { setLoadMovs(p => ({ ...p, [id]: false })); }
-  };
-
-  const crearPlan = async (e) => {
-    e.preventDefault();
-    if (!form.PlaCantidadTotal || Number(form.PlaCantidadTotal) <= 0) { toast.error('Cantidad obligatoria'); return; }
-    setWorking(true);
-    try {
-      const res = await fetchAPI('/api/contabilidad/planes', {
-        method: 'POST',
-        body: JSON.stringify({
-          CueIdCuenta:         cuenta.CueIdCuenta,
-          ProIdProducto:       cuenta.ProIdProducto,
-          PlaCantidadTotal:    Number(form.PlaCantidadTotal),
-          PlaImportePagado:    form.PlaImportePagado ? Number(form.PlaImportePagado) : null,
-          MonedaPagoId:        form.MonedaPagoId  || null,
-          MetodoPagoId:        form.MetodoPagoId  || null,
-          PlaFechaVencimiento: form.PlaFechaVencimiento || null,
-          PlaDescripcion:      form.PlaDescripcion || null,
-          DocTipo:             form.DocTipo || 'FACTURA',
-        }),
-      });
-      toast.success(res.message);
-      setShowForm(false);
-      setForm(formVacio);
-      await cargar(); onChanged?.();
-    } catch (e) { toast.error(e.message); }
-    finally { setWorking(false); }
-  };
-
-  const recargar = async (planId) => {
-    const extra = formRecarga[planId];
-    if (!extra?.cantidad || Number(extra.cantidad) <= 0) { toast.error('Ingresá la cantidad adicional'); return; }
-    setWorking(true);
-    try {
-      const res = await fetchAPI(`/api/contabilidad/planes/${planId}/recargar`, {
-        method: 'POST',
-        body: JSON.stringify({ CantidadAdicional: Number(extra.cantidad), ImportePagado: extra.importe ? Number(extra.importe) : null }),
-      });
-      toast.success(res.message);
-      setFormRecarga(prev => ({ ...prev, [planId]: undefined }));
-      setMovsPlan(p => ({ ...p, [planId]: undefined }));  // limpiar caché de movs
-      await cargar(); onChanged?.();
-    } catch (e) { toast.error(e.message); }
-    finally { setWorking(false); }
-  };
-
-  const desactivar = async (planId) => {
-    if (!confirm('¿Desactivar este plan y anular el saldo restante?\n\n⚠️ NOTA: Si desea devolverle el dinero al cliente por este saldo, debe registrar la devolución manualmente por el módulo de Gastos o Salidas de Caja.')) return;
-    setWorking(true);
-    try {
-      await fetchAPI(`/api/contabilidad/planes/${planId}/desactivar`, { method: 'PATCH' });
-      toast.success('Plan desactivado. Se ajustó el saldo a cero.');
-      await cargar(); onChanged?.();
-    } catch (e) { toast.error(e.message); }
-    finally { setWorking(false); }
-  };
 
   const planActivo = planes.find(p => p.PlaActivo);
 
   return (
     <div className="mt-3 rounded-xl border border-violet-200 overflow-hidden">
-      <div className="flex items-center justify-between px-4 py-3 bg-violet-600 text-slate-800">
+      <div className="flex items-center justify-between px-4 py-3 bg-violet-600 text-white">
         <div className="flex items-center gap-2">
           <Layers size={14} /><span className="text-sm font-semibold">Planes de Recursos</span>
           {planActivo && <Badge color="green"><span className="animate-pulse">●</span> ACTIVO</Badge>}
         </div>
-        <div className="flex gap-2">
-          <button onClick={() => setShowForm(!showForm)}
-            className="flex items-center gap-1 text-xs px-3 py-1.5 bg-slate-50 hover:bg-slate-200 rounded-lg transition-colors font-medium">
-            <PlusCircle size={11} /> Nuevo plan
-          </button>
-          <button onClick={onClose} className="p-1 hover:bg-slate-100 rounded-lg"><X size={14} /></button>
-        </div>
+        <button 
+          title="Imprimir Estado de Cuenta (Recursos)"
+          onClick={async () => {
+            try {
+              const t = toast.loading('Generando PDF de Recursos...');
+              const p = new URLSearchParams({ top: 500 });
+              if (desde) p.append('desde', desde);
+              if (hasta) p.append('hasta', hasta);
+              const resp = await fetchAPI(`/api/contabilidad/cuentas/${cuenta.CueIdCuenta}/movimientos?${p}`);
+              const planesRes = await fetchAPI(`/api/contabilidad/planes/${CliIdCliente}`).catch(() => ({ data: [] }));
+              const sec = { [cuenta.CueIdCuenta]: { cue: cuenta, movs: resp.data || [], saldoArrastre: Number(resp.saldoArrastre ?? 0) } };
+              generarPdfEstadoCuenta(cliente || { Nombre: 'Cliente', CliIdCliente }, [cuenta], sec, planesRes.data || [], desde, hasta);
+              toast.success('PDF descargado', { id: t });
+            } catch (err) {
+              toast.error('Error al generar PDF: ' + err.message);
+            }
+          }}
+          className="p-1.5 bg-violet-500/50 hover:bg-white/20 rounded-lg transition-colors"
+        >
+          <Printer size={14} />
+        </button>
       </div>
-
-      {/* Formulario nuevo plan */}
-      {showForm && (
-        <form onSubmit={crearPlan} className="px-4 py-3 bg-violet-50 border-b border-violet-200 space-y-3">
-          <p className="text-xs font-semibold text-violet-800">Nuevo plan de recursos</p>
-          <div className="grid grid-cols-2 gap-2">
-            <div>
-              <label className="text-[10px] text-slate-400 uppercase">Cantidad</label>
-              <input type="number" required min="0.01" step="0.01"
-                value={form.PlaCantidadTotal} onChange={e => setForm(f => ({ ...f, PlaCantidadTotal: e.target.value }))}
-                className="w-full mt-0.5 px-2 py-1.5 border border-slate-200 rounded text-sm focus:outline-none focus:ring-2 focus:ring-violet-400/30" />
-            </div>
-            <div>
-              <label className="text-[10px] text-slate-400 uppercase">Unidad</label>
-              <div className="w-full mt-0.5 px-2 py-1.5 border border-violet-200 rounded text-sm bg-violet-100 text-violet-800 font-semibold">
-                {unidadLabel}
-              </div>
-            </div>
-          </div>
-          <div className="grid grid-cols-3 gap-2">
-            <div>
-              <label className="text-[10px] text-slate-400 uppercase">Importe pagado</label>
-              <input type="number" min="0" step="0.01"
-                value={form.PlaImportePagado} onChange={e => setForm(f => ({ ...f, PlaImportePagado: e.target.value }))}
-                className="w-full mt-0.5 px-2 py-1.5 border border-slate-200 rounded text-sm focus:outline-none" />
-            </div>
-            <div>
-              <label className="text-[10px] text-slate-400 uppercase">Moneda</label>
-              <select value={form.MonedaPagoId} onChange={e => setForm(f => ({ ...f, MonedaPagoId: e.target.value }))}
-                className="w-full mt-0.5 px-2 py-1.5 border border-slate-200 rounded text-sm focus:outline-none">
-                {monedas.map(m => <option key={m.MonIdMoneda} value={m.MonIdMoneda}>{m.MonSimbolo} — {m.MonNombre}</option>)}
-                {monedas.length === 0 && <option value="">Cargando...</option>}
-              </select>
-            </div>
-            <div>
-              <label className="text-[10px] text-slate-400 uppercase">Forma de pago</label>
-              <select value={form.MetodoPagoId} onChange={e => setForm(f => ({ ...f, MetodoPagoId: e.target.value }))}
-                className="w-full mt-0.5 px-2 py-1.5 border border-slate-200 rounded text-sm focus:outline-none">
-                {metodos.map(m => <option key={m.MetodoPagoId} value={m.MetodoPagoId}>{m.MetNombre}</option>)}
-                {metodos.length === 0 && <option value="">Cargando...</option>}
-              </select>
-            </div>
-          </div>
-          <div className="grid grid-cols-2 gap-2">
-            <div>
-              <label className="text-[10px] text-slate-400 uppercase">Vencimiento (opcional)</label>
-              <input type="date" value={form.PlaFechaVencimiento} onChange={e => setForm(f => ({ ...f, PlaFechaVencimiento: e.target.value }))}
-                className="w-full mt-0.5 px-2 py-1.5 border border-slate-200 rounded text-sm focus:outline-none" />
-            </div>
-            <div>
-              <label className="text-[10px] text-slate-400 uppercase">Descripción / Referencia</label>
-              <input type="text" value={form.PlaDescripcion} onChange={e => setForm(f => ({ ...f, PlaDescripcion: e.target.value }))}
-                placeholder="Ej: Rollo Nov-2026"
-                className="w-full mt-0.5 px-2 py-1.5 border border-slate-200 rounded text-sm focus:outline-none" />
-            </div>
-          </div>
-
-          {/* Tipo de documento contable */}
-          <div>
-            <label className="text-[10px] text-slate-400 uppercase">Tipo de documento</label>
-            <div className="flex gap-2 mt-1">
-              {[
-                { val: 'FACTURA', label: '🧾 Factura',  desc: 'Obliga al cliente a pagar (contado o crédito)' },
-                { val: 'RECIBO',  label: '✅ Recibo',   desc: 'El cliente ya pagó — solo se emite constancia' },
-                { val: 'TICKET',  label: '📋 Ticket',   desc: 'Comprobante interno sin obligación formal' },
-              ].map(opt => (
-                <button
-                  key={opt.val}
-                  type="button"
-                  title={opt.desc}
-                  onClick={() => setForm(f => ({ ...f, DocTipo: opt.val }))}
-                  className={`flex-1 py-1.5 text-xs font-semibold rounded-lg border transition-all ${
-                    form.DocTipo === opt.val
-                      ? 'bg-violet-600 text-slate-800 border-violet-600 shadow-sm'
-                      : 'bg-[#f1f5f9] text-slate-600 border-slate-200 hover:border-violet-400 hover:text-violet-600'
-                  }`}
-                >
-                  {opt.label}
-                </button>
-              ))}
-            </div>
-            <p className="text-[10px] text-slate-500 mt-1">
-              {form.DocTipo === 'FACTURA' && '🧾 Se genera una factura. Si no hay pago inmediato, queda como deuda pendiente.'}
-              {form.DocTipo === 'RECIBO'  && '✅ El cliente ya abonó. Se registra el cobro y se emite recibo sin deuda.'}
-              {form.DocTipo === 'TICKET'  && '📋 Solo queda constancia interna. No genera obligación contable.'}
-            </p>
-          </div>
-
-          <div className="flex gap-2 justify-end">
-            <button type="button" onClick={() => setShowForm(false)} className="px-3 py-1.5 text-xs border border-slate-200 rounded-lg text-slate-600 hover:bg-slate-50/50">Cancelar</button>
-            <button type="submit" disabled={working} className="px-4 py-1.5 text-xs bg-violet-600 text-slate-800 rounded-lg hover:bg-violet-700 disabled:opacity-50">
-              {working ? <RefreshCw size={11} className="animate-spin inline" /> : null} Crear plan
-            </button>
-          </div>
-        </form>
-      )}
 
       {loading ? (
         <div className="flex justify-center py-5 bg-[#f1f5f9]"><div className="animate-spin h-5 w-5 border-2 border-violet-400 border-t-transparent rounded-full" /></div>
@@ -1702,21 +1558,13 @@ const PlanesPanel = ({ cuenta, CliIdCliente, onClose, onChanged }) => {
             const pct     = Number(p.PorcentajeUsado);
             const agotado = pct >= 100;
             const alerta  = pct >= 80 && !agotado;
-            const rec     = formRecarga[p.PlaIdPlan];
             const movsDelPlan = movsPlan[p.PlaIdPlan] || [];
-            const movsOpen    = movsAbiertos[p.PlaIdPlan];
-            const movsLoading = loadMovs[p.PlaIdPlan];
-            const totalPlan   = Number(p.PlaCantidadTotal);
 
             return (
               <div key={p.PlaIdPlan} className="px-4 py-3">
-                {/* Cabecera del plan */}
                 <div className="flex items-start justify-between mb-2">
                   <div>
                     <div className="flex items-center gap-2">
-                      <Badge color={p.PlaActivo ? (agotado ? 'red' : alerta ? 'amber' : 'green') : 'slate'}>
-                        {p.PlaActivo ? (agotado ? 'AGOTADO' : 'ACTIVO') : 'CERRADO'}
-                      </Badge>
                       <span className="text-xs font-semibold text-slate-700">{p.NombreArticulo || `Producto #${p.ProIdProducto}`}</span>
                       <span className="text-[10px] text-slate-500">Plan #{p.PlaIdPlan}</span>
                     </div>
@@ -1729,7 +1577,6 @@ const PlanesPanel = ({ cuenta, CliIdCliente, onClose, onChanged }) => {
                   </div>
                 </div>
 
-                {/* Barra de progreso */}
                 <div className="h-2 bg-slate-100 rounded-full overflow-hidden mb-2">
                   <div className={`h-full rounded-full transition-all ${
                     agotado ? 'bg-rose-900/100' : alerta ? 'bg-amber-400' : 'bg-emerald-500'
@@ -1740,93 +1587,45 @@ const PlanesPanel = ({ cuenta, CliIdCliente, onClose, onChanged }) => {
                   <span>Inicio: {fmtFecha(p.PlaFechaInicio)}</span>
                 </div>
 
-                {/* Acciones */}
-                <div className="mt-2 flex gap-2 flex-wrap">
-                  {/* Ver movimientos toggle */}
-                  <button onClick={() => toggleMovs(p)}
-                    className={`flex items-center gap-1 text-xs px-2 py-1 rounded border transition-colors
-                      ${movsOpen ? 'bg-slate-700 text-slate-800 border-slate-100' : 'bg-slate-50/50 text-slate-600 border-slate-200 hover:bg-slate-700/50'}`}>
-                    <BarChart3 size={10} /> {movsOpen ? 'Ocultar' : 'Ver entregas'}
-                  </button>
-
-                  {p.PlaActivo && (
-                    <>
-                      {rec ? (
-                        <div className="flex gap-1 flex-1">
-                          <input type="number" min="0.01" step="0.01" placeholder={`Cantidad (${p.PlaUnidad})`}
-                            value={rec.cantidad || ''} onChange={e => setFormRecarga(prev => ({ ...prev, [p.PlaIdPlan]: { ...prev[p.PlaIdPlan], cantidad: e.target.value } }))}
-                            className="flex-1 px-2 py-1 border border-slate-200 rounded text-xs focus:outline-none" />
-                          <input type="number" min="0" step="0.01" placeholder="$ (opcional)"
-                            value={rec.importe || ''} onChange={e => setFormRecarga(prev => ({ ...prev, [p.PlaIdPlan]: { ...prev[p.PlaIdPlan], importe: e.target.value } }))}
-                            className="w-24 px-2 py-1 border border-slate-200 rounded text-xs focus:outline-none" />
-                          <button onClick={() => recargar(p.PlaIdPlan)} disabled={working}
-                            className="px-2 py-1 bg-violet-600 text-slate-800 text-xs rounded hover:bg-violet-700 disabled:opacity-50">
-                            <CheckCircle2 size={11} />
-                          </button>
-                          <button onClick={() => setFormRecarga(prev => ({ ...prev, [p.PlaIdPlan]: undefined }))}
-                            className="px-2 py-1 bg-slate-100 text-slate-600 text-xs rounded hover:bg-slate-200">
-                            <X size={11} />
-                          </button>
-                        </div>
-                      ) : (
-                        <button onClick={() => setFormRecarga(prev => ({ ...prev, [p.PlaIdPlan]: {} }))}
-                          className="flex items-center gap-1 text-xs px-2 py-1 bg-violet-50 text-violet-700 border border-violet-200 rounded hover:bg-violet-100">
-                          <RotateCcw size={10} /> Recargar
-                        </button>
-                      )}
-                      <button onClick={() => desactivar(p.PlaIdPlan)} disabled={working}
-                        className="flex items-center gap-1 text-xs px-2 py-1 bg-rose-900/10 text-red-700 border border-red-200 rounded hover:bg-red-100 ml-auto">
-                        <X size={10} /> Cerrar plan
-                      </button>
-                    </>
-                  )}
-                </div>
-
-                {/* ── Movimientos del plan (expandibles) ───────────────── */}
-                {movsOpen && (
-                  <div className="mt-3 rounded-lg border border-slate-200 overflow-hidden">
-                    <div className="px-3 py-2 bg-slate-50/50 border-b border-slate-200 flex items-center justify-between">
-                      <span className="text-[11px] font-semibold text-slate-600">Entregas del Plan #{p.PlaIdPlan}</span>
-                      <span className="text-[10px] text-slate-500">{movsDelPlan.length} movimientos</span>
-                    </div>
-                    {movsLoading ? (
-                      <div className="flex justify-center py-4">
-                        <div className="animate-spin h-4 w-4 border-2 border-violet-400 border-t-transparent rounded-full" />
-                      </div>
-                    ) : movsDelPlan.length === 0 ? (
-                      <p className="text-xs text-slate-500 text-center py-4">Sin entregas registradas en este plan</p>
-                    ) : (
-                      <table className="w-full text-xs">
-                        <thead>
-                          <tr className="text-[10px] text-slate-500 uppercase">
-                            <th className="px-3 py-1.5 text-left">Fecha</th>
-                            <th className="px-3 py-1.5 text-left">Orden / Trabajo</th>
-                            <th className="px-3 py-1.5 text-right">Saldo In.</th>
-                            <th className="px-3 py-1.5 text-right">Consumo</th>
-                            <th className="px-3 py-1.5 text-right">Saldo Fn.</th>
+                <div className="mt-3 rounded-lg border border-slate-200 overflow-hidden">
+                  <div className="px-3 py-2 bg-slate-50/50 border-b border-slate-200 flex items-center justify-between">
+                    <span className="text-[11px] font-semibold text-slate-600">Entregas del Plan #{p.PlaIdPlan}</span>
+                    <span className="text-[10px] text-slate-500">{movsDelPlan.length} movimientos</span>
+                  </div>
+                  {movsDelPlan.length === 0 ? (
+                    <p className="text-xs text-slate-500 text-center py-4">Sin entregas registradas en este plan</p>
+                  ) : (
+                    <table className="w-full text-xs">
+                      <thead>
+                        <tr className="text-[10px] text-slate-500 uppercase">
+                          <th className="px-3 py-1.5 text-left">Fecha</th>
+                          <th className="px-3 py-1.5 text-left">Orden / Trabajo</th>
+                          <th className="px-3 py-1.5 text-right">Saldo In.</th>
+                          <th className="px-3 py-1.5 text-right">Consumo</th>
+                          <th className="px-3 py-1.5 text-right">Saldo Fn.</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-50">
+                        {[...movsDelPlan].reverse().reduce((acc, m) => {
+                          const consumo = Math.abs(Number(m.MovImporte));
+                          const basePlanAcum = acc.planAcum || 0;
+                          const currentPlanAcum = basePlanAcum + consumo;
+                          const quedan = (p.PlaCantidadTotal || 0) - currentPlanAcum;
+                          
+                          acc.push({ ...m, _movImporteAbs: consumo, _quedan: quedan, _saldoIn: (p.PlaCantidadTotal || 0) - basePlanAcum });
+                          acc.planAcum = currentPlanAcum;
+                          return acc;
+                        }, []).reverse().map(m => (
+                          <tr key={m.MovIdMovimiento} className="hover:bg-slate-50/50">
+                            <td className="px-3 py-2 text-slate-500">{fmtFecha(m.MovFecha)}</td>
+                            <td className="px-3 py-2 max-w-xs" title={m.MovConcepto}><span className="block truncate text-xs text-slate-700">{m.MovConcepto || '—'}</span></td>
+                            <td className="px-3 py-2 text-right text-slate-500 font-medium">{fmtNum(m._saldoIn)} {p.PlaUnidad}</td>
+                            <td className="px-3 py-2 text-right text-rose-600 font-semibold">-{fmtNum(m._movImporteAbs)} {p.PlaUnidad}</td>
+                            <td className={`px-3 py-2 text-right font-bold ${m._quedan < (p.PlaCantidadTotal || 0) * 0.1 ? 'text-amber-600' : 'text-violet-700'}`}>
+                              {fmtNum(m._quedan)} {p.PlaUnidad}
+                            </td>
                           </tr>
-                        </thead>
-                        <tbody className="divide-y divide-slate-50">
-                          {[...movsDelPlan].reverse().reduce((acc, m) => {
-                            const consumo = Math.abs(Number(m.MovImporte));
-                            const basePlanAcum = acc.planAcum || 0;
-                            const currentPlanAcum = basePlanAcum + consumo;
-                            const quedan = (p.PlaCantidadTotal || 0) - currentPlanAcum;
-                            
-                            acc.push({ ...m, _movImporteAbs: consumo, _quedan: quedan, _saldoIn: (p.PlaCantidadTotal || 0) - basePlanAcum });
-                            acc.planAcum = currentPlanAcum;
-                            return acc;
-                          }, []).reverse().map(m => (
-                            <tr key={m.MovIdMovimiento} className="hover:bg-slate-50/50">
-                              <td className="px-3 py-2 text-slate-500">{fmtFecha(m.MovFecha)}</td>
-                              <td className="px-3 py-2 max-w-xs" title={m.MovConcepto}><span className="block truncate text-xs text-slate-700">{m.MovConcepto || '—'}</span></td>
-                              <td className="px-3 py-2 text-right text-slate-500 font-medium">{fmtNum(m._saldoIn)} {p.PlaUnidad}</td>
-                              <td className="px-3 py-2 text-right text-rose-600 font-semibold">-{fmtNum(m._movImporteAbs)} {p.PlaUnidad}</td>
-                              <td className={`px-3 py-2 text-right font-bold ${m._quedan < (p.PlaCantidadTotal || 0) * 0.1 ? 'text-amber-600' : 'text-violet-700'}`}>
-                                {fmtNum(m._quedan)} {p.PlaUnidad}
-                              </td>
-                            </tr>
-                          ))}
+                        ))}
                         </tbody>
                       </table>
                     )}
@@ -1990,9 +1789,13 @@ const ModalEstadoCuenta = ({ cliente, cuentas, onClose, globalDesde, globalHasta
                       </div>
                       <div className="flex items-center gap-4">
                         <div className="text-right">
-                          <p className="text-[10px] text-slate-500 uppercase">Saldo actual</p>
+                          <p className="text-[10px] text-slate-500 uppercase">
+                            Saldo actual
+                          </p>
                           <p className={`text-base font-black ${saldo < 0 ? 'text-red-600' : 'text-emerald-600'}`}>
                             {c.MonSimbolo} {fmtNum(saldo)}
+                            {saldo > 0 && <span className="text-xs font-bold text-emerald-600 ml-1">(Saldo a favor)</span>}
+                            {saldo < 0 && <span className="text-xs font-bold text-red-600 ml-1">(Deuda)</span>}
                           </p>
                         </div>
                         <div className={`w-5 h-5 rounded flex items-center justify-center text-slate-500 transition-transform ${abierto ? 'rotate-180' : ''}`}>
@@ -2270,17 +2073,12 @@ const CuentaCard = ({ cuenta, CliIdCliente, panelActivo, onToggle, onCicloChange
               <Calendar size={14} /> Ciclos
             </button>
           )}
-          {esRecursos && (
-            <button onClick={() => onToggle('planes')}
-              className={`flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg font-bold border transition-all
-                ${panelActivo === 'planes' ? 'bg-violet-600 text-white border-violet-600' : 'bg-violet-50 text-violet-700 hover:bg-violet-100 border-violet-200'}`}>
-              <Layers size={14} /> Planes
+          {!esRecursos && (
+            <button onClick={() => onRegistrarPago(cuenta)}
+              className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg font-black border transition-all bg-emerald-50 text-emerald-700 hover:bg-emerald-100 border-emerald-200 shadow-sm ml-2">
+              <DollarSign size={14} /> Cobrar / Ajustar
             </button>
           )}
-          <button onClick={() => onRegistrarPago(cuenta)}
-            className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg font-black border transition-all bg-emerald-50 text-emerald-700 hover:bg-emerald-100 border-emerald-200 shadow-sm ml-2">
-            <DollarSign size={14} /> Cobrar / Ajustar
-          </button>
         </div>
 
       </div>
@@ -2306,6 +2104,9 @@ export default function ContabilidadCuentasView() {
   const [globalDesde, setGlobalDesde] = useState(() => { const d = new Date(); d.setMonth(d.getMonth() - 1); return d.toISOString().split('T')[0]; });
   const [globalHasta, setGlobalHasta] = useState(() => new Date().toISOString().split('T')[0]);
   const [globalFiltroTrigger, setGlobalFiltroTrigger] = useState(0);
+
+  const location = useLocation();
+  const [hasAutoSelected, setHasAutoSelected] = useState(false);
 
   const cargarClientesActivos = useCallback(async (q = '') => {
     setLoadingLista(true);
@@ -2344,6 +2145,17 @@ export default function ContabilidadCuentasView() {
     } catch (e) { toast.error(e.message); }
     finally { setLoadingCuentas(false); }
   };
+
+  useEffect(() => {
+    if (location.state?.selectedClienteId && clientesActivos.length > 0 && !hasAutoSelected) {
+      const targetId = Number(location.state.selectedClienteId);
+      const found = clientesActivos.find(c => c.CliIdCliente === targetId);
+      if (found) {
+        setHasAutoSelected(true);
+        seleccionarCliente(found);
+      }
+    }
+  }, [location.state, clientesActivos, hasAutoSelected]);
 
   const recargarCuentas = async () => {
     if (!clienteSel) return;
@@ -2644,56 +2456,73 @@ export default function ContabilidadCuentasView() {
                       <div className="flex items-center justify-between px-4 py-3 bg-emerald-600 text-white">
                         <div className="flex items-center gap-2">
                           <i className="fa-solid fa-file-invoice-dollar text-sm"></i>
-                          <span className="text-sm font-semibold">Órdenes Pendientes de Facturar (Anticipos)</span>
+                          <span className="text-sm font-semibold">
+                            Órdenes Pendientes de Facturar
+                          </span>
                           <span className="bg-white/20 text-white text-[10px] font-bold px-2 py-0.5 rounded-full animate-pulse">
                             ● {ordenesFiltradas.length} PENDIENTE{ordenesFiltradas.length > 1 ? 'S' : ''}
                           </span>
                         </div>
+                        <button 
+                          onClick={() => setShowFacturarAnticipo(true)}
+                          className="flex items-center gap-1.5 text-xs px-3.5 py-2 bg-white/20 hover:bg-white/30 text-white rounded-lg transition-colors font-bold">
+                          <i className="fa-solid fa-file-invoice-dollar"></i>
+                          Revisar y Facturar Todas
+                        </button>
                       </div>
-                      <div className="px-4 py-3 bg-emerald-50/50">
-                        <div className="flex items-start justify-between gap-4">
-                          <div className="grid grid-cols-3 gap-4 flex-1">
-                            <div>
-                              <p className="text-[10px] text-slate-400 uppercase tracking-wide">Concepto</p>
-                              <p className="text-xs font-bold text-slate-700">Órdenes cobradas por Anticipo</p>
+                      <div className="divide-y divide-emerald-100 bg-emerald-50/30">
+                        {ordenesFiltradas.map(orden => (
+                          <div key={orden.MovIdMovimiento} className="flex items-center justify-between px-4 py-2.5 hover:bg-emerald-50 transition-colors group">
+                            <div className="flex items-center gap-3 flex-1 min-w-0">
+                              <div className="w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0"></div>
+                              <div className="flex flex-col min-w-0">
+                                <span className="text-xs font-bold text-slate-700 truncate">
+                                  {orden.OrdCodigoOrden || orden.MovConcepto || `Mov #${orden.MovIdMovimiento}`}
+                                </span>
+                                {orden.OrdNombreTrabajo && (
+                                  <span className="text-[10px] text-slate-500 truncate">{orden.OrdNombreTrabajo}</span>
+                                )}
+                              </div>
                             </div>
-                            <div>
-                              <p className="text-[10px] text-slate-400 uppercase tracking-wide">Comprobantes</p>
-                              <p className="text-xs font-bold text-slate-700">{ordenesFiltradas.length} orden(es) auto-pagadas</p>
-                            </div>
-                            <div>
-                              <p className="text-[10px] text-slate-400 uppercase tracking-wide">Total a Facturar</p>
-                              <p className="text-sm font-bold text-emerald-700">
-                                {cuentaActiva?.MonSimbolo || '$'} {new Intl.NumberFormat('es-UY', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(ordenesFiltradas.reduce((sum, o) => sum + Math.abs(o.MovImporte), 0))}
-                              </p>
+                            <div className="flex items-center gap-3 shrink-0">
+                              <span className="text-xs font-bold text-emerald-700 font-mono">
+                                {cuentaActiva?.MonSimbolo || '$'} {new Intl.NumberFormat('es-UY', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(Math.abs(orden.MovImporte))}
+                              </span>
+                              <button
+                                onClick={async (e) => {
+                                  e.stopPropagation();
+                                  if (!window.confirm(`¿Cancelar la orden ${orden.OrdCodigoOrden || orden.MovConcepto}? Se revertirá el saldo y no podrá facturarse.`)) return;
+                                  try {
+                                    const res = await api.post(`/contabilidad/movimientos/${orden.MovIdMovimiento}/anular-orden`);
+                                    toast.success(res.data?.message || 'Orden cancelada');
+                                    recargarCuentas();
+                                  } catch (err) {
+                                    toast.error(err.response?.data?.error || err.message || 'Error al cancelar');
+                                  }
+                                }}
+                                title="Cancelar esta orden"
+                                className="opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-1 px-2 py-1 text-[10px] font-bold text-rose-600 bg-rose-50 hover:bg-rose-100 rounded border border-rose-200">
+                                <X size={10} /> Cancelar
+                              </button>
                             </div>
                           </div>
-                          <div className="shrink-0 flex items-center h-full pt-1">
-                            <button 
-                              onClick={() => setShowFacturarAnticipo(true)}
-                              className="flex items-center gap-1.5 text-xs px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg transition-colors font-bold shadow-sm">
-                              <i className="fa-solid fa-file-invoice-dollar"></i>
-                              Revisar y Facturar
-                            </button>
-                          </div>
-                        </div>
+                        ))}
+                      </div>
+                      <div className="px-4 py-2 bg-white border-t border-emerald-200 flex items-center justify-between">
+                        <span className="text-[10px] text-slate-400 font-bold uppercase">
+                          Total: {ordenesFiltradas.length} orden(es)
+                        </span>
+                        <span className="text-sm font-black text-emerald-700">
+                          {cuentaActiva?.MonSimbolo || '$'} {new Intl.NumberFormat('es-UY', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(ordenesFiltradas.reduce((sum, o) => sum + Math.abs(o.MovImporte), 0))}
+                        </span>
                       </div>
                     </div>
                   )}
 
                   {tabCuentas !== 'RECURSOS' && cuentaActiva && (
                     <div className="animate-in fade-in duration-300">
-                      {clienteSel.TClIdTipoCliente === 2 && (
-                        <div className="mb-4">
-                          <CiclosPanel 
-                            cuenta={cuentaActiva} 
-                            CliIdCliente={clienteSel.CliIdCliente} 
-                            cliente={clienteSel}
-                            onClose={() => {}} 
-                            onCicloChanged={recargarCuentas} 
-                          />
-                        </div>
-                      )}
+                      {/* CiclosPanel ocultado — el panel verde "Revisar y Facturar" ya gestiona 
+                          la creación/cierre del ciclo de forma transparente */}
                       <MovimientosPanel 
                         CueIdCuenta={cuentaActiva.CueIdCuenta} 
                         simbolo={cuentaActiva.MonSimbolo || '$'} 
@@ -2709,29 +2538,26 @@ export default function ContabilidadCuentasView() {
                     </div>
                   )}
 
-                  {tabCuentas === 'RECURSOS' && cuentas.filter(c => {
-                    const TIPOS_MONETARIOS = ['USD','UYU','ARS','EUR','PYG','BRL','CORRIENTE','CREDITO','DEBITO','CAJA','DINERO_USD','DINERO_UYU'];
-                    return c.ProIdProducto != null || !TIPOS_MONETARIOS.includes(c.CueTipo?.toUpperCase());
-                  }).map(cuenta => (
-                    <div key={cuenta.CueIdCuenta} className="animate-in fade-in duration-300">
-                      <CuentaCard
-                          cuenta={cuenta}
-                          CliIdCliente={clienteSel.CliIdCliente}
-                          panelActivo={paneles[cuenta.CueIdCuenta]}
-                          onToggle={(tipo) => togglePanel(cuenta.CueIdCuenta, tipo)}
-                          onCicloChanged={recargarCuentas}
-                          onRegistrarPago={setModalPago}
-                      />
-                      {paneles[cuenta.CueIdCuenta] === 'planes' && (
+                  {tabCuentas === 'RECURSOS' && (() => {
+                    const recursoCuentas = cuentas.filter(c => {
+                      const TIPOS_MONETARIOS = ['USD','UYU','ARS','EUR','PYG','BRL','CORRIENTE','CREDITO','DEBITO','CAJA','DINERO_USD','DINERO_UYU'];
+                      return c.ProIdProducto != null || !TIPOS_MONETARIOS.includes(c.CueTipo?.toUpperCase());
+                    });
+                    if (recursoCuentas.length === 0) return null;
+                    return recursoCuentas.map(cuenta => (
+                      <div key={cuenta.CueIdCuenta} className="animate-in fade-in duration-300">
                         <PlanesPanel
                           cuenta={cuenta}
                           CliIdCliente={clienteSel.CliIdCliente}
-                          onClose={() => togglePanel(cuenta.CueIdCuenta, 'planes')}
+                          cliente={clienteSel}
+                          desde={globalDesde}
+                          hasta={globalHasta}
+                          onClose={() => {}}
                           onChanged={recargarCuentas}
                         />
-                      )}
-                    </div>
-                  ))}
+                      </div>
+                    ));
+                  })()}
 
                   {tabCuentas !== 'RECURSOS' && !cuentaActiva && (
                     <p className="text-center text-slate-400 text-sm py-8 bg-[#f1f5f9] rounded-xl border border-slate-200 border-dashed">No hay cuenta activa en esta moneda.</p>
@@ -2752,7 +2578,7 @@ export default function ContabilidadCuentasView() {
 
       {showFacturarAnticipo && (
         <CierreCicloPreviewModal 
-          ciclo={{ CicIdCiclo: 'ANTICIPO', CicFechaInicio: new Date().toISOString(), CicFechaCierre: new Date().toISOString() }}
+          ciclo={{ CicIdCiclo: (cuentaActiva && Number(cuentaActiva.CueSaldoActual || 0) > 0) ? 'ANTICIPO' : 'CREDITO', CicFechaInicio: new Date().toISOString(), CicFechaCierre: new Date().toISOString() }}
           cliente={clienteSel}
           cuenta={cuentaActiva || cuentas[0]}
           movsOriginales={ordenesFiltradas.map(m => ({

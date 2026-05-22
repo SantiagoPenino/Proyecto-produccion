@@ -880,8 +880,23 @@ exports.desactivarPlan = async (req, res) => {
 exports.getCiclosCliente = async (req, res) => {
   try {
     const pool = await getPool();
+    const cliId = parseInt(req.params.CliIdCliente);
+
+    // Recalcular dinámicamente los totales de los ciclos abiertos para este cliente para asegurar consistencia
+    await pool.request()
+      .input('CliIdCliente', sql.Int, cliId)
+      .query(`
+        UPDATE c
+        SET 
+          c.CicTotalOrdenes = ISNULL((SELECT SUM(ABS(MovImporte)) FROM dbo.MovimientosCuenta WHERE CicIdCiclo = c.CicIdCiclo AND MovTipo IN ('ORDEN', 'ENTREGA', 'ORDEN_ANTICIPO') AND (MovAnulado IS NULL OR MovAnulado = 0)), 0),
+          c.CicTotalPagos   = ISNULL((SELECT SUM(ABS(MovImporte)) FROM dbo.MovimientosCuenta WHERE CicIdCiclo = c.CicIdCiclo AND MovTipo IN ('PAGO', 'PAGO_CRUZADO', 'ANTICIPO', 'COBRO', 'SALDO_A_FAVOR') AND (MovAnulado IS NULL OR MovAnulado = 0)), 0)
+        FROM dbo.CiclosCredito c
+        WHERE c.CliIdCliente = @CliIdCliente
+          AND c.CicEstado = 'ABIERTO'
+      `);
+
     const result = await pool.request()
-      .input('CliIdCliente', sql.Int, parseInt(req.params.CliIdCliente))
+      .input('CliIdCliente', sql.Int, cliId)
       .query(`
         SELECT
           cc.CicIdCiclo, cc.CueIdCuenta,
@@ -891,7 +906,7 @@ exports.getCiclosCliente = async (req, res) => {
           cc.CicFechaFactura, cc.CicFechaCobro
         FROM dbo.CiclosCredito cc
         WHERE cc.CliIdCliente = @CliIdCliente
-        ORDER BY cc.CicFechaInicio DESC
+          ORDER BY cc.CicFechaInicio DESC
       `);
     res.json({ success: true, data: result.recordset });
   } catch (err) {
@@ -1960,6 +1975,100 @@ exports.deleteTipoMovimiento = async (req, res) => {
 };
 
 /**
+ * POST /api/contabilidad/movimientos/:MovIdMovimiento/anular-orden
+ * Cancela una orden no facturada: la marca como anulada, revierte el saldo
+ * de la cuenta y actualiza los totales del ciclo si corresponde.
+ */
+exports.anularOrdenPendiente = async (req, res) => {
+  try {
+    const pool = await getPool();
+    const movId = parseInt(req.params.MovIdMovimiento);
+    const UsuarioAlta = req.user?.id || 1;
+
+    // 1. Verificar que el movimiento existe, es ORDEN, no está facturado y no está ya anulado
+    const movRes = await pool.request()
+      .input('MovId', sql.Int, movId)
+      .query(`
+        SELECT m.*, cc.CueSaldoActual, cc.MonIdMoneda
+        FROM dbo.MovimientosCuenta m
+        JOIN dbo.CuentasCliente cc ON cc.CueIdCuenta = m.CueIdCuenta
+        WHERE m.MovIdMovimiento = @MovId
+      `);
+    if (!movRes.recordset.length)
+      return res.status(404).json({ success: false, error: 'Movimiento no encontrado.' });
+
+    const mov = movRes.recordset[0];
+    if (!['ORDEN', 'ORDEN_ANTICIPO', 'ENTREGA'].includes(mov.MovTipo))
+      return res.status(400).json({ success: false, error: 'Solo se pueden cancelar movimientos de tipo ORDEN.' });
+    if (mov.DocIdDocumento)
+      return res.status(400).json({ success: false, error: 'Esta orden ya fue facturada. No se puede cancelar.' });
+    if (mov.MovAnulado)
+      return res.status(400).json({ success: false, error: 'Esta orden ya está cancelada.' });
+
+    // 2. Marcar como anulada
+    await pool.request()
+      .input('MovId', sql.Int, movId)
+      .query(`UPDATE dbo.MovimientosCuenta SET MovAnulado = 1 WHERE MovIdMovimiento = @MovId`);
+
+    // 3. Revertir el saldo de la cuenta (la orden era negativa, sumamos el absoluto)
+    const revertir = Math.abs(Number(mov.MovImporte));
+    await pool.request()
+      .input('Cue', sql.Int, mov.CueIdCuenta)
+      .input('Imp', sql.Decimal(18, 4), revertir)
+      .query(`UPDATE dbo.CuentasCliente SET CueSaldoActual = CueSaldoActual + @Imp WHERE CueIdCuenta = @Cue`);
+
+    // 4. Registrar movimiento de ajuste compensatorio
+    const saldoRes = await pool.request()
+      .input('Cue', sql.Int, mov.CueIdCuenta)
+      .query(`SELECT CueSaldoActual FROM dbo.CuentasCliente WHERE CueIdCuenta = @Cue`);
+    const nuevoSaldo = saldoRes.recordset[0].CueSaldoActual;
+
+    await pool.request()
+      .input('Cue', sql.Int, mov.CueIdCuenta)
+      .input('Imp', sql.Decimal(18, 4), revertir)
+      .input('SP', sql.Decimal(18, 4), nuevoSaldo)
+      .input('Usr', sql.Int, UsuarioAlta)
+      .input('Concepto', sql.NVarChar(300), `Cancelación orden: ${mov.MovConcepto || ''}`)
+      .input('MovIdAnula', sql.Int, movId)
+      .input('OrdIdOrden', sql.Int, mov.OrdIdOrden || null)
+      .query(`
+        INSERT INTO dbo.MovimientosCuenta(CueIdCuenta, MovTipo, MovImporte, MovConcepto, MovSaldoPosterior, MovFecha, MovUsuarioAlta, MovIdAnula, OrdIdOrden, MovAnulado)
+        VALUES (@Cue, 'AJUSTE', @Imp, @Concepto, @SP, GETDATE(), @Usr, @MovIdAnula, @OrdIdOrden, 0)
+      `);
+
+    // 5. Anular DeudaDocumento asociada si existe
+    if (mov.OrdIdOrden) {
+      await pool.request()
+        .input('OrdId', sql.Int, mov.OrdIdOrden)
+        .input('Cue', sql.Int, mov.CueIdCuenta)
+        .query(`
+          UPDATE dbo.DeudaDocumento
+          SET DDeEstado = 'CANCELADO', DDeImportePendiente = 0
+          WHERE OrdIdOrden = @OrdId AND CueIdCuenta = @Cue AND DDeEstado IN ('PENDIENTE', 'PARCIAL', 'VENCIDO')
+        `);
+    }
+
+    // 6. Recalcular totales del ciclo si la orden pertenecía a uno
+    if (mov.CicIdCiclo) {
+      await pool.request()
+        .input('CicId', sql.Int, mov.CicIdCiclo)
+        .query(`
+          UPDATE c SET
+            c.CicTotalOrdenes = ISNULL((SELECT SUM(ABS(MovImporte)) FROM dbo.MovimientosCuenta WHERE CicIdCiclo=c.CicIdCiclo AND MovTipo IN ('ORDEN','ENTREGA','ORDEN_ANTICIPO') AND (MovAnulado IS NULL OR MovAnulado=0)), 0),
+            c.CicTotalPagos   = ISNULL((SELECT SUM(ABS(MovImporte)) FROM dbo.MovimientosCuenta WHERE CicIdCiclo=c.CicIdCiclo AND MovTipo IN ('PAGO','PAGO_CRUZADO','ANTICIPO','COBRO','SALDO_A_FAVOR') AND (MovAnulado IS NULL OR MovAnulado=0)), 0)
+          FROM dbo.CiclosCredito c WHERE c.CicIdCiclo = @CicId
+        `);
+    }
+
+    logger.info(`[ANULAR-ORDEN] Mov #${movId} (${mov.MovConcepto}) CANCELADO. Saldo revertido: +${revertir}`);
+    res.json({ success: true, message: `Orden cancelada correctamente. Saldo revertido.` });
+  } catch (err) {
+    logger.error('[ANULAR-ORDEN]', err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+};
+
+/**
  * GET /api/contabilidad/clientes/:CliIdCliente/ordenes-anticipo
  */
 exports.getOrdenesAnticipo = async (req, res) => {
@@ -1995,8 +2104,9 @@ exports.getOrdenesAnticipo = async (req, res) => {
         LEFT JOIN dbo.Articulos p WITH(NOLOCK) ON od.ProIdProducto = p.ProIdProducto
         LEFT JOIN dbo.StockArt s WITH(NOLOCK) ON p.CodStock = s.CodStock
         WHERE m.CueIdCuenta IN (SELECT CueIdCuenta FROM dbo.CuentasCliente WHERE CliIdCliente = @Cli)
-          AND m.MovTipo = 'ORDEN'
+          AND m.MovTipo IN ('ORDEN', 'ORDEN_ANTICIPO')
           AND m.DocIdDocumento IS NULL
+          AND (m.MovAnulado IS NULL OR m.MovAnulado = 0)
       `);
 
     res.json({ success: true, data: result.recordset });
@@ -2060,7 +2170,7 @@ exports.emitirFacturaAnticipo = async (req, res) => {
 
     const saldo = await pool.request().input('Cic', sql.Int, CicIdCiclo).query(`
       SELECT ISNULL(SUM(ABS(MovImporte)), 0) as Tot
-      FROM dbo.MovimientosCuenta WHERE CicIdCiclo = @Cic AND MovTipo IN ('ORDEN', 'ORDEN_ANTICIPO') AND MovAnulado = 0
+      FROM dbo.MovimientosCuenta WHERE CicIdCiclo = @Cic AND MovTipo IN ('ORDEN', 'ORDEN_ANTICIPO') AND (MovAnulado IS NULL OR MovAnulado = 0)
     `);
     const totOrd = saldo.recordset[0].Tot;
 

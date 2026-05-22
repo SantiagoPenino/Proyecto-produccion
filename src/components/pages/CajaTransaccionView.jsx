@@ -146,6 +146,61 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
   const ticketRef = useRef(null);
   const [ticketData, setTicketData] = useState(null);
 
+  // Imprime el ticket abriendo una ventana nueva (más confiable que window.print en el DOM)
+  const printTicketData = (data) => {
+    if (!data) return;
+    const { empresa, sucursal, rut, direccion, fecha, comprobante, cajero, cliente, items, totales, pagos } = data;
+    const fmtN = (n) => Number(n || 0).toFixed(2);
+    const itemsHtml = (items || []).map(it =>
+      `<tr><td style="padding:2px 0;vertical-align:top">${it.descripcion}</td><td style="text-align:center;vertical-align:top">${it.cantidad || 1}</td><td style="text-align:right;vertical-align:top">$${fmtN(it.importe)}</td></tr>`
+    ).join('');
+    const pagosHtml = (pagos || []).map(p =>
+      `<p style="margin:2px 0;display:flex;justify-content:space-between;font-size:11px"><span>${p.metodo}</span><span>${p.moneda} ${fmtN(p.monto)}</span></p>`
+    ).join('');
+    const win = window.open('', '_blank', 'width=340,height=600');
+    if (!win) return;
+    win.document.write(`
+      <html><head><title>Ticket ${comprobante || ''}</title>
+      <style>
+        *{margin:0;padding:0;box-sizing:border-box}
+        body{font-family:'Courier New',Courier,monospace;font-size:12px;line-height:1.2;padding:5mm;width:80mm;background:#fff;color:#000}
+        h2{font-size:18px;font-weight:bold;text-align:center;margin:0 0 5px}
+        .sep{border-bottom:1px dashed #000;margin:10px 0}
+        table{width:100%;font-size:11px;margin-bottom:10px}
+        th{text-align:left;border-bottom:1px dotted #000}
+        th:nth-child(2){text-align:center}th:last-child{text-align:right}
+        .total{font-size:14px;font-weight:bold;display:flex;justify-content:space-between;margin:5px 0}
+        .pie{text-align:center;font-size:10px;color:#999;margin-top:20px}
+        @page{size:80mm auto;margin:0}
+      </style></head><body>
+      <div style="text-align:center;margin-bottom:10px">
+        <h2>${empresa || 'EMPRESA'}</h2>
+        ${rut ? `<p>RUT: ${rut}</p>` : ''}
+        ${direccion ? `<p>${direccion}</p>` : ''}
+        ${sucursal ? `<p>${sucursal}</p>` : ''}
+      </div>
+      <div class="sep"></div>
+      <p><strong>FECHA :</strong> ${fecha}</p>
+      <p><strong>TICKET:</strong> ${comprobante || '---'}</p>
+      <p><strong>CAJERO:</strong> ${cajero || 'CAJA'}</p>
+      <p><strong>CLIENTE:</strong> ${cliente || 'Consumidor Final'}</p>
+      <div class="sep"></div>
+      <table><thead><tr><th>Detalle</th><th>Cant</th><th>Total</th></tr></thead>
+      <tbody>${itemsHtml}</tbody></table>
+      <div class="sep"></div>
+      ${totales?.subtotal !== undefined ? `<p style="display:flex;justify-content:space-between;margin:2px 0"><span>SUBTOTAL:</span><span>$${fmtN(totales.subtotal)}</span></p>` : ''}
+      <p class="total"><span>TOTAL:</span><span>${totales?.moneda || '$'} ${fmtN(totales?.total)}</span></p>
+      <div class="sep"></div>
+      <p style="font-weight:bold;margin:2px 0">Medios de Pago:</p>
+      ${pagosHtml}
+      <div class="pie"><p>GRACIAS POR SU COMPRA</p><p>Servicio brindado por Macrosoft ERP</p></div>
+      <div style="height:10mm"></div>
+      </body></html>`);
+    win.document.close();
+    win.focus();
+    setTimeout(() => { win.print(); win.close(); }, 400);
+  };
+
   const [resumenCierre, setResumenCierre] = useState(null);
   const [cierreMontoFisico, setCierreMontoFisico] = useState('');
   const [cierreObs, setCierreObs] = useState('');
@@ -418,12 +473,18 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
         }))
       };
       setTicketData(newTicket);
-      setTimeout(() => { if (ticketRef.current) window.print(); }, 300);
+      printTicketData(newTicket);
 
+      const clienteId = seleccionados[0]?.retiro?.CliIdCliente;
       toast.success(`Cobro registrado (${res.data?.numeroDoc || 'OK'})`);
       setSeleccionados([]); setAjustes({});
       setCarritosPago([{ id: Date.now(), metodoPagoId: 1, moneda: 'UYU', monedaId: 1, monto: '' }]);
-      setObsCobro(''); fetchRetiros();
+      setObsCobro(''); 
+      if (clienteId) {
+        navigate('/contabilidad/cuentas', { state: { selectedClienteId: clienteId } });
+      } else {
+        fetchRetiros();
+      }
     } catch (e) { toast.error(e.response?.data?.error || 'Error al cobrar'); }
     finally { setProcesandoCobro(false); }
   };
@@ -916,7 +977,7 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
                               }))
                             };
                             setTicketData(ventaTicket);
-                            setTimeout(() => { if (ticketRef.current) window.print(); }, 300);
+                            printTicketData(ventaTicket);
 
                             fetchRetiros(); setVentaPagos([{ id: Date.now(), metodoPagoId: 1, moneda: 'UYU', monedaId: 1, monto: '' }]); setVentaObs(''); setVentaTotalACubrir(0); setVentaMoneda('UYU');
                           } catch (e) { toast.error(e.response?.data?.error || 'Error al procesar venta'); }

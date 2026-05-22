@@ -144,7 +144,7 @@ async function procesarVentaDirecta(payload) {
             OUTPUT INSERTED.SecSerie AS Serie, INSERTED.SecUltimoNumero AS UltimoNumero, c.Detalle AS DocTipoStr
             FROM dbo.SecuenciaDocumentos s
             JOIN dbo.Config_TiposDocumento c ON c.SecIdSecuencia = s.SecIdSecuencia
-            WHERE c.CodDocumento = @TipoD AND s.SecSerie = @Serie
+            WHERE c.CodDocumento = @TipoD
         `);
         if (seqR.recordset.length > 0) {
             const r = seqR.recordset[0];
@@ -508,7 +508,8 @@ async function procesarVentaDirecta(payload) {
       numeroDoc: numeroDocString,
       tipoDocumento: docTipoStr,
       serieDoc: serieDocStr,
-      numeroDocFormato: `${serieDocStr}-${numeroDocString.padStart(6,'0')}`
+      numeroDocFormato: `${serieDocStr}-${numeroDocString.padStart(6,'0')}`,
+      docIdDocumento: dId || null
     };
 
   } catch (err) {
@@ -603,14 +604,13 @@ async function procesarTransaccion(payload) {
       try {
         const seqR = await transaction.request()
           .input('CodDoc', sql.VarChar(20), header.tipoDocumento)
-          .input('Serie', sql.VarChar(5), header.serieDoc || 'A')
           .query(`
             UPDATE s
             SET s.SecUltimoNumero = s.SecUltimoNumero + 1
             OUTPUT INSERTED.SecSerie AS Serie, INSERTED.SecUltimoNumero AS UltimoNumero, INSERTED.SecPrefijo AS Prefijo, INSERTED.SecDigitos AS Digitos
             FROM dbo.SecuenciaDocumentos s
             JOIN dbo.Config_TiposDocumento c ON c.SecIdSecuencia = s.SecIdSecuencia
-            WHERE c.CodDocumento = @CodDoc AND s.SecSerie = @Serie
+            WHERE c.CodDocumento = @CodDoc
           `);
         if (seqR.recordset.length > 0) {
           const r = seqR.recordset[0];
@@ -1004,16 +1004,25 @@ async function procesarTransaccion(payload) {
           const config = resConfig.recordset[0];
           
           if (config.SecIdSecuencia) {
-             const resSeq = await transaction.request()
-               .input('secId', sql.Int, config.SecIdSecuencia)
-               .query(`
-                 UPDATE dbo.SecuenciaDocumentos 
-                 SET SecUltimoNumero = SecUltimoNumero + 1 
-                 OUTPUT INSERTED.SecUltimoNumero 
-                 WHERE SecIdSecuencia = @secId
-               `);
-             const numeroCFE = resSeq.recordset[0].SecUltimoNumero;
-             const serieCFE = config.SecSerie || 'A';
+             let numeroCFE;
+             let serieCFE;
+             if (header.numeroDoc) {
+               numeroCFE = parseInt(header.numeroDoc, 10);
+               serieCFE = header.serieDoc || config.SecSerie || 'A';
+             } else {
+               const resSeq = await transaction.request()
+                 .input('secId', sql.Int, config.SecIdSecuencia)
+                 .query(`
+                   UPDATE dbo.SecuenciaDocumentos 
+                   SET SecUltimoNumero = SecUltimoNumero + 1 
+                   OUTPUT INSERTED.SecUltimoNumero 
+                   WHERE SecIdSecuencia = @secId
+                 `);
+               numeroCFE = resSeq.recordset[0].SecUltimoNumero;
+               serieCFE = config.SecSerie || 'A';
+               header.numeroDoc = String(numeroCFE);
+               header.serieDoc = serieCFE;
+             }
              
              const desgloseCFE = contabilidadCore.desglosarIVA(totalNetoMoneda, 22); // 22% as default for VAT
              
@@ -1050,6 +1059,124 @@ async function procesarTransaccion(payload) {
                
              const docIdDocumento = insertDocResult.recordset[0].DocIdDocumento;
              header.docIdDocumento = docIdDocumento;
+
+             // Para PedidoCaja (venta libre sin órdenes de producción): capturar ítems de TransaccionDetalle directamente.
+             // Para documentos normales: hacer el JOIN completo con PedidosCobranzaDetalle (barrera productiva → contable).
+             const esPedidoCaja = header.tipoDocumento === 'PC' || (config.Detalle || '').toLowerCase().includes('pedido caja');
+
+             if (esPedidoCaja) {
+               await transaction.request()
+                 .input('docId', sql.Int, docIdDocumento)
+                 .input('tcaId', sql.Int, tcaIdTransaccion)
+                 .query(`
+                   INSERT INTO dbo.DocumentosContablesDetalle 
+                     (DocIdDocumento, DcdNomItem, DcdDscItem, DcdCantidad, DcdPrecioUnitario, DcdSubtotal, DcdImpuestos, DcdTotal)
+                   SELECT 
+                       @docId,
+                       LEFT(ISNULL(td.TdeDescripcion, 'Servicio'), 200),
+                       td.TdeDescripcion,
+                       ISNULL(td.TdeCantidad, 1),
+                       ROUND(td.TdeImporteFinal / NULLIF(ISNULL(td.TdeCantidad, 1), 0), 4),
+                       ROUND(td.TdeImporteFinal / 1.22, 2),
+                       ROUND(td.TdeImporteFinal - td.TdeImporteFinal / 1.22, 2),
+                       td.TdeImporteFinal
+                   FROM dbo.TransaccionDetalle td
+                   WHERE td.TcaIdTransaccion = @tcaId
+                 `);
+             } else {
+               // Documento de producción: la barrera es este INSERT que convierte PedidosCobranzaDetalle → DocumentosContablesDetalle
+               await transaction.request()
+                 .input('docId', sql.Int, docIdDocumento)
+                 .input('tcaId', sql.Int, tcaIdTransaccion)
+                 .query(`
+                   INSERT INTO dbo.DocumentosContablesDetalle 
+                     (DocIdDocumento, OrdCodigoOrden, DcdNomItem, DcdDscItem, DcdCantidad, DcdPrecioUnitario, DcdSubtotal, DcdImpuestos, DcdTotal)
+                   SELECT 
+                       @docId,
+                       ISNULL(od.OrdCodigoOrden, td.TdeCodigoReferencia),
+                       LEFT(ISNULL(art.Descripcion, ISNULL(od.OrdNombreTrabajo, 'Servicios de Producción')), 80),
+                       LEFT(
+                           'Orden: ' + ISNULL(od.OrdCodigoOrden, td.TdeCodigoReferencia)
+                           + ISNULL(' (' + od.OrdNombreTrabajo + ')', '')
+                           + CHAR(13)+CHAR(10)
+                           + ISNULL('Técnico: ' + CAST(pcd.DatoTecnico AS VARCHAR(1000)) + CHAR(13)+CHAR(10), '')
+                           + ISNULL(CAST(pcd.LogPrecioAplicado AS VARCHAR(1000)), CAST(td.TdeDescripcion AS VARCHAR(1000))), 
+                       1000),
+                       CAST(COALESCE(
+                           CASE WHEN pcd.Cantidad IS NOT NULL AND pcd.Cantidad != FLOOR(pcd.Cantidad) THEN pcd.Cantidad ELSE NULL END,
+                           CASE WHEN od.OrdCantidad IS NOT NULL AND od.OrdCantidad != FLOOR(od.OrdCantidad) THEN od.OrdCantidad ELSE NULL END,
+                           pcd.Cantidad,
+                           od.OrdCantidad,
+                           1.0
+                       ) AS DECIMAL(18,4)),
+                       ROUND(td.TdeImporteFinal / NULLIF(COALESCE(
+                           CASE WHEN pcd.Cantidad IS NOT NULL AND pcd.Cantidad != FLOOR(pcd.Cantidad) THEN pcd.Cantidad ELSE NULL END,
+                           CASE WHEN od.OrdCantidad IS NOT NULL AND od.OrdCantidad != FLOOR(od.OrdCantidad) THEN od.OrdCantidad ELSE NULL END,
+                           pcd.Cantidad,
+                           od.OrdCantidad,
+                           1.0
+                       ), 0), 2),
+                       ROUND(td.TdeImporteFinal / 1.22, 2),
+                       ROUND(td.TdeImporteFinal - td.TdeImporteFinal / 1.22, 2),
+                       td.TdeImporteFinal
+                   FROM dbo.TransaccionDetalle td
+                   LEFT JOIN dbo.RelOrdenesRetiroOrdenes rel ON rel.OReIdOrdenRetiro = td.TdeReferenciaId
+                       AND td.TdeTipoReferencia = 'ORDEN_RETIRO'
+                   LEFT JOIN dbo.OrdenesDeposito od ON 
+                       (td.TdeTipoReferencia = 'ORDEN_RETIRO'   AND od.OrdIdOrden = rel.OrdIdOrden)
+                       OR (td.TdeTipoReferencia = 'ORDEN_DEPOSITO' AND od.OrdIdOrden = td.TdeReferenciaId)
+                   LEFT JOIN dbo.PedidosCobranza pc ON CAST(pc.NoDocERP AS VARCHAR(100)) = 
+                       LEFT(ISNULL(od.OrdCodigoOrden, CAST(td.TdeCodigoReferencia AS VARCHAR(100))), 
+                            CASE WHEN CHARINDEX(' ', ISNULL(od.OrdCodigoOrden, CAST(td.TdeCodigoReferencia AS VARCHAR(100)))) > 0 
+                                 THEN CHARINDEX(' ', ISNULL(od.OrdCodigoOrden, CAST(td.TdeCodigoReferencia AS VARCHAR(100)))) - 1 
+                                 ELSE LEN(ISNULL(od.OrdCodigoOrden, CAST(td.TdeCodigoReferencia AS VARCHAR(100)))) END)
+                   -- JOIN estricto: solo el detalle que pertenece a ese PedidosCobranza (sin OR que genera productos cartesianos)
+                   LEFT JOIN dbo.PedidosCobranzaDetalle pcd ON pcd.PedidoCobranzaID = pc.ID
+                       AND (od.OrdCodigoOrden IS NULL OR CAST(pcd.OrdenID AS VARCHAR(100)) = od.OrdCodigoOrden)
+                   LEFT JOIN dbo.Articulos art ON art.ProIdProducto = ISNULL(pcd.ProIdProducto, od.ProIdProducto)
+                   WHERE td.TcaIdTransaccion = @tcaId
+                 `);
+             }
+
+             // --- Link ORDEN movements to the new CFE ---
+             const allOdIds = [];
+             const allOrIds = [];
+             for (const a of ordenesDeposito) {
+               const id = parseInt(a.referenciaId, 10);
+               if (!isNaN(id)) allOdIds.push(id);
+             }
+             for (const ap of ordenesRetiro) {
+               const id = parseInt(ap.referenciaId, 10);
+               if (!isNaN(id)) allOrIds.push(id);
+               if (ap.orderNumbers && Array.isArray(ap.orderNumbers)) {
+                 for (const subId of ap.orderNumbers) {
+                   const numSubId = parseInt(subId, 10);
+                   if (!isNaN(numSubId)) allOdIds.push(numSubId);
+                 }
+               }
+             }
+
+             if (allOdIds.length > 0 || allOrIds.length > 0) {
+               const updateMcReq = transaction.request().input('docId', sql.Int, docIdDocumento);
+               let updateMcQuery = `
+                 UPDATE dbo.MovimientosCuenta
+                 SET DocIdDocumento = @docId
+                 WHERE MovTipo = 'ORDEN'
+                   AND DocIdDocumento IS NULL
+               `;
+               const mcConditions = [];
+               if (allOdIds.length > 0) {
+                 allOdIds.forEach((id, idx) => updateMcReq.input(`odId_${idx}`, sql.Int, id));
+                 mcConditions.push(`OrdIdOrden IN (${allOdIds.map((_, idx) => `@odId_${idx}`).join(',')})`);
+               }
+               if (allOrIds.length > 0) {
+                 allOrIds.forEach((id, idx) => updateMcReq.input(`orId_${idx}`, sql.Int, id));
+                 mcConditions.push(`OReIdOrdenRetiro IN (${allOrIds.map((_, idx) => `@orId_${idx}`).join(',')})`);
+               }
+               updateMcQuery += ` AND (${mcConditions.join(' OR ')})`;
+               await updateMcReq.query(updateMcQuery);
+               logger.info(`[CAJA-CFE] Linked ORDEN movements to DocIdDocumento=${docIdDocumento}`);
+             }
 
              // ── DeudaDocumento: consultamos al Motor Contable ────
              const evtConfig = await motorContable.getEvento(header.tipoDocumento || 'F_ORDEN');
@@ -1125,83 +1252,7 @@ async function procesarTransaccion(payload) {
                            .execute('dbo.SP_ImputarPagoPEPS');
                      }
                      
-              // Para PedidoCaja (venta libre sin órdenes de producción): capturar ítems de TransaccionDetalle directamente.
-              // Para documentos normales: hacer el JOIN completo con PedidosCobranzaDetalle (barrera productiva → contable).
-              const esPedidoCaja = header.tipoDocumento === 'PC' || (config.Detalle || '').toLowerCase().includes('pedido caja');
 
-              if (esPedidoCaja) {
-                await transaction.request()
-                  .input('docId', sql.Int, docIdDocumento)
-                  .input('tcaId', sql.Int, tcaIdTransaccion)
-                  .query(`
-                    INSERT INTO dbo.DocumentosContablesDetalle 
-                      (DocIdDocumento, DcdNomItem, DcdDscItem, DcdCantidad, DcdPrecioUnitario, DcdSubtotal, DcdImpuestos, DcdTotal)
-                    SELECT 
-                        @docId,
-                        LEFT(ISNULL(td.TdeDescripcion, 'Servicio'), 200),
-                        td.TdeDescripcion,
-                        ISNULL(td.TdeCantidad, 1),
-                        ROUND(td.TdeImporteFinal / NULLIF(ISNULL(td.TdeCantidad, 1), 0), 4),
-                        ROUND(td.TdeImporteFinal / 1.22, 2),
-                        ROUND(td.TdeImporteFinal - td.TdeImporteFinal / 1.22, 2),
-                        td.TdeImporteFinal
-                    FROM dbo.TransaccionDetalle td
-                    WHERE td.TcaIdTransaccion = @tcaId
-                  `);
-              } else {
-                // Documento de producción: la barrera es este INSERT que convierte PedidosCobranzaDetalle → DocumentosContablesDetalle
-                await transaction.request()
-                  .input('docId', sql.Int, docIdDocumento)
-                  .input('tcaId', sql.Int, tcaIdTransaccion)
-                  .query(`
-                    INSERT INTO dbo.DocumentosContablesDetalle 
-                      (DocIdDocumento, OrdCodigoOrden, DcdNomItem, DcdDscItem, DcdCantidad, DcdPrecioUnitario, DcdSubtotal, DcdImpuestos, DcdTotal)
-                    SELECT 
-                        @docId,
-                        ISNULL(od.OrdCodigoOrden, td.TdeCodigoReferencia),
-                        LEFT(ISNULL(art.Descripcion, ISNULL(od.OrdNombreTrabajo, 'Servicios de Producción')), 80),
-                        LEFT(
-                            'Orden: ' + ISNULL(od.OrdCodigoOrden, td.TdeCodigoReferencia)
-                            + ISNULL(' (' + od.OrdNombreTrabajo + ')', '')
-                            + CHAR(13)+CHAR(10)
-                            + ISNULL('Técnico: ' + CAST(pcd.DatoTecnico AS VARCHAR(1000)) + CHAR(13)+CHAR(10), '')
-                            + ISNULL(CAST(pcd.LogPrecioAplicado AS VARCHAR(1000)), CAST(td.TdeDescripcion AS VARCHAR(1000))), 
-                        1000),
-                        CAST(COALESCE(
-                            CASE WHEN pcd.Cantidad IS NOT NULL AND pcd.Cantidad != FLOOR(pcd.Cantidad) THEN pcd.Cantidad ELSE NULL END,
-                            CASE WHEN od.OrdCantidad IS NOT NULL AND od.OrdCantidad != FLOOR(od.OrdCantidad) THEN od.OrdCantidad ELSE NULL END,
-                            pcd.Cantidad,
-                            od.OrdCantidad,
-                            1.0
-                        ) AS DECIMAL(18,4)),
-                        ROUND(td.TdeImporteFinal / NULLIF(COALESCE(
-                            CASE WHEN pcd.Cantidad IS NOT NULL AND pcd.Cantidad != FLOOR(pcd.Cantidad) THEN pcd.Cantidad ELSE NULL END,
-                            CASE WHEN od.OrdCantidad IS NOT NULL AND od.OrdCantidad != FLOOR(od.OrdCantidad) THEN od.OrdCantidad ELSE NULL END,
-                            pcd.Cantidad,
-                            od.OrdCantidad,
-                            1.0
-                        ), 0), 2),
-                        ROUND(td.TdeImporteFinal / 1.22, 2),
-                        ROUND(td.TdeImporteFinal - td.TdeImporteFinal / 1.22, 2),
-                        td.TdeImporteFinal
-                    FROM dbo.TransaccionDetalle td
-                    LEFT JOIN dbo.RelOrdenesRetiroOrdenes rel ON rel.OReIdOrdenRetiro = td.TdeReferenciaId
-                        AND td.TdeTipoReferencia = 'ORDEN_RETIRO'
-                    LEFT JOIN dbo.OrdenesDeposito od ON 
-                        (td.TdeTipoReferencia = 'ORDEN_RETIRO'   AND od.OrdIdOrden = rel.OrdIdOrden)
-                        OR (td.TdeTipoReferencia = 'ORDEN_DEPOSITO' AND od.OrdIdOrden = td.TdeReferenciaId)
-                    LEFT JOIN dbo.PedidosCobranza pc ON CAST(pc.NoDocERP AS VARCHAR(100)) = 
-                        LEFT(ISNULL(od.OrdCodigoOrden, CAST(td.TdeCodigoReferencia AS VARCHAR(100))), 
-                             CASE WHEN CHARINDEX(' ', ISNULL(od.OrdCodigoOrden, CAST(td.TdeCodigoReferencia AS VARCHAR(100)))) > 0 
-                                  THEN CHARINDEX(' ', ISNULL(od.OrdCodigoOrden, CAST(td.TdeCodigoReferencia AS VARCHAR(100)))) - 1 
-                                  ELSE LEN(ISNULL(od.OrdCodigoOrden, CAST(td.TdeCodigoReferencia AS VARCHAR(100)))) END)
-                    -- JOIN estricto: solo el detalle que pertenece a ese PedidosCobranza (sin OR que genera productos cartesianos)
-                    LEFT JOIN dbo.PedidosCobranzaDetalle pcd ON pcd.PedidoCobranzaID = pc.ID
-                        AND (od.OrdCodigoOrden IS NULL OR CAST(pcd.OrdenID AS VARCHAR(100)) = od.OrdCodigoOrden)
-                    LEFT JOIN dbo.Articulos art ON art.ProIdProducto = ISNULL(pcd.ProIdProducto, od.ProIdProducto)
-                    WHERE td.TcaIdTransaccion = @tcaId
-                  `);
-              }
 
                } else {
                  logger.warn(`[CAJA-CFE] Sin cuenta DINERO para CliId=${header.clienteId} — DeudaDocumento no creada`);
@@ -1238,6 +1289,9 @@ async function procesarTransaccion(payload) {
       totalAjuste,
       totalNeto,
       totalCobrado,
+      docIdDocumento:   header.docIdDocumento || null,
+      numeroDoc:        header.numeroDoc || null,
+      serieDoc:         header.serieDoc || null,
     };
 
   } catch (err) {
@@ -1500,7 +1554,22 @@ async function _lanzarHooksContables({ aplicaciones, pagosNorm, pagosCreados, he
     // Si la transacción NO generó deuda en la tabla DeudaDocumento (ej. porque se pagó al contado 100%),
     // registramos explícitamente el CARGO de la factura/venta para que el PAGO no quede flotando
     if (!header._creoDeuda && totalNeto > 0) {
-       const conceptoContado = `Venta Contado: ${header.serieDoc || ''}-${header.numeroDoc || ''}`.trim() || 'Venta Contado';
+       let detailDesc = '';
+       if (aplicaciones && aplicaciones.length > 0) {
+         detailDesc = aplicaciones.map(ap => {
+           const code = ap.codigoRef || '';
+           const desc = ap.descripcion || '';
+           if (code && desc) return `${code} (${desc})`;
+           return code || desc;
+         }).filter(Boolean).join(', ');
+       }
+       let conceptoContado = `Venta Contado: ${header.serieDoc || ''}-${header.numeroDoc || ''}`.trim() || 'Venta Contado';
+       if (detailDesc) {
+         conceptoContado += ` (${detailDesc})`;
+       }
+       if (conceptoContado.length > 195) {
+         conceptoContado = conceptoContado.substring(0, 192) + '...';
+       }
 
        if (header.deudaPuraUSD > 0) {
           const cueIdUsd = await contabilidadSvc.obtenerOCrearCuenta(header.clienteId, 'DINERO_USD', { UsuarioAlta: usuarioId });
@@ -1523,7 +1592,7 @@ async function _lanzarHooksContables({ aplicaciones, pagosNorm, pagosCreados, he
           const cueId = await contabilidadSvc.obtenerOCrearCuenta(header.clienteId, isOrdenUSD ? 'DINERO_USD' : 'DINERO_UYU', { UsuarioAlta: usuarioId });
           await contabilidadSvc.registrarMovimiento({
              CueIdCuenta: cueId, MovTipo: 'VTA_CAJA', MovConcepto: conceptoContado,
-             MovImporte: -(totalNeto), MovUsuarioAlta: usuarioId || 1
+             MovImporte: -(totalNeto), MovUsuarioAlta: usuarioId || 1, DocIdDocumento: header.docIdDocumento || null
           });
        }
     }
@@ -1728,6 +1797,49 @@ async function generarCFEDesdeOrdenesDirectas({ orderIds, clienteId, monto, mone
       WHERE od.OrdIdOrden IN (${idList})
     `);
 
+  // Update MovimientosCuenta setting DocIdDocumento = docId
+  await pool.request()
+    .input('docId', sql.Int, docId)
+    .query(`
+      UPDATE dbo.MovimientosCuenta
+      SET DocIdDocumento = @docId
+      WHERE MovTipo = 'ORDEN'
+        AND DocIdDocumento IS NULL
+        AND OrdIdOrden IN (${idList})
+    `);
+  logger.info(`[CFE-MOSTRADOR] Linked ORDEN movements to DocIdDocumento=${docId} for orders ${idList}`);
+
+  // Query order details for the descriptive concept
+  let orderDetails = [];
+  try {
+    const ordDetailsRes = await pool.request().query(`
+      SELECT OrdCodigoOrden, OrdNombreTrabajo 
+      FROM dbo.OrdenesDeposito 
+      WHERE OrdIdOrden IN (${idList})
+    `);
+    orderDetails = ordDetailsRes.recordset;
+  } catch (errDet) {
+    logger.warn(`[CFE-MOSTRADOR] No se pudieron obtener detalles de órdenes para concepto: ${errDet.message}`);
+  }
+
+  let detailDescDirect = '';
+  if (orderDetails.length > 0) {
+    detailDescDirect = orderDetails.map(od => {
+      const code = od.OrdCodigoOrden || '';
+      const desc = od.OrdNombreTrabajo || '';
+      if (code && desc) return `${code} (${desc})`;
+      return code || desc;
+    }).filter(Boolean).join(', ');
+  }
+
+  let conceptoContadoDirect = `Factura ${serieCFE}-${numeroCFE} (CFE Mostrador)`;
+  if (detailDescDirect) {
+    conceptoContadoDirect += ` (${detailDescDirect})`;
+  }
+  if (conceptoContadoDirect.length > 195) {
+    conceptoContadoDirect = conceptoContadoDirect.substring(0, 192) + '...';
+  }
+
   // 8. DeudaDocumento: actualizar existentes O crear nueva (PAGADO, pend=0)
   //    Necesario para que aparezca en el Estado de Cuentas del cliente.
   const ddExist = await pool.request()
@@ -1767,7 +1879,7 @@ async function generarCFEDesdeOrdenesDirectas({ orderIds, clienteId, monto, mone
       await contabilidadSvc.registrarMovimiento({
         CueIdCuenta:    cueIdCuenta,
         MovTipo:        'VTA_CAJA',
-        MovConcepto:    `Factura ${serieCFE}-${numeroCFE} (CFE Mostrador)`,
+        MovConcepto:    conceptoContadoDirect,
         MovImporte:     -monto,
         MovUsuarioAlta: usuarioId || 1,
         DocIdDocumento: docId,

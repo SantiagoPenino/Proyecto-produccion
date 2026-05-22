@@ -154,15 +154,19 @@ exports.saveQuotation = async (req, res) => {
         return res.status(400).json({ error: 'Se requiere el campo "lineas" como array.' });
     }
 
+    const pool = await getPool();
+    const transaction = new sql.Transaction(pool);
+
     try {
-        const pool = await getPool();
+        await transaction.begin();
 
         // Verificar existencia de la cabecera
-        const cabRes = await pool.request()
+        const cabRes = await new sql.Request(transaction)
             .input('Doc', sql.NVarChar, noDocERP)
             .query(`SELECT * FROM PedidosCobranza WHERE LTRIM(RTRIM(NoDocERP)) = LTRIM(RTRIM(@Doc))`);
 
         if (cabRes.recordset.length === 0) {
+            await transaction.rollback();
             return res.status(404).json({ error: `No existe cotización para ${noDocERP}` });
         }
         const cabecera = cabRes.recordset[0];
@@ -174,7 +178,7 @@ exports.saveQuotation = async (req, res) => {
         let lineasAPreservar = [];
         if (!isAdmin) {
             // Cargar las líneas actuales de otras áreas para preservarlas
-            const otrasAreasRes = await pool.request()
+            const otrasAreasRes = await new sql.Request(transaction)
                 .input('PID', sql.Int, pedidoId)
                 .input('Area', sql.NVarChar, userArea)
                 .query(`
@@ -189,11 +193,11 @@ exports.saveQuotation = async (req, res) => {
 
         // Eliminar líneas del área actual (o todas si admin)
         if (isAdmin) {
-            await pool.request()
+            await new sql.Request(transaction)
                 .input('PID', sql.Int, pedidoId)
                 .query(`DELETE FROM PedidosCobranzaDetalle WHERE PedidoCobranzaID = @PID`);
         } else {
-            await pool.request()
+            await new sql.Request(transaction)
                 .input('PID', sql.Int, pedidoId)
                 .input('Area', sql.NVarChar, userArea)
                 .query(`
@@ -212,7 +216,7 @@ exports.saveQuotation = async (req, res) => {
             const lineaMonOrig = linea.MonedaOriginal || lineaMon;
             const lineaSubOrig = parseFloat(linea.SubtotalOriginal) || ((parseFloat(linea.Cantidad) || 0) * (parseFloat(linea.PrecioUnitarioOriginal) || parseFloat(linea.PrecioUnitario) || 0));
 
-            await pool.request()
+            await new sql.Request(transaction)
                 .input('PID', sql.Int, pedidoId)
                 .input('OID', sql.Int, linea.OrdenID || null)
                 .input('Cod', sql.NVarChar, linea.CodArticulo || '')
@@ -229,13 +233,13 @@ exports.saveQuotation = async (req, res) => {
                 .input('Perfil', sql.NVarChar(sql.MAX), linea.PerfilAplicado || 'Manual')
                 .input('Trace', sql.NVarChar(sql.MAX), linea.PricingTrace || 'Edición manual')
                 .query(`INSERT INTO PedidosCobranzaDetalle 
-                    (PedidoCobranzaID, OrdenID, ProIdProducto, Cantidad, DatoTecnico, PrecioUnitario, Subtotal, 
+                    (PedidoCobranzaID, OrdenID, CodArticulo, ProIdProducto, Cantidad, DatoTecnico, PrecioUnitario, Subtotal, 
                      LogPrecioAplicado, Moneda, PerfilAplicado, PricingTrace, MonedaOriginal, PrecioUnitarioOriginal, SubtotalOriginal)
-                    VALUES (@PID, @OID, @ProId, @Cant, @DT, @PU, @ST, @Log, @Mon, @Perfil, @Trace, @MonOrig, @PUOrig, @STOrig)`);
+                    VALUES (@PID, @OID, @Cod, @ProId, @Cant, @DT, @PU, @ST, @Log, @Mon, @Perfil, @Trace, @MonOrig, @PUOrig, @STOrig)`);
         }
 
         // Determinar moneda final revisando todas las líneas de la base de datos
-        const curRes = await pool.request()
+        const curRes = await new sql.Request(transaction)
             .input('PID2', sql.Int, pedidoId)
             .query(`
                 SELECT CASE WHEN EXISTS (SELECT 1 FROM PedidosCobranzaDetalle WHERE PedidoCobranzaID = @PID2 AND Moneda = 'USD') THEN 'USD' ELSE 'UYU' END as MonedaFinal
@@ -243,7 +247,7 @@ exports.saveQuotation = async (req, res) => {
         const monedaFinal = curRes.recordset[0].MonedaFinal;
 
         // Recalcular MontoTotal sumando TODAS las líneas, transformando a la moneda final
-        const totRes = await pool.request()
+        const totRes = await new sql.Request(transaction)
             .input('PID', sql.Int, pedidoId)
             .input('Cotiz', sql.Decimal(18, 4), parseFloat(cotizacion) || 40)
             .input('MFinal', sql.VarChar(10), monedaFinal)
@@ -279,7 +283,7 @@ exports.saveQuotation = async (req, res) => {
             nuevoQrImporte
         ].join(SEP);
 
-        await pool.request()
+        await new sql.Request(transaction)
             .input('ID', sql.Int, pedidoId)
             .input('Total', sql.Decimal(18, 2), nuevoTotal)
             .input('Cant', sql.NVarChar, nuevoQrCantidad)
@@ -295,6 +299,8 @@ exports.saveQuotation = async (req, res) => {
                 FechaGeneracion = GETDATE()
                 WHERE ID = @ID`);
 
+        await transaction.commit();
+
         logger.info(`[Quotation] ✅ Cotización guardada para ${noDocERP} | Total: ${nuevoTotal} | QR: ${nuevoQrString}`);
 
         res.json({
@@ -305,6 +311,11 @@ exports.saveQuotation = async (req, res) => {
         });
 
     } catch (err) {
+        try {
+            await transaction.rollback();
+        } catch (rollbackErr) {
+            logger.error('[Quotation] Error on rollback:', rollbackErr);
+        }
         logger.error('[Quotation] Error al guardar cotización:', err);
         res.status(500).json({ error: err.message });
     }

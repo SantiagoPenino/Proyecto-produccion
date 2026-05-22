@@ -904,7 +904,7 @@ async function getMovimientos(CueIdCuenta, FechaDesde = null, FechaHasta = null,
       FROM dbo.MovimientosCuenta WITH(NOLOCK)
       WHERE CueIdCuenta = @CueIdCuentaA
         AND CAST(MovFecha AS DATE) < @FechaDesdeA
-        AND MovAnulado = 0
+        AND (MovAnulado IS NULL OR MovAnulado = 0)
     `);
     saldoArrastre = Number(arrastreRes.recordset[0]?.SaldoArrastre ?? 0);
   }
@@ -1201,7 +1201,7 @@ async function getDeudasPorCliente(CliIdCliente, modo = 'TODO') {
             OR
             (d.DocIdDocumento IS NULL AND m.OrdIdOrden = d.OrdIdOrden)
          )
-           AND m.MovTipo = 'ORDEN' AND m.MovAnulado = 0
+           AND m.MovTipo = 'ORDEN' AND (m.MovAnulado IS NULL OR m.MovAnulado = 0)
          FOR JSON PATH) AS SubOrdenesJSON
       FROM dbo.DeudaDocumento d WITH(NOLOCK)
       JOIN dbo.CuentasCliente cc WITH(NOLOCK) ON cc.CueIdCuenta = d.CueIdCuenta
@@ -1277,7 +1277,7 @@ async function getTodasLasDeudasVivas() {
             OR
             (d.DocIdDocumento IS NULL AND m.OrdIdOrden = d.OrdIdOrden)
          )
-           AND m.MovTipo = 'ORDEN' AND m.MovAnulado = 0
+           AND m.MovTipo = 'ORDEN' AND (m.MovAnulado IS NULL OR m.MovAnulado = 0)
          FOR JSON PATH) AS SubOrdenesJSON
       FROM dbo.DeudaDocumento d WITH(NOLOCK)
       JOIN dbo.CuentasCliente cc WITH(NOLOCK) ON cc.CueIdCuenta = d.CueIdCuenta
@@ -1487,7 +1487,7 @@ async function abrirCicloPorCuenta({ CueIdCuenta, CliIdCliente, UsuarioAlta, Fec
       SET CicIdCiclo = @CicIdCiclo
       WHERE CueIdCuenta = @CueIdCuenta
         AND CicIdCiclo IS NULL
-        AND MovTipo IN ('ORDEN', 'PAGO')
+        AND MovTipo IN ('ORDEN', 'ENTREGA', 'ORDEN_ANTICIPO', 'PAGO', 'PAGO_CRUZADO', 'ANTICIPO', 'COBRO', 'SALDO_A_FAVOR')
         AND MovFecha >= DATEADD(month, -1, GETDATE())
     `);
     
@@ -1497,8 +1497,8 @@ async function abrirCicloPorCuenta({ CueIdCuenta, CliIdCliente, UsuarioAlta, Fec
     .query(`
       UPDATE c
       SET 
-        c.CicTotalOrdenes = ISNULL((SELECT SUM(ABS(MovImporte)) FROM dbo.MovimientosCuenta WHERE CicIdCiclo = c.CicIdCiclo AND MovTipo = 'ORDEN'), 0),
-        c.CicTotalPagos   = ISNULL((SELECT SUM(ABS(MovImporte)) FROM dbo.MovimientosCuenta WHERE CicIdCiclo = c.CicIdCiclo AND MovTipo = 'PAGO'), 0)
+        c.CicTotalOrdenes = ISNULL((SELECT SUM(ABS(MovImporte)) FROM dbo.MovimientosCuenta WHERE CicIdCiclo = c.CicIdCiclo AND MovTipo IN ('ORDEN', 'ENTREGA', 'ORDEN_ANTICIPO') AND (MovAnulado IS NULL OR MovAnulado = 0)), 0),
+        c.CicTotalPagos   = ISNULL((SELECT SUM(ABS(MovImporte)) FROM dbo.MovimientosCuenta WHERE CicIdCiclo = c.CicIdCiclo AND MovTipo IN ('PAGO', 'PAGO_CRUZADO', 'ANTICIPO', 'COBRO', 'SALDO_A_FAVOR') AND (MovAnulado IS NULL OR MovAnulado = 0)), 0)
       FROM dbo.CiclosCredito c
       WHERE c.CicIdCiclo = @CicIdCiclo
     `);
@@ -1511,12 +1511,12 @@ async function abrirCicloPorCuenta({ CueIdCuenta, CliIdCliente, UsuarioAlta, Fec
  * acumularEnCiclo
  * Acumula un importe en el campo especificado del ciclo activo.
  * @param {number} CicIdCiclo
- * @param {'ORDEN'|'PAGO'} tipo
+ * @param {'ORDEN'|'PAGO'|'PAGO_CRUZADO'|'ANTICIPO'|'COBRO'|'SALDO_A_FAVOR'} tipo
  * @param {number} importe   (siempre positivo)
  */
 async function acumularEnCiclo(CicIdCiclo, tipo, importe) {
   const pool  = await getPool();
-  const campo = tipo === 'PAGO' ? 'CicTotalPagos' : 'CicTotalOrdenes';
+  const campo = ['PAGO', 'PAGO_CRUZADO', 'ANTICIPO', 'COBRO', 'SALDO_A_FAVOR'].includes(tipo) ? 'CicTotalPagos' : 'CicTotalOrdenes';
 
   await pool.request()
     .input('CicIdCiclo', sql.Int,          CicIdCiclo)
@@ -1551,7 +1551,7 @@ async function cerrarCicloCompleto({
   montoDescuentoCalculado = 0,
   detallesEditados = [],
   detallesParaPDF = [],
-  tipoDocumento = 'FACTURA',
+  tipoDocumento = 'E-TICKET CREDITO',
   observaciones = '',
   cliDgiNombre = null,
   cliDgiDocumento = null,
@@ -1656,7 +1656,7 @@ async function cerrarCicloCompleto({
     SELECT MovIdMovimiento, MovImporte, MovTipo, DocIdDocumento
     FROM   dbo.MovimientosCuenta
     WHERE  CicIdCiclo = @CicIdCiclo
-      AND  MovAnulado = 0
+      AND  (MovAnulado IS NULL OR MovAnulado = 0)
       AND  MovTipo    != 'CIERRE_CICLO'
       AND  MovImporte  < 0              -- SOLO órdenes/débitos. Los pagos son operaciones separadas.
       AND  DocIdDocumento IS NULL       -- excluir órdenes ya facturadas individualmente
@@ -1674,6 +1674,33 @@ async function cerrarCicloCompleto({
   const totalOrdenesFacturadas = totalOrdenesCiclo - sumExcluidosOrdenes;
   const saldoFacturar          = Math.max(0, totalOrdenesFacturadas - montoDescuentoCalculado); // la factura neta
 
+  // ── GUARD: No generar documento si el importe es cero ──────────────────
+  if (saldoFacturar <= 0) {
+    logger.info(`[CICLO] Ciclo ${CicIdCiclo}: saldoFacturar=0 (sin órdenes pendientes). No se genera documento.`);
+    
+    // Cerrar el ciclo sin factura
+    await pool.request()
+      .input('CicIdCiclo', sql.Int, CicIdCiclo)
+      .query(`
+        UPDATE dbo.CiclosCredito
+        SET CicEstado = 'CERRADO', CicSaldoFacturar = 0
+        WHERE CicIdCiclo = @CicIdCiclo
+      `);
+
+    // Abrir el siguiente ciclo automáticamente
+    let nuevoCiclo = null;
+    if (ciclo.CueDiasCiclo > 0) {
+      nuevoCiclo = await abrirCicloPorCuenta({
+        CueIdCuenta: ciclo.CueIdCuenta,
+        CliIdCliente: ciclo.CliIdCliente,
+        UsuarioAlta,
+      });
+    }
+
+    logger.info(`[CICLO] Ciclo ${CicIdCiclo} → CERRADO SIN FACTURA (sin órdenes).`);
+    return { DocIdDocumento: null, SaldoFacturar: 0, docNumero: null, nuevoCiclo };
+  }
+  // ───────────────────────────────────────────────────────────────────────
 
   // Consultar saldo actual de la cuenta.
   // El saldo YA incorpora todos los movimientos del ciclo: órdenes (débitos negativos) y pagos (créditos positivos).
@@ -1702,17 +1729,33 @@ async function cerrarCicloCompleto({
   const seqRes = await pool.request()
     .input('Tipo', sql.VarChar(50), tipoDocumento)
     .query(`
-      IF NOT EXISTS (SELECT 1 FROM dbo.SecuenciaDocumentos WHERE SecTipoDoc = @Tipo AND SecSerie = 'A')
+      -- Buscar la secuencia activa para este tipo de documento (la que NO sea 'A' fallback)
+      DECLARE @SecSerie VARCHAR(10);
+      SELECT TOP 1 @SecSerie = SecSerie 
+      FROM dbo.SecuenciaDocumentos 
+      WHERE SecTipoDoc = @Tipo AND SecActivo = 1 AND SecSerie <> 'A'
+      ORDER BY SecIdSecuencia ASC;
+
+      -- Si no encontró ninguna distinta de 'A', usar 'A' como fallback
+      IF @SecSerie IS NULL
+        SET @SecSerie = (SELECT TOP 1 SecSerie FROM dbo.SecuenciaDocumentos WHERE SecTipoDoc = @Tipo AND SecActivo = 1);
+
+      -- Si aún no existe, crear una por defecto
+      IF @SecSerie IS NULL
+      BEGIN
+        SET @SecSerie = 'A';
         INSERT INTO dbo.SecuenciaDocumentos (SecTipoDoc, SecSerie, SecPrefijo, SecDigitos, SecUltimoNumero, SecActivo) 
         VALUES (@Tipo, 'A', 'A-', 5, 0, 1);
-        
+      END
+
       UPDATE dbo.SecuenciaDocumentos
       SET    SecUltimoNumero = SecUltimoNumero + 1
-      OUTPUT INSERTED.SecUltimoNumero, INSERTED.SecPrefijo
-      WHERE  SecTipoDoc = @Tipo AND SecSerie = 'A';
+      OUTPUT INSERTED.SecUltimoNumero, INSERTED.SecPrefijo, INSERTED.SecSerie
+      WHERE  SecTipoDoc = @Tipo AND SecSerie = @SecSerie;
     `);
   const numero    = seqRes.recordset[0].SecUltimoNumero;
   const prefijo   = seqRes.recordset[0].SecPrefijo || 'A-';
+  const docSerie  = seqRes.recordset[0].SecSerie || 'A';
   const docNumero = String(numero);
   const docLabel  = `${prefijo}${numero}`;
 
@@ -1770,6 +1813,7 @@ async function cerrarCicloCompleto({
         .input('CliIdCliente',  sql.Int,          ciclo.CliIdCliente)
         .input('DocTipo',       sql.VarChar(50),  tipoDocumento)
         .input('DocNumero',     sql.VarChar(50),  docNumero)
+        .input('DocSerie',      sql.VarChar(10),  docSerie)
         .input('DocSubtotal',   sql.Decimal(18,4), docSubtotal)
         .input('DocImpuestos',  sql.Decimal(18,4), docImpuestos)
         .input('DocTotalDescuentos', sql.Decimal(18,4), docDescuentos)
@@ -1794,7 +1838,7 @@ async function cerrarCicloCompleto({
              DocCliNombre, DocCliDocumento, DocCliDireccion, DocCliCiudad, DocPagado)
           OUTPUT INSERTED.DocIdDocumento
           VALUES
-            (@CueIdCuenta, @CliIdCliente, @DocTipo, @DocNumero, 'A',
+            (@CueIdCuenta, @CliIdCliente, @DocTipo, @DocNumero, @DocSerie,
              @FechaDesde, @FechaHasta, @DocSubtotal, @DocImpuestos, @DocTotal,
              @MonIdMoneda, @CicIdCiclo, 'EMITIDO', 'PENDIENTE',
              GETDATE(), @UsuarioAlta, @DocTotalDescuentos, 0, @DocObservaciones,
@@ -1803,16 +1847,27 @@ async function cerrarCicloCompleto({
     DocIdDocumento = docRes.recordset[0].DocIdDocumento;
 
     // Vincular el documento generado a los movimientos del ciclo facturado para que dejen de estar pendientes
-    await pool.request()
+    const linkReq = pool.request()
       .input('DocId', sql.Int, DocIdDocumento)
-      .input('CicIdCiclo', sql.Int, CicIdCiclo)
-      .query(`
-        UPDATE dbo.MovimientosCuenta
-        SET DocIdDocumento = @DocId
-        WHERE CicIdCiclo = @CicIdCiclo
-          AND MovAnulado = 0
-          AND DocIdDocumento IS NULL
-      `);
+      .input('CicIdCiclo', sql.Int, CicIdCiclo);
+    
+    let linkQueryAdd = '';
+    if (excluidos && excluidos.length > 0) {
+      const inClause = excluidos.map((id, i) => {
+        linkReq.input(`ex${i}`, sql.Int, id);
+        return `@ex${i}`;
+      }).join(',');
+      linkQueryAdd = `AND MovIdMovimiento NOT IN (${inClause})`;
+    }
+
+    await linkReq.query(`
+      UPDATE dbo.MovimientosCuenta
+      SET DocIdDocumento = @DocId
+      WHERE CicIdCiclo = @CicIdCiclo
+        AND (MovAnulado IS NULL OR MovAnulado = 0)
+        AND DocIdDocumento IS NULL
+        ${linkQueryAdd}
+    `);
 
 
   // 4. Insertar detalles para el PDF
@@ -1889,38 +1944,60 @@ async function cerrarCicloCompleto({
   // Las órdenes del ciclo ya están consolidadas en la factura A-X.
   // Cualquier DeudaDocumento individual que haya quedado de esas órdenes
   // se marca como PAGADO para evitar doble contabilización en Antigüedad.
-  await pool.request()
+  const absReq = pool.request()
     .input('CicIdCiclo',    sql.Int, CicIdCiclo)
-    .input('CueIdCuenta',   sql.Int, ciclo.CueIdCuenta)
-    .query(`
-      UPDATE dd
-      SET    dd.DDeEstado          = 'PAGADO',
-             dd.DDeImportePendiente = 0
-      FROM   dbo.DeudaDocumento dd
-      WHERE  dd.CueIdCuenta = @CueIdCuenta
-        AND  dd.DDeEstado IN ('PENDIENTE', 'PARCIAL', 'VENCIDO')
-        AND  dd.OrdIdOrden IS NOT NULL          -- solo deudas individuales de órdenes
-        AND  dd.DocIdDocumento IS NULL          -- sin documento propio (son las generadas por hookOrdenCreada)
-        AND  dd.OrdIdOrden IN (
-               SELECT DISTINCT m.OrdIdOrden
-               FROM   dbo.MovimientosCuenta m
-               WHERE  m.CicIdCiclo = @CicIdCiclo
-                 AND  m.OrdIdOrden IS NOT NULL
-                 AND  m.MovAnulado = 0
-             )
-    `);
+    .input('CueIdCuenta',   sql.Int, ciclo.CueIdCuenta);
 
-  const absorbidas = await pool.request()
+  let absQueryAdd = '';
+  if (excluidos && excluidos.length > 0) {
+    const inClause = excluidos.map((id, i) => {
+      absReq.input(`exabs${i}`, sql.Int, id);
+      return `@exabs${i}`;
+    }).join(',');
+    absQueryAdd = `AND m.MovIdMovimiento NOT IN (${inClause})`;
+  }
+
+  await absReq.query(`
+    UPDATE dd
+    SET    dd.DDeEstado          = 'PAGADO',
+           dd.DDeImportePendiente = 0
+    FROM   dbo.DeudaDocumento dd
+    WHERE  dd.CueIdCuenta = @CueIdCuenta
+      AND  dd.DDeEstado IN ('PENDIENTE', 'PARCIAL', 'VENCIDO')
+      AND  dd.OrdIdOrden IS NOT NULL          -- solo deudas individuales de órdenes
+      AND  dd.DocIdDocumento IS NULL          -- sin documento propio (son las generadas por hookOrdenCreada)
+      AND  dd.OrdIdOrden IN (
+             SELECT DISTINCT m.OrdIdOrden
+             FROM   dbo.MovimientosCuenta m
+             WHERE  m.CicIdCiclo = @CicIdCiclo
+               AND  m.OrdIdOrden IS NOT NULL
+               AND  (m.MovAnulado IS NULL OR m.MovAnulado = 0)
+               ${absQueryAdd}
+           )
+  `);
+
+  const absCountReq = pool.request()
     .input('CicIdCiclo', sql.Int, CicIdCiclo)
-    .input('CueIdCuenta', sql.Int, ciclo.CueIdCuenta)
-    .query(`
-      SELECT COUNT(*) AS total FROM dbo.DeudaDocumento dd
-      WHERE  dd.CueIdCuenta = @CueIdCuenta AND dd.DDeEstado = 'PAGADO'
-        AND  dd.OrdIdOrden IN (
-               SELECT DISTINCT m.OrdIdOrden FROM dbo.MovimientosCuenta m
-               WHERE m.CicIdCiclo = @CicIdCiclo AND m.OrdIdOrden IS NOT NULL AND m.MovAnulado = 0
-             )
-    `);
+    .input('CueIdCuenta', sql.Int, ciclo.CueIdCuenta);
+
+  let absCountQueryAdd = '';
+  if (excluidos && excluidos.length > 0) {
+    const inClause = excluidos.map((id, i) => {
+      absCountReq.input(`exabscnt${i}`, sql.Int, id);
+      return `@exabscnt${i}`;
+    }).join(',');
+    absCountQueryAdd = `AND m.MovIdMovimiento NOT IN (${inClause})`;
+  }
+
+  const absorbidas = await absCountReq.query(`
+    SELECT COUNT(*) AS total FROM dbo.DeudaDocumento dd
+    WHERE  dd.CueIdCuenta = @CueIdCuenta AND dd.DDeEstado = 'PAGADO'
+      AND  dd.OrdIdOrden IN (
+             SELECT DISTINCT m.OrdIdOrden FROM dbo.MovimientosCuenta m
+             WHERE m.CicIdCiclo = @CicIdCiclo AND m.OrdIdOrden IS NOT NULL AND (m.MovAnulado IS NULL OR m.MovAnulado = 0)
+             ${absCountQueryAdd}
+           )
+  `);
   logger.info(`[CICLO] ${absorbidas.recordset[0].total} DeudaDocumento(s) individuales absorbidas por el cierre del ciclo ${CicIdCiclo}`);
 
 
@@ -1948,11 +2025,22 @@ async function cerrarCicloCompleto({
   });
 
   // 6. Cerrar el ciclo actual (actualizando con los montos ajustados)
+  const pagosCicloRes = await pool.request()
+    .input('CicIdCiclo', sql.Int, CicIdCiclo)
+    .query(`
+      SELECT ISNULL(SUM(ABS(MovImporte)), 0) AS total
+      FROM   dbo.MovimientosCuenta
+      WHERE  CicIdCiclo = @CicIdCiclo
+        AND  (MovAnulado IS NULL OR MovAnulado = 0)
+        AND  MovTipo IN ('PAGO', 'PAGO_CRUZADO', 'ANTICIPO', 'COBRO', 'SALDO_A_FAVOR')
+    `);
+  const totalPagosCicloReal = pagosCicloRes.recordset[0]?.total || 0;
+
   await pool.request()
     .input('CicIdCiclo',     sql.Int,          CicIdCiclo)
     .input('SaldoFacturar',  sql.Decimal(18,4), saldoFacturar)
     .input('TotalOrdenes',   sql.Decimal(18,4), totalOrdenesFacturadas)
-    .input('TotalPagos',     sql.Decimal(18,4), 0)
+    .input('TotalPagos',     sql.Decimal(18,4), totalPagosCicloReal)
     .input('NumeroFactura',  sql.VarChar(100),  docLabel)
     .input('UsuarioCierre',  sql.Int,          UsuarioAlta)
     .query(`

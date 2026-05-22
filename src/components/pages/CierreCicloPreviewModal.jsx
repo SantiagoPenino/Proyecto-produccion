@@ -201,9 +201,10 @@ export default function CierreCicloPreviewModal({
     if (monedaFactura === 'USD' && Number(cuenta?.MonIdMoneda) === 1) baseMontoDescuento = montoDescuento * cotDolar;
 
     try {
-      const obsConPeriodo = observaciones 
-        ? `Período: ${new Date(ciclo.CicFechaInicio).toLocaleDateString('es-UY')} al ${new Date(ciclo.CicFechaCierre).toLocaleDateString('es-UY')}\n\n${observaciones}` 
-        : `Período: ${new Date(ciclo.CicFechaInicio).toLocaleDateString('es-UY')} al ${new Date(ciclo.CicFechaCierre).toLocaleDateString('es-UY')}`;
+      const esCicloReal = ciclo?.CicIdCiclo && !isNaN(Number(ciclo.CicIdCiclo));
+      const obsConPeriodo = esCicloReal
+        ? `Período: ${new Date(ciclo.CicFechaInicio).toLocaleDateString('es-UY')} al ${new Date(ciclo.CicFechaCierre).toLocaleDateString('es-UY')}${observaciones ? '\n\n' + observaciones : ''}`
+        : (observaciones || '');
 
       const detallesParaPDF = getDetallesParaPDF();
 
@@ -410,9 +411,9 @@ export default function CierreCicloPreviewModal({
       DocCliNombre: cliDgiNombre,
       DocCliDocumento: cliDgiDocumento,
       DocCliDireccion: cliDgiDireccion,
-      DocObservaciones: observaciones 
-        ? `Período: ${new Date(ciclo.CicFechaInicio).toLocaleDateString('es-UY')} al ${new Date(ciclo.CicFechaCierre).toLocaleDateString('es-UY')}\n\n${observaciones}` 
-        : `Período: ${new Date(ciclo.CicFechaInicio).toLocaleDateString('es-UY')} al ${new Date(ciclo.CicFechaCierre).toLocaleDateString('es-UY')}`
+      DocObservaciones: (ciclo?.CicIdCiclo && !isNaN(Number(ciclo.CicIdCiclo)))
+        ? `Período: ${new Date(ciclo.CicFechaInicio).toLocaleDateString('es-UY')} al ${new Date(ciclo.CicFechaCierre).toLocaleDateString('es-UY')}${observaciones ? '\n\n' + observaciones : ''}`
+        : (observaciones || '')
     };
 
     generarPdfFacturaDGI(fakeDoc, detallesParaPDF);
@@ -426,7 +427,12 @@ export default function CierreCicloPreviewModal({
         <div className="flex items-center justify-between px-6 py-5 bg-white border-b border-slate-100">
           <div>
             <h3 className="text-xl font-black text-slate-800">Vista Previa de Facturación</h3>
-            <p className="text-sm text-slate-500 mt-1">Revisa, edita precios y aplica descuentos antes de cerrar el ciclo de {cliente?.Nombre}.</p>
+            <p className="text-sm text-slate-500 mt-1">
+              {ciclo?.CicIdCiclo && !isNaN(Number(ciclo.CicIdCiclo))
+                ? `Revisa, edita precios y aplica descuentos antes de cerrar el ciclo de ${cliente?.Nombre}.`
+                : `Revisa, edita precios y aplica descuentos antes de facturar las órdenes de ${cliente?.Nombre}.`
+              }
+            </p>
           </div>
           <div className="flex items-center gap-4">
             

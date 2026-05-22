@@ -249,8 +249,9 @@ async function runEstadosCuentaBatch() {
   logger.info('[ESTADOS-CRON] ▶ Iniciando generación de estados de cuenta...');
   const pool = await getPool();
 
-  // 1. Mantenimiento previo: forzar cierre de todos los ciclos ABIERTOS (Semanales) y auto-abrir
-  await svc.forzarCierreTodosCiclosAbiertos();
+  // DESACTIVADO: El cierre de ciclos se hace manualmente desde la UI
+  // await svc.forzarCierreTodosCiclosAbiertos();
+  logger.info('[ESTADOS-CRON] ℹ️ Cierre automático de ciclos DESACTIVADO (solo manual desde UI)');
   await marcarDeudasVencidas(pool);
   await asegurarCiclosSemanalesAbiertos(pool);
 

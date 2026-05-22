@@ -1,0 +1,162 @@
+=== COMPARACIÓN DE TABLAS ===
+❌ Tablas faltantes en SecureAppDB (están en SecureAppDB2205):
+   - Config_CFE
+
+=== COMPARACIÓN DE COLUMNAS ===
+📋 Tabla [AjustesDocumento]:
+   ⚠️ Columna [AjuBaseCalculo] tiene diferencias:
+      - Precisión/Escala: (18,2) (debería ser (18,0))
+   ⚠️ Columna [AjuImporte] tiene diferencias:
+      - Precisión/Escala: (18,4) (debería ser (18,0))
+   ⚠️ Columna [AjuMontoFijo] tiene diferencias:
+      - Precisión/Escala: (18,2) (debería ser (18,0))
+   ⚠️ Columna [AjuPorcentaje] tiene diferencias:
+      - Precisión/Escala: (5,2) (debería ser (18,0))
+📋 Tabla [AutorizacionesSinPago]:
+   ⚠️ Columna [AuzMontoDeuda] tiene diferencias:
+      - Precisión/Escala: (18,2) (debería ser (18,0))
+📋 Tabla [CiclosCredito]:
+   ⚠️ Columna [CicSaldoFacturar] tiene diferencias:
+      - Precisión/Escala: (18,4) (debería ser (18,2))
+   ⚠️ Columna [CicTotalOrdenes] tiene diferencias:
+      - Precisión/Escala: (18,4) (debería ser (18,2))
+   ⚠️ Columna [CicTotalPagos] tiene diferencias:
+      - Precisión/Escala: (18,4) (debería ser (18,2))
+📋 Tabla [Cont_AsientosDetalle]:
+   ⚠️ Columna [DetCotizacion] tiene diferencias:
+      - Precisión/Escala: (18,6) (debería ser (18,0))
+   ⚠️ Columna [DetDebeUYU] tiene diferencias:
+      - Precisión/Escala: (18,2) (debería ser (18,0))
+   ⚠️ Columna [DetHaberUYU] tiene diferencias:
+      - Precisión/Escala: (18,2) (debería ser (18,0))
+   ⚠️ Columna [DetImporteOriginal] tiene diferencias:
+      - Precisión/Escala: (18,4) (debería ser (18,0))
+📋 Tabla [Cont_EventosContables]:
+   ⚠️ Columna [EvtDescripcion] tiene diferencias:
+      - Longitud: 1000 (debería ser 500)
+   ⚠️ Columna [EvtNombre] tiene diferencias:
+      - Longitud: 200 (debería ser 100)
+📋 Tabla [Cont_PlanCuentas]:
+   ⚠️ Columna [CueCodigo] tiene diferencias:
+      - Longitud: 30 (debería ser 20)
+   ⚠️ Columna [CueMoneda] tiene diferencias:
+      - Longitud: 10 (debería ser 5)
+   ⚠️ Columna [CueNombre] tiene diferencias:
+      - Longitud: 200 (debería ser 100)
+   ⚠️ Columna [CueTipoBase] tiene diferencias:
+      - Longitud: 50 (debería ser 20)
+📋 Tabla [CuentasCliente]:
+   ⚠️ Columna [CueLimiteCredito] tiene diferencias:
+      - Precisión/Escala: (18,4) (debería ser (18,2))
+   ⚠️ Columna [CueSaldoActual] tiene diferencias:
+      - Precisión/Escala: (18,4) (debería ser (18,2))
+📋 Tabla [DeudaDocumento]:
+   ⚠️ Columna [DDeImporteOriginal] tiene diferencias:
+      - Precisión/Escala: (18,4) (debería ser (18,2))
+   ⚠️ Columna [DDeImportePendiente] tiene diferencias:
+      - Precisión/Escala: (18,4) (debería ser (18,2))
+📋 Tabla [DocumentosContables]:
+   ❌ Falta columna [DocCaeNumero] en SecureAppDB
+   ❌ Falta columna [DocCodSeguridad] en SecureAppDB
+   ❌ Falta columna [DocDiasVencimiento] en SecureAppDB
+   ⚠️ Columna [DocSubtotal] tiene diferencias:
+      - Nullability: NO (debería ser YES)
+   ⚠️ Columna [DocTipo] tiene diferencias:
+      - Longitud: 20 (debería ser 50)
+   ⚠️ Columna [DocTotal] tiene diferencias:
+      - Nullability: NO (debería ser YES)
+   ⚠️ Columna [DocTotalDescuentos] tiene diferencias:
+      - Nullability: NO (debería ser YES)
+   ⚠️ Columna [DocTotalRecargos] tiene diferencias:
+      - Nullability: NO (debería ser YES)
+   ❌ Falta columna [DocVendedorId] en SecureAppDB
+📋 Tabla [EgresosCaja]:
+   ⚠️ Columna [EgrCotizacion] tiene diferencias:
+      - Precisión/Escala: (18,6) (debería ser (18,0))
+   ⚠️ Columna [EgrMonto] tiene diferencias:
+      - Precisión/Escala: (18,2) (debería ser (18,0))
+   ⚠️ Columna [EgrMontoConvertido] tiene diferencias:
+      - Precisión/Escala: (18,2) (debería ser (18,0))
+📋 Tabla [ImputacionPago]:
+   ⚠️ Columna [ImpImporte] tiene diferencias:
+      - Precisión/Escala: (18,4) (debería ser (18,0))
+📋 Tabla [MovimientosCuenta]:
+   ⚠️ Columna [MovImporte] tiene diferencias:
+      - Precisión/Escala: (18,4) (debería ser (18,2))
+   ⚠️ Columna [MovSaldoPosterior] tiene diferencias:
+      - Nullability: NO (debería ser YES)
+      - Precisión/Escala: (18,4) (debería ser (18,2))
+📋 Tabla [Pagos]:
+   ⚠️ Columna [PagMontoPago] tiene diferencias:
+      - Tipo: float (debería ser decimal)
+      - Precisión/Escala: (53,null) (debería ser (18,2))
+📋 Tabla [PedidosCobranza]:
+   ⚠️ Columna [MetrosContabilizados] tiene diferencias:
+      - Precisión/Escala: (18,2) (debería ser (18,0))
+   ⚠️ Columna [MontoContabilizado] tiene diferencias:
+      - Precisión/Escala: (18,2) (debería ser (18,0))
+📋 Tabla [PedidosCobranzaDetalle]:
+   ⚠️ Columna [DatoTecnico] tiene diferencias:
+      - Precisión/Escala: (18,2) (debería ser (18,0))
+   ⚠️ Columna [PrecioUnitarioOriginal] tiene diferencias:
+      - Precisión/Escala: (18,2) (debería ser (18,0))
+   ⚠️ Columna [SubtotalOriginal] tiene diferencias:
+      - Precisión/Escala: (18,2) (debería ser (18,0))
+📋 Tabla [PlanesMetros]:
+   ⚠️ Columna [PlaCantidadTotal] tiene diferencias:
+      - Precisión/Escala: (18,4) (debería ser (18,0))
+   ⚠️ Columna [PlaCantidadUsada] tiene diferencias:
+      - Precisión/Escala: (18,4) (debería ser (18,0))
+   ⚠️ Columna [PlaPrecioUnitario] tiene diferencias:
+      - Precisión/Escala: (18,2) (debería ser (18,0))
+📋 Tabla [SecuenciaDocumentos]:
+   ❌ Falta columna [SecFechaVencimientoCAE] en SecureAppDB
+   ❌ Falta columna [SecNroResolucion] en SecureAppDB
+   ❌ Falta columna [SecRangoDesde] en SecureAppDB
+   ❌ Falta columna [SecRangoHasta] en SecureAppDB
+📋 Tabla [SesionesTurno]:
+   ⚠️ Columna [StuDiferencia] tiene diferencias:
+      - Precisión/Escala: (18,2) (debería ser (18,0))
+   ⚠️ Columna [StuMontoFinal] tiene diferencias:
+      - Precisión/Escala: (18,2) (debería ser (18,0))
+   ⚠️ Columna [StuMontoInicial] tiene diferencias:
+      - Precisión/Escala: (18,2) (debería ser (18,0))
+   ⚠️ Columna [StuMontoSistema] tiene diferencias:
+      - Precisión/Escala: (18,2) (debería ser (18,0))
+📋 Tabla [TesoreriaCheques]:
+   ⚠️ Columna [Monto] tiene diferencias:
+      - Precisión/Escala: (18,2) (debería ser (18,0))
+📋 Tabla [TransaccionDetalle]:
+   ⚠️ Columna [TdeAjuste] tiene diferencias:
+      - Precisión/Escala: (18,2) (debería ser (18,0))
+   ⚠️ Columna [TdeImporteFinal] tiene diferencias:
+      - Precisión/Escala: (18,2) (debería ser (18,0))
+   ⚠️ Columna [TdeImporteOriginal] tiene diferencias:
+      - Precisión/Escala: (18,2) (debería ser (18,0))
+📋 Tabla [TransaccionesCaja]:
+   ⚠️ Columna [TcaTotalAjuste] tiene diferencias:
+      - Precisión/Escala: (18,2) (debería ser (18,0))
+   ⚠️ Columna [TcaTotalBruto] tiene diferencias:
+      - Precisión/Escala: (18,2) (debería ser (18,0))
+   ⚠️ Columna [TcaTotalCobrado] tiene diferencias:
+      - Precisión/Escala: (18,2) (debería ser (18,0))
+   ⚠️ Columna [TcaTotalNeto] tiene diferencias:
+      - Precisión/Escala: (18,2) (debería ser (18,0))
+
+=== COMPARACIÓN DE PROCEDIMIENTOS ALMACENADOS ===
+✅ No faltan procedimientos en SecureAppDB.
+
+=== DIFERENCIAS EN EL CONTENIDO DE PROCEDIMIENTOS ===
+⚠️ Procedimiento [SP_AbrirSesionCaja] difiere en su definición / código.
+⚠️ Procedimiento [sp_ArchivosOrden_Listar] difiere en su definición / código.
+⚠️ Procedimiento [sp_CalcularFechaEntrega] difiere en su definición / código.
+⚠️ Procedimiento [SP_CerrarSesionCaja] difiere en su definición / código.
+⚠️ Procedimiento [sp_GenerarCRUD_Faltantes_PROFIX] difiere en su definición / código.
+⚠️ Procedimiento [sp_GenerarCRUD_Faltantes_PROFIX2] difiere en su definición / código.
+⚠️ Procedimiento [sp_GenerarCRUD_Faltantes_ULTRA] difiere en su definición / código.
+⚠️ Procedimiento [sp_GetDetalleOrdenControl] difiere en su definición / código.
+⚠️ Procedimiento [sp_GetProductionBoard] difiere en su definición / código.
+⚠️ Procedimiento [SP_ImputarPagoPEPS] difiere en su definición / código.
+⚠️ Procedimiento [sp_PredecirProximoServicio] difiere en su definición / código.
+⚠️ Procedimiento [SP_RegistrarMovimiento] difiere en su definición / código.
+⚠️ Procedimiento [SP_SiguienteNumeroDoc] difiere en su definición / código.

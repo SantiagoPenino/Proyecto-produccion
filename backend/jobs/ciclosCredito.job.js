@@ -33,16 +33,9 @@ function parsearHora(horaStr = '23:55') {
  * Lógica principal: delega en contabilidadService.cerrarCiclosVencidos
  */
 async function ejecutarCierreCiclos() {
-  logger.info('[CICLOS-CRON] 🔄 Iniciando cierre de ciclos vencidos...');
-  try {
-    const svc = require('../services/contabilidadService');
-    const resultado = await svc.cerrarCiclosVencidos();
-    logger.info(`[CICLOS-CRON] ✅ Completado − Cerrados: ${resultado.procesados} | Errores: ${resultado.errores}`);
-    return resultado;
-  } catch (err) {
-    logger.error(`[CICLOS-CRON] ❌ Error: ${err.message}`);
-    return { procesados: 0, errores: 1, error: err.message };
-  }
+  // DESACTIVADO: El cierre de ciclos se hace manualmente desde la UI
+  logger.info('[CICLOS-CRON] ℹ️ Cierre automático DESACTIVADO. Use la UI para cerrar ciclos manualmente.');
+  return { procesados: 0, errores: 0 };
 }
 
 /**

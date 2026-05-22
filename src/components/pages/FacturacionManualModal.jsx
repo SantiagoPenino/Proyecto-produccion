@@ -276,7 +276,7 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
                           <td className="p-2">
                             <input 
                               type="number" 
-                              required min="0" step="0.01"
+                              required min="0" step="any"
                               className="w-full bg-white border border-slate-200 rounded-lg px-2 py-1 text-sm outline-none focus:border-blue-500"
                               value={line.cantidad}
                               onChange={(e) => updateLinea(line.id, 'cantidad', e.target.value)}
@@ -285,7 +285,7 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
                           <td className="p-2">
                             <input 
                               type="number" 
-                              required min="0" step="0.01"
+                              required min="0" step="any"
                               className="w-full bg-white border border-slate-200 rounded-lg px-2 py-1 text-sm outline-none focus:border-blue-500"
                               value={line.precioUnitario}
                               onChange={(e) => updateLinea(line.id, 'precioUnitario', e.target.value)}

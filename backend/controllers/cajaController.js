@@ -137,10 +137,26 @@ const abrirSesion = async (req, res) => {
   const { montoInicial = 0 } = req.body;
   try {
     const pool = await getPool();
+
+    // Verificar que no exista una sesión abierta hoy
+    const chk = await pool.request().query(`
+      SELECT 1 FROM dbo.SesionesTurno WITH(NOLOCK)
+      WHERE StuEstado = 'ABIERTA'
+        AND CAST(StuFechaApertura AS DATE) = CAST(GETDATE() AS DATE)
+    `);
+    if (chk.recordset.length > 0) {
+      return res.status(409).json({ success: false, error: 'Ya existe una sesión de caja ABIERTA hoy. Ciérrela antes de abrir una nueva.' });
+    }
+
     const result = await pool.request()
-      .input('UsuarioId',    sql.Int,           usuarioId)
-      .input('MontoInicial', sql.Decimal(18,2),  parseFloat(montoInicial) || 0)
-      .execute('SP_AbrirSesionCaja');
+      .input('UsuarioId',    sql.Int,          usuarioId)
+      .input('MontoInicial', sql.Decimal(18,2), parseFloat(montoInicial) || 0)
+      .query(`
+        INSERT INTO dbo.SesionesTurno (StuFechaApertura, StuUsuarioAbre, StuMontoInicial, StuEstado)
+        VALUES (GETDATE(), @UsuarioId, @MontoInicial, 'ABIERTA');
+        SELECT SCOPE_IDENTITY() AS StuIdSesion, GETDATE() AS FechaApertura;
+      `);
+
     logger.info(`[CAJA] 🟢 Caja abierta por usuario ${usuarioId}. Sesión: ${result.recordset[0]?.StuIdSesion}`);
     return res.status(201).json({ success:true, sesion:result.recordset[0] });
   } catch (err) {
@@ -313,14 +329,13 @@ const getMovimientosTurno = async (req, res) => {
 
 /** GET /api/contabilidad/caja/siguiente-numero?tipoDoc=ETICKET&serie=A */
 const getSiguienteNumero = async (req, res) => {
-  const { tipoDoc, serie = 'A' } = req.query;
+  const { tipoDoc } = req.query;
   if (!tipoDoc) return res.status(400).json({ success:false, error:'tipoDoc es requerido.' });
   try {
     const pool = await getPool();
     // Solo PEEK — no incrementa todavía; el incremento real ocurre al CONFIRMAR la transacción
     const result = await pool.request()
       .input('TipoDoc', sql.VarChar(20), tipoDoc)
-      .input('Serie',   sql.VarChar(5),  serie)
       .query(`
         SELECT
           s.SecUltimoNumero + 1  AS NumeroEntero,
@@ -332,10 +347,10 @@ const getSiguienteNumero = async (req, res) => {
           ISNULL(s.SecPrefijo,'') AS Prefijo
         FROM Config_TiposDocumento c WITH(NOLOCK)
         JOIN dbo.SecuenciaDocumentos s WITH(NOLOCK) ON c.SecIdSecuencia = s.SecIdSecuencia
-        WHERE c.CodDocumento = @TipoDoc AND s.SecSerie = @Serie AND s.SecActivo = 1
+        WHERE c.CodDocumento = @TipoDoc AND s.SecActivo = 1
       `);
     if (!result.recordset.length)
-      return res.status(404).json({ success:false, error:`No hay secuencia para ${tipoDoc}-${serie}.` });
+      return res.status(404).json({ success:false, error:`No hay secuencia para el tipo de documento ${tipoDoc}.` });
     return res.json({ success:true, ...result.recordset[0] });
   } catch (err) { return res.status(500).json({ success:false, error:err.message }); }
 };
@@ -972,8 +987,8 @@ const registrarOperacionManual = async (req, res) => {
         .input('Con', sql.NVarChar(500), `${evento.EvtNombre}${observaciones ? ': '+observaciones : ''}`)
         .input('Imp', sql.Decimal(18,4), importeMov).input('Sal', sql.Decimal(18,4), nuevoSaldo)
         .input('Usr', sql.Int, usuarioId).input('Doc', sql.Int, docId)
-        .query(`INSERT INTO dbo.MovimientosCuenta (CueIdCuenta,MovTipo,MovConcepto,MovImporte,MovSaldoPosterior,DocIdDocumento,MovUsuarioAlta,MovFecha)
-                VALUES (@Cue,@Tip,@Con,@Imp,@Sal,@Doc,@Usr,GETDATE())`);
+        .query(`INSERT INTO dbo.MovimientosCuenta (CueIdCuenta,MovTipo,MovConcepto,MovImporte,MovSaldoPosterior,DocIdDocumento,MovUsuarioAlta,MovFecha,MovAnulado)
+                VALUES (@Cue,@Tip,@Con,@Imp,@Sal,@Doc,@Usr,GETDATE(),0)`);
     }
 
     // 4. Asiento en Libro Mayor usando reglas del Motor
@@ -1192,7 +1207,7 @@ const procesarPagoDeuda = async (req, res) => {
             FROM dbo.Config_TiposDocumento c
             JOIN dbo.SecuenciaDocumentos s ON c.SecIdSecuencia = s.SecIdSecuencia
             WHERE s.SecActivo = 1 AND s.SecSerie = @Serie
-            ORDER BY CASE c.CodDocumento WHEN '05' THEN 0 WHEN '101' THEN 1 ELSE 9 END
+            ORDER BY CASE c.CodDocumento WHEN '05' THEN 0 ELSE 9 END
           `);
         if (autoDocR.recordset.length) {
           tipoTransaccion = autoDocR.recordset[0].CodDocumento;
@@ -1464,9 +1479,9 @@ const generarNotaCredito = async (req, res) => {
   const usuarioId = req.user?.id || 70;
   try {
     const { docIdOrigen, monto, motivo, clienteId, cuentaId, monedaId } = req.body;
-    if (!docIdOrigen || !monto || !clienteId || !cuentaId)
-      return res.status(400).json({ error: 'Faltan parámetros: docIdOrigen, monto, clienteId, cuentaId' });
-    const montoNum = Number(monto);
+    if (!docIdOrigen || !clienteId || !cuentaId)
+      return res.status(400).json({ error: 'Faltan parámetros: docIdOrigen, clienteId, cuentaId' });
+    let montoNum = Number(monto);
     if (montoNum <= 0) return res.status(400).json({ error: 'El monto debe ser mayor a 0' });
 
     const pool = await getPool();
@@ -1475,14 +1490,17 @@ const generarNotaCredito = async (req, res) => {
     try {
       const docR = await transaction.request()
         .input('DocId', sql.Int, parseInt(docIdOrigen))
-        .query(`SELECT DocTipo, DocSerie, DocNumero, DocTotal, MonIdMoneda, CueIdCuenta
+        .query(`SELECT DocTipo, DocSerie, DocNumero, DocTotal, MonIdMoneda, CueIdCuenta, DocSubtotal, DocImpuestos, DocTotalDescuentos, DocTotalRecargos, CliIdCliente
                 FROM dbo.DocumentosContables WHERE DocIdDocumento = @DocId`);
       if (!docR.recordset.length) throw new Error('Documento origen no encontrado');
       const docOrigen = docR.recordset[0];
 
-      // Admin NC: '100' = E-Ticket NC Admin, '104' = E-Factura NC Admin
+      // La NC debe ser igual al documento original con las mismas líneas y totales
+      montoNum = Number(docOrigen.DocTotal) || 0;
+
+      // '10' = E-Ticket Nota De Credito, '04' = E-Factura Nota De Credito
       const esETicket = !docOrigen.DocTipo?.toUpperCase().includes('FACTURA');
-      const codNC = esETicket ? '100' : '104';
+      const codNC = esETicket ? '10' : '04';
 
       const seqR = await transaction.request()
         .input('CodDoc', sql.VarChar(10), codNC)
@@ -1505,30 +1523,37 @@ const generarNotaCredito = async (req, res) => {
 
       const ncR = await transaction.request()
         .input('Cue',   sql.Int,           cueId)
-        .input('Cli',   sql.Int,           parseInt(clienteId))
+        .input('Cli',   sql.Int,           parseInt(clienteId) || docOrigen.CliIdCliente)
         .input('Tipo',  sql.VarChar(50),   ncTipo)
         .input('Num',   sql.VarChar(20),   ncNumero)
-        .input('Monto', sql.Decimal(18,2), montoNum)
         .input('MonId', sql.Int,           monId)
         .input('Usr',   sql.Int,           usuarioId)
         .input('DocRef',sql.Int,           parseInt(docIdOrigen))
         .input('Motivo',sql.NVarChar(300), motivo || 'Nota de crédito')
+        .input('Subtotal', sql.Decimal(18,2), docOrigen.DocSubtotal || 0)
+        .input('TotalDescuentos', sql.Decimal(18,2), docOrigen.DocTotalDescuentos || 0)
+        .input('TotalRecargos', sql.Decimal(18,2), docOrigen.DocTotalRecargos || 0)
+        .input('Total', sql.Decimal(18,2), docOrigen.DocTotal || 0)
+        .input('Impuestos', sql.Decimal(18,2), docOrigen.DocImpuestos || 0)
         .query(`INSERT INTO dbo.DocumentosContables
                   (CueIdCuenta,CliIdCliente,MonIdMoneda,DocTipo,DocNumero,DocSerie,
                    DocSubtotal,DocTotalDescuentos,DocTotalRecargos,DocTotal,DocImpuestos,
                    DocEstado,CfeEstado,DocFechaEmision,DocUsuarioAlta,DocObservaciones,DocIdDocumentoRef,DocMotivoRef,DocPagado)
                 OUTPUT INSERTED.DocIdDocumento
                 VALUES (@Cue,@Cli,@MonId,@Tipo,@Num,'A',
-                        @Monto,0,0,@Monto,0,
+                        @Subtotal,@TotalDescuentos,@TotalRecargos,@Total,@Impuestos,
                         'COBRADO','PENDIENTE',GETDATE(),@Usr,@Motivo,@DocRef,@Motivo,1)`);
       const ncId = ncR.recordset[0].DocIdDocumento;
 
       await transaction.request()
         .input('DocId', sql.Int,          ncId)
-        .input('Desc',  sql.VarChar(200), `NC s/ ${docOrigen.DocTipo} ${docOrigen.DocSerie}-${docOrigen.DocNumero}`)
-        .input('Tot',   sql.Decimal(18,2),montoNum)
-        .query(`INSERT INTO dbo.DocumentosContablesDetalle(DocIdDocumento,DcdNomItem,DcdCantidad,DcdPrecioUnitario,DcdSubtotal)
-                VALUES (@DocId,@Desc,1,@Tot,@Tot)`);
+        .input('DocRef',sql.Int,          parseInt(docIdOrigen))
+        .query(`INSERT INTO dbo.DocumentosContablesDetalle
+                  (DocIdDocumento, OrdCodigoOrden, DcdNomItem, DcdDscItem, DcdCantidad, DcdPrecioUnitario, DcdSubtotal, DcdImpuestos, DcdTotal, DcdTotalDescuentos, DcdDescuentoStr)
+                SELECT 
+                  @DocId, OrdCodigoOrden, DcdNomItem, DcdDscItem, DcdCantidad, DcdPrecioUnitario, DcdSubtotal, DcdImpuestos, DcdTotal, DcdTotalDescuentos, DcdDescuentoStr
+                FROM dbo.DocumentosContablesDetalle
+                WHERE DocIdDocumento = @DocRef`);
 
       await transaction.request()
         .input('Cue',sql.Int,cueId).input('Imp',sql.Decimal(18,4),montoNum)
@@ -1537,8 +1562,8 @@ const generarNotaCredito = async (req, res) => {
         .query(`DECLARE @SA DECIMAL(18,4); SELECT @SA=CueSaldoActual FROM dbo.CuentasCliente WHERE CueIdCuenta=@Cue;
                 UPDATE dbo.CuentasCliente SET CueSaldoActual=CueSaldoActual+@Imp WHERE CueIdCuenta=@Cue;
                 DECLARE @SP DECIMAL(18,4); SELECT @SP=CueSaldoActual FROM dbo.CuentasCliente WHERE CueIdCuenta=@Cue;
-                INSERT INTO dbo.MovimientosCuenta(CueIdCuenta,MovTipo,MovImporte,MovConcepto,MovSaldoPosterior,MovFecha,MovUsuarioAlta,DocIdDocumento)
-                VALUES (@Cue,'NOTA_CREDITO',@Imp,@Mot,@SP,GETDATE(),@Usr,@Doc)`);
+                INSERT INTO dbo.MovimientosCuenta(CueIdCuenta,MovTipo,MovImporte,MovConcepto,MovSaldoPosterior,MovFecha,MovUsuarioAlta,DocIdDocumento,MovAnulado)
+                VALUES (@Cue,'NOTA_CREDITO',@Imp,@Mot,@SP,GETDATE(),@Usr,@Doc,0)`);
 
       await transaction.request()
         .input('DocRef',sql.Int,parseInt(docIdOrigen)).input('Monto',sql.Decimal(18,4),montoNum)
@@ -1619,8 +1644,8 @@ const reversarDocumento = async (req, res) => {
       .query(`DECLARE @SA DECIMAL(18,4); SELECT @SA=CueSaldoActual FROM dbo.CuentasCliente WHERE CueIdCuenta=@Cue;
               UPDATE dbo.CuentasCliente SET CueSaldoActual=CueSaldoActual+@Imp WHERE CueIdCuenta=@Cue;
               DECLARE @SP DECIMAL(18,4); SELECT @SP=CueSaldoActual FROM dbo.CuentasCliente WHERE CueIdCuenta=@Cue;
-              INSERT INTO dbo.MovimientosCuenta(CueIdCuenta,MovTipo,MovImporte,MovConcepto,MovSaldoPosterior,MovFecha,MovUsuarioAlta,DocIdDocumento)
-              VALUES (@Cue,'NOTA_CREDITO',@Imp,@Mot,@SP,GETDATE(),@Usr,@Doc)`);
+              INSERT INTO dbo.MovimientosCuenta(CueIdCuenta,MovTipo,MovImporte,MovConcepto,MovSaldoPosterior,MovFecha,MovUsuarioAlta,DocIdDocumento,MovAnulado)
+              VALUES (@Cue,'NOTA_CREDITO',@Imp,@Mot,@SP,GETDATE(),@Usr,@Doc,0)`);
 
     await pool.request()
       .input('DocId', sql.Int, docRef)
@@ -1810,9 +1835,9 @@ const registrarPagoAnticipo = async (req, res) => {
         .query(`DECLARE @SP DECIMAL(18,4);
                 UPDATE dbo.CuentasCliente SET CueSaldoActual=CueSaldoActual+@Imp WHERE CueIdCuenta=@Cue;
                 SELECT @SP=CueSaldoActual FROM dbo.CuentasCliente WHERE CueIdCuenta=@Cue;
-                INSERT INTO dbo.MovimientosCuenta(CueIdCuenta,MovTipo,MovImporte,MovConcepto,MovSaldoPosterior,MovFecha,MovUsuarioAlta,DocIdDocumento)
+                INSERT INTO dbo.MovimientosCuenta(CueIdCuenta,MovTipo,MovImporte,MovConcepto,MovSaldoPosterior,MovFecha,MovUsuarioAlta,DocIdDocumento,MovAnulado)
                 OUTPUT INSERTED.MovIdMovimiento
-                VALUES(@Cue,'ANTICIPO',@Imp,@Obs,@SP,GETDATE(),@Usr,@DocId)`);
+                VALUES(@Cue,'ANTICIPO',@Imp,@Obs,@SP,GETDATE(),@Usr,@DocId,0)`);
       const movId = movResult.recordset[0]?.MovIdMovimiento || null;
 
       // ── 6. Asiento contable en Libro Mayor ─────────────────────────────────
@@ -1971,8 +1996,8 @@ const anularFactura = async (req, res) => {
         .query(`DECLARE @SP DECIMAL(18,4);
                 UPDATE dbo.CuentasCliente SET CueSaldoActual=CueSaldoActual+@Imp WHERE CueIdCuenta=@Cue;
                 SELECT @SP=CueSaldoActual FROM dbo.CuentasCliente WHERE CueIdCuenta=@Cue;
-                INSERT INTO dbo.MovimientosCuenta(CueIdCuenta,MovTipo,MovImporte,MovConcepto,MovSaldoPosterior,MovFecha,MovUsuarioAlta,DocIdDocumento,CicIdCiclo)
-                VALUES (@Cue,'AJUSTE',@Imp,@Mot,@SP,GETDATE(),@Usr,@DocId,@Cic)`);
+                INSERT INTO dbo.MovimientosCuenta(CueIdCuenta,MovTipo,MovImporte,MovConcepto,MovSaldoPosterior,MovFecha,MovUsuarioAlta,DocIdDocumento,CicIdCiclo,MovAnulado)
+                VALUES (@Cue,'AJUSTE',@Imp,@Mot,@SP,GETDATE(),@Usr,@DocId,@Cic,0)`);
 
       // 6. Marcar ciclo como ANULADO (NO reabrirlo) para mantener trazabilidad
       if (cicId) {
@@ -2022,8 +2047,8 @@ const anularFactura = async (req, res) => {
           await transaction.request()
             .input('CicId', sql.Int, nuevoCicId)
             .query(`UPDATE c SET
-                      c.CicTotalOrdenes = ISNULL((SELECT SUM(ABS(MovImporte)) FROM dbo.MovimientosCuenta WHERE CicIdCiclo=c.CicIdCiclo AND MovTipo='ORDEN' AND MovAnulado=0), 0),
-                      c.CicTotalPagos   = ISNULL((SELECT SUM(ABS(MovImporte)) FROM dbo.MovimientosCuenta WHERE CicIdCiclo=c.CicIdCiclo AND MovTipo='PAGO'   AND MovAnulado=0), 0)
+                      c.CicTotalOrdenes = ISNULL((SELECT SUM(ABS(MovImporte)) FROM dbo.MovimientosCuenta WHERE CicIdCiclo=c.CicIdCiclo AND MovTipo IN ('ORDEN', 'ENTREGA', 'ORDEN_ANTICIPO') AND (MovAnulado IS NULL OR MovAnulado=0)), 0),
+                      c.CicTotalPagos   = ISNULL((SELECT SUM(ABS(MovImporte)) FROM dbo.MovimientosCuenta WHERE CicIdCiclo=c.CicIdCiclo AND MovTipo IN ('PAGO', 'PAGO_CRUZADO', 'ANTICIPO', 'COBRO', 'SALDO_A_FAVOR') AND (MovAnulado IS NULL OR MovAnulado=0)), 0)
                     FROM dbo.CiclosCredito c WHERE c.CicIdCiclo=@CicId`);
 
           logger.info(`[ANULAR-FACTURA] Órdenes reasignadas al ciclo activo #${nuevoCicId}. Totales recalculados.`);
@@ -2121,7 +2146,7 @@ async function imputarAnticipoADeuda(req, res) {
       .input('Saldo', sql.Decimal(18,4), saldoPosterior).input('Usr', sql.Int, usuarioId)
       .input('DocId', sql.Int, deuda.DocIdDocumento || null)
       .input('Obs', sql.NVarChar(300), `Imputación anticipo a deuda #${ddeIdDocumento}`)
-      .query('INSERT INTO dbo.MovimientosCuenta(CueIdCuenta,MovTipo,MovImporte,MovConcepto,MovSaldoPosterior,MovFecha,MovUsuarioAlta,DocIdDocumento) VALUES(@CueId,\'PAGO\',-@Monto,@Obs,@Saldo,GETDATE(),@Usr,@DocId)');
+      .query('INSERT INTO dbo.MovimientosCuenta(CueIdCuenta,MovTipo,MovImporte,MovConcepto,MovSaldoPosterior,MovFecha,MovUsuarioAlta,DocIdDocumento,MovAnulado) VALUES(@CueId,\'PAGO\',-@Monto,@Obs,@Saldo,GETDATE(),@Usr,@DocId,0)');
 
     await transaction.commit();
     logger.info(`[IMPUTAR-ANT] Cue=${cuentaId} Deuda=${ddeIdDocumento} Aplicado=${montoAplicar} SaldoRestante=${saldoPosterior}`);
