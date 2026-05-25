@@ -433,6 +433,130 @@ const ModalAnticipo = ({ cuenta, cliente, onClose, onSuccess }) => {
   );
 };
 
+// ── Modal Consumir Recurso Adelantado ─────────────────────────────────────────────
+const ModalConsumirRecurso = ({ mov, cuenta, cliente, onClose, onSuccess }) => {
+  const importeOrden     = Math.abs(Number(mov.MovImporte || 0));
+  const cantidadMts      = Number(mov.OrdCantidad || 0);
+  const codigoOrden      = mov.OrdCodigoOrden || mov.MovConcepto || `Mov#${mov.MovIdMovimiento}`;
+  const esClienteSemanal = (cuenta?.CueDiasCiclo || 0) > 0;
+
+  const [loading,          setLoading]          = useState(false);
+  const [preview,          setPreview]          = useState(null);
+  const [previewErr,       setPreviewErr]       = useState(null);
+  const [metrosConfirmados,setMetrosConfirmados]= useState(false);
+
+  useEffect(() => {
+    let activo = true;
+    (async () => {
+      try {
+        const r = await fetchAPI(
+          `/api/contabilidad/movimientos/${mov.MovIdMovimiento}/consumir-recurso-adelantado?preview=1`,
+          { method: 'POST', body: JSON.stringify({}) }
+        );
+        if (activo) { setPreview(r); setPreviewErr(null); }
+      } catch (e) {
+        if (activo) setPreviewErr(e.message);
+      }
+    })();
+    return () => { activo = false; };
+  }, [mov.MovIdMovimiento]);
+
+  const confirmar = async () => {
+    if (!metrosConfirmados) { toast.error('Debe confirmar la cantidad de metros antes de aplicar.'); return; }
+    setLoading(true);
+    try {
+      const r = await fetchAPI(
+        `/api/contabilidad/movimientos/${mov.MovIdMovimiento}/consumir-recurso-adelantado`,
+        { method: 'POST', body: JSON.stringify({}) }
+      );
+      toast.success(r.mensaje || 'Recurso aplicado correctamente.');
+      onSuccess?.();
+      onClose();
+    } catch (e) {
+      toast.error(e.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 px-4">
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md border border-violet-100 overflow-hidden">
+        <div className="px-6 py-4 bg-gradient-to-r from-violet-600 to-indigo-600 text-white">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <Layers size={18} />
+              <h2 className="font-bold text-base">Consumir desde Recurso Adelantado</h2>
+            </div>
+            <button onClick={onClose} className="p-1 hover:bg-white/20 rounded-lg transition-colors"><X size={16}/></button>
+          </div>
+          <p className="text-xs text-violet-200 mt-1">
+            {esClienteSemanal ? 'Cliente semanal — crédito dentro del ciclo abierto' : 'Cancela la deuda usando saldo del plan'}
+          </p>
+        </div>
+        <div className="px-6 py-5 space-y-4">
+          <div className="p-3 rounded-xl bg-slate-50 border border-slate-200">
+            <p className="text-[10px] text-slate-400 uppercase font-bold tracking-widest mb-1">Orden a cubrir</p>
+            <p className="text-sm font-bold text-slate-800">{codigoOrden}</p>
+            {mov.OrdNombreTrabajo && <p className="text-xs text-slate-500 mt-0.5">{mov.OrdNombreTrabajo}</p>}
+            <div className="flex items-center gap-6 mt-2.5">
+              <div><p className="text-[10px] text-slate-400 uppercase">Importe deuda</p><p className="text-base font-black text-rose-600">{fmt(importeOrden, cuenta?.MonSimbolo)}</p></div>
+              {cantidadMts > 0 && <div><p className="text-[10px] text-slate-400 uppercase">Metros de la orden</p><p className="text-base font-black text-violet-700">{fmtNum(cantidadMts)} mts</p></div>}
+            </div>
+          </div>
+          {!preview && !previewErr && <div className="flex items-center gap-2 text-slate-400 text-xs py-1"><RefreshCw size={13} className="animate-spin" /> Verificando saldo del plan...</div>}
+          {previewErr && (
+            <div className="p-4 rounded-xl bg-rose-50 border border-rose-200">
+              <div className="flex items-start gap-2">
+                <AlertTriangle size={15} className="text-rose-600 mt-0.5 flex-shrink-0"/>
+                <div><p className="text-xs font-black text-rose-700 mb-0.5">No se puede aplicar el recurso</p><p className="text-xs text-rose-600">{previewErr}</p></div>
+              </div>
+            </div>
+          )}
+          {preview && (
+            <>
+              <div className="p-3 rounded-xl bg-violet-50 border border-violet-200">
+                <p className="text-[10px] text-violet-500 uppercase font-bold tracking-widest mb-2">Impacto de la operación</p>
+                <div className="grid grid-cols-2 gap-3">
+                  <div><p className="text-[10px] text-slate-400 uppercase">Metros a descontar</p><p className="text-base font-black text-violet-700">{fmtNum(preview.metrosConsumidos)} mts</p></div>
+                  <div><p className="text-[10px] text-slate-400 uppercase">Deuda que se cancela</p><p className="text-base font-black text-emerald-600">{fmt(preview.importeCancelado, cuenta?.MonSimbolo)}</p></div>
+                  <div><p className="text-[10px] text-slate-400 uppercase">Saldo plan restante</p><p className="text-sm font-black text-slate-700">{fmtNum(preview.planRestante)} mts</p></div>
+                  <div><p className="text-[10px] text-slate-400 uppercase">Deuda restante</p><p className="text-sm font-black text-emerald-600">— Cancelada</p></div>
+                </div>
+                <p className="text-[10px] text-violet-600 mt-2 border-t border-violet-200 pt-2">
+                  {preview.escenario === 'CICLO_ABIERTO' ? '📋 Ciclo semanal abierto — crédito dentro del ciclo' : '📄 Documento de deuda individual — se marca CANCELADO'}
+                </p>
+              </div>
+              <div className="p-4 rounded-xl bg-amber-50 border-2 border-amber-300">
+                <p className="text-[10px] text-amber-600 uppercase font-black tracking-widest mb-2">Confirmar metros a descontar</p>
+                <div className="flex items-center justify-between mb-3">
+                  <span className="text-sm text-slate-600">Se descontarán del plan:</span>
+                  <span className="text-xl font-black text-violet-700 bg-violet-100 px-3 py-1 rounded-lg border border-violet-200">{fmtNum(preview.metrosConsumidos)} mts</span>
+                </div>
+                <label className="flex items-start gap-3 cursor-pointer">
+                  <input type="checkbox" checked={metrosConfirmados} onChange={e => setMetrosConfirmados(e.target.checked)} className="mt-0.5 w-4 h-4 rounded accent-violet-600 cursor-pointer flex-shrink-0" />
+                  <span className="text-xs text-amber-800 font-semibold leading-snug">
+                    Confirmo que se descontarán <strong>{fmtNum(preview.metrosConsumidos)} metros</strong> del plan activo
+                    y la deuda de <strong>{fmt(preview.importeCancelado, cuenta?.MonSimbolo)}</strong> quedará cancelada.
+                  </span>
+                </label>
+              </div>
+            </>
+          )}
+        </div>
+        <div className="px-6 pb-5 flex gap-3">
+          <button onClick={onClose} className="flex-1 px-4 py-2.5 text-sm font-semibold text-slate-600 bg-slate-100 hover:bg-slate-200 rounded-xl transition-colors">Cancelar</button>
+          <button onClick={confirmar} disabled={loading || !!previewErr || !preview || !metrosConfirmados}
+            className="flex-1 px-4 py-2.5 text-sm font-black text-white bg-violet-600 hover:bg-violet-700 disabled:opacity-40 disabled:cursor-not-allowed rounded-xl transition-colors flex items-center justify-center gap-2">
+            {loading ? <RefreshCw size={14} className="animate-spin"/> : <Layers size={14}/>}
+            {loading ? 'Aplicando...' : `Aplicar — ${fmtNum(preview?.metrosConsumidos ?? cantidadMts)} mts`}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 // ── Menú contextual de acciones por fila ─────────────────────────────────────
 const MenuAccionesDoc = ({ m, cuenta, cliente, onRefresh, onPrint, onCobrar }) => {
   const [open, setOpen] = useState(false);
@@ -446,6 +570,13 @@ const MenuAccionesDoc = ({ m, cuenta, cliente, onRefresh, onPrint, onCobrar }) =
   const esContado = m.DocPagado===1||m.DocPagado===true;
   const anulado   = !!m.MovAnulado || m.DocEstado==='ANULADO';
   const acciones  = [];
+
+  // ── Consumir desde Recurso Adelantado ────────────────────────────────────
+  // Cond: ORDEN no anulada y sin facturar. EsPendientePago puede ser 0
+  // en clientes semanales (ciclo abierto, sin DeudaDocumento aun).
+  if (!anulado && !m.DocIdDocumento && ['ORDEN','ORDEN_ANTICIPO'].includes(m.MovTipo)) {
+    acciones.push({id:'consumir-recurso', label:'Consumir desde Recurso', icon:<Layers size={13}/>, cls:'text-violet-700 hover:bg-violet-50 font-bold'});
+  };
 
   // ── Cobrar deuda pendiente ──────────────────────────────────────────────
   if (!anulado && m.EsPendientePago === 1) {
@@ -514,11 +645,12 @@ const MenuAccionesDoc = ({ m, cuenta, cliente, onRefresh, onPrint, onCobrar }) =
           )}
         </div>
       )}
-      {modal==='nc'        && <ModalNotaCredito   mov={m} conta={cuenta} cuenta={cuenta} cliente={cliente} onClose={()=>setModal(null)} onSuccess={onRefresh}/>}
-      {modal==='reversar'  && <ModalReversarDoc   mov={m} conta={cuenta} cuenta={cuenta} cliente={cliente} onClose={()=>setModal(null)} onSuccess={onRefresh}/>}
-      {modal==='anticipo'  && <ModalAnticipo      conta={cuenta} cuenta={cuenta} cliente={cliente} onClose={()=>setModal(null)} onSuccess={onRefresh}/>}
-      {modal==='anular-fac'&& <ModalAnularFactura mov={m} conta={cuenta} cuenta={cuenta} cliente={cliente} onClose={()=>setModal(null)} onSuccess={onRefresh}/>}
-      {modal==='imp-ant'   && <ModalImputarAnticipo mov={m} cuenta={cuenta} onClose={()=>setModal(null)} onSuccess={onRefresh}/>}
+      {modal==='nc'               && <ModalNotaCredito     mov={m} conta={cuenta} cuenta={cuenta} cliente={cliente} onClose={()=>setModal(null)} onSuccess={onRefresh}/>}
+      {modal==='reversar'          && <ModalReversarDoc     mov={m} conta={cuenta} cuenta={cuenta} cliente={cliente} onClose={()=>setModal(null)} onSuccess={onRefresh}/>}
+      {modal==='anticipo'          && <ModalAnticipo        conta={cuenta} cuenta={cuenta} cliente={cliente} onClose={()=>setModal(null)} onSuccess={onRefresh}/>}
+      {modal==='anular-fac'        && <ModalAnularFactura   mov={m} conta={cuenta} cuenta={cuenta} cliente={cliente} onClose={()=>setModal(null)} onSuccess={onRefresh}/>}
+      {modal==='imp-ant'           && <ModalImputarAnticipo mov={m} cuenta={cuenta} onClose={()=>setModal(null)} onSuccess={onRefresh}/>}
+      {modal==='consumir-recurso'  && <ModalConsumirRecurso mov={m} cuenta={cuenta} cliente={cliente} onClose={()=>setModal(null)} onSuccess={onRefresh}/>}
     </div>
   );
 };
@@ -1630,7 +1762,6 @@ const PlanesPanel = ({ cuenta, CliIdCliente, cliente, desde, hasta, onClose, onC
                       </table>
                     )}
                   </div>
-                )}
               </div>
             );
           })}

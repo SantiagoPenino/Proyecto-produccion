@@ -216,6 +216,15 @@ export default function AreaView({ areaKey, areaConfig, onSwitchTab }) {
         })];
     }, [dbOrders]);
 
+    const availableVariants = useMemo(() => {
+        const unique = new Set(
+            dbOrders
+                .map(o => (o.variantCode || '').trim())
+                .filter(v => v && v !== 'N/A' && v !== '')
+        );
+        return ['ALL', ...Array.from(unique).sort((a, b) => a.localeCompare(b))];
+    }, [dbOrders]);
+
     // 5. FILTRADO
     const filteredOrders = useMemo(() => {
         let result = dbOrders;
@@ -226,7 +235,7 @@ export default function AreaView({ areaKey, areaConfig, onSwitchTab }) {
             else result = result.filter(o => o[filterField] === sidebarFilter);
         }
         if (clientFilter) result = result.filter(o => o.client?.toLowerCase().includes(clientFilter.toLowerCase()));
-        if (variantFilter !== 'ALL') result = result.filter(o => o.variant === variantFilter);
+        if (variantFilter !== 'ALL') result = result.filter(o => (o.variantCode || '').trim() === variantFilter);
         if (statusFilter !== 'ALL') {
             // Exact match (case insensitive) now that filters are dynamic
             result = result.filter(o => (o.status || 'Pendiente').toLowerCase() === statusFilter.toLowerCase());
@@ -305,6 +314,31 @@ export default function AreaView({ areaKey, areaConfig, onSwitchTab }) {
                     );
                 })}
             </div>
+
+            <div className="w-px h-5 bg-zinc-200 mx-1"></div>
+
+            {/* Variante */}
+            {availableVariants.length > 1 && (
+                <div className="flex items-center gap-2 overflow-x-auto no-scrollbar">
+                    <span className="text-[10px] uppercase font-black text-zinc-400 tracking-wider mr-1">Variante:</span>
+                    {availableVariants.map(v => {
+                        const isSelected = variantFilter === v;
+                        return (
+                            <button
+                                key={v}
+                                onClick={() => setVariantFilter(v)}
+                                className={`flex items-center px-3 py-1.5 text-xs font-bold border rounded-lg transition-colors capitalize whitespace-nowrap ${
+                                    isSelected
+                                        ? 'bg-indigo-600 text-white border-indigo-600 shadow-sm'
+                                        : 'bg-white text-zinc-600 border-zinc-200 hover:bg-zinc-50 hover:text-indigo-600 hover:border-indigo-300 shadow-sm'
+                                }`}
+                            >
+                                {v === 'ALL' ? 'Todas' : v}
+                            </button>
+                        );
+                    })}
+                </div>
+            )}
 
             <div className="w-px h-5 bg-zinc-200 mx-1"></div>
 

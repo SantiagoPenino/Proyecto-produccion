@@ -47,7 +47,8 @@ exports.createPlanillaOrder = async (req, res) => {
         nombreTrabajo, prioridad, notasGenerales, configuracion,
         especificacionesCorte, lineas, archivosReferencia, archivosTecnicos, serviciosExtras,
         clienteInfo, // Nuevo objeto de cliente
-        rowNumber // Fila de la planilla
+        rowNumber, // Fila de la planilla
+        fechaIngreso // Fecha/hora original de la planilla (opcional)
     } = req.body;
 
     // Variables de Validación (NUEVOS CAMPOS)
@@ -305,20 +306,23 @@ exports.createPlanillaOrder = async (req, res) => {
 
                 // --- HARCODEO DE EXTRAS (BORDADO, CORTE LASER, COSTURA) ---
                 if (localCodArticulo === 'SERV-CORTE') {
-                    localCodArticulo = '112';
+                    localCodArticulo = '1375';
                     localCodStock = '1.1.6.1';
-                    localMaterial = 'Corte Laser personalizado';
+                    localMaterial = 'Corte Laser por prenda';
                     localVariante = 'Corte Laser';
+                    localProIdProductoDB = 90;
                 } else if (localCodArticulo === 'SERV-COSTURA') {
                     localCodArticulo = '115';
                     localCodStock = '1.1.7.1';
                     localMaterial = 'Costura';
                     localVariante = 'Costura';
+                    localProIdProductoDB = 36;
                 } else if (localCodArticulo === 'SERV-BORDADO') {
-                    localCodArticulo = '109';
+                    localCodArticulo = '1567';
                     localCodStock = '1.1.4.1';
-                    localMaterial = 'Bordado personalizado';
+                    localMaterial = 'Bordado';
                     localVariante = 'Bordado';
+                    localProIdProductoDB = 434;
                 }
 
                 // --- HEURÍSTICA DE RESCATE SI NO HAY CODIGO DE ARTICULO ---
@@ -384,14 +388,13 @@ exports.createPlanillaOrder = async (req, res) => {
         // Buscamos IDProdReact en la tabla Articulos usando el CodArticulo (ej: 47)
         const codesToLookup = [...new Set(pendingOrderExecutions.map(e => e.codArticulo || e.proIdProductoDB).filter(c => c))];
         const mapArtByProId = {};
-        const mapArtByCodArt = {};
         const mapArtByIdReact = {};
 
         if (codesToLookup.length > 0) {
             logger.info(`🔍 [Integration] Buscando Artículos: ${JSON.stringify(codesToLookup)}`);
             try {
                 const request = pool.request();
-                const clauses = codesToLookup.map((_, i) => `(CodArticulo = @cod${i} OR ProIdProducto = TRY_CAST(@cod${i} AS INT) OR IDProdReact = TRY_CAST(@cod${i} AS INT))`).join(' OR ');
+                const clauses = codesToLookup.map((_, i) => `(ProIdProducto = TRY_CAST(@cod${i} AS INT) OR IDProdReact = TRY_CAST(@cod${i} AS INT))`).join(' OR ');
                 codesToLookup.forEach((c, i) => request.input(`cod${i}`, sql.VarChar(50), String(c).trim()));
 
                 const artRes = await request.query(`SELECT IDProdReact, CodArticulo, ProIdProducto FROM Articulos WHERE ${clauses}`);
@@ -402,9 +405,6 @@ exports.createPlanillaOrder = async (req, res) => {
                     const info = { idReact: r.IDProdReact, proId: r.ProIdProducto, codArt: r.CodArticulo };
                     if (r.ProIdProducto !== null && r.ProIdProducto !== undefined) {
                         mapArtByProId[String(r.ProIdProducto).trim()] = info;
-                    }
-                    if (r.CodArticulo) {
-                        mapArtByCodArt[String(r.CodArticulo).trim()] = info;
                     }
                     if (r.IDProdReact !== null && r.IDProdReact !== undefined) {
                         mapArtByIdReact[String(r.IDProdReact).trim()] = info;
@@ -424,12 +424,12 @@ exports.createPlanillaOrder = async (req, res) => {
 
               if (exec.proIdProductoDB) {
                   key = String(exec.proIdProductoDB).trim();
-                  info = mapArtByProId[key] || mapArtByCodArt[key] || mapArtByIdReact[key];
+                  info = mapArtByIdReact[key] || mapArtByProId[key];
               }
               
               if (!info && exec.codArticulo) {
                   key = String(exec.codArticulo).trim();
-                  info = mapArtByCodArt[key] || mapArtByProId[key] || mapArtByIdReact[key];
+                  info = mapArtByIdReact[key] || mapArtByProId[key];
               }
 
               if (info) {
@@ -524,7 +524,7 @@ exports.createPlanillaOrder = async (req, res) => {
                     codigoParaEstaOrden = codigoOrdenFinal;
                 }
 
-                const estadoInicial = (fisicaIndex === 1) ? 'PRONTO' : 'INGRESADO';
+                const estadoInicial = 'Pendiente';
 
                 exec.codigoOrden = codigoParaEstaOrden;
 
@@ -570,6 +570,13 @@ exports.createPlanillaOrder = async (req, res) => {
                     .input('ValObs', sql.NVarChar(sql.MAX), validacionObsStr)
                     .input('CliIdCliente', sql.Int, !isNaN(parseInt(cliIdClienteDB)) ? parseInt(cliIdClienteDB) : null)
                     .input('ProIdProducto', sql.Int, !isNaN(parseInt(exec.proIdProductoDB)) ? parseInt(exec.proIdProductoDB) : null)
+                    .input('FechaOrigen', sql.DateTime, (() => {
+                        if (fechaIngreso) {
+                            const d = new Date(fechaIngreso);
+                            if (!isNaN(d.getTime()) && d.getFullYear() > 2000) return d;
+                        }
+                        return new Date();
+                    })())
                     .query(`
                         INSERT INTO Ordenes (
                             AreaID, Cliente, CodCliente, IdClienteReact, DescripcionTrabajo, Prioridad, 
@@ -580,7 +587,7 @@ exports.createPlanillaOrder = async (req, res) => {
                         OUTPUT INSERTED.OrdenID
                         VALUES (
                             @AreaID, @Cliente, @CodCliente, @IdClienteReact, @Desc, @Prio, 
-                            GETDATE(), GETDATE(), DATEADD(day, 3, GETDATE()), @Mat, @Var, 
+                            @FechaOrigen, @FechaOrigen, DATEADD(day, 3, @FechaOrigen), @Mat, @Var, 
                             @Cod, @ERP, @Nota, @Mag, @Prox, @UM, @Estado, @Estado,
                             @CArt, @IdProdReact, @Val, @ValObs, @CliIdCliente, @ProIdProducto
                         )
@@ -721,6 +728,15 @@ exports.createPlanillaOrder = async (req, res) => {
             await transaction.commit();
 
             logger.info("✅ [IntegrationOrder] Pedido creado:", generatedOrders);
+
+            // Lanzar procesamiento de archivos en segundo plano
+            try {
+                const io = req.app.get('socketio');
+                fileProcessingService.processOrderList(generatedIDs, io);
+                logger.info(`⚡ [IntegrationOrder] Procesamiento asíncrono de archivos lanzado para órdenes: ${generatedIDs.join(', ')}`);
+            } catch (errProc) {
+                logger.error("⚠️ [IntegrationOrder] Error launching file processing:", errProc.message);
+            }
 
             // 🎯 EARLY PRICING & SYNC: Disparar SOLO cotización y PedidosCobranza, NO OrdenesDeposito.
             // OrdenesDeposito se escribe únicamente durante el Check-In del WMS (depósito).

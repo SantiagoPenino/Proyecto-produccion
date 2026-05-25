@@ -47,10 +47,10 @@ async function obtenerOCrearCuenta(CliIdCliente, CueTipo, opciones = {}, transac
     UsuarioAlta    = 1,
   } = opciones;
 
-  const req = transaction ? new sql.Request(transaction) : pool.request();
+  const mkReq = () => transaction ? new sql.Request(transaction) : pool.request();
 
   // ── 1. Buscar cuenta existente o crear una nueva ──────────────────────
-  const existe = await req
+  const existe = await mkReq()
     .input('CliIdCliente',  sql.Int,         CliIdCliente)
     .input('CueTipo',       sql.VarChar(20), CueTipo)
     .input('ProIdProducto', sql.Int,         ProIdProducto)
@@ -72,7 +72,7 @@ async function obtenerOCrearCuenta(CliIdCliente, CueTipo, opciones = {}, transac
     cueIdFinal = existe.recordset[0].CueIdCuenta;
     logger.info(`[CUENTA] Cuenta existente: CliId=${CliIdCliente} Tipo=${CueTipo} CueId=${cueIdFinal}`);
   } else {
-    const creada = await req
+    const creada = await mkReq()
       .input('CliIdCliente',  sql.Int,         CliIdCliente)
       .input('CueTipo',       sql.VarChar(20), CueTipo)
       .input('ProIdProducto', sql.Int,         ProIdProducto)
@@ -100,7 +100,7 @@ async function obtenerOCrearCuenta(CliIdCliente, CueTipo, opciones = {}, transac
   // ── 2. Verificar ciclo activo — aplica a cuenta nueva Y existente ─────
   // Solo aplica a cuentas monetarias (no MTS/KG que son de recursos)
   if (CueTipo !== 'MTS' && CueTipo !== 'KG') {
-    const cliRes = await req
+    const cliRes = await mkReq()
       .input('CliIdCliente', sql.Int, CliIdCliente)
       .query('SELECT TClIdTipoCliente FROM dbo.Clientes WITH(NOLOCK) WHERE CliIdCliente = @CliIdCliente');
 
@@ -237,11 +237,11 @@ async function imputarPago(params) {
  */
 async function crearDeudaDocumento(params, transaction = null) {
   const pool = await getPool();
-  const req = transaction ? new sql.Request(transaction) : pool.request();
+  const mkReq = () => transaction ? new sql.Request(transaction) : pool.request();
   let { CueIdCuenta, OrdIdOrden = null, DocIdDocumento = null, Importe, ImportePendiente = Importe } = params;
 
   // Auto-consumir Saldo a Favor existente en la cuenta para no crear deuda irreal
-  const ctaRes = await req
+  const ctaRes = await mkReq()
     .input('CueIdCuenta', sql.Int, CueIdCuenta)
     .query(`
       SELECT 
@@ -261,7 +261,7 @@ async function crearDeudaDocumento(params, transaction = null) {
 
   if (ImportePendiente > 0.01 || Importe > 0) {
       // Nace con ImportePendiente completo
-      const insertRes = await req
+      const insertRes = await mkReq()
         .input('CueIdCuenta',         sql.Int,          CueIdCuenta)
         .input('OrdIdOrden',          sql.Int,          OrdIdOrden)
         .input('DocIdDocumento',      sql.Int,          DocIdDocumento)
@@ -289,7 +289,7 @@ async function crearDeudaDocumento(params, transaction = null) {
           const montoAAplicar = Math.min(saldoActual, ImportePendiente);
           
           // Crear un pago sintético (recibo interno) que represente la aplicación del anticipo
-          const pagRes = await req
+          const pagRes = await mkReq()
             .input('Metodo', sql.Int, 1) // Efectivo genérico
             .input('Moneda', sql.Int, monId)
             .input('Monto', sql.Decimal(18,4), montoAAplicar)
@@ -306,7 +306,7 @@ async function crearDeudaDocumento(params, transaction = null) {
           const pagId = pagRes.recordset[0].PagIdPago;
 
           // Imputar el pago sintético a la deuda usando PEPS
-          await req
+          await mkReq()
             .input('PagIdPago',       sql.Int,          pagId)
             .input('MontoDisponible', sql.Decimal(18,4), montoAAplicar)
             .input('CueIdCuenta',     sql.Int,          CueIdCuenta)
@@ -321,6 +321,7 @@ async function crearDeudaDocumento(params, transaction = null) {
   }
   return null;
 }
+
 
 // ============================================================
 // SECCIÓN 5: HOOKS PARA EVENTOS DEL SISTEMA
@@ -340,16 +341,16 @@ async function crearDeudaDocumento(params, transaction = null) {
  *   @param {number} UsuarioAlta
  */
 async function hookOrdenCreada(params, transaction = null) {
-  const { OrdIdOrden, CliIdCliente, Importe, MonIdMoneda, CodigoOrden, NombreTrabajo, UsuarioAlta, ProIdProducto } = params;
+  const { OrdIdOrden, CliIdCliente, Importe, MonIdMoneda, CodigoOrden, NombreTrabajo, UsuarioAlta, ProIdProducto, Cantidad } = params;
   const contabilidadCore = require('./contabilidadCore'); // Import CORE for Asientos
 
-  logger.info(`[HOOK:ORDEN] Iniciando hookOrdenCreada — Orden=${CodigoOrden} CliId=${CliIdCliente} ProIdProducto=${ProIdProducto} Importe=${Importe} MonIdMoneda=${MonIdMoneda}`);
+  logger.info(`[HOOK:ORDEN] Iniciando hookOrdenCreada — Orden=${CodigoOrden} CliId=${CliIdCliente} ProIdProducto=${ProIdProducto} Cantidad=${Cantidad} Importe=${Importe} MonIdMoneda=${MonIdMoneda}`);
 
   try {
     const pool = await getPool();
     const req = transaction ? new sql.Request(transaction) : pool.request();
 
-    // ── Si el cliente tiene plan de recursos para este artículo → no cobrar en dinero
+    // ── Si el cliente tiene plan de recursos para este artículo → descontar metros al INGRESO
     if (ProIdProducto) {
       const planCheck = await req
         .input('CliIdCliente',  sql.Int, CliIdCliente)
@@ -371,8 +372,20 @@ async function hookOrdenCreada(params, transaction = null) {
         `);
       logger.info(`[HOOK:ORDEN] Plan check para CliId=${CliIdCliente} ProId=${ProIdProducto}: encontrados=${planCheck.recordset.length} planes. Detalle=${JSON.stringify(planCheck.recordset[0] || null)}`);
       if (planCheck.recordset.length > 0) {
-        logger.info(`[HOOK:ORDEN] Orden ${CodigoOrden} cubierta por plan #${planCheck.recordset[0].PlaIdPlan} — SALTANDO débito monetario (hookEntregaMetros descuenta los metros).`);
-        return; // el hookEntregaMetros se encarga del descuento
+        const cantidadParaDescontar = Cantidad && Cantidad > 0 ? Cantidad : null;
+        if (cantidadParaDescontar) {
+          logger.info(`[HOOK:ORDEN] Orden ${CodigoOrden} cubierta por plan #${planCheck.recordset[0].PlaIdPlan} — descontando ${cantidadParaDescontar} metros AL INGRESO.`);
+          // Descuento inmediato al ingresar la orden (el producto ya está fabricado)
+          await hookEntregaMetros({
+            OrdIdOrden, CliIdCliente, ProIdProducto,
+            Cantidad: cantidadParaDescontar,
+            Importe, MonIdMoneda,
+            CodigoOrden, NombreTrabajo, UsuarioAlta,
+          });
+        } else {
+          logger.warn(`[HOOK:ORDEN] Orden ${CodigoOrden} cubierta por plan pero sin Cantidad informada — no se descuentan metros (llamada desde excedente).`);
+        }
+        return; // Sin deuda monetaria
       }
     } else {
       logger.info(`[HOOK:ORDEN] Orden ${CodigoOrden} sin ProIdProducto — NO se verifica plan. Se generará deuda monetaria directamente.`);
@@ -682,10 +695,10 @@ async function hookEntregaMetros(params) {
   await transaction.begin();
 
   try {
-    const req = new sql.Request(transaction);
+    const mkReq = () => new sql.Request(transaction);
 
     // 1. Verificar si el cliente tiene alguna cuenta de metros con planes activos que permitan el artículo
-    const cuentaRes = await req
+    const cuentaRes = await mkReq()
       .input('CliIdCliente',  sql.Int, CliIdCliente)
       .input('ProIdProducto', sql.Int, ProIdProducto)
       .query(`
@@ -719,7 +732,7 @@ async function hookEntregaMetros(params) {
     }
 
     // 2. Descontar en cascada de los planes activos (FIFO)
-    const planRes = await req
+    const planRes = await mkReq()
       .input('CliIdCliente',  sql.Int, CliIdCliente)
       .input('ProIdProducto', sql.Int, ProIdProducto)
       .query(`
@@ -758,7 +771,7 @@ async function hookEntregaMetros(params) {
     let valorCubiertoPorPlanes = 0;
 
     // Obtener cotización si hay cruce de monedas
-    const cotRes = await req.query('SELECT TOP 1 CotDolar FROM dbo.Cotizaciones WITH(NOLOCK) ORDER BY CotFecha DESC');
+    const cotRes = await mkReq().query('SELECT TOP 1 CotDolar FROM dbo.Cotizaciones WITH(NOLOCK) ORDER BY CotFecha DESC');
     const TC = cotRes.recordset.length > 0 ? parseFloat(cotRes.recordset[0].CotDolar) || 40.0 : 40.0;
 
     for (const plan of planRes.recordset) {
@@ -1500,7 +1513,7 @@ async function getCicloMovimientos(CicIdCiclo) {
  */
 async function abrirCicloPorCuenta({ CueIdCuenta, CliIdCliente, UsuarioAlta, FechaInicio = null }, transaction = null) {
   const pool = await getPool();
-  const req = transaction ? new sql.Request(transaction) : pool.request();
+  const mkReq = () => transaction ? new sql.Request(transaction) : pool.request();
 
   // Verificar si ya tiene uno abierto
   const existente = await obtenerCicloActivo(CueIdCuenta, transaction);
@@ -1510,14 +1523,14 @@ async function abrirCicloPorCuenta({ CueIdCuenta, CliIdCliente, UsuarioAlta, Fec
   }
 
   // Obtener CueDiasCiclo de la cuenta
-  const cuentaRes = await req
+  const cuentaRes = await mkReq()
     .input('CueIdCuenta', sql.Int, CueIdCuenta)
     .query(`SELECT ISNULL(CueDiasCiclo, 7) AS Dias FROM dbo.CuentasCliente WHERE CueIdCuenta = @CueIdCuenta`);
 
   const dias = cuentaRes.recordset[0]?.Dias ?? 7;
   const fechaIni = FechaInicio ? new Date(FechaInicio) : new Date();
 
-  const insertRes = await req
+  const insertRes = await mkReq()
     .input('CueIdCuenta',      sql.Int,  CueIdCuenta)
     .input('CliIdCliente',     sql.Int,  CliIdCliente)
     .input('CicFechaInicio',   sql.DateTime, fechaIni)
@@ -1539,7 +1552,7 @@ async function abrirCicloPorCuenta({ CueIdCuenta, CliIdCliente, UsuarioAlta, Fec
   const CicIdCiclo = insertRes.recordset[0].CicIdCiclo;
 
   // Absolver movimientos anteriores que no tengan ciclo asignado y sean facturables (de la semana o recientes)
-  await req
+  await mkReq()
     .input('CicIdCiclo', sql.Int, CicIdCiclo)
     .input('CueIdCuenta', sql.Int, CueIdCuenta)
     .query(`
@@ -1552,7 +1565,7 @@ async function abrirCicloPorCuenta({ CueIdCuenta, CliIdCliente, UsuarioAlta, Fec
     `);
     
   // Recalcular CicTotalOrdenes y CicTotalPagos para el ciclo recién creado por si absorbió movimientos
-  await req
+  await mkReq()
     .input('CicIdCiclo', sql.Int, CicIdCiclo)
     .query(`
       UPDATE c
@@ -2575,3 +2588,4 @@ async function procesarEventoContable(evtCodigo, data) {
     return { success: false, error: err.message };
   }
 }
+

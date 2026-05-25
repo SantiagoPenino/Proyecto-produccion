@@ -37,10 +37,17 @@ async function verificarRecursoCliente(transaction, { CliIdCliente, ProIdProduct
                     PlaCantidadTotal - PlaCantidadUsada AS SaldoDisponible
                 FROM dbo.PlanesMetros WITH(NOLOCK)
                 WHERE CliIdCliente  = @CliIdCliente
-                  AND ProIdProducto = @ProIdProducto
                   AND PlaActivo     = 1
                   AND (PlaFechaVencimiento IS NULL
                     OR PlaFechaVencimiento >= CAST(GETDATE() AS DATE))
+                  AND (
+                    ProIdProducto = @ProIdProducto
+                    OR EXISTS (
+                      SELECT 1 FROM dbo.PlanesMetrosArticulosPermitidos pap WITH(NOLOCK)
+                      WHERE pap.PlaIdPlan = PlanesMetros.PlaIdPlan
+                        AND pap.ProIdProducto = @ProIdProducto
+                    )
+                  )
                 ORDER BY PlaFechaAlta DESC
             `);
 
@@ -353,54 +360,6 @@ async function marcarEntregado(transactionOrReq, OReIdOrdenRetiro, fecha, usuari
                 'R'
             ) + '-' + CAST(@ID AS VARCHAR);
         `);
-
-    // ── Descuento de recursos (Planes de Metros) ─────────────────────────────
-    // Por cada orden del retiro, si el cliente tiene cuenta METROS/KG,
-    // descontamos la cantidad de su plan activo.
-    // SE EJECUTA DE FORMA ASÍNCRONA (Fire and Forget) para no dejar la transacción SQL abierta.
-    (async () => {
-        try {
-            const svc = require('./contabilidadService');
-            const pool = await (require('../config/db')).getPool();
-
-            // Obtener órdenes con su cliente, artículo y cantidad
-            const ordenesRes = await pool.request()
-                .input('OReId', sql.Int, OReIdOrdenRetiro)
-                .query(`
-                    SELECT
-                        od.OrdIdOrden,
-                        od.OrdCantidad,
-                        od.OrdCodigo,
-                        o.CodCliente,
-                        cl.CliIdCliente,
-                        art.IDArticulo AS ProIdProducto
-                    FROM dbo.OrdenesDeposito od WITH(NOLOCK)
-                    JOIN dbo.Ordenes         o   WITH(NOLOCK) ON o.OrdenID     = od.OrdIdOrdenExterna
-                    JOIN dbo.Clientes        cl  WITH(NOLOCK) ON cl.CodCliente = o.CodCliente
-                    LEFT JOIN dbo.Articulos  art WITH(NOLOCK) ON art.IDArticulo = od.OrdIdArticulo
-                    WHERE od.OReIdOrdenRetiro = @OReId
-                      AND od.OrdEstadoActual  = 9
-                `);
-
-            for (const ord of ordenesRes.recordset) {
-                if (!ord.CliIdCliente || !ord.ProIdProducto) continue;
-                try {
-                    await svc.hookEntregaMetros({
-                        CliIdCliente:  ord.CliIdCliente,
-                        ProIdProducto: ord.ProIdProducto,
-                        Cantidad:      Number(ord.OrdCantidad) || 1,
-                        OrdIdOrden:    ord.OrdIdOrden,
-                        UsuarioAlta:   usuarioId,
-                    });
-                } catch (hookErr) {
-                    // No bloquear la entrega si el hook falla — solo loguear
-                    logger.warn(`[hookEntregaMetros] CliId=${ord.CliIdCliente} OrdId=${ord.OrdIdOrden}: ${hookErr.message}`);
-                }
-            }
-        } catch (err) {
-            logger.warn(`[marcarEntregado] Error en descuento de metros: ${err.message}`);
-        }
-    })();
 }
 
 /**

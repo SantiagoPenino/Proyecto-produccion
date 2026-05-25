@@ -36,8 +36,8 @@ const CUENTAS = {
  * Obtiene el CueId de una cuenta basándose en su CueCodigo.
  */
 const getCuentaId = async (codigo, externalTx = null) => {
-  const pool = externalTx || await getPool();
-  const request = externalTx ? externalTx.request() : pool.request();
+  const pool = externalTx ? null : await getPool();
+  const request = externalTx ? new sql.Request(externalTx) : pool.request();
   const res = await request.input('Cod', sql.VarChar(20), codigo).query(
     `SELECT CueId FROM dbo.Cont_PlanCuentas WITH(NOLOCK) WHERE CueCodigo = @Cod AND CueImputable = 1`
   );
@@ -114,7 +114,7 @@ const generarAsientoCompleto = async ({
   if (!lineas || lineas.length < 2) throw new Error('[CONTABILIDAD] Un asiento requiere mínimo 2 líneas (Partida Doble).');
 
   try {
-    const request = transaction.request();
+    const request = new sql.Request(transaction);
 
     // 1. VALIDACIÓN PARTIDA DOBLE
     let sumaDebeUYU = 0;
@@ -166,7 +166,7 @@ const generarAsientoCompleto = async ({
     for (const linea of lineasProcesadas) {
       if (linea.debeUYU === 0 && linea.haberUYU === 0) continue;
 
-      const reqDet = transaction.request();
+      const reqDet = new sql.Request(transaction);
       await reqDet
         .input('AsiId',       sql.Int,          asiId)
         .input('CueId',       sql.Int,          linea.CueId)

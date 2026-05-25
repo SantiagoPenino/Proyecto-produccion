@@ -184,6 +184,11 @@ async function procesarVentaDirecta(payload) {
             const rProd = await reqItem.input('Cod', sql.VarChar, item.codigo.trim()).query(`SELECT ProIdProducto FROM dbo.Articulos WHERE LTRIM(RTRIM(CodArticulo)) = LTRIM(RTRIM(@Cod))`);
             const proId = rProd.recordset.length > 0 ? rProd.recordset[0].ProIdProducto : 110;
 
+            // Normalizar artículos permitidos para esta compra
+            const artsPermitidos = Array.isArray(item.articulosPermitidos) && item.articulosPermitidos.length > 0
+                ? [...new Set(item.articulosPermitidos)].sort((a, b) => a - b)
+                : [proId];
+
             // Verificar si el cliente TIENE CuentasCliente memo para este artículo
             const rCue = await new sql.Request(transaction).input('Cli', sql.Int, header.clienteId).input('Pro', sql.Int, proId).query(`
                SELECT CueIdCuenta FROM dbo.CuentasCliente WHERE CliIdCliente = @Cli AND ProIdProducto = @Pro AND CueTipo = 'MTS'
@@ -200,57 +205,99 @@ async function procesarVentaDirecta(payload) {
                 cueMemoId = rInsertCue.recordset[0].CueIdCuenta;
             }
 
-            // Inyectar el Plan
-            const reqPlan = new sql.Request(transaction);
-            const rPlan = await reqPlan.input('Cue', sql.Int, cueMemoId)
-                 .input('Cli', sql.Int, header.clienteId)
-                 .input('Pro', sql.Int, proId)
-                 .input('Cant', sql.Decimal(18,4), item.cantidad)
-                 .input('Usr', sql.Int, usuarioId).query(`
-                 INSERT INTO dbo.PlanesMetros
-                   (CliIdCliente, CueIdCuenta, ProIdProducto,
-                    PlaCantidadTotal, PlaCantidadUsada,
-                    PlaPrecioUnitario, MonIdMoneda,
-                    PlaFechaInicio, PlaFechaVencimiento,
-                    PlaDescripcion, PlaObservaciones,
-                    PlaActivo, PlaFechaAlta, PlaUsuarioAlta)
-                 OUTPUT INSERTED.PlaIdPlan
-                 VALUES
-                   (@Cli, @Cue, @Pro,
-                    @Cant, 0,
-                    NULL, NULL,
-                    CAST(GETDATE() AS DATE), NULL,
-                    'Plan desde Venta Directa Caja', NULL,
-                    1, GETDATE(), @Usr)
-            `);
-            referenciaId = rPlan.recordset[0].PlaIdPlan;
-            item.codigo = `PLAN_MTS_${proId}`;
-
-            // Registrar los artículos permitidos en la tabla PlanesMetrosArticulosPermitidos
-            const artsPermitidos = Array.isArray(item.articulosPermitidos) && item.articulosPermitidos.length > 0 
-                ? item.articulosPermitidos 
-                : [proId];
-            
-            for (const artPermId of artsPermitidos) {
-                await new sql.Request(transaction)
-                    .input('PlaId', sql.Int, referenciaId)
-                    .input('ProId', sql.Int, artPermId)
+            // ── RECARGA vs PLAN NUEVO ──────────────────────────────────────────────────
+            // Buscar plan activo existente para esta cuenta con el MISMO conjunto de artículos permitidos.
+            // Si existe → recargar (UPDATE PlaCantidadTotal). Si no → crear plan nuevo (INSERT).
+            let planExistenteId = null;
+            {
+                const rPlanesActivos = await new sql.Request(transaction)
+                    .input('Cue', sql.Int, cueMemoId)
+                    .input('Cli', sql.Int, header.clienteId)
                     .query(`
-                        INSERT INTO dbo.PlanesMetrosArticulosPermitidos (PlaIdPlan, ProIdProducto)
-                        VALUES (@PlaId, @ProId)
+                        SELECT pm.PlaIdPlan,
+                               (SELECT STRING_AGG(CAST(pap.ProIdProducto AS VARCHAR), ',') 
+                                WITHIN GROUP (ORDER BY pap.ProIdProducto)
+                                FROM dbo.PlanesMetrosArticulosPermitidos pap
+                                WHERE pap.PlaIdPlan = pm.PlaIdPlan) AS ArtsPermitidos
+                        FROM dbo.PlanesMetros pm WITH(UPDLOCK, ROWLOCK)
+                        WHERE pm.CueIdCuenta  = @Cue
+                          AND pm.CliIdCliente = @Cli
+                          AND pm.PlaActivo    = 1
                     `);
+
+                // Firma esperada: IDs ordenados separados por coma (ej: "247,255")
+                const firmaCompra = artsPermitidos.join(',');
+
+                for (const row of rPlanesActivos.recordset) {
+                    const firmaExistente = (row.ArtsPermitidos || '').split(',').map(Number).sort((a,b)=>a-b).join(',');
+                    if (firmaExistente === firmaCompra) {
+                        planExistenteId = row.PlaIdPlan;
+                        break;
+                    }
+                }
             }
 
-            // ── Inyectar Movimiento de ENTRADA y actualizar saldo en TX ──
-            // El tipo de movimiento lo lee del Motor (evento ENTRADA o VTA_CAJA_RECURSO)
+            if (planExistenteId) {
+                // ── RECARGA: sumar metros al plan existente ──────────────────────────
+                logger.info(`[CAJA:VTA] Recargando plan existente PlaId=${planExistenteId} con ${item.cantidad} metros para CliId=${header.clienteId}`);
+                await new sql.Request(transaction)
+                    .input('PlaId', sql.Int, planExistenteId)
+                    .input('Cant',  sql.Decimal(18,4), item.cantidad)
+                    .query(`UPDATE dbo.PlanesMetros SET PlaCantidadTotal = PlaCantidadTotal + @Cant WHERE PlaIdPlan = @PlaId`);
+                referenciaId = planExistenteId;
+                item.codigo = `PLAN_MTS_${proId}`;
+            } else {
+                // ── PLAN NUEVO: mismo flujo que antes ───────────────────────────────
+                logger.info(`[CAJA:VTA] Creando plan nuevo para CliId=${header.clienteId} artsPermitidos=${artsPermitidos.join(',')}`);
+                const reqPlan = new sql.Request(transaction);
+                const rPlan = await reqPlan
+                    .input('Cue',  sql.Int, cueMemoId)
+                    .input('Cli',  sql.Int, header.clienteId)
+                    .input('Pro',  sql.Int, proId)
+                    .input('Cant', sql.Decimal(18,4), item.cantidad)
+                    .input('Usr',  sql.Int, usuarioId)
+                    .query(`
+                        INSERT INTO dbo.PlanesMetros
+                          (CliIdCliente, CueIdCuenta, ProIdProducto,
+                           PlaCantidadTotal, PlaCantidadUsada,
+                           PlaPrecioUnitario, MonIdMoneda,
+                           PlaFechaInicio, PlaFechaVencimiento,
+                           PlaDescripcion, PlaObservaciones,
+                           PlaActivo, PlaFechaAlta, PlaUsuarioAlta)
+                        OUTPUT INSERTED.PlaIdPlan
+                        VALUES
+                          (@Cli, @Cue, @Pro,
+                           @Cant, 0,
+                           NULL, NULL,
+                           CAST(GETDATE() AS DATE), NULL,
+                           'Plan desde Venta Directa Caja', NULL,
+                           1, GETDATE(), @Usr)
+                    `);
+                referenciaId = rPlan.recordset[0].PlaIdPlan;
+                item.codigo = `PLAN_MTS_${proId}`;
+
+                // Registrar los artículos permitidos
+                for (const artPermId of artsPermitidos) {
+                    await new sql.Request(transaction)
+                        .input('PlaId', sql.Int, referenciaId)
+                        .input('ProId', sql.Int, artPermId)
+                        .query(`INSERT INTO dbo.PlanesMetrosArticulosPermitidos (PlaIdPlan, ProIdProducto) VALUES (@PlaId, @ProId)`);
+                }
+            }
+
+            // ── Movimiento de ENTRADA (siempre, recarga o plan nuevo) ─────────────
+            // Queda en el estado de cuenta como trazabilidad de cada compra.
             const evtRecurso = await motorContable.getEvento('ENTRADA').catch(() => null);
             const movTipoEntrada = evtRecurso?.EvtCodigo || 'ENTRADA';
+            const conceptoEntrada = planExistenteId
+                ? `Recarga plan #${referenciaId} (+${item.cantidad} metros)`
+                : `Saldo inicial plan #${referenciaId}`;
 
-            await transaction.request()
+            await new sql.Request(transaction)
               .input('Cue', sql.Int, cueMemoId)
               .input('Cant', sql.Decimal(18,4), item.cantidad)
               .input('Usr', sql.Int, usuarioId)
-              .input('Concep', sql.NVarChar(500), `Saldo inicial plan #${referenciaId}`)
+              .input('Concep', sql.NVarChar(500), conceptoEntrada)
               .input('MovTipo', sql.VarChar(30), movTipoEntrada)
               .query(`
                 UPDATE dbo.CuentasCliente
@@ -407,7 +454,7 @@ async function procesarVentaDirecta(payload) {
             // Pago sintético de aplicación
             const pagRes = await new sql.Request(transaction)
               .input('Metodo', sql.Int, 1)
-              .input('Moneda', sql.Int, monedaId || 1)
+              .input('Moneda', sql.Int, monIdDeuda || 1)
               .input('Monto', sql.Decimal(18,4), montoAAplicar)
               .query(`
                 INSERT INTO dbo.Pagos
@@ -618,7 +665,7 @@ async function procesarTransaccion(payload) {
     // ── PASO 0: Generar correlativo si no viene el número ────────────────
     if (header.tipoDocumento && header.tipoDocumento !== 'NINGUNO' && !header.numeroDoc) {
       try {
-        const seqR = await transaction.request()
+        const seqR = await new sql.Request(transaction)
           .input('CodDoc', sql.VarChar(20), header.tipoDocumento)
           .query(`
             UPDATE s
@@ -641,7 +688,7 @@ async function procesarTransaccion(payload) {
     }
 
     // ── PASO 1: Crear encabezado en TransaccionesCaja ──────────────────
-    const tcaRes = await transaction.request()
+    const tcaRes = await new sql.Request(transaction)
       .input('StuIdSesion',      sql.Int,           stuIdSesion)
       .input('TcaUsuarioId',     sql.Int,           usuarioId)
       .input('TcaClienteId',     sql.Int,           header.clienteId)
@@ -679,7 +726,7 @@ async function procesarTransaccion(payload) {
       let safeRefId2 = parseInt(String(ap.referenciaId).replace(/\D/g, ''), 10);
       if (isNaN(safeRefId2)) safeRefId2 = null;
 
-      await transaction.request()
+      await new sql.Request(transaction)
         .input('TcaId',       sql.Int,           tcaIdTransaccion)
         .input('Tipo',        sql.VarChar(20),   ap.tipo)
         .input('RefId',       sql.Int,           safeRefId2)
@@ -704,7 +751,7 @@ async function procesarTransaccion(payload) {
     let primerPagIdPago = null;   // se linkea como FK principal en OrdenesRetiro
 
     for (const pago of pagosNorm) {
-      const pagoRes = await transaction.request()
+      const pagoRes = await new sql.Request(transaction)
         .input('MetodoId',       sql.Int,           pago.metodoPagoId)
         .input('MonedaId',       sql.Int,           pago.monedaId)
         .input('Monto',          sql.Decimal(18,4), pago.montoOriginal)
@@ -751,7 +798,7 @@ async function procesarTransaccion(payload) {
 
       // 1. Marcar siempre como pagas las OrdenesDeposito hijas (tanto reales como virtuales)
       if (ap.orderNumbers && ap.orderNumbers.length > 0) {
-          const reqOd = transaction.request().input('PagId', sql.Int, primerPagIdPago).input('TcaId', sql.Int, tcaIdTransaccion);
+          const reqOd = new sql.Request(transaction).input('PagId', sql.Int, primerPagIdPago).input('TcaId', sql.Int, tcaIdTransaccion);
           ap.orderNumbers.forEach((id, i) => reqOd.input(`id${i}`, sql.Int, id));
           const inClauseOd = ap.orderNumbers.map((_, i) => `@id${i}`).join(',');
 
@@ -763,7 +810,7 @@ async function procesarTransaccion(payload) {
             WHERE OrdIdOrden IN (${inClauseOd});
           `);
 
-          const histReqOd = transaction.request().input('UsuarioId', sql.Int, usuarioId);
+          const histReqOd = new sql.Request(transaction).input('UsuarioId', sql.Int, usuarioId);
           ap.orderNumbers.forEach((id, i) => histReqOd.input(`id${i}`, sql.Int, id));
           const histValsOd = ap.orderNumbers.map((_, i) => `(@id${i}, 7, GETDATE(), @UsuarioId)`).join(',');
 
@@ -778,7 +825,7 @@ async function procesarTransaccion(payload) {
           continue;
       }
 
-      const estadoRes = await transaction.request()
+      const estadoRes = await new sql.Request(transaction)
         .input('Id', sql.Int, realRefId)
         .query(`SELECT OReEstadoActual FROM dbo.OrdenesRetiro WITH(UPDLOCK) WHERE OReIdOrdenRetiro = @Id`);
 
@@ -790,7 +837,7 @@ async function procesarTransaccion(payload) {
       // Estado 1(Pendiente)→3(Abonado)  | Estado 5(Listo)→8(Listo y abonado) | otros→sin cambio de estado
       const nuevoEstado = estadoActual === 1 ? 3 : estadoActual === 5 ? 8 : estadoActual;
 
-      await transaction.request()
+      await new sql.Request(transaction)
         .input('PagId',    sql.Int, primerPagIdPago)
         .input('TcaId',    sql.Int, tcaIdTransaccion)
         .input('Estado',   sql.Int, nuevoEstado)
@@ -811,7 +858,7 @@ async function procesarTransaccion(payload) {
         `);
 
       // Actualizar OcupacionEstantes si aplica
-      await transaction.request()
+      await new sql.Request(transaction)
         .input('Id', sql.Int, realRefId)
         .query(`
           UPDATE dbo.OcupacionEstantes SET Pagado = 1
@@ -825,7 +872,7 @@ async function procesarTransaccion(payload) {
     // OrdenesDeposito → estado 7 = Pagada
     if (ordenesDeposito.length > 0) {
       const ids = ordenesDeposito.map(a => a.referenciaId);
-      const req = transaction.request().input('PagId', sql.Int, primerPagIdPago).input('TcaId', sql.Int, tcaIdTransaccion);
+      const req = new sql.Request(transaction).input('PagId', sql.Int, primerPagIdPago).input('TcaId', sql.Int, tcaIdTransaccion);
       ids.forEach((id, i) => req.input(`id${i}`, sql.Int, id));
       const inClause = ids.map((_, i) => `@id${i}`).join(',');
 
@@ -837,7 +884,7 @@ async function procesarTransaccion(payload) {
         WHERE OrdIdOrden IN (${inClause});
       `);
 
-      const histReq = transaction.request().input('UsuarioId', sql.Int, usuarioId);
+      const histReq = new sql.Request(transaction).input('UsuarioId', sql.Int, usuarioId);
       ids.forEach((id, i) => histReq.input(`id${i}`, sql.Int, id));
       const histVals = ids.map((_, i) => `(@id${i}, 7, GETDATE(), @UsuarioId)`).join(',');
 
@@ -853,7 +900,7 @@ async function procesarTransaccion(payload) {
       const realRefId = parseInt(ap.referenciaId, 10);
       if (isNaN(realRefId)) continue; // Los retiros virtuales no se cierran porque no existen en tabla
 
-      const checkRes = await transaction.request()
+      const checkRes = await new sql.Request(transaction)
         .input('Id', sql.Int, realRefId)
         .query(`
           SELECT
@@ -867,7 +914,7 @@ async function procesarTransaccion(payload) {
       const { total, pagas } = checkRes.recordset[0];
 
       if (total > 0 && total === pagas) {
-        await transaction.request()
+        await new sql.Request(transaction)
           .input('PagId',  sql.Int, primerPagIdPago)
           .input('TcaId',  sql.Int, tcaIdTransaccion)
           .input('Usr',    sql.Int, usuarioId)
@@ -1005,7 +1052,7 @@ async function procesarTransaccion(payload) {
 
       // ── PASO 5.6: GENERACIÓN CFE (FACTURACIÓN ELECTRÓNICA) ─────────────
       if (header.tipoDocumento && header.tipoDocumento !== 'NINGUNO') {
-        const resConfig = await transaction.request()
+        const resConfig = await new sql.Request(transaction)
           .input('codDoc', sql.VarChar(10), header.tipoDocumento)
           .query(`
             SELECT c.EvtCodigo, c.Detalle, c.AfectaCtaCte, 
@@ -1026,7 +1073,7 @@ async function procesarTransaccion(payload) {
                numeroCFE = parseInt(header.numeroDoc, 10);
                serieCFE = header.serieDoc || config.SecSerie || 'A';
              } else {
-               const resSeq = await transaction.request()
+               const resSeq = await new sql.Request(transaction)
                  .input('secId', sql.Int, config.SecIdSecuencia)
                  .query(`
                    UPDATE dbo.SecuenciaDocumentos 
@@ -1042,7 +1089,7 @@ async function procesarTransaccion(payload) {
              
              const desgloseCFE = contabilidadCore.desglosarIVA(totalNetoMoneda, 22); // 22% as default for VAT
              
-             const insertDocResult = await transaction.request()
+             const insertDocResult = await new sql.Request(transaction)
                .input('tipo',      sql.VarChar(50), 
                   (header.tipoDocumento === 'PC' ? 'PedidoCaja' : (config.Detalle || header.tipoDocumento)))
                .input('cuenta',    sql.Int,         isOrdenUSD ? 119 : 118)
@@ -1081,7 +1128,7 @@ async function procesarTransaccion(payload) {
              const esPedidoCaja = header.tipoDocumento === 'PC' || (config.Detalle || '').toLowerCase().includes('pedido caja');
 
              if (esPedidoCaja) {
-               await transaction.request()
+               await new sql.Request(transaction)
                  .input('docId', sql.Int, docIdDocumento)
                  .input('tcaId', sql.Int, tcaIdTransaccion)
                  .query(`
@@ -1101,7 +1148,7 @@ async function procesarTransaccion(payload) {
                  `);
              } else {
                // Documento de producción: la barrera es este INSERT que convierte PedidosCobranzaDetalle → DocumentosContablesDetalle
-               await transaction.request()
+               await new sql.Request(transaction)
                  .input('docId', sql.Int, docIdDocumento)
                  .input('tcaId', sql.Int, tcaIdTransaccion)
                  .query(`
@@ -1173,7 +1220,7 @@ async function procesarTransaccion(payload) {
              }
 
              if (allOdIds.length > 0 || allOrIds.length > 0) {
-               const updateMcReq = transaction.request().input('docId', sql.Int, docIdDocumento);
+               const updateMcReq = new sql.Request(transaction).input('docId', sql.Int, docIdDocumento);
                let updateMcQuery = `
                  UPDATE dbo.MovimientosCuenta
                  SET DocIdDocumento = @docId
@@ -1204,7 +1251,7 @@ async function procesarTransaccion(payload) {
              header._creoDeuda = false;
              if (importePendienteMoneda > 0.01 && generaDeuda) {
                header._creoDeuda = true;
-               const cuentaDeudaRes = await transaction.request()
+               const cuentaDeudaRes = await new sql.Request(transaction)
                  .input('cli', sql.Int, header.clienteId)
                  .query(`
                    SELECT TOP 1 CueIdCuenta, ISNULL(CueSaldoActual, 0) as Saldo
@@ -1220,7 +1267,7 @@ async function procesarTransaccion(payload) {
                  
                  // Nace en el importe real pendiente
                  const diasVenc = config.DiasVencimiento || 30;
-                 const insertRes = await transaction.request()
+                 const insertRes = await new sql.Request(transaction)
                    .input('cue',  sql.Int,          cueDeudaId)
                    .input('doc',  sql.Int,          docIdDocumento)
                    .input('orig', sql.Decimal(18,4), totalNeto)
@@ -1244,7 +1291,7 @@ async function procesarTransaccion(payload) {
                      const montoAAplicar = Math.min(saldoAFavor, importePendienteMoneda);
                      
                      // Pago sintético de aplicación
-                     const pagRes = await transaction.request()
+                     const pagRes = await new sql.Request(transaction)
                            .input('Metodo', sql.Int, 1)
                            .input('Moneda', sql.Int, isOrdenUSD ? 2 : 1)
                            .input('Monto', sql.Decimal(18,4), montoAAplicar)
@@ -1259,7 +1306,7 @@ async function procesarTransaccion(payload) {
                            `);
                          const pagId = pagRes.recordset[0].PagIdPago;
 
-                         await transaction.request()
+                         await new sql.Request(transaction)
                            .input('PagIdPago',       sql.Int,          pagId)
                            .input('MontoDisponible', sql.Decimal(18,4), montoAAplicar)
                            .input('CueIdCuenta',     sql.Int,          cueDeudaId)
@@ -1336,7 +1383,7 @@ async function anularTransaccion({ tcaIdTransaccion, usuarioId, motivo }) {
 
   try {
     // Verificar que existe y no está ya anulada
-    const tcaRes = await transaction.request()
+    const tcaRes = await new sql.Request(transaction)
       .input('TcaId', sql.Int, tcaIdTransaccion)
       .query(`SELECT TcaEstado FROM dbo.TransaccionesCaja WITH(UPDLOCK) WHERE TcaIdTransaccion = @TcaId`);
 
@@ -1344,7 +1391,7 @@ async function anularTransaccion({ tcaIdTransaccion, usuarioId, motivo }) {
     if (tcaRes.recordset[0].TcaEstado === 'ANULADO') throw new Error('La transacción ya está anulada.');
 
     // Verificar que la transacción no esté asociada a un documento fiscal ya firmado
-    const docsRes = await transaction.request()
+    const docsRes = await new sql.Request(transaction)
       .input('TcaId', sql.Int, tcaIdTransaccion)
       .query(`
           SELECT dc.CfeEstado 
@@ -1358,7 +1405,7 @@ async function anularTransaccion({ tcaIdTransaccion, usuarioId, motivo }) {
     }
 
     // Marcar TransaccionesCaja como ANULADO
-    await transaction.request()
+    await new sql.Request(transaction)
       .input('TcaId',   sql.Int,           tcaIdTransaccion)
       .input('UsuarioId',sql.Int,          usuarioId)
       .input('Motivo',  sql.NVarChar(500), motivo || null)
@@ -1372,7 +1419,7 @@ async function anularTransaccion({ tcaIdTransaccion, usuarioId, motivo }) {
       `);
 
     // Revertir los Pagos relacionados (marcar TipoMovimiento = 'ANULADO')
-    await transaction.request()
+    await new sql.Request(transaction)
       .input('TcaId', sql.Int, tcaIdTransaccion)
       .query(`
         UPDATE dbo.Pagos
@@ -1381,7 +1428,7 @@ async function anularTransaccion({ tcaIdTransaccion, usuarioId, motivo }) {
       `);
 
     // Revertir OrdenesRetiro (quitar PagIdPago + TcaId, volver a estado anterior)
-    await transaction.request()
+    await new sql.Request(transaction)
       .input('TcaId',    sql.Int, tcaIdTransaccion)
       .input('UsuarioId',sql.Int, usuarioId)
       .query(`
@@ -1406,7 +1453,7 @@ async function anularTransaccion({ tcaIdTransaccion, usuarioId, motivo }) {
       `);
 
     // Revertir OrdenesDeposito
-    await transaction.request()
+    await new sql.Request(transaction)
       .input('TcaId',    sql.Int, tcaIdTransaccion)
       .input('UsuarioId',sql.Int, usuarioId)
       .query(`
@@ -1922,3 +1969,4 @@ module.exports = {
   getTransaccionesByCliente,
   generarCFEDesdeOrdenesDirectas,
 };
+

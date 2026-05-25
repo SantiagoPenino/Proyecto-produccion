@@ -706,9 +706,33 @@ const viewDriveFile = async (req, res) => {
         res.setHeader('Content-Type', finalMimeType);
         if (size) res.setHeader('Content-Length', size);
 
+        // Si el nombre no tiene extensión o termina en .dat, intentamos agregarle la extensión correcta según el MIME type
+        let finalName = name || 'archivo';
+        const hasExt = finalName.includes('.') && finalName.split('.').pop().length <= 4;
+        
+        if (!hasExt || finalName.toLowerCase().endsWith('.dat')) {
+            const mimeToExt = {
+                'application/pdf': '.pdf',
+                'image/png': '.png',
+                'image/jpeg': '.jpg',
+                'image/jpg': '.jpg',
+                'text/plain': '.txt',
+                'application/json': '.json'
+            };
+            const expectedExt = mimeToExt[finalMimeType];
+            if (expectedExt) {
+                if (finalName.toLowerCase().endsWith('.dat')) {
+                    finalName = finalName.substring(0, finalName.length - 4) + expectedExt;
+                } else {
+                    finalName = finalName + expectedExt;
+                }
+                logger.info(`[Proxy] Nombre de archivo corregido a: ${finalName} según MIME Type: ${finalMimeType}`);
+            }
+        }
+
         // Mantener el nombre original si es posible (meta-data opcional)
         // Usamos 'inline' para que el navegador intente mostrarlo
-        const safeName = (name || 'archivo').replace(/[^\w\.-]/g, '_');
+        const safeName = finalName.replace(/[^\w\.-]/g, '_');
         res.setHeader('Content-Disposition', `inline; filename="${safeName}"`);
 
         stream.on('error', (err) => {

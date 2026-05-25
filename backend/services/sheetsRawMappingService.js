@@ -129,6 +129,16 @@ class SheetsRawMappingService {
         const prioridad = prioridadStr.includes("URGENT") ? "Urgente" : "Normal";
         const material = f.H ? f.H.toString().trim() : "";
 
+        // Fecha/hora de la planilla: columna A suele tener el timestamp de ingreso
+        let fechaIngreso = null;
+        const rawFecha = f.A || f.B || null;
+        if (rawFecha) {
+            const parsedFecha = new Date(rawFecha);
+            if (!isNaN(parsedFecha.getTime()) && parsedFecha.getFullYear() > 2000) {
+                fechaIngreso = parsedFecha.toISOString();
+            }
+        }
+
         let cantidadReal = parseFloat(f.J) || parseFloat(f.F) || 1;
         if (datosPorHoja && datosPorHoja["BASE"] && datosPorHoja["BASE"].B) {
             const baseCant = parseFloat(datosPorHoja["BASE"].B);
@@ -155,7 +165,7 @@ class SheetsRawMappingService {
         const notasGenerales = f.P ? f.P.toString().trim() : "";
         cantidadReal = Math.round(cantidadReal * 100) / 100;
 
-        return { idExterno, idServicioBase: areaId, nombreTrabajo, prioridad, notasGenerales, metrosTotales: cantidadReal, clienteInfo: { id: clienteNom, idReact: 0 }, archivosReferencia: [], archivosTecnicos: [], servicios: [{ areaId, esPrincipal: true, cabecera: { material, variante: "", metros: cantidadReal }, items: itemsResult, variablesEspeciales: {} }] };
+        return { idExterno, idServicioBase: areaId, nombreTrabajo, prioridad, notasGenerales, metrosTotales: cantidadReal, fechaIngreso, clienteInfo: { id: clienteNom, idReact: 0 }, archivosReferencia: [], archivosTecnicos: [], servicios: [{ areaId, esPrincipal: true, cabecera: { material, variante: "", metros: cantidadReal }, items: itemsResult, variablesEspeciales: {} }] };
     }
 
     static mapTPU(idExterno, areaId, f, matriz, datosPorHoja) {

@@ -2209,3 +2209,322 @@ exports.emitirFacturaAnticipo = async (req, res) => {
     res.status(500).json({ success: false, error: err.message });
   }
 };
+
+// ============================================================
+// SECCIÓN: CONSUMIR RECURSO ADELANTADO
+// ============================================================
+
+/**
+ * POST /api/contabilidad/movimientos/:MovIdMovimiento/consumir-recurso-adelantado
+ *
+ * Aplica retroactivamente un plan de recursos para cancelar una deuda monetaria
+ * pendiente generada antes de que el cliente comprara el plan.
+ *
+ * Escenario A - Cliente común o ciclo ya cerrado:
+ *   Existe DeudaDocumento → se cancela/reduce + crédito en cuenta monetaria.
+ *
+ * Escenario B - Cliente semanal con ciclo ABIERTO:
+ *   No hay DeudaDocumento aún → se inserta crédito COBERTURA_RETROACTIVA
+ *   dentro del ciclo para que el cierre semanal lo descuente naturalmente.
+ */
+exports.consumirRecursoAdelantado = async (req, res) => {
+  const pool = await getPool();
+  let transaction = null;
+
+  try {
+    const movId       = parseInt(req.params.MovIdMovimiento);
+    const UsuarioAlta = req.user?.id || 1;
+
+    if (!movId) return res.status(400).json({ success: false, error: 'MovIdMovimiento requerido.' });
+
+    // 1. Cargar el movimiento original
+    const movRes = await pool.request()
+      .input('MovId', sql.Int, movId)
+      .query(`
+        SELECT
+          m.MovIdMovimiento, m.CueIdCuenta, m.MovTipo, m.MovImporte,
+          m.MovConcepto, m.MovFecha, m.OrdIdOrden, m.CicIdCiclo,
+          m.DocIdDocumento, m.MovAnulado,
+          cc.CliIdCliente, cc.MonIdMoneda, cc.CueTipo,
+          cc.CueSaldoActual, cc.CueDiasCiclo,
+          COALESCE(od.OrdCodigoOrden, erp.CodigoOrden) AS OrdCodigoOrden,
+          COALESCE(od.OrdNombreTrabajo, erp.DescripcionTrabajo) AS OrdNombreTrabajo,
+          COALESCE(od.OrdCantidad, TRY_CAST(erp.Magnitud AS FLOAT), 1.0) AS OrdCantidad,
+          COALESCE(od.ProIdProducto, erp.ProIdProducto) AS ProIdProducto,
+          art.Descripcion AS NombreProducto
+        FROM dbo.MovimientosCuenta m WITH(NOLOCK)
+        JOIN  dbo.CuentasCliente   cc  WITH(NOLOCK) ON cc.CueIdCuenta  = m.CueIdCuenta
+        LEFT JOIN dbo.OrdenesDeposito od  WITH(NOLOCK) ON od.OrdIdOrden = m.OrdIdOrden
+        LEFT JOIN dbo.Ordenes         erp WITH(NOLOCK) ON erp.OrdenID   = m.OrdIdOrden
+        LEFT JOIN dbo.Articulos       art WITH(NOLOCK) ON art.ProIdProducto = COALESCE(od.ProIdProducto, erp.ProIdProducto)
+        WHERE m.MovIdMovimiento = @MovId
+      `);
+
+    if (!movRes.recordset.length)
+      return res.status(404).json({ success: false, error: 'Movimiento no encontrado.' });
+
+    const mov = movRes.recordset[0];
+
+    if (!['ORDEN', 'ORDEN_ANTICIPO'].includes(mov.MovTipo))
+      return res.status(400).json({ success: false, error: 'Solo aplicable sobre movimientos tipo ORDEN.' });
+    if (mov.MovAnulado)
+      return res.status(400).json({ success: false, error: 'Este movimiento ya está anulado.' });
+    if (mov.DocIdDocumento)
+      return res.status(400).json({ success: false, error: 'La orden ya fue facturada. No se puede aplicar recurso retroactivo.' });
+    if (!mov.ProIdProducto)
+      return res.status(400).json({ success: false, error: 'La orden no tiene producto asociado. No se puede aplicar recurso.' });
+
+    // Evitar duplicados de cobertura retroactiva
+    const cruzRes = await pool.request()
+      .input('MovId', sql.Int, movId)
+      .query(`SELECT TOP 1 MovIdMovimiento FROM dbo.MovimientosCuenta WHERE MovIdAnula = @MovId AND MovTipo = 'COBERTURA_RETROACTIVA'`);
+    if (cruzRes.recordset.length)
+      return res.status(400).json({ success: false, error: 'Esta orden ya tiene cobertura retroactiva aplicada.' });
+
+    const importeOrden     = Math.abs(Number(mov.MovImporte));
+    const cantidadMetros   = Number(mov.OrdCantidad) || 0;
+    const ProIdProducto    = mov.ProIdProducto;
+    const CliIdCliente     = mov.CliIdCliente;
+    const CodigoOrden      = mov.OrdCodigoOrden || ('ORD-' + mov.OrdIdOrden);
+    const esClienteSemanal = (mov.CueDiasCiclo || 0) > 0;
+
+    if (cantidadMetros <= 0)
+      return res.status(400).json({ success: false, error: 'La orden no tiene cantidad de metros (OrdCantidad = 0).' });
+
+    // 2. Detectar escenario: DeudaDocumento vs Ciclo Abierto
+    const deudaRes = await pool.request()
+      .input('OrdId', sql.Int, mov.OrdIdOrden)
+      .input('CueId', sql.Int, mov.CueIdCuenta)
+      .query(`
+        SELECT TOP 1 DDeIdDocumento, DDeImportePendiente, DDeEstado
+        FROM dbo.DeudaDocumento WITH(NOLOCK)
+        WHERE OrdIdOrden  = @OrdId
+          AND CueIdCuenta = @CueId
+          AND DDeEstado IN ('PENDIENTE', 'VENCIDO', 'PARCIAL')
+      `);
+    const deudaDoc     = deudaRes.recordset[0] || null;
+    const importeDeuda = deudaDoc ? Number(deudaDoc.DDeImportePendiente) : importeOrden;
+
+    let cicloAbierto = null;
+    if (!deudaDoc && mov.CicIdCiclo) {
+      const cicloRes = await pool.request()
+        .input('CicId', sql.Int, mov.CicIdCiclo)
+        .query(`SELECT CicIdCiclo, CicEstado, CicTotalOrdenes, CicTotalPagos FROM dbo.CiclosCredito WITH(NOLOCK) WHERE CicIdCiclo = @CicId`);
+      const c = cicloRes.recordset[0];
+      if (c && c.CicEstado === 'ABIERTO') cicloAbierto = c;
+    }
+
+    if (!deudaDoc && !cicloAbierto) {
+      return res.status(400).json({ success: false, error: 'No hay deuda pendiente ni ciclo abierto para esta orden.' });
+    }
+
+    // 3. Buscar plan activo (preview sin TX)
+    const planPreviewRes = await pool.request()
+      .input('CliId', sql.Int, CliIdCliente)
+      .input('ProId', sql.Int, ProIdProducto)
+      .query(`
+        SELECT TOP 1
+          pm.PlaIdPlan,
+          pm.CueIdCuenta  AS CueMTS,
+          pm.PlaCantidadTotal,
+          pm.PlaCantidadUsada,
+          pm.PlaCantidadTotal - pm.PlaCantidadUsada AS SaldoDisponible,
+          art.Descripcion AS NombreArticulo
+        FROM dbo.PlanesMetros pm WITH(NOLOCK)
+        LEFT JOIN dbo.Articulos art WITH(NOLOCK) ON art.ProIdProducto = pm.ProIdProducto
+        WHERE pm.CliIdCliente = @CliId
+          AND pm.PlaActivo    = 1
+          AND (pm.PlaFechaVencimiento IS NULL OR pm.PlaFechaVencimiento >= CAST(GETDATE() AS DATE))
+          AND (
+            pm.ProIdProducto = @ProId
+            OR EXISTS (
+              SELECT 1 FROM dbo.PlanesMetrosArticulosPermitidos pap WITH(NOLOCK)
+              WHERE pap.PlaIdPlan = pm.PlaIdPlan AND pap.ProIdProducto = @ProId
+            )
+          )
+        ORDER BY pm.PlaFechaAlta ASC
+      `);
+
+    if (!planPreviewRes.recordset.length)
+      return res.status(422).json({
+        success: false,
+        error: 'Sin plan activo para el producto de la orden. Compre metros primero.'
+      });
+
+    const plan      = planPreviewRes.recordset[0];
+    const saldoDisp = Number(plan.SaldoDisponible);
+
+    // ── REGLA: cobertura total o rechazo. Sin coberturas parciales. ──
+    if (saldoDisp <= 0)
+      return res.status(422).json({
+        success: false,
+        error: ('Plan #' + plan.PlaIdPlan + ' (' + (plan.NombreArticulo || 'sin nombre') + ') no tiene saldo disponible.')
+      });
+
+    if (saldoDisp < cantidadMetros)
+      return res.status(422).json({
+        success: false,
+        error:
+          'Saldo insuficiente en Plan #' + plan.PlaIdPlan +
+          ' (' + (plan.NombreArticulo || 'sin nombre') + '). ' +
+          'Disponible: ' + Number(saldoDisp).toFixed(2) + ' mts. ' +
+          'Se necesitan: ' + Number(cantidadMetros).toFixed(2) + ' mts. ' +
+          'Recargue el plan antes de aplicar.'
+      });
+
+    // Siempre cobertura total: metros = OrdCantidad, importe = deuda completa
+    const importeACancelar = importeDeuda;
+
+    // 4. Transacción atómica
+    transaction = await pool.transaction();
+    await transaction.begin();
+
+    try {
+      // 4a. UPDLOCK en el plan
+      const planTxRes = await new sql.Request(transaction)
+        .input('PlaId', sql.Int, plan.PlaIdPlan)
+        .query(`
+          SELECT PlaIdPlan, PlaCantidadTotal, PlaCantidadUsada,
+                 PlaCantidadTotal - PlaCantidadUsada AS SaldoReal,
+                 CueIdCuenta AS CueMTS
+          FROM dbo.PlanesMetros WITH(UPDLOCK, ROWLOCK)
+          WHERE PlaIdPlan = @PlaId
+        `);
+
+      const planTx      = planTxRes.recordset[0];
+      const saldoReal   = Number(planTx.SaldoReal);
+      const CueMTS      = planTx.CueMTS;
+
+      // Verificación de seguridad dentro de TX (condición de carrera)
+      if (saldoReal < cantidadMetros)
+        throw new Error(
+          'El plan quedó sin saldo suficiente (condición de carrera). ' +
+          'Disponible: ' + saldoReal.toFixed(2) + ' mts. Reintente.'
+        );
+
+      const metrosFinal = cantidadMetros; // siempre cobertura total
+
+      // 4b. Actualizar plan
+      const nuevaUsada  = Number(planTx.PlaCantidadUsada) + metrosFinal;
+      const nuevoActivo = nuevaUsada >= Number(planTx.PlaCantidadTotal) ? 0 : 1;
+
+      await new sql.Request(transaction)
+        .input('PlaId',  sql.Int,          planTx.PlaIdPlan)
+        .input('Usada',  sql.Decimal(18,4), nuevaUsada)
+        .input('Activo', sql.Bit,           nuevoActivo)
+        .query('UPDATE dbo.PlanesMetros SET PlaCantidadUsada = @Usada, PlaActivo = @Activo WHERE PlaIdPlan = @PlaId');
+
+      // 4c. Movimiento ENTREGA en cuenta MTS
+      const smtsRes = await new sql.Request(transaction)
+        .input('C', sql.Int, CueMTS)
+        .query('SELECT CueSaldoActual FROM dbo.CuentasCliente WITH(UPDLOCK) WHERE CueIdCuenta = @C');
+
+      const saldoMTSActual = Number(smtsRes.recordset[0].CueSaldoActual);
+      const nuevoSaldoMTS  = Math.round((saldoMTSActual - metrosFinal) * 10000) / 10000;
+
+      await new sql.Request(transaction)
+        .input('C', sql.Int, CueMTS).input('S', sql.Decimal(18,4), nuevoSaldoMTS)
+        .query('UPDATE dbo.CuentasCliente SET CueSaldoActual = @S WHERE CueIdCuenta = @C');
+
+      await new sql.Request(transaction)
+        .input('C',  sql.Int,           CueMTS)
+        .input('Imp',sql.Decimal(18,4), -metrosFinal)
+        .input('SP', sql.Decimal(18,4),  nuevoSaldoMTS)
+        .input('Usr',sql.Int,            UsuarioAlta)
+        .input('Con',sql.NVarChar(300),  'Cobertura retroactiva: ' + CodigoOrden)
+        .input('Ord',sql.Int,            mov.OrdIdOrden || null)
+        .input('Ref',sql.Int,            movId)
+        .input('PlaIdPlan', sql.Int,     planTx.PlaIdPlan)
+        .query(`
+          INSERT INTO dbo.MovimientosCuenta
+            (CueIdCuenta,MovTipo,MovImporte,MovConcepto,MovSaldoPosterior,
+             MovFecha,MovUsuarioAlta,OrdIdOrden,MovObservaciones)
+          VALUES (@C,'ENTREGA',@Imp,@Con,@SP,GETDATE(),@Usr,@Ord,
+                  CONCAT('Cobertura retroactiva Ref#',@Ref, ' — Plan #',@PlaIdPlan))
+        `);
+
+      // 4d. Crédito COBERTURA_RETROACTIVA en cuenta monetaria
+      //     Semanal: lleva CicIdCiclo para que el cierre del ciclo lo descuente.
+      const smonRes = await new sql.Request(transaction)
+        .input('C', sql.Int, mov.CueIdCuenta)
+        .query('SELECT CueSaldoActual FROM dbo.CuentasCliente WITH(UPDLOCK) WHERE CueIdCuenta = @C');
+
+      const saldoMonActual = Number(smonRes.recordset[0].CueSaldoActual);
+      const nuevoSaldoMon  = Math.round((saldoMonActual + importeACancelar) * 100) / 100;
+
+      await new sql.Request(transaction)
+        .input('C', sql.Int, mov.CueIdCuenta).input('S', sql.Decimal(18,4), nuevoSaldoMon)
+        .query('UPDATE dbo.CuentasCliente SET CueSaldoActual = @S WHERE CueIdCuenta = @C');
+
+      const conceptoCob     = 'Cobertura retroactiva Plan #' + planTx.PlaIdPlan + ' \u2014 ' + CodigoOrden + (mov.OrdNombreTrabajo ? ' \u2014 ' + mov.OrdNombreTrabajo : '');
+      const cicloIdInsertar = (esClienteSemanal && mov.CicIdCiclo) ? mov.CicIdCiclo : null;
+
+      await new sql.Request(transaction)
+        .input('C',   sql.Int,          mov.CueIdCuenta)
+        .input('Imp', sql.Decimal(18,4), importeACancelar)
+        .input('SP',  sql.Decimal(18,4), nuevoSaldoMon)
+        .input('Usr', sql.Int,           UsuarioAlta)
+        .input('Con', sql.NVarChar(300),  conceptoCob)
+        .input('Ord', sql.Int,            mov.OrdIdOrden || null)
+        .input('Mid', sql.Int,            movId)
+        .input('Cic', sql.Int,            cicloIdInsertar)
+        .query(`
+          INSERT INTO dbo.MovimientosCuenta
+            (CueIdCuenta,MovTipo,MovImporte,MovConcepto,MovSaldoPosterior,
+             MovFecha,MovUsuarioAlta,OrdIdOrden,MovIdAnula,CicIdCiclo)
+          VALUES (@C,'COBERTURA_RETROACTIVA',@Imp,@Con,@SP,GETDATE(),@Usr,@Ord,@Mid,@Cic)
+        `);
+
+      // 4e. Escenario A: cancelar DeudaDocumento completo (cobertura total garantizada)
+      if (deudaDoc) {
+        await new sql.Request(transaction)
+          .input('Id', sql.Int, deudaDoc.DDeIdDocumento)
+          .query("UPDATE dbo.DeudaDocumento SET DDeEstado='CANCELADO', DDeImportePendiente=0 WHERE DDeIdDocumento=@Id");
+      }
+
+      // 4f. Escenario B: actualizar acumulados del ciclo abierto (semanal)
+      if (cicloAbierto) {
+        await new sql.Request(transaction)
+          .input('CicId', sql.Int,          cicloAbierto.CicIdCiclo)
+          .input('Imp',   sql.Decimal(18,4), importeACancelar)
+          .query(`
+            UPDATE dbo.CiclosCredito
+            SET CicTotalPagos    = CicTotalPagos + @Imp,
+                CicSaldoFacturar = CicSaldoFacturar - @Imp
+            WHERE CicIdCiclo = @CicId
+          `);
+      }
+
+      await transaction.commit();
+
+      logger.info(
+        '[COBERTURA_RETROACTIVA] MovId=' + movId + ' Orden=' + CodigoOrden +
+        ' Plan#' + planTx.PlaIdPlan + ' -> ' + metrosFinal + ' mts / $' + importeACancelar +
+        ' | Escenario: ' + (deudaDoc ? 'DEUDA_DOC' : 'CICLO_ABIERTO') +
+        ' | Cliente: ' + (esClienteSemanal ? 'SEMANAL' : 'COMUN')
+      );
+
+      return res.json({
+        success:          true,
+        metrosConsumidos: metrosFinal,
+        importeCancelado: importeACancelar,
+        deudaRestante:    0,
+        planRestante:     Math.max(0, saldoReal - metrosFinal),
+        esCoberturaTotal: true,
+        escenario:        deudaDoc ? 'DEUDA_DOCUMENTO' : 'CICLO_ABIERTO',
+        tipoCliente:      esClienteSemanal ? 'SEMANAL' : 'COMUN',
+        mensaje:
+          'Orden ' + CodigoOrden + ' cubierta por Plan #' + planTx.PlaIdPlan + ' \u2014 ' +
+          metrosFinal + ' mts consumidos. Deuda cancelada completamente.'
+      });
+
+    } catch (txErr) {
+      await transaction.rollback().catch(() => {});
+      throw txErr;
+    }
+
+  } catch (err) {
+    logger.error('[COBERTURA_RETROACTIVA] Error:', err.message, err);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+};

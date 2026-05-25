@@ -5,6 +5,8 @@ const path = require('path');
 const sharp = require('sharp');
 const { PDFDocument } = require('pdf-lib');
 const logger = require('../utils/logger');
+const driveService = require('./driveService');
+
 
 // --- HELPERS ---
 const downloadStream = async (url, filepath) => {
@@ -140,43 +142,29 @@ const processOrderListInternal = async (orderIds, io, targetFileIds = null) => {
                         const tempPath = path.join(targetDir, `${baseName}.tmp`);
                         let sourcePath = file.RutaAlmacenamiento || '';
                         let isDrive = false;
+                        let driveFileId = null;
 
                         if (sourcePath.includes('drive.google.com')) {
                             const dId = getDriveId(sourcePath);
                             if (dId) {
-                                sourcePath = `https://drive.google.com/uc?export=download&id=${dId}`;
                                 isDrive = true;
+                                driveFileId = dId;
                             }
                         }
 
                         // ... Downloading Logic ...
                         try {
-                            if (sourcePath.startsWith('http')) {
+                            if (isDrive && driveFileId) {
+                                logger.info(`      🚀 Descargando archivo de Drive usando API autorizada (ID: ${driveFileId})...`);
+                                const { stream } = await driveService.getFileStream(driveFileId);
+                                const writer = fs.createWriteStream(tempPath);
+                                stream.pipe(writer);
+                                await new Promise((resolve, reject) => {
+                                    writer.on('finish', resolve);
+                                    writer.on('error', reject);
+                                });
+                            } else if (sourcePath.startsWith('http')) {
                                 await downloadStream(sourcePath, tempPath);
-                                // Check Drive Warning (Virus Scan)
-                                if (isDrive) {
-                                    const stats = fs.statSync(tempPath);
-                                    if (stats.size < 200000) {
-                                        const content = fs.readFileSync(tempPath, 'utf8');
-                                        if (content.toLowerCase().includes('<!doctype html') || content.includes('Virus scan') || content.includes('virus')) {
-                                            logger.info(`      🔄 Drive Virus Scan Warning detectado. Buscando bypass...`);
-                                            let confirmToken = null;
-                                            const match = content.match(/confirm=([a-zA-Z0-9_\-]+)/);
-                                            if (match) confirmToken = match[1];
-                                            if (!confirmToken) {
-                                                const matchForm = content.match(/action=".*?confirm=([a-zA-Z0-9_\-]+)/);
-                                                if (matchForm) confirmToken = matchForm[1];
-                                            }
-                                            if (confirmToken) {
-                                                logger.info(`      🚀 Token encontrado: ${confirmToken}. Reintentando descarga...`);
-                                                await downloadStream(`${sourcePath}&confirm=${confirmToken}`, tempPath);
-                                            } else {
-                                                logger.info(`      ⚠️ Token no encontrado explícitamente. Probando bypass genérico (confirm=t)...`);
-                                                await downloadStream(`${sourcePath}&confirm=t`, tempPath);
-                                            }
-                                        }
-                                    }
-                                }
                             } else if (fs.existsSync(sourcePath)) {
                                 fs.copyFileSync(sourcePath, tempPath);
                             } else {

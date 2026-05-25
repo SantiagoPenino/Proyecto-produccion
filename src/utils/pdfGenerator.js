@@ -578,7 +578,10 @@ export const generarPdfEstadoCuenta = (cliente, cuentas, secciones, planes, desd
         pdf.setFontSize(12);
         pdf.setTextColor(0, 0, 0);
         const suffix = saldo > 0 ? ' (Saldo a favor)' : (saldo < 0 ? ' (Deuda)' : '');
-        pdf.text(`Cuenta: ${c.UnidadLabel || c.CueTipo} - Saldo Actual: ${saldoStr}${suffix}`, 14, currentY);
+        const cuentaLabel = c.NombreArticulo
+            ? `${c.UnidadLabel || c.CueTipo} — ${c.NombreArticulo}`
+            : (c.UnidadLabel || c.CueTipo);
+        pdf.text(`Cuenta: ${cuentaLabel} - Saldo Actual: ${saldoStr}${suffix}`, 14, currentY);
         currentY += 6;
 
         if (movs.length === 0) {
@@ -757,7 +760,10 @@ export const generarPdfPrefactura = (ciclo, movs, excluidos, cuenta, cliente, es
     if (cliente.CioRuc) {
         pdf.text(`RUT/CI: ${cliente.CioRuc}`, 14, 58);
     }
-    pdf.text(`Cuenta: ${cuenta.UnidadLabel || cuenta.CueTipo}`, 120, 52);
+    const cuentaLabelPF = cuenta.NombreArticulo
+        ? `${cuenta.UnidadLabel || cuenta.CueTipo} — ${cuenta.NombreArticulo}`
+        : (cuenta.UnidadLabel || cuenta.CueTipo);
+    pdf.text(`Cuenta: ${cuentaLabelPF}`, 120, 52);
 
     // Tabla de Detalles
     const movsIncluidos = movs.filter(m => !excluidos.has(m.MovIdMovimiento));

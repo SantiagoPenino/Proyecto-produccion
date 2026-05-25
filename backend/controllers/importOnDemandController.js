@@ -274,21 +274,26 @@ exports.previewOnDemand = async (req, res) => {
                     const isOrderUrgente = nodoPrioridad.toLowerCase().includes('urgent');
 
                     // 🎯 NUEVO: Buscar ProIdProducto real en BD
-                    // Como la planilla ahora manda el ProIdProducto dentro del campo codArticulo,
-                    // intentamos usarlo como ID principal.
-                    let finalProId = parseInt(cabecera.proIdProducto || cabecera.ProIdProducto || codArticulo) || null;
-                    
-                    // Si por algún motivo nos mandaron un código alfanumérico viejo y finalProId quedó nulo
-                    if (!finalProId && typeof codArticulo === 'string') {
+                    // Como la planilla ahora manda el IDProdReact o ProIdProducto dentro del campo codArticulo (ej: 47),
+                    // intentamos buscar el ProIdProducto correspondiente en la BD priorizando IDProdReact.
+                    let finalProId = null;
+                    const possibleId = parseInt(cabecera.proIdProducto || cabecera.ProIdProducto || codArticulo);
+                    if (!isNaN(possibleId)) {
                         try {
                             const pReq = await pool.request()
-                                .input('cod', sql.NVarChar, codArticulo.toString().trim())
-                                .query("SELECT TOP 1 ProIdProducto FROM Articulos WHERE LTRIM(RTRIM(CodArticulo)) = @cod");
+                                .input('id', sql.Int, possibleId)
+                                .query(`
+                                    SELECT TOP 1 ProIdProducto 
+                                    FROM Articulos 
+                                    WHERE IDProdReact = @id 
+                                       OR ProIdProducto = @id 
+                                    ORDER BY CASE WHEN IDProdReact = @id THEN 1 ELSE 2 END
+                                `);
                             if (pReq.recordset.length > 0) {
                                 finalProId = pReq.recordset[0].ProIdProducto;
                             }
                         } catch (e) {
-                            logger.error("[Preview] Error buscando ProIdProducto por codArticulo txt: " + e.message);
+                            logger.error("[Preview] Error buscando ProIdProducto por ID/Cod numérico: " + e.message);
                         }
                     }
 
