@@ -43,7 +43,8 @@ async function syncPlanillaArea(areaId, procesoID) {
             for (const pedido of data.data) {
                 try {
                     // LLAMADA LOCAL A LA API DE INTEGRACIÓN con Timeout de 30s
-                    await axios.post('http://localhost:5000/api/web-orders/integration/create', pedido, {
+                    const port = process.env.PORT || 5000;
+                    await axios.post(`http://localhost:${port}/api/web-orders/integration/create`, pedido, {
                         headers: { 'x-api-key': process.env.INTEGRATION_API_KEY || 'macrosoft-secret-key' },
                         timeout: 30000
                     });
