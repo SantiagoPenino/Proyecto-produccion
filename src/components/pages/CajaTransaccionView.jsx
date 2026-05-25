@@ -61,6 +61,7 @@ function LightSelect({ value, onChange, options = [], placeholder = 'Seleccionar
 }
 
 const TIPOS_DOC = [
+  { value: '40', label: 'Pedido Caja' },
   { value: '07', label: 'E-Ticket Contado -> 101' },
   { value: '08', label: 'E-Ticket Crédito -> 101' },
   { value: '01', label: 'E-Factura Contado -> 111' },
@@ -110,18 +111,18 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
   const [seleccionados, setSeleccionados] = useState([]);
   const [ajustes, setAjustes] = useState({});
   const [carritosPago, setCarritosPago] = useState([{ id: Date.now(), metodoPagoId: 1, moneda: 'UYU', monedaId: 1, monto: '' }]);
-  const [tipoDocCobro, setTipoDocCobro] = useState('07');
+  const [tipoDocCobro, setTipoDocCobro] = useState('40');
   const [serieDocCobro, setSerieDocCobro] = useState('A');
   const [numDocCobro, setNumDocCobro] = useState('');
   const [numDocCobroPredict, setNumDocCobroPredict] = useState('');
   const [obsCobro, setObsCobro] = useState('');
   const [procesandoCobro, setProcesandoCobro] = useState(false);
   const [motorPagos, setMotorPagos] = useState([{ id: Date.now(), metodoPagoId: 1, moneda: 'UYU', monedaId: 1, monto: '' }]);
-  const [motorTipoDoc, setMotorTipoDoc] = useState('07');
+  const [motorTipoDoc, setMotorTipoDoc] = useState('40');
   const [motorSerieDoc, setMotorSerieDoc] = useState('A');
 
   const [ventaPagos, setVentaPagos] = useState([{ id: Date.now(), metodoPagoId: 1, moneda: 'UYU', monedaId: 1, monto: '' }]);
-  const [ventaTipoDoc, setVentaTipoDoc] = useState('07');
+  const [ventaTipoDoc, setVentaTipoDoc] = useState('40');
   const [ventaSerieDoc, setVentaSerieDoc] = useState('A');
   const [ventaObs, setVentaObs] = useState('');
   const [ventaTotalACubrir, setVentaTotalACubrir] = useState(0);

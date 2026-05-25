@@ -104,7 +104,8 @@ class ERPSyncService {
                 const vars = {
                     puntadas: sib.Puntadas || 0,
                     bajadas: sib.Bajadas || 0,
-                    bajadasAdicionales: sib.BajadasAdicionales || 0
+                    bajadasAdicionales: sib.BajadasAdicionales || 0,
+                    skipPrepago: true
                 };
 
                 // --- Lógica Especial de Cantidad Efectiva (Bajadas) ---
@@ -163,17 +164,52 @@ class ERPSyncService {
                         const planRes = await pool.request()
                             .input('Cli', sql.Int, internalClientId)
                             .input('Pro', sql.Int, sib.ProIdProducto)
-                            .query(`SELECT TOP 1 PlaIdPlan,
-                                        ISNULL(PlaCantidadTotal, 0) - ISNULL(PlaCantidadUsada, 0) AS MetrosDisponibles
-                                    FROM PlanesMetros WITH(NOLOCK)
-                                    WHERE CliIdCliente = @Cli
-                                      AND ProIdProducto = @Pro
-                                      AND PlaActivo = 1
-                                      AND (PlaFechaVencimiento IS NULL OR PlaFechaVencimiento >= CAST(GETDATE() AS DATE))
-                                    ORDER BY PlaFechaVencimiento ASC`);
+                            .query(`SELECT pm.PlaIdPlan,
+                                         ISNULL(pm.PlaCantidadTotal, 0) - ISNULL(pm.PlaCantidadUsada, 0) AS MetrosDisponibles
+                                     FROM dbo.PlanesMetros pm WITH(NOLOCK)
+                                     WHERE pm.CliIdCliente = @Cli
+                                       AND pm.PlaActivo = 1
+                                       AND (pm.PlaFechaVencimiento IS NULL OR pm.PlaFechaVencimiento >= CAST(GETDATE() AS DATE))
+                                       AND (
+                                         pm.ProIdProducto = @Pro
+                                         OR EXISTS (
+                                           SELECT 1 FROM dbo.PlanesMetrosArticulosPermitidos pap WITH(NOLOCK)
+                                           WHERE pap.PlaIdPlan = pm.PlaIdPlan
+                                             AND pap.ProIdProducto = @Pro
+                                         )
+                                       )
+                                     ORDER BY pm.PlaFechaVencimiento ASC`);
                         if (planRes.recordset.length > 0) {
-                            metrosDisponibles = parseFloat(planRes.recordset[0].MetrosDisponibles) || 0;
+                            const planIds = planRes.recordset.map(p => p.PlaIdPlan);
                             planIdActivo = planRes.recordset[0].PlaIdPlan;
+                            const totalAvailableRaw = planRes.recordset.reduce((sum, p) => sum + (parseFloat(p.MetrosDisponibles) || 0), 0);
+
+                            // Sumar metros comprometidos de otras órdenes activas (excluyendo sib.OrdenID)
+                            const committedRes = await pool.request()
+                                .input('CliId', sql.Int, internalClientId)
+                                .input('ExcludeId', sql.Int, sib.OrdenID)
+                                .query(`
+                                    SELECT o.OrdenID, o.Magnitud
+                                    FROM dbo.Ordenes o WITH(NOLOCK)
+                                    WHERE o.CliIdCliente = @CliId
+                                      AND o.Estado NOT IN ('Cancelado', 'Finalizado', 'Entregado', 'Anulado', 'RECHAZADO')
+                                      AND (@ExcludeId IS NULL OR o.OrdenID <> @ExcludeId)
+                                      AND (
+                                          o.ProIdProducto IN (
+                                              SELECT ProIdProducto FROM dbo.PlanesMetros WHERE PlaIdPlan IN (${planIds.join(',')}) AND ProIdProducto IS NOT NULL
+                                          )
+                                          OR o.ProIdProducto IN (
+                                              SELECT ProIdProducto FROM dbo.PlanesMetrosArticulosPermitidos WHERE PlaIdPlan IN (${planIds.join(',')})
+                                          )
+                                      )
+                                `);
+
+                            const totalCommitted = committedRes.recordset.reduce((sum, o) => {
+                                const magStr = String(o.Magnitud || '0').replace(/[^\d.]/g, '');
+                                return sum + (parseFloat(magStr) || 0);
+                            }, 0);
+
+                            metrosDisponibles = Math.max(0, totalAvailableRaw - totalCommitted);
                         }
                     } catch (ePlan) {
                         logger.warn(`[ERPSync] No se pudo verificar PlanesMetros para Orden ${sib.OrdenID}:`, ePlan.message);
@@ -337,7 +373,7 @@ class ERPSyncService {
                     .query("SELECT * FROM ServiciosExtraOrden WHERE OrdenID = @OID");
 
                 for (const srv of srvRes.recordset) {
-                    const srvVars = { puntadas: srv.Puntadas || 0, bajadas: srv.Bajadas || 0, bajadasAdicionales: srv.BajadasAdicionales || 0 };
+                    const srvVars = { puntadas: srv.Puntadas || 0, bajadas: srv.Bajadas || 0, bajadasAdicionales: srv.BajadasAdicionales || 0, skipPrepago: true };
                     let srvQty = srv.Cantidad || 1;
                     if (['110', '113'].includes(srv.CodArt?.trim())) {
                         srvQty = (srv.Cantidad || 1) * (srv.Bajadas || 1) + (srv.BajadasAdicionales || 0);

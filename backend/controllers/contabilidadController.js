@@ -619,6 +619,23 @@ exports.crearPlan = async (req, res) => {
 
     const PlaIdPlan = insert.recordset[0].PlaIdPlan;
 
+    // Registrar los artículos permitidos en la tabla PlanesMetrosArticulosPermitidos
+    const artsPermitidos = Array.isArray(req.body.articulosPermitidos) && req.body.articulosPermitidos.length > 0 
+        ? req.body.articulosPermitidos 
+        : [ProIdFinal];
+    
+    for (const artPermId of artsPermitidos) {
+        if (artPermId) {
+            await pool.request()
+                .input('PlaId', sql.Int, PlaIdPlan)
+                .input('ProId', sql.Int, artPermId)
+                .query(`
+                    INSERT INTO dbo.PlanesMetrosArticulosPermitidos (PlaIdPlan, ProIdProducto)
+                    VALUES (@PlaId, @ProId)
+                `);
+        }
+    }
+
     // ── 1. ENTRADA en inventario de recursos (siempre) ─────────────────────
     await svc.registrarMovimiento({
       CueIdCuenta:     parseInt(CueIdCuenta),

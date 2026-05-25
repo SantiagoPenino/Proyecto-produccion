@@ -226,6 +226,21 @@ async function procesarVentaDirecta(payload) {
             referenciaId = rPlan.recordset[0].PlaIdPlan;
             item.codigo = `PLAN_MTS_${proId}`;
 
+            // Registrar los artículos permitidos en la tabla PlanesMetrosArticulosPermitidos
+            const artsPermitidos = Array.isArray(item.articulosPermitidos) && item.articulosPermitidos.length > 0 
+                ? item.articulosPermitidos 
+                : [proId];
+            
+            for (const artPermId of artsPermitidos) {
+                await new sql.Request(transaction)
+                    .input('PlaId', sql.Int, referenciaId)
+                    .input('ProId', sql.Int, artPermId)
+                    .query(`
+                        INSERT INTO dbo.PlanesMetrosArticulosPermitidos (PlaIdPlan, ProIdProducto)
+                        VALUES (@PlaId, @ProId)
+                    `);
+            }
+
             // ── Inyectar Movimiento de ENTRADA y actualizar saldo en TX ──
             // El tipo de movimiento lo lee del Motor (evento ENTRADA o VTA_CAJA_RECURSO)
             const evtRecurso = await motorContable.getEvento('ENTRADA').catch(() => null);
@@ -482,7 +497,7 @@ async function procesarVentaDirecta(payload) {
           const isPagoUSD = pago.moneda === 'USD';
           lineasContables.push({ codigoCuenta: isPagoUSD ? contabilidadCore.CUENTAS.CAJA_USD : contabilidadCore.CUENTAS.CAJA_UYU, debeBase: pago.montoOriginal, haberBase: 0, monedaId: pago.monedaId, cotizacion: pago.cotizacion, entidadId: header.clienteId, entidadTipo: 'CLIENTE' });
         }
-        if (totalCobrado > 0) lineasContables.push({ codigoCuenta: cuentaCli, debeBase: 0, haberBase: totalCobrado, monedaId: monId, cotizacion: cotizRef, entidadId: header.clienteId, entidadTipo: 'CLIENTE' });
+        if (totalAbonadoDeuda > 0) lineasContables.push({ codigoCuenta: cuentaCli, debeBase: 0, haberBase: totalAbonadoDeuda, monedaId: monId, cotizacion: cotizRef, entidadId: header.clienteId, entidadTipo: 'CLIENTE' });
       }
 
       await contabilidadCore.generarAsientoCompleto({
@@ -522,7 +537,8 @@ async function procesarVentaDirecta(payload) {
 async function getProductosVenta() {
   const pool = await getPool();
   const res = await pool.request().query(`
-      SELECT LTRIM(RTRIM(p.CodArticulo)) as CodArticulo, 
+      SELECT p.ProIdProducto as ProIdProducto,
+             LTRIM(RTRIM(p.CodArticulo)) as CodArticulo, 
              LTRIM(RTRIM(p.Descripcion)) as Descripcion, 
              ISNULL(c.NombreReferencia, 
                 CASE WHEN LTRIM(RTRIM(p.CodStock)) = '2.2.1.1' THEN 'Insumos' 

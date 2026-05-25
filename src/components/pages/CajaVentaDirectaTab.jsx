@@ -45,7 +45,7 @@ export default function CajaVentaDirectaTab({
   // Estado interno para cuando NO se usan props externas
   const [pagosInternal, setPagosInternal] = useState([]);
   const [obsInternal, setObsInternal] = useState('');
-  const [tipoDocInternal, setTipoDocInternal] = useState('07');
+  const [tipoDocInternal, setTipoDocInternal] = useState('40');
   const [serieDocInternal, setSerieDocInternal] = useState('A');
   const [procesandoInternal, setProcesandoInternal] = useState(false);
 
@@ -114,14 +114,25 @@ export default function CajaVentaDirectaTab({
       monedaBase: monedaExhibicion,
       admin: isAdminCaja
     },
-    items: items.map(i => ({
-      tipo: i.tipo,
-      codigo: i.codigo,
-      descripcion: i.descripcion,
-      cantidad: parseFloat(i.cantidad),
-      precioTotal: parseFloat(i.precioTotal),
-      monedaId: monedaExhibicion === 'USD' ? 2 : 1
-    })),
+    items: items.map(i => {
+      let articulosPermitidos = null;
+      if (i.tipo === 'RECURSO') {
+        if (i.esMixto) {
+          articulosPermitidos = [247, 255]; // DTF Común (247) y DTF UV (255)
+        } else if (i.proId) {
+          articulosPermitidos = [i.proId];
+        }
+      }
+      return {
+        tipo: i.tipo,
+        codigo: i.codigo,
+        descripcion: i.descripcion,
+        cantidad: parseFloat(i.cantidad),
+        precioTotal: parseFloat(i.precioTotal),
+        monedaId: monedaExhibicion === 'USD' ? 2 : 1,
+        articulosPermitidos
+      };
+    }),
     pagos: pagos.filter(p => p.monto && p.metodoPagoId).map(p => ({
       metodoPagoId: parseInt(p.metodoPagoId),
       montoOriginal: parseFloat(p.monto),
@@ -358,7 +369,13 @@ export default function CajaVentaDirectaTab({
 
                           setItems(p => p.map(x => {
                             if (x.id !== it.id) return x;
-                            let newObj = { ...x, codigo: val, descripcion: prod ? prod.Descripcion : x.descripcion };
+                            let newObj = { 
+                              ...x, 
+                              codigo: val, 
+                              descripcion: prod ? prod.Descripcion : x.descripcion,
+                              proId: prod ? prod.ProIdProducto : null,
+                              esMixto: (val === '48' || val === '55') ? true : false
+                            };
                             if ((x.tipo === 'RECURSO' || x.tipo === 'VENTA_GENERICA' || x.tipo === 'VENTA_INSUMOS' || x.tipo === 'VENTA_PRODUCTOS') && prod) {
                                let precio = prod.PrecioBase || 0;
                                if (prod.MonedaBase === 'DOLAR' && currentMoneda === 'UYU') {
@@ -440,6 +457,23 @@ export default function CajaVentaDirectaTab({
                       }))} className="bg-zinc-50 border-2 border-zinc-200 rounded-xl px-4 py-2 text-sm font-black text-zinc-900 outline-none focus:border-brand-cyan text-right placeholder-zinc-300 shadow-sm" />
                     </div>
                   </div>
+                  {it.tipo === 'RECURSO' && (it.codigo === '48' || it.codigo === '55') && (
+                    <div className="flex items-center gap-2 mt-2 px-2.5 py-1.5 bg-brand-cyan/5 border border-brand-cyan/25 rounded-xl">
+                      <input 
+                        type="checkbox" 
+                        id={`mixto-${it.id}`}
+                        checked={it.esMixto !== false} 
+                        onChange={e => {
+                          const val = e.target.checked;
+                          setItems(p => p.map(x => x.id === it.id ? { ...x, esMixto: val } : x));
+                        }}
+                        className="rounded text-brand-cyan focus:ring-brand-cyan"
+                      />
+                      <label htmlFor={`mixto-${it.id}`} className="text-xs font-bold text-zinc-700 cursor-pointer">
+                        Habilitar Plan Mixto (Permite consumir indistintamente DTF Común y DTF UV)
+                      </label>
+                    </div>
+                  )}
                 </div>
               ))}
             </div>

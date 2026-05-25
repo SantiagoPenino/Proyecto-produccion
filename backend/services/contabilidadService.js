@@ -38,7 +38,7 @@ const logger           = require('../utils/logger');
  *   @param {number}      UsuarioAlta
  * @returns {Promise<number>} CueIdCuenta
  */
-async function obtenerOCrearCuenta(CliIdCliente, CueTipo, opciones = {}) {
+async function obtenerOCrearCuenta(CliIdCliente, CueTipo, opciones = {}, transaction = null) {
   const pool = await getPool();
   const {
     ProIdProducto  = null,
@@ -47,8 +47,10 @@ async function obtenerOCrearCuenta(CliIdCliente, CueTipo, opciones = {}) {
     UsuarioAlta    = 1,
   } = opciones;
 
+  const req = transaction ? new sql.Request(transaction) : pool.request();
+
   // ── 1. Buscar cuenta existente o crear una nueva ──────────────────────
-  const existe = await pool.request()
+  const existe = await req
     .input('CliIdCliente',  sql.Int,         CliIdCliente)
     .input('CueTipo',       sql.VarChar(20), CueTipo)
     .input('ProIdProducto', sql.Int,         ProIdProducto)
@@ -70,7 +72,7 @@ async function obtenerOCrearCuenta(CliIdCliente, CueTipo, opciones = {}) {
     cueIdFinal = existe.recordset[0].CueIdCuenta;
     logger.info(`[CUENTA] Cuenta existente: CliId=${CliIdCliente} Tipo=${CueTipo} CueId=${cueIdFinal}`);
   } else {
-    const creada = await pool.request()
+    const creada = await req
       .input('CliIdCliente',  sql.Int,         CliIdCliente)
       .input('CueTipo',       sql.VarChar(20), CueTipo)
       .input('ProIdProducto', sql.Int,         ProIdProducto)
@@ -98,17 +100,17 @@ async function obtenerOCrearCuenta(CliIdCliente, CueTipo, opciones = {}) {
   // ── 2. Verificar ciclo activo — aplica a cuenta nueva Y existente ─────
   // Solo aplica a cuentas monetarias (no MTS/KG que son de recursos)
   if (CueTipo !== 'MTS' && CueTipo !== 'KG') {
-    const cliRes = await pool.request()
+    const cliRes = await req
       .input('CliIdCliente', sql.Int, CliIdCliente)
       .query('SELECT TClIdTipoCliente FROM dbo.Clientes WITH(NOLOCK) WHERE CliIdCliente = @CliIdCliente');
 
     const tipoCliente = cliRes.recordset[0]?.TClIdTipoCliente;
 
     if (tipoCliente === 2) { // 2 = Semanal
-      const cicloExistente = await obtenerCicloActivo(cueIdFinal);
+      const cicloExistente = await obtenerCicloActivo(cueIdFinal, transaction);
       if (!cicloExistente) {
         logger.info(`[CICLO] Cliente ${CliIdCliente} es SEMANAL sin ciclo activo → abriendo ciclo para CueId=${cueIdFinal}`);
-        await abrirCicloPorCuenta({ CueIdCuenta: cueIdFinal, CliIdCliente, UsuarioAlta });
+        await abrirCicloPorCuenta({ CueIdCuenta: cueIdFinal, CliIdCliente, UsuarioAlta }, transaction);
       } else {
         logger.info(`[CICLO] Cliente ${CliIdCliente} SEMANAL — ciclo activo encontrado: CicId=${cicloExistente.CicIdCiclo}`);
       }
@@ -141,7 +143,7 @@ async function obtenerOCrearCuenta(CliIdCliente, CueTipo, opciones = {}) {
  *   @param {string?} MovObservaciones
  * @returns {Promise<{MovIdGenerado: number, SaldoResultante: number}>}
  */
-async function registrarMovimiento(params) {
+async function registrarMovimiento(params, transaction = null) {
   const pool = await getPool();
   const {
     CueIdCuenta, MovTipo, MovConcepto, MovImporte, MovUsuarioAlta,
@@ -156,11 +158,12 @@ async function registrarMovimiento(params) {
 
   let resolvedCicloId = CicIdCiclo;
   if (!resolvedCicloId) {
-    const activo = await obtenerCicloActivo(CueIdCuenta);
+    const activo = await obtenerCicloActivo(CueIdCuenta, transaction);
     if (activo) resolvedCicloId = activo.CicIdCiclo;
   }
 
-  const result = await pool.request()
+  const req = transaction ? new sql.Request(transaction) : pool.request();
+  const result = await req
     .input('CueIdCuenta',       sql.Int,          CueIdCuenta)
     .input('MovTipo',           sql.VarChar(30),  MovTipo)
     .input('MovConcepto',       sql.NVarChar(500), MovConcepto)
@@ -232,12 +235,13 @@ async function imputarPago(params) {
  *   @param {number}  ImportePendiente
  * @returns {Promise<number>} DDeIdDocumento
  */
-async function crearDeudaDocumento(params) {
+async function crearDeudaDocumento(params, transaction = null) {
   const pool = await getPool();
+  const req = transaction ? new sql.Request(transaction) : pool.request();
   let { CueIdCuenta, OrdIdOrden = null, DocIdDocumento = null, Importe, ImportePendiente = Importe } = params;
 
   // Auto-consumir Saldo a Favor existente en la cuenta para no crear deuda irreal
-  const ctaRes = await pool.request()
+  const ctaRes = await req
     .input('CueIdCuenta', sql.Int, CueIdCuenta)
     .query(`
       SELECT 
@@ -257,7 +261,7 @@ async function crearDeudaDocumento(params) {
 
   if (ImportePendiente > 0.01 || Importe > 0) {
       // Nace con ImportePendiente completo
-      const insertRes = await pool.request()
+      const insertRes = await req
         .input('CueIdCuenta',         sql.Int,          CueIdCuenta)
         .input('OrdIdOrden',          sql.Int,          OrdIdOrden)
         .input('DocIdDocumento',      sql.Int,          DocIdDocumento)
@@ -280,12 +284,12 @@ async function crearDeudaDocumento(params) {
       
       const newDDeId = insertRes.recordset[0].DDeIdDocumento;
 
-      // 2. Si el cliente tiene un Pago Anticipado (Saldo a Favor) flotante en la cuenta, lo consumimos AHORA explícitamente
+      // 2. Si el client tiene un Pago Anticipado (Saldo a Favor) flotante en la cuenta, lo consumimos AHORA explícitamente
       if (saldoActual > 0 && ImportePendiente > 0.01) {
           const montoAAplicar = Math.min(saldoActual, ImportePendiente);
           
           // Crear un pago sintético (recibo interno) que represente la aplicación del anticipo
-          const pagRes = await pool.request()
+          const pagRes = await req
             .input('Metodo', sql.Int, 1) // Efectivo genérico
             .input('Moneda', sql.Int, monId)
             .input('Monto', sql.Decimal(18,4), montoAAplicar)
@@ -302,7 +306,7 @@ async function crearDeudaDocumento(params) {
           const pagId = pagRes.recordset[0].PagIdPago;
 
           // Imputar el pago sintético a la deuda usando PEPS
-          await pool.request()
+          await req
             .input('PagIdPago',       sql.Int,          pagId)
             .input('MontoDisponible', sql.Decimal(18,4), montoAAplicar)
             .input('CueIdCuenta',     sql.Int,          CueIdCuenta)
@@ -335,29 +339,35 @@ async function crearDeudaDocumento(params) {
  *   @param {string} CodigoOrden   Para el concepto del movimiento
  *   @param {number} UsuarioAlta
  */
-async function hookOrdenCreada(params) {
+async function hookOrdenCreada(params, transaction = null) {
   const { OrdIdOrden, CliIdCliente, Importe, MonIdMoneda, CodigoOrden, NombreTrabajo, UsuarioAlta, ProIdProducto } = params;
   const contabilidadCore = require('./contabilidadCore'); // Import CORE for Asientos
 
   logger.info(`[HOOK:ORDEN] Iniciando hookOrdenCreada — Orden=${CodigoOrden} CliId=${CliIdCliente} ProIdProducto=${ProIdProducto} Importe=${Importe} MonIdMoneda=${MonIdMoneda}`);
 
   try {
+    const pool = await getPool();
+    const req = transaction ? new sql.Request(transaction) : pool.request();
+
     // ── Si el cliente tiene plan de recursos para este artículo → no cobrar en dinero
     if (ProIdProducto) {
-      const pool = await getPool();
-      const planCheck = await pool.request()
+      const planCheck = await req
         .input('CliIdCliente',  sql.Int, CliIdCliente)
         .input('ProIdProducto', sql.Int, ProIdProducto)
         .query(`
           SELECT TOP 1 pm.PlaIdPlan, pm.PlaCantidadTotal, pm.PlaCantidadUsada, pm.PlaActivo
-          FROM   dbo.PlanesMetros  pm WITH(NOLOCK)
-          JOIN   dbo.CuentasCliente cc WITH(NOLOCK)
-                 ON cc.CueIdCuenta = pm.CueIdCuenta
+          FROM   dbo.PlanesMetros pm WITH(NOLOCK)
           WHERE  pm.CliIdCliente  = @CliIdCliente
-            AND  pm.ProIdProducto = @ProIdProducto
             AND  pm.PlaActivo     = 1
-            AND  (pm.PlaFechaVencimiento IS NULL
-               OR pm.PlaFechaVencimiento >= CAST(GETDATE() AS DATE))
+            AND  (pm.PlaFechaVencimiento IS NULL OR pm.PlaFechaVencimiento >= CAST(GETDATE() AS DATE))
+            AND  (
+              pm.ProIdProducto = @ProIdProducto
+              OR EXISTS (
+                SELECT 1 FROM dbo.PlanesMetrosArticulosPermitidos pap WITH(NOLOCK)
+                WHERE pap.PlaIdPlan = pm.PlaIdPlan
+                  AND pap.ProIdProducto = @ProIdProducto
+              )
+            )
         `);
       logger.info(`[HOOK:ORDEN] Plan check para CliId=${CliIdCliente} ProId=${ProIdProducto}: encontrados=${planCheck.recordset.length} planes. Detalle=${JSON.stringify(planCheck.recordset[0] || null)}`);
       if (planCheck.recordset.length > 0) {
@@ -374,10 +384,10 @@ async function hookOrdenCreada(params) {
     const CueIdCuenta = await obtenerOCrearCuenta(CliIdCliente, CueTipo, {
       MonIdMoneda,
       UsuarioAlta,
-    });
+    }, transaction);
 
     // Buscar si hay ciclo activo para asignarlo al movimiento
-    const cicloActivo = await obtenerCicloActivo(CueIdCuenta);
+    const cicloActivo = await obtenerCicloActivo(CueIdCuenta, transaction);
 
     // 2. Registrar débito en libro mayor
     const { SaldoResultante } = await registrarMovimiento({
@@ -389,26 +399,27 @@ async function hookOrdenCreada(params) {
       MovUsuarioAlta: UsuarioAlta,
       OrdIdOrden,
       CicIdCiclo: cicloActivo ? cicloActivo.CicIdCiclo : null,
-    });
+    }, transaction);
 
     let deudaAislada = Math.min(Math.abs(Importe), Math.max(0, -SaldoResultante));
     let idOtraMoneda = MonIdMoneda === 2 ? 1 : 2; 
-    let poolDB = await getPool();
 
     // Si todavía hay deuda (el saldo de esta cuenta bajó de 0, o estaba en 0)
     if (deudaAislada > 0.01) {
       // Intentar cruzar desde otra cuenta si tiene dinero (Ej: Debe USD, pero tiene UYU a favor)
       const tipoOtra = MonIdMoneda === 2 ? 'DINERO_UYU' : 'DINERO_USD';
-      const ctaOtraRes = await poolDB.request()
+      const reqOtra = transaction ? new sql.Request(transaction) : pool.request();
+      const ctaOtraRes = await reqOtra
          .input('Cli', sql.Int, CliIdCliente)
          .input('Tipo', sql.VarChar(20), tipoOtra)
-         .query(`SELECT CueIdCuenta, CueSaldoActual FROM CuentasCliente WHERE CliIdCliente=@Cli AND CueTipo=@Tipo AND CueActiva=1 AND CueSaldoActual > 0`);
+         .query(`SELECT CueIdCuenta, CueSaldoActual FROM dbo.CuentasCliente WITH (UPDLOCK, ROWLOCK) WHERE CliIdCliente=@Cli AND CueTipo=@Tipo AND CueActiva=1 AND CueSaldoActual > 0`);
       
       if (ctaOtraRes.recordset.length > 0) {
         const ctaOtra = ctaOtraRes.recordset[0];
         
         let coti = 1;
-        const cotiRes = await poolDB.request().query('SELECT TOP 1 CotDolar FROM dbo.Cotizaciones WITH(NOLOCK) ORDER BY CotFecha DESC');
+        const reqCoti = transaction ? new sql.Request(transaction) : pool.request();
+        const cotiRes = await reqCoti.query('SELECT TOP 1 CotDolar FROM dbo.Cotizaciones WITH(NOLOCK) ORDER BY CotFecha DESC');
         if (cotiRes.recordset.length > 0) coti = parseFloat(cotiRes.recordset[0].CotDolar) || 1;
 
         // Si la orden es en USD(2) y la otra es UYU(1) -> La otra cuenta vale su saldo / coti en USD
@@ -429,7 +440,7 @@ async function hookOrdenCreada(params) {
              MovImporte: -Math.abs(aDescontarCtaOtra),
              MovUsuarioAlta: UsuarioAlta,
              OrdIdOrden,
-           });
+           }, transaction);
 
            // Ingresar la plata convertida a la cuenta endeudada
            await registrarMovimiento({
@@ -439,7 +450,7 @@ async function hookOrdenCreada(params) {
              MovImporte: Math.abs(aDescontarOrden),
              MovUsuarioAlta: UsuarioAlta,
              OrdIdOrden,
-           });
+           }, transaction);
 
            deudaAislada -= aDescontarOrden;
         }
@@ -448,7 +459,7 @@ async function hookOrdenCreada(params) {
 
     // 3. Si la cuenta tiene ciclo activo → acumular en él (cliente semanal)
     if (cicloActivo) {
-      await acumularEnCiclo(cicloActivo.CicIdCiclo, 'ORDEN', Math.abs(Importe));
+      await acumularEnCiclo(cicloActivo.CicIdCiclo, 'ORDEN', Math.abs(Importe), transaction);
       logger.info(`[CICLO] Orden ${CodigoOrden} acumulada en CicIdCiclo=${cicloActivo.CicIdCiclo}`);
     } else {
       // Sin ciclo activo → crear deuda documento individual con el remanente Real de deuda (0 si quedó pagada por fondos)
@@ -457,7 +468,7 @@ async function hookOrdenCreada(params) {
         OrdIdOrden, 
         Importe: Math.abs(Importe),
         ImportePendiente: Math.max(0, deudaAislada)
-      });
+      }, transaction);
     }
 
     logger.info(`[CONTABILIDAD] Orden ${CodigoOrden} registrada. Saldo cliente ${CliIdCliente}: ${SaldoResultante}`);
@@ -467,15 +478,21 @@ async function hookOrdenCreada(params) {
     const { neto, ivaMonto } = contabilidadCore.desglosarIVA(importeAbsRounded, 22);
     const cuentaCliente = MonIdMoneda === 2 ? contabilidadCore.CUENTAS.CLIENTE_USD : contabilidadCore.CUENTAS.CLIENTE_UYU; // Deudores USD / UYU
 
-    const pool = await getPool();
     let cotizacion = 1;
     if (MonIdMoneda === 2) {
-      const cotiRes = await pool.request().query('SELECT TOP 1 CotDolar FROM dbo.Cotizaciones WITH(NOLOCK) ORDER BY CotFecha DESC');
+      const reqCotiGlobal = transaction ? new sql.Request(transaction) : pool.request();
+      const cotiRes = await reqCotiGlobal.query('SELECT TOP 1 CotDolar FROM dbo.Cotizaciones WITH(NOLOCK) ORDER BY CotFecha DESC');
       cotizacion = cotiRes.recordset.length > 0 ? parseFloat(cotiRes.recordset[0].CotDolar) || 1 : 1;
     }
 
-    const tran = pool.transaction();
-    await tran.begin();
+    let useTransaction = transaction;
+    let localTran = null;
+    if (!useTransaction) {
+      localTran = pool.transaction();
+      await localTran.begin();
+      useTransaction = localTran;
+    }
+
     try {
       await contabilidadCore.generarAsientoCompleto({
         fecha: new Date(),
@@ -488,14 +505,25 @@ async function hookOrdenCreada(params) {
           { codigoCuenta: contabilidadCore.CUENTAS.VENTA_SERV, debeBase: 0,                 haberBase: neto,     monedaId: MonIdMoneda, cotizacion },
           { codigoCuenta: contabilidadCore.CUENTAS.IVA_22,     debeBase: 0,                 haberBase: ivaMonto, monedaId: MonIdMoneda, cotizacion }
         ]
-      }, tran);
-      await tran.commit();
+      }, useTransaction);
+
+      if (localTran) {
+        await localTran.commit();
+      }
     } catch (errAsiento) {
-      await tran.rollback();
+      if (localTran) {
+        await localTran.rollback();
+      }
       logger.warn(`[CONTABILIDAD] Fallo al crear asiento para orden ${CodigoOrden}: ${errAsiento.message}`);
+      if (!localTran) {
+        throw errAsiento;
+      }
     }
   } catch (err) {
     logger.warn(`[CONTABILIDAD] hookOrdenCreada falló (no afecta la orden): ${err.message}`);
+    if (transaction) {
+      throw err;
+    }
   }
 }
 
@@ -649,46 +677,69 @@ async function hookEntregaMetros(params) {
 
   logger.info(`[HOOK:METROS] Iniciando hookEntregaMetros — Orden=${CodigoOrden} CliId=${CliIdCliente} ProId=${ProIdProducto} Cantidad=${Cantidad} Importe=${params.Importe}`);
 
-  try {
-    const pool = await getPool();
+  const pool = await getPool();
+  const transaction = new sql.Transaction(pool);
+  await transaction.begin();
 
-    // 1. Verificar si el cliente tiene cuenta de METROS para este artículo
-    const cuentaRes = await pool.request()
+  try {
+    const req = new sql.Request(transaction);
+
+    // 1. Verificar si el cliente tiene alguna cuenta de metros con planes activos que permitan el artículo
+    const cuentaRes = await req
       .input('CliIdCliente',  sql.Int, CliIdCliente)
       .input('ProIdProducto', sql.Int, ProIdProducto)
       .query(`
-        SELECT CueIdCuenta, CueTipo, CueSaldoActual
-        FROM   dbo.CuentasCliente
-        WHERE  CliIdCliente  = @CliIdCliente
-          AND  ProIdProducto = @ProIdProducto
-          AND  CueTipo NOT IN ('USD','UYU','ARS','EUR','PYG','BRL','CORRIENTE','CREDITO','DEBITO','CAJA','DINERO_USD','DINERO_UYU')
-          AND  CueActiva = 1
+        SELECT DISTINCT cc.CueIdCuenta, cc.CueTipo, cc.CueSaldoActual
+        FROM dbo.CuentasCliente cc WITH(UPDLOCK, ROWLOCK)
+        WHERE cc.CliIdCliente = @CliIdCliente
+          AND cc.CueTipo NOT IN ('USD','UYU','ARS','EUR','PYG','BRL','CORRIENTE','CREDITO','DEBITO','CAJA','DINERO_USD','DINERO_UYU')
+          AND cc.CueActiva = 1
+          AND EXISTS (
+            SELECT 1 FROM dbo.PlanesMetros pm WITH(UPDLOCK, ROWLOCK)
+            WHERE pm.CueIdCuenta = cc.CueIdCuenta
+              AND pm.PlaActivo = 1
+              AND (pm.PlaFechaVencimiento IS NULL OR pm.PlaFechaVencimiento >= CAST(GETDATE() AS DATE))
+              AND (
+                pm.ProIdProducto = @ProIdProducto
+                OR EXISTS (
+                  SELECT 1 FROM dbo.PlanesMetrosArticulosPermitidos pap WITH(NOLOCK)
+                  WHERE pap.PlaIdPlan = pm.PlaIdPlan
+                    AND pap.ProIdProducto = @ProIdProducto
+                )
+              )
+          )
       `);
 
     logger.info(`[HOOK:METROS] Cuentas de recursos encontradas para CliId=${CliIdCliente} ProId=${ProIdProducto}: ${cuentaRes.recordset.length}. Detalle=${JSON.stringify(cuentaRes.recordset)}`);
 
     if (cuentaRes.recordset.length === 0) {
       logger.warn(`[HOOK:METROS] ⚠️ Sin cuenta de recursos para CliId=${CliIdCliente} ProId=${ProIdProducto}. No se descuentan metros.`);
+      await transaction.commit();
       return;
     }
 
-    const CueIdCuenta = cuentaRes.recordset[0].CueIdCuenta;
-
     // 2. Descontar en cascada de los planes activos (FIFO)
-    const planRes = await pool.request()
-      .input('CueIdCuenta',   sql.Int, CueIdCuenta)
+    const planRes = await req
+      .input('CliIdCliente',  sql.Int, CliIdCliente)
       .input('ProIdProducto', sql.Int, ProIdProducto)
       .query(`
-        SELECT PlaIdPlan, PlaCantidadTotal, PlaCantidadUsada, PlaPrecioUnitario, MonIdMoneda, PlaActivo, PlaFechaVencimiento
-        FROM   dbo.PlanesMetros WITH (UPDLOCK, ROWLOCK)
-        WHERE  CueIdCuenta   = @CueIdCuenta
-          AND  ProIdProducto = @ProIdProducto
-          AND  PlaActivo     = 1
-          AND  (PlaFechaVencimiento IS NULL OR PlaFechaVencimiento >= CAST(GETDATE() AS DATE))
-        ORDER  BY PlaFechaAlta ASC
+        SELECT pm.PlaIdPlan, pm.PlaCantidadTotal, pm.PlaCantidadUsada, pm.PlaPrecioUnitario, pm.MonIdMoneda, pm.PlaActivo, pm.PlaFechaVencimiento, pm.CueIdCuenta
+        FROM   dbo.PlanesMetros pm WITH (UPDLOCK, ROWLOCK)
+        WHERE  pm.CliIdCliente   = @CliIdCliente
+          AND  pm.PlaActivo     = 1
+          AND  (pm.PlaFechaVencimiento IS NULL OR pm.PlaFechaVencimiento >= CAST(GETDATE() AS DATE))
+          AND  (
+            pm.ProIdProducto = @ProIdProducto
+            OR EXISTS (
+              SELECT 1 FROM dbo.PlanesMetrosArticulosPermitidos pap WITH(NOLOCK)
+              WHERE pap.PlaIdPlan = pm.PlaIdPlan
+                AND pap.ProIdProducto = @ProIdProducto
+            )
+          )
+        ORDER  BY pm.PlaFechaAlta ASC
       `);
 
-    logger.info(`[HOOK:METROS] Planes activos para CueId=${CueIdCuenta} ProId=${ProIdProducto}: ${planRes.recordset.length}. Detalle=${JSON.stringify(planRes.recordset)}`);
+    logger.info(`[HOOK:METROS] Planes activos para CliId=${CliIdCliente} ProId=${ProIdProducto}: ${planRes.recordset.length}. Detalle=${JSON.stringify(planRes.recordset)}`);
 
     if (planRes.recordset.length === 0) {
       logger.warn(`[HOOK:METROS] ⚠️ Sin plan activo para CliId=${CliIdCliente} ProId=${ProIdProducto} — Generando deuda monetaria por ${params.Importe}`);
@@ -697,8 +748,9 @@ async function hookEntregaMetros(params) {
         await hookOrdenCreada({
           OrdIdOrden, CliIdCliente, Importe: params.Importe, MonIdMoneda: params.MonIdMoneda,
           CodigoOrden, NombreTrabajo: params.NombreTrabajo, UsuarioAlta, ProIdProducto: null
-        });
+        }, transaction);
       }
+      await transaction.commit();
       return;
     }
 
@@ -706,44 +758,49 @@ async function hookEntregaMetros(params) {
     let valorCubiertoPorPlanes = 0;
 
     // Obtener cotización si hay cruce de monedas
-    const cotRes = await pool.request().query('SELECT TOP 1 CotDolar FROM dbo.Cotizaciones ORDER BY CotFecha DESC');
+    const cotRes = await req.query('SELECT TOP 1 CotDolar FROM dbo.Cotizaciones WITH(NOLOCK) ORDER BY CotFecha DESC');
     const TC = cotRes.recordset.length > 0 ? parseFloat(cotRes.recordset[0].CotDolar) || 40.0 : 40.0;
 
     for (const plan of planRes.recordset) {
       if (cantidadPendiente <= 0) break;
 
-      const disponible = plan.PlaCantidadTotal - plan.PlaCantidadUsada;
+      const total = parseFloat(plan.PlaCantidadTotal) || 0;
+      const usada = parseFloat(plan.PlaCantidadUsada) || 0;
+      const disponible = Math.round((total - usada) * 10000) / 10000;
+
       if (disponible <= 0) {
-         await pool.request().query(`UPDATE dbo.PlanesMetros SET PlaActivo = 0 WHERE PlaIdPlan = ${plan.PlaIdPlan}`);
+         const updateReqZero = new sql.Request(transaction);
+         await updateReqZero.query(`UPDATE dbo.PlanesMetros SET PlaActivo = 0 WHERE PlaIdPlan = ${plan.PlaIdPlan}`);
          continue;
       }
 
-      const consumir = Math.min(cantidadPendiente, disponible);
-      const nuevaUsada = plan.PlaCantidadUsada + consumir;
-      const activo = nuevaUsada >= plan.PlaCantidadTotal ? 0 : 1;
+      const consumir = Math.round(Math.min(cantidadPendiente, disponible) * 10000) / 10000;
+      const nuevaUsada = Math.round((usada + consumir) * 10000) / 10000;
+      const activo = nuevaUsada >= total ? 0 : 1;
 
-      await pool.request()
+      const updateReq = new sql.Request(transaction);
+      await updateReq
         .input('P', sql.Int, plan.PlaIdPlan)
         .input('U', sql.Decimal(18,4), nuevaUsada)
         .input('A', sql.Bit, activo)
         .query(`UPDATE dbo.PlanesMetros SET PlaCantidadUsada = @U, PlaActivo = @A WHERE PlaIdPlan = @P`);
 
       await registrarMovimiento({
-        CueIdCuenta,
-        MovTipo:     'ENTREGA', // El Motor puede sobreescribir esto en futuras versiones
+        CueIdCuenta: plan.CueIdCuenta,
+        MovTipo:     'ENTREGA',
         MovConcepto: `${CodigoOrden} ${NombreTrabajo || ''}`.trim() || `Entrega Plan #${plan.PlaIdPlan}`,
         MovImporte:  -Math.abs(consumir),
         MovUsuarioAlta: UsuarioAlta,
         OrdIdOrden,
         MovObservaciones: `Plan #${plan.PlaIdPlan}`,
-      });
+      }, transaction);
 
-      cantidadPendiente -= consumir;
-      const restante = plan.PlaCantidadTotal - nuevaUsada;
+      cantidadPendiente = Math.round((cantidadPendiente - consumir) * 10000) / 10000;
+      const restante = Math.round((total - nuevaUsada) * 10000) / 10000;
 
       // Calcular el valor financiero de los metros consumidos para restarlo a la deuda final
       const precioTotal = parseFloat(plan.PlaPrecioUnitario) || 0;
-      let precioUnitarioPlan = plan.PlaCantidadTotal > 0 ? (precioTotal / plan.PlaCantidadTotal) : 0;
+      let precioUnitarioPlan = total > 0 ? (precioTotal / total) : 0;
       
       if (plan.MonIdMoneda && params.MonIdMoneda && plan.MonIdMoneda !== params.MonIdMoneda && precioUnitarioPlan > 0) {
          if (plan.MonIdMoneda === 2 && params.MonIdMoneda === 1) { // Plan en USD, Orden en UYU -> multiplicar
@@ -756,13 +813,12 @@ async function hookEntregaMetros(params) {
 
       logger.info(`[CONTABILIDAD] Metros descontados: ${consumir}. Plan ${plan.PlaIdPlan} → Restante: ${restante}`);
 
-      if (restante > 0 && restante / plan.PlaCantidadTotal < 0.1) {
+      if (restante > 0 && total > 0 && restante / total < 0.1) {
         logger.warn(`[CONTABILIDAD] ⚠️ Plan ${plan.PlaIdPlan} de CliId=${CliIdCliente} tiene menos del 10% restante (${restante} uds)`);
       }
     }
 
     // 3. Generar cargo monetario si no se cubrió todo con planes o si corresponde
-    // Dado que ordenesController ahora delega la orden SI hay plan activo, procesamos lo que falte
     if (params.Importe > 0) {
       let deudaACobrar = params.Importe;
 
@@ -771,12 +827,10 @@ async function hookEntregaMetros(params) {
            deudaACobrar = params.Importe - valorCubiertoPorPlanes;
            if (deudaACobrar < 0) deudaACobrar = 0; 
         } else {
-           // fallback si no había precio en el plan
            const porcentajeFaltante = cantidadPendiente / Cantidad;
            deudaACobrar = params.Importe * porcentajeFaltante;
         }
       } else {
-         // Si el plan cubrió TODO (cantidadPendiente == 0), no hay deuda!
          deudaACobrar = 0;
       }
 
@@ -794,12 +848,18 @@ async function hookEntregaMetros(params) {
           NombreTrabajo: params.NombreTrabajo ? `${params.NombreTrabajo} (Saldo Faltante)` : 'Exceso de Plan (Saldo Faltante)',
           UsuarioAlta,
           ProIdProducto: null // evitamos loops
-        });
+        }, transaction);
       }
     }
 
+    await transaction.commit();
   } catch (err) {
-    logger.warn(`[CONTABILIDAD] hookEntregaMetros falló (no afecta la entrega): ${err.message}`);
+    logger.error(`[HOOK:METROS] Falló hookEntregaMetros: ${err.message}`, err);
+    try {
+      await transaction.rollback();
+    } catch (rollbackErr) {
+      logger.error(`[HOOK:METROS] Error al hacer rollback: ${rollbackErr.message}`, rollbackErr);
+    }
   }
 }
 
@@ -1365,16 +1425,17 @@ async function getAntiguedadDeuda(modo = 'TODO') {
  * @param {number} CueIdCuenta
  * @returns {Promise<object|null>}
  */
-async function obtenerCicloActivo(CueIdCuenta) {
+async function obtenerCicloActivo(CueIdCuenta, transaction = null) {
   const pool = await getPool();
-  const res  = await pool.request()
+  const req = transaction ? new sql.Request(transaction) : pool.request();
+  const res  = await req
     .input('CueIdCuenta', sql.Int, CueIdCuenta)
     .query(`
       SELECT TOP 1
         CicIdCiclo, CueIdCuenta, CliIdCliente,
         CicFechaInicio, CicFechaCierre, CicDiasAprobados,
         CicTotalOrdenes, CicTotalPagos, CicSaldoFacturar, CicEstado
-      FROM dbo.CiclosCredito
+      FROM dbo.CiclosCredito WITH(NOLOCK)
       WHERE CueIdCuenta = @CueIdCuenta
         AND CicEstado = 'ABIERTO'
       ORDER BY CicFechaInicio DESC
@@ -1437,27 +1498,26 @@ async function getCicloMovimientos(CicIdCiclo) {
  *   @param {Date?}  FechaInicio    default = hoy
  * @returns {Promise<{CicIdCiclo, esNuevo}>}
  */
-async function abrirCicloPorCuenta({ CueIdCuenta, CliIdCliente, UsuarioAlta, FechaInicio = null }) {
+async function abrirCicloPorCuenta({ CueIdCuenta, CliIdCliente, UsuarioAlta, FechaInicio = null }, transaction = null) {
   const pool = await getPool();
+  const req = transaction ? new sql.Request(transaction) : pool.request();
 
   // Verificar si ya tiene uno abierto
-  const existente = await obtenerCicloActivo(CueIdCuenta);
+  const existente = await obtenerCicloActivo(CueIdCuenta, transaction);
   if (existente) {
     logger.info(`[CICLO] CueIdCuenta=${CueIdCuenta} ya tiene ciclo abierto CicIdCiclo=${existente.CicIdCiclo}`);
     return { CicIdCiclo: existente.CicIdCiclo, esNuevo: false };
   }
 
   // Obtener CueDiasCiclo de la cuenta
-  const cuentaRes = await pool.request()
+  const cuentaRes = await req
     .input('CueIdCuenta', sql.Int, CueIdCuenta)
     .query(`SELECT ISNULL(CueDiasCiclo, 7) AS Dias FROM dbo.CuentasCliente WHERE CueIdCuenta = @CueIdCuenta`);
 
   const dias = cuentaRes.recordset[0]?.Dias ?? 7;
   const fechaIni = FechaInicio ? new Date(FechaInicio) : new Date();
-  // fechaCierre ya no se guarda al abrir (se deja en NULL)
-  // pero el cron/jobs la puede usar para saber cuándo debería emitirse la deuda
 
-  const insertRes = await pool.request()
+  const insertRes = await req
     .input('CueIdCuenta',      sql.Int,  CueIdCuenta)
     .input('CliIdCliente',     sql.Int,  CliIdCliente)
     .input('CicFechaInicio',   sql.DateTime, fechaIni)
@@ -1479,7 +1539,7 @@ async function abrirCicloPorCuenta({ CueIdCuenta, CliIdCliente, UsuarioAlta, Fec
   const CicIdCiclo = insertRes.recordset[0].CicIdCiclo;
 
   // Absolver movimientos anteriores que no tengan ciclo asignado y sean facturables (de la semana o recientes)
-  await pool.request()
+  await req
     .input('CicIdCiclo', sql.Int, CicIdCiclo)
     .input('CueIdCuenta', sql.Int, CueIdCuenta)
     .query(`
@@ -1492,7 +1552,7 @@ async function abrirCicloPorCuenta({ CueIdCuenta, CliIdCliente, UsuarioAlta, Fec
     `);
     
   // Recalcular CicTotalOrdenes y CicTotalPagos para el ciclo recién creado por si absorbió movimientos
-  await pool.request()
+  await req
     .input('CicIdCiclo', sql.Int, CicIdCiclo)
     .query(`
       UPDATE c
@@ -1514,11 +1574,12 @@ async function abrirCicloPorCuenta({ CueIdCuenta, CliIdCliente, UsuarioAlta, Fec
  * @param {'ORDEN'|'PAGO'|'PAGO_CRUZADO'|'ANTICIPO'|'COBRO'|'SALDO_A_FAVOR'} tipo
  * @param {number} importe   (siempre positivo)
  */
-async function acumularEnCiclo(CicIdCiclo, tipo, importe) {
+async function acumularEnCiclo(CicIdCiclo, tipo, importe, transaction = null) {
   const pool  = await getPool();
+  const req = transaction ? new sql.Request(transaction) : pool.request();
   const campo = ['PAGO', 'PAGO_CRUZADO', 'ANTICIPO', 'COBRO', 'SALDO_A_FAVOR'].includes(tipo) ? 'CicTotalPagos' : 'CicTotalOrdenes';
 
-  await pool.request()
+  await req
     .input('CicIdCiclo', sql.Int,          CicIdCiclo)
     .input('Importe',    sql.Decimal(18,4), Math.abs(importe))
     .query(`UPDATE dbo.CiclosCredito SET ${campo} = ${campo} + @Importe WHERE CicIdCiclo = @CicIdCiclo`);
@@ -2306,9 +2367,19 @@ async function procesarEventoContable(evtCodigo, data) {
             .input('C', sql.Int, CliIdCliente)
             .input('P', sql.Int, ProIdProducto)
             .query(`
-              SELECT TOP 1 PlaIdPlan FROM PlanesMetros 
-              WHERE CliIdCliente=@C AND ProIdProducto=@P AND PlaActivo=1 
-              AND (PlaFechaVencimiento IS NULL OR PlaFechaVencimiento >= CAST(GETDATE() AS DATE))
+              SELECT TOP 1 pm.PlaIdPlan 
+              FROM dbo.PlanesMetros pm WITH(NOLOCK)
+              WHERE pm.CliIdCliente=@C 
+                AND pm.PlaActivo=1 
+                AND (pm.PlaFechaVencimiento IS NULL OR pm.PlaFechaVencimiento >= CAST(GETDATE() AS DATE))
+                AND (
+                  pm.ProIdProducto=@P
+                  OR EXISTS (
+                    SELECT 1 FROM dbo.PlanesMetrosArticulosPermitidos pap WITH(NOLOCK)
+                    WHERE pap.PlaIdPlan = pm.PlaIdPlan
+                      AND pap.ProIdProducto = @P
+                  )
+                )
             `);
          if (pCheck.recordset.length > 0) {
             saltarDinero = true;

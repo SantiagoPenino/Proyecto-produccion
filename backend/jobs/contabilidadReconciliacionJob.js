@@ -85,16 +85,24 @@ async function run() {
                     let planMetrosDisp = 0;
                     let planIdCtb = null;
                     if (d.IDProdReact && row.CliIdCliente) {
-                        const planRes = await pool.request()
-                            .input('Cli', sql.Int, row.CliIdCliente)
-                            .input('Pro', sql.Int, d.IDProdReact)
-                            .query(`SELECT TOP 1 PlaIdPlan,
-                                        ISNULL(PlaCantidadTotal, 0) - ISNULL(PlaCantidadUsada, 0) AS MetrosDisponibles
-                                    FROM PlanesMetros WITH(NOLOCK)
-                                    WHERE CliIdCliente = @Cli AND ProIdProducto = @Pro
-                                      AND PlaActivo = 1
-                                      AND (PlaFechaVencimiento IS NULL OR PlaFechaVencimiento >= CAST(GETDATE() AS DATE))
-                                    ORDER BY PlaFechaVencimiento ASC`);
+                         const planRes = await pool.request()
+                             .input('Cli', sql.Int, row.CliIdCliente)
+                             .input('Pro', sql.Int, d.IDProdReact)
+                             .query(`SELECT TOP 1 pm.PlaIdPlan,
+                                          ISNULL(pm.PlaCantidadTotal, 0) - ISNULL(pm.PlaCantidadUsada, 0) AS MetrosDisponibles
+                                      FROM dbo.PlanesMetros pm WITH(NOLOCK)
+                                      WHERE pm.CliIdCliente = @Cli 
+                                        AND pm.PlaActivo = 1
+                                        AND (pm.PlaFechaVencimiento IS NULL OR pm.PlaFechaVencimiento >= CAST(GETDATE() AS DATE))
+                                        AND (
+                                          pm.ProIdProducto = @Pro
+                                          OR EXISTS (
+                                            SELECT 1 FROM dbo.PlanesMetrosArticulosPermitidos pap WITH(NOLOCK)
+                                            WHERE pap.PlaIdPlan = pm.PlaIdPlan
+                                              AND pap.ProIdProducto = @Pro
+                                          )
+                                        )
+                                      ORDER BY pm.PlaFechaVencimiento ASC`);
                         if (planRes.recordset.length > 0) {
                             planMetrosDisp = parseFloat(planRes.recordset[0].MetrosDisponibles) || 0;
                             planIdCtb = planRes.recordset[0].PlaIdPlan;

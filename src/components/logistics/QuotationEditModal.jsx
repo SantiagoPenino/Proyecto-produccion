@@ -326,6 +326,7 @@ export default function QuotationEditModal({ noDocERP, onClose, onSaved, current
     const [activeProductSearch, setActiveProductSearch] = useState(null); // null, 'add'
     const [cotizacion, setCotizacion] = useState(40); // Backup default
     const [allProducts, setAllProducts] = useState([]);
+    const [recalculating, setRecalculating] = useState(false);
 
     const userArea = currentUser?.AreaID || null;
     const isAdmin = !userArea || currentUser?.rol === 'ADMIN' || currentUser?.esAdmin;
@@ -368,22 +369,34 @@ export default function QuotationEditModal({ noDocERP, onClose, onSaved, current
                 clienteId: cabecera?.CliIdCliente || cabecera?.ClienteID || cabecera?.CodCliente,
                 areaId: line.AreaIDInterna || line.AreaID,
                 datoTecnicoValue: line.DatoTecnico,
-                variables: { isUrgente: line.Prioridad?.toUpperCase() === 'URGENTE' }
+                variables: { 
+                    isUrgente: line.Prioridad?.toUpperCase() === 'URGENTE',
+                    ordenId: line.OrdenID || line.OrdenIDExterna || null
+                }
             });
             
             const cotizacionData = res.data;
             if (cotizacionData.precioUnitario !== undefined) {
-                const newLine = {
-                    ...line,
-                    PrecioUnitario: cotizacionData.precioUnitario,
-                    Moneda: cotizacionData.moneda || line.Moneda,
-                    PrecioUnitarioOriginal: cotizacionData.precioUnitarioOriginal || cotizacionData.precioUnitario,
-                    SubtotalOriginal: cotizacionData.precioTotalOriginal || cotizacionData.precioTotal,
-                    MonedaOriginal: cotizacionData.monedaOriginal || cotizacionData.moneda,
-                    PerfilAplicado: (cotizacionData.perfilesAplicados && cotizacionData.perfilesAplicados.length > 0) ? cotizacionData.perfilesAplicados.join(', ') : 'Precio Base',
-                    PricingTrace: cotizacionData.txt || 'Recalculado automático'
-                };
-                handleChange(newLine);
+                setLineas(prev => prev.map(l => {
+                    if (l._tempId === line._tempId) {
+                        // Evitar sobreescritura de estado si el usuario modificó cantidad o dato técnico en el intermedio
+                        if (parseFloat(l.Cantidad) !== parseFloat(line.Cantidad) || parseFloat(l.DatoTecnico || 0) !== parseFloat(line.DatoTecnico || 0)) {
+                            console.log(`[QuotationEditModal] Recálculo descartado para línea ${line.CodArticulo} debido a cambio de valores.`);
+                            return l;
+                        }
+                        return {
+                            ...l,
+                            PrecioUnitario: cotizacionData.precioUnitario,
+                            Moneda: cotizacionData.moneda || l.Moneda,
+                            PrecioUnitarioOriginal: cotizacionData.precioUnitarioOriginal || cotizacionData.precioUnitario,
+                            SubtotalOriginal: cotizacionData.precioTotalOriginal || cotizacionData.precioTotal,
+                            MonedaOriginal: cotizacionData.monedaOriginal || cotizacionData.moneda,
+                            PerfilAplicado: (cotizacionData.perfilesAplicados && cotizacionData.perfilesAplicados.length > 0) ? cotizacionData.perfilesAplicados.join(', ') : 'Precio Base',
+                            PricingTrace: cotizacionData.txt || 'Recalculado automático'
+                        };
+                    }
+                    return l;
+                }));
             }
         } catch (err) {
             console.error('Error recalculating line price:', err);
@@ -391,7 +404,7 @@ export default function QuotationEditModal({ noDocERP, onClose, onSaved, current
     };
 
     const handleRecalculateAll = async () => {
-        setLoading(true);
+        setRecalculating(true);
         setError('');
         try {
             await Promise.all(lineas.map(l => handleRecalculateLine(l)));
@@ -401,7 +414,7 @@ export default function QuotationEditModal({ noDocERP, onClose, onSaved, current
             console.error(e);
             setError('Error al recalcular precios masivamente.');
         } finally {
-            setLoading(false);
+            setRecalculating(false);
         }
     };
 
@@ -527,9 +540,15 @@ export default function QuotationEditModal({ noDocERP, onClose, onSaved, current
                         <p className="text-sm text-slate-500 mt-0.5 font-mono font-bold">{noDocERP}</p>
                     </div>
                     <div className="flex items-center gap-4">
-                        <button onClick={handleRecalculateAll} className="px-3 py-1.5 text-xs font-bold text-slate-600 hover:text-indigo-600 bg-slate-50 border border-slate-200 hover:border-indigo-300 rounded shadow-sm flex items-center gap-1.5 transition-all mt-1" title="Recargas Precios según base de datos">
-                            <i className="fa-solid fa-cloud-arrow-down" />
-                            Recargar Precios
+                        <button 
+                            onClick={handleRecalculateAll} 
+                            disabled={recalculating || loading}
+                            className={`px-3 py-1.5 text-xs font-bold rounded shadow-sm flex items-center gap-1.5 transition-all mt-1 border
+                                ${recalculating ? 'text-indigo-600 bg-indigo-50 border-indigo-200 cursor-wait' : 'text-slate-600 hover:text-indigo-600 bg-slate-50 border-slate-200 hover:border-indigo-300'}`}
+                            title="Recargar precios según base de datos"
+                        >
+                            {recalculating ? <i className="fa-solid fa-spinner fa-spin" /> : <i className="fa-solid fa-cloud-arrow-down" />}
+                            {recalculating ? 'Recalculando...' : 'Recargar Precios'}
                         </button>
                         {cabecera && (
                             <div className="text-right border-l pl-4 ml-2 border-slate-200">
@@ -681,9 +700,15 @@ export default function QuotationEditModal({ noDocERP, onClose, onSaved, current
                         <p className="text-sm text-slate-500 mt-0.5 font-mono font-bold">{noDocERP}</p>
                     </div>
                     <div className="flex items-center gap-4">
-                        <button onClick={handleRecalculateAll} className="px-3 py-1.5 text-xs font-bold text-slate-600 hover:text-indigo-600 bg-slate-50 border border-slate-200 hover:border-indigo-300 rounded shadow-sm flex items-center gap-1.5 transition-all mt-1" title="Recargas Precios según base de datos">
-                            <i className="fa-solid fa-cloud-arrow-down" />
-                            Recargar Precios
+                        <button 
+                            onClick={handleRecalculateAll} 
+                            disabled={recalculating || loading}
+                            className={`px-3 py-1.5 text-xs font-bold rounded shadow-sm flex items-center gap-1.5 transition-all mt-1 border
+                                ${recalculating ? 'text-indigo-600 bg-indigo-50 border-indigo-200 cursor-wait' : 'text-slate-600 hover:text-indigo-600 bg-slate-50 border-slate-200 hover:border-indigo-300'}`}
+                            title="Recargar precios según base de datos"
+                        >
+                            {recalculating ? <i className="fa-solid fa-spinner fa-spin" /> : <i className="fa-solid fa-cloud-arrow-down" />}
+                            {recalculating ? 'Recalculando...' : 'Recargar Precios'}
                         </button>
                         {cabecera && (
                             <div className="text-right border-l pl-4 ml-2 border-slate-200">

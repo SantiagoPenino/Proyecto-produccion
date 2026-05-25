@@ -239,6 +239,31 @@ class PricingService {
         }
         possibleClientIds = [...new Set(possibleClientIds.filter(Boolean))];
 
+        let numericCliId = null;
+        for (const cid of possibleClientIds) {
+            const num = parseInt(cid);
+            if (!isNaN(num) && num > 0) {
+                // Verificar si existe en la base de datos
+                const checkRes = await pool.request().input('cid', sql.Int, num).query('SELECT TOP 1 CliIdCliente FROM dbo.Clientes WITH(NOLOCK) WHERE CliIdCliente = @cid');
+                if (checkRes.recordset.length > 0) {
+                    numericCliId = checkRes.recordset[0].CliIdCliente;
+                    break;
+                }
+            }
+        }
+        if (!numericCliId) {
+            for (const cid of possibleClientIds) {
+                if (typeof cid === 'string' && cid.trim().length > 0) {
+                    const checkRes = await pool.request().input('cod', sql.VarChar(50), cid.trim()).query('SELECT TOP 1 CliIdCliente FROM dbo.Clientes WITH(NOLOCK) WHERE CodCliente = @cod');
+                    if (checkRes.recordset.length > 0) {
+                        numericCliId = checkRes.recordset[0].CliIdCliente;
+                        break;
+                    }
+                }
+            }
+        }
+
+
         let resolvedCategoria = resolvedAreaId;
         if (resolvedAreaId === 'DF') resolvedCategoria = 'DTF';
         if (resolvedAreaId === 'EST') resolvedCategoria = 'Estampados';
@@ -396,10 +421,91 @@ class PricingService {
         traceDecision += `\n= PRECIO FINAL CALCULADO: ${finalPU.toFixed(2)}\n`;
         logger.info(traceDecision);
 
+        // ---- LÓGICA DE PREPAGO (PlanesMetros) Y RESERVAS ----
+        let finalPUWithPrepago = finalPU;
+        let pricingProfileName = null;
+        let isPrepagoTotal = false;
+        let isPrepagoParcial = false;
+        let availableMetersEfectivos = 0;
+        let totalCommitted = 0;
+        let totalAvailableRaw = 0;
+
+        if (!variables.skipPrepago && numericCliId && resolvedProId) {
+            try {
+                // 1. Buscar planes de metros activos
+                const plansRes = await pool.request()
+                    .input('CliId', sql.Int, numericCliId)
+                    .input('ProId', sql.Int, resolvedProId)
+                    .query(`
+                        SELECT pm.PlaIdPlan, pm.ProIdProducto,
+                               ISNULL(pm.PlaCantidadTotal, 0) - ISNULL(pm.PlaCantidadUsada, 0) AS MetrosDisponibles
+                        FROM dbo.PlanesMetros pm WITH(NOLOCK)
+                        WHERE pm.CliIdCliente = @CliId
+                          AND pm.PlaActivo = 1
+                          AND (pm.PlaFechaVencimiento IS NULL OR pm.PlaFechaVencimiento >= CAST(GETDATE() AS DATE))
+                          AND (
+                            pm.ProIdProducto = @ProId
+                            OR EXISTS (
+                              SELECT 1 FROM dbo.PlanesMetrosArticulosPermitidos pap WITH(NOLOCK)
+                              WHERE pap.PlaIdPlan = pm.PlaIdPlan
+                                AND pap.ProIdProducto = @ProId
+                            )
+                          )
+                    `);
+
+                if (plansRes.recordset.length > 0) {
+                    const planIds = plansRes.recordset.map(p => p.PlaIdPlan);
+                    totalAvailableRaw = plansRes.recordset.reduce((sum, p) => sum + (parseFloat(p.MetrosDisponibles) || 0), 0);
+
+                    // 2. Sumar metros comprometidos de órdenes activas (excluyendo la actual)
+                    const excludeId = parseInt(variables.ordenId || variables.orderId) || null;
+                    const committedRes = await pool.request()
+                        .input('CliId', sql.Int, numericCliId)
+                        .input('ExcludeId', sql.Int, excludeId)
+                        .query(`
+                            SELECT o.OrdenID, o.Magnitud
+                            FROM dbo.Ordenes o WITH(NOLOCK)
+                            WHERE o.CliIdCliente = @CliId
+                              AND o.Estado NOT IN ('Cancelado', 'Finalizado', 'Entregado', 'Anulado', 'RECHAZADO')
+                              AND (@ExcludeId IS NULL OR o.OrdenID <> @ExcludeId)
+                              AND (
+                                  o.ProIdProducto IN (
+                                      SELECT ProIdProducto FROM dbo.PlanesMetros WHERE PlaIdPlan IN (${planIds.join(',')}) AND ProIdProducto IS NOT NULL
+                                  )
+                                  OR o.ProIdProducto IN (
+                                      SELECT ProIdProducto FROM dbo.PlanesMetrosArticulosPermitidos WHERE PlaIdPlan IN (${planIds.join(',')})
+                                  )
+                              )
+                        `);
+
+                    totalCommitted = committedRes.recordset.reduce((sum, o) => {
+                        const magStr = String(o.Magnitud || '0').replace(/[^\d.]/g, '');
+                        return sum + (parseFloat(magStr) || 0);
+                    }, 0);
+
+                    availableMetersEfectivos = Math.max(0, totalAvailableRaw - totalCommitted);
+
+                    if (availableMetersEfectivos > 0) {
+                        if (availableMetersEfectivos >= cantidad) {
+                            finalPUWithPrepago = 0;
+                            isPrepagoTotal = true;
+                            pricingProfileName = 'PREPAGO (ROLLO PRE-COMPRADO)';
+                        } else {
+                            const excedente = cantidad - availableMetersEfectivos;
+                            finalPUWithPrepago = (excedente * finalPU) / cantidad;
+                            isPrepagoParcial = true;
+                            pricingProfileName = 'PREPAGO PARCIAL (ROLLO PRE-COMPRADO)';
+                        }
+                    }
+                }
+            } catch (errPlan) {
+                logger.error("[PricingService] Error calculando metros comprometidos prepago: " + errPlan.message);
+            }
+        }
+
         // --- Generar resumen textual ---
         let txt = `Base: ${cleanCurrency} ${precioBase.toFixed(2)}`;
         breakdown.forEach(b => {
-            // Si el breakdown es un override, informamos que la base cambió
             if (b.tipo === 'OVERRIDE') {
                 txt += `\nOverride: ${cleanCurrency} ${b.valor.toFixed(2)} (${b.desc})`;
             } else if (b.tipo === 'DISCOUNT') {
@@ -408,37 +514,55 @@ class PricingService {
                 txt += `\nRecargo: +${cleanCurrency} ${Math.abs(b.valor).toFixed(2)} (${b.desc})`;
             }
         });
-        txt += `\nTotal Unit.: ${cleanCurrency} ${finalPU.toFixed(2)}`;
+        txt += `\nTotal Unit. Calculado: ${cleanCurrency} ${finalPU.toFixed(2)}`;
+        
+        if (isPrepagoTotal) {
+            txt += `\nPrepago: Cubierto 100% por plan (Sobrante: ${availableMetersEfectivos.toFixed(2)}m de ${totalAvailableRaw.toFixed(2)}m, Comprometido: ${totalCommitted.toFixed(2)}m)`;
+            txt += `\nTotal Unit. Prepago: ${cleanCurrency} 0.00`;
+        } else if (isPrepagoParcial) {
+            txt += `\nPrepago: Cubierto parcial (${availableMetersEfectivos.toFixed(2)}m cubiertos de ${totalAvailableRaw.toFixed(2)}m, Comprometido: ${totalCommitted.toFixed(2)}m, Excedente: ${(cantidad - availableMetersEfectivos).toFixed(2)}m)`;
+            txt += `\nTotal Unit. Prepago: ${cleanCurrency} ${finalPUWithPrepago.toFixed(2)}`;
+        }
 
         // --- Recopilar Nombres de Perfiles SÓLO los que aplicaron ---
         const appliedSet = new Set();
-        if (appliedFixed && bestFixed) appliedSet.add(bestFixed.NombrePerfil);
-        else if (bestDisc) appliedSet.add(bestDisc.NombrePerfil);
-
-        surchargeRules.forEach(r => appliedSet.add(r.NombrePerfil));
+        if (pricingProfileName) {
+            appliedSet.add(pricingProfileName);
+        } else {
+            if (appliedFixed && bestFixed) appliedSet.add(bestFixed.NombrePerfil);
+            else if (bestDisc) appliedSet.add(bestDisc.NombrePerfil);
+            surchargeRules.forEach(r => appliedSet.add(r.NombrePerfil));
+        }
 
         // --- Calcular precio en moneda original para trazabilidad ---
-        let precioOriginalUnitario = finalPU;
+        let precioOriginalUnitario = finalPUWithPrepago;
         if (monedaBaseOriginal !== cleanCurrency) {
-            if (monedaBaseOriginal === 'UYU' && cleanCurrency === 'USD') precioOriginalUnitario = finalPU * actualExchangeRate;
-            if (monedaBaseOriginal === 'USD' && cleanCurrency === 'UYU') precioOriginalUnitario = finalPU / actualExchangeRate;
+            if (monedaBaseOriginal === 'UYU' && cleanCurrency === 'USD') precioOriginalUnitario = finalPUWithPrepago * actualExchangeRate;
+            if (monedaBaseOriginal === 'USD' && cleanCurrency === 'UYU') precioOriginalUnitario = finalPUWithPrepago / actualExchangeRate;
+        }
+
+        let precioOriginalCalculado = finalPU;
+        if (monedaBaseOriginal !== cleanCurrency) {
+            if (monedaBaseOriginal === 'UYU' && cleanCurrency === 'USD') precioOriginalCalculado = finalPU * actualExchangeRate;
+            if (monedaBaseOriginal === 'USD' && cleanCurrency === 'UYU') precioOriginalCalculado = finalPU / actualExchangeRate;
         }
 
         return {
             codArticulo: cleanCod,
             proIdProducto: resolvedProId || null,
             cantidad,
-            precioUnitario: finalPU,
-            precioTotal: finalPU * cantidad,
+            precioUnitario: finalPUWithPrepago,
+            precioTotal: finalPUWithPrepago * cantidad,
             moneda: cleanCurrency,
             monedaOriginal: monedaBaseOriginal,
-            precioUnitarioOriginal: precioOriginalUnitario,
-            precioTotalOriginal: precioOriginalUnitario * cantidad,
+            precioUnitarioOriginal: precioOriginalCalculado,
+            precioTotalOriginal: precioOriginalCalculado * cantidad,
             breakdown,
             txt,
             perfilesAplicados: [...appliedSet].filter(Boolean),
             _debug: { resolvedAreaId, cleanCod, cleanCurrency }
         };
+
     }
 
     static async setBasePrice(codArticulo, precio, moneda = 'UYU') {

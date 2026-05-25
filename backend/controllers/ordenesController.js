@@ -540,7 +540,21 @@ const createOrden = async (req, res) => {
       const planCheck = await pool.request()
         .input('c', sql.Int, reqClientId)
         .input('p', sql.Int, productoContabilidad.ProIdProducto)
-        .query('SELECT TOP 1 PlaIdPlan, PlaCantidadTotal, PlaCantidadUsada FROM PlanesMetros WHERE CliIdCliente = @c AND ProIdProducto = @p AND PlaActivo = 1 AND (PlaFechaVencimiento IS NULL OR PlaFechaVencimiento >= CAST(GETDATE() AS DATE))');
+        .query(`
+          SELECT TOP 1 pm.PlaIdPlan, pm.PlaCantidadTotal, pm.PlaCantidadUsada 
+          FROM dbo.PlanesMetros pm WITH(NOLOCK)
+          WHERE pm.CliIdCliente = @c 
+            AND pm.PlaActivo = 1 
+            AND (pm.PlaFechaVencimiento IS NULL OR pm.PlaFechaVencimiento >= CAST(GETDATE() AS DATE))
+            AND (
+              pm.ProIdProducto = @p
+              OR EXISTS (
+                SELECT 1 FROM dbo.PlanesMetrosArticulosPermitidos pap WITH(NOLOCK)
+                WHERE pap.PlaIdPlan = pm.PlaIdPlan
+                  AND pap.ProIdProducto = @p
+              )
+            )
+        `);
 
       tienePlan = planCheck.recordset.length > 0;
       logger.info(`[CTRL:ORDEN] Plan check en controller: CliId=${reqClientId} ProId=${productoContabilidad.ProIdProducto} tienePlan=${tienePlan} Detalle=${JSON.stringify(planCheck.recordset[0] || null)}`);
