@@ -43,3 +43,4 @@ backend/tickets/
 *.bat
 *.sql
 
+backend/ordenes/
