@@ -253,7 +253,7 @@ const getMovimientosTurno = async (req, res) => {
     
     if (!isAdmin) {
       // Obtener la sesión activa
-      const sR = await pool.request().query(`SELECT StuIdSesion, StuFechaApertura FROM dbo.SesionesTurno WITH(NOLOCK) WHERE StuEstado = 'ABIERTA'`);
+      const sR = await pool.request().query(`SELECT StuIdSesion, StuFechaApertura FROM dbo.SesionesTurno WITH(NOLOCK) WHERE StuEstado = 'ABIERTA' ORDER BY StuFechaApertura DESC`);
       if(!sR.recordset.length) return res.json({ success:true, movimientos:[], totales:{} });
       sid = sR.recordset[0].StuIdSesion;
       fecAbierta = sR.recordset[0].StuFechaApertura;
@@ -285,16 +285,24 @@ const getMovimientosTurno = async (req, res) => {
         t.TcaFecha as Fecha,
         ISNULL(ct1.Detalle, t.TcaTipoDocumento) as TipoComprobante,
         ISNULL(t.TcaSerieDoc,'') + '-' + ISNULL(t.TcaNumeroDoc,'Pendiente') as Comprobante,
-        ISNULL(NULLIF(t.TcaObservaciones, ''), 'Cobro Mostrador') + CASE WHEN c.Nombre IS NOT NULL THEN ' (' + RTRIM(c.Nombre) + ')' ELSE '' END as Concepto,
+        ISNULL(NULLIF(t.TcaObservaciones, ''), 'Cobro Mostrador') + 
+        CASE WHEN c.Nombre IS NOT NULL THEN ' (' + RTRIM(c.Nombre) + ')' ELSE '' END +
+        COALESCE(' [' + (
+          SELECT STRING_AGG(RTRIM(td.TdeCodigoReferencia), ', ') 
+          FROM dbo.TransaccionDetalle td WITH(NOLOCK) 
+          WHERE td.TcaIdTransaccion = t.TcaIdTransaccion AND td.TdeCodigoReferencia IS NOT NULL AND td.TdeCodigoReferencia <> ''
+        ) + ']', '') as Concepto,
         mp.MPaDescripcionMetodo as MedioDePago,
         CASE WHEN p.PagIdMonedaPago = 2 THEN 'USD' ELSE 'UYU' END as Moneda,
         p.PagMontoPago as Entrada,
-        0 as Salida
+        0 as Salida,
+        COALESCE(u.Nombre, u.Usuario, 'Sistema') as Usuario
       FROM dbo.TransaccionesCaja t WITH(NOLOCK)
       JOIN dbo.Pagos p WITH(NOLOCK) ON p.PagTcaIdTransaccion = t.TcaIdTransaccion
       LEFT JOIN dbo.MetodosPagos mp WITH(NOLOCK) ON mp.MPaIdMetodoPago = p.MPaIdMetodoPago
       LEFT JOIN dbo.Config_TiposDocumento ct1 WITH(NOLOCK) ON ct1.CodDocumento = t.TcaTipoDocumento
       LEFT JOIN dbo.Clientes c WITH(NOLOCK) ON c.CliIdCliente = t.TcaClienteId
+      LEFT JOIN dbo.Usuarios u WITH(NOLOCK) ON u.IdUsuario = t.TcaUsuarioId
       WHERE (
          (@IsAdmin = 0 AND t.StuIdSesion = @Sid) OR
          (@IsAdmin = 1 AND t.StuIdSesion IS NULL AND t.TcaFecha >= @FecA AND t.TcaFecha <= @FecH)
@@ -309,10 +317,12 @@ const getMovimientosTurno = async (req, res) => {
         mp.MPaDescripcionMetodo as MedioDePago,
         e.EgrMoneda as Moneda,
         0 as Entrada,
-        e.EgrMonto as Salida
+        e.EgrMonto as Salida,
+        COALESCE(u.Nombre, u.Usuario, 'Sistema') as Usuario
       FROM dbo.EgresosCaja e WITH(NOLOCK)
       LEFT JOIN dbo.MetodosPagos mp WITH(NOLOCK) ON mp.MPaIdMetodoPago = e.MPaIdMetodoPago
       LEFT JOIN dbo.Config_TiposDocumento ct2 WITH(NOLOCK) ON ct2.CodDocumento = e.EgrTipoDocumento
+      LEFT JOIN dbo.Usuarios u WITH(NOLOCK) ON u.IdUsuario = e.EgrUsuarioId
       WHERE (
          (@IsAdmin = 0 AND e.StuIdSesion = @Sid) OR
          (@IsAdmin = 1 AND e.StuIdSesion IS NULL AND e.EgrFecha >= @FecA AND e.EgrFecha <= @FecH)
@@ -338,17 +348,33 @@ const getSiguienteNumero = async (req, res) => {
     const result = await pool.request()
       .input('TipoDoc', sql.VarChar(20), tipoDoc)
       .query(`
-        SELECT
-          s.SecUltimoNumero + 1  AS NumeroEntero,
-          ISNULL(s.SecPrefijo,'') +
-            RIGHT(REPLICATE('0', s.SecDigitos) + CAST(s.SecUltimoNumero+1 AS VARCHAR(10)), s.SecDigitos)
-                               AS NumeroFormato,
-          s.SecTipoDoc AS TipoDoc,
-          s.SecSerie   AS Serie,
-          ISNULL(s.SecPrefijo,'') AS Prefijo
-        FROM Config_TiposDocumento c WITH(NOLOCK)
-        JOIN dbo.SecuenciaDocumentos s WITH(NOLOCK) ON c.SecIdSecuencia = s.SecIdSecuencia
-        WHERE c.CodDocumento = @TipoDoc AND s.SecActivo = 1
+        IF EXISTS (SELECT 1 FROM Config_TiposDocumento WHERE CodDocumento = @TipoDoc)
+        BEGIN
+          SELECT
+            s.SecUltimoNumero + 1  AS NumeroEntero,
+            ISNULL(s.SecPrefijo,'') +
+              RIGHT(REPLICATE('0', s.SecDigitos) + CAST(s.SecUltimoNumero+1 AS VARCHAR(10)), s.SecDigitos)
+                                 AS NumeroFormato,
+            s.SecTipoDoc AS TipoDoc,
+            s.SecSerie   AS Serie,
+            ISNULL(s.SecPrefijo,'') AS Prefijo
+          FROM Config_TiposDocumento c WITH(NOLOCK)
+          JOIN dbo.SecuenciaDocumentos s WITH(NOLOCK) ON c.SecIdSecuencia = s.SecIdSecuencia
+          WHERE c.CodDocumento = @TipoDoc AND s.SecActivo = 1
+        END
+        ELSE
+        BEGIN
+          SELECT
+            s.SecUltimoNumero + 1  AS NumeroEntero,
+            ISNULL(s.SecPrefijo,'') +
+              RIGHT(REPLICATE('0', s.SecDigitos) + CAST(s.SecUltimoNumero+1 AS VARCHAR(10)), s.SecDigitos)
+                                 AS NumeroFormato,
+            s.SecTipoDoc AS TipoDoc,
+            s.SecSerie   AS Serie,
+            ISNULL(s.SecPrefijo,'') AS Prefijo
+          FROM dbo.SecuenciaDocumentos s WITH(NOLOCK)
+          WHERE s.SecTipoDoc = @TipoDoc AND s.SecActivo = 1
+        END
       `);
     if (!result.recordset.length)
       return res.status(404).json({ success:false, error:`No hay secuencia para el tipo de documento ${tipoDoc}.` });
@@ -1310,7 +1336,7 @@ const procesarPagoDeuda = async (req, res) => {
               OUTPUT INSERTED.DocIdDocumento
               VALUES (@Cta, @Cli, @MonId, @Tipo, @Num, @Serie, 
                       @Tot, 0, 0, @Tot, 
-                      'COBRADO', 'PENDIENTE', GETDATE(), @Usr, @TcaId, @Obs, 1)
+                      'COBRADO', NULL, GETDATE(), @Usr, @TcaId, @Obs, 1)
             `);
           docId = docR.recordset[0].DocIdDocumento;
           

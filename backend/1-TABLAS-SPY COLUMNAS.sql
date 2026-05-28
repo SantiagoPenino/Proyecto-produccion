@@ -559,7 +559,9 @@ CREATE TABLE dbo.[PlanesMetros] (
     [PlaActivo] bit NOT NULL,
     [PlaObservaciones] nvarchar(500) NULL,
     [PlaFechaAlta] datetime NOT NULL,
-    [PlaUsuarioAlta] int NULL
+    [PlaUsuarioAlta] int NULL,
+    [PlaFechaBaja] datetime NULL,
+    [PlaUsuarioBaja] int NULL
 );
 GO
 

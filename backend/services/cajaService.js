@@ -1055,7 +1055,7 @@ async function procesarTransaccion(payload) {
         const resConfig = await new sql.Request(transaction)
           .input('codDoc', sql.VarChar(10), header.tipoDocumento)
           .query(`
-            SELECT c.EvtCodigo, c.Detalle, c.AfectaCtaCte, 
+            SELECT c.EvtCodigo, c.Detalle, c.AfectaCtaCte, c.Codigo_Efact,
                    30 AS DiasVencimiento,
                    s.SecSerie, s.SecUltimoNumero, s.SecIdSecuencia 
             FROM dbo.Config_TiposDocumento c WITH(NOLOCK)
@@ -1104,6 +1104,7 @@ async function procesarTransaccion(payload) {
                .input('asientoId', sql.Int,         asiId || null)
                .input('tcaId',     sql.Int,         tcaIdTransaccion || null)
                .input('docPagado', sql.Bit,         totalCobrado >= totalNeto ? 1 : 0)
+               .input('codigoEfact', sql.Int,       config.Codigo_Efact || null)
                .query(`
                  INSERT INTO dbo.DocumentosContables 
                  (DocTipo, CueIdCuenta, MonIdMoneda, CliIdCliente, DocSubtotal, DocImpuestos, 
@@ -1115,7 +1116,11 @@ async function procesarTransaccion(payload) {
                  (@tipo, @cuenta, @moneda, @clienteId, @subtotal, @iva, 
                   0, 0, @total, 1, 
                   GETDATE(), @usuario, 
-                  CASE WHEN @tipo LIKE '%Pedido%' OR @tipo LIKE '%PEDIDO%' OR @tipo = 'PC' THEN 'BORRADOR' ELSE 'PENDIENTE' END,
+                  CASE 
+                    WHEN @codigoEfact IS NULL THEN NULL 
+                    WHEN @tipo LIKE '%Pedido%' OR @tipo LIKE '%PEDIDO%' OR @tipo = 'PC' THEN 'BORRADOR' 
+                    ELSE 'PENDIENTE' 
+                  END,
                   @serie, @numero,
                   @asientoId, @tcaId, @docPagado)
                `);

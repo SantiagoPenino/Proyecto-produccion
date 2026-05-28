@@ -246,6 +246,7 @@ class SheetsRawMappingService {
         const prioridadStr = f.E ? f.E.toString().toUpperCase() : "";
         const prioridad = prioridadStr.includes("URGENT") ? "Urgente" : "Normal";
         const material = (f.K || f.I || "").toString().trim();
+        const variante = (f.H || "Impresión Directa").toString().trim();
 
         let cR = parseFloat(f.F) || parseFloat(f.B) || 1;
         if (datosPorHoja && datosPorHoja["BASE"] && datosPorHoja["BASE"].B) {
@@ -253,18 +254,26 @@ class SheetsRawMappingService {
             if (!isNaN(baseCant) && baseCant > 0) cR = baseCant;
         }
         
-        const colFiles = ['N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W'];
+        const hojaBase = (datosPorHoja && datosPorHoja["BASE"]) ? datosPorHoja["BASE"] : f;
+        
+        let colFiles;
+        if (datosPorHoja && datosPorHoja["BASE"] && !datosPorHoja["BASE INGRESO"]) {
+            // BASE tab: files start at N (index 13)
+            colFiles = ['N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W'];
+        } else {
+            // BASE INGRESO tab or automatic sync: files start at L (index 11)
+            colFiles = ['L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W'];
+        }
         const colCopias = ['X', 'Y', 'Z', 'AA', 'AB', 'AC', 'AD', 'AE', 'AF', 'AG'];
         const colMetros = ['AH', 'AI', 'AJ', 'AK', 'AL', 'AM', 'AN', 'AO', 'AP', 'AQ'];
 
         let itemsResult = [];
-        const hojaBase = (datosPorHoja && datosPorHoja["BASE"]) ? datosPorHoja["BASE"] : f;
 
-        for (let i = 0; i < 10; i++) {
+        for (let i = 0; i < colFiles.length; i++) {
             const fileUrl = hojaBase[colFiles[i]] ? hojaBase[colFiles[i]].toString().trim() : null;
             if (fileUrl && fileUrl.includes('http')) {
-                const copias = parseFloat(hojaBase[colCopias[i]]) || 1;
-                const metros = parseFloat(hojaBase[colMetros[i]]) || 0;
+                const copias = (i < colCopias.length && hojaBase[colCopias[i]]) ? parseFloat(hojaBase[colCopias[i]]) || 1 : 1;
+                const metros = (i < colMetros.length && hojaBase[colMetros[i]]) ? parseFloat(hojaBase[colMetros[i]]) || 0 : 0;
                 itemsResult.push({ fileName: fileUrl, cantidad: metros > 0 ? metros : (cR / 10), copias });
             }
         }
@@ -273,39 +282,101 @@ class SheetsRawMappingService {
         cR = Math.round(cR * 100) / 100;
 
         const serviciosArray = [{
-            areaId, esPrincipal: true, cabecera: { material, variante: "", metros: cR },
+            areaId, esPrincipal: true, cabecera: { material, variante, metros: cR },
             items: itemsResult, variablesEspeciales: {}
         }];
 
-        const textoServiciosExtra = (f.AJ || "").toString().toUpperCase();
+        const textoServiciosExtra = (
+            (f.G || "") + " " + 
+            (f.I || "") + " " + 
+            (f.AI || "") + " " + 
+            (f.AJ || "") + " " + 
+            (f.AK || "") + " " + 
+            (f.AM || "")
+        ).toUpperCase();
 
         let urlInfoCorte = "";
-        if (f.AL && typeof f.AL === 'string' && f.AL.includes('http')) {
+        let urlBocetoCorte = "";
+
+        // Caso normal / On-demand: enlaces directos (que no contienen "$*")
+        if (f.AL && typeof f.AL === 'string' && f.AL.includes('http') && !f.AL.includes('$*')) {
             urlInfoCorte = f.AL.toString().trim();
-        } else if (datosPorHoja && datosPorHoja["BASE INGRESO"] && datosPorHoja["BASE INGRESO"].AL) {
+        } else if (datosPorHoja && datosPorHoja["BASE INGRESO"] && datosPorHoja["BASE INGRESO"].AL && !datosPorHoja["BASE INGRESO"].AL.includes('$*')) {
             urlInfoCorte = datosPorHoja["BASE INGRESO"].AL.toString().trim();
         }
 
-        let urlBocetoCorte = "";
-        if (f.BH && typeof f.BH === 'string' && f.BH.includes('http')) {
+        if (f.BH && typeof f.BH === 'string' && f.BH.includes('http') && !f.BH.includes('$*')) {
             urlBocetoCorte = f.BH.toString().trim();
-        } else if (datosPorHoja && datosPorHoja["BASE INGRESO"] && datosPorHoja["BASE INGRESO"].BH) {
+        } else if (datosPorHoja && datosPorHoja["BASE INGRESO"] && datosPorHoja["BASE INGRESO"].BH && !datosPorHoja["BASE INGRESO"].BH.includes('$*')) {
             urlBocetoCorte = datosPorHoja["BASE INGRESO"].BH.toString().trim();
+        }
+
+        // Si tenemos un string QR con "$*" en cualquier columna (caso sincronización automática)
+        let qrString = "";
+        for (let key of Object.keys(f)) {
+            if (f[key] && typeof f[key] === 'string' && f[key].includes('$*')) {
+                qrString = f[key];
+                break;
+            }
+        }
+
+        if (qrString) {
+            const parts = qrString.split('$*');
+            if (parts[5] && parts[5].includes('http')) {
+                urlInfoCorte = parts[5].trim();
+            }
+            if (parts[7] && parts[7].includes('http')) {
+                urlBocetoCorte = parts[7].trim();
+            }
         }
         
         let refFiles = [];
         let localesCorte = [];
         
         if (urlInfoCorte) {
-            refFiles.push({ nombre: urlInfoCorte, url: urlInfoCorte });
-            localesCorte.push({ url: urlInfoCorte, nota: urlInfoCorte, tipo: "ARCHIVO-PEDIDO" });
+            refFiles.push({ nombre: 'Archivo de Corte (AL)', url: urlInfoCorte, tipo: "ARCHIVO-PEDIDO" });
+            localesCorte.push({ url: urlInfoCorte, nota: 'Archivo de Corte (AL)', tipo: "ARCHIVO-PEDIDO" });
         }
         if (urlBocetoCorte) {
-            refFiles.push({ nombre: urlBocetoCorte, url: urlBocetoCorte });
-            localesCorte.push({ url: urlBocetoCorte, nota: urlBocetoCorte, tipo: "BOCETO-CORTE" });
+            refFiles.push({ nombre: 'Archivo de Referencia (BH)', url: urlBocetoCorte, tipo: "BOCETO-CORTE" });
+            localesCorte.push({ url: urlBocetoCorte, nota: 'Archivo de Referencia (BH)', tipo: "BOCETO-CORTE" });
         }
 
-        if (textoServiciosExtra.includes("CORTE")) {
+        // Extraer también Boceto (L) y Logo (M) como archivos de referencia generales para IMD
+        const urlBocetoL = hojaBase.L ? hojaBase.L.toString().trim() : '';
+        const urlLogoM = hojaBase.M ? hojaBase.M.toString().trim() : '';
+        if (urlBocetoL && urlBocetoL.includes('http')) {
+            refFiles.push({ nombre: 'Boceto (L)', url: urlBocetoL, tipo: "BOCETO" });
+        }
+        if (urlLogoM && urlLogoM.includes('http')) {
+            refFiles.push({ nombre: 'Logo (M)', url: urlLogoM, tipo: "LOGO" });
+        }
+
+        const checkServiciosExtra = ((f.AI || "") + " " + (f.AJ || "") + " " + (f.AK || "") + " " + (f.AM || "")).toUpperCase();
+        const obsUpper = ((f.G || "") + " " + (f.I || "")).toUpperCase();
+
+        let tieneCorte = checkServiciosExtra.includes("CORTE");
+        if (!tieneCorte && obsUpper.includes("CORTE")) {
+            const falsosPositivos = ["HICIMOS YA", "YA HICIMOS", "YA TIENE", "YA VIENE", "SIN CORTE", "NO CORTE", "NO REQUIERE CORTE"];
+            const esFalsoPositivo = falsosPositivos.some(fp => obsUpper.includes(fp));
+            if (!esFalsoPositivo) tieneCorte = true;
+        }
+
+        let tieneCostura = checkServiciosExtra.includes("COSTURA");
+        if (!tieneCostura && obsUpper.includes("COSTURA")) {
+            const falsosPositivos = ["SIN COSTURA", "NO COSTURA", "NO REQUIERE COSTURA", "YA TIENE COSTURA"];
+            const esFalsoPositivo = falsosPositivos.some(fp => obsUpper.includes(fp));
+            if (!esFalsoPositivo) tieneCostura = true;
+        }
+
+        let tieneBordado = checkServiciosExtra.includes("BORDADO") || checkServiciosExtra.includes("EMB");
+        if (!tieneBordado && (obsUpper.includes("BORDADO") || obsUpper.includes("EMB"))) {
+            const falsosPositivos = ["SIN BORDADO", "NO BORDADO", "NO REQUIERE BORDADO", "YA TIENE BORDADO"];
+            const esFalsoPositivo = falsosPositivos.some(fp => obsUpper.includes(fp));
+            if (!esFalsoPositivo) tieneBordado = true;
+        }
+
+        if (tieneCorte) {
             serviciosArray.push({
                 areaId: 'TWC', esPrincipal: false,
                 cabecera: { material: "Corte Laser por prenda", variante: "Corte detectado Automáticamente", metros: 0, codArticulo: "1375", proIdProducto: 90, codStock: "1.1.6.1" },
@@ -313,11 +384,11 @@ class SheetsRawMappingService {
             });
         }
         
-        if (textoServiciosExtra.includes("COSTURA")) {
+        if (tieneCostura) {
             serviciosArray.push({ areaId: 'TWT', esPrincipal: false, cabecera: { material: "Costura", variante: "Costura detectada Automáticamente", metros: 0, codArticulo: "115", proIdProducto: 36, codStock: "1.1.7.1" }, items: [] });
         }
 
-        if (textoServiciosExtra.includes("BORDADO") || textoServiciosExtra.includes("EMB")) {
+        if (tieneBordado) {
             serviciosArray.push({ areaId: 'EMB', esPrincipal: false, cabecera: { material: "Bordado Estándar", variante: "Bordado detectado Automáticamente", metros: 0, codArticulo: "1567", proIdProducto: 434, codStock: "1.1.9.1" }, items: [] });
         }
 
@@ -345,20 +416,27 @@ class SheetsRawMappingService {
             }
         }
         
-        const colFiles = ['N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W'];
+        // Obtener la fila correspondiente a "BASE"
+        const hojaBase = (datosPorHoja && datosPorHoja["BASE"]) ? datosPorHoja["BASE"] : f;
+
+        let colFiles;
+        if (datosPorHoja && datosPorHoja["BASE"] && !datosPorHoja["BASE INGRESO"]) {
+            // BASE tab: files start at N (index 13)
+            colFiles = ['N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W'];
+        } else {
+            // BASE INGRESO tab or automatic sync: files start at L (index 11)
+            colFiles = ['L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W'];
+        }
         const colCopias = ['X', 'Y', 'Z', 'AA', 'AB', 'AC', 'AD', 'AE', 'AF', 'AG'];
         const colMetros = ['AH', 'AI', 'AJ', 'AK', 'AL', 'AM', 'AN', 'AO', 'AP', 'AQ'];
 
         let itemsResult = [];
         
-        // Obtener la fila correspondiente a "BASE"
-        const hojaBase = (datosPorHoja && datosPorHoja["BASE"]) ? datosPorHoja["BASE"] : f;
-
-        for (let i = 0; i < 10; i++) {
+        for (let i = 0; i < colFiles.length; i++) {
             const fileUrl = hojaBase[colFiles[i]] ? hojaBase[colFiles[i]].toString().trim() : null;
             if (fileUrl && fileUrl.includes('http')) {
-                const copias = parseFloat(hojaBase[colCopias[i]]) || 1;
-                const metros = parseFloat(hojaBase[colMetros[i]]) || 0;
+                const copias = (i < colCopias.length && hojaBase[colCopias[i]]) ? parseFloat(hojaBase[colCopias[i]]) || 1 : 1;
+                const metros = (i < colMetros.length && hojaBase[colMetros[i]]) ? parseFloat(hojaBase[colMetros[i]]) || 0 : 0;
 
                 itemsResult.push({
                     fileName: fileUrl,
@@ -399,34 +477,78 @@ class SheetsRawMappingService {
             (f.AM || "")
         ).toUpperCase();
 
-        // Extraer archivos especificos para CORTE (AL: Info Corte, BH: Boceto Corte)
         let urlInfoCorte = "";
-        if (f.AL && typeof f.AL === 'string' && f.AL.includes('http')) {
+        let urlBocetoCorte = "";
+
+        // Caso normal / On-demand: enlaces directos (que no contienen "$*")
+        if (f.AL && typeof f.AL === 'string' && f.AL.includes('http') && !f.AL.includes('$*')) {
             urlInfoCorte = f.AL.toString().trim();
-        } else if (datosPorHoja && datosPorHoja["BASE INGRESO"] && datosPorHoja["BASE INGRESO"].AL) {
+        } else if (datosPorHoja && datosPorHoja["BASE INGRESO"] && datosPorHoja["BASE INGRESO"].AL && !datosPorHoja["BASE INGRESO"].AL.includes('$*')) {
             urlInfoCorte = datosPorHoja["BASE INGRESO"].AL.toString().trim();
         }
 
-        let urlBocetoCorte = "";
-        if (f.BH && typeof f.BH === 'string' && f.BH.includes('http')) {
+        if (f.BH && typeof f.BH === 'string' && f.BH.includes('http') && !f.BH.includes('$*')) {
             urlBocetoCorte = f.BH.toString().trim();
-        } else if (datosPorHoja && datosPorHoja["BASE INGRESO"] && datosPorHoja["BASE INGRESO"].BH) {
+        } else if (datosPorHoja && datosPorHoja["BASE INGRESO"] && datosPorHoja["BASE INGRESO"].BH && !datosPorHoja["BASE INGRESO"].BH.includes('$*')) {
             urlBocetoCorte = datosPorHoja["BASE INGRESO"].BH.toString().trim();
         }
-        
+
+        // Si tenemos un string QR con "$*" en cualquier columna (caso sincronización automática)
+        let qrString = "";
+        for (let key of Object.keys(f)) {
+            if (f[key] && typeof f[key] === 'string' && f[key].includes('$*')) {
+                qrString = f[key];
+                break;
+            }
+        }
+
+        if (qrString) {
+            const parts = qrString.split('$*');
+            if (parts[5] && parts[5].includes('http')) {
+                urlInfoCorte = parts[5].trim();
+            }
+            if (parts[7] && parts[7].includes('http')) {
+                urlBocetoCorte = parts[7].trim();
+            }
+        }
+
         let refFiles = [];
         let localesCorte = [];
         
         if (urlInfoCorte) {
-            refFiles.push({ nombre: urlInfoCorte, url: urlInfoCorte });
-            localesCorte.push({ url: urlInfoCorte, nota: urlInfoCorte, tipo: "ARCHIVO-PEDIDO" });
+            refFiles.push({ nombre: 'Archivo de Corte (AL)', url: urlInfoCorte, tipo: "ARCHIVO-PEDIDO" });
+            localesCorte.push({ url: urlInfoCorte, nota: 'Archivo de Corte (AL)', tipo: "ARCHIVO-PEDIDO" });
         }
         if (urlBocetoCorte) {
-            refFiles.push({ nombre: urlBocetoCorte, url: urlBocetoCorte });
-            localesCorte.push({ url: urlBocetoCorte, nota: urlBocetoCorte, tipo: "BOCETO-CORTE" });
+            refFiles.push({ nombre: 'Archivo de Referencia (BH)', url: urlBocetoCorte, tipo: "BOCETO-CORTE" });
+            localesCorte.push({ url: urlBocetoCorte, nota: 'Archivo de Referencia (BH)', tipo: "BOCETO-CORTE" });
         }
 
-        if (textoServiciosExtra.includes("CORTE")) {
+        const checkServiciosExtra = ((f.AI || "") + " " + (f.AJ || "") + " " + (f.AK || "") + " " + (f.AM || "")).toUpperCase();
+        const obsUpper = ((f.G || "") + " " + (f.I || "")).toUpperCase();
+
+        let tieneCorte = checkServiciosExtra.includes("CORTE");
+        if (!tieneCorte && obsUpper.includes("CORTE")) {
+            const falsosPositivos = ["HICIMOS YA", "YA HICIMOS", "YA TIENE", "YA VIENE", "SIN CORTE", "NO CORTE", "NO REQUIERE CORTE"];
+            const esFalsoPositivo = falsosPositivos.some(fp => obsUpper.includes(fp));
+            if (!esFalsoPositivo) tieneCorte = true;
+        }
+
+        let tieneCostura = checkServiciosExtra.includes("COSTURA");
+        if (!tieneCostura && obsUpper.includes("COSTURA")) {
+            const falsosPositivos = ["SIN COSTURA", "NO COSTURA", "NO REQUIERE COSTURA", "YA TIENE COSTURA"];
+            const esFalsoPositivo = falsosPositivos.some(fp => obsUpper.includes(fp));
+            if (!esFalsoPositivo) tieneCostura = true;
+        }
+
+        let tieneBordado = checkServiciosExtra.includes("BORDADO") || checkServiciosExtra.includes("EMB");
+        if (!tieneBordado && (obsUpper.includes("BORDADO") || obsUpper.includes("EMB"))) {
+            const falsosPositivos = ["SIN BORDADO", "NO BORDADO", "NO REQUIERE BORDADO", "YA TIENE BORDADO"];
+            const esFalsoPositivo = falsosPositivos.some(fp => obsUpper.includes(fp));
+            if (!esFalsoPositivo) tieneBordado = true;
+        }
+
+        if (tieneCorte) {
             serviciosArray.push({
                 areaId: 'TWC', // Taller Web Corte / Corte Láser
                 esPrincipal: false,
@@ -443,7 +565,7 @@ class SheetsRawMappingService {
             });
         }
         
-        if (textoServiciosExtra.includes("COSTURA")) {
+        if (tieneCostura) {
             serviciosArray.push({
                 areaId: 'TWT', // Taller Web Costura
                 esPrincipal: false,
@@ -459,7 +581,7 @@ class SheetsRawMappingService {
             });
         }
 
-        if (textoServiciosExtra.includes("BORDADO") || textoServiciosExtra.includes("EMB")) {
+        if (tieneBordado) {
             serviciosArray.push({
                 areaId: 'EMB', // Bordado
                 esPrincipal: false,

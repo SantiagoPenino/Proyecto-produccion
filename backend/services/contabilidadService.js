@@ -772,7 +772,8 @@ async function hookEntregaMetros(params) {
 
     // Obtener cotización si hay cruce de monedas
     const cotRes = await mkReq().query('SELECT TOP 1 CotDolar FROM dbo.Cotizaciones WITH(NOLOCK) ORDER BY CotFecha DESC');
-    const TC = cotRes.recordset.length > 0 ? parseFloat(cotRes.recordset[0].CotDolar) || 40.0 : 40.0;
+    const rawTC = cotRes.recordset.length > 0 ? parseFloat(cotRes.recordset[0].CotDolar) : 40.0;
+    const TC = (rawTC && rawTC > 0) ? rawTC : 40.0;
 
     for (const plan of planRes.recordset) {
       if (cantidadPendiente <= 0) break;
@@ -819,7 +820,7 @@ async function hookEntregaMetros(params) {
          if (plan.MonIdMoneda === 2 && params.MonIdMoneda === 1) { // Plan en USD, Orden en UYU -> multiplicar
              precioUnitarioPlan = precioUnitarioPlan * TC;
          } else if (plan.MonIdMoneda === 1 && params.MonIdMoneda === 2) { // Plan en UYU, Orden en USD -> dividir
-             precioUnitarioPlan = precioUnitarioPlan / TC;
+             precioUnitarioPlan = TC > 0 ? (precioUnitarioPlan / TC) : 0;
          }
       }
       valorCubiertoPorPlanes += (consumir * precioUnitarioPlan);
@@ -1337,6 +1338,10 @@ async function getTodasLasDeudasVivas() {
         cli.CliIdCliente,
         cli.Nombre AS ClienteNombre,
         cli.CodCliente AS ClienteCodigo,
+        RTRIM(LTRIM(cli.IDCliente)) AS ClienteIDCliente,
+        RTRIM(LTRIM(cli.CioRuc)) AS ClienteRuc,
+        RTRIM(LTRIM(cli.Email)) AS ClienteEmail,
+        RTRIM(LTRIM(cli.TelefonoTrabajo)) AS ClienteTelefono,
         (SELECT 
             m.OrdIdOrden,
             ISNULL(od.OrdCodigoOrden, erp.CodigoOrden) as CodigoOrden,

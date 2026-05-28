@@ -178,9 +178,22 @@ export default function ConfigSyncModal({ isOpen, onClose }) {
 
 // Subcomponente para manejar el panel de Control Manual de Planilla por separado
 function ManualPlanillaControl({ procesoID, onSuccess }) {
-    const isSub = procesoID === 'SYNC_PLANILLA_SHEETS_SUB';
-    const area = isSub ? 'SB' : 'DF';
-    const propName = isSub ? 'UltimafilaSB' : 'UltimafilaDF';
+    let area = 'DF';
+    let propName = 'UltimafilaDF';
+
+    if (procesoID === 'SYNC_PLANILLA_SHEETS_SUB') {
+        area = 'SB';
+        propName = 'UltimafilaSB';
+    } else if (procesoID === 'SYNC_PLANILLA_SHEETS_IMD') {
+        area = 'IMD';
+        propName = 'UltimafilaIMD';
+    } else if (procesoID === 'SYNC_PLANILLA_SHEETS_TPU') {
+        area = 'TPU';
+        propName = 'UltimafilaTPU';
+    } else if (procesoID === 'SYNC_PLANILLA_SHEETS_CENCO') {
+        area = 'CENCO';
+        propName = 'UltimafilaCENCO';
+    }
 
     const [rowInput, setRowInput] = useState('');
     const [updatingRow, setUpdatingRow] = useState(false);

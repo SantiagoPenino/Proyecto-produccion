@@ -2,6 +2,7 @@ import React, { useMemo, useState, useEffect } from 'react';
 import { Plus, X, CheckCircle, Loader2, FileText, Landmark, CreditCard, DollarSign, ChevronDown, Check } from 'lucide-react';
 import ChequeRecibirModal from './tesoreria/ChequeRecibirModal';
 import { Listbox } from '@headlessui/react';
+import api from '../../services/apiClient';
 
 // Select ligero construido con Headless UI
 function LightSelect({ value, onChange, options = [], placeholder = 'Seleccionar...' }) {
@@ -76,6 +77,7 @@ export default function CajaPanelPago({
   mode = 'COBRO',
   totalACubrir = 0,
   moneda = 'UYU',
+  onMonedaChange,
   cotizacion = 1,
   metodosPago = [],
   pagos = [],
@@ -85,6 +87,7 @@ export default function CajaPanelPago({
   serieDoc,
   onSerieDoc,
   numDoc,
+  notes = '', // fallback
   notas = '',
   onNotas,
   onConfirmar,
@@ -94,6 +97,8 @@ export default function CajaPanelPago({
   tiposDocDisponibles = [],
   containerClassName = "w-[400px] shrink-0 border-l border-zinc-200 bg-white flex flex-col h-full overflow-y-auto",
   lockMoneda = null,   // Si viene 'UYU' o 'USD', oculta el selector de moneda por línea
+  layout = 'vertical',
+  showSubmitButton = true,
 }) {
   const esEgreso = mode === 'EGRESO';
   const tiposDoc = tiposDocDisponibles.length > 0
@@ -101,6 +106,25 @@ export default function CajaPanelPago({
     : [{ value: 'NINGUNO', label: 'Sin documento / Cargando...' }];
   const [efectivoRecibido, setEfectivoRecibido] = useState('');
   const [chequeIndexActivo, setChequeIndexActivo] = useState(null);
+  const [numDocPredict, setNumDocPredict] = useState('...');
+
+  useEffect(() => {
+    if (tipoDoc && tipoDoc !== 'NINGUNO') {
+      setNumDocPredict('...');
+      api.get(`/contabilidad/caja/siguiente-numero?tipoDoc=${tipoDoc}`)
+        .then(r => {
+          if (r.data.success) {
+            setNumDocPredict(r.data.NumeroFormato);
+            if (r.data.Serie && onSerieDoc) {
+              onSerieDoc(r.data.Serie);
+            }
+          }
+        })
+        .catch(() => setNumDocPredict('?'));
+    } else {
+      setNumDocPredict('Sin Número');
+    }
+  }, [tipoDoc]);
 
   // ── Totales ──────────────────────────────────────────────────────
   const totalIngresado = useMemo(() => {
@@ -183,12 +207,315 @@ export default function CajaPanelPago({
 
   const colorBoton = {
     COBRO: 'bg-brand-cyan hover:bg-brand-cyan shadow-brand-cyan/30 text-zinc-100',
-    VENTA: 'bg-brand-cyan hover:bg-brand-cyan shadow-brand-cyan/30 text-zinc-100',
+    VENTA: 'bg-[#006097] hover:bg-[#005080] shadow-brand-cyan/30 text-zinc-100',
     MOTOR: 'bg-violet-600 hover:bg-violet-500 shadow-violet-200 text-zinc-100',
     EGRESO: 'bg-brand-magenta hover:bg-brand-magenta shadow-brand-magenta/30 text-zinc-100',
   }[mode] || 'bg-brand-cyan hover:bg-brand-cyan text-zinc-100';
 
   const canConfirm = !procesando && !disabledExtra;
+
+  if (layout === 'horizontal') {
+    return (
+      <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-4 shrink-0 w-full mb-4 animate-in fade-in duration-300">
+        <div className="flex items-start justify-between gap-6 flex-wrap">
+          
+          {/* Medios de Pago */}
+          <div className="flex flex-col gap-1.5 flex-1 min-w-[320px]">
+            <div className="flex items-center justify-between mb-1">
+              <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest px-1">Formas de pago recibidas</label>
+              {totalACubrir > 0 && (
+                <div className={`px-2.5 py-1 rounded-full border text-[10px] font-black uppercase tracking-wider flex items-center gap-1.5
+                  ${balanceOK && totalIngresado > 0
+                    ? 'bg-emerald-50 border-emerald-200 text-emerald-700'
+                    : diferencia > 0
+                      ? 'bg-rose-50 border-rose-200 text-rose-700'
+                      : 'bg-zinc-100 border-zinc-200 text-zinc-500'
+                  }`}
+                >
+                  <span>
+                    {totalIngresado === 0
+                      ? mode === 'VENTA' ? '💳 Factura a Crédito' : '⏳ Sin pago inicial'
+                      : balanceOK
+                        ? '✅ Caja Balanceada'
+                        : diferencia > 0
+                          ? `Falta ${simbMoneda} ${fmt(Math.abs(diferencia))}`
+                          : `Excede ${simbMoneda} ${fmt(Math.abs(diferencia))}`}
+                  </span>
+                  {!balanceOK && totalIngresado > 0 && cotizacion && moneda === 'USD' && (
+                    <span className="text-zinc-400 font-bold bg-zinc-50 px-1 py-0.5 rounded border border-zinc-200 text-[9px]">
+                      ($ {fmt(Math.abs(diferencia) * cotizacion)})
+                    </span>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {pagos.length === 0 && (
+              <div className="bg-zinc-50 border border-dashed border-zinc-200 rounded-xl p-3 text-center">
+                <p className="text-[11px] text-zinc-400 font-bold italic">
+                  {mode === 'VENTA' ? 'Sin pago hoy = Factura 100% a Crédito' : 'Debe agregar al menos un medio de pago'}
+                </p>
+              </div>
+            )}
+
+            <div className="flex flex-col gap-2">
+              {pagos.map((p) => {
+                const isCheque = metodosPago.find(m => m.MPaIdMetodoPago === parseInt(p.metodoPagoId))?.MPaDescripcionMetodo?.toLowerCase()?.includes('cheque');
+                return (
+                  <div key={p.id} className="flex gap-2 items-center bg-slate-50 border border-slate-200 p-2 rounded-xl">
+                    <div className="w-36 shrink-0">
+                      <LightSelect
+                        value={p.metodoPagoId}
+                        onChange={(val) => {
+                          updatePago(p.id, 'metodoPagoId', val);
+                          const isNowCheque = metodosPago.find(m => m.MPaIdMetodoPago === parseInt(val))?.MPaDescripcionMetodo?.toLowerCase()?.includes('cheque');
+                          if (isNowCheque && !p.idCheque) setChequeIndexActivo(p.id);
+                        }}
+                        options={metodosPago.map(m => ({ value: m.MPaIdMetodoPago, label: m.MPaDescripcionMetodo }))}
+                        placeholder="Medio..."
+                      />
+                    </div>
+                    
+                    {!lockMoneda && (
+                      <div className="flex bg-slate-100 rounded-lg p-0.5 border border-slate-200 select-none shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const newMoneda = 'UYU';
+                            if (p.moneda === newMoneda) return;
+                            if (pagos.length === 1 && totalACubrir > 0) {
+                              let fill = totalACubrir;
+                              if (moneda === 'USD') fill = totalACubrir * (cotizacion || 1);
+                              onPagosChange([{ ...p, moneda: newMoneda, monto: fill.toFixed(2) }]);
+                            } else {
+                              updatePago(p.id, 'moneda', newMoneda);
+                            }
+                          }}
+                          className={`px-2.5 py-1 text-[9px] font-black uppercase tracking-wider rounded-md transition-all ${
+                            p.moneda === 'UYU' ? 'bg-[#006097] text-white shadow-sm' : 'text-slate-400 hover:text-slate-600'
+                          }`}
+                        >
+                          $ (PESOS)
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const newMoneda = 'USD';
+                            if (p.moneda === newMoneda) return;
+                            if (pagos.length === 1 && totalACubrir > 0) {
+                              let fill = totalACubrir;
+                              if (moneda === 'UYU') fill = totalACubrir / (cotizacion || 1);
+                              onPagosChange([{ ...p, moneda: newMoneda, monto: fill.toFixed(2) }]);
+                            } else {
+                              updatePago(p.id, 'moneda', newMoneda);
+                            }
+                          }}
+                          className={`px-2.5 py-1 text-[9px] font-black uppercase tracking-wider rounded-md transition-all ${
+                            p.moneda === 'USD' ? 'bg-[#006097] text-white shadow-sm' : 'text-slate-400 hover:text-slate-600'
+                          }`}
+                        >
+                          US$ (DÓLARES)
+                        </button>
+                      </div>
+                    )}
+
+                    <input
+                      type="number"
+                      placeholder="0.0"
+                      value={p.monto}
+                      onChange={(e) => updatePago(p.id, 'monto', e.target.value)}
+                      className="w-24 bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs font-black text-slate-800 text-right outline-none focus:border-brand-cyan shadow-inner"
+                    />
+
+                    {isCheque && (
+                      <button
+                        onClick={() => setChequeIndexActivo(p.id)}
+                        className={`text-[10px] font-black px-2 py-2 rounded-xl shrink-0 transition-colors flex items-center gap-1 uppercase tracking-widest ${p.idCheque ? 'bg-emerald-500/20 text-emerald-600 border border-emerald-200' : 'bg-amber-500/20 text-amber-400 border border-amber-200 hover:bg-amber-500/30'}`}
+                      >
+                        <Landmark size={12} /> {p.idCheque ? 'OK' : 'INFO'}
+                      </button>
+                    )}
+
+                    {pagos.length > 1 && (
+                      <button
+                        onClick={() => removePago(p.id)}
+                        className="text-zinc-400 hover:text-rose-500 p-1.5 hover:bg-rose-50 rounded-lg transition-all shrink-0"
+                      >
+                        <X size={14} />
+                      </button>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+
+            <div className="flex gap-2 mt-1">
+              <button
+                onClick={addPago}
+                className="bg-slate-50 text-slate-500 text-[10px] font-black border border-dashed border-slate-200 rounded-lg px-3 py-1.5 hover:border-slate-400 hover:text-slate-800 transition-all flex items-center gap-1 uppercase tracking-wider"
+              >
+                <Plus size={12} /> Agregar Medio
+              </button>
+              {totalACubrir > 0 && diferencia > 0.01 && (
+                <button
+                  onClick={autoRellenar}
+                  className="bg-white text-slate-500 text-[10px] font-black border border-slate-200 rounded-lg px-3 py-1.5 hover:border-slate-300 hover:text-slate-800 transition-all uppercase tracking-wider"
+                >
+                  Completar Saldo
+                </button>
+              )}
+            </div>
+          </div>
+
+          {/* Vuelto Calculator (Middle Column) */}
+          {(() => {
+            const cashPayments = pagos.filter(p => {
+              const m = metodosPago.find(met => met.MPaIdMetodoPago === parseInt(p.metodoPagoId));
+              return m && /efectivo|contado/i.test(m.MPaDescripcionMetodo);
+            });
+            if (cashPayments.length > 0 && !esEgreso) {
+              const totalEfectivoUYU = cashPayments.reduce((acc, p) => {
+                const val = parseFloat(p.monto) || 0;
+                return acc + (p.moneda === 'USD' ? val * (cotizacion || 1) : val);
+              }, 0);
+              const totalEfectivoUSD = totalEfectivoUYU / (cotizacion || 1);
+              const montoEfectivo = moneda === 'USD' ? totalEfectivoUSD : totalEfectivoUYU;
+
+              if (montoEfectivo > 0) {
+                const recibido = parseFloat(efectivoRecibido) || 0;
+                const vuelto = recibido - montoEfectivo;
+                return (
+                  <div className="flex flex-col gap-1.5 min-w-[200px] max-w-[260px] flex-1 self-start bg-emerald-50/50 border border-emerald-100 rounded-xl p-3 text-emerald-800 animate-in fade-in duration-200 shrink-0">
+                    <label className="text-[9px] font-black text-emerald-600 uppercase tracking-widest px-1">Calculadora de Vuelto</label>
+                    <div className="flex flex-col gap-2 mt-1">
+                      <div className="flex justify-between items-center text-xs">
+                        <span className="font-bold text-slate-500">Efectivo:</span>
+                        <span className="font-black text-emerald-700">{simbMoneda}{fmt(montoEfectivo)}</span>
+                      </div>
+                      <div className="flex justify-between items-center gap-2 text-xs">
+                        <span className="text-slate-500">Recibido:</span>
+                        <input
+                          type="number"
+                          value={efectivoRecibido}
+                          onChange={e => setEfectivoRecibido(e.target.value)}
+                          placeholder="0.00"
+                          className="w-20 bg-white border border-emerald-200 rounded-lg px-2 py-1 text-xs text-right font-black outline-none focus:border-emerald-500 shadow-inner"
+                        />
+                      </div>
+                      {recibido > 0 && (
+                        <div className="flex justify-between items-center border-t border-emerald-100/80 pt-2 text-xs">
+                          <span className="font-bold text-slate-600">Vuelto:</span>
+                          <span className={`font-black text-sm ${vuelto >= 0 ? 'text-emerald-600 animate-pulse' : 'text-rose-600'}`}>
+                            {vuelto >= 0 ? '+' : ''}
+                            {simbMoneda}{fmt(vuelto)}
+                          </span>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                );
+              }
+            }
+            return null;
+          })()}
+
+          {/* Columna Derecha: Tipo de Comprobante + Observaciones + Botón */}
+          <div className="flex flex-col gap-3 min-w-[320px] flex-[1.5] self-start">
+            <div className={`grid grid-cols-1 ${onMonedaChange ? 'md:grid-cols-3' : 'md:grid-cols-2'} gap-3.5`}>
+              {onMonedaChange && (
+                <div className="flex flex-col gap-1">
+                  <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest px-1">
+                    Moneda de la Operación
+                  </label>
+                  <LightSelect
+                    value={moneda}
+                    onChange={onMonedaChange}
+                    options={[
+                      { value: 'UYU', label: 'UYU ($)' },
+                      { value: 'USD', label: 'USD (US$)' }
+                    ]}
+                    placeholder="Moneda..."
+                  />
+                </div>
+              )}
+              <div className="flex flex-col gap-1">
+                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest px-1">
+                  Tipo de Comprobante
+                </label>
+                <div className="flex items-center gap-2">
+                  <div className="w-full">
+                    <LightSelect
+                      value={tipoDoc}
+                      onChange={onTipoDoc}
+                      options={tiposDoc}
+                      placeholder="Comprobante..."
+                    />
+                  </div>
+                  {tipoDoc !== 'NINGUNO' && (
+                    <>
+                      <input
+                        type="text"
+                        value={serieDoc}
+                        onChange={(e) => onSerieDoc && onSerieDoc(e.target.value.toUpperCase())}
+                        placeholder="Serie"
+                        title="Serie del comprobante"
+                        className="w-12 text-center bg-zinc-50 border border-zinc-200 rounded-xl px-2 py-2 text-xs font-black text-zinc-800 outline-none focus:border-brand-cyan shadow-sm"
+                      />
+                      <div
+                        className="bg-zinc-100 border border-zinc-200 rounded-xl px-3 py-2 text-xs text-zinc-500 font-black italic min-w-[70px] max-w-[100px] truncate shadow-inner flex items-center justify-center"
+                        title="Número del comprobante"
+                      >
+                        {numDoc || numDocPredict}
+                      </div>
+                    </>
+                  )}
+                </div>
+              </div>
+
+              <div className="flex flex-col gap-1">
+                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest px-1">
+                  Observaciones Internas
+                </label>
+                <input
+                  type="text"
+                  value={notas}
+                  onChange={(e) => onNotas && onNotas(e.target.value)}
+                  placeholder="Añada notas..."
+                  className="w-full bg-zinc-50 border border-zinc-200 rounded-xl px-3 py-2 text-xs font-bold text-zinc-800 outline-none focus:border-brand-cyan transition-all shadow-sm placeholder-zinc-300"
+                />
+              </div>
+            </div>
+            
+            {showSubmitButton && onConfirmar && (
+              <button
+                onClick={onConfirmar}
+                disabled={!canConfirm}
+                className={`w-full text-white font-black py-4 px-6 rounded-2xl border border-transparent shadow-lg transition-all hover:scale-[1.01] active:scale-[0.98] text-sm uppercase tracking-wider whitespace-nowrap flex items-center justify-center gap-3 disabled:opacity-50 disabled:cursor-not-allowed shrink-0 ${colorBoton}`}
+              >
+                {procesando ? (
+                  <Loader2 className="animate-spin" size={20} />
+                ) : (
+                  <><CheckCircle size={20} /> {labelBoton || defaultLabel}</>
+                )}
+              </button>
+            )}
+          </div>
+
+        </div>
+
+        {chequeIndexActivo !== null && (
+          <ChequeRecibirModal
+            initialMonto={pagos.find(p => p.id === chequeIndexActivo)?.monto || ''}
+            onClose={() => setChequeIndexActivo(null)}
+            onSuccess={(idCheque) => {
+              updatePago(chequeIndexActivo, 'idCheque', idCheque);
+              setChequeIndexActivo(null);
+            }}
+          />
+        )}
+      </div>
+    );
+  }
 
   return (
     <div className={containerClassName}>
@@ -407,6 +734,24 @@ export default function CajaPanelPago({
           )
         }
 
+        {/* ── MONEDA DE LA OPERACIÓN ── */}
+        {onMonedaChange && (
+          <div className="flex flex-col gap-3">
+            <label className="text-[10px] uppercase font-black text-zinc-400 tracking-widest px-1">
+              Moneda de la Operación
+            </label>
+            <LightSelect
+              value={moneda}
+              onChange={onMonedaChange}
+              options={[
+                { value: 'UYU', label: 'UYU ($)' },
+                { value: 'USD', label: 'USD (US$)' }
+              ]}
+              placeholder="Seleccionar moneda..."
+            />
+          </div>
+        )}
+
         {/* ── DOCUMENTO A EMITIR ────────────────────────────────────── */}
         <div className="flex flex-col gap-3">
           <label className="text-[10px] uppercase font-black text-zinc-400 tracking-widest px-1">
@@ -424,12 +769,12 @@ export default function CajaPanelPago({
               <input
                 type="text"
                 value={serieDoc}
-                onChange={(e) => onSerieDoc(e.target.value)}
+                onChange={(e) => onSerieDoc && onSerieDoc(e.target.value.toUpperCase())}
                 placeholder="Serie"
                 className="w-20 text-center bg-zinc-50 border border-zinc-200 rounded-2xl px-3 py-3 text-sm font-black text-zinc-800 outline-none focus:border-brand-cyan transition-all shadow-sm"
               />
               <div className="flex-1 bg-zinc-50 border border-zinc-200 rounded-2xl px-4 py-3 text-[10px] text-zinc-400 font-black flex items-center justify-center italic uppercase tracking-widest">
-                {numDoc || 'Automático'}
+                {numDoc || numDocPredict}
               </div>
             </div>
           )}

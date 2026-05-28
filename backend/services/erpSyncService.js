@@ -413,7 +413,7 @@ class ERPSyncService {
                 }
 
             } catch (errCalc) {
-                logger.error(`[ERPSync] Error calculando precio para Orden ${sib.OrdenID}:`, errCalc.message);
+                logger.error(`[ERPSync] Error calculando precio para Orden ${sib.OrdenID}: ${errCalc.message}`);
             }
         }
 
@@ -467,7 +467,7 @@ class ERPSyncService {
                 lineasAgrupadas[cod] = (lineasAgrupadas[cod] || 0) + parseFloat(d.Cantidad);
             });
             const erpPayload = {
-                CodCliente: first.CodCliente ? first.CodCliente.toString() : "100101",
+                CodCliente: first.CodCliente ? first.CodCliente.toString().trim() : "100101",
                 Documento: "11",
                 Lineas: Object.entries(lineasAgrupadas).map(([cod, qty]) => ({ CodArticulo: cod, Cantidad: qty.toString() }))
             };
@@ -624,7 +624,7 @@ class ERPSyncService {
 
                     reactSuccess = true;
                 } catch (eReact) {
-                    logger.error(`[ERPSync] Error al insertar en OrdenesDeposito:`, eReact.message);
+                    logger.error(`[ERPSync] Error al insertar en OrdenesDeposito: ${eReact.message}`);
                 }
             }
         } else {
@@ -653,13 +653,13 @@ class ERPSyncService {
                             });
 
                             erpPayload = {
-                                CodCliente: first.CodCliente ? first.CodCliente.toString() : "100101",
+                                CodCliente: first.CodCliente ? first.CodCliente.toString().trim() : "100101",
                                 Documento: "11",
                                 Lineas: Object.entries(lineasAgrupadas).map(([cod, qty]) => ({ CodArticulo: cod, Cantidad: qty.toString() }))
                             };
                         }
-
-                        const erpRes = await axios.post('https://api-user.devmacrosoft.com/pedido', erpPayload, {
+                        const erpBaseUrl = process.env.ERP_API_URL || 'https://api-user.devmacrosoft.com';
+                        const erpRes = await axios.post(`${erpBaseUrl}/pedidos`, erpPayload, {
                             headers: { 'Authorization': `Bearer ${erpToken}`, 'Content-Type': 'application/json' }
                         });
 
@@ -673,7 +673,7 @@ class ERPSyncService {
                         }
                     }
                 } catch (eErp) {
-                    logger.error(`[ERPSync] Error al enviar a ERP Macrosoft:`, eErp.message);
+                    logger.error(`[ERPSync] Error al enviar a ERP Macrosoft: ${eErp.message}`);
                 }
             } // Fin if/else desactivado global
         } else {
@@ -785,7 +785,8 @@ class ERPSyncService {
 
     static async getMacrosoftToken() {
         try {
-            const res = await axios.post('https://api-user.devmacrosoft.com/authenticate', { username: "user", password: "1234" });
+            const erpBaseUrl = process.env.ERP_API_URL || 'https://api-user.devmacrosoft.com';
+            const res = await axios.post(`${erpBaseUrl}/authenticate`, { username: "user", password: "1234" });
             return res.data?.token || res.data?.accessToken;
         } catch (e) { return null; }
     }

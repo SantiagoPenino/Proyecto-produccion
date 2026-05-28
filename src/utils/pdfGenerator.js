@@ -242,9 +242,38 @@ export const generarPdfFacturaDGI = async (doc, detalles) => {
                 ];
             }
 
-            const pUnitario = d.DcdPrecioUnitario ? Number(d.DcdPrecioUnitario) : (Number(d.DcdSubtotal) / Number(d.DcdCantidad));
+            // Safe parsing of inputs with fallback to 0
+            const rawSubtotal = d.DcdSubtotal != null && !isNaN(Number(d.DcdSubtotal)) ? Number(d.DcdSubtotal) : 0;
+            const rawImpuestos = d.DcdImpuestos != null && !isNaN(Number(d.DcdImpuestos)) ? Number(d.DcdImpuestos) : null;
+            const rawTotal = d.DcdTotal != null && !isNaN(Number(d.DcdTotal)) ? Number(d.DcdTotal) : null;
+
+            let lineTotal, lineNeto, lineIva, lineRate;
+
+            if (rawTotal != null) {
+                // Database record with all columns populated
+                lineTotal = rawTotal;
+                lineNeto = rawSubtotal;
+                lineIva = rawImpuestos != null ? rawImpuestos : (lineTotal - lineNeto);
+                lineRate = (lineNeto > 0) ? Math.round((lineIva / lineNeto) * 100) : 22;
+            } else if (rawImpuestos != null) {
+                // Subtotal and Impuestos populated, but Total is null
+                lineNeto = rawSubtotal;
+                lineIva = rawImpuestos;
+                lineTotal = lineNeto + lineIva;
+                lineRate = (lineNeto > 0) ? Math.round((lineIva / lineNeto) * 100) : 22;
+            } else {
+                // UI preview / draft: DcdSubtotal holds the gross total of the line, or we don't have DcdTotal/DcdImpuestos.
+                // We assume a 22% IVA rate to compute net and taxes.
+                lineTotal = rawSubtotal;
+                lineNeto = lineTotal / 1.22;
+                lineIva = lineTotal - lineNeto;
+                lineRate = 22;
+            }
+
+            const lineCantidad = Number(d.DcdCantidad) || 1;
+            const pUnitario = lineCantidad > 0 ? (lineTotal / lineCantidad) : 0;
             const descBruto = Number(d.DcdTotalDescuentos || 0);
-            const originalSub = pUnitario * Number(d.DcdCantidad);
+            const originalSub = pUnitario * lineCantidad;
 
             let descuentoStr = d.DcdDescuentoStr || '';
             if (!descuentoStr && descBruto > 0.01) {
@@ -252,17 +281,20 @@ export const generarPdfFacturaDGI = async (doc, detalles) => {
                 descuentoStr = `${fmtNum(descBruto)} (${fmtNum(pct)}%)`;
             }
 
-            const puNeto = pUnitario - (descBruto / Number(d.DcdCantidad));
+            const puNeto = pUnitario - (descBruto / lineCantidad);
+            
+            const currencySymbol = doc.MonIdMoneda === 2 ? 'U$S' : '$';
+            const descText = d.DcdNomItem + (d.DcdDscItem ? `\n${d.DcdDscItem}` : '') + ` (Neto: ${currencySymbol} ${fmtNum(lineNeto)})`;
 
             return [
                 index + 1,
-                d.DcdNomItem + (d.DcdDscItem ? `\n${d.DcdDscItem}` : ''),
-                '22%',
+                descText,
+                `${lineRate}%`,
                 fmtNum(pUnitario),        // P. Unitario (bruto con IVA)
-                fmtNum(d.DcdCantidad),    // Cantidad exacta
+                fmtNum(lineCantidad),     // Cantidad exacta
                 descuentoStr,             // Descuentos
                 fmtNum(puNeto),           // P.U. Neto (bruto - descuento)
-                fmtNum(d.DcdTotal != null ? d.DcdTotal : d.DcdSubtotal)        // Importe = total línea con IVA incluido
+                fmtNum(lineTotal)         // Importe = total línea con IVA incluido
             ];
         });
     } else {

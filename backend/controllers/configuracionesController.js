@@ -53,7 +53,12 @@ exports.setPlanillaRow = async (req, res) => {
             const response = await axios.get(scriptUrl);
 
             // Log this manual action
-            const procesoId = area === 'SB' ? 'SYNC_PLANILLA_SHEETS_SUB' : 'SYNC_PLANILLA_SHEETS_DF';
+            let procesoId = 'SYNC_PLANILLA_SHEETS_DF';
+            if (area === 'SB') procesoId = 'SYNC_PLANILLA_SHEETS_SUB';
+            else if (area === 'IMD') procesoId = 'SYNC_PLANILLA_SHEETS_IMD';
+            else if (area === 'TPU') procesoId = 'SYNC_PLANILLA_SHEETS_TPU';
+            else if (area === 'CENCO') procesoId = 'SYNC_PLANILLA_SHEETS_CENCO';
+
             exports.updateProcessLog(procesoId, 'OK', `FILA ACTUALIZADA MANUALMENTE: Recargará desde la fila ${rowNumber}.`);
 
             res.json({ success: true, message: `Propiedad actualizada. La lectura se reiniciará desde la fila ${rowNumber}.`, scriptResponse: response.data });

@@ -1,0 +1,870 @@
+diff --git a/src/components/pages/CajaTransaccionView.jsx b/src/components/pages/CajaTransaccionView.jsx
+index 96addd9..e699d18 100644
+--- a/src/components/pages/CajaTransaccionView.jsx
++++ b/src/components/pages/CajaTransaccionView.jsx
+@@ -10,7 +10,8 @@ import {
+   CreditCard, CheckCircle, AlertCircle,
+   FileText, User, Phone, Search, X,
+   Zap, ArrowRight, ChevronRight, LayoutGrid, TrendingDown, Hash, History, Wallet, Tag, FileMinus,
+-  ArrowDownCircle, ArrowUpCircle, ShieldCheck, DoorClosed, LockKeyhole, DollarSign, BookOpen, Power, Calendar, ShoppingBag
++  ArrowDownCircle, ArrowUpCircle, ShieldCheck, DoorClosed, LockKeyhole, DollarSign, BookOpen, Power, Calendar, ShoppingBag,
++  Landmark
+ } from 'lucide-react';
+ import CajaArqueoModal from './CajaArqueoModal';
+ import CajaVentaDirectaTab from './CajaVentaDirectaTab';
+@@ -22,6 +23,7 @@ import CajaOtrosIngresosTab from './CajaOtrosIngresosTab';
+ import CajaPanelPago from './CajaPanelPago';
+ import TicketImpresion from '../common/TicketImpresion';
+ import ClienteBilletera from '../common/ClienteBilletera';
++import ChequeRecibirModal from './tesoreria/ChequeRecibirModal';
+ import { CustomSelect } from '../../client-portal/pautas/CustomSelect';
+ import { Listbox } from '@headlessui/react';
+ import { ChevronDown, Check } from 'lucide-react';
+@@ -116,6 +118,9 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
+   const [numDocCobro, setNumDocCobro] = useState('');
+   const [numDocCobroPredict, setNumDocCobroPredict] = useState('');
+   const [obsCobro, setObsCobro] = useState('');
++  const [efectivoRecibido, setEfectivoRecibido] = useState('');
++  const [chequeIndexActivo, setChequeIndexActivo] = useState(null);
++  const [searchSituacionInput, setSearchSituacionInput] = useState('');
+   const [procesandoCobro, setProcesandoCobro] = useState(false);
+   const [motorPagos, setMotorPagos] = useState([{ id: Date.now(), metodoPagoId: 1, moneda: 'UYU', monedaId: 1, monto: '' }]);
+   const [motorTipoDoc, setMotorTipoDoc] = useState('40');
+@@ -322,6 +327,39 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
+     setLoadingCot(false);
+   };
+ 
++  const handleSearchSituacion = async (val) => {
++    if (!val || val.length < 2) return toast.warning('Ingresá al menos 2 caracteres');
++    try {
++      const res = await api.get(`/apiordenesRetiro/mostrador/buscar?q=${encodeURIComponent(val)}`);
++      const data = res.data || {};
++      const combined = [
++        ...(data.retiroRows || []),
++        ...(data.sinRetiro || []).map(o => ({
++          OReIdOrdenRetiro: o.OrdIdOrden,
++          ordenDeRetiro: o.OrdCodigoOrden,
++          CliNombre: o.CliNombre,
++          CliCodigo: o.CliCodigo,
++          CliIdCliente: o.CliIdCliente || null,
++          OReCostoTotalOrden: o.OrdCostoFinal,
++          Pagada: o.Pagada,
++          estadoRetiro: o.estadoOrden,
++          OReFechaAlta: o.OReFechaAlta || null,
++          orders: [{
++            orderNumber: o.OrdCodigoOrden,
++            orderEstado: o.estadoOrden,
++            orderCosto: o.MonSimbolo ? `${o.MonSimbolo} ${parseFloat(o.OrdCostoFinal).toFixed(2)}` : `$ ${parseFloat(o.OrdCostoFinal).toFixed(2)}`,
++            monedaId: (o.MonSimbolo && o.MonSimbolo.includes('US')) ? 2 : 1
++          }]
++        }))
++      ];
++      setRetiros(combined);
++      setSearchTerm(val);
++      toast.success(`Resultados para "${val}"`);
++    } catch {
++      toast.error('Error en búsqueda global');
++    }
++  };
++
+   const handleAbrirCaja = async () => {
+     try {
+       const res = await api.post('/contabilidad/caja/sesion/abrir', { montoInicial });
+@@ -387,6 +425,16 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
+     const id = r.OReIdOrdenRetiro || r.ordenDeRetiro;
+     setSeleccionados(prev => {
+       if (prev.find(s => s.retiroId === id)) return prev.filter(s => s.retiroId !== id);
++      
++      // Validar si es del mismo cliente
++      if (prev.length > 0) {
++        const first = prev[0].retiro;
++        if (first.CliIdCliente !== r.CliIdCliente) {
++          toast.warning('No se pueden agrupar órdenes de diferentes clientes en un mismo cobro.');
++          return prev;
++        }
++      }
++      
+       return [...prev, { retiroId: id, retiro: r, ordenesIds: getOrdenes(r).filter(o => !o.orderIdMetodoPago && !o.orderPago).map(o => o.orderId), codigoRef: r.ordenDeRetiro, descripcion: r.CliNombre || '' }];
+     });
+   };
+@@ -419,7 +467,7 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
+     if (!cobroBalanceado) return toast.warning('Pagos no cuadran con el total.');
+     if (carritosPago.some(p => !p.metodoPagoId)) return toast.warning('Debe seleccionar Método de pago en todas las líneas.');
+     const chequeFaltante = carritosPago.some(p => {
+-      const isCheque = metodosPago.find(m => m.MPaIdMetodoPago === parseInt(p.metodoPagoId))?.MPaDescripcionMetodo?.toLowerCase().includes('cheque');
++      const isCheque = metodosPago.find(m => m.MPaIdMetodoPago === parseInt(p.metodoPagoId))?.MPaDescripcionMetodo?.toLowerCase()?.includes('cheque');
+       return isCheque && !p.idCheque;
+     });
+     if (chequeFaltante) return toast.warning('Debe cargar los datos del cheque en el método de pago correspondiente.');
+@@ -715,202 +763,531 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
+               </div>
+ 
+               <div className="flex-1 flex overflow-hidden">
+-                <div className="flex-1 overflow-hidden flex flex-col relative bg-[#f1f5f9]">
+-                  {subTabIngreso === 'COBRO' && (
+-                    <div className="flex-1 flex overflow-hidden">
+-                      <div className="w-[440px] border-r border-slate-200 flex flex-col bg-white shrink-0 shadow-lg z-0">
+-                        <div className="p-6 border-b border-slate-100 flex flex-col gap-5 bg-slate-50/50">
+-                          <h3 className="font-black font-archivo text-slate-400 text-[10px] uppercase tracking-widest flex items-center gap-2 px-1">
+-                            <Search size={12} /> Buscar Pedidos Disponibles
+-                          </h3>
+-                          <div className="relative group">
+-                            <Search size={22} className="absolute left-5 top-1/2 -translate-y-1/2 text-zinc-400 group-focus-within:text-brand-cyan transition-colors" />
+-                            <input
+-                              type="text"
+-                              placeholder="Ingrese orden o cliente..."
+-                              value={searchTerm}
+-                              onChange={e => setSearchTerm(e.target.value)}
+-                              className="bg-zinc-100 border-2 border-zinc-300 rounded-3xl pl-14 pr-6 py-4 text-base text-zinc-100 placeholder-zinc-600 outline-none w-full focus:border-brand-cyan transition-all font-black font-archivo"
+-                            />
+-                          </div>
+-                          <div className="flex gap-2 flex-wrap px-1">
+-                            {[{ val: 'todos', l: 'Todos' }, { val: '1', l: 'Comunes' }, { val: '2', l: 'Semanales' }, { val: '3', l: 'Rollos' }].map(f => (
++                <div className="flex-1 overflow-hidden flex flex-c                  {subTabIngreso === 'COBRO' && (
++                    <div className="flex-1 flex flex-col min-h-0 overflow-hidden bg-slate-100 p-4 gap-4">
++                      {/* BARRA SUPERIOR HORIZONTAL */}
++                      <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-4 shrink-0">
++                        <div className="flex items-start justify-between gap-6 flex-wrap">
++                          {/* Medios de Pago */}
++                          <div className="flex flex-col gap-1.5 flex-1 min-w-[320px]">
++                            <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest px-1">Formas de pago recibidas</label>
++                            
++                            {carritosPago.length === 0 && (
++                              <div className="bg-zinc-50 border border-dashed border-zinc-200 rounded-xl p-3 text-center">
++                                <p className="text-[11px] text-zinc-400 font-bold italic">Debe agregar al menos un medio de pago</p>
++                              </div>
++                            )}
++
++                            <div className="flex flex-col gap-2">
++                              {carritosPago.map((p) => {
++                                const isCheque = metodosPago.find(m => m.MPaIdMetodoPago === parseInt(p.metodoPagoId))?.MPaDescripcionMetodo?.toLowerCase()?.includes('cheque');
++                                return (
++                                  <div key={p.id} className="flex gap-2 items-center bg-slate-50 border border-slate-200 p-2 rounded-xl">
++                                    <div className="flex-1 min-w-0">
++                                      <LightSelect
++                                        value={p.metodoPagoId}
++                                        onChange={(val) => {
++                                          const updated = carritosPago.map(item => item.id === p.id ? { ...item, metodoPagoId: val } : item);
++                                          setCarritosPago(updated);
++                                          const isNowCheque = metodosPago.find(m => m.MPaIdMetodoPago === parseInt(val))?.MPaDescripcionMetodo?.toLowerCase()?.includes('cheque');
++                                          if (isNowCheque && !p.idCheque) setChequeIndexActivo(p.id);
++                                        }}
++                                        options={metodosPago.map(m => ({ value: m.MPaIdMetodoPago, label: m.MPaDescripcionMetodo }))}
++                                        placeholder="Medio..."
++                                      />
++                                    </div>
++                                    <div 
++                                      className="flex rounded-lg border border-slate-200 overflow-hidden cursor-pointer select-none shrink-0"
++                                      onClick={() => {
++                                        const newMoneda = p.moneda === 'USD' ? 'UYU' : 'USD';
++                                        const updated = carritosPago.map(item => {
++                                          if (item.id === p.id) {
++                                            if (carritosPago.length === 1 && totalesCobro.neto > 0) {
++                                              let fill = totalesCobro.neto;
++                                              if (monedaExhibicion === 'UYU' && newMoneda === 'USD') fill = totalesCobro.neto / (cotizacion || 1);
++                                              if (monedaExhibicion === 'USD' && newMoneda === 'UYU') fill = totalesCobro.neto * (cotizacion || 1);
++                                              return { ...item, moneda: newMoneda, monto: fill.toFixed(2) };
++                                            }
++                                            return { ...item, moneda: newMoneda };
++                                          }
++                                          return item;
++                                        });
++                                        setCarritosPago(updated);
++                                      }}
++                                    >
++                                      <div className={`w-[35px] py-1.5 text-xs font-bold transition-all text-center ${p.moneda === 'UYU' ? 'bg-brand-cyan text-white' : 'bg-white text-slate-500'}`}>$</div>
++                                      <div className={`w-[35px] py-1.5 text-xs font-bold transition-all text-center border-l border-slate-200 ${p.moneda === 'USD' ? 'bg-brand-magenta text-white' : 'bg-white text-slate-500'}`}>US$</div>
++                                    </div>
++                                    <input
++                                      type="number"
++                                      placeholder="0.0"
++                                      value={p.monto}
++                                      onChange={(e) => {
++                                        const updated = carritosPago.map(item => item.id === p.id ? { ...item, monto: e.target.value } : item);
++                                        setCarritosPago(updated);
++                                      }}
++                                      className="w-24 bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs font-black text-slate-800 text-right outline-none focus:border-brand-cyan shadow-inner"
++                                    />
++                                    {isCheque && (
++                                      <button
++                                        onClick={() => setChequeIndexActivo(p.id)}
++                                        className={`text-[10px] font-black px-2 py-2 rounded-xl shrink-0 transition-colors flex items-center gap-1 uppercase tracking-widest ${p.idCheque ? 'bg-emerald-500/20 text-emerald-600 border border-emerald-200' : 'bg-amber-500/20 text-amber-400 border border-amber-200 hover:bg-amber-500/30'}`}
++                                      >
++                                        <Landmark size={12} /> {p.idCheque ? 'OK' : 'INFO'}
++                                      </button>
++                                    )}
++                                    {carritosPago.length > 1 && (
++                                      <button
++                                        onClick={() => setCarritosPago(carritosPago.filter(item => item.id !== p.id))}
++                                        className="text-zinc-400 hover:text-rose-500 p-1.5 hover:bg-rose-50 rounded-lg transition-all shrink-0"
++                                      >
++                                        <X size={14} />
++                                      </button>
++                                    )}
++                                  </div>
++                                );
++                              })}
++                            </div>
++                            
++                            <div className="flex gap-2 mt-1">
+                               <button
+-                                key={f.val}
+-                                onClick={() => setFiltroTipo(f.val)}
+-                                className={`px-4 py-2 text-[10px] font-black font-archivo rounded-xl uppercase tracking-widest transition-all ${filtroTipo === f.val ? 'bg-brand-cyan text-white shadow-md' : 'text-zinc-500 hover:bg-zinc-100'}`}
++                                onClick={() => {
++                                  const contadoId = metodosPago.find(m => /(contado|efectivo)/i.test(m.MPaIdMetodoPago))?.MPaIdMetodoPago || metodosPago[0]?.MPaIdMetodoPago || '';
++                                  setCarritosPago([...carritosPago, { id: Date.now(), metodoPagoId: contadoId, moneda: monedaExhibicion, monto: '' }]);
++                                }}
++                                className="bg-slate-50 text-slate-500 text-[10px] font-black border border-dashed border-slate-200 rounded-lg px-3 py-1.5 hover:border-slate-400 hover:text-slate-800 transition-all flex items-center gap-1 uppercase tracking-wider"
+                               >
+-                                {f.l}
++                                <Plus size={12} /> Agregar Medio
+                               </button>
+-                            ))}
+-                            <div className="ml-auto flex items-center gap-2">
+-                              {seleccionados.length > 0 && (
++                              {totalesCobro.neto > 0 && (totalesCobro.neto - totalIngresado) > 0.01 && (
+                                 <button
+-                                  onClick={() => setSeleccionados([])}
+-                                  className="text-[10px] font-black text-brand-magenta bg-brand-magenta/10 px-3 py-1.5 rounded-xl border border-brand-magenta/20 hover:bg-brand-magenta/20 transition-colors uppercase tracking-widest flex items-center gap-1"
++                                  onClick={() => {
++                                    const diff = totalesCobro.neto - totalIngresado;
++                                    const last = carritosPago[carritosPago.length - 1];
++                                    if (!last) return;
++                                    let fill = diff;
++                                    if (monedaExhibicion === 'UYU' && last.moneda === 'USD') fill = diff / (cotizacion || 1);
++                                    if (monedaExhibicion === 'USD' && last.moneda === 'UYU') fill = diff * (cotizacion || 1);
++                                    setCarritosPago(carritosPago.map((item, i) => i === carritosPago.length - 1 ? { ...item, monto: ((parseFloat(item.monto) || 0) + fill).toFixed(2) } : item));
++                                  }}
++                                  className="bg-white text-slate-500 text-[10px] font-black border border-slate-200 rounded-lg px-3 py-1.5 hover:border-slate-300 hover:text-slate-800 transition-all uppercase tracking-wider"
+                                 >
+-                                  <X size={12} /> Desmarcar Todos
++                                  Completar Saldo
+                                 </button>
+                               )}
+-                              <span className="text-[10px] font-black text-zinc-400 self-center bg-zinc-100 px-3 py-1.5 rounded-xl border border-zinc-300">{retirosFiltrados.length} Registros</span>
+                             </div>
+                           </div>
+-                        </div>
+ 
+-                        <div className="flex-1 overflow-y-auto p-5 flex flex-col gap-4">
+-                          {retirosFiltrados.length === 0 ? (
+-                            <div className="m-auto text-center opacity-30 px-6">
+-                              <Search size={48} className="mx-auto mb-3 text-zinc-300" />
+-                              <p className="text-sm font-black uppercase tracking-widest text-zinc-400">Sin pedidos por cobrar</p>
++                          {/* Comprobante Info & Observaciones Internas Stacked vertically */}
++                          <div className="flex flex-col gap-3 min-w-[280px] flex-1 self-start">
++                            {/* Row 1: Tipo de Comprobante */}
++                            <div className="flex flex-col gap-1">
++                              <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest px-1">Tipo de Comprobante</label>
++                              <div className="flex items-center gap-2">
++                                <div className="w-[180px]">
++                                  <LightSelect
++                                    value={tipoDocCobro}
++                                    onChange={setTipoDocCobro}
++                                    options={tiposDocumentos.length > 0 ? tiposDocumentos : TIPOS_DOC}
++                                    placeholder="Comprobante..."
++                                  />
++                                </div>
++                                {tipoDocCobro !== 'NINGUNO' && (
++                                  <>
++                                    <input
++                                      type="text"
++                                      value={serieDocCobro}
++                                      onChange={(e) => setSerieDocCobro(e.target.value)}
++                                      placeholder="Serie"
++                                      title="Serie del comprobante"
++                                      className="w-12 text-center bg-zinc-50 border border-zinc-200 rounded-xl px-2 py-2 text-xs font-black text-zinc-800 outline-none focus:border-brand-cyan shadow-sm"
++                                    />
++                                    <div className="bg-zinc-100 border border-zinc-200 rounded-xl px-3 py-2 text-xs text-zinc-500 font-black italic max-w-[120px] truncate shadow-inner" title="Número del comprobante">
++                                      {numDocCobro || numDocCobroPredict}
++                                    </div>
++                                  </>
++                                )}
++                              </div>
+                             </div>
+-                          ) : retirosFiltrados.map(r => {
+-                            const sel = seleccionados.find(x => x.retiroId === (r.OReIdOrdenRetiro || r.ordenDeRetiro));
+-                            let sumUsd = 0, sumUyu = 0;
+-                            getOrdenes(r).forEach(o => {
+-                              if (o.orderIdMetodoPago !== null || o.orderPago !== null) return;
+-                              const val = parseFloat((o.orderCosto || '').replace(/[^0-9.-]/g, '')) || 0;
+-                              if (o.monedaId === 2) sumUsd += val; else sumUyu += val;
+-                            });
+-                            return (
+-                              <div key={r.ordenDeRetiro} onClick={() => toggleSeleccion(r)}
+-                                className={`cursor-pointer shrink-0 rounded-xl p-3 border-2 transition-all flex flex-col gap-2 relative overflow-hidden group ${sel ? 'border-brand-cyan bg-brand-cyan/10' : 'border-zinc-200 bg-white/50 hover:border-zinc-300'}`}>
+-
+-                                {/* Fila superior: checkbox + cliente + pill + monto */}
+-                                <div className="flex items-center gap-2">
+-                                  {/* Checkbox */}
+-                                  <div className={`w-5 h-5 rounded-lg border-2 flex items-center justify-center shrink-0 transition-all ${sel ? 'border-brand-cyan bg-brand-cyan shadow-md shadow-brand-cyan/20' : 'border-zinc-200 bg-zinc-100 group-hover:border-zinc-300'}`}>
+-                                    {sel && <CheckCircle size={12} className="text-white" />}
+-                                  </div>
+ 
+-                                  {/* Nombre + pill */}
+-                                  <div className="flex items-center gap-1.5 min-w-0 flex-1">
+-                                    <p className="text-xs font-black text-zinc-700 group-hover:text-zinc-900 transition-colors truncate uppercase tracking-wide">{r.CliNombre || 'Consumidor Final'}</p>
+-                                    <span className="text-[9px] font-black text-brand-cyan bg-brand-cyan/10 px-1.5 py-0.5 rounded-md border border-brand-cyan/20 uppercase tracking-widest shrink-0">{r.CliCodigoCliente || 'S/C'}</span>
+-                                  </div>
++                            {/* Row 2: Observaciones Internas */}
++                            <div className="flex flex-col gap-1">
++                              <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest px-1">Observaciones Internas</label>
++                              <input
++                                type="text"
++                                value={obsCobro}
++                                onChange={(e) => setObsCobro(e.target.value)}
++                                placeholder="Añada notas para el arqueo de caja..."
++                                className="w-full bg-zinc-50 border border-zinc-200 rounded-xl px-3 py-2 text-xs font-bold text-zinc-800 outline-none focus:border-brand-cyan transition-all shadow-sm placeholder-zinc-300"
++                              />
++                            </div>
++                          </div>
++                        </div>
+ 
+-                                  {/* Montos */}
+-                                  <div className="flex flex-col items-end shrink-0 gap-0.5">
+-                                    {sumUsd > 0 && <span className="bg-emerald-50 text-emerald-600 px-2 py-0.5 rounded-md text-[9px] font-black border border-emerald-100">US$ {fmt(sumUsd)}</span>}
+-                                    {sumUyu > 0 && <span className="bg-brand-cyan/10 text-brand-cyan px-2 py-0.5 rounded-md text-[9px] font-black border border-brand-cyan/20">${fmt(sumUyu)}</span>}
+-                                  </div>
+-                                </div>
++                        {/* Vuelto Calculator & Balance Indicator */}
++                        <div className="flex items-center justify-between mt-3 pt-3 border-t border-slate-100 flex-wrap gap-2">
++                          <div className="flex-1 min-w-[250px]">
++                            {(() => {
++                              const cashPayments = carritosPago.filter(p => {
++                                const m = metodosPago.find(met => met.MPaIdMetodoPago === parseInt(p.metodoPagoId));
++                                return m && /efectivo|contado/i.test(m.MPaDescripcionMetodo);
++                              });
++                              if (cashPayments.length > 0) {
++                                const totalEfectivoUYU = cashPayments.reduce((acc, p) => {
++                                  const val = parseFloat(p.monto) || 0;
++                                  return acc + (p.moneda === 'USD' ? val * (cotizacion || 1) : val);
++                                }, 0);
++                                const totalEfectivoUSD = totalEfectivoUYU / (cotizacion || 1);
++                                const montoEfectivo = monedaExhibicion === 'USD' ? totalEfectivoUSD : totalEfectivoUYU;
++
++                                if (montoEfectivo > 0) {
++                                  const recibido = parseFloat(efectivoRecibido) || 0;
++                                  const vuelto = recibido - montoEfectivo;
++                                  return (
++                                    <div className="flex items-center gap-3 bg-emerald-50 border border-emerald-100 rounded-xl px-3 py-1.5 text-xs text-emerald-800 animate-in fade-in duration-200 shrink-0">
++                                      <span className="font-bold">Efectivo: {monedaExhibicion === 'USD' ? 'US$' : '$'}{fmt(montoEfectivo)}</span>
++                                      <span className="text-emerald-300">|</span>
++                                      <div className="flex items-center gap-1.5">
++                                        <span>Recibido:</span>
++                                        <input
++                                          type="number"
++                                          value={efectivoRecibido}
++                                          onChange={e => setEfectivoRecibido(e.target.value)}
++                                          placeholder="0.00"
++                                          className="w-16 bg-white border border-emerald-200 rounded px-1.5 py-0.5 text-xs text-right font-black outline-none"
++                                        />
++                                      </div>
++                                      {recibido > 0 && (
++                                        <>
++                                          <span className="text-emerald-300">|</span>
++                                          <span className="font-bold">Vuelto: <span className={vuelto >= 0 ? 'text-emerald-600' : 'text-rose-600'}>{vuelto >= 0 ? '+' : ''}{fmt(vuelto)}</span></span>
++                                        </>
++                                      )}
++                                    </div>
++                                  );
++                                }
++                              }
++                              return null;
++                            })()}
++                          </div>
+ 
+-                                {/* Fila inferior: código orden + estado */}
+-                                <div className="flex items-center gap-2 pl-7">
+-                                  <span className={`font-black text-xs tracking-tight uppercase ${sel ? 'text-brand-cyan' : 'text-zinc-400'}`}>{r.ordenDeRetiro}</span>
+-                                  <span className="text-[9px] text-zinc-400 uppercase tracking-widest">{r.lugarRetiro || 'Retiro Local'}</span>
+-                                  {r.estadoRetiro && <span className="text-[9px] font-black text-zinc-400 uppercase tracking-widest bg-zinc-100 px-1.5 py-0.5 rounded ml-auto">{r.estadoRetiro}</span>}
+-                                </div>
+-                              </div>
+-                            );
+-                          })}
++                          {totalesCobro.neto > 0 && (
++                            <div className={`px-4 py-1.5 rounded-lg border text-xs font-black uppercase tracking-wider flex items-center gap-2
++                              ${cobroBalanceado && totalIngresado > 0
++                                ? 'bg-emerald-50 border-emerald-200 text-emerald-700'
++                                : (totalesCobro.neto - totalIngresado) > 0
++                                  ? 'bg-rose-50 border-rose-200 text-rose-700'
++                                  : 'bg-white border-slate-200 text-slate-400'
++                              }`}
++                            >
++                              <span>
++                                {totalIngresado === 0
++                                  ? '💳 Venta a Crédito'
++                                  : cobroBalanceado
++                                    ? '✅ Caja Balanceada'
++                                    : (totalesCobro.neto - totalIngresado) > 0
++                                      ? `❌ Falta: ${monedaExhibicion === 'USD' ? 'US$' : '$'}${fmt(Math.abs(totalesCobro.neto - totalIngresado))}`
++                                      : `⚡ Excede: ${monedaExhibicion === 'USD' ? 'US$' : '$'}${fmt(Math.abs(totalesCobro.neto - totalIngresado))}`}
++                              </span>
++                              {!cobroBalanceado && totalIngresado > 0 && cotizacion && monedaExhibicion === 'USD' && (
++                                <span className="text-zinc-400 font-bold bg-zinc-50 px-1.5 py-0.5 rounded border border-zinc-200 text-[10px]">
++                                  ($ {fmt(Math.abs(totalesCobro.neto - totalIngresado) * cotizacion)})
++                                </span>
++                              )}
++                            </div>
++                          )}
+                         </div>
+                       </div>
+ 
+-                      <div className="flex-1 flex flex-col min-h-0">
+-                        {globalClient.id && (
+-                          <div className="px-6 py-2 border-b border-zinc-200 bg-white/80  z-50 shadow-sm shrink-0">
+-                            <ClienteBilletera
+-                              clienteId={globalClient.id}
+-                              clienteNombre={globalClient.nombre}
+-                            />
++                      {/* SPLIT LAYOUT */}
++                      <div className="flex-1 flex gap-4 min-h-0 overflow-hidden">
++                        {/* LEFT COLUMN: 3-column retiros grid with double search */}
++                        <div className="flex-1 bg-white rounded-2xl border border-slate-200 shadow-sm p-4 flex flex-col min-w-0">
++                          {/* Search Inputs (Buscar Retiros & Buscar Situación) */}
++                          <div className="flex gap-3 mb-4 flex-wrap">
++                            <div className="flex flex-col gap-1 flex-1 min-w-[150px]">
++                              <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest px-1">Buscar retiros</label>
++                              <div className="relative group">
++                                <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 group-focus-within:text-brand-cyan transition-colors" />
++                                <input
++                                  type="text"
++                                  placeholder="Código, cliente..."
++                                  value={searchTerm}
++                                  onChange={e => setSearchTerm(e.target.value)}
++                                  className="w-full bg-slate-50 border border-slate-200 rounded-xl pl-9 pr-4 py-2 text-xs font-bold text-slate-800 outline-none focus:border-brand-cyan shadow-inner transition-all placeholder-slate-300"
++                                />
++                              </div>
++                            </div>
++                            <div className="flex flex-col gap-1 flex-1 min-w-[150px]">
++                              <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest px-1">Buscar situación</label>
++                              <div className="relative group">
++                                <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 group-focus-within:text-brand-cyan transition-colors" />
++                                <input
++                                  type="text"
++                                  placeholder="Ingresar y presionar Enter..."
++                                  value={searchSituacionInput}
++                                  onChange={e => setSearchSituacionInput(e.target.value)}
++                                  onKeyDown={e => {
++                                    if (e.key === 'Enter') {
++                                      e.preventDefault();
++                                      handleSearchSituacion(searchSituacionInput);
++                                    }
++                                  }}
++                                  className="w-full bg-slate-50 border border-slate-200 rounded-xl pl-9 pr-4 py-2 text-xs font-bold text-slate-800 outline-none focus:border-brand-cyan shadow-inner transition-all placeholder-slate-300"
++                                />
++                              </div>
++                            </div>
+                           </div>
+-                        )}
+ 
+-                        <div className="flex-1 p-5 overflow-y-auto flex flex-col gap-4">
+-                          {seleccionados.length === 0 ? (
+-                            <div className="m-auto text-center opacity-40">
+-                              <ShoppingCart size={80} className="mx-auto mb-4 text-zinc-300" />
+-                              <p className="font-black uppercase tracking-widest text-zinc-400">Selecciona órdenes para cobrar</p>
+-                            </div>
+-                          ) : (
+-                            <div className="animate-in fade-in slide-in-from-bottom-5 duration-500 flex flex-col gap-8">
+-                              <div className="flex justify-between items-center border-b border-zinc-200 pb-6">
+-                                <h2 className="text-2xl font-black text-zinc-800 tracking-tight">Resumen de Cobro</h2>
+-                                <div className="flex bg-white rounded-2xl p-1.5 border border-zinc-200 shadow-inner">
+-                                  <button
+-                                    onClick={() => setMonedaExhibicion('UYU')}
+-                                    className={`px-6 py-2 text-[10px] font-black font-archivo uppercase tracking-widest rounded-xl transition-all flex items-center gap-2 ${monedaExhibicion === 'UYU' ? 'bg-brand-cyan text-white' : 'text-zinc-400 hover:text-zinc-700'}`}
+-                                  >
+-                                    Pesos ($)
+-                                  </button>
+-                                  <button
+-                                    onClick={() => setMonedaExhibicion('USD')}
+-                                    className={`px-6 py-2 text-[10px] font-black font-archivo uppercase tracking-widest rounded-xl transition-all flex items-center gap-2 ${monedaExhibicion === 'USD' ? 'bg-brand-cyan text-white' : 'text-zinc-400 hover:text-zinc-700'}`}
+-                                  >
+-                                    Dólares (US$)
+-                                  </button>
+-                                </div>
++                          {/* Filter buttons */}
++                          <div className="flex gap-2 flex-wrap items-center mb-4 border-t border-slate-100 pt-3">
++                            {[{ val: 'todos', l: 'Todos' }, { val: '1', l: 'Comunes' }, { val: '2', l: 'Semanales' }, { val: '3', l: 'Rollos' }].map(f => (
++                              <button
++                                key={f.val}
++                                onClick={() => setFiltroTipo(f.val)}
++                                className={`px-3 py-1.5 text-[10px] font-black rounded-lg uppercase tracking-wider transition-all border ${filtroTipo === f.val ? 'bg-brand-cyan border-brand-cyan text-white shadow-sm' : 'bg-slate-50 text-slate-500 border-slate-200 hover:bg-slate-100'}`}
++                              >
++                                {f.l}
++                              </button>
++                            ))}
++                            {seleccionados.length > 0 && (
++                              <button
++                                onClick={() => setSeleccionados([])}
++                                className="text-[10px] font-black text-brand-magenta bg-brand-magenta/10 px-3 py-1.5 rounded-lg border border-brand-magenta/20 hover:bg-brand-magenta/20 transition-colors uppercase tracking-wider flex items-center gap-1 animate-in zoom-in-95 duration-200"
++                              >
++                                <X size={12} /> Desmarcar Todos
++                              </button>
++                            )}
++                            <span className="text-[10px] font-black text-slate-400 bg-slate-50 px-2.5 py-1.5 rounded-lg border border-slate-200 ml-auto">{retirosFiltrados.length} Registros</span>
++                          </div>
++
++                          {/* Grid layout for retiros */}
++                          <div className="flex-1 overflow-y-auto min-h-0 pr-1">
++                            {retirosFiltrados.length === 0 ? (
++                              <div className="h-full flex flex-col items-center justify-center opacity-30 py-8">
++                                <Search size={40} className="text-zinc-300 mb-2" />
++                                <p className="text-[11px] font-black uppercase tracking-widest text-zinc-400">Sin pedidos por cobrar</p>
++                              </div>
++                            ) : (
++                              <div className="grid grid-cols-3 gap-2 p-1">
++                                {retirosFiltrados.map((r) => {
++                                  const sel = seleccionados.some(x => x.retiroId === (r.OReIdOrdenRetiro || r.ordenDeRetiro));
++                                  const allPaid = getOrdenes(r).length > 0 && getOrdenes(r).every(o => o.orderIdMetodoPago !== null || o.orderPago !== null);
++                                  const isAutorizado = r.estadoNumerico === 9 || (r.estadoRetiro || '').toLowerCase() === 'autorizado' || (r.estado || '').toLowerCase() === 'autorizado';
++                                  const isEntregado = r.estadoNumerico === 6 || (r.estadoRetiro || '').toLowerCase() === 'entregado' || (r.estado || '').toLowerCase() === 'entregado';
++                                  
++                                  return (
++                                    <button
++                                      key={r.ordenDeRetiro}
++                                      onClick={() => toggleSeleccion(r)}
++                                      title={r.CliNombre || r.CliCodigoCliente || ''}
++                                      className={`px-3 py-3.5 rounded-xl border-2 font-black text-sm transition-all whitespace-nowrap flex items-center justify-center gap-1.5 active:scale-95 hover:scale-[1.02]
++                                        ${sel
++                                          ? 'bg-[#00bcff] border-[#00bcff] text-white shadow-md shadow-[#00bcff]/20'
++                                          : allPaid
++                                            ? 'bg-emerald-50 border-emerald-200 text-emerald-700 hover:border-emerald-300'
++                                            : isAutorizado
++                                              ? 'bg-amber-50 border-amber-200 text-amber-700 hover:border-amber-300'
++                                              : 'bg-rose-50 border-rose-200 text-rose-700 hover:border-rose-300'
++                                        }`}
++                                    >
++                                      <span>{r.ordenDeRetiro}</span>
++                                      {isEntregado && <ShoppingBag size={14} className="shrink-0" />}
++                                      {isAutorizado && !isEntregado && <ShieldCheck size={14} className="shrink-0" />}
++                                    </button>
++                                  );
++                                })}
++                              </div>
++                            )}
++                          </div>
++                        </div>
++
++                        {/* RIGHT COLUMN: Action button & details summary */}
++                        <div className="w-[480px] shrink-0 flex flex-col gap-4 min-w-0">
++                          {/* REALIZAR COBRO BUTTON */}
++                          <button
++                            onClick={handleRealizarCobro}
++                            disabled={seleccionados.length === 0 || !cobroBalanceado || procesandoCobro}
++                            className={`w-full text-white font-black py-7 px-6 rounded-2xl border border-transparent shadow-[0_4px_12px_rgba(0,0,0,0.15)] transition-all hover:scale-[1.01] active:scale-[0.98] text-lg uppercase tracking-wider whitespace-nowrap flex items-center justify-center gap-3 disabled:opacity-50 disabled:cursor-not-allowed shrink-0
++                              ${monedaExhibicion === 'UYU' ? 'bg-brand-cyan hover:bg-brand-cyan/90 shadow-brand-cyan/20' : 'bg-brand-magenta hover:bg-brand-magenta/90 shadow-brand-magenta/20'}`}
++                          >
++                            {procesandoCobro ? <Loader2 className="animate-spin" size={24} /> : <><CreditCard size={24} /> Realizar Cobro</>}
++                          </button>
++
++                          {/* Selected Retiros details */}
++                          <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-4 flex flex-col flex-1 overflow-hidden">
++                            {seleccionados.length === 0 ? (
++                              <div className="m-auto text-center opacity-40">
++                                <ShoppingCart size={64} className="mx-auto mb-3 text-zinc-300" />
++                                <p className="font-black uppercase tracking-widest text-zinc-400 text-sm">Selecciona órdenes para cobrar</p>
+                               </div>
+-                              {seleccionados.map(s => (
+-                                <div key={s.retiroId} className="bg-white border border-zinc-200 rounded-3xl p-6 flex flex-col gap-4 hover:border-zinc-300 transition-all">
+-                                  <div className="flex justify-between items-start mb-1">
+-                                    <div className="flex-1 flex items-center gap-4 flex-wrap">
+-                                      <span className="font-black text-xl text-brand-cyan tracking-tight">{s.codigoRef}</span>
+-                                      <span className="text-sm text-zinc-700 font-bold tracking-tight bg-zinc-50 px-3 py-1 rounded-xl border border-zinc-200">
+-                                        <span className="text-zinc-400">ID: {s.retiro?.CliCodigoCliente || '-'}</span> {s.descripcion}
+-                                      </span>
+-                                      <span className="text-[9px] text-zinc-400 font-black uppercase tracking-widest border border-zinc-200 px-3 py-1 rounded-full shrink-0 shadow-inner">{s.retiro?.lugarRetiro || 'Retiro en el Local'}</span>
++                            ) : (
++                              <div className="flex flex-col gap-4 h-full overflow-hidden">
++                                <div className="flex justify-between items-center shrink-0">
++                                  <h2 className="text-base font-black text-slate-800 tracking-tight">Resumen de Cobro</h2>
++                                  <div className="flex bg-slate-100 rounded-lg p-0.5 border border-slate-200">
++                                    <button
++                                      onClick={() => setMonedaExhibicion('UYU')}
++                                      className={`px-3 py-1 text-[9px] font-black uppercase tracking-wider rounded transition-all ${monedaExhibicion === 'UYU' ? 'bg-brand-cyan text-white shadow-sm' : 'text-slate-400 hover:text-slate-700'}`}
++                                    >
++                                      $ (Pesos)
++                                    </button>
++                                    <button
++                                      onClick={() => setMonedaExhibicion('USD')}
++                                      className={`px-3 py-1 text-[9px] font-black uppercase tracking-wider rounded transition-all ${monedaExhibicion === 'USD' ? 'bg-brand-cyan text-white shadow-sm' : 'text-slate-400 hover:text-slate-700'}`}
++                                    >
++                                      US$ (Dólares)
++                                    </button>
++                                  </div>
++                                </div>
++
++                                {globalClient.id && (
++                                  <div className="shrink-0 border border-slate-100 rounded-xl bg-slate-50/50 p-1">
++                                    <ClienteBilletera
++                                      clienteId={globalClient.id}
++                                      clienteNombre={globalClient.nombre}
++                                    />
++                                  </div>
++                                )}
++
++                                {/* Client details card */}
++                                <div className="bg-slate-50 rounded-xl border border-slate-200 p-3 grid grid-cols-2 gap-3 shrink-0 text-xs">
++                                  <div className="flex items-center gap-2">
++                                    <User size={14} className="text-slate-400 shrink-0" />
++                                    <div className="min-w-0 flex-1">
++                                      <p className="text-[10px] font-bold text-slate-400 uppercase">Cliente</p>
++                                      <p className="font-bold text-slate-800 truncate">{seleccionados[0]?.retiro?.CliNombre || '—'}</p>
+                                     </div>
+-                                    <div className="flex gap-4">
+-                                      <div className="text-right">
+-                                        <p className="text-[9px] text-zinc-400 font-black uppercase tracking-widest">Saldo Base</p>
+-                                        <p className="font-black text-zinc-800 text-lg">{monedaExhibicion === 'USD' ? 'US$' : '$'}{fmt(calcularMontoPorMoneda(s.retiro, monedaExhibicion))}</p>
+-                                      </div>
+-                                      <div className="w-px h-10 bg-zinc-100 self-center"></div>
+-                                      <div>
+-                                        <p className="text-[9px] text-zinc-400 font-black uppercase tracking-widest">Ajuste Manual</p>
+-                                        <input type="number" value={ajustes[s.retiroId]?.ajuste || ''} onChange={e => setAjustes(p => ({ ...p, [s.retiroId]: { ...p[s.retiroId], ajuste: e.target.value } }))} className="bg-zinc-50 border-2 border-zinc-200 rounded-xl px-3 py-2 w-24 text-brand-cyan font-black text-sm outline-none focus:border-brand-cyan/50 transition-all shadow-inner" placeholder="0.0" />
+-                                      </div>
+-                                      <div>
+-                                        <p className="text-[9px] text-zinc-400 font-black uppercase tracking-widest">Motivo Ajuste</p>
+-                                        <LightSelect
+-                                          value={ajustes[s.retiroId]?.tipoAjuste || ''}
+-                                          onChange={val => setAjustes(p => ({ ...p, [s.retiroId]: { ...p[s.retiroId], tipoAjuste: val } }))}
+-                                          options={TIPOS_AJUSTE.map(t => ({ value: t.value, label: t.label }))}
+-                                          placeholder="Sin ajuste"
+-                                        />
+-                                      </div>
++                                  </div>
++                                  <div className="flex items-center gap-2">
++                                    <Phone size={14} className="text-slate-400 shrink-0" />
++                                    <div className="min-w-0 flex-1">
++                                      <p className="text-[10px] font-bold text-slate-400 uppercase">Teléfono</p>
++                                      <p className="font-bold text-slate-800 truncate">{seleccionados[0]?.retiro?.CliTelefono || '—'}</p>
+                                     </div>
+                                   </div>
++                                  <div className="flex items-center gap-2">
++                                    <FileText size={14} className="text-slate-400 shrink-0" />
++                                    <div className="min-w-0 flex-1">
++                                      <p className="text-[10px] font-bold text-slate-400 uppercase">ID Cliente</p>
++                                      <p className="font-bold text-slate-800 truncate">{seleccionados[0]?.retiro?.CliCodigoCliente || '—'}</p>
++                                    </div>
++                                  </div>
++                                  <div className="flex items-center gap-2">
++                                    <Package size={14} className="text-slate-400 shrink-0" />
++                                    <div className="min-w-0 flex-1">
++                                      <p className="text-[10px] font-bold text-slate-400 uppercase">Tipo</p>
++                                      <p className="font-bold text-slate-800 truncate">{seleccionados[0]?.retiro?.TClDescripcion || '—'}</p>
++                                    </div>
++                                  </div>
++                                </div>
+ 
+-
+-                                  <div className="flex flex-col gap-2 border-t border-zinc-100 pt-5">
+-                                    {getOrdenes(s.retiro).map(o => {
++                                {/* Selected Retiros cards scrollable container */}
++                                <div className="flex-1 overflow-y-auto flex flex-col gap-4 pr-1">
++                                  {seleccionados.map(s => {
++                                    const sumUsd = getOrdenes(s.retiro).reduce((acc, o) => {
++                                      if (o.orderIdMetodoPago !== null || o.orderPago !== null) return acc;
++                                      if (o.orderCobertura || o.orderEstado === 'Abonado' || o.orderEstado === 'Autorizado') return acc;
++                                      const val = parseFloat((o.orderCosto || '').replace(/[^0-9.-]/g, '')) || 0;
++                                      return o.monedaId === 2 ? acc + val : acc;
++                                    }, 0);
++                                    const sumUyu = getOrdenes(s.retiro).reduce((acc, o) => {
++                                      if (o.orderIdMetodoPago !== null || o.orderPago !== null) return acc;
++                                      if (o.orderCobertura || o.orderEstado === 'Abonado' || o.orderEstado === 'Autorizado') return acc;
+                                       const val = parseFloat((o.orderCosto || '').replace(/[^0-9.-]/g, '')) || 0;
+-                                      const currency = o.monedaId === 2 ? 'US$' : '$';
+-                                      const pagado = o.orderIdMetodoPago !== null || o.orderPago !== null;
+-                                      const cubierto = o.orderEstado === 'Abonado' || o.orderEstado === 'Autorizado';
+-                                      return (
+-                                        <div key={o.orderId} className={`flex justify-between items-center px-4 py-3 mt-1 rounded-2xl border gap-4 ${(pagado || cubierto) ? 'bg-zinc-50 border-zinc-900 opacity-60' : 'bg-white border-zinc-200'}`}>
+-                                          <div className="flex items-center gap-4 w-full truncate text-xs">
+-                                            <AlertCircle size={14} className={`shrink-0 ${(pagado || cubierto) ? 'text-zinc-300' : 'text-brand-cyan/50'}`} />
+-                                            <span className="font-black text-zinc-400 shrink-0 text-[10px]">#{o.orderNumber || o.orderId}</span>
+-                                            <span className="font-bold text-zinc-800 truncate">Trabajo: {o.orderNombreTrabajo || 'Impreso'}</span>
+-                                            <span className="font-medium text-zinc-400 truncate hidden md:block">Material: {o.orderMaterial || '-'}</span>
+-                                            <span className="font-black text-zinc-700 shrink-0 bg-zinc-50 px-2 py-0.5 rounded-lg text-[9px] border border-zinc-900">Cant: {o.orderCantidad || '?'}</span>
++                                      return o.monedaId === 1 ? acc + val : acc;
++                                    }, 0);
++                                    
++                                    const hasUnpaid = getOrdenes(s.retiro).some(o => o.orderIdMetodoPago === null && o.orderPago === null && o.orderEstado !== 'Abonado' && o.orderEstado !== 'Autorizado');
++
++                                    return (
++                                      <div key={s.retiroId} className="bg-slate-50/50 border border-slate-200 rounded-xl p-3 flex flex-col gap-3">
++                                        <div className="flex items-center justify-between flex-wrap gap-2">
++                                          <div className="flex items-center gap-2">
++                                            <span className="font-black text-sm text-brand-cyan tracking-tight">{s.codigoRef}</span>
++                                            <span className="text-[9px] text-slate-400 font-bold uppercase tracking-wider bg-white border border-slate-200 px-2 py-0.5 rounded-full">{s.retiro?.lugarRetiro || 'Retiro Local'}</span>
+                                           </div>
+-                                          <div className="flex items-center gap-4 shrink-0">
+-                                            <span className={`font-black text-zinc-800 min-w-[80px] text-right ${cubierto ? 'line-through text-zinc-400' : ''}`}>{currency} {fmt(val)}</span>
+-                                            {pagado ? (
+-                                              <span className="w-20 text-center px-2 py-1 bg-emerald-50 text-emerald-500 text-[9px] font-black rounded-lg border border-emerald-100 uppercase tracking-widest">Facturada</span>
+-                                            ) : cubierto ? (
+-                                              <span className="w-24 text-center px-2 py-1 bg-brand-cyan/10 text-brand-cyan text-[9px] font-black rounded-lg border border-brand-cyan/20 uppercase tracking-widest">{o.orderEstado === 'Autorizado' ? 'Autorizado' : 'Abonada'}</span>
+-                                            ) : (
+-                                              <span className="w-20 text-center px-2 py-1 bg-brand-magenta/10 text-brand-magenta text-[9px] font-black rounded-lg border border-brand-magenta/20 uppercase tracking-widest">Pendiente</span>
+-                                            )}
++                                          {hasUnpaid && (
++                                            <button
++                                              onClick={() => setRetiroSelectAut({ retiroId: s.retiroId, raw: s.retiro, deudaEstimada: calcularMontoRetiro(s.retiro) })}
++                                              className="bg-amber-500 hover:bg-amber-600 text-white text-[9px] font-black px-2.5 py-1 rounded-lg transition-all flex items-center gap-0.5 uppercase tracking-wider ml-auto shadow-sm"
++                                            >
++                                              <ShieldCheck size={11} /> Autorizar
++                                            </button>
++                                          )}
++                                        </div>
++
++                                        {/* Adjustments row */}
++                                        <div className="grid grid-cols-2 gap-2 bg-white p-2.5 rounded-xl border border-slate-200/60">
++                                          <div>
++                                            <p className="text-[9px] text-slate-400 font-black uppercase tracking-wider mb-1">Ajuste Manual</p>
++                                            <input
++                                              type="number"
++                                              value={ajustes[s.retiroId]?.ajuste || ''}
++                                              onChange={e => setAjustes(p => ({ ...p, [s.retiroId]: { ...p[s.retiroId], ajuste: e.target.value } }))}
++                                              className="bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1.5 w-full text-brand-cyan font-black text-xs outline-none focus:border-brand-cyan/50 shadow-inner"
++                                              placeholder="0.0"
++                                            />
++                                          </div>
++                                          <div>
++                                            <p className="text-[9px] text-slate-400 font-black uppercase tracking-wider mb-1">Motivo Ajuste</p>
++                                            <LightSelect
++                                              value={ajustes[s.retiroId]?.tipoAjuste || ''}
++                                              onChange={val => setAjustes(p => ({ ...p, [s.retiroId]: { ...p[s.retiroId], tipoAjuste: val } }))}
++                                              options={TIPOS_AJUSTE.map(t => ({ value: t.value, label: t.label }))}
++                                              placeholder="Sin ajuste"
++                                            />
+                                           </div>
+                                         </div>
+-                                      );
+-                                    })}
+-                                  </div>
++
++                                        {/* Retiro totals info */}
++                                        <div className="flex justify-between items-center text-xs px-1 text-slate-500">
++                                          <span>Total Retiro:</span>
++                                          <div className="flex gap-2">
++                                            {sumUsd > 0 && <span className="font-bold text-emerald-600">US$ {fmt(sumUsd)}</span>}
++                                            {sumUyu > 0 && <span className="font-bold text-brand-cyan">${fmt(sumUyu)}</span>}
++                                          </div>
++                                        </div>
++
++                                        {/* Sub-orders list */}
++                                        <div className="flex flex-col gap-1 border-t border-slate-200/60 pt-2.5">
++                                          {getOrdenes(s.retiro).map(o => {
++                                            const val = parseFloat((o.orderCosto || '').replace(/[^0-9.-]/g, '')) || 0;
++                                            const currency = o.monedaId === 2 ? 'US$' : '$';
++                                            const pagado = o.orderIdMetodoPago !== null || o.orderPago !== null;
++                                            const cubierto = o.orderEstado === 'Abonado' || o.orderEstado === 'Autorizado';
++                                            return (
++                                              <div key={o.orderId} className={`flex justify-between items-center px-2.5 py-2 rounded-lg border gap-2 text-[11px] ${pagado || cubierto ? 'bg-slate-50 border-slate-100 opacity-60' : 'bg-white border-slate-200 hover:border-slate-300'}`}>
++                                                <div className="flex items-center gap-1.5 w-full min-w-0">
++                                                  <AlertCircle size={12} className={`shrink-0 ${pagado || cubierto ? 'text-slate-300' : 'text-brand-cyan/50'}`} />
++                                                  <span className="font-black text-slate-400 shrink-0">#{o.orderNumber || o.orderId}</span>
++                                                  <span className="font-bold text-slate-800 truncate">{o.orderNombreTrabajo || 'Impreso'}</span>
++                                                </div>
++                                                <div className="flex items-center gap-2 shrink-0">
++                                                  <span className={`font-black text-slate-700 min-w-[60px] text-right ${cubierto ? 'line-through text-zinc-400' : ''}`}>{currency} {fmt(val)}</span>
++                                                  {pagado ? (
++                                                    <span className="px-1.5 py-0.5 bg-emerald-100 text-emerald-700 text-[8px] font-black rounded uppercase">✓ Pago</span>
++                                                  ) : cubierto ? (
++                                                    <span className="px-1.5 py-0.5 bg-brand-cyan/10 text-brand-cyan text-[8px] font-black rounded uppercase">⚡ Cubierta</span>
++                                                  ) : (
++                                                    <span className="px-1.5 py-0.5 bg-rose-100 text-rose-700 text-[8px] font-black rounded uppercase">✗ Impaga</span>
++                                                  )}
++                                                </div>
++                                              </div>
++                                            );
++                                          })}
++                                        </div>
++                                      </div>
++                                    );
++                                  })}
+                                 </div>
+-                              ))}
+-                            </div>
+-                          )}
++                              </div>
++                            )}
++                          </div>
+                         </div>
+                       </div>
+                     </div>
++                  )}                  </div>
+                   )}
+                   {subTabIngreso === 'VENTA' && (
+                     <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
+@@ -1339,7 +1716,7 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
+                   )}
+                 </div>
+ 
+-                {(subTabIngreso === 'COBRO' || subTabIngreso === 'MOTOR' || subTabIngreso === 'VENTA' || subTabIngreso === 'VENTA_DIRECTA') && (
++                {(subTabIngreso !== 'COBRO' && (subTabIngreso === 'MOTOR' || subTabIngreso === 'VENTA' || subTabIngreso === 'VENTA_DIRECTA')) && (
+                   <CajaPanelPago
+                     mode={subTabIngreso}
+                     tiposDocDisponibles={tiposDocumentos}
+@@ -1696,6 +2073,66 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
+ 
+       {showArqueo && <CajaArqueoModal onClose={() => setShowArqueo(false)} />}
+ 
++      {chequeIndexActivo !== null && (
++        <ChequeRecibirModal
++          initialMonto={carritosPago.find(p => p.id === chequeIndexActivo)?.monto || ''}
++          onClose={() => setChequeIndexActivo(null)}
++          onSuccess={(idCheque) => {
++            setCarritosPago(carritosPago.map(p => p.id === chequeIndexActivo ? { ...p, idCheque } : p));
++            setChequeIndexActivo(null);
++          }}
++        />
++      )}
++
++      {retiroSelectAut && (
++        <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-in fade-in duration-200">
++          <div className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl flex flex-col gap-5 border border-zinc-200 animate-in zoom-in-95 duration-200 text-slate-800">
++            <div className="flex justify-between items-center">
++              <h3 className="font-black text-zinc-800 text-lg uppercase tracking-wider flex items-center gap-2">
++                <ShieldCheck className="text-brand-cyan" size={20} />
++                Autorizar Entrega Sin Cobro
++              </h3>
++              <button onClick={() => setRetiroSelectAut(null)} className="text-zinc-400 hover:text-zinc-600">
++                <X size={18} />
++              </button>
++            </div>
++
++            <div>
++              <p className="text-xs text-zinc-400 font-bold uppercase tracking-wider mb-1">Orden de Retiro</p>
++              <p className="text-sm font-black text-brand-cyan">{retiroSelectAut.retiroId}</p>
++            </div>
++
++            <div className="flex flex-col gap-2">
++              <label className="text-xs font-bold text-zinc-500 uppercase tracking-wider">Motivo de Autorización</label>
++              <textarea
++                value={autMotivo}
++                onChange={e => setAutMotivo(e.target.value)}
++                placeholder="Ej: Cliente cuenta corriente, paga mañana, autorizado por administración..."
++                className="w-full bg-zinc-50 border border-zinc-200 rounded-xl p-3 text-xs font-bold text-zinc-800 outline-none focus:border-brand-cyan h-24 resize-none transition-all shadow-inner placeholder-zinc-300"
++              />
++            </div>
++
++            <div className="flex flex-col gap-2">
++              <label className="text-xs font-bold text-zinc-500 uppercase tracking-wider">Fecha de Vencimiento (Opcional)</label>
++              <input
++                type="date"
++                value={autVencimiento}
++                onChange={e => setAutVencimiento(e.target.value)}
++                className="w-full bg-zinc-50 border border-zinc-200 rounded-xl px-3 py-2 text-xs font-bold text-zinc-800 outline-none focus:border-brand-cyan transition-all shadow-sm"
++              />
++            </div>
++
++            <button
++              onClick={handleAutorizar}
++              disabled={procesandoAut || !autMotivo}
++              className="w-full bg-brand-cyan hover:bg-brand-cyan/90 disabled:bg-zinc-100 disabled:text-zinc-400 text-white font-black py-3 rounded-xl transition-all shadow-lg shadow-brand-cyan/20 flex justify-center items-center gap-2 uppercase tracking-widest text-xs"
++            >
++              {procesandoAut ? <Loader2 size={16} className="animate-spin" /> : <><ShieldCheck size={16} /> CONFIRMAR Y AUTORIZAR</>}
++            </button>
++          </div>
++        </div>
++      )}
++
+       {busquedaGlobalRes && (
+         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-zinc-900/60  p-8 animate-in fade-in duration-300" onClick={(e) => e.target === e.currentTarget && setBusquedaGlobalRes(null)}>
+           <div className="bg-white border border-zinc-200 rounded-[3rem] w-full max-w-5xl max-h-[85vh] flex flex-col shadow-[0_40px_100px_rgba(0,0,0,0.3)] overflow-hidden animate-in zoom-in-95 duration-500">

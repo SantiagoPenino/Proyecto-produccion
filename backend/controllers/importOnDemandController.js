@@ -61,7 +61,26 @@ exports.previewOnDemand = async (req, res) => {
              // Soportamos el nuevo diseño puro (datosPorHoja) y el legacy (rawRow)
              if (orden && (orden.datosPorHoja || orden.rawRow)) {
                  if (!orden.servicios || orden.servicios.length === 0) {
-                      return SheetsRawMappingService.mapToOrderPayload(orden);
+                      const originalArchivosReferencia = orden.archivosReferencia;
+                      const mapped = SheetsRawMappingService.mapToOrderPayload(orden);
+                      if (mapped) {
+                          // Preservamos y de-duplicamos archivos de referencia
+                          if (originalArchivosReferencia && originalArchivosReferencia.length > 0) {
+                              if (!mapped.archivosReferencia || mapped.archivosReferencia.length === 0) {
+                                  mapped.archivosReferencia = originalArchivosReferencia;
+                              } else {
+                                  const urls = new Set(mapped.archivosReferencia.map(r => (r.url || '').toLowerCase().trim()));
+                                  for (const ref of originalArchivosReferencia) {
+                                      if (ref.url && !urls.has(ref.url.toLowerCase().trim())) {
+                                          mapped.archivosReferencia.push(ref);
+                                      }
+                                  }
+                              }
+                          }
+                          if (orden.rowNumber && !mapped.rowNumber) mapped.rowNumber = orden.rowNumber;
+                          if (orden.clienteInfo && !mapped.clienteInfo) mapped.clienteInfo = orden.clienteInfo;
+                      }
+                      return mapped;
                  }
              }
              return orden; 
@@ -456,9 +475,28 @@ exports.importOnDemand = async (req, res) => {
         const SheetsRawMappingService = require('../services/sheetsRawMappingService');
         const ordenesEncontradas = ordenesEncontradasRaw.map(orden => {
              if (orden && (orden.datosPorHoja || orden.rawRow)) {
-                 if (!orden.servicios || orden.servicios.length === 0) {
-                      return SheetsRawMappingService.mapToOrderPayload(orden);
-                 }
+                  if (!orden.servicios || orden.servicios.length === 0) {
+                       const originalArchivosReferencia = orden.archivosReferencia;
+                       const mapped = SheetsRawMappingService.mapToOrderPayload(orden);
+                       if (mapped) {
+                           // Preservamos y de-duplicamos archivos de referencia
+                           if (originalArchivosReferencia && originalArchivosReferencia.length > 0) {
+                               if (!mapped.archivosReferencia || mapped.archivosReferencia.length === 0) {
+                                   mapped.archivosReferencia = originalArchivosReferencia;
+                               } else {
+                                   const urls = new Set(mapped.archivosReferencia.map(r => (r.url || '').toLowerCase().trim()));
+                                   for (const ref of originalArchivosReferencia) {
+                                       if (ref.url && !urls.has(ref.url.toLowerCase().trim())) {
+                                           mapped.archivosReferencia.push(ref);
+                                       }
+                                   }
+                               }
+                           }
+                           if (orden.rowNumber && !mapped.rowNumber) mapped.rowNumber = orden.rowNumber;
+                           if (orden.clienteInfo && !mapped.clienteInfo) mapped.clienteInfo = orden.clienteInfo;
+                       }
+                       return mapped;
+                  }
              }
              return orden; 
         }).filter(o => o !== null);

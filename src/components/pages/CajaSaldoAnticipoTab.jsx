@@ -52,6 +52,24 @@ export default function CajaSaldoAnticipoTab({ sesion, metodosPago, cotizacion, 
   const [cuentaId, setCuentaId]             = useState(null);
   const [buscandoCuenta, setBuscandoCuenta] = useState(false);
 
+  const getClienteDisplayName = (c) => {
+    if (!c) return '';
+    const nom = c.Nombre?.trim();
+    const fan = c.NombreFantasia?.trim();
+    return nom || fan || 'Cliente sin nombre';
+  };
+
+  // Close dropdown on click outside
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (!event.target.closest('.client-search-container')) {
+        setClientesRes([]);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
   /* ── formulario ──────────────────────────────────────────────────────────── */
   const [importe, setImporte]       = useState('');
   const [moneda, setMoneda]         = useState('UYU');
@@ -62,6 +80,14 @@ export default function CajaSaldoAnticipoTab({ sesion, metodosPago, cotizacion, 
   const [pagos, setPagos]                 = useState([{ id: Date.now(), metodoPagoId: '', moneda: 'UYU', monedaId: 1, monto: '' }]);
   const [observaciones, setObservaciones] = useState('');
   const [tipoComprobante, setTipoComprobante] = useState('RECIBO_ANTICIPO');
+
+  const handlePagosChange = (newPagos) => {
+    setPagos(newPagos);
+    const primaryMon = newPagos[0]?.moneda;
+    if (primaryMon && primaryMon !== moneda) {
+      setMoneda(primaryMon);
+    }
+  };
 
   const searchTimeout = useRef(null);
 
@@ -181,188 +207,186 @@ export default function CajaSaldoAnticipoTab({ sesion, metodosPago, cotizacion, 
   const importeNum = parseFloat(importe) || 0;
 
   return (
-    <div className="flex flex-1 flex-col overflow-hidden bg-zinc-50">
-      {clienteSel && (
-        <div className="px-5 py-1 border-b border-zinc-200 bg-white/80 sticky top-0 z-20 shrink-0 shadow-sm">
-          <ClienteBilletera clienteId={clienteSel.CliIdCliente} clienteNombre={clienteSel.Nombre} />
-        </div>
-      )}
+    <div className="flex flex-col lg:flex-row flex-1 overflow-hidden h-full min-h-0 bg-zinc-100">
+      {/* ── PANEL LATERAL DE CLIENTES ── */}
+      <div className="w-full lg:w-[360px] bg-white border-b lg:border-b-0 lg:border-r border-zinc-200 flex flex-col shrink-0 overflow-y-auto p-4 client-search-container">
+        <h3 className="font-black text-zinc-400 text-[11px] font-archivo uppercase tracking-widest mb-3 flex items-center justify-between">
+          1. Seleccionar Cliente
+          {clienteSel && <span className="text-emerald-600 flex items-center gap-1 text-[9px] font-bold bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-100">Verificado <CheckCircle2 size={10}/></span>}
+        </h3>
 
-      <div className="flex-1 p-0 overflow-y-auto w-full flex flex-col">
-        <div className="flex flex-col md:flex-row gap-0 w-full flex-1 bg-white">
-
-          {/* ── COLUMNA IZQUIERDA ──────────────────────────────────────────── */}
-          <div className="flex flex-col flex-1 border-r border-zinc-200 min-w-0">
-
-            {/* Encabezado con título y pill-switch de moneda */}
-            <div className="flex items-center justify-between px-6 pt-6 pb-2 shrink-0 flex-wrap gap-3">
-              <h2 className="text-2xl font-black text-zinc-800 flex items-center gap-3">
-                <div className="bg-blue-500/10 p-2 rounded-xl border border-blue-500/20">
-                  <Wallet size={24} className="text-blue-500" />
-                </div>
-                Ingreso de Saldo Anticipado
-              </h2>
-              {/* ── PILL SWITCH MONEDA ── */}
-              <MonedaSwitch value={moneda} onChange={setMoneda} />
+        {!clienteSel ? (
+          <div className="flex flex-col gap-3">
+            <div className="relative flex items-center group/search">
+              <div className="absolute left-4 text-zinc-400 group-focus-within/search:text-brand-cyan transition-colors">
+                <Search size={18} />
+              </div>
+              <input 
+                  value={qCliente} 
+                  onChange={e=>setQCliente(e.target.value)} 
+                  placeholder="Buscar por Nombre, RUC/CI, Tel, IdCliente..." 
+                  className="w-full bg-zinc-50 border border-zinc-200 hover:border-zinc-300 focus:border-blue-400 focus:bg-white rounded-xl pl-11 pr-4 py-2.5 text-sm font-bold text-zinc-800 placeholder-zinc-400 outline-none transition-all" 
+              />
+              {buscandoCli && <div className="absolute right-4"><Loader2 size={16} className="text-blue-400 animate-spin" /></div>}
             </div>
 
-            {/* Aviso */}
-            <div className="mx-6 mb-4 mt-2 bg-blue-50 border border-blue-200 rounded-2xl px-5 py-3 flex items-start gap-3">
-              <AlertCircle className="text-blue-500 shrink-0 mt-0.5" size={18} />
-              <p className="text-blue-700 text-xs font-medium leading-relaxed">
-                Registra dinero a <strong>favor del cliente</strong> (anticipo / seña).{' '}
-                El saldo queda disponible para descontarse de futuras facturas o deudas.{' '}
-                <strong>No genera deuda — genera crédito.</strong>
-              </p>
-            </div>
-
-            {/* 1. Cliente */}
-            <div className="bg-white border-b border-zinc-200 p-6 shrink-0">
-              <h3 className="font-black text-zinc-400 text-[11px] uppercase tracking-widest mb-6 font-archivo">
-                1. Seleccionar Cliente
-              </h3>
-
-              {!clienteSel ? (
-                <div className="relative">
-                  <div className="flex items-center bg-zinc-50 border-2 border-zinc-100 rounded-2xl px-5 py-2 focus-within:border-blue-400 focus-within:bg-white focus-within:ring-8 focus-within:ring-blue-400/5 transition-all">
-                    <Search size={22} className="text-zinc-400" />
-                    <input
-                      value={qCliente}
-                      onChange={e => setQCliente(e.target.value)}
-                      placeholder="Buscar por Nombre, RUC o Código..."
-                      className="w-full bg-transparent text-zinc-800 px-4 py-3 outline-none text-base font-bold placeholder-zinc-400"
-                    />
-                    {buscandoCli && <Loader2 size={20} className="text-blue-400 animate-spin" />}
-                  </div>
-
-                  {clientesRes.length > 0 && (
-                    <div className="absolute top-full mt-3 left-0 right-0 bg-white border border-zinc-200 rounded-3xl shadow-xl z-50 max-h-96 overflow-y-auto">
-                      {clientesRes.map(c => (
-                        <div key={c.CliIdCliente} onClick={() => seleccionarCliente(c)}
-                          className="w-full text-left px-6 py-5 hover:bg-blue-50 cursor-pointer border-b border-zinc-50 last:border-0 flex items-center gap-5 transition-all group">
-                          <div className="w-12 h-12 rounded-2xl bg-zinc-100 flex items-center justify-center font-black text-zinc-400 border border-zinc-200 group-hover:bg-white group-hover:border-blue-300 group-hover:text-blue-500 transition-all shrink-0">
-                            {c.Nombre?.[0] || 'C'}
-                          </div>
-                          <div>
-                            <span className="text-zinc-900 font-black text-lg group-hover:text-blue-600 transition-colors">{c.Nombre}</span>
-                            <div className="flex items-center gap-2 mt-1">
-                              <span className="text-[10px] bg-zinc-100 text-zinc-500 px-2.5 py-1 rounded-md font-mono font-black uppercase border border-zinc-200">
-                                ID: {c.CliIdCliente}
-                              </span>
-                            </div>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              ) : (
-                <div className="flex items-center justify-between bg-blue-500/5 border-2 border-blue-500/20 rounded-2xl p-4 shadow-sm">
-                  <div className="flex items-center gap-5">
-                    <div className="w-16 h-16 rounded-3xl bg-white flex items-center justify-center text-blue-500 shadow-xl border border-blue-500/20 ring-4 ring-blue-500/10">
-                      <User size={32} />
-                    </div>
-                    <div>
-                      <p className="text-zinc-900 text-xl font-black leading-tight tracking-tight">{clienteSel.Nombre}</p>
-                      <p className="text-xs text-zinc-500 font-bold uppercase tracking-widest mt-1">ID: {clienteSel.CodCliente || clienteSel.CliIdCliente}</p>
-                      {buscandoCuenta ? (
-                        <p className="text-xs text-blue-400 mt-1 flex items-center gap-1"><Loader2 size={11} className="animate-spin" /> Buscando cuenta...</p>
-                      ) : cuentaId ? (
-                        <p className="text-xs text-emerald-600 mt-1 flex items-center gap-1"><CheckCircle2 size={11} /> Cuenta {moneda} #{cuentaId}</p>
-                      ) : (
-                        <p className="text-xs text-amber-600 mt-1">⚠ Se creará cuenta {moneda} automáticamente</p>
-                      )}
-                    </div>
-                  </div>
-                  <button
-                    onClick={() => { setClienteSel(null); setCuentaId(null); }}
-                    className="bg-white hover:bg-rose-50 text-zinc-400 hover:text-rose-600 p-4 rounded-2xl transition-all border border-zinc-200 hover:border-rose-200 shadow-sm hover:shadow-md"
+            {/* Listado de tarjetas de clientes encontrados */}
+            <div className="flex flex-col gap-2 mt-2">
+              {clientesRes.length > 0 ? (
+                clientesRes.map(c => (
+                  <div key={c.CliIdCliente} 
+                    onClick={()=>seleccionarCliente(c)} 
+                    className="w-full text-left p-3.5 bg-zinc-50 hover:bg-blue-50/5 border border-zinc-200 hover:border-blue-300/35 rounded-xl cursor-pointer transition-all flex flex-col gap-1.5 active:scale-[0.98] group"
                   >
-                    <Trash2 size={24} />
-                  </button>
-                </div>
+                    <div className="flex items-start justify-between">
+                      <span className="text-zinc-900 font-extrabold text-sm group-hover:text-blue-500 transition-colors leading-snug">{getClienteDisplayName(c)}</span>
+                      <span className="text-[9px] bg-zinc-200 text-zinc-600 px-1.5 py-0.5 rounded font-mono font-black">IdCliente: {c.IDCliente || c.CodCliente || c.CliIdCliente}</span>
+                    </div>
+                    {c.Nombre && c.NombreFantasia && c.Nombre.trim() !== c.NombreFantasia.trim() && (
+                      <span className="text-[11px] text-zinc-500 font-semibold italic">"{c.NombreFantasia}"</span>
+                    )}
+                    <div className="flex flex-col gap-1 text-[11px] text-zinc-500 font-medium border-t border-zinc-200/60 pt-1.5 mt-0.5">
+                      {c.CioRuc && <div className="flex items-center gap-1 font-semibold text-zinc-600">RUC / CI: <span className="font-mono text-[10px] text-zinc-950 font-extrabold">{c.CioRuc}</span></div>}
+                      {c.Email && <div className="flex items-center gap-1 truncate">Email: <span className="font-mono text-[10px] text-zinc-700">{c.Email}</span></div>}
+                      {c.TelefonoTrabajo && <div className="flex items-center gap-1 font-semibold text-zinc-600">Tel: <span className="font-mono text-[10px] text-zinc-700 font-bold">{c.TelefonoTrabajo}</span></div>}
+                    </div>
+                  </div>
+                ))
+              ) : qCliente.trim() ? (
+                <div className="text-center py-6 text-zinc-400 text-xs font-semibold">No se encontraron clientes.</div>
+              ) : (
+                <div className="text-center py-6 text-zinc-400 text-xs font-semibold">Use el buscador para listar clientes...</div>
               )}
             </div>
-
-            {/* 2. Importe y Concepto */}
-            <div className="bg-white p-6 flex flex-col gap-6 flex-1">
-              <h3 className="font-black text-zinc-400 text-[11px] uppercase tracking-widest font-archivo">
-                2. Importe a Acreditar
-              </h3>
-
-              <div>
-                <label className="text-[10px] font-black tracking-widest uppercase text-zinc-400 ml-2 mb-2 block font-archivo">
-                  Concepto / Servicio
-                </label>
-                <input
-                  type="text"
-                  value={concepto}
-                  onChange={e => setConcepto(e.target.value)}
-                  placeholder="Ej: Seña para pedido de junio, Anticipo cuota..."
-                  className="w-full border-2 border-zinc-200 bg-white rounded-2xl px-5 py-4 focus:border-blue-400 focus:ring-4 focus:ring-blue-400/5 outline-none text-base font-bold text-zinc-800 transition-all placeholder-zinc-400"
-                />
-              </div>
-
-              <div>
-                <label className="text-[10px] font-black tracking-widest uppercase text-zinc-400 ml-2 mb-2 block font-archivo">
-                  Importe ({moneda === 'USD' ? 'U$S' : '$'})
-                </label>
-                {/* Input de monto sin selector de moneda — ya está el pill-switch arriba */}
-                <div className="flex rounded-2xl overflow-hidden border-2 border-zinc-200 bg-white focus-within:border-blue-400 transition-colors focus-within:ring-4 focus-within:ring-blue-400/5">
-                  {/* Badge de moneda fija — reflejo del switch */}
-                  <div className="flex items-center px-4 bg-zinc-50 border-r border-zinc-200 shrink-0">
-                    <span className="text-sm font-black text-zinc-500">
-                      {moneda === 'USD' ? 'U$S' : '$'}
-                    </span>
-                  </div>
-                  <input
-                    type="number"
-                    value={importe}
-                    onChange={e => setImporte(e.target.value)}
-                    placeholder="0.00"
-                    className="w-full px-5 py-4 bg-transparent flex-1 outline-none font-black text-2xl text-zinc-800 placeholder-zinc-300"
-                    min="0.01"
-                    step="0.01"
-                  />
+          </div>
+        ) : (
+          /* Cliente Seleccionado */
+          <div className="bg-blue-500/5 border border-blue-500/20 rounded-xl p-4 shadow-sm flex flex-col gap-3">
+            <div className="flex items-start justify-between">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-lg bg-white flex items-center justify-center text-blue-500 border border-blue-500/10">
+                  <User size={20} />
+                </div>
+                <div>
+                  <p className="text-zinc-900 text-sm font-extrabold leading-tight tracking-tight">{getClienteDisplayName(clienteSel)}</p>
+                  <p className="text-[10px] text-zinc-500 font-bold uppercase tracking-wider mt-0.5 font-mono">
+                    IdCliente: {clienteSel.IDCliente || clienteSel.CodCliente || clienteSel.CliIdCliente}
+                  </p>
                 </div>
               </div>
+              <button 
+                onClick={() => { setClienteSel(null); setCuentaId(null); }} 
+                className="bg-white hover:bg-rose-50 text-zinc-400 hover:text-rose-600 p-1.5 rounded-lg transition-all border border-zinc-200 hover:border-rose-200 shadow-sm"
+                title="Quitar cliente"
+              >
+                <Trash2 size={16} />
+              </button>
             </div>
-          </div>
-
-          {/* ── COLUMNA DERECHA: Panel de Pago (sin selector de moneda por línea) ── */}
-          <div className="flex flex-col flex-1 bg-white min-w-0">
-            <div className="bg-white rounded-none p-6 relative overflow-hidden flex flex-col justify-between flex-1">
-              <h3 className="font-black text-zinc-400 text-[11px] uppercase tracking-widest mb-6 font-archivo">
-                3. Cobro y Documentación
-              </h3>
-
-              <div className="flex-1 flex flex-col -mx-6 -mb-6 mt-4 border-t border-zinc-200">
-                <CajaPanelPago
-                  containerClassName="w-full flex flex-col h-full bg-zinc-50/50"
-                  mode="VENTA"
-                  metodosPago={metodosPago}
-                  pagos={pagos}
-                  onPagosChange={setPagos}
-                  totalACubrir={importeNum}
-                  moneda={moneda}
-                  cotizacion={cotizacion}
-                  procesando={procesando}
-                  onConfirmar={handleProcesar}
-                  notas={observaciones}
-                  onNotas={setObservaciones}
-                  tipoDoc={tipoComprobante}
-                  onTipoDoc={setTipoComprobante}
-                  tiposDocDisponibles={[
-                    { value: 'RECIBO_ANTICIPO', label: 'Recibo de Pago (RC)' },
-                    { value: 'NINGUNO',         label: 'Sin Comprobante Fiscal (Anticipo)' },
-                  ]}
-                  lockMoneda={moneda}
-                  labelBoton="REGISTRAR ANTICIPO"
-                />
+            
+            <div className="flex flex-col gap-1 text-[11px] text-zinc-500 font-medium border-t border-zinc-200/80 pt-2.5">
+              {clienteSel.CioRuc && <div>RUC / CI: <span className="font-mono font-bold text-zinc-800">{clienteSel.CioRuc}</span></div>}
+              {clienteSel.Email && <div className="truncate">Email: <span className="font-mono text-zinc-700">{clienteSel.Email}</span></div>}
+              {clienteSel.TelefonoTrabajo && <div>Teléfono: <span className="font-mono text-zinc-700">{clienteSel.TelefonoTrabajo}</span></div>}
+              {clienteSel.DireccionTrabajo && <div className="leading-tight">Dirección: <span className="text-zinc-700">{clienteSel.DireccionTrabajo}</span></div>}
+              <div className="mt-1 pt-1.5 border-t border-zinc-100">
+                {buscandoCuenta ? (
+                  <p className="text-[11px] text-blue-500 flex items-center gap-1"><Loader2 size={11} className="animate-spin" /> Buscando cuenta...</p>
+                ) : cuentaId ? (
+                  <p className="text-[11px] text-emerald-600 flex items-center gap-1 font-semibold"><CheckCircle2 size={11} /> Cuenta {moneda} #{cuentaId}</p>
+                ) : (
+                  <p className="text-[11px] text-amber-600 font-semibold">⚠ Se creará cuenta {moneda} automáticamente</p>
+                )}
               </div>
             </div>
           </div>
+        )}
+      </div>
 
+      {/* ── CONTENIDO PRINCIPAL ── */}
+      <div className="flex-1 flex flex-col min-h-0 h-full overflow-y-auto bg-zinc-50 p-4 gap-4">
+        {/* BILLETERA DE CLIENTE STICKY */}
+        {clienteSel && (
+          <div className="px-5 py-1 border-b border-zinc-200 bg-white/80 sticky top-0 z-20 shrink-0 shadow-sm rounded-2xl mb-2">
+            <ClienteBilletera 
+              clienteId={clienteSel.CliIdCliente} 
+              clienteNombre={getClienteDisplayName(clienteSel)} 
+            />
+          </div>
+        )}
+
+        {/* ── 2. PANEL DE COBRO (HORIZONTAL) ── */}
+        <CajaPanelPago
+          layout="horizontal"
+          mode="VENTA"
+          metodosPago={metodosPago}
+          pagos={pagos}
+          onPagosChange={handlePagosChange}
+          totalACubrir={importeNum}
+          moneda={moneda}
+          cotizacion={cotizacion}
+          procesando={procesando}
+          onConfirmar={handleProcesar}
+          notas={observaciones}
+          onNotas={setObservaciones}
+          tipoDoc={tipoComprobante}
+          onTipoDoc={setTipoComprobante}
+          tiposDocDisponibles={[
+            { value: 'RECIBO_ANTICIPO', label: 'Recibo de Pago (RC)' },
+            { value: 'NINGUNO',         label: 'Sin Comprobante Fiscal (Anticipo)' },
+          ]}
+          labelBoton="REGISTRAR ANTICIPO"
+        />
+
+        {/* ── 1. FORMULARIO DE IMPORTE A ACREDITAR ── */}
+        <div className="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm flex flex-col gap-6">
+          <div className="flex items-center justify-between border-b border-zinc-100 pb-3">
+            <h2 className="text-xl font-black text-zinc-800 flex items-center gap-3">
+              <div className="bg-blue-500/10 p-2 rounded-xl border border-blue-500/20">
+                <Wallet size={20} className="text-blue-500" />
+              </div>
+              Ingreso de Saldo Anticipado
+            </h2>
+          </div>
+
+          {/* Aviso */}
+          <div className="bg-blue-50 border border-blue-200 rounded-2xl px-5 py-3 flex items-start gap-3">
+            <AlertCircle className="text-blue-500 shrink-0 mt-0.5" size={18} />
+            <p className="text-blue-700 text-xs font-medium leading-relaxed">
+              Registra dinero a <strong>favor del cliente</strong> (anticipo / seña).{' '}
+              El saldo queda disponible para descontarse de futuras facturas o deudas.{' '}
+              <strong>No genera deuda — genera crédito.</strong>
+            </p>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+              <label className="text-[10px] font-black tracking-widest uppercase text-zinc-400 ml-2 mb-2 block font-archivo">
+                Concepto / Servicio
+              </label>
+              <input
+                type="text"
+                value={concepto}
+                onChange={e => setConcepto(e.target.value)}
+                placeholder="Ej: Seña para pedido de junio, Anticipo cuota..."
+                className="w-full border-2 border-zinc-200 bg-white rounded-2xl px-5 py-4 focus:border-blue-400 focus:ring-4 focus:ring-blue-400/5 outline-none text-base font-bold text-zinc-800 transition-all placeholder-zinc-400"
+              />
+            </div>
+
+            <div>
+              <label className="text-[10px] font-black tracking-widest uppercase text-zinc-400 ml-2 mb-2 block font-archivo">
+                Importe
+              </label>
+              <input
+                type="number"
+                value={importe}
+                onChange={e => setImporte(e.target.value)}
+                placeholder="0.00"
+                className="w-full border-2 border-zinc-200 bg-white rounded-2xl px-5 py-4 focus:border-blue-400 focus:ring-4 focus:ring-blue-400/5 outline-none font-black text-2xl text-zinc-800 transition-all placeholder-zinc-300"
+                min="0.01"
+                step="0.01"
+              />
+            </div>
+          </div>
         </div>
       </div>
     </div>

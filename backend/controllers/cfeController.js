@@ -16,7 +16,11 @@ exports.getDocumentosCFE = async (req, res) => {
                 c.Nombre AS CliRazonSocial,
                 c.CioRuc AS CliRUT,
                 c.CioRuc AS CliDocumento,
-                c.IDCliente AS StringIDCliente
+                c.IDCliente AS StringIDCliente,
+                (SELECT TOP 1 mp.MPaDescripcionMetodo 
+                 FROM dbo.Pagos p WITH(NOLOCK)
+                 JOIN dbo.MetodosPagos mp WITH(NOLOCK) ON p.MPaIdMetodoPago = mp.MPaIdMetodoPago
+                 WHERE p.PagTcaIdTransaccion = d.TcaIdTransaccion) AS MetodoPagoNombre
             FROM DocumentosContables d
             LEFT JOIN Clientes c ON d.CliIdCliente = c.CliIdCliente
             WHERE d.CfeEstado IS NOT NULL
@@ -132,7 +136,7 @@ exports.enviarADGI = async (req, res) => {
 };
 
 exports.crearFacturaManual = async (req, res) => {
-    const { DocTipo, MonIdMoneda, CliIdCliente, Lineas, Totales } = req.body;
+    const { DocTipo, MonIdMoneda, CliIdCliente, Lineas, Totales, DocCliNombre, DocCliDocumento, DocCliDireccion, DocCliCiudad, DocPagado, MetodoPagoId, Pagos } = req.body;
     const pool = await getPool();
     const transaction = new sql.Transaction(pool);
     
@@ -140,7 +144,7 @@ exports.crearFacturaManual = async (req, res) => {
         await transaction.begin();
         const request = transaction.request();
         
-        // 1. Obtener configuración del documento y secuencia (soporta tanto código corto como descripción)
+        // 1. Obtener configuración del documento y secuencia
         const resConfig = await request
             .input('codDoc', sql.NVarChar(100), DocTipo)
             .query(`
@@ -173,6 +177,86 @@ exports.crearFacturaManual = async (req, res) => {
             numero = resMax.recordset[0].num;
         }
 
+        // 1.5 Registrar Transacción de Caja y Pago si es Contado
+        const isPaid = DocPagado === true || DocPagado === 1 || DocPagado === 'true';
+        let tcaId = null;
+
+        if (isPaid) {
+            const cotResult = await request.query(`SELECT TOP 1 CotDolar FROM Cotizaciones ORDER BY CotFecha DESC`);
+            const cotDolar = cotResult.recordset.length > 0 ? cotResult.recordset[0].CotDolar : 40.0;
+            const cotNum = MonIdMoneda === 2 ? cotDolar : 1;
+            const convertido = MonIdMoneda === 2 ? Totales.total * cotNum : Totales.total;
+
+            const tcaRes = await request
+                .input('TcaUsuarioId', sql.Int, req.user?.id || 1)
+                .input('TcaClienteId', sql.Int, CliIdCliente || 1)
+                .input('TcaTipoDoc', sql.VarChar(20), (config.CodDocumento || DocTipo).substring(0, 20))
+                .input('TcaSerieDoc', sql.VarChar(5), serie)
+                .input('TcaNumeroDoc', sql.VarChar(20), String(numero))
+                .input('TcaBruto', sql.Decimal(18, 4), Totales.total)
+                .input('TcaNeto', sql.Decimal(18, 4), Totales.total)
+                .input('TcaCobrado', sql.Decimal(18, 4), convertido)
+                .input('TcaMonedaBase', sql.VarChar(10), MonIdMoneda === 2 ? 'USD' : 'UYU')
+                .query(`
+                    INSERT INTO dbo.TransaccionesCaja
+                        (TcaFecha, TcaUsuarioId, TcaClienteId, TcaTipoDocumento, TcaSerieDoc, TcaNumeroDoc,
+                         TcaTotalBruto, TcaTotalAjuste, TcaTotalNeto, TcaTotalCobrado, TcaMonedaBase, TcaEstado, TcaObservaciones)
+                    OUTPUT INSERTED.TcaIdTransaccion
+                    VALUES
+                        (GETDATE(), @TcaUsuarioId, @TcaClienteId, @TcaTipoDoc, @TcaSerieDoc, @TcaNumeroDoc,
+                         @TcaBruto, 0, @TcaNeto, @TcaCobrado, @TcaMonedaBase, 'COBRADO', 'Pago Factura Manual')
+                `);
+            tcaId = tcaRes.recordset[0].TcaIdTransaccion;
+
+            if (Array.isArray(Pagos) && Pagos.length > 0) {
+                for (const pago of Pagos) {
+                    const pMonto = parseFloat(pago.monto) || 0;
+                    const pMonedaId = parseInt(pago.monedaId) || MonIdMoneda;
+                    const pCot = pMonedaId === 2 ? cotDolar : 1;
+                    const pConvertido = pMonedaId === 2 ? pMonto * pCot : pMonto;
+
+                    const reqPago = transaction.request();
+                    await reqPago
+                        .input('tcaId', sql.Int, tcaId)
+                        .input('metodo', sql.Int, pago.metodoPagoId || 1)
+                        .input('moneda', sql.Int, pMonedaId)
+                        .input('monto', sql.Decimal(18, 4), pMonto)
+                        .input('cot', sql.Decimal(18, 4), pCot)
+                        .input('convert', sql.Decimal(18, 4), pConvertido)
+                        .input('usuario', sql.Int, req.user?.id || 1)
+                        .query(`
+                            INSERT INTO dbo.Pagos
+                                (PagTcaIdTransaccion, MPaIdMetodoPago, PagIdMonedaPago,
+                                 PagMontoPago, PagFechaPago, PagUsuarioAlta, PagCotizacion,
+                                 PagMontoConvertido, PagTipoMovimiento)
+                            VALUES
+                                (@tcaId, @metodo, @moneda,
+                                 @monto, GETDATE(), @usuario, @cot,
+                                 @convert, 'COBRO')
+                        `);
+                }
+            } else {
+                await request
+                    .input('tcaId', sql.Int, tcaId)
+                    .input('metodo', sql.Int, MetodoPagoId || 1)
+                    .input('moneda', sql.Int, MonIdMoneda)
+                    .input('monto', sql.Decimal(18, 4), Totales.total)
+                    .input('cot', sql.Decimal(18, 4), cotNum)
+                    .input('convert', sql.Decimal(18, 4), convertido)
+                    .input('usuario', sql.Int, req.user?.id || 1)
+                    .query(`
+                        INSERT INTO dbo.Pagos
+                            (PagTcaIdTransaccion, MPaIdMetodoPago, PagIdMonedaPago,
+                             PagMontoPago, PagFechaPago, PagUsuarioAlta, PagCotizacion,
+                             PagMontoConvertido, PagTipoMovimiento)
+                        VALUES
+                            (@tcaId, @metodo, @moneda,
+                             @monto, GETDATE(), @usuario, @cot,
+                             @convert, 'COBRO')
+                    `);
+            }
+        }
+
         // 2. Crear documento CFE
         const insertDoc = await request
             .input('tipo', sql.VarChar(50), config.Detalle)
@@ -185,16 +269,24 @@ exports.crearFacturaManual = async (req, res) => {
             .input('serie', sql.VarChar(10), serie)
             .input('numero', sql.Int, numero)
             .input('usuario', sql.Int, req.user?.id || 1)
+            .input('cliNombre', sql.NVarChar(200), DocCliNombre || '')
+            .input('cliDoc', sql.NVarChar(20), DocCliDocumento || '')
+            .input('cliDir', sql.NVarChar(200), DocCliDireccion || '')
+            .input('cliCiu', sql.NVarChar(100), DocCliCiudad || '')
+            .input('docPagado', sql.Bit, isPaid ? 1 : 0)
+            .input('tcaId', sql.Int, tcaId)
             .query(`
                 INSERT INTO DocumentosContables 
                 (DocTipo, CueIdCuenta, MonIdMoneda, CliIdCliente, DocSubtotal, DocImpuestos, 
                  DocTotalDescuentos, DocTotalRecargos, DocTotal, DocEstado, 
-                 DocFechaEmision, DocUsuarioAlta, CfeEstado, DocSerie, DocNumero, DocPagado)
+                 DocFechaEmision, DocUsuarioAlta, CfeEstado, DocSerie, DocNumero, DocPagado, TcaIdTransaccion,
+                 DocCliNombre, DocCliDocumento, DocCliDireccion, DocCliCiudad)
                 OUTPUT INSERTED.DocIdDocumento
                 VALUES 
                 (@tipo, @cuenta, @moneda, @clienteId, @subtotal, @iva, 
                  0, 0, @total, 1, 
-                 GETDATE(), @usuario, CASE WHEN @tipo LIKE '%Pedido%' OR @tipo LIKE '%PEDIDO%' OR @tipo = 'PedidoCaja' THEN 'BORRADOR' ELSE 'PENDIENTE' END, @serie, @numero, 0)
+                 GETDATE(), @usuario, CASE WHEN @tipo LIKE '%Pedido%' OR @tipo LIKE '%PEDIDO%' OR @tipo = 'PedidoCaja' THEN 'BORRADOR' ELSE 'PENDIENTE' END, @serie, @numero, @docPagado, @tcaId,
+                 @cliNombre, @cliDoc, @cliDir, @cliCiu)
             `);
             
         const docId = insertDoc.recordset[0].DocIdDocumento;
@@ -202,17 +294,27 @@ exports.crearFacturaManual = async (req, res) => {
         // 2.5 Insertar las líneas del detalle
         if (Array.isArray(Lineas) && Lineas.length > 0) {
             for (const linea of Lineas) {
+                const cant = parseFloat(linea.cantidad) || 0;
+                const precio = parseFloat(linea.precioUnitario) || 0;
+                const ivaRate = parseFloat(linea.iva) || 22;
+                const lineTotal = cant * precio;
+                const lineNeto = lineTotal / (1 + ivaRate / 100);
+                const lineIva = lineTotal - lineNeto;
+
                 const reqLine = transaction.request();
                 await reqLine
                     .input('docId', sql.Int, docId)
                     .input('nom', sql.NVarChar(255), linea.concepto || '')
-                    .input('cant', sql.Decimal(18, 4), parseFloat(linea.cantidad) || 0)
-                    .input('precio', sql.Decimal(18, 4), parseFloat(linea.precioUnitario) || 0)
-                    .input('sub', sql.Decimal(18, 2), (parseFloat(linea.cantidad) || 0) * (parseFloat(linea.precioUnitario) || 0))
+                    .input('dsc', sql.NVarChar(255), linea.DcdDscItem || linea.sublinea || '')
+                    .input('cant', sql.Decimal(18, 4), cant)
+                    .input('precio', sql.Decimal(18, 4), precio)
+                    .input('sub', sql.Decimal(18, 2), lineNeto)
+                    .input('imp', sql.Decimal(18, 2), lineIva)
+                    .input('tot', sql.Decimal(18, 2), lineTotal)
                     .query(`
                         INSERT INTO DocumentosContablesDetalle
-                            (DocIdDocumento, DcdNomItem, DcdCantidad, DcdPrecioUnitario, DcdSubtotal)
-                        VALUES (@docId, @nom, @cant, @precio, @sub)
+                            (DocIdDocumento, DcdNomItem, DcdDscItem, DcdCantidad, DcdPrecioUnitario, DcdSubtotal, DcdImpuestos, DcdTotal)
+                        VALUES (@docId, @nom, @dsc, @cant, @precio, @sub, @imp, @tot)
                     `);
             }
         }
@@ -537,13 +639,16 @@ exports.editarFactura = async (req, res) => {
                 await transaction.request()
                     .input('docId', sql.Int, id)
                     .input('nom', sql.NVarChar(255), linea.DcdNomItem || '')
+                    .input('dsc', sql.NVarChar(255), linea.DcdDscItem || '')
                     .input('cant', sql.Decimal(18, 4), parseFloat(linea.DcdCantidad) || 1)
                     .input('precio', sql.Decimal(18, 4), parseFloat(linea.DcdPrecioUnitario) || 0)
                     .input('sub', sql.Decimal(18, 2), parseFloat(linea.DcdSubtotal) || 0)
+                    .input('imp', sql.Decimal(18, 2), parseFloat(linea.DcdImpuestos) || 0)
+                    .input('tot', sql.Decimal(18, 2), parseFloat(linea.DcdTotal) || 0)
                     .query(`
                         INSERT INTO DocumentosContablesDetalle
-                            (DocIdDocumento, DcdNomItem, DcdCantidad, DcdPrecioUnitario, DcdSubtotal)
-                        VALUES (@docId, @nom, @cant, @precio, @sub)
+                            (DocIdDocumento, DcdNomItem, DcdDscItem, DcdCantidad, DcdPrecioUnitario, DcdSubtotal, DcdImpuestos, DcdTotal)
+                        VALUES (@docId, @nom, @dsc, @cant, @precio, @sub, @imp, @tot)
                     `);
             }
         }

@@ -299,16 +299,39 @@ export default function CajaPagoDeudaTab({ sesion, metodosPago = [], cotizacion 
               const badge = badgeEstado(d);
               return (
                 <div key={d.DDeIdDocumento} onClick={() => toggleDeuda(d.DDeIdDocumento)}
-                  className={`cursor-pointer shrink-0 rounded-[1.2rem] p-4 border-2 transition-all flex flex-col gap-3 relative overflow-hidden group shadow-sm active:scale-[0.98]
+                  className={`cursor-pointer shrink-0 rounded-2xl p-4 border-2 transition-all flex flex-col gap-3.5 relative overflow-hidden group shadow-sm active:scale-[0.98]
                     ${sel ? 'border-brand-cyan bg-brand-cyan/5 ring-4 ring-brand-cyan/10' : 'border-slate-200 bg-white hover:border-brand-cyan/50 hover:shadow-md hover:-translate-y-0.5'}`}>
 
-                  <div className="flex items-center gap-2 mb-1">
-                    <User size={12} className={sel ? 'text-brand-cyan/70' : 'text-slate-400'}/>
-                    <span className="text-[10px] font-black uppercase tracking-widest text-slate-500 truncate">
-                      {d.ClienteNombre}
-                    </span>
+                  {/* Datos del Cliente */}
+                  <div className="flex flex-col gap-1 border-b border-zinc-100 pb-2.5">
+                    <div className="flex items-start justify-between">
+                      <span className="text-zinc-900 font-extrabold text-sm group-hover:text-brand-cyan transition-colors leading-snug">
+                        {d.ClienteNombre}
+                      </span>
+                      <span className="text-[9px] bg-zinc-200 text-zinc-600 px-1.5 py-0.5 rounded font-mono font-black">
+                        IdCliente: {d.ClienteIDCliente || d.ClienteCodigo || d.CliIdCliente}
+                      </span>
+                    </div>
+                    <div className="flex flex-col gap-1 text-[11px] text-zinc-500 font-medium mt-1">
+                      {d.ClienteRuc && (
+                        <div className="flex items-center gap-1 font-semibold text-zinc-600">
+                          RUC / CI: <span className="font-mono text-[10px] text-zinc-950 font-extrabold">{d.ClienteRuc}</span>
+                        </div>
+                      )}
+                      {d.ClienteEmail && (
+                        <div className="flex items-center gap-1 truncate">
+                          Email: <span className="font-mono text-[10px] text-zinc-700">{d.ClienteEmail}</span>
+                        </div>
+                      )}
+                      {d.ClienteTelefono && (
+                        <div className="flex items-center gap-1 font-semibold text-zinc-600">
+                          Tel: <span className="font-mono text-[10px] text-zinc-700 font-bold">{d.ClienteTelefono}</span>
+                        </div>
+                      )}
+                    </div>
                   </div>
 
+                  {/* Datos de la Deuda */}
                   <div className="flex items-center justify-between gap-4">
                     <div className="flex items-center gap-3 min-w-0">
                       <div className={`w-10 h-10 rounded-xl border-2 flex items-center justify-center shrink-0 transition-all
@@ -316,21 +339,35 @@ export default function CajaPagoDeudaTab({ sesion, metodosPago = [], cotizacion 
                         {sel && <CheckCircle size={20} className="text-white" />}
                       </div>
                       <div className="flex flex-col min-w-0">
-                        <span className={`font-black text-base transition-colors leading-none tracking-tight truncate ${sel ? 'text-brand-cyan' : 'text-slate-900 group-hover:text-brand-cyan'}`}>
-                          {d.NombreTrabajo || d.CodigoOrden || `Deuda #${d.DDeIdDocumento}`}
+                        <span className={`font-black text-sm transition-colors leading-tight tracking-tight truncate ${sel ? 'text-brand-cyan' : 'text-slate-800 group-hover:text-brand-cyan'}`}>
+                          {d.NombreTrabajo || `Deuda #${d.DDeIdDocumento}`}
                         </span>
-                        <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest mt-1.5">
+                        
+                        {/* Tipo de Documento y Número / Orden */}
+                        {d.DocIdDocumento ? (
+                          <span className="text-[10px] font-extrabold text-blue-600 mt-1 uppercase tracking-wide">
+                            Doc: {d.CodigoOrden}
+                          </span>
+                        ) : (
+                          <span className="text-[10px] font-extrabold text-amber-600 mt-1 uppercase tracking-wide">
+                            Orden: #{d.CodigoOrden || d.OrdIdOrden}
+                          </span>
+                        )}
+                        
+                        <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest mt-1">
                           Vence: {fmtFecha(d.DDeFechaVencimiento)}
                         </span>
                       </div>
                     </div>
+                    
                     <div className="font-black text-right flex flex-col items-end shrink-0 gap-1.5">
-                      <span className={`text-[10px] font-black px-2.5 py-1 rounded-lg border shadow-sm ${badge.cls}`}>{badge.label}</span>
-                      <span className={`text-base font-black ${sel ? 'text-brand-cyan' : 'text-slate-800'}`}>
+                      <span className={`text-[9px] font-black px-2 py-0.5 rounded border shadow-sm ${badge.cls}`}>{badge.label}</span>
+                      <span className={`text-base font-black ${sel ? 'text-brand-cyan' : 'text-slate-850'}`}>
                         {d.MonSimbolo || '$'} {fmt(d.DDeImportePendiente)}
                       </span>
                     </div>
                   </div>
+
                 </div>
               );
             })
@@ -339,16 +376,40 @@ export default function CajaPagoDeudaTab({ sesion, metodosPago = [], cotizacion 
       </div>
 
       {/* ─── 2. ÁREA CENTRAL: Resumen ───────────────────────────────────────────── */}
-      <div className="flex-1 flex flex-col min-w-0 overflow-hidden bg-slate-50">
+      <div className="flex-1 flex flex-col min-w-0 bg-slate-100 p-6 gap-4 overflow-y-auto">
+        <CajaPanelPago
+          layout="horizontal"
+          mode="VENTA"
+          labelBoton="REGISTRAR PAGO"
+          metodosPago={metodosPago}
+          pagos={pagos}
+          onPagosChange={setPagos}
+          totalACubrir={totalAPagar}
+          moneda={monedaDeuda}
+          cotizacion={cotizacion}
+          procesando={procesando}
+          onConfirmar={handleProcesar}
+          notes={observaciones}
+          notas={observaciones}
+          onNotas={setObservaciones}
+          tipoDoc={tipoDoc}
+          onTipoDoc={setTipoDoc}
+          serieDoc={serieDoc}
+          onSerieDoc={setSerieDoc}
+          numDoc=""
+          tiposDocDisponibles={tiposDocDisponibles.length > 0 ? tiposDocDisponibles : TIPOS_DOC_PAGO}
+          disabledExtra={seleccionadas.length === 0}
+        />
+
         {seleccionadas.length === 0 ? (
-          <div className="flex-1 flex flex-col items-center justify-center opacity-40 gap-4">
+          <div className="bg-white rounded-3xl border border-slate-200 p-8 shadow-sm flex-1 flex flex-col items-center justify-center opacity-40 gap-4">
             <ArrowDownCircle size={80} className="text-slate-300" />
             <p className="font-black text-slate-400 uppercase tracking-widest text-sm text-center">
               Seleccioná las deudas a pagar<br/>desde la lista de la izquierda
             </p>
           </div>
         ) : (
-          <div className="flex-1 p-6 overflow-y-auto flex flex-col gap-4">
+          <div className="flex flex-col gap-4 flex-1">
             {/* Encabezado */}
             <div className="flex justify-between items-center border-b border-slate-200 pb-4">
               <h2 className="text-2xl font-black text-slate-800 tracking-tight flex items-center gap-3">
@@ -377,7 +438,7 @@ export default function CajaPagoDeudaTab({ sesion, metodosPago = [], cotizacion 
                 </p>
                 <div className="flex gap-2">
                   <button
-                    onClick={() => { setConfirmarParcial(true); handleProcesar(true); }}
+                    onClick={() => { handleProcesar(true); }}
                     className="flex-1 bg-amber-500 hover:bg-amber-600 text-white font-black py-2 px-4 rounded-xl text-sm transition-colors">
                     ✓ Confirmar pago parcial
                   </button>
@@ -463,42 +524,8 @@ export default function CajaPagoDeudaTab({ sesion, metodosPago = [], cotizacion 
         )}
       </div>
 
-      {/* ─── 3. COLUMNA DERECHA: PANEL FIJO DE PAGO ───────────────────────────── */}
-      {seleccionadas.length > 0 && (
-        <div className="w-[420px] shrink-0 border-l border-slate-200 bg-white relative shadow-xl z-20 flex flex-col h-full animate-in slide-in-from-right-8 duration-300">
-          <div className="absolute top-0 inset-x-0 h-1.5 bg-brand-cyan z-30"></div>
-          
-          <div className="p-6 border-b border-slate-100 bg-slate-50/80">
-             <h3 className="font-black text-slate-800 flex items-center gap-2 text-sm uppercase tracking-widest">
-               <CreditCard size={16} className="text-brand-cyan"/> Procesar Pago
-             </h3>
-             <p className="text-[10px] text-slate-400 mt-1 font-black">MÉTODOS Y COMPROBANTE</p>
-          </div>
-
-          <div className="flex-1 overflow-y-auto p-6 custom-scrollbar">
-            <CajaPanelPago
-              mode="VENTA"
-              metodosPago={metodosPago}
-              pagos={pagos}
-              onPagosChange={setPagos}
-              totalACubrir={totalAPagar}
-              moneda={monedaDeuda}
-              cotizacion={cotizacion}
-              procesando={procesando}
-              onConfirmar={handleProcesar}
-              notas={observaciones}
-              onNotas={setObservaciones}
-              tipoDoc={tipoDoc}
-              onTipoDoc={setTipoDoc}
-              serieDoc={serieDoc}
-              onSerieDoc={setSerieDoc}
-              numDoc=""
-              tiposDocDisponibles={tiposDocDisponibles.length > 0 ? tiposDocDisponibles : TIPOS_DOC_PAGO}
-            />
-          </div>
-        </div>
-      )}
-
     </div>
   );
 }
+
+

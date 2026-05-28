@@ -47,7 +47,12 @@ const VoucherEgresoModal = ({ voucher, onClose }) => {
     `);
     printWin.document.close();
     printWin.focus();
-    setTimeout(() => { printWin.print(); printWin.close(); }, 400);
+    printWin.addEventListener('afterprint', () => {
+      printWin.close();
+    });
+    setTimeout(() => {
+      printWin.print();
+    }, 1000);
   };
 
   return (

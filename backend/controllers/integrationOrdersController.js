@@ -166,8 +166,9 @@ exports.createPlanillaOrder = async (req, res) => {
     }
 
     const referenceFiles = (archivosReferencia || req.body.referenceFiles || []).map(f => ({
-        name: f.nombre || f.name,
-        type: f.tipo || f.type
+        name: f.nombre || f.name || f.url || '',
+        type: f.tipo || f.type || 'REFERENCIA',
+        url: f.url || f.ubicacionStorage || ''
     }));
 
     const cuttingSpecs = especificacionesCorte || req.body.cuttingSpecs;
@@ -384,20 +385,40 @@ exports.createPlanillaOrder = async (req, res) => {
             });
         }
 
-        // --- 5B. LOOKUP ID PRODUCTO REACT (NUEVO & ROBUSTO) ---
-        // Buscamos IDProdReact en la tabla Articulos usando el CodArticulo (ej: 47)
-        const codesToLookup = [...new Set(pendingOrderExecutions.map(e => e.codArticulo || e.proIdProductoDB).filter(c => c))];
+        // Buscamos IDProdReact en la tabla Articulos usando el CodArticulo (ej: 47) o ProIdProducto usando proIdProductoDB
+        const proIdCodes = [];
+        const codArtCodes = [];
+        pendingOrderExecutions.forEach(e => {
+            if (e.proIdProductoDB) proIdCodes.push(String(e.proIdProductoDB).trim());
+            if (e.codArticulo) codArtCodes.push(String(e.codArticulo).trim());
+        });
+        const uniqueProIds = [...new Set(proIdCodes)];
+        const uniqueCodArts = [...new Set(codArtCodes)];
+        
         const mapArtByProId = {};
         const mapArtByIdReact = {};
+        const mapArtByCodArt = {};
 
-        if (codesToLookup.length > 0) {
-            logger.info(`🔍 [Integration] Buscando Artículos: ${JSON.stringify(codesToLookup)}`);
+        if (uniqueProIds.length > 0 || uniqueCodArts.length > 0) {
+            logger.info(`🔍 [Integration] Buscando Artículos ProId: ${JSON.stringify(uniqueProIds)}, CodArt: ${JSON.stringify(uniqueCodArts)}`);
             try {
                 const request = pool.request();
-                const clauses = codesToLookup.map((_, i) => `(ProIdProducto = TRY_CAST(@cod${i} AS INT) OR IDProdReact = TRY_CAST(@cod${i} AS INT))`).join(' OR ');
-                codesToLookup.forEach((c, i) => request.input(`cod${i}`, sql.VarChar(50), String(c).trim()));
+                const clauses = [];
+                
+                uniqueProIds.forEach((id, i) => {
+                    request.input(`proId${i}`, sql.Int, parseInt(id));
+                    clauses.push(`(ProIdProducto = @proId${i})`);
+                });
+                
+                uniqueCodArts.forEach((code, i) => {
+                    request.input(`codArt${i}`, sql.VarChar(50), code);
+                    clauses.push(`(CodArticulo = @codArt${i} OR IDProdReact = TRY_CAST(@codArt${i} AS INT))`);
+                });
 
-                const artRes = await request.query(`SELECT IDProdReact, CodArticulo, ProIdProducto FROM Articulos WHERE ${clauses}`);
+                const whereClause = clauses.join(' OR ');
+                const queryStr = `SELECT IDProdReact, CodArticulo, ProIdProducto FROM Articulos WHERE ${whereClause}`;
+                
+                const artRes = await request.query(queryStr);
 
                 logger.info(`🔍 [Integration] Resultados DB Articulos encontrados: ${artRes.recordset.length}`);
 
@@ -409,10 +430,13 @@ exports.createPlanillaOrder = async (req, res) => {
                     if (r.IDProdReact !== null && r.IDProdReact !== undefined) {
                         mapArtByIdReact[String(r.IDProdReact).trim()] = info;
                     }
+                    if (r.CodArticulo !== null && r.CodArticulo !== undefined) {
+                        mapArtByCodArt[String(r.CodArticulo).trim()] = info;
+                    }
                 });
 
             } catch (errLookup) {
-                logger.warn("⚠️ Error buscando IDProdReact:", errLookup.message);
+                logger.warn("⚠️ Error buscando artículos en DB:", errLookup.message);
                 observacionesValidacion.push("Error DB buscando producto: " + errLookup.message);
             }
         }
@@ -424,12 +448,14 @@ exports.createPlanillaOrder = async (req, res) => {
 
               if (exec.proIdProductoDB) {
                   key = String(exec.proIdProductoDB).trim();
-                  info = mapArtByIdReact[key] || mapArtByProId[key];
-              }
-              
-              if (!info && exec.codArticulo) {
+                  info = mapArtByProId[key];
+              } else if (exec.codArticulo) {
                   key = String(exec.codArticulo).trim();
-                  info = mapArtByIdReact[key] || mapArtByProId[key];
+                  if (/^\d+$/.test(key)) {
+                      info = mapArtByIdReact[key] || mapArtByCodArt[key];
+                  } else {
+                      info = mapArtByCodArt[key] || mapArtByIdReact[key];
+                  }
               }
 
               if (info) {
@@ -438,9 +464,10 @@ exports.createPlanillaOrder = async (req, res) => {
                   exec.codArticulo = info.codArt;
                   logger.info(`✅ IDProductoReact asignado: ${info.idReact} para identificador proporcionado: ${key} (Asignando CodArticulo real: ${info.codArt})`);
               } else {
-                  logger.warn(`⚠️ Datos de artículo NO encontrados para identificador ${exec.codArticulo}. (Buscado como: '${key}')`);
+                  const searchKey = exec.proIdProductoDB ? `ProIdProducto: ${exec.proIdProductoDB}` : `CodArticulo: ${exec.codArticulo}`;
+                  logger.warn(`⚠️ Datos de artículo NO encontrados para identificador. (Buscado como: '${searchKey}')`);
                   esValido = false;
-                  observacionesValidacion.push(`Producto Cod '${exec.codArticulo}' no se encontró o no tiene vinculaciones.`);
+                  observacionesValidacion.push(`Producto '${searchKey}' no se encontró o no tiene vinculaciones.`);
               }
         });
 
@@ -694,15 +721,56 @@ exports.createPlanillaOrder = async (req, res) => {
                 }
 
                 // --- INSERCIÓN DE ARCHIVOS DE REFERENCIA PROPIOS DEL SERVICIO ---
+                const insertedUrlsForThisOrder = new Set();
+
                 if (exec.archivosReferenciaLocales && exec.archivosReferenciaLocales.length > 0) {
                     for (let i = 0; i < exec.archivosReferenciaLocales.length; i++) {
                         const refItem = exec.archivosReferenciaLocales[i];
-                        const refName = refItem.url || refItem.nota || refItem.tipo || `Boceto_Corte_${i+1}`;
+                        const refUrl = (refItem.url || '').trim();
+                        if (refUrl) {
+                            if (insertedUrlsForThisOrder.has(refUrl.toLowerCase())) continue;
+                            insertedUrlsForThisOrder.add(refUrl.toLowerCase());
+                        }
+
+                        // Priorizar la nota descriptiva si no es una URL cruda
+                        let refName = refItem.nota || refItem.url || refItem.tipo || `Boceto_Corte_${i+1}`;
+                        if (refItem.nota && (refItem.nota.startsWith('http') || refItem.nota.includes('drive.google'))) {
+                            refName = refItem.tipo || refItem.url || `Boceto_Corte_${i+1}`;
+                        }
+
                         await new sql.Request(transaction)
                             .input('OID', sql.Int, newOID)
                             .input('Tipo', sql.VarChar(50), refItem.tipo || 'BOCETO_CORTE')
                             .input('Nom', sql.VarChar(200), refName)
                             .input('Not', sql.NVarChar(sql.MAX), refItem.nota || '')
+                            .input('Ubi', sql.NVarChar(sql.MAX), refItem.url)
+                            .query(`
+                                INSERT INTO ArchivosReferencia (
+                                    OrdenID, TipoArchivo, NombreOriginal, NotasAdicionales, FechaSubida, UbicacionStorage
+                                ) 
+                                VALUES (
+                                    @OID, @Tipo, @Nom, @Not, GETDATE(), @Ubi
+                                )
+                            `);
+                    }
+                }
+
+                // --- INSERCIÓN DE ARCHIVOS DE REFERENCIA GENERALES (TOP LEVEL) ---
+                if (referenceFiles && referenceFiles.length > 0) {
+                    for (let i = 0; i < referenceFiles.length; i++) {
+                        const refItem = referenceFiles[i];
+                        if (!refItem.url) continue;
+
+                        const refUrl = refItem.url.trim();
+                        if (insertedUrlsForThisOrder.has(refUrl.toLowerCase())) continue;
+                        insertedUrlsForThisOrder.add(refUrl.toLowerCase());
+
+                        const refName = refItem.name || refItem.url;
+                        await new sql.Request(transaction)
+                            .input('OID', sql.Int, newOID)
+                            .input('Tipo', sql.VarChar(50), refItem.type || 'REFERENCIA')
+                            .input('Nom', sql.VarChar(200), refName)
+                            .input('Not', sql.NVarChar(sql.MAX), '')
                             .input('Ubi', sql.NVarChar(sql.MAX), refItem.url)
                             .query(`
                                 INSERT INTO ArchivosReferencia (

@@ -1016,7 +1016,33 @@ exports.getIntegralPedidoDetailsV2 = async (req, res) => {
                 pool.request().query(servQ)
             ]);
 
-            archivosData = [...pRes.recordset, ...rRes.recordset, ...sRes.recordset];
+            // De-duplicar archivos de referencia por URL (UbicacionStorage)
+            const uniqueRefs = new Map();
+            rRes.recordset.forEach(f => {
+                const url = (f.UbicacionStorage || '').trim();
+                if (!url) {
+                    uniqueRefs.set(`ref_${f.RefID}`, f);
+                    return;
+                }
+                const urlKey = url.toLowerCase();
+                const existing = uniqueRefs.get(urlKey);
+                if (!existing) {
+                    uniqueRefs.set(urlKey, f);
+                } else {
+                    // Priorizar el registro que tenga un NombreOriginal descriptivo y no la URL
+                    const existingName = (existing.NombreOriginal || '').trim();
+                    const currentName = (f.NombreOriginal || '').trim();
+                    const existingIsUrl = existingName.startsWith('http') || existingName.includes('drive.google');
+                    const currentIsUrl = currentName.startsWith('http') || currentName.includes('drive.google');
+                    
+                    if (existingIsUrl && !currentIsUrl) {
+                        uniqueRefs.set(urlKey, f);
+                    }
+                }
+            });
+            const deduplicatedRefs = Array.from(uniqueRefs.values());
+
+            archivosData = [...pRes.recordset, ...deduplicatedRefs, ...sRes.recordset];
         }
 
         // 3.5 Construir Ruta Visual (Step Tracker) - AGRUPADA POR ÁREA
@@ -1579,14 +1605,26 @@ exports.getOrderReferences = async (req, res) => {
         }
 
         // Agrupar visualmente por link (archivo) para evitar que el mismo archivo 
-        // aparezca repetido si fue subido a varias órdenes del mismo carrito
+        // aparezca repetido si fue subido a varias órdenes del mismo carrito,
+        // priorizando mantener los nombres amigables sobre URLs.
         const uniqueRefs = new Map();
         result.recordset.forEach(f => {
-            // Usamos el link como clave única para que no se muestre 3 veces el mismo logo
-            if (f.link && !uniqueRefs.has(f.link)) {
-                uniqueRefs.set(f.link, f);
-            } else if (!f.link && !uniqueRefs.has(f.id)) {
-                // Fallback si no hay link (raro), agrupamos por ID
+            if (f.link) {
+                const linkKey = f.link.toLowerCase().trim();
+                const existing = uniqueRefs.get(linkKey);
+                if (!existing) {
+                    uniqueRefs.set(linkKey, f);
+                } else {
+                    const existingName = (existing.nombre || '').trim();
+                    const currentName = (f.nombre || '').trim();
+                    const existingIsUrl = existingName.startsWith('http') || existingName.includes('drive.google');
+                    const currentIsUrl = currentName.startsWith('http') || currentName.includes('drive.google');
+                    
+                    if (existingIsUrl && !currentIsUrl) {
+                        uniqueRefs.set(linkKey, f);
+                    }
+                }
+            } else if (!uniqueRefs.has(f.id)) {
                 uniqueRefs.set(f.id, f);
             }
         });

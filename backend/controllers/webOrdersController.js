@@ -235,6 +235,7 @@ exports.createWebOrder = async (req, res) => {
     const codCliente = req.body.codCliente || user.codCliente || null;
     const nombreCliente = req.body.nombreCliente || user.name || user.username || 'Cliente Web';
     let idClienteReact = null;
+    let cliIdCliente = null;
 
     if ((!items || items.length === 0) && (!req.body.servicios || req.body.servicios.length === 0)) {
         return res.status(400).json({ error: "El pedido no contiene ítems." });
@@ -255,8 +256,11 @@ exports.createWebOrder = async (req, res) => {
         const erpDocNumber = `${nuevoNroPedido}`;
 
         if (codCliente) {
-            const clientRes = await pool.request().input('cod', sql.Int, codCliente).query("SELECT IDReact FROM Clientes WHERE CodCliente = @cod");
-            if (clientRes.recordset.length > 0) idClienteReact = clientRes.recordset[0].IDReact;
+            const clientRes = await pool.request().input('cod', sql.Int, codCliente).query("SELECT CliIdCliente, IDReact FROM Clientes WHERE CodCliente = @cod");
+            if (clientRes.recordset.length > 0) {
+                idClienteReact = clientRes.recordset[0].IDReact;
+                cliIdCliente = clientRes.recordset[0].CliIdCliente;
+            }
         }
 
         // --- 3. PREPARACIÓN DE ÁREAS Y RUTAS (Igual que antes) ---
@@ -374,6 +378,15 @@ exports.createWebOrder = async (req, res) => {
                     finalCodStock = cabecera.material.codStock;
                 }
 
+                // Extracción robusta de ID de producto
+                let finalProIdProducto = cabecera.proIdProducto || cabecera.ProIdProducto;
+                let finalIdProductoReact = cabecera.idProductoReact || cabecera.idProducto;
+
+                if (cabecera.material && typeof cabecera.material === 'object') {
+                    if (!finalProIdProducto) finalProIdProducto = cabecera.material.proIdProducto || cabecera.material.ProIdProducto || cabecera.material.id;
+                    if (!finalIdProductoReact) finalIdProductoReact = cabecera.material.idProductoReact || cabecera.material.idProducto || cabecera.material.id;
+                }
+
                 // Construir Nota con Metadatos Técnicos
                 let serviceNote = srv.notas || '';
                 let techInfo = '';
@@ -398,6 +411,8 @@ exports.createWebOrder = async (req, res) => {
                     variante: cabecera.variante || 'N/A',
                     codArticulo: finalCodArt,
                     codStock: finalCodStock,
+                    proIdProducto: finalProIdProducto,
+                    idProductoReact: finalIdProductoReact,
                     items: ordenItems,
                     referencias: ordenReferencias,
                     isExtra: !srv.esPrincipal,
@@ -413,12 +428,19 @@ exports.createWebOrder = async (req, res) => {
             lineas.forEach(linea => {
                 const cabecera = linea.cabecera || {};
                 const sublineas = linea.sublineas || [];
+
+                let finalProIdProducto = cabecera.proIdProducto || cabecera.ProIdProducto;
+                if (cabecera.material && typeof cabecera.material === 'object') {
+                    if (!finalProIdProducto) finalProIdProducto = cabecera.material.proIdProducto || cabecera.material.ProIdProducto || cabecera.material.id;
+                }
+
                 pendingOrderExecutions.push({
                     areaID: mainAreaID,
                     material: cabecera.material,
                     variante: cabecera.variante,
                     codArticulo: cabecera.codArticulo,
                     codStock: cabecera.codStock,
+                    proIdProducto: finalProIdProducto,
                     idProductoReact: cabecera.idProductoReact || cabecera.material?.id,
                     items: sublineas.map(sl => ({
                         fileName: sl.archivoPrincipal?.name,
@@ -452,6 +474,7 @@ exports.createWebOrder = async (req, res) => {
                         variante: varWeb,
                         codArticulo: matObj.codArt,
                         codStock: matObj.codStock,
+                        proIdProducto: matObj.proIdProducto || matObj.id,
                         idProductoReact: matObj.id,
                         items: [],
                         isExtra: false,
@@ -486,6 +509,7 @@ exports.createWebOrder = async (req, res) => {
                 let extraCodArt = null;
                 let extraCodStock = null;
                 let extraIdProd = null;
+                let extraProIdProd = null;
                 let magnitudInicial = 0;
 
                 if (extraArea === 'TWT' || extraId.toUpperCase() === 'COSTURA') {
@@ -493,6 +517,24 @@ exports.createWebOrder = async (req, res) => {
                     areaVariante = 'Costura';
                     extraCodArt = '115';
                     extraCodStock = '1.1.7.1';
+                    extraProIdProd = 36;
+                    extraIdProd = 219;
+                    magnitudInicial = parseInt(val.cantidad || val.quantity || cabecera?.cantidad || 0);
+                } else if (extraArea === 'TWC' || extraId.toUpperCase() === 'LASER' || extraId.toUpperCase() === 'CORTE') {
+                    areaMaterial = 'Corte Laser por prenda';
+                    areaVariante = 'Corte Laser';
+                    extraCodArt = '1375';
+                    extraCodStock = '1.1.6.1';
+                    extraProIdProd = 90;
+                    extraIdProd = 253;
+                    magnitudInicial = parseInt(val.cantidad || val.quantity || cabecera?.cantidad || 0);
+                } else if (extraArea === 'EMB' || extraId.toUpperCase() === 'BORDADO') {
+                    areaMaterial = 'Bordado';
+                    areaVariante = 'Bordado';
+                    extraCodArt = '1567';
+                    extraCodStock = '1.1.9.1';
+                    extraProIdProd = 434;
+                    extraIdProd = 65;
                     magnitudInicial = parseInt(val.cantidad || val.quantity || cabecera?.cantidad || 0);
                 }
 
@@ -509,6 +551,7 @@ exports.createWebOrder = async (req, res) => {
                     codArticulo: extraCodArt,
                     codStock: extraCodStock,
                     idProductoReact: extraIdProd,
+                    proIdProducto: extraProIdProd,
                     isExtra: true,
                     extraOriginId: extraId,
                     magnitudInicial: magnitudInicial,
@@ -550,37 +593,86 @@ exports.createWebOrder = async (req, res) => {
             }
         });
 
-        // --- NUEVO: LOOKUP DE IdProductoReact EN BASE A CodArticulo ---
-        // Recolectar todos los códigos de artículo
-        const codesToLookup = [...new Set(pendingOrderExecutions.map(e => e.codArticulo).filter(c => c))];
+        // Buscamos IDProdReact y ProIdProducto en la tabla Articulos usando ProIdProducto, IDProdReact o CodArticulo
+        const proIdCodes = [];
+        const idReactCodes = [];
+        const codArtCodes = [];
+        pendingOrderExecutions.forEach(e => {
+            if (e.proIdProducto) proIdCodes.push(String(e.proIdProducto).trim());
+            if (e.idProductoReact) idReactCodes.push(String(e.idProductoReact).trim());
+            if (e.codArticulo) codArtCodes.push(String(e.codArticulo).trim());
+        });
+        const uniqueProIds = [...new Set(proIdCodes)].filter(Boolean);
+        const uniqueIdReacts = [...new Set(idReactCodes)].filter(Boolean);
+        const uniqueCodArts = [...new Set(codArtCodes)].filter(Boolean);
 
-        if (codesToLookup.length > 0) {
+        const mapArtByProId = {};
+        const mapArtByIdReact = {};
+        const mapArtByCodArt = {};
+
+        if (uniqueProIds.length > 0 || uniqueIdReacts.length > 0 || uniqueCodArts.length > 0) {
             try {
-                // Consulta dinámica para obtener IDs
-                // Asumimos tabla 'Articulos' y columnas 'CodigoArticulo' / 'Id'
                 const request = pool.request();
-                // Construir lista de parámetros para la query IN (...)
-                const clauses = codesToLookup.map((_, i) => `CodigoArticulo = @cod${i}`).join(' OR ');
-                codesToLookup.forEach((c, i) => request.input(`cod${i}`, sql.VarChar(50), c));
+                const clauses = [];
 
-                const artRes = await request.query(`SELECT Id, CodigoArticulo FROM Articulos WHERE ${clauses}`);
+                uniqueProIds.forEach((id, i) => {
+                    request.input(`proId${i}`, sql.Int, parseInt(id));
+                    clauses.push(`(ProIdProducto = @proId${i})`);
+                });
 
-                const mapArtId = {};
+                uniqueIdReacts.forEach((id, i) => {
+                    request.input(`idReact${i}`, sql.Int, parseInt(id));
+                    clauses.push(`(IDProdReact = @idReact${i})`);
+                });
+
+                uniqueCodArts.forEach((code, i) => {
+                    request.input(`codArt${i}`, sql.VarChar(50), code);
+                    clauses.push(`(LTRIM(RTRIM(CodArticulo)) = @codArt${i})`);
+                });
+
+                const whereClause = clauses.join(' OR ');
+                const queryStr = `SELECT IDProdReact, CodArticulo, ProIdProducto, CodStock FROM Articulos WHERE ${whereClause}`;
+
+                const artRes = await request.query(queryStr);
+
                 artRes.recordset.forEach(r => {
-                    if (r.CodigoArticulo) mapArtId[r.CodigoArticulo.trim().toUpperCase()] = r.Id; // o 'ID'
+                    const info = { idReact: r.IDProdReact, proId: r.ProIdProducto, codArt: r.CodArticulo ? r.CodArticulo.trim() : null, codStock: r.CodStock ? r.CodStock.trim() : null };
+                    if (r.ProIdProducto !== null && r.ProIdProducto !== undefined) {
+                        mapArtByProId[String(r.ProIdProducto).trim()] = info;
+                    }
+                    if (r.IDProdReact !== null && r.IDProdReact !== undefined) {
+                        mapArtByIdReact[String(r.IDProdReact).trim()] = info;
+                    }
+                    if (r.CodArticulo !== null && r.CodArticulo !== undefined) {
+                        mapArtByCodArt[r.CodArticulo.trim().toUpperCase()] = info;
+                    }
                 });
 
                 // Asignar IDs a las ejecuciones
                 pendingOrderExecutions.forEach(exec => {
-                    if (exec.codArticulo && !exec.idProductoReact) {
-                        const foundId = mapArtId[exec.codArticulo.trim().toUpperCase()];
-                        if (foundId) exec.idProductoReact = foundId;
+                    let info = null;
+                    if (exec.proIdProducto) {
+                        info = mapArtByProId[String(exec.proIdProducto).trim()];
+                    }
+                    if (!info && exec.idProductoReact) {
+                        info = mapArtByIdReact[String(exec.idProductoReact).trim()];
+                    }
+                    if (!info && exec.codArticulo) {
+                        info = mapArtByCodArt[String(exec.codArticulo).trim().toUpperCase()];
+                    }
+
+                    if (info) {
+                        exec.idProductoReact = info.idReact || exec.idProductoReact;
+                        exec.proIdProducto = info.proId || exec.proIdProducto;
+                        exec.codArticulo = info.codArt || exec.codArticulo;
+                        if (info.codStock && !exec.codStock) {
+                            exec.codStock = info.codStock;
+                        }
                     }
                 });
 
             } catch (lookupErr) {
-                logger.warn("⚠️ No se pudo resolver IdProductoReact desde Articulos:", lookupErr.message);
-                // No bloqueamos el flujo, seguimos con lo que tengamos
+                logger.warn("⚠️ No se pudo resolver IdProductoReact/ProIdProducto desde Articulos:", lookupErr.message);
             }
         }
 
@@ -638,6 +730,9 @@ exports.createWebOrder = async (req, res) => {
                 // Combinar Nota General + Nota Específica del Servicio (Metadatos)
                 const combinedNote = [finalNote, exec.notaAdicional].filter(n => n && n.trim()).join(' | ');
 
+                const isPrinting = (exec.areaID || "").toUpperCase().match(/IMPRESION|GIG|SUBLIMACION|SB|DF|ECO|UV/);
+                const fechaEntradaSector = isPrinting ? new Date() : null;
+
                 // INSERCIÓN DE ORDEN CON ESTADO 'Cargando...'
                 const resOrder = await new sql.Request(transaction)
                     .input('AreaID', sql.VarChar(20), exec.areaID)
@@ -657,19 +752,22 @@ exports.createWebOrder = async (req, res) => {
                     .input('UM', sql.VarChar(20), areaUM)
                     .input('CodArt', sql.VarChar(50), exec.codArticulo || null)
                     .input('IdProdReact', sql.Int, idProdReact)
+                    .input('ProIdProducto', sql.Int, exec.proIdProducto || null)
+                    .input('CliIdCliente', sql.Int, cliIdCliente)
+                    .input('F_EntSec', sql.DateTime, fechaEntradaSector)
                     .query(`
                         INSERT INTO Ordenes (
                             AreaID, Cliente, CodCliente, IdClienteReact, DescripcionTrabajo, Prioridad, 
                             FechaIngreso, FechaEstimadaEntrega, Material, Variante, 
                             CodigoOrden, NoDocERP, Nota, Magnitud, ProximoServicio, UM, Estado, EstadoenArea,
-                            CodArticulo, IdProductoReact
+                            CodArticulo, IdProductoReact, ProIdProducto, CliIdCliente, FechaEntradaSector
                         )
                         OUTPUT INSERTED.OrdenID
                         VALUES (
                             @AreaID, @Cliente, @CodCliente, @IdClienteReact, @Desc, @Prio, 
                             GETDATE(), DATEADD(day, 3, GETDATE()), @Mat, @Var, 
                             @Cod, @ERP, @Nota, @Mag, @Prox, @UM, @Estado, @Estado,
-                            @CodArt, @IdProdReact
+                            @CodArt, @IdProdReact, @ProIdProducto, @CliIdCliente, @F_EntSec
                         )
                     `);
 

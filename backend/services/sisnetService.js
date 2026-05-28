@@ -127,7 +127,7 @@ exports.emitirCFE = async (doc, lineas, cotDolar = 40.0) => {
                     wsVarios: {
                         fchEmis: new Date().toLocaleDateString('en-GB'), // DD/MM/YYYY
                         fhcVenc: new Date().toLocaleDateString('en-GB'), // Podría sumarle DocDiasVencimiento
-                        fmaPago: 1, // 1 Contado, 2 Credito
+                        fmaPago: doc.DocPagado ? 1 : 2, // 1 Contado, 2 Credito
                         comprobanteTipo: tipoCFE, 
                         mntBruto: 0,
                         textoObservacion: doc.DocObservaciones ? doc.DocObservaciones.substring(0, 100) : ''

@@ -18,6 +18,7 @@ export default function CajaVentaDirectaTab({
   tipoDocumento: tipoDocExt, onTipoDocumento,
   tiposDocDisponibles = [],
   serieDoc: serieDocExt,
+  onSerieDoc,
   obs: obsExt, onObs,
   onConfirmar: onConfirmarExt,
   procesando: procesandoExt,
@@ -33,12 +34,30 @@ export default function CajaVentaDirectaTab({
   const [buscandoCli, setBuscandoCli] = useState(false);
   const [clienteSel, setClienteSel] = useState(null);
 
+  const getClienteDisplayName = (c) => {
+    if (!c) return '';
+    const nom = c.Nombre?.trim();
+    const fan = c.NombreFantasia?.trim();
+    return nom || fan || 'Cliente sin nombre';
+  };
+
+  // Close dropdown on click outside
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (!event.target.closest('.client-search-container')) {
+        setClientesRes([]);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
   // Moneda exhibición
   const [monedaExhibicion, setMonedaExhibicion] = useState('UYU');
 
   // Items
   const [items, setItems] = useState([
-    { id: Date.now(), tipo: defaultTipo, grupo: '', codigo: '', descripcion: '', cantidad: 1, precioUnitario: '', precioTotal: '' }
+    { id: Date.now(), tipo: defaultTipo, grupo: defaultTipo === 'VENTA_INSUMOS' ? 'Insumos' : defaultTipo === 'VENTA_PRODUCTOS' ? 'Productos en el local' : '', codigo: '', descripcion: '', cantidad: 1, precioUnitario: '', precioTotal: '' }
   ]);
   const [productosBase, setProductosBase] = useState([]);
 
@@ -64,6 +83,19 @@ export default function CajaVentaDirectaTab({
   useEffect(() => {
     api.get('/contabilidad/caja/productos-venta').then(r => setProductosBase(r.data?.data||[])).catch(e => console.error(e));
   }, []);
+
+  // Limpiar controles al concretar venta
+  useEffect(() => {
+    const handleLimpiar = () => {
+      setClienteSel(null);
+      setQCliente('');
+      setPagos([]);
+      setItems([{ id: Date.now(), tipo: defaultTipo, grupo: defaultTipo === 'VENTA_INSUMOS' ? 'Insumos' : defaultTipo === 'VENTA_PRODUCTOS' ? 'Productos en el local' : '', codigo: '', descripcion: '', cantidad: 1, precioUnitario: '', precioTotal: '' }]);
+      setObs('');
+    };
+    document.addEventListener('caja:limpiarVenta', handleLimpiar);
+    return () => document.removeEventListener('caja:limpiarVenta', handleLimpiar);
+  }, [defaultTipo]);
 
   // Notificar al padre cuando el cliente cambia
   useEffect(() => {
@@ -104,7 +136,7 @@ export default function CajaVentaDirectaTab({
   React.useEffect(() => { if (onTotalChange) onTotalChange(totalPagar, monedaExhibicion); }, [totalPagar, monedaExhibicion]);
 
   const buildPayload = () => ({
-    _clienteNombre: clienteSel?.Nombre || clienteSel?.NombreFantasia || 'Cliente',
+    _clienteNombre: getClienteDisplayName(clienteSel) || 'Cliente',
     header: {
       clienteId: clienteSel?.CliIdCliente,
       tipoDocumento,
@@ -162,7 +194,7 @@ export default function CajaVentaDirectaTab({
       toast.success(`Venta procesada exitosamente. Total cobrado: ${fmt(res.data.totalCobrado)}`);
       if (onVentaExitosa) onVentaExitosa();
       setClienteSel(null); setQCliente(''); setPagos([]);
-      setItems([{ id: Date.now(), tipo: defaultTipo, grupo: '', codigo: '', descripcion: '', cantidad: 1, precioUnitario: '', precioTotal: '' }]);
+      setItems([{ id: Date.now(), tipo: defaultTipo, grupo: defaultTipo === 'VENTA_INSUMOS' ? 'Insumos' : defaultTipo === 'VENTA_PRODUCTOS' ? 'Productos en el local' : '', codigo: '', descripcion: '', cantidad: 1, precioUnitario: '', precioTotal: '' }]);
       setObs('');
     } catch (e) {
       toast.error(e.response?.data?.error || 'Error al procesar la venta');
@@ -177,113 +209,123 @@ export default function CajaVentaDirectaTab({
     return () => document.removeEventListener('caja:confirmarVenta', handler);
   }, [clienteSel, items, tipoDocumento, obs, pagos, cotizacion, monedaExhibicion, onConfirmarExt]);
 
+  const seleccionarCliente = (c) => {
+    setClienteSel(c);
+    setClientesRes([]);
+    setQCliente('');
+  };
+
   return (
-    <div className="flex flex-1 overflow-hidden bg-zinc-50 h-full min-h-0">
-      <div className="flex-1 flex flex-col min-h-0 h-full">
+    <div className="flex flex-col lg:flex-row flex-1 overflow-hidden h-full min-h-0 bg-zinc-100">
+      {/* ── PANEL LATERAL DE CLIENTES ── */}
+      <div className="w-full lg:w-[360px] bg-white border-b lg:border-b-0 lg:border-r border-zinc-200 flex flex-col shrink-0 overflow-y-auto p-4 client-search-container">
+        <h3 className="font-black text-zinc-400 text-[11px] font-archivo uppercase tracking-widest mb-3 flex items-center justify-between">
+          1. Seleccionar Cliente
+          {clienteSel && <span className="text-emerald-600 flex items-center gap-1 text-[9px] font-bold bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-100">Verificado <CheckCircle size={10}/></span>}
+        </h3>
+
+        {!clienteSel ? (
+          <div className="flex flex-col gap-3">
+            <div className="relative flex items-center group/search">
+              <div className="absolute left-4 text-zinc-400 group-focus-within/search:text-brand-cyan transition-colors">
+                <Search size={18} />
+              </div>
+              <input 
+                  value={qCliente} 
+                  onChange={e=>setQCliente(e.target.value)} 
+                  placeholder="Buscar por Nombre, RUC/CI, Tel, IdCliente..." 
+                  className="w-full bg-zinc-50 border border-zinc-200 hover:border-zinc-300 focus:border-brand-cyan focus:bg-white rounded-xl pl-11 pr-4 py-2.5 text-sm font-bold text-zinc-800 placeholder-zinc-400 outline-none transition-all" 
+              />
+              {buscandoCli && <div className="absolute right-4"><Loader2 size={16} className="text-brand-cyan animate-spin" /></div>}
+            </div>
+
+            {/* Listado de tarjetas de clientes encontrados */}
+            <div className="flex flex-col gap-2 mt-2">
+              {clientesRes.length > 0 ? (
+                clientesRes.map(c => (
+                  <div key={c.CliIdCliente} 
+                    onClick={()=>seleccionarCliente(c)} 
+                    className="w-full text-left p-3.5 bg-zinc-50 hover:bg-brand-cyan/5 border border-zinc-200 hover:border-brand-cyan/35 rounded-xl cursor-pointer transition-all flex flex-col gap-1.5 active:scale-[0.98] group"
+                  >
+                    <div className="flex items-start justify-between">
+                      <span className="text-zinc-900 font-extrabold text-sm group-hover:text-brand-cyan transition-colors leading-snug">{getClienteDisplayName(c)}</span>
+                      <span className="text-[9px] bg-zinc-200 text-zinc-600 px-1.5 py-0.5 rounded font-mono font-black">IdCliente: {c.IDCliente || c.CodCliente || c.CliIdCliente}</span>
+                    </div>
+                    {c.Nombre && c.NombreFantasia && c.Nombre.trim() !== c.NombreFantasia.trim() && (
+                      <span className="text-[11px] text-zinc-500 font-semibold italic">"{c.NombreFantasia}"</span>
+                    )}
+                    <div className="flex flex-col gap-1 text-[11px] text-zinc-500 font-medium border-t border-zinc-200/60 pt-1.5 mt-0.5">
+                      {c.CioRuc && <div className="flex items-center gap-1 font-semibold text-zinc-600">RUC / CI: <span className="font-mono text-[10px] text-zinc-950 font-extrabold">{c.CioRuc}</span></div>}
+                      {c.Email && <div className="flex items-center gap-1 truncate">Email: <span className="font-mono text-[10px] text-zinc-700">{c.Email}</span></div>}
+                      {c.TelefonoTrabajo && <div className="flex items-center gap-1 font-semibold text-zinc-600">Tel: <span className="font-mono text-[10px] text-zinc-700 font-bold">{c.TelefonoTrabajo}</span></div>}
+                    </div>
+                  </div>
+                ))
+              ) : qCliente.trim() ? (
+                <div className="text-center py-6 text-zinc-400 text-xs font-semibold">No se encontraron clientes.</div>
+              ) : (
+                <div className="text-center py-6 text-zinc-400 text-xs font-semibold">Use el buscador para listar clientes...</div>
+              )}
+            </div>
+          </div>
+        ) : (
+          /* Cliente Seleccionado */
+          <div className="bg-brand-cyan/5 border border-brand-cyan/20 rounded-xl p-4 shadow-sm flex flex-col gap-3">
+            <div className="flex items-start justify-between">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-lg bg-white flex items-center justify-center text-brand-cyan border border-brand-cyan/10">
+                  <User size={20} />
+                </div>
+                <div>
+                  <p className="text-zinc-900 text-sm font-extrabold leading-tight tracking-tight">{getClienteDisplayName(clienteSel)}</p>
+                  <p className="text-[10px] text-zinc-500 font-bold uppercase tracking-wider mt-0.5 font-mono">
+                    IdCliente: {clienteSel.IDCliente || clienteSel.CodCliente || clienteSel.CliIdCliente}
+                  </p>
+                </div>
+              </div>
+              <button 
+                onClick={()=>setClienteSel(null)} 
+                className="bg-white hover:bg-rose-50 text-zinc-400 hover:text-rose-600 p-1.5 rounded-lg transition-all border border-zinc-200 hover:border-rose-200 shadow-sm"
+                title="Quitar cliente"
+              >
+                <Trash2 size={16} />
+              </button>
+            </div>
+            
+            <div className="flex flex-col gap-1 text-[11px] text-zinc-500 font-medium border-t border-zinc-200/80 pt-2.5">
+              {clienteSel.CioRuc && <div>RUC / CI: <span className="font-mono font-bold text-zinc-800">{clienteSel.CioRuc}</span></div>}
+              {clienteSel.Email && <div className="truncate">Email: <span className="font-mono text-zinc-700">{clienteSel.Email}</span></div>}
+              {clienteSel.TelefonoTrabajo && <div>Teléfono: <span className="font-mono text-zinc-700">{clienteSel.TelefonoTrabajo}</span></div>}
+              {clienteSel.DireccionTrabajo && <div className="leading-tight">Dirección: <span className="text-zinc-700">{clienteSel.DireccionTrabajo}</span></div>}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* ── CONTENIDO PRINCIPAL ── */}
+      <div className="flex-1 flex flex-col min-h-0 h-full overflow-y-auto bg-zinc-50">
         {/* BILLETERA DE CLIENTE STICKY */}
         {clienteSel && (
-          <div className="px-5 py-1 border-b border-zinc-200 bg-white/80  sticky top-0 z-20 shrink-0 shadow-sm">
+          <div className="px-5 py-1 border-b border-zinc-200 bg-white/80 sticky top-0 z-20 shrink-0 shadow-sm">
             <ClienteBilletera 
               clienteId={clienteSel.CliIdCliente} 
-              clienteNombre={clienteSel.Nombre} 
+              clienteNombre={getClienteDisplayName(clienteSel)} 
             />
           </div>
         )}
 
-        <div className="flex-1 p-0 overflow-y-auto flex flex-col">
-          <h2 className="text-lg font-black text-zinc-800 mb-2 px-2 pt-2 flex items-center gap-2 shrink-0">
+        <div className="flex-1 p-4 flex flex-col gap-4">
+          <h2 className="text-lg font-black text-zinc-800 flex items-center gap-2 shrink-0">
             Nuevo Ingreso / Venta de Rollo por Adelantado
             <span className="inline-flex items-center justify-center text-[9px] leading-none bg-brand-cyan/10 text-brand-cyan px-1.5 py-0.5 rounded-full font-black uppercase tracking-widest border border-brand-cyan/20 h-4">POS Express</span>
           </h2>
 
         <div className="flex flex-col flex-1 gap-0 w-full">
 
-          {/* BLOQUE CLIENTE */}
-          <div className="bg-white border border-zinc-200 rounded-none p-3 relative group/cli transition-all shadow-sm">
-            <div className="absolute top-0 left-0 w-1.5 h-full bg-brand-cyan rounded-none opacity-20 group-hover/cli:opacity-100 transition-opacity"></div>
-            <h3 className="font-black text-zinc-400 text-[10px] font-archivo uppercase tracking-widest mb-2 flex items-center justify-between">
-              1. Seleccionar Cliente
-              {clienteSel && <span className="text-emerald-600 flex items-center gap-1.5 font-bold bg-emerald-50 px-3 py-1 rounded-full border border-emerald-100">Cliente Verificado <CheckCircle size={12}/></span>}
-            </h3>
-            
-            {!clienteSel ? (
-              <div className="relative">
-                <div className="flex items-center bg-zinc-50 border-2 border-zinc-100 rounded-2xl px-5 py-2 focus-within:border-brand-cyan focus-within:bg-white focus-within:ring-8 focus-within:ring-brand-cyan/5 transition-all">
-                  <Search size={22} className="text-zinc-400" />
-                  <input 
-                      value={qCliente} 
-                      onChange={e=>setQCliente(e.target.value)} 
-                      placeholder="Buscar por Nombre, RUC o Código..." 
-                      className="w-full bg-transparent text-zinc-800 px-4 py-3 outline-none text-base font-bold placeholder-zinc-400" 
-                  />
-                  {buscandoCli && <Loader2 size={20} className="text-brand-cyan animate-spin" />}
-                </div>
-                
-                {clientesRes.length > 0 && (
-                  <div className="absolute top-full mt-3 left-0 right-0 bg-white border border-zinc-200 rounded-3xl shadow-[0_30px_90px_rgba(15,23,42,0.15)] z-50 max-h-96 overflow-y-auto animate-in fade-in slide-in-from-top-2 duration-200 ring-1 ring-black/5">
-                    <div className="px-6 py-3.5 bg-zinc-50/80 text-[10px] font-black text-zinc-500 uppercase border-b border-zinc-100 flex items-center justify-between">
-                        <span>Resultados de búsqueda</span>
-                        <span className="bg-white text-zinc-600 px-2.5 py-1 rounded-lg border border-zinc-200 shadow-sm">{clientesRes.length}</span>
-                    </div>
-                    {clientesRes.map(c => (
-                      <div key={c.CliIdCliente} 
-                        onClick={()=>{setClienteSel(c); setClientesRes([]); setQCliente('');}} 
-                        className="w-full text-left px-6 py-5 hover:bg-brand-cyan/10 cursor-pointer border-b border-zinc-50 last:border-0 group flex items-center justify-between transition-all active:scale-[0.99]">
-                        <div className="flex items-center gap-5">
-                            <div className="w-12 h-12 rounded-2xl bg-zinc-100 flex items-center justify-center font-black text-zinc-400 group-hover:bg-white group-hover:text-brand-cyan transition-all border border-zinc-200 group-hover:border-brand-cyan/30 shadow-sm group-hover:shadow-md">
-                                {c.Nombre?.[0] || 'C'}
-                            </div>
-                            <div className="flex flex-col gap-1">
-                                <span className="text-zinc-900 font-black group-hover:text-brand-cyan transition-colors text-lg">{c.Nombre}</span>
-                                {c.NombreFantasia && <span className="text-xs text-zinc-500 font-semibold tracking-tight">"{c.NombreFantasia}"</span>}
-                                <div className="flex items-center gap-2.5 mt-1.5">
-                                    <span className="text-[10px] bg-zinc-100 text-zinc-500 px-2.5 py-1 rounded-md font-mono font-black uppercase border border-zinc-200 tracking-tight">ID: {c.CliIdCliente}</span>
-                                    <span className="text-[10px] text-zinc-400 font-bold uppercase tracking-widest">{c.CodCliente || 'Sin Código'}</span>
-                                </div>
-                            </div>
-                        </div>
-                        <div className="opacity-0 group-hover:opacity-100 transition-all translate-x-4 group-hover:translate-x-0">
-                            <div className="bg-brand-cyan p-2.5 rounded-xl shadow-lg shadow-brand-cyan/30">
-                                <ArrowRight size={18} className="text-zinc-800" />
-                            </div>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            ) : (
-              <div className="flex items-center justify-between bg-brand-cyan/5 border-2 border-brand-cyan/20 rounded-2xl p-4 shadow-sm">
-                <div className="flex items-center gap-5">
-                  <div className="w-16 h-16 rounded-3xl bg-white flex items-center justify-center text-brand-cyan shadow-xl border border-brand-cyan/20 ring-4 ring-brand-cyan/10/30">
-                    <User size={32} />
-                  </div>
-                  <div>
-                    <p className="text-zinc-900 text-xl font-black leading-tight tracking-tight">{clienteSel.Nombre}</p>
-                    <p className="text-xs text-zinc-500 font-bold uppercase tracking-widest mt-1">
-                      ID: {clienteSel.CodCliente || clienteSel.CliIdCliente} {clienteSel.NombreFantasia && ` · ${clienteSel.NombreFantasia}`}
-                    </p>
-                  </div>
-                </div>
-                <button 
-                  onClick={()=>setClienteSel(null)} 
-                  className="bg-white hover:bg-rose-50 text-zinc-400 hover:text-rose-600 p-4 rounded-2xl transition-all border border-zinc-200 hover:border-rose-200 shadow-sm hover:shadow-md"
-                  title="Quitar cliente"
-                >
-                  <Trash2 size={24} />
-                </button>
-              </div>
-            )}
-          </div>
-
           {/* BLOQUE ITEMS */}
-          <div className="bg-white border border-zinc-200 border-t-0 rounded-none p-3 shadow-sm flex flex-col flex-1 gap-2 relative overflow-hidden">
+          <div className="bg-white border border-zinc-200 rounded-none p-3 shadow-sm flex flex-col flex-1 gap-2 relative overflow-hidden">
             <div className="flex items-center justify-between border-b border-zinc-100 pb-2">
               <h3 className="font-black text-zinc-400 text-[10px] font-archivo uppercase tracking-widest">2. Conceptos a Cobrar</h3>
-              <div className="flex bg-zinc-100 rounded-xl p-1 border border-zinc-200">
-                <button onClick={()=>setMonedaExhibicion('UYU')} className={`px-4 py-1.5 rounded-lg text-xs font-black transition-all ${monedaExhibicion==='UYU'?'bg-white text-brand-cyan shadow-sm border border-zinc-200':'text-zinc-500 hover:text-zinc-800'}`}>UYU ($)</button>
-                <button onClick={()=>setMonedaExhibicion('USD')} className={`px-4 py-1.5 rounded-lg text-xs font-black transition-all ${monedaExhibicion==='USD'?'bg-white text-emerald-700 shadow-sm border border-zinc-200':'text-zinc-500 hover:text-zinc-800'}`}>USD (US$)</button>
-              </div>
             </div>
 
             <div className="flex flex-col gap-2">
@@ -363,7 +405,7 @@ export default function CajaVentaDirectaTab({
                           
                           let currentMoneda = monedaExhibicion;
                           if (prod && it.codigo === '' && items.length === 1) {
-                             currentMoneda = prod.MonedaBase === 'DOLAR' ? 'USD' : 'UYU';
+                             currentMoneda = (prod.MonedaBase === 'DOLAR' || prod.MonedaBase === 'USD') ? 'USD' : 'UYU';
                              setMonedaExhibicion(currentMoneda);
                           }
 
@@ -378,9 +420,10 @@ export default function CajaVentaDirectaTab({
                             };
                             if ((x.tipo === 'RECURSO' || x.tipo === 'VENTA_GENERICA' || x.tipo === 'VENTA_INSUMOS' || x.tipo === 'VENTA_PRODUCTOS') && prod) {
                                let precio = prod.PrecioBase || 0;
-                               if (prod.MonedaBase === 'DOLAR' && currentMoneda === 'UYU') {
+                               const isProdUSD = prod.MonedaBase === 'DOLAR' || prod.MonedaBase === 'USD';
+                               if (isProdUSD && currentMoneda === 'UYU') {
                                    precio = precio * (cotizacion || 40);
-                               } else if (prod.MonedaBase !== 'DOLAR' && currentMoneda === 'USD') {
+                               } else if (!isProdUSD && currentMoneda === 'USD') {
                                    precio = precio / (cotizacion || 40);
                                }
                                newObj.precioUnitario = Number(precio).toFixed(2);
@@ -479,7 +522,7 @@ export default function CajaVentaDirectaTab({
             </div>
 
             <div className="mt-auto pt-4">
-              <button onClick={()=>setItems(p=>[...p,{ id:Date.now(), tipo:'RECURSO', grupo:'', codigo:'', descripcion:'', cantidad:1, precioTotal:'' }])} 
+              <button onClick={()=>setItems(p=>[...p,{ id:Date.now(), tipo:defaultTipo, grupo: defaultTipo === 'VENTA_INSUMOS' ? 'Insumos' : defaultTipo === 'VENTA_PRODUCTOS' ? 'Productos en el local' : '', codigo:'', descripcion:'', cantidad:1, precioTotal:'' }])} 
                 className="w-full py-2 border-2 border-dashed border-zinc-200 hover:border-brand-cyan hover:bg-brand-cyan/5 rounded-xl flex items-center justify-center gap-2 text-zinc-400 hover:text-brand-cyan font-black transition-all group/add">
                 <div className="w-5 h-5 rounded flex items-center justify-center group-hover/add:bg-brand-cyan group-hover/add:text-white transition-all shadow-sm"><Plus size={12} /></div>
                 Agregar otro concepto a cobrar

@@ -737,7 +737,7 @@ const ModalPago = ({ cuenta, onClose, onSuccess }) => {
 
   const info       = tiposInfo[tipo];
   const colorHeader = { green: 'from-green-500 to-emerald-500', blue: 'from-blue-500 to-cyan-500', amber: 'from-amber-500 to-orange-500', indigo: 'from-indigo-500 to-violet-500', red: 'from-red-500 to-rose-500' }[info.color];
-  const colorBtn   = { green: 'bg-green-600 hover:bg-green-700', blue: 'bg-blue-600 hover:bg-blue-700', amber: 'bg-amber-900/100 hover:bg-amber-600', indigo: 'bg-indigo-600 hover:bg-indigo-700', red: 'bg-red-600 hover:bg-red-700' }[info.color];
+  const colorBtn   = { green: 'bg-green-600 hover:bg-green-700', blue: 'bg-blue-600 hover:bg-blue-700', amber: 'bg-amber-600 hover:bg-amber-700', indigo: 'bg-indigo-600 hover:bg-indigo-700', red: 'bg-red-600 hover:bg-red-700' }[info.color];
 
   // Cargar métodos de pago y monedas desde la BD al montar
   useEffect(() => {
@@ -877,7 +877,7 @@ const ModalPago = ({ cuenta, onClose, onSuccess }) => {
                 )}
                 {/* Aviso conversión cruzada */}
                 {esCruzado && (
-                  <p className="text-[10px] text-amber-600 font-semibold mt-1 bg-amber-900/10 px-2 py-1 rounded">
+                  <p className="text-[10px] text-amber-700 font-semibold mt-1 bg-amber-50 border border-amber-100 px-2 py-1 rounded">
                     ⚡ Pago en {monedaPagoObj?.MonSimbolo} → imputa en {simboloCuenta}
                   </p>
                 )}
@@ -906,7 +906,7 @@ const ModalPago = ({ cuenta, onClose, onSuccess }) => {
 
           {/* Tipo de cambio (solo si es cruzado) */}
           {esCruzado && (
-            <div className="bg-amber-900/10 rounded-xl p-3 border border-amber-200">
+            <div className="bg-amber-50/50 rounded-xl p-3 border border-amber-200">
               <div className="flex items-center justify-between mb-2">
                 <p className="text-xs font-semibold text-amber-800">Tipo de cambio</p>
                 {cotizacion && (
@@ -1418,7 +1418,7 @@ const DeudasPanel = ({ CueIdCuenta, simbolo, onClose }) => {
 
   return (
     <div className="mt-3 rounded-xl border border-slate-200 overflow-hidden">
-      <div className="flex items-center justify-between px-4 py-3 bg-amber-900/100 text-slate-800">
+      <div className="flex items-center justify-between px-4 py-3 bg-slate-800 text-white">
         <div className="flex items-center gap-2"><FileText size={14} /><span className="text-sm font-semibold">Documentos Pendientes</span></div>
         <button onClick={onClose} className="p-1 hover:bg-slate-100 rounded-lg"><X size={14} /></button>
       </div>
@@ -1428,7 +1428,7 @@ const DeudasPanel = ({ CueIdCuenta, simbolo, onClose }) => {
         <div className="divide-y divide-slate-100 max-h-64 overflow-y-auto bg-[#f1f5f9]">
           {deudas.map(d => (
             <div key={d.DDeIdDocumento}
-              className={`flex items-center justify-between px-4 py-3 hover:bg-amber-900/10/30 ${d.DiasVencido > 0 ? 'bg-rose-900/10/30' : ''}`}>
+              className={`flex items-center justify-between px-4 py-3 hover:bg-slate-50 transition-colors ${d.DiasVencido > 0 ? 'bg-rose-50/50' : ''}`}>
               <div className="flex items-center gap-3">
                 <Clock size={13} className={d.DiasVencido > 0 ? 'text-red-500' : 'text-slate-500'} />
                 <div>
@@ -1579,7 +1579,7 @@ const CiclosPanel = ({ cuenta, CliIdCliente, cliente, onClose, onCicloChanged })
                 </div>;
               })()}
               <button onClick={() => abrirModalCierre(cicloAbierto)} disabled={working}
-                className="flex items-center gap-1 text-xs px-3 py-1.5 bg-rose-900/10 text-red-700 border border-red-200 rounded-lg hover:bg-red-100 transition-colors font-medium disabled:opacity-50">
+                className="flex items-center gap-1 text-xs px-3 py-1.5 bg-rose-50 text-rose-700 border border-rose-200 rounded-lg hover:bg-rose-100 transition-colors font-medium disabled:opacity-50">
                 {working ? <RefreshCw size={11} className="animate-spin" /> : <StopCircle size={11} />}Revisar y Cerrar
               </button>
             </div>
@@ -1711,7 +1711,7 @@ const PlanesPanel = ({ cuenta, CliIdCliente, cliente, desde, hasta, onClose, onC
 
                 <div className="h-2 bg-slate-100 rounded-full overflow-hidden mb-2">
                   <div className={`h-full rounded-full transition-all ${
-                    agotado ? 'bg-rose-900/100' : alerta ? 'bg-amber-400' : 'bg-emerald-500'
+                    agotado ? 'bg-rose-600' : alerta ? 'bg-amber-400' : 'bg-emerald-500'
                   }`} style={{ width: `${Math.min(pct, 100)}%` }} />
                 </div>
                 <div className="flex items-center justify-between text-[10px] text-slate-500">
@@ -2408,7 +2408,8 @@ export default function ContabilidadCuentasView() {
 
 
 
-      <div className="h-full bg-[#f1f5f9] p-2 sm:p-4 overflow-y-auto text-slate-700 font-sans custom-scrollbar"><div className="flex gap-6 h-full min-h-0 max-w-[1500px] mx-auto w-full" style={{ maxHeight: 'calc(100vh - 50px)' }}>
+      <div className="h-full bg-[#f1f5f9] p-2 sm:p-4 overflow-hidden text-slate-700 font-sans custom-scrollbar">
+        <div className="flex gap-6 h-full min-h-0 max-w-[1500px] mx-auto w-full">
 
         {/* ── Columna izquierda: lista ────────────────────────────────────── */}
         <div className="w-80 shrink-0 flex flex-col bg-[#f1f5f9] rounded-xl border border-slate-200 shadow-sm overflow-hidden">

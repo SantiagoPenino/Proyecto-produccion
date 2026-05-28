@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { X, Save, Edit2, Trash2, RefreshCw, ChevronDown, AlertTriangle, Hash, Loader2, FileText, Lock, Search, User } from 'lucide-react';
+import { X, Save, Edit2, Trash2, RefreshCw, ChevronDown, AlertTriangle, Hash, Loader2, FileText, Lock, Search, User, UserCheck } from 'lucide-react';
 import api from '../../services/apiClient';
 import { toast } from 'sonner';
 
@@ -19,10 +19,19 @@ const LineaRow = ({ linea, idx, onChange, onDelete }) => {
 
     const handle = (field, value) => {
         const updated = { ...linea, [field]: value };
-        if (field === 'DcdCantidad' || field === 'DcdPrecioUnitario') {
-            const c = field === 'DcdCantidad' ? parseFloat(value) || 0 : parseFloat(updated.DcdCantidad) || 0;
-            const p = field === 'DcdPrecioUnitario' ? parseFloat(value) || 0 : parseFloat(updated.DcdPrecioUnitario) || 0;
-            updated.DcdSubtotal = parseFloat((c * p).toFixed(4));
+        if (field === 'DcdCantidad' || field === 'DcdPrecioUnitario' || field === 'ivaRate') {
+            const c = parseFloat(updated.DcdCantidad) || 0;
+            const p = parseFloat(updated.DcdPrecioUnitario) || 0;
+            const r = (updated.ivaRate !== undefined && updated.ivaRate !== null) ? parseFloat(updated.ivaRate) : 22;
+            const total = c * p;
+            
+            updated.DcdSubtotal = parseFloat((total / (1 + r / 100)).toFixed(4));
+            updated.DcdImpuestos = parseFloat((total - updated.DcdSubtotal).toFixed(4));
+            updated.DcdTotal = parseFloat(total.toFixed(4));
+            
+            if (field === 'DcdPrecioUnitario') {
+                updated.precioNote = 'Modificado manualmente';
+            }
         }
         onChange(idx, updated);
     };
@@ -33,12 +42,12 @@ const LineaRow = ({ linea, idx, onChange, onDelete }) => {
                 <td className="px-3 py-2 w-10 text-center">
                     <Lock size={12} className="text-slate-300 mx-auto" />
                 </td>
-                <td className="px-3 py-2 text-xs font-bold text-slate-500 italic" colSpan={3}>
+                <td className="px-3 py-2 text-xs font-bold text-slate-500 italic" colSpan={5}>
                     {linea.DcdNomItem}
                 </td>
                 <td className="px-3 py-2 text-right">
                     <span className="text-xs font-black text-slate-600 bg-slate-200 px-2 py-1 rounded-lg">
-                        {fmt(linea.DcdSubtotal)}
+                        {fmt(linea.DcdTotal || linea.DcdSubtotal)}
                     </span>
                 </td>
                 <td className="px-2 py-2 w-10" />
@@ -50,13 +59,23 @@ const LineaRow = ({ linea, idx, onChange, onDelete }) => {
         <tr className="border-b border-slate-100 hover:bg-indigo-50/30 transition-colors">
             <td className="px-3 py-2 w-10 text-center text-xs text-slate-400 font-mono">{idx + 1}</td>
             <td className="px-2 py-2">
-                <input
-                    type="text"
-                    value={linea.DcdNomItem || ''}
-                    onChange={e => handle('DcdNomItem', e.target.value)}
-                    className="w-full text-sm border border-slate-200 rounded-lg px-2.5 py-1.5 focus:ring-2 focus:ring-indigo-400 outline-none bg-white"
-                    placeholder="Descripción"
-                />
+                <div className="flex flex-col gap-1.5">
+                    <input
+                        type="text"
+                        value={linea.DcdNomItem || ''}
+                        onChange={e => handle('DcdNomItem', e.target.value)}
+                        list="articulos-list"
+                        className="w-full text-sm border border-slate-200 rounded-lg px-2.5 py-1.5 focus:ring-2 focus:ring-indigo-400 outline-none bg-white font-medium"
+                        placeholder="Descripción"
+                    />
+                    <input
+                        type="text"
+                        value={linea.DcdDscItem || ''}
+                        onChange={e => handle('DcdDscItem', e.target.value)}
+                        className="w-full text-xs border border-dashed border-slate-200 rounded-lg px-2.5 py-1 focus:ring-2 focus:ring-indigo-300 outline-none bg-slate-50/50 text-slate-500 placeholder-slate-400"
+                        placeholder="Detalle adicional / Sublínea"
+                    />
+                </div>
             </td>
             <td className="px-2 py-2 w-24">
                 <input
@@ -75,11 +94,28 @@ const LineaRow = ({ linea, idx, onChange, onDelete }) => {
                     className="w-full text-sm border border-slate-200 rounded-lg px-2 py-1.5 text-right focus:ring-2 focus:ring-indigo-400 outline-none bg-white"
                     min="0" step="0.0001"
                 />
+                {linea.precioNote && (
+                    <span className="text-[10px] text-indigo-500 font-semibold block text-right mt-1 italic" title={linea.precioNote}>
+                        {linea.precioNote}
+                    </span>
+                )}
             </td>
-            <td className="px-2 py-2 w-28 text-right">
-                <span className="text-sm font-semibold text-slate-700 bg-slate-100 px-2.5 py-1.5 rounded-lg block text-right">
-                    {fmt(linea.DcdSubtotal)}
-                </span>
+            <td className="px-2 py-2 w-24">
+                <select
+                    value={linea.ivaRate ?? 22}
+                    onChange={e => handle('ivaRate', e.target.value)}
+                    className="w-full text-sm border border-slate-200 rounded-lg px-2 py-1.5 focus:ring-2 focus:ring-indigo-400 outline-none bg-white text-slate-800"
+                >
+                    <option value={22}>22%</option>
+                    <option value={10}>10%</option>
+                    <option value={0}>0%</option>
+                </select>
+            </td>
+            <td className="px-2 py-2 w-24 text-right font-mono text-xs text-slate-600">
+                {fmt(linea.DcdSubtotal || 0)}
+            </td>
+            <td className="px-2 py-2 w-24 text-right font-mono text-sm font-bold text-slate-900">
+                {fmt(linea.DcdTotal || (parseFloat(linea.DcdCantidad || 0) * parseFloat(linea.DcdPrecioUnitario || 0)))}
             </td>
             <td className="px-2 py-2 w-10 text-center">
                 <button
@@ -98,8 +134,10 @@ const LineaRow = ({ linea, idx, onChange, onDelete }) => {
 export default function CfeEditModal({ doc, onClose, onSuccess }) {
     const [loadingDetalle, setLoadingDetalle] = useState(true);
     const [saving, setSaving] = useState(false);
+    const [updatingClient, setUpdatingClient] = useState(false);
     const [tiposDoc, setTiposDoc] = useState([]);
     const [articulos, setArticulos] = useState([]);
+    const [departamentos, setDepartamentos] = useState([]);
     const [lineas, setLineas] = useState([]);
 
     // Búsqueda de clientes
@@ -107,6 +145,24 @@ export default function CfeEditModal({ doc, onClose, onSuccess }) {
     const [clientesRes, setClientesRes] = useState([]);
     const [buscandoCli, setBuscandoCli] = useState(false);
     const [clienteSel, setClienteSel] = useState(null); // { CliIdCliente, Nombre, NombreFantasia, CioRuc, DireccionTrabajo }
+
+    const getClienteDisplayName = (c) => {
+        if (!c) return '';
+        const nom = c.Nombre?.trim();
+        const fan = c.NombreFantasia?.trim();
+        return nom || fan || 'Cliente sin nombre';
+    };
+
+    // Close dropdown on click outside
+    useEffect(() => {
+        const handleClickOutside = (event) => {
+            if (!event.target.closest('.client-search-container')) {
+                setClientesRes([]);
+            }
+        };
+        document.addEventListener('mousedown', handleClickOutside);
+        return () => document.removeEventListener('mousedown', handleClickOutside);
+    }, []);
 
     const [form, setForm] = useState({
         DocTipo:          doc.DocTipo || '',
@@ -126,15 +182,36 @@ export default function CfeEditModal({ doc, onClose, onSuccess }) {
     const cargar = useCallback(async () => {
         setLoadingDetalle(true);
         try {
-            const [detRes, nomRes, artRes] = await Promise.all([
+            const [detRes, nomRes, artRes, depRes] = await Promise.all([
                 api.get(`/contabilidad/cfe/documentos/${doc.DocIdDocumento}/detalle`),
                 api.get('/contabilidad/cfe/nomencladores'),
                 api.get('/contabilidad/articulos'),
+                api.get('/nomenclators/departments').catch(() => ({ data: { success: false, data: [] } })),
             ]);
 
             // Cargar líneas
             if (detRes.data?.detalles?.length) {
-                setLineas(detRes.data.detalles.map(l => ({ ...l })));
+                setLineas(detRes.data.detalles.map(l => {
+                    const sub = parseFloat(l.DcdSubtotal) || 0;
+                    const imp = parseFloat(l.DcdImpuestos) || 0;
+                    let ivaRate = 22;
+                    if (sub > 0) {
+                        const ratio = (imp / sub) * 100;
+                        if (ratio < 2) ivaRate = 0;
+                        else if (ratio < 15) ivaRate = 10;
+                        else ivaRate = 22;
+                    }
+                    const total = parseFloat(l.DcdTotal) || (sub + imp);
+                    const qty = parseFloat(l.DcdCantidad) || 1;
+                    const priceWithIva = qty > 0 ? (total / qty) : (parseFloat(l.DcdPrecioUnitario) || 0);
+
+                    return {
+                        ...l,
+                        DcdPrecioUnitario: parseFloat(priceWithIva.toFixed(4)),
+                        ivaRate: ivaRate,
+                        precioNote: 'Precio original'
+                    };
+                }));
             }
 
             // Cargar datos del doc desde la API (fuente de verdad)
@@ -168,7 +245,24 @@ export default function CfeEditModal({ doc, onClose, onSuccess }) {
             }
 
             if (nomRes.data?.tiposDocumentos) setTiposDoc(nomRes.data.tiposDocumentos);
-            if (artRes.data) setArticulos(Array.isArray(artRes.data) ? artRes.data : []);
+            
+            // Cargar artículos de forma segura
+            if (artRes.data?.success && Array.isArray(artRes.data.data)) {
+                setArticulos(artRes.data.data);
+            } else if (artRes.data && Array.isArray(artRes.data)) {
+                setArticulos(artRes.data);
+            } else {
+                setArticulos([]);
+            }
+
+            // Cargar departamentos de forma segura
+            if (depRes.data?.success && Array.isArray(depRes.data.data)) {
+                setDepartamentos(depRes.data.data);
+            } else if (depRes.data && Array.isArray(depRes.data)) {
+                setDepartamentos(depRes.data);
+            } else {
+                setDepartamentos([]);
+            }
 
         } catch (err) {
             toast.error('Error cargando detalle: ' + (err.response?.data?.error || err.message));
@@ -193,41 +287,227 @@ export default function CfeEditModal({ doc, onClose, onSuccess }) {
         return () => clearTimeout(t);
     }, [qCliente]);
 
+    const recalcularPrecioLinea = async (idx, currLine, currentClienteId, currentMonedaId) => {
+        if (!currLine.DcdNomItem) return;
+        const match = articulos.find(a => a.NombreArticulo === currLine.DcdNomItem);
+        if (!match) return;
+        try {
+            const res = await api.post('/prices/calculate', {
+                codArticulo: match.CodigoArticulo,
+                cantidad: parseFloat(currLine.DcdCantidad) || 1,
+                clienteId: currentClienteId ? Number(currentClienteId) : null,
+                targetCurrency: currentMonedaId === 2 ? 'USD' : 'UYU'
+            });
+            if (res.data && res.data.precioUnitario !== undefined) {
+                const price = Number(res.data.precioUnitario);
+                setLineas(prev => prev.map((l, i) => {
+                    if (i === idx) {
+                        const qty = parseFloat(l.DcdCantidad) || 0;
+                        const r = (l.ivaRate !== undefined && l.ivaRate !== null) ? parseFloat(l.ivaRate) : 22;
+                        const lineTotal = qty * price;
+                        const lineNeto = lineTotal / (1 + r / 100);
+                        const lineIva = lineTotal - lineNeto;
+                        return {
+                            ...l,
+                            DcdPrecioUnitario: price,
+                            DcdSubtotal: parseFloat(lineNeto.toFixed(4)),
+                            DcdImpuestos: parseFloat(lineIva.toFixed(4)),
+                            DcdTotal: parseFloat(lineTotal.toFixed(4)),
+                            precioNote: res.data.perfilesAplicados?.length 
+                                ? `Tarifa: ${res.data.perfilesAplicados.join(', ')}` 
+                                : 'Precio Base'
+                        };
+                    }
+                    return l;
+                }));
+            }
+        } catch (err) {
+            console.error('Error recalculando precio:', err);
+        }
+    };
+
     // Cuando se selecciona un cliente → actualizar form con sus datos DGI
     const seleccionarCliente = (c) => {
         setClienteSel(c);
         setClientesRes([]);
         setQCliente('');
+        // Buscar el departamento correspondiente por ID para auto-rellenar Ciudad/Depto
+        let deptoNombre = '';
+        if (c.DepartamentoID && departamentos.length > 0) {
+            const found = departamentos.find(d => d.ID === c.DepartamentoID || d.id === c.DepartamentoID);
+            if (found) deptoNombre = found.Nombre;
+        }
+        
+        const newClienteId = c.CliIdCliente;
         setForm(prev => ({
             ...prev,
-            CliIdCliente:    c.CliIdCliente,
-            DocCliNombre:    c.NombreFantasia || c.Nombre || '',
+            CliIdCliente:    newClienteId,
+            DocCliNombre:    getClienteDisplayName(c),
             DocCliDocumento: c.CioRuc || c.IDCliente || '',
             DocCliDireccion: c.DireccionTrabajo || '',
-            DocCliCiudad:    '',
+            DocCliCiudad:    deptoNombre || prev.DocCliCiudad || '',
         }));
+
+        // Recalcular precios de todas las líneas que coincidan con productos (solo nuevas)
+        setTimeout(() => {
+            lineas.forEach((l, idx) => {
+                if (!l.DcdIdDetalle) {
+                    recalcularPrecioLinea(idx, l, newClienteId, form.MonIdMoneda);
+                }
+            });
+        }, 100);
+    };
+
+    const handleSetConsumidorFinal = () => {
+        setForm(prev => ({
+            ...prev,
+            DocCliNombre: 'Consumidor Final',
+            DocCliDocumento: '',
+            DocCliDireccion: '',
+            DocCliCiudad: 'Montevideo'
+        }));
+        toast.info('Campos DGI cambiados a Consumidor Final');
+    };
+
+    const handleRestoreFichaCliente = () => {
+        if (!clienteSel) {
+            toast.error('Debe buscar y seleccionar un cliente primero');
+            return;
+        }
+        let deptoNombre = '';
+        if (clienteSel.DepartamentoID && departamentos.length > 0) {
+            const found = departamentos.find(d => d.ID === clienteSel.DepartamentoID || d.id === clienteSel.DepartamentoID);
+            if (found) deptoNombre = found.Nombre;
+        }
+        setForm(prev => ({
+            ...prev,
+            DocCliNombre: getClienteDisplayName(clienteSel),
+            DocCliDocumento: clienteSel.CioRuc || clienteSel.IDCliente || '',
+            DocCliDireccion: clienteSel.DireccionTrabajo || '',
+            DocCliCiudad: deptoNombre || prev.DocCliCiudad || '',
+        }));
+        toast.success('Datos DGI restablecidos desde la ficha del cliente');
+    };
+
+    const handleUpdateClientDGI = async () => {
+        if (!form.CliIdCliente || Number(form.CliIdCliente) <= 1) {
+            toast.error('Debe seleccionar un cliente válido para actualizar su ficha.');
+            return;
+        }
+        if (!form.DocCliNombre || !form.DocCliDocumento || !form.DocCliDireccion || !form.DocCliCiudad) {
+            toast.error('Todos los campos (Nombre, Documento, Dirección, Ciudad/Depto) son obligatorios para actualizar la ficha.');
+            return;
+        }
+
+        const depObj = departamentos.find(d => d.Nombre === form.DocCliCiudad);
+        const depId = depObj ? depObj.ID || depObj.id : null;
+        if (!depId) {
+            toast.error('El departamento seleccionado no es válido.');
+            return;
+        }
+
+        setUpdatingClient(true);
+        try {
+            await api.patch(`/contabilidad/clientes/${form.CliIdCliente}/dgi`, {
+                Nombre: form.DocCliNombre,
+                Documento: form.DocCliDocumento,
+                Direccion: form.DocCliDireccion,
+                Ciudad: depId
+            });
+            toast.success('Ficha del cliente actualizada con éxito');
+        } catch (err) {
+            toast.error('Error al actualizar ficha: ' + (err.response?.data?.error || err.message));
+        } finally {
+            setUpdatingClient(false);
+        }
     };
 
     // Recalcular totales desde líneas
     useEffect(() => {
         if (!lineas.length) return;
         const editables = lineas.filter(l => !esLineaAgrupacion(l.DcdNomItem));
-        const subtotal = parseFloat(editables.reduce((a, l) => a + (parseFloat(l.DcdSubtotal) || 0), 0).toFixed(2));
-        const iva = parseFloat((subtotal * 0.22).toFixed(2));
-        setForm(prev => ({ ...prev, DocSubtotal: subtotal, DocImpuestos: iva, DocTotal: parseFloat((subtotal + iva).toFixed(2)) }));
+        let total = 0;
+        let subtotal = 0;
+        editables.forEach(l => {
+            const qty = parseFloat(l.DcdCantidad) || 0;
+            const price = parseFloat(l.DcdPrecioUnitario) || 0;
+            const r = (l.ivaRate !== undefined && l.ivaRate !== null) ? parseFloat(l.ivaRate) : 22;
+            const lineTotal = qty * price;
+            const lineNeto = lineTotal / (1 + r / 100);
+            total += lineTotal;
+            subtotal += lineNeto;
+        });
+        setForm(prev => ({
+            ...prev,
+            DocSubtotal: parseFloat(subtotal.toFixed(2)),
+            DocImpuestos: parseFloat((total - subtotal).toFixed(2)),
+            DocTotal: parseFloat(total.toFixed(2))
+        }));
     }, [lineas]);
 
     const setField = (k, v) => setForm(prev => ({ ...prev, [k]: v }));
-    const handleLineaChange = (idx, updated) => setLineas(prev => prev.map((l, i) => i === idx ? updated : l));
+    const handleLineaChange = async (idx, updated) => {
+        const originalLinea = lineas[idx];
+        const descChanged = updated.DcdNomItem !== originalLinea?.DcdNomItem;
+        const cantChanged = updated.DcdCantidad !== originalLinea?.DcdCantidad;
+        const ivaChanged = updated.ivaRate !== originalLinea?.ivaRate;
+
+        setLineas(prev => prev.map((l, i) => i === idx ? updated : l));
+
+        if ((descChanged || cantChanged) && updated.DcdNomItem && !ivaChanged) {
+            const match = articulos.find(a => a.NombreArticulo === updated.DcdNomItem);
+            if (match) {
+                try {
+                    const res = await api.post('/prices/calculate', {
+                        codArticulo: match.CodigoArticulo,
+                        cantidad: parseFloat(updated.DcdCantidad) || 1,
+                        clienteId: form.CliIdCliente ? Number(form.CliIdCliente) : null,
+                        targetCurrency: form.MonIdMoneda === 2 ? 'USD' : 'UYU'
+                    });
+                    
+                    if (res.data && res.data.precioUnitario !== undefined) {
+                        const price = Number(res.data.precioUnitario);
+                        setLineas(prev => prev.map((l, i) => {
+                            if (i === idx) {
+                                const qty = parseFloat(l.DcdCantidad) || 0;
+                                const r = (l.ivaRate !== undefined && l.ivaRate !== null) ? parseFloat(l.ivaRate) : 22;
+                                const lineTotal = qty * price;
+                                const lineNeto = lineTotal / (1 + r / 100);
+                                const lineIva = lineTotal - lineNeto;
+                                return {
+                                    ...l,
+                                    DcdPrecioUnitario: price,
+                                    DcdSubtotal: parseFloat(lineNeto.toFixed(4)),
+                                    DcdImpuestos: parseFloat(lineIva.toFixed(4)),
+                                    DcdTotal: parseFloat(lineTotal.toFixed(4)),
+                                    precioNote: res.data.perfilesAplicados?.length 
+                                        ? `Tarifa: ${res.data.perfilesAplicados.join(', ')}` 
+                                        : 'Precio Base'
+                                };
+                            }
+                            return l;
+                        }));
+                        toast.success(`Precio cargado: ${form.MonIdMoneda === 2 ? 'U$S' : '$'} ${price} (Perfil: ${res.data.perfilesAplicados?.join(', ') || 'Precio Base'})`);
+                    }
+                } catch (err) {
+                    console.error('Error calculando precio:', err);
+                }
+            }
+        }
+    };
     const handleEliminar = (idx) => setLineas(prev => prev.filter((_, i) => i !== idx));
 
     const handleAddLinea = () => {
         setLineas(prev => [...prev, {
             DcdIdDetalle: null,
             DcdNomItem: '',
+            DcdDscItem: '',
             DcdCantidad: 1,
             DcdPrecioUnitario: 0,
-            DcdSubtotal: 0
+            DcdSubtotal: 0,
+            DcdImpuestos: 0,
+            DcdTotal: 0,
+            ivaRate: 22
         }]);
     };
 
@@ -260,9 +540,12 @@ export default function CfeEditModal({ doc, onClose, onSuccess }) {
                 lineas: lineas.map(l => ({
                     DcdIdDetalle:       l.DcdIdDetalle,
                     DcdNomItem:         l.DcdNomItem,
+                    DcdDscItem:         l.DcdDscItem || '',
                     DcdCantidad:        parseFloat(l.DcdCantidad) || 1,
                     DcdPrecioUnitario:  parseFloat(l.DcdPrecioUnitario) || 0,
                     DcdSubtotal:        parseFloat(l.DcdSubtotal) || 0,
+                    DcdImpuestos:       parseFloat(l.DcdImpuestos) || 0,
+                    DcdTotal:           parseFloat(l.DcdTotal) || 0,
                     _agrupacion:        esLineaAgrupacion(l.DcdNomItem),
                 })),
                 DocCliNombre:    form.DocCliNombre,
@@ -347,7 +630,18 @@ export default function CfeEditModal({ doc, onClose, onSuccess }) {
                             <div className="relative">
                                 <select
                                     value={form.MonIdMoneda}
-                                    onChange={e => setField('MonIdMoneda', parseInt(e.target.value))}
+                                    onChange={e => {
+                                        const newMonId = parseInt(e.target.value);
+                                        setField('MonIdMoneda', newMonId);
+                                        // Recalcular precios de todas las líneas que coincidan con productos (solo nuevas)
+                                        setTimeout(() => {
+                                            lineas.forEach((l, idx) => {
+                                                if (!l.DcdIdDetalle) {
+                                                    recalcularPrecioLinea(idx, l, form.CliIdCliente, newMonId);
+                                                }
+                                            });
+                                        }, 100);
+                                    }}
                                     className="w-full text-sm border-2 border-slate-200 rounded-xl px-3 py-2.5 pr-8 bg-white focus:ring-2 focus:ring-indigo-500 focus:border-indigo-400 outline-none appearance-none font-semibold"
                                 >
                                     <option value={1}>$ — Peso Uruguayo (UYU)</option>
@@ -369,7 +663,7 @@ export default function CfeEditModal({ doc, onClose, onSuccess }) {
                                     <div className="flex items-center gap-2 min-w-0">
                                         <User size={14} className="text-indigo-500 shrink-0" />
                                         <div className="min-w-0">
-                                            <p className="text-sm font-black text-indigo-900 truncate">{clienteSel.NombreFantasia || clienteSel.Nombre}</p>
+                                            <p className="text-sm font-black text-indigo-900 truncate">{getClienteDisplayName(clienteSel)}</p>
                                             <p className="text-[10px] text-indigo-400 font-mono">ID: {clienteSel.CliIdCliente} {clienteSel.CioRuc ? `· RUT: ${clienteSel.CioRuc}` : ''}</p>
                                         </div>
                                     </div>
@@ -383,7 +677,7 @@ export default function CfeEditModal({ doc, onClose, onSuccess }) {
                                 </div>
                             ) : (
                                 /* Buscador de cliente */
-                                <div className="relative">
+                                <div className="relative client-search-container">
                                     <div className="flex items-center border-2 border-slate-200 rounded-xl px-3 py-2 focus-within:border-indigo-400 bg-white transition-all">
                                         <Search size={14} className="text-slate-400 shrink-0" />
                                         <input
@@ -403,10 +697,11 @@ export default function CfeEditModal({ doc, onClose, onSuccess }) {
                                                     className="flex items-center gap-3 px-4 py-3 hover:bg-indigo-50 cursor-pointer border-b border-slate-50 last:border-0 transition-colors"
                                                 >
                                                     <div className="w-8 h-8 rounded-xl bg-indigo-100 flex items-center justify-center font-black text-indigo-600 text-sm shrink-0">
-                                                        {(c.NombreFantasia || c.Nombre)?.[0] || 'C'}
+                                                        {getClienteDisplayName(c)[0] || 'C'}
                                                     </div>
                                                     <div>
-                                                        <p className="text-sm font-bold text-slate-800">{c.NombreFantasia || c.Nombre}</p>
+                                                        <p className="text-sm font-bold text-slate-800">{getClienteDisplayName(c)}</p>
+                                                        {c.Nombre && c.NombreFantasia && c.Nombre.trim() !== c.NombreFantasia.trim() && <p className="text-xs text-slate-400 font-medium italic">"{c.NombreFantasia}"</p>}
                                                         <p className="text-[10px] text-slate-400 font-mono">ID: {c.CliIdCliente} {c.CioRuc ? `· ${c.CioRuc}` : ''}</p>
                                                     </div>
                                                 </div>
@@ -431,7 +726,42 @@ export default function CfeEditModal({ doc, onClose, onSuccess }) {
                     {/* ── Datos DGI del Comprobante ── */}
                     <div className="bg-slate-50 border border-slate-200 rounded-2xl p-4">
                         <div className="flex justify-between items-center mb-3">
-                            <h3 className="text-[11px] font-black uppercase tracking-widest text-slate-500">Datos DGI del Comprobante</h3>
+                            <div className="flex items-center gap-2">
+                                <h3 className="text-[11px] font-black uppercase tracking-widest text-slate-500">Datos DGI del Comprobante</h3>
+                                <div className="flex items-center gap-2">
+                                    <button
+                                        type="button"
+                                        onClick={handleSetConsumidorFinal}
+                                        className="px-2.5 py-1 rounded-lg text-[10px] font-bold text-purple-700 bg-purple-50 border border-purple-200 hover:bg-purple-100 hover:border-purple-300 transition-colors cursor-pointer"
+                                    >
+                                        Consumidor Final
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={handleRestoreFichaCliente}
+                                        disabled={!clienteSel}
+                                        className="px-2.5 py-1 rounded-lg text-[10px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 hover:bg-emerald-100 hover:border-emerald-300 transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                                    >
+                                        Ficha Cliente
+                                    </button>
+                                    
+                                    {form.CliIdCliente && Number(form.CliIdCliente) > 1 && (
+                                        <button
+                                            type="button"
+                                            onClick={handleUpdateClientDGI}
+                                            disabled={updatingClient}
+                                            className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[10px] font-bold text-indigo-700 bg-indigo-50 border border-indigo-200 hover:bg-indigo-100 hover:border-indigo-300 transition-colors cursor-pointer disabled:opacity-50"
+                                        >
+                                            {updatingClient ? (
+                                                <Loader2 size={11} className="animate-spin" />
+                                            ) : (
+                                                <UserCheck size={11} />
+                                            )}
+                                            Actualizar Ficha
+                                        </button>
+                                    )}
+                                </div>
+                            </div>
                             {form.DocTipo?.includes('TICKET') && form.MonIdMoneda === 1 && form.DocTotal > DGI_UMBRAL_UYU && (
                                 <span className="text-[10px] bg-amber-100 text-amber-700 font-bold px-2 py-0.5 rounded-lg border border-amber-200">RUT/CI OBLIGATORIO (&gt;{DGI_UMBRAL_UYU} UYU)</span>
                             )}
@@ -454,8 +784,22 @@ export default function CfeEditModal({ doc, onClose, onSuccess }) {
                             </div>
                             <div className="col-span-1">
                                 <label className="block text-[10px] font-black uppercase tracking-wider text-slate-400 mb-1">Ciudad / Depto</label>
-                                <input type="text" value={form.DocCliCiudad} onChange={e => setField('DocCliCiudad', e.target.value)}
-                                    className="w-full text-xs border border-slate-200 rounded-lg px-2.5 py-1.5 bg-white focus:ring-2 focus:ring-indigo-400 outline-none" />
+                                <div className="relative">
+                                    <select
+                                        value={form.DocCliCiudad}
+                                        onChange={e => setField('DocCliCiudad', e.target.value)}
+                                        className="w-full text-xs border border-slate-200 rounded-lg px-2.5 py-1.5 bg-white focus:ring-2 focus:ring-indigo-400 outline-none appearance-none pr-6 font-medium text-slate-700 font-sans"
+                                    >
+                                        <option value="">— Seleccionar —</option>
+                                        {departamentos.map(dep => (
+                                            <option key={dep.ID || dep.id} value={dep.Nombre}>{dep.Nombre}</option>
+                                        ))}
+                                        {form.DocCliCiudad && !departamentos.find(d => d.Nombre === form.DocCliCiudad) && (
+                                            <option value={form.DocCliCiudad}>{form.DocCliCiudad}</option>
+                                        )}
+                                    </select>
+                                    <ChevronDown size={10} className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -464,7 +808,9 @@ export default function CfeEditModal({ doc, onClose, onSuccess }) {
                     <div>
                         <datalist id="articulos-list">
                             {articulos.map((art, i) => (
-                                <option key={i} value={art.Descripcion || art.Material} />
+                                <option key={art.IDArticulo || i} value={art.NombreArticulo}>
+                                    {art.CodigoArticulo ? `[${art.CodigoArticulo}]` : ''}
+                                </option>
                             ))}
                         </datalist>
 
@@ -495,9 +841,11 @@ export default function CfeEditModal({ doc, onClose, onSuccess }) {
                                             <tr className="text-[10px] font-black uppercase tracking-widest text-slate-500">
                                                 <th className="px-3 py-3 w-10 text-center">#</th>
                                                 <th className="px-2 py-3">Descripción</th>
-                                                <th className="px-2 py-3 w-24 text-right">Cantidad</th>
-                                                <th className="px-2 py-3 w-28 text-right">P. Unitario</th>
-                                                <th className="px-2 py-3 w-28 text-right">Subtotal</th>
+                                                <th className="px-2 py-3 w-20 text-right">Cantidad</th>
+                                                <th className="px-2 py-3 w-24 text-right">P. Unitario</th>
+                                                <th className="px-2 py-3 w-20 text-center">IVA %</th>
+                                                <th className="px-2 py-3 w-24 text-right">Subtotal Neto</th>
+                                                <th className="px-2 py-3 w-24 text-right">Total con IVA</th>
                                                 <th className="px-2 py-3 w-10" />
                                             </tr>
                                         </thead>

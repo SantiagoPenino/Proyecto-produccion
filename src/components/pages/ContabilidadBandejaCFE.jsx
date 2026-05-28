@@ -585,8 +585,21 @@ const ContabilidadBandejaCFE = () => {
                                             {doc.CliRUT && <div className="text-xs text-gray-400">RUT: {doc.CliRUT}</div>}
                                         </td>
                                         <td className="px-6 py-4 whitespace-nowrap text-sm font-semibold text-gray-900">
-                                            {doc.MonIdMoneda === 1 ? 'UYU ' : 'USD '}
-                                            {Number(doc.DocTotal).toLocaleString('es-UY', { minimumFractionDigits: 2 })}
+                                            <div>
+                                                {doc.MonIdMoneda === 1 ? 'UYU ' : 'USD '}
+                                                {Number(doc.DocTotal).toLocaleString('es-UY', { minimumFractionDigits: 2 })}
+                                            </div>
+                                            <div className="mt-1">
+                                                {doc.DocPagado ? (
+                                                    <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-green-100 text-green-800" title={doc.MetodoPagoNombre || ''}>
+                                                        Contado {doc.MetodoPagoNombre ? `(${doc.MetodoPagoNombre.trim()})` : ''}
+                                                    </span>
+                                                ) : (
+                                                    <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-slate-100 text-slate-800">
+                                                        Crédito
+                                                    </span>
+                                                )}
+                                            </div>
                                         </td>
                                         <td className="px-6 py-4 whitespace-nowrap">
                                             {getStatusBadge(doc.CfeEstado)}

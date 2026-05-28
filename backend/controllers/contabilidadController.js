@@ -1378,7 +1378,15 @@ exports.getClientesActivos = async (req, res) => {
     const request = pool.request();
 
     const filtroNombre = q.trim()
-      ? `AND (c.Nombre LIKE @Q OR c.NombreFantasia LIKE @Q OR CAST(c.CliIdCliente AS VARCHAR) = @Qexact)`
+      ? `AND (
+          c.Nombre LIKE @Q 
+          OR c.NombreFantasia LIKE @Q 
+          OR c.Email LIKE @Q 
+          OR c.TelefonoTrabajo LIKE @Q 
+          OR c.CioRuc LIKE @Q 
+          OR CAST(c.CliIdCliente AS VARCHAR) = @Qexact
+          OR CAST(c.CodCliente AS VARCHAR) = @Qexact
+         )`
       : '';
     if (q.trim()) {
       request.input('Q',      sql.NVarChar(200), `%${q.trim()}%`);
@@ -1390,22 +1398,24 @@ exports.getClientesActivos = async (req, res) => {
       const result = await request.query(`
         SELECT DISTINCT
           c.CliIdCliente,
-          c.Nombre,
-          c.NombreFantasia,
-          c.Email,
+          RTRIM(LTRIM(c.Nombre)) AS Nombre,
+          RTRIM(LTRIM(c.NombreFantasia)) AS NombreFantasia,
+          RTRIM(LTRIM(c.Email)) AS Email,
           c.CodCliente,
+          RTRIM(LTRIM(c.IDCliente)) AS IDCliente,
           c.TClIdTipoCliente,
-          c.CioRuc,
-          c.DireccionTrabajo,
+          RTRIM(LTRIM(c.CioRuc)) AS CioRuc,
+          RTRIM(LTRIM(c.DireccionTrabajo)) AS DireccionTrabajo,
           c.DepartamentoID,
+          RTRIM(LTRIM(c.TelefonoTrabajo)) AS TelefonoTrabajo,
           COUNT(DISTINCT cc.CueIdCuenta) AS TotalCuentas
         FROM      dbo.CuentasCliente cc WITH(NOLOCK)
         JOIN      dbo.Clientes        c  WITH(NOLOCK) ON c.CliIdCliente = cc.CliIdCliente
         WHERE cc.CueActiva = 1
           AND cc.CueTipo NOT IN ('USD','UYU','ARS','EUR','PYG','BRL')
           ${filtroNombre}
-        GROUP BY c.CliIdCliente, c.Nombre, c.NombreFantasia, c.Email, c.CodCliente, c.TClIdTipoCliente, c.CioRuc, c.DireccionTrabajo, c.DepartamentoID
-        ORDER BY c.Nombre
+        GROUP BY c.CliIdCliente, c.Nombre, c.NombreFantasia, c.Email, c.CodCliente, c.IDCliente, c.TClIdTipoCliente, c.CioRuc, c.DireccionTrabajo, c.DepartamentoID, c.TelefonoTrabajo
+        ORDER BY RTRIM(LTRIM(c.Nombre))
       `);
       return res.json({ success: true, data: result.recordset });
     }
@@ -1415,17 +1425,19 @@ exports.getClientesActivos = async (req, res) => {
       const result = await request.query(`
         SELECT TOP 50
           c.CliIdCliente,
-          c.Nombre,
-          c.NombreFantasia,
-          c.Email,
+          RTRIM(LTRIM(c.Nombre)) AS Nombre,
+          RTRIM(LTRIM(c.NombreFantasia)) AS NombreFantasia,
+          RTRIM(LTRIM(c.Email)) AS Email,
           c.CodCliente,
+          RTRIM(LTRIM(c.IDCliente)) AS IDCliente,
           c.TClIdTipoCliente,
-          c.CioRuc,
-          c.DireccionTrabajo,
-          c.DepartamentoID
+          RTRIM(LTRIM(c.CioRuc)) AS CioRuc,
+          RTRIM(LTRIM(c.DireccionTrabajo)) AS DireccionTrabajo,
+          c.DepartamentoID,
+          RTRIM(LTRIM(c.TelefonoTrabajo)) AS TelefonoTrabajo
         FROM dbo.Clientes c WITH(NOLOCK)
         WHERE 1=1 ${filtroNombre}
-        ORDER BY c.Nombre
+        ORDER BY RTRIM(LTRIM(c.Nombre))
       `);
       return res.json({ success: true, data: result.recordset });
     }
@@ -1436,14 +1448,16 @@ exports.getClientesActivos = async (req, res) => {
 
       SELECT
         c.CliIdCliente,
-        c.Nombre,
-        c.NombreFantasia,
-        c.Email,
+        RTRIM(LTRIM(c.Nombre)) AS Nombre,
+        RTRIM(LTRIM(c.NombreFantasia)) AS NombreFantasia,
+        RTRIM(LTRIM(c.Email)) AS Email,
         c.CodCliente,
+        RTRIM(LTRIM(c.IDCliente)) AS IDCliente,
         c.TClIdTipoCliente,
-        c.CioRuc,
-        c.DireccionTrabajo,
+        RTRIM(LTRIM(c.CioRuc)) AS CioRuc,
+        RTRIM(LTRIM(c.DireccionTrabajo)) AS DireccionTrabajo,
         c.DepartamentoID,
+        RTRIM(LTRIM(c.TelefonoTrabajo)) AS TelefonoTrabajo,
         COUNT(DISTINCT cc.CueIdCuenta)                                                           AS TotalCuentas,
         ISNULL(SUM(CASE WHEN cc.MonIdMoneda = 2 THEN cc.CueSaldoActual * @TC ELSE cc.CueSaldoActual END), 0) AS SaldoTotal,
         ISNULL(SUM(CASE WHEN cc.MonIdMoneda = 2 THEN dd.DDeImportePendiente * @TC ELSE dd.DDeImportePendiente END), 0) AS DeudaTotal,
@@ -1465,8 +1479,8 @@ exports.getClientesActivos = async (req, res) => {
             ${(q.trim() || todos === 'true') ? "OR 1=1" : ""}
         )
         ${filtroNombre}
-      GROUP BY c.CliIdCliente, c.Nombre, c.NombreFantasia, c.Email, c.CodCliente, c.TClIdTipoCliente, c.CioRuc, c.DireccionTrabajo, c.DepartamentoID
-      ORDER BY ABS(SUM(cc.CueSaldoActual)) DESC, c.Nombre
+      GROUP BY c.CliIdCliente, c.Nombre, c.NombreFantasia, c.Email, c.CodCliente, c.IDCliente, c.TClIdTipoCliente, c.CioRuc, c.DireccionTrabajo, c.DepartamentoID, c.TelefonoTrabajo
+      ORDER BY ABS(SUM(cc.CueSaldoActual)) DESC, RTRIM(LTRIM(c.Nombre))
     `);
 
     res.json({ success: true, data: result.recordset });

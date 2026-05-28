@@ -7,10 +7,11 @@ import Swal from 'sweetalert2';
 import { useNavigate } from 'react-router-dom';
 import {
   ShoppingCart, Plus, Trash2, RefreshCw, Loader2,
-  CreditCard, CheckCircle, AlertCircle,
+  CreditCard, CheckCircle, AlertCircle, AlertTriangle,
   FileText, User, Phone, Search, X,
-  Zap, ArrowRight, ChevronRight, LayoutGrid, TrendingDown, Hash, History, Wallet, Tag, FileMinus,
-  ArrowDownCircle, ArrowUpCircle, ShieldCheck, DoorClosed, LockKeyhole, DollarSign, BookOpen, Power, Calendar, ShoppingBag
+  Zap, ArrowRight, ChevronRight, LayoutGrid, TrendingDown, TrendingUp, Hash, History, Wallet, Tag, FileMinus,
+  ArrowDownCircle, ArrowUpCircle, ShieldCheck, DoorClosed, LockKeyhole, DollarSign, BookOpen, Power, Calendar, ShoppingBag,
+  Landmark, Package
 } from 'lucide-react';
 import CajaArqueoModal from './CajaArqueoModal';
 import CajaVentaDirectaTab from './CajaVentaDirectaTab';
@@ -22,6 +23,7 @@ import CajaOtrosIngresosTab from './CajaOtrosIngresosTab';
 import CajaPanelPago from './CajaPanelPago';
 import TicketImpresion from '../common/TicketImpresion';
 import ClienteBilletera from '../common/ClienteBilletera';
+import ChequeRecibirModal from './tesoreria/ChequeRecibirModal';
 import { CustomSelect } from '../../client-portal/pautas/CustomSelect';
 import { Listbox } from '@headlessui/react';
 import { ChevronDown, Check } from 'lucide-react';
@@ -116,6 +118,9 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
   const [numDocCobro, setNumDocCobro] = useState('');
   const [numDocCobroPredict, setNumDocCobroPredict] = useState('');
   const [obsCobro, setObsCobro] = useState('');
+  const [efectivoRecibido, setEfectivoRecibido] = useState('');
+  const [chequeIndexActivo, setChequeIndexActivo] = useState(null);
+  const [searchSituacionInput, setSearchSituacionInput] = useState('');
   const [procesandoCobro, setProcesandoCobro] = useState(false);
   const [motorPagos, setMotorPagos] = useState([{ id: Date.now(), metodoPagoId: 1, moneda: 'UYU', monedaId: 1, monto: '' }]);
   const [motorTipoDoc, setMotorTipoDoc] = useState('40');
@@ -199,7 +204,12 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
       </body></html>`);
     win.document.close();
     win.focus();
-    setTimeout(() => { win.print(); win.close(); }, 400);
+    win.addEventListener('afterprint', () => {
+      win.close();
+    });
+    setTimeout(() => {
+      win.print();
+    }, 1000);
   };
 
   const [resumenCierre, setResumenCierre] = useState(null);
@@ -216,9 +226,52 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
     10: '', 5: '', 2: '', 1: ''
   });
 
+  const [denominacionesUSD, setDenominacionesUSD] = useState({
+    100: '', 50: '', 20: '', 10: '', 5: '', 2: '', 1: ''
+  });
+
+  const [monedaCierre, setMonedaCierre] = useState('UYU'); // 'UYU' o 'USD'
+  const [movimientosTurno, setMovimientosTurno] = useState([]);
+
   const totalDenominaciones = useMemo(() => {
     return Object.entries(denominaciones).reduce((acc, [den, qty]) => acc + (parseFloat(den) * (parseInt(qty) || 0)), 0);
   }, [denominaciones]);
+
+  const totalDenominacionesUSD = useMemo(() => {
+    return Object.entries(denominacionesUSD).reduce((acc, [den, qty]) => acc + (parseFloat(den) * (parseInt(qty) || 0)), 0);
+  }, [denominacionesUSD]);
+
+  // Expected USD and UYU cash drawer balance calculations
+  const UYUUSD_Totals = useMemo(() => {
+    let cashIngressUYU = 0;
+    let cashEgressUYU = 0;
+    let cashIngressUSD = 0;
+    let cashEgressUSD = 0;
+
+    movimientosTurno.forEach(m => {
+      const isEgreso = m.TipoOperacion === 'EGRESO';
+      const fp = m.MedioDePago || 'INDEFINIDO';
+      const isUSD = m.Moneda === 'USD';
+      const isCash = /efectivo|contado/i.test(fp);
+
+      if (isCash) {
+        if (isEgreso) {
+          if (isUSD) cashEgressUSD += m.Salida;
+          else cashEgressUYU += m.Salida;
+        } else {
+          if (isUSD) cashIngressUSD += m.Entrada;
+          else cashIngressUYU += m.Entrada;
+        }
+      }
+    });
+
+    return {
+      cashIngressUYU,
+      cashEgressUYU,
+      cashIngressUSD,
+      cashEgressUSD,
+    };
+  }, [movimientosTurno]);
 
   useEffect(() => {
     if (totalDenominaciones > 0) {
@@ -239,6 +292,24 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
   const [procesandoOp, setProcesandoOp] = useState(false);
   const [busquedaClientes, setBusquedaClientes] = useState([]);
   const [buscandoCliente, setBuscandoCliente] = useState(false);
+
+  const getClienteDisplayName = (c) => {
+    if (!c) return '';
+    const nom = c.Nombre?.trim();
+    const fan = c.NombreFantasia?.trim();
+    return nom || fan || 'Cliente sin nombre';
+  };
+
+  // Close dropdown on click outside
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (!event.target.closest('.client-search-container')) {
+        setBusquedaClientes([]);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
 
   const [ventaClienteId, setVentaClienteId] = useState('');
   const [ventaClienteNombre, setVentaClienteNombre] = useState('');
@@ -322,6 +393,39 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
     setLoadingCot(false);
   };
 
+  const handleSearchSituacion = async (val) => {
+    if (!val || val.length < 2) return toast.warning('Ingresá al menos 2 caracteres');
+    try {
+      const res = await api.get(`/apiordenesRetiro/mostrador/buscar?q=${encodeURIComponent(val)}`);
+      const data = res.data || {};
+      const combined = [
+        ...(data.retiroRows || []),
+        ...(data.sinRetiro || []).map(o => ({
+          OReIdOrdenRetiro: o.OrdIdOrden,
+          ordenDeRetiro: o.OrdCodigoOrden,
+          CliNombre: o.CliNombre,
+          CliCodigo: o.CliCodigo,
+          CliIdCliente: o.CliIdCliente || null,
+          OReCostoTotalOrden: o.OrdCostoFinal,
+          Pagada: o.Pagada,
+          estadoRetiro: o.estadoOrden,
+          OReFechaAlta: o.OReFechaAlta || null,
+          orders: [{
+            orderNumber: o.OrdCodigoOrden,
+            orderEstado: o.estadoOrden,
+            orderCosto: o.MonSimbolo ? `${o.MonSimbolo} ${parseFloat(o.OrdCostoFinal).toFixed(2)}` : `$ ${parseFloat(o.OrdCostoFinal).toFixed(2)}`,
+            monedaId: (o.MonSimbolo && o.MonSimbolo.includes('US')) ? 2 : 1
+          }]
+        }))
+      ];
+      setRetiros(combined);
+      setSearchTerm(val);
+      toast.success(`Resultados para "${val}"`);
+    } catch {
+      toast.error('Error en búsqueda global');
+    }
+  };
+
   const handleAbrirCaja = async () => {
     try {
       const res = await api.post('/contabilidad/caja/sesion/abrir', { montoInicial });
@@ -343,6 +447,12 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
         const path = `/contabilidad/caja/sesion/${sesion.StuIdSesion}/resumen`;
         const res = await api.get(path);
         setResumenCierre(res.data);
+        try {
+          const resMovs = await api.get('/contabilidad/caja/movimientos-turno');
+          setMovimientosTurno(resMovs.data.movimientos || []);
+        } catch (e) {
+          console.error('Error fetching movements for closure', e);
+        }
       }
     } catch {
       toast.error('No se pudo cargar el resumen/movimientos.');
@@ -358,12 +468,39 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
 
   const handleCerrarCaja = async () => {
     if (!cierreMontoFisico) return toast.warning('Ingrese el efectivo contado final.');
+    
+    // Auto-append USD desglose and difference details to observations
+    let finalObs = cierreObs;
+    const expectedUSD = UYUUSD_Totals.cashIngressUSD - UYUUSD_Totals.cashEgressUSD;
+    const diffUSD = totalDenominacionesUSD - expectedUSD;
+    
+    if (totalDenominacionesUSD > 0 || expectedUSD > 0) {
+      const formattedDesgloseUSD = Object.entries(denominacionesUSD)
+        .filter(([_, cant]) => cant && parseInt(cant) > 0)
+        .map(([den, cant]) => `U$S ${den}x${cant}`)
+        .join(', ');
+      
+      const usdAuditMessage = `\n[AUDITORÍA USD - Físico: U$S ${fmt(totalDenominacionesUSD)} | Esperado: U$S ${fmt(expectedUSD)} | Dif: ${diffUSD >= 0 ? '+' : ''}${fmt(diffUSD)} (${Math.abs(diffUSD) < 0.05 ? 'BALANCEADO' : diffUSD > 0 ? 'SOBRANTE' : 'FALTANTE'}) | Desglose: ${formattedDesgloseUSD || 'Sin desglose'}]`;
+      finalObs = finalObs ? `${finalObs}${usdAuditMessage}` : usdAuditMessage.trim();
+    }
+
     try {
       await api.post(`/contabilidad/caja/sesion/${sesion.StuIdSesion}/cerrar`, {
-        montoFinal: parseFloat(cierreMontoFisico), observaciones: cierreObs
+        montoFinal: parseFloat(cierreMontoFisico), observaciones: finalObs
       });
       toast.success('Sesión de caja cerrada.');
       setSesion(null); setModalApertura(true); setActiveTab('COBRO');
+      
+      // Clear breakdown states on close
+      setDenominaciones({
+        2000: '', 1000: '', 500: '', 200: '', 100: '', 50: '', 20: '',
+        10: '', 5: '', 2: '', 1: ''
+      });
+      setDenominacionesUSD({
+        100: '', 50: '', 20: '', 10: '', 5: '', 2: '', 1: ''
+      });
+      setMonedaCierre('UYU');
+      setCierreObs('');
     } catch (e) { toast.error(e.response?.data?.error || 'Error al cerrar caja'); }
   };
 
@@ -387,6 +524,16 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
     const id = r.OReIdOrdenRetiro || r.ordenDeRetiro;
     setSeleccionados(prev => {
       if (prev.find(s => s.retiroId === id)) return prev.filter(s => s.retiroId !== id);
+      
+      // Validar si es del mismo cliente
+      if (prev.length > 0) {
+        const first = prev[0].retiro;
+        if (first.CliIdCliente !== r.CliIdCliente) {
+          toast.warning('No se pueden agrupar órdenes de diferentes clientes en un mismo cobro.');
+          return prev;
+        }
+      }
+      
       return [...prev, { retiroId: id, retiro: r, ordenesIds: getOrdenes(r).filter(o => !o.orderIdMetodoPago && !o.orderPago).map(o => o.orderId), codigoRef: r.ordenDeRetiro, descripcion: r.CliNombre || '' }];
     });
   };
@@ -401,6 +548,36 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
     return { bruto: b, ajusteTotal: ajT, neto: b + ajT };
   }, [seleccionados, ajustes, monedaExhibicion, calcularMontoPorMoneda]);
 
+  const totalNetoUYU = useMemo(() => {
+    let b = 0, ajT = 0;
+    seleccionados.forEach(s => {
+      b += calcularMontoPorMoneda(s.retiro, 'UYU');
+      const a = parseFloat(ajustes[s.retiroId]?.ajuste || 0);
+      if (monedaExhibicion === 'USD' && cotizacion) {
+        ajT += isNaN(a) ? 0 : a * cotizacion;
+      } else {
+        ajT += isNaN(a) ? 0 : a;
+      }
+    });
+    return Math.max(0, b + ajT);
+  }, [seleccionados, ajustes, monedaExhibicion, cotizacion, calcularMontoPorMoneda]);
+
+  useEffect(() => {
+    const contadoId = metodosPago.find(m => /(contado|efectivo)/i.test(m.MPaDescripcionMetodo))?.MPaIdMetodoPago || metodosPago[0]?.MPaIdMetodoPago || '';
+    if (!contadoId) return;
+    if (seleccionados.length === 0) {
+      setCarritosPago([{ id: Date.now(), metodoPagoId: contadoId, moneda: 'UYU', monedaId: 1, monto: '' }]);
+      return;
+    }
+    setCarritosPago([{
+      id: Date.now(),
+      metodoPagoId: contadoId,
+      moneda: 'UYU',
+      monedaId: 1,
+      monto: totalNetoUYU > 0 ? totalNetoUYU.toFixed(2) : ''
+    }]);
+  }, [seleccionados, totalNetoUYU, metodosPago]);
+
   const totalIngresado = useMemo(() => {
     return carritosPago.reduce((acc, p) => {
       const pMonto = parseFloat(p.monto) || 0;
@@ -411,6 +588,20 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
 
   const cobroBalanceado = Math.abs(totalesCobro.neto - totalIngresado) < (monedaExhibicion === 'UYU' ? 1.0 : 0.05);
 
+  const totalEfectivoMonto = useMemo(() => {
+    const cashPayments = carritosPago.filter(p => {
+      const m = metodosPago.find(met => met.MPaIdMetodoPago === parseInt(p.metodoPagoId));
+      return m && /efectivo|contado/i.test(m.MPaDescripcionMetodo);
+    });
+    if (cashPayments.length === 0) return 0;
+    const totalEfectivoUYU = cashPayments.reduce((acc, p) => {
+      const val = parseFloat(p.monto) || 0;
+      return acc + (p.moneda === 'USD' ? val * (cotizacion || 1) : val);
+    }, 0);
+    const totalEfectivoUSD = totalEfectivoUYU / (cotizacion || 1);
+    return monedaExhibicion === 'USD' ? totalEfectivoUSD : totalEfectivoUYU;
+  }, [carritosPago, metodosPago, cotizacion, monedaExhibicion]);
+
   const calcularMontoRetiro = (r) => calcularMontoPorMoneda(r, 'UYU');
 
 
@@ -419,7 +610,7 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
     if (!cobroBalanceado) return toast.warning('Pagos no cuadran con el total.');
     if (carritosPago.some(p => !p.metodoPagoId)) return toast.warning('Debe seleccionar Método de pago en todas las líneas.');
     const chequeFaltante = carritosPago.some(p => {
-      const isCheque = metodosPago.find(m => m.MPaIdMetodoPago === parseInt(p.metodoPagoId))?.MPaDescripcionMetodo?.toLowerCase().includes('cheque');
+      const isCheque = metodosPago.find(m => m.MPaIdMetodoPago === parseInt(p.metodoPagoId))?.MPaDescripcionMetodo?.toLowerCase()?.includes('cheque');
       return isCheque && !p.idCheque;
     });
     if (chequeFaltante) return toast.warning('Debe cargar los datos del cheque en el método de pago correspondiente.');
@@ -481,11 +672,7 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
       setSeleccionados([]); setAjustes({});
       setCarritosPago([{ id: Date.now(), metodoPagoId: 1, moneda: 'UYU', monedaId: 1, monto: '' }]);
       setObsCobro(''); 
-      if (clienteId) {
-        navigate('/contabilidad/cuentas', { state: { selectedClienteId: clienteId } });
-      } else {
-        fetchRetiros();
-      }
+      fetchRetiros();
     } catch (e) { toast.error(e.response?.data?.error || 'Error al cobrar'); }
     finally { setProcesandoCobro(false); }
   };
@@ -493,21 +680,36 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
   useEffect(() => {
     if (tipoDocCobro && tipoDocCobro !== 'NINGUNO') {
       setNumDocCobroPredict('...');
-      api.get(`/contabilidad/caja/siguiente-numero?tipoDoc=${tipoDocCobro}&serie=${serieDocCobro}`)
-        .then(r => { if (r.data.success) setNumDocCobroPredict(r.data.NumeroFormato); })
+      api.get(`/contabilidad/caja/siguiente-numero?tipoDoc=${tipoDocCobro}`)
+        .then(r => {
+          if (r.data.success) {
+            setNumDocCobroPredict(r.data.NumeroFormato);
+            if (r.data.Serie) {
+              setSerieDocCobro(r.data.Serie);
+            }
+          }
+        })
         .catch(() => setNumDocCobroPredict('?'));
     } else {
       setNumDocCobroPredict('Sin Número');
     }
-  }, [tipoDocCobro, serieDocCobro]);
+  }, [tipoDocCobro]);
 
   useEffect(() => {
     if (activeTab === 'EGRESOS' && egresoTipoDoc !== 'NINGUNO') {
-      api.get(`/contabilidad/caja/siguiente-numero?tipoDoc=${egresoTipoDoc}&serie=${egresoSerieDoc}`)
-        .then(r => { if (r.data.success) setEgresoNumDocPredict(r.data.NumeroFormato); })
+      setEgresoNumDocPredict('...');
+      api.get(`/contabilidad/caja/siguiente-numero?tipoDoc=${egresoTipoDoc}`)
+        .then(r => {
+          if (r.data.success) {
+            setEgresoNumDocPredict(r.data.NumeroFormato);
+            if (r.data.Serie) {
+              setEgresoSerieDoc(r.data.Serie);
+            }
+          }
+        })
         .catch(() => setEgresoNumDocPredict('...'));
     }
-  }, [activeTab, egresoTipoDoc, egresoSerieDoc]);
+  }, [activeTab, egresoTipoDoc]);
 
   const handleRealizarEgreso = async () => {
     if (!egresoCuentaCodigo || !egresoMonto || !egresoMetodoId) return toast.warning('Cuenta de Gasto, método y monto obligatorios.');
@@ -619,7 +821,7 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
         document.body
       )}
 
-      <div className="min-h-full bg-[#0f1117] text-slate-200 font-sans flex flex-col h-full overflow-hidden">
+      <div className="min-h-screen bg-[#0f1117] text-slate-200 font-sans flex flex-col">
         <div className="border-b border-zinc-200 bg-zinc-50 shrink-0">
           <div className="flex items-center justify-between px-4 py-2">
             <div className="flex items-center gap-3">
@@ -693,10 +895,10 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
             ))}
           </div>
         </div>
-        <div className="flex-1 bg-zinc-50 flex overflow-hidden">
+        <div className="flex-1 bg-zinc-50 flex">
 
           {activeTab === 'INGRESOS' && (
-            <div className="flex-1 flex flex-col overflow-hidden">
+            <div className="flex-1 flex flex-col">
 
               <div className="bg-white border-b border-slate-200 px-4 py-2 flex items-center gap-1 shrink-0 shadow-sm z-10 overflow-x-auto">
                 {[
@@ -714,313 +916,524 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
                 ))}
               </div>
 
-              <div className="flex-1 flex overflow-hidden">
-                <div className="flex-1 overflow-hidden flex flex-col relative bg-[#f1f5f9]">
+              <div className="flex-1 flex">
+                <div className="flex-1 flex flex-col">
                   {subTabIngreso === 'COBRO' && (
-                    <div className="flex-1 flex overflow-hidden">
-                      <div className="w-[440px] border-r border-slate-200 flex flex-col bg-white shrink-0 shadow-lg z-0">
-                        <div className="p-6 border-b border-slate-100 flex flex-col gap-5 bg-slate-50/50">
-                          <h3 className="font-black font-archivo text-slate-400 text-[10px] uppercase tracking-widest flex items-center gap-2 px-1">
-                            <Search size={12} /> Buscar Pedidos Disponibles
-                          </h3>
-                          <div className="relative group">
-                            <Search size={22} className="absolute left-5 top-1/2 -translate-y-1/2 text-zinc-400 group-focus-within:text-brand-cyan transition-colors" />
-                            <input
-                              type="text"
-                              placeholder="Ingrese orden o cliente..."
-                              value={searchTerm}
-                              onChange={e => setSearchTerm(e.target.value)}
-                              className="bg-zinc-100 border-2 border-zinc-300 rounded-3xl pl-14 pr-6 py-4 text-base text-zinc-100 placeholder-zinc-600 outline-none w-full focus:border-brand-cyan transition-all font-black font-archivo"
-                            />
+                    <div className="flex-1 flex flex-col bg-slate-100 p-4 gap-4">
+                      <CajaPanelPago
+                        layout="horizontal"
+                        mode="COBRO"
+                        totalACubrir={totalesCobro.neto}
+                        moneda={monedaExhibicion}
+                        cotizacion={cotizacion}
+                        metodosPago={metodosPago}
+                        pagos={carritosPago}
+                        onPagosChange={setCarritosPago}
+                        tipoDoc={tipoDocCobro}
+                        onTipoDoc={setTipoDocCobro}
+                        serieDoc={serieDocCobro}
+                        onSerieDoc={setSerieDocCobro}
+                        numDoc=""
+                        notas={obsCobro}
+                        onNotas={setObsCobro}
+                        tiposDocDisponibles={tiposDocumentos.length > 0 ? tiposDocumentos : TIPOS_DOC}
+                        showSubmitButton={false}
+                      />
+
+                      {/* SPLIT LAYOUT */}
+                      <div className="flex w-full gap-4 items-start">
+                        {/* LEFT COLUMN: 3-column retiros grid with double search */}
+                        <div className="flex-1 bg-white rounded-2xl border border-slate-200 shadow-sm p-4 flex flex-col min-w-0">
+                          {/* Search Inputs (Buscar Retiros & Buscar Situación) */}
+                          <div className="flex gap-3 mb-4 flex-wrap">
+                            <div className="flex flex-col gap-1 flex-1 min-w-[150px]">
+                              <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest px-1">Buscar retiros</label>
+                              <div className="relative group">
+                                <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 group-focus-within:text-brand-cyan transition-colors" />
+                                <input
+                                  type="text"
+                                  placeholder="Código, cliente..."
+                                  value={searchTerm}
+                                  onChange={e => setSearchTerm(e.target.value)}
+                                  className="w-full bg-slate-50 border border-slate-200 rounded-xl pl-9 pr-4 py-2 text-xs font-bold text-slate-800 outline-none focus:border-brand-cyan shadow-inner transition-all placeholder-slate-300"
+                                />
+                              </div>
+                            </div>
+                            <div className="flex flex-col gap-1 flex-1 min-w-[150px]">
+                              <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest px-1">Buscar situación</label>
+                              <div className="relative group">
+                                <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 group-focus-within:text-brand-cyan transition-colors" />
+                                <input
+                                  type="text"
+                                  placeholder="Ingresar y presionar Enter..."
+                                  value={searchSituacionInput}
+                                  onChange={e => setSearchSituacionInput(e.target.value)}
+                                  onKeyDown={e => {
+                                    if (e.key === 'Enter') {
+                                      e.preventDefault();
+                                      handleSearchSituacion(searchSituacionInput);
+                                    }
+                                  }}
+                                  className="w-full bg-slate-50 border border-slate-200 rounded-xl pl-9 pr-4 py-2 text-xs font-bold text-slate-800 outline-none focus:border-brand-cyan shadow-inner transition-all placeholder-slate-300"
+                                />
+                              </div>
+                            </div>
                           </div>
-                          <div className="flex gap-2 flex-wrap px-1">
+
+                          {/* Filter buttons */}
+                          <div className="flex gap-2 flex-wrap items-center mb-4 border-t border-slate-100 pt-3">
                             {[{ val: 'todos', l: 'Todos' }, { val: '1', l: 'Comunes' }, { val: '2', l: 'Semanales' }, { val: '3', l: 'Rollos' }].map(f => (
                               <button
                                 key={f.val}
                                 onClick={() => setFiltroTipo(f.val)}
-                                className={`px-4 py-2 text-[10px] font-black font-archivo rounded-xl uppercase tracking-widest transition-all ${filtroTipo === f.val ? 'bg-brand-cyan text-white shadow-md' : 'text-zinc-500 hover:bg-zinc-100'}`}
+                                className={`px-3 py-1.5 text-[10px] font-black rounded-lg uppercase tracking-wider transition-all border ${filtroTipo === f.val ? 'bg-brand-cyan border-brand-cyan text-white shadow-sm' : 'bg-slate-50 text-slate-500 border-slate-200 hover:bg-slate-100'}`}
                               >
                                 {f.l}
                               </button>
                             ))}
-                            <div className="ml-auto flex items-center gap-2">
-                              {seleccionados.length > 0 && (
-                                <button
-                                  onClick={() => setSeleccionados([])}
-                                  className="text-[10px] font-black text-brand-magenta bg-brand-magenta/10 px-3 py-1.5 rounded-xl border border-brand-magenta/20 hover:bg-brand-magenta/20 transition-colors uppercase tracking-widest flex items-center gap-1"
-                                >
-                                  <X size={12} /> Desmarcar Todos
-                                </button>
-                              )}
-                              <span className="text-[10px] font-black text-zinc-400 self-center bg-zinc-100 px-3 py-1.5 rounded-xl border border-zinc-300">{retirosFiltrados.length} Registros</span>
-                            </div>
+                            {seleccionados.length > 0 && (
+                              <button
+                                onClick={() => setSeleccionados([])}
+                                className="text-[10px] font-black text-brand-magenta bg-brand-magenta/10 px-3 py-1.5 rounded-lg border border-brand-magenta/20 hover:bg-brand-magenta/20 transition-colors uppercase tracking-wider flex items-center gap-1 animate-in zoom-in-95 duration-200"
+                              >
+                                <X size={12} /> Desmarcar Todos
+                              </button>
+                            )}
+                            <span className="text-[10px] font-black text-slate-400 bg-slate-50 px-2.5 py-1.5 rounded-lg border border-slate-200 ml-auto">{retirosFiltrados.length} Registros</span>
+                          </div>
+
+                          {/* Grid layout for retiros */}
+                          <div className="pr-1">
+                            {retirosFiltrados.length === 0 ? (
+                              <div className="h-full flex flex-col items-center justify-center opacity-30 py-8">
+                                <Search size={40} className="text-zinc-300 mb-2" />
+                                <p className="text-[11px] font-black uppercase tracking-widest text-zinc-400">Sin pedidos por cobrar</p>
+                              </div>
+                            ) : (
+                              <div className="grid grid-cols-3 gap-2 p-1">
+                                {retirosFiltrados.map((r) => {
+                                  const sel = seleccionados.some(x => x.retiroId === (r.OReIdOrdenRetiro || r.ordenDeRetiro));
+                                  const allPaid = getOrdenes(r).length > 0 && getOrdenes(r).every(o => o.orderIdMetodoPago !== null || o.orderPago !== null);
+                                  const isAutorizado = r.estadoNumerico === 9 || (r.estadoRetiro || '').toLowerCase() === 'autorizado' || (r.estado || '').toLowerCase() === 'autorizado';
+                                  const isEntregado = r.estadoNumerico === 6 || (r.estadoRetiro || '').toLowerCase() === 'entregado' || (r.estado || '').toLowerCase() === 'entregado';
+                                  
+                                  return (
+                                    <button
+                                      key={r.ordenDeRetiro}
+                                      onClick={() => toggleSeleccion(r)}
+                                      title={r.CliNombre || r.CliCodigoCliente || ''}
+                                      className={`px-3 py-3.5 rounded-xl border-2 font-black text-sm transition-all whitespace-nowrap flex items-center justify-center gap-1.5 active:scale-95 hover:scale-[1.02]
+                                        ${sel
+                                          ? 'bg-[#00bcff] border-[#00bcff] text-white shadow-md shadow-[#00bcff]/20'
+                                          : allPaid
+                                            ? 'bg-emerald-50 border-emerald-200 text-emerald-700 hover:border-emerald-300'
+                                            : isAutorizado
+                                              ? 'bg-amber-50 border-amber-200 text-amber-700 hover:border-amber-300'
+                                              : 'bg-rose-50 border-rose-200 text-rose-700 hover:border-rose-300'
+                                        }`}
+                                    >
+                                      <span>{r.ordenDeRetiro}</span>
+                                      {isEntregado && <ShoppingBag size={14} className="shrink-0" />}
+                                      {isAutorizado && !isEntregado && <ShieldCheck size={14} className="shrink-0" />}
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                            )}
                           </div>
                         </div>
 
-                        <div className="flex-1 overflow-y-auto p-5 flex flex-col gap-4">
-                          {retirosFiltrados.length === 0 ? (
-                            <div className="m-auto text-center opacity-30 px-6">
-                              <Search size={48} className="mx-auto mb-3 text-zinc-300" />
-                              <p className="text-sm font-black uppercase tracking-widest text-zinc-400">Sin pedidos por cobrar</p>
-                            </div>
-                          ) : retirosFiltrados.map(r => {
-                            const sel = seleccionados.find(x => x.retiroId === (r.OReIdOrdenRetiro || r.ordenDeRetiro));
-                            let sumUsd = 0, sumUyu = 0;
-                            getOrdenes(r).forEach(o => {
-                              if (o.orderIdMetodoPago !== null || o.orderPago !== null) return;
-                              const val = parseFloat((o.orderCosto || '').replace(/[^0-9.-]/g, '')) || 0;
-                              if (o.monedaId === 2) sumUsd += val; else sumUyu += val;
-                            });
-                            return (
-                              <div key={r.ordenDeRetiro} onClick={() => toggleSeleccion(r)}
-                                className={`cursor-pointer shrink-0 rounded-xl p-3 border-2 transition-all flex flex-col gap-2 relative overflow-hidden group ${sel ? 'border-brand-cyan bg-brand-cyan/10' : 'border-zinc-200 bg-white/50 hover:border-zinc-300'}`}>
+                        {/* RIGHT COLUMN: Action button & details summary */}
+                        <div className="flex-1 flex flex-col gap-4 min-w-0">
+                          {/* REALIZAR COBRO BUTTON */}
+                          <button
+                            onClick={handleRealizarCobro}
+                            disabled={seleccionados.length === 0 || !cobroBalanceado || procesandoCobro}
+                            className={`w-full text-white font-black py-7 px-6 rounded-2xl border border-transparent shadow-[0_4px_12px_rgba(0,0,0,0.15)] transition-all hover:scale-[1.01] active:scale-[0.98] text-lg uppercase tracking-wider whitespace-nowrap flex items-center justify-center gap-3 disabled:opacity-50 disabled:cursor-not-allowed shrink-0
+                              ${monedaExhibicion === 'UYU' ? 'bg-brand-cyan hover:bg-brand-cyan/90 shadow-brand-cyan/20' : 'bg-brand-magenta hover:bg-brand-magenta/90 shadow-brand-magenta/20'}`}
+                          >
+                            {procesandoCobro ? <Loader2 className="animate-spin" size={24} /> : <><CreditCard size={24} /> Realizar Cobro</>}
+                          </button>
 
-                                {/* Fila superior: checkbox + cliente + pill + monto */}
-                                <div className="flex items-center gap-2">
-                                  {/* Checkbox */}
-                                  <div className={`w-5 h-5 rounded-lg border-2 flex items-center justify-center shrink-0 transition-all ${sel ? 'border-brand-cyan bg-brand-cyan shadow-md shadow-brand-cyan/20' : 'border-zinc-200 bg-zinc-100 group-hover:border-zinc-300'}`}>
-                                    {sel && <CheckCircle size={12} className="text-white" />}
-                                  </div>
-
-                                  {/* Nombre + pill */}
-                                  <div className="flex items-center gap-1.5 min-w-0 flex-1">
-                                    <p className="text-xs font-black text-zinc-700 group-hover:text-zinc-900 transition-colors truncate uppercase tracking-wide">{r.CliNombre || 'Consumidor Final'}</p>
-                                    <span className="text-[9px] font-black text-brand-cyan bg-brand-cyan/10 px-1.5 py-0.5 rounded-md border border-brand-cyan/20 uppercase tracking-widest shrink-0">{r.CliCodigoCliente || 'S/C'}</span>
-                                  </div>
-
-                                  {/* Montos */}
-                                  <div className="flex flex-col items-end shrink-0 gap-0.5">
-                                    {sumUsd > 0 && <span className="bg-emerald-50 text-emerald-600 px-2 py-0.5 rounded-md text-[9px] font-black border border-emerald-100">US$ {fmt(sumUsd)}</span>}
-                                    {sumUyu > 0 && <span className="bg-brand-cyan/10 text-brand-cyan px-2 py-0.5 rounded-md text-[9px] font-black border border-brand-cyan/20">${fmt(sumUyu)}</span>}
-                                  </div>
-                                </div>
-
-                                {/* Fila inferior: código orden + estado */}
-                                <div className="flex items-center gap-2 pl-7">
-                                  <span className={`font-black text-xs tracking-tight uppercase ${sel ? 'text-brand-cyan' : 'text-zinc-400'}`}>{r.ordenDeRetiro}</span>
-                                  <span className="text-[9px] text-zinc-400 uppercase tracking-widest">{r.lugarRetiro || 'Retiro Local'}</span>
-                                  {r.estadoRetiro && <span className="text-[9px] font-black text-zinc-400 uppercase tracking-widest bg-zinc-100 px-1.5 py-0.5 rounded ml-auto">{r.estadoRetiro}</span>}
-                                </div>
+                          {/* Selected Retiros details */}
+                          <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-4 flex flex-col">
+                            {seleccionados.length === 0 ? (
+                              <div className="m-auto text-center opacity-40 py-8">
+                                <ShoppingCart size={64} className="mx-auto mb-3 text-zinc-300" />
+                                <p className="font-black uppercase tracking-widest text-zinc-400 text-sm">Selecciona órdenes para cobrar</p>
                               </div>
-                            );
-                          })}
-                        </div>
-                      </div>
-
-                      <div className="flex-1 flex flex-col min-h-0">
-                        {globalClient.id && (
-                          <div className="px-6 py-2 border-b border-zinc-200 bg-white/80  z-50 shadow-sm shrink-0">
-                            <ClienteBilletera
-                              clienteId={globalClient.id}
-                              clienteNombre={globalClient.nombre}
-                            />
-                          </div>
-                        )}
-
-                        <div className="flex-1 p-5 overflow-y-auto flex flex-col gap-4">
-                          {seleccionados.length === 0 ? (
-                            <div className="m-auto text-center opacity-40">
-                              <ShoppingCart size={80} className="mx-auto mb-4 text-zinc-300" />
-                              <p className="font-black uppercase tracking-widest text-zinc-400">Selecciona órdenes para cobrar</p>
-                            </div>
-                          ) : (
-                            <div className="animate-in fade-in slide-in-from-bottom-5 duration-500 flex flex-col gap-8">
-                              <div className="flex justify-between items-center border-b border-zinc-200 pb-6">
-                                <h2 className="text-2xl font-black text-zinc-800 tracking-tight">Resumen de Cobro</h2>
-                                <div className="flex bg-white rounded-2xl p-1.5 border border-zinc-200 shadow-inner">
-                                  <button
-                                    onClick={() => setMonedaExhibicion('UYU')}
-                                    className={`px-6 py-2 text-[10px] font-black font-archivo uppercase tracking-widest rounded-xl transition-all flex items-center gap-2 ${monedaExhibicion === 'UYU' ? 'bg-brand-cyan text-white' : 'text-zinc-400 hover:text-zinc-700'}`}
-                                  >
-                                    Pesos ($)
-                                  </button>
-                                  <button
-                                    onClick={() => setMonedaExhibicion('USD')}
-                                    className={`px-6 py-2 text-[10px] font-black font-archivo uppercase tracking-widest rounded-xl transition-all flex items-center gap-2 ${monedaExhibicion === 'USD' ? 'bg-brand-cyan text-white' : 'text-zinc-400 hover:text-zinc-700'}`}
-                                  >
-                                    Dólares (US$)
-                                  </button>
+                            ) : (
+                              <div className="flex flex-col gap-4">
+                                <div className="flex justify-between items-center shrink-0">
+                                  <h2 className="text-base font-black text-slate-800 tracking-tight">Resumen de Cobro</h2>
                                 </div>
-                              </div>
-                              {seleccionados.map(s => (
-                                <div key={s.retiroId} className="bg-white border border-zinc-200 rounded-3xl p-6 flex flex-col gap-4 hover:border-zinc-300 transition-all">
-                                  <div className="flex justify-between items-start mb-1">
-                                    <div className="flex-1 flex items-center gap-4 flex-wrap">
-                                      <span className="font-black text-xl text-brand-cyan tracking-tight">{s.codigoRef}</span>
-                                      <span className="text-sm text-zinc-700 font-bold tracking-tight bg-zinc-50 px-3 py-1 rounded-xl border border-zinc-200">
-                                        <span className="text-zinc-400">ID: {s.retiro?.CliCodigoCliente || '-'}</span> {s.descripcion}
-                                      </span>
-                                      <span className="text-[9px] text-zinc-400 font-black uppercase tracking-widest border border-zinc-200 px-3 py-1 rounded-full shrink-0 shadow-inner">{s.retiro?.lugarRetiro || 'Retiro en el Local'}</span>
+
+                                <div className="flex gap-3 items-stretch shrink-0 flex-wrap md:flex-nowrap">
+                                  {/* Client details card */}
+                                  <div className="flex-1 bg-slate-50 rounded-xl border border-slate-200 p-2.5 grid grid-cols-2 gap-2 text-[10px] min-w-[200px]">
+                                    <div className="flex items-center gap-1.5 min-w-0">
+                                      <User size={12} className="text-slate-400 shrink-0" />
+                                      <div className="min-w-0 flex-1">
+                                        <p className="text-[8px] font-bold text-slate-400 uppercase leading-none mb-0.5">Cliente</p>
+                                        <p className="font-bold text-slate-800 truncate text-[11px] leading-tight">{seleccionados[0]?.retiro?.CliNombre || '—'}</p>
+                                      </div>
                                     </div>
-                                    <div className="flex gap-4">
-                                      <div className="text-right">
-                                        <p className="text-[9px] text-zinc-400 font-black uppercase tracking-widest">Saldo Base</p>
-                                        <p className="font-black text-zinc-800 text-lg">{monedaExhibicion === 'USD' ? 'US$' : '$'}{fmt(calcularMontoPorMoneda(s.retiro, monedaExhibicion))}</p>
+                                    <div className="flex items-center gap-1.5 min-w-0">
+                                      <Phone size={12} className="text-slate-400 shrink-0" />
+                                      <div className="min-w-0 flex-1">
+                                        <p className="text-[8px] font-bold text-slate-400 uppercase leading-none mb-0.5">Teléfono</p>
+                                        <p className="font-bold text-slate-800 truncate text-[11px] leading-tight">{seleccionados[0]?.retiro?.CliTelefono || '—'}</p>
                                       </div>
-                                      <div className="w-px h-10 bg-zinc-100 self-center"></div>
-                                      <div>
-                                        <p className="text-[9px] text-zinc-400 font-black uppercase tracking-widest">Ajuste Manual</p>
-                                        <input type="number" value={ajustes[s.retiroId]?.ajuste || ''} onChange={e => setAjustes(p => ({ ...p, [s.retiroId]: { ...p[s.retiroId], ajuste: e.target.value } }))} className="bg-zinc-50 border-2 border-zinc-200 rounded-xl px-3 py-2 w-24 text-brand-cyan font-black text-sm outline-none focus:border-brand-cyan/50 transition-all shadow-inner" placeholder="0.0" />
+                                    </div>
+                                    <div className="flex items-center gap-1.5 min-w-0">
+                                      <FileText size={12} className="text-slate-400 shrink-0" />
+                                      <div className="min-w-0 flex-1">
+                                        <p className="text-[8px] font-bold text-slate-400 uppercase leading-none mb-0.5">ID Cliente</p>
+                                        <p className="font-bold text-slate-800 truncate text-[11px] leading-tight">{seleccionados[0]?.retiro?.CliCodigoCliente || '—'}</p>
                                       </div>
-                                      <div>
-                                        <p className="text-[9px] text-zinc-400 font-black uppercase tracking-widest">Motivo Ajuste</p>
-                                        <LightSelect
-                                          value={ajustes[s.retiroId]?.tipoAjuste || ''}
-                                          onChange={val => setAjustes(p => ({ ...p, [s.retiroId]: { ...p[s.retiroId], tipoAjuste: val } }))}
-                                          options={TIPOS_AJUSTE.map(t => ({ value: t.value, label: t.label }))}
-                                          placeholder="Sin ajuste"
-                                        />
+                                    </div>
+                                    <div className="flex items-center gap-1.5 min-w-0">
+                                      <Package size={12} className="text-slate-400 shrink-0" />
+                                      <div className="min-w-0 flex-1">
+                                        <p className="text-[8px] font-bold text-slate-400 uppercase leading-none mb-0.5">Tipo</p>
+                                        <p className="font-bold text-slate-800 truncate text-[11px] leading-tight">{seleccionados[0]?.retiro?.TClDescripcion || '—'}</p>
                                       </div>
                                     </div>
                                   </div>
 
+                                  {globalClient.id && (
+                                    <div className="flex-1 border border-slate-100 rounded-xl bg-slate-50/50 p-1 min-w-[200px]">
+                                      <ClienteBilletera
+                                        clienteId={globalClient.id}
+                                        clienteNombre={globalClient.nombre}
+                                      />
+                                    </div>
+                                  )}
+                                </div>
 
-                                  <div className="flex flex-col gap-2 border-t border-zinc-100 pt-5">
-                                    {getOrdenes(s.retiro).map(o => {
+                                {/* Selected Retiros cards scrollable container */}
+                                <div className="flex flex-col gap-4 pr-1">
+                                  {seleccionados.map(s => {
+                                    const sumUsd = getOrdenes(s.retiro).reduce((acc, o) => {
+                                      if (o.orderIdMetodoPago !== null || o.orderPago !== null) return acc;
+                                      if (o.orderCobertura || o.orderEstado === 'Abonado' || o.orderEstado === 'Autorizado') return acc;
                                       const val = parseFloat((o.orderCosto || '').replace(/[^0-9.-]/g, '')) || 0;
-                                      const currency = o.monedaId === 2 ? 'US$' : '$';
-                                      const pagado = o.orderIdMetodoPago !== null || o.orderPago !== null;
-                                      const cubierto = o.orderEstado === 'Abonado' || o.orderEstado === 'Autorizado';
-                                      return (
-                                        <div key={o.orderId} className={`flex justify-between items-center px-4 py-3 mt-1 rounded-2xl border gap-4 ${(pagado || cubierto) ? 'bg-zinc-50 border-zinc-900 opacity-60' : 'bg-white border-zinc-200'}`}>
-                                          <div className="flex items-center gap-4 w-full truncate text-xs">
-                                            <AlertCircle size={14} className={`shrink-0 ${(pagado || cubierto) ? 'text-zinc-300' : 'text-brand-cyan/50'}`} />
-                                            <span className="font-black text-zinc-400 shrink-0 text-[10px]">#{o.orderNumber || o.orderId}</span>
-                                            <span className="font-bold text-zinc-800 truncate">Trabajo: {o.orderNombreTrabajo || 'Impreso'}</span>
-                                            <span className="font-medium text-zinc-400 truncate hidden md:block">Material: {o.orderMaterial || '-'}</span>
-                                            <span className="font-black text-zinc-700 shrink-0 bg-zinc-50 px-2 py-0.5 rounded-lg text-[9px] border border-zinc-900">Cant: {o.orderCantidad || '?'}</span>
+                                      return o.monedaId === 2 ? acc + val : acc;
+                                    }, 0);
+                                    const sumUyu = getOrdenes(s.retiro).reduce((acc, o) => {
+                                      if (o.orderIdMetodoPago !== null || o.orderPago !== null) return acc;
+                                      if (o.orderCobertura || o.orderEstado === 'Abonado' || o.orderEstado === 'Autorizado') return acc;
+                                      const val = parseFloat((o.orderCosto || '').replace(/[^0-9.-]/g, '')) || 0;
+                                      return o.monedaId === 1 ? acc + val : acc;
+                                    }, 0);
+                                    
+                                    const hasUnpaid = getOrdenes(s.retiro).some(o => o.orderIdMetodoPago === null && o.orderPago === null && o.orderEstado !== 'Abonado' && o.orderEstado !== 'Autorizado');
+
+                                    return (
+                                      <div key={s.retiroId} className="bg-slate-50/50 border border-slate-200 rounded-xl p-3 flex flex-col gap-3">
+                                        <div className="flex items-center justify-between flex-wrap gap-2">
+                                          <div className="flex items-center gap-2">
+                                            <span className="font-black text-sm text-brand-cyan tracking-tight">{s.codigoRef}</span>
+                                            <span className="text-[9px] text-slate-400 font-bold uppercase tracking-wider bg-white border border-slate-200 px-2 py-0.5 rounded-full">{s.retiro?.lugarRetiro || 'Retiro Local'}</span>
                                           </div>
-                                          <div className="flex items-center gap-4 shrink-0">
-                                            <span className={`font-black text-zinc-800 min-w-[80px] text-right ${cubierto ? 'line-through text-zinc-400' : ''}`}>{currency} {fmt(val)}</span>
-                                            {pagado ? (
-                                              <span className="w-20 text-center px-2 py-1 bg-emerald-50 text-emerald-500 text-[9px] font-black rounded-lg border border-emerald-100 uppercase tracking-widest">Facturada</span>
-                                            ) : cubierto ? (
-                                              <span className="w-24 text-center px-2 py-1 bg-brand-cyan/10 text-brand-cyan text-[9px] font-black rounded-lg border border-brand-cyan/20 uppercase tracking-widest">{o.orderEstado === 'Autorizado' ? 'Autorizado' : 'Abonada'}</span>
-                                            ) : (
-                                              <span className="w-20 text-center px-2 py-1 bg-brand-magenta/10 text-brand-magenta text-[9px] font-black rounded-lg border border-brand-magenta/20 uppercase tracking-widest">Pendiente</span>
-                                            )}
+                                          {hasUnpaid && (
+                                            <button
+                                              onClick={() => setRetiroSelectAut({ retiroId: s.retiroId, raw: s.retiro, deudaEstimada: calcularMontoRetiro(s.retiro) })}
+                                              className="bg-amber-500 hover:bg-amber-600 text-white text-[9px] font-black px-2.5 py-1 rounded-lg transition-all flex items-center gap-0.5 uppercase tracking-wider ml-auto shadow-sm"
+                                            >
+                                              <ShieldCheck size={11} /> Autorizar
+                                            </button>
+                                          )}
+                                        </div>
+
+                                        {/* Adjustments row */}
+                                        {/* <div className="grid grid-cols-2 gap-2 bg-white p-2.5 rounded-xl border border-slate-200/60">
+                                          <div>
+                                            <p className="text-[9px] text-slate-400 font-black uppercase tracking-wider mb-1">Ajuste Manual</p>
+                                            <input
+                                              type="number"
+                                              value={ajustes[s.retiroId]?.ajuste || ''}
+                                              onChange={e => setAjustes(p => ({ ...p, [s.retiroId]: { ...p[s.retiroId], ajuste: e.target.value } }))}
+                                              className="bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1.5 w-full text-brand-cyan font-black text-xs outline-none focus:border-brand-cyan/50 shadow-inner"
+                                              placeholder="0.0"
+                                            />
+                                          </div>
+                                          <div>
+                                            <p className="text-[9px] text-slate-400 font-black uppercase tracking-wider mb-1">Motivo Ajuste</p>
+                                            <LightSelect
+                                              value={ajustes[s.retiroId]?.tipoAjuste || ''}
+                                              onChange={val => setAjustes(p => ({ ...p, [s.retiroId]: { ...p[s.retiroId], tipoAjuste: val } }))}
+                                              options={TIPOS_AJUSTE.map(t => ({ value: t.value, label: t.label }))}
+                                              placeholder="Sin ajuste"
+                                            />
+                                          </div>
+                                        </div> */}
+
+                                        {/* Retiro totals info */}
+                                        <div className="flex justify-between items-center text-xs px-1 text-slate-500">
+                                          <span>Total Retiro:</span>
+                                          <div className="flex gap-2">
+                                            {sumUsd > 0 && <span className="font-bold text-emerald-600">US$ {fmt(sumUsd)}</span>}
+                                            {sumUyu > 0 && <span className="font-bold text-brand-cyan">${fmt(sumUyu)}</span>}
                                           </div>
                                         </div>
-                                      );
-                                    })}
-                                  </div>
+
+                                        {/* Sub-orders list */}
+                                        <div className="flex flex-col gap-2 border-t border-slate-200/60 pt-2.5">
+                                          {getOrdenes(s.retiro).map(o => {
+                                            const val = parseFloat((o.orderCosto || '').replace(/[^0-9.-]/g, '')) || 0;
+                                            const currency = o.monedaId === 2 ? 'US$' : '$';
+                                            const pagado = o.orderIdMetodoPago !== null || o.orderPago !== null;
+                                            const cubierto = o.orderEstado === 'Abonado' || o.orderEstado === 'Autorizado';
+                                            return (
+                                              <div
+                                                key={o.orderId}
+                                                className={`flex justify-between items-center px-4 py-3 rounded-xl border gap-4 text-xs shadow-sm transition-all ${
+                                                  pagado || cubierto
+                                                    ? 'bg-slate-50/80 border-slate-100 opacity-60'
+                                                    : 'bg-white border-slate-200 hover:border-slate-300'
+                                                }`}
+                                              >
+                                                {/* Left side info */}
+                                                <div className="flex items-center gap-3 min-w-0">
+                                                  <AlertTriangle
+                                                    size={16}
+                                                    className={`shrink-0 ${
+                                                      pagado || cubierto ? 'text-slate-300' : 'text-amber-500'
+                                                    }`}
+                                                  />
+                                                  <div className="flex flex-col min-w-0">
+                                                    <div className="flex items-center gap-2">
+                                                      <span className="font-bold text-slate-800 text-sm leading-none">
+                                                        {o.orderNumber || o.orderId}
+                                                      </span>
+                                                      <span className="text-[10px] text-slate-400 font-medium">
+                                                        Cant:{' '}
+                                                        <span className="font-extrabold text-slate-800">
+                                                          {o.orderCantidad || 1}
+                                                        </span>
+                                                      </span>
+                                                    </div>
+                                                    <p className="text-[10px] text-slate-400 italic font-semibold uppercase tracking-wider mt-1 leading-none">
+                                                      {o.orderNombreTrabajo || 'Impreso'}
+                                                    </p>
+                                                  </div>
+                                                </div>
+
+                                                {/* Right side info */}
+                                                <div className="flex items-center gap-4 shrink-0">
+                                                  {/* Status Pill */}
+                                                  {pagado ? (
+                                                    <span className="px-2.5 py-0.5 bg-emerald-50 text-emerald-700 text-[10px] font-black rounded-full border border-emerald-100/50 flex items-center gap-1">
+                                                      ✓ Pago
+                                                    </span>
+                                                  ) : cubierto ? (
+                                                    <span className="px-2.5 py-0.5 bg-brand-cyan/10 text-brand-cyan text-[10px] font-black rounded-full border border-brand-cyan/20 flex items-center gap-1">
+                                                      ⚡ Cubierta
+                                                    </span>
+                                                  ) : (
+                                                    <span className="px-2.5 py-0.5 bg-red-50 text-rose-700 text-[10px] font-black rounded-full border border-red-100 flex items-center gap-1">
+                                                      <span className="text-rose-600 font-black">X</span> Sin pago
+                                                    </span>
+                                                  )}
+
+                                                  {/* Price */}
+                                                  <span
+                                                    className={`font-black text-slate-800 text-sm ${
+                                                      cubierto ? 'line-through text-zinc-400' : ''
+                                                    }`}
+                                                  >
+                                                    {currency} {fmt(val)}
+                                                  </span>
+                                                </div>
+                                              </div>
+                                            );
+                                          })}
+                                        </div>
+                                      </div>
+                                    );
+                                  })}
                                 </div>
-                              ))}
-                            </div>
-                          )}
+                              </div>
+                            )}
+                          </div>
                         </div>
                       </div>
                     </div>
                   )}
                   {subTabIngreso === 'VENTA' && (
-                    <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
-                      <CajaVentaDirectaTab
-                        allowedTipos={['RECURSO']}
-                        metodosPago={metodosPago}
+                    <div className="flex-1 flex flex-col bg-slate-100 p-4 gap-4 overflow-y-auto">
+                      <CajaPanelPago
+                        layout="horizontal"
+                        mode="VENTA"
+                        totalACubrir={ventaTotalACubrir}
+                        moneda={ventaMoneda}
                         cotizacion={cotizacion}
-                        tiposDocDisponibles={tiposDocumentos.length > 0 ? tiposDocumentos : TIPOS_DOC}
-                        isAdminCaja={isAdminCaja}
-                        onVentaExitosa={() => { fetchRetiros(); setVentaPagos([{ id: Date.now(), metodoPagoId: '', moneda: 'UYU', monedaId: 1, monto: '' }]); setVentaObs(''); setVentaTotalACubrir(0); setVentaMoneda('UYU'); setVentaClienteId(''); setVentaClienteNombre(''); }}
-                        onClienteChange={(c) => {
-                          setVentaClienteId(c?.CliIdCliente || '');
-                          setVentaClienteNombre(c?.Nombre || '');
-                        }}
+                        metodosPago={metodosPago}
                         pagos={ventaPagos}
                         onPagosChange={setVentaPagos}
-                        tipoDocumento={ventaTipoDoc}
-                        onTipoDocumento={setVentaTipoDoc}
-                        obs={ventaObs}
-                        onObs={setVentaObs}
+                        tipoDoc={ventaTipoDoc}
+                        onTipoDoc={setVentaTipoDoc}
+                        serieDoc={ventaSerieDoc}
+                        onSerieDoc={setVentaSerieDoc}
+                        numDoc=""
+                        notas={ventaObs}
+                        onNotas={setVentaObs}
+                        onConfirmar={() => document.dispatchEvent(new CustomEvent('caja:confirmarVenta'))}
                         procesando={procesandoVenta}
-                        onConfirmar={async (payload) => {
-                          if (!payload.header.clienteId) { toast.warning('Debe seleccionar un cliente.'); return; }
-                          if (!payload.items.every(i => i.codigo && i.precioTotal && i.cantidad)) { toast.warning('Complete todos los campos de los ítems.'); return; }
-
-                          const pagosFilt = ventaPagos.filter(p => p.monto && p.metodoPagoId);
-                          if (pagosFilt.length === 0 && ventaTotalACubrir > 0) {
-                            const confirm = await Swal.fire({
-                              title: '¿Venta a Crédito?',
-                              html: `No ingresaste ninguna <b>Forma de Pago</b>.<br/><br/>Esto enviará la venta 100% a la cuenta corriente del cliente como <b>deuda (-${ventaMoneda === 'USD' ? 'US$' : '$'} ${ventaTotalACubrir})</b>.<br/><br/>¿Es correcto o te olvidaste de agregar el pago?`,
-                              icon: 'warning',
-                              showCancelButton: true,
-                              confirmButtonText: 'Sí, vender a crédito',
-                              cancelButtonText: 'Uy, olvidé el pago'
-                            });
-                            if (!confirm.isConfirmed) return;
-                          }
-
-                          setProcesandoVenta(true);
-                          try {
-                            const ventaPayload = { ...payload, pagos: ventaPagos.filter(p => p.monto && p.metodoPagoId).map(p => ({ metodoPagoId: parseInt(p.metodoPagoId), montoOriginal: parseFloat(p.monto), monedaId: p.moneda === 'USD' ? 2 : 1, cotizacion: p.moneda === 'USD' ? cotizacion : null, referenciaNumero: '' })) };
-                            const res = await api.post('/contabilidad/caja/venta-directa', ventaPayload);
-                            toast.success(`Venta procesada. Comprobante: ${res.data.numeroDocFormato || res.data.tcaIdTransaccion}`);
-
-                            const ventaTicket = {
-                              empresa: 'MACROSOFT LTDA',
-                              fecha: new Date().toLocaleString('es-UY'),
-                              comprobante: res.data.numeroDocFormato || `TCA-${res.data.tcaIdTransaccion}`,
-                              cajero: sesion?.usrLogin || 'Sistema',
-                              cliente: payload.header.clienteId ? (payload._clienteNombre || 'Cliente') : 'Consumidor Final',
-                              items: payload.items.map(it => ({
-                                descripcion: it.descripcion || it.codigo,
-                                cantidad: it.cantidad,
-                                importe: it.precioTotal
-                              })),
-                              totales: {
-                                subtotal: res.data.totalBruto,
-                                total: res.data.totalBruto,
-                                moneda: ventaMoneda === 'USD' ? 'US$' : '$'
-                              },
-                              pagos: ventaPagos.filter(p => p.monto && p.metodoPagoId).map(p => ({
-                                metodo: metodosPago.find(m => m.MPaIdMetodoPago === parseInt(p.metodoPagoId))?.MPaDescripcionMetodo || 'Pago',
-                                moneda: p.moneda,
-                                monto: p.monto
-                              }))
-                            };
-                            setTicketData(ventaTicket);
-                            printTicketData(ventaTicket);
-
-                            fetchRetiros(); setVentaPagos([{ id: Date.now(), metodoPagoId: 1, moneda: 'UYU', monedaId: 1, monto: '' }]); setVentaObs(''); setVentaTotalACubrir(0); setVentaMoneda('UYU');
-                          } catch (e) { toast.error(e.response?.data?.error || 'Error al procesar venta'); }
-                          finally { setProcesandoVenta(false); }
-                        }}
-                        onTotalChange={(t, m) => { setVentaTotalACubrir(t); if (m) setVentaMoneda(m); }}
+                        disabledExtra={procesandoVenta}
+                        tiposDocDisponibles={tiposDocumentos.length > 0 ? tiposDocumentos : TIPOS_DOC}
                       />
+                      <div className="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm flex-1">
+                        <CajaVentaDirectaTab
+                          allowedTipos={['RECURSO']}
+                          metodosPago={metodosPago}
+                          cotizacion={cotizacion}
+                          tiposDocDisponibles={tiposDocumentos.length > 0 ? tiposDocumentos : TIPOS_DOC}
+                          isAdminCaja={isAdminCaja}
+                          onVentaExitosa={() => { fetchRetiros(); setVentaPagos([{ id: Date.now(), metodoPagoId: '', moneda: 'UYU', monedaId: 1, monto: '' }]); setVentaObs(''); setVentaTotalACubrir(0); setVentaMoneda('UYU'); setVentaClienteId(''); setVentaClienteNombre(''); }}
+                          onClienteChange={(c) => {
+                            setVentaClienteId(c?.CliIdCliente || '');
+                            setVentaClienteNombre(c?.Nombre || '');
+                          }}
+                          pagos={ventaPagos}
+                          onPagosChange={setVentaPagos}
+                          tipoDocumento={ventaTipoDoc}
+                          onTipoDocumento={setVentaTipoDoc}
+                          serieDoc={ventaSerieDoc}
+                          onSerieDoc={setVentaSerieDoc}
+                          obs={ventaObs}
+                          onObs={setVentaObs}
+                          procesando={procesandoVenta}
+                          onConfirmar={async (payload) => {
+                            if (!payload.header.clienteId) { toast.warning('Debe seleccionar un cliente.'); return; }
+                            if (!payload.items.every(i => i.codigo && i.precioTotal && i.cantidad)) { toast.warning('Complete todos los campos de los ítems.'); return; }
+
+                            const pagosFilt = ventaPagos.filter(p => p.monto && p.metodoPagoId);
+                            if (pagosFilt.length === 0 && ventaTotalACubrir > 0) {
+                              const confirm = await Swal.fire({
+                                title: '¿Venta a Crédito?',
+                                html: `No ingresaste ninguna <b>Forma de Pago</b>.<br/><br/>Esto enviará la venta 100% a la cuenta corriente del cliente como <b>deuda (-${ventaMoneda === 'USD' ? 'US$' : '$'} ${ventaTotalACubrir})</b>.<br/><br/>¿Es correcto o te olvidaste de agregar el pago?`,
+                                icon: 'warning',
+                                showCancelButton: true,
+                                confirmButtonText: 'Sí, vender a crédito',
+                                cancelButtonText: 'Uy, olvidé el pago'
+                              });
+                              if (!confirm.isConfirmed) return;
+                            }
+
+                            setProcesandoVenta(true);
+                            try {
+                              const ventaPayload = { ...payload, pagos: ventaPagos.filter(p => p.monto && p.metodoPagoId).map(p => ({ metodoPagoId: parseInt(p.metodoPagoId), montoOriginal: parseFloat(p.monto), monedaId: p.moneda === 'USD' ? 2 : 1, cotizacion: p.moneda === 'USD' ? cotizacion : null, referenciaNumero: '' })) };
+                              const res = await api.post('/contabilidad/caja/venta-directa', ventaPayload);
+                              toast.success(`Venta procesada. Comprobante: ${res.data.numeroDocFormato || res.data.tcaIdTransaccion}`);
+
+                              const ventaTicket = {
+                                empresa: 'MACROSOFT LTDA',
+                                fecha: new Date().toLocaleString('es-UY'),
+                                comprobante: res.data.numeroDocFormato || `TCA-${res.data.tcaIdTransaccion}`,
+                                cajero: sesion?.usrLogin || 'Sistema',
+                                cliente: payload.header.clienteId ? (payload._clienteNombre || 'Cliente') : 'Consumidor Final',
+                                items: payload.items.map(it => ({
+                                  descripcion: it.descripcion || it.codigo,
+                                  cantidad: it.cantidad,
+                                  importe: it.precioTotal
+                                })),
+                                totales: {
+                                  subtotal: res.data.totalBruto,
+                                  total: res.data.totalBruto,
+                                  moneda: ventaMoneda === 'USD' ? 'US$' : '$'
+                                },
+                                pagos: ventaPagos.filter(p => p.monto && p.metodoPagoId).map(p => ({
+                                  metodo: metodosPago.find(m => m.MPaIdMetodoPago === parseInt(p.metodoPagoId))?.MPaDescripcionMetodo || 'Pago',
+                                  moneda: p.moneda,
+                                  monto: p.monto
+                                }))
+                              };
+                              setTicketData(ventaTicket);
+                              printTicketData(ventaTicket);
+
+                              fetchRetiros(); 
+                              setVentaPagos([{ id: Date.now(), metodoPagoId: 1, moneda: 'UYU', monedaId: 1, monto: '' }]); 
+                              setVentaObs(''); 
+                              setVentaTotalACubrir(0); 
+                              setVentaMoneda('UYU');
+                              setVentaClienteId('');
+                              setVentaClienteNombre('');
+                              document.dispatchEvent(new CustomEvent('caja:limpiarVenta'));
+                            } catch (e) { toast.error(e.response?.data?.error || 'Error al procesar venta'); }
+                            finally { setProcesandoVenta(false); }
+                          }}
+                          onTotalChange={(t, m) => { setVentaTotalACubrir(t); if (m) setVentaMoneda(m); }}
+                        />
+                      </div>
                     </div>
                   )}
                   {subTabIngreso === 'VENTA_DIRECTA' && (
-                    <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
-                      <CajaVentaDirectaTab
-                        defaultTipo="VENTA_INSUMOS" allowedTipos={['VENTA_INSUMOS', 'VENTA_PRODUCTOS']}
-                        metodosPago={metodosPago}
-                        isAdminCaja={isAdminCaja}
+                    <div className="flex-1 flex flex-col bg-slate-100 p-4 gap-4 overflow-y-auto">
+                      <CajaPanelPago
+                        layout="horizontal"
+                        mode="VENTA_DIRECTA"
+                        totalACubrir={ventaTotalACubrir}
+                        moneda={ventaMoneda}
                         cotizacion={cotizacion}
-                        onVentaExitosa={() => { fetchRetiros(); setVentaPagos([{ id: Date.now(), metodoPagoId: '', moneda: 'UYU', monedaId: 1, monto: '' }]); setVentaObs(''); setVentaTotalACubrir(0); setVentaMoneda('UYU'); setVentaClienteId(''); setVentaClienteNombre(''); }}
-                        onClienteChange={(c) => {
-                          setVentaClienteId(c?.CliIdCliente || '');
-                          setVentaClienteNombre(c?.Nombre || '');
-                        }}
+                        metodosPago={metodosPago}
                         pagos={ventaPagos}
                         onPagosChange={setVentaPagos}
-                        tipoDocumento={ventaTipoDoc}
-                        onTipoDocumento={setVentaTipoDoc}
-                        obs={ventaObs}
-                        onObs={setVentaObs}
+                        tipoDoc={ventaTipoDoc}
+                        onTipoDoc={setVentaTipoDoc}
+                        serieDoc={ventaSerieDoc}
+                        onSerieDoc={setVentaSerieDoc}
+                        numDoc=""
+                        notas={ventaObs}
+                        onNotas={setVentaObs}
+                        onConfirmar={() => document.dispatchEvent(new CustomEvent('caja:confirmarVenta'))}
                         procesando={procesandoVenta}
-                        onConfirmar={async (payload) => {
-                          if (!payload.header.clienteId) { toast.warning('Debe seleccionar un cliente.'); return; }
-                          if (!payload.items.every(i => i.codigo && i.precioTotal && i.cantidad)) { toast.warning('Complete todos los campos de los ítems.'); return; }
-                          setProcesandoVenta(true);
-                          try {
-                            const ventaPayload = { ...payload, pagos: ventaPagos.filter(p => p.monto && p.metodoPagoId).map(p => ({ metodoPagoId: parseInt(p.metodoPagoId), montoOriginal: parseFloat(p.monto), monedaId: p.moneda === 'USD' ? 2 : 1, cotizacion: p.moneda === 'USD' ? cotizacion : null, referenciaNumero: '' })) };
-                            const res = await api.post('/contabilidad/caja/venta-directa', ventaPayload);
-                            toast.success('Venta procesada');
-                            fetchRetiros(); setVentaPagos([{ id: Date.now(), metodoPagoId: 1, moneda: 'UYU', monedaId: 1, monto: '' }]); setVentaObs(''); setVentaTotalACubrir(0); setVentaMoneda('UYU');
-                          } catch (e) { toast.error('Error al procesar venta'); }
-                          finally { setProcesandoVenta(false); }
-                        }}
-                        onTotalChange={(t, m) => { setVentaTotalACubrir(t); if (m) setVentaMoneda(m); }}
+                        disabledExtra={procesandoVenta}
+                        tiposDocDisponibles={tiposDocumentos.length > 0 ? tiposDocumentos : TIPOS_DOC}
                       />
+                      <div className="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm flex-1">
+                        <CajaVentaDirectaTab
+                          defaultTipo="VENTA_INSUMOS" allowedTipos={['VENTA_INSUMOS', 'VENTA_PRODUCTOS']}
+                          metodosPago={metodosPago}
+                          isAdminCaja={isAdminCaja}
+                          cotizacion={cotizacion}
+                          onVentaExitosa={() => { fetchRetiros(); setVentaPagos([{ id: Date.now(), metodoPagoId: '', moneda: 'UYU', monedaId: 1, monto: '' }]); setVentaObs(''); setVentaTotalACubrir(0); setVentaMoneda('UYU'); setVentaClienteId(''); setVentaClienteNombre(''); }}
+                          onClienteChange={(c) => {
+                            setVentaClienteId(c?.CliIdCliente || '');
+                            setVentaClienteNombre(c?.Nombre || '');
+                          }}
+                          pagos={ventaPagos}
+                          onPagosChange={setVentaPagos}
+                          tipoDocumento={ventaTipoDoc}
+                          onTipoDocumento={setVentaTipoDoc}
+                          serieDoc={ventaSerieDoc}
+                          onSerieDoc={setVentaSerieDoc}
+                          obs={ventaObs}
+                          onObs={setVentaObs}
+                          procesando={procesandoVenta}
+                          onConfirmar={async (payload) => {
+                            if (!payload.header.clienteId) { toast.warning('Debe seleccionar un cliente.'); return; }
+                            if (!payload.items.every(i => i.codigo && i.precioTotal && i.cantidad)) { toast.warning('Complete todos los campos de los ítems.'); return; }
+                            setProcesandoVenta(true);
+                            try {
+                              const ventaPayload = { ...payload, pagos: ventaPagos.filter(p => p.monto && p.metodoPagoId).map(p => ({ metodoPagoId: parseInt(p.metodoPagoId), montoOriginal: parseFloat(p.monto), monedaId: p.moneda === 'USD' ? 2 : 1, cotizacion: p.moneda === 'USD' ? cotizacion : null, referenciaNumero: '' })) };
+                              const res = await api.post('/contabilidad/caja/venta-directa', ventaPayload);
+                              toast.success('Venta procesada');
+                              fetchRetiros(); 
+                              setVentaPagos([{ id: Date.now(), metodoPagoId: 1, moneda: 'UYU', monedaId: 1, monto: '' }]); 
+                              setVentaObs(''); 
+                              setVentaTotalACubrir(0); 
+                              setVentaMoneda('UYU');
+                              setVentaClienteId('');
+                              setVentaClienteNombre('');
+                              document.dispatchEvent(new CustomEvent('caja:limpiarVenta'));
+                            } catch (e) { toast.error('Error al procesar venta'); }
+                            finally { setProcesandoVenta(false); }
+                          }}
+                          onTotalChange={(t, m) => { setVentaTotalACubrir(t); if (m) setVentaMoneda(m); }}
+                        />
+                      </div>
                     </div>
                   )}
                   {subTabIngreso === 'SALDO_FAVOR' && (
@@ -1104,6 +1517,32 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
                           </div>
                         )}
 
+                        {opSeleccionada && (
+                          <div className="px-6 pt-4 shrink-0">
+                            <CajaPanelPago
+                              layout="horizontal"
+                              mode="MOTOR"
+                              totalACubrir={parseFloat(opImporte) || 0}
+                              moneda={opMoneda}
+                              cotizacion={cotizacion}
+                              metodosPago={metodosPago}
+                              pagos={motorPagos}
+                              onPagosChange={setMotorPagos}
+                              tipoDoc={motorTipoDoc}
+                              onTipoDoc={setMotorTipoDoc}
+                              serieDoc={motorSerieDoc}
+                              onSerieDoc={setMotorSerieDoc}
+                              numDoc=""
+                              notas={opObs}
+                              onNotas={setOpObs}
+                              onConfirmar={handleOperacionManual}
+                              procesando={procesandoOp}
+                              disabledExtra={!opSeleccionada || !opImporte}
+                              tiposDocDisponibles={tiposDocumentos}
+                            />
+                          </div>
+                        )}
+
                         <div className="flex-1 p-6 overflow-y-auto flex flex-col min-w-[500px]">
                           {!opSeleccionada ? (
                             <div className="m-auto text-center opacity-40 py-20 animate-pulse">
@@ -1137,7 +1576,7 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
 
                                 <div className="flex flex-col gap-8">
                                   {(opSeleccionada.EvtUsaEntidad || opSeleccionada.EvtAfectaSaldo !== 0) && (
-                                    <div className="relative">
+                                    <div className="relative client-search-container">
                                       <label className="flex items-center justify-between text-[10px] font-black text-zinc-400 uppercase tracking-widest mb-3 px-1">
                                         <span>Selección de Cliente {opSeleccionada.EvtUsaEntidad ? '(OBLIGATORIO)' : '(OPCIONAL)'}</span>
                                         {opClienteId && <span className="text-emerald-500 flex items-center gap-1.5 font-black bg-emerald-50 px-3 py-1 rounded-lg border border-emerald-100">Cliente Verificado <CheckCircle size={12} /></span>}
@@ -1169,15 +1608,15 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
                                           </div>
                                           {busquedaClientes.map(c => (
                                             <button key={c.CliIdCliente}
-                                              onClick={() => { setOpClienteId(c.CliIdCliente); setOpClienteNombre(`${c.CodCliente || ''} - ${c.Nombre}`); setBusquedaClientes([]); }}
+                                              onClick={() => { setOpClienteId(c.CliIdCliente); setOpClienteNombre(`${c.CodCliente || ''} - ${getClienteDisplayName(c)}`); setBusquedaClientes([]); }}
                                               className="w-full text-left px-6 py-5 hover:bg-white text-sm border-b border-zinc-100 last:border-0 group flex items-center justify-between transition-all">
                                               <div className="flex items-center gap-5">
                                                 <div className="w-12 h-12 rounded-2xl bg-zinc-50 flex items-center justify-center font-black text-zinc-300 group-hover:bg-brand-cyan group-hover:text-white transition-all border-2 border-zinc-200 group-hover:border-brand-cyan shadow-sm">
-                                                  {c.Nombre?.[0] || 'C'}
+                                                  {getClienteDisplayName(c)[0] || 'C'}
                                                 </div>
                                                 <div className="flex flex-col gap-1">
-                                                  <span className="font-black text-zinc-800 group-hover:text-brand-cyan transition-colors text-lg">{c.Nombre}</span>
-                                                  {c.NombreFantasia && <span className="text-[11px] text-zinc-400 font-bold uppercase tracking-tight opacity-70">"{c.NombreFantasia}"</span>}
+                                                  <span className="font-black text-zinc-800 group-hover:text-brand-cyan transition-colors text-lg">{getClienteDisplayName(c)}</span>
+                                                  {c.Nombre && c.NombreFantasia && c.Nombre.trim() !== c.NombreFantasia.trim() && <span className="text-[11px] text-zinc-400 font-bold uppercase tracking-tight opacity-70">"{c.NombreFantasia}"</span>}
                                                   <div className="flex items-center gap-3 mt-1.5">
                                                     <span className="text-[9px] bg-zinc-50 text-zinc-400 px-2.5 py-1 rounded-lg font-black uppercase border border-zinc-200 group-hover:border-brand-cyan/30">ID: {c.CliIdCliente}</span>
                                                     <span className="text-[9px] text-zinc-400 font-black uppercase tracking-widest">{c.CodCliente || 'SIN CÓDIGO'}</span>
@@ -1338,65 +1777,6 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
                     </div>
                   )}
                 </div>
-
-                {(subTabIngreso === 'COBRO' || subTabIngreso === 'MOTOR' || subTabIngreso === 'VENTA' || subTabIngreso === 'VENTA_DIRECTA') && (
-                  <CajaPanelPago
-                    mode={subTabIngreso}
-                    tiposDocDisponibles={tiposDocumentos}
-                    {...(subTabIngreso === 'COBRO' ? {
-                      totalACubrir: totalesCobro.neto,
-                      moneda: monedaExhibicion,
-                      cotizacion: cotizacion,
-                      metodosPago: metodosPago,
-                      pagos: carritosPago,
-                      onPagosChange: setCarritosPago,
-                      tipoDoc: tipoDocCobro,
-                      onTipoDoc: setTipoDocCobro,
-                      serieDoc: serieDocCobro,
-                      onSerieDoc: setSerieDocCobro,
-                      numDoc: numDocCobro || numDocCobroPredict,
-                      notas: obsCobro,
-                      onNotas: setObsCobro,
-                      onConfirmar: handleRealizarCobro,
-                      procesando: procesandoCobro,
-                      disabledExtra: seleccionados.length === 0 || !cobroBalanceado
-                    } : (subTabIngreso === 'VENTA' || subTabIngreso === 'VENTA_DIRECTA') ? {
-                      totalACubrir: ventaTotalACubrir,
-                      moneda: ventaMoneda,
-                      cotizacion: cotizacion,
-                      metodosPago: metodosPago,
-                      pagos: ventaPagos,
-                      onPagosChange: setVentaPagos,
-                      tipoDoc: ventaTipoDoc,
-                      onTipoDoc: setVentaTipoDoc,
-                      serieDoc: ventaSerieDoc,
-                      onSerieDoc: setVentaSerieDoc,
-                      numDoc: '',
-                      notas: ventaObs,
-                      onNotas: setVentaObs,
-                      onConfirmar: () => document.dispatchEvent(new CustomEvent('caja:confirmarVenta')),
-                      procesando: procesandoVenta,
-                      disabledExtra: procesandoVenta
-                    } : {
-                      totalACubrir: parseFloat(opImporte) || 0,
-                      moneda: opMoneda,
-                      cotizacion: cotizacion,
-                      metodosPago: metodosPago,
-                      pagos: motorPagos,
-                      onPagosChange: setMotorPagos,
-                      tipoDoc: motorTipoDoc,
-                      onTipoDoc: setMotorTipoDoc,
-                      serieDoc: motorSerieDoc,
-                      onSerieDoc: setMotorSerieDoc,
-                      numDoc: '',
-                      notas: opObs,
-                      onNotas: setOpObs,
-                      onConfirmar: handleOperacionManual,
-                      procesando: procesandoOp,
-                      disabledExtra: !opSeleccionada || !opImporte
-                    })}
-                  />
-                )}
               </div>
             </div>
           )}
@@ -1576,15 +1956,16 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
                                   <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest">Fecha</th>
                                   <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest">Tipo / Ref</th>
                                   <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest">Concepto</th>
+                                  <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest">Usuario</th>
                                   <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest text-right">Ingreso</th>
                                   <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest text-right">Egreso</th>
                                 </tr>
                               </thead>
                               <tbody className="divide-y divide-slate-100">
                                 {cargandoMovsAdmin ? (
-                                  <tr><td colSpan="5" className="px-6 py-8 text-center text-slate-400 font-bold text-sm">Cargando...</td></tr>
+                                  <tr><td colSpan="6" className="px-6 py-8 text-center text-slate-400 font-bold text-sm">Cargando...</td></tr>
                                 ) : movimientosAdmin.length === 0 ? (
-                                  <tr><td colSpan="5" className="px-6 py-8 text-center text-slate-400 font-bold text-sm">No hay movimientos en este rango.</td></tr>
+                                  <tr><td colSpan="6" className="px-6 py-8 text-center text-slate-400 font-bold text-sm">No hay movimientos en este rango.</td></tr>
                                 ) : movimientosAdmin.map((m, i) => (
                                   <tr key={i} className="hover:bg-slate-50/50 transition-colors">
                                     <td className="px-6 py-4 text-xs text-slate-500 font-medium whitespace-nowrap">{new Date(m.Fecha).toLocaleString('es-UY', { dateStyle: 'short', timeStyle: 'short' })}</td>
@@ -1593,6 +1974,7 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
                                       <span className="font-bold text-slate-700 text-xs">{m.Comprobante !== '-' ? m.Comprobante : m.TipoComprobante}</span>
                                     </td>
                                     <td className="px-6 py-4 text-xs text-slate-600 font-medium max-w-[300px] truncate" title={m.Concepto}>{m.Concepto}</td>
+                                    <td className="px-6 py-4 text-xs text-slate-600 font-medium whitespace-nowrap">{m.Usuario || 'Sistema'}</td>
                                     <td className="px-6 py-4 text-right font-black text-emerald-600 text-sm">{m.Entrada > 0 ? `$${fmt(m.Entrada)}` : '-'}</td>
                                     <td className="px-6 py-4 text-right font-black text-brand-magenta text-sm">{m.Salida > 0 ? `$${fmt(m.Salida)}` : '-'}</td>
                                   </tr>
@@ -1630,47 +2012,197 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
 
                         <>
                           <div className="bg-white p-6 flex flex-col gap-6 relative border-b border-slate-200">
-                            <h3 className="font-black text-slate-800 flex items-center gap-4 text-xl tracking-tight"><DollarSign size={24} className="text-brand-cyan" /> Arqueo Físico de Valores</h3>
-
-                            <div className="flex flex-col gap-4">
-                              <div className="flex justify-between items-end px-1">
-                                <label className="text-[11px] font-black text-slate-400 uppercase tracking-widest">Desglose de Efectivo Físico en Cajón</label>
-                                <span className="text-2xl font-black text-brand-cyan tracking-tighter bg-brand-cyan/10 px-4 py-1 rounded-xl border border-brand-cyan/20">Total Físico: $ {fmt(totalDenominaciones)}</span>
+                            <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 border-b border-slate-100 pb-4">
+                              <div>
+                                <h3 className="font-black text-slate-800 flex items-center gap-4 text-xl tracking-tight">
+                                  <DollarSign size={24} className="text-brand-cyan" /> 
+                                  Arqueo Físico de Valores
+                                </h3>
+                                <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest mt-1">Conteo y conciliación de valores físicos en cajón</p>
                               </div>
-                              <div className="grid grid-cols-2 md:grid-cols-4 gap-4 bg-slate-50/50 p-4 rounded-xl border border-slate-200 shadow-inner">
-                                <div className="col-span-2 md:col-span-4"><p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-3 border-b border-slate-200 pb-2">Billetes</p></div>
-                                {[2000, 1000, 500, 200, 100, 50, 20].map(den => (
-                                  <div key={den} className="flex items-center gap-3 bg-white p-2 rounded-xl border border-slate-200 shadow-sm focus-within:border-brand-cyan focus-within:ring-2 focus-within:ring-brand-cyan/20 transition-all">
-                                    <div className="w-16 text-right"><span className="text-sm font-black text-emerald-700 bg-emerald-50 px-2 py-1 rounded-md border border-emerald-100">${den}</span></div>
-                                    <span className="text-slate-300 font-bold">x</span>
-                                    <input type="number" min="0" value={denominaciones[den]} onChange={e => setDenominaciones(p => ({ ...p, [den]: e.target.value }))} placeholder="0" className="w-full bg-transparent text-lg font-black text-slate-800 outline-none text-center" />
-                                  </div>
-                                ))}
-                                <div className="col-span-2 md:col-span-4 mt-2"><p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-3 border-b border-slate-200 pb-2">Monedas</p></div>
-                                {[50, 10, 5, 2, 1].map(den => (
-                                  <div key={den} className="flex items-center gap-3 bg-white p-2 rounded-xl border border-slate-200 shadow-sm focus-within:border-amber-500 focus-within:ring-2 focus-within:ring-amber-500/20 transition-all">
-                                    <div className="w-16 text-right"><span className="text-sm font-black text-amber-700 bg-amber-50 px-2 py-1 rounded-md border border-amber-100">${den}</span></div>
-                                    <span className="text-slate-300 font-bold">x</span>
-                                    <input type="number" min="0" value={denominaciones[den]} onChange={e => setDenominaciones(p => ({ ...p, [den]: e.target.value }))} placeholder="0" className="w-full bg-transparent text-lg font-black text-slate-800 outline-none text-center" />
-                                  </div>
-                                ))}
+                              <div className="flex items-center gap-3">
+                                <span className="text-sm font-black text-brand-cyan tracking-tight bg-brand-cyan/5 px-3 py-1.5 rounded-lg border border-brand-cyan/25">
+                                  {monedaCierre === 'UYU' ? `Total UYU: $ ${fmt(totalDenominaciones)}` : `Total USD: U$S ${fmt(totalDenominacionesUSD)}`}
+                                </span>
+                                <div className="flex bg-slate-100 rounded-xl p-1 border border-slate-200 select-none gap-1">
+                                  <button
+                                    type="button"
+                                    onClick={() => setMonedaCierre('UYU')}
+                                    className={`px-3 py-1 text-[10px] font-black uppercase tracking-wider rounded-lg transition-all ${
+                                      monedaCierre === 'UYU' ? 'bg-[#006097] text-white shadow-sm' : 'text-slate-400 hover:text-slate-600'
+                                    }`}
+                                  >
+                                    Pesos (UYU)
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => setMonedaCierre('USD')}
+                                    className={`px-3 py-1 text-[10px] font-black uppercase tracking-wider rounded-lg transition-all ${
+                                      monedaCierre === 'USD' ? 'bg-[#006097] text-white shadow-sm' : 'text-slate-400 hover:text-slate-600'
+                                    }`}
+                                  >
+                                    Dólares (USD)
+                                  </button>
+                                </div>
                               </div>
                             </div>
 
-                            {cierreMontoFisico !== '' && (() => {
-                              const sis = resumenCierre.sesion.StuMontoInicial + resumenCierre.cobros.TotalCobrado - resumenCierre.egresos.TotalEgresos;
-                              const real = parseFloat(cierreMontoFisico) || 0;
-                              const diff = real - sis;
-                              return (
-                                <div className={`p-4 rounded-xl font-black flex justify-between items-center animate-in zoom-in-95 duration-300 border ${Math.abs(diff) < 2 ? 'bg-emerald-50 border-emerald-200 text-emerald-700 shadow-emerald-50' : diff > 0 ? 'bg-brand-cyan/10 border-brand-cyan/30 text-brand-cyan shadow-brand-cyan/10' : 'bg-brand-magenta/5 border-brand-magenta/20 text-brand-magenta shadow-brand-magenta/5'}`}>
-                                  <div className="flex items-center gap-4">
-                                    {Math.abs(diff) < 2 ? <CheckCircle size={32} /> : diff > 0 ? <TrendingUp size={32} /> : <TrendingDown size={32} />}
-                                    <span className="text-xl tracking-tight uppercase">{Math.abs(diff) < 2 ? 'BALANCE MANTENIDO CON ÉXITO' : diff > 0 ? 'SOBRANTE DE CAJA DETECTADO' : 'FALTANTE DE CAJA DETECTADO'}</span>
+                            {monedaCierre === 'UYU' ? (
+                              <div className="grid grid-cols-1 md:grid-cols-2 gap-6 items-start">
+                                {/* Billetes UYU */}
+                                <div className="space-y-3">
+                                  <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest border-b border-slate-100 pb-1">Billetes (Pesos UYU)</p>
+                                  <div className="grid grid-cols-2 gap-2.5">
+                                    {[2000, 1000, 500, 200, 100, 50, 20].map(den => (
+                                      <div key={den} className="flex items-center gap-2 bg-slate-50 p-1.5 px-3 rounded-xl border border-slate-200 focus-within:border-brand-cyan focus-within:ring-2 focus-within:ring-brand-cyan/10 focus-within:bg-white transition-all shadow-inner">
+                                        <span className="text-xs font-black text-emerald-700 w-10">${den}</span>
+                                        <span className="text-slate-300 font-bold text-xs">x</span>
+                                        <input 
+                                          type="number" 
+                                          min="0" 
+                                          value={denominaciones[den] || ''} 
+                                          onChange={e => setDenominaciones(p => ({ ...p, [den]: e.target.value }))} 
+                                          placeholder="0" 
+                                          className="w-full bg-transparent text-xs font-black text-slate-800 outline-none text-right" 
+                                        />
+                                      </div>
+                                    ))}
                                   </div>
-                                  <span className="text-4xl tracking-tighter font-black">{diff > 0 ? '+' : ''}{fmt(diff)}</span>
                                 </div>
-                              )
-                            })()}
+
+                                {/* Monedas UYU */}
+                                <div className="space-y-3 flex flex-col justify-between h-full">
+                                  <div>
+                                    <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest border-b border-slate-100 pb-1">Monedas (Pesos UYU)</p>
+                                    <div className="grid grid-cols-2 gap-2.5">
+                                      {[50, 10, 5, 2, 1].map(den => (
+                                        <div key={den} className="flex items-center gap-2 bg-slate-50 p-1.5 px-3 rounded-xl border border-slate-200 focus-within:border-amber-500 focus-within:ring-2 focus-within:ring-amber-500/10 focus-within:bg-white transition-all shadow-inner">
+                                          <span className="text-xs font-black text-amber-700 w-10">${den}</span>
+                                          <span className="text-slate-300 font-bold text-xs">x</span>
+                                          <input 
+                                            type="number" 
+                                            min="0" 
+                                            value={denominaciones[den] || ''} 
+                                            onChange={e => setDenominaciones(p => ({ ...p, [den]: e.target.value }))} 
+                                            placeholder="0" 
+                                            className="w-full bg-transparent text-xs font-black text-slate-800 outline-none text-right" 
+                                          />
+                                        </div>
+                                      ))}
+                                    </div>
+                                  </div>
+
+                                  {/* Tarjeta de Comparación / Diferencia UYU */}
+                                  {(() => {
+                                    const sis = resumenCierre.sesion.StuMontoInicial + resumenCierre.cobros.TotalCobrado - resumenCierre.egresos.TotalEgresos;
+                                    const real = totalDenominaciones;
+                                    const diff = real - sis;
+                                    return (
+                                      <div className={`p-4 rounded-2xl border flex flex-col gap-2 mt-4 shadow-sm animate-in zoom-in-95 duration-300 ${
+                                        Math.abs(diff) < 2 
+                                          ? 'bg-emerald-50/50 border-emerald-200 text-emerald-800' 
+                                          : diff > 0 
+                                            ? 'bg-sky-50 border-sky-200 text-sky-800' 
+                                            : 'bg-rose-50 border-rose-200 text-rose-800'
+                                      }`}>
+                                        <div className="flex justify-between items-center text-[10px] font-black uppercase tracking-widest">
+                                          <span>Monto Inicial Apertura UYU:</span>
+                                          <span className="font-mono">$ {fmt(resumenCierre.sesion?.StuMontoInicial || 0)}</span>
+                                        </div>
+                                        <div className="flex justify-between items-center text-[10px] font-black uppercase tracking-widest border-b border-slate-200/50 pb-2">
+                                          <span>Efectivo Esperado (UYU):</span>
+                                          <span className="font-mono">$ {fmt(sis)}</span>
+                                        </div>
+                                        <div className="flex justify-between items-center pt-1">
+                                          <div className="flex items-center gap-2">
+                                            {Math.abs(diff) < 2 ? (
+                                              <CheckCircle size={20} className="text-emerald-500 shrink-0" />
+                                            ) : diff > 0 ? (
+                                              <TrendingUp size={20} className="text-sky-500 shrink-0" />
+                                            ) : (
+                                              <TrendingDown size={20} className="text-rose-500 shrink-0" />
+                                            )}
+                                            <span className="text-xs font-black uppercase tracking-wide">
+                                              {Math.abs(diff) < 2 ? 'CAJA BALANCEADA' : diff > 0 ? 'SOBRANTE UYU' : 'FALTANTE UYU'}
+                                            </span>
+                                          </div>
+                                          <span className="text-xl font-black font-mono">
+                                            {diff > 0 ? '+' : ''}{fmt(diff)}
+                                          </span>
+                                        </div>
+                                      </div>
+                                    );
+                                  })()}
+                                </div>
+                              </div>
+                            ) : (
+                              <div className="grid grid-cols-1 md:grid-cols-2 gap-6 items-start">
+                                {/* Billetes USD */}
+                                <div className="space-y-3">
+                                  <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest border-b border-slate-100 pb-1">Billetes (Dólares USD)</p>
+                                  <div className="grid grid-cols-2 gap-2.5">
+                                    {[100, 50, 20, 10, 5, 2, 1].map(den => (
+                                      <div key={den} className="flex items-center gap-2 bg-slate-50 p-1.5 px-3 rounded-xl border border-slate-200 focus-within:border-brand-cyan focus-within:ring-2 focus-within:ring-brand-cyan/10 focus-within:bg-white transition-all shadow-inner">
+                                        <span className="text-xs font-black text-emerald-700 w-10">U$S{den}</span>
+                                        <span className="text-slate-300 font-bold text-xs">x</span>
+                                        <input 
+                                          type="number" 
+                                          min="0" 
+                                          value={denominacionesUSD[den] || ''} 
+                                          onChange={e => setDenominacionesUSD(p => ({ ...p, [den]: e.target.value }))} 
+                                          placeholder="0" 
+                                          className="w-full bg-transparent text-xs font-black text-slate-800 outline-none text-right" 
+                                        />
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+
+                                {/* Tarjeta de Comparación / Diferencia USD */}
+                                <div className="h-full flex flex-col justify-end">
+                                  {(() => {
+                                    const sis = UYUUSD_Totals.cashIngressUSD - UYUUSD_Totals.cashEgressUSD;
+                                    const real = totalDenominacionesUSD;
+                                    const diff = real - sis;
+                                    return (
+                                      <div className={`p-4 rounded-2xl border flex flex-col gap-2 shadow-sm animate-in zoom-in-95 duration-300 ${
+                                        Math.abs(diff) < 0.05
+                                          ? 'bg-emerald-50/50 border-emerald-200 text-emerald-800' 
+                                          : diff > 0 
+                                            ? 'bg-sky-50 border-sky-200 text-sky-800' 
+                                            : 'bg-rose-50 border-rose-200 text-rose-800'
+                                      }`}>
+                                        <div className="flex justify-between items-center text-[10px] font-black uppercase tracking-widest">
+                                          <span>Monto Inicial Apertura USD:</span>
+                                          <span className="font-mono">U$S 0,00</span>
+                                        </div>
+                                        <div className="flex justify-between items-center text-[10px] font-black uppercase tracking-widest border-b border-slate-200/50 pb-2">
+                                          <span>Efectivo Esperado (USD):</span>
+                                          <span className="font-mono">U$S {fmt(sis)}</span>
+                                        </div>
+                                        <div className="flex justify-between items-center pt-1">
+                                          <div className="flex items-center gap-2">
+                                            {Math.abs(diff) < 0.05 ? (
+                                              <CheckCircle size={20} className="text-emerald-500 shrink-0" />
+                                            ) : diff > 0 ? (
+                                              <TrendingUp size={20} className="text-sky-500 shrink-0" />
+                                            ) : (
+                                              <TrendingDown size={20} className="text-rose-500 shrink-0" />
+                                            )}
+                                            <span className="text-xs font-black uppercase tracking-wide">
+                                              {Math.abs(diff) < 0.05 ? 'CAJA BALANCEADA' : diff > 0 ? 'SOBRANTE USD' : 'FALTANTE USD'}
+                                            </span>
+                                          </div>
+                                          <span className="text-xl font-black font-mono">
+                                            {diff > 0 ? '+' : ''}{fmt(diff)}
+                                          </span>
+                                        </div>
+                                      </div>
+                                    );
+                                  })()}
+                                </div>
+                              </div>
+                            )}
 
                             <div className="flex flex-col gap-2">
                               <label className="text-[11px] font-black text-slate-400 uppercase tracking-widest mb-2 px-1">Observaciones Finales / Justificación</label>
@@ -1694,7 +2226,78 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
         </div>
       </div>
 
-      {showArqueo && <CajaArqueoModal onClose={() => setShowArqueo(false)} />}
+      {showArqueo && (
+        <CajaArqueoModal 
+          onClose={() => setShowArqueo(false)} 
+          isAdmin={isAdminCaja} 
+          denominaciones={denominaciones}
+          setDenominaciones={setDenominaciones}
+          denominacionesUSD={denominacionesUSD}
+          setDenominacionesUSD={setDenominacionesUSD}
+          movimientos={movimientosTurno}
+          sesion={sesion}
+        />
+      )}
+
+      {chequeIndexActivo !== null && (
+        <ChequeRecibirModal
+          initialMonto={carritosPago.find(p => p.id === chequeIndexActivo)?.monto || ''}
+          onClose={() => setChequeIndexActivo(null)}
+          onSuccess={(idCheque) => {
+            setCarritosPago(carritosPago.map(p => p.id === chequeIndexActivo ? { ...p, idCheque } : p));
+            setChequeIndexActivo(null);
+          }}
+        />
+      )}
+
+      {retiroSelectAut && (
+        <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-in fade-in duration-200">
+          <div className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl flex flex-col gap-5 border border-zinc-200 animate-in zoom-in-95 duration-200 text-slate-800">
+            <div className="flex justify-between items-center">
+              <h3 className="font-black text-zinc-800 text-lg uppercase tracking-wider flex items-center gap-2">
+                <ShieldCheck className="text-brand-cyan" size={20} />
+                Autorizar Entrega Sin Cobro
+              </h3>
+              <button onClick={() => setRetiroSelectAut(null)} className="text-zinc-400 hover:text-zinc-600">
+                <X size={18} />
+              </button>
+            </div>
+
+            <div>
+              <p className="text-xs text-zinc-400 font-bold uppercase tracking-wider mb-1">Orden de Retiro</p>
+              <p className="text-sm font-black text-brand-cyan">{retiroSelectAut.retiroId}</p>
+            </div>
+
+            <div className="flex flex-col gap-2">
+              <label className="text-xs font-bold text-zinc-500 uppercase tracking-wider">Motivo de Autorización</label>
+              <textarea
+                value={autMotivo}
+                onChange={e => setAutMotivo(e.target.value)}
+                placeholder="Ej: Cliente cuenta corriente, paga mañana, autorizado por administración..."
+                className="w-full bg-zinc-50 border border-zinc-200 rounded-xl p-3 text-xs font-bold text-zinc-800 outline-none focus:border-brand-cyan h-24 resize-none transition-all shadow-inner placeholder-zinc-300"
+              />
+            </div>
+
+            <div className="flex flex-col gap-2">
+              <label className="text-xs font-bold text-zinc-500 uppercase tracking-wider">Fecha de Vencimiento (Opcional)</label>
+              <input
+                type="date"
+                value={autVencimiento}
+                onChange={e => setAutVencimiento(e.target.value)}
+                className="w-full bg-zinc-50 border border-zinc-200 rounded-xl px-3 py-2 text-xs font-bold text-zinc-800 outline-none focus:border-brand-cyan transition-all shadow-sm"
+              />
+            </div>
+
+            <button
+              onClick={handleAutorizar}
+              disabled={procesandoAut || !autMotivo}
+              className="w-full bg-brand-cyan hover:bg-brand-cyan/90 disabled:bg-zinc-100 disabled:text-zinc-400 text-white font-black py-3 rounded-xl transition-all shadow-lg shadow-brand-cyan/20 flex justify-center items-center gap-2 uppercase tracking-widest text-xs"
+            >
+              {procesandoAut ? <Loader2 size={16} className="animate-spin" /> : <><ShieldCheck size={16} /> CONFIRMAR Y AUTORIZAR</>}
+            </button>
+          </div>
+        </div>
+      )}
 
       {busquedaGlobalRes && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-zinc-900/60  p-8 animate-in fade-in duration-300" onClick={(e) => e.target === e.currentTarget && setBusquedaGlobalRes(null)}>

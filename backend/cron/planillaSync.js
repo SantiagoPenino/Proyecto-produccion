@@ -44,6 +44,46 @@ async function syncPlanillaArea(areaId, procesoID) {
             // 3. PROCESAR CADA PEDIDO
             for (const pedido of data.data) {
                 try {
+                    // Si viene rawRow (ej. desde el script de Apps Script), corremos la lógica para detectar Corte/Costura/Bordado.
+                    if (pedido.rawRow) {
+                        try {
+                            const SheetsRawMappingService = require('../services/sheetsRawMappingService');
+                            // Aseguramos que tenga el area y idExterno definidos
+                            pedido.area = pedido.area || areaId;
+                            pedido.idExterno = pedido.idExterno || pedido.codigoOrdenReal;
+                            const mapped = SheetsRawMappingService.mapToOrderPayload(pedido);
+                            if (mapped && mapped.servicios && mapped.servicios.length > 0) {
+                                // Preservamos los datos ya resueltos por el Apps Script (ej: clienteInfo, rowNumber y archivosReferencia)
+                                const originalClienteInfo = pedido.clienteInfo;
+                                const originalRowNumber = pedido.rowNumber;
+                                const originalArchivosReferencia = pedido.archivosReferencia;
+                                
+                                Object.assign(pedido, mapped);
+                                
+                                if (originalClienteInfo) pedido.clienteInfo = originalClienteInfo;
+                                pedido.rowNumber = originalRowNumber;
+
+                                // Preservar y de-duplicar los archivos de referencia originales
+                                if (originalArchivosReferencia && originalArchivosReferencia.length > 0) {
+                                    if (!pedido.archivosReferencia || pedido.archivosReferencia.length === 0) {
+                                        pedido.archivosReferencia = originalArchivosReferencia;
+                                    } else {
+                                        const urls = new Set(pedido.archivosReferencia.map(r => (r.url || '').toLowerCase().trim()));
+                                        for (const ref of originalArchivosReferencia) {
+                                            if (ref.url && !urls.has(ref.url.toLowerCase().trim())) {
+                                                pedido.archivosReferencia.push(ref);
+                                            }
+                                        }
+                                    }
+                                }
+                                
+                                logger.info(`[PlanillaSync-${areaId}] Mapeados extras (Corte/Costura/Bordado) para ${pedido.idExterno || pedido.codigoOrdenReal}. Servicios totales: ${pedido.servicios.length}`);
+                            }
+                        } catch (errMap) {
+                            logger.error(`[PlanillaSync-${areaId}] Error re-mapeando extras para ${pedido.idExterno}:`, errMap.message);
+                        }
+                    }
+
                     // LLAMADA LOCAL A LA API DE INTEGRACIÓN con Timeout de 30s
                     const port = process.env.PORT || 5000;
                     await axios.post(`http://localhost:${port}/api/web-orders/integration/create`, pedido, {
@@ -72,10 +112,13 @@ async function syncPlanillaArea(areaId, procesoID) {
 }
 
 async function syncAllPlanillas() {
-    // Al usar Promise.all, Node dispara las dos tareas exactamente al mismo tiempo
+    // Al usar Promise.all, Node dispara las tareas exactamente al mismo tiempo
     await Promise.all([
         syncPlanillaArea('DF', 'SYNC_PLANILLA_SHEETS_DF'),
-        syncPlanillaArea('SB', 'SYNC_PLANILLA_SHEETS_SUB')
+        syncPlanillaArea('SB', 'SYNC_PLANILLA_SHEETS_SUB'),
+        syncPlanillaArea('IMD', 'SYNC_PLANILLA_SHEETS_IMD'),
+        syncPlanillaArea('TPU', 'SYNC_PLANILLA_SHEETS_TPU'),
+        syncPlanillaArea('CENCO', 'SYNC_PLANILLA_SHEETS_CENCO')
     ]);
 }
 // --- ACTIVAR CRON ---

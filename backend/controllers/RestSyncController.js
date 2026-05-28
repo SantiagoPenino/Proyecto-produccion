@@ -254,16 +254,18 @@ const syncOrdersLogic = async (io) => {
         }
 
         let mapaReactProducts = {};
+        let mapaProIdProducts = {};
         if (allCodArtsParams.size > 0) {
             const listaCodigos = Array.from(allCodArtsParams.keys()).map(c => `'${c}'`).join(',');
 
             // A. Detectar Existentes
             let existentes = new Set();
             try {
-                const checkRes = await pool.request().query(`SELECT CodArticulo, IDProdReact FROM Articulos WHERE CodArticulo IN (${listaCodigos})`);
+                const checkRes = await pool.request().query(`SELECT CodArticulo, IDProdReact, ProIdProducto FROM Articulos WHERE CodArticulo IN (${listaCodigos})`);
                 checkRes.recordset.forEach(r => {
                     existentes.add(r.CodArticulo);
                     if (r.IDProdReact) mapaReactProducts[r.CodArticulo] = r.IDProdReact;
+                    if (r.ProIdProducto) mapaProIdProducts[r.CodArticulo] = r.ProIdProducto;
                 });
             } catch (e) { logger.error("Error checking articles", e); }
 
@@ -358,8 +360,9 @@ const syncOrdersLogic = async (io) => {
                     let nextService = 'DEPOSITO';
                     let foundDestino = false;
 
-                    // A. BUSCAR VINCULACIÓN REACT PRODUCTO
+                    // A. BUSCAR VINCULACIÓN REACT PRODUCTO Y PROIDPRODUCTO REAL
                     const idProdReact = mapaReactProducts[matGroup.codArt] || null;
+                    const proIdProducto = mapaProIdProducts[matGroup.codArt] || null;
                     if (!idProdReact) {
                         try {
                             const { logAlert } = require('../services/alertsService');
@@ -456,19 +459,20 @@ const syncOrdersLogic = async (io) => {
                         .input('F_EntSec', sql.DateTime, fechaImp) // SIEMPRE FECHA ACTUAL
                         .input('IdReact', sql.Int, idProdReact)
                         .input('CodArt', sql.VarChar, matGroup.codArt) // NUEVO CAMPO
+                        .input('ProIdProducto', sql.Int, proIdProducto)
                         .query(`
                             INSERT INTO Ordenes (
                                 AreaID, Cliente, DescripcionTrabajo, Prioridad, Estado, EstadoenArea,
                                 FechaIngreso, FechaEstimadaEntrega, Material, Variante, CodigoOrden,
                                 NoDocERP, Nota, Tinta, ModoRetiro, ArchivosCount, Magnitud, ProximoServicio, UM,
-                                FechaEntradaSector, IdProductoReact, CodArticulo
+                                FechaEntradaSector, IdProductoReact, CodArticulo, ProIdProducto
                             )
                             OUTPUT INSERTED.OrdenID
                             VALUES (
                                 @AreaID, @Cliente, @Desc, @Prio, 'Pendiente', 'Pendiente',
                                 @F_Ing, @F_Ent, @Mat, @Var, @Cod,
                                 @ERP, @Nota, @Tinta, @Retiro, 0, @Mag, @Prox, @UM,
-                                @F_EntSec, @IdReact, @CodArt
+                                @F_EntSec, @IdReact, @CodArt, @ProIdProducto
                             )
                         `);
 
@@ -663,14 +667,14 @@ async function processAsyncProductUpdate(orderIds) {
         // Using LTRIM/RTRIM for robustness
         const res = await pool.request().query(`
             UPDATE Ordenes 
-            SET IdProductoReact = A.IDProdReact
+            SET IdProductoReact = A.IDProdReact,
+                ProIdProducto = A.ProIdProducto
             FROM Ordenes O
             INNER JOIN Articulos A ON LTRIM(RTRIM(O.CodArticulo)) = LTRIM(RTRIM(A.CodArticulo))
             WHERE O.OrdenID IN (${idsStr})
-              AND (O.IdProductoReact IS NULL OR O.IdProductoReact = 0)
-              AND A.IDProdReact IS NOT NULL AND A.IDProdReact <> 0
+              AND (O.IdProductoReact IS NULL OR O.IdProductoReact = 0 OR O.ProIdProducto IS NULL OR O.ProIdProducto = 0)
         `);
-        logger.info(`[AsyncProd] Ordenes actualizadas con IDProdReact: ${res.rowsAffected}`);
+        logger.info(`[AsyncProd] Ordenes actualizadas con IDProdReact y ProIdProducto: ${res.rowsAffected}`);
     } catch (e) {
         logger.error("[AsyncProd] Error:", e.message);
     }
