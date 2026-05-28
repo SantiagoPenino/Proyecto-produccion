@@ -11,6 +11,10 @@ const getClients = async (req, res) => {
                 C.Nombre,
                 C.NombreFantasia,
                 C.IDCliente,
+                C.CioRuc,
+                C.Email,
+                C.TelefonoTrabajo,
+                C.DireccionTrabajo,
                 (SELECT COUNT(*) FROM PreciosEspecialesItems WHERE CliIdCliente = PE.CliIdCliente) as CantReglas
             FROM PreciosEspeciales PE
             LEFT JOIN Clientes C ON C.CodCliente = PE.CliIdCliente OR C.CliIdCliente = PE.CliIdCliente
@@ -31,7 +35,12 @@ const getClientRules = async (req, res) => {
         // 1. Verificar si existe el cliente
         const clientRes = await pool.request()
             .input('CID', sql.Int, clientId)
-            .query("SELECT * FROM PreciosEspeciales WHERE CliIdCliente = @CID");
+            .query(`
+                SELECT PE.*, C.Nombre, C.NombreFantasia, C.IDCliente, C.CioRuc, C.Email, C.TelefonoTrabajo, C.DireccionTrabajo
+                FROM PreciosEspeciales PE
+                LEFT JOIN Clientes C ON C.CodCliente = PE.CliIdCliente OR C.CliIdCliente = PE.CliIdCliente
+                WHERE PE.CliIdCliente = @CID
+            `);
 
         if (clientRes.recordset.length === 0) {
             return res.status(404).json({ error: "Cliente no encontrado" });
@@ -48,23 +57,21 @@ const getClientRules = async (req, res) => {
                 WHERE PI.CliIdCliente = @CID OR PI.ClienteID = @CID
             `);
 
-        // 3. Obtener Perfiles Generales Asignados (Manejo seguro si la tabla no existe en la migración)
+        // 3. Obtener Perfiles Generales Asignados
         let profiles = [];
         try {
-            const perfilesRes = await pool.request()
-                .input('CID', sql.Int, clientId)
-                .query(`
-                    IF OBJECT_ID('ClientePerfil', 'U') IS NOT NULL AND OBJECT_ID('Perfiles', 'U') IS NOT NULL
-                    BEGIN
-                        SELECT P.NombrePerfil, P.Global, CP.FechaAsignacion
-                        FROM ClientePerfil CP
-                        JOIN Perfiles P ON CP.PerfilID = P.PerfilID
-                        WHERE CP.ClienteID = @CID AND CP.Activo = 1 AND P.Activo = 1
-                    END
-                `);
-            profiles = perfilesRes.recordset || [];
+            const client = clientRes.recordset[0];
+            if (client && client.PerfilesIDs) {
+                const ids = client.PerfilesIDs.split(',').map(id => parseInt(id.trim())).filter(id => !isNaN(id));
+                if (ids.length > 0) {
+                    const perfilesRes = await pool.request()
+                        .query("SELECT ID, Nombre as NombrePerfil, EsGlobal as [Global] FROM PerfilesPrecios WHERE Activo = 1");
+                    const allProfiles = perfilesRes.recordset || [];
+                    profiles = allProfiles.filter(p => ids.includes(p.ID));
+                }
+            }
         } catch(e) {
-            // Ignorar si las tablas de perfiles no están migradas
+            logger.error("Error loading client profiles:", e);
         }
 
         res.json({

@@ -87,6 +87,12 @@ const ClienteBilletera = ({ clienteId, clienteNombre }) => {
                            <span className="text-[9px] bg-slate-100 px-2 py-0.5 rounded-md text-slate-500 font-black border border-slate-200 uppercase tracking-tighter shadow-sm">{d.CodigoOrden}</span>
                            <span className="text-[9px] text-slate-400 font-semibold tracking-tighter">{new Date(d.DDeFechaEmision).toLocaleDateString()}</span>
                         </div>
+                        {d.DocCliNombre && d.DocCliNombre.trim().toLowerCase() !== (clienteNombre || '').trim().toLowerCase() && (
+                           <div className="text-[9px] font-semibold text-amber-600 mt-1 flex items-center gap-1">
+                              <span className="uppercase font-black text-[8px] bg-amber-100 px-1 py-0.2 rounded text-amber-700">Facturado a:</span>
+                              <span className="truncate max-w-[150px]" title={d.DocCliNombre}>{d.DocCliNombre}</span>
+                           </div>
+                        )}
                      </div>
                      <div className="flex flex-col items-end gap-1">
                         <span className="font-black text-rose-600 font-mono text-xs tracking-tighter">{d.MonSimbolo} {fmt(d.DDeImportePendiente)}</span>

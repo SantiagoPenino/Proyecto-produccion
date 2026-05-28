@@ -1078,56 +1078,69 @@ if (triggerReversal || triggerForward) {
                                     }
 
                                     // Adicion Nueva
-                                    if (triggerForward && (currentMonto !== 0 || totalMetros > 0)) {
-                                        console.log(`${logPrefix} -> Generando nuevo cargo`); // por ${currentMonto}`);
-                                        const details = await poolLocal.request().input('PID', require('mssql').Int, pc.ID).query("SELECT Cantidad, Subtotal as TotalLinea, ProIdProducto as IDProdReact FROM PedidosCobranzaDetalle WHERE PedidoCobranzaID = @PID");
-                                          
-                                          // --- EN ESTE PUNTO LA ORDEN YA LLAMÓ AL CHECKIN WMS, INSERTAMOS EN ORDENESDEPOSITO SI FALTA ---
-                                          const cliPKForDep = oRow.CliIdCliente || oRow.CodCliente;
-                                          const depCheck = await poolLocal.request().input('Cod', require('mssql').VarChar, oRow.CodigoOrden)
-                                              .query("SELECT OrdIdOrden FROM OrdenesDeposito WITH(NOLOCK) WHERE OrdCodigoOrden = @Cod");
-                                          
-                                          if (depCheck.recordset.length === 0 && details.recordset.length > 0) {
-                                              const dTop = details.recordset[0];
-                                              const lugarReq = await poolLocal.request().input('CID', require('mssql').Int, cliPKForDep).query("SELECT FormaEnvioID FROM Clientes WITH(NOLOCK) WHERE CliIdCliente = @CID");
-                                              const lugarRetiro = lugarReq.recordset[0]?.FormaEnvioID ? parseInt(lugarReq.recordset[0].FormaEnvioID) : null;
-                                              
-                                              const insertResult = await poolLocal.request()
-                                                  .input('Cod', require('mssql').VarChar, oRow.CodigoOrden)
-                                                  .input('Cant', require('mssql').Float, totalMetros)
-                                                  .input('Cli', require('mssql').Int, cliPKForDep)
-                                                  .input('Trab', require('mssql').VarChar, oRow.DescripcionTrabajo)
-                                                  .input('Prod', require('mssql').Int, dTop.IDProdReact || null)
-                                                  .input('Mon', require('mssql').Int, finalMonId)
-                                                  .input('Costo', require('mssql').Float, currentMonto)
-                                                  .input('Usr', require('mssql').Int, usuarioId || 1)
-                                                  .input('Lugar', require('mssql').Int, lugarRetiro)
-                                                  .query(`
-                                                      INSERT INTO OrdenesDeposito (
-                                                          OrdCodigoOrden, OrdCantidad, CliIdCliente, OrdNombreTrabajo,
-                                                          MOrIdModoOrden, ProIdProducto, MonIdMoneda, OrdCostoFinal,
-                                                          OrdFechaIngresoOrden, OrdUsuarioAlta, OrdEstadoActual, OrdFechaEstadoActual, LReIdLugarRetiro
-                                                      )
-                                                      OUTPUT INSERTED.OrdIdOrden
-                                                      VALUES (
-                                                          @Cod, @Cant, @Cli, @Trab, 1, @Prod, @Mon, @Costo,
-                                                          GETDATE(), @Usr, 1, GETDATE(), @Lugar
-                                                      )
-                                                  `);
-                                              if (insertResult.recordset[0]?.OrdIdOrden) {
-                                                  await poolLocal.request()
-                                                      .input('OID', require('mssql').Int, insertResult.recordset[0].OrdIdOrden)
-                                                      .input('Usr', require('mssql').Int, usuarioId || 1)
-                                                      .query("INSERT INTO HistoricoEstadosOrdenes (OrdIdOrden, EOrIdEstadoOrden, HEOFechaEstado, HEOUsuarioAlta) VALUES (@OID, 1, GETDATE(), @Usr)");
-                                              }
-                                              console.log(`[WMS-INTERNAL] Creado OrdenesDeposito para ${oRow.CodigoOrden}`);
-                                          }
-                                          // ------------------------------------------------------------------------------------------------
-                                        
-                                          let importeTotalOrden = 0;
-                                          for (const d of details.recordset) {
-                                              const lineImp = parseFloat(d.TotalLinea) || 0;
-                                              const lineQty = parseFloat(d.Cantidad) || 0;
+                                     if (triggerForward && (currentMonto !== 0 || totalMetros > 0)) {
+                                         console.log(`${logPrefix} -> Generando nuevo cargo`); // por ${currentMonto}`);
+                                         const cRes = await poolLocal.request().query("SELECT TOP 1 CotDolar FROM dbo.Cotizaciones WITH(NOLOCK) ORDER BY CotFecha DESC");
+                                         const cotizacionVal = cRes.recordset[0]?.CotDolar || 40;
+
+                                         const details = await poolLocal.request().input('PID', require('mssql').Int, pc.ID).query("SELECT Cantidad, Subtotal as TotalLinea, ProIdProducto as IDProdReact, Moneda FROM PedidosCobranzaDetalle WHERE PedidoCobranzaID = @PID");
+                                           
+                                           // --- EN ESTE PUNTO LA ORDEN YA LLAMÓ AL CHECKIN WMS, INSERTAMOS EN ORDENESDEPOSITO SI FALTA ---
+                                           const cliPKForDep = oRow.CliIdCliente || oRow.CodCliente;
+                                           const depCheck = await poolLocal.request().input('Cod', require('mssql').VarChar, oRow.CodigoOrden)
+                                               .query("SELECT OrdIdOrden FROM OrdenesDeposito WITH(NOLOCK) WHERE OrdCodigoOrden = @Cod");
+                                           
+                                           if (depCheck.recordset.length === 0 && details.recordset.length > 0) {
+                                               const dTop = details.recordset[0];
+                                               const lugarReq = await poolLocal.request().input('CID', require('mssql').Int, cliPKForDep).query("SELECT FormaEnvioID FROM Clientes WITH(NOLOCK) WHERE CliIdCliente = @CID");
+                                               const lugarRetiro = lugarReq.recordset[0]?.FormaEnvioID ? parseInt(lugarReq.recordset[0].FormaEnvioID) : null;
+                                               
+                                               const insertResult = await poolLocal.request()
+                                                   .input('Cod', require('mssql').VarChar, oRow.CodigoOrden)
+                                                   .input('Cant', require('mssql').Float, totalMetros)
+                                                   .input('Cli', require('mssql').Int, cliPKForDep)
+                                                   .input('Trab', require('mssql').VarChar, oRow.DescripcionTrabajo)
+                                                   .input('Prod', require('mssql').Int, dTop.IDProdReact || null)
+                                                   .input('Mon', require('mssql').Int, finalMonId)
+                                                   .input('Costo', require('mssql').Float, currentMonto)
+                                                   .input('Usr', require('mssql').Int, usuarioId || 1)
+                                                   .input('Lugar', require('mssql').Int, lugarRetiro)
+                                                   .query(`
+                                                       INSERT INTO OrdenesDeposito (
+                                                           OrdCodigoOrden, OrdCantidad, CliIdCliente, OrdNombreTrabajo,
+                                                           MOrIdModoOrden, ProIdProducto, MonIdMoneda, OrdCostoFinal,
+                                                           OrdFechaIngresoOrden, OrdUsuarioAlta, OrdEstadoActual, OrdFechaEstadoActual, LReIdLugarRetiro
+                                                       )
+                                                       OUTPUT INSERTED.OrdIdOrden
+                                                       VALUES (
+                                                           @Cod, @Cant, @Cli, @Trab, 1, @Prod, @Mon, @Costo,
+                                                           GETDATE(), @Usr, 1, GETDATE(), @Lugar
+                                                       )
+                                                   `);
+                                               if (insertResult.recordset[0]?.OrdIdOrden) {
+                                                   await poolLocal.request()
+                                                       .input('OID', require('mssql').Int, insertResult.recordset[0].OrdIdOrden)
+                                                       .input('Usr', require('mssql').Int, usuarioId || 1)
+                                                       .query("INSERT INTO HistoricoEstadosOrdenes (OrdIdOrden, EOrIdEstadoOrden, HEOFechaEstado, HEOUsuarioAlta) VALUES (@OID, 1, GETDATE(), @Usr)");
+                                               }
+                                               console.log(`[WMS-INTERNAL] Creado OrdenesDeposito para ${oRow.CodigoOrden}`);
+                                           }
+                                           // ------------------------------------------------------------------------------------------------
+                                         
+                                           let importeTotalOrden = 0;
+                                           for (const d of details.recordset) {
+                                               const lineQty = parseFloat(d.Cantidad) || 0;
+                                               const lineMon = (d.Moneda || pc.Moneda || 'UYU').trim().toUpperCase();
+                                               const docMon = (pc.Moneda || 'UYU').trim().toUpperCase();
+                                               let lineImp = parseFloat(d.TotalLinea) || 0;
+
+                                               if (lineMon !== docMon) {
+                                                   if (lineMon === 'UYU' && docMon === 'USD') {
+                                                       lineImp = parseFloat((lineImp / cotizacionVal).toFixed(2));
+                                                   } else if (lineMon === 'USD' && docMon === 'UYU') {
+                                                       lineImp = parseFloat((lineImp * cotizacionVal).toFixed(2));
+                                                   }
+                                               }
 
                                               // Detectar si el cliente tiene un plan activo y cuántos metros disponibles
                                               const cliPK = oRow.CliIdCliente || oRow.CodCliente;

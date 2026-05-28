@@ -1404,6 +1404,7 @@ exports.getClientesActivos = async (req, res) => {
           c.CodCliente,
           RTRIM(LTRIM(c.IDCliente)) AS IDCliente,
           c.TClIdTipoCliente,
+          RTRIM(LTRIM(tc.TClDescripcion)) AS TipoClienteDescripcion,
           RTRIM(LTRIM(c.CioRuc)) AS CioRuc,
           RTRIM(LTRIM(c.DireccionTrabajo)) AS DireccionTrabajo,
           c.DepartamentoID,
@@ -1411,10 +1412,11 @@ exports.getClientesActivos = async (req, res) => {
           COUNT(DISTINCT cc.CueIdCuenta) AS TotalCuentas
         FROM      dbo.CuentasCliente cc WITH(NOLOCK)
         JOIN      dbo.Clientes        c  WITH(NOLOCK) ON c.CliIdCliente = cc.CliIdCliente
+        LEFT JOIN dbo.TiposClientes  tc WITH(NOLOCK) ON c.TClIdTipoCliente = tc.TClIdTipoCliente
         WHERE cc.CueActiva = 1
           AND cc.CueTipo NOT IN ('USD','UYU','ARS','EUR','PYG','BRL')
           ${filtroNombre}
-        GROUP BY c.CliIdCliente, c.Nombre, c.NombreFantasia, c.Email, c.CodCliente, c.IDCliente, c.TClIdTipoCliente, c.CioRuc, c.DireccionTrabajo, c.DepartamentoID, c.TelefonoTrabajo
+        GROUP BY c.CliIdCliente, c.Nombre, c.NombreFantasia, c.Email, c.CodCliente, c.IDCliente, c.TClIdTipoCliente, tc.TClDescripcion, c.CioRuc, c.DireccionTrabajo, c.DepartamentoID, c.TelefonoTrabajo
         ORDER BY RTRIM(LTRIM(c.Nombre))
       `);
       return res.json({ success: true, data: result.recordset });
@@ -1431,11 +1433,13 @@ exports.getClientesActivos = async (req, res) => {
           c.CodCliente,
           RTRIM(LTRIM(c.IDCliente)) AS IDCliente,
           c.TClIdTipoCliente,
+          RTRIM(LTRIM(tc.TClDescripcion)) AS TipoClienteDescripcion,
           RTRIM(LTRIM(c.CioRuc)) AS CioRuc,
           RTRIM(LTRIM(c.DireccionTrabajo)) AS DireccionTrabajo,
           c.DepartamentoID,
           RTRIM(LTRIM(c.TelefonoTrabajo)) AS TelefonoTrabajo
         FROM dbo.Clientes c WITH(NOLOCK)
+        LEFT JOIN dbo.TiposClientes tc WITH(NOLOCK) ON c.TClIdTipoCliente = tc.TClIdTipoCliente
         WHERE 1=1 ${filtroNombre}
         ORDER BY RTRIM(LTRIM(c.Nombre))
       `);
@@ -1454,6 +1458,7 @@ exports.getClientesActivos = async (req, res) => {
         c.CodCliente,
         RTRIM(LTRIM(c.IDCliente)) AS IDCliente,
         c.TClIdTipoCliente,
+        RTRIM(LTRIM(tc.TClDescripcion)) AS TipoClienteDescripcion,
         RTRIM(LTRIM(c.CioRuc)) AS CioRuc,
         RTRIM(LTRIM(c.DireccionTrabajo)) AS DireccionTrabajo,
         c.DepartamentoID,
@@ -1471,6 +1476,7 @@ exports.getClientesActivos = async (req, res) => {
                                                     AND dd.DDeEstado   IN ('PENDIENTE','VENCIDO','PARCIAL')
       LEFT JOIN dbo.CiclosCredito  cic WITH(NOLOCK) ON cic.CueIdCuenta = cc.CueIdCuenta
                                                     AND cic.CicEstado  = 'ABIERTO'
+      LEFT JOIN dbo.TiposClientes   tc WITH(NOLOCK) ON c.TClIdTipoCliente = tc.TClIdTipoCliente
       WHERE cc.CueActiva = 1
         AND (
             cc.CueSaldoActual <> 0 
@@ -1479,7 +1485,7 @@ exports.getClientesActivos = async (req, res) => {
             ${(q.trim() || todos === 'true') ? "OR 1=1" : ""}
         )
         ${filtroNombre}
-      GROUP BY c.CliIdCliente, c.Nombre, c.NombreFantasia, c.Email, c.CodCliente, c.IDCliente, c.TClIdTipoCliente, c.CioRuc, c.DireccionTrabajo, c.DepartamentoID, c.TelefonoTrabajo
+      GROUP BY c.CliIdCliente, c.Nombre, c.NombreFantasia, c.Email, c.CodCliente, c.IDCliente, c.TClIdTipoCliente, tc.TClDescripcion, c.CioRuc, c.DireccionTrabajo, c.DepartamentoID, c.TelefonoTrabajo
       ORDER BY ABS(SUM(cc.CueSaldoActual)) DESC, RTRIM(LTRIM(c.Nombre))
     `);
 

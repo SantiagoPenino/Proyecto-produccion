@@ -793,8 +793,9 @@ async function procesarTransaccion(payload) {
 
     // OrdenesRetiro → determinar nuevo estado según estado actual
     for (const ap of ordenesRetiro) {
-      const realRefId = parseInt(ap.referenciaId, 10);
-      const isVirtual = isNaN(realRefId);
+      const refStr = String(ap.referenciaId || '').trim();
+      const realRefId = parseInt(refStr.replace(/\D/g, ''), 10);
+      const isVirtual = isNaN(realRefId) || refStr.toUpperCase().startsWith('RL');
 
       // 1. Marcar siempre como pagas las OrdenesDeposito hijas (tanto reales como virtuales)
       if (ap.orderNumbers && ap.orderNumbers.length > 0) {
@@ -846,7 +847,6 @@ async function procesarTransaccion(payload) {
         .query(`
           UPDATE dbo.OrdenesRetiro
           SET PagIdPago            = @PagId,
-              TcaIdTransaccion     = @TcaId,
               OReEstadoActual      = @Estado,
               OReFechaEstadoActual = GETDATE(),
               ORePasarPorCaja      = 0
@@ -897,8 +897,8 @@ async function procesarTransaccion(payload) {
 
     // ── PASO 5: AUTO-CIERRE de retiro si todas sus órdenes están pagas ─
     for (const ap of ordenesRetiro) {
-      const realRefId = parseInt(ap.referenciaId, 10);
-      if (isNaN(realRefId)) continue; // Los retiros virtuales no se cierran porque no existen en tabla
+      const realRefId = parseInt(String(ap.referenciaId).replace(/\D/g, ''), 10);
+      if (isNaN(realRefId) || String(ap.referenciaId).trim().toUpperCase().startsWith('RL')) continue; // Los retiros virtuales no se cierran porque no existen en tabla
 
       const checkRes = await new sql.Request(transaction)
         .input('Id', sql.Int, realRefId)
@@ -922,7 +922,6 @@ async function procesarTransaccion(payload) {
           .query(`
             UPDATE dbo.OrdenesRetiro
             SET PagIdPago            = @PagId,
-                TcaIdTransaccion     = @TcaId,
                 OReEstadoActual      = CASE WHEN OReEstadoActual = 5 THEN 5 ELSE 4 END,
                 OReFechaEstadoActual = GETDATE(),
                 ORePasarPorCaja      = 0
@@ -1210,11 +1209,11 @@ async function procesarTransaccion(payload) {
              const allOdIds = [];
              const allOrIds = [];
              for (const a of ordenesDeposito) {
-               const id = parseInt(a.referenciaId, 10);
+               const id = parseInt(String(a.referenciaId).replace(/\D/g, ''), 10);
                if (!isNaN(id)) allOdIds.push(id);
              }
              for (const ap of ordenesRetiro) {
-               const id = parseInt(ap.referenciaId, 10);
+               const id = parseInt(String(ap.referenciaId).replace(/\D/g, ''), 10);
                if (!isNaN(id)) allOrIds.push(id);
                if (ap.orderNumbers && Array.isArray(ap.orderNumbers)) {
                  for (const subId of ap.orderNumbers) {
@@ -1432,29 +1431,38 @@ async function anularTransaccion({ tcaIdTransaccion, usuarioId, motivo }) {
         WHERE PagTcaIdTransaccion = @TcaId
       `);
 
-    // Revertir OrdenesRetiro (quitar PagIdPago + TcaId, volver a estado anterior)
+    // Revertir OrdenesRetiro (quitar PagIdPago, volver a estado anterior)
     await new sql.Request(transaction)
       .input('TcaId',    sql.Int, tcaIdTransaccion)
       .input('UsuarioId',sql.Int, usuarioId)
       .query(`
+        -- 1. Insertar en el histórico de estados
+        INSERT INTO dbo.HistoricoEstadosOrdenesRetiro
+          (OReIdOrdenRetiro, EORIdEstadoOrden, HEOFechaEstado, HEOUsuarioAlta)
+        SELECT OReIdOrdenRetiro, 
+          CASE
+            WHEN OReEstadoActual IN (3,4) THEN 1   -- Abonado → Pendiente
+            WHEN OReEstadoActual = 8      THEN 5    -- Empaquetado y abonado → Entregado
+            ELSE OReEstadoActual
+          END, GETDATE(), @UsuarioId
+        FROM dbo.OrdenesRetiro WITH(NOLOCK)
+        WHERE PagIdPago IN (
+            SELECT PagIdPago FROM dbo.Pagos WHERE PagTcaIdTransaccion = @TcaId
+        );
+
+        -- 2. Desvincular pagos y revertir estados
         UPDATE dbo.OrdenesRetiro
         SET PagIdPago        = NULL,
-            TcaIdTransaccion = NULL,
             OReEstadoActual  = CASE
               WHEN OReEstadoActual IN (3,4) THEN 1   -- Abonado → Pendiente
-              WHEN OReEstadoActual = 8      THEN 5    -- Listo+Abonado → Listo
+              WHEN OReEstadoActual = 8      THEN 5    -- Empaquetado y abonado → Entregado
               ELSE OReEstadoActual
             END,
             OReFechaEstadoActual = GETDATE(),
             ORePasarPorCaja      = 1
-        WHERE TcaIdTransaccion = @TcaId;
-
-        INSERT INTO dbo.HistoricoEstadosOrdenesRetiro
-          (OReIdOrdenRetiro, EORIdEstadoOrden, HEOFechaEstado, HEOUsuarioAlta)
-        SELECT OReIdOrdenRetiro, OReEstadoActual, GETDATE(), @UsuarioId
-        FROM dbo.OrdenesRetiro WITH(NOLOCK)
-        WHERE TcaIdTransaccion IS NULL   -- ya fueron revertidas arriba
-          -- re-seleccionamos para el histórico usando la TcaId en Pagos
+        WHERE PagIdPago IN (
+            SELECT PagIdPago FROM dbo.Pagos WHERE PagTcaIdTransaccion = @TcaId
+        );
       `);
 
     // Revertir OrdenesDeposito

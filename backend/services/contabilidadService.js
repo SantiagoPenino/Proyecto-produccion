@@ -1041,6 +1041,8 @@ async function getMovimientos(CueIdCuenta, FechaDesde = null, FechaHasta = null,
       COALESCE(dc.DocEstado, dcPago.DocEstado) AS DocEstado,
       COALESCE(dc.DocTotal, dcPago.DocTotal) AS DocTotal,
       COALESCE(dc.DocSubtotal, dcPago.DocSubtotal) AS DocSubtotal,
+      COALESCE(dc.DocCliNombre, dcPago.DocCliNombre, '') AS DocCliNombre,
+      COALESCE(dc.DocCliDocumento, dcPago.DocCliDocumento, '') AS DocCliDocumento,
       CAST(
         CASE WHEN EXISTS (
           SELECT 1 
@@ -1054,6 +1056,7 @@ async function getMovimientos(CueIdCuenta, FechaDesde = null, FechaHasta = null,
         ) THEN 1 ELSE 0 END AS BIT
       ) AS EsPendientePago,
       COALESCE(
+        (SELECT TOP 1 CodigoOrden FROM dbo.Ordenes WITH(NOLOCK) WHERE OrdenID = m.OrdIdOrden),
         (SELECT TOP 1 OrdCodigoOrden FROM dbo.OrdenesDeposito WITH(NOLOCK) WHERE OrdIdOrden = m.OrdIdOrden),
         (SELECT TOP 1 OrdCodigoOrden FROM dbo.OrdenesDeposito WITH(NOLOCK) WHERE OReIdOrdenRetiro = m.OReIdOrdenRetiro),
         m.MovRefExterna
@@ -1189,7 +1192,9 @@ async function getDeudas(CueIdCuenta, SoloEstado = null) {
       d.DDeCuotaNumero,
       d.DDeCuotaTotal,
       d.DDeEstado,
-      DATEDIFF(DAY, d.DDeFechaVencimiento, GETDATE()) AS DiasVencido
+      DATEDIFF(DAY, d.DDeFechaVencimiento, GETDATE()) AS DiasVencido,
+      docPrincipal.DocCliNombre,
+      docPrincipal.DocCliDocumento
     FROM dbo.DeudaDocumento d WITH(NOLOCK)
     LEFT JOIN dbo.DocumentosContables docPrincipal WITH(NOLOCK) ON docPrincipal.DocIdDocumento = d.DocIdDocumento
     LEFT JOIN dbo.OrdenesDeposito od WITH(NOLOCK) ON od.OrdIdOrden = d.OrdIdOrden
@@ -1259,6 +1264,9 @@ async function getDeudasPorCliente(CliIdCliente, modo = 'TODO') {
         cc.CueTipo,
         ISNULL(mon.MonSimbolo, '$U') AS MonSimbolo,
         DATEDIFF(DAY, d.DDeFechaVencimiento, GETDATE()) AS DiasVencido,
+        docPrincipal.DocCliNombre,
+        docPrincipal.DocCliDocumento,
+        cli.Nombre AS ClienteNombre,
         (SELECT c.CicSaldoFacturar FROM dbo.DocumentosContables dc WITH(NOLOCK) JOIN dbo.CiclosCredito c WITH(NOLOCK) ON c.CicIdCiclo = dc.CicIdCiclo WHERE dc.DocIdDocumento = d.DocIdDocumento AND dc.DocTipo = 'FACTURA') AS CicSaldoFacturar,
         (SELECT c.CicTotalOrdenes FROM dbo.DocumentosContables dc WITH(NOLOCK) JOIN dbo.CiclosCredito c WITH(NOLOCK) ON c.CicIdCiclo = dc.CicIdCiclo WHERE dc.DocIdDocumento = d.DocIdDocumento AND dc.DocTipo = 'FACTURA') AS CicTotalOrdenes,
         (SELECT c.CicTotalPagos FROM dbo.DocumentosContables dc WITH(NOLOCK) JOIN dbo.CiclosCredito c WITH(NOLOCK) ON c.CicIdCiclo = dc.CicIdCiclo WHERE dc.DocIdDocumento = d.DocIdDocumento AND dc.DocTipo = 'FACTURA') AS CicTotalPagos,
@@ -1279,6 +1287,8 @@ async function getDeudasPorCliente(CliIdCliente, modo = 'TODO') {
          FOR JSON PATH) AS SubOrdenesJSON
       FROM dbo.DeudaDocumento d WITH(NOLOCK)
       JOIN dbo.CuentasCliente cc WITH(NOLOCK) ON cc.CueIdCuenta = d.CueIdCuenta
+      JOIN dbo.Clientes cli WITH(NOLOCK) ON cli.CliIdCliente = cc.CliIdCliente
+      LEFT JOIN dbo.DocumentosContables docPrincipal WITH(NOLOCK) ON docPrincipal.DocIdDocumento = d.DocIdDocumento
       LEFT JOIN dbo.Monedas mon WITH(NOLOCK) ON mon.MonIdMoneda = cc.MonIdMoneda
       LEFT JOIN dbo.OrdenesDeposito od WITH(NOLOCK) ON od.OrdIdOrden = d.OrdIdOrden
       LEFT JOIN dbo.Ordenes ordERP WITH(NOLOCK) ON ordERP.OrdenID = d.OrdIdOrden
@@ -1342,6 +1352,8 @@ async function getTodasLasDeudasVivas() {
         RTRIM(LTRIM(cli.CioRuc)) AS ClienteRuc,
         RTRIM(LTRIM(cli.Email)) AS ClienteEmail,
         RTRIM(LTRIM(cli.TelefonoTrabajo)) AS ClienteTelefono,
+        docPrincipal.DocCliNombre,
+        docPrincipal.DocCliDocumento,
         (SELECT 
             m.OrdIdOrden,
             ISNULL(od.OrdCodigoOrden, erp.CodigoOrden) as CodigoOrden,
@@ -1360,6 +1372,7 @@ async function getTodasLasDeudasVivas() {
       FROM dbo.DeudaDocumento d WITH(NOLOCK)
       JOIN dbo.CuentasCliente cc WITH(NOLOCK) ON cc.CueIdCuenta = d.CueIdCuenta
       JOIN dbo.Clientes cli WITH(NOLOCK) ON cli.CliIdCliente = cc.CliIdCliente
+      LEFT JOIN dbo.DocumentosContables docPrincipal WITH(NOLOCK) ON docPrincipal.DocIdDocumento = d.DocIdDocumento
       LEFT JOIN dbo.Monedas mon WITH(NOLOCK) ON mon.MonIdMoneda = cc.MonIdMoneda
       LEFT JOIN dbo.OrdenesDeposito od WITH(NOLOCK) ON od.OrdIdOrden = d.OrdIdOrden
       LEFT JOIN dbo.Ordenes ordERP WITH(NOLOCK) ON ordERP.OrdenID = d.OrdIdOrden

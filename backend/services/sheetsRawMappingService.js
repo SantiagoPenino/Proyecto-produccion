@@ -274,7 +274,7 @@ class SheetsRawMappingService {
             if (fileUrl && fileUrl.includes('http')) {
                 const copias = (i < colCopias.length && hojaBase[colCopias[i]]) ? parseFloat(hojaBase[colCopias[i]]) || 1 : 1;
                 const metros = (i < colMetros.length && hojaBase[colMetros[i]]) ? parseFloat(hojaBase[colMetros[i]]) || 0 : 0;
-                itemsResult.push({ fileName: fileUrl, cantidad: metros > 0 ? metros : (cR / 10), copias });
+                itemsResult.push({ fileName: fileUrl, cantidad: metros, copias });
             }
         }
         if (itemsResult.length === 0) itemsResult.push({ fileName: "Sin link", cantidad: cR, copias: 1 });
@@ -440,7 +440,7 @@ class SheetsRawMappingService {
 
                 itemsResult.push({
                     fileName: fileUrl,
-                    cantidad: metros > 0 ? metros : (cR / 10), // Fallback
+                    cantidad: metros,
                     copias: copias
                 });
             }

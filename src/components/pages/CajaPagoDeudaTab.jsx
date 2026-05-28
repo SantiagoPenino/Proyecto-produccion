@@ -357,6 +357,13 @@ export default function CajaPagoDeudaTab({ sesion, metodosPago = [], cotizacion 
                         <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest mt-1">
                           Vence: {fmtFecha(d.DDeFechaVencimiento)}
                         </span>
+                        
+                        {d.DocCliNombre && d.DocCliNombre.trim().toLowerCase() !== (d.ClienteNombre || '').trim().toLowerCase() && (
+                          <span className="text-[9px] font-bold text-amber-600 mt-1 flex items-center gap-1">
+                            <span className="uppercase font-black text-[8px] bg-amber-100 px-1 py-0.2 rounded text-amber-700">Facturado a:</span>
+                            <span className="truncate max-w-[180px]" title={d.DocCliNombre}>{d.DocCliNombre}</span>
+                          </span>
+                        )}
                       </div>
                     </div>
                     
@@ -476,6 +483,12 @@ export default function CajaPagoDeudaTab({ sesion, metodosPago = [], cotizacion 
                               <span className="text-[10px] text-slate-500 font-bold bg-slate-50 px-2 py-0.5 rounded-lg border border-slate-200 uppercase tracking-widest truncate max-w-[150px]"><span className="text-slate-400">ID: {d.ClienteCodigo || '-'}</span> {d.ClienteNombre}</span>
                               <span className={`text-[9px] font-black px-2 py-0.5 rounded-md border uppercase tracking-widest ${badge.cls}`}>{badge.label}</span>
                             </div>
+                            {d.DocCliNombre && d.DocCliNombre.trim().toLowerCase() !== (d.ClienteNombre || '').trim().toLowerCase() && (
+                              <div className="text-[10px] font-bold text-amber-600 mt-2 flex items-center gap-1.5 bg-amber-50 px-2.5 py-1 rounded-lg border border-amber-200 w-fit select-none">
+                                <span className="uppercase font-black text-[8px] bg-amber-200 px-1 py-0.2 rounded text-amber-800">Facturado a:</span>
+                                <span>{d.DocCliNombre}</span>
+                              </div>
+                            )}
                           </div>
                         </div>
                         <div className="flex items-end flex-col gap-1 shrink-0 ml-4">

@@ -61,10 +61,9 @@ async function run() {
         for (const row of rows) {
             const tag = `[ReconciliacionCtb] [${row.CodigoOrden}]`;
             try {
-                // Obtener detalles de cobranza
                 const detRes = await pool.request()
                     .input('PID', sql.Int, row.PCId)
-                    .query('SELECT Cantidad, Subtotal AS TotalLinea, ProIdProducto AS IDProdReact FROM PedidosCobranzaDetalle WHERE PedidoCobranzaID = @PID');
+                    .query('SELECT Cantidad, Subtotal AS TotalLinea, ProIdProducto AS IDProdReact, Moneda FROM PedidosCobranzaDetalle WHERE PedidoCobranzaID = @PID');
 
                 const detalles = detRes.recordset;
                 if (detalles.length === 0) {
@@ -77,9 +76,22 @@ async function run() {
                 const currentMonto = parseFloat(row.MontoTotal) || 0;
                 const finalMonId = row.Moneda === 'USD' ? 2 : 1;
 
+                const cRes = await pool.request().query("SELECT TOP 1 CotDolar FROM dbo.Cotizaciones WITH(NOLOCK) ORDER BY CotFecha DESC");
+                const cotizacionVal = cRes.recordset[0]?.CotDolar || 40;
+
                 for (const d of detalles) {
-                    const lineImp = parseFloat(d.TotalLinea) || 0;
                     const lineQty = parseFloat(d.Cantidad) || 0;
+                    const lineMon = (d.Moneda || row.Moneda || 'UYU').trim().toUpperCase();
+                    const docMon = (row.Moneda || 'UYU').trim().toUpperCase();
+                    let lineImp = parseFloat(d.TotalLinea) || 0;
+
+                    if (lineMon !== docMon) {
+                        if (lineMon === 'UYU' && docMon === 'USD') {
+                            lineImp = parseFloat((lineImp / cotizacionVal).toFixed(2));
+                        } else if (lineMon === 'USD' && docMon === 'UYU') {
+                            lineImp = parseFloat((lineImp * cotizacionVal).toFixed(2));
+                        }
+                    }
 
                     // Verificar plan activo
                     let planMetrosDisp = 0;

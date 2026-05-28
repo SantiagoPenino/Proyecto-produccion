@@ -10,7 +10,7 @@ import {
   Calendar, PlayCircle, StopCircle, X,
   ArrowUpCircle, ArrowDownCircle, Info, Users, Zap,
   DollarSign, PlusCircle, Package, RotateCcw, Layers, Download, Printer, ChevronDown, FileMinus, Trash2,
-  Lock, Unlock
+  Lock, Unlock, User
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { useLocation } from 'react-router-dom';
@@ -18,6 +18,7 @@ import { useLocation } from 'react-router-dom';
 import api from '../../services/api';
 import { generarPdfEstadoCuenta, generarPdfPrefactura, generarPdfFacturaDGI } from '../../utils/pdfGenerator';
 import CierreCicloPreviewModal from './CierreCicloPreviewModal';
+import ClienteBilletera from '../common/ClienteBilletera';
 
 const fetchAPI = async (url, opts = {}) => {
   try {
@@ -682,7 +683,7 @@ const FilaCliente = ({ c, seleccionado, onClick }) => {
         <div className="flex flex-col flex-1 min-w-0">
           <span className="text-sm font-semibold text-slate-800 truncate">{c.Nombre}</span>
           <div className="flex items-center gap-2 mt-0.5">
-            <span className="text-[10px] font-mono text-slate-500 shrink-0">#{c.CodCliente || c.CliIdCliente}</span>
+            <span className="text-[10px] font-mono text-slate-500 shrink-0">#{c.IDCliente || c.CodCliente || c.CliIdCliente}</span>
             <div className="flex items-center gap-1">
               {c.EsSemanal      == 1 && <Badge color="indigo"><Calendar size={9} /> Sem.</Badge>}
               {c.TieneCicloAbierto == 1 && <Badge color="green"><span className="animate-pulse">●</span> Ciclo</Badge>}
@@ -1220,6 +1221,11 @@ const MovimientosPanel = ({ CueIdCuenta, simbolo = '$', onClose, cuenta, onRegis
                                 {m.CfeEstado && (
                                     <span className={`text-[9px] font-black tracking-widest uppercase mt-0.5 block ${m.CfeEstado === 'ACEPTADO_DGI' ? 'text-emerald-500' : 'text-amber-500'}`}>DGI: {m.CfeEstado.replace('_DGI','')}</span>
                                 )}
+                                {m.DocCliNombre && m.DocCliNombre.trim().toLowerCase() !== (cliente?.Nombre || '').trim().toLowerCase() && (
+                                    <span className="text-[10px] font-bold text-amber-600 mt-1 block" title={m.DocCliNombre}>
+                                        Facturado a: <span className="font-extrabold">{m.DocCliNombre}</span>
+                                    </span>
+                                )}
                             </td>
                             <td className="px-4 py-3 text-slate-600 min-w-[250px] max-w-[350px]" title={m.MovConcepto}><span className="block text-xs font-medium leading-relaxed whitespace-normal break-words">{conceptoLimpio}</span></td>
                             <td className="px-4 py-3 text-right bg-indigo-50/30 group-hover:bg-indigo-50/60 transition-colors">
@@ -1332,6 +1338,11 @@ const MovimientosPanel = ({ CueIdCuenta, simbolo = '$', onClose, cuenta, onRegis
                         </div>
                         {m.CfeEstado && (
                           <span className={`text-[9px] font-black tracking-widest uppercase mt-0.5 block ${m.CfeEstado === 'ACEPTADO_DGI' ? 'text-emerald-500' : 'text-amber-500'}`}>DGI: {m.CfeEstado.replace('_DGI','')}</span>
+                        )}
+                        {m.DocCliNombre && m.DocCliNombre.trim().toLowerCase() !== (cliente?.Nombre || '').trim().toLowerCase() && (
+                          <span className="text-[10px] font-bold text-amber-600 mt-1 block" title={m.DocCliNombre}>
+                            Facturado a: <span className="font-extrabold">{m.DocCliNombre}</span>
+                          </span>
                         )}
                       </td>
                       <td className="px-4 py-3 text-slate-600 min-w-[250px] max-w-[350px]" title={m.MovConcepto}>
@@ -2219,7 +2230,6 @@ const CuentaCard = ({ cuenta, CliIdCliente, panelActivo, onToggle, onCicloChange
 
 export default function ContabilidadCuentasView() {
   const [busqueda, setBusqueda]               = useState('');
-  const [filtroTipo, setFiltroTipo]           = useState('HISTORICOS');
   const [clientesActivos, setClientesActivos] = useState([]);
   const [clienteSel, setClienteSel]           = useState(null);
   const [cuentas, setCuentas]                 = useState([]);
@@ -2245,17 +2255,20 @@ export default function ContabilidadCuentasView() {
       const qp = new URLSearchParams();
       if (q.trim()) {
          qp.append('q', q.trim());
-         qp.append('todos', 'true'); // Siempre buscar en todos si hay texto
-      } else {
-         if (filtroTipo === 'HISTORICOS') qp.append('todos', 'true');
       }
+      qp.append('todos', 'true');
       const data = await fetchAPI(`/api/contabilidad/clientes-activos?${qp.toString()}`);
       setClientesActivos(data.data || []);
     } catch (e) { toast.error(e.message); }
     finally { setLoadingLista(false); }
-  }, [filtroTipo]);
+  }, []);
 
-  useEffect(() => { cargarClientesActivos(); }, [cargarClientesActivos]);
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      cargarClientesActivos(busqueda);
+    }, 400);
+    return () => clearTimeout(timer);
+  }, [busqueda, cargarClientesActivos]);
 
   const seleccionarCliente = async (cli) => {
     if (clienteSel?.CliIdCliente === cli.CliIdCliente) { setClienteSel(null); return; }
@@ -2367,14 +2380,8 @@ export default function ContabilidadCuentasView() {
   const docsVencidos = cuentas.reduce((s, c) => s + Number(c.DocumentosVencidos ?? 0), 0);
 
   const mostrarClientes = useMemo(() => {
-    return clientesActivos.filter(c => {
-      const s = Number(c.SaldoTotal||0);
-      const d = Number(c.DeudaTotal||0);
-      if (filtroTipo === 'DEUDORES') return d > 0 || s < 0;
-      if (filtroTipo === 'ACREEDORES') return s > 0 && d === 0;
-      return true;
-    });
-  }, [clientesActivos, filtroTipo]);
+    return clientesActivos;
+  }, [clientesActivos]);
 
   const cuentaActiva = useMemo(() => {
     if (!cuentas || cuentas.length === 0) return null;
@@ -2423,28 +2430,22 @@ export default function ContabilidadCuentasView() {
                 <RefreshCw size={13} className={loadingLista ? 'animate-spin' : ''} />
               </button>
             </div>
-            <div className="flex gap-2">
-              <div className="relative flex-1">
-                <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-500" />
-                <input type="text" placeholder="Buscar..."
-                  value={busqueda}
-                  onChange={e => setBusqueda(e.target.value)}
-                  onKeyDown={e => e.key === 'Enter' && cargarClientesActivos(busqueda)}
-                  className="w-full pl-7 pr-3 py-2 border border-slate-200 rounded-lg text-xs focus:outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-blue-400"
-                />
+            <div className="relative flex items-center mt-1">
+              <div className="absolute left-3 text-slate-400">
+                <Search size={14} />
               </div>
-              <button onClick={() => cargarClientesActivos(busqueda)}
-                className="px-3 py-2 bg-blue-600 text-white text-xs rounded-lg hover:bg-blue-700 transition-colors">
-                <Search size={12} />
-              </button>
-            </div>
-            <div className="mt-2">
-              <select value={filtroTipo} onChange={e => setFiltroTipo(e.target.value)} className="w-full bg-[#f1f5f9] border border-slate-200 rounded-lg text-[11px] text-slate-600 py-1.5 px-2 focus:outline-none focus:ring-1 focus:ring-blue-500">
-                <option value="HISTORICOS">Todos los Clientes (Histórico completo)</option>
-                <option value="TODOS">Sólo clientes activos (Con saldo o deuda)</option>
-                <option value="DEUDORES">Sólo deudores (Deuda pendiente o saldo negativo)</option>
-                <option value="ACREEDORES">Sólo acreedores (Saldo a favor)</option>
-              </select>
+              <input 
+                type="text" 
+                placeholder="Buscar por Nombre, RUT/CI, Tel..." 
+                value={busqueda}
+                onChange={e => setBusqueda(e.target.value)}
+                className="w-full bg-slate-50 border border-slate-200 hover:border-slate-300 focus:border-indigo-500 focus:bg-white rounded-xl pl-9 pr-8 py-2 text-xs font-bold text-slate-800 placeholder-slate-400 outline-none transition-all" 
+              />
+              {loadingLista && (
+                <div className="absolute right-3">
+                  <RefreshCw size={12} className="text-indigo-500 animate-spin" />
+                </div>
+              )}
             </div>
           </div>
 
@@ -2480,96 +2481,123 @@ export default function ContabilidadCuentasView() {
             </div>
           ) : (
             <>
-              <div className="bg-white rounded-2xl border border-slate-200 shadow-sm mb-4">
-                <div className="px-5 py-3 flex items-center justify-between gap-4">
+              <div className="bg-white rounded-2xl border border-slate-200 shadow-sm mb-4 overflow-hidden animate-in fade-in duration-300">
+                <div className="p-5 flex flex-col xl:flex-row gap-6">
                   
-                  {/* Avatar + Client Info */}
-                  <div className="flex items-center gap-3 min-w-[200px]">
-                    <div className="w-10 h-10 rounded-full bg-blue-100 flex items-center justify-center text-blue-700 font-bold shadow-sm shrink-0">
-                      {clienteSel.Nombre?.[0]?.toUpperCase()}
-                    </div>
-                    <div className="flex flex-col">
-                      <h2 className="text-base font-bold text-slate-800 leading-tight truncate">{clienteSel.Nombre}</h2>
-                      {clienteSel.NombreFantasia && <p className="text-xs text-slate-500 truncate">{clienteSel.NombreFantasia}</p>}
-                    </div>
-                  </div>
-
-                  {/* Active Account Balances */}
-                  {cuentaActiva && (
-                      <div className="flex items-center gap-6 px-6 py-2 bg-slate-50/80 rounded-xl border border-slate-100">
-                          <div className="flex flex-col">
-                              <div className="flex items-center gap-2 mb-0.5">
-                                  {Number(cuentaActiva.CueSaldoActual) < 0 && <span className="text-[9px] bg-rose-100 text-rose-600 px-1.5 py-0.5 rounded font-bold uppercase tracking-widest">Saldo Deudor</span>}
-                                  {Number(cuentaActiva.CueSaldoActual) >= 0 && <span className="text-[9px] bg-emerald-100 text-emerald-600 px-1.5 py-0.5 rounded font-bold uppercase tracking-widest">Saldo a Favor</span>}
-                              </div>
-                              <span className={`text-xl font-black leading-none ${Number(cuentaActiva.CueSaldoActual) < 0 ? 'text-rose-600' : 'text-emerald-600'}`}>
-                                  {fmt(Number(cuentaActiva.CueSaldoActual), cuentaActiva.MonSimbolo)}
-                              </span>
-                          </div>
-                          
-                          {(Number(cuentaActiva.DeudaPendienteTotal) > 0 || cuentaActiva.DocumentosVencidos > 0) && (
-                              <div className="flex items-center gap-4 pl-6 border-l border-slate-200">
-                                  {Number(cuentaActiva.DeudaPendienteTotal) > 0 && (
-                                      <div className="flex flex-col">
-                                          <span className="text-[9px] text-slate-400 font-bold uppercase tracking-widest">Deuda Pendiente</span>
-                                          <span className="text-base font-bold text-rose-600 leading-none mt-1">{fmt(Number(cuentaActiva.DeudaPendienteTotal), cuentaActiva.MonSimbolo)}</span>
-                                      </div>
-                                  )}
-                                  {cuentaActiva.DocumentosVencidos > 0 && (
-                                      <div className="flex items-center gap-1.5 bg-rose-50 text-rose-600 px-2.5 py-1 rounded-lg border border-rose-100">
-                                          <AlertTriangle size={14} />
-                                          <span className="text-xs font-bold">{cuentaActiva.DocumentosVencidos} Venc.</span>
-                                      </div>
-                                  )}
-                              </div>
-                          )}
+                  {/* Tarjeta de Información de Cliente (Estilo Caja) */}
+                  <div className="bg-indigo-50/30 border border-indigo-100/80 rounded-2xl p-4 flex flex-col gap-3 w-full xl:w-96 shrink-0 shadow-sm">
+                    <div className="flex items-start justify-between">
+                      <div className="flex items-center gap-3">
+                        <div className="w-10 h-10 rounded-xl bg-indigo-600 flex items-center justify-center text-white font-extrabold text-lg shadow-md shadow-indigo-600/10 shrink-0">
+                          <User size={18} />
+                        </div>
+                        <div className="min-w-0">
+                          <h2 className="text-sm font-black text-slate-800 leading-tight truncate max-w-[200px]" title={clienteSel.Nombre}>{clienteSel.Nombre}</h2>
+                          <p className="text-[9px] text-slate-400 font-bold uppercase tracking-wider font-mono mt-0.5">
+                            IDCliente: {clienteSel.IDCliente || clienteSel.CodCliente || clienteSel.CliIdCliente}
+                          </p>
+                        </div>
                       </div>
-                  )}
-
-                  {/* Controls: Tabs & Buttons */}
-                  <div className="flex items-center gap-3">
-                    <div className="flex bg-[#f1f5f9] rounded-xl border border-slate-200 p-1 gap-1">
-                      <button onClick={() => setTabCuentas('UYU')} className={`relative px-4 py-2 text-xs font-black rounded-lg transition-colors uppercase tracking-widest ${tabCuentas === 'UYU' || tabCuentas === 'SALDOS' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500 hover:text-slate-700 hover:bg-slate-50'}`}>
-                        UYU
-                        {cuentas.some(c => (c.CueTipo?.includes('UYU') || c.MonIdMoneda === 1) && (Number(c.CueSaldoActual) !== 0 || c.DocumentosVencidos > 0 || Number(c.DeudaPendienteTotal) > 0)) && <span className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-indigo-500 shadow-sm border border-white animate-pulse"></span>}
-                      </button>
-                      <button onClick={() => setTabCuentas('USD')} className={`relative px-4 py-2 text-xs font-black rounded-lg transition-colors uppercase tracking-widest ${tabCuentas === 'USD' ? 'bg-white text-emerald-600 shadow-sm' : 'text-slate-500 hover:text-slate-700 hover:bg-slate-50'}`}>
-                        USD
-                        {cuentas.some(c => (c.CueTipo?.includes('USD') || c.MonIdMoneda === 2) && (Number(c.CueSaldoActual) !== 0 || c.DocumentosVencidos > 0 || Number(c.DeudaPendienteTotal) > 0)) && <span className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-emerald-500 shadow-sm border border-white animate-pulse"></span>}
-                      </button>
-                      <button onClick={() => setTabCuentas('RECURSOS')} className={`relative px-4 py-2 text-xs font-black rounded-lg transition-colors uppercase tracking-widest ${tabCuentas === 'RECURSOS' ? 'bg-white text-violet-600 shadow-sm' : 'text-slate-500 hover:text-slate-700 hover:bg-slate-50'}`}>
-                        Recursos
-                        {cuentas.some(c => (c.ProIdProducto != null || !['USD','UYU','ARS','EUR','PYG','BRL','CORRIENTE','CREDITO','DEBITO','CAJA','DINERO_USD','DINERO_UYU'].includes(c.CueTipo?.toUpperCase())) && Number(c.CueSaldoActual) !== 0) && <span className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-violet-500 shadow-sm border border-white animate-pulse"></span>}
-                      </button>
+                      <div className="flex flex-col gap-1 items-end shrink-0">
+                        <span className="text-emerald-600 flex items-center gap-0.5 text-[8px] font-black bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-100 select-none">
+                          VERIFICADO <CheckCircle2 size={10} />
+                        </span>
+                        <span className={`text-[8px] font-black px-2 py-0.5 rounded-full border select-none ${clienteSel.TClIdTipoCliente === 2 ? 'text-indigo-600 bg-indigo-50 border-indigo-100' : clienteSel.TClIdTipoCliente === 3 ? 'text-violet-600 bg-violet-50 border-violet-100' : clienteSel.TClIdTipoCliente === 4 ? 'text-rose-600 bg-rose-50 border-rose-100' : 'text-slate-600 bg-slate-50 border-slate-100'}`}>
+                          {clienteSel.TipoClienteDescripcion ? clienteSel.TipoClienteDescripcion.toUpperCase() : 'COMÚN'}
+                        </span>
+                      </div>
                     </div>
+                    
+                    {clienteSel.NombreFantasia && (
+                      <p className="text-xs text-slate-500 font-semibold italic px-1 truncate">"{clienteSel.NombreFantasia}"</p>
+                    )}
 
-                    <div className="flex items-center gap-1">
-                      <button
-                        onClick={handleImprimirEstadoCuenta}
-                        title="Imprimir Estado de Cuenta"
-                        disabled={cuentas.length === 0 || generandoPdf}
-                        className="p-2.5 bg-slate-50 hover:bg-slate-700 hover:text-white text-slate-600 rounded-lg transition-colors disabled:opacity-40 border border-slate-200">
-                        {generandoPdf ? <RefreshCw size={16} className="animate-spin" /> : <Printer size={16} />}
-                      </button>
-                      <button onClick={recargarCuentas} disabled={loadingCuentas} title="Actualizar"
-                        className="p-2.5 hover:bg-slate-100 rounded-lg transition-colors text-slate-500 border border-transparent hover:border-slate-200">
-                        <RefreshCw size={16} className={loadingCuentas ? 'animate-spin' : ''} />
-                      </button>
+                    <div className="flex flex-col gap-1 text-xs text-slate-500 font-medium border-t border-slate-200/60 pt-3">
+                      {clienteSel.CioRuc && <div>RUC / CI: <span className="font-mono font-bold text-slate-800">{clienteSel.CioRuc}</span></div>}
+                      {clienteSel.Email && <div className="truncate" title={clienteSel.Email}>Email: <span className="font-mono text-slate-700">{clienteSel.Email}</span></div>}
+                      {clienteSel.TelefonoTrabajo && <div>Teléfono: <span className="font-mono text-slate-700">{clienteSel.TelefonoTrabajo}</span></div>}
+                      {clienteSel.DireccionTrabajo && <div className="leading-tight">Dirección: <span className="text-slate-700">{clienteSel.DireccionTrabajo}</span></div>}
                     </div>
                   </div>
+
+                  {/* Billetera, Recursos y Controles de Cuentas */}
+                  <div className="flex-1 flex flex-col justify-between gap-4">
+                    {/* Fila Superior: Controles (Tabs, Imprimir, Actualizar) */}
+                    <div className="flex flex-wrap items-center justify-between gap-4 pb-2 border-b border-slate-100">
+                      <div className="flex bg-slate-100 rounded-xl border border-slate-200 p-0.5 gap-0.5 select-none">
+                        <button 
+                          type="button"
+                          onClick={() => setTabCuentas('UYU')} 
+                          className={`relative px-4 py-2 text-xs font-black rounded-lg transition-colors uppercase tracking-widest ${tabCuentas === 'UYU' || tabCuentas === 'SALDOS' ? 'bg-white text-indigo-600 shadow-sm border border-slate-200/50' : 'text-slate-500 hover:text-slate-700 hover:bg-slate-50'}`}
+                        >
+                          UYU
+                          {cuentas.some(c => (c.CueTipo?.includes('UYU') || c.MonIdMoneda === 1) && (Number(c.CueSaldoActual) !== 0 || c.DocumentosVencidos > 0 || Number(c.DeudaPendienteTotal) > 0)) && (
+                            <span className="absolute top-1 right-1 w-2 h-2 rounded-full bg-indigo-500 border border-white animate-pulse"></span>
+                          )}
+                        </button>
+                        <button 
+                          type="button"
+                          onClick={() => setTabCuentas('USD')} 
+                          className={`relative px-4 py-2 text-xs font-black rounded-lg transition-colors uppercase tracking-widest ${tabCuentas === 'USD' ? 'bg-white text-emerald-600 shadow-sm border border-slate-200/50' : 'text-slate-500 hover:text-slate-700 hover:bg-slate-50'}`}
+                        >
+                          USD
+                          {cuentas.some(c => (c.CueTipo?.includes('USD') || c.MonIdMoneda === 2) && (Number(c.CueSaldoActual) !== 0 || c.DocumentosVencidos > 0 || Number(c.DeudaPendienteTotal) > 0)) && (
+                            <span className="absolute top-1 right-1 w-2 h-2 rounded-full bg-emerald-500 border border-white animate-pulse"></span>
+                          )}
+                        </button>
+                        <button 
+                          type="button"
+                          onClick={() => setTabCuentas('RECURSOS')} 
+                          className={`relative px-4 py-2 text-xs font-black rounded-lg transition-colors uppercase tracking-widest ${tabCuentas === 'RECURSOS' ? 'bg-white text-violet-600 shadow-sm border border-slate-200/50' : 'text-slate-500 hover:text-slate-700 hover:bg-slate-50'}`}
+                        >
+                          Recursos
+                          {cuentas.some(c => (c.ProIdProducto != null || !['USD','UYU','ARS','EUR','PYG','BRL','CORRIENTE','CREDITO','DEBITO','CAJA','DINERO_USD','DINERO_UYU'].includes(c.CueTipo?.toUpperCase())) && Number(c.CueSaldoActual) !== 0) && (
+                            <span className="absolute top-1 right-1 w-2 h-2 rounded-full bg-violet-500 border border-white animate-pulse"></span>
+                          )}
+                        </button>
+                      </div>
+
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          type="button"
+                          onClick={handleImprimirEstadoCuenta}
+                          title="Imprimir Estado de Cuenta"
+                          disabled={cuentas.length === 0 || generandoPdf}
+                          className="p-2.5 bg-slate-50 hover:bg-slate-100 text-slate-600 rounded-lg transition-colors disabled:opacity-40 border border-slate-200 hover:border-slate-300 shadow-sm"
+                        >
+                          {generandoPdf ? <RefreshCw size={14} className="animate-spin" /> : <Printer size={14} />}
+                        </button>
+                        <button 
+                          type="button"
+                          onClick={recargarCuentas} 
+                          disabled={loadingCuentas} 
+                          title="Actualizar"
+                          className="p-2.5 bg-slate-50 hover:bg-slate-100 text-slate-600 rounded-lg transition-colors disabled:opacity-40 border border-slate-200 hover:border-slate-300 shadow-sm"
+                        >
+                          <RefreshCw size={14} className={loadingCuentas ? 'animate-spin' : ''} />
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Componente de Billetera y Recursos en tiempo real */}
+                    <div className="flex-1 flex items-center min-h-[60px]">
+                      <ClienteBilletera clienteId={clienteSel.CliIdCliente} clienteNombre={clienteSel.Nombre} />
+                    </div>
+                  </div>
+
                 </div>
 
                 {/* FILTRO GLOBAL DE FECHAS */}
-                <div className="px-5 py-2.5 bg-slate-50 border-t border-slate-100 flex flex-wrap items-center justify-between rounded-b-2xl gap-3">
-                    <div className="flex items-center gap-2 text-xs font-bold text-slate-500 uppercase tracking-widest">
-                        <Calendar size={14} /> Filtro de período
-                    </div>
-                    <div className="flex items-center gap-3">
-                        <input type="date" value={globalDesde} onChange={e => setGlobalDesde(e.target.value)} className="text-xs border border-slate-200 rounded-lg px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-blue-500/30 font-medium text-slate-700 bg-white shadow-sm" />
-                        <span className="text-slate-400 text-xs font-black">→</span>
-                        <input type="date" value={globalHasta} onChange={e => setGlobalHasta(e.target.value)} className="text-xs border border-slate-200 rounded-lg px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-blue-500/30 font-medium text-slate-700 bg-white shadow-sm" />
-                        <button onClick={() => setGlobalFiltroTrigger(t => t + 1)} className="text-xs font-bold uppercase tracking-widest px-4 py-1.5 bg-indigo-600 text-white hover:bg-indigo-700 rounded-lg transition-colors shadow-sm">Aplicar</button>
-                    </div>
+                <div className="px-5 py-2.5 bg-slate-50 border-t border-slate-100 flex flex-wrap items-center justify-between gap-3">
+                  <div className="flex items-center gap-2 text-xs font-bold text-slate-500 uppercase tracking-widest">
+                    <Calendar size={14} /> Filtro de período
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <input type="date" value={globalDesde} onChange={e => setGlobalDesde(e.target.value)} className="text-xs border border-slate-200 rounded-lg px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-blue-500/30 font-medium text-slate-700 bg-white shadow-sm" />
+                    <span className="text-slate-400 text-xs font-black">→</span>
+                    <input type="date" value={globalHasta} onChange={e => setGlobalHasta(e.target.value)} className="text-xs border border-slate-200 rounded-lg px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-blue-500/30 font-medium text-slate-700 bg-white shadow-sm" />
+                    <button onClick={() => setGlobalFiltroTrigger(t => t + 1)} className="text-xs font-bold uppercase tracking-widest px-4 py-1.5 bg-indigo-600 text-white hover:bg-indigo-700 rounded-lg transition-colors shadow-sm">Aplicar</button>
+                  </div>
                 </div>
               </div>
 
