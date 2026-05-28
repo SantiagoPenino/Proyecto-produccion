@@ -31,7 +31,7 @@ import BordadoTechnicalUI from './order-form/components/BordadoTechnicalUI';
 import { EstampadoTechnicalUI } from './order-form/components/EstampadoTechnicalUI';
 import EcouvTerminacionesUI from './EcouvTerminacionesUI';
 
-const ServiceAccordion = ({ title, isActive, onToggle, children, icon: Icon, main = false }) => {
+const ServiceAccordion = ({ title, subtitle, isActive, onToggle, children, icon: Icon, main = false, optional = false }) => {
     return (
         <div className={`md:!rounded-3xl !rounded-none border-y !border-x-0 md:!border transition-all duration-300 ${isActive ? 'border-zinc-700 bg-custom-dark shadow-xl shadow-black/20 overflow-visible' : 'border-zinc-700/50 bg-custom-dark/60 overflow-hidden'} -mx-4 md:mx-0`}>
             <div
@@ -40,9 +40,22 @@ const ServiceAccordion = ({ title, isActive, onToggle, children, icon: Icon, mai
             >
                 <div className="flex items-center gap-4">
                     {Icon && <Icon size={20} className="text-brand-gold" />}
-                    <span className="font-bold uppercase tracking-wide text-sm">{title}</span>
+                    <div>
+                        <span className="font-bold uppercase tracking-wide text-sm">{title}</span>
+                        {subtitle && <p className="text-[10px] text-zinc-500 mt-0.5 md:hidden">{subtitle}</p>}
+                        {optional && (
+                            <p className={`text-[10px] mt-0.5 font-medium tracking-wide ${isActive ? 'text-cyan-400' : 'text-zinc-500'}`}>
+                                {isActive ? '✓ Incluido en el pedido' : 'Opcional · Tocá para agregar'}
+                            </p>
+                        )}
+                    </div>
                 </div>
                 {main && <span className="text-[10px] bg-cyan-400 text-zinc-900 px-2.5 py-1 rounded-full font-black tracking-wider">PRINCIPAL</span>}
+                {optional && !main && (
+                    <span className={`text-[10px] px-2.5 py-1 rounded-full font-black tracking-wider ${isActive ? 'bg-cyan-400/20 text-cyan-400' : 'bg-zinc-700/50 text-zinc-500'}`}>
+                        {isActive ? 'ACTIVO' : '+ AGREGAR'}
+                    </span>
+                )}
             </div>
 
             {isActive && (
@@ -1190,6 +1203,7 @@ const OrderForm = ({ serviceId: propServiceId }) => {
                             isActive={enableCorte}
                             onToggle={() => actions.setEnableCorte(!enableCorte)}
                             icon={Zap}
+                            optional={true}
                         >
                             <CorteTechnicalUI
                                 serviceId={serviceId} moldType={moldType} setMoldType={actions.setMoldType}
@@ -1226,6 +1240,7 @@ const OrderForm = ({ serviceId: propServiceId }) => {
                             isActive={enableCostura}
                             onToggle={() => actions.setEnableCostura(!enableCostura)}
                             icon={Scissors}
+                            optional={true}
                         >
                             <CosturaTechnicalUI isCorteActive={enableCorte} costuraNote={costuraNote} setCosturaNote={actions.setCosturaNote} compact={true} />
                         </ServiceAccordion>
@@ -1236,6 +1251,7 @@ const OrderForm = ({ serviceId: propServiceId }) => {
                         <ServiceAccordion
                             key={opt.id}
                             title={opt.label}
+                            subtitle={opt.subtitle}
                             isActive={!!selectedComplementary[opt.id]}
                             onToggle={() => {
                                 // Logic: Costura (TWT) depends on Corte (TWC)
@@ -1259,7 +1275,8 @@ const OrderForm = ({ serviceId: propServiceId }) => {
                                 }
                                 actions.setSelectedComplementary(newSelection);
                             }}
-                            icon={Plus} // Or generic icon
+                            icon={Plus}
+                            optional={true}
                         >
                             {/* Content for Complementary */}
                             <div className="space-y-4">

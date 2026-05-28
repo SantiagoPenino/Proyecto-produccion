@@ -117,5 +117,10 @@ export const fileControlService = {
     getRelatedOrders: async (ordenId) => {
         const response = await api.get(`/production-file-control/orden/${ordenId}/relacionadas`);
         return response.data;
+    },
+
+    completarOrden: async (ordenId) => {
+        const response = await api.post(`/production-file-control/orden/${ordenId}/completar`);
+        return response.data;
     }
 };

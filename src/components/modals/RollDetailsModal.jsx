@@ -953,9 +953,9 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { } }) 
                                             />
                                         </th>
                                         <th className="px-4 py-3 w-10 text-center text-zinc-300">#</th>
-                                        <th className="px-4 py-3">Orden</th>
-                                        <th className="px-4 py-3">Cliente / Trabajo</th>
-                                        <th className="px-4 py-3">Material / Variante</th>
+                                        <th className="px-4 py-3 w-28">Orden</th>
+                                        <th className="px-4 py-3 w-48">Cliente / Trabajo</th>
+                                        <th className="px-4 py-3 w-48">Material / Variante</th>
                                         <th className="px-4 py-3 w-16 text-center"><i className="fa-solid fa-paperclip" /></th>
                                         <th className="px-4 py-3 w-20 text-center">Metros</th>
                                         <th className="px-4 py-3 w-28 text-center">Prioridad</th>
@@ -976,10 +976,13 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { } }) 
                                                         <tr 
                                                             ref={provided.innerRef}
                                                             {...provided.draggableProps}
-                                                            style={provided.draggableProps.style}
+                                                            style={{
+                                                                ...provided.draggableProps.style,
+                                                                ...(snapshot.isDragging ? { display: 'table', tableLayout: 'fixed' } : {})
+                                                            }}
                                                             className={`transition-colors group ${selectedOrderIds.includes(o.id) ? 'bg-brand-cyan/10' : 'hover:bg-slate-50'} ${snapshot.isDragging ? 'bg-white shadow-xl ring-1 ring-brand-cyan/50 opacity-90' : ''}`}
                                                         >
-                                                            <td className="px-4 py-3 text-center">
+                                                            <td className="px-4 py-3 text-center w-10">
                                                                 <div className="flex items-center justify-center gap-2">
                                                                     <div {...provided.dragHandleProps} className="text-zinc-300 hover:text-zinc-500 cursor-grab active:cursor-grabbing px-1">
                                                                         <i className="fa-solid fa-grip-vertical"></i>
@@ -992,25 +995,25 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { } }) 
                                                                     />
                                                                 </div>
                                                             </td>
-                                            <td className="px-4 py-3 text-center text-zinc-300 font-mono text-xs">{idx + 1}</td>
-                                            <td className="px-4 py-3 font-bold text-zinc-700 min-w-[120px] font-mono text-xs">
+                                            <td className="px-4 py-3 text-center text-zinc-300 font-mono text-xs w-10">{idx + 1}</td>
+                                            <td className="px-4 py-3 font-bold text-zinc-700 font-mono text-xs w-28 break-all">
                                                 {o.code || o.CodigoOrden}
                                             </td>
-                                            <td className="px-4 py-3 max-w-[240px]">
-                                                <div className="font-semibold text-zinc-800 truncate text-sm">{o.client || o.Cliente}</div>
-                                                <div className="text-xs text-zinc-400 truncate mt-0.5">{o.desc || o.DescripcionTrabajo}</div>
+                                            <td className="px-4 py-3 w-48">
+                                                <div className="font-semibold text-zinc-800 truncate text-sm max-w-[170px]">{o.client || o.Cliente}</div>
+                                                <div className="text-xs text-zinc-400 truncate mt-0.5 max-w-[170px]">{o.desc || o.DescripcionTrabajo}</div>
                                             </td>
-                                            <td className="px-4 py-3 max-w-[240px]">
-                                                <div className="font-semibold text-zinc-800 truncate text-sm">
+                                            <td className="px-4 py-3 w-48">
+                                                <div className="font-semibold text-zinc-800 truncate text-sm max-w-[170px]">
                                                     {o.material || o.Material || '-'}
                                                 </div>
                                                 {o.variantCode && (
-                                                    <div className="text-xs text-zinc-400 truncate mt-0.5">
+                                                    <div className="text-xs text-zinc-400 truncate mt-0.5 max-w-[170px]">
                                                         {o.variantCode}
                                                     </div>
                                                 )}
                                             </td>
-                                            <td className="px-4 py-3 text-center">
+                                            <td className="px-4 py-3 text-center w-16">
                                                 {o.fileCount > 0 ? (
                                                     <span className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-brand-cyan/10 text-brand-cyan text-[10px] font-black border border-brand-cyan/30">
                                                         {o.fileCount}
@@ -1019,11 +1022,11 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { } }) 
                                                     <span className="text-zinc-200 text-xs">—</span>
                                                 )}
                                             </td>
-                                            <td className="px-4 py-3 text-center">
+                                            <td className="px-4 py-3 text-center w-20">
                                                 <span className="font-black text-zinc-800 text-sm">{o.magnitude || 0}</span>
                                                 <span className="text-[10px] text-zinc-400 ml-0.5">m</span>
                                             </td>
-                                            <td className="px-4 py-3 text-center">
+                                            <td className="px-4 py-3 text-center w-28">
                                                 <span className={`px-2.5 py-1 rounded-lg text-[10px] font-black uppercase tracking-wider border
                                                     ${o.priority === 'Urgente'
                                                         ? 'bg-brand-magenta/10 text-brand-magenta border-brand-magenta/20'
@@ -1031,7 +1034,7 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { } }) 
                                                     {o.priority || 'Normal'}
                                                 </span>
                                             </td>
-                                            <td className="px-4 py-3 text-center">
+                                            <td className="px-4 py-3 text-center w-10">
                                                 {o.note && o.note.trim() !== '' && (
                                                     <div className="group/note relative flex justify-center">
                                                         <i className="fa-solid fa-message text-amber-400 cursor-help" />
@@ -1042,7 +1045,7 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { } }) 
                                                     </div>
                                                 )}
                                             </td>
-                                            <td className="px-4 py-3 text-center">
+                                            <td className="px-4 py-3 text-center w-20">
                                                 <div className="flex items-center justify-center gap-1">
                                                     <button
                                                         onClick={() => onViewOrder && onViewOrder(o)}

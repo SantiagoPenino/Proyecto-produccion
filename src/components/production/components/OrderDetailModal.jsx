@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { ordersService, fileControlService } from '../../../services/api';
 import api from '../../../services/apiClient';
 import FileItem, { ActionButton } from './FileItem';
@@ -594,7 +595,7 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated }) => {
                     {/* RESULTADO (Calculado) */}
                     <div className="flex items-center gap-1 bg-zinc-100/50 px-2 py-0.5 rounded border border-zinc-200">
                         <label className="text-[9px] font-bold text-zinc-400 uppercase">Total:</label>
-                        <div className="text-xs font-black text-blue-600">
+                        <div className="text-xs font-black text-brand-cyan">
                             {editValues.metros} {currentOrder.UM || 'm'}
                         </div>
                     </div>
@@ -608,7 +609,7 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated }) => {
                 <div className={`px-2 py-1 rounded text-[9px] font-black uppercase tracking-wider border select-none 
                     ${rawStatus === 'OK' || rawStatus === 'FINALIZADO' ? 'bg-emerald-50 text-emerald-600 border-emerald-100' :
                         rawStatus === 'FALLA' ? 'bg-orange-50 text-orange-600 border-orange-100' :
-                            rawStatus === 'CANCELADO' ? 'bg-red-50 text-red-600 border-red-100' :
+                            rawStatus === 'CANCELADO' ? 'bg-brand-magenta/10 text-brand-magenta border-brand-magenta/20' :
                                 'bg-zinc-50 text-zinc-400 border-zinc-100'
                     }`}>
                     {rawStatus}
@@ -643,15 +644,15 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated }) => {
         return { actions, editContent };
     };
 
-    return (
-        <div className="fixed inset-0 z-[2000] flex items-start justify-center p-4 overflow-y-auto">
+    return createPortal(
+        <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4 sm:p-6">
 
             <div
                 className="absolute inset-0 bg-zinc-900/60 transition-opacity"
                 onClick={onClose}
             ></div>
 
-            <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-[95vw] lg:max-w-7xl flex flex-col animate-in zoom-in-95 duration-200 border border-zinc-200 my-8">
+            <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-[95vw] lg:max-w-7xl flex flex-col max-h-[90vh] animate-in zoom-in-95 duration-200 border border-zinc-200 overflow-hidden">
 
                 <div className="px-6 py-4 bg-zinc-50 border-b border-zinc-200 flex justify-between items-start shrink-0">
                     <div>
@@ -660,15 +661,15 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated }) => {
                                 Orden No.: {currentOrder.code || currentOrder.id}
                             </span>
                             {labels.length > 0 && (
-                                <span className="bg-indigo-50 text-indigo-600 px-2 py-0.5 rounded text-xs font-bold border border-indigo-100 flex items-center gap-1">
+                                <span className="bg-brand-cyan/10 text-brand-cyan px-2 py-0.5 rounded text-xs font-bold border border-brand-cyan/20 flex items-center gap-1">
                                     <i className="fa-solid fa-tags text-[10px]"></i> {labels.length} Bultos
                                 </span>
                             )}
-                            <span className="text-xs font-bold text-blue-500 bg-blue-50 px-2 py-0.5 rounded uppercase tracking-wider border border-blue-100">
+                            <span className="text-xs font-bold text-brand-cyan bg-brand-cyan/10 px-2 py-0.5 rounded uppercase tracking-wider border border-brand-cyan/20">
                                 Detalle de Orden
                             </span>
                             {currentOrder.status === 'CANCELADO' && (
-                                <span className="text-xs font-bold text-white bg-red-500 px-2 py-0.5 rounded uppercase tracking-wider">CANCELADA</span>
+                                <span className="text-xs font-bold text-white bg-brand-magenta px-2 py-0.5 rounded uppercase tracking-wider">CANCELADA</span>
                             )}
                         </div>
                         <h2 className="text-xl font-bold text-zinc-800 leading-tight">{currentOrder.client}</h2>
@@ -677,16 +678,16 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated }) => {
 
                     <button
                         onClick={onClose}
-                        className="w-8 h-8 rounded-full bg-white border border-zinc-200 text-zinc-400 hover:text-red-500 hover:bg-red-50 hover:border-red-200 transition-all flex items-center justify-center shadow-sm"
+                        className="w-8 h-8 rounded-full bg-white border border-zinc-200 text-zinc-400 hover:text-brand-magenta hover:bg-brand-magenta/10 hover:border-brand-magenta/30 transition-all flex items-center justify-center shadow-sm"
                     >
                         <i className="fa-solid fa-xmark text-lg"></i>
                     </button>
                 </div>
 
-                <div className="p-6 bg-white">
+                <div className="p-6 bg-white flex-1 overflow-y-auto custom-scrollbar">
 
                     {/* Campos de Estado Editables */}
-                    <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-3 bg-indigo-50/50 p-4 rounded-xl border border-indigo-100 shadow-sm">
+                    <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-3 bg-brand-cyan/5 p-4 rounded-xl border border-brand-cyan/20 shadow-sm">
                         {(() => {
                             const areaId = currentOrder?.area || '';
                             const filteredGeneral = configEstados.filter(s => 
@@ -714,10 +715,10 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated }) => {
                             return (
                                 <>
                                     <div className="lg:col-span-2">
-                                        <label className="text-[10px] uppercase font-bold text-zinc-500 block mb-1"><i className="fa-solid fa-flag text-indigo-400 mr-1"></i> Estado General</label>
+                                        <label className="text-[10px] uppercase font-bold text-zinc-500 block mb-1"><i className="fa-solid fa-flag text-brand-cyan mr-1"></i> Estado General</label>
                                         <div className="flex gap-2 mb-4">
                                             <select 
-                                                className="flex-1 text-sm font-bold text-zinc-700 border border-zinc-300 rounded px-2 py-1.5 outline-none focus:border-blue-500 bg-white shadow-sm"
+                                                className="flex-1 text-sm font-bold text-zinc-700 border border-zinc-300 rounded px-2 py-1.5 outline-none focus:border-brand-cyan bg-white shadow-sm"
                                                 value={draftStates.status}
                                                 onChange={(e) => setDraftStates({ ...draftStates, status: e.target.value })}
                                             >
@@ -729,7 +730,7 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated }) => {
                                             <button 
                                                 onClick={() => handleUpdateOrderStatus(draftStates.status)}
                                                 disabled={draftStates.status === currentOrder.status}
-                                                className={`px-3 py-1.5 rounded border transition-colors flex items-center justify-center shrink-0 ${draftStates.status !== currentOrder.status ? 'bg-indigo-50 text-indigo-600 border-indigo-200 hover:bg-indigo-100' : 'bg-zinc-100 text-zinc-400 border-zinc-200 cursor-not-allowed'}`}
+                                                className={`px-3 py-1.5 rounded border transition-colors flex items-center justify-center shrink-0 ${draftStates.status !== currentOrder.status ? 'bg-brand-cyan/10 text-brand-cyan border-brand-cyan/30 hover:bg-brand-cyan/20' : 'bg-zinc-100 text-zinc-400 border-zinc-200 cursor-not-allowed'}`}
                                                 title="Actualizar Estado General"
                                             >
                                                 <i className="fa-solid fa-save"></i>
@@ -737,10 +738,10 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated }) => {
                                         </div>
                                     </div>
                                     <div className="lg:col-span-2">
-                                        <label className="text-[10px] uppercase font-bold text-zinc-500 block mb-1"><i className="fa-solid fa-layer-group text-indigo-400 mr-1"></i> Estado en su Área</label>
+                                        <label className="text-[10px] uppercase font-bold text-zinc-500 block mb-1"><i className="fa-solid fa-layer-group text-brand-cyan mr-1"></i> Estado en su Área</label>
                                         <div className="flex gap-2">
                                             <select 
-                                                className="flex-1 text-sm font-bold text-zinc-700 border border-zinc-300 rounded px-2 py-1.5 outline-none focus:border-blue-500 bg-white shadow-sm"
+                                                className="flex-1 text-sm font-bold text-zinc-700 border border-zinc-300 rounded px-2 py-1.5 outline-none focus:border-brand-cyan bg-white shadow-sm"
                                                 value={draftStates.areaStatus}
                                                 onChange={(e) => setDraftStates({ ...draftStates, areaStatus: e.target.value })}
                                             >
@@ -752,7 +753,7 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated }) => {
                                             <button 
                                                 onClick={() => handleUpdateAreaStatus(draftStates.areaStatus)}
                                                 disabled={draftStates.areaStatus === currentOrder.areaStatus}
-                                                className={`px-3 py-1.5 rounded border transition-colors flex items-center justify-center shrink-0 ${draftStates.areaStatus !== currentOrder.areaStatus ? 'bg-indigo-50 text-indigo-600 border-indigo-200 hover:bg-indigo-100' : 'bg-zinc-100 text-zinc-400 border-zinc-200 cursor-not-allowed'}`}
+                                                className={`px-3 py-1.5 rounded border transition-colors flex items-center justify-center shrink-0 ${draftStates.areaStatus !== currentOrder.areaStatus ? 'bg-brand-cyan/10 text-brand-cyan border-brand-cyan/30 hover:bg-brand-cyan/20' : 'bg-zinc-100 text-zinc-400 border-zinc-200 cursor-not-allowed'}`}
                                                 title="Actualizar Estado en su Área"
                                             >
                                                 <i className="fa-solid fa-save"></i>
@@ -774,7 +775,7 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated }) => {
 
                         <div>
                             <label className="text-[10px] uppercase font-bold text-zinc-400 block mb-1">Magnitud Global</label>
-                            <div className="font-black text-blue-600 text-lg leading-none">
+                            <div className="font-black text-brand-cyan text-lg leading-none">
                                 {(() => {
                                     // 1. Suma de Producción
                                     const prodTotal = productionFiles.reduce((acc, f) => {
@@ -799,7 +800,7 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated }) => {
 
                         <div>
                             <label className="text-[10px] uppercase font-bold text-zinc-400 block mb-1">Prioridad</label>
-                            <div className={`font-bold text-sm ${currentOrder.priority === 'Urgente' ? 'text-red-600' : 'text-zinc-600'}`}>
+                            <div className={`font-bold text-sm ${currentOrder.priority === 'Urgente' ? 'text-brand-magenta' : 'text-zinc-600'}`}>
                                 {currentOrder.priority || 'Normal'}
                             </div>
                         </div>
@@ -820,7 +821,7 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated }) => {
 
                         <div>
                             <label className="text-[10px] uppercase font-bold text-zinc-400 block mb-1">Próximo Area</label>
-                            <div className="font-bold text-indigo-600 text-sm flex items-center gap-1">
+                            <div className="font-bold text-brand-cyan text-sm flex items-center gap-1">
                                 <i className="fa-solid fa-arrow-right text-[10px]"></i> {currentOrder.nextService || '-'}
                             </div>
                         </div>
@@ -858,14 +859,14 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated }) => {
                                     onClick={() => setActiveTab(tab.id)}
                                     className={`px-4 py-3 font-bold text-sm border-b-2 transition-all flex items-center gap-2 whitespace-nowrap
                                         ${activeTab === tab.id
-                                            ? 'border-blue-500 text-blue-600 bg-blue-50/50'
+                                            ? 'border-brand-cyan text-brand-cyan bg-brand-cyan/5'
                                             : 'border-transparent text-zinc-400 hover:text-zinc-600 hover:bg-zinc-50'
                                         }`}
                                 >
-                                    <i className={`fa-solid ${tab.icon} ${activeTab === tab.id ? 'text-blue-500' : 'text-zinc-300'}`}></i>
+                                    <i className={`fa-solid ${tab.icon} ${activeTab === tab.id ? 'text-brand-cyan' : 'text-zinc-300'}`}></i>
                                     {tab.label}
                                     {tab.count > 0 && (
-                                        <span className={`text-[10px] px-1.5 py-0.5 rounded-full ${activeTab === tab.id ? 'bg-blue-100 text-blue-700' : 'bg-zinc-100 text-zinc-500'}`}>
+                                        <span className={`text-[10px] px-1.5 py-0.5 rounded-full ${activeTab === tab.id ? 'bg-brand-cyan/20 text-brand-cyan' : 'bg-zinc-100 text-zinc-500'}`}>
                                             {tab.count}
                                         </span>
                                     )}
@@ -879,7 +880,7 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated }) => {
                             {/* PESTAÑA: REQUISITOS (Nueva) */}
                             {activeTab === 'reqs' && (
                                 <div className="p-1">
-                                    <div className="bg-blue-50 border border-blue-100 p-3 rounded-lg flex gap-3 text-blue-800 text-sm mb-4">
+                                    <div className="bg-brand-cyan/10 border border-brand-cyan/20 p-3 rounded-lg flex gap-3 text-brand-cyan text-sm mb-4">
                                         <i className="fa-solid fa-circle-info mt-0.5"></i>
                                         <p>
                                             Verifique que los materiales para <b>{currentOrder.area}</b> estén listos.
@@ -924,7 +925,7 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated }) => {
                                     {productionFiles.length > 0 && (
                                         <div className="mt-4 pt-3 border-t border-zinc-100 flex justify-between items-center text-sm px-2">
                                             <span className="font-bold text-zinc-400 uppercase text-xs tracking-wider">Metraje Total Estimado</span>
-                                            <span className="font-black text-blue-600 text-xl font-mono">
+                                            <span className="font-black text-brand-cyan text-xl font-mono">
                                                 {productionFiles.reduce((acc, f) => {
                                                     if ((f.Estado || '').toUpperCase() === 'CANCELADO') return acc;
                                                     return acc + ((f.copias || f.copies || f.Copias || 1) * (f.metros || f.width || f.Metros || 0));
@@ -967,15 +968,15 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated }) => {
                             {/* PESTAÑA: ETIQUETAS (Tu código existente) */}
                             {activeTab === 'labels' && (
                                 <div className="min-h-[200px]">
-                                    <div className="flex justify-between items-center mb-4 bg-indigo-50 p-3 rounded-lg border border-indigo-100">
-                                        <div className="flex items-center gap-2 text-indigo-800">
+                                    <div className="flex justify-between items-center mb-4 bg-brand-cyan/10 p-3 rounded-lg border border-brand-cyan/20">
+                                        <div className="flex items-center gap-2 text-brand-cyan">
                                             <i className="fa-solid fa-boxes-stacked"></i>
                                             <h3 className="font-bold text-sm">Gestión de Bultos</h3>
                                         </div>
                                         <div className="flex gap-2">
-                                            <button onClick={handleAddLabel} className="px-3 py-1.5 bg-white text-indigo-600 border border-indigo-200 rounded text-xs font-bold hover:bg-indigo-50 transition shadow-sm"><i className="fa-solid fa-plus mr-1"></i> Extra</button>
-                                            <button onClick={handleRegenerate} className="px-3 py-1.5 bg-white text-amber-600 border border-amber-200 rounded text-xs font-bold hover:bg-amber-50 transition shadow-sm" title="Regenerar todo"><i className="fa-solid fa-arrows-rotate mr-1"></i> Regenerar</button>
-                                            <button onClick={handlePrintLabels} className="px-3 py-1.5 bg-indigo-600 text-white rounded text-xs font-bold hover:bg-indigo-700 transition shadow-sm"><i className="fa-solid fa-print mr-1"></i> Imprimir</button>
+                                            <button onClick={handleAddLabel} className="px-3 py-1.5 bg-white text-brand-cyan border border-brand-cyan/30 rounded text-xs font-bold hover:bg-brand-cyan/10 transition shadow-sm"><i className="fa-solid fa-plus mr-1"></i> Extra</button>
+                                            <button onClick={handleRegenerate} className="px-3 py-1.5 bg-white text-amber-600 border border-brand-cyan/20 rounded text-xs font-bold hover:bg-amber-50 transition shadow-sm" title="Regenerar todo"><i className="fa-solid fa-arrows-rotate mr-1"></i> Regenerar</button>
+                                            <button onClick={handlePrintLabels} className="px-3 py-1.5 bg-brand-cyan text-white rounded text-xs font-bold hover:bg-brand-cyan/80 transition shadow-sm"><i className="fa-solid fa-print mr-1"></i> Imprimir</button>
                                         </div>
                                     </div>
                                     {/* ... Logic de mapeo de labels (mantenida igual) ... */}
@@ -987,7 +988,7 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated }) => {
                                                         <div className="w-10 h-10 bg-zinc-100 rounded flex items-center justify-center text-zinc-500 font-bold text-lg border border-zinc-200">{l.NumeroBulto}</div>
                                                         <div><div className="font-bold text-zinc-700 text-sm">Bulto {l.NumeroBulto}/{l.TotalBultos}</div><div className="text-[10px] text-zinc-400 font-mono tracking-widest">{l.CodigoEtiqueta || '---'}</div></div>
                                                     </div>
-                                                    <button onClick={() => handleDeleteLabel(l.EtiquetaID)} className="w-7 h-7 rounded bg-white text-zinc-300 hover:text-red-500 hover:bg-red-50 border border-transparent hover:border-red-100 transition"><i className="fa-solid fa-trash-can text-xs"></i></button>
+                                                    <button onClick={() => handleDeleteLabel(l.EtiquetaID)} className="w-7 h-7 rounded bg-white text-zinc-300 hover:text-brand-magenta hover:bg-brand-magenta/10 border border-transparent hover:border-brand-magenta/20 transition"><i className="fa-solid fa-trash-can text-xs"></i></button>
                                                 </div>
                                             ))}
                                         </div>
@@ -1007,7 +1008,7 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated }) => {
                         <div className="flex bg-white rounded-lg border border-zinc-200 p-1 shadow-sm">
                             <button
                                 onClick={() => { setCancelType('ORDER'); setCancelModalOpen(true); }}
-                                className={`px-3 py-1.5 rounded text-xs font-bold transition flex items-center gap-2 hover:bg-red-50 text-zinc-500 hover:text-red-600`}
+                                className={`px-3 py-1.5 rounded text-xs font-bold transition flex items-center gap-2 hover:bg-brand-magenta/10 text-zinc-500 hover:text-brand-magenta`}
                                 disabled={currentOrder.status === 'CANCELADO'}
                                 title="Cancelar solo esta orden del área"
                             >
@@ -1016,7 +1017,7 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated }) => {
                             <div className="w-px bg-zinc-200 my-1"></div>
                             <button
                                 onClick={() => { setCancelType('REQUEST'); setCancelModalOpen(true); }}
-                                className={`px-3 py-1.5 rounded text-xs font-bold transition flex items-center gap-2 hover:bg-red-50 text-zinc-500 hover:text-red-700`}
+                                className={`px-3 py-1.5 rounded text-xs font-bold transition flex items-center gap-2 hover:bg-brand-magenta/10 text-zinc-500 hover:text-brand-magenta`}
                                 disabled={currentOrder.status === 'CANCELADO'}
                                 title="Cancelar todo el pedido (todas las áreas)"
                             >
@@ -1038,8 +1039,8 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated }) => {
             {/* MODAL DE CANCELACIÓN */}
             {cancelModalOpen && (
                 <div className="fixed inset-0 z-[2100] bg-black/50 flex items-center justify-center p-4 animate-in fade-in duration-200">
-                    <div className="bg-white w-full max-w-md rounded-2xl shadow-2xl p-6 animate-in zoom-in-95 duration-200 border border-red-100">
-                        <div className="flex items-center gap-3 text-red-500 mb-4">
+                    <div className="bg-white w-full max-w-md rounded-2xl shadow-2xl p-6 animate-in zoom-in-95 duration-200 border border-brand-magenta/20">
+                        <div className="flex items-center gap-3 text-brand-magenta mb-4">
                             <i className="fa-solid fa-triangle-exclamation text-2xl"></i>
                             <h3 className="text-lg font-black uppercase">
                                 {cancelType === 'REQUEST' ? 'Cancelar Pedido Completo' :
@@ -1051,7 +1052,7 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated }) => {
                             {cancelType === 'REQUEST' ? (
                                 <>
                                     Se cancelarán <b>TODAS las órdenes</b> del pedido <b>{currentOrder.code.split('(')[0]}</b> en <b>TODAS las áreas</b>.
-                                    <span className="block mt-2 font-bold text-red-600 bg-red-50 p-2 rounded border border-red-100">
+                                    <span className="block mt-2 font-bold text-brand-magenta bg-brand-magenta/10 p-2 rounded border border-brand-magenta/20">
                                         Esta acción afecta a todo el flujo de producción.
                                     </span>
                                 </>
@@ -1086,7 +1087,7 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated }) => {
                             </button>
                             <button
                                 onClick={handleConfirmCancel}
-                                className="px-4 py-2 bg-red-500 text-white font-bold rounded-lg shadow-lg shadow-red-200 hover:bg-red-600 transition transform active:scale-95"
+                                className="px-4 py-2 bg-brand-magenta text-white font-bold rounded-lg shadow-lg shadow-red-200 hover:bg-brand-magenta transition transform active:scale-95"
                             >
                                 Confirmar
                             </button>
@@ -1094,7 +1095,8 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated }) => {
                     </div>
                 </div>
             )}
-        </div>
+        </div>,
+        document.body
     );
 };
 

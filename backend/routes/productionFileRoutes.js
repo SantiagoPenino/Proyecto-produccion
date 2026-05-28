@@ -30,6 +30,7 @@ router.get('/view-drive-file', productionFileController.viewDriveFile);
 router.get('/tipos-falla', productionFileController.getTiposFalla);
 router.post('/controlar', productionFileController.postControlArchivo);
 router.post('/update-copy-count', productionFileController.updateFileCopyCount);
+router.post('/orden/:ordenId/completar', productionFileController.completarOrden);
 // --- ETIQUETAS y Vista Dividida ---
 router.get('/ordenes-labels', etiquetasController.getOrdersForLabels);
 router.post('/regen-labels/:ordenId', productionFileController.regenerateEtiquetas);

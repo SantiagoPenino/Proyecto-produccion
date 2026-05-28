@@ -1,5 +1,6 @@
 import React from 'react';
 import { API_URL } from '../../../services/apiClient';
+import { FileImage, FileBox, FileText, Download } from 'lucide-react';
 
 /**
  * Componente "FileItem" Unificado.
@@ -31,10 +32,10 @@ const FileItem = ({ file, readOnly = false, onAction, extraInfo, actions, editin
         switch (status) {
             case 'OK':
             case 'FINALIZADO': return { container: 'bg-emerald-50/50 border-emerald-100', text: 'text-emerald-600', dot: 'bg-emerald-500' };
-            case 'FALLA': return { container: 'bg-red-50/50 border-red-100', text: 'text-red-500', dot: 'bg-red-500' };
-            case 'CANCELADO': return { container: 'bg-red-50 border-red-200 opacity-75', text: 'text-red-500', dot: 'bg-red-500' };
-            case 'EN PROCESO': return { container: 'bg-blue-50 border-blue-100', text: 'text-blue-600', dot: 'bg-blue-500 animate-pulse' };
-            default: return { container: 'bg-white border-zinc-100 hover:border-blue-200', text: 'text-zinc-500', dot: 'bg-zinc-300' };
+            case 'FALLA': return { container: 'bg-brand-magenta/5 border-brand-magenta/20', text: 'text-brand-magenta', dot: 'bg-brand-magenta' };
+            case 'CANCELADO': return { container: 'bg-brand-magenta/5 border-brand-magenta/20 opacity-75', text: 'text-brand-magenta', dot: 'bg-brand-magenta' };
+            case 'EN PROCESO': return { container: 'bg-brand-cyan/10 border-brand-cyan/20', text: 'text-brand-cyan', dot: 'bg-brand-cyan animate-pulse' };
+            default: return { container: 'bg-white border-zinc-100 hover:border-brand-cyan/30', text: 'text-zinc-500', dot: 'bg-zinc-300' };
         }
     };
 
@@ -89,8 +90,8 @@ const FileItem = ({ file, readOnly = false, onAction, extraInfo, actions, editin
         switch (status) {
             case 'OK':
             case 'FINALIZADO': return { icon: 'fa-check', color: 'text-emerald-500', border: 'border-emerald-200' };
-            case 'FALLA': return { icon: 'fa-circle-exclamation', color: 'text-red-500', border: 'border-red-200' };
-            case 'CANCELADO': return { icon: 'fa-ban', color: 'text-red-500', border: 'border-red-200' };
+            case 'FALLA': return { icon: 'fa-circle-exclamation', color: 'text-brand-magenta', border: 'border-brand-magenta/20' };
+            case 'CANCELADO': return { icon: 'fa-ban', color: 'text-brand-magenta', border: 'border-brand-magenta/20' };
             default: return null;
         }
     };
@@ -116,7 +117,7 @@ const FileItem = ({ file, readOnly = false, onAction, extraInfo, actions, editin
                     {isImage ? (
                         <img src={fileUrl} alt="prev" className="w-full h-full object-cover opacity-80" />
                     ) : (
-                        <i className={`fa-solid ${extraInfo?.isProduct ? 'fa-box-open text-amber-500' : isPdf ? 'fa-file-pdf text-red-400' : 'fa-file-image'} text-lg`}></i>
+                        extraInfo?.isProduct ? <FileBox className="w-5 h-5 text-amber-500" /> : isPdf ? <FileText className="w-5 h-5 text-brand-magenta" /> : <FileImage className="w-5 h-5 text-brand-cyan" />
                     )}
 
                     {/* Badge Copias */}
@@ -149,7 +150,7 @@ const FileItem = ({ file, readOnly = false, onAction, extraInfo, actions, editin
                                 <img src={fileUrl} className="w-full h-auto" alt="preview" />
                             ) : (
                                 <div className="text-center py-4">
-                                    <i className={`fa-solid ${isPdf ? 'fa-file-pdf text-red-400' : 'fa-file-arrow-down text-zinc-300'} text-3xl mb-2`}></i>
+                                    {isPdf ? <FileText className="w-8 h-8 text-brand-magenta mx-auto mb-2" /> : <Download className="w-8 h-8 text-zinc-300 mx-auto mb-2" />}
                                     <div className="text-[10px] text-zinc-400">Clic para abrir</div>
                                 </div>
                             )}
@@ -176,14 +177,20 @@ const FileItem = ({ file, readOnly = false, onAction, extraInfo, actions, editin
             {/* 2. Información Principal */}
             <div className="min-w-0 flex-1 pr-2">
                 <div className="flex items-center justify-between">
-                    <div className={`font-bold text-sm truncate ${styles.text}`} title={file.NombreArchivo}>
-                        {file.NombreArchivo || file.name || file.nombre || (extraInfo?.isProduct ? 'Producto/Servicio' : 'Sin Nombre')}
-                        {extraInfo?.isProduct && (
-                            <span className="ml-2 bg-amber-100 text-amber-700 text-[9px] px-1.5 py-0.5 rounded border border-amber-200 uppercase font-black tracking-tighter align-middle shadow-sm">
-                                Producto
-                            </span>
-                        )}
-                    </div>
+                    {(() => {
+                        const rawFileName = file.NombreArchivo || file.name || file.nombre || (extraInfo?.isProduct ? 'Producto/Servicio' : 'Sin Nombre');
+                        const displayFileName = rawFileName.replace(/\.dat$/i, '');
+                        return (
+                            <div className={`font-bold text-sm truncate ${styles.text}`} title={rawFileName}>
+                                {displayFileName}
+                                {extraInfo?.isProduct && (
+                                    <span className="ml-2 bg-amber-100 text-amber-700 text-[9px] px-1.5 py-0.5 rounded border border-amber-200 uppercase font-black tracking-tighter align-middle shadow-sm">
+                                        Producto
+                                    </span>
+                                )}
+                            </div>
+                        );
+                    })()}
                 </div>
 
                 {/* Metadata Row: Swappable for Editing Content */}
@@ -218,7 +225,7 @@ const FileItem = ({ file, readOnly = false, onAction, extraInfo, actions, editin
                         {/* Total */}
                         <div className="flex items-center gap-1 ml-2 pl-2 border-l border-zinc-200">
                             <span className="text-zinc-400 text-[9px] uppercase font-bold">Total:</span>
-                            <span className="font-black text-blue-600">
+                            <span className="font-black text-brand-cyan">
                                 {metrosTotal} {extraInfo?.um || 'm'}
                             </span>
                         </div>
@@ -235,7 +242,7 @@ const FileItem = ({ file, readOnly = false, onAction, extraInfo, actions, editin
                             <div className="flex items-center gap-2 ml-auto lg:ml-2 pl-2 border-l border-zinc-200">
                                 {extraInfo.roll && (
                                     <div className="flex items-center gap-1 group/roll cursor-help relative">
-                                        <i className="fa-solid fa-scroll text-indigo-400 hover:text-indigo-600 transition-colors"></i>
+                                        <i className="fa-solid fa-scroll text-brand-cyan hover:text-cyan-600 transition-colors"></i>
                                         {/* Tooltip */}
                                         <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1 px-2 py-1 bg-zinc-800 text-white text-[9px] rounded opacity-0 group-hover/roll:opacity-100 pointer-events-none whitespace-nowrap z-40 shadow-lg">
                                             Rollo: {extraInfo.roll}
@@ -245,7 +252,7 @@ const FileItem = ({ file, readOnly = false, onAction, extraInfo, actions, editin
                                 )}
                                 {extraInfo.machine && (
                                     <div className="flex items-center gap-1 group/mac cursor-help relative">
-                                        <i className="fa-solid fa-print text-cyan-500 hover:text-cyan-600 transition-colors"></i>
+                                        <i className="fa-solid fa-print text-brand-cyan hover:text-cyan-600 transition-colors"></i>
                                         {/* Tooltip */}
                                         <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1 px-2 py-1 bg-zinc-800 text-white text-[9px] rounded opacity-0 group-hover/mac:opacity-100 pointer-events-none whitespace-nowrap z-40 shadow-lg">
                                             Eq: {extraInfo.machine}
@@ -301,9 +308,9 @@ const FileItem = ({ file, readOnly = false, onAction, extraInfo, actions, editin
 export const ActionButton = ({ icon, color, onClick, title }) => {
     const colors = {
         zinc: 'border-zinc-200 text-zinc-300 hover:bg-zinc-100 hover:text-zinc-600',
-        red: 'border-red-100 text-red-300 hover:bg-red-50 hover:text-red-500 hover:border-red-200',
+        red: 'border-brand-magenta/30 text-brand-magenta/70 hover:bg-brand-magenta/10 hover:text-brand-magenta hover:border-brand-magenta/50',
         emerald: 'border-emerald-100 text-emerald-300 hover:bg-emerald-50 hover:text-emerald-600 hover:border-emerald-200',
-        blue: 'border-blue-100 text-blue-400 hover:bg-blue-50 hover:text-blue-600 hover:border-blue-200',
+        blue: 'border-brand-cyan/30 text-brand-cyan/70 hover:bg-brand-cyan/10 hover:text-brand-cyan hover:border-brand-cyan/50',
         amber: 'border-amber-100 text-amber-400 hover:bg-amber-50 hover:text-amber-600 hover:border-amber-200'
     };
     return (

@@ -321,10 +321,10 @@ const MachineControl = ({ machine, onAssign, onToggleStatus, onViewDetails, onUn
                                 {/* OPCIÓN: FINALIZAR Y ENVIAR A CALIDAD */}
                                 <button
                                     onClick={() => confirmFinish('quality')}
-                                    className="group relative w-full py-3 px-4 bg-gradient-to-r from-emerald-500 to-emerald-600 hover:from-emerald-400 hover:to-emerald-500 text-white rounded-xl font-bold flex items-center justify-center gap-2 transition-all shadow-md shadow-emerald-500/20 active:scale-[0.98] overflow-hidden"
+                                    className="group relative w-full py-3 px-4 bg-brand-cyan hover:bg-cyan-500 text-white rounded-xl font-bold flex items-center justify-center gap-2 transition-all shadow-md shadow-brand-cyan/30 active:scale-[0.98] overflow-hidden"
                                 >
                                     <i className="fa-solid fa-clipboard-check relative z-10"></i>
-                                    <span className="relative z-10">Enviar a Calidad</span>
+                                    <span className="relative z-10">Enviar a Control de Calidad</span>
                                 </button>
 
                                 {/* OPCIÓN: SEGUIR EN PROD */}

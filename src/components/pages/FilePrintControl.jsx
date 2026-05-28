@@ -89,6 +89,7 @@ const FilePrintControl = ({ areaCode }) => {
   const [selectedFileForAction, setSelectedFileForAction] = useState(null);
   const [completedOrderData, setCompletedOrderData] = useState(null);
   const [fallaTypes, setFallaTypes] = useState([]);
+  const [finalizandoOrden, setFinalizandoOrden] = useState(false);
 
   // Falla Form
   const [failureType, setFailureType] = useState('');
@@ -310,17 +311,44 @@ const FilePrintControl = ({ areaCode }) => {
   };
 
   // --- ACTIONS HANDLERS ---
+  const handleFinalizarOrden = async () => {
+    if (!selectedOrder || finalizandoOrden) return;
+    setFinalizandoOrden(true);
+    try {
+      const res = await fileControlService.completarOrden(selectedOrder.id);
+      if (res.success) {
+        // Quitar la orden de la lista inmediatamente sin esperar al socket
+        setOrders(prev => prev.filter(o => o.id !== selectedOrder.id));
+        setSelectedOrder(null);
+        setFiles([]);
+        setCompletedOrderData({
+          destino: res.estadoLogistica || 'LOGÍSTICA',
+          proximoServicio: selectedOrder.nextService
+        });
+      } else {
+        setToast({ visible: true, message: res.error || 'Error al finalizar la orden', type: 'error' });
+      }
+    } catch (e) {
+      setToast({ visible: true, message: 'Error de conexión al finalizar la orden', type: 'error' });
+    } finally {
+      setFinalizandoOrden(false);
+    }
+  };
+
   const handlePrintLabels = async () => {
     if (!selectedOrder) return;
+    setToast({ visible: true, message: 'Generando etiquetas...', type: 'info' });
     try {
-      // alert("Solicitando etiquetas al servidor...");
       const res = await fileControlService.regenerateLabels(selectedOrder.id);
       if (res.success) {
-        setToast({ visible: true, message: `Etiquetas generadas/impresas: ${res.totalBultos || 'OK'}`, type: 'success' });
+        setToast({ visible: true, message: `✅ Etiquetas generadas: ${res.totalBultos || 'OK'}`, type: 'success' });
       } else {
-        alert("Error generando etiquetas: " + res.error);
+        setToast({ visible: true, message: `❌ Error: ${res.error || 'No se pudieron generar las etiquetas'}`, type: 'error' });
       }
-    } catch (e) { console.error(e); alert("Error imprimiendo: " + e.message); }
+    } catch (e) {
+      console.error(e);
+      setToast({ visible: true, message: `❌ Error de conexión: ${e.message}`, type: 'error' });
+    }
   };
 
   const openActionModal = (file, action) => {
@@ -624,16 +652,24 @@ const FilePrintControl = ({ areaCode }) => {
               )}
             </div>
 
-            {/* BOTTOM COMPLETION BAR */}
+            {/* BOTTOM COMPLETION BUTTON - aparece cuando todos los archivos están listos */}
             {orderMetrics.done === orderMetrics.total && orderMetrics.total > 0 && selectedOrder.status !== 'PRONTO' && (
               <div className="fixed bottom-6 right-6 z-50 animate-in slide-in-from-bottom duration-500">
-                <div className="bg-brand-cyan text-white px-6 py-4 rounded-2xl shadow-2xl shadow-brand-cyan/40 flex items-center gap-4">
-                  <i className="fa-solid fa-check-circle text-2xl"></i>
+                <button
+                  onClick={handleFinalizarOrden}
+                  disabled={finalizandoOrden}
+                  className="bg-brand-cyan text-white px-6 py-4 rounded-2xl shadow-2xl shadow-brand-cyan/40 flex items-center gap-4 hover:bg-cyan-600 active:scale-95 transition-all disabled:opacity-70 disabled:cursor-not-allowed"
+                >
+                  {finalizandoOrden ? (
+                    <i className="fa-solid fa-circle-notch fa-spin text-2xl"></i>
+                  ) : (
+                    <i className="fa-solid fa-check-circle text-2xl"></i>
+                  )}
                   <div>
-                    <div className="font-black text-lg">ORDEN COMPLETA</div>
-                    <div className="text-xs opacity-90">Verificando cierre automático...</div>
+                    <div className="font-black text-lg">{finalizandoOrden ? 'FINALIZANDO...' : 'FINALIZAR ORDEN'}</div>
+                    <div className="text-xs opacity-90">Todos los archivos listos · Pulsar para cerrar</div>
                   </div>
-                </div>
+                </button>
               </div>
             )}
 
@@ -722,7 +758,7 @@ const FilePrintControl = ({ areaCode }) => {
 
       {/* 2. Completed Order Modal (Pronto Sector) */}
       {completedOrderData && (
-        <div className="fixed inset-0 z-[1600] bg-black/70 backdrop-blur-sm flex items-center justify-center p-6 animate-in fade-in duration-300">
+        <div className="fixed inset-0 z-[1600] bg-black/70 flex items-center justify-center p-6 animate-in fade-in duration-300">
           <div className="bg-white w-full max-w-md rounded-3xl shadow-2xl overflow-hidden animate-in zoom-in-95 duration-300 border-4 border-brand-cyan">
 
             <div className="bg-brand-cyan p-8 flex flex-col items-center justify-center text-white relative overflow-hidden">

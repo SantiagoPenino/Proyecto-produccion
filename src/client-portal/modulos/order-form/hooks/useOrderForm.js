@@ -38,7 +38,7 @@ const initialState = {
     selectedSubOrderId: '',
     tizadaFiles: [],
     pedidoExcelFile: null,
-    enableCorte: true,
+    enableCorte: false,
     enableCostura: false,
     garmentQuantity: '',
     ponchadoFiles: [],
@@ -357,7 +357,7 @@ export const useOrderForm = (serviceId, overrides = {}) => {
             tpuForma: '',
             tizadaFiles: [],
             pedidoExcelFile: null,
-            enableCorte: true,
+            enableCorte: false,
             enableCostura: serviceId === 'corte-confeccion' ? true : false,
             // Reset Arrays
             items: [],

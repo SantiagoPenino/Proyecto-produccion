@@ -871,7 +871,7 @@ const updateFileCopyCount = async (req, res) => {
                 `);
         }
 
-        // Si se completó el archivo, verificar si se completa la orden
+        // Si se completó el archivo, verificar si la orden está completa (solo para informar al frontend, NO cierra automáticamente)
         let orderFullyCompleted = false;
         if (isCompletedNow) {
             const checkOrder = await new sql.Request(transaction)
@@ -886,10 +886,7 @@ const updateFileCopyCount = async (req, res) => {
             const { Total, Completed } = checkOrder.recordset[0];
             if (Total > 0 && Total === Completed) {
                 orderFullyCompleted = true;
-                // Actualizar orden a Pronto
-                await new sql.Request(transaction)
-                    .input('OID', sql.Int, ordenId)
-                    .query("UPDATE Ordenes SET Estado = 'Pronto', EstadoenArea = 'Pronto', EstadoLogistica = 'Canasto Produccion' WHERE OrdenID = @OID");
+                // NO se cierra automáticamente. El operador debe pulsar "Finalizar Orden".
             }
         }
 
@@ -1173,5 +1170,85 @@ module.exports = {
     updateFileCopyCount,
     getCompletedOrdersForReplacement,
     createCustomerReplacementOrder,
-    getRelatedOrders
+    getRelatedOrders,
+    completarOrden
 };
+
+/**
+ * Cierre manual de orden: llamado cuando el operador pulsa "Finalizar Orden".
+ * Hace exactamente lo mismo que antes ocurría automáticamente al contar la última copia.
+ */
+async function completarOrden(req, res) {
+    const { ordenId } = req.params;
+    let transaction;
+    try {
+        const pool = await getPool();
+        transaction = new sql.Transaction(pool);
+        await transaction.begin();
+
+        // Verificar que realmente todos los archivos están completos
+        const checkOrder = await new sql.Request(transaction)
+            .input('OID', sql.Int, ordenId)
+            .query(`
+                SELECT 
+                    (SELECT COUNT(*) FROM ArchivosOrden WHERE OrdenID = @OID AND EstadoArchivo != 'CANCELADO') + 
+                    (SELECT COUNT(*) FROM ServiciosExtraOrden WHERE OrdenID = @OID AND Estado != 'CANCELADO') as Total,
+                    (SELECT COUNT(*) FROM ArchivosOrden WHERE OrdenID = @OID AND EstadoArchivo IN ('OK', 'FINALIZADO')) +
+                    (SELECT COUNT(*) FROM ServiciosExtraOrden WHERE OrdenID = @OID AND Estado IN ('OK', 'FINALIZADO')) as Completed
+            `);
+
+        const { Total, Completed } = checkOrder.recordset[0];
+        if (Total === 0 || Total !== Completed) {
+            await transaction.rollback();
+            return res.status(400).json({ error: 'La orden aún tiene archivos sin completar.' });
+        }
+
+        // Verificar si tiene fallas pendientes
+        const fallaCheck = await new sql.Request(transaction)
+            .input('OID', sql.Int, ordenId)
+            .query(`SELECT COUNT(*) as Fallas FROM ArchivosOrden WHERE OrdenID = @OID AND EstadoArchivo = 'FALLA'`);
+        const tieneFallas = (fallaCheck.recordset[0]?.Fallas || 0) > 0;
+
+        const nuevoEstado = tieneFallas ? 'Retenido' : 'Pronto';
+        const nuevoEstadoArea = tieneFallas ? 'Retenido' : 'Pronto';
+        const estadoLogistica = tieneFallas ? 'Esperando Reposición' : 'Canasto Produccion';
+
+        // Actualizar la orden
+        await new sql.Request(transaction)
+            .input('OID', sql.Int, ordenId)
+            .query(`UPDATE Ordenes SET Estado = '${nuevoEstado}', EstadoenArea = '${nuevoEstadoArea}', EstadoLogistica = '${estadoLogistica}' WHERE OrdenID = @OID`);
+
+        await transaction.commit();
+
+        // Emitir socket para actualizar todas las pantallas
+        const io = req.app.get('socketio');
+        if (io) {
+            io.emit('server:order_updated', { orderId: ordenId, status: nuevoEstado, timestamp: new Date() });
+            io.emit('server:ordersUpdated', { count: 1 });
+        }
+
+        // Generar etiquetas si corresponde
+        let totalBultos = 0;
+        if (!tieneFallas) {
+            try {
+                const checkMag = await pool.request()
+                    .input('OID', sql.Int, ordenId)
+                    .query("SELECT SUM(Cantidad) as TotalCantidad FROM PedidosCobranzaDetalle WHERE OrdenID = @OID");
+                const magVal = parseFloat(checkMag.recordset[0]?.TotalCantidad) || 0;
+                if (magVal > 0) {
+                    const labelResult = await LabelGenerationService.regenerateLabelsForOrder(ordenId, (req.user?.id || 1), (req.user?.usuario || 'Sistema'));
+                    if (labelResult.success) totalBultos = labelResult.totalBultos;
+                }
+            } catch (eLabels) {
+                logger.warn(`[completarOrden] Error etiquetas: ${eLabels.message}`);
+            }
+        }
+
+        res.json({ success: true, nuevoEstado, estadoLogistica, totalBultos });
+
+    } catch (err) {
+        if (transaction) { try { await transaction.rollback(); } catch (e) {} }
+        logger.error('Error completarOrden:', err);
+        res.status(500).json({ error: err.message });
+    }
+}

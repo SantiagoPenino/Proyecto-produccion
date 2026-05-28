@@ -23,7 +23,7 @@ export const EstampadoTechnicalUI = ({
                 <div className="flex items-center gap-3 mb-6">
                     {!compact && <span className="px-3 py-1 bg-brand-gold text-zinc-900 text-[10px] font-black rounded-lg">CONFIGURACIÓN</span>}
                     <h3 className="text-sm font-black text-zinc-100 uppercase tracking-widest">
-                        {compact ? 'Detalles de Estampado' : 'Estampado (Planchado en USER)'}
+                        {compact ? 'Detalles de Estampado' : 'Estampado'}
                     </h3>
                 </div>
 

@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { API_URL } from '../../../services/apiClient';
+import { FileImage, FileBox, FileText } from 'lucide-react';
 import { fileControlService } from '../../../services/modules/fileControlService';
 
 const FileControlCard = ({ file, refreshOrder, onAction }) => {
@@ -117,9 +118,14 @@ const FileControlCard = ({ file, refreshOrder, onAction }) => {
                     {isImage ? (
                         <img src={fileUrl} alt="Preview" className="w-full h-full object-cover transform group-hover:scale-110 transition-transform duration-500" />
                     ) : (
-                        <div className="w-full h-full flex flex-col items-center justify-center text-zinc-400">
-                            <i className={`fa-solid ${file.isService ? 'fa-screwdriver-wrench' : (isPdf ? 'fa-regular fa-file-pdf' : 'fa-regular fa-file')} text-xl mb-1`}></i>
-                            <span className="text-[8px] font-bold">{file.isService ? 'SERVICIO' : ext}</span>
+                        <div className="w-full h-full flex items-center justify-center text-zinc-400 bg-zinc-50/50">
+                            {file.isService ? (
+                                <FileBox className="w-6 h-6 text-amber-500" />
+                            ) : isPdf ? (
+                                <FileText className="w-6 h-6 text-brand-magenta" />
+                            ) : (
+                                <FileImage className="w-6 h-6 text-brand-cyan" />
+                            )}
                         </div>
                     )}
                     {/* Badge Copies on Thumb */}
@@ -132,7 +138,7 @@ const FileControlCard = ({ file, refreshOrder, onAction }) => {
                 <div className="flex-1 w-full min-w-0 flex flex-col justify-center gap-1">
                     <div className="flex items-center justify-between">
                         <div className="font-bold text-zinc-700 text-sm truncate pr-2" title={file.NombreArchivo}>
-                            {file.NombreArchivo}
+                            {file.NombreArchivo?.replace(/\.dat$/i, '')}
                         </div>
                         {/* Status Label (If special) */}
                         {isFailed && <span className="text-[9px] font-black uppercase bg-red-100 text-red-600 px-2 py-0.5 rounded">FALLA</span>}

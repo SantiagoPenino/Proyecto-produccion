@@ -33,7 +33,7 @@ export const SERVICES_LIST = [
             stockTriggerMaterial: 'Tela Cliente', // Specific material that triggers stock logic
 
             // Workflow Config
-            hasCuttingWorkflow: true, // Enables Corte (TWC) and Costura (TWT) accordions
+            hasCuttingWorkflow: true, // Enables Corte (TWC) and Costura (TWT) accordions with full UI
             requiresProductionFiles: true, // Show "Archivos de Producción" section
             disableItemNote: true, // Hide individual note per item
 
@@ -45,12 +45,8 @@ export const SERVICES_LIST = [
         },
 
         complementaryOptions: [
-            // These are logically handled by workflows if active, but kept for reference
-            { id: 'TWC', label: 'Corte Láser / Tizada', hasFile: false, fullWidth: true },
-            { id: 'TWT', label: 'Confección / Costura', hasInput: false, fullWidth: true },
-            // Extra services
             { id: 'EMB', label: 'Servicio de Bordado', hasFile: true, fullWidth: true, inputLabel: 'Adjuntar Ponchado/Logo' },
-            { id: 'EST', label: 'Estampado (Planchado en USER)', fullWidth: true }
+            { id: 'EST', label: 'Estampado', fullWidth: true }
         ]
     },
     {
@@ -73,7 +69,7 @@ export const SERVICES_LIST = [
         },
 
         complementaryOptions: [
-            { id: 'EST', label: 'Estampado (Planchado en USER)', fullWidth: true },
+            { id: 'EST', label: 'Estampado', fullWidth: true },
         ]
     },
     {
@@ -235,7 +231,7 @@ export const SERVICES_LIST = [
             { id: 'TWC', label: 'Corte Láser / Tizada', hasFile: false, fullWidth: true },
             { id: 'TWT', label: 'Confección / Costura', hasInput: false, fullWidth: true },
             { id: 'EMB', label: 'Servicio de Bordado', hasFile: true, fullWidth: true, inputLabel: 'Adjuntar Ponchado/Logo' },
-            { id: 'EST', label: 'Estampado (Planchado en USER)', fullWidth: true }
+            { id: 'EST', label: 'Estampado', fullWidth: true }
         ]
     },
     // {
