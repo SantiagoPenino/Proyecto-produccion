@@ -218,7 +218,7 @@ const CajaArqueoModal = ({
         .card { padding: 12px; background: #eee; border: 1px solid #ccc; font-size: 13px; margin-bottom: 15px; }
       </style>
     </head><body>
-      <h1>Arqueo Documentado de Caja</h1>
+      <h1>Arqueo Documentado de Caja ${isAdmin ? '(Caja Administrativa)' : '(Turno Actual)'}</h1>
       <p style="color:#666">Impreso: ${d}</p>
       
       <div class="s">RESUMEN POR FORMA DE PAGO</div>
@@ -231,7 +231,6 @@ const CajaArqueoModal = ({
         <strong>SALDO FINAL NETO DEL TURNO:</strong> &nbsp;&nbsp;&nbsp; UYU ${fmt(agrupado.saldoUYU)} &nbsp;&nbsp;|&nbsp;&nbsp; USD ${fmt(agrupado.saldoUSD)}
       </div>
 
-      ${!isAdmin ? `
       <div style="display: flex; gap: 40px; margin-bottom: 20px;">
         <div>
           <div class="s">ARQUEO FÍSICO EFECTIVO UYU</div>
@@ -280,7 +279,6 @@ const CajaArqueoModal = ({
           </table>
         </div>
       </div>
-      ` : ''}
 
       <div class="s">DETALLE DE MOVIMIENTOS POR FORMA DE PAGO</div>
       <table>
@@ -412,176 +410,168 @@ const CajaArqueoModal = ({
                     </div>
 
                     {/* Selector de Moneda de Arqueo */}
-                    {!isAdmin && (
-                      <div className="flex bg-slate-100 rounded-xl p-1 border border-slate-200 select-none self-start gap-1">
-                        <button
-                          type="button"
-                          onClick={() => setMonedaArqueo('UYU')}
-                          className={`px-3 py-1.5 text-[10px] font-black uppercase tracking-wider rounded-lg transition-all ${
-                            monedaArqueo === 'UYU' ? 'bg-[#006097] text-white shadow-sm' : 'text-slate-400 hover:text-slate-600'
-                          }`}
-                        >
-                          Pesos (UYU)
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setMonedaArqueo('USD')}
-                          className={`px-3 py-1.5 text-[10px] font-black uppercase tracking-wider rounded-lg transition-all ${
-                            monedaArqueo === 'USD' ? 'bg-[#006097] text-white shadow-sm' : 'text-slate-400 hover:text-slate-600'
-                          }`}
-                        >
-                          Dólares (USD)
-                        </button>
-                      </div>
-                    )}
+                    <div className="flex bg-slate-100 rounded-xl p-1 border border-slate-200 select-none self-start gap-1">
+                      <button
+                        type="button"
+                        onClick={() => setMonedaArqueo('UYU')}
+                        className={`px-3 py-1.5 text-[10px] font-black uppercase tracking-wider rounded-lg transition-all ${
+                          monedaArqueo === 'UYU' ? 'bg-[#006097] text-white shadow-sm' : 'text-slate-400 hover:text-slate-600'
+                        }`}
+                      >
+                        Pesos (UYU)
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setMonedaArqueo('USD')}
+                        className={`px-3 py-1.5 text-[10px] font-black uppercase tracking-wider rounded-lg transition-all ${
+                          monedaArqueo === 'USD' ? 'bg-[#006097] text-white shadow-sm' : 'text-slate-400 hover:text-slate-600'
+                        }`}
+                      >
+                        Dólares (USD)
+                      </button>
+                    </div>
                   </div>
 
-                  {!isAdmin ? (
-                    <>
-                      {monedaArqueo === 'UYU' ? (
-                        <>
-                          {/* Billetes UYU */}
-                          <div className="space-y-3">
-                            <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest border-b border-slate-100 pb-1">Billetes (Pesos UYU)</p>
-                            <div className="grid grid-cols-2 gap-2.5">
-                              {[2000, 1000, 500, 200, 100, 50, 20].map(den => (
-                                <div key={den} className="flex items-center gap-2 bg-slate-50 p-1.5 px-3 rounded-xl border border-slate-200 focus-within:border-brand-cyan focus-within:ring-2 focus-within:ring-brand-cyan/10 focus-within:bg-white transition-all shadow-inner">
-                                  <span className="text-xs font-black text-emerald-700 w-10">${den}</span>
-                                  <span className="text-slate-300 font-bold text-xs">x</span>
-                                  <input 
-                                    type="number" 
-                                    min="0" 
-                                    value={denominaciones[den] || ''} 
-                                    onChange={e => setDenominaciones(p => ({ ...p, [den]: e.target.value }))} 
-                                    placeholder="0" 
-                                    className="w-full bg-transparent text-xs font-black text-slate-800 outline-none text-right" 
-                                  />
-                                </div>
-                              ))}
-                            </div>
-                          </div>
-
-                          {/* Monedas UYU */}
-                          <div className="space-y-3">
-                            <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest border-b border-slate-100 pb-1">Monedas (Pesos UYU)</p>
-                            <div className="grid grid-cols-2 gap-2.5">
-                              {[50, 10, 5, 2, 1].map(den => (
-                                <div key={den} className="flex items-center gap-2 bg-slate-50 p-1.5 px-3 rounded-xl border border-slate-200 focus-within:border-amber-500 focus-within:ring-2 focus-within:ring-amber-500/10 focus-within:bg-white transition-all shadow-inner">
-                                  <span className="text-xs font-black text-amber-700 w-10">${den}</span>
-                                  <span className="text-slate-300 font-bold text-xs">x</span>
-                                  <input 
-                                    type="number" 
-                                    min="0" 
-                                    value={denominaciones[den] || ''} 
-                                    onChange={e => setDenominaciones(p => ({ ...p, [den]: e.target.value }))} 
-                                    placeholder="0" 
-                                    className="w-full bg-transparent text-xs font-black text-slate-800 outline-none text-right" 
-                                  />
-                                </div>
-                              ))}
-                            </div>
-                          </div>
-
-                          {/* Tarjeta de Comparación / Diferencia UYU */}
-                          <div className={`p-4 rounded-2xl border flex flex-col gap-2 mt-2 shadow-sm animate-in zoom-in-95 duration-300 ${
-                            Math.abs(diferenciaArqueo) < 2 
-                              ? 'bg-emerald-50/50 border-emerald-200 text-emerald-800' 
-                              : diferenciaArqueo > 0 
-                                ? 'bg-sky-50 border-sky-200 text-sky-800' 
-                                : 'bg-rose-50 border-rose-200 text-rose-800'
-                          }`}>
-                            <div className="flex justify-between items-center text-[10px] font-black uppercase tracking-widest">
-                              <span>Monto Inicial Apertura:</span>
-                              <span className="font-mono">$ {fmt(montoInicial)}</span>
-                            </div>
-                            <div className="flex justify-between items-center text-[10px] font-black uppercase tracking-widest border-b border-slate-200/50 pb-2">
-                              <span>Efectivo Esperado (UYU):</span>
-                              <span className="font-mono">$ {fmt(expectedCashDrawer)}</span>
-                            </div>
-                            <div className="flex justify-between items-center pt-1">
-                              <div className="flex items-center gap-2">
-                                {Math.abs(diferenciaArqueo) < 2 ? (
-                                  <CheckCircle size={20} className="text-emerald-500 shrink-0" />
-                                ) : diferenciaArqueo > 0 ? (
-                                  <TrendingUp size={20} className="text-sky-500 shrink-0" />
-                                ) : (
-                                  <TrendingDown size={20} className="text-rose-500 shrink-0" />
-                                )}
-                                <span className="text-xs font-black uppercase tracking-wide">
-                                  {Math.abs(diferenciaArqueo) < 2 ? 'CAJA BALANCEADA' : diferenciaArqueo > 0 ? 'SOBRANTE UYU' : 'FALTANTE UYU'}
-                                </span>
+                  <>
+                    {monedaArqueo === 'UYU' ? (
+                      <>
+                        {/* Billetes UYU */}
+                        <div className="space-y-3">
+                          <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest border-b border-slate-100 pb-1">Billetes (Pesos UYU)</p>
+                          <div className="grid grid-cols-2 gap-2.5">
+                            {[2000, 1000, 500, 200, 100, 50, 20].map(den => (
+                              <div key={den} className="flex items-center gap-2 bg-slate-50 p-1.5 px-3 rounded-xl border border-slate-200 focus-within:border-brand-cyan focus-within:ring-2 focus-within:ring-brand-cyan/10 focus-within:bg-white transition-all shadow-inner">
+                                <span className="text-xs font-black text-emerald-700 w-10">${den}</span>
+                                <span className="text-slate-300 font-bold text-xs">x</span>
+                                <input 
+                                  type="number" 
+                                  min="0" 
+                                  value={denominaciones[den] || ''} 
+                                  onChange={e => setDenominaciones(p => ({ ...p, [den]: e.target.value }))} 
+                                  placeholder="0" 
+                                  className="w-full bg-transparent text-xs font-black text-slate-800 outline-none text-right" 
+                                />
                               </div>
-                              <span className="text-xl font-black font-mono">
-                                {diferenciaArqueo > 0 ? '+' : ''}{fmt(diferenciaArqueo)}
+                            ))}
+                          </div>
+                        </div>
+
+                        {/* Monedas UYU */}
+                        <div className="space-y-3">
+                          <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest border-b border-slate-100 pb-1">Monedas (Pesos UYU)</p>
+                          <div className="grid grid-cols-2 gap-2.5">
+                            {[50, 10, 5, 2, 1].map(den => (
+                              <div key={den} className="flex items-center gap-2 bg-slate-50 p-1.5 px-3 rounded-xl border border-slate-200 focus-within:border-amber-500 focus-within:ring-2 focus-within:ring-amber-500/10 focus-within:bg-white transition-all shadow-inner">
+                                <span className="text-xs font-black text-amber-700 w-10">${den}</span>
+                                <span className="text-slate-300 font-bold text-xs">x</span>
+                                <input 
+                                  type="number" 
+                                  min="0" 
+                                  value={denominaciones[den] || ''} 
+                                  onChange={e => setDenominaciones(p => ({ ...p, [den]: e.target.value }))} 
+                                  placeholder="0" 
+                                  className="w-full bg-transparent text-xs font-black text-slate-800 outline-none text-right" 
+                                />
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+
+                        {/* Tarjeta de Comparación / Diferencia UYU */}
+                        <div className={`p-4 rounded-2xl border flex flex-col gap-2 mt-2 shadow-sm animate-in zoom-in-95 duration-300 ${
+                          Math.abs(diferenciaArqueo) < 2 
+                            ? 'bg-emerald-50/50 border-emerald-200 text-emerald-800' 
+                            : diferenciaArqueo > 0 
+                              ? 'bg-sky-50 border-sky-200 text-sky-800' 
+                              : 'bg-rose-50 border-rose-200 text-rose-800'
+                        }`}>
+                          <div className="flex justify-between items-center text-[10px] font-black uppercase tracking-widest">
+                            <span>Monto Inicial Apertura:</span>
+                            <span className="font-mono">$ {fmt(montoInicial)}</span>
+                          </div>
+                          <div className="flex justify-between items-center text-[10px] font-black uppercase tracking-widest border-b border-slate-200/50 pb-2">
+                            <span>Efectivo Esperado (UYU):</span>
+                            <span className="font-mono">$ {fmt(expectedCashDrawer)}</span>
+                          </div>
+                          <div className="flex justify-between items-center pt-1">
+                            <div className="flex items-center gap-2">
+                              {Math.abs(diferenciaArqueo) < 2 ? (
+                                <CheckCircle size={20} className="text-emerald-500 shrink-0" />
+                              ) : diferenciaArqueo > 0 ? (
+                                <TrendingUp size={20} className="text-sky-500 shrink-0" />
+                              ) : (
+                                <TrendingDown size={20} className="text-rose-500 shrink-0" />
+                              )}
+                              <span className="text-xs font-black uppercase tracking-wide">
+                                {Math.abs(diferenciaArqueo) < 2 ? 'CAJA BALANCEADA' : diferenciaArqueo > 0 ? 'SOBRANTE UYU' : 'FALTANTE UYU'}
                               </span>
                             </div>
+                            <span className="text-xl font-black font-mono">
+                              {diferenciaArqueo > 0 ? '+' : ''}{fmt(diferenciaArqueo)}
+                            </span>
                           </div>
-                        </>
-                      ) : (
-                        <>
-                          {/* Billetes USD */}
-                          <div className="space-y-3">
-                            <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest border-b border-slate-100 pb-1">Billetes (Dólares USD)</p>
-                            <div className="grid grid-cols-2 gap-2.5">
-                              {[100, 50, 20, 10, 5, 2, 1].map(den => (
-                                <div key={den} className="flex items-center gap-2 bg-slate-50 p-1.5 px-3 rounded-xl border border-slate-200 focus-within:border-brand-cyan focus-within:ring-2 focus-within:ring-brand-cyan/10 focus-within:bg-white transition-all shadow-inner">
-                                  <span className="text-xs font-black text-emerald-700 w-10">U$S{den}</span>
-                                  <span className="text-slate-300 font-bold text-xs">x</span>
-                                  <input 
-                                    type="number" 
-                                    min="0" 
-                                    value={denominacionesUSD[den] || ''} 
-                                    onChange={e => setDenominacionesUSD(p => ({ ...p, [den]: e.target.value }))} 
-                                    placeholder="0" 
-                                    className="w-full bg-transparent text-xs font-black text-slate-800 outline-none text-right" 
-                                  />
-                                </div>
-                              ))}
-                            </div>
-                          </div>
-
-                          {/* Tarjeta de Comparación / Diferencia USD */}
-                          <div className={`p-4 rounded-2xl border flex flex-col gap-2 mt-2 shadow-sm animate-in zoom-in-95 duration-300 ${
-                            Math.abs(diferenciaArqueoUSD) < 0.05
-                              ? 'bg-emerald-50/50 border-emerald-200 text-emerald-800' 
-                              : diferenciaArqueoUSD > 0 
-                                ? 'bg-sky-50 border-sky-200 text-sky-800' 
-                                : 'bg-rose-50 border-rose-200 text-rose-800'
-                          }`}>
-                            <div className="flex justify-between items-center text-[10px] font-black uppercase tracking-widest">
-                              <span>Monto Inicial Apertura:</span>
-                              <span className="font-mono">U$S 0,00</span>
-                            </div>
-                            <div className="flex justify-between items-center text-[10px] font-black uppercase tracking-widest border-b border-slate-200/50 pb-2">
-                              <span>Efectivo Esperado (USD):</span>
-                              <span className="font-mono">U$S {fmt(expectedCashDrawerUSD)}</span>
-                            </div>
-                            <div className="flex justify-between items-center pt-1">
-                              <div className="flex items-center gap-2">
-                                {Math.abs(diferenciaArqueoUSD) < 0.05 ? (
-                                  <CheckCircle size={20} className="text-emerald-500 shrink-0" />
-                                ) : diferenciaArqueoUSD > 0 ? (
-                                  <TrendingUp size={20} className="text-sky-500 shrink-0" />
-                                ) : (
-                                  <TrendingDown size={20} className="text-rose-500 shrink-0" />
-                                )}
-                                <span className="text-xs font-black uppercase tracking-wide">
-                                  {Math.abs(diferenciaArqueoUSD) < 0.05 ? 'CAJA BALANCEADA' : diferenciaArqueoUSD > 0 ? 'SOBRANTE USD' : 'FALTANTE USD'}
-                                </span>
+                        </div>
+                      </>
+                    ) : (
+                      <>
+                        {/* Billetes USD */}
+                        <div className="space-y-3">
+                          <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest border-b border-slate-100 pb-1">Billetes (Dólares USD)</p>
+                          <div className="grid grid-cols-2 gap-2.5">
+                            {[100, 50, 20, 10, 5, 2, 1].map(den => (
+                              <div key={den} className="flex items-center gap-2 bg-slate-50 p-1.5 px-3 rounded-xl border border-slate-200 focus-within:border-brand-cyan focus-within:ring-2 focus-within:ring-brand-cyan/10 focus-within:bg-white transition-all shadow-inner">
+                                <span className="text-xs font-black text-emerald-700 w-10">U$S{den}</span>
+                                <span className="text-slate-300 font-bold text-xs">x</span>
+                                <input 
+                                  type="number" 
+                                  min="0" 
+                                  value={denominacionesUSD[den] || ''} 
+                                  onChange={e => setDenominacionesUSD(p => ({ ...p, [den]: e.target.value }))} 
+                                  placeholder="0" 
+                                  className="w-full bg-transparent text-xs font-black text-slate-800 outline-none text-right" 
+                                />
                               </div>
-                              <span className="text-xl font-black font-mono">
-                                {diferenciaArqueoUSD > 0 ? '+' : ''}{fmt(diferenciaArqueoUSD)}
+                            ))}
+                          </div>
+                        </div>
+
+                        {/* Tarjeta de Comparación / Diferencia USD */}
+                        <div className={`p-4 rounded-2xl border flex flex-col gap-2 mt-2 shadow-sm animate-in zoom-in-95 duration-300 ${
+                          Math.abs(diferenciaArqueoUSD) < 0.05
+                            ? 'bg-emerald-50/50 border-emerald-200 text-emerald-800' 
+                            : diferenciaArqueoUSD > 0 
+                              ? 'bg-sky-50 border-sky-200 text-sky-800' 
+                              : 'bg-rose-50 border-rose-200 text-rose-800'
+                        }`}>
+                          <div className="flex justify-between items-center text-[10px] font-black uppercase tracking-widest">
+                            <span>Monto Inicial Apertura:</span>
+                            <span className="font-mono">U$S 0,00</span>
+                          </div>
+                          <div className="flex justify-between items-center text-[10px] font-black uppercase tracking-widest border-b border-slate-200/50 pb-2">
+                            <span>Efectivo Esperado (USD):</span>
+                            <span className="font-mono">U$S {fmt(expectedCashDrawerUSD)}</span>
+                          </div>
+                          <div className="flex justify-between items-center pt-1">
+                            <div className="flex items-center gap-2">
+                              {Math.abs(diferenciaArqueoUSD) < 0.05 ? (
+                                <CheckCircle size={20} className="text-emerald-500 shrink-0" />
+                              ) : diferenciaArqueoUSD > 0 ? (
+                                <TrendingUp size={20} className="text-sky-500 shrink-0" />
+                              ) : (
+                                <TrendingDown size={20} className="text-rose-500 shrink-0" />
+                              )}
+                              <span className="text-xs font-black uppercase tracking-wide">
+                                {Math.abs(diferenciaArqueoUSD) < 0.05 ? 'CAJA BALANCEADA' : diferenciaArqueoUSD > 0 ? 'SOBRANTE USD' : 'FALTANTE USD'}
                               </span>
                             </div>
+                            <span className="text-xl font-black font-mono">
+                              {diferenciaArqueoUSD > 0 ? '+' : ''}{fmt(diferenciaArqueoUSD)}
+                            </span>
                           </div>
-                        </>
-                      )}
-                    </>
-                  ) : (
-                    <div className="py-8 text-center text-slate-400 text-xs font-black uppercase tracking-widest leading-relaxed">
-                      El desglose físico está disponible solo en cajas con sesiones abiertas (Caja Central)
-                    </div>
-                  )}
+                        </div>
+                      </>
+                    )}
+                  </>
 
                 </div>
 

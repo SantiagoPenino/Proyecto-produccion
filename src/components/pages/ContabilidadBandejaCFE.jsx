@@ -42,6 +42,7 @@ const ContabilidadBandejaCFE = () => {
     const [error, setError] = useState('');
     const [showFacturaModal, setShowFacturaModal] = useState(false);
     const [selectedDocs, setSelectedDocs] = useState(new Set());
+    const [tiposExistentes, setTiposExistentes] = useState([]);
     
     // Modal de edición
     const [editDoc, setEditDoc] = useState(null);
@@ -147,9 +148,21 @@ const ContabilidadBandejaCFE = () => {
         setSelectedDocs(new Set());
     };
 
+    const fetchTiposExistentes = async () => {
+        try {
+            const { data } = await api.get('/contabilidad/cfe/tipos-existentes');
+            if (data.success) {
+                setTiposExistentes(data.data || []);
+            }
+        } catch (err) {
+            console.error('Error al cargar tipos de documentos existentes:', err);
+        }
+    };
+
     useEffect(() => {
         fetchClientes();
         fetchDocumentos();
+        fetchTiposExistentes();
         // eslint-disable-next-line
     }, []);
 
@@ -193,7 +206,7 @@ const ContabilidadBandejaCFE = () => {
     };
 
     const toggleAll = () => {
-        const pendings = docs.filter(d => d.CfeEstado === 'PENDIENTE');
+        const pendings = docs.filter(d => d.CfeEstado === 'PENDIENTE' && d.DocTipo !== 'PedidoCaja' && d.DocTipo !== 'PC');
         if (selectedDocs.size === pendings.length && pendings.length > 0) {
             setSelectedDocs(new Set());
         } else {
@@ -203,11 +216,16 @@ const ContabilidadBandejaCFE = () => {
 
     const handleEnviarSeleccionados = async () => {
         if (selectedDocs.size === 0) return;
-        if (!window.confirm(`[MODO PRUEBA SISNET] ¿Seguro que deseas simular el envío de ${selectedDocs.size} documentos a SISNET?`)) return;
+        const nonPedidoDocs = Array.from(selectedDocs).filter(id => {
+            const doc = docs.find(d => d.DocIdDocumento === id);
+            return doc && doc.DocTipo !== 'PedidoCaja' && doc.DocTipo !== 'PC';
+        });
+        if (nonPedidoDocs.length === 0) return;
+        if (!window.confirm(`[MODO PRUEBA SISNET] ¿Seguro que deseas simular el envío de ${nonPedidoDocs.length} documentos a SISNET?`)) return;
         
         let sentCount = 0;
         setLoading(true);
-        for (const docId of selectedDocs) {
+        for (const docId of nonPedidoDocs) {
             try {
                 setSendingId(docId);
                 const { data } = await api.post(`/contabilidad/cfe/documentos/${docId}/enviar`);
@@ -429,19 +447,16 @@ const ContabilidadBandejaCFE = () => {
                         </div>
                         <div>
                             <label className="block text-sm font-medium text-gray-700 mb-1">Tipo de Documento</label>
-                            <select 
+                             <select 
                                 name="tipo" 
                                 value={filtros.tipo} 
                                 onChange={handleFilterChange}
                                 className="w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 p-2 border bg-white text-sm"
                             >
                                 <option value="">Todos</option>
-                                <option value="FACTURA">Factura de Crédito</option>
-                                <option value="FACTURA_CICLO">Factura de Ciclo</option>
-                                <option value="E-TICKET">e-Ticket de Caja</option>
-                                <option value="NOTA_CREDITO">Nota de Crédito</option>
-                                <option value="RECIBO">Recibo / Anticipo</option>
-                                <option value="PEDIDO_CAJA">Pedido Caja (Borrador)</option>
+                                {tiposExistentes.map(t => (
+                                    <option key={t} value={t}>{getTipoDocName(t)}</option>
+                                ))}
                             </select>
                         </div>
                         <div className="relative" ref={dropdownRef}>
@@ -535,7 +550,7 @@ const ContabilidadBandejaCFE = () => {
                                         type="checkbox"
                                         className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
                                         onChange={toggleAll}
-                                        checked={docs.length > 0 && docs.filter(d => d.CfeEstado === 'PENDIENTE').length > 0 && selectedDocs.size === docs.filter(d => d.CfeEstado === 'PENDIENTE').length}
+                                        checked={docs.length > 0 && docs.filter(d => d.CfeEstado === 'PENDIENTE' && d.DocTipo !== 'PedidoCaja' && d.DocTipo !== 'PC').length > 0 && selectedDocs.size === docs.filter(d => d.CfeEstado === 'PENDIENTE' && d.DocTipo !== 'PedidoCaja' && d.DocTipo !== 'PC').length}
                                     />
                                 </th>
                                 <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Fecha</th>
@@ -559,7 +574,7 @@ const ContabilidadBandejaCFE = () => {
                                 docs.map(doc => (
                                     <tr key={doc.DocIdDocumento} className="hover:bg-gray-50">
                                         <td className="px-6 py-4 whitespace-nowrap">
-                                            {doc.CfeEstado === 'PENDIENTE' && (
+                                            {doc.CfeEstado === 'PENDIENTE' && doc.DocTipo !== 'PedidoCaja' && doc.DocTipo !== 'PC' && (
                                                 <input 
                                                     type="checkbox"
                                                     className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
@@ -688,21 +703,23 @@ const ContabilidadBandejaCFE = () => {
                                                     >
                                                         <RefreshCw className="h-5 w-5" />
                                                     </button>
-                                                    <button 
-                                                        onClick={() => handleEnviarDGI(doc)}
-                                                        disabled={sendingId === doc.DocIdDocumento}
-                                                        className="inline-flex items-center px-2 py-1 border border-transparent text-xs font-medium rounded shadow-sm text-white bg-green-600 hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500 disabled:opacity-50"
-                                                        title="Enviar a DGI"
-                                                    >
-                                                        {sendingId === doc.DocIdDocumento ? (
-                                                            <svg className="animate-spin h-4 w-4 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                                                                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                                                                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                                                            </svg>
-                                                        ) : (
-                                                            <Send className="h-4 w-4" />
-                                                        )}
-                                                    </button>
+                                                    {doc.DocTipo !== 'PedidoCaja' && doc.DocTipo !== 'PC' && (
+                                                        <button 
+                                                            onClick={() => handleEnviarDGI(doc)}
+                                                            disabled={sendingId === doc.DocIdDocumento}
+                                                            className="inline-flex items-center px-2 py-1 border border-transparent text-xs font-medium rounded shadow-sm text-white bg-green-600 hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500 disabled:opacity-50"
+                                                            title="Enviar a DGI"
+                                                        >
+                                                            {sendingId === doc.DocIdDocumento ? (
+                                                                <svg className="animate-spin h-4 w-4 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                                                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                                                                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                                                </svg>
+                                                            ) : (
+                                                                <Send className="h-4 w-4" />
+                                                            )}
+                                                        </button>
+                                                    )}
                                                 </div>
                                             ) : doc.CfeEstado === 'ANULADO' ? (
                                                 <span className="text-gray-400 font-semibold italic text-xs">ANULADA</span>

@@ -802,3 +802,24 @@ exports.getDetalleFactura = async (req, res) => {
         res.status(500).json({ error: err.message });
     }
 };
+
+exports.getTiposDocumentosExistentes = async (req, res) => {
+    try {
+        const pool = await getPool();
+        const result = await pool.request().query(`
+            SELECT DISTINCT DocTipo 
+            FROM dbo.DocumentosContables WITH(NOLOCK) 
+            WHERE CfeEstado IS NOT NULL 
+              AND DocTipo IS NOT NULL
+              AND DocTipo != ''
+              AND DocTipo NOT LIKE '%RECIBO%'
+              AND DocTipo NOT LIKE '%Recibo%'
+            ORDER BY DocTipo
+        `);
+        const list = result.recordset.map(r => r.DocTipo);
+        res.json({ success: true, data: list });
+    } catch (err) {
+        logger.error('Error en getTiposDocumentosExistentes:', err);
+        res.status(500).json({ error: err.message });
+    }
+};

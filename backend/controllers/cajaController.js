@@ -1249,15 +1249,17 @@ const procesarPagoDeuda = async (req, res) => {
         .input('CodDoc', sql.VarChar(10), tipoTransaccion)
         .input('Serie',  sql.VarChar(5),  serieTransaccion)
         .query(`
-          SELECT c.Detalle AS DocTipoStr, s.SecIdSecuencia
+          SELECT c.Detalle AS DocTipoStr, s.SecIdSecuencia, c.Codigo_Efact
           FROM dbo.Config_TiposDocumento c
           JOIN dbo.SecuenciaDocumentos s ON c.SecIdSecuencia = s.SecIdSecuencia
           WHERE c.CodDocumento = @CodDoc AND s.SecSerie = @Serie AND s.SecActivo = 1
         `);
 
+      let codigoEfact = null;
       if (tipoDocR.recordset && tipoDocR.recordset.length) {
         docTipoStr = tipoDocR.recordset[0].DocTipoStr || 'E-Ticket';
         const secId = tipoDocR.recordset[0].SecIdSecuencia;
+        codigoEfact = tipoDocR.recordset[0].Codigo_Efact;
 
         const seqR = await new sql.Request(transaction)
           .input('SecId', sql.Int, secId)
@@ -1327,6 +1329,7 @@ const procesarPagoDeuda = async (req, res) => {
             .input('MonId', sql.Int, monedaBaseId)
             .input('Usr', sql.Int, usuarioId)
             .input('TcaId', sql.Int, tcaIdPago)
+            .input('codigoEfact', sql.Int, (codigoEfact !== undefined && codigoEfact !== null) ? codigoEfact : null)
             .input('Obs', sql.NVarChar(300), header.observaciones || 'Pago de deuda cuenta corriente')
             .query(`
               INSERT INTO dbo.DocumentosContables 
@@ -1336,7 +1339,13 @@ const procesarPagoDeuda = async (req, res) => {
               OUTPUT INSERTED.DocIdDocumento
               VALUES (@Cta, @Cli, @MonId, @Tipo, @Num, @Serie, 
                       @Tot, 0, 0, @Tot, 
-                      'COBRADO', NULL, GETDATE(), @Usr, @TcaId, @Obs, 1)
+                      'COBRADO', 
+                      CASE 
+                        WHEN @Tipo LIKE '%Pedido%' OR @Tipo LIKE '%PEDIDO%' OR @Tipo = 'PC' OR @Tipo = 'PedidoCaja' THEN 'PENDIENTE'
+                        WHEN @codigoEfact IS NULL OR @codigoEfact = 0 THEN NULL 
+                        ELSE 'PENDIENTE' 
+                      END, 
+                      GETDATE(), @Usr, @TcaId, @Obs, 1)
             `);
           docId = docR.recordset[0].DocIdDocumento;
           
@@ -2096,6 +2105,31 @@ const anularFactura = async (req, res) => {
   } catch (err) { logger.error('[ANULAR-FACTURA]', err.message); return res.status(500).json({ error: err.message }); }
 };
 
+const guardarComprobante = async (req, res) => {
+  const { nombreDocumento, pdfBase64 } = req.body;
+  if (!nombreDocumento || !pdfBase64) {
+    return res.status(400).json({ error: 'Faltan parámetros nombreDocumento o pdfBase64' });
+  }
+  try {
+    const fs = require('fs');
+    const path = require('path');
+    const buffer = Buffer.from(pdfBase64, 'base64');
+    const baseDir = process.env.COMPROBANTES_PATH || path.join(__dirname, '..', 'comprobantesPagos');
+    if (!fs.existsSync(baseDir)) {
+      fs.mkdirSync(baseDir, { recursive: true });
+    }
+    // Asegurar nombre de archivo limpio de caracteres ilegales
+    const cleanName = nombreDocumento.replace(/[<>:"/\\|?*]/g, '_').trim();
+    const filePath = path.join(baseDir, `${cleanName}.pdf`);
+    fs.writeFileSync(filePath, buffer);
+    logger.info(`[COMPROBANTE] Comprobante guardado en servidor: ${filePath}`);
+    return res.json({ success: true, path: filePath });
+  } catch (err) {
+    logger.error(`[COMPROBANTE] Error al guardar: ${err.message}`);
+    return res.status(500).json({ error: err.message });
+  }
+};
+
 // ─── EXPORTS ─────────────────────────────────────────────────────────────────
 module.exports = {
   // Transacciones
@@ -2112,6 +2146,8 @@ module.exports = {
   registrarOperacionManual,
   // Operaciones desde Estado de Cuenta (Caja Administrativa)
   generarNotaCredito, reversarDocumento, registrarPagoAnticipo, anularFactura,
+  // Guardar Comprobantes en Servidor
+  guardarComprobante,
 };
 
 
@@ -2186,4 +2222,5 @@ async function imputarAnticipoADeuda(req, res) {
   }
 }
 module.exports.imputarAnticipoADeuda = imputarAnticipoADeuda;
+module.exports.guardarComprobante = guardarComprobante;
 

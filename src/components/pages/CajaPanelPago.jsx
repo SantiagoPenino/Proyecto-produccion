@@ -442,32 +442,33 @@ export default function CajaPanelPago({
                 <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest px-1">
                   Tipo de Comprobante
                 </label>
-                <div className="flex items-center gap-2">
-                  <div className="w-full">
-                    <LightSelect
-                      value={tipoDoc}
-                      onChange={onTipoDoc}
-                      options={tiposDoc}
-                      placeholder="Comprobante..."
-                    />
-                  </div>
+                <div className="flex flex-col gap-1.5 w-full">
+                  <LightSelect
+                    value={tipoDoc}
+                    onChange={onTipoDoc}
+                    options={tiposDoc}
+                    placeholder="Comprobante..."
+                  />
                   {tipoDoc !== 'NINGUNO' && (
-                    <>
-                      <input
-                        type="text"
-                        value={serieDoc}
-                        onChange={(e) => onSerieDoc && onSerieDoc(e.target.value.toUpperCase())}
-                        placeholder="Serie"
-                        title="Serie del comprobante"
-                        className="w-12 text-center bg-zinc-50 border border-zinc-200 rounded-xl px-2 py-2 text-xs font-black text-zinc-800 outline-none focus:border-brand-cyan shadow-sm"
-                      />
+                    <div className="flex gap-2 items-center">
+                      <div className="flex-1 flex items-center gap-1.5 bg-zinc-50 border border-zinc-200 rounded-xl px-2.5 py-1.5 shadow-sm min-w-0">
+                        <span className="text-[9px] font-black text-slate-400 uppercase tracking-wider shrink-0 select-none">Serie:</span>
+                        <input
+                          type="text"
+                          value={serieDoc}
+                          onChange={(e) => onSerieDoc && onSerieDoc(e.target.value.toUpperCase())}
+                          placeholder="Serie"
+                          title="Serie del comprobante"
+                          className="w-8 text-center bg-transparent border-none text-xs font-black text-zinc-800 outline-none p-0"
+                        />
+                      </div>
                       <div
-                        className="bg-zinc-100 border border-zinc-200 rounded-xl px-3 py-2 text-xs text-zinc-500 font-black italic min-w-[70px] max-w-[100px] truncate shadow-inner flex items-center justify-center"
+                        className="bg-zinc-100 border border-zinc-200 rounded-xl px-3 py-1.5 text-xs text-zinc-500 font-black italic flex-1 min-w-0 truncate shadow-inner flex items-center justify-center h-[30px]"
                         title="Número del comprobante"
                       >
                         {numDoc || numDocPredict}
                       </div>
-                    </>
+                    </div>
                   )}
                 </div>
               </div>

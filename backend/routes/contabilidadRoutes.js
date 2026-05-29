@@ -75,6 +75,7 @@ router.get('/erp/libro-mayor',    erp.getLibroMayor);
 
 // Transacciones
 router.post('/caja/transaccion',              caja.procesarTransaccion);
+router.post('/caja/guardar-comprobante',      caja.guardarComprobante);
 router.post('/caja/venta-directa',            caja.procesarVentaDirecta); // NUEVO
 router.post('/caja/pago-deuda',               caja.procesarPagoDeuda);    // Pago de deudas por cuenta corriente
 router.get('/caja/productos-venta',           caja.getProductosVenta); // NUEVO
@@ -125,6 +126,7 @@ router.post('/caja/imputar-anticipo-deuda', caja.imputarAnticipoADeuda); // Impu
 // ── CFE (Facturación Electrónica) ──────────────────────────────────────────
 const cfeCtrl = require('../controllers/cfeController');
 router.get('/cfe/nomencladores', cfeCtrl.getNomencladores);
+router.get('/cfe/tipos-existentes', cfeCtrl.getTiposDocumentosExistentes);
 router.get('/cfe/documentos', cfeCtrl.getDocumentosCFE);
 router.post('/cfe/documentos/:id/enviar', cfeCtrl.enviarADGI);
 router.post('/cfe/manual', cfeCtrl.crearFacturaManual);

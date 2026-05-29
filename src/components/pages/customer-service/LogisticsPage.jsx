@@ -194,7 +194,7 @@ const LogisticsPage = () => {
         </head>
         <body>
             <div class="header">
-                <div class="logo">MACROSOFT TEXTIL</div>
+                <div class="logo">USER TEXTIL</div>
                 <div>Comprobante de Recepción de Mercadería</div>
                 <div>Sucursal: ${area}</div>
             </div>

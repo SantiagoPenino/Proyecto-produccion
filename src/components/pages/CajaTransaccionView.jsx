@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { io } from 'socket.io-client';
+import { jsPDF } from 'jspdf';
 import api, { SOCKET_URL } from '../../services/apiClient';
 import { toast } from 'sonner';
 import Swal from 'sweetalert2';
@@ -155,7 +156,7 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
   // Imprime el ticket abriendo una ventana nueva (más confiable que window.print en el DOM)
   const printTicketData = (data) => {
     if (!data) return;
-    const { empresa, sucursal, rut, direccion, fecha, comprobante, cajero, cliente, items, totales, pagos } = data;
+    const { empresa, sucursal, rut, direccion, fecha, comprobante, cajero, cliente, items, totales, pagos, caja, tipoCambio, observaciones, esRetiro, codigosRetiro, clienteDetalles } = data;
     const fmtN = (n) => Number(n || 0).toFixed(2);
     const itemsHtml = (items || []).map(it =>
       `<tr><td style="padding:2px 0;vertical-align:top">${it.descripcion}</td><td style="text-align:center;vertical-align:top">${it.cantidad || 1}</td><td style="text-align:right;vertical-align:top">$${fmtN(it.importe)}</td></tr>`
@@ -163,6 +164,20 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
     const pagosHtml = (pagos || []).map(p =>
       `<p style="margin:2px 0;display:flex;justify-content:space-between;font-size:11px"><span>${p.metodo}</span><span>${p.moneda} ${fmtN(p.monto)}</span></p>`
     ).join('');
+
+    let clientDetailsHtml = '';
+    if (clienteDetalles) {
+      clientDetailsHtml = `
+        <div style="font-size:10px;color:#555;margin:4px 0 0 10px;line-height:1.3">
+          ${clienteDetalles.id ? `<p><strong>IDCLIENTE:</strong> ${clienteDetalles.id}</p>` : ''}
+          ${clienteDetalles.ruc ? `<p><strong>RUC / CI:</strong> ${clienteDetalles.ruc}</p>` : ''}
+          ${clienteDetalles.email ? `<p><strong>Email:</strong> ${clienteDetalles.email}</p>` : ''}
+          ${clienteDetalles.telefono ? `<p><strong>Teléfono:</strong> ${clienteDetalles.telefono}</p>` : ''}
+          ${clienteDetalles.direccion ? `<p><strong>Dirección:</strong> ${clienteDetalles.direccion}</p>` : ''}
+        </div>
+      `;
+    }
+
     const win = window.open('', '_blank', 'width=340,height=600');
     if (!win) return;
     win.document.write(`
@@ -188,8 +203,13 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
       <div class="sep"></div>
       <p><strong>FECHA :</strong> ${fecha}</p>
       <p><strong>TICKET:</strong> ${comprobante || '---'}</p>
+      <p><strong>CAJA  :</strong> ${caja || 'Caja Central'}</p>
       <p><strong>CAJERO:</strong> ${cajero || 'CAJA'}</p>
       <p><strong>CLIENTE:</strong> ${cliente || 'Consumidor Final'}</p>
+      ${clientDetailsHtml}
+      ${tipoCambio ? `<p><strong>T.CAMBIO:</strong> $${fmtN(tipoCambio)}</p>` : ''}
+      ${esRetiro && codigosRetiro ? `<p><strong>RETIRO:</strong> ${codigosRetiro}</p>` : ''}
+      ${observaciones ? `<p style="font-size:10px;font-style:italic"><strong>OBS:</strong> ${observaciones}</p>` : ''}
       <div class="sep"></div>
       <table><thead><tr><th>Detalle</th><th>Cant</th><th>Total</th></tr></thead>
       <tbody>${itemsHtml}</tbody></table>
@@ -199,7 +219,7 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
       <div class="sep"></div>
       <p style="font-weight:bold;margin:2px 0">Medios de Pago:</p>
       ${pagosHtml}
-      <div class="pie"><p>GRACIAS POR SU COMPRA</p><p>Servicio brindado por Macrosoft ERP</p></div>
+      <div class="pie"><p>GRACIAS POR SU COMPRA</p><p>Servicio brindado por USER ERP</p></div>
       <div style="height:10mm"></div>
       </body></html>`);
     win.document.close();
@@ -210,6 +230,100 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
     setTimeout(() => {
       win.print();
     }, 1000);
+  };
+
+  const saveTicketOnServer = async (data) => {
+    if (!data) return;
+    try {
+      // Calcular alto dinámico del ticket según cantidad de ítems
+      const numItems = data.items?.length || 0;
+      const numPagos = data.pagos?.length || 0;
+      const calculatedHeight = 110 + (numItems * 6) + (numPagos * 5) + (data.clienteDetalles ? 25 : 0) + (data.observaciones ? 15 : 0);
+      const pageHeight = Math.max(160, calculatedHeight);
+
+      const doc = new jsPDF({
+        orientation: 'portrait',
+        unit: 'mm',
+        format: [80, pageHeight]
+      });
+
+      doc.setFont('courier', 'normal');
+      doc.setFontSize(8);
+
+      let y = 10;
+      const writeLine = (text, align = 'left', bold = false) => {
+        doc.setFont('courier', bold ? 'bold' : 'normal');
+        if (align === 'center') {
+          doc.text(text, 40, y, { align: 'center' });
+        } else if (align === 'right') {
+          doc.text(text, 75, y, { align: 'right' });
+        } else {
+          doc.text(text, 5, y);
+        }
+        y += 4.5;
+      };
+
+      writeLine(data.empresa || 'USER', 'center', true);
+      if (data.rut) writeLine(`RUT: ${data.rut}`, 'center');
+      if (data.direccion) writeLine(data.direccion, 'center');
+      if (data.sucursal) writeLine(data.sucursal, 'center');
+
+      writeLine('----------------------------------', 'center');
+      writeLine(`FECHA : ${data.fecha}`);
+      writeLine(`TICKET: ${data.comprobante}`);
+      writeLine(`CAJA  : ${data.caja || 'Caja Central'}`);
+      writeLine(`CAJERO: ${data.cajero}`);
+      writeLine(`CLIENTE: ${data.cliente}`);
+
+      if (data.clienteDetalles) {
+        const cd = data.clienteDetalles;
+        if (cd.id) writeLine(`  IDCLIENTE: ${cd.id}`);
+        if (cd.ruc) writeLine(`  RUC / CI: ${cd.ruc}`);
+        if (cd.email) writeLine(`  Email: ${cd.email}`);
+        if (cd.telefono) writeLine(`  Teléfono: ${cd.telefono}`);
+        if (cd.direccion) writeLine(`  Dirección: ${cd.direccion}`);
+      }
+
+      if (data.tipoCambio) writeLine(`T.CAMBIO: $${Number(data.tipoCambio).toFixed(2)}`);
+      if (data.esRetiro && data.codigosRetiro) writeLine(`RETIRO: ${data.codigosRetiro}`);
+      if (data.observaciones) writeLine(`OBS: ${data.observaciones}`);
+
+      writeLine('----------------------------------', 'center');
+      writeLine('Detalle          Cant      Total', 'left', true);
+      writeLine('----------------------------------', 'center');
+
+      (data.items || []).forEach(it => {
+        const desc = String(it.descripcion).substring(0, 16);
+        const cant = String(it.cantidad || 1).padStart(3);
+        const imp = `$${Number(it.importe).toFixed(2)}`.padStart(10);
+        writeLine(`${desc.padEnd(16)} ${cant} ${imp}`);
+      });
+
+      writeLine('----------------------------------', 'center');
+      if (data.totales?.subtotal !== undefined) {
+        writeLine(`SUBTOTAL: $${Number(data.totales.subtotal).toFixed(2)}`, 'right');
+      }
+      writeLine(`TOTAL: ${data.totales?.moneda || '$'} ${Number(data.totales?.total).toFixed(2)}`, 'right', true);
+      writeLine('----------------------------------', 'center');
+
+      writeLine('Medios de Pago:', 'left', true);
+      (data.pagos || []).forEach(p => {
+        writeLine(`${p.metodo.padEnd(18)} ${p.moneda} ${Number(p.monto).toFixed(2)}`);
+      });
+
+      writeLine('');
+      writeLine('GRACIAS POR SU COMPRA', 'center');
+      writeLine('Servicio brindado por USER ERP', 'center');
+
+      const pdfBase64 = doc.output('datauristring').split(',')[1];
+
+      await api.post('/contabilidad/caja/guardar-comprobante', {
+        nombreDocumento: data.comprobante,
+        pdfBase64
+      });
+    } catch (err) {
+      console.error('Error al guardar comprobante en el servidor:', err);
+    }
   };
 
   const [resumenCierre, setResumenCierre] = useState(null);
@@ -313,6 +427,7 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
 
   const [ventaClienteId, setVentaClienteId] = useState('');
   const [ventaClienteNombre, setVentaClienteNombre] = useState('');
+  const [ventaClienteObj, setVentaClienteObj] = useState(null);
   const [tiposDocumentos, setTiposDocumentos] = useState([]);
 
   const globalClient = useMemo(() => {
@@ -441,7 +556,20 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
       if (isAdminCaja) {
         setCargandoMovsAdmin(true);
         const resMovs = await api.get(`/contabilidad/caja/movimientos-turno?admin=true&desde=${fechaDesdeAdmin}&hasta=${fechaHastaAdmin}`);
-        setMovimientosAdmin(resMovs.data.movimientos || []);
+        const movimientos = resMovs.data.movimientos || [];
+        setMovimientosAdmin(movimientos);
+        setMovimientosTurno(movimientos);
+
+        // Calcular resumen de cierre localmente en UYU
+        const totalCobrado = movimientos.reduce((acc, m) => acc + (m.TipoOperacion === 'INGRESO' ? (m.Moneda === 'USD' ? m.Entrada * (cotizacion || 1) : m.Entrada) : 0), 0);
+        const totalEgresos = movimientos.reduce((acc, m) => acc + (m.TipoOperacion === 'EGRESO' ? (m.Moneda === 'USD' ? m.Salida * (cotizacion || 1) : m.Salida) : 0), 0);
+
+        setResumenCierre({
+          sesion: { StuMontoInicial: 0 },
+          cobros: { TotalCobrado: totalCobrado },
+          egresos: { TotalEgresos: totalEgresos }
+        });
+
         setCargandoMovsAdmin(false);
       } else {
         const path = `/contabilidad/caja/sesion/${sesion.StuIdSesion}/resumen`;
@@ -464,7 +592,7 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
     if (isAdminCaja && activeTab === 'OPERACIONES') {
       cargarResumenCierre();
     }
-  }, [fechaDesdeAdmin, fechaHastaAdmin, activeTab]);
+  }, [fechaDesdeAdmin, fechaHastaAdmin, activeTab, cotizacion]);
 
   const handleCerrarCaja = async () => {
     if (!cierreMontoFisico) return toast.warning('Ingrese el efectivo contado final.');
@@ -567,16 +695,42 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
     if (!contadoId) return;
     if (seleccionados.length === 0) {
       setCarritosPago([{ id: Date.now(), metodoPagoId: contadoId, moneda: 'UYU', monedaId: 1, monto: '' }]);
+      setMonedaExhibicion('UYU');
       return;
     }
+
+    // Auto-detectar la moneda principal de los retiros
+    let usdCount = 0;
+    let uyuCount = 0;
+    seleccionados.forEach(s => {
+      getOrdenes(s.retiro).forEach(o => {
+        if (o.orderIdMetodoPago !== null || o.orderPago !== null) return;
+        if (o.orderCobertura || o.orderEstado === 'Abonado' || o.orderEstado === 'Autorizado') return;
+        if (o.monedaId === 2) usdCount++;
+        if (o.monedaId === 1) uyuCount++;
+      });
+    });
+
+    const autoMoneda = (usdCount > 0 && usdCount >= uyuCount) ? 'USD' : 'UYU';
+    setMonedaExhibicion(autoMoneda);
+
+    // Calcular el monto en la moneda detectada
+    let b = 0, ajT = 0;
+    seleccionados.forEach(s => {
+      b += calcularMontoPorMoneda(s.retiro, autoMoneda);
+      const a = parseFloat(ajustes[s.retiroId]?.ajuste || 0);
+      ajT += isNaN(a) ? 0 : a;
+    });
+    const montoAuto = Math.max(0, b + ajT);
+
     setCarritosPago([{
       id: Date.now(),
       metodoPagoId: contadoId,
-      moneda: 'UYU',
-      monedaId: 1,
-      monto: totalNetoUYU > 0 ? totalNetoUYU.toFixed(2) : ''
+      moneda: autoMoneda,
+      monedaId: autoMoneda === 'USD' ? 2 : 1,
+      monto: montoAuto > 0 ? montoAuto.toFixed(2) : ''
     }]);
-  }, [seleccionados, totalNetoUYU, metodosPago]);
+  }, [seleccionados, metodosPago, cotizacion, calcularMontoPorMoneda, ajustes]);
 
   const totalIngresado = useMemo(() => {
     return carritosPago.reduce((acc, p) => {
@@ -642,14 +796,37 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
       });
 
       const newTicket = {
-        empresa: 'MACROSOFT LTDA',
+        empresa: 'USER',
         fecha: new Date().toLocaleString('es-UY'),
-        comprobante: res.data?.numeroDoc || 'TICKET CAJA',
+        comprobante: res.data?.serieDoc ? `${res.data.serieDoc}-${res.data.numeroDoc}` : (res.data?.numeroDoc || 'TICKET CAJA'),
         cajero: sesion?.usrLogin || 'Sistema',
         cliente: seleccionados[0]?.retiro?.CliNombre || 'CLIENTE',
-        items: seleccionados.map(s => {
-          const m = calcularMontoPorMoneda(s.retiro, monedaExhibicion);
-          return { descripcion: `Orden ${s.codigoRef}`, cantidad: 1, importe: m };
+        caja: isAdminCaja ? 'Caja Administrativa' : 'Caja Central',
+        tipoCambio: cotizacion,
+        observaciones: obsCobro,
+        esRetiro: true,
+        codigosRetiro: seleccionados.map(s => s.codigoRef).join(', '),
+        clienteDetalles: {
+          id: seleccionados[0]?.retiro?.CliCodigoCliente,
+          ruc: seleccionados[0]?.retiro?.CliRuc,
+          email: seleccionados[0]?.retiro?.CliEmail,
+          telefono: seleccionados[0]?.retiro?.CliTelefono,
+          direccion: seleccionados[0]?.retiro?.CliDireccion
+        },
+        items: seleccionados.flatMap(s => {
+          const ordersOfRetiro = getOrdenes(s.retiro).filter(o => !o.orderIdMetodoPago && !o.orderPago && o.orderEstado !== 'Abonado' && o.orderEstado !== 'Autorizado');
+          if (ordersOfRetiro.length === 0) {
+            const m = calcularMontoPorMoneda(s.retiro, monedaExhibicion);
+            return [{ descripcion: `Orden ${s.codigoRef}`, cantidad: 1, importe: m }];
+          }
+          return ordersOfRetiro.map(o => {
+            const m = parseFloat((o.orderCosto || '').replace(/[^0-9.-]/g, '')) || 0;
+            return {
+              descripcion: `Orden ${o.orderNumber || o.orderId}`,
+              cantidad: o.orderCantidad || 1,
+              importe: m
+            };
+          });
         }),
         totales: {
           subtotal: totalesCobro.bruto,
@@ -666,6 +843,7 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
       };
       setTicketData(newTicket);
       printTicketData(newTicket);
+      saveTicketOnServer(newTicket);
 
       const clienteId = seleccionados[0]?.retiro?.CliIdCliente;
       toast.success(`Cobro registrado (${res.data?.numeroDoc || 'OK'})`);
@@ -1291,10 +1469,11 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
                           cotizacion={cotizacion}
                           tiposDocDisponibles={tiposDocumentos.length > 0 ? tiposDocumentos : TIPOS_DOC}
                           isAdminCaja={isAdminCaja}
-                          onVentaExitosa={() => { fetchRetiros(); setVentaPagos([{ id: Date.now(), metodoPagoId: '', moneda: 'UYU', monedaId: 1, monto: '' }]); setVentaObs(''); setVentaTotalACubrir(0); setVentaMoneda('UYU'); setVentaClienteId(''); setVentaClienteNombre(''); }}
+                          onVentaExitosa={() => { fetchRetiros(); setVentaPagos([{ id: Date.now(), metodoPagoId: '', moneda: 'UYU', monedaId: 1, monto: '' }]); setVentaObs(''); setVentaTotalACubrir(0); setVentaMoneda('UYU'); setVentaClienteId(''); setVentaClienteNombre(''); setVentaClienteObj(null); }}
                           onClienteChange={(c) => {
                             setVentaClienteId(c?.CliIdCliente || '');
                             setVentaClienteNombre(c?.Nombre || '');
+                            setVentaClienteObj(c || null);
                           }}
                           pagos={ventaPagos}
                           onPagosChange={setVentaPagos}
@@ -1329,11 +1508,22 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
                               toast.success(`Venta procesada. Comprobante: ${res.data.numeroDocFormato || res.data.tcaIdTransaccion}`);
 
                               const ventaTicket = {
-                                empresa: 'MACROSOFT LTDA',
+                                empresa: 'USER',
                                 fecha: new Date().toLocaleString('es-UY'),
                                 comprobante: res.data.numeroDocFormato || `TCA-${res.data.tcaIdTransaccion}`,
                                 cajero: sesion?.usrLogin || 'Sistema',
                                 cliente: payload.header.clienteId ? (payload._clienteNombre || 'Cliente') : 'Consumidor Final',
+                                caja: isAdminCaja ? 'Caja Administrativa' : 'Caja Central',
+                                tipoCambio: cotizacion,
+                                observaciones: ventaObs,
+                                esRetiro: false,
+                                clienteDetalles: ventaClienteObj ? {
+                                  id: ventaClienteObj.IDCliente || ventaClienteObj.CodCliente || ventaClienteObj.CliIdCliente,
+                                  ruc: ventaClienteObj.CioRuc,
+                                  email: ventaClienteObj.Email,
+                                  telefono: ventaClienteObj.TelefonoTrabajo,
+                                  direccion: ventaClienteObj.DireccionTrabajo
+                                } : null,
                                 items: payload.items.map(it => ({
                                   descripcion: it.descripcion || it.codigo,
                                   cantidad: it.cantidad,
@@ -1352,6 +1542,7 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
                               };
                               setTicketData(ventaTicket);
                               printTicketData(ventaTicket);
+                              saveTicketOnServer(ventaTicket);
 
                               fetchRetiros(); 
                               setVentaPagos([{ id: Date.now(), metodoPagoId: 1, moneda: 'UYU', monedaId: 1, monto: '' }]); 
@@ -1360,6 +1551,7 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
                               setVentaMoneda('UYU');
                               setVentaClienteId('');
                               setVentaClienteNombre('');
+                              setVentaClienteObj(null);
                               document.dispatchEvent(new CustomEvent('caja:limpiarVenta'));
                             } catch (e) { toast.error(e.response?.data?.error || 'Error al procesar venta'); }
                             finally { setProcesandoVenta(false); }
@@ -1398,10 +1590,11 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
                           metodosPago={metodosPago}
                           isAdminCaja={isAdminCaja}
                           cotizacion={cotizacion}
-                          onVentaExitosa={() => { fetchRetiros(); setVentaPagos([{ id: Date.now(), metodoPagoId: '', moneda: 'UYU', monedaId: 1, monto: '' }]); setVentaObs(''); setVentaTotalACubrir(0); setVentaMoneda('UYU'); setVentaClienteId(''); setVentaClienteNombre(''); }}
+                          onVentaExitosa={() => { fetchRetiros(); setVentaPagos([{ id: Date.now(), metodoPagoId: '', moneda: 'UYU', monedaId: 1, monto: '' }]); setVentaObs(''); setVentaTotalACubrir(0); setVentaMoneda('UYU'); setVentaClienteId(''); setVentaClienteNombre(''); setVentaClienteObj(null); }}
                           onClienteChange={(c) => {
                             setVentaClienteId(c?.CliIdCliente || '');
                             setVentaClienteNombre(c?.Nombre || '');
+                            setVentaClienteObj(c || null);
                           }}
                           pagos={ventaPagos}
                           onPagosChange={setVentaPagos}
@@ -1419,7 +1612,45 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
                             try {
                               const ventaPayload = { ...payload, pagos: ventaPagos.filter(p => p.monto && p.metodoPagoId).map(p => ({ metodoPagoId: parseInt(p.metodoPagoId), montoOriginal: parseFloat(p.monto), monedaId: p.moneda === 'USD' ? 2 : 1, cotizacion: p.moneda === 'USD' ? cotizacion : null, referenciaNumero: '' })) };
                               const res = await api.post('/contabilidad/caja/venta-directa', ventaPayload);
-                              toast.success('Venta procesada');
+                              toast.success(`Venta procesada. Comprobante: ${res.data.numeroDocFormato || res.data.tcaIdTransaccion}`);
+
+                              const ventaTicket = {
+                                empresa: 'USER',
+                                fecha: new Date().toLocaleString('es-UY'),
+                                comprobante: res.data.numeroDocFormato || `TCA-${res.data.tcaIdTransaccion}`,
+                                cajero: sesion?.usrLogin || 'Sistema',
+                                cliente: payload.header.clienteId ? (payload._clienteNombre || 'Cliente') : 'Consumidor Final',
+                                caja: isAdminCaja ? 'Caja Administrativa' : 'Caja Central',
+                                tipoCambio: cotizacion,
+                                observaciones: ventaObs,
+                                esRetiro: false,
+                                clienteDetalles: ventaClienteObj ? {
+                                  id: ventaClienteObj.IDCliente || ventaClienteObj.CodCliente || ventaClienteObj.CliIdCliente,
+                                  ruc: ventaClienteObj.CioRuc,
+                                  email: ventaClienteObj.Email,
+                                  telefono: ventaClienteObj.TelefonoTrabajo,
+                                  direccion: ventaClienteObj.DireccionTrabajo
+                                } : null,
+                                items: payload.items.map(it => ({
+                                  descripcion: it.descripcion || it.codigo,
+                                  cantidad: it.cantidad,
+                                  importe: it.precioTotal
+                                })),
+                                totales: {
+                                  subtotal: res.data.totalBruto,
+                                  total: res.data.totalBruto,
+                                  moneda: ventaMoneda === 'USD' ? 'US$' : '$'
+                                },
+                                pagos: ventaPagos.filter(p => p.monto && p.metodoPagoId).map(p => ({
+                                  metodo: metodosPago.find(m => m.MPaIdMetodoPago === parseInt(p.metodoPagoId))?.MPaDescripcionMetodo || 'Pago',
+                                  moneda: p.moneda,
+                                  monto: p.monto
+                                }))
+                              };
+                              setTicketData(ventaTicket);
+                              printTicketData(ventaTicket);
+                              saveTicketOnServer(ventaTicket);
+
                               fetchRetiros(); 
                               setVentaPagos([{ id: Date.now(), metodoPagoId: 1, moneda: 'UYU', monedaId: 1, monto: '' }]); 
                               setVentaObs(''); 
@@ -1427,6 +1658,7 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
                               setVentaMoneda('UYU');
                               setVentaClienteId('');
                               setVentaClienteNombre('');
+                              setVentaClienteObj(null);
                               document.dispatchEvent(new CustomEvent('caja:limpiarVenta'));
                             } catch (e) { toast.error('Error al procesar venta'); }
                             finally { setProcesandoVenta(false); }
@@ -1909,12 +2141,10 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
 
           {activeTab === 'OPERACIONES' && (
             <div className="flex-1 flex flex-col overflow-hidden">
-              <div className="bg-white border-b border-slate-200 px-6 py-3 flex items-center gap-3 shrink-0 shadow-sm z-10 overflow-x-auto">
-                {!isAdminCaja && (
-                  <button onClick={() => setShowArqueo(true)} className="flex items-center gap-2 px-4 py-2 rounded-xl font-black text-xs transition-all border whitespace-nowrap bg-white border-slate-200 text-slate-500 hover:border-slate-300 hover:text-slate-800 hover:bg-slate-50">
-                    <FileText size={16} /> Arqueo de Turno
-                  </button>
-                )}
+              <div className="bg-white border-b border-slate-200 px-6 py-4 flex justify-between items-center shrink-0">
+                <button onClick={() => setShowArqueo(true)} className="flex items-center gap-2 px-4 py-2 rounded-xl font-black text-xs transition-all border whitespace-nowrap bg-white border-slate-200 text-slate-500 hover:border-slate-300 hover:text-slate-800 hover:bg-slate-50">
+                  <FileText size={16} /> Arqueo de Turno
+                </button>
                 <button className="flex items-center gap-2 px-4 py-2 rounded-xl font-black text-xs transition-all border whitespace-nowrap bg-brand-cyan border-brand-cyan text-white shadow-md shadow-brand-cyan/20">
                   <DoorClosed size={16} /> {isAdminCaja ? 'Movimientos Realizados' : 'Cierre de Turno'}
                 </button>
@@ -1935,61 +2165,26 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
                       )}
                     </div>
 
-                    {isAdminCaja ? (
-                      <div className="flex flex-col">
-                        <div className="flex items-end gap-4 bg-slate-50 p-8 border-b border-slate-200">
-                          <div className="flex-1">
-                            <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-2 px-1">Fecha Desde</label>
-                            <input type="date" value={fechaDesdeAdmin} onChange={e => setFechaDesdeAdmin(e.target.value)} className="w-full bg-white border border-slate-200 rounded-2xl px-4 py-3 text-sm font-bold text-slate-700 outline-none focus:border-brand-cyan" />
-                          </div>
-                          <div className="flex-1">
-                            <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-2 px-1">Fecha Hasta</label>
-                            <input type="date" value={fechaHastaAdmin} onChange={e => setFechaHastaAdmin(e.target.value)} className="w-full bg-white border border-slate-200 rounded-2xl px-4 py-3 text-sm font-bold text-slate-700 outline-none focus:border-brand-cyan" />
-                          </div>
+                    {/* Si es Caja Administrativa, mostramos los inputs de fecha arriba */}
+                    {isAdminCaja && (
+                      <div className="flex items-end gap-4 bg-slate-50 p-8 border-b border-slate-200 shrink-0">
+                        <div className="flex-1">
+                          <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-2 px-1">Fecha Desde</label>
+                          <input type="date" value={fechaDesdeAdmin} onChange={e => setFechaDesdeAdmin(e.target.value)} className="w-full bg-white border border-slate-200 rounded-2xl px-4 py-3 text-sm font-bold text-slate-700 outline-none focus:border-brand-cyan" />
                         </div>
-
-                        <div className="bg-white overflow-hidden">
-                          <div className="overflow-x-auto">
-                            <table className="w-full text-left border-collapse">
-                              <thead>
-                                <tr className="bg-slate-50 border-b border-slate-200">
-                                  <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest">Fecha</th>
-                                  <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest">Tipo / Ref</th>
-                                  <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest">Concepto</th>
-                                  <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest">Usuario</th>
-                                  <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest text-right">Ingreso</th>
-                                  <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest text-right">Egreso</th>
-                                </tr>
-                              </thead>
-                              <tbody className="divide-y divide-slate-100">
-                                {cargandoMovsAdmin ? (
-                                  <tr><td colSpan="6" className="px-6 py-8 text-center text-slate-400 font-bold text-sm">Cargando...</td></tr>
-                                ) : movimientosAdmin.length === 0 ? (
-                                  <tr><td colSpan="6" className="px-6 py-8 text-center text-slate-400 font-bold text-sm">No hay movimientos en este rango.</td></tr>
-                                ) : movimientosAdmin.map((m, i) => (
-                                  <tr key={i} className="hover:bg-slate-50/50 transition-colors">
-                                    <td className="px-6 py-4 text-xs text-slate-500 font-medium whitespace-nowrap">{new Date(m.Fecha).toLocaleString('es-UY', { dateStyle: 'short', timeStyle: 'short' })}</td>
-                                    <td className="px-6 py-4">
-                                      <span className="block text-[10px] font-black text-slate-400 uppercase tracking-widest">{m.TipoOperacion}</span>
-                                      <span className="font-bold text-slate-700 text-xs">{m.Comprobante !== '-' ? m.Comprobante : m.TipoComprobante}</span>
-                                    </td>
-                                    <td className="px-6 py-4 text-xs text-slate-600 font-medium max-w-[300px] truncate" title={m.Concepto}>{m.Concepto}</td>
-                                    <td className="px-6 py-4 text-xs text-slate-600 font-medium whitespace-nowrap">{m.Usuario || 'Sistema'}</td>
-                                    <td className="px-6 py-4 text-right font-black text-emerald-600 text-sm">{m.Entrada > 0 ? `$${fmt(m.Entrada)}` : '-'}</td>
-                                    <td className="px-6 py-4 text-right font-black text-brand-magenta text-sm">{m.Salida > 0 ? `$${fmt(m.Salida)}` : '-'}</td>
-                                  </tr>
-                                ))}
-                              </tbody>
-                            </table>
-                          </div>
+                        <div className="flex-1">
+                          <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-2 px-1">Fecha Hasta</label>
+                          <input type="date" value={fechaHastaAdmin} onChange={e => setFechaHastaAdmin(e.target.value)} className="w-full bg-white border border-slate-200 rounded-2xl px-4 py-3 text-sm font-bold text-slate-700 outline-none focus:border-brand-cyan" />
                         </div>
                       </div>
-                    ) : !resumenCierre ? (
+                    )}
+
+                    {(cargandoMovsAdmin || (!resumenCierre && !isAdminCaja)) ? (
                       <div className="text-center py-20 flex flex-col items-center gap-4">
                         <Loader2 className="animate-spin text-brand-cyan" size={48} />
                         <p className="font-black text-zinc-400 uppercase tracking-widest text-sm animate-pulse">Consolidando transacciones...</p>
                       </div>
-                    ) : (
+                    ) : resumenCierre ? (
                       <div className="flex flex-col">
                         <div className="bg-slate-50/50 px-6 py-3 grid grid-cols-2 lg:grid-cols-4 gap-4 border-b border-slate-200">
                           <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
@@ -2173,7 +2368,7 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
                                             : 'bg-rose-50 border-rose-200 text-rose-800'
                                       }`}>
                                         <div className="flex justify-between items-center text-[10px] font-black uppercase tracking-widest">
-                                          <span>Monto Inicial Apertura USD:</span>
+                                          <span>Monto Inicial Apertura:</span>
                                           <span className="font-mono">U$S 0,00</span>
                                         </div>
                                         <div className="flex justify-between items-center text-[10px] font-black uppercase tracking-widest border-b border-slate-200/50 pb-2">
@@ -2210,15 +2405,17 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
                             </div>
                           </div>
 
-                          <div className="p-8 bg-zinc-50/50">
-                            <button onClick={handleCerrarCaja} className="w-full bg-brand-magenta hover:opacity-90 text-white font-black py-6 rounded-2xl shadow-xl shadow-brand-magenta/20 transition-all active:scale-[0.98] text-xl tracking-tighter flex items-center justify-center gap-4">
-                              <Power size={28} /> FINALIZAR TURNO Y CERRAR SESIÓN
-                            </button>
-                          </div>
+                          {!isAdminCaja && (
+                            <div className="p-8 bg-zinc-50/50">
+                              <button onClick={handleCerrarCaja} className="w-full bg-brand-magenta hover:opacity-90 text-white font-black py-6 rounded-2xl shadow-xl shadow-brand-magenta/20 transition-all active:scale-[0.98] text-xl tracking-tighter flex items-center justify-center gap-4">
+                                <Power size={28} /> FINALIZAR TURNO Y CERRAR SESIÓN
+                              </button>
+                            </div>
+                          )}
                         </>
 
                       </div>
-                    )}
+                    ) : null}
                   </div>
               </div>
             </div>

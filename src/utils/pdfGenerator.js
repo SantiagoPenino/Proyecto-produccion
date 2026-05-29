@@ -729,7 +729,7 @@ export const generarPdfEstadoCuenta = (cliente, cuentas, secciones, planes, desd
     pdf.setFont('helvetica', 'normal');
     pdf.setFontSize(8);
     pdf.setTextColor(...COLOR_SECONDARY);
-    pdf.text("Documento generado por Macrosoft Sistema", 105, 280, { align: 'center' });
+    pdf.text("Documento generado por USER Sistema", 105, 280, { align: 'center' });
 
     const filename = `Estado_Cuenta_${cliente.Nombre.replace(/\s+/g, '_')}`;
     pdf.setProperties({
@@ -752,7 +752,7 @@ export const generarPdfPrefactura = (ciclo, movs, excluidos, cuenta, cliente, es
     pdf.setTextColor(...COLOR_PRIMARY);
 
     // Cabecera Empresa
-    pdf.text("MACROSOFT S.A.", 14, 20);
+    pdf.text("USER S.A.", 14, 20);
     pdf.setFont('helvetica', 'normal');
     pdf.setFontSize(10);
     pdf.setTextColor(...COLOR_SECONDARY);
@@ -935,7 +935,7 @@ export const generarPdfPrefactura = (ciclo, movs, excluidos, cuenta, cliente, es
     pdf.setFont('helvetica', 'normal');
     pdf.setFontSize(8);
     pdf.setTextColor(...COLOR_SECONDARY);
-    pdf.text("Documento generado por Macrosoft Sistema", 105, 280, { align: 'center' });
+    pdf.text("Documento generado por USER Sistema", 105, 280, { align: 'center' });
 
     if (!esFinal) {
         pdf.setTextColor(220, 38, 38); // red-600

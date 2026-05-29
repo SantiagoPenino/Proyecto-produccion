@@ -1116,8 +1116,8 @@ async function procesarTransaccion(payload) {
                   0, 0, @total, 1, 
                   GETDATE(), @usuario, 
                   CASE 
-                    WHEN @codigoEfact IS NULL THEN NULL 
-                    WHEN @tipo LIKE '%Pedido%' OR @tipo LIKE '%PEDIDO%' OR @tipo = 'PC' THEN 'BORRADOR' 
+                    WHEN @tipo LIKE '%Pedido%' OR @tipo LIKE '%PEDIDO%' OR @tipo = 'PC' OR @tipo = 'PedidoCaja' THEN 'PENDIENTE'
+                    WHEN @codigoEfact IS NULL OR @codigoEfact = 0 THEN NULL 
                     ELSE 'PENDIENTE' 
                   END,
                   @serie, @numero,

@@ -92,9 +92,9 @@ ${results.faltaEnDeposito.map(x => x.codigo).join(', ') || 'Ninguna'}
 ${results.sobraEnDeposito.map(x => x.codigo).join(', ') || 'Ninguna'}
 
 >> DESCONOCIDAS (A INVESTIGAR):
-${results.desconocido.map(x => x.codigo).join(', ') || 'Ninguna'}
+${results.desconocido.map(x => x.code).join(', ') || 'Ninguna'}
 --------------------------------------------------
-Reporte Generado Automáticamente por Macrosoft.
+Reporte Generado Automáticamente por USER.
 `;
 
     const blob = new Blob([informe], { type: 'text/plain;charset=utf-8' });

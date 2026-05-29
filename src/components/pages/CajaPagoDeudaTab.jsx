@@ -393,6 +393,7 @@ export default function CajaPagoDeudaTab({ sesion, metodosPago = [], cotizacion 
           onPagosChange={setPagos}
           totalACubrir={totalAPagar}
           moneda={monedaDeuda}
+          lockMoneda={monedaDeuda}
           cotizacion={cotizacion}
           procesando={procesando}
           onConfirmar={handleProcesar}

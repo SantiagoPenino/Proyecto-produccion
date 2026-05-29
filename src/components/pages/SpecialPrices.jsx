@@ -410,6 +410,135 @@ const NewRuleDrawer = ({ isOpen, onClose, baseProducts, onAddRule, onRemoveRule,
     );
 };
 
+// --- MODAL DE GESTIÓN DE PERFILES ---
+const ProfileSelectionModal = ({ isOpen, onClose, allProfiles, selectedProfileIds, onApply }) => {
+    const [tempIds, setTempIds] = useState(new Set(selectedProfileIds));
+
+    useEffect(() => {
+        setTempIds(new Set(selectedProfileIds));
+    }, [selectedProfileIds, isOpen]);
+
+    if (!isOpen) return null;
+
+    // Clasificar perfiles
+    const globalProfiles = allProfiles.filter(p => p.EsGlobal === 1 || p.Global === 1 || p.EsGlobal === true || p.Global === true);
+    const assignableProfiles = allProfiles.filter(p => !(p.EsGlobal === 1 || p.Global === 1 || p.EsGlobal === true || p.Global === true));
+
+    const handleToggle = (id) => {
+        setTempIds(prev => {
+            const next = new Set(prev);
+            if (next.has(id)) next.delete(id);
+            else next.add(id);
+            return next;
+        });
+    };
+
+    const handleSubmit = () => {
+        onApply(tempIds);
+    };
+
+    return (
+        <>
+            {/* Backdrop */}
+            <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-[9990] transition-opacity animate-in fade-in duration-200" onClick={onClose}></div>
+            
+            {/* Modal */}
+            <div className="fixed inset-0 z-[9995] flex items-center justify-center p-4">
+                <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl flex flex-col overflow-hidden max-h-[85vh] text-slate-700 transform scale-100 transition-all duration-300 animate-in zoom-in-95 duration-200">
+                    {/* Header */}
+                    <div className="p-5 border-b border-slate-100 flex items-center justify-between bg-slate-50">
+                        <div>
+                            <h3 className="text-lg font-black text-slate-800 flex items-center gap-2">
+                                <i className="fa-solid fa-user-gear text-indigo-500"></i> Gestionar Perfiles
+                            </h3>
+                            <p className="text-xs text-slate-400 mt-0.5">Asigna o quita perfiles de precios para este cliente.</p>
+                        </div>
+                        <button onClick={onClose} className="w-8 h-8 rounded-full hover:bg-slate-200 flex items-center justify-center text-slate-400 hover:text-slate-600 transition-colors">
+                            <i className="fa-solid fa-xmark"></i>
+                        </button>
+                    </div>
+
+                    {/* Body */}
+                    <div className="flex-1 overflow-y-auto p-6 space-y-6 custom-scrollbar">
+                        {/* Perfiles Globales (Activos / Bloqueados) */}
+                        <div>
+                            <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-wider mb-3 flex items-center gap-1.5">
+                                <i className="fa-solid fa-earth-americas text-slate-400"></i> Perfiles Globales (Activos)
+                            </h4>
+                            {globalProfiles.length === 0 ? (
+                                <p className="text-xs text-slate-400 italic">No hay perfiles globales configurados en el sistema.</p>
+                            ) : (
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                    {globalProfiles.map(p => (
+                                        <div key={p.ID} className="flex items-center justify-between p-3.5 bg-slate-50 border border-slate-200/80 rounded-xl select-none opacity-80">
+                                            <div className="min-w-0 pr-2">
+                                                <div className="font-bold text-slate-700 text-xs truncate">{p.Nombre}</div>
+                                                <div className="text-[10px] text-slate-400 truncate mt-0.5">{p.Descripcion || 'Perfil global activo por defecto'}</div>
+                                            </div>
+                                            <span className="text-slate-400 bg-white border border-slate-200 w-7 h-7 rounded-full flex items-center justify-center text-xs flex-shrink-0 shadow-sm" title="Este perfil es global y se aplica automáticamente">
+                                                <i className="fa-solid fa-lock"></i>
+                                            </span>
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
+                        </div>
+
+                        {/* Asignación de Perfiles (Editables) */}
+                        <div>
+                            <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-wider mb-3 flex items-center gap-1.5">
+                                <i className="fa-solid fa-user-tag text-slate-400"></i> Asignación de Perfiles
+                            </h4>
+                            {assignableProfiles.length === 0 ? (
+                                <p className="text-xs text-slate-400 italic">No hay perfiles asignables configurados.</p>
+                            ) : (
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                    {assignableProfiles.map(p => {
+                                        const isChecked = tempIds.has(p.ID);
+                                        return (
+                                            <div 
+                                                key={p.ID} 
+                                                onClick={() => handleToggle(p.ID)}
+                                                className={`flex items-center justify-between p-3.5 rounded-xl cursor-pointer transition-all border select-none ${isChecked ? 'bg-indigo-50/40 border-indigo-500 shadow-sm' : 'bg-white border-slate-100 hover:border-slate-300'}`}
+                                            >
+                                                <div className="min-w-0 pr-2">
+                                                    <div className="font-bold text-slate-800 text-xs truncate">{p.Nombre}</div>
+                                                    <div className="text-[10px] text-slate-400 truncate mt-0.5">{p.Descripcion || 'Sin descripción'}</div>
+                                                </div>
+                                                <div className={`w-5.5 h-5.5 rounded-full border flex items-center justify-center flex-shrink-0 transition-all ${isChecked ? 'bg-indigo-600 border-indigo-600 text-white shadow-sm shadow-indigo-100' : 'border-slate-300 bg-white'}`}>
+                                                    {isChecked && <i className="fa-solid fa-check text-[10px]"></i>}
+                                                </div>
+                                            </div>
+                                        );
+                                    })}
+                                </div>
+                            )}
+                        </div>
+                    </div>
+
+                    {/* Footer */}
+                    <div className="p-4 border-t border-slate-100 bg-slate-50 flex justify-end gap-2.5">
+                        <button 
+                            type="button" 
+                            onClick={onClose} 
+                            className="px-4 py-2 border border-slate-200 hover:bg-slate-200 text-slate-600 rounded-xl font-bold transition-all text-xs"
+                        >
+                            Cancelar
+                        </button>
+                        <button 
+                            type="button" 
+                            onClick={handleSubmit} 
+                            className="px-5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-bold transition-all text-xs shadow-md shadow-indigo-100"
+                        >
+                            Aplicar Perfiles
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </>
+    );
+};
+
 // --- COMPONENTE PRINCIPAL ---
 const SpecialPrices = () => {
     // Referencias y Listas base de la DB
@@ -446,10 +575,22 @@ const SpecialPrices = () => {
     const [showAllProducts, setShowAllProducts] = useState(false);
     const [editingRule, setEditingRule] = useState(null);
 
+    // Gestión Integrada de Perfiles
+    const [allProfiles, setAllProfiles] = useState([]);
+    const [selectedProfileIds, setSelectedProfileIds] = useState(new Set());
+    const [isProfileModalOpen, setIsProfileModalOpen] = useState(false);
+
     useEffect(() => {
         loadClients();
         loadProducts();
+        loadAllProfiles();
     }, []);
+
+    const loadAllProfiles = () => {
+        api.get('/profiles')
+            .then(res => setAllProfiles(res.data || []))
+            .catch(e => console.error("Error cargando perfiles:", e));
+    };
 
     useEffect(() => {
         setShowAllProducts(false);
@@ -463,6 +604,7 @@ const SpecialPrices = () => {
             setIsDirtyMap(false);
             setExpandedGroups(new Set());
             setHiddenGroups(new Set());
+            setSelectedProfileIds(new Set());
         }
     }, [selClientId]);
 
@@ -534,6 +676,7 @@ const SpecialPrices = () => {
                     client: res.data.client,
                     profiles: res.data.profiles || [] 
                 });
+                setSelectedProfileIds(new Set((res.data.profiles || []).map(p => p.ID)));
                 const rules = res.data.rules || [];
                 
                 // Auto-expandir familias que tengan reglas activas
@@ -564,6 +707,7 @@ const SpecialPrices = () => {
                         client: { CliIdCliente: cid, Nombre: temp?.Nombre || `Cliente ${cid}` },
                         profiles: []
                     });
+                    setSelectedProfileIds(new Set());
                     
                     const allFamilies = new Set(baseProducts.filter(p => p.Grupo && p.Grupo !== 'GLOBAL').map(p => p.Grupo));
                     setExpandedGroups(new Set());
@@ -723,6 +867,19 @@ const SpecialPrices = () => {
     };
 
     // --- GUARDAR A BASE DE DATOS ---
+    const handleApplyProfiles = (tempIds) => {
+        setSelectedProfileIds(tempIds);
+        // Actualizar localmente clientData.profiles para que las etiquetas del header se actualicen inmediatamente
+        const updatedProfiles = allProfiles.filter(p => tempIds.has(p.ID));
+        setClientData(prev => ({
+            ...prev,
+            profiles: updatedProfiles
+        }));
+        setIsDirtyMap(true);
+        setIsProfileModalOpen(false);
+        toast.info("Perfiles de precio modificados localmente. Recuerda guardar tarifa.");
+    };
+
     const handleSaveRules = () => {
         if (!selClientId) return;
         const payloadRules = [];
@@ -762,10 +919,11 @@ const SpecialPrices = () => {
         api.post('/special-prices/profile', {
             clientId: selClientId,
             nombre: clientData.client?.Nombre || clientData.client?.NombreCliente || `Cliente ${selClientId}`,
-            rules: payloadRules
+            rules: payloadRules,
+            profileIds: Array.from(selectedProfileIds)
         })
         .then(() => {
-            toast.success("Perfil de precios guardado exitosamente");
+            toast.success("Tarifa y perfiles guardados exitosamente");
             setIsDirtyMap(false);
             loadRules(selClientId); // refrescar orgánicos
         })
@@ -983,6 +1141,14 @@ const SpecialPrices = () => {
                 onRemoveRule={handleRemoveRule}
                 editingRule={editingRule}
                 rowStateMap={rowStateMap}
+            />
+
+            <ProfileSelectionModal
+                isOpen={isProfileModalOpen}
+                onClose={() => setIsProfileModalOpen(false)}
+                allProfiles={allProfiles}
+                selectedProfileIds={selectedProfileIds}
+                onApply={handleApplyProfiles}
             />
 
             {/* SIDEBAR CLIENTES */}
@@ -1265,6 +1431,12 @@ const SpecialPrices = () => {
                                     </div>
                                 </div>
                                 <div className="flex gap-3">
+                                    <button 
+                                        onClick={() => setIsProfileModalOpen(true)}
+                                        className="bg-slate-50 border border-slate-300 text-slate-700 hover:bg-slate-100 px-4 py-2 rounded-lg font-bold flex items-center gap-2 transition-colors shadow-sm"
+                                    >
+                                        <i className="fa-solid fa-user-gear text-slate-500"></i> Gestionar Perfiles
+                                    </button>
                                     <button 
                                         onClick={() => setIsDrawerOpen(true)}
                                         className="bg-indigo-50 border border-indigo-200 text-indigo-700 hover:bg-indigo-100 px-4 py-2 rounded-lg font-bold flex items-center gap-2 transition-colors shadow-sm"

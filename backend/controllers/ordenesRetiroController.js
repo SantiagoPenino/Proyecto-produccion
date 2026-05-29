@@ -109,6 +109,9 @@ const getOrdenesRetiroQueryBase = `
     COALESCE(tc.TClDescripcion, tcr.TClDescripcion) AS TClDescripcion,
     COALESCE(tc.TClIdTipoCliente, tcr.TClIdTipoCliente) AS TClIdTipoCliente,
     COALESCE(c.CliIdCliente, cr.CliIdCliente) AS CliIdCliente,
+    COALESCE(LTRIM(RTRIM(c.CioRuc)), LTRIM(RTRIM(cr.CioRuc))) AS CliRuc,
+    COALESCE(LTRIM(RTRIM(c.Email)), LTRIM(RTRIM(cr.Email))) AS CliEmail,
+    COALESCE(LTRIM(RTRIM(c.DireccionTrabajo)), LTRIM(RTRIM(cr.DireccionTrabajo))) AS CliDireccion,
     r.DireccionEnvio,
     r.DepartamentoEnvio,
     r.LocalidadEnvio,
@@ -156,6 +159,9 @@ const processRetirosRows = (rows) => {
         CliCodigoCliente: row.CliCodigoCliente || 'Desconocido',
         CliNombre: row.CliNombre || null,
         CliTelefono: row.CliTelefono || null,
+        CliRuc: row.CliRuc || null,
+        CliEmail: row.CliEmail || null,
+        CliDireccion: row.CliDireccion || null,
         TClDescripcion: row.TClDescripcion || 'Desconocido',
         TClIdTipoCliente: row.TClIdTipoCliente,
         CliIdCliente: row.CliIdCliente || null,
@@ -598,6 +604,9 @@ const buscarParaMostrador = async (req, res) => {
         LTRIM(RTRIM(c.Nombre))           AS CliNombre,
         c.IDCliente                      AS CliCodigo,
         LTRIM(RTRIM(c.TelefonoTrabajo))  AS CliTelefono,
+        LTRIM(RTRIM(c.CioRuc))           AS CliRuc,
+        LTRIM(RTRIM(c.Email))            AS CliEmail,
+        LTRIM(RTRIM(c.DireccionTrabajo)) AS CliDireccion,
         tc.TClDescripcion,
         CASE WHEN o.PagIdPago IS NOT NULL THEN 1 ELSE 0 END AS Pagada
       FROM OrdenesRetiro r WITH(NOLOCK)
@@ -618,7 +627,11 @@ const buscarParaMostrador = async (req, res) => {
       SELECT o.OrdIdOrden, o.OrdCodigoOrden, o.OrdCostoFinal,
              eo.EOrNombreEstado AS estadoOrden, mon.MonSimbolo,
              LTRIM(RTRIM(c.Nombre)) AS CliNombre, c.IDCliente AS CliCodigo,
-             LTRIM(RTRIM(c.TelefonoTrabajo)) AS CliTelefono, tc.TClDescripcion,
+             LTRIM(RTRIM(c.TelefonoTrabajo)) AS CliTelefono,
+             LTRIM(RTRIM(c.CioRuc)) AS CliRuc,
+             LTRIM(RTRIM(c.Email)) AS CliEmail,
+             LTRIM(RTRIM(c.DireccionTrabajo)) AS CliDireccion,
+             tc.TClDescripcion,
              CASE WHEN o.PagIdPago IS NOT NULL THEN 1 ELSE 0 END AS Pagada
       FROM OrdenesDeposito o WITH(NOLOCK)
       LEFT JOIN Monedas mon         WITH(NOLOCK) ON mon.MonIdMoneda      = o.MonIdMoneda

@@ -80,6 +80,7 @@ export default function CajaSaldoAnticipoTab({ sesion, metodosPago, cotizacion, 
   const [pagos, setPagos]                 = useState([{ id: Date.now(), metodoPagoId: '', moneda: 'UYU', monedaId: 1, monto: '' }]);
   const [observaciones, setObservaciones] = useState('');
   const [tipoComprobante, setTipoComprobante] = useState('RECIBO_ANTICIPO');
+  const [serieDoc, setSerieDoc]           = useState('RC');
 
   const handlePagosChange = (newPagos) => {
     setPagos(newPagos);
@@ -323,6 +324,7 @@ export default function CajaSaldoAnticipoTab({ sesion, metodosPago, cotizacion, 
           onPagosChange={handlePagosChange}
           totalACubrir={importeNum}
           moneda={moneda}
+          lockMoneda={moneda}
           cotizacion={cotizacion}
           procesando={procesando}
           onConfirmar={handleProcesar}
@@ -330,6 +332,8 @@ export default function CajaSaldoAnticipoTab({ sesion, metodosPago, cotizacion, 
           onNotas={setObservaciones}
           tipoDoc={tipoComprobante}
           onTipoDoc={setTipoComprobante}
+          serieDoc={serieDoc}
+          onSerieDoc={setSerieDoc}
           tiposDocDisponibles={[
             { value: 'RECIBO_ANTICIPO', label: 'Recibo de Pago (RC)' },
             { value: 'NINGUNO',         label: 'Sin Comprobante Fiscal (Anticipo)' },

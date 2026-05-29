@@ -145,10 +145,18 @@ const getAllCustomersWithProfile = async (req, res) => {
         logger.info("Fetching customer assignments with PerfilesIDs...");
         const pool = await getPool();
         const result = await pool.request().query(`
-            SELECT 
-                PE.CliIdCliente as ClienteID, PE.PerfilesIDs,
-                (SELECT COUNT(*) FROM PreciosEspecialesItems WHERE CliIdCliente = PE.CliIdCliente) as CantReglas
+            SELECT DISTINCT
+                COALESCE(C.CliIdCliente, PE.CliIdCliente) as ClienteID,
+                PE.PerfilesIDs,
+                (
+                    SELECT COUNT(*) 
+                    FROM PreciosEspecialesItems 
+                    WHERE CliIdCliente = COALESCE(C.CliIdCliente, PE.CliIdCliente) 
+                       OR ClienteID = COALESCE(C.CliIdCliente, PE.CliIdCliente)
+                       OR (C.CodCliente IS NOT NULL AND (CliIdCliente = C.CodCliente OR ClienteID = C.CodCliente))
+                ) as CantReglas
             FROM PreciosEspeciales PE
+            LEFT JOIN Clientes C ON C.CodCliente = PE.CliIdCliente OR C.CliIdCliente = PE.CliIdCliente
         `);
         res.json(result.recordset);
     } catch (e) {
@@ -175,19 +183,34 @@ const assignProfileToCustomer = async (req, res) => {
 
     try {
         const pool = await getPool();
-        // Upsert en PreciosEspeciales
-        await pool.request()
+        
+        // Resolve target CliIdCliente and CodCliente from Clientes
+        const clientRes = await pool.request()
             .input('CID', sql.Int, clienteId)
+            .query("SELECT CliIdCliente, CodCliente FROM Clientes WHERE CliIdCliente = @CID OR CodCliente = @CID");
+
+        let targetCliId = clienteId;
+        let targetCodCliente = clienteId;
+        if (clientRes.recordset.length > 0) {
+            targetCliId = clientRes.recordset[0].CliIdCliente; // always use the internal CliIdCliente
+            targetCodCliente = clientRes.recordset[0].CodCliente;
+        }
+
+        // Upsert en PreciosEspeciales bajo targetCliId
+        await pool.request()
+            .input('CID', sql.Int, targetCliId)
+            .input('CodCli', sql.Int, targetCodCliente)
             .input('PIDs', sql.NVarChar, pidsStr)
             .query(`
                 IF NOT EXISTS (SELECT 1 FROM PreciosEspeciales WHERE CliIdCliente = @CID)
                 BEGIN
-                    INSERT INTO PreciosEspeciales (CliIdCliente, PerfilesIDs) VALUES (@CID, @PIDs)
+                    INSERT INTO PreciosEspeciales (CliIdCliente, ClienteID, PerfilesIDs) VALUES (@CID, @CodCli, @PIDs)
                 END
                 ELSE
                 BEGIN
                     UPDATE PreciosEspeciales SET 
                         PerfilesIDs = @PIDs,
+                        ClienteID = @CodCli,
                         UltimaActualizacion = GETDATE()
                     WHERE CliIdCliente = @CID
                 END

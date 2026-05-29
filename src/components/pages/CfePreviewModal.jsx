@@ -61,7 +61,7 @@ export default function CfePreviewModal({ doc, onClose }) {
                     <div className="bg-white p-8 w-full max-w-sm shadow-sm font-mono text-sm border-t-4 border-gray-800 relative print:shadow-none print:max-w-none">
                         
                         <div className="text-center mb-6">
-                            <h2 className="text-xl font-bold mb-1">MACROSOFT S.A.</h2>
+                            <h2 className="text-xl font-bold mb-1">USER S.A.</h2>
                             <p className="text-xs text-gray-500">RUT: 211111110015</p>
                             <p className="text-xs text-gray-500">Bulevar Artigas 1234, Montevideo</p>
                             <div className="mt-4 border-b border-dashed border-gray-300 pb-4">

@@ -6,6 +6,8 @@ const controller = require('../controllers/pricesController');
 router.get('/base', controller.getBasePrices);
 router.post('/base', controller.saveBasePrice);
 router.post('/base/bulk', controller.saveBasePricesBulk);
+router.get('/tiered', controller.getTieredPrices);
+router.post('/tiered/bulk', controller.saveTieredPricesBulk);
 router.post('/calculate', controller.calculatePriceEndpoint);
 
 module.exports = router;
