@@ -11,6 +11,7 @@ import FileControlCard from '../production/components/FileControlCard';
 
 import { socket } from '../../services/socketService';
 import Toast from '../ui/Toast';
+import { printLabelsHelper } from '../../utils/printHelper';
 
 const SmallRollMetrics = ({ roll, metrics }) => {
   if (!roll) return null;
@@ -314,17 +315,24 @@ const FilePrintControl = ({ areaCode }) => {
   const handleFinalizarOrden = async () => {
     if (!selectedOrder || finalizandoOrden) return;
     setFinalizandoOrden(true);
+    const completedId = selectedOrder.id;
+    const nextService = selectedOrder.nextService;
+    
     try {
-      const res = await fileControlService.completarOrden(selectedOrder.id);
+      const res = await fileControlService.completarOrden(completedId);
       if (res.success) {
         // Quitar la orden de la lista inmediatamente sin esperar al socket
-        setOrders(prev => prev.filter(o => o.id !== selectedOrder.id));
+        setOrders(prev => prev.filter(o => o.id !== completedId));
         setSelectedOrder(null);
         setFiles([]);
         setCompletedOrderData({
+          ordenId: completedId,
           destino: res.estadoLogistica || 'LOGÍSTICA',
-          proximoServicio: selectedOrder.nextService
+          proximoServicio: nextService
         });
+        
+        // Auto-imprimir etiquetas
+        handlePrintLabels(completedId);
       } else {
         setToast({ visible: true, message: res.error || 'Error al finalizar la orden', type: 'error' });
       }
@@ -335,19 +343,39 @@ const FilePrintControl = ({ areaCode }) => {
     }
   };
 
-  const handlePrintLabels = async () => {
-    if (!selectedOrder) return;
-    setToast({ visible: true, message: 'Generando etiquetas...', type: 'info' });
+  const handlePrintLabels = async (ordenIdToPrint) => {
+    const id = ordenIdToPrint || selectedOrder?.id;
+    if (!id) return;
+    setToast({ visible: true, message: 'Obteniendo etiquetas...', type: 'info' });
     try {
-      const res = await fileControlService.regenerateLabels(selectedOrder.id);
-      if (res.success) {
-        setToast({ visible: true, message: `✅ Etiquetas generadas: ${res.totalBultos || 'OK'}`, type: 'success' });
+      let data = await fileControlService.getEtiquetas(id);
+      
+      if (!data || !data.etiquetas || data.etiquetas.length === 0) {
+          setToast({ visible: true, message: 'Generando etiquetas por primera vez...', type: 'info' });
+          const regenRes = await fileControlService.regenerateLabels(id);
+          if (regenRes.success) {
+             data = await fileControlService.getEtiquetas(id);
+          } else {
+             setToast({ visible: true, message: `Error al generar: ${regenRes.error}`, type: 'error' });
+             return;
+          }
+      }
+
+      if (data && data.etiquetas && data.etiquetas.length > 0) {
+        printLabelsHelper(null, { id });
+        setToast({ visible: true, message: `Etiquetas listas para imprimir`, type: 'success' });
       } else {
-        setToast({ visible: true, message: `❌ Error: ${res.error || 'No se pudieron generar las etiquetas'}`, type: 'error' });
+        // En caso de que el backend devuelva el array de etiquetas directamente
+        if (Array.isArray(data) && data.length > 0) {
+          printLabelsHelper(null, { id });
+          setToast({ visible: true, message: `Etiquetas listas para imprimir`, type: 'success' });
+        } else {
+          setToast({ visible: true, message: `Error: No se encontraron etiquetas.`, type: 'error' });
+        }
       }
     } catch (e) {
       console.error(e);
-      setToast({ visible: true, message: `❌ Error de conexión: ${e.message}`, type: 'error' });
+      setToast({ visible: true, message: `Error de conexión: ${e.message}`, type: 'error' });
     }
   };
 
@@ -776,15 +804,15 @@ const FilePrintControl = ({ areaCode }) => {
                 </div>
               </div>
 
-              <div className="w-full bg-blue-50 rounded-2xl border-2 border-blue-100 p-4 mb-6">
-                <div className="text-[10px] font-black text-blue-400 uppercase tracking-widest mb-1">PRÓXIMO SERVICIO</div>
-                <div className="text-2xl font-black text-blue-700 leading-tight">
+              <div className="w-full bg-brand-cyan/10 rounded-2xl border-2 border-brand-cyan/20 p-4 mb-6">
+                <div className="text-[10px] font-black text-brand-cyan uppercase tracking-widest mb-1">PRÓXIMO SERVICIO</div>
+                <div className="text-2xl font-black text-brand-cyan leading-tight">
                   {completedOrderData.proximoServicio || '---'}
                 </div>
               </div>
 
               <div className="space-y-3 w-full">
-                <button onClick={() => { setCompletedOrderData(null); handlePrintLabels(); }} className="w-full py-3 rounded-xl bg-brand-cyan text-white font-black text-lg shadow-lg shadow-brand-cyan/30 hover:bg-brand-cyan hover:scale-[1.02] transition-all active:scale-95">
+                <button onClick={() => { const id = completedOrderData?.ordenId; setCompletedOrderData(null); handlePrintLabels(id); }} className="w-full py-3 rounded-xl bg-brand-cyan text-white font-black text-lg shadow-lg shadow-brand-cyan/30 hover:bg-brand-cyan hover:scale-[1.02] transition-all active:scale-95">
                   <i className="fa-solid fa-print mr-2"></i> IMPRIMIR ETIQUETAS
                 </button>
                 <div className="flex gap-2">

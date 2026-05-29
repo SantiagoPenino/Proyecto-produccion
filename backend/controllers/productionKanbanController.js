@@ -20,6 +20,7 @@ exports.getBoard = async (req, res) => {
                     EstadoProceso as processStatus
                 FROM [dbo].[ConfigEquipos] 
                 WHERE AreaID = @Area AND Activo = 1
+                ORDER BY Nombre ASC
             `);
 
         const machines = machinesRes.recordset;

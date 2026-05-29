@@ -349,7 +349,7 @@ export default function AreaView({ areaKey, areaConfig, onSwitchTab }) {
                             <div>
                                 <span className="text-[10px] uppercase font-black text-zinc-400 tracking-wider mb-2 block">Prioridad</span>
                                 <div className="flex flex-wrap gap-2">
-                                    {availablePriorities.filter(p => p !== 'ALL').map(p => {
+                                    {availablePriorities.filter(p => p !== 'ALL' && p.toUpperCase() !== 'ALTA').map(p => {
                                         const isSelected = activeFilters.priorities.includes(p);
                                         const isUrgent = ['Urgente', 'Reposición', 'Falla'].includes(p);
                                         let selectedClass = isUrgent 

@@ -3,10 +3,12 @@ import { Listbox, ListboxButton, ListboxOptions, ListboxOption, Transition } fro
 import { Check, ChevronsUpDown, Layers, X, Plus, List, Loader2 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { ordersService, rollsService } from '../../services/api';
+import { useQueryClient } from '@tanstack/react-query';
 
 const RollAssignmentModal = ({ isOpen, onClose, selectedIds = [], selectedOrders = [], areaCode, onSuccess }) => {
 
     const navigate = useNavigate();
+    const queryClient = useQueryClient();
 
     const [mode, setMode] = useState('new');
     const [rollName, setRollName] = useState('');
@@ -48,6 +50,11 @@ const RollAssignmentModal = ({ isOpen, onClose, selectedIds = [], selectedOrders
                 capacity: 100
             };
             await ordersService.assignRoll(payload);
+            
+            // Invalidar queries para que planeación se recargue inmediatamente
+            queryClient.invalidateQueries(['rollsBoard', areaCode]);
+            queryClient.invalidateQueries(['productionBoard', areaCode]);
+            
             if (onSuccess) onSuccess();
             onClose();
             // Navegar a la tab de planeación del área actual

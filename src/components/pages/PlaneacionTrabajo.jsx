@@ -430,10 +430,42 @@ const PlaneacionTrabajo = ({ AreaID }) => {
     };
 
     const handleToggleMachineStatus = async (rollId, action, destination) => {
+        // Actualización optimista para Play/Pause
+        if (action === 'start' || action === 'pause') {
+            queryClient.cancelQueries({ queryKey: ['productionBoard', areaCode] });
+            flushSync(() => {
+                const oldData = localBoardData;
+                if (!oldData) return;
+                const newData = { ...oldData, machines: oldData.machines.map(m => ({ ...m, rolls: [...m.rolls] })) };
+                
+                newData.machines.forEach(m => {
+                    const r = m.rolls.find(roll => String(roll.id) === String(rollId));
+                    if (r) {
+                        if (action === 'start') {
+                            r.status = 'En maquina';
+                            // Pausar optimísticamente cualquier otro rollo en la misma máquina
+                            m.rolls.forEach(other => {
+                                if (String(other.id) !== String(rollId) && other.status.includes('En maquina')) {
+                                    other.status = 'En cola';
+                                }
+                            });
+                        } else if (action === 'pause') {
+                            r.status = 'En cola';
+                        }
+                    }
+                });
+                
+                setLocalBoardData(newData);
+                queryClient.setQueryData(['productionBoard', areaCode], newData);
+            });
+        }
+
         try {
             await productionService.toggleStatus(rollId, action, destination);
             refreshBoard();
         } catch (error) {
+            // Revertir en caso de error refrescando forzosamente
+            refreshBoard();
             const msg = error.response?.data?.error || error.message || "Error desconocido";
 
             // Si es error de validación (400), usar warn para no alarmar en consola
