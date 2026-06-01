@@ -2,12 +2,18 @@ const sql = require('mssql');
 const fs = require('fs');
 const path = require('path');
 
+require('dotenv').config({ path: path.resolve(__dirname, '.env') });
+
 const config = {
-    user: 'sa', 
-    password: '2441', 
-    server: 'localhost', 
-    database: 'SecureAppDB_Vieja',
-    options: { encrypt: false, trustServerCertificate: true }
+    user: process.env.DB_USER,
+    password: process.env.DB_PASSWORD,
+    server: process.env.DB_SERVER,
+    database: process.env.DB_DATABASE,
+    options: { 
+        encrypt: false, 
+        trustServerCertificate: true,
+        instanceName: process.env.DB_INSTANCE || undefined
+    }
 };
 
 function formatValue(val) {
@@ -114,11 +120,10 @@ async function generateScript() {
             out += `-- ==========================================\n`;
             out += `-- METODOS DE PAGO\n`;
             out += `-- ==========================================\n`;
-            out += `SET IDENTITY_INSERT [MetodosPagos] ON;\n`;
             for(let r of mp.recordset) {
                 out += `INSERT INTO [MetodosPagos] (MPaIdMetodoPago, MPaDescripcionMetodo, MPaActivo) VALUES (${formatValue(r.MPaIdMetodoPago)}, ${formatValue(r.MPaDescripcionMetodo)}, ${formatValue(r.MPaActivo)});\n`;
             }
-            out += `SET IDENTITY_INSERT [MetodosPagos] OFF;\n\n`;
+            out += `\n`;
         }
 
         out += `EXEC sp_msforeachtable 'ALTER TABLE ? WITH CHECK CHECK CONSTRAINT ALL';\nGO\n`;

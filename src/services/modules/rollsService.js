@@ -72,5 +72,14 @@ export const rollsService = {
     downloadZip: async (orderIds) => {
         const response = await api.post('/measurements/download-zip', { orderIds }, { responseType: 'blob' });
         return response.data;
+    },
+    reorderPendingOrders: async (areaId, orderIds) => {
+        const { data } = await api.post('/rolls/reorder-pending', { areaId, orderIds });
+        return data;
+    },
+    reorderRolls: async (areaId, rollIds) => {
+        const { data } = await api.post('/rolls/reorder-rolls', { areaId, rollIds });
+        return data;
     }
 };
+

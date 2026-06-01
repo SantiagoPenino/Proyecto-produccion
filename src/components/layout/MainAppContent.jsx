@@ -81,6 +81,7 @@ const ContabilidadReconciliacionView = lazyWithRetry(() => import('../pages/Cont
 const ContabilidadTesoreriaView    = lazyWithRetry(() => import('../pages/ContabilidadTesoreriaView'));
 const ContabilidadBandejaCFE       = lazyWithRetry(() => import('../pages/ContabilidadBandejaCFE'));
 const CronAdminView                = lazyWithRetry(() => import('../pages/CronAdminView'));
+const CoordinacionView             = lazyWithRetry(() => import('../pages/CoordinacionView'));
 
 // ============================================
 // 1. LUCIDE ICON MAP (override FA icons)
@@ -625,6 +626,7 @@ const MainAppContent = ({ menuItems = [] }) => {
                 <Route path="/contabilidad/tesoreria"         element={<ContabilidadTesoreriaView />} />
                 <Route path="/contabilidad/caja-admin"        element={<CajaTransaccionView isAdminCaja={true} />} />
                 <Route path="/admin/cron"                     element={<CronAdminView />} />
+                <Route path="/coordinacion"                   element={<CoordinacionView />} />
                 <Route path="/*" element={<DynamicRouter menuItems={menuItems} />} />
             </Routes>
         </Suspense>

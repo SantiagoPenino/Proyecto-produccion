@@ -56,7 +56,8 @@ const getOrdenes = async (req, res) => {
                         (SELECT COUNT(*) FROM ArchivosOrden AO WITH(NOLOCK) WHERE AO.OrdenID = O.OrdenID AND AO.EstadoArchivo IN('FALLA', 'Falla')) as CantidadFallas,
                             (SELECT COUNT(*) FROM ArchivosOrden AO WITH(NOLOCK) WHERE AO.OrdenID = O.OrdenID AND AO.EstadoArchivo = 'CANCELADO') as CantidadCancelados,
                                 (CASE WHEN(SELECT COUNT(*) FROM ArchivosOrden AO WITH(NOLOCK) WHERE AO.OrdenID = O.OrdenID AND AO.EstadoArchivo = 'Pendiente') = 0 THEN 1 ELSE 0 END) as Controlada,
-                                O.Magnitud
+                                O.Magnitud,
+                                O.EstadoenArea
             FROM Ordenes O WITH(NOLOCK)
         WHERE
             (@RolloID = '' OR CAST(O.RolloID AS NVARCHAR(50)) = @RolloID OR @RolloID IS NULL)
@@ -78,12 +79,19 @@ AND(
                 AND O.Estado != 'CANCELADO'
 AND(
     @IsLabelMode = 1
-                    OR(
-        LTRIM(RTRIM(O.Estado)) != 'PRONTO' 
-                        AND(
-            EXISTS(SELECT 1 FROM ArchivosOrden AO WITH(NOLOCK) WHERE AO.OrdenID = O.OrdenID AND(AO.EstadoArchivo = 'Pendiente' OR AO.EstadoArchivo IS NULL))
-                            OR 
-                            NOT EXISTS(SELECT 1 FROM ArchivosOrden AO WITH(NOLOCK) WHERE AO.OrdenID = O.OrdenID)
+    OR(
+        -- En la vista de CONTROL: la orden desaparece solo cuando fue finalizada (Pronto/Retenido),
+        -- no antes. El operario debe poder ver la orden aunque todos los archivos estén OK.
+        (${isControlView ? 1 : 0} = 1 AND O.Estado NOT IN ('Pronto', 'PRONTO', 'Retenido', 'RETENIDO'))
+        OR
+        -- En otras vistas: comportamiento original (ocultar si no hay archivos pendientes)
+        (${isControlView ? 0 : 1} = 1 AND
+            LTRIM(RTRIM(O.Estado)) != 'PRONTO' 
+            AND(
+                EXISTS(SELECT 1 FROM ArchivosOrden AO WITH(NOLOCK) WHERE AO.OrdenID = O.OrdenID AND(AO.EstadoArchivo = 'Pendiente' OR AO.EstadoArchivo IS NULL))
+                OR 
+                NOT EXISTS(SELECT 1 FROM ArchivosOrden AO WITH(NOLOCK) WHERE AO.OrdenID = O.OrdenID)
+            )
         )
     )
 )
@@ -645,7 +653,7 @@ const regenerateEtiquetas = async (req, res) => {
 
         if (!result.success) {
             logger.warn(`[regenerateEtiquetas] Falló validación para Orden ${ordenId}: ${result.error}`);
-            return res.status(400).json({ error: result.error }); // Return specific validation error
+            return res.json({ success: false, error: result.error }); // Changed to 200 so axios doesn't throw
         }
 
         res.json({
@@ -1160,20 +1168,6 @@ const getRelatedOrders = async (req, res) => {
     }
 };
 
-module.exports = {
-    getOrdenes,
-    getArchivosPorOrden,
-    viewDriveFile,
-    postControlArchivo,
-    getTiposFalla,
-    regenerateEtiquetas,
-    updateFileCopyCount,
-    getCompletedOrdersForReplacement,
-    createCustomerReplacementOrder,
-    getRelatedOrders,
-    completarOrden
-};
-
 /**
  * Cierre manual de orden: llamado cuando el operador pulsa "Finalizar Orden".
  * Hace exactamente lo mismo que antes ocurría automáticamente al contar la última copia.
@@ -1252,3 +1246,18 @@ async function completarOrden(req, res) {
         res.status(500).json({ error: err.message });
     }
 }
+
+module.exports = {
+    getOrdenes,
+    getArchivosPorOrden,
+    viewDriveFile,
+    postControlArchivo,
+    getTiposFalla,
+    regenerateEtiquetas,
+    updateFileCopyCount,
+    getCompletedOrdersForReplacement,
+    createCustomerReplacementOrder,
+    getRelatedOrders,
+    completarOrden
+};
+

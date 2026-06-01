@@ -27,7 +27,8 @@ exports.getBoardData = async (req, res) => {
                 SELECT r.*, u.Nombre AS CreadorNombre, u.IdUsuario AS CreadorId
                 FROM dbo.Rollos r
                 LEFT JOIN dbo.Usuarios u ON r.UsuarioID = u.IdUsuario
-                WHERE r.AreaID = @AreaID AND r.Estado NOT IN ('Cerrado', 'Cancelado')
+                WHERE r.AreaID = @AreaID
+                  AND r.Estado IN ('Abierto', 'En Cola', 'En maquina', 'Producción', 'Pausado')
             `);
 
         // B. TRAER ÓRDENES (Consulta Completa con Conteo de Archivos)
@@ -61,8 +62,15 @@ exports.getBoardData = async (req, res) => {
                 ORDER BY ISNULL(o.Secuencia, 999999), o.OrdenID ASC
             `);
 
-        // Mapeo de Rollos
-        const rolls = rollsRes.recordset.map(r => ({
+        // Mapeo de Rollos (ordenados por Secuencia DESC si existe, sino por FechaCreacion)
+        const rolls = rollsRes.recordset
+            .sort((a, b) => {
+                const sa = a.Secuencia ?? 0;
+                const sb = b.Secuencia ?? 0;
+                if (sb !== sa) return sb - sa;
+                return new Date(a.FechaCreacion || 0) - new Date(b.FechaCreacion || 0);
+            })
+            .map(r => ({
             id: r.RolloID,
             name: `${r.Nombre || `Lote ${r.RolloID}`}`,
             rawName: r.Nombre,
@@ -233,8 +241,51 @@ exports.moveOrder = async (req, res) => {
                             return res.status(400).json({ error: `⛔ El lote de destino ya contiene órdenes con material '${existingOrder.Material}'. No puedes mezclar materiales en DTF.` });
                         }
                     }
+                } // fin if (isDTF)
+
+                // VALIDACION SB
+                const isSB = orderData.recordset.some(o => o.AreaID === 'SB');
+
+                if (isSB && targetRollId) {
+                    const PAPEL = 'impresión papel';
+
+                    // ¿Las órdenes entrantes son de papel?
+                    const incomingEsPapel = orderData.recordset.some(
+                        o => (o.Variante || '').trim().toLowerCase() === PAPEL
+                    );
+                    const incomingEsOtro = orderData.recordset.some(
+                        o => (o.Variante || '').trim().toLowerCase() !== PAPEL
+                    );
+
+                    // No se puede mover un mix papel+otro en el mismo movimiento
+                    if (incomingEsPapel && incomingEsOtro) {
+                        return res.status(400).json({
+                            error: '⛔ En SB no se pueden mezclar órdenes de "Impresión Papel" con otras variantes en el mismo lote.'
+                        });
+                    }
+
+                    // Verificar qué hay ya en el lote de destino
+                    const existingSB = await pool.request()
+                        .input('RID_SB', sql.VarChar(20), String(targetRollId))
+                        .query(`SELECT TOP 1 Variante FROM dbo.Ordenes WHERE RolloID = @RID_SB`);
+
+                    if (existingSB.recordset.length > 0) {
+                        const existingVariante = (existingSB.recordset[0].Variante || '').trim().toLowerCase();
+                        const existingEsPapel = existingVariante === PAPEL;
+
+                        if (existingEsPapel && !incomingEsPapel) {
+                            return res.status(400).json({
+                                error: '⛔ El lote ya contiene órdenes de "Impresión Papel". No se pueden agregar otras variantes.'
+                            });
+                        }
+                        if (!existingEsPapel && incomingEsPapel) {
+                            return res.status(400).json({
+                                error: '⛔ El lote ya contiene órdenes de otras variantes. No se puede agregar "Impresión Papel".'
+                            });
+                        }
+                    }
                 }
-            }
+            } // fin if (targetRollId)
 
             // 2. Transacción para mover las órdenes
             const transaction = new sql.Transaction(pool);
@@ -875,15 +926,15 @@ exports.getRolloMetrics = async (req, res) => {
                     SUM(CASE WHEN AO.EstadoArchivo IN ('FALLA', 'Falla') THEN 1 ELSE 0 END) as FailFiles,
                     
                     -- Suma de Metros PLANIFICADOS (Total del Lote sumando magnitudes de ordenes)
-                    SUM(TRY_CAST(O.Magnitud AS DECIMAL(10,2))) as MetrosTotalesLote,
+                    SUM(DISTINCT TRY_CAST(O.Magnitud AS DECIMAL(10,2))) as MetrosTotalesLote,
                     
-                    -- Suma de Metros REALES YA PRODUCIDOS (Status OK)
+                    -- Suma de Metros YA CONTROLADOS (revisados: OK, Falla o Cancelado)
                     (
                         SELECT SUM(ISNULL(AO2.Metros, 0) * ISNULL(AO2.Copias, 1))
                         FROM dbo.ArchivosOrden AO2 WITH (NOLOCK)
                         INNER JOIN dbo.Ordenes O2 WITH (NOLOCK) ON AO2.OrdenID = O2.OrdenID
                         WHERE CAST(O2.RolloID AS VARCHAR(50)) = CAST(@RID AS VARCHAR(50)) 
-                        AND AO2.EstadoArchivo IN ('OK', 'Finalizado')
+                        AND AO2.EstadoArchivo IN ('OK', 'Finalizado', 'FALLA', 'Falla', 'CANCELADO', 'Cancelado')
                     ) as MetrosProducidos
 
                 FROM dbo.Ordenes O WITH (NOLOCK)
@@ -1076,6 +1127,15 @@ exports.getRollosActivos = async (req, res) => {
                 (${isControlView ? 1 : 0} = 1 AND r.Estado IN ('Finalizado', 'En maquina', 'Produccion', 'Imprimiendo'))
                 OR
                 (${isControlView ? 0 : 1} = 1 AND r.Estado NOT IN ('Cerrado', 'Cancelado')) 
+            )
+            AND (
+                ${isControlView ? 1 : 0} = 0 
+                OR EXISTS (
+                    SELECT 1 FROM dbo.Ordenes O WITH(NOLOCK)
+                    JOIN dbo.ArchivosOrden AO WITH(NOLOCK) ON O.OrdenID = AO.OrdenID
+                    WHERE O.RolloID = r.RolloID
+                    AND (AO.EstadoArchivo = 'Pendiente' OR AO.EstadoArchivo IS NULL)
+                )
             )
             ORDER BY r.FechaCreacion DESC
         `;
@@ -1400,3 +1460,86 @@ exports.magicRollAssignment = async (req, res) => {
         res.status(500).json({ error: err.message });
     }
 };
+
+// ==========================================
+// COORDINACION: REORDENAR ÓRDENES PENDIENTES
+// ==========================================
+exports.reorderPendingOrders = async (req, res) => {
+    const { areaId, orderIds } = req.body;
+    if (!areaId || !Array.isArray(orderIds) || orderIds.length === 0)
+        return res.status(400).json({ error: 'areaId y orderIds son requeridos.' });
+
+    try {
+        const pool = await getPool();
+        const n = orderIds.length;
+        const transaction = new sql.Transaction(pool);
+        await transaction.begin();
+        try {
+            for (let i = 0; i < n; i++) {
+                // Mayor índice = más al tope = Secuencia más alta
+                const secuencia = n - i;
+                await new sql.Request(transaction)
+                    .input('OID', sql.Int, orderIds[i])
+                    .input('SEQ', sql.Int, secuencia)
+                    .input('AREA', sql.VarChar(20), areaId)
+                    .query(`UPDATE dbo.Ordenes SET Secuencia = @SEQ
+                            WHERE OrdenID = @OID AND AreaID = @AREA AND Estado = 'Pendiente'`);
+            }
+            await transaction.commit();
+            res.json({ success: true });
+        } catch (inner) {
+            await transaction.rollback();
+            throw inner;
+        }
+    } catch (err) {
+        logger.error('reorderPendingOrders error:', err);
+        res.status(500).json({ error: err.message });
+    }
+};
+
+// ==========================================
+// COORDINACION: REORDENAR LOTES
+// ==========================================
+exports.reorderRolls = async (req, res) => {
+    const { areaId, rollIds } = req.body;
+    if (!areaId || !Array.isArray(rollIds) || rollIds.length === 0)
+        return res.status(400).json({ error: 'areaId y rollIds son requeridos.' });
+
+    try {
+        const pool = await getPool();
+
+        // Agregar columna Secuencia a Rollos si no existe
+        await pool.request().query(`
+            IF NOT EXISTS (
+                SELECT 1 FROM sys.columns
+                WHERE Name = 'Secuencia' AND Object_ID = Object_ID('dbo.Rollos')
+            )
+            ALTER TABLE dbo.Rollos ADD Secuencia INT NULL;
+        `);
+
+        const n = rollIds.length;
+        const transaction = new sql.Transaction(pool);
+        await transaction.begin();
+        try {
+            for (let i = 0; i < n; i++) {
+                const secuencia = n - i; // primer elemento = más alto
+                await new sql.Request(transaction)
+                    .input('RID', sql.Int, rollIds[i])
+                    .input('SEQ', sql.Int, secuencia)
+                    .input('AREA', sql.VarChar(20), areaId)
+                    .query(`UPDATE dbo.Rollos SET Secuencia = @SEQ
+                            WHERE RolloID = @RID AND AreaID = @AREA
+                            AND Estado IN ('Abierto', 'En Cola')`);
+            }
+            await transaction.commit();
+            res.json({ success: true });
+        } catch (inner) {
+            await transaction.rollback();
+            throw inner;
+        }
+    } catch (err) {
+        logger.error('reorderRolls error:', err);
+        res.status(500).json({ error: err.message });
+    }
+};
+

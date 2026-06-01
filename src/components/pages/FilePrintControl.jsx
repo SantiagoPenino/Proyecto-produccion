@@ -141,6 +141,8 @@ const FilePrintControl = ({ areaCode }) => {
           client: o.Cliente,
           material: o.Material,
           status: o.Estado,
+          statusArea: o.EstadoenArea,
+          controlled: o.Controlada === 1,
           sequence: o.Secuencia || 0,
           failures: o.CantidadFallas || 0,
           hasLabels: o.CantidadEtiquetas || 0,
@@ -296,6 +298,29 @@ const FilePrintControl = ({ areaCode }) => {
     if (selectedOrder) {
       fileControlService.getArchivosPorOrden(selectedOrder.id).then(setFiles);
       fileControlService.getPedidoMetrics(selectedOrder.code || selectedOrder.id).then(setPedidoMetrics);
+    }
+    // Refrescar métricas del lote para actualizar el progreso en la sidebar
+    if (activeRoll?.id) {
+      fileControlService.getRolloMetrics(activeRoll.id).then(setActiveRollMetrics).catch(console.error);
+      // Refrescar lista de órdenes para actualizar el flag "Controlada" (check verde)
+      const rId = activeRoll.id === 'todo' ? '' : activeRoll.id;
+      fileControlService.getOrdenes('', rId, areaCode || 'DTF').then(data => {
+        const normalized = (data || []).map(o => ({
+          id: o.OrdenID,
+          code: o.CodigoOrden,
+          client: o.Cliente,
+          material: o.Material,
+          status: o.Estado,
+          statusArea: o.EstadoenArea,
+          controlled: o.Controlada === 1,
+          sequence: o.Secuencia || 0,
+          failures: o.CantidadFallas || 0,
+          hasLabels: o.CantidadEtiquetas || 0,
+          nextService: o.ProximoServicio,
+          meters: parseFloat(o.Magnitud) || 0
+        }));
+        setOrders(normalized);
+      }).catch(console.error);
     }
   };
 

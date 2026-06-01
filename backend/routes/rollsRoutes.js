@@ -25,4 +25,8 @@ router.get('/details/:rolloId', controller.getRollDetails);
 // Magic Route
 router.post('/magic', controller.magicRollAssignment);
 
-module.exports = router;
+// Coordinación
+router.post('/reorder-pending', verifyToken, controller.reorderPendingOrders);
+router.post('/reorder-rolls',   verifyToken, controller.reorderRolls);
+
+module.exports = router;

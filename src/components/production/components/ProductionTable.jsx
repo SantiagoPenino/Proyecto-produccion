@@ -76,7 +76,10 @@ export default function ProductionTable({ rowData = [], onRowSelected, selectedR
         if (params.value === 'Urgente') {
             return <span className="text-xs font-bold text-brand-magenta uppercase tracking-wide">URGENTE</span>;
         }
-        return <span className="text-xs text-zinc-500 font-medium">Normal</span>;
+        if (params.value === 'Falla' || params.value === 'FALLA') {
+            return <span className="text-xs font-bold text-red-600 uppercase tracking-wide">FALLA</span>;
+        }
+        return <span className="text-xs text-zinc-500 font-medium">{params.value || 'Normal'}</span>;
     };
 
     const BatchRenderer = (params) => {
@@ -361,9 +364,10 @@ export default function ProductionTable({ rowData = [], onRowSelected, selectedR
                                         onClick={() => row.toggleSelected()}
                                         className={`
                                             cursor-pointer transition-all border-b border-zinc-100 group row-appear
-                                            ${isSelected 
-                                                ? 'bg-custom-cyan/40 hover:bg-custom-cyan/50' 
-                                                : 'bg-white hover:bg-zinc-50'}
+                                            ${row.original?.priority === 'Falla' || row.original?.priority === 'FALLA'
+                                                ? (isSelected ? 'bg-red-100 hover:bg-red-200' : 'bg-red-50 hover:bg-red-100 text-red-600')
+                                                : (isSelected ? 'bg-custom-cyan/40 hover:bg-custom-cyan/50' : 'bg-white hover:bg-zinc-50')
+                                            }
                                         `}
                                         style={{ animationDelay: `${Math.min(rowIndex, 20) * 30}ms` }}
                                     >

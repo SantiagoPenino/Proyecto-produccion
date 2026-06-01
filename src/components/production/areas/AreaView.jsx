@@ -274,6 +274,10 @@ export default function AreaView({ areaKey, areaConfig, onSwitchTab }) {
     // 5. FILTRADO
     const filteredOrders = useMemo(() => {
         let result = dbOrders;
+        
+        // Todas las fallas siempre van a saltar, sin importar el filtro
+        const allFallas = dbOrders.filter(o => (o.priority || '').toLowerCase() === 'falla');
+
         if (sidebarFilter !== 'ALL') {
             let filterField = sidebarMode === 'rolls' ? 'rollId' : 'printer';
             if (areaKey === 'BORD' && sidebarMode === 'rolls') filterField = 'matrixStatus';
@@ -291,7 +295,22 @@ export default function AreaView({ areaKey, areaConfig, onSwitchTab }) {
         if (activeFilters.priorities && activeFilters.priorities.length > 0) {
             result = result.filter(o => activeFilters.priorities.some(p => p.toLowerCase() === (o.priority || 'Normal').toLowerCase()));
         }
-        return result;
+        
+        // Quitar las fallas del resultado filtrado (para no duplicarlas)
+        const resultWithoutFallas = result.filter(o => (o.priority || '').toLowerCase() !== 'falla');
+
+        // Ordenar por defecto: Las de estado "Pendiente" primero
+        resultWithoutFallas.sort((a, b) => {
+            const isAPendiente = (a.status || 'Pendiente').toLowerCase() === 'pendiente';
+            const isBPendiente = (b.status || 'Pendiente').toLowerCase() === 'pendiente';
+            
+            if (isAPendiente && !isBPendiente) return -1;
+            if (!isAPendiente && isBPendiente) return 1;
+            return 0; // Mantener el orden original para el resto
+        });
+
+        // Retornamos las Fallas primero, y luego el resto de los resultados filtrados
+        return [...allFallas, ...resultWithoutFallas];
     }, [dbOrders, sidebarFilter, sidebarMode, clientFilter, activeFilters, areaKey]);
 
     const renderSidebar = () => null;
@@ -422,8 +441,34 @@ export default function AreaView({ areaKey, areaConfig, onSwitchTab }) {
                 <button
                     disabled={selectedIds.length === 0}
                     onClick={() => {
+                        const selectedOrdersList = dbOrders.filter(o => selectedIds.includes(o.id));
+                        
+                        // Validación de Estado Pendiente (Aplica a todas las áreas)
+                        const hasNonPending = selectedOrdersList.some(o => (o.status || 'Pendiente').toLowerCase() !== 'pendiente');
+                        if (hasNonPending) {
+                            Swal.fire({
+                                title: 'Error!',
+                                text: 'Solo se pueden asignar a un lote las órdenes que tengan estado "Pendiente".',
+                                iconHtml: '<svg xmlns="http://www.w3.org/2000/svg" width="60" height="60" viewBox="0 0 24 24" fill="none" stroke="#BD0C7E" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="m4.9 4.9 14.2 14.2"/></svg>',
+                                customClass: { 
+                                    popup: '!p-0 overflow-hidden rounded-xl',
+                                    icon: 'border-none !mt-5 !mb-2',
+                                    title: '!pt-0',
+                                    htmlContainer: 'mb-5 px-6',
+                                    actions: '!w-full !m-0',
+                                    confirmButton: '!w-full !m-0 !rounded-none py-4 text-lg font-bold'
+                                },
+                                background: '#f4f4f5',
+                                color: '#000000',
+                                confirmButtonColor: '#BD0C7E',
+                                confirmButtonText: 'Aceptar'
+                            }).then(() => {
+                                setSelectedIds([]);
+                            });
+                            return;
+                        }
+
                         if (areaKey === 'DF' || areaKey === 'DTF') {
-                            const selectedOrdersList = dbOrders.filter(o => selectedIds.includes(o.id));
                             const variantSet = new Set();
                             const materialSet = new Set();
                             

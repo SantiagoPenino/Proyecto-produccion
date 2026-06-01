@@ -131,7 +131,17 @@ exports.getOrdersByArea = async (req, res) => {
             request.input('q', sql.NVarChar(100), `%${q}%`);
         }
 
-        query += ` ORDER BY o.Prioridad DESC, o.FechaIngreso ASC`;
+        query += ` ORDER BY 
+            CASE o.Prioridad 
+                WHEN 'Falla'      THEN 1 
+                WHEN 'Urgente'    THEN 2 
+                WHEN 'Normal'     THEN 3 
+                WHEN 'Reposición' THEN 4 
+                ELSE 5 
+            END ASC,
+            ISNULL(o.Secuencia, 0) DESC,
+            o.FechaIngreso ASC`;
+
 
         const result = await request.query(query);
 

@@ -1,4 +1,5 @@
 import React from 'react';
+import { CheckCircle, ScanSearch, Clock, AlertTriangle, Circle } from 'lucide-react';
 
 const OrderCard = ({ order, onViewDetails, isSelected, onToggleSelect, minimal = false }) => {
     if (!order) return null;
@@ -17,16 +18,21 @@ const OrderCard = ({ order, onViewDetails, isSelected, onToggleSelect, minimal =
         // Status Icon Logic
         const getStatusIcon = () => {
             const s = (order.status || '').toUpperCase().trim();
-            if (s === 'FINALIZADO' || s === 'PRONTO SECTOR' || s === 'COMPLETO')
-                return <i className="fa-solid fa-circle-check text-emerald-500 text-lg"></i>;
-            if (s === 'EN PROCESO' || s.includes('IMPRIMIENDO') || s === 'PRODUCCION')
-                return <i className="fa-regular fa-clock text-brand-cyan animate-pulse text-lg"></i>; // Clock requested
-            if (s.includes('CONTROL') || s.includes('CALIDAD'))
-                return <i className="fa-solid fa-check-double text-purple-500 text-lg"></i>;
-            if (s === 'FALLA')
-                return <i className="fa-solid fa-triangle-exclamation text-red-500 text-lg"></i>; // Red Triangle for fail status
+            const sa = (order.statusArea || '').toUpperCase().trim();
 
-            return <i className="fa-regular fa-circle text-zinc-300 text-lg"></i>;
+            // Todos los archivos controlados → check (listo para finalizar)
+            if (order.controlled)
+                return <span className="inline-flex rounded-full bg-emerald-500 p-[3px]"><CheckCircle size={14} className="text-white" strokeWidth={2.5} /></span>;
+            if (s === 'FINALIZADO' || s === 'PRONTO SECTOR' || s === 'COMPLETO')
+                return <CheckCircle size={18} className="text-brand-cyan" />;
+            if (sa.includes('CONTROL') || sa.includes('CALIDAD') || s.includes('CONTROL') || s.includes('CALIDAD'))
+                return <ScanSearch size={18} className="text-brand-cyan" />;
+            if (s === 'EN PROCESO' || s.includes('IMPRIMIENDO') || s === 'PRODUCCION')
+                return <Clock size={18} className="text-brand-cyan animate-pulse" />;
+            if (s === 'FALLA')
+                return <span className="inline-flex rounded-full bg-red-500 p-[3px]"><AlertTriangle size={14} className="text-white" strokeWidth={2.5} /></span>;
+
+            return <Circle size={18} className="text-brand-cyan opacity-30" />;
         };
 
         return (
