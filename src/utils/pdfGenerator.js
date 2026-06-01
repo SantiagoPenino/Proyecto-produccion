@@ -162,12 +162,25 @@ export const generarPdfFacturaDGI = async (doc, detalles) => {
     pdf.text(doc.DocPagado ? "Contado" : "Crédito", rightX + boxW * 0.83, 37, { align: 'center' });
 
     // Caja 3: RUC COMPRADOR
+    // Los e-Tickets son siempre B2C → CONSUMIDOR FINAL (nunca mostrar RUT/CI del comprador)
+    // Solo las e-Facturas (B2B) deben mostrar el RUT real del comprador
+    const esETicketDoc = (() => {
+        const tipo = String(doc.DocTipo || '').toUpperCase();
+        // Detectar por tipo interno (07, 08, 10, 11) o por descripción que contenga TICKET
+        return tipo.includes('TICKET') ||
+               tipo === '07' || tipo === '08' || tipo === '10' || tipo === '11' ||
+               tipo === '101' || tipo === '102' || tipo === '103';
+    })();
+
     let rucComprador = "CONSUMIDOR FINAL";
-    if (String(doc.DocTipo || "").includes("TICKET")) {
-        rucComprador = doc.DocCliDocumento ? String(doc.DocCliDocumento) : "CONSUMIDOR FINAL";
-    } else {
-        rucComprador = doc.DocCliDocumento ? String(doc.DocCliDocumento) : (doc.CliRUT ? String(doc.CliRUT) : (doc.StringIDCliente ? String(doc.StringIDCliente).trim() : "CONSUMIDOR FINAL"));
+    if (!esETicketDoc) {
+        // e-Factura: mostrar RUT real del comprador
+        rucComprador = doc.DocCliDocumento
+            ? String(doc.DocCliDocumento)
+            : (doc.CliRUT ? String(doc.CliRUT) : (doc.StringIDCliente ? String(doc.StringIDCliente).trim() : "CONSUMIDOR FINAL"));
     }
+    // Para e-Ticket: siempre "CONSUMIDOR FINAL" sin importar si hay un documento cargado
+
 
     pdf.rect(rightX, 41, boxW, 12);
     pdf.setFontSize(8);
@@ -530,6 +543,21 @@ export const generarPdfFacturaDGI = async (doc, detalles) => {
         pdf.text(`Unidades:        ${fmtNum(doc.DocTotalUnidades)}`, 15, adY);
     }
 
+    // Marca de agua si no está aceptado por DGI
+    if (doc.CfeEstado !== 'ACEPTADO_DGI') {
+        pdf.saveGraphicsState();
+        pdf.setGState(new pdf.GState({opacity: 0.15}));
+        pdf.setTextColor(100, 100, 100);
+        pdf.setFontSize(70);
+        pdf.setFont('helvetica', 'bold');
+        pdf.text("BORRADOR", 105, 160, { align: 'center', angle: 45 });
+        pdf.restoreGraphicsState();
+        // Reset defaults just in case
+        pdf.setTextColor(0, 0, 0);
+        pdf.setFontSize(8);
+        pdf.setFont('helvetica', 'normal');
+    }
+
     // Visualizar en nueva pestaña
     const safeNum = doc.DocNumero || 'Borrador';
     pdf.setProperties({
@@ -595,7 +623,8 @@ export const generarPdfEstadoCuenta = (cliente, cuentas, secciones, planes, desd
         }
 
         const sec = secciones[c.CueIdCuenta];
-        const movs = sec?.movs || [];
+        const rawMovs = sec?.movs || [];
+        const movs = rawMovs.filter(m => m.visualIsVisible !== false);
         const arrastre = Number(sec?.saldoArrastre ?? 0);
         const saldo = Number(c.CueSaldoActual || 0);
 
@@ -642,7 +671,7 @@ export const generarPdfEstadoCuenta = (cliente, cuentas, secciones, planes, desd
         let runningSaldo = arrastre;
 
         const tableBody = movsAsc.map(m => {
-            const importe = Number(m.MovImporte);
+            const importe = m.visualImporte !== undefined ? Number(m.visualImporte) : Number(m.MovImporte);
 
             // Debe (debits / charges) are negative importes
             const debeVal = importe < 0 ? Math.abs(importe) : 0;

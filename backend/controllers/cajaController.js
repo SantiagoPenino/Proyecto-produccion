@@ -478,7 +478,6 @@ const registrarEgreso = async (req, res) => {
               UPDATE SecuenciaDocumentos
               SET SecUltimoNumero = SecUltimoNumero + 1
               OUTPUT 
-                ISNULL(INSERTED.SecPrefijo,'') + 
                 RIGHT(REPLICATE('0', INSERTED.SecDigitos) + CAST(INSERTED.SecUltimoNumero AS VARCHAR(10)), INSERTED.SecDigitos) AS NumeroFormato
               WHERE SecIdSecuencia = @SecId;
             END
@@ -728,7 +727,6 @@ const registrarIngresoGenerico = async (req, res) => {
               UPDATE SecuenciaDocumentos
               SET SecUltimoNumero = SecUltimoNumero + 1
               OUTPUT 
-                ISNULL(INSERTED.SecPrefijo,'') + 
                 RIGHT(REPLICATE('0', INSERTED.SecDigitos) + CAST(INSERTED.SecUltimoNumero AS VARCHAR(10)), INSERTED.SecDigitos) AS NumeroFormato
               WHERE SecIdSecuencia = @SecId;
             END
@@ -1267,7 +1265,6 @@ const procesarPagoDeuda = async (req, res) => {
             UPDATE dbo.SecuenciaDocumentos
             SET SecUltimoNumero = SecUltimoNumero + 1
             OUTPUT
-              ISNULL(INSERTED.SecPrefijo,'') +
               RIGHT(REPLICATE('0', INSERTED.SecDigitos) + CAST(INSERTED.SecUltimoNumero AS VARCHAR(10)), INSERTED.SecDigitos) AS NumeroFormato
             WHERE SecIdSecuencia = @SecId
           `);
@@ -1341,7 +1338,7 @@ const procesarPagoDeuda = async (req, res) => {
                       @Tot, 0, 0, @Tot, 
                       'COBRADO', 
                       CASE 
-                        WHEN @Tipo LIKE '%Pedido%' OR @Tipo LIKE '%PEDIDO%' OR @Tipo = 'PC' OR @Tipo = 'PedidoCaja' THEN 'PENDIENTE'
+                        WHEN @Tipo LIKE '%Pedido%' OR @Tipo LIKE '%PEDIDO%' OR @Tipo = 'PC' OR @Tipo = 'PedidoCaja' THEN 'BORRADOR'
                         WHEN @codigoEfact IS NULL OR @codigoEfact = 0 THEN NULL 
                         ELSE 'PENDIENTE' 
                       END, 
@@ -1514,11 +1511,9 @@ const procesarPagoDeuda = async (req, res) => {
 const generarNotaCredito = async (req, res) => {
   const usuarioId = req.user?.id || 70;
   try {
-    const { docIdOrigen, monto, motivo, clienteId, cuentaId, monedaId } = req.body;
+    const { docIdOrigen, monto, motivo, clienteId, cuentaId, monedaId, Lineas, Totales } = req.body;
     if (!docIdOrigen || !clienteId || !cuentaId)
       return res.status(400).json({ error: 'Faltan parámetros: docIdOrigen, clienteId, cuentaId' });
-    let montoNum = Number(monto);
-    if (montoNum <= 0) return res.status(400).json({ error: 'El monto debe ser mayor a 0' });
 
     const pool = await getPool();
     const transaction = pool.transaction();
@@ -1531,8 +1526,16 @@ const generarNotaCredito = async (req, res) => {
       if (!docR.recordset.length) throw new Error('Documento origen no encontrado');
       const docOrigen = docR.recordset[0];
 
-      // La NC debe ser igual al documento original con las mismas líneas y totales
-      montoNum = Number(docOrigen.DocTotal) || 0;
+      // Calcular monto de la Nota de Crédito
+      let montoNum = Totales ? Number(Totales.total) : Number(monto);
+      if (isNaN(montoNum) || montoNum <= 0) {
+        // Fallback si no viene monto ni Totales
+        montoNum = Number(docOrigen.DocTotal) || 0;
+      }
+
+      if (montoNum > Number(docOrigen.DocTotal)) {
+        throw new Error(`El total de la Nota de Crédito (${montoNum}) no puede superar al total del documento original (${docOrigen.DocTotal})`);
+      }
 
       // '10' = E-Ticket Nota De Credito, '04' = E-Factura Nota De Credito
       const esETicket = !docOrigen.DocTipo?.toUpperCase().includes('FACTURA');
@@ -1540,7 +1543,7 @@ const generarNotaCredito = async (req, res) => {
 
       const seqR = await new sql.Request(transaction)
         .input('CodDoc', sql.VarChar(10), codNC)
-        .query(`SELECT s.SecIdSecuencia, s.SecPrefijo, s.SecDigitos, c.Detalle
+        .query(`SELECT s.SecIdSecuencia, s.SecPrefijo, s.SecSerie, s.SecDigitos, c.Detalle
                 FROM Config_TiposDocumento c
                 JOIN SecuenciaDocumentos s ON c.SecIdSecuencia = s.SecIdSecuencia
                 WHERE c.CodDocumento = @CodDoc AND s.SecActivo = 1`);
@@ -1550,63 +1553,124 @@ const generarNotaCredito = async (req, res) => {
       const numR = await new sql.Request(transaction)
         .input('SecId', sql.Int, seq.SecIdSecuencia)
         .query(`UPDATE SecuenciaDocumentos SET SecUltimoNumero = SecUltimoNumero + 1
-                OUTPUT ISNULL(INSERTED.SecPrefijo,'') + RIGHT(REPLICATE('0', INSERTED.SecDigitos) + CAST(INSERTED.SecUltimoNumero AS VARCHAR(10)), INSERTED.SecDigitos) AS NumeroFormato
+                OUTPUT INSERTED.SecSerie AS Serie,
+                       RIGHT(REPLICATE('0', INSERTED.SecDigitos) + CAST(INSERTED.SecUltimoNumero AS VARCHAR(10)), INSERTED.SecDigitos) AS NumeroSolo
                 WHERE SecIdSecuencia = @SecId`);
-      const ncNumero = numR.recordset[0].NumeroFormato;
-      const ncTipo   = seq.Detalle?.trim() || 'Nota de Credito Admin';
+      const ncSerie  = numR.recordset[0].Serie || seq.SecSerie || 'NC';
+      const ncNumero = numR.recordset[0].NumeroSolo;
+      const ncTipo   = (seq.Detalle?.trim() || 'Nota de Credito').substring(0, 20);
       const monId    = parseInt(monedaId) || docOrigen.MonIdMoneda || 1;
       const cueId    = parseInt(cuentaId) || docOrigen.CueIdCuenta;
+
+      // ─── Determinar si es Consumidor Final genérico (sin cuenta corriente) ───
+      const CONSUMIDOR_FINAL_ID = 2089;
+      const cliIdNum = parseInt(clienteId) || docOrigen.CliIdCliente;
+      const esConsumidorFinalGenerico = cliIdNum === CONSUMIDOR_FINAL_ID;
+
+      // Buscar la cuenta corriente real del cliente para la moneda correspondiente
+      const tipoCtaReal = monId === 2 ? 'DINERO_USD' : 'DINERO_UYU';
+      let cueIdReal = null;
+      if (!esConsumidorFinalGenerico) {
+        const ctaR = await new sql.Request(transaction)
+          .input('Cli', sql.Int, cliIdNum)
+          .input('Tipo', sql.VarChar(20), tipoCtaReal)
+          .query(`SELECT TOP 1 CueIdCuenta FROM dbo.CuentasCliente WHERE CliIdCliente = @Cli AND CueTipo = @Tipo AND CueActiva = 1`);
+        cueIdReal = ctaR.recordset[0]?.CueIdCuenta;
+        if (!cueIdReal) {
+          throw new Error('El cliente no tiene una cuenta corriente activa para esta moneda.');
+        }
+      }
+
+      const subtotalVal = Totales ? Number(Totales.subtotal) : (docOrigen.DocSubtotal || 0);
+      const impuestosVal = Totales ? Number(Totales.iva) : (docOrigen.DocImpuestos || 0);
+      const totalVal = Totales ? Number(Totales.total) : (docOrigen.DocTotal || 0);
+      const totalDescVal = Totales ? 0 : (docOrigen.DocTotalDescuentos || 0);
+      const totalRecVal = Totales ? 0 : (docOrigen.DocTotalRecargos || 0);
 
       const ncR = await new sql.Request(transaction)
         .input('Cue',   sql.Int,           cueId)
         .input('Cli',   sql.Int,           parseInt(clienteId) || docOrigen.CliIdCliente)
-        .input('Tipo',  sql.VarChar(50),   ncTipo)
+        .input('Tipo',  sql.VarChar(20),   ncTipo)
         .input('Num',   sql.VarChar(20),   ncNumero)
+        .input('Serie', sql.VarChar(10),   ncSerie)
         .input('MonId', sql.Int,           monId)
         .input('Usr',   sql.Int,           usuarioId)
         .input('DocRef',sql.Int,           parseInt(docIdOrigen))
         .input('Motivo',sql.NVarChar(300), motivo || 'Nota de crédito')
-        .input('Subtotal', sql.Decimal(18,2), docOrigen.DocSubtotal || 0)
-        .input('TotalDescuentos', sql.Decimal(18,2), docOrigen.DocTotalDescuentos || 0)
-        .input('TotalRecargos', sql.Decimal(18,2), docOrigen.DocTotalRecargos || 0)
-        .input('Total', sql.Decimal(18,2), docOrigen.DocTotal || 0)
-        .input('Impuestos', sql.Decimal(18,2), docOrigen.DocImpuestos || 0)
+        .input('Subtotal', sql.Decimal(18,2), subtotalVal)
+        .input('TotalDescuentos', sql.Decimal(18,2), totalDescVal)
+        .input('TotalRecargos', sql.Decimal(18,2), totalRecVal)
+        .input('Total', sql.Decimal(18,2), totalVal)
+        .input('Impuestos', sql.Decimal(18,2), impuestosVal)
         .query(`INSERT INTO dbo.DocumentosContables
                   (CueIdCuenta,CliIdCliente,MonIdMoneda,DocTipo,DocNumero,DocSerie,
                    DocSubtotal,DocTotalDescuentos,DocTotalRecargos,DocTotal,DocImpuestos,
                    DocEstado,CfeEstado,DocFechaEmision,DocUsuarioAlta,DocObservaciones,DocIdDocumentoRef,DocMotivoRef,DocPagado)
                 OUTPUT INSERTED.DocIdDocumento
-                VALUES (@Cue,@Cli,@MonId,@Tipo,@Num,'A',
+                VALUES (@Cue,@Cli,@MonId,@Tipo,@Num,@Serie,
                         @Subtotal,@TotalDescuentos,@TotalRecargos,@Total,@Impuestos,
                         'COBRADO','PENDIENTE',GETDATE(),@Usr,@Motivo,@DocRef,@Motivo,1)`);
       const ncId = ncR.recordset[0].DocIdDocumento;
 
-      await new sql.Request(transaction)
-        .input('DocId', sql.Int,          ncId)
-        .input('DocRef',sql.Int,          parseInt(docIdOrigen))
-        .query(`INSERT INTO dbo.DocumentosContablesDetalle
-                  (DocIdDocumento, OrdCodigoOrden, DcdNomItem, DcdDscItem, DcdCantidad, DcdPrecioUnitario, DcdSubtotal, DcdImpuestos, DcdTotal, DcdTotalDescuentos, DcdDescuentoStr)
-                SELECT 
-                  @DocId, OrdCodigoOrden, DcdNomItem, DcdDscItem, DcdCantidad, DcdPrecioUnitario, DcdSubtotal, DcdImpuestos, DcdTotal, DcdTotalDescuentos, DcdDescuentoStr
-                FROM dbo.DocumentosContablesDetalle
-                WHERE DocIdDocumento = @DocRef`);
+      if (Array.isArray(Lineas) && Lineas.length > 0) {
+        for (const linea of Lineas) {
+          const cant = parseFloat(linea.cantidad) || 0;
+          const precio = parseFloat(linea.precioUnitario) || 0;
+          const ivaRate = parseFloat(linea.iva) || 22;
+          const lineTotal = cant * precio;
+          const lineNeto = lineTotal / (1 + ivaRate / 100);
+          const lineIva = lineTotal - lineNeto;
 
-      await new sql.Request(transaction)
-        .input('Cue',sql.Int,cueId).input('Imp',sql.Decimal(18,4),montoNum)
-        .input('Doc',sql.Int,ncId).input('Usr',sql.Int,usuarioId)
-        .input('Mot',sql.NVarChar(300),motivo || `NC ${ncNumero}`)
-        .query(`DECLARE @SA DECIMAL(18,4); SELECT @SA=CueSaldoActual FROM dbo.CuentasCliente WHERE CueIdCuenta=@Cue;
-                UPDATE dbo.CuentasCliente SET CueSaldoActual=CueSaldoActual+@Imp WHERE CueIdCuenta=@Cue;
-                DECLARE @SP DECIMAL(18,4); SELECT @SP=CueSaldoActual FROM dbo.CuentasCliente WHERE CueIdCuenta=@Cue;
-                INSERT INTO dbo.MovimientosCuenta(CueIdCuenta,MovTipo,MovImporte,MovConcepto,MovSaldoPosterior,MovFecha,MovUsuarioAlta,DocIdDocumento,MovAnulado)
-                VALUES (@Cue,'NOTA_CREDITO',@Imp,@Mot,@SP,GETDATE(),@Usr,@Doc,0)`);
+          const reqLine = new sql.Request(transaction);
+          await reqLine
+            .input('DocId', sql.Int, ncId)
+            .input('Nom', sql.NVarChar(255), (linea.concepto || '').substring(0, 255))
+            .input('Dsc', sql.NVarChar(255), (linea.DcdDscItem || '').substring(0, 255))
+            .input('Cant', sql.Decimal(18, 4), cant)
+            .input('Precio', sql.Decimal(18, 4), precio)
+            .input('Sub', sql.Decimal(18, 2), lineNeto)
+            .input('Imp', sql.Decimal(18, 2), lineIva)
+            .input('Tot', sql.Decimal(18, 2), lineTotal)
+            .input('TotalDescuentos', sql.Decimal(18,2), 0)
+            .input('DescuentoStr', sql.VarChar(50), '')
+            .query(`INSERT INTO dbo.DocumentosContablesDetalle
+                      (DocIdDocumento, DcdNomItem, DcdDscItem, DcdCantidad, DcdPrecioUnitario, DcdSubtotal, DcdImpuestos, DcdTotal, DcdTotalDescuentos, DcdDescuentoStr)
+                    VALUES (@DocId, @Nom, @Dsc, @Cant, @Precio, @Sub, @Imp, @Tot, @TotalDescuentos, @DescuentoStr)`);
+        }
+      } else {
+        await new sql.Request(transaction)
+          .input('DocId', sql.Int,          ncId)
+          .input('DocRef',sql.Int,          parseInt(docIdOrigen))
+          .query(`INSERT INTO dbo.DocumentosContablesDetalle
+                    (DocIdDocumento, OrdCodigoOrden, DcdNomItem, DcdDscItem, DcdCantidad, DcdPrecioUnitario, DcdSubtotal, DcdImpuestos, DcdTotal, DcdTotalDescuentos, DcdDescuentoStr)
+                  SELECT 
+                    @DocId, OrdCodigoOrden, DcdNomItem, DcdDscItem, DcdCantidad, DcdPrecioUnitario, DcdSubtotal, DcdImpuestos, DcdTotal, DcdTotalDescuentos, DcdDescuentoStr
+                  FROM dbo.DocumentosContablesDetalle
+                  WHERE DocIdDocumento = @DocRef`);
+      }
 
-      await new sql.Request(transaction)
-        .input('DocRef',sql.Int,parseInt(docIdOrigen)).input('Monto',sql.Decimal(18,4),montoNum)
-        .query(`UPDATE dbo.DeudaDocumento
-                SET DDeImportePendiente=CASE WHEN DDeImportePendiente-@Monto<0 THEN 0 ELSE DDeImportePendiente-@Monto END,
-                    DDeEstado=CASE WHEN DDeImportePendiente-@Monto<=0 THEN 'CANCELADA' ELSE DDeEstado END
-                WHERE DocIdDocumento=@DocRef AND DDeEstado='PENDIENTE'`);
+      const fullNcNumero = `${ncSerie}-${ncNumero}`;
+
+      // ─── Movimientos de cuenta corriente solo para clientes reales ───
+      if (!esConsumidorFinalGenerico) {
+        await new sql.Request(transaction)
+          .input('Cue',sql.Int,cueIdReal)
+          .input('Imp',sql.Decimal(18,4),montoNum)
+          .input('Doc',sql.Int,ncId).input('Usr',sql.Int,usuarioId)
+          .input('Mot',sql.NVarChar(300),motivo || `NC ${fullNcNumero}`)
+          .query(`DECLARE @SA DECIMAL(18,4); SELECT @SA=CueSaldoActual FROM dbo.CuentasCliente WHERE CueIdCuenta=@Cue;
+                  UPDATE dbo.CuentasCliente SET CueSaldoActual=CueSaldoActual+@Imp WHERE CueIdCuenta=@Cue;
+                  DECLARE @SP DECIMAL(18,4); SELECT @SP=CueSaldoActual FROM dbo.CuentasCliente WHERE CueIdCuenta=@Cue;
+                  INSERT INTO dbo.MovimientosCuenta(CueIdCuenta,MovTipo,MovImporte,MovConcepto,MovSaldoPosterior,MovFecha,MovUsuarioAlta,DocIdDocumento,MovAnulado)
+                  VALUES (@Cue,'NOTA_CREDITO',@Imp,@Mot,@SP,GETDATE(),@Usr,@Doc,0)`);
+
+        await new sql.Request(transaction)
+          .input('DocRef',sql.Int,parseInt(docIdOrigen)).input('Monto',sql.Decimal(18,4),montoNum)
+          .query(`UPDATE dbo.DeudaDocumento
+                  SET DDeImportePendiente=CASE WHEN DDeImportePendiente-@Monto<0 THEN 0 ELSE DDeImportePendiente-@Monto END,
+                      DDeEstado=CASE WHEN DDeImportePendiente-@Monto<=0 THEN 'CANCELADA' ELSE DDeEstado END
+                  WHERE DocIdDocumento=@DocRef AND DDeEstado='PENDIENTE'`);
+      }
 
       // ── ASIENTO CONTABLE: NC ────────────────────────────────────────────────
       // Nota de crédito a cliente: anula ingreso (DEBE ventas) y reduce deuda (HABER cliente)
@@ -1628,7 +1692,7 @@ const generarNotaCredito = async (req, res) => {
         ];
 
         await contabilidadCore.generarAsientoCompleto({
-          concepto: `Nota de Crédito ${ncNumero} — ${motivo || 'Reverso'}`,
+          concepto: `Nota de Crédito ${fullNcNumero} — ${motivo || 'Reverso'}`,
           usuarioId,
           tcaIdTransaccion: null,
           origen: 'NOTA_CREDITO',
@@ -1639,11 +1703,212 @@ const generarNotaCredito = async (req, res) => {
       }
 
       await transaction.commit();
-      logger.info(`[NOTA-CREDITO] Doc #${docIdOrigen} → NC #${ncId} (${ncNumero}) Monto:${montoNum}`);
+      logger.info(`[NOTA-CREDITO] Doc #${docIdOrigen} → NC #${ncId} (${fullNcNumero}) Monto:${montoNum}`);
       const s = io(req); if (s) s.emit('actualizado', { type: 'nota-credito' });
-      return res.status(201).json({ success: true, ncId, ncNumero, ncTipo, message: `Nota de Crédito ${ncNumero} generada` });
+      return res.status(201).json({ success: true, ncId, ncNumero: fullNcNumero, ncTipo, message: `Nota de Crédito ${fullNcNumero} generada` });
     } catch (errTx) { await transaction.rollback(); throw errTx; }
   } catch (err) { logger.error('[NOTA-CREDITO]', err.message); return res.status(500).json({ error: err.message }); }
+};
+
+// ─── GENERAR NOTA DE DÉBITO ────────────────────────────────────────────────────
+// POST /contabilidad/caja/nota-debito
+// Body: { docIdOrigen, monto, motivo, clienteId, cuentaId, monedaId, Lineas, Totales }
+const generarNotaDebito = async (req, res) => {
+  const usuarioId = req.user?.id || 70;
+  try {
+    const { docIdOrigen, monto, motivo, clienteId, cuentaId, monedaId, Lineas, Totales } = req.body;
+    if (!docIdOrigen || !clienteId || !cuentaId)
+      return res.status(400).json({ error: 'Faltan parámetros: docIdOrigen, clienteId, cuentaId' });
+
+    const pool = await getPool();
+    const transaction = pool.transaction();
+    await transaction.begin();
+    try {
+      const docR = await new sql.Request(transaction)
+        .input('DocId', sql.Int, parseInt(docIdOrigen))
+        .query(`SELECT DocTipo, DocSerie, DocNumero, DocTotal, MonIdMoneda, CueIdCuenta, DocSubtotal, DocImpuestos, DocTotalDescuentos, DocTotalRecargos, CliIdCliente
+                FROM dbo.DocumentosContables WHERE DocIdDocumento = @DocId`);
+      if (!docR.recordset.length) throw new Error('Documento origen no encontrado');
+      const docOrigen = docR.recordset[0];
+
+      // Calcular monto de la Nota de Débito
+      let montoNum = Totales ? Number(Totales.total) : Number(monto);
+      if (isNaN(montoNum) || montoNum <= 0) {
+        montoNum = Number(docOrigen.DocTotal) || 0;
+      }
+
+      if (montoNum > Number(docOrigen.DocTotal)) {
+        throw new Error(`El total de la Nota de Débito (${montoNum}) no puede superar al total del documento original (${docOrigen.DocTotal})`);
+      }
+
+      // '11' = E-Ticket Nota De Debito, '06' = E-Factura Nota De Debito
+      const esETicket = !docOrigen.DocTipo?.toUpperCase().includes('FACTURA');
+      const codND = esETicket ? '11' : '06';
+
+      const seqR = await new sql.Request(transaction)
+        .input('CodDoc', sql.VarChar(10), codND)
+        .query(`SELECT s.SecIdSecuencia, s.SecPrefijo, s.SecSerie, s.SecDigitos, c.Detalle
+                FROM Config_TiposDocumento c
+                JOIN SecuenciaDocumentos s ON c.SecIdSecuencia = s.SecIdSecuencia
+                WHERE c.CodDocumento = @CodDoc AND s.SecActivo = 1`);
+      if (!seqR.recordset.length) throw new Error(`Sin secuencia para ND (${codND})`);
+      const seq = seqR.recordset[0];
+
+      const numR = await new sql.Request(transaction)
+        .input('SecId', sql.Int, seq.SecIdSecuencia)
+        .query(`UPDATE SecuenciaDocumentos SET SecUltimoNumero = SecUltimoNumero + 1
+                OUTPUT INSERTED.SecSerie AS Serie,
+                       RIGHT(REPLICATE('0', INSERTED.SecDigitos) + CAST(INSERTED.SecUltimoNumero AS VARCHAR(10)), INSERTED.SecDigitos) AS NumeroSolo
+                WHERE SecIdSecuencia = @SecId`);
+      const ndSerie  = numR.recordset[0].Serie || seq.SecSerie || 'ND';
+      const ndNumero = numR.recordset[0].NumeroSolo;
+      const ndTipo   = (seq.Detalle?.trim() || 'Nota de Debito').substring(0, 20);
+      const monId    = parseInt(monedaId) || docOrigen.MonIdMoneda || 1;
+      const cueId    = parseInt(cuentaId) || docOrigen.CueIdCuenta;
+
+      // ─── Determinar si es Consumidor Final genérico (sin cuenta corriente) ───
+      const CONSUMIDOR_FINAL_ID = 2089;
+      const cliIdNum = parseInt(clienteId) || docOrigen.CliIdCliente;
+      const esConsumidorFinalGenerico = cliIdNum === CONSUMIDOR_FINAL_ID;
+
+      // Buscar la cuenta corriente real del cliente para la moneda correspondiente
+      const tipoCtaReal = monId === 2 ? 'DINERO_USD' : 'DINERO_UYU';
+      let cueIdReal = null;
+      if (!esConsumidorFinalGenerico) {
+        const ctaR = await new sql.Request(transaction)
+          .input('Cli', sql.Int, cliIdNum)
+          .input('Tipo', sql.VarChar(20), tipoCtaReal)
+          .query(`SELECT TOP 1 CueIdCuenta FROM dbo.CuentasCliente WHERE CliIdCliente = @Cli AND CueTipo = @Tipo AND CueActiva = 1`);
+        cueIdReal = ctaR.recordset[0]?.CueIdCuenta;
+        if (!cueIdReal) {
+          throw new Error('El cliente no tiene una cuenta corriente activa para esta moneda.');
+        }
+      }
+
+      const subtotalVal = Totales ? Number(Totales.subtotal) : (docOrigen.DocSubtotal || 0);
+      const impuestosVal = Totales ? Number(Totales.iva) : (docOrigen.DocImpuestos || 0);
+      const totalVal = Totales ? Number(Totales.total) : (docOrigen.DocTotal || 0);
+      const totalDescVal = Totales ? 0 : (docOrigen.DocTotalDescuentos || 0);
+      const totalRecVal = Totales ? 0 : (docOrigen.DocTotalRecargos || 0);
+
+      const ndR = await new sql.Request(transaction)
+        .input('Cue',   sql.Int,           cueId)
+        .input('Cli',   sql.Int,           parseInt(clienteId) || docOrigen.CliIdCliente)
+        .input('Tipo',  sql.VarChar(20),   ndTipo)
+        .input('Num',   sql.VarChar(20),   ndNumero)
+        .input('Serie', sql.VarChar(10),   ndSerie)
+        .input('MonId', sql.Int,           monId)
+        .input('Usr',   sql.Int,           usuarioId)
+        .input('DocRef',sql.Int,           parseInt(docIdOrigen))
+        .input('Motivo',sql.NVarChar(300), motivo || 'Nota de débito')
+        .input('Subtotal', sql.Decimal(18,2), subtotalVal)
+        .input('TotalDescuentos', sql.Decimal(18,2), totalDescVal)
+        .input('TotalRecargos', sql.Decimal(18,2), totalRecVal)
+        .input('Total', sql.Decimal(18,2), totalVal)
+        .input('Impuestos', sql.Decimal(18,2), impuestosVal)
+        .query(`INSERT INTO dbo.DocumentosContables
+                  (CueIdCuenta,CliIdCliente,MonIdMoneda,DocTipo,DocNumero,DocSerie,
+                   DocSubtotal,DocTotalDescuentos,DocTotalRecargos,DocTotal,DocImpuestos,
+                   DocEstado,CfeEstado,DocFechaEmision,DocUsuarioAlta,DocObservaciones,DocIdDocumentoRef,DocMotivoRef,DocPagado)
+                OUTPUT INSERTED.DocIdDocumento
+                VALUES (@Cue,@Cli,@MonId,@Tipo,@Num,@Serie,
+                        @Subtotal,@TotalDescuentos,@TotalRecargos,@Total,@Impuestos,
+                        'PENDIENTE','PENDIENTE',GETDATE(),@Usr,@Motivo,@DocRef,@Motivo,0)`);
+      const ndId = ndR.recordset[0].DocIdDocumento;
+
+      if (Array.isArray(Lineas) && Lineas.length > 0) {
+        for (const linea of Lineas) {
+          const cant = parseFloat(linea.cantidad) || 0;
+          const precio = parseFloat(linea.precioUnitario) || 0;
+          const ivaRate = parseFloat(linea.iva) || 22;
+          const lineTotal = cant * precio;
+          const lineNeto = lineTotal / (1 + ivaRate / 100);
+          const lineIva = lineTotal - lineNeto;
+
+          const reqLine = new sql.Request(transaction);
+          await reqLine
+            .input('DocId', sql.Int, ndId)
+            .input('Nom', sql.NVarChar(255), (linea.concepto || '').substring(0, 255))
+            .input('Dsc', sql.NVarChar(255), (linea.DcdDscItem || '').substring(0, 255))
+            .input('Cant', sql.Decimal(18, 4), cant)
+            .input('Precio', sql.Decimal(18, 4), precio)
+            .input('Sub', sql.Decimal(18, 2), lineNeto)
+            .input('Imp', sql.Decimal(18, 2), lineIva)
+            .input('Tot', sql.Decimal(18, 2), lineTotal)
+            .input('TotalDescuentos', sql.Decimal(18,2), 0)
+            .input('DescuentoStr', sql.VarChar(50), '')
+            .query(`INSERT INTO dbo.DocumentosContablesDetalle
+                      (DocIdDocumento, DcdNomItem, DcdDscItem, DcdCantidad, DcdPrecioUnitario, DcdSubtotal, DcdImpuestos, DcdTotal, DcdTotalDescuentos, DcdDescuentoStr)
+                    VALUES (@DocId, @Nom, @Dsc, @Cant, @Precio, @Sub, @Imp, @Tot, @TotalDescuentos, @DescuentoStr)`);
+        }
+      } else {
+        await new sql.Request(transaction)
+          .input('DocId', sql.Int,          ndId)
+          .input('DocRef',sql.Int,          parseInt(docIdOrigen))
+          .query(`INSERT INTO dbo.DocumentosContablesDetalle
+                    (DocIdDocumento, OrdCodigoOrden, DcdNomItem, DcdDscItem, DcdCantidad, DcdPrecioUnitario, DcdSubtotal, DcdImpuestos, DcdTotal, DcdTotalDescuentos, DcdDescuentoStr)
+                  SELECT 
+                    @DocId, OrdCodigoOrden, DcdNomItem, DcdDscItem, DcdCantidad, DcdPrecioUnitario, DcdSubtotal, DcdImpuestos, DcdTotal, DcdTotalDescuentos, DcdDescuentoStr
+                  FROM dbo.DocumentosContablesDetalle
+                  WHERE DocIdDocumento = @DocRef`);
+      }
+
+      const fullNdNumero = `${ndSerie}-${ndNumero}`;
+
+      // ─── Movimientos de cuenta corriente solo para clientes reales ───
+      if (!esConsumidorFinalGenerico) {
+        // Nota de Débito: debita / reduce el saldo del cliente
+        await new sql.Request(transaction)
+          .input('Cue',sql.Int,cueIdReal)
+          .input('Imp',sql.Decimal(18,4),-montoNum) // Negativo para restar del saldo
+          .input('Doc',sql.Int,ndId).input('Usr',sql.Int,usuarioId)
+          .input('Mot',sql.NVarChar(300),motivo || `ND ${fullNdNumero}`)
+          .query(`DECLARE @SA DECIMAL(18,4); SELECT @SA=CueSaldoActual FROM dbo.CuentasCliente WHERE CueIdCuenta=@Cue;
+                  UPDATE dbo.CuentasCliente SET CueSaldoActual=CueSaldoActual+@Imp WHERE CueIdCuenta=@Cue;
+                  DECLARE @SP DECIMAL(18,4); SELECT @SP=CueSaldoActual FROM dbo.CuentasCliente WHERE CueIdCuenta=@Cue;
+                  INSERT INTO dbo.MovimientosCuenta(CueIdCuenta,MovTipo,MovImporte,MovConcepto,MovSaldoPosterior,MovFecha,MovUsuarioAlta,DocIdDocumento,MovAnulado)
+                  VALUES (@Cue,'NOTA_DEBITO',@Imp,@Mot,@SP,GETDATE(),@Usr,@Doc,0)`);
+
+        // Registrar la Nota de Débito como una nueva deuda pendiente
+        await new sql.Request(transaction)
+          .input('Cue', sql.Int, cueIdReal)
+          .input('DocId', sql.Int, ndId)
+          .input('Monto', sql.Decimal(18, 4), montoNum)
+          .query(`
+            INSERT INTO dbo.DeudaDocumento
+              (CueIdCuenta, DocIdDocumento, DDeImporteOriginal, DDeImportePendiente, DDeFechaEmision, DDeFechaVencimiento, DDeEstado)
+            VALUES
+              (@Cue, @DocId, @Monto, @Monto, GETDATE(), DATEADD(DAY, 7, GETDATE()), 'PENDIENTE')
+          `);
+      }
+
+      // Asiento Contable
+      try {
+        const cuentaCliente = monId === 2 ? contabilidadCore.CUENTAS.CLIENTE_USD : contabilidadCore.CUENTAS.CLIENTE_UYU;
+        const cuentaVentas  = contabilidadCore.CUENTAS.VENTA_SERV;
+
+        const lineas = [
+          { codigoCuenta: cuentaCliente, debeBase: montoNum, haberBase: 0, monedaId: monId, cotizacion: 1, entidadId: clienteId, entidadTipo: 'CLIENTE' },
+          { codigoCuenta: cuentaVentas,  debeBase: 0, haberBase: montoNum, monedaId: monId, cotizacion: 1, entidadId: clienteId, entidadTipo: 'CLIENTE' },
+        ];
+
+        await contabilidadCore.generarAsientoCompleto({
+          concepto: `Nota de Débito ${fullNdNumero} — ${motivo || 'Reverso NC'}`,
+          usuarioId,
+          tcaIdTransaccion: null,
+          origen: 'NOTA_DEBITO',
+          lineas,
+        }, transaction);
+      } catch (eAsiento) {
+        logger.warn(`[NOTA-DEBITO] Asiento contable no generado: ${eAsiento.message}`);
+      }
+
+      await transaction.commit();
+      logger.info(`[NOTA-DEBITO] Doc #${docIdOrigen} → ND #${ndId} (${fullNdNumero}) Monto:${montoNum}`);
+      const s = io(req); if (s) s.emit('actualizado', { type: 'nota-debito' });
+      return res.status(201).json({ success: true, ndId, ndNumero: fullNdNumero, ndTipo, message: `Nota de Débito ${fullNdNumero} generada` });
+    } catch (errTx) { await transaction.rollback(); throw errTx; }
+  } catch (err) { logger.error('[NOTA-DEBITO]', err.message); return res.status(500).json({ error: err.message }); }
 };
 
 // ─── REVERSAR DOCUMENTO ───────────────────────────────────────────────────────
@@ -1659,29 +1924,42 @@ const reversarDocumento = async (req, res) => {
     const pool = await getPool();
     const docR = await pool.request()
       .input('DocId', sql.Int, parseInt(docId))
-      .query(`SELECT DocTipo, DocSerie, DocNumero, DocTotal, MonIdMoneda, DocPagado, DocEstado
+      .query(`SELECT DocTipo, DocSerie, DocNumero, DocTotal, MonIdMoneda, DocPagado, DocEstado, CfeEstado
               FROM dbo.DocumentosContables WHERE DocIdDocumento=@DocId`);
     if (!docR.recordset.length) return res.status(404).json({ error: 'Documento no encontrado' });
     const doc = docR.recordset[0];
     if (doc.DocEstado === 'ANULADO') return res.status(400).json({ error: 'El documento ya está anulado' });
 
+    // ─── Bloquear anulación de documentos ya aceptados por la DGI ───
+    if (doc.CfeEstado === 'ACEPTADO_DGI') {
+      return res.status(400).json({
+        error: 'Este documento ya fue aceptado por la DGI y no puede anularse directamente. Debe emitir una Nota de Crédito correctiva.'
+      });
+    }
+
     const monto  = Number(doc.DocTotal);
     const cueId  = parseInt(cuentaId);
     const docRef = parseInt(docId);
+
+    // Determinar si el documento es una NC (en cuyo caso se resta en lugar de sumar)
+    const esNotaCredito = (doc.DocTipo || '').toUpperCase().includes('NOTA DE CRE') ||
+                          (doc.DocTipo || '').toUpperCase().includes('NOTA_CREDITO') ||
+                          (doc.DocTipo || '').toUpperCase().includes('NOTA DE CRÉ');
+    const ajusteImporte = esNotaCredito ? -monto : monto;
 
     await pool.request()
       .input('DocId', sql.Int, docRef)
       .query(`UPDATE dbo.DocumentosContables SET DocEstado='ANULADO' WHERE DocIdDocumento=@DocId`);
 
     await pool.request()
-      .input('Cue',sql.Int,cueId).input('Imp',sql.Decimal(18,4),monto)
+      .input('Cue',sql.Int,cueId).input('Imp',sql.Decimal(18,4),ajusteImporte)
       .input('Usr',sql.Int,usuarioId).input('Doc',sql.Int,docRef)
       .input('Mot',sql.NVarChar(300),motivo || `Reverso ${doc.DocTipo} ${doc.DocSerie}-${doc.DocNumero}`)
       .query(`DECLARE @SA DECIMAL(18,4); SELECT @SA=CueSaldoActual FROM dbo.CuentasCliente WHERE CueIdCuenta=@Cue;
               UPDATE dbo.CuentasCliente SET CueSaldoActual=CueSaldoActual+@Imp WHERE CueIdCuenta=@Cue;
               DECLARE @SP DECIMAL(18,4); SELECT @SP=CueSaldoActual FROM dbo.CuentasCliente WHERE CueIdCuenta=@Cue;
               INSERT INTO dbo.MovimientosCuenta(CueIdCuenta,MovTipo,MovImporte,MovConcepto,MovSaldoPosterior,MovFecha,MovUsuarioAlta,DocIdDocumento,MovAnulado)
-              VALUES (@Cue,'NOTA_CREDITO',@Imp,@Mot,@SP,GETDATE(),@Usr,@Doc,0)`);
+              VALUES (@Cue,'REVERSO',@Imp,@Mot,@SP,GETDATE(),@Usr,@Doc,0)`);
 
     await pool.request()
       .input('DocId', sql.Int, docRef)
@@ -2145,7 +2423,7 @@ module.exports = {
   // Motor: Operación Manual
   registrarOperacionManual,
   // Operaciones desde Estado de Cuenta (Caja Administrativa)
-  generarNotaCredito, reversarDocumento, registrarPagoAnticipo, anularFactura,
+  generarNotaCredito, generarNotaDebito, reversarDocumento, registrarPagoAnticipo, anularFactura,
   // Guardar Comprobantes en Servidor
   guardarComprobante,
 };

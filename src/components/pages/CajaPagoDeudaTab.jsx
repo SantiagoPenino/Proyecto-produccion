@@ -12,10 +12,8 @@ const fmtFecha = (f) => f ? new Date(f).toLocaleDateString('es-UY', { day:'2-dig
 
 const TIPOS_DOC_PAGO = [
   { value: '05', label: 'Recibo' },
-  { value: 'NINGUNO', label: 'Sin documento' },
 ];
-
-export default function CajaPagoDeudaTab({ sesion, metodosPago = [], cotizacion = 1, tiposDocDisponibles = TIPOS_DOC_PAGO, onPagoCompletado, isAdminCaja }) {
+export default function CajaPagoDeudaTab({ sesion, metodosPago = [], cotizacion = 1, tiposDocDisponibles = TIPOS_DOC_PAGO, onPagoCompletado, isAdminCaja, initialCliente, initialDocumento }) {
 
   // ─── Estado ─────────────────────────────────────────────────────────────
   const [qCliente, setQCliente]         = useState('');
@@ -79,6 +77,28 @@ export default function CajaPagoDeudaTab({ sesion, metodosPago = [], cotizacion 
     cargarDeudas();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    if (deudas.length > 0) {
+      if (initialDocumento) {
+        const matchingDeuda = deudas.find(d => 
+          (initialDocumento.DDeIdDocumento && d.DDeIdDocumento === initialDocumento.DDeIdDocumento) ||
+          (initialDocumento.DocIdDocumento && d.DocIdDocumento === initialDocumento.DocIdDocumento) ||
+          (initialDocumento.OrdIdOrden && d.OrdIdOrden === initialDocumento.OrdIdOrden)
+        );
+        if (matchingDeuda) {
+          setSeleccionadas([matchingDeuda.DDeIdDocumento]);
+          if (matchingDeuda.ClienteNombre) {
+            setQCliente(matchingDeuda.ClienteNombre);
+          }
+        } else if (initialCliente) {
+          setQCliente(initialCliente.Nombre || initialCliente.CodCliente || '');
+        }
+      } else if (initialCliente) {
+        setQCliente(initialCliente.Nombre || initialCliente.CodCliente || '');
+      }
+    }
+  }, [deudas, initialCliente, initialDocumento]);
 
   // ─── Filtrado local ───────────────────────────────────────────────────────
   const deudasFiltradas = useMemo(() => {
@@ -222,7 +242,11 @@ export default function CajaPagoDeudaTab({ sesion, metodosPago = [], cotizacion 
         aplicaciones: deudasSeleccionadas.map(d => ({
           tipo: 'PAGO_DEUDA',
           codigoRef: `${d.CodigoOrden || d.OrdIdOrden || `Deuda #${d.DDeIdDocumento}`} ${d.NombreTrabajo || ''}`.trim(),
-          descripcion: d.NombreTrabajo || d.CodigoOrden || `Deuda #${d.DDeIdDocumento}`,
+          descripcion: d.DocIdDocumento 
+            ? `${d.CodigoOrden || 'Factura'}` 
+            : (d.OrdIdOrden 
+                ? `Orden ${d.CodigoOrden}${d.NombreTrabajo ? ` (${d.NombreTrabajo})` : ''}` 
+                : `${d.CodigoOrden || `Deuda #${d.DDeIdDocumento}`}${d.NombreTrabajo ? ` — ${d.NombreTrabajo}` : ''}`),
           montoOriginal: Number(d.DDeImportePendiente),
           ddeId: d.DDeIdDocumento,
         })),

@@ -43,12 +43,12 @@ function MonedaSwitch({ value, onChange }) {
  * La moneda se elige UNA sola vez con el pill-switch; el panel de pago
  * hereda esa moneda y no muestra el selector por-línea (lockMoneda).
  */
-export default function CajaSaldoAnticipoTab({ sesion, metodosPago, cotizacion, onCobroCompletado }) {
+export default function CajaSaldoAnticipoTab({ sesion, metodosPago, cotizacion, onCobroCompletado, initialCliente }) {
   /* ── cliente ─────────────────────────────────────────────────────────────── */
   const [qCliente, setQCliente]             = useState('');
   const [buscandoCli, setBuscandoCli]       = useState(false);
   const [clientesRes, setClientesRes]       = useState([]);
-  const [clienteSel, setClienteSel]         = useState(null);
+  const [clienteSel, setClienteSel]         = useState(initialCliente || null);
   const [cuentaId, setCuentaId]             = useState(null);
   const [buscandoCuenta, setBuscandoCuenta] = useState(false);
 
@@ -133,6 +133,13 @@ export default function CajaSaldoAnticipoTab({ sesion, metodosPago, cotizacion, 
     } catch { /* el backend crea la cuenta si no existe */ }
     finally { setBuscandoCuenta(false); }
   }, []);
+
+  useEffect(() => {
+    if (initialCliente) {
+      setClienteSel(initialCliente);
+      buscarCuenta(initialCliente.CliIdCliente, moneda);
+    }
+  }, [initialCliente, buscarCuenta, moneda]);
 
   const seleccionarCliente = (c) => {
     setClienteSel(c);
@@ -324,7 +331,6 @@ export default function CajaSaldoAnticipoTab({ sesion, metodosPago, cotizacion, 
           onPagosChange={handlePagosChange}
           totalACubrir={importeNum}
           moneda={moneda}
-          lockMoneda={moneda}
           cotizacion={cotizacion}
           procesando={procesando}
           onConfirmar={handleProcesar}
@@ -335,8 +341,7 @@ export default function CajaSaldoAnticipoTab({ sesion, metodosPago, cotizacion, 
           serieDoc={serieDoc}
           onSerieDoc={setSerieDoc}
           tiposDocDisponibles={[
-            { value: 'RECIBO_ANTICIPO', label: 'Recibo de Pago (RC)' },
-            { value: 'NINGUNO',         label: 'Sin Comprobante Fiscal (Anticipo)' },
+            { value: 'RECIBO_ANTICIPO', label: 'Recibo' },
           ]}
           labelBoton="REGISTRAR ANTICIPO"
         />

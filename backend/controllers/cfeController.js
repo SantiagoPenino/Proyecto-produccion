@@ -1,7 +1,11 @@
 const { getPool, sql } = require('../config/db');
 const logger = require('../utils/logger');
+
+// ID del cliente genérico "Consumidor Final" — no tiene cuenta corriente propia
+const CONSUMIDOR_FINAL_ID = 2089;
 const { resolverLineasDesdeMotor, generarAsientoCompleto } = require('../services/contabilidadCore');
 const sisnetService = require('../services/sisnetService');
+const contabilidadService = require('../services/contabilidadService');
 
 exports.getDocumentosCFE = async (req, res) => {
     try {
@@ -95,7 +99,10 @@ exports.enviarADGI = async (req, res) => {
             return res.status(400).json({ error: 'Este documento ya fue firmado y aceptado por DGI.' });
         }
         if (doc.CfeEstado === 'BORRADOR') {
-            return res.status(400).json({ error: 'El Pedido Caja es un borrador interno. Debe convertirlo a e-Ticket o e-Factura antes de enviarlo a DGI.' });
+            const isFiscal = doc.DocTipo && !doc.DocTipo.toLowerCase().includes('pedido') && doc.DocTipo.toLowerCase().trim() !== 'pc';
+            if (!isFiscal) {
+                return res.status(400).json({ error: 'El Pedido Caja es un borrador interno. Debe convertirlo a e-Ticket o e-Factura antes de enviarlo a DGI.' });
+            }
         }
 
         // 2. Obtener lineas
@@ -319,6 +326,100 @@ exports.crearFacturaManual = async (req, res) => {
             }
         }
 
+        // 2.7 Registrar en Cuenta Corriente de Cliente si es cliente real
+        // El genérico (ID 2089 = "Consumidor Final") NO tiene cuenta corriente propia.
+        // Cualquier otro cliente — aunque el doc sea e-Ticket (B2C para DGI) — sí la tiene.
+        const cliIdNum = parseInt(CliIdCliente) || 0;
+        const isRealClient = cliIdNum > 1 && cliIdNum !== CONSUMIDOR_FINAL_ID && cliIdNum !== 100101;
+        if (isRealClient) {
+            const cueTipo = MonIdMoneda === 2 ? 'DINERO_USD' : 'DINERO_UYU';
+            const ctaMonedaId = await contabilidadService.obtenerOCrearCuenta(CliIdCliente, cueTipo, {
+                MonIdMoneda,
+                UsuarioAlta: req.user?.id || 1
+            }, transaction);
+
+            const cicloActivoObj = await contabilidadService.obtenerCicloActivo(ctaMonedaId, transaction);
+            const cicId = cicloActivoObj ? cicloActivoObj.CicIdCiclo : null;
+
+            // 2.7.1 Cargar el Cargo (Venta)
+            const reqCargo = transaction.request();
+            const rUpdCta1 = await reqCargo
+                .input('C', sql.Int, ctaMonedaId)
+                .input('Dif', sql.Decimal(18, 4), -Totales.total)
+                .query(`
+                    UPDATE dbo.CuentasCliente 
+                    SET CueSaldoActual = CueSaldoActual + @Dif 
+                    OUTPUT INSERTED.CueSaldoActual 
+                    WHERE CueIdCuenta = @C
+                `);
+            const saldoP1 = rUpdCta1.recordset[0].CueSaldoActual;
+
+            const conceptCargo = `${config.CodDocumento || DocTipo} Manual ${serie}-${numero}`;
+            const reqMov1 = transaction.request();
+            await reqMov1
+                .input('Cue', sql.Int, ctaMonedaId)
+                .input('Imp', sql.Decimal(18, 4), -Totales.total)
+                .input('Sal', sql.Decimal(18, 4), saldoP1)
+                .input('Usr', sql.Int, req.user?.id || 1)
+                .input('DocId', sql.Int, docId)
+                .input('Concepto', sql.VarChar(200), conceptCargo)
+                .input('CicId', sql.Int, cicId)
+                .query(`
+                    INSERT INTO dbo.MovimientosCuenta 
+                        (CueIdCuenta, MovTipo, MovConcepto, MovImporte, MovSaldoPosterior, DocIdDocumento, MovUsuarioAlta, MovFecha, CicIdCiclo, MovAnulado)
+                    VALUES 
+                        (@Cue, 'VTA_CAJA', @Concepto, @Imp, @Sal, @DocId, @Usr, GETDATE(), @CicId, 0)
+                `);
+
+            // 2.7.2 Si es Contado, registrar el Abono (Pago)
+            if (isPaid) {
+                const reqAbono = transaction.request();
+                const rUpdCta2 = await reqAbono
+                    .input('C', sql.Int, ctaMonedaId)
+                    .input('Dif', sql.Decimal(18, 4), Totales.total)
+                    .query(`
+                        UPDATE dbo.CuentasCliente 
+                        SET CueSaldoActual = CueSaldoActual + @Dif 
+                        OUTPUT INSERTED.CueSaldoActual 
+                        WHERE CueIdCuenta = @C
+                    `);
+                const saldoP2 = rUpdCta2.recordset[0].CueSaldoActual;
+
+                const conceptPago = `Pago ${config.CodDocumento || DocTipo} Manual ${serie}-${numero}`;
+                const reqMov2 = transaction.request();
+                await reqMov2
+                    .input('Cue', sql.Int, ctaMonedaId)
+                    .input('Imp', sql.Decimal(18, 4), Totales.total)
+                    .input('Sal', sql.Decimal(18, 4), saldoP2)
+                    .input('Usr', sql.Int, req.user?.id || 1)
+                    .input('DocId', sql.Int, docId)
+                    .input('Concepto', sql.VarChar(200), conceptPago)
+                    .input('CicId', sql.Int, cicId)
+                    .query(`
+                        INSERT INTO dbo.MovimientosCuenta 
+                            (CueIdCuenta, MovTipo, MovConcepto, MovImporte, MovSaldoPosterior, DocIdDocumento, MovUsuarioAlta, MovFecha, CicIdCiclo, MovAnulado)
+                        VALUES 
+                            (@Cue, 'PAGO', @Concepto, @Imp, @Sal, @DocId, @Usr, GETDATE(), @CicId, 0)
+                    `);
+            } else {
+                // 2.7.3 Si es Crédito, registrar en DeudaDocumento para visibilidad de deuda viva
+                const reqDeuda = transaction.request();
+                await reqDeuda
+                    .input('Cue', sql.Int, ctaMonedaId)
+                    .input('DocId', sql.Int, docId)
+                    .input('Orig', sql.Decimal(18, 4), Totales.total)
+                    .input('Pend', sql.Decimal(18, 4), Totales.total)
+                    .query(`
+                        INSERT INTO dbo.DeudaDocumento
+                            (CueIdCuenta, DocIdDocumento, DDeImporteOriginal, DDeImportePendiente,
+                             DDeFechaEmision, DDeFechaVencimiento, DDeEstado)
+                        VALUES
+                            (@Cue, @DocId, @Orig, @Pend,
+                             GETDATE(), DATEADD(DAY, 7, GETDATE()), 'PENDIENTE')
+                    `);
+            }
+        }
+
         // 3. Contabilizar automáticamente
         const evtCodigo = config.EvtCodigo;
         
@@ -371,17 +472,19 @@ exports.getNomencladores = async (req, res) => {
             pool.request().query('SELECT MonIdMoneda as id, MonDescripcionMoneda as nombre, MonSimbolo as simbolo FROM Monedas ORDER BY MonIdMoneda'),
             pool.request().query(`
                 SELECT 
-                    CodDocumento as value, 
-                    Detalle as label, 
-                    Codigo_Efact, 
-                    RutObligatorio, 
-                    AfectaCtaCte, 
-                    Referenciado, 
-                    NroCaja, 
-                    EvtCodigo 
-                FROM Config_TiposDocumento 
-                WHERE EvtCodigo IS NOT NULL
-                ORDER BY CodDocumento
+                    c.CodDocumento as value, 
+                    c.Detalle as label, 
+                    c.Codigo_Efact, 
+                    c.RutObligatorio, 
+                    c.AfectaCtaCte, 
+                    c.Referenciado, 
+                    c.NroCaja, 
+                    c.EvtCodigo,
+                    s.SecSerie
+                FROM Config_TiposDocumento c
+                LEFT JOIN SecuenciaDocumentos s ON c.SecIdSecuencia = s.SecIdSecuencia
+                WHERE c.EvtCodigo IS NOT NULL
+                ORDER BY c.CodDocumento
             `)
         ]);
 
@@ -574,7 +677,11 @@ exports.anularFactura = async (req, res) => {
 exports.editarFactura = async (req, res) => {
     try {
         const { id } = req.params;
-        const { DocTipo, CliIdCliente, MonIdMoneda, DocSubtotal, DocImpuestos, DocTotal, DocObservaciones, lineas, DocCliNombre, DocCliDocumento, DocCliDireccion, DocCliCiudad } = req.body;
+        const { 
+            DocTipo, CliIdCliente, MonIdMoneda, DocSubtotal, DocImpuestos, DocTotal, DocObservaciones, 
+            lineas, DocCliNombre, DocCliDocumento, DocCliDireccion, DocCliCiudad, 
+            DocPagado, MetodoPagoId, Pagos 
+        } = req.body;
 
         const pool = await getPool();
         const transaction = pool.transaction();
@@ -582,7 +689,7 @@ exports.editarFactura = async (req, res) => {
 
         const docRes = await transaction.request()
             .input('id', sql.Int, id)
-            .query('SELECT CfeEstado, DocPagado, AsiIdAsiento, TcaIdTransaccion, DocTotal FROM DocumentosContables WHERE DocIdDocumento = @id');
+            .query('SELECT DocTipo, CfeEstado, DocPagado, AsiIdAsiento, TcaIdTransaccion, DocTotal, DocSerie, DocNumero FROM DocumentosContables WHERE DocIdDocumento = @id');
 
         if (docRes.recordset.length === 0) {
             await transaction.rollback();
@@ -590,15 +697,89 @@ exports.editarFactura = async (req, res) => {
         }
 
         const doc = docRes.recordset[0];
-        if (doc.CfeEstado !== 'PENDIENTE') {
+        if (doc.CfeEstado !== 'PENDIENTE' && doc.CfeEstado !== 'BORRADOR') {
             await transaction.rollback();
-            return res.status(400).json({ error: 'Solo se pueden editar documentos en estado PENDIENTE. Si ya fue enviado a DGI, emití una Nota de Crédito.' });
+            return res.status(400).json({ error: 'Solo se pueden editar documentos en estado PENDIENTE o BORRADOR. Si ya fue enviado a DGI, emití una Nota de Crédito.' });
         }
+
+        const cleanDocTipo = String(DocTipo || '').trim();
+        const cleanOldDocTipo = String(doc.DocTipo || '').trim();
+
+        // 1. Obtener configuraciones de ambos tipos de documentos
+        const resConfig = await transaction.request()
+            .input('newDocTipo', sql.NVarChar(100), cleanDocTipo)
+            .input('oldDocTipo', sql.NVarChar(100), cleanOldDocTipo)
+            .query(`
+                SELECT c.EvtCodigo, c.Detalle, s.SecSerie, s.SecUltimoNumero, s.SecIdSecuencia, c.CodDocumento 
+                FROM Config_TiposDocumento c
+                LEFT JOIN SecuenciaDocumentos s ON c.SecIdSecuencia = s.SecIdSecuencia
+                WHERE c.CodDocumento IN (@newDocTipo, @oldDocTipo) 
+                   OR LTRIM(RTRIM(c.Detalle)) IN (LTRIM(RTRIM(@newDocTipo)), LTRIM(RTRIM(@oldDocTipo)))
+            `);
+
+        const configs = resConfig.recordset;
+        // Buscar el config para el nuevo tipo. Si cleanDocTipo es código, buscamos por CodDocumento. Si no, por Detalle.
+        const newConfig = configs.find(c => c.CodDocumento === cleanDocTipo || c.Detalle.trim() === cleanDocTipo);
+        // Buscar el config para el viejo tipo
+        const oldConfig = configs.find(c => c.CodDocumento === cleanOldDocTipo || c.Detalle.trim() === cleanOldDocTipo);
+
+        const isTypeChanged = !oldConfig || !newConfig || oldConfig.CodDocumento !== newConfig.CodDocumento;
+
+        let newSerie = doc.DocSerie;
+        let newNumero = doc.DocNumero;
+        let newCfeEstado = doc.CfeEstado;
+        let savedDocTipo = doc.DocTipo; // default to old type
+
+        if (newConfig) {
+            savedDocTipo = newConfig.Detalle; // Store description for consistency
+        }
+
+        if (isTypeChanged && newConfig) {
+            newSerie = newConfig.SecSerie || 'M';
+            
+            // Si el nuevo tipo de documento tiene una secuencia configurada, incrementamos y obtenemos el número
+            if (newConfig.SecIdSecuencia) {
+                const resSeq = await transaction.request()
+                    .input('secId', sql.Int, newConfig.SecIdSecuencia)
+                    .query(`
+                        UPDATE SecuenciaDocumentos 
+                        SET SecUltimoNumero = SecUltimoNumero + 1 
+                        OUTPUT INSERTED.SecUltimoNumero 
+                        WHERE SecIdSecuencia = @secId
+                    `);
+                newNumero = resSeq.recordset[0].SecUltimoNumero;
+            } else {
+                // Si no, asignamos por máximo + 1 de la serie
+                const resMax = await transaction.request()
+                    .input('serie', sql.VarChar(10), newSerie)
+                    .query(`SELECT ISNULL(MAX(DocNumero), 0) + 1 AS num FROM DocumentosContables WHERE DocSerie = @serie`);
+                newNumero = resMax.recordset[0].num;
+            }
+
+            // Resolver CfeEstado según el nuevo tipo
+            const newDocTipoStr = newConfig.CodDocumento || cleanDocTipo;
+            if (newDocTipoStr.includes('Pedido') || newDocTipoStr.includes('PEDIDO') || newDocTipoStr === 'PedidoCaja' || newDocTipoStr === 'PC' || newDocTipoStr === '40') {
+                newCfeEstado = 'BORRADOR';
+            } else {
+                newCfeEstado = 'PENDIENTE';
+            }
+        } else {
+            // Si el tipo no cambió, pero se guarda y por algún motivo el CfeEstado necesita actualizarse
+            const docTipoStr = newConfig ? newConfig.CodDocumento : (cleanDocTipo || cleanOldDocTipo);
+            if (docTipoStr.includes('Pedido') || docTipoStr.includes('PEDIDO') || docTipoStr === 'PedidoCaja' || docTipoStr === 'PC' || docTipoStr === '40') {
+                newCfeEstado = 'BORRADOR';
+            } else {
+                newCfeEstado = 'PENDIENTE';
+            }
+        }
+
+        const newPaid = DocPagado === true || DocPagado === 1 || DocPagado === 'true';
+        const oldPaid = doc.DocPagado === true || doc.DocPagado === 1;
 
         // 1. Actualizar cabecera del documento
         await transaction.request()
             .input('id', sql.Int, id)
-            .input('docTipo', sql.NVarChar(50), DocTipo || '')
+            .input('docTipo', sql.NVarChar(50), savedDocTipo)
             .input('clienteId', sql.Int, CliIdCliente || 1)
             .input('moneda', sql.Int, MonIdMoneda)
             .input('subtotal', sql.Decimal(18, 2), DocSubtotal)
@@ -610,6 +791,10 @@ exports.editarFactura = async (req, res) => {
             .input('cliDoc', sql.NVarChar(20), DocCliDocumento || '')
             .input('cliDir', sql.NVarChar(200), DocCliDireccion || '')
             .input('cliCiu', sql.NVarChar(100), DocCliCiudad || '')
+            .input('docPagado', sql.Bit, newPaid ? 1 : 0)
+            .input('serie', sql.VarChar(10), newSerie)
+            .input('numero', sql.Int, newNumero)
+            .input('cfeEstado', sql.VarChar(20), newCfeEstado)
             .query(`
                 UPDATE DocumentosContables SET
                     DocTipo           = CASE WHEN @docTipo <> '' THEN @docTipo ELSE DocTipo END,
@@ -623,7 +808,11 @@ exports.editarFactura = async (req, res) => {
                     DocCliNombre      = @cliNombre,
                     DocCliDocumento   = @cliDoc,
                     DocCliDireccion   = @cliDir,
-                    DocCliCiudad      = @cliCiu
+                    DocCliCiudad      = @cliCiu,
+                    DocPagado         = @docPagado,
+                    DocSerie          = @serie,
+                    DocNumero         = @numero,
+                    CfeEstado         = @cfeEstado
                 WHERE DocIdDocumento = @id
             `);
 
@@ -653,57 +842,330 @@ exports.editarFactura = async (req, res) => {
             }
         }
 
-        // 2.5 Actualizar cobros/pagos y saldos en cuenta si está pagado o es crédito
-        if (doc.DocPagado) {
-            if (doc.TcaIdTransaccion) {
-                await transaction.request()
-                    .input('tcaId', sql.Int, doc.TcaIdTransaccion)
-                    .input('total', sql.Decimal(18, 2), DocTotal)
-                    .query(`
-                        UPDATE TransaccionesCaja
-                        SET TcaTotalBruto = @total,
-                            TcaTotalNeto = @total,
-                            TcaTotalCobrado = @total
-                        WHERE TcaIdTransaccion = @tcaId;
+        // 3. Revertir y actualizar cuenta corriente de clientes (MovimientosCuenta y CuentasCliente)
+        const oldMovs = await transaction.request()
+            .input('id', sql.Int, id)
+            .query("SELECT CueIdCuenta, MovImporte FROM dbo.MovimientosCuenta WHERE DocIdDocumento = @id AND (MovAnulado IS NULL OR MovAnulado = 0) AND MovTipo NOT IN ('ORDEN', 'ENTREGA')");
 
-                        UPDATE Pagos
-                        SET PagMontoPago = @total,
-                            PagMontoConvertido = @total
-                        WHERE PagTcaIdTransaccion = @tcaId;
-                    `);
-            }
-        } else {
-            // Documento crédito (por cuenta corriente): actualizar deuda y saldo
+        for (const mov of oldMovs.recordset) {
             await transaction.request()
-                .input('id', sql.Int, id)
-                .input('total', sql.Decimal(18, 2), DocTotal)
+                .input('cueId', sql.Int, mov.CueIdCuenta)
+                .input('importe', sql.Decimal(18, 4), mov.MovImporte)
+                .query("UPDATE dbo.CuentasCliente SET CueSaldoActual = CueSaldoActual - @importe WHERE CueIdCuenta = @cueId");
+        }
+
+        await transaction.request()
+            .input('id', sql.Int, id)
+            .query("UPDATE dbo.MovimientosCuenta SET MovAnulado = 1 WHERE DocIdDocumento = @id AND MovTipo NOT IN ('ORDEN', 'ENTREGA')");
+
+        // Insertar los nuevos movimientos para el cliente actual si es cliente real
+        const cliIdNum = parseInt(CliIdCliente) || 0;
+        const isRealClient = cliIdNum > 1 && cliIdNum !== CONSUMIDOR_FINAL_ID && cliIdNum !== 100101;
+        if (isRealClient) {
+            const cueTipo = MonIdMoneda === 2 ? 'DINERO_USD' : 'DINERO_UYU';
+            const ctaMonedaId = await contabilidadService.obtenerOCrearCuenta(CliIdCliente, cueTipo, {
+                MonIdMoneda,
+                UsuarioAlta: req.user?.id || 1
+            }, transaction);
+
+            const cicloActivoObj = await contabilidadService.obtenerCicloActivo(ctaMonedaId, transaction);
+            const cicId = cicloActivoObj ? cicloActivoObj.CicIdCiclo : null;
+
+            // Registrar el Cargo (Venta)
+            const rUpdCta1 = await transaction.request()
+                .input('C', sql.Int, ctaMonedaId)
+                .input('Dif', sql.Decimal(18, 4), -DocTotal)
                 .query(`
-                    UPDATE DeudaDocumento 
-                    SET DDeImporteOriginal = @total,
-                        DDeImportePendiente = CASE WHEN DDeEstado = 'PENDIENTE' THEN @total ELSE DDeImportePendiente END
-                    WHERE DocIdDocumento = @id
+                    UPDATE dbo.CuentasCliente 
+                    SET CueSaldoActual = CueSaldoActual + @Dif 
+                    OUTPUT INSERTED.CueSaldoActual 
+                    WHERE CueIdCuenta = @C
+                `);
+            const saldoP1 = rUpdCta1.recordset[0].CueSaldoActual;
+
+            const configRes = await transaction.request()
+                .input('codDoc', sql.NVarChar(100), DocTipo)
+                .query(`SELECT Detalle, CodDocumento FROM Config_TiposDocumento WHERE CodDocumento = @codDoc OR Detalle = @codDoc`);
+            const config = configRes.recordset[0] || { Detalle: DocTipo, CodDocumento: DocTipo };
+            const serie = newSerie;
+            const numero = newNumero;
+
+            const conceptCargo = `${config.CodDocumento || DocTipo} Manual ${serie}-${numero}`;
+            await transaction.request()
+                .input('Cue', sql.Int, ctaMonedaId)
+                .input('Imp', sql.Decimal(18, 4), -DocTotal)
+                .input('Sal', sql.Decimal(18, 4), saldoP1)
+                .input('Usr', sql.Int, req.user?.id || 1)
+                .input('DocId', sql.Int, id)
+                .input('Concepto', sql.VarChar(200), conceptCargo)
+                .input('CicId', sql.Int, cicId)
+                .query(`
+                    INSERT INTO dbo.MovimientosCuenta 
+                        (CueIdCuenta, MovTipo, MovConcepto, MovImporte, MovSaldoPosterior, DocIdDocumento, MovUsuarioAlta, MovFecha, CicIdCiclo, MovAnulado)
+                    VALUES 
+                        (@Cue, 'VTA_CAJA', @Concepto, @Imp, @Sal, @DocId, @Usr, GETDATE(), @CicId, 0)
                 `);
 
-            const movRes = await transaction.request()
-                .input('id', sql.Int, id)
-                .query(`SELECT MovId, CueIdCuenta, MovImporte FROM MovimientosCuenta WHERE DocIdDocumento = @id`);
-            if (movRes.recordset.length > 0) {
-                const mov = movRes.recordset[0];
-                const oldTotal = Number(doc.DocTotal) || 0;
-                const diff = DocTotal - oldTotal;
-                if (diff !== 0) {
-                    const isNegative = mov.MovImporte < 0;
-                    const adjust = isNegative ? -diff : diff;
+            // Registrar el Abono (Pago) si es Contado
+            if (newPaid) {
+                const rUpdCta2 = await transaction.request()
+                    .input('C', sql.Int, ctaMonedaId)
+                    .input('Dif', sql.Decimal(18, 4), DocTotal)
+                    .query(`
+                        UPDATE dbo.CuentasCliente 
+                        SET CueSaldoActual = CueSaldoActual + @Dif 
+                        OUTPUT INSERTED.CueSaldoActual 
+                        WHERE CueIdCuenta = @C
+                    `);
+                const saldoP2 = rUpdCta2.recordset[0].CueSaldoActual;
+
+                const conceptPago = `Pago ${config.CodDocumento || DocTipo} Manual ${serie}-${numero}`;
+                await transaction.request()
+                    .input('Cue', sql.Int, ctaMonedaId)
+                    .input('Imp', sql.Decimal(18, 4), DocTotal)
+                    .input('Sal', sql.Decimal(18, 4), saldoP2)
+                    .input('Usr', sql.Int, req.user?.id || 1)
+                    .input('DocId', sql.Int, id)
+                    .input('Concepto', sql.VarChar(200), conceptPago)
+                    .input('CicId', sql.Int, cicId)
+                    .query(`
+                        INSERT INTO dbo.MovimientosCuenta 
+                            (CueIdCuenta, MovTipo, MovConcepto, MovImporte, MovSaldoPosterior, DocIdDocumento, MovUsuarioAlta, MovFecha, CicIdCiclo, MovAnulado)
+                        VALUES 
+                            (@Cue, 'PAGO', @Concepto, @Imp, @Sal, @DocId, @Usr, GETDATE(), @CicId, 0)
+                    `);
+
+                // Eliminar cualquier deuda activa de este documento ya que ahora está pagado
+                await transaction.request()
+                    .input('id', sql.Int, id)
+                    .query("DELETE FROM dbo.DeudaDocumento WHERE DocIdDocumento = @id");
+            } else {
+                // Si es crédito, registrar o actualizar en DeudaDocumento
+                await transaction.request()
+                    .input('id', sql.Int, id)
+                    .query("DELETE FROM dbo.DeudaDocumento WHERE DocIdDocumento = @id");
+
+                await transaction.request()
+                    .input('Cue', sql.Int, ctaMonedaId)
+                    .input('DocId', sql.Int, id)
+                    .input('Orig', sql.Decimal(18, 4), DocTotal)
+                    .input('Pend', sql.Decimal(18, 4), DocTotal)
+                    .query(`
+                        INSERT INTO dbo.DeudaDocumento
+                            (CueIdCuenta, DocIdDocumento, DDeImporteOriginal, DDeImportePendiente,
+                             DDeFechaEmision, DDeFechaVencimiento, DDeEstado)
+                        VALUES
+                            (@Cue, @DocId, @Orig, @Pend,
+                             GETDATE(), DATEADD(DAY, 7, GETDATE()), 'PENDIENTE')
+                    `);
+            }
+        }
+
+        // 4. Actualizar Transacciones de Caja e Historial de Cobros
+        let currentTcaId = doc.TcaIdTransaccion;
+
+        if (oldPaid) {
+            if (!newPaid) {
+                // Cambió de Contado a Crédito: anular transacción de caja y pagos
+                if (currentTcaId) {
                     await transaction.request()
-                        .input('movId', sql.Int, mov.MovId)
-                        .input('adjust', sql.Decimal(18, 2), adjust)
-                        .query(`UPDATE MovimientosCuenta SET MovImporte = MovImporte + @adjust WHERE MovId = @movId`);
+                        .input('tcaId', sql.Int, currentTcaId)
+                        .input('usuarioId', sql.Int, req.user?.id || 1)
+                        .query(`
+                            UPDATE dbo.TransaccionesCaja
+                            SET TcaEstado = 'ANULADO',
+                                TcaFechaAnulacion = GETDATE(),
+                                TcaUsuarioAnula = @usuarioId,
+                                TcaObservaciones = ISNULL(TcaObservaciones, '') + ' | CAMBIADO A CREDITO POR EDICION'
+                            WHERE TcaIdTransaccion = @tcaId;
+
+                            UPDATE dbo.Pagos
+                            SET PagTipoMovimiento = 'ANULADO'
+                            WHERE PagTcaIdTransaccion = @tcaId;
+                        `);
+                    
+                    await transaction.request()
+                        .input('id', sql.Int, id)
+                        .query("UPDATE DocumentosContables SET TcaIdTransaccion = NULL WHERE DocIdDocumento = @id");
+                    
+                    currentTcaId = null;
+                }
+            } else {
+                // Se mantiene Contado: actualizar transacciones y pagos
+                if (currentTcaId) {
+                    const cotResult = await transaction.request().query(`SELECT TOP 1 CotDolar FROM Cotizaciones ORDER BY CotFecha DESC`);
+                    const cotDolar = cotResult.recordset.length > 0 ? cotResult.recordset[0].CotDolar : 40.0;
+                    const cotNum = MonIdMoneda === 2 ? cotDolar : 1;
+                    const convertido = MonIdMoneda === 2 ? DocTotal * cotNum : DocTotal;
+
+                    const configRes = await transaction.request()
+                        .input('codDoc', sql.NVarChar(100), DocTipo)
+                        .query(`SELECT CodDocumento FROM Config_TiposDocumento WHERE CodDocumento = @codDoc OR Detalle = @codDoc`);
+                    const config = configRes.recordset[0] || { CodDocumento: DocTipo };
 
                     await transaction.request()
-                        .input('cueId', sql.Int, mov.CueIdCuenta)
-                        .input('adjust', sql.Decimal(18, 2), adjust)
-                        .query(`UPDATE CuentasCliente SET CueSaldoActual = CueSaldoActual + @adjust WHERE CueIdCuenta = @cueId`);
+                        .input('tcaId', sql.Int, currentTcaId)
+                        .input('clienteId', sql.Int, CliIdCliente || 1)
+                        .input('tipoDoc', sql.VarChar(20), (config.CodDocumento || DocTipo).substring(0, 20))
+                        .input('total', sql.Decimal(18, 4), DocTotal)
+                        .input('cobrado', sql.Decimal(18, 4), convertido)
+                        .input('moneda', sql.VarChar(10), MonIdMoneda === 2 ? 'USD' : 'UYU')
+                        .input('serie', sql.VarChar(5), newSerie)
+                        .input('numero', sql.VarChar(20), String(newNumero))
+                        .query(`
+                            UPDATE dbo.TransaccionesCaja
+                            SET TcaClienteId = @clienteId,
+                                TcaTipoDocumento = @tipoDoc,
+                                TcaTotalBruto = @total,
+                                TcaTotalNeto = @total,
+                                TcaTotalCobrado = @cobrado,
+                                TcaMonedaBase = @moneda,
+                                TcaSerieDoc = @serie,
+                                TcaNumeroDoc = @numero
+                            WHERE TcaIdTransaccion = @tcaId
+                        `);
+
+                    // Eliminar pagos antiguos de esta transacción
+                    await transaction.request()
+                        .input('tcaId', sql.Int, currentTcaId)
+                        .query("DELETE FROM dbo.Pagos WHERE PagTcaIdTransaccion = @tcaId");
+
+                    // Insertar nuevos pagos
+                    if (Array.isArray(Pagos) && Pagos.length > 0) {
+                        for (const pago of Pagos) {
+                            const pMonto = parseFloat(pago.monto) || 0;
+                            const pMonedaId = parseInt(pago.monedaId) || MonIdMoneda;
+                            const pCot = pMonedaId === 2 ? cotDolar : 1;
+                            const pConvertido = pMonedaId === 2 ? pMonto * pCot : pMonto;
+
+                            await transaction.request()
+                                .input('tcaId', sql.Int, currentTcaId)
+                                .input('metodo', sql.Int, pago.metodoPagoId || 1)
+                                .input('moneda', sql.Int, pMonedaId)
+                                .input('monto', sql.Decimal(18, 4), pMonto)
+                                .input('cot', sql.Decimal(18, 4), pCot)
+                                .input('convert', sql.Decimal(18, 4), pConvertido)
+                                .input('usuario', sql.Int, req.user?.id || 1)
+                                .query(`
+                                    INSERT INTO dbo.Pagos
+                                        (PagTcaIdTransaccion, MPaIdMetodoPago, PagIdMonedaPago,
+                                         PagMontoPago, PagFechaPago, PagUsuarioAlta, PagCotizacion,
+                                         PagMontoConvertido, PagTipoMovimiento)
+                                    VALUES
+                                        (@tcaId, @metodo, @moneda,
+                                         @monto, GETDATE(), @usuario, @cot,
+                                         @convert, 'COBRO')
+                                `);
+                        }
+                    } else {
+                        await transaction.request()
+                            .input('tcaId', sql.Int, currentTcaId)
+                            .input('metodo', sql.Int, MetodoPagoId || 1)
+                            .input('moneda', sql.Int, MonIdMoneda)
+                            .input('monto', sql.Decimal(18, 4), DocTotal)
+                            .input('cot', sql.Decimal(18, 4), cotNum)
+                            .input('convert', sql.Decimal(18, 4), convertido)
+                            .input('usuario', sql.Int, req.user?.id || 1)
+                            .query(`
+                                INSERT INTO dbo.Pagos
+                                    (PagTcaIdTransaccion, MPaIdMetodoPago, PagIdMonedaPago,
+                                     PagMontoPago, PagFechaPago, PagUsuarioAlta, PagCotizacion,
+                                     PagMontoConvertido, PagTipoMovimiento)
+                                VALUES
+                                    (@tcaId, @metodo, @moneda,
+                                     @monto, GETDATE(), @usuario, @cot,
+                                     @convert, 'COBRO')
+                            `);
+                    }
                 }
+            }
+        } else {
+            if (newPaid) {
+                // Cambió de Crédito a Contado: crear transacción de caja y pagos
+                const cotResult = await transaction.request().query(`SELECT TOP 1 CotDolar FROM Cotizaciones ORDER BY CotFecha DESC`);
+                const cotDolar = cotResult.recordset.length > 0 ? cotResult.recordset[0].CotDolar : 40.0;
+                const cotNum = MonIdMoneda === 2 ? cotDolar : 1;
+                const convertido = MonIdMoneda === 2 ? DocTotal * cotNum : DocTotal;
+
+                const configRes = await transaction.request()
+                    .input('codDoc', sql.NVarChar(100), DocTipo)
+                    .query(`SELECT CodDocumento, SecSerie FROM Config_TiposDocumento c LEFT JOIN SecuenciaDocumentos s ON c.SecIdSecuencia = s.SecIdSecuencia WHERE c.CodDocumento = @codDoc OR c.Detalle = @codDoc`);
+                const config = configRes.recordset[0] || { CodDocumento: DocTipo, SecSerie: 'M' };
+                const serie = newSerie;
+                const numero = newNumero;
+
+                const tcaRes = await transaction.request()
+                    .input('TcaUsuarioId', sql.Int, req.user?.id || 1)
+                    .input('TcaClienteId', sql.Int, CliIdCliente || 1)
+                    .input('TcaTipoDoc', sql.VarChar(20), (config.CodDocumento || DocTipo).substring(0, 20))
+                    .input('TcaSerieDoc', sql.VarChar(5), serie)
+                    .input('TcaNumeroDoc', sql.VarChar(20), String(numero))
+                    .input('TcaBruto', sql.Decimal(18, 4), DocTotal)
+                    .input('TcaNeto', sql.Decimal(18, 4), DocTotal)
+                    .input('TcaCobrado', sql.Decimal(18, 4), convertido)
+                    .input('TcaMonedaBase', sql.VarChar(10), MonIdMoneda === 2 ? 'USD' : 'UYU')
+                    .query(`
+                        INSERT INTO dbo.TransaccionesCaja
+                            (TcaFecha, TcaUsuarioId, TcaClienteId, TcaTipoDocumento, TcaSerieDoc, TcaNumeroDoc,
+                             TcaTotalBruto, TcaTotalAjuste, TcaTotalNeto, TcaTotalCobrado, TcaMonedaBase, TcaEstado, TcaObservaciones)
+                        OUTPUT INSERTED.TcaIdTransaccion
+                        VALUES
+                            (GETDATE(), @TcaUsuarioId, @TcaClienteId, @TcaTipoDoc, @TcaSerieDoc, @TcaNumeroDoc,
+                             @TcaBruto, 0, @TcaNeto, @TcaCobrado, @TcaMonedaBase, 'COBRADO', 'Pago Factura Manual Edicion')
+                    `);
+                currentTcaId = tcaRes.recordset[0].TcaIdTransaccion;
+
+                if (Array.isArray(Pagos) && Pagos.length > 0) {
+                    for (const pago of Pagos) {
+                        const pMonto = parseFloat(pago.monto) || 0;
+                        const pMonedaId = parseInt(pago.monedaId) || MonIdMoneda;
+                        const pCot = pMonedaId === 2 ? cotDolar : 1;
+                        const pConvertido = pMonedaId === 2 ? pMonto * pCot : pMonto;
+
+                        await transaction.request()
+                            .input('tcaId', sql.Int, currentTcaId)
+                            .input('metodo', sql.Int, pago.metodoPagoId || 1)
+                            .input('moneda', sql.Int, pMonedaId)
+                            .input('monto', sql.Decimal(18, 4), pMonto)
+                            .input('cot', sql.Decimal(18, 4), pCot)
+                            .input('convert', sql.Decimal(18, 4), pConvertido)
+                            .input('usuario', sql.Int, req.user?.id || 1)
+                            .query(`
+                                INSERT INTO dbo.Pagos
+                                    (PagTcaIdTransaccion, MPaIdMetodoPago, PagIdMonedaPago,
+                                     PagMontoPago, PagFechaPago, PagUsuarioAlta, PagCotizacion,
+                                     PagMontoConvertido, PagTipoMovimiento)
+                                VALUES
+                                    (@tcaId, @metodo, @moneda,
+                                     @monto, GETDATE(), @usuario, @cot,
+                                     @convert, 'COBRO')
+                            `);
+                    }
+                } else {
+                    await transaction.request()
+                        .input('tcaId', sql.Int, currentTcaId)
+                        .input('metodo', sql.Int, MetodoPagoId || 1)
+                        .input('moneda', sql.Int, MonIdMoneda)
+                        .input('monto', sql.Decimal(18, 4), DocTotal)
+                        .input('cot', sql.Decimal(18, 4), cotNum)
+                        .input('convert', sql.Decimal(18, 4), convertido)
+                        .input('usuario', sql.Int, req.user?.id || 1)
+                        .query(`
+                            INSERT INTO dbo.Pagos
+                                (PagTcaIdTransaccion, MPaIdMetodoPago, PagIdMonedaPago,
+                                 PagMontoPago, PagFechaPago, PagUsuarioAlta, PagCotizacion,
+                                 PagMontoConvertido, PagTipoMovimiento)
+                            VALUES
+                                (@tcaId, @metodo, @moneda,
+                                 @monto, GETDATE(), @usuario, @cot,
+                                 @convert, 'COBRO')
+                        `);
+                }
+
+                await transaction.request()
+                    .input('docId', sql.Int, id)
+                    .input('tcaId', sql.Int, currentTcaId)
+                    .query("UPDATE DocumentosContables SET TcaIdTransaccion = @tcaId WHERE DocIdDocumento = @docId");
             }
         }
 
@@ -711,7 +1173,12 @@ exports.editarFactura = async (req, res) => {
         if (doc.AsiIdAsiento) {
             await transaction.request()
                 .input('asiId', sql.Int, doc.AsiIdAsiento)
-                .query('DELETE FROM Cont_AsientosDetalle WHERE AsiIdAsiento = @asiId');
+                .query('DELETE FROM Cont_AsientosDetalle WHERE AsiId = @asiId');
+
+            const cotResult = await transaction.request().query(`SELECT TOP 1 CotDolar FROM Cotizaciones ORDER BY CotFecha DESC`);
+            const cotDolar = cotResult.recordset.length > 0 ? cotResult.recordset[0].CotDolar : 40.0;
+            const cotiz = MonIdMoneda === 2 ? cotDolar : 1;
+            const totalUYU = DocTotal * cotiz;
 
             const cuentaCliente = MonIdMoneda === 2 ? 119 : 118;
             const cuentaVentas = 411;
@@ -720,12 +1187,17 @@ exports.editarFactura = async (req, res) => {
                 .input('asiId', sql.Int, doc.AsiIdAsiento)
                 .input('cuentaCli', sql.Int, cuentaCliente)
                 .input('cuentaVen', sql.Int, cuentaVentas)
-                .input('total', sql.Decimal(18, 2), DocTotal)
+                .input('totalUYU', sql.Decimal(18, 2), totalUYU)
+                .input('totalOriginal', sql.Decimal(18, 2), DocTotal)
+                .input('cotizacion', sql.Decimal(18, 4), cotiz)
+                .input('monedaId', sql.Int, MonIdMoneda)
+                .input('clienteId', sql.Int, CliIdCliente || null)
                 .query(`
-                    INSERT INTO Cont_AsientosDetalle (AsiIdAsiento, CueIdCuenta, DetDebe, DetHaber)
+                    INSERT INTO Cont_AsientosDetalle 
+                        (AsiId, CueId, DetDebeUYU, DetHaberUYU, DetImporteOriginal, DetCotizacion, DetMonedaId, DetEntidadId, DetEntidadTipo)
                     VALUES
-                        (@asiId, @cuentaCli, @total, 0),
-                        (@asiId, @cuentaVen, 0, @total)
+                        (@asiId, @cuentaCli, @totalUYU, 0, @totalOriginal, @cotizacion, @monedaId, @clienteId, 'CLIENTE'),
+                        (@asiId, @cuentaVen, 0, @totalUYU, @totalOriginal, @cotizacion, @monedaId, @clienteId, 'CLIENTE')
                 `);
         }
 
@@ -733,6 +1205,11 @@ exports.editarFactura = async (req, res) => {
         res.json({ success: true, message: 'Documento y líneas actualizados correctamente' });
     } catch (err) {
         logger.error('Error editando documento CFE:', err);
+        try {
+            await transaction.rollback();
+        } catch (rollbackErr) {
+            // Ignorar si ya se abortó la transacción
+        }
         res.status(500).json({ error: err.message });
     }
 };
@@ -796,7 +1273,16 @@ exports.getDetalleFactura = async (req, res) => {
                 WHERE d.DocIdDocumento = @docId
             `);
 
-        res.json({ success: true, doc: docResult.recordset[0] || null, detalles: result.recordset });
+        const doc = docResult.recordset[0] || null;
+        let pagos = [];
+        if (doc && doc.TcaIdTransaccion) {
+            const pagosRes = await pool.request()
+                .input('tcaId', sql.Int, doc.TcaIdTransaccion)
+                .query('SELECT * FROM dbo.Pagos WITH(NOLOCK) WHERE PagTcaIdTransaccion = @tcaId');
+            pagos = pagosRes.recordset;
+        }
+
+        res.json({ success: true, doc, detalles: result.recordset, pagos });
     } catch (err) {
         logger.error('Error obteniendo detalle de factura:', err);
         res.status(500).json({ error: err.message });

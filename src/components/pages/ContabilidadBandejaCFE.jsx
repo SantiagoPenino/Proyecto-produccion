@@ -1,11 +1,11 @@
 import React, { useState, useEffect } from 'react';
-import { FileText, CheckCircle, AlertCircle, Search, Send, FileOutput, Plus, Edit, XCircle, Printer, Copy, RefreshCw, FileX } from 'lucide-react';
+import { FileText, CheckCircle, AlertCircle, Search, Send, FileOutput, Plus, Edit, XCircle, Printer, Copy, RefreshCw, FileX, FilePlus } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { toast } from 'sonner';
 import api from '../../services/apiClient';
 import { generarPdfFacturaDGI } from '../../utils/pdfGenerator';
 import FacturacionManualModal from './FacturacionManualModal';
-import CfeEditModal from './CfeEditModal';
+import CfeNotaCreditoModal from './CfeNotaCreditoModal';
 
 const getStatusBadge = (status) => {
     switch(status) {
@@ -24,7 +24,7 @@ const getTipoDocName = (tipo) => {
         '02': 'E-Factura Crédito', '04': 'N.Crédito E-Factura',
         '107': 'E-Ticket Contado', '108': 'E-Ticket Crédito',
         '101': 'E-Factura Contado', '102': 'E-Factura Crédito',
-        'PedidoCaja': 'Pedido Caja', 'PC': 'Pedido Caja',
+        'PedidoCaja': 'Pedido Caja', 'PC': 'Pedido Caja', 'Pedidos Caja': 'Pedido Caja',
         'FACTURA': 'Factura de Crédito', 'E-TICKET': 'e-Ticket',
         'FACTURA_CICLO': 'Estado de Cuenta',
         'NOTA_CREDITO': 'Nota de Crédito', 'NOTA_DEBITO': 'Nota de Débito',
@@ -32,6 +32,73 @@ const getTipoDocName = (tipo) => {
     if (!tipo) return '—';
     const k = String(tipo).trim();
     return MAP[k] || k;
+};
+
+const isFiscalCfe = (tipo) => {
+    if (!tipo) return false;
+    const t = String(tipo).toLowerCase();
+    return !t.includes('pedido') && t !== 'pc';
+};
+
+const isCreditNote = (tipo) => {
+    if (!tipo) return false;
+    const t = String(tipo).toLowerCase();
+    return t.includes('nota de cre') || t.includes('nota de cr') || t.includes('n.crédito') || t.includes('n.credito') || t.includes('nota_credito') || t === '10' || t === '04';
+};
+
+const renderDocFecha = (fechaStr) => {
+    if (!fechaStr) return '—';
+    const date = new Date(fechaStr);
+    const datePart = date.toLocaleDateString('es-UY', { day: '2-digit', month: '2-digit', year: 'numeric' });
+    const timePart = date.toLocaleTimeString('es-UY', { hour: '2-digit', minute: '2-digit', hour12: true });
+    return (
+        <div className="flex flex-col text-xs text-gray-500 font-medium">
+            <span className="text-gray-900 font-semibold">{datePart}</span>
+            <span className="text-[10px] text-gray-400 mt-0.5">{timePart}</span>
+        </div>
+    );
+};
+
+const renderCfeOficialCol = (doc) => {
+    if (doc.CfeEstado !== 'ACEPTADO_DGI') {
+        return <span className="text-gray-400">-</span>;
+    }
+    const text = doc.CfeNumeroOficial || '';
+    
+    // Caso 1: Formato "Nro. de CAE 90260001010 Serie B 1 / 1000"
+    const matchCae = text.match(/Nro\.\s+de\s+CAE\s+(\d+)\s+Serie\s+([A-Za-z]+)\s+(\d+)\s*(?:\/\s*(\d+))?/i);
+    if (matchCae) {
+        const [_, caeNum, serie, numero, total] = matchCae;
+        return (
+            <div className="flex flex-col text-xs leading-tight">
+                <div className="font-extrabold text-blue-600 text-sm">N° {numero}</div>
+                <div className="font-medium text-gray-500">Serie {serie} {total ? `/ ${total}` : ''}</div>
+                <div className="text-[10px] text-gray-400 mt-1">CAE: {caeNum}</div>
+                <div className="text-[10px] text-gray-400">{doc.CfeCAE}</div>
+            </div>
+        );
+    }
+
+    // Caso 2: Formato simple "B-1" o "Serie B-1"
+    const matchSimple = text.match(/(?:Serie\s+)?([A-Za-z]+)-(\d+)/i);
+    if (matchSimple) {
+        const [_, serie, numero] = matchSimple;
+        return (
+            <div className="flex flex-col text-xs leading-tight">
+                <div className="font-extrabold text-blue-600 text-sm">N° {numero}</div>
+                <div className="font-medium text-gray-500">Serie {serie}</div>
+                <div className="text-[10px] text-gray-400 mt-1">{doc.CfeCAE}</div>
+            </div>
+        );
+    }
+    
+    // Fallback
+    return (
+        <div className="flex flex-col leading-tight">
+            <div className="font-semibold text-gray-900 text-sm">{text}</div>
+            <div className="text-xs text-gray-400">{doc.CfeCAE}</div>
+        </div>
+    );
 };
 
 const ContabilidadBandejaCFE = () => {
@@ -44,15 +111,15 @@ const ContabilidadBandejaCFE = () => {
     const [selectedDocs, setSelectedDocs] = useState(new Set());
     const [tiposExistentes, setTiposExistentes] = useState([]);
     
-    // Modal de edición
-    const [editDoc, setEditDoc] = useState(null);
+    // ID del documento a editar (abre FacturacionManualModal en mode='editar')
+    const [editDocId, setEditDocId] = useState(null);
 
     // Acciones Copiar/Reversar/Nota de Crédito
     const [copyData, setCopyData] = useState(null);
     const [showNcModal, setShowNcModal] = useState(false);
     const [ncDoc, setNcDoc] = useState(null);
-    const [ncMonto, setNcMonto] = useState('');
-    const [ncMotivo, setNcMotivo] = useState('Anulación de documento');
+    const [ncLineas, setNcLineas] = useState([]);
+    const [ncMode, setNcMode] = useState('NC');
 
     // Filtros
     const [clientes, setClientes] = useState([]);
@@ -206,7 +273,7 @@ const ContabilidadBandejaCFE = () => {
     };
 
     const toggleAll = () => {
-        const pendings = docs.filter(d => d.CfeEstado === 'PENDIENTE' && d.DocTipo !== 'PedidoCaja' && d.DocTipo !== 'PC');
+        const pendings = docs.filter(d => d.CfeEstado === 'PENDIENTE' && isFiscalCfe(d.DocTipo));
         if (selectedDocs.size === pendings.length && pendings.length > 0) {
             setSelectedDocs(new Set());
         } else {
@@ -218,7 +285,7 @@ const ContabilidadBandejaCFE = () => {
         if (selectedDocs.size === 0) return;
         const nonPedidoDocs = Array.from(selectedDocs).filter(id => {
             const doc = docs.find(d => d.DocIdDocumento === id);
-            return doc && doc.DocTipo !== 'PedidoCaja' && doc.DocTipo !== 'PC';
+            return doc && isFiscalCfe(doc.DocTipo);
         });
         if (nonPedidoDocs.length === 0) return;
         if (!window.confirm(`[MODO PRUEBA SISNET] ¿Seguro que deseas simular el envío de ${nonPedidoDocs.length} documentos a SISNET?`)) return;
@@ -300,6 +367,10 @@ const ContabilidadBandejaCFE = () => {
                 DocTipo: doc.DocTipo,
                 MonIdMoneda: doc.MonIdMoneda,
                 CliIdCliente: doc.CliIdCliente,
+                DocCliNombre: doc.DocCliNombre || doc.CliRazonSocial || doc.CliNombreFantasia || '',
+                DocCliDocumento: doc.DocCliDocumento || doc.CliRUT || '',
+                DocCliDireccion: doc.DocCliDireccion || doc.CliDireccion || '',
+                DocCliCiudad: doc.DocCliCiudad || '',
                 lineas: lineas
             });
         } catch (error) {
@@ -311,7 +382,7 @@ const ContabilidadBandejaCFE = () => {
     const handleReversarYGenerar = async (doc) => {
         const confirmMsg = doc.CfeEstado === 'ACEPTADO_DGI' 
             ? 'Esta acción emitirá una Nota de Crédito por el 100% del total para anular la factura fiscal y abrirá el formulario para que generes una nueva corregida. ¿Deseas continuar?'
-            : 'Esta acción anulará el documento actual y abrirá el formulario para que generes uno nuevo corregido. ¿Deseas continuar?';
+            : 'Esta acción reversará el documento actual y abrirá el formulario para que generes uno nuevo corregido. ¿Deseas continuar?';
         
         if (!window.confirm(confirmMsg)) return;
 
@@ -350,27 +421,19 @@ const ContabilidadBandejaCFE = () => {
         }
     };
 
-    const submitNotaCredito = async () => {
-        if (!ncMonto || parseFloat(ncMonto) <= 0) {
-            return toast.error('El monto debe ser mayor a 0');
-        }
+    const handleOpenNcModal = async (doc, mode = 'NC') => {
         try {
-            const toastId = toast.loading('Generando Nota de Crédito...');
-            await api.post('/contabilidad/caja/nota-credito', {
-                docIdOrigen: ncDoc.DocIdDocumento,
-                monto: parseFloat(ncMonto),
-                motivo: ncMotivo,
-                clienteId: ncDoc.CliIdCliente || 1,
-                monedaId: ncDoc.MonIdMoneda || 1,
-                cuentaId: ncDoc.CueIdCuenta || (ncDoc.MonIdMoneda === 2 ? 119 : 118)
-            });
+            const toastId = toast.loading('Cargando detalles del documento original...');
+            const response = await api.get(`/contabilidad/cfe/documentos/${doc.DocIdDocumento}/detalle`);
+            const lineas = response.data?.detalles || [];
             toast.dismiss(toastId);
-            toast.success('Nota de Crédito generada correctamente');
-            setShowNcModal(false);
-            fetchDocumentos();
+            setNcDoc(doc);
+            setNcLineas(lineas);
+            setNcMode(mode);
+            setShowNcModal(true);
         } catch (error) {
             toast.dismiss();
-            toast.error('Error al generar Nota de Crédito: ' + (error.response?.data?.error || error.message));
+            toast.error('Error al cargar datos del documento: ' + (error.response?.data?.error || error.message));
         }
     };
 
@@ -550,7 +613,7 @@ const ContabilidadBandejaCFE = () => {
                                         type="checkbox"
                                         className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
                                         onChange={toggleAll}
-                                        checked={docs.length > 0 && docs.filter(d => d.CfeEstado === 'PENDIENTE' && d.DocTipo !== 'PedidoCaja' && d.DocTipo !== 'PC').length > 0 && selectedDocs.size === docs.filter(d => d.CfeEstado === 'PENDIENTE' && d.DocTipo !== 'PedidoCaja' && d.DocTipo !== 'PC').length}
+                                        checked={docs.length > 0 && docs.filter(d => d.CfeEstado === 'PENDIENTE' && isFiscalCfe(d.DocTipo)).length > 0 && selectedDocs.size === docs.filter(d => d.CfeEstado === 'PENDIENTE' && isFiscalCfe(d.DocTipo)).length}
                                     />
                                 </th>
                                 <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Fecha</th>
@@ -574,7 +637,7 @@ const ContabilidadBandejaCFE = () => {
                                 docs.map(doc => (
                                     <tr key={doc.DocIdDocumento} className="hover:bg-gray-50">
                                         <td className="px-6 py-4 whitespace-nowrap">
-                                            {doc.CfeEstado === 'PENDIENTE' && doc.DocTipo !== 'PedidoCaja' && doc.DocTipo !== 'PC' && (
+                                            {doc.CfeEstado === 'PENDIENTE' && isFiscalCfe(doc.DocTipo) && (
                                                 <input 
                                                     type="checkbox"
                                                     className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
@@ -584,7 +647,7 @@ const ContabilidadBandejaCFE = () => {
                                             )}
                                         </td>
                                         <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                                            {new Date(doc.DocFechaEmision).toLocaleString('es-UY', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                                            {renderDocFecha(doc.DocFechaEmision)}
                                         </td>
                                         <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
                                             {getTipoDocName(doc.DocTipo)}
@@ -593,11 +656,17 @@ const ContabilidadBandejaCFE = () => {
                                             {doc.DocSerie}-{doc.DocNumero}
                                         </td>
                                         <td className="px-6 py-4 text-sm text-gray-500">
-                                            <div className="text-gray-900">
-                                                {doc.StringIDCliente && <span className="text-indigo-600 font-bold mr-1">[{doc.StringIDCliente.trim()}]</span>}
+                                            <div className="text-gray-900 font-medium">
                                                 {doc.CliNombreFantasia || doc.CliRazonSocial || 'Consumidor Final'}
                                             </div>
-                                            {doc.CliRUT && <div className="text-xs text-gray-400">RUT: {doc.CliRUT}</div>}
+                                            <div className="flex items-center gap-2 mt-0.5 flex-wrap">
+                                                {doc.StringIDCliente && (
+                                                    <span className="text-[10px] font-bold text-indigo-500 bg-indigo-50 border border-indigo-100 px-1.5 py-0.5 rounded">
+                                                        {doc.StringIDCliente.trim()}
+                                                    </span>
+                                                )}
+                                                {doc.CliRUT && <span className="text-xs text-gray-400">RUT: {doc.CliRUT}</span>}
+                                            </div>
                                         </td>
                                         <td className="px-6 py-4 whitespace-nowrap text-sm font-semibold text-gray-900">
                                             <div>
@@ -620,14 +689,7 @@ const ContabilidadBandejaCFE = () => {
                                             {getStatusBadge(doc.CfeEstado)}
                                         </td>
                                         <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                                            {doc.CfeEstado === 'ACEPTADO_DGI' ? (
-                                                <div>
-                                                    <div className="font-semibold text-gray-900">{doc.CfeNumeroOficial}</div>
-                                                    <div className="text-xs text-gray-400">CAE: {doc.CfeCAE}</div>
-                                                </div>
-                                            ) : (
-                                                <span className="text-gray-400">-</span>
-                                            )}
+                                            {renderCfeOficialCol(doc)}
                                         </td>
                                         <td className="px-6 py-4 whitespace-nowrap text-center text-sm font-medium">
                                             {doc.CfeEstado === 'BORRADOR' ? (
@@ -640,27 +702,39 @@ const ContabilidadBandejaCFE = () => {
                                                         <Printer className="h-5 w-5" />
                                                     </button>
                                                     <button
-                                                        onClick={() => setEditDoc(doc)}
+                                                        onClick={() => setEditDocId(doc.DocIdDocumento)}
                                                         className="text-gray-500 hover:text-yellow-600 transition-colors"
                                                         title="Editar Borrador"
                                                     >
                                                         <Edit className="h-5 w-5" />
                                                     </button>
-                                                    <button
-                                                        onClick={() => handleCopiar(doc)}
-                                                        className="text-gray-500 hover:text-blue-600 transition-colors"
-                                                        title="Convertir / Copiar como e-Ticket o e-Factura"
-                                                    >
-                                                        <Copy className="h-5 w-5" />
-                                                    </button>
+                                                    {!(isCreditNote(doc.DocTipo) || String(doc.DocTipo).toUpperCase().includes('DEBITO')) && (
+                                                        <button
+                                                            onClick={() => handleCopiar(doc)}
+                                                            className="text-gray-500 hover:text-blue-600 transition-colors"
+                                                            title="Convertir / Copiar como e-Ticket o e-Factura"
+                                                        >
+                                                            <Copy className="h-5 w-5" />
+                                                        </button>
+                                                    )}
                                                     <button
                                                         onClick={() => handleAnular(doc)}
                                                         className="text-gray-500 hover:text-red-600 transition-colors"
-                                                        title="Eliminar Borrador"
+                                                        title="Reversar Documento"
                                                     >
                                                         <XCircle className="h-5 w-5" />
                                                     </button>
-                                                    <span className="text-xs text-purple-500 font-semibold italic">No va a DGI</span>
+                                                    {isFiscalCfe(doc.DocTipo) ? (
+                                                        <button
+                                                            onClick={() => handleEnviarDGI(doc)}
+                                                            className="text-blue-500 hover:text-blue-700 transition-colors font-bold text-xs border border-blue-200 hover:border-blue-400 bg-blue-50/50 hover:bg-blue-50 px-2 py-1 rounded"
+                                                            title="Enviar a DGI"
+                                                        >
+                                                            Enviar a DGI
+                                                        </button>
+                                                    ) : (
+                                                        <span className="text-xs text-purple-500 font-semibold italic">No va a DGI</span>
+                                                    )}
                                                 </div>
                                             ) : doc.CfeEstado === 'PENDIENTE' ? (
                                                 <div className="flex items-center justify-center space-x-2">
@@ -671,39 +745,33 @@ const ContabilidadBandejaCFE = () => {
                                                     >
                                                         <Printer className="h-5 w-5" />
                                                     </button>
-                                                    {/* Editar: abre modal completo con líneas de detalle */}
+                                                    {/* Editar: abre FacturacionManualModal en modo editar */}
                                                     <button
-                                                        onClick={() => setEditDoc(doc)}
+                                                        onClick={() => setEditDocId(doc.DocIdDocumento)}
                                                         className="text-gray-500 hover:text-yellow-600 transition-colors"
                                                         title="Editar Factura"
                                                     >
                                                         <Edit className="h-5 w-5" />
                                                     </button>
-                                                    {/* Anular */}
+                                                    {/* Reversar */}
                                                     <button
                                                         onClick={() => handleAnular(doc)}
                                                         className="text-gray-500 hover:text-red-600 transition-colors"
-                                                        title="Anular Factura"
+                                                        title="Reversar Documento"
                                                     >
                                                         <XCircle className="h-5 w-5" />
                                                     </button>
                                                     {/* Copiar */}
-                                                    <button
-                                                        onClick={() => handleCopiar(doc)}
-                                                        className="text-gray-500 hover:text-blue-600 transition-colors"
-                                                        title="Copiar Factura"
-                                                    >
-                                                        <Copy className="h-5 w-5" />
-                                                    </button>
-                                                    {/* Reversar y Generar Nueva */}
-                                                    <button
-                                                        onClick={() => handleReversarYGenerar(doc)}
-                                                        className="text-gray-500 hover:text-purple-600 transition-colors"
-                                                        title="Reversar y Generar Nueva"
-                                                    >
-                                                        <RefreshCw className="h-5 w-5" />
-                                                    </button>
-                                                    {doc.DocTipo !== 'PedidoCaja' && doc.DocTipo !== 'PC' && (
+                                                    {!(isCreditNote(doc.DocTipo) || String(doc.DocTipo).toUpperCase().includes('DEBITO')) && (
+                                                        <button
+                                                            onClick={() => handleCopiar(doc)}
+                                                            className="text-gray-500 hover:text-blue-600 transition-colors"
+                                                            title="Copiar Factura"
+                                                        >
+                                                            <Copy className="h-5 w-5" />
+                                                        </button>
+                                                    )}
+                                                    {isFiscalCfe(doc.DocTipo) && (
                                                         <button 
                                                             onClick={() => handleEnviarDGI(doc)}
                                                             disabled={sendingId === doc.DocIdDocumento}
@@ -732,35 +800,34 @@ const ContabilidadBandejaCFE = () => {
                                                     >
                                                         <FileOutput className="mr-1.5 h-3.5 w-3.5 text-red-500" /> PDF
                                                     </button>
-                                                    {/* Copiar */}
-                                                    <button
-                                                        onClick={() => handleCopiar(doc)}
-                                                        className="text-gray-500 hover:text-blue-600 transition-colors p-1"
-                                                        title="Copiar Factura"
-                                                    >
-                                                        <Copy className="h-5 w-5" />
-                                                    </button>
-                                                    {/* Nota de Crédito */}
-                                                    <button
-                                                        onClick={() => {
-                                                            setNcDoc(doc);
-                                                            setNcMonto(doc.DocTotal);
-                                                            setNcMotivo('Devolución/Ajuste de comprobante');
-                                                            setShowNcModal(true);
-                                                        }}
-                                                        className="text-gray-500 hover:text-red-500 transition-colors p-1"
-                                                        title="Generar Nota de Crédito"
-                                                    >
-                                                        <FileX className="h-5 w-5" />
-                                                    </button>
-                                                    {/* Reversar y Generar Nueva */}
-                                                    <button
-                                                        onClick={() => handleReversarYGenerar(doc)}
-                                                        className="text-gray-500 hover:text-purple-600 transition-colors p-1"
-                                                        title="Reversar y Generar Nueva"
-                                                    >
-                                                        <RefreshCw className="h-5 w-5" />
-                                                    </button>
+                                                    {/* Copiar (solo si no es nota de crédito o débito) */}
+                                                    {!(isCreditNote(doc.DocTipo) || String(doc.DocTipo).toUpperCase().includes('DEBITO')) && (
+                                                        <button
+                                                            onClick={() => handleCopiar(doc)}
+                                                            className="text-gray-500 hover:text-blue-600 transition-colors p-1"
+                                                            title="Copiar Factura"
+                                                        >
+                                                            <Copy className="h-5 w-5" />
+                                                        </button>
+                                                    )}
+                                                    {/* Nota de Crédito o Débito según el tipo */}
+                                                    {isCreditNote(doc.DocTipo) ? (
+                                                        <button
+                                                            onClick={() => handleOpenNcModal(doc, 'ND')}
+                                                            className="text-gray-500 hover:text-red-500 transition-colors p-1"
+                                                            title="Generar Nota de Débito (Anula NC)"
+                                                        >
+                                                            <XCircle className="h-5 w-5" />
+                                                        </button>
+                                                    ) : (
+                                                        <button
+                                                            onClick={() => handleOpenNcModal(doc, 'NC')}
+                                                            className="text-gray-500 hover:text-red-500 transition-colors p-1"
+                                                            title="Generar Nota de Crédito (Anula Doc.)"
+                                                        >
+                                                            <XCircle className="h-5 w-5" />
+                                                        </button>
+                                                    )}
                                                 </div>
                                             )}
                                         </td>
@@ -788,59 +855,33 @@ const ContabilidadBandejaCFE = () => {
             )}
 
             {showNcModal && ncDoc && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 animate-in fade-in">
-                    <div className="bg-white rounded-2xl shadow-xl max-w-md w-full p-6 flex flex-col gap-4">
-                        <div className="flex justify-between items-center pb-2 border-b border-slate-100">
-                            <h3 className="text-lg font-bold text-slate-800">Generar Nota de Crédito</h3>
-                            <button onClick={() => setShowNcModal(false)} className="text-slate-400 hover:text-slate-600">
-                                <XCircle className="h-6 w-6" />
-                            </button>
-                        </div>
-                        <div>
-                            <p className="text-sm text-slate-500 mb-4">
-                                Se emitirá una Nota de Crédito vinculada al comprobante <strong>{ncDoc.DocSerie}-{ncDoc.DocNumero}</strong>.
-                            </p>
-                            <label className="block text-sm font-bold text-slate-700 mb-1">Monto a Acreditar</label>
-                            <input 
-                                type="number" 
-                                className="w-full border border-slate-200 rounded-xl px-4 py-2.5 font-medium text-slate-800 outline-none focus:ring-2 focus:ring-blue-500 mb-3"
-                                value={ncMonto}
-                                onChange={(e) => setNcMonto(e.target.value)}
-                            />
-                            <label className="block text-sm font-bold text-slate-700 mb-1">Motivo / Observaciones</label>
-                            <textarea 
-                                className="w-full border border-slate-200 rounded-xl px-4 py-2.5 font-medium text-slate-800 outline-none focus:ring-2 focus:ring-blue-500"
-                                value={ncMotivo}
-                                onChange={(e) => setNcMotivo(e.target.value)}
-                                rows={3}
-                            />
-                        </div>
-                        <div className="flex justify-end gap-3 pt-2 border-t border-slate-100 mt-2">
-                            <button 
-                                onClick={() => setShowNcModal(false)}
-                                className="px-4 py-2 text-sm font-bold text-slate-600 hover:bg-slate-100 rounded-xl"
-                            >
-                                Cancelar
-                            </button>
-                            <button 
-                                onClick={submitNotaCredito}
-                                className="px-5 py-2 text-sm font-bold bg-blue-600 text-white hover:bg-blue-700 rounded-xl"
-                            >
-                                Generar Nota de Crédito
-                            </button>
-                        </div>
-                    </div>
-                </div>
+                <CfeNotaCreditoModal 
+                    doc={ncDoc}
+                    lineas={ncLineas}
+                    mode={ncMode}
+                    onClose={() => {
+                        setShowNcModal(false);
+                        setNcDoc(null);
+                        setNcLineas([]);
+                    }}
+                    onSuccess={() => {
+                        setShowNcModal(false);
+                        setNcDoc(null);
+                        setNcLineas([]);
+                        fetchDocumentos();
+                    }}
+                />
             )}
 
             {/* PreviewModal eliminada — el lápiz abre el modal de edición completo */}
 
-            {editDoc && (
-                <CfeEditModal 
-                    doc={editDoc} 
-                    onClose={() => setEditDoc(null)}
+            {editDocId && (
+                <FacturacionManualModal
+                    mode="editar"
+                    editDocId={editDocId}
+                    onClose={() => setEditDocId(null)}
                     onSuccess={() => {
-                        setEditDoc(null);
+                        setEditDocId(null);
                         fetchDocumentos();
                     }}
                 />

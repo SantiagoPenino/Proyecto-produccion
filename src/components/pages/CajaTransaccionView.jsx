@@ -5,7 +5,7 @@ import { jsPDF } from 'jspdf';
 import api, { SOCKET_URL } from '../../services/apiClient';
 import { toast } from 'sonner';
 import Swal from 'sweetalert2';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router-dom';
 import {
   ShoppingCart, Plus, Trash2, RefreshCw, Loader2,
   CreditCard, CheckCircle, AlertCircle, AlertTriangle,
@@ -108,6 +108,28 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
   const [showArqueo, setShowArqueo] = useState(false);
   const [busquedaGlobalRes, setBusquedaGlobalRes] = useState(null);
   const navigate = useNavigate();
+  const location = useLocation();
+  const [locationCliente, setLocationCliente] = useState(null);
+  const [locationDocumento, setLocationDocumento] = useState(null);
+
+  useEffect(() => {
+    if (location.state) {
+      if (location.state.tab) {
+        setActiveTab(location.state.tab);
+      }
+      if (location.state.subTab) {
+        setSubTabIngreso(location.state.subTab);
+      }
+      if (location.state.cliente) {
+        setLocationCliente(location.state.cliente);
+      }
+      if (location.state.documento) {
+        setLocationDocumento(location.state.documento);
+      }
+      // Limpiar el estado de la ubicación para no re-aplicarlo al recargar
+      window.history.replaceState({}, document.title);
+    }
+  }, [location]);
 
   const [searchTerm, setSearchTerm] = useState('');
   const [filtroTipo, setFiltroTipo] = useState('1');
@@ -526,10 +548,13 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
           estadoRetiro: o.estadoOrden,
           OReFechaAlta: o.OReFechaAlta || null,
           orders: [{
+            orderId: o.OrdIdOrden,
             orderNumber: o.OrdCodigoOrden,
             orderEstado: o.estadoOrden,
             orderCosto: o.MonSimbolo ? `${o.MonSimbolo} ${parseFloat(o.OrdCostoFinal).toFixed(2)}` : `$ ${parseFloat(o.OrdCostoFinal).toFixed(2)}`,
-            monedaId: (o.MonSimbolo && o.MonSimbolo.includes('US')) ? 2 : 1
+            monedaId: (o.MonSimbolo && o.MonSimbolo.includes('US')) ? 2 : 1,
+            orderIdMetodoPago: o.Pagada ? 999999 : null,
+            orderPago: o.Pagada ? o.OrdCostoFinal : null
           }]
         }))
       ];
@@ -1029,10 +1054,13 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
                       estadoRetiro: o.estadoOrden,
                       OReFechaAlta: o.OReFechaAlta || null,
                       orders: [{
+                        orderId: o.OrdIdOrden,
                         orderNumber: o.OrdCodigoOrden,
                         orderEstado: o.estadoOrden,
                         orderCosto: o.MonSimbolo ? `${o.MonSimbolo} ${parseFloat(o.OrdCostoFinal).toFixed(2)}` : `$ ${parseFloat(o.OrdCostoFinal).toFixed(2)}`,
-                        monedaId: (o.MonSimbolo && o.MonSimbolo.includes('US')) ? 2 : 1
+                        monedaId: (o.MonSimbolo && o.MonSimbolo.includes('US')) ? 2 : 1,
+                        orderIdMetodoPago: o.Pagada ? 999999 : null,
+                        orderPago: o.Pagada ? o.OrdCostoFinal : null
                       }]
                     }))
                   ];
@@ -1503,7 +1531,8 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
 
                             setProcesandoVenta(true);
                             try {
-                              const ventaPayload = { ...payload, pagos: ventaPagos.filter(p => p.monto && p.metodoPagoId).map(p => ({ metodoPagoId: parseInt(p.metodoPagoId), montoOriginal: parseFloat(p.monto), monedaId: p.moneda === 'USD' ? 2 : 1, cotizacion: p.moneda === 'USD' ? cotizacion : null, referenciaNumero: '' })) };
+                              const esCred = String(ventaTipoDoc).toUpperCase().includes('CREDITO') || ventaTipoDoc === '08' || ventaTipoDoc === '02';
+                              const ventaPayload = { ...payload, pagos: esCred ? [] : ventaPagos.filter(p => p.monto && p.metodoPagoId).map(p => ({ metodoPagoId: parseInt(p.metodoPagoId), montoOriginal: parseFloat(p.monto), monedaId: p.moneda === 'USD' ? 2 : 1, cotizacion: p.moneda === 'USD' ? cotizacion : null, referenciaNumero: '' })) };
                               const res = await api.post('/contabilidad/caja/venta-directa', ventaPayload);
                               toast.success(`Venta procesada. Comprobante: ${res.data.numeroDocFormato || res.data.tcaIdTransaccion}`);
 
@@ -1610,7 +1639,8 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
                             if (!payload.items.every(i => i.codigo && i.precioTotal && i.cantidad)) { toast.warning('Complete todos los campos de los ítems.'); return; }
                             setProcesandoVenta(true);
                             try {
-                              const ventaPayload = { ...payload, pagos: ventaPagos.filter(p => p.monto && p.metodoPagoId).map(p => ({ metodoPagoId: parseInt(p.metodoPagoId), montoOriginal: parseFloat(p.monto), monedaId: p.moneda === 'USD' ? 2 : 1, cotizacion: p.moneda === 'USD' ? cotizacion : null, referenciaNumero: '' })) };
+                              const esCred = String(ventaTipoDoc).toUpperCase().includes('CREDITO') || ventaTipoDoc === '08' || ventaTipoDoc === '02';
+                              const ventaPayload = { ...payload, pagos: esCred ? [] : ventaPagos.filter(p => p.monto && p.metodoPagoId).map(p => ({ metodoPagoId: parseInt(p.metodoPagoId), montoOriginal: parseFloat(p.monto), monedaId: p.moneda === 'USD' ? 2 : 1, cotizacion: p.moneda === 'USD' ? cotizacion : null, referenciaNumero: '' })) };
                               const res = await api.post('/contabilidad/caja/venta-directa', ventaPayload);
                               toast.success(`Venta procesada. Comprobante: ${res.data.numeroDocFormato || res.data.tcaIdTransaccion}`);
 
@@ -1674,6 +1704,7 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
                       metodosPago={metodosPago}
                       cotizacion={cotizacion}
                       onCobroCompletado={() => {}}
+                      initialCliente={locationCliente}
                     />
                   )}
                   {subTabIngreso === 'OTROS_INGRESOS' && (
@@ -1681,7 +1712,6 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
                       sesion={sesion}
                       metodosPago={metodosPago}
                       cotizacion={cotizacion}
-                      tiposDocDisponibles={tiposDocumentos.length > 0 ? tiposDocumentos : TIPOS_DOC}
                       onCobroCompletado={() => { fetchRetiros(); }}
                       isAdminCaja={isAdminCaja}
                     />
@@ -1691,9 +1721,10 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
                       sesion={sesion}
                       metodosPago={metodosPago}
                       cotizacion={cotizacion}
-                      tiposDocDisponibles={tiposDocumentos.length > 0 ? tiposDocumentos : TIPOS_DOC}
                       onPagoCompletado={() => { fetchRetiros(); }}
                       isAdminCaja={isAdminCaja}
+                      initialCliente={locationCliente}
+                      initialDocumento={locationDocumento}
                     />
                   )}
                   {subTabIngreso === 'MOTOR' && (

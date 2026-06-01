@@ -979,6 +979,7 @@ async function getMovimientos(CueIdCuenta, FechaDesde = null, FechaHasta = null,
       WHERE CueIdCuenta = @CueIdCuentaA
         AND CAST(MovFecha AS DATE) < @FechaDesdeA
         AND (MovAnulado IS NULL OR MovAnulado = 0)
+        AND MovTipo NOT IN ('ORDEN', 'ENTREGA', 'ORDEN_ANTICIPO')
     `);
     saldoArrastre = Number(arrastreRes.recordset[0]?.SaldoArrastre ?? 0);
   }
@@ -1098,13 +1099,13 @@ async function getMovimientos(CueIdCuenta, FechaDesde = null, FechaHasta = null,
         // Visualmente, agrupamos el total usando DocTotal (en negativo por ser cargo)
         importeVirtual = -(Math.abs(Number(m.DocTotal || 0)));
       }
-    } else if (['PAGO', 'VTA_CAJA', 'SALDO_INICIAL', 'SALDO_A_FAVOR', 'COBRO', 'ANTICIPO', 'AJUSTE', 'AJUSTE_POS', 'AJUSTE_NEG', 'PAGO_CRUZADO'].includes(m.MovTipo)) {
+    } else if (['PAGO', 'VTA_CAJA', 'SALDO_INICIAL', 'SALDO_A_FAVOR', 'COBRO', 'ANTICIPO', 'AJUSTE', 'AJUSTE_POS', 'AJUSTE_NEG', 'PAGO_CRUZADO', 'NOTA_DEBITO'].includes(m.MovTipo)) {
       isVisible = true;
       importeVirtual = Number(m.MovImporte);
     } else if (['NOTA_CREDITO', 'REVERSO', 'DEVOLUCION'].includes(m.MovTipo)) {
       isVisible = true;
       importeVirtual = Math.abs(Number(m.MovImporte));
-    } else if (['ORDEN', 'ENTREGA'].includes(m.MovTipo)) {
+    } else if (['ORDEN', 'ENTREGA', 'ORDEN_ANTICIPO'].includes(m.MovTipo)) {
       isVisible = false;
       importeVirtual = 0;
     } else {
@@ -1276,8 +1277,8 @@ async function getDeudasPorCliente(CliIdCliente, modo = 'TODO') {
             ABS(m.MovImporte) as Importe,
             m.MovConcepto as Concepto
          FROM dbo.MovimientosCuenta m WITH(NOLOCK)
-         LEFT JOIN dbo.OrdenesDeposito od WITH(NOLOCK) ON od.OrdIdOrden = m.OrdIdOrden
          LEFT JOIN dbo.Ordenes erp WITH(NOLOCK) ON erp.OrdenID = m.OrdIdOrden
+         LEFT JOIN dbo.OrdenesDeposito od WITH(NOLOCK) ON od.OrdCodigoOrden = erp.CodigoOrden
          WHERE (
             (d.DocIdDocumento IS NOT NULL AND m.CicIdCiclo = (SELECT CicIdCiclo FROM dbo.DocumentosContables dc WITH(NOLOCK) WHERE dc.DocIdDocumento = d.DocIdDocumento))
             OR
@@ -1290,8 +1291,8 @@ async function getDeudasPorCliente(CliIdCliente, modo = 'TODO') {
       JOIN dbo.Clientes cli WITH(NOLOCK) ON cli.CliIdCliente = cc.CliIdCliente
       LEFT JOIN dbo.DocumentosContables docPrincipal WITH(NOLOCK) ON docPrincipal.DocIdDocumento = d.DocIdDocumento
       LEFT JOIN dbo.Monedas mon WITH(NOLOCK) ON mon.MonIdMoneda = cc.MonIdMoneda
-      LEFT JOIN dbo.OrdenesDeposito od WITH(NOLOCK) ON od.OrdIdOrden = d.OrdIdOrden
       LEFT JOIN dbo.Ordenes ordERP WITH(NOLOCK) ON ordERP.OrdenID = d.OrdIdOrden
+      LEFT JOIN dbo.OrdenesDeposito od WITH(NOLOCK) ON od.OrdCodigoOrden = ordERP.CodigoOrden
       WHERE cc.CliIdCliente = @CliIdCliente
         AND d.DDeEstado IN ('PENDIENTE', 'PARCIAL', 'VENCIDO')
         AND d.DDeImportePendiente > 0.01

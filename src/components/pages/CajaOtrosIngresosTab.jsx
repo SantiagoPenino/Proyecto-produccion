@@ -6,12 +6,12 @@ import CajaPanelPago from './CajaPanelPago';
 
 const TIPOS_DOC_PAGO = [
   { value: '05', label: 'Recibo' },
-  { value: 'NINGUNO', label: 'Sin documento' },
 ];
 
 export default function CajaOtrosIngresosTab({ sesion, metodosPago = [], cotizacion = 1, tiposDocDisponibles = TIPOS_DOC_PAGO, onCobroCompletado, isAdminCaja }) {
   
   const [concepto, setConcepto] = useState('');
+  const [importe, setImporte]   = useState('');
   
   const [pagos, setPagos]         = useState([{ id: Date.now(), metodoPagoId: '', moneda: 'UYU', monedaId: 1, monto: '' }]);
   const [tipoDoc, setTipoDoc]     = useState('05');
@@ -34,15 +34,22 @@ export default function CajaOtrosIngresosTab({ sesion, metodosPago = [], cotizac
     }
   }, [tiposDocDisponibles]);
 
-
-
   const handleProcesar = async () => {
     if (!concepto.trim()) return toast.warning('Debe ingresar un concepto para el ingreso.');
+    
+    const importeNum = parseFloat(importe) || 0;
+    if (importeNum <= 0) return toast.warning('El importe debe ser mayor a 0.');
 
     const pagosValidos = pagos.filter(p => parseFloat(p.monto) > 0 && p.metodoPagoId);
-    if (!pagosValidos.length) return toast.warning('Ingrese al menos un método de pago con un monto mayor a 0.');
+    if (!pagosValidos.length) return toast.warning('Ingrese al menos un método de pago.');
 
-    // Tomamos el primer pago válido como el principal para definir el importe y la moneda
+    const totalPagado = pagosValidos.reduce((acc, p) => acc + (parseFloat(p.monto) || 0), 0);
+    const diferencia = importeNum - totalPagado;
+    const tolerancia = pagosValidos[0].moneda === 'USD' ? 0.05 : 1.0;
+    if (Math.abs(diferencia) > tolerancia) {
+      return toast.warning(`Falta cubrir la diferencia o el monto excede el importe especificado.`);
+    }
+
     const pagoActivo = pagosValidos[0];
     const m = parseFloat(pagoActivo.monto);
     const mon = pagoActivo.moneda;
@@ -56,7 +63,7 @@ export default function CajaOtrosIngresosTab({ sesion, metodosPago = [], cotizac
         moneda: mon,
         monedaId: mon === 'USD' ? 2 : 1,
         cotizacion: mon === 'USD' ? cotizacion : null,
-        metodoPagoId: parseInt(pagoActivo.metodoPagoId, 10), // Asumimos 1 solo medio de pago para simplificar el asiento
+        metodoPagoId: parseInt(pagoActivo.metodoPagoId, 10),
         tipoDocumento: tipoDoc,
         serieDoc: serieDoc,
         observaciones: observaciones,
@@ -65,6 +72,7 @@ export default function CajaOtrosIngresosTab({ sesion, metodosPago = [], cotizac
 
       toast.success(`Ingreso registrado exitosamente.`);
       setConcepto('');
+      setImporte('');
       setObservaciones('');
       
       const contado = metodosPago.find(met => /contado|efectivo/i.test(met.MPaDescripcionMetodo));
@@ -77,6 +85,8 @@ export default function CajaOtrosIngresosTab({ sesion, metodosPago = [], cotizac
     } finally { setProcesando(false); }
   };
 
+  const importeNum = parseFloat(importe) || 0;
+
   return (
     <div className="flex flex-1 flex-col overflow-hidden bg-zinc-50">
       <div className="flex-1 p-4 overflow-y-auto w-full flex flex-col gap-4 bg-slate-100">
@@ -88,7 +98,7 @@ export default function CajaOtrosIngresosTab({ sesion, metodosPago = [], cotizac
           metodosPago={metodosPago}
           pagos={pagos}
           onPagosChange={setPagos}
-          totalACubrir={0}
+          totalACubrir={importeNum}
           moneda={pagos[0]?.moneda || 'UYU'}
           cotizacion={cotizacion}
           procesando={procesando}
@@ -99,7 +109,11 @@ export default function CajaOtrosIngresosTab({ sesion, metodosPago = [], cotizac
           onSerieDoc={setSerieDoc}
           numDoc=""
           tiposDocDisponibles={tiposDocDisponibles.length > 0 ? tiposDocDisponibles : TIPOS_DOC_PAGO}
-          disabledExtra={!concepto.trim() || !pagos.some(p => parseFloat(p.monto) > 0 && p.metodoPagoId)}
+          disabledExtra={
+            !concepto.trim() || 
+            importeNum <= 0 || 
+            Math.abs(importeNum - pagos.reduce((acc, p) => acc + (parseFloat(p.monto) || 0), 0)) > (pagos[0]?.moneda === 'USD' ? 0.05 : 1.0)
+          }
         />
 
         <div className="bg-white border border-slate-200 rounded-3xl p-6 shadow-sm flex flex-col gap-6">
@@ -114,23 +128,38 @@ export default function CajaOtrosIngresosTab({ sesion, metodosPago = [], cotizac
           </div>
 
           <div className="flex flex-col gap-6">
-            <div className="flex flex-col gap-3">
-              <label className="text-[11px] font-black text-zinc-400 uppercase tracking-widest px-1 font-archivo">
-                Concepto / Descripción del Ingreso
-              </label>
-              <div className="relative group">
-                <Edit3 size={20} className="absolute left-6 top-1/2 -translate-y-1/2 text-zinc-300 group-focus-within:text-brand-cyan transition-colors" />
-                <input 
-                  type="text" 
-                  value={concepto}
-                  onChange={e => setConcepto(e.target.value)}
-                  placeholder="Ej: Aporte de socio, Ingreso extraordinario..." 
-                  className="w-full bg-white border-2 border-zinc-200 rounded-2xl pl-16 pr-6 py-4 text-zinc-800 font-bold focus:border-brand-cyan focus:ring-4 focus:ring-brand-cyan/5 outline-none transition-all placeholder-zinc-400"
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="flex flex-col gap-3">
+                <label className="text-[11px] font-black text-zinc-400 uppercase tracking-widest px-1 font-archivo">
+                  Concepto / Descripción del Ingreso
+                </label>
+                <div className="relative group">
+                  <Edit3 size={20} className="absolute left-6 top-1/2 -translate-y-1/2 text-zinc-300 group-focus-within:text-brand-cyan transition-colors" />
+                  <input 
+                    type="text" 
+                    value={concepto}
+                    onChange={e => setConcepto(e.target.value)}
+                    placeholder="Ej: Aporte de socio, Ingreso extraordinario..." 
+                    className="w-full bg-white border-2 border-zinc-200 rounded-2xl pl-16 pr-6 py-4 text-zinc-800 font-bold focus:border-brand-cyan focus:ring-4 focus:ring-brand-cyan/5 outline-none transition-all placeholder-zinc-400"
+                  />
+                </div>
+              </div>
+
+              <div className="flex flex-col gap-3">
+                <label className="text-[11px] font-black text-zinc-400 uppercase tracking-widest px-1 font-archivo">
+                  Importe
+                </label>
+                <input
+                  type="number"
+                  value={importe}
+                  onChange={e => setImporte(e.target.value)}
+                  placeholder="0.00"
+                  className="w-full border-2 border-zinc-200 bg-white rounded-2xl px-5 py-4 focus:border-brand-cyan focus:ring-4 focus:ring-brand-cyan/5 outline-none font-black text-2xl text-zinc-800 transition-all placeholder-zinc-300"
+                  min="0.01"
+                  step="0.01"
                 />
               </div>
             </div>
-
-
 
             <div className="flex flex-col gap-3">
               <label className="text-[11px] font-black text-zinc-400 uppercase tracking-widest px-1 font-archivo">

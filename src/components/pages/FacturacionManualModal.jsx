@@ -2,10 +2,37 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { X, CheckCircle, FileText, User, Plus, Trash2, DollarSign, UserCheck, Loader2 } from 'lucide-react';
 import api from '../../services/apiClient';
 import { toast } from 'sonner';
+import ClienteBilletera from '../common/ClienteBilletera';
+import CajaPanelPago from './CajaPanelPago';
 
 
+// ID del Consumidor Final genérico (sin cuenta corriente)
+const CONSUMIDOR_FINAL_ID = 2089;
 
-export default function FacturacionManualModal({ onClose, onSuccess, initialData }) {
+// Mapea (tipoCliente, formaPago) => valor de CodDocumento en tiposDocs
+function resolverDocTipo(tiposDocs, tipoCliente, formaPago) {
+  if (!tiposDocs || tiposDocs.length === 0) return '';
+  if (tipoCliente === 'PEDIDO_CAJA') {
+    const pedido = tiposDocs.find(t => t.value === '40' || (t.label || '').toUpperCase().includes('PEDIDO'));
+    return pedido?.value || '';
+  }
+  const esFactura = tipoCliente === 'RUT';
+  const esContado = formaPago === 'CONTADO';
+  const candidatos = tiposDocs.filter(t => {
+    const lbl = (t.label || '').toUpperCase();
+    if (lbl.includes('NOTA') || lbl.includes('ANULAC') || lbl.includes('RECIBO') || lbl.includes('PEDIDO')) return false;
+    const esDocFactura = lbl.includes('FACTURA') || t.RutObligatorio === true || t.RutObligatorio === 1;
+    const esDocContado = lbl.includes('CONTADO');
+    if (esFactura && !esDocFactura) return false;
+    if (!esFactura && esDocFactura) return false;
+    if (esContado && !esDocContado) return false;
+    if (!esContado && esDocContado) return false;
+    return true;
+  });
+  return candidatos[0]?.value || '';
+}
+
+export default function FacturacionManualModal({ onClose, onSuccess, initialData, mode = 'nuevo', editDocId = null }) {
   const [clientes, setClientes] = useState([]);
   const [tiposDocs, setTiposDocs] = useState([]);
   const [monedas, setMonedas] = useState([]);
@@ -13,9 +40,23 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
   const [articulos, setArticulos] = useState([]);
   const [metodosPago, setMetodosPago] = useState([]);
   const [loading, setLoading] = useState(false);
+  const [loadingEdit, setLoadingEdit] = useState(mode === 'editar');
   const [updatingClient, setUpdatingClient] = useState(false);
+  const [editDocInfo, setEditDocInfo] = useState(null);
+  const esEditar = mode === 'editar' && !!editDocId;
 
-  // Nuevos estados para búsqueda de clientes y pagos mixtos
+  // Selectores simplificados
+  const [tipoCliente, setTipoCliente] = useState('CONSUMIDOR_FINAL'); // 'CONSUMIDOR_FINAL' | 'RUT' | 'PEDIDO_CAJA'
+  const [formaPago, setFormaPago] = useState('CONTADO'); // 'CONTADO' | 'CREDITO'
+
+  // Panel de pago
+  const [serieDoc, setSerieDoc] = useState('');
+  // ID numérico real del cliente (para ClienteBilletera)
+  const [clienteIdNumerico, setClienteIdNumerico] = useState(null);
+  const [notas, setNotas] = useState('');
+  const [monedaOp, setMonedaOp] = useState('UYU'); // moneda de la operación
+
+  // Búsqueda de clientes y pagos mixtos
   const [qCliente, setQCliente] = useState('');
   const [cotizacion, setCotizacion] = useState(40);
   const [pagos, setPagos] = useState(() => {
@@ -90,6 +131,112 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
     fetchData();
   }, []);
 
+  // Si mode === 'editar': cargar datos del documento existente
+  useEffect(() => {
+    if (mode !== 'editar' || !editDocId) return;
+    const cargarDocParaEditar = async () => {
+      setLoadingEdit(true);
+      try {
+        const res = await api.get(`/contabilidad/cfe/documentos/${editDocId}/detalle`);
+        const d = res.data?.doc;
+        const lineas = res.data?.detalles || [];
+        if (!d) throw new Error('Sin datos del documento');
+        setEditDocInfo({ DocSerie: d.DocSerie, DocNumero: d.DocNumero, DocTipo: d.DocTipo });
+        const lbl = (d.DocTipo || '').toUpperCase();
+        if (lbl.includes('PEDIDO')) setTipoCliente('PEDIDO_CAJA');
+        else if (d.RutObligatorio || lbl.includes('FACTURA')) setTipoCliente('RUT');
+        else setTipoCliente('CONSUMIDOR_FINAL');
+        const isContado = lbl.includes('CONTADO') || d.DocPagado === true || d.DocPagado === 1;
+        setFormaPago(isContado ? 'CONTADO' : 'CREDITO');
+        setNotas(d.DocObservaciones || '');
+        if (res.data?.pagos && res.data.pagos.length > 0) {
+          setPagos(res.data.pagos.map((p, idx) => ({
+            id: Date.now() + idx,
+            metodoPagoId: String(p.MPaIdMetodoPago || p.metodoPagoId || ''),
+            monedaId: p.PagIdMonedaPago || p.monedaId || 1,
+            monto: String(p.PagMontoPago || p.monto || '')
+          })));
+        }
+        const lineasMapeadas = lineas.map((l, idx) => {
+          const qty = parseFloat(l.DcdCantidad) || 1;
+          const sub = parseFloat(l.DcdSubtotal) || 0;
+          const imp = parseFloat(l.DcdImpuestos) || 0;
+          const total = parseFloat(l.DcdTotal) || (sub + imp);
+          const unitPrice = qty > 0 ? (total / qty) : (parseFloat(l.DcdPrecioUnitario) || 0);
+          let ivaRate = 22;
+          if (sub > 0) {
+            const ratio = (imp / sub) * 100;
+            if (ratio < 2) ivaRate = 0;
+            else if (ratio < 15) ivaRate = 10;
+          }
+          return { id: Date.now() + idx, concepto: (l.DcdNomItem || '').trim(), DcdDscItem: (l.DcdDscItem || '').trim(), cantidad: qty, precioUnitario: parseFloat(unitPrice.toFixed(4)), iva: ivaRate, isPreexisting: true, precioNote: 'Precio original' };
+        });
+        setFormData(prev => ({
+          ...prev,
+          DocTipo: d.DocTipo || '',
+          MonIdMoneda: d.MonIdMoneda || 1,
+          CliIdCliente: d.CliIdCliente ? String(d.CliIdCliente) : '',
+          DocCliNombre: d.DocCliNombre || d.CliRazonSocial || d.CliNombreFantasia || 'Consumidor Final',
+          DocCliDocumento: d.DocCliDocumento || d.CliRUT || '',
+          DocCliDireccion: d.DocCliDireccion || d.CliDireccion || '',
+          DocCliCiudad: d.DocCliCiudad || '',
+          DocPagado: isContado,
+          Lineas: lineasMapeadas.length > 0 ? lineasMapeadas : prev.Lineas
+        }));
+      } catch (err) {
+        toast.error('Error cargando documento: ' + (err.response?.data?.error || err.message));
+      } finally {
+        setLoadingEdit(false);
+      }
+    };
+    cargarDocParaEditar();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editDocId, mode]);
+
+  // Derivar DocTipo cuando cambian tiposDocs, tipoCliente o formaPago
+  useEffect(() => {
+    if (tiposDocs.length === 0) return;
+    const docTipo = resolverDocTipo(tiposDocs, tipoCliente, formaPago);
+    const esContado = formaPago === 'CONTADO';
+    setFormData(prev => ({ ...prev, DocTipo: docTipo, DocPagado: esContado }));
+  }, [tiposDocs, tipoCliente, formaPago]);
+
+  // Cuando cambia el tipoCliente, forzar contado en Pedido Caja
+  useEffect(() => {
+    if (tipoCliente === 'PEDIDO_CAJA') setFormaPago('CONTADO');
+  }, [tipoCliente]);
+
+  // Sincronizar monedaOp con formData.MonIdMoneda
+  useEffect(() => {
+    const monId = monedaOp === 'USD' ? 2 : 1;
+    setFormData(prev => ({ ...prev, MonIdMoneda: monId }));
+  }, [monedaOp]);
+
+  // Sincronizar info del cliente seleccionado al iniciar (por ej. al copiar o editar)
+  useEffect(() => {
+    if (clientes.length === 0 || !formData.CliIdCliente) return;
+    const c = clientes.find(item => String(item.CodCliente || item.CliIdCliente) === String(formData.CliIdCliente));
+    if (c) {
+      const idNumerico = c.CliIdCliente ? parseInt(c.CliIdCliente) : null;
+      setClienteIdNumerico(idNumerico);
+      
+      setFormData(prev => {
+        let deptoNombre = '';
+        if (c.DepartamentoID && departamentos.length > 0) {
+          const found = departamentos.find(d => d.ID === c.DepartamentoID || d.id === c.DepartamentoID);
+          if (found) deptoNombre = found.Nombre;
+        }
+        return {
+          ...prev,
+          DocCliNombre: prev.DocCliNombre || c.Nombre || c.NombreFantasia || '',
+          DocCliDocumento: prev.DocCliDocumento || c.CioRuc || c.IDCliente || '',
+          DocCliDireccion: prev.DocCliDireccion || c.DireccionTrabajo || '',
+          DocCliCiudad: prev.DocCliCiudad || deptoNombre || ''
+        };
+      });
+    }
+  }, [clientes, formData.CliIdCliente, departamentos]);
+
   // Calcular totales
   const totales = useMemo(() => {
     let subtotal = 0;
@@ -158,7 +305,7 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
       ]);
       setClientes(resClientes.data || []);
       setMetodosPago(Array.isArray(resMetodosPago.data) ? resMetodosPago.data : []);
-      
+
       if (resCotizacion?.data?.success && resCotizacion.data?.data?.CotDolar) {
         setCotizacion(resCotizacion.data.data.CotDolar);
       } else if (resCotizacion?.data?.promedio) {
@@ -221,7 +368,7 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
                 precioNote: res.data.perfilesAplicados?.length 
                   ? `Tarifa: ${res.data.perfilesAplicados.join(', ')}` 
                   : 'Precio Base'
-              };
+                };
             }
             return l;
           })
@@ -257,6 +404,10 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
     
     const c = clientes.find(item => String(item.CodCliente || item.CliIdCliente) === String(val));
     if (c) {
+      // Guardar el ID numérico real (CliIdCliente entero) para endpoints de cuentas
+      const idNumerico = c.CliIdCliente ? parseInt(c.CliIdCliente) : null;
+      setClienteIdNumerico(idNumerico);
+
       let deptoNombre = '';
       if (c.DepartamentoID && departamentos.length > 0) {
         const found = departamentos.find(d => d.ID === c.DepartamentoID || d.id === c.DepartamentoID);
@@ -280,6 +431,7 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
         };
       });
     } else {
+      setClienteIdNumerico(null);
       setFormData(prev => ({ ...prev, CliIdCliente: val }));
     }
   };
@@ -484,31 +636,72 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
 
     setLoading(true);
     try {
-      await api.post('/contabilidad/cfe/manual', {
-        DocTipo: formData.DocTipo,
-        MonIdMoneda: formData.MonIdMoneda,
-        CliIdCliente: formData.CliIdCliente ? parseInt(formData.CliIdCliente) : null,
-        DocCliNombre: formData.DocCliNombre,
-        DocCliDocumento: formData.DocCliDocumento,
-        DocCliDireccion: formData.DocCliDireccion,
-        DocCliCiudad: formData.DocCliCiudad,
-        DocPagado: formData.DocPagado,
-        MetodoPagoId: formData.DocPagado ? parseInt(pagos[0]?.metodoPagoId) : null,
-        Pagos: formData.DocPagado ? pagos.map(p => ({
-          metodoPagoId: parseInt(p.metodoPagoId),
-          monto: parseFloat(p.monto),
-          monedaId: parseInt(p.monedaId)
-        })) : null,
-        Lineas: lineasValidas.map(l => ({
-          concepto: l.concepto,
-          DcdDscItem: l.DcdDscItem || '',
-          cantidad: parseFloat(l.cantidad),
-          precioUnitario: parseFloat(l.precioUnitario),
-          iva: parseFloat(l.iva)
-        })),
-        Totales: totales
-      });
-      toast.success('Documento generado exitosamente');
+      if (esEditar) {
+        await api.put(`/contabilidad/cfe/documentos/${editDocId}`, {
+          DocTipo: formData.DocTipo,
+          MonIdMoneda: formData.MonIdMoneda,
+          CliIdCliente: formData.CliIdCliente ? parseInt(formData.CliIdCliente) : null,
+          DocCliNombre: formData.DocCliNombre,
+          DocCliDocumento: formData.DocCliDocumento,
+          DocCliDireccion: formData.DocCliDireccion,
+          DocCliCiudad: formData.DocCliCiudad,
+          DocPagado: formData.DocPagado,
+          MetodoPagoId: formData.DocPagado ? parseInt(pagos[0]?.metodoPagoId) : null,
+          Pagos: formData.DocPagado ? pagos.map(p => ({
+            metodoPagoId: parseInt(p.metodoPagoId),
+            monto: parseFloat(p.monto),
+            monedaId: parseInt(p.monedaId)
+          })) : null,
+          lineas: lineasValidas.map(l => {
+            const qty = parseFloat(l.cantidad) || 1;
+            const price = parseFloat(l.precioUnitario) || 0;
+            const ivaRate = (l.iva !== undefined && l.iva !== null) ? parseFloat(l.iva) : 22;
+            const lineTotal = qty * price;
+            const lineNeto = lineTotal / (1 + ivaRate / 100);
+            const lineIva = lineTotal - lineNeto;
+            return {
+              DcdNomItem: l.concepto,
+              DcdDscItem: l.DcdDscItem || '',
+              DcdCantidad: qty,
+              DcdPrecioUnitario: price,
+              DcdSubtotal: parseFloat(lineNeto.toFixed(2)),
+              DcdImpuestos: parseFloat(lineIva.toFixed(2)),
+              DcdTotal: parseFloat(lineTotal.toFixed(2))
+            };
+          }),
+          DocSubtotal: totales.subtotal,
+          DocImpuestos: totales.iva,
+          DocTotal: totales.total,
+          DocObservaciones: notas
+        });
+        toast.success('Documento actualizado exitosamente');
+      } else {
+        await api.post('/contabilidad/cfe/manual', {
+          DocTipo: formData.DocTipo,
+          MonIdMoneda: formData.MonIdMoneda,
+          CliIdCliente: formData.CliIdCliente ? parseInt(formData.CliIdCliente) : null,
+          DocCliNombre: formData.DocCliNombre,
+          DocCliDocumento: formData.DocCliDocumento,
+          DocCliDireccion: formData.DocCliDireccion,
+          DocCliCiudad: formData.DocCliCiudad,
+          DocPagado: formData.DocPagado,
+          MetodoPagoId: formData.DocPagado ? parseInt(pagos[0]?.metodoPagoId) : null,
+          Pagos: formData.DocPagado ? pagos.map(p => ({
+            metodoPagoId: parseInt(p.metodoPagoId),
+            monto: parseFloat(p.monto),
+            monedaId: parseInt(p.monedaId)
+          })) : null,
+          Lineas: lineasValidas.map(l => ({
+            concepto: l.concepto,
+            DcdDscItem: l.DcdDscItem || '',
+            cantidad: parseFloat(l.cantidad),
+            precioUnitario: parseFloat(l.precioUnitario),
+            iva: parseFloat(l.iva)
+          })),
+          Totales: totales
+        });
+        toast.success('Documento generado exitosamente');
+      }
       onSuccess();
     } catch (error) {
       toast.error(error.response?.data?.error || 'Error al emitir el documento');
@@ -542,196 +735,45 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
       {/* CONTENIDO PRINCIPAL */}
       <div className="flex-1 flex flex-col p-4 gap-4 min-h-0 overflow-y-auto">
         
-        {/* TARJETA HORIZONTAL SUPERIOR: Pagos, Comprobante, Observaciones, Acción */}
-        <div className="bg-white rounded-2xl border border-zinc-200 shadow-sm p-4 flex gap-6 items-start flex-wrap w-full shrink-0 animate-in fade-in duration-300">
-          
-          {/* Columna 1: Formas de Pago / Cobro Inmediato */}
-          <div className="flex flex-col gap-1.5 flex-1 min-w-[320px]">
-            <div className="flex items-center justify-between mb-1">
-              <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest px-1">Formas de pago recibidas</label>
-              
-              <div className={`px-2.5 py-0.5 rounded-full border text-[9px] font-black uppercase tracking-wider flex items-center gap-1.5
-                ${!formData.DocPagado
-                  ? 'bg-zinc-100 border-zinc-200 text-zinc-500'
-                  : balanceOK
-                    ? 'bg-emerald-50 border-emerald-200 text-emerald-700'
-                    : diferenciaPago > 0
-                      ? 'bg-rose-50 border-rose-200 text-rose-700'
-                      : 'bg-zinc-100 border-zinc-200 text-zinc-500'
-                }`}
-              >
-                <span>
-                  {!formData.DocPagado
-                    ? '⏳ Factura a Crédito'
-                    : balanceOK
-                      ? '✅ Caja Balanceada'
-                      : diferenciaPago > 0
-                        ? `Falta ${formData.MonIdMoneda === 2 ? 'U$S' : '$'} ${formatMoney(Math.abs(diferenciaPago))}`
-                        : `Excede ${formData.MonIdMoneda === 2 ? 'U$S' : '$'} ${formatMoney(Math.abs(diferenciaPago))}`}
-                </span>
-              </div>
-            </div>
-
-            <div className="flex gap-3 items-center">
-              {/* Selector Contado / Crédito */}
-              <select
-                value={formData.DocPagado ? "true" : "false"}
-                onChange={e => setFormData(prev => ({ ...prev, DocPagado: e.target.value === "true" }))}
-                className="bg-zinc-50 border border-zinc-200 rounded-xl px-3 py-2 text-xs font-black text-zinc-800 outline-none focus:border-indigo-500 shadow-sm cursor-pointer shrink-0 w-44"
-              >
-                <option value="false">Crédito (A Deuda)</option>
-                <option value="true">Contado (Cobro Inmediato)</option>
-              </select>
-
-              {/* Botón rápido si faltan pagos */}
-              {formData.DocPagado && diferenciaPago > 0.01 && (
-                <button
-                  type="button"
-                  onClick={autoRellenarPago}
-                  className="bg-indigo-50 text-indigo-600 text-[10px] font-black border border-indigo-200 rounded-xl px-3 py-2 hover:bg-indigo-100 transition-all uppercase tracking-wider shadow-sm shrink-0"
-                >
-                  Completar Saldo
-                </button>
-              )}
-            </div>
-
-            {/* Listado de Pagos Mixtos */}
-            {formData.DocPagado && (
-              <div className="flex flex-col gap-2 mt-2 max-h-32 overflow-y-auto w-full">
-                {pagos.map(p => (
-                  <div key={p.id} className="flex gap-2 items-center bg-zinc-50 border border-zinc-200 p-2 rounded-xl">
-                    <select
-                      value={p.metodoPagoId}
-                      onChange={e => updatePago(p.id, 'metodoPagoId', e.target.value)}
-                      className="bg-white border border-zinc-200 rounded-lg px-2 py-1.5 text-xs font-bold text-zinc-800 outline-none w-32 shrink-0 cursor-pointer"
-                    >
-                      <option value="">Medio...</option>
-                      {metodosPago.map(mp => <option key={mp.MPaIdMetodoPago} value={mp.MPaIdMetodoPago}>{mp.MPaDescripcionMetodo}</option>)}
-                    </select>
-
-                    <div className="flex bg-zinc-200 rounded-lg p-0.5 border border-zinc-300 select-none shrink-0 text-[10px]">
-                      <button
-                        type="button"
-                        onClick={() => updatePago(p.id, 'monedaId', 1)}
-                        className={`px-2 py-1 text-[9px] font-black uppercase tracking-wider rounded-md transition-all ${
-                          String(p.monedaId) === '1' ? 'bg-indigo-600 text-white shadow-sm' : 'text-zinc-500 hover:text-zinc-700'
-                        }`}
-                      >
-                        $ (PESOS)
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => updatePago(p.id, 'monedaId', 2)}
-                        className={`px-2 py-1 text-[9px] font-black uppercase tracking-wider rounded-md transition-all ${
-                          String(p.monedaId) === '2' ? 'bg-indigo-600 text-white shadow-sm' : 'text-zinc-500 hover:text-zinc-700'
-                        }`}
-                      >
-                        US$ (DÓLARES)
-                      </button>
-                    </div>
-
-                    <input
-                      type="number"
-                      placeholder="0.00"
-                      value={p.monto}
-                      onChange={e => updatePago(p.id, 'monto', e.target.value)}
-                      className="w-24 bg-white border border-zinc-200 rounded-xl px-3 py-1.5 text-xs font-black text-zinc-800 text-right outline-none focus:border-indigo-500 shadow-inner"
-                    />
-
-                    {pagos.length > 1 && (
-                      <button
-                        type="button"
-                        onClick={() => removePago(p.id)}
-                        className="text-zinc-400 hover:text-rose-500 p-1.5 hover:bg-rose-50 rounded-lg transition-all shrink-0"
-                      >
-                        <X size={14} />
-                      </button>
-                    )}
-                  </div>
-                ))}
-                
-                <button
-                  type="button"
-                  onClick={addPago}
-                  className="w-40 text-left bg-zinc-50 text-zinc-500 text-[10px] font-black border border-dashed border-zinc-200 rounded-lg px-3 py-1.5 hover:border-zinc-400 hover:text-zinc-800 transition-all flex items-center gap-1 uppercase tracking-wider mt-1"
-                >
-                  <Plus size={12} /> Agregar Medio
-                </button>
-              </div>
-            )}
-          </div>
-
-          {/* Columna 2: Configuración del Comprobante */}
-          <div className="flex flex-col gap-1.5 min-w-[200px] flex-1">
-            <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest px-1">Tipo de Comprobante</label>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mt-1">
-              <div>
-                <label className="text-[8px] font-black text-zinc-400 uppercase tracking-widest px-1">CFE</label>
-                <select
-                  value={formData.DocTipo}
-                  onChange={e => setFormData({ ...formData, DocTipo: e.target.value })}
-                  className="w-full bg-zinc-50 border border-zinc-200 rounded-xl px-3 py-2 text-xs font-black text-zinc-800 outline-none focus:border-indigo-500 shadow-sm cursor-pointer mt-0.5"
-                >
-                  {tiposDocs.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
-                </select>
-              </div>
-
-              <div>
-                <label className="text-[8px] font-black text-zinc-400 uppercase tracking-widest px-1">Moneda</label>
-                <select
-                  value={formData.MonIdMoneda}
-                  onChange={e => {
-                    const newMonId = parseInt(e.target.value);
-                    setFormData(prev => {
-                      setTimeout(() => {
-                        prev.Lineas.forEach(l => {
-                          if (!l.isPreexisting) {
-                            recalcularPrecioLineaManual(l.id, l.concepto, l.cantidad, prev.CliIdCliente, newMonId);
-                          }
-                        });
-                      }, 100);
-                      return { ...prev, MonIdMoneda: newMonId };
-                    });
-                  }}
-                  className="w-full bg-zinc-50 border border-zinc-200 rounded-xl px-3 py-2 text-xs font-black text-zinc-800 outline-none focus:border-indigo-500 shadow-sm cursor-pointer mt-0.5"
-                >
-                  <option value={1}>UYU ($)</option>
-                  <option value={2}>USD (U$S)</option>
-                </select>
-              </div>
-            </div>
-          </div>
-
-          {/* Columna 3: Observaciones y Procesar Emisión */}
-          <div className="flex flex-col gap-1.5 min-w-[280px] flex-1">
-            <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest px-1">Observaciones Internas</label>
-            <input
-              type="text"
-              placeholder="Añada notas informativas..."
-              className="w-full bg-zinc-50 border border-zinc-200 rounded-xl px-3 py-2 text-xs font-bold text-zinc-800 outline-none focus:border-indigo-500 transition-all shadow-sm placeholder-zinc-300 mt-1"
-            />
-            
-            <button
-              type="submit"
-              form="factura-form"
-              disabled={loading}
-              className="w-full bg-[#006097] hover:bg-[#005080] text-white font-black py-3.5 px-6 rounded-2xl border border-transparent shadow-lg shadow-sky-600/10 transition-all hover:scale-[1.01] active:scale-[0.98] text-xs uppercase tracking-wider whitespace-nowrap flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed shrink-0 mt-3"
-            >
-              {loading ? (
-                <Loader2 className="animate-spin" size={16} />
-              ) : (
-                <><CheckCircle size={16} /> {formData.DocPagado ? 'PROCESAR EMISIÓN (CONTADO)' : 'PROCESAR EMISIÓN (A DEUDA)'}</>
-              )}
-            </button>
-          </div>
-
-        </div>
+        {/* PANEL SUPERIOR: CajaPanelPago idéntico a Caja */}
+        <CajaPanelPago
+          layout="horizontal"
+          mode="COBRO"
+          totalACubrir={totales.total}
+          moneda={monedaOp}
+          cotizacion={cotizacion}
+          metodosPago={metodosPago}
+          pagos={pagos}
+          onPagosChange={setPagos}
+          tipoDoc={formData.DocTipo}
+          onTipoDoc={(v) => {
+            setFormData(prev => ({ ...prev, DocTipo: v }));
+            // Sincronizar flags internos
+            const esContado = v === '07' || v === '01' || v === '40';
+            setFormData(prev => ({ ...prev, DocTipo: v, DocPagado: esContado }));
+            const esCF = v === '07' || v === '08';
+            const esRut = v === '01' || v === '02';
+            if (v === '40') setTipoCliente('PEDIDO_CAJA');
+            else if (esCF) setTipoCliente('CONSUMIDOR_FINAL');
+            else if (esRut) setTipoCliente('RUT');
+            setFormaPago(esContado ? 'CONTADO' : 'CREDITO');
+          }}
+          serieDoc={serieDoc}
+          onSerieDoc={setSerieDoc}
+          notas={notas}
+          onNotas={setNotas}
+          onConfirmar={() => { document.getElementById('factura-form')?.requestSubmit?.() || document.getElementById('factura-submit-btn')?.click(); }}
+          procesando={loading}
+          tiposDocDisponibles={tiposDocs}
+          labelBoton={esEditar ? 'GUARDAR CAMBIOS' : undefined}
+          showSubmitButton={true}
+        />
 
         {/* ESTRUCTURA INFERIOR: Columnas Divididas */}
-        <div className="flex-1 flex flex-col lg:flex-row gap-4 min-h-0 min-w-0">
+        <div className="flex flex-col lg:flex-row gap-4 min-w-0 items-start">
           
           {/* COLUMNA IZQUIERDA: Clientes y DGI */}
-          <div className="w-full lg:w-[360px] bg-white border border-zinc-200 rounded-2xl flex flex-col p-4 shrink-0 gap-4 overflow-y-auto shadow-sm">
+          <div className="w-full lg:w-[360px] bg-white border border-zinc-200 rounded-2xl flex flex-col p-4 shrink-0 gap-4 shadow-sm">
             
             {/* 1. Seleccionar Cliente */}
             <div className="flex flex-col gap-3">
@@ -795,12 +837,18 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
                       type="button"
                       onClick={() => handleClienteChange('')}
                       className="bg-white hover:bg-rose-50 text-zinc-400 hover:text-rose-600 p-1.5 rounded-lg transition-all border border-zinc-200 hover:border-rose-200 shadow-sm"
-                      title="Quitar Cliente"
-                    >
-                      <Trash2 size={14} />
-                    </button>
+                       title="Quitar Cliente"
+                     >
+                       <Trash2 size={14} />
+                     </button>
                   </div>
                 </div>
+              )}
+              {clienteIdNumerico && clienteIdNumerico !== CONSUMIDOR_FINAL_ID && (
+                <ClienteBilletera
+                  clienteId={clienteIdNumerico}
+                  clienteNombre={formData.DocCliNombre}
+                />
               )}
             </div>
 
@@ -887,11 +935,11 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
           </div>
 
           {/* COLUMNA DERECHA: Conceptos y Totales */}
-          <div className="flex-1 flex flex-col gap-4 min-h-0">
+          <div className="flex-1 flex flex-col gap-4">
             
             {/* Panel de Conceptos */}
-            <div className="bg-white border border-zinc-200 rounded-2xl p-4 shadow-sm flex flex-col flex-1 gap-3 min-h-0 overflow-y-auto">
-              <form id="factura-form" onSubmit={handleSubmit} className="flex flex-col gap-3 flex-1 min-h-0">
+            <div className="bg-white border border-zinc-200 rounded-2xl p-4 shadow-sm flex flex-col gap-3">
+              <form id="factura-form" onSubmit={handleSubmit} className="flex flex-col gap-3">
                 <div className="flex justify-between items-center shrink-0 pb-1.5 border-b border-zinc-100">
                   <h3 className="font-black text-zinc-400 text-[10px] uppercase tracking-widest">2. Conceptos del Comprobante</h3>
                   <button
@@ -903,7 +951,7 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
                   </button>
                 </div>
 
-                <div className="flex-1 overflow-y-auto min-h-0">
+                <div>
                   <table className="w-full text-left min-w-[650px] border-collapse">
                     <thead className="bg-zinc-50 border-b border-zinc-200 text-[9px] font-black text-zinc-500 uppercase tracking-widest sticky top-0 z-10">
                       <tr>

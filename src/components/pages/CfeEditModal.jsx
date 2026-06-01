@@ -512,12 +512,20 @@ export default function CfeEditModal({ doc, onClose, onSuccess }) {
     };
 
     const handleSave = async () => {
-        if (form.DocTipo.includes('FACTURA')) {
+        if (form.DocTipo.toUpperCase().includes('FACTURA')) {
+            const isConsumidorFinal = 
+                (clienteSel && (clienteSel.CliIdCliente === 1 || clienteSel.CliIdCliente === 100101 || getClienteDisplayName(clienteSel).toLowerCase().includes('consumidor final'))) ||
+                (!clienteSel && (form.CliIdCliente === 1 || form.CliIdCliente === 100101 || form.DocCliNombre?.toLowerCase().includes('consumidor final')));
+
+            if (isConsumidorFinal) {
+                toast.error('Las e-Facturas (débito o crédito) no pueden emitirse a Consumidor Final. Seleccione un cliente con RUT.');
+                return;
+            }
             if (!form.DocCliDocumento || form.DocCliDocumento.replace(/\D/g, '').length < 11) {
                 toast.error('Las E-Facturas requieren un número de RUT válido.');
                 return;
             }
-        } else if (form.DocTipo.includes('TICKET')) {
+        } else if (form.DocTipo.toUpperCase().includes('TICKET')) {
             const isUYU = form.MonIdMoneda === 1 || form.MonIdMoneda === '1';
             if (isUYU && form.DocTotal > DGI_UMBRAL_UYU) {
                 if (!form.DocCliDocumento || form.DocCliDocumento.trim() === '') {
@@ -910,7 +918,9 @@ export default function CfeEditModal({ doc, onClose, onSuccess }) {
                 <div className="shrink-0 border-t border-slate-100 bg-slate-50 px-6 py-4 flex items-center justify-between rounded-b-3xl">
                     <div className="text-xs text-slate-400 font-medium flex items-center gap-1.5">
                         <Hash size={11} />Doc ID: <strong className="text-slate-600">{doc.DocIdDocumento}</strong>
-                        &nbsp;·&nbsp;<span className="text-amber-600 font-bold">PENDIENTE DGI</span>
+                        &nbsp;·&nbsp;<span className={doc.CfeEstado === 'BORRADOR' ? "text-purple-600 font-bold" : "text-amber-600 font-bold"}>
+                            {doc.CfeEstado === 'BORRADOR' ? 'BORRADOR' : 'PENDIENTE DGI'}
+                        </span>
                     </div>
                     <div className="flex gap-3">
                         <button onClick={onClose} disabled={saving}

@@ -1,5 +1,6 @@
 const soap = require('soap');
 const logger = require('../utils/logger');
+const { getPool, sql } = require('../config/db');
 
 // La URL de WSDL y las credenciales vienen del .env
 const WSDL_URL = process.env.SISNET_WSDL_URL || 'http://test.sisnet.com.uy:8062/EfacturaWeb/wsService?wsdl';
@@ -17,6 +18,80 @@ const TASA_MINIMA = process.env.SISNET_TASA_MINIMA || 'tasa_Minima';
  * @returns {Promise<Object>} - Devuelve un objeto con CAE, URL, Serie, etc.
  */
 exports.emitirCFE = async (doc, lineas, cotDolar = 40.0) => {
+    // 1. Cargar referencias si existen (Requerido por DGI para Notas de Crédito y Débito)
+    let listaWsReferencias = [];
+    if (doc.DocIdDocumentoRef) {
+        try {
+            logger.info(`[SISNET-Service] Buscando documento referenciado con ID: ${doc.DocIdDocumentoRef}`);
+            const pool = await getPool();
+            const refRes = await pool.request()
+                .input('RefId', sql.Int, doc.DocIdDocumentoRef)
+                .query(`SELECT DocTipo, DocSerie, DocNumero, DocFechaEmision, DocTotal, MonIdMoneda, CfeNumeroOficial
+                        FROM dbo.DocumentosContables WHERE DocIdDocumento = @RefId`);
+            
+            if (refRes.recordset.length > 0) {
+                const refDoc = refRes.recordset[0];
+                // Para e-Tickets (B2C) NO se envía wsReceptor → no necesitamos el RUT aquí
+                // Solo para e-Facturas (B2B) leemos el RUT del comprador
+                const rutReceptorRef = (doc.CliRUT || doc.DocCliDocumento || '').replace(/\D/g, '').trim();
+                const esRUT = (rutReceptorRef.length === 12);
+                
+                const refTipoUpper = (refDoc.DocTipo || '').toUpperCase();
+                let tpoDocRef = 'e_Ticket';
+                
+                if (refTipoUpper.includes('TICKET')) {
+                    if (refTipoUpper.includes('CREDITO') || refTipoUpper.includes('CRE')) {
+                        tpoDocRef = 'nc_e_Ticket';
+                    } else if (refTipoUpper.includes('DEBITO') || refTipoUpper.includes('DEB')) {
+                        tpoDocRef = 'nd_e_Ticket';
+                    } else {
+                        tpoDocRef = 'e_Ticket';
+                    }
+                } else if (refTipoUpper.includes('FACTURA')) {
+                    if (refTipoUpper.includes('CREDITO') || refTipoUpper.includes('CRE')) {
+                        tpoDocRef = 'nc_e_Factura';
+                    } else if (refTipoUpper.includes('DEBITO') || refTipoUpper.includes('DEB')) {
+                        tpoDocRef = 'nd_e_Factura';
+                    } else {
+                        tpoDocRef = 'e_Factura';
+                    }
+                } else {
+                    tpoDocRef = esRUT ? 'e_Factura' : 'e_Ticket';
+                }
+                
+                let refSerie = refDoc.DocSerie || 'B';
+                let refNumero = parseInt(refDoc.DocNumero, 10) || 1;
+                
+                if (refDoc.CfeNumeroOficial) {
+                    const text = refDoc.CfeNumeroOficial;
+                    const match = text.match(/Serie\s+([A-Za-z]+)\s+(\d+)/i) || text.match(/Serie\s+([A-Za-z]+)-(\d+)/i) || text.match(/([A-Za-z]+)-(\d+)/i);
+                    if (match) {
+                        refSerie = match[1];
+                        refNumero = parseInt(match[2], 10);
+                    }
+                }
+                
+                const fechaRef = new Date(refDoc.DocFechaEmision).toLocaleDateString('en-GB'); // DD/MM/YYYY
+                
+                listaWsReferencias.push({
+                    nroLinRef: 1,
+                    indicadorReferenciaGlobal: 0,
+                    tpoDocRef: tpoDocRef,
+                    serie: refSerie,
+                    nroCFERef: refNumero,
+                    fechaCFEref: fechaRef,
+                    razonReferencia: (doc.DocMotivoRef || 'Reverso').substring(0, 90),
+                    mntCFEref: Number(Number(refDoc.DocTotal || 0).toFixed(2))
+                });
+                logger.info(`[SISNET-Service] Referencia cargada correctamente: tipo=${tpoDocRef}, serie=${refSerie}, nro=${refNumero}`);
+            } else {
+                logger.warn(`[SISNET-Service] Documento referenciado con ID ${doc.DocIdDocumentoRef} no fue encontrado en la base de datos.`);
+            }
+        } catch (errRef) {
+            logger.error("[SISNET-Service] Error consultando referencia en BD: " + errRef.message);
+        }
+    }
+
     return new Promise((resolve, reject) => {
         logger.info(`[SISNET-Service] Conectando a SOAP: ${WSDL_URL}`);
         
@@ -31,11 +106,26 @@ exports.emitirCFE = async (doc, lineas, cotDolar = 40.0) => {
             client.setSecurity(security);
 
             // 2. Determinar tipo de CFE y Tipo de Documento del Receptor
-            // Mapeo básico: e-Factura=111, e-Ticket=101. Asumimos e-Factura (111) para RUT y 101 para CI.
-            // Limpiamos los strings de la BD que suelen venir con espacios o ser nulos/vacíos
-            const rutReceptor = (doc.CliRUT || doc.DocCliDocumento || '').trim() || '999999999999';
-            const tipoCFE = (rutReceptor.length === 12) ? 111 : 101; 
-            const tipoDocRecep = tipoCFE === 111 ? 2 : 3; // 2=RUT, 3=CI
+            // Para e-Facturas (B2B): se incluye wsReceptor con RUT real
+            // Para e-Tickets (B2C): NO se incluye wsReceptor (DGI no lo requiere y rechaza RUTs inválidos)
+            const docCliDoc = (doc.CliRUT || doc.DocCliDocumento || '').replace(/\D/g, '').trim();
+            const esRUT = (docCliDoc.length === 12); // RUT uruguayo = 12 dígitos
+            const esCI  = (docCliDoc.length >= 6 && docCliDoc.length <= 8);
+            // tipoDocRecep: 2=RUT, 3=CI (solo aplica para e-Facturas)
+            const tipoDocRecep = esRUT ? 2 : 3;
+
+            const docTipoUpper = (doc.DocTipo || '').toUpperCase();
+            let tipoCFE = 101;
+            if (docTipoUpper.includes('CREDITO') || docTipoUpper.includes('CRE')) {
+                tipoCFE = esRUT ? 112 : 102;
+            } else if (docTipoUpper.includes('DEBITO') || docTipoUpper.includes('DEB')) {
+                tipoCFE = esRUT ? 113 : 103;
+            } else {
+                tipoCFE = esRUT ? 111 : 101;
+            }
+
+            // ¿Es e-Ticket (B2C)? → tipoCFE 101, 102, 103 → NO enviar wsReceptor
+            const esETicket = [101, 102, 103].includes(tipoCFE);
 
             const rznSoc = (doc.CliRazonSocial || doc.DocCliNombre || '').trim() || 'Consumidor Final';
             const direccion = (doc.CliDireccion || doc.DocCliDireccion || '').trim() || 'Sin Direccion';
@@ -99,15 +189,19 @@ exports.emitirCFE = async (doc, lineas, cotDolar = 40.0) => {
                 const mntTotal = fixD(mntNetoIvaTasaBasica + mntIVATasaBas + mntNoGrv);
 
                 const cfeData = {
-                    wsReceptor: {
-                        tipoDocRecep: tipoDocRecep,
-                        codPaisRecep: 'UY',
-                        docRecep: rutReceptor,
-                        rznSocRecep: rznSoc,
-                        dirRecep: direccion,
-                        ciudadRecep: ciudad,
-                        deptoRecep: 'Montevideo'
-                    },
+                    // Para e-Tickets (B2C) NO se incluye wsReceptor — DGI no lo requiere
+                    // Para e-Facturas (B2B) se incluye con el RUT real del comprador
+                    ...(esETicket ? {} : {
+                        wsReceptor: {
+                            tipoDocRecep: tipoDocRecep,
+                            codPaisRecep: 'UY',
+                            docRecep: docCliDoc,
+                            rznSocRecep: (doc.CliRazonSocial || doc.DocCliNombre || '').trim() || 'Sin Nombre',
+                            dirRecep: (doc.CliDireccion || doc.DocCliDireccion || '').trim() || 'Sin Direccion',
+                            ciudadRecep: (doc.DocCliCiudad || '').trim() || 'Montevideo',
+                            deptoRecep: 'Montevideo'
+                        }
+                    }),
                     wsTotales: {
                         tpoMoneda: doc.MonIdMoneda === 2 ? 'USD' : 'UYU', 
                         tpoCambio: doc.MonIdMoneda === 2 ? cotDolar : 1.0,
@@ -124,6 +218,7 @@ exports.emitirCFE = async (doc, lineas, cotDolar = 40.0) => {
                         mntPagar: mntTotal
                     },
                     listaWsItems: listaWsItems,
+                    listaWsReferencias: listaWsReferencias,
                     wsVarios: {
                         fchEmis: new Date().toLocaleDateString('en-GB'), // DD/MM/YYYY
                         fhcVenc: new Date().toLocaleDateString('en-GB'), // Podría sumarle DocDiasVencimiento
@@ -151,9 +246,41 @@ exports.emitirCFE = async (doc, lineas, cotDolar = 40.0) => {
 
                     logger.info(`[SISNET-Service] Factura aceptada exitosamente. Hash: ${result.return.hash}`);
                     
+                    // Extraer número y serie reales del urlQR
+                    let docNum = wsCAE.numero;
+                    let docSerie = wsCAE.serie || 'B';
+                    if (result.return.urlQR) {
+                        try {
+                            const parts = result.return.urlQR.split('?');
+                            if (parts.length > 1) {
+                                const queryParams = parts[1].split(',');
+                                if (queryParams.length >= 4) {
+                                    if (queryParams[2]) docSerie = queryParams[2].trim();
+                                    if (queryParams[3]) docNum = parseInt(queryParams[3].trim(), 10);
+                                }
+                            }
+                        } catch (e) {
+                            logger.error("[SISNET-Service] Error parsing urlQR for document number/serie:", e);
+                        }
+                    }
+
+                    // Reconstruir la serie/número en el formato esperado por el frontend
+                    const template = result.return.datosCaeSerie || '';
+                    const match = template.match(/Nro\.\s+de\s+CAE\s+(\d+)\s+Serie\s+([A-Za-z]+)\s+(\d+)\s*(?:\/\s*(\d+))?/i);
+                    let caeAutorizacion = wsCAE.numeroAutorizacion || '';
+                    let totalRange = '';
+
+                    if (match) {
+                        caeAutorizacion = match[1];
+                        if (!docSerie) docSerie = match[2];
+                        totalRange = match[4] || '';
+                    }
+
+                    const rebuiltSerie = `Nro. de CAE ${caeAutorizacion} Serie ${docSerie} ${docNum}${totalRange ? ' / ' + totalRange : ''}`;
+
                     resolve({
-                        cae: wsCAE.numero,
-                        serie: result.return.datosCaeSerie,
+                        cae: wsCAE.numeroAutorizacion || wsCAE.numero,
+                        serie: rebuiltSerie,
                         vencimiento: result.return.datosCaeVencimiento,
                         hash: result.return.hash,
                         qr: result.return.qr,

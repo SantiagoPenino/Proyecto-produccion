@@ -13,11 +13,13 @@ import {
   Lock, Unlock, User
 } from 'lucide-react';
 import { toast } from 'sonner';
-import { useLocation } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 
 import api from '../../services/api';
 import { generarPdfEstadoCuenta, generarPdfPrefactura, generarPdfFacturaDGI } from '../../utils/pdfGenerator';
 import CierreCicloPreviewModal from './CierreCicloPreviewModal';
+
+const ORDEN_TYPES = ['ORDEN', 'ENTREGA', 'ORDEN_ANTICIPO'];
 import ClienteBilletera from '../common/ClienteBilletera';
 
 const fetchAPI = async (url, opts = {}) => {
@@ -559,7 +561,8 @@ const ModalConsumirRecurso = ({ mov, cuenta, cliente, onClose, onSuccess }) => {
 };
 
 // ── Menú contextual de acciones por fila ─────────────────────────────────────
-const MenuAccionesDoc = ({ m, cuenta, cliente, onRefresh, onPrint, onCobrar }) => {
+const MenuAccionesDoc = ({ m, cuenta, cliente, onRefresh, onPrint, onCobrar, hideActionsDropdown, hidePrinter }) => {
+  const navigate = useNavigate();
   const [open, setOpen] = useState(false);
   const [modal, setModal] = useState(null);
   const ref = useRef(null);
@@ -585,9 +588,11 @@ const MenuAccionesDoc = ({ m, cuenta, cliente, onRefresh, onPrint, onCobrar }) =
     acciones.push({id:'imp-ant',  label:'Imputar anticipo', icon:<ArrowUpCircle size={13}/>, cls:'text-teal-700 hover:bg-teal-50'});
   }
 
-  // ── Registrar Pago / Anticipo (siempre disponible) ─────────────────────
+  // ── Registrar Pago / Anticipo (solo si tiene deuda pendiente o es anticipo) ─────────────────────
   if (!anulado) {
-    acciones.push({id:'pago',label:'Registrar Pago',icon:<DollarSign size={13}/>,cls:'text-green-700 hover:bg-green-50'});
+    if (m.EsPendientePago === 1) {
+      acciones.push({id:'pago',label:'Registrar Pago',icon:<DollarSign size={13}/>,cls:'text-green-700 hover:bg-green-50'});
+    }
     acciones.push({id:'anticipo',label:'Pago anticipado',icon:<PlusCircle size={13}/>,cls:'text-blue-700 hover:bg-blue-50'});
   }
 
@@ -596,21 +601,46 @@ const MenuAccionesDoc = ({ m, cuenta, cliente, onRefresh, onPrint, onCobrar }) =
     if (m.MovTipo === 'CIERRE_CICLO') {
       if (m.CfeEstado === 'ACEPTADO_DGI') {
         acciones.push({id:'nc',label:'Nota de crédito',icon:<FileMinus size={13}/>,cls:'text-amber-700 hover:bg-amber-50'});
-      } else {
-        acciones.push({id:'anular-fac',label:'Anular factura',icon:<Trash2 size={13}/>,cls:'text-rose-700 hover:bg-rose-50'});
       }
     } else {
       if (!esContado) acciones.push({id:'nc',label:'Nota de crédito',icon:<FileMinus size={13}/>,cls:'text-amber-700 hover:bg-amber-50'});
-      acciones.push({id:'reversar',label:'Reversar / Anular',icon:<RotateCcw size={13}/>,cls:'text-rose-700 hover:bg-rose-50'});
+      // Solo se permite reversar localmente si el documento NO fue aceptado por DGI
+      if (m.CfeEstado !== 'ACEPTADO_DGI') {
+        acciones.push({id:'reversar',label:'Reversar / Anular',icon:<RotateCcw size={13}/>,cls:'text-rose-700 hover:bg-rose-50'});
+      }
     }
   }
 
   const handleAction = (id) => {
     setOpen(false);
-    if (id === 'cobrar' && onCobrar) {
-      onCobrar(cuenta);
-    } else if (id === 'pago' && onCobrar) {
-      onCobrar(cuenta);
+    if (id === 'cobrar' || id === 'pago') {
+      navigate('/contabilidad/caja-admin', {
+        state: {
+          tab: 'INGRESOS',
+          subTab: 'PAGO_DEUDAS',
+          cliente: {
+            CliIdCliente: cliente?.CliIdCliente,
+            Nombre: cliente?.Nombre,
+            CodCliente: cliente?.CodCliente
+          },
+          documento: {
+            DocIdDocumento: m.DocIdDocumento,
+            OrdIdOrden: m.OrdIdOrden
+          }
+        }
+      });
+    } else if (id === 'anticipo') {
+      navigate('/contabilidad/caja-admin', {
+        state: {
+          tab: 'INGRESOS',
+          subTab: 'SALDO_FAVOR',
+          cliente: {
+            CliIdCliente: cliente?.CliIdCliente,
+            Nombre: cliente?.Nombre,
+            CodCliente: cliente?.CodCliente
+          }
+        }
+      });
     } else {
       setModal(id);
     }
@@ -618,17 +648,35 @@ const MenuAccionesDoc = ({ m, cuenta, cliente, onRefresh, onPrint, onCobrar }) =
 
   return (
     <div className="flex items-center justify-center gap-1 opacity-50 group-hover:opacity-100 transition-opacity" ref={ref}>
-      <button onClick={(e)=>onPrint(e,m)} title="Imprimir / Descargar"
-        className="p-1.5 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-all border border-transparent hover:border-indigo-100">
-        <Printer size={15}/>
-      </button>
-      {!anulado && m.EsPendientePago===1 && onCobrar && (
-        <button onClick={()=>onCobrar(cuenta)} title="Cobrar deuda"
+      {!hidePrinter && (
+        <button onClick={(e)=>onPrint(e,m)} title="Imprimir / Descargar"
+          className="p-1.5 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-all border border-transparent hover:border-indigo-100">
+          <Printer size={15}/>
+        </button>
+      )}
+      {!anulado && m.EsPendientePago===1 && (
+        <button onClick={()=>{
+          navigate('/contabilidad/caja-admin', {
+            state: {
+              tab: 'INGRESOS',
+              subTab: 'PAGO_DEUDAS',
+              cliente: {
+                CliIdCliente: cliente?.CliIdCliente,
+                Nombre: cliente?.Nombre,
+                CodCliente: cliente?.CodCliente
+              },
+              documento: {
+                DocIdDocumento: m.DocIdDocumento,
+                OrdIdOrden: m.OrdIdOrden
+              }
+            }
+          });
+        }} title="Cobrar deuda"
           className="flex items-center gap-1 px-2 py-1 text-[10px] font-black uppercase text-emerald-700 bg-emerald-50 hover:bg-emerald-100 rounded border border-emerald-200 transition-all">
           <DollarSign size={11}/> Cobrar
         </button>
       )}
-      {acciones.length>0 && (
+      {!hideActionsDropdown && acciones.length>0 && (
         <div className="relative">
           <button onClick={()=>setOpen(o=>!o)} title="Más acciones"
             className={`p-1.5 rounded-lg border transition-all ${open?'bg-slate-100 border-slate-300 text-slate-700':'text-slate-400 hover:text-slate-700 hover:bg-slate-50 border-transparent hover:border-slate-200'}`}>
@@ -649,7 +697,6 @@ const MenuAccionesDoc = ({ m, cuenta, cliente, onRefresh, onPrint, onCobrar }) =
       {modal==='nc'               && <ModalNotaCredito     mov={m} conta={cuenta} cuenta={cuenta} cliente={cliente} onClose={()=>setModal(null)} onSuccess={onRefresh}/>}
       {modal==='reversar'          && <ModalReversarDoc     mov={m} conta={cuenta} cuenta={cuenta} cliente={cliente} onClose={()=>setModal(null)} onSuccess={onRefresh}/>}
       {modal==='anticipo'          && <ModalAnticipo        conta={cuenta} cuenta={cuenta} cliente={cliente} onClose={()=>setModal(null)} onSuccess={onRefresh}/>}
-      {modal==='anular-fac'        && <ModalAnularFactura   mov={m} conta={cuenta} cuenta={cuenta} cliente={cliente} onClose={()=>setModal(null)} onSuccess={onRefresh}/>}
       {modal==='imp-ant'           && <ModalImputarAnticipo mov={m} cuenta={cuenta} onClose={()=>setModal(null)} onSuccess={onRefresh}/>}
       {modal==='consumir-recurso'  && <ModalConsumirRecurso mov={m} cuenta={cuenta} cliente={cliente} onClose={()=>setModal(null)} onSuccess={onRefresh}/>}
     </div>
@@ -1119,7 +1166,7 @@ const MovimientosPanel = ({ CueIdCuenta, simbolo = '$', onClose, cuenta, onRegis
       {loading ? (
         <div className="flex justify-center py-12 bg-white"><div className="animate-spin h-8 w-8 border-4 border-indigo-400 border-t-transparent rounded-full" /></div>
       ) : (
-        <div className="overflow-x-auto max-h-96 bg-white">
+        <div className="overflow-x-auto bg-white">
           <table className="w-full text-xs">
             <thead className="sticky top-0 bg-slate-50 border-b border-slate-200 z-10 shadow-sm">
               <tr className="text-left text-slate-400 uppercase tracking-widest font-black text-[10px]">
@@ -1157,11 +1204,13 @@ const MovimientosPanel = ({ CueIdCuenta, simbolo = '$', onClose, cuenta, onRegis
                     };
                     const docTipoLabel = m.DocTipo ? (DOC_TIPO_LABEL[m.DocTipo.trim()] || m.DocTipo.trim()) : null;
                     let docFull = docTipoLabel ? `${docTipoLabel} ${m.DocSerie}-${m.DocNumero}` : (m.CodigoOrdenStr ? m.CodigoOrdenStr : (m.OReIdOrdenRetiro ? `RET: ${m.OReIdOrdenRetiro}` : 'N/D'));
-                    if (['ORDEN','ENTREGA'].includes(m.MovTipo)) {
-                        if (m.CicIdCiclo) {
-                            docFull = isFacturado ? `Facturado (${info.CicNumeroFactura || 'En proc.'})` : 'Pendiente de facturar (Ciclo)';
+                    if (ORDEN_TYPES.includes(m.MovTipo)) {
+                        if (m.DocIdDocumento) {
+                            docFull = `Facturado (${docTipoLabel || m.DocTipo || 'CFE'} ${m.DocSerie || ''}-${m.DocNumero || ''})`;
+                        } else if (m.CicIdCiclo) {
+                            docFull = isFacturado ? `Facturado (${info?.CicNumeroFactura || 'En proc.'})` : 'Pendiente de facturar (Ciclo)';
                         } else {
-                            docFull = 'Pendiente de cobro';
+                            docFull = 'Pendiente de facturar';
                         }
                     }
                     
@@ -1185,7 +1234,7 @@ const MovimientosPanel = ({ CueIdCuenta, simbolo = '$', onClose, cuenta, onRegis
 
                     const esPago = ['PAGO','ANTICIPO','COBRO','SALDO_INICIAL'].includes(m.MovTipo);
                     const esVenta = ['VTA_CAJA','CIERRE_CICLO'].includes(m.MovTipo);
-                    const facturaPaga    = esVenta && m.DocPagado === 1 && m.EsPendientePago !== 1;
+                    const facturaPaga    = esVenta && m.EsPendientePago !== 1;
                     const facturaDeuda   = esVenta && m.EsPendientePago === 1;
 
                     return (
@@ -1202,8 +1251,8 @@ const MovimientosPanel = ({ CueIdCuenta, simbolo = '$', onClose, cuenta, onRegis
                             </td>
                             <td className="px-4 py-3">
                                 <div className="flex flex-wrap items-center gap-2">
-                                    {['ORDEN','ENTREGA'].includes(m.MovTipo) ? (
-                                        (m.CicIdCiclo && isFacturado) ? <Lock size={12} className="text-rose-500" title="Facturado" /> : <Unlock size={12} className="text-emerald-500" title="Pendiente" />
+                                    {ORDEN_TYPES.includes(m.MovTipo) ? (
+                                        ((m.CicIdCiclo && isFacturado) || m.DocIdDocumento) ? <Lock size={12} className="text-rose-500" title="Facturado" /> : <Unlock size={12} className="text-emerald-500" title="Pendiente" />
                                     ) : (
                                         m.DocTipo ? (m.EsPendientePago ? <Unlock size={12} className="text-emerald-500" title="Pendiente de pago" /> : <Lock size={12} className="text-rose-500" title="Pagado / Cerrado" />) : null
                                     )}
@@ -1229,31 +1278,31 @@ const MovimientosPanel = ({ CueIdCuenta, simbolo = '$', onClose, cuenta, onRegis
                             </td>
                             <td className="px-4 py-3 text-slate-600 min-w-[250px] max-w-[350px]" title={m.MovConcepto}><span className="block text-xs font-medium leading-relaxed whitespace-normal break-words">{conceptoLimpio}</span></td>
                             <td className="px-4 py-3 text-right bg-indigo-50/30 group-hover:bg-indigo-50/60 transition-colors">
-                                {['ORDEN', 'ENTREGA'].includes(m.MovTipo) ? (
+                                {ORDEN_TYPES.includes(m.MovTipo) ? (
                                     <span className="flex items-center justify-end gap-1 font-bold text-indigo-600">
                                         <span className="mr-0.5 opacity-60 text-[9px]">{simbolo}</span>{fmtNum(Math.abs(Number(m.MovImporte)))}
                                     </span>
                                 ) : <span className="text-slate-200">—</span>}
                             </td>
                             <td className="px-4 py-3 text-right text-slate-400 font-medium">
-                                {['ORDEN', 'ENTREGA'].includes(m.MovTipo) ? <span className="text-slate-200">—</span> : <><span className="mr-0.5 opacity-60 text-[9px]">{simbolo}</span>{fmtNum(m.visualSaldoAntes)}</>}
+                                {ORDEN_TYPES.includes(m.MovTipo) ? <span className="text-slate-200">—</span> : <><span className="mr-0.5 opacity-60 text-[9px]">{simbolo}</span>{fmtNum(m.visualSaldoAntes)}</>}
                             </td>
                             <td className="px-4 py-3 text-right bg-rose-50/30 group-hover:bg-rose-50/60 transition-colors">
-                                {esDebe && !['ORDEN', 'ENTREGA'].includes(m.MovTipo) ? (
+                                {esDebe && !ORDEN_TYPES.includes(m.MovTipo) ? (
                                     <span className="flex items-center justify-end gap-1 font-bold text-rose-600">
                                         <span className="mr-0.5 opacity-60 text-[9px]">{simbolo}</span>{fmtNum(Math.abs(importe))}
                                     </span>
                                 ) : <span className="text-slate-200">—</span>}
                             </td>
                             <td className="px-4 py-3 text-right bg-emerald-50/30 group-hover:bg-emerald-50/60 transition-colors">
-                                {esHaber && !['ORDEN', 'ENTREGA'].includes(m.MovTipo) ? (
+                                {esHaber && !ORDEN_TYPES.includes(m.MovTipo) ? (
                                     <span className="flex items-center justify-end gap-1 font-bold text-emerald-600">
                                         <span className="mr-0.5 opacity-60 text-[9px]">{simbolo}</span>{fmtNum(importe)}
                                     </span>
                                 ) : <span className="text-slate-200">—</span>}
                             </td>
                             <td className="px-4 py-3 text-right text-slate-800 font-black">
-                                {['ORDEN', 'ENTREGA'].includes(m.MovTipo) ? <span className="text-slate-200">—</span> : <><span className="mr-0.5 opacity-60 text-[9px] text-slate-400">{simbolo}</span>{fmtNum(m.visualSaldoDespues)}</>}
+                                {ORDEN_TYPES.includes(m.MovTipo) ? <span className="text-slate-200">—</span> : <><span className="mr-0.5 opacity-60 text-[9px] text-slate-400">{simbolo}</span>{fmtNum(m.visualSaldoDespues)}</>}
                             </td>
                             <td className="px-4 py-3 text-center">
                                 <MenuAccionesDoc
@@ -1263,6 +1312,8 @@ const MovimientosPanel = ({ CueIdCuenta, simbolo = '$', onClose, cuenta, onRegis
                                   onRefresh={cargar}
                                   onPrint={handleDescargarRecibo}
                                   onCobrar={onRegistrarPago}
+                                  hideActionsDropdown={true}
+                                  hidePrinter={ORDEN_TYPES.includes(m.MovTipo) && (!!m.DocIdDocumento || isFacturado)}
                                 />
                             </td>
                         </tr>
@@ -1283,10 +1334,14 @@ const MovimientosPanel = ({ CueIdCuenta, simbolo = '$', onClose, cuenta, onRegis
                     : (m.CodigoOrdenStr
                       ? m.CodigoOrdenStr
                       : (m.OReIdOrdenRetiro ? `RET: ${m.OReIdOrdenRetiro}` : (m.MovTipo === 'ORDEN' ? 'Orden no facturada' : 'N/D')));
-                  if (['ORDEN','ENTREGA'].includes(m.MovTipo)) {
-                    docFull = isFacturado
-                      ? `Facturado (${cicloInfo.CicNumeroFactura || 'En proc.'})`
-                      : 'Pendiente de facturar';
+                  if (ORDEN_TYPES.includes(m.MovTipo)) {
+                    if (m.DocIdDocumento) {
+                      docFull = `Facturado (${m.DocTipo || 'CFE'} ${m.DocSerie || ''}-${m.DocNumero || ''})`;
+                    } else {
+                      docFull = isFacturado
+                        ? `Facturado (${cicloInfo?.CicNumeroFactura || 'En proc.'})`
+                        : 'Pendiente de facturar';
+                    }
                   }
 
                   let conceptoLimpio = m.MovConcepto || '—';
@@ -1303,8 +1358,8 @@ const MovimientosPanel = ({ CueIdCuenta, simbolo = '$', onClose, cuenta, onRegis
                     displayTipo = 'ANULACIÓN';
                   }
 
-                  const lockIcon = ['ORDEN','ENTREGA'].includes(m.MovTipo) ? (
-                    isFacturado
+                  const lockIcon = ORDEN_TYPES.includes(m.MovTipo) ? (
+                    (isFacturado || m.DocIdDocumento)
                       ? <Lock size={12} className="text-rose-500 flex-shrink-0" title="Facturado / Cerrado" />
                       : <Unlock size={12} className="text-emerald-500 flex-shrink-0" title="Pendiente de facturar" />
                   ) : (
@@ -1350,7 +1405,7 @@ const MovimientosPanel = ({ CueIdCuenta, simbolo = '$', onClose, cuenta, onRegis
                       </td>
                       {/* VALOR ORDEN (informativo, no afecta saldo) */}
                       <td className="px-4 py-3 text-right bg-indigo-50/30 group-hover:bg-indigo-50/60 transition-colors">
-                        {['ORDEN', 'ENTREGA'].includes(m.MovTipo) ? (
+                        {ORDEN_TYPES.includes(m.MovTipo) ? (
                           <span className="flex items-center justify-end gap-1 font-bold text-indigo-600">
                             <span className="mr-0.5 opacity-60 text-[9px]">{simbolo}</span>{fmtNum(Math.abs(Number(m.MovImporte)))}
                           </span>
@@ -1358,13 +1413,13 @@ const MovimientosPanel = ({ CueIdCuenta, simbolo = '$', onClose, cuenta, onRegis
                       </td>
                       {/* SALDO INICIAL */}
                       <td className="px-4 py-3 text-right text-slate-400 font-medium">
-                        {['ORDEN', 'ENTREGA'].includes(m.MovTipo)
+                        {ORDEN_TYPES.includes(m.MovTipo)
                           ? <span className="text-slate-200">—</span>
                           : <><span className="mr-0.5 opacity-60 text-[9px]">{simbolo}</span>{fmtNum(m.visualSaldoAntes)}</>}
                       </td>
                       {/* DEBE */}
                       <td className="px-4 py-3 text-right bg-rose-50/30 group-hover:bg-rose-50/60 transition-colors">
-                        {esDebe && !['ORDEN', 'ENTREGA'].includes(m.MovTipo) ? (
+                        {esDebe && !ORDEN_TYPES.includes(m.MovTipo) ? (
                           <span className="flex items-center justify-end gap-1 font-bold text-rose-600">
                             <span className="mr-0.5 opacity-60 text-[9px]">{simbolo}</span>{fmtNum(Math.abs(importe))}
                           </span>
@@ -1372,7 +1427,7 @@ const MovimientosPanel = ({ CueIdCuenta, simbolo = '$', onClose, cuenta, onRegis
                       </td>
                       {/* HABER */}
                       <td className="px-4 py-3 text-right bg-emerald-50/30 group-hover:bg-emerald-50/60 transition-colors">
-                        {esHaber && !['ORDEN', 'ENTREGA'].includes(m.MovTipo) ? (
+                        {esHaber && !ORDEN_TYPES.includes(m.MovTipo) ? (
                           <span className="flex items-center justify-end gap-1 font-bold text-emerald-600">
                             <span className="mr-0.5 opacity-60 text-[9px]">{simbolo}</span>{fmtNum(importe)}
                           </span>
@@ -1380,7 +1435,7 @@ const MovimientosPanel = ({ CueIdCuenta, simbolo = '$', onClose, cuenta, onRegis
                       </td>
                       {/* SALDO FINAL */}
                       <td className="px-4 py-3 text-right text-slate-800 font-black">
-                        {['ORDEN', 'ENTREGA'].includes(m.MovTipo)
+                        {ORDEN_TYPES.includes(m.MovTipo)
                           ? <span className="text-slate-200">—</span>
                           : <><span className="mr-0.5 opacity-60 text-[9px] text-slate-400">{simbolo}</span>{fmtNum(m.visualSaldoDespues)}</>}
                       </td>
@@ -1392,6 +1447,8 @@ const MovimientosPanel = ({ CueIdCuenta, simbolo = '$', onClose, cuenta, onRegis
                           onRefresh={cargar}
                           onPrint={handleDescargarRecibo}
                           onCobrar={onRegistrarPago}
+                          hideActionsDropdown={ORDEN_TYPES.includes(m.MovTipo) && (!!m.DocIdDocumento || isFacturado)}
+                          hidePrinter={ORDEN_TYPES.includes(m.MovTipo) && (!!m.DocIdDocumento || isFacturado)}
                         />
                       </td>
                     </tr>
@@ -1794,6 +1851,7 @@ const ETIQUETA_TIPO = {
   PAGO:         'Pago',
   ANTICIPO:     'Anticipo',
   NOTA_CREDITO: 'Nota cred.',
+  NOTA_DEBITO:  'Nota déb.',
   AJUSTE_POS:   'Ajuste +',
   AJUSTE_NEG:   'Ajuste -',
   REPOSICION:   'Reposición',
@@ -1802,6 +1860,7 @@ const ETIQUETA_TIPO = {
 const ModalEstadoCuenta = ({ cliente, cuentas, onClose, globalDesde, globalHasta, onRegistrarPago }) => {
   const [secciones, setSecciones] = useState({});  // { CueIdCuenta: { movs, loading } }
   const [planes, setPlanes]       = useState([]);
+  const [ciclosInfo, setCiclosInfo] = useState({});
   const [expandidos, setExpandidos] = useState({});
   const [desde, setDesde] = useState(globalDesde || '');
   const [hasta, setHasta] = useState(globalHasta || '');
@@ -1814,9 +1873,10 @@ const ModalEstadoCuenta = ({ cliente, cuentas, onClose, globalDesde, globalHasta
       if (desde) p.append('desde', desde);
       if (hasta) p.append('hasta', hasta);
 
-      // Movimientos + planes en paralelo
-      const [planesRes, ...movsRes] = await Promise.all([
+      // Movimientos + planes + ciclos en paralelo
+      const [planesRes, ciclosRes, ...movsRes] = await Promise.all([
         fetchAPI(`/api/contabilidad/planes/${cliente.CliIdCliente}`).catch(() => ({ data: [] })),
+        fetchAPI(`/api/contabilidad/ciclos/${cliente.CliIdCliente}`).catch(() => ({ data: [] })),
         ...cuentas.map(c =>
           fetchAPI(`/api/contabilidad/cuentas/${c.CueIdCuenta}/movimientos?${p}`)
             .then(d => ({ cue: c, movs: d.data || [], saldoArrastre: d.saldoArrastre ?? 0 }))
@@ -1825,6 +1885,10 @@ const ModalEstadoCuenta = ({ cliente, cuentas, onClose, globalDesde, globalHasta
       ]);
 
       setPlanes(planesRes.data || []);
+
+      const cMap = {};
+      (ciclosRes.data || []).forEach(c => cMap[c.CicIdCiclo] = c);
+      setCiclosInfo(cMap);
 
       const nuevas = {};
       movsRes.forEach(({ cue, movs, saldoArrastre }) => {
@@ -1970,6 +2034,8 @@ const ModalEstadoCuenta = ({ cliente, cuentas, onClose, globalDesde, globalHasta
                             <tbody className="divide-y divide-slate-50">
                               {movs.map(m => {
                                 const cred = esCreditoTipo(m.MovTipo);
+                                const cicloInfo = ciclosInfo[m.CicIdCiclo];
+                                const isFacturado = m.CicIdCiclo && cicloInfo && cicloInfo.CicEstado !== 'ABIERTO';
                                 return (
                                   <tr key={m.MovIdMovimiento} className="hover:bg-slate-50/50 transition-colors">
                                     <td className="px-5 py-2.5 text-slate-500 whitespace-nowrap">{fmtFecha(m.MovFecha)}</td>
@@ -1998,6 +2064,8 @@ const ModalEstadoCuenta = ({ cliente, cuentas, onClose, globalDesde, globalHasta
                                         onRefresh={cargar}
                                         onPrint={handleDescargarRecibo}
                                         onCobrar={onRegistrarPago}
+                                        hideActionsDropdown={true}
+                                        hidePrinter={ORDEN_TYPES.includes(m.MovTipo) && (!!m.DocIdDocumento || isFacturado)}
                                       />
                                     </td>
                                   </tr>
@@ -2415,11 +2483,11 @@ export default function ContabilidadCuentasView() {
 
 
 
-      <div className="h-full bg-[#f1f5f9] p-2 sm:p-4 overflow-hidden text-slate-700 font-sans custom-scrollbar">
-        <div className="flex gap-6 h-full min-h-0 max-w-[1500px] mx-auto w-full">
+      <div className="bg-[#f1f5f9] p-2 sm:p-4 text-slate-700 font-sans custom-scrollbar">
+        <div className="flex flex-col md:flex-row gap-6 max-w-[1500px] mx-auto w-full items-start">
 
         {/* ── Columna izquierda: lista ────────────────────────────────────── */}
-        <div className="w-80 shrink-0 flex flex-col bg-[#f1f5f9] rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+        <div className="w-full md:w-80 shrink-0 flex flex-col bg-[#f1f5f9] rounded-xl border border-slate-200 shadow-sm">
           <div className="px-4 py-4 border-b border-slate-200">
             <div className="flex items-center justify-between mb-3">
               <h1 className="text-base font-bold text-slate-800 flex items-center gap-2">
@@ -2449,7 +2517,7 @@ export default function ContabilidadCuentasView() {
             </div>
           </div>
 
-          <div className="flex-1 overflow-y-auto">
+          <div className="flex-1">
             {loadingLista ? (
               <div className="flex justify-center py-12"><div className="animate-spin h-6 w-6 border-2 border-blue-500 border-t-transparent rounded-full" /></div>
             ) : clientesActivos.length === 0 ? (
@@ -2472,7 +2540,7 @@ export default function ContabilidadCuentasView() {
         </div>
 
         {/* ── Columna derecha: detalle ────────────────────────────────────── */}
-        <div className="flex-1 overflow-y-auto space-y-4 min-w-0">
+        <div className="flex-1 space-y-4 min-w-0">
           {!clienteSel ? (
             <div className="flex flex-col items-center justify-center h-full text-slate-500">
               <CreditCard size={48} className="mb-4 opacity-20" />

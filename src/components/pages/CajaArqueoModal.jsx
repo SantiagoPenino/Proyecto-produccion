@@ -22,7 +22,8 @@ const CajaArqueoModal = ({
 
   const fetchData = async () => {
     if (movimientosProp) {
-      setData(movimientosProp);
+      const sorted = [...movimientosProp].sort((a, b) => new Date(a.Fecha) - new Date(b.Fecha));
+      setData(sorted);
       setLoading(false);
       return;
     }
@@ -31,7 +32,8 @@ const CajaArqueoModal = ({
       const url = isAdmin ? '/contabilidad/caja/movimientos-turno?admin=true' : '/contabilidad/caja/movimientos-turno';
       const res = await api.get(url);
       if (res.data.success) {
-        setData(res.data.movimientos || []);
+        const sorted = (res.data.movimientos || []).sort((a, b) => new Date(a.Fecha) - new Date(b.Fecha));
+        setData(sorted);
       }
     } catch (e) {
       console.error(e);
@@ -147,7 +149,8 @@ const CajaArqueoModal = ({
     });
 
     const detailedRowsHTML = Object.entries(groupedMovs).map(([fp, movs]) => {
-      const rowsHtml = movs.map(m => {
+      const sortedMovs = [...movs].sort((a, b) => new Date(a.Fecha) - new Date(b.Fecha));
+      const rowsHtml = sortedMovs.map(m => {
         const inStr = m.Entrada > 0 ? `${m.Moneda} ${fmt(m.Entrada)}` : '-';
         const outStr = m.Salida > 0 ? `${m.Moneda} ${fmt(m.Salida)}` : '-';
         return `
@@ -606,7 +609,9 @@ const CajaArqueoModal = ({
                         ) : (
                           Object.entries(agrupado.porForma).flatMap(([fp, v], gIndex) => {
                             return ['UYU', 'USD'].map((mon, mIndex) => {
-                              const movsForma = data.filter(m => (m.MedioDePago || 'INDEFINIDO') === fp && m.Moneda === mon);
+                              const movsForma = data
+                                .filter(m => (m.MedioDePago || 'INDEFINIDO') === fp && m.Moneda === mon)
+                                .sort((a, b) => new Date(a.Fecha) - new Date(b.Fecha));
                               if (movsForma.length === 0) return null;
                               const uniqueKey = `${gIndex}-${mIndex}`;
                               return (

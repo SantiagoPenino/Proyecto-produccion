@@ -118,6 +118,7 @@ router.post('/caja/operacion-manual', caja.registrarOperacionManual);
 
 // ── OPERACIONES DESDE ESTADO DE CUENTA (Caja Administrativa) ──────────────────
 router.post('/caja/nota-credito',      caja.generarNotaCredito);      // Nota de crédito sobre doc existente
+router.post('/caja/nota-debito',       caja.generarNotaDebito);       // Nota de débito sobre doc existente (NUEVO)
 router.post('/caja/reversar-doc',      caja.reversarDocumento);       // Reverso: contado→egreso/crédito→NC
 router.post('/caja/pago-anticipo',     caja.registrarPagoAnticipo);   // Anticipo directo a cuenta (nuevo dinero)
 router.post('/caja/anular-factura',    caja.anularFactura);           // Anular factura no enviada a DGI → reabre ciclo

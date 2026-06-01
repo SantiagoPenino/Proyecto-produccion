@@ -391,7 +391,9 @@ async function procesarVentaDirecta(payload) {
        .input('DocPagado', sql.Bit, totalAbonadoDeuda >= totalBruto ? 1 : 0)
        .query(`INSERT INTO dbo.DocumentosContables (CueIdCuenta, CliIdCliente, MonIdMoneda, DocTipo, DocNumero, DocSerie, DocSubtotal, DocImpuestos, DocTotalDescuentos, DocTotalRecargos, DocTotal, DocEstado, DocFechaEmision, DocUsuarioAlta, TcaIdTransaccion, CfeEstado, DocPagado)
                OUTPUT INSERTED.DocIdDocumento
-               VALUES (@Cta, @Cli, @MonId, @DocTipoStr, @Num, @Serie, @SubTot, @Iva, 0, 0, @Tot, @Estado, GETDATE(), @Usr, @Tca, 'PENDIENTE', @DocPagado)`);
+               VALUES (@Cta, @Cli, @MonId, @DocTipoStr, @Num, @Serie, @SubTot, @Iva, 0, 0, @Tot, @Estado, GETDATE(), @Usr, @Tca, 
+                       CASE WHEN @DocTipoStr LIKE '%Pedido%' OR @DocTipoStr LIKE '%PEDIDO%' OR @DocTipoStr = 'PC' OR @DocTipoStr = 'PedidoCaja' THEN 'BORRADOR' ELSE 'PENDIENTE' END, 
+                       @DocPagado)`);
     const dId = iDoc.recordset[0].DocIdDocumento;
 
     // Leer el saldo previo para saber si hay Saldo a Favor que consuma la deuda automáticamente
@@ -678,9 +680,7 @@ async function procesarTransaccion(payload) {
         if (seqR.recordset.length > 0) {
           const r = seqR.recordset[0];
           header.serieDoc  = r.Serie;
-          header.numeroDoc = String(r.UltimoNumero);
-          // Opcional: Si quieren guardar el prefijo y ceros (ej. REC-000123) en NumeroDoc en lugar de solo '123'
-          // header.numeroDoc = (r.Prefijo || '') + String(r.UltimoNumero).padStart(r.Digitos, '0');
+          header.numeroDoc = String(r.UltimoNumero).padStart(r.Digitos || 6, '0');
         }
       } catch (eSeq) {
         logger.warn(`[CAJA] No se pudo generar secuencia para ${header.tipoDocumento}:`, eSeq.message);
@@ -1116,7 +1116,7 @@ async function procesarTransaccion(payload) {
                   0, 0, @total, 1, 
                   GETDATE(), @usuario, 
                   CASE 
-                    WHEN @tipo LIKE '%Pedido%' OR @tipo LIKE '%PEDIDO%' OR @tipo = 'PC' OR @tipo = 'PedidoCaja' THEN 'PENDIENTE'
+                    WHEN @tipo LIKE '%Pedido%' OR @tipo LIKE '%PEDIDO%' OR @tipo = 'PC' OR @tipo = 'PedidoCaja' THEN 'BORRADOR'
                     WHEN @codigoEfact IS NULL OR @codigoEfact = 0 THEN NULL 
                     ELSE 'PENDIENTE' 
                   END,
@@ -1223,27 +1223,47 @@ async function procesarTransaccion(payload) {
                }
              }
 
-             if (allOdIds.length > 0 || allOrIds.length > 0) {
-               const updateMcReq = new sql.Request(transaction).input('docId', sql.Int, docIdDocumento);
-               let updateMcQuery = `
-                 UPDATE dbo.MovimientosCuenta
-                 SET DocIdDocumento = @docId
-                 WHERE MovTipo = 'ORDEN'
-                   AND DocIdDocumento IS NULL
-               `;
-               const mcConditions = [];
-               if (allOdIds.length > 0) {
-                 allOdIds.forEach((id, idx) => updateMcReq.input(`odId_${idx}`, sql.Int, id));
-                 mcConditions.push(`OrdIdOrden IN (${allOdIds.map((_, idx) => `@odId_${idx}`).join(',')})`);
-               }
-               if (allOrIds.length > 0) {
-                 allOrIds.forEach((id, idx) => updateMcReq.input(`orId_${idx}`, sql.Int, id));
-                 mcConditions.push(`OReIdOrdenRetiro IN (${allOrIds.map((_, idx) => `@orId_${idx}`).join(',')})`);
-               }
-               updateMcQuery += ` AND (${mcConditions.join(' OR ')})`;
-               await updateMcReq.query(updateMcQuery);
-               logger.info(`[CAJA-CFE] Linked ORDEN movements to DocIdDocumento=${docIdDocumento}`);
-             }
+                           if (allOdIds.length > 0) {
+                try {
+                  const mapRes = await new sql.Request(transaction)
+                    .query(`
+                      SELECT e.OrdenID
+                      FROM dbo.Ordenes e
+                      JOIN dbo.OrdenesDeposito od ON e.CodigoOrden = od.OrdCodigoOrden
+                      WHERE od.OrdIdOrden IN (${allOdIds.join(',')})
+                    `);
+                  const erpIds = mapRes.recordset.map(r => r.OrdenID);
+                  for (const erpId of erpIds) {
+                    if (!allOdIds.includes(erpId)) {
+                      allOdIds.push(erpId);
+                    }
+                  }
+                } catch (errMap) {
+                  logger.warn(`[CAJA-CFE] Error mapping IDs: ${errMap.message}`);
+                }
+              }
+
+              if (allOdIds.length > 0 || allOrIds.length > 0) {
+                const updateMcReq = new sql.Request(transaction).input('docId', sql.Int, docIdDocumento);
+                let updateMcQuery = `
+                  UPDATE dbo.MovimientosCuenta
+                  SET DocIdDocumento = @docId
+                  WHERE MovTipo IN ('ORDEN', 'ORDEN_ANTICIPO')
+                    AND DocIdDocumento IS NULL
+                `;
+                const mcConditions = [];
+                if (allOdIds.length > 0) {
+                  allOdIds.forEach((id, idx) => updateMcReq.input(`odId_${idx}`, sql.Int, id));
+                  mcConditions.push(`OrdIdOrden IN (${allOdIds.map((_, idx) => `@odId_${idx}`).join(',')})`);
+                }
+                if (allOrIds.length > 0) {
+                  allOrIds.forEach((id, idx) => updateMcReq.input(`orId_${idx}`, sql.Int, id));
+                  mcConditions.push(`OReIdOrdenRetiro IN (${allOrIds.map((_, idx) => `@orId_${idx}`).join(',')})`);
+                }
+                updateMcQuery += ` AND (${mcConditions.join(' OR ')})`;
+                await updateMcReq.query(updateMcQuery);
+                logger.info(`[CAJA-CFE] Linked ORDEN/ORDEN_ANTICIPO movements to DocIdDocumento=${docIdDocumento}`);
+              }
 
              // ── DeudaDocumento: consultamos al Motor Contable ────
              const evtConfig = await motorContable.getEvento(header.tipoDocumento || 'F_ORDEN');
@@ -1873,17 +1893,37 @@ async function generarCFEDesdeOrdenesDirectas({ orderIds, clienteId, monto, mone
       WHERE od.OrdIdOrden IN (${idList})
     `);
 
+  // Map OrdenesDeposito OrdIdOrden to ERP OrdenID
+  let allMcOrdIds = [...orderIds];
+  try {
+    const mapRes = await pool.request().query(`
+      SELECT e.OrdenID
+      FROM dbo.Ordenes e
+      JOIN dbo.OrdenesDeposito od ON e.CodigoOrden = od.OrdCodigoOrden
+      WHERE od.OrdIdOrden IN (${idList})
+    `);
+    const erpIds = mapRes.recordset.map(r => r.OrdenID);
+    for (const erpId of erpIds) {
+      if (!allMcOrdIds.includes(erpId)) {
+        allMcOrdIds.push(erpId);
+      }
+    }
+  } catch (errMap) {
+    logger.warn(`[CFE-MOSTRADOR] Error mapping IDs: ${errMap.message}`);
+  }
+  const mcIdList = allMcOrdIds.map(Number).join(',');
+
   // Update MovimientosCuenta setting DocIdDocumento = docId
   await pool.request()
     .input('docId', sql.Int, docId)
     .query(`
       UPDATE dbo.MovimientosCuenta
       SET DocIdDocumento = @docId
-      WHERE MovTipo = 'ORDEN'
+      WHERE MovTipo IN ('ORDEN', 'ORDEN_ANTICIPO')
         AND DocIdDocumento IS NULL
-        AND OrdIdOrden IN (${idList})
+        AND OrdIdOrden IN (${mcIdList})
     `);
-  logger.info(`[CFE-MOSTRADOR] Linked ORDEN movements to DocIdDocumento=${docId} for orders ${idList}`);
+  logger.info(`[CFE-MOSTRADOR] Linked ORDEN/ORDEN_ANTICIPO movements to DocIdDocumento=${docId} for orders ${mcIdList}`);
 
   // Query order details for the descriptive concept
   let orderDetails = [];

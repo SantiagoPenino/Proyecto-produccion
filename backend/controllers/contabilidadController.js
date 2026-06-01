@@ -1873,6 +1873,22 @@ exports.generarReciboPdf = async (req, res) => {
 
     const pdfBytes = await pdfDoc.save();
 
+    // Guardar copia del recibo en el servidor en la carpeta de comprobantes
+    try {
+      const fs = require('fs');
+      const path = require('path');
+      const baseDir = process.env.COMPROBANTES_PATH || path.join(__dirname, '..', 'comprobantesPagos');
+      if (!fs.existsSync(baseDir)) {
+        fs.mkdirSync(baseDir, { recursive: true });
+      }
+      const cleanName = receiptNum.replace(/[<>:"/\\|?*]/g, '_').trim();
+      const filePath = path.join(baseDir, `${cleanName}.pdf`);
+      fs.writeFileSync(filePath, Buffer.from(pdfBytes));
+      logger.info(`[CONTABILIDAD] Recibo PDF guardado en el servidor: ${filePath}`);
+    } catch (errDir) {
+      logger.error('[CONTABILIDAD] Error al guardar copia local del recibo:', errDir.message);
+    }
+
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `attachment; filename=Recibo-${receiptNum}.pdf`);
     res.send(Buffer.from(pdfBytes));
@@ -2136,8 +2152,8 @@ exports.getOrdenesAnticipo = async (req, res) => {
                    FOR JSON PATH
                 ) AS DetallesJSON
         FROM dbo.MovimientosCuenta m WITH(NOLOCK)
-        LEFT JOIN dbo.OrdenesDeposito od WITH(NOLOCK) ON m.OrdIdOrden = od.OrdIdOrden
         LEFT JOIN dbo.Ordenes erp WITH(NOLOCK) ON erp.OrdenID = m.OrdIdOrden
+        LEFT JOIN dbo.OrdenesDeposito od WITH(NOLOCK) ON od.OrdCodigoOrden = erp.CodigoOrden
         LEFT JOIN dbo.Articulos p WITH(NOLOCK) ON od.ProIdProducto = p.ProIdProducto
         LEFT JOIN dbo.StockArt s WITH(NOLOCK) ON p.CodStock = s.CodStock
         WHERE m.CueIdCuenta IN (SELECT CueIdCuenta FROM dbo.CuentasCliente WHERE CliIdCliente = @Cli)
@@ -2274,8 +2290,8 @@ exports.consumirRecursoAdelantado = async (req, res) => {
           art.Descripcion AS NombreProducto
         FROM dbo.MovimientosCuenta m WITH(NOLOCK)
         JOIN  dbo.CuentasCliente   cc  WITH(NOLOCK) ON cc.CueIdCuenta  = m.CueIdCuenta
-        LEFT JOIN dbo.OrdenesDeposito od  WITH(NOLOCK) ON od.OrdIdOrden = m.OrdIdOrden
         LEFT JOIN dbo.Ordenes         erp WITH(NOLOCK) ON erp.OrdenID   = m.OrdIdOrden
+        LEFT JOIN dbo.OrdenesDeposito od  WITH(NOLOCK) ON od.OrdCodigoOrden = erp.CodigoOrden
         LEFT JOIN dbo.Articulos       art WITH(NOLOCK) ON art.ProIdProducto = COALESCE(od.ProIdProducto, erp.ProIdProducto)
         WHERE m.MovIdMovimiento = @MovId
       `);
