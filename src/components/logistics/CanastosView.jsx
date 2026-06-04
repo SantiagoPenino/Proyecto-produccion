@@ -39,10 +39,10 @@ const SendToDropdown = ({ currentCanasto, onSend, disabled }) => {
             <button
                 disabled={disabled}
                 onClick={() => setOpen(o => !o)}
-                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all border
+                className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] font-bold transition-all whitespace-nowrap
                     ${disabled
-                        ? 'bg-gray-100 text-gray-300 border-gray-200 cursor-not-allowed'
-                        : 'bg-white text-indigo-600 border-indigo-200 hover:bg-indigo-50 hover:border-indigo-400 shadow-sm'}`}
+                        ? 'bg-zinc-100 text-zinc-300 cursor-not-allowed'
+                        : 'bg-brand-cyan/10 text-brand-cyan hover:bg-brand-cyan hover:text-white border border-brand-cyan/30 hover:border-brand-cyan'}`}
             >
                 <i className="fa-solid fa-paper-plane text-[10px]" />
                 Enviar a
@@ -137,8 +137,8 @@ const CanastoDetail = ({ canasto, areaFilter, onClose, onMoved }) => {
 
     return (
         <div className="fixed inset-0 z-[9000] flex items-center justify-center p-4">
-            <div className="absolute inset-0 bg-zinc-900/60 backdrop-blur-sm" onClick={onClose} />
-            <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-3xl max-h-[85vh] flex flex-col border border-gray-200 overflow-hidden animate-in zoom-in-95 duration-200">
+            <div className="absolute inset-0 bg-zinc-900/60" onClick={onClose} />
+            <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-5xl max-h-[85vh] flex flex-col border border-gray-200 overflow-hidden animate-in zoom-in-95 duration-200">
 
                 {/* Header */}
                 <div className={`px-6 py-4 flex items-center justify-between border-b border-gray-200 ${clr.card}`}>
@@ -203,7 +203,7 @@ const CanastoDetail = ({ canasto, areaFilter, onClose, onMoved }) => {
                                     <th className="px-4 py-2.5 w-10">
                                         <input
                                             type="checkbox"
-                                            className="rounded accent-indigo-500"
+                                            className="rounded accent-brand-cyan cursor-pointer"
                                             checked={selected.size === filtered.length && filtered.length > 0}
                                             onChange={toggleAll}
                                         />
@@ -219,22 +219,27 @@ const CanastoDetail = ({ canasto, areaFilter, onClose, onMoved }) => {
                                 {filtered.map(o => {
                                     const isSelected = selected.has(o.OrdenID);
                                     return (
-                                        <tr key={o.OrdenID} className={`transition-colors ${isSelected ? 'bg-indigo-50' : 'hover:bg-gray-50'}`}>
+                                        <tr key={o.OrdenID} className={`transition-colors ${isSelected ? 'bg-brand-cyan/10' : 'hover:bg-zinc-50'}`}>
                                             <td className="px-4 py-3">
                                                 <input
                                                     type="checkbox"
-                                                    className="rounded accent-indigo-500"
+                                                    className="rounded accent-brand-cyan cursor-pointer"
                                                     checked={isSelected}
                                                     onChange={() => toggleSelect(o.OrdenID)}
                                                 />
                                             </td>
-                                            <td className="px-4 py-3 font-mono font-bold text-gray-700 text-xs">{o.CodigoOrden}</td>
-                                            <td className="px-4 py-3 font-medium text-gray-600 truncate max-w-[200px]">{o.Cliente || '-'}</td>
+                                            <td className="px-4 py-3 font-mono font-bold text-zinc-800 text-xs tracking-wide">{o.CodigoOrden}</td>
+                                            <td className="px-4 py-3 font-medium text-zinc-600 truncate max-w-[200px]">{o.Cliente || '-'}</td>
                                             <td className="px-4 py-3">
-                                                <span className="text-[10px] font-bold bg-gray-100 text-gray-600 px-2 py-0.5 rounded-full">{o.AreaID}</span>
+                                                <span className="text-[10px] font-bold bg-zinc-100 text-zinc-600 px-2 py-0.5 rounded-full border border-zinc-200">{o.AreaID}</span>
                                             </td>
                                             <td className="px-4 py-3">
-                                                <span className="text-[10px] font-bold text-gray-500">{o.Estado}</span>
+                                                <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
+                                                    o.Estado === 'Produccion' ? 'bg-blue-100 text-blue-700' :
+                                                    o.Estado === 'Pendiente'  ? 'bg-zinc-100 text-zinc-600' :
+                                                    o.Estado === 'Pronto'     ? 'bg-emerald-100 text-emerald-700' :
+                                                    'bg-zinc-100 text-zinc-500'
+                                                }`}>{o.Estado}</span>
                                             </td>
                                             <td className="px-4 py-3 flex justify-end">
                                                 <SendToDropdown
@@ -254,7 +259,7 @@ const CanastoDetail = ({ canasto, areaFilter, onClose, onMoved }) => {
                 {/* Footer */}
                 <div className="px-4 py-3 border-t border-gray-200 bg-gray-50 flex justify-between items-center">
                     <span className="text-xs text-gray-400">{filtered.length} orden(es) mostrada(s)</span>
-                    <button onClick={onClose} className="px-4 py-2 bg-gray-800 text-white text-xs font-bold rounded-lg hover:bg-gray-700 transition">
+                    <button onClick={onClose} className="px-5 py-2 bg-zinc-800 text-white text-xs font-bold rounded-lg hover:bg-zinc-700 transition shadow-sm">
                         Cerrar
                     </button>
                 </div>

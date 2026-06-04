@@ -73,11 +73,13 @@ export default function ProductionTable({ rowData = [], onRowSelected, selectedR
     );
 
     const PriorityRenderer = (params) => {
+        const code = (params.data?.code || '').toUpperCase();
+        const isFalla = (params.value === 'Falla' || params.value === 'FALLA') || code.includes('-F') || code.startsWith('F-') || code.startsWith('F ');
+        if (isFalla) {
+            return <span className="pulse-falla-badge inline-flex items-center px-3 py-1 rounded text-xs font-bold uppercase tracking-wide">FALLA</span>;
+        }
         if (params.value === 'Urgente') {
             return <span className="text-xs font-bold text-brand-magenta uppercase tracking-wide">URGENTE</span>;
-        }
-        if (params.value === 'Falla' || params.value === 'FALLA') {
-            return <span className="text-xs font-bold text-red-600 uppercase tracking-wide">FALLA</span>;
         }
         return <span className="text-xs text-zinc-500 font-medium">{params.value || 'Normal'}</span>;
     };
@@ -365,10 +367,13 @@ export default function ProductionTable({ rowData = [], onRowSelected, selectedR
                                         className={`
                                             cursor-pointer transition-all border-b border-zinc-100 group row-appear
                                             ${flashingRowIds.map(String).includes(String(row.id)) ? 'flash-emerald' : ''}
-                                            ${row.original?.priority === 'Falla' || row.original?.priority === 'FALLA'
-                                                ? (isSelected ? 'bg-red-100 hover:bg-red-200' : 'bg-red-50 hover:bg-red-100 text-red-600')
-                                                : (isSelected ? 'bg-custom-cyan/40 hover:bg-custom-cyan/50' : 'bg-white hover:bg-zinc-50')
-                                            }
+                                            ${(() => {
+                                                const code = (row.original?.code || '').toUpperCase();
+                                                const priority = (row.original?.priority || '').toUpperCase();
+                                                const isFalla = priority === 'FALLA' || code.includes('-F') || code.startsWith('F-') || code.startsWith('F ');
+                                                if (isFalla) return isSelected ? 'bg-custom-cyan/40 hover:bg-custom-cyan/50' : 'bg-white hover:bg-zinc-50';
+                                                return isSelected ? 'bg-custom-cyan/40 hover:bg-custom-cyan/50' : 'bg-white hover:bg-zinc-50';
+                                            })()}
                                         `}
                                         style={{ animationDelay: `${Math.min(rowIndex, 20) * 30}ms` }}
                                     >
@@ -448,6 +453,16 @@ export default function ProductionTable({ rowData = [], onRowSelected, selectedR
                 }
                 tr.flash-emerald td {
                     animation: flashEmerald 3s ease-out forwards;
+                }
+                @keyframes pulseFallaBadge {
+                    0%, 100% { background-color: rgb(239 68 68); color: white; opacity: 1; }
+                    50%       { background-color: rgb(239 68 68); color: white; opacity: 0.5; }
+                }
+                td:has(.pulse-falla-badge) { /* reset td bg */
+                    background-color: transparent !important;
+                }
+                .pulse-falla-badge {
+                    animation: pulseFallaBadge 2s ease-in-out infinite;
                 }
             `}</style>
         </div>

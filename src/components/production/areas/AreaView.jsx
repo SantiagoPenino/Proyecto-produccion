@@ -282,8 +282,13 @@ export default function AreaView({ areaKey, areaConfig, onSwitchTab }) {
     const filteredOrders = useMemo(() => {
         let result = dbOrders;
         
-        // Todas las fallas siempre van a saltar, sin importar el filtro
-        const allFallas = dbOrders.filter(o => (o.priority || '').toLowerCase() === 'falla');
+        // Fallas: por priority='Falla' O por código con -F
+        const isFalla = (o) => (o.priority || '').toLowerCase() === 'falla' || (o.code || '').toUpperCase().includes('-F');
+        // Reposiciones: por priority='Reposición' O por código con -R
+        const isReposicion = (o) => (o.priority || '').toLowerCase() === 'reposición' || (o.code || '').toUpperCase().includes('-R');
+
+        const allFallas = dbOrders.filter(isFalla);
+        const allReposiciones = dbOrders.filter(o => !isFalla(o) && isReposicion(o));
 
         if (sidebarFilter !== 'ALL') {
             let filterField = sidebarMode === 'rolls' ? 'rollId' : 'printer';
@@ -302,22 +307,22 @@ export default function AreaView({ areaKey, areaConfig, onSwitchTab }) {
         if (activeFilters.priorities && activeFilters.priorities.length > 0) {
             result = result.filter(o => activeFilters.priorities.some(p => p.toLowerCase() === (o.priority || 'Normal').toLowerCase()));
         }
-        
-        // Quitar las fallas del resultado filtrado (para no duplicarlas)
-        const resultWithoutFallas = result.filter(o => (o.priority || '').toLowerCase() !== 'falla');
 
-        // Ordenar por defecto: Las de estado "Pendiente" primero
+        // Quitar fallas y reposiciones del resultado filtrado (para no duplicarlas)
+        const resultWithoutFallas = result.filter(o => !isFalla(o) && !isReposicion(o));
+
+        // Ordenar por defecto: Las de estado "Pendiente" primero (solo en el grupo normal)
         resultWithoutFallas.sort((a, b) => {
             const isAPendiente = (a.status || 'Pendiente').toLowerCase() === 'pendiente';
             const isBPendiente = (b.status || 'Pendiente').toLowerCase() === 'pendiente';
             
             if (isAPendiente && !isBPendiente) return -1;
             if (!isAPendiente && isBPendiente) return 1;
-            return 0; // Mantener el orden original para el resto
+            return 0;
         });
 
-        // Retornamos las Fallas primero, y luego el resto de los resultados filtrados
-        return [...allFallas, ...resultWithoutFallas];
+        // Fallas 1°, Reposiciones 2°, resto
+        return [...allFallas, ...allReposiciones, ...resultWithoutFallas];
     }, [dbOrders, sidebarFilter, sidebarMode, clientFilter, activeFilters, areaKey]);
 
     const renderSidebar = () => null;

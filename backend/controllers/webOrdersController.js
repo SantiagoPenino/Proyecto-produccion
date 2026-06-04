@@ -1204,7 +1204,13 @@ exports.uploadOrderFile = async (req, res) => {
 // --- OBTENER ESTADO EN FÁBRICA ---
 exports.getClientOrders = async (req, res) => {
     const codCliente = req.user?.codCliente;
-    if (!codCliente) return res.status(401).json({ error: "Usuario no identificado como cliente." });
+    if (!codCliente) {
+        // If the user is an internal admin testing the portal, don't throw 401 to avoid breaking the UI.
+        if (req.user?.userType === 'INTERNAL' || req.user?.role !== 'WEB_CLIENT') {
+            return res.json({ success: true, data: [] });
+        }
+        return res.status(401).json({ error: "Usuario no identificado como cliente." });
+    }
 
     try {
         const pool = await getPool();

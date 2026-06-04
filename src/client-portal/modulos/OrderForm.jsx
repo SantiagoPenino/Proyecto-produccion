@@ -1385,7 +1385,7 @@ const OrderForm = ({ serviceId: propServiceId }) => {
             <ErrorModal isOpen={errorModalOpen} onClose={() => actions.setErrorModalOpen(false)} message={errorModalMessage} />
 
             {showSuccessModal && createPortal(
-                <div className="fixed inset-0 z-[99999] flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm animate-in fade-in">
+                <div className="fixed inset-0 z-[99999] flex items-center justify-center p-4 bg-black/70 animate-in fade-in">
                     <div className="bg-zinc-900 border border-zinc-700/60 rounded-3xl shadow-2xl shadow-black/60 max-w-md w-full p-10 text-center animate-in zoom-in-95 slide-in-from-bottom-4 duration-300">
 
                         {/* Icono con halo cyan */}

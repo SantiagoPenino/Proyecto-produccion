@@ -2,6 +2,45 @@ const { getPool, sql } = require('../config/db');
 const logger = require('../utils/logger');
 
 // ==========================================
+// 0. SIGUIENTE NOMBRE DE LOTE (GET)
+// Formato: YYYYMMDD-{area}{N}  — secuencia diaria por área
+// Ej: 20260603-df1, 20260603-df2, 20260603-sb1
+// ==========================================
+exports.getNextRollName = async (req, res) => {
+    const { area } = req.query;
+    if (!area) return res.status(400).json({ error: 'area requerida' });
+
+    try {
+        const pool  = await getPool();
+        const now   = new Date();
+        const yyyy  = now.getFullYear();
+        const mm    = String(now.getMonth() + 1).padStart(2, '0');
+        const dd    = String(now.getDate()).padStart(2, '0');
+        const datePrefix = `${yyyy}${mm}${dd}`;          // "20260603"
+        const areaLower  = area.toLowerCase();            // "df"
+
+        // Contar lotes de esta área creados hoy (cualquier estado)
+        const result = await pool.request()
+            .input('AreaID', sql.VarChar(20), area)
+            .input('Today',  sql.Date, now)
+            .query(`
+                SELECT COUNT(*) AS Hoy
+                FROM dbo.Rollos
+                WHERE AreaID = @AreaID
+                  AND CAST(FechaCreacion AS DATE) = CAST(@Today AS DATE)
+            `);
+
+        const seq  = String((result.recordset[0]?.Hoy || 0) + 1).padStart(2, '0');
+        const name = `${datePrefix}-${areaLower}-${seq}`;   // "20260603-df-01"
+
+        res.json({ name });
+    } catch (err) {
+        logger.error('[getNextRollName] Error:', err);
+        res.status(500).json({ error: err.message });
+    }
+};
+
+// ==========================================
 // 1. OBTENER TABLERO KANBAN (GET)
 // ==========================================
 // 1. OBTENER TABLERO KANBAN
@@ -1127,18 +1166,18 @@ exports.getRollosActivos = async (req, res) => {
             FROM dbo.Rollos r WITH (NOLOCK)
             LEFT JOIN dbo.ConfigEquipos ce WITH (NOLOCK) ON r.MaquinaID = ce.EquipoID
             WHERE (@AreaID IS NULL OR r.AreaID = @AreaID)
+            AND r.Estado NOT IN ('Cerrado', 'Cancelado')
             AND (
-                (${isControlView ? 1 : 0} = 1 AND r.Estado IN ('Finalizado', 'En maquina', 'Produccion', 'Imprimiendo'))
-                OR
-                (${isControlView ? 0 : 1} = 1 AND r.Estado NOT IN ('Cerrado', 'Cancelado')) 
-            )
-            AND (
-                ${isControlView ? 1 : 0} = 0 
-                OR EXISTS (
-                    SELECT 1 FROM dbo.Ordenes O WITH(NOLOCK)
-                    JOIN dbo.ArchivosOrden AO WITH(NOLOCK) ON O.OrdenID = AO.OrdenID
-                    WHERE O.RolloID = r.RolloID
-                    AND (AO.EstadoArchivo = 'Pendiente' OR AO.EstadoArchivo IS NULL)
+                ${isControlView ? 1 : 0} = 0
+                OR r.Estado IN ('En maquina', 'Produccion', 'Imprimiendo')
+                -- Incluir Finalizado solo si aún tiene órdenes no completadas
+                OR (
+                    r.Estado = 'Finalizado'
+                    AND EXISTS (
+                        SELECT 1 FROM dbo.Ordenes o WITH (NOLOCK)
+                        WHERE o.RolloID = r.RolloID
+                          AND o.Estado NOT IN ('Pronto', 'Finalizado', 'CANCELADO', 'Entregado')
+                    )
                 )
             )
             ORDER BY r.FechaCreacion DESC
@@ -1289,10 +1328,14 @@ exports.getRollLabels = async (req, res) => {
 
 exports.getRollHistory = async (req, res) => {
     const { search, area } = req.query;
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 50;
+    const offset = (page - 1) * limit;
+
     try {
         const pool = await getPool();
         let query = `
-            SELECT TOP 50
+            SELECT
                 r.RolloID as id,
                 r.Nombre as name,
                 r.Estado as status,
@@ -1307,6 +1350,8 @@ exports.getRollHistory = async (req, res) => {
         `;
 
         const request = pool.request();
+        request.input('Offset', sql.Int, offset);
+        request.input('Limit', sql.Int, limit);
 
         if (area) {
             query += ` AND r.AreaID = @AreaID`;
@@ -1316,15 +1361,16 @@ exports.getRollHistory = async (req, res) => {
         if (search) {
             query += ` AND (r.Nombre LIKE @Search OR CAST(r.RolloID AS VARCHAR) LIKE @Search)`;
             request.input('Search', sql.NVarChar, `%${search}%`);
-        } else {
-            // Si no hay búsqueda específica, solo mostrar finalizados/cerrados por defecto -> CAMBIO: Mostrar TODO para que el usuario vea algo
-            // query += ` AND r.Estado IN ('Finalizado', 'Cerrado')`;
         }
 
-        query += ` ORDER BY r.FechaCreacion DESC`;
+        query += ` ORDER BY r.FechaCreacion DESC OFFSET @Offset ROWS FETCH NEXT @Limit ROWS ONLY`;
 
         const result = await request.query(query);
-        res.json(result.recordset);
+        res.json({
+            data: result.recordset,
+            page,
+            hasMore: result.recordset.length === limit
+        });
 
     } catch (err) {
         logger.error("Error en getRollHistory:", err);

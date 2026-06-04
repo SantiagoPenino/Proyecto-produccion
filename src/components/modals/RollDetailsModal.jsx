@@ -982,10 +982,10 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { } }) 
                                                             }}
                                                             className={`transition-colors group ${selectedOrderIds.includes(o.id) ? 'bg-brand-cyan/10' : 'hover:bg-slate-50'} ${snapshot.isDragging ? 'bg-white shadow-xl ring-1 ring-brand-cyan/50 opacity-90' : ''}`}
                                                         >
-                                                            <td className="px-4 py-3 text-center w-10">
-                                                                <div className="flex items-center justify-center gap-2">
-                                                                    <div {...provided.dragHandleProps} className="text-zinc-300 hover:text-zinc-500 cursor-grab active:cursor-grabbing px-1">
-                                                                        <i className="fa-solid fa-grip-vertical"></i>
+                                                            <td className="px-2 py-0 align-middle w-10">
+                                                                <div className="flex items-center justify-center gap-1.5 h-full">
+                                                                    <div {...provided.dragHandleProps} className="flex items-center text-zinc-300 hover:text-zinc-500 cursor-grab active:cursor-grabbing">
+                                                                        <i className="fa-solid fa-grip-vertical text-xs"></i>
                                                                     </div>
                                                                     <input
                                                                         type="checkbox"

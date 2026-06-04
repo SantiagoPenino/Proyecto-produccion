@@ -124,6 +124,8 @@ exports.getOrdersByArea = async (req, res) => {
             // No filtrar por estado
         } else {
             query += ` AND o.Estado NOT IN (${estadosFinales})`;
+            // Excluir fallas/reposiciones ya completadas (Pronto)
+            query += ` AND NOT (o.Prioridad = 'Falla' AND o.Estado = 'Pronto')`;
         }
 
         if (q) {
@@ -132,11 +134,11 @@ exports.getOrdersByArea = async (req, res) => {
         }
 
         query += ` ORDER BY 
-            CASE o.Prioridad 
-                WHEN 'Falla'      THEN 1 
-                WHEN 'Urgente'    THEN 2 
-                WHEN 'Normal'     THEN 3 
-                WHEN 'Reposición' THEN 4 
+            CASE 
+                WHEN o.Prioridad = 'Falla' OR o.CodigoOrden LIKE '%-F%' THEN 1
+                WHEN o.Prioridad = 'Reposición' OR o.CodigoOrden LIKE '%-R%' THEN 2
+                WHEN o.Prioridad = 'Urgente'    THEN 3 
+                WHEN o.Prioridad = 'Normal'     THEN 4 
                 ELSE 5 
             END ASC,
             ISNULL(o.Secuencia, 0) DESC,

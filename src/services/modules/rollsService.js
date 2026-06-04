@@ -54,9 +54,9 @@ export const rollsService = {
         const response = await api.post('/rolls/dismantle', { rollId });
         return response.data;
     },
-    getHistory: async (search, area) => {
-        // search: string, area: string (optional)
-        const params = { search };
+    getHistory: async (search, area, page = 1) => {
+        // search: string, area: string (optional), page: number
+        const params = { search, page };
         if (area) params.area = area;
         const response = await api.get(`/rolls/history`, { params });
         return response.data;
@@ -80,6 +80,10 @@ export const rollsService = {
     reorderRolls: async (areaId, rollIds, movedId) => {
         const { data } = await api.post('/rolls/reorder-rolls', { areaId, rollIds, movedId });
         return data;
-    }
+    },
+    getNextRollName: async (areaCode) => {
+        const response = await api.get(`/rolls/next-name?area=${areaCode}`);
+        return response.data; // { name: '20260603-df1' }
+    },
 };
 

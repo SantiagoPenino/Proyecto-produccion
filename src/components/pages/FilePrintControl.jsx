@@ -116,16 +116,17 @@ const FilePrintControl = ({ areaCode }) => {
   }, [areaCode]);
 
   // 1. Load active rolls
-  useEffect(() => {
-    const fetchRollos = async () => {
-      try {
-        const area = areaCode || 'DTF';
-        const data = await fileControlService.getRollosActivos(area);
-        setRollos(data || []);
-      } catch (error) { console.error("Error rollos:", error); }
-    };
-    fetchRollos();
+  const fetchRollos = React.useCallback(async () => {
+    try {
+      const area = areaCode || 'DTF';
+      const data = await fileControlService.getRollosActivos(area);
+      setRollos(data || []);
+    } catch (error) { console.error("Error rollos:", error); }
   }, [areaCode]);
+
+  useEffect(() => {
+    fetchRollos();
+  }, [fetchRollos]);
 
   // 2. Load Orders when Roll changes
   useEffect(() => {
@@ -342,7 +343,7 @@ const FilePrintControl = ({ areaCode }) => {
     if (!selectedOrder || finalizandoOrden) return;
     setFinalizandoOrden(true);
 
-    const loteCompleto = orders.length > 0 && orders.every(o => o.controlled);
+    const loteCompleto = orders.length > 0 && orders.every(o => o.controlled) && orders.every(o => (o.failures || 0) === 0);
     const ordersToComplete = loteCompleto ? orders : [selectedOrder];
     
     try {
@@ -367,11 +368,6 @@ const FilePrintControl = ({ areaCode }) => {
           const nextOrders = prev.filter(o => !completedIds.includes(o.id));
           
           const isLastInRoll = nextOrders.length === 0 && activeRoll && activeRoll.id && activeRoll.id !== 'todo';
-          
-          if (isLastInRoll) {
-            rollsService.update(activeRoll.id, { estado: 'Finalizado' }).catch(console.error);
-            setRollos(prevRolls => prevRolls.filter(r => r.id !== activeRoll.id));
-          }
 
           setCompletedOrderData({
             ordenId: selectedOrder.id,
@@ -385,6 +381,8 @@ const FilePrintControl = ({ areaCode }) => {
 
         setSelectedOrder(null);
         setFiles([]);
+        // Refrescar el selector de lotes para que desaparezcan los vacíos
+        fetchRollos();
       }
     } catch (e) {
       setToast({ visible: true, message: 'Error de conexión al finalizar', type: 'error' });
@@ -744,8 +742,8 @@ const FilePrintControl = ({ areaCode }) => {
                     <i className="fa-solid fa-check-circle text-2xl"></i>
                   )}
                   <div>
-                    <div className="font-black text-lg">{finalizandoOrden ? 'FINALIZANDO...' : (orders.length > 0 && orders.every(o => o.controlled) ? 'FINALIZAR LOTE COMPLETO' : 'FINALIZAR ORDEN')}</div>
-                    <div className="text-xs opacity-90">{orders.length > 0 && orders.every(o => o.controlled) ? 'Finalizar todas las órdenes del lote a la vez' : 'Todos los archivos listos · Pulsar para cerrar'}</div>
+                    <div className="font-black text-lg">{finalizandoOrden ? 'FINALIZANDO...' : (orders.length > 0 && orders.every(o => o.controlled) && orders.every(o => (o.failures || 0) === 0) ? 'FINALIZAR LOTE COMPLETO' : 'FINALIZAR ORDEN')}</div>
+                    <div className="text-xs opacity-90">{orders.length > 0 && orders.every(o => o.controlled) && orders.every(o => (o.failures || 0) === 0) ? 'Finalizar todas las órdenes del lote a la vez' : 'Todos los archivos listos · Pulsar para cerrar'}</div>
                   </div>
                 </button>
               </div>

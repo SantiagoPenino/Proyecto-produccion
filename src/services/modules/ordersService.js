@@ -73,11 +73,40 @@ export const ordersService = {
         return response.data;
     },
     getById: async (orderId, area) => {
-        let url = `/orders?q=${orderId}&mode=all`;
-        if (area) url += `&area=${area}`;
-        const response = await api.get(url);
-        // Si no devuelve array, asumimos objeto unico o array vacio
-        return Array.isArray(response.data) ? response.data[0] : response.data;
+        // Use the direct ID endpoint to avoid returning wrong orders via text search
+        try {
+            const response = await api.get(`/orders/details/${orderId}`);
+            const o = response.data;
+            if (!o) return null;
+            // Map raw SQL fields to the frontend model format
+            return {
+                id: o.OrdenID || o.id,
+                code: o.CodigoOrden || o.code || `ORD-${o.OrdenID}`,
+                client: o.Cliente || o.client || '',
+                desc: o.DescripcionTrabajo || o.desc || '',
+                area: o.AreaID || o.area || area || '',
+                status: o.Estado || o.status || 'Pendiente',
+                areaStatus: o.EstadoenArea || o.areaStatus || '',
+                priority: o.Prioridad || o.priority || 'Normal',
+                magnitude: o.Magnitud || o.magnitude || '',
+                material: o.Material || o.material || '',
+                variantCode: o.Variante || o.variantCode || '',
+                ink: o.Tinta || o.ink || '',
+                UM: o.UnidadMedida || o.UM || 'm',
+                retiro: o.ModoRetiro || o.retiro || '',
+                noDocERP: o.NoDocERP || o.noDocERP || '',
+                nextService: o.ProximoServicio || o.nextService || '',
+                entryDate: o.FechaIngreso || o.entryDate || null,
+                deliveryDate: o.FechaEstimadaEntrega || o.deliveryDate || null,
+                filesData: o.filesData || o.files || [],
+            };
+        } catch (e) {
+            // Fallback to search if details endpoint fails
+            let url = `/orders?q=${orderId}&mode=all`;
+            if (area) url += `&area=${area}`;
+            const response = await api.get(url);
+            return Array.isArray(response.data) ? response.data[0] : response.data;
+        }
     },
     cancel: async (payload) => {
         const response = await api.post('/orders/cancel', payload);

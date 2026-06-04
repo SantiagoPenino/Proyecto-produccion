@@ -1,5 +1,5 @@
 import React from 'react';
-import { CheckCircle, ScanSearch, Clock, AlertTriangle, Circle } from 'lucide-react';
+import { CircleCheck, CircleX, ScanSearch, Clock, AlertTriangle, Circle } from 'lucide-react';
 
 const OrderCard = ({ order, onViewDetails, isSelected, onToggleSelect, minimal = false }) => {
     if (!order) return null;
@@ -21,10 +21,13 @@ const OrderCard = ({ order, onViewDetails, isSelected, onToggleSelect, minimal =
             const sa = (order.statusArea || '').toUpperCase().trim();
 
             // Todos los archivos controlados → check (listo para finalizar)
-            if (order.controlled)
-                return <span className="inline-flex rounded-full bg-emerald-500 p-[3px]"><CheckCircle size={14} className="text-white" strokeWidth={2.5} /></span>;
+            if (order.controlled) {
+                if (order.failures > 0)
+                    return <span className="inline-flex rounded-full bg-red-500 p-[3px]"><CircleX size={14} className="text-white" strokeWidth={2.5} /></span>;
+                return <span className="inline-flex rounded-full bg-emerald-500 p-[3px]"><CircleCheck size={14} className="text-white" strokeWidth={2.5} /></span>;
+            }
             if (s === 'FINALIZADO' || s === 'PRONTO SECTOR' || s === 'COMPLETO')
-                return <CheckCircle size={18} className="text-brand-cyan" />;
+                return <CircleCheck size={18} className="text-brand-cyan" />;
             if (sa.includes('CONTROL') || sa.includes('CALIDAD') || s.includes('CONTROL') || s.includes('CALIDAD'))
                 return <ScanSearch size={18} className="text-brand-cyan" />;
             if (s === 'EN PROCESO' || s.includes('IMPRIMIENDO') || s === 'PRODUCCION')

@@ -201,14 +201,16 @@ const FileControlCard = ({ file, refreshOrder, onAction }) => {
                         )}
                     </div>
 
-                    {/* Report Falla (Warning Icon) */}
-                    <button
-                        className="w-12 h-12 rounded-full flex items-center justify-center text-zinc-300 hover:text-brand-magenta hover:bg-brand-magenta/10 transition-colors"
-                        onClick={(e) => { e.stopPropagation(); onAction(file, 'FALLA'); }}
-                        title="Reportar Falla"
-                    >
-                        <i className="fa-solid fa-triangle-exclamation text-2xl"></i>
-                    </button>
+                    {/* Report Falla (Warning Icon) — oculto si ya está en FALLA o CANCELADO */}
+                    {!isFailed && !isCancelled && (
+                        <button
+                            className="w-12 h-12 rounded-full flex items-center justify-center text-zinc-300 hover:text-brand-magenta hover:bg-brand-magenta/10 transition-colors"
+                            onClick={(e) => { e.stopPropagation(); onAction(file, 'FALLA'); }}
+                            title="Reportar Falla"
+                        >
+                            <i className="fa-solid fa-triangle-exclamation text-2xl"></i>
+                        </button>
+                    )}
 
                 </div>
 

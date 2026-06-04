@@ -31,7 +31,17 @@ const RollAssignmentModal = ({ isOpen, onClose, selectedIds = [], selectedOrders
                 .catch(err => console.error("Error loading rolls:", err))
                 .finally(() => setLoadingRolls(false));
 
-            setRollName(`Lote ${new Date().toLocaleDateString('es-ES').replace(/\//g, '')}-${new Date().getHours()}${new Date().getMinutes()}`);
+            // Obtener siguiente nombre secuencial del backend
+            rollsService.getNextRollName(areaCode)
+                .then(data => setRollName(data.name))
+                .catch(() => {
+                    // Fallback local si el endpoint falla
+                    const now = new Date();
+                    const yyyy = now.getFullYear();
+                    const mm = String(now.getMonth() + 1).padStart(2, '0');
+                    const dd = String(now.getDate()).padStart(2, '0');
+                    setRollName(`${yyyy}${mm}${dd}-${areaCode.toLowerCase()}1`);
+                });
         }
     }, [isOpen, areaCode]);
 

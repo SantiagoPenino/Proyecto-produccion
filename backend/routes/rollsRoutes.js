@@ -22,6 +22,9 @@ router.post('/:id/generate-labels', controller.generateRollLabels);
 router.get('/metrics/:rolloId', controller.getRolloMetrics);
 router.get('/details/:rolloId', controller.getRollDetails);
 
+// Next roll name (sequential per area per day)
+router.get('/next-name', controller.getNextRollName);
+
 // Magic Route
 router.post('/magic', controller.magicRollAssignment);
 

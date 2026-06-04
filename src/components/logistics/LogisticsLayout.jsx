@@ -1,3 +1,5 @@
+import { Listbox } from '@headlessui/react';
+
 const LogisticsLayout = ({ children, activeTab, setActiveTab, globalArea, setGlobalArea, areasList = [], disabled = false, isAreaContext = false }) => {
     let tabs = [
         { id: 'import', label: 'Cargar Órdenes', icon: 'fa-file-import' },
@@ -34,25 +36,32 @@ const LogisticsLayout = ({ children, activeTab, setActiveTab, globalArea, setGlo
                         </div>
                     </div>
 
-                    {/* GLOBAL AREA SELECTOR */}
+                    {/* GLOBAL AREA SELECTOR — Headless UI Listbox */}
                     {globalArea && setGlobalArea && (
                         <div className="relative border-l border-gray-200 pl-6">
                             <label className="block text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-1">Filtrar por Área</label>
-                            <div className="relative">
-                                <select
-                                    value={globalArea}
-                                    onChange={(e) => setGlobalArea(e.target.value)}
-                                    disabled={disabled}
-                                    className={`appearance-none pl-3 pr-8 py-1.5 bg-gray-50 border border-gray-200 rounded-lg text-sm font-bold text-gray-700 focus:outline-none focus:border-indigo-500 focus:bg-white shadow-sm transition-colors uppercase w-48 ${disabled ? 'opacity-70 cursor-not-allowed' : 'cursor-pointer hover:border-gray-300'}`}
-                                >
-                                    {areasList.map(area => (
-                                        <option key={area} value={area}>{area}</option>
-                                    ))}
-                                </select>
-                                <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2 text-gray-400">
-                                    <i className="fa-solid fa-chevron-down text-[10px]"></i>
+                            <Listbox value={globalArea} onChange={setGlobalArea} disabled={disabled}>
+                                <div className="relative w-48">
+                                    <Listbox.Button className={`w-full flex items-center justify-between pl-3 pr-3 py-1.5 bg-gray-50 border border-gray-200 rounded-lg text-sm font-bold text-gray-700 focus:outline-none focus:border-brand-cyan focus:bg-white shadow-sm transition-colors uppercase text-left ${disabled ? 'opacity-70 cursor-not-allowed' : 'cursor-pointer hover:border-brand-cyan/50'}`}>
+                                        <span>{globalArea}</span>
+                                        <i className="fa-solid fa-chevron-down text-[10px] text-gray-400 ml-2" />
+                                    </Listbox.Button>
+                                    <Listbox.Options className="absolute z-50 mt-1 w-full bg-white border border-gray-200 rounded-xl shadow-xl overflow-auto max-h-60 focus:outline-none">
+                                        {areasList.map(area => (
+                                            <Listbox.Option key={area} value={area} className={({ active, selected }) =>
+                                                `cursor-pointer select-none px-3 py-2 text-sm font-bold uppercase transition-colors ${selected ? 'bg-brand-cyan/10 text-brand-cyan' : active ? 'bg-gray-50 text-gray-800' : 'text-gray-600'}`
+                                            }>
+                                                {({ selected }) => (
+                                                    <div className="flex items-center justify-between">
+                                                        <span>{area}</span>
+                                                        {selected && <i className="fa-solid fa-check text-brand-cyan text-[10px]" />}
+                                                    </div>
+                                                )}
+                                            </Listbox.Option>
+                                        ))}
+                                    </Listbox.Options>
                                 </div>
-                            </div>
+                            </Listbox>
                         </div>
                     )}
                 </div>
