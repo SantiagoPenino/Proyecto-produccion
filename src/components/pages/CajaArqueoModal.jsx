@@ -130,7 +130,7 @@ const CajaArqueoModal = ({
   }, [denominacionesUSD]);
 
   // Montos esperados en cajón de efectivo (pesos y dólares)
-  const montoInicial = sesion ? (sesion.StuMontoInicial || 0) : 0;
+  const montoInicial = (sesion && !isAdmin) ? (sesion.StuMontoInicial || 0) : 0;
   const expectedCashDrawer = montoInicial + agrupado.cashIngress - agrupado.cashEgress;
   const diferenciaArqueo = totalDenominaciones - expectedCashDrawer;
 

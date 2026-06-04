@@ -1075,10 +1075,10 @@ const parseQROrden = async (req, res) => {
       return res.status(404).json({ valid: false, error: 'Producto Web (IDProdReact) no encontrado en base local.' });
     }
 
-    // Para órdenes externas (XSB/XDF): consultar Sheets para obtener el material real
+    // Para órdenes externas (XSB, XDF, XMD, XIMD, IMD): consultar Sheets para obtener el material real
     let materialSheets = null;
     let cantidadSheets = null;
-    const esOrdenExterna = /^(XSB|XDF)-/i.test(CodigoOrden);
+    const esOrdenExterna = ordenesExternasSvc.esOrdenExterna(CodigoOrden);
     if (esOrdenExterna) {
       try {
         const datosSheets = await ordenesExternasSvc.getDatosDesdeSheets(CodigoOrden);
@@ -1105,7 +1105,7 @@ const parseQROrden = async (req, res) => {
         Cantidad: parseFloat(Cantidad?.toString()?.replace(',', '.') || 0),
         CostoFinal: parseFloat(CostoFinal?.toString()?.replace(',', '.') || 0),
         Moneda: productoData.MonSimbolo || '$U',
-        // Datos de Sheets (solo para XSB/XDF)
+        // Datos de Sheets (para órdenes externas: XSB, XDF, XMD, XIMD, IMD)
         MaterialSheets: materialSheets,    // nombre de la tela desde la planilla
         CantidadSheets: cantidadSheets,    // metros reales desde la planilla
         EsOrdenExterna: esOrdenExterna,

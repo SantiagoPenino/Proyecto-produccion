@@ -17,4 +17,7 @@ router.post('/unlink', controller.unlinkProduct);
 // 5. Actualizar Producto Local
 router.post('/update', controller.updateLocalProduct);
 
+// 6. Crear Producto Local (nuevo)
+router.post('/create', controller.createLocalProduct);
+
 module.exports = router;

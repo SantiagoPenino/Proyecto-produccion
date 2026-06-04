@@ -184,7 +184,23 @@ export default function CajaPagoDeudaTab({ sesion, metodosPago = [], cotizacion 
   const clientesInvolucrados = Array.from(new Set(deudasSeleccionadas.map(d => d.CliIdCliente)));
   const clientePrincipalId = clientesInvolucrados[0] || null;
 
+  // ── Determinar tipo de documento dinámicamente según las deudas seleccionadas ──
+  // Si hay alguna orden SIN factura (DocIdDocumento = null) → PEDIDO CAJA
+  // Si todas las deudas ya tienen factura (DocIdDocumento != null) → RECIBO
+  const tieneOrdenSinFactura = deudasSeleccionadas.some(d => !d.DocIdDocumento);
+  const tiposDocDinamicos = tieneOrdenSinFactura
+    ? [{ value: '40', label: 'Pedido Caja' }]   // orden sin factura → genera PEDIDO CAJA
+    : [{ value: '05', label: 'Recibo' }];         // deuda ya facturada → solo RECIBO
 
+  // Auto-cambiar tipoDoc según el tipo de deudas seleccionadas
+  useEffect(() => {
+    const nuevoTipo = tieneOrdenSinFactura ? '40' : '05';
+    const nuevaSerie = tieneOrdenSinFactura ? 'PC' : 'R';
+    if (tipoDoc !== nuevoTipo) {
+      setTipoDoc(nuevoTipo);
+      setSerieDoc(nuevaSerie);
+    }
+  }, [tieneOrdenSinFactura]);
 
   // ─── Badge de estado ─────────────────────────────────────────────────────
   const badgeEstado = (d) => {
@@ -237,7 +253,9 @@ export default function CajaPagoDeudaTab({ sesion, metodosPago = [], cotizacion 
           moneda: monedaDeuda,          // ← moneda real de la deuda (USD o UYU)
           monedaId: monedaDeuda === 'USD' ? 2 : 1,
           observaciones: observaciones || `Pago de deudas combinadas`,
-          admin: isAdminCaja
+          admin: isAdminCaja,
+          // Si alguna deuda no tiene DocIdDocumento → es una orden sin facturar → el backend genera PEDIDO CAJA
+          tieneOrdenSinFactura: deudasSeleccionadas.some(d => !d.DocIdDocumento),
         },
         aplicaciones: deudasSeleccionadas.map(d => ({
           tipo: 'PAGO_DEUDA',
@@ -249,6 +267,8 @@ export default function CajaPagoDeudaTab({ sesion, metodosPago = [], cotizacion 
                 : `${d.CodigoOrden || `Deuda #${d.DDeIdDocumento}`}${d.NombreTrabajo ? ` — ${d.NombreTrabajo}` : ''}`),
           montoOriginal: Number(d.DDeImportePendiente),
           ddeId: d.DDeIdDocumento,
+          docIdDocumento: d.DocIdDocumento || null,  // para que el backend distinga facturas ya emitidas
+          ordIdOrden:     d.OrdIdOrden    || null,   // referencia a la orden original
         })),
         pagos: pagosValidos.map(p => ({
           metodoPagoId: parseInt(p.metodoPagoId, 10),
@@ -429,7 +449,7 @@ export default function CajaPagoDeudaTab({ sesion, metodosPago = [], cotizacion 
           serieDoc={serieDoc}
           onSerieDoc={setSerieDoc}
           numDoc=""
-          tiposDocDisponibles={tiposDocDisponibles.length > 0 ? tiposDocDisponibles : TIPOS_DOC_PAGO}
+          tiposDocDisponibles={tiposDocDinamicos}
           disabledExtra={seleccionadas.length === 0}
         />
 

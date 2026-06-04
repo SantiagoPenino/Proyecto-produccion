@@ -1161,7 +1161,13 @@ async function procesarTransaccion(payload) {
                    SELECT 
                        @docId,
                        ISNULL(od.OrdCodigoOrden, td.TdeCodigoReferencia),
-                       LEFT(ISNULL(art.Descripcion, ISNULL(od.OrdNombreTrabajo, 'Servicios de Producción')), 80),
+                       LEFT(COALESCE(
+                            NULLIF(NULLIF(LTRIM(RTRIM(art.Descripcion)), 'Articulos User'), 'Articulos User USD'),
+                            NULLIF(NULLIF(LTRIM(RTRIM(artod.Descripcion)), 'Articulos User'), 'Articulos User USD'),
+                            NULLIF(LTRIM(RTRIM(od.OrdMaterialPlanilla)), ''),
+                            od.OrdNombreTrabajo,
+                            'Servicios de Producción'
+                        ), 80),
                        LEFT(
                            'Orden: ' + ISNULL(od.OrdCodigoOrden, td.TdeCodigoReferencia)
                            + ISNULL(' (' + od.OrdNombreTrabajo + ')', '')
@@ -1188,6 +1194,8 @@ async function procesarTransaccion(payload) {
                    -- JOIN estricto: solo el detalle que pertenece a ese PedidosCobranza (sin OR que genera productos cartesianos)
                    LEFT JOIN dbo.PedidosCobranzaDetalle pcd ON pcd.PedidoCobranzaID = pc.ID
                    LEFT JOIN dbo.Articulos art ON art.ProIdProducto = ISNULL(pcd.ProIdProducto, od.ProIdProducto)
+                   -- Fallback: articulo correcto desde OrdenesDeposito cuando pcd.ProIdProducto es generico
+                   LEFT JOIN dbo.Articulos artod ON artod.ProIdProducto = od.ProIdProducto
                    WHERE td.TcaIdTransaccion = @tcaId
                  `);
              }
@@ -1635,8 +1643,13 @@ async function _lanzarHooksContables({ aplicaciones, pagosNorm, pagosCreados, he
     const pagId = pagosCreados[0].pagIdPago;
     
     // Si la transacción NO generó deuda en la tabla DeudaDocumento (ej. porque se pagó al contado 100%),
-    // registramos explícitamente el CARGO de la factura/venta para que el PAGO no quede flotando
-    if (!header._creoDeuda && totalNeto > 0) {
+    // registramos explícitamente el CARGO de la factura/venta para que el PAGO no quede flotando.
+    // EXCEPCIÓN: si las aplicaciones referencian órdenes existentes (OrdIdOrden), esas órdenes
+    // ya fueron debitadas por hookOrdenCreada con MovTipo='ORDEN'. Registrar VTA_CAJA de nuevo
+    // sería un doble débito que deja el saldo negativo aunque el pago se haya recibido.
+    const tieneOrdenesExistentes = aplicaciones && aplicaciones.some(ap => ap.ordIdOrden || ap.OrdIdOrden);
+
+    if (!header._creoDeuda && totalNeto > 0 && !tieneOrdenesExistentes) {
        let detailDesc = '';
        if (aplicaciones && aplicaciones.length > 0) {
          detailDesc = aplicaciones.map(ap => {
@@ -1867,7 +1880,13 @@ async function generarCFEDesdeOrdenesDirectas({ orderIds, clienteId, monto, mone
       SELECT
         @docId,
         od.OrdCodigoOrden,
-        LEFT(ISNULL(art_pcd.Descripcion, ISNULL(art.Descripcion, ISNULL(od.OrdNombreTrabajo, 'Servicios de Produccion'))), 80),
+        LEFT(COALESCE(
+            NULLIF(NULLIF(LTRIM(RTRIM(art_pcd.Descripcion)), 'Articulos User'), 'Articulos User USD'),
+            NULLIF(NULLIF(LTRIM(RTRIM(art.Descripcion)), 'Articulos User'), 'Articulos User USD'),
+            NULLIF(LTRIM(RTRIM(od.OrdMaterialPlanilla)), ''),
+            od.OrdNombreTrabajo,
+            'Servicios de Produccion'
+        ), 80),
         LEFT('Orden: ' + ISNULL(od.OrdCodigoOrden,'')
              + ISNULL(' (' + od.OrdNombreTrabajo + ')','')
              + ISNULL(CHAR(13)+CHAR(10) + 'Servicio: ' + CAST(pcd.LogPrecioAplicado AS VARCHAR(1000)), ''), 500),

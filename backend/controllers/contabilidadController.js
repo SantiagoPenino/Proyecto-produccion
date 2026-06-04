@@ -2143,11 +2143,26 @@ exports.getOrdenesAnticipo = async (req, res) => {
                s.Articulo AS ProSubFamilia,
                s.CodStock AS ProCodStock,
                 (
-                   SELECT d.ID AS DetalleID, a.CodArticulo, d.Cantidad, d.PrecioUnitario, d.Subtotal, d.LogPrecioAplicado, a.Descripcion, pc.Moneda, a.CodStock, sa.Articulo AS ArticuloNombre
+                   SELECT d.ID AS DetalleID,
+                          ISNULL(a.CodArticulo, aod.CodArticulo) AS CodArticulo,
+                          d.Cantidad, d.PrecioUnitario, d.Subtotal, d.LogPrecioAplicado,
+                          COALESCE(
+                              NULLIF(NULLIF(LTRIM(RTRIM(a.Descripcion)), 'Articulos User'), 'Articulos User USD'),
+                              NULLIF(NULLIF(LTRIM(RTRIM(aod.Descripcion)), 'Articulos User'), 'Articulos User USD'),
+                              NULLIF(LTRIM(RTRIM(odj.OrdMaterialPlanilla)), ''),
+                              a.Descripcion,
+                              aod.Descripcion
+                          ) AS Descripcion,
+                          pc.Moneda,
+                          ISNULL(a.CodStock, aod.CodStock) AS CodStock,
+                          ISNULL(sa.Articulo, saod.Articulo) AS ArticuloNombre
                    FROM dbo.PedidosCobranza pc WITH(NOLOCK)
                    JOIN dbo.PedidosCobranzaDetalle d WITH(NOLOCK) ON pc.ID = d.PedidoCobranzaID
                    LEFT JOIN dbo.Articulos a WITH(NOLOCK) ON a.ProIdProducto = d.ProIdProducto
                    LEFT JOIN dbo.StockArt sa WITH(NOLOCK) ON a.CodStock = sa.CodStock
+                   LEFT JOIN dbo.OrdenesDeposito odj WITH(NOLOCK) ON LTRIM(RTRIM(odj.OrdCodigoOrden)) = LTRIM(RTRIM(pc.NoDocERP))
+                   LEFT JOIN dbo.Articulos aod WITH(NOLOCK) ON aod.ProIdProducto = odj.ProIdProducto
+                   LEFT JOIN dbo.StockArt saod WITH(NOLOCK) ON aod.CodStock = saod.CodStock
                    WHERE LTRIM(RTRIM(pc.NoDocERP)) = oa.CodigoOrdenStr
                    FOR JSON PATH
                 ) AS DetallesJSON

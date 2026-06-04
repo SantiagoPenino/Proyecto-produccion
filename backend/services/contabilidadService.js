@@ -1984,9 +1984,19 @@ async function cerrarCicloCompleto({
   // 4. Insertar detalles para el PDF
   if (detallesParaPDF && detallesParaPDF.length > 0) {
     for (const [index, d] of detallesParaPDF.entries()) {
-      let dcdSubtotal = d.DcdSubtotal != null ? Number(d.DcdSubtotal) : 0;
-      let dcdTotal = d.DcdSubtotal != null ? Number(d.DcdSubtotal) : 0;
-      let dcdImpuestos = d.DcdSubtotal != null ? 0 : 0; // Se calcula globalmente o asumimos IVA en subtotal
+      // El DcdSubtotal almacenado en detallesParaPDF es el importe bruto (con IVA incluido).
+      // Hay que descomponer: neto = bruto / 1.22, iva = bruto - neto, total = bruto
+      const bruto = d.DcdSubtotal != null ? Number(d.DcdSubtotal) : 0;
+      const ivaRate = d.DcdIvaRate != null ? Number(d.DcdIvaRate) : 22; // si viene con tasa, la usa; si no, 22%
+      const divisor = 1 + ivaRate / 100;
+      let dcdSubtotal  = bruto / divisor;                  // neto sin IVA
+      let dcdImpuestos = bruto - dcdSubtotal;              // IVA calculado correctamente
+      let dcdTotal     = bruto;                            // total con IVA
+      
+      // Redondear a 4 decimales
+      dcdSubtotal  = Math.round(dcdSubtotal  * 10000) / 10000;
+      dcdImpuestos = Math.round(dcdImpuestos * 10000) / 10000;
+      dcdTotal     = Math.round(dcdTotal     * 10000) / 10000;
       
       let nomItem = d.DcdNomItem || '';
       let dscItem = d.DcdDscItem || '';

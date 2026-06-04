@@ -161,18 +161,33 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
         }
         const lineasMapeadas = lineas.map((l, idx) => {
           const qty = parseFloat(l.DcdCantidad) || 1;
-          const sub = parseFloat(l.DcdSubtotal) || 0;
-          const imp = parseFloat(l.DcdImpuestos) || 0;
+          const sub = parseFloat(l.DcdSubtotal) || 0;   // neto sin IVA (si está bien guardado)
+          const imp = parseFloat(l.DcdImpuestos) || 0;  // IVA
           const total = parseFloat(l.DcdTotal) || (sub + imp);
           const unitPrice = qty > 0 ? (total / qty) : (parseFloat(l.DcdPrecioUnitario) || 0);
-          let ivaRate = 22;
-          if (sub > 0) {
+          let ivaRate = 22; // default
+          if (imp > 0 && sub > 0) {
+            // Caso normal: IVA y neto correctamente guardados
             const ratio = (imp / sub) * 100;
             if (ratio < 2) ivaRate = 0;
             else if (ratio < 15) ivaRate = 10;
+            else ivaRate = 22;
+          } else if (imp === 0 && sub > 0 && total > sub) {
+            // DcdImpuestos=0 pero DcdTotal > DcdSubtotal → sub es el bruto, calcular con total
+            // Esto ocurre en cierres de ciclo guardados con el bug anterior
+            const ratio = ((total - sub) / sub) * 100;
+            if (ratio < 2) ivaRate = 0;
+            else if (ratio < 15) ivaRate = 10;
+            else ivaRate = 22;
+          } else if (imp === 0 && sub > 0 && Math.abs(total - sub) < 0.01) {
+            // DcdSubtotal ≈ DcdTotal y DcdImpuestos = 0 → fue guardado como bruto en DcdSubtotal
+            // Asumimos IVA 22% (valor por defecto para cierres de ciclo)
+            ivaRate = 22;
           }
           return { id: Date.now() + idx, concepto: (l.DcdNomItem || '').trim(), DcdDscItem: (l.DcdDscItem || '').trim(), cantidad: qty, precioUnitario: parseFloat(unitPrice.toFixed(4)), iva: ivaRate, isPreexisting: true, precioNote: 'Precio original' };
         });
+        // Sincronizar monedaOp ANTES de setFormData para que el useEffect no lo sobreescriba
+        setMonedaOp(d.MonIdMoneda === 2 ? 'USD' : 'UYU');
         setFormData(prev => ({
           ...prev,
           DocTipo: d.DocTipo || '',

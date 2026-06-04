@@ -15,7 +15,7 @@ const getLocalArticles = async (req, res) => {
                 LTRIM(RTRIM(a.CodStock)) AS CodStock,
                 LTRIM(RTRIM(a.CodArticulo)) AS CodArticulo,
                 LTRIM(RTRIM(a.Descripcion)) AS Descripcion,
-                a.IDProdReact, a.Mostrar, a.anchoimprimible, a.LLEVAPAPEL,
+                a.IDProdReact, a.Mostrar, a.anchoimprimible, a.LLEVAPAPEL, a.MonIdMoneda,
                 map.NombreReferencia AS DescripcionGrupo,
                 LTRIM(RTRIM(sa.Articulo)) AS DescripcionStock
             FROM Articulos a
@@ -103,7 +103,7 @@ const unlinkProduct = async (req, res) => {
 
 // 5. Actualizar Producto Local
 const updateLocalProduct = async (req, res) => {
-    const { proIdProducto, codArticulo, idProdReact, descripcion, codStock, grupo, supFlia, mostrar, anchoImprimible, llevaPapel } = req.body;
+    const { proIdProducto, codArticulo, idProdReact, descripcion, codStock, grupo, supFlia, mostrar, anchoImprimible, llevaPapel, monIdMoneda } = req.body;
 
     // Necesitamos al menos uno de los dos identificadores
     if (!proIdProducto && !codArticulo) return res.status(400).json({ error: "Falta ProIdProducto o CodArticulo" });
@@ -119,7 +119,8 @@ const updateLocalProduct = async (req, res) => {
             .input('Sup',      sql.VarChar(100),     supFlia        || '')
             .input('Mos',      sql.Bit,              mostrar ? 1 : 0)
             .input('Ancho',    sql.Decimal(10, 2),   parseFloat(anchoImprimible) || 0)
-            .input('Papel',    sql.Bit,              llevaPapel ? 1 : 0);
+            .input('Papel',    sql.Bit,              llevaPapel ? 1 : 0)
+            .input('MonId',    sql.Int,              monIdMoneda != null ? parseInt(monIdMoneda) : null);
 
         if (proIdProducto) {
             // Clave preferida: ProIdProducto (INT) — permite también editar CodArticulo
@@ -134,7 +135,8 @@ const updateLocalProduct = async (req, res) => {
                     SupFlia         = @Sup, 
                     Mostrar         = @Mos, 
                     anchoimprimible = @Ancho, 
-                    LLEVAPAPEL      = @Papel
+                    LLEVAPAPEL      = @Papel,
+                    MonIdMoneda     = @MonId
                 WHERE ProIdProducto = @ProId
             `);
         } else {
@@ -149,7 +151,8 @@ const updateLocalProduct = async (req, res) => {
                     SupFlia         = @Sup, 
                     Mostrar         = @Mos, 
                     anchoimprimible = @Ancho, 
-                    LLEVAPAPEL      = @Papel
+                    LLEVAPAPEL      = @Papel,
+                    MonIdMoneda     = @MonId
                 WHERE CodArticulo   = @Cod
             `);
         }
@@ -163,10 +166,45 @@ const updateLocalProduct = async (req, res) => {
     }
 };
 
+// 6. Crear Producto Local (INSERT)
+const createLocalProduct = async (req, res) => {
+    const { codArticulo, idProdReact, descripcion, codStock, grupo, supFlia, mostrar, anchoImprimible, llevaPapel, monIdMoneda } = req.body;
+
+    if (!codArticulo) return res.status(400).json({ error: 'El CodArticulo es obligatorio' });
+
+    try {
+        const pool = await getPool();
+        await pool.request()
+            .input('Cod',   sql.VarChar(50),     codArticulo.trim())
+            .input('React', sql.Int,              idProdReact != null && idProdReact !== '' ? parseInt(idProdReact) : null)
+            .input('Desc',  sql.VarChar(255),     descripcion    || '')
+            .input('Stock', sql.VarChar(50),      codStock       || '')
+            .input('Grp',   sql.VarChar(100),     grupo          || '')
+            .input('Sup',   sql.VarChar(100),     supFlia        || '')
+            .input('Mos',   sql.Bit,              mostrar ? 1 : 0)
+            .input('Ancho', sql.Decimal(10, 2),   parseFloat(anchoImprimible) || 0)
+            .input('Papel', sql.Bit,              llevaPapel ? 1 : 0)
+            .input('MonId', sql.Int,              monIdMoneda != null && monIdMoneda !== '' ? parseInt(monIdMoneda) : null)
+            .query(`
+                INSERT INTO Articulos
+                    (CodArticulo, IDProdReact, Descripcion, CodStock, Grupo, SupFlia, Mostrar, anchoimprimible, LLEVAPAPEL, MonIdMoneda, borrar)
+                VALUES
+                    (@Cod, @React, @Desc, @Stock, @Grp, @Sup, @Mos, @Ancho, @Papel, @MonId, 0)
+            `);
+
+        logAlert('INFO', 'PRODUCTO', 'Nuevo artículo creado', codArticulo, { descripcion, codStock, idProdReact });
+        res.status(201).json({ success: true, message: 'Artículo creado correctamente' });
+    } catch (e) {
+        logger.error('Error createLocalProduct:', e);
+        res.status(500).json({ error: e.message });
+    }
+};
+
 module.exports = {
     getLocalArticles,
     getRemoteProducts,
     linkProduct,
     unlinkProduct,
-    updateLocalProduct
+    updateLocalProduct,
+    createLocalProduct
 };

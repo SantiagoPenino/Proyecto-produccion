@@ -366,6 +366,11 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
     100: '', 50: '', 20: '', 10: '', 5: '', 2: '', 1: ''
   });
 
+  useEffect(() => {
+    setDenominaciones({ 2000: '', 1000: '', 500: '', 200: '', 100: '', 50: '', 20: '', 10: '', 5: '', 2: '', 1: '' });
+    setDenominacionesUSD({ 100: '', 50: '', 20: '', 10: '', 5: '', 2: '', 1: '' });
+  }, [isAdminCaja]);
+
   const [monedaCierre, setMonedaCierre] = useState('UYU'); // 'UYU' o 'USD'
   const [movimientosTurno, setMovimientosTurno] = useState([]);
 

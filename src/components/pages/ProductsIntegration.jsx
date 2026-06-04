@@ -10,7 +10,7 @@ const EditModal = ({ article, allArticles, onClose, onSaved }) => {
         proIdProducto: null, codArticulo: '', idProdReact: '',
         descripcion: '', codStock: '',
         grupo: '', supFlia: '', mostrar: true,
-        anchoImprimible: '', llevaPapel: false,
+        anchoImprimible: '', llevaPapel: false, monIdMoneda: '',
     });
     const [saving, setSaving] = useState(false);
 
@@ -27,6 +27,7 @@ const EditModal = ({ article, allArticles, onClose, onSaved }) => {
                 mostrar:         article.Mostrar == null ? true : !!article.Mostrar,
                 anchoImprimible: article.anchoimprimible != null ? String(article.anchoimprimible) : '',
                 llevaPapel:      !!article.LLEVAPAPEL,
+                monIdMoneda:     article.MonIdMoneda != null ? String(article.MonIdMoneda) : '',
             });
         }
     }, [article]);
@@ -90,8 +91,7 @@ const EditModal = ({ article, allArticles, onClose, onSaved }) => {
         if (!form.codArticulo.trim()) return toast.error('El código es obligatorio');
         setSaving(true);
         try {
-            await api.post('/products-integration/update', {
-                proIdProducto:   form.proIdProducto,
+            const payload = {
                 codArticulo:     form.codArticulo,
                 idProdReact:     form.idProdReact !== '' ? parseInt(form.idProdReact) : null,
                 descripcion:     form.descripcion,
@@ -101,7 +101,18 @@ const EditModal = ({ article, allArticles, onClose, onSaved }) => {
                 mostrar:         form.mostrar,
                 llevaPapel:      form.llevaPapel,
                 anchoImprimible: form.anchoImprimible !== '' ? parseFloat(form.anchoImprimible) : 0,
-            });
+                monIdMoneda:     form.monIdMoneda !== '' ? parseInt(form.monIdMoneda) : null,
+            };
+
+            if (isNew) {
+                await api.post('/products-integration/create', payload);
+            } else {
+                await api.post('/products-integration/update', {
+                    ...payload,
+                    proIdProducto: form.proIdProducto,
+                });
+            }
+
             toast.success(isNew ? 'Artículo creado' : 'Artículo actualizado');
             onSaved(form);
         } catch (err) {
@@ -211,6 +222,18 @@ const EditModal = ({ article, allArticles, onClose, onSaved }) => {
                         </div>
                     </div>
 
+                    {/* Moneda */}
+                    <div>
+                        <label className={labelCls}>
+                            Moneda <span className="text-slate-400 font-normal">(para precios y facturación)</span>
+                        </label>
+                        <select name="monIdMoneda" value={form.monIdMoneda} onChange={handleChange} className={selectCls}>
+                            <option value="">— Sin especificar —</option>
+                            <option value="1">$ UYU — Pesos Uruguayos</option>
+                            <option value="2">USD — Dólares</option>
+                        </select>
+                    </div>
+
                     {/* Ancho imprimible */}
                     <div>
                         <label className={labelCls}>Ancho Imprimible (metros)</label>
@@ -283,6 +306,13 @@ const ArticleRow = ({ art, onEdit }) => {
                 <span className={`inline-flex items-center justify-center w-5 h-5 rounded-full font-bold ${art.LLEVAPAPEL ? 'bg-blue-100 text-blue-700' : 'bg-slate-100 text-slate-400'}`}>
                     {art.LLEVAPAPEL ? '✓' : '✗'}
                 </span>
+            </td>
+            <td className="px-3 py-2 text-center w-16">
+                {art.MonIdMoneda === 2
+                    ? <span className="inline-block px-1.5 py-0.5 rounded text-[10px] font-bold bg-green-100 text-green-700">USD</span>
+                    : art.MonIdMoneda === 1
+                        ? <span className="inline-block px-1.5 py-0.5 rounded text-[10px] font-bold bg-blue-100 text-blue-700">UYU</span>
+                        : <span className="text-slate-300 text-xs">—</span>}
             </td>
             <td className="px-3 py-2 text-center w-16 text-slate-500">
                 {ancho > 0 ? `${ancho}m` : <span className="text-slate-300">—</span>}
@@ -392,6 +422,7 @@ const ProductsIntegration = () => {
                     Mostrar:         formData.mostrar ? 1 : 0,
                     anchoimprimible: parseFloat(formData.anchoImprimible) || 0,
                     LLEVAPAPEL:      formData.llevaPapel ? 1 : 0,
+                    MonIdMoneda:     formData.monIdMoneda !== '' ? parseInt(formData.monIdMoneda) : null,
                 };
                 return updated;
             }
@@ -455,6 +486,7 @@ const ProductsIntegration = () => {
                             <th className="px-3 py-2.5 text-left">Descripción</th>
                             <th className="px-3 py-2.5 text-center w-16">Mostrar</th>
                             <th className="px-3 py-2.5 text-center w-16">Papel</th>
+                            <th className="px-3 py-2.5 text-center w-16">Moneda</th>
                             <th className="px-3 py-2.5 text-center w-16">Ancho</th>
                             <th className="w-10"></th>
                         </tr>
