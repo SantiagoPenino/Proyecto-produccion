@@ -101,6 +101,58 @@ async function registrarPagoCompleto(opts) {
       }
     }
 
+    // ── 1b. Fallback: si OrdIdOrden no matcheó deudas, buscar por CueIdCuenta (PEPS) ──
+    //   Esto cubre el caso donde DeudaDocumento.OrdIdOrden fue guardado con un ID
+    //   distinto al de OrdenesDeposito (ej: hookOrdenCreada pasó un ID diferente).
+    if (totalImputado === 0 && pagoRestante > 0 && clienteId) {
+      const cueTipo = monedaId === 2 ? 'DINERO_USD' : 'DINERO_UYU';
+      const cueFallback = await transaction.request()
+        .input('Cli', sql.Int,         clienteId)
+        .input('T',   sql.VarChar(20), cueTipo)
+        .query('SELECT CueIdCuenta FROM dbo.CuentasCliente WHERE CliIdCliente=@Cli AND CueTipo=@T AND CueActiva=1');
+
+      if (cueFallback.recordset.length) {
+        const cueIdFb = cueFallback.recordset[0].CueIdCuenta;
+        if (!primerCueId) primerCueId = cueIdFb;
+
+        logger.info(`[PAGO-SVC] Fallback: buscando deudas por CueIdCuenta=${cueIdFb} (OrdIdOrden no matcheó)`);
+
+        const ddFb = await transaction.request()
+          .input('CueId', sql.Int, cueIdFb)
+          .query(`
+            SELECT dd.DDeIdDocumento, dd.DDeImportePendiente, dd.DDeEstado, dd.CueIdCuenta
+            FROM   dbo.DeudaDocumento dd WITH (UPDLOCK, ROWLOCK)
+            WHERE  dd.CueIdCuenta = @CueId
+              AND  dd.DDeEstado IN ('PENDIENTE','PARCIAL')
+            ORDER  BY dd.DDeFechaEmision ASC
+          `);
+
+        for (const dd of ddFb.recordset) {
+          if (pagoRestante <= 0) break;
+          const pendiente      = Number(dd.DDeImportePendiente);
+          const aplicar        = Math.min(pagoRestante, pendiente);
+          const nuevoPendiente = Math.max(0, pendiente - aplicar);
+          const nuevoEstado    = nuevoPendiente < 0.01 ? 'COBRADO' : 'PARCIAL';
+          pagoRestante   -= aplicar;
+          totalImputado  += aplicar;
+
+          await transaction.request()
+            .input('ID',     sql.Int,          dd.DDeIdDocumento)
+            .input('pend',   sql.Decimal(18,4), nuevoPendiente)
+            .input('estado', sql.VarChar(20),  nuevoEstado)
+            .query(`
+              UPDATE dbo.DeudaDocumento
+              SET    DDeImportePendiente = @pend,
+                     DDeEstado           = @estado,
+                     DDeFechaCobro       = CASE WHEN @estado = 'COBRADO' THEN GETDATE() ELSE DDeFechaCobro END
+              WHERE  DDeIdDocumento = @ID
+            `);
+
+          logger.info(`[PAGO-SVC] Fallback CueId: DeudaDoc #${dd.DDeIdDocumento}: aplicado=${aplicar.toFixed(2)} estado=${nuevoEstado}`);
+        }
+      }
+    }
+
     // ── 2. TransaccionesCaja ──────────────────────────────────────────────────
     // Se fuerza a NULL la sesión para que actúe como Caja Administrativa y no ensucie 
     // el turno del cajero de mostrador (que sí usa StuIdSesion abierta).

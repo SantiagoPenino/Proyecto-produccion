@@ -210,8 +210,10 @@ const desglosarIVA = (totalMonto, tasaIVA = 22) => {
 };
 
 const crearDocumentoContable = async ({ header, lineas }, transaction = null) => {
-  if (!header.cueIdCuenta || !header.clienteId || !header.monedaId || !header.tipo || !header.numero || !header.serie || !header.usuarioId) {
-    throw new Error('[crearDocumentoContable] Faltan parámetros obligatorios en el cabezal del documento.');
+  const requiredFields = { cueIdCuenta: header.cueIdCuenta, clienteId: header.clienteId, monedaId: header.monedaId, tipo: header.tipo, numero: header.numero, serie: header.serie, usuarioId: header.usuarioId };
+  const missing = Object.entries(requiredFields).filter(([,v]) => !v).map(([k]) => k);
+  if (missing.length > 0) {
+    throw new Error(`[crearDocumentoContable] Faltan parámetros obligatorios: ${missing.join(', ')}. Valores: ${JSON.stringify(requiredFields)}`);
   }
 
   const pool = transaction ? null : await getPool();
