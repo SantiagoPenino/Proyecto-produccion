@@ -898,7 +898,13 @@ async function getSaldoCliente(CliIdCliente) {
         cc.CueIdCuenta,
         cc.CueTipo,
         cc.ProIdProducto,
-        cc.CueSaldoActual,
+        ISNULL((
+          SELECT SUM(MovImporte) 
+          FROM dbo.MovimientosCuenta WITH(NOLOCK)
+          WHERE CueIdCuenta = cc.CueIdCuenta 
+            AND (MovAnulado IS NULL OR MovAnulado = 0)
+            AND MovTipo NOT IN ('ORDEN', 'ORDEN_ANTICIPO')
+        ), 0) AS CueSaldoActual,
         cc.CueLimiteCredito,
         cc.CuePuedeNegativo,
         cc.CueDiasCiclo,
@@ -913,7 +919,14 @@ async function getSaldoCliente(CliIdCliente) {
         cp.CPaNombre    AS CondicionPago,
         ISNULL((
           SELECT SUM(DDeImportePendiente)
-          FROM   dbo.DeudaDocumento
+          FROM   dbo.DeudaDocumento WITH(NOLOCK)
+          WHERE  CueIdCuenta = cc.CueIdCuenta
+            AND  DDeEstado IN ('PENDIENTE', 'VENCIDO', 'PARCIAL')
+            AND  DocIdDocumento IS NULL
+        ), 0) AS PendienteFacturar,
+        ISNULL((
+          SELECT SUM(DDeImportePendiente)
+          FROM   dbo.DeudaDocumento WITH(NOLOCK)
           WHERE  CueIdCuenta = cc.CueIdCuenta
             AND  DDeEstado IN ('PENDIENTE', 'VENCIDO', 'PARCIAL')
         ), 0) AS DeudaPendienteTotal,
@@ -2035,6 +2048,18 @@ async function cerrarCicloCompleto({
       });
       logger.info(`[CICLO] Deuda cruzada: ${deudaImporte.toFixed(2)} ${monedaDestLabel} en cuenta ${deudaCuentaId}`);
     } else {
+      // Registrar el movimiento de débito en la cuenta actual porque las ORDEN ya no restan el CueSaldoActual
+      const movTipoCierre = tipoDocumento.toUpperCase().includes('CONTADO') || tipoDocumento.toUpperCase().includes('CAJA') ? 'VTA_CAJA' : 'CIERRE_CICLO';
+      await registrarMovimiento({
+        CueIdCuenta:   deudaCuentaId,
+        MovTipo:       movTipoCierre,
+        MovConcepto:   `Facturado (${tipoDocumento} ${docLabel})`,
+        MovImporte:    -saldoFacturar, // débito en la misma cuenta
+        MovUsuarioAlta: UsuarioAlta,
+        DocIdDocumento,
+        CicIdCiclo,
+      });
+
       if (importePendiente !== saldoFacturar) {
         logger.info(`[CICLO] Ciclo ${CicIdCiclo}: Factura ${saldoFacturar}. Saldo cuenta (${saldoCuentaActual}) → Pendiente real: ${importePendiente}`);
       }
@@ -2321,8 +2346,331 @@ async function hookRetiroSinPago({ OReIdOrdenRetiro, CliIdCliente, OrdIds = [], 
 }
 
 // ============================================================
+// SECCIÓN CENTRALIZACIÓN: OPERACIONES SOBRE MOVIMIENTOSCUENTA
+// ============================================================
+
+/**
+ * anularMovimiento
+ * Marca un movimiento individual como anulado (MovAnulado = 1) y revierte
+ * su impacto en CueSaldoActual de la cuenta.
+ *
+ * @param {number} movId          MovIdMovimiento a anular
+ * @param {string} obs            Observación/motivo del anulamiento
+ * @param {object} transaction    Transacción mssql activa (opcional)
+ */
+async function anularMovimiento(movId, obs, transaction = null) {
+  const pool = await getPool();
+  const req = transaction ? new sql.Request(transaction) : pool.request();
+
+  // Leer el movimiento antes de anular para revertir el saldo
+  const movRes = await req
+    .input('MovId', sql.Int, movId)
+    .query(`SELECT CueIdCuenta, MovImporte FROM dbo.MovimientosCuenta WHERE MovIdMovimiento = @MovId AND (MovAnulado IS NULL OR MovAnulado = 0)`);
+
+  if (!movRes.recordset.length) {
+    logger.warn(`[CONTAB] anularMovimiento: MovId=${movId} no encontrado o ya anulado`);
+    return;
+  }
+  const { CueIdCuenta, MovImporte } = movRes.recordset[0];
+
+  const req2 = transaction ? new sql.Request(transaction) : pool.request();
+  await req2
+    .input('MovId', sql.Int, movId)
+    .input('Obs',   sql.NVarChar(500), obs || 'Anulado por sistema')
+    .query(`UPDATE dbo.MovimientosCuenta SET MovAnulado = 1, MovObservaciones = ISNULL(MovObservaciones + ' | ', '') + @Obs WHERE MovIdMovimiento = @MovId`);
+
+  // Revertir el impacto en CueSaldoActual
+  const req3 = transaction ? new sql.Request(transaction) : pool.request();
+  await req3
+    .input('CueId',   sql.Int,          CueIdCuenta)
+    .input('Importe', sql.Decimal(18,4), MovImporte)
+    .query(`UPDATE dbo.CuentasCliente SET CueSaldoActual = CueSaldoActual - @Importe WHERE CueIdCuenta = @CueId`);
+
+  logger.info(`[CONTAB] anularMovimiento: MovId=${movId} anulado. Saldo revertido en CueId=${CueIdCuenta} por ${MovImporte}`);
+}
+
+/**
+ * anularMovimientosPorFiltro
+ * Anula en lote todos los movimientos activos que coincidan con el filtro.
+ * Revierte el saldo de cada uno en CuentasCliente.
+ *
+ * @param {object} filtros
+ *   @param {number}   filtros.docId      Filtrar por DocIdDocumento
+ *   @param {number}   filtros.tcaId      Filtrar por PagIdPago IN (pagos de esa transacción)
+ *   @param {string[]} filtros.excluirTipos  Tipos de movimiento a NO anular (ej. ['ORDEN','ENTREGA'])
+ * @param {object} transaction  Transacción mssql activa (opcional)
+ * @returns {number}  Cantidad de movimientos anulados
+ */
+async function anularMovimientosPorFiltro(filtros, transaction = null) {
+  const pool = await getPool();
+  const { docId = null, tcaId = null, excluirTipos = [] } = filtros;
+
+  const mkReq = () => transaction ? new sql.Request(transaction) : pool.request();
+
+  // Armar WHERE dinámico
+  const whereParts = [`(MovAnulado IS NULL OR MovAnulado = 0)`];
+  if (docId)  whereParts.push(`(DocIdDocumento = ${docId}${tcaId ? ` OR PagIdPago IN (SELECT PagIdPago FROM dbo.Pagos WHERE PagTcaIdTransaccion = ${tcaId})` : ''})`);
+  if (excluirTipos.length) whereParts.push(`MovTipo NOT IN (${excluirTipos.map(t => `'${t}'`).join(',')})`);
+
+  const whereSQL = whereParts.join(' AND ');
+
+  // Leer todos los movimientos a anular para revertir saldos
+  const movsRes = await mkReq().query(`SELECT MovIdMovimiento, CueIdCuenta, MovImporte FROM dbo.MovimientosCuenta WHERE ${whereSQL}`);
+
+  if (!movsRes.recordset.length) return 0;
+
+  // Anular en bloque
+  await mkReq().query(`UPDATE dbo.MovimientosCuenta SET MovAnulado = 1 WHERE ${whereSQL}`);
+
+  // Revertir saldo en CuentasCliente para cada movimiento
+  for (const mov of movsRes.recordset) {
+    await mkReq()
+      .input('CueId',   sql.Int,          mov.CueIdCuenta)
+      .input('Importe', sql.Decimal(18,4), mov.MovImporte)
+      .query(`UPDATE dbo.CuentasCliente SET CueSaldoActual = CueSaldoActual - @Importe WHERE CueIdCuenta = @CueId`);
+  }
+
+  logger.info(`[CONTAB] anularMovimientosPorFiltro: ${movsRes.recordset.length} movimientos anulados (docId=${docId}, tcaId=${tcaId})`);
+  return movsRes.recordset.length;
+}
+
+/**
+ * transformarMovimiento
+ * Cambia el tipo de movimientos existentes (ej. ORDEN -> VTA_CAJA) y les asigna
+ * un documento de respaldo. Usado por pagoService al emitir una factura web.
+ *
+ * @param {object} params
+ *   @param {number[]} params.ordIds     IDs de OrdenDeposito cuyos movimientos se transforman
+ *   @param {string}   params.tipoOrigen Tipo actual a buscar (ej. 'ORDEN')
+ *   @param {string}   params.tipoDestino Nuevo tipo (ej. 'VTA_CAJA')
+ *   @param {number}   params.docId      DocIdDocumento a asignar
+ *   @param {string}   params.concepto   Nuevo concepto del movimiento
+ * @param {object} transaction  Transacción mssql activa (opcional)
+ */
+async function transformarMovimiento(params, transaction = null) {
+  const pool = await getPool();
+  const { ordIds = [], tipoOrigen, tipoDestino, docId, concepto } = params;
+
+  if (!ordIds.length) return;
+
+  const mkReq = () => transaction ? new sql.Request(transaction) : pool.request();
+
+  await mkReq()
+    .input('docId',    sql.Int,          docId)
+    .input('concepto', sql.NVarChar(500), concepto)
+    .input('tipo',     sql.VarChar(30),  tipoDestino)
+    .query(`
+      UPDATE dbo.MovimientosCuenta
+      SET MovTipo        = @tipo,
+          DocIdDocumento = @docId,
+          MovConcepto    = @concepto,
+          MovFecha       = GETDATE()
+      WHERE OrdIdOrden IN (${ordIds.join(',')})
+        AND MovTipo = '${tipoOrigen}'
+        AND (MovAnulado IS NULL OR MovAnulado = 0)
+    `);
+
+  logger.info(`[CONTAB] transformarMovimiento: ordIds=[${ordIds}] ${tipoOrigen}->${tipoDestino} docId=${docId}`);
+}
+
+// ============================================================
 // EXPORTS
 // ============================================================
+
+// ============================================================
+// SECCIÓN CENTRALIZACIÓN: OPERACIONES SOBRE DEUDADOCUMENTO
+// ============================================================
+
+/**
+ * cancelarDeuda
+ * Marca como CANCELADA una o varias deudas: DDeEstado='CANCELADA', DDeImportePendiente=0.
+ * Filtrado por docId, ddeId o ambos.
+ *
+ * @param {object} filtros
+ *   @param {number}  filtros.docId   DocIdDocumento (cancela todas las deudas del doc)
+ *   @param {number}  filtros.ddeId   DDeIdDocumento (cancela una fila específica)
+ * @param {object} transaction
+ */
+async function cancelarDeuda(filtros, transaction = null) {
+  const pool = await getPool();
+  const mkReq = () => transaction ? new sql.Request(transaction) : pool.request();
+  const { docId = null, ddeId = null, ordId = null, cueId = null } = filtros;
+
+  if (!docId && !ddeId && !ordId) throw new Error('[cancelarDeuda] Se requiere docId, ddeId u ordId');
+
+  let where;
+  if (ddeId)        where = `DDeIdDocumento = ${ddeId}`;
+  else if (docId)   where = `DocIdDocumento = ${docId}`;
+  else if (ordId)   where = `OrdIdOrden = ${ordId}${cueId ? ` AND CueIdCuenta = ${cueId}` : ''} AND DDeEstado IN ('PENDIENTE','PARCIAL','VENCIDO')`;
+
+  await mkReq().query(`
+    UPDATE dbo.DeudaDocumento
+    SET DDeEstado = 'CANCELADA', DDeImportePendiente = 0
+    WHERE ${where}
+  `);
+  logger.info(`[CONTAB] cancelarDeuda: ${where}`);
+}
+
+/**
+ * reducirDeuda
+ * Reduce DDeImportePendiente de una deuda y ajusta DDeEstado según el resultado.
+ * Si queda en 0 o menos → 'COBRADO'. Si queda parcial → DDeEstado sin cambio.
+ *
+ * @param {object} params
+ *   @param {number} params.ddeId     DDeIdDocumento a reducir
+ *   @param {number} params.monto     Monto a restar de DDeImportePendiente
+ *   @param {number} params.docId     (Opcional) DocIdDocumento para la búsqueda alternativa
+ * @param {object} transaction
+ */
+async function reducirDeuda(params, transaction = null) {
+  const pool = await getPool();
+  const mkReq = () => transaction ? new sql.Request(transaction) : pool.request();
+  const { ddeId = null, docId = null, monto } = params;
+
+  if (!ddeId && !docId) throw new Error('[reducirDeuda] Se requiere ddeId o docId');
+  const where = ddeId ? `DDeIdDocumento = ${ddeId}` : `DocIdDocumento = ${docId}`;
+
+  await mkReq()
+    .input('Monto', sql.Decimal(18,4), monto)
+    .query(`
+      UPDATE dbo.DeudaDocumento
+      SET DDeImportePendiente = CASE WHEN DDeImportePendiente - @Monto < 0 THEN 0
+                                     ELSE DDeImportePendiente - @Monto END,
+          DDeEstado           = CASE WHEN DDeImportePendiente - @Monto <= 0 THEN 'COBRADO'
+                                     ELSE DDeEstado END,
+          DDeFechaCobro       = CASE WHEN DDeImportePendiente - @Monto <= 0 THEN GETDATE()
+                                     ELSE DDeFechaCobro END
+      WHERE ${where} AND DDeEstado NOT IN ('CANCELADA','COBRADO')
+    `);
+  logger.info(`[CONTAB] reducirDeuda: ${where} monto=${monto}`);
+}
+
+/**
+ * reemplazarDeuda
+ * Elimina las deudas existentes de un documento y crea una nueva.
+ * Reemplaza el DELETE+INSERT crudo por una operación atómica rastreable.
+ * Ojo: el DELETE solo se permite para documentos en estado PENDIENTE/BORRADOR
+ * que aún no pasaron por DGI. Para documentos ACEPTADOS_DGI se debe usar NC.
+ *
+ * @param {object} params
+ *   @param {number} params.docId          DocIdDocumento a reemplazar
+ *   @param {number} params.cueIdCuenta    CueIdCuenta de la cuenta corriente del cliente
+ *   @param {number} params.importe        Nuevo importe original
+ *   @param {number} [params.diasVenc]     Días de vencimiento (default: 7)
+ * @param {object} transaction
+ * @returns {number} DDeIdDocumento nuevo
+ */
+async function reemplazarDeuda(params, transaction = null) {
+  const pool = await getPool();
+  const mkReq = () => transaction ? new sql.Request(transaction) : pool.request();
+  const { docId, cueIdCuenta, importe, diasVenc = 7 } = params;
+
+  // 1. Eliminar deudas anteriores del documento (solo PENDIENTE/PARCIAL)
+  await mkReq()
+    .input('DocId', sql.Int, docId)
+    .query(`DELETE FROM dbo.DeudaDocumento WHERE DocIdDocumento = @DocId`);
+
+  // 2. Crear la nueva deuda (si hay importe)
+  if (importe > 0) {
+    const insertRes = await mkReq()
+      .input('CueId',   sql.Int,           cueIdCuenta)
+      .input('DocId',   sql.Int,           docId)
+      .input('Orig',    sql.Decimal(18,4), importe)
+      .input('Pend',    sql.Decimal(18,4), importe)
+      .input('Dias',    sql.Int,           diasVenc)
+      .query(`
+        INSERT INTO dbo.DeudaDocumento
+          (CueIdCuenta, DocIdDocumento, DDeImporteOriginal, DDeImportePendiente,
+           DDeFechaEmision, DDeFechaVencimiento, DDeEstado)
+        OUTPUT INSERTED.DDeIdDocumento
+        VALUES
+          (@CueId, @DocId, @Orig, @Pend,
+           GETDATE(), DATEADD(DAY, @Dias, GETDATE()), 'PENDIENTE')
+      `);
+    const newId = insertRes.recordset[0].DDeIdDocumento;
+    logger.info(`[CONTAB] reemplazarDeuda: docId=${docId} → DDeId=${newId} importe=${importe}`);
+    return newId;
+  }
+
+  logger.info(`[CONTAB] reemplazarDeuda: docId=${docId} eliminada (importe=0, doc pagado)`);
+  return null;
+}
+
+// ============================================================
+// SECCIÓN CENTRALIZACIÓN: ENSAMBLADO DE ESTADO DE CUENTA
+// ============================================================
+
+/**
+ * getEstadoCuentaCompleto
+ * Fuente única de verdad para armar el estado de cuenta de un cliente.
+ * Usada por:
+ *   - contabilidadController.getEstadoCuentaCliente (reporte web/PDF)
+ *   - estadosCuenta.job (snapshot para email)
+ *   - cualquier consumer futuro
+ *
+ * @param {number}  clienteId
+ * @param {Date|null} desde       Inicio del período (null = desde el origen)
+ * @param {Date|null} hasta       Fin del período   (null = hasta hoy)
+ * @param {object}  opts
+ *   @param {number}  opts.top          Límite de movimientos por cuenta (default: 500)
+ *   @param {boolean} opts.soloActivas  Si true, filtra cuentas con saldo=0 y sin deudas (default: false)
+ * @returns {Promise<{cliente, cuentas, periodoDesde, periodoHasta, generadoEn}>}
+ */
+async function getEstadoCuentaCompleto(clienteId, desde = null, hasta = null, opts = {}) {
+  const pool = await getPool();
+  const { top = 500, soloActivas = false } = opts;
+
+  // 1. Datos del cliente
+  const cliRes = await pool.request()
+    .input('CliIdCliente', sql.Int, parseInt(clienteId))
+    .query(`
+      SELECT CliIdCliente, Nombre, NombreFantasia, Email, TelefonoTrabajo, CioRuc
+      FROM   dbo.Clientes WITH(NOLOCK)
+      WHERE  CliIdCliente = @CliIdCliente
+    `);
+
+  if (!cliRes.recordset.length) {
+    throw new Error(`Cliente ${clienteId} no encontrado`);
+  }
+  const cliente = cliRes.recordset[0];
+
+  // 2. Cuentas con saldo
+  const cuentas = await getSaldoCliente(parseInt(clienteId));
+
+  if (!cuentas.length) {
+    return {
+      cliente,
+      cuentas:      [],
+      periodoDesde: desde  ? desde.toISOString()  : null,
+      periodoHasta: hasta  ? hasta.toISOString()  : null,
+      generadoEn:   new Date().toISOString(),
+    };
+  }
+
+  // 3. Para cada cuenta: movimientos + deudas en paralelo
+  const cuentasDetalle = await Promise.all(
+    cuentas.map(async (cuenta) => {
+      const [movimientos, deudas] = await Promise.all([
+        getMovimientos(cuenta.CueIdCuenta, desde, hasta, top),
+        getDeudas(cuenta.CueIdCuenta),
+      ]);
+      return { ...cuenta, movimientos, deudas };
+    })
+  );
+
+  // 4. Si soloActivas=true, filtrar cuentas sin movimiento ni deuda (para el email)
+  const cuentasFinal = soloActivas
+    ? cuentasDetalle.filter(c => Number(c.CueSaldoActual) !== 0 || c.deudas.length > 0)
+    : cuentasDetalle;
+
+  return {
+    cliente,
+    cuentas:      cuentasFinal,
+    periodoDesde: desde ? desde.toISOString() : null,
+    periodoHasta: hasta ? hasta.toISOString() : null,
+    generadoEn:   new Date().toISOString(),
+  };
+}
 
 module.exports = {
   // Cuentas
@@ -2331,12 +2679,16 @@ module.exports = {
   // Libro mayor
   registrarMovimiento,
   getMovimientos,
+  getEstadoCuentaCompleto,
 
   // Pagos
   imputarPago,
 
   // Deuda
   crearDeudaDocumento,
+  cancelarDeuda,
+  reducirDeuda,
+  reemplazarDeuda,
   getDeudas,
 
   // Ciclos de crédito
@@ -2365,6 +2717,11 @@ module.exports = {
   // Consultas extra
   getDeudasPorCliente,
   getTodasLasDeudasVivas,
+
+  // Centralización: escritura segura en MovimientosCuenta
+  anularMovimiento,
+  anularMovimientosPorFiltro,
+  transformarMovimiento,
 };
 
 /**

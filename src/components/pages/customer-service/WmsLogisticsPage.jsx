@@ -82,12 +82,12 @@ const WmsLogisticsPage = () => {
     const handleConfirmPrep = async (pedidoId) => {
         try {
             setConfirmDialog(null);
-            const loadingToast = toast.loading('Descontando stock en WMS...');
+            const loadingToast = toast.loading('Confirmando preparación...');
             const res = await wmsService.confirmPreparation(pedidoId);
-            toast.success(res.message || 'Stock descontado correctamente', { id: loadingToast });
+            toast.success(res.message || 'Pedido confirmado correctamente', { id: loadingToast });
             loadOrders();
         } catch (error) {
-            toast.error(error.response?.data?.error || 'Error al descontar stock');
+            toast.error(error.response?.data?.error || 'Error al confirmar');
         }
     };
 
@@ -125,11 +125,11 @@ const WmsLogisticsPage = () => {
                             <div className="bg-amber-100 p-3 rounded-full">
                                 <AlertTriangle size={24} />
                             </div>
-                            <h2 className="text-xl font-bold text-slate-800">¿Confirmar y Descontar?</h2>
+                            <h2 className="text-xl font-bold text-slate-800">¿Confirmar Preparación?</h2>
                         </div>
                         <p className="text-slate-600 mb-6">
                             Estás a punto de confirmar el pedido <strong>{confirmDialog.codigo}</strong>. 
-                            Esta acción descontará el stock directamente en el WMS y avisará al cliente. Esta acción no se puede deshacer.
+                            Esta acción marcará el pedido como preparado y avisará al cliente. Esta acción no se puede deshacer.
                         </p>
                         <div className="flex gap-3 justify-end">
                             <button 
@@ -410,7 +410,7 @@ const WmsLogisticsPage = () => {
                                                         className="bg-emerald-500 hover:bg-emerald-600 text-white font-bold py-3 px-6 rounded-xl shadow-lg shadow-emerald-500/30 transition-all flex items-center gap-2"
                                                     >
                                                         <CheckCircle size={20} />
-                                                        Confirmar y Descontar Stock
+                                                        Confirmar Preparación
                                                     </button>
                                                 )}
                                             </div>

@@ -14,6 +14,7 @@
 
 const { sql } = require('../config/db');
 const logger  = require('../utils/logger');
+const contabilidadService = require('./contabilidadService');
 
 // ── Método de pago interno para anticipos (sin caja física) ──────────────────
 // Buscamos el método "Anticipo" o "Cuenta Corriente" para no requerir efectivo.
@@ -247,34 +248,17 @@ async function aplicarAnticipoAOrden({ oReId, cliId, cuentaId, monto, monedaId, 
       FROM   dbo.OrdenesDeposito WHERE OReIdOrdenRetiro = @OReId;
     `);
 
-  // 6. Debitar CuentasCliente
-  await req()
-    .input('Monto', sql.Decimal(18,4), monto)
-    .input('Cue',   sql.Int,           cuentaId)
-    .query(`
-      UPDATE dbo.CuentasCliente
-      SET    CueSaldoActual = CueSaldoActual - @Monto
-      WHERE  CueIdCuenta = @Cue
-    `);
-
-  // 7. Registrar movimiento en libro mayor
-  await req()
-    .input('Cue',     sql.Int,           cuentaId)
-    .input('Monto',   sql.Decimal(18,4), monto)
-    .input('Usr',     sql.Int,           usuarioId)
-    .input('Obs',     sql.NVarChar(500),  concepto)
-    .input('TcaId',   sql.Int,           tcaId)
-    .query(`
-      DECLARE @NuevoSaldo DECIMAL(18,4);
-      SELECT  @NuevoSaldo = CueSaldoActual FROM dbo.CuentasCliente WHERE CueIdCuenta = @Cue;
-
-      INSERT INTO dbo.MovimientosCuenta
-        (CueIdCuenta, MovTipo, MovImporte, MovConcepto,
-         MovSaldoPosterior, MovFecha, MovUsuarioAlta, MovAnulado)
-      VALUES
-        (@Cue, 'ORDEN_ANTICIPO', -@Monto, @Obs,
-         @NuevoSaldo, GETDATE(), @Usr, 0)
-    `);
+  // 6. Debitar CuentasCliente Y registrar movimiento en libro mayor
+  // Usamos el SP centralizado que calcula MovSaldoPosterior correctamente
+  await contabilidadService.registrarMovimiento({
+    CueIdCuenta:     cuentaId,
+    MovTipo:         'ORDEN_ANTICIPO',
+    MovConcepto:     concepto,
+    MovImporte:      -monto,   // negativo: debita el saldo disponible del cliente
+    MovUsuarioAlta:  usuarioId,
+    OReIdOrdenRetiro: oReId,
+    PagIdPago:       pagIdPago,
+  }, tran);
 
   logger.info(`[ANTICIPO-SVC] Anticipo aplicado: OReId=${oReId} PagId=${pagIdPago} Monto=${monto}`);
   return { pagIdPago, tcaIdTransaccion: tcaId };

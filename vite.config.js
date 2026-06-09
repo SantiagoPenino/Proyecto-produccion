@@ -1,11 +1,9 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
-import basicSsl from '@vitejs/plugin-basic-ssl'
 
 export default defineConfig({
   plugins: [
-    react(),
-    basicSsl()
+    react()
   ],
   build: {
     outDir: 'backend/public',
@@ -31,7 +29,6 @@ export default defineConfig({
   server: {
     host: true,  // Permite conexiones externas (celular en red local)
     port: 5173,
-    https: true,
     proxy: {
       '/api': {
         target: 'http://localhost:5000',
@@ -54,7 +51,6 @@ export default defineConfig({
   // CONFIGURACIÓN PARA PRODUCCIÓN (PREVIEW)
   preview: {
     port: 5173, // Usar el mismo puerto
-    https: true, // Mantener HTTPS
     proxy: {     // Mantener el Proxy
       '/api': {
         target: 'http://localhost:5000',

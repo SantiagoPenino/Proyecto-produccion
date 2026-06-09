@@ -1,5 +1,5 @@
-import React, { useState, useEffect, useMemo } from 'react';
-import { X, CheckCircle, FileText, User, Plus, Trash2, DollarSign, UserCheck, Loader2 } from 'lucide-react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
+import { X, CheckCircle, FileText, User, Plus, Trash2, DollarSign, UserCheck, Loader2, AlertTriangle } from 'lucide-react';
 import api from '../../services/apiClient';
 import { toast } from 'sonner';
 import ClienteBilletera from '../common/ClienteBilletera';
@@ -44,6 +44,8 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
   const [updatingClient, setUpdatingClient] = useState(false);
   const [editDocInfo, setEditDocInfo] = useState(null);
   const esEditar = mode === 'editar' && !!editDocId;
+  // Guarda si el documento ORIGINAL era contado (para mostrar alerta de anulación de pago)
+  const originalPagadoRef = useRef(null);
 
   // Selectores simplificados
   const [tipoCliente, setTipoCliente] = useState('CONSUMIDOR_FINAL'); // 'CONSUMIDOR_FINAL' | 'RUT' | 'PEDIDO_CAJA'
@@ -149,6 +151,8 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
         else if (d.RutObligatorio || lbl.includes('FACTURA')) setTipoCliente('RUT');
         else setTipoCliente('CONSUMIDOR_FINAL');
         const isContado = lbl.includes('CONTADO') || d.DocPagado === true || d.DocPagado === 1;
+        // Guardar el estado original de pago para detectar cambio contado→crédito
+        originalPagadoRef.current = isContado;
         setFormaPago(isContado ? 'CONTADO' : 'CREDITO');
         setNotas(d.DocObservaciones || '');
         if (res.data?.pagos && res.data.pagos.length > 0) {
@@ -766,7 +770,32 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
 
       {/* CONTENIDO PRINCIPAL */}
       <div className="flex-1 flex flex-col p-4 gap-4 min-h-0 overflow-y-auto">
-        
+
+        {/* ⚠️ ALERTA GRANDE: cambio de contado a crédito en edición */}
+        {esEditar && originalPagadoRef.current === true && formaPago === 'CREDITO' && (
+          <div className="flex items-start gap-4 bg-amber-50 border-2 border-amber-400 rounded-2xl px-5 py-4 shadow-lg animate-in fade-in">
+            <div className="shrink-0 bg-amber-400 text-white rounded-xl p-2 mt-0.5">
+              <AlertTriangle size={28} strokeWidth={2.5} />
+            </div>
+            <div>
+              <p className="text-amber-900 font-black text-base leading-snug">
+                ⚠️ ATENCIÓN — Se va a ANULAR el pago registrado en caja
+              </p>
+              <p className="text-amber-800 font-semibold text-sm mt-1 leading-relaxed">
+                Este documento fue cobrado como <strong>Contado</strong>. Al cambiarlo a <strong>Crédito</strong>:
+              </p>
+              <ul className="mt-2 space-y-1 text-amber-800 text-sm font-medium list-none">
+                <li className="flex items-center gap-2"><span className="text-amber-500 font-black">✕</span> La transacción de caja quedará <strong>ANULADA</strong></li>
+                <li className="flex items-center gap-2"><span className="text-amber-500 font-black">✕</span> El cobro registrado desaparecerá del historial de pagos</li>
+                <li className="flex items-center gap-2"><span className="text-green-600 font-black">✓</span> Se creará una <strong>deuda pendiente</strong> por el monto total</li>
+              </ul>
+              <p className="text-amber-700 text-xs mt-2 font-semibold">
+                Solo confirmá si esto es intencional. Esta acción no se puede deshacer desde aquí.
+              </p>
+            </div>
+          </div>
+        )}
+
         {/* PANEL SUPERIOR: CajaPanelPago idéntico a Caja */}
         <CajaPanelPago
           layout="horizontal"

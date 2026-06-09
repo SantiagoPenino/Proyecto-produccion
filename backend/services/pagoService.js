@@ -1,7 +1,21 @@
 /**
  * pagoService.js
  * ─────────────────────────────────────────────────────────────────────────────
- * Servicio unificado de pago. Replica exactamente el flujo de
+ * @deprecated 2026-06-08
+ *
+ * ESTE SERVICIO ESTÁ REEMPLAZADO POR cajaService.procesarTransaccion
+ * que desde la versión actual incluye:
+ *   - Auto-descubrimiento de órdenes hijas de un ORDEN_RETIRO
+ *   - Cruce exacto de DeudaDocumento por OrdIdOrden (+ fallback PEPS)
+ *   - Generación de CFE (E-Ticket Contado)
+ *   - Asiento contable (Partida Doble)
+ *
+ * Los webhooks Handy y MercadoPago ya migrados a cajaService.
+ * Este archivo se conserva solo como referencia histórica.
+ * NO agregues llamadas nuevas a registrarPagoCompleto.
+ * ─────────────────────────────────────────────────────────────────────────────
+ *
+ * Servicio original de pago. Replicaba el flujo de
  * procesarPagoDeuda de Caja para pagos online (Handy, MercadoPago) y logística.
  *
  * Operaciones realizadas (igual que Caja):
@@ -349,30 +363,23 @@ async function registrarPagoCompleto(opts) {
         pagoId,
         usuarioId
       }).then(async (cfe) => {
-        if (cfe && cfe.docId) {
-          const { getPool } = require('../config/db');
-          const poolAsync = await getPool();
-          // Convertimos la ORDEN fantasma en VTA_CAJA para que el cliente vea la factura en su estado de cuenta
-          await poolAsync.request()
-            .input('docId', sql.Int, cfe.docId)
-            .query(`
-              UPDATE dbo.MovimientosCuenta
-              SET MovTipo = 'VTA_CAJA',
-                  DocIdDocumento = @docId,
-                  MovConcepto = 'Factura Web ' + '${cfe.serie}-${cfe.numero}',
-                  MovFecha = GETDATE()
-              WHERE OrdIdOrden IN (${ordIds.join(',')})
-                AND MovTipo = 'ORDEN'
-            `);
-          // Ligamos el pago al documento de la factura
-          await poolAsync.request()
-            .input('docId', sql.Int, cfe.docId)
-            .input('pagoId', sql.Int, pagoId)
-            .query(`
-              UPDATE dbo.MovimientosCuenta
-              SET DocIdDocumento = @docId
-              WHERE PagIdPago = @pagoId AND MovTipo = 'PAGO'
-            `);
+          // Usamos el helper centralizado para convertir ORDEN -> VTA_CAJA
+          const contabilidadSvc = require('./contabilidadService');
+          await contabilidadSvc.transformarMovimiento({
+            ordIds,
+            tipoOrigen:  'ORDEN',
+            tipoDestino: 'VTA_CAJA',
+            docId:       cfe.docId,
+            concepto:    `Factura Web ${cfe.serie}-${cfe.numero}`,
+          });
+          // Ligamos el PAGO al documento de la factura
+          await contabilidadSvc.transformarMovimiento({
+            ordIds:      [],   // filtramos por PagIdPago directamente
+            tipoOrigen:  'PAGO',
+            tipoDestino: 'PAGO',
+            docId:       cfe.docId,
+            concepto:    `Pago Factura Web ${cfe.serie}-${cfe.numero}`,
+          });
         }
       }).catch(e => logger.error(`[PAGO-SVC] Error generando CFE tras pago ${pagoId}: ${e.message}`));
     }

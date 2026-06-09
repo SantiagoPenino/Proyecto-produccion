@@ -11,13 +11,15 @@ exports.getPendingOrders = async (req, res) => {
                 p.ID as PedidoID, p.NoDocERP, p.ClienteID, p.MontoTotal, p.Moneda, p.FechaGeneracion, p.EstadoCobro,
                 c.Nombre as ClienteNombre,
                 d.CodArticulo as wms_variante_id, d.Cantidad,
+                a.Descripcion as nombre_producto,
                 awv.sku, awv.nombre_variante,
                 loc.pasillo, loc.estante
             FROM PedidosCobranza p
             LEFT JOIN Clientes c ON p.ClienteID = c.CliIdCliente
             INNER JOIN PedidosCobranzaDetalle d ON p.ID = d.PedidoCobranzaID
+            LEFT JOIN Articulos a ON d.ProIdProducto = a.ProIdProducto
             LEFT JOIN Articulos_WMS_Variantes awv ON CAST(awv.wms_variante_id AS VARCHAR(100)) = CAST(d.CodArticulo AS VARCHAR(100))
-            LEFT JOIN Articulos_UbicacionLocal loc ON awv.Idproid = loc.Idproid
+            LEFT JOIN Articulos_UbicacionLocal loc ON a.ProIdProducto = loc.Idproid
             WHERE p.NoDocERP LIKE 'VEN-%' 
               AND p.EstadoCobro IN ('PENDIENTE', 'EN_PREPARACION')
             ORDER BY p.FechaGeneracion ASC
@@ -39,10 +41,12 @@ exports.getPendingOrders = async (req, res) => {
                 };
             }
             
+            const fullName = row.nombre_variante ? `${row.nombre_producto} - ${row.nombre_variante}` : (row.nombre_producto || 'Artículo Desconocido');
+            
             ordersMap[row.PedidoID].items.push({
                 wms_variante_id: row.wms_variante_id,
                 sku: row.sku,
-                nombre_variante: row.nombre_variante,
+                nombre_variante: fullName,
                 cantidad: row.Cantidad,
                 ubicacion: { pasillo: row.pasillo, estante: row.estante }
             });
@@ -85,36 +89,6 @@ exports.confirmPreparation = async (req, res) => {
         const items = itemsRes.recordset;
         if (items.length === 0) throw new Error('El pedido no tiene items');
 
-        const wmsUrl = process.env.WMS_API_URL;
-        const depotId = process.env.WMS_DEPOSITO_LOCAL_ID || 5;
-
-        // 2. Call WMS API to discount stock for each item
-        const results = [];
-        for (const item of items) {
-            const body = {
-                variante_id: item.wms_variante_id,
-                cantidad: item.Cantidad,
-                deposito_id: depotId,
-                proposito: 'VENTA_PAQUETE',
-                orden_venta_nro: pedidoId.toString()
-            };
-
-            // const response = await fetch(`${wmsUrl}/articulos/descontar`, {
-            //     method: 'POST',
-            //     headers: { 'Content-Type': 'application/json' },
-            //     body: JSON.stringify(body)
-            // });
-            // const data = await response.json();
-            
-            // Si el endpoint real no soporta estos params extra aun, igual se descuenta por la cantidad y variante
-            // if (data.error) throw new Error(`WMS Error: ${data.error}`);
-            // Log for tracing
-            
-            // API de descuento comentada para pruebas:
-            const data = { dummy: true, status: "Comentado temporalmente para no afectar stock" };
-            results.push(data);
-        }
-
         // 3. Update Order State
         await pool.request()
             .input('PedidoID', sql.Int, pedidoId)
@@ -124,7 +98,7 @@ exports.confirmPreparation = async (req, res) => {
                 WHERE ID = @PedidoID AND NoDocERP LIKE 'VEN-%'
             `);
 
-        res.json({ success: true, message: 'Stock descontado y pedido PREPARADO', wms_results: results });
+        res.json({ success: true, message: 'Pedido confirmado y marcado como PREPARADO' });
     } catch (err) {
         logger.error('Error en confirmPreparation (Logistica):', err);
         res.status(500).json({ error: err.message });
@@ -156,15 +130,37 @@ exports.receivePreparedOrder = async (req, res) => {
         if (orderRes.recordset.length === 0) throw new Error('Pedido no encontrado');
         const order = orderRes.recordset[0];
         const proIdProducto = order.Moneda === 'USD' ? 411 : 386;
-        await pool.request()
+        const insertRes = await pool.request()
             .input('Cod', sql.VarChar(100), order.NoDocERP)
             .input('Cli', sql.Int, order.ClienteID)
             .input('Prod', sql.Int, proIdProducto)
             .input('Mon', sql.Int, order.Moneda === 'USD' ? 2 : 1)
             .input('Monto', sql.Decimal(18,2), order.MontoTotal)
-            .query(`INSERT INTO OrdenesDeposito (OrdCodigoOrden, OrdCantidad, CliIdCliente, OrdNombreTrabajo, MOrIdModoOrden, ProIdProducto, MonIdMoneda, OrdCostoFinal, OrdFechaIngresoOrden, OrdUsuarioAlta, OrdEstadoActual, OrdFechaEstadoActual, LReIdLugarRetiro, OrdAvisoWsp, OrdMaterialPlanilla) VALUES (@Cod, 1, @Cli, 'PEDIDO ECOMMERCE WMS', 1, @Prod, @Mon, @Monto, GETDATE(), 1, 1, GETDATE(), 1, 0, 'WMS')`);
+            .query(`
+                INSERT INTO OrdenesDeposito (OrdCodigoOrden, OrdCantidad, CliIdCliente, OrdNombreTrabajo, MOrIdModoOrden, ProIdProducto, MonIdMoneda, OrdCostoFinal, OrdFechaIngresoOrden, OrdUsuarioAlta, OrdEstadoActual, OrdFechaEstadoActual, LReIdLugarRetiro, OrdAvisoWsp, OrdMaterialPlanilla) 
+                OUTPUT INSERTED.OrdIdOrden
+                VALUES (@Cod, 1, @Cli, 'PEDIDO ECOMMERCE WMS', 1, @Prod, @Mon, @Monto, GETDATE(), 1, 1, GETDATE(), 1, 0, 'WMS')
+            `);
+            
+        const insertedOrdId = insertRes.recordset[0]?.OrdIdOrden;
+
         await pool.request().input('PedidoID', sql.Int, pedidoId).query(`UPDATE PedidosCobranza SET EstadoCobro = 'RECIBIDO_DEPOSITO' WHERE ID = @PedidoID`);
-        res.json({ success: true, message: 'Orden recibida en depósito y aviso programado.' });
+
+        // Registrar en deuda contable
+        const contabilidadService = require('../services/contabilidadService');
+        await contabilidadService.procesarEventoContable('ORDEN', {
+            OrdIdOrden: insertedOrdId || null,
+            CliIdCliente: order.ClienteID,
+            ProIdProducto: proIdProducto,
+            Cantidad: 1,
+            CodigoOrden: order.NoDocERP,
+            NombreTrabajo: 'PEDIDO ECOMMERCE WMS',
+            UsuarioAlta: req.user?.usuarioId || 1,
+            Importe: order.MontoTotal,
+            MonIdMoneda: order.Moneda === 'USD' ? 2 : 1
+        });
+
+        res.json({ success: true, message: 'Orden recibida en depósito, ingresada a deuda y aviso programado.' });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
@@ -173,13 +169,30 @@ exports.receivePreparedOrder = async (req, res) => {
 exports.getPreparedOrders = async (req, res) => {
     try {
         const pool = await getPool();
-        const result = await pool.request().query(`SELECT p.ID as PedidoID, p.NoDocERP, p.ClienteID, p.MontoTotal, p.Moneda, p.FechaGeneracion, p.EstadoCobro, c.Nombre as ClienteNombre, d.CodArticulo as wms_variante_id, d.Cantidad, awv.sku, awv.nombre_variante, loc.pasillo, loc.estante FROM PedidosCobranza p LEFT JOIN Clientes c ON p.ClienteID = c.CliIdCliente INNER JOIN PedidosCobranzaDetalle d ON p.ID = d.PedidoCobranzaID LEFT JOIN Articulos_WMS_Variantes awv ON CAST(awv.wms_variante_id AS VARCHAR(100)) = CAST(d.CodArticulo AS VARCHAR(100)) LEFT JOIN Articulos_UbicacionLocal loc ON awv.Idproid = loc.Idproid WHERE p.NoDocERP LIKE 'VEN-%' AND p.EstadoCobro = 'PREPARADO' ORDER BY p.FechaGeneracion ASC`);
+        const result = await pool.request().query(`
+            SELECT 
+                p.ID as PedidoID, p.NoDocERP, p.ClienteID, p.MontoTotal, p.Moneda, p.FechaGeneracion, p.EstadoCobro, 
+                c.Nombre as ClienteNombre, 
+                d.CodArticulo as wms_variante_id, d.Cantidad, 
+                a.Descripcion as nombre_producto,
+                awv.sku, awv.nombre_variante, 
+                loc.pasillo, loc.estante 
+            FROM PedidosCobranza p 
+            LEFT JOIN Clientes c ON p.ClienteID = c.CliIdCliente 
+            INNER JOIN PedidosCobranzaDetalle d ON p.ID = d.PedidoCobranzaID 
+            LEFT JOIN Articulos a ON d.ProIdProducto = a.ProIdProducto
+            LEFT JOIN Articulos_WMS_Variantes awv ON CAST(awv.wms_variante_id AS VARCHAR(100)) = CAST(d.CodArticulo AS VARCHAR(100)) 
+            LEFT JOIN Articulos_UbicacionLocal loc ON a.ProIdProducto = loc.Idproid 
+            WHERE p.NoDocERP LIKE 'VEN-%' AND p.EstadoCobro = 'PREPARADO' 
+            ORDER BY p.FechaGeneracion ASC
+        `);
         const ordersMap = {};
         result.recordset.forEach(row => {
             if (!ordersMap[row.PedidoID]) {
                 ordersMap[row.PedidoID] = { id: row.PedidoID, codigo: row.NoDocERP, cliente: row.ClienteNombre || 'Cliente Contado', fecha: row.FechaGeneracion, total: row.MontoTotal, moneda: row.Moneda, estado: row.EstadoCobro, items: [] };
             }
-            ordersMap[row.PedidoID].items.push({ wms_variante_id: row.wms_variante_id, sku: row.sku, nombre_variante: row.nombre_variante, cantidad: row.Cantidad, ubicacion: { pasillo: row.pasillo, estante: row.estante } });
+            const fullName = row.nombre_variante ? `${row.nombre_producto} - ${row.nombre_variante}` : (row.nombre_producto || 'Artículo Desconocido');
+            ordersMap[row.PedidoID].items.push({ wms_variante_id: row.wms_variante_id, sku: row.sku, nombre_variante: fullName, cantidad: row.Cantidad, ubicacion: { pasillo: row.pasillo, estante: row.estante } });
         });
         res.json(Object.values(ordersMap));
     } catch (err) {

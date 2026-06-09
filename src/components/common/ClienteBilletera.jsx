@@ -58,6 +58,20 @@ const ClienteBilletera = ({ clienteId, clienteNombre }) => {
         <span className="text-sm font-black text-slate-900 font-mono italic">U$ {fmt(ctaUSD?.CueSaldoActual)}</span>
       </div>
 
+      {/* Pendiente Facturar (si existe) */}
+      {(Number(ctaUYU?.PendienteFacturar || 0) > 0 || Number(ctaUSD?.PendienteFacturar || 0) > 0) && (
+        <div className="flex items-center gap-2 px-4 py-2 rounded-2xl border border-amber-200 bg-amber-50 text-amber-700 shadow-[0_4px_12px_rgba(245,158,11,0.1)]">
+          <FileText size={14} className="opacity-80" />
+          <div className="flex flex-col">
+             <span className="text-[9px] font-black uppercase tracking-tighter opacity-70">Pendiente Facturar</span>
+             <div className="flex items-center gap-2 text-xs font-black text-slate-900 font-mono">
+               {Number(ctaUYU?.PendienteFacturar || 0) > 0 && <span>$ {fmt(ctaUYU?.PendienteFacturar)}</span>}
+               {Number(ctaUSD?.PendienteFacturar || 0) > 0 && <span>U$ {fmt(ctaUSD?.PendienteFacturar)}</span>}
+             </div>
+          </div>
+        </div>
+      )}
+
       {/* Alerta de Deuda Viva (Documentos Pendientes) */}
       {deudas.length > 0 && (
         <div 

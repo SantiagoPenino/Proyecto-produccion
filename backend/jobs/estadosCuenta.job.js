@@ -54,58 +54,32 @@ async function generarEstadoParaCliente(pool, cliente) {
   const { CliIdCliente, Nombre, Email } = cliente;
 
   try {
-    // 1. Obtener cuentas con saldo activo o deuda pendiente
-    const cuentas = await svc.getSaldoCliente(CliIdCliente);
-
-    if (cuentas.length === 0) {
-      logger.info(`[ESTADOS-CRON] CliId=${CliIdCliente} (${Nombre}) sin cuentas → skip`);
-      return null;
-    }
-
-    // 2. Para cada cuenta buscar movimientos del mes actual y deudas activas
-    const hoy     = new Date();
+    const hoy          = new Date();
     const primeroDeMes = new Date(hoy.getFullYear(), hoy.getMonth(), 1);
 
-    const cuentasDetalle = await Promise.all(
-      cuentas.map(async (c) => {
-        const [movimientos, deudas] = await Promise.all([
-          svc.getMovimientos(c.CueIdCuenta, primeroDeMes, hoy, 500),
-          svc.getDeudas(c.CueIdCuenta),
-        ]);
-        return { ...c, movimientos, deudas };
-      })
+    // Una sola llamada: datos del cliente + cuentas + movimientos + deudas
+    // soloActivas=true: omite cuentas con saldo 0 y sin deudas (no tiene sentido enviarlas)
+    const snapshot = await svc.getEstadoCuentaCompleto(
+      CliIdCliente,
+      primeroDeMes,
+      hoy,
+      { top: 500, soloActivas: true }
     );
 
-    // 3. Filtrar cuentas que tienen saldo distinto de cero o tienen deudas pendientes
-    const cuentasActivas = cuentasDetalle.filter(c => Number(c.CueSaldoActual) !== 0 || c.deudas.length > 0);
-
-    // Si después de filtrar no queda ninguna cuenta con saldo/deuda, no enviamos nada
-    if (cuentasActivas.length === 0) {
-      logger.info(`[ESTADOS-CRON] CliId=${CliIdCliente} saldos en cero → skip`);
+    // Si no quedan cuentas con actividad, no generamos el email
+    if (!snapshot.cuentas.length) {
+      logger.info(`[ESTADOS-CRON] CliId=${CliIdCliente} (${Nombre}) sin cuentas activas → skip`);
       return null;
     }
 
-    // 4. Armar el snapshot JSON completo solo con las cuentas activas
-    const snapshot = {
-      cliente: {
-        CliIdCliente,
-        Nombre,
-        Email,
-      },
-      cuentas: cuentasActivas,
-      periodoDesde: primeroDeMes.toISOString(),
-      periodoHasta: hoy.toISOString(),
-      generadoEn:   hoy.toISOString(),
-    };
-
-    // 5. Formatear fechas para el asunto
+    // Formatear fechas para el asunto
     const fechaStr = hoy.toLocaleDateString('es-UY', {
       day: '2-digit', month: '2-digit', year: 'numeric',
       timeZone: 'America/Montevideo',
     });
     const asunto = `Estado de cuenta — ${Nombre} — ${fechaStr}`;
 
-    // 6. Verificar que no exista ya un PENDIENTE del mismo cliente/día
+    // Verificar que no exista ya un PENDIENTE del mismo cliente/día
     const existeRes = await pool.request()
       .input('CliIdCliente', sql.Int, CliIdCliente)
       .query(`
@@ -120,22 +94,20 @@ async function generarEstadoParaCliente(pool, cliente) {
       return existeRes.recordset[0].ColIdCola;
     }
 
-    // 7. Insertar en la cola
+    // Insertar en la cola
     const insertRes = await pool.request()
-      .input('CliIdCliente',    sql.Int,          CliIdCliente)
-      .input('ColContenidoJSON',sql.NVarChar(sql.MAX), JSON.stringify(snapshot))
-      .input('ColAsunto',       sql.NVarChar(300), asunto)
-      .input('ColEmailDestino', sql.NVarChar(300), Email || '')
-      .input('ColFechaDesde',   sql.Date,         primeroDeMes)
-      .input('ColFechaHasta',   sql.Date,         hoy)
+      .input('CliIdCliente',     sql.Int,              CliIdCliente)
+      .input('ColContenidoJSON', sql.NVarChar(sql.MAX), JSON.stringify(snapshot))
+      .input('ColAsunto',        sql.NVarChar(300),     asunto)
+      .input('ColEmailDestino',  sql.NVarChar(300),     Email || '')
+      .input('ColFechaDesde',    sql.Date,              primeroDeMes)
+      .input('ColFechaHasta',    sql.Date,              hoy)
       .query(`
-        -- Obtener la primera cuenta del cliente para el FK requerido
         DECLARE @CueIdCuenta INT = (
           SELECT TOP 1 CueIdCuenta FROM dbo.CuentasCliente
           WHERE CliIdCliente = @CliIdCliente AND CueActiva = 1
           ORDER BY CueIdCuenta
         );
-
         INSERT INTO dbo.ColaEstadosCuenta
           (CliIdCliente, CueIdCuenta, ColContenidoJSON, ColAsunto,
            ColEmailDestino, ColFechaDesde, ColFechaHasta,

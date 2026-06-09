@@ -509,9 +509,11 @@ const WmsOrderPage = () => {
                                                                     </span>
                                                                 </div>
                                                             </div>
-                                                            <span className={`text-[11px] font-bold ${v.stock > 10 ? 'text-emerald-500' : v.stock > 0 ? 'text-amber-500' : 'text-red-500'}`}>
-                                                                Stock: {v.stock}
-                                                            </span>
+                                                            {v.stock < 9999 && (
+                                                                <span className={`text-[11px] font-bold ${v.stock > 10 ? 'text-emerald-500' : v.stock > 0 ? 'text-amber-500' : 'text-red-500'}`}>
+                                                                    Stock: {v.stock}
+                                                                </span>
+                                                            )}
                                                             {selectedColor === v.color && (
                                                                 <div className="absolute top-2 right-2 w-4 h-4 bg-blue-500 rounded-full flex items-center justify-center">
                                                                     <CheckCircle size={10} className="text-white" />
@@ -663,10 +665,14 @@ const WmsOrderPage = () => {
                                             </div>
                                             
                                             <div className="flex flex-col text-right">
-                                                <span className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-0.5">Stock</span>
-                                                <span className="font-black text-lg text-slate-700">
-                                                    {product.total_stock}
-                                                </span>
+                                                {product.total_stock < 9999 && (
+                                                    <>
+                                                        <span className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-0.5">Stock</span>
+                                                        <span className="font-black text-lg text-slate-700">
+                                                            {product.total_stock}
+                                                        </span>
+                                                    </>
+                                                )}
                                             </div>
                                         </div>
                                     </div>

@@ -1173,52 +1173,18 @@ exports.getEstadoCuentaCliente = async (req, res) => {
     const { CliIdCliente } = req.params;
     const { desde = null, hasta = null } = req.query;
 
-    // 1. Datos del cliente
-    const pool = await getPool();
-    const cliRes = await pool.request()
-      .input('CliIdCliente', sql.Int, parseInt(CliIdCliente))
-      .query(`
-        SELECT CliIdCliente, Nombre, NombreFantasia, Email, TelefonoTrabajo, CioRuc
-        FROM   dbo.Clientes
-        WHERE  CliIdCliente = @CliIdCliente
-      `);
-
-    if (cliRes.recordset.length === 0) {
-      return res.status(404).json({ success: false, error: 'Cliente no encontrado.' });
-    }
-
-    const cliente = cliRes.recordset[0];
-
-    // 2. Cuentas + saldo
-    const cuentas = await svc.getSaldoCliente(parseInt(CliIdCliente));
-
-    // 3. Para cada cuenta: movimientos y deudas
-    const cuentasDetalle = await Promise.all(
-      cuentas.map(async (cuenta) => {
-        const [movimientos, deudas] = await Promise.all([
-          svc.getMovimientos(
-            cuenta.CueIdCuenta,
-            desde ? new Date(desde) : null,
-            hasta ? new Date(hasta) : null,
-            200,
-          ),
-          svc.getDeudas(cuenta.CueIdCuenta),
-        ]);
-        return { ...cuenta, movimientos, deudas };
-      })
+    const datos = await svc.getEstadoCuentaCompleto(
+      parseInt(CliIdCliente),
+      desde ? new Date(desde) : null,
+      hasta ? new Date(hasta) : null,
+      { top: 200, soloActivas: false }
     );
 
-    res.json({
-      success: true,
-      data: {
-        cliente,
-        cuentas: cuentasDetalle,
-        generadoEn: new Date().toISOString(),
-      }
-    });
+    res.json({ success: true, data: datos });
   } catch (err) {
+    const status = err.message.includes('no encontrado') ? 404 : 500;
     logger.error('[CONTABILIDAD] getEstadoCuentaCliente:', err.message);
-    res.status(500).json({ success: false, error: err.message });
+    res.status(status).json({ success: false, error: err.message });
   }
 };
 
@@ -2085,16 +2051,9 @@ exports.anularOrdenPendiente = async (req, res) => {
         VALUES (@Cue, 'AJUSTE', @Imp, @Concepto, @SP, GETDATE(), @Usr, @MovIdAnula, @OrdIdOrden, 0)
       `);
 
-    // 5. Anular DeudaDocumento asociada si existe
+    // 5. Anular DeudaDocumento asociada si existe (centralizado con filtro por OrdIdOrden)
     if (mov.OrdIdOrden) {
-      await pool.request()
-        .input('OrdId', sql.Int, mov.OrdIdOrden)
-        .input('Cue', sql.Int, mov.CueIdCuenta)
-        .query(`
-          UPDATE dbo.DeudaDocumento
-          SET DDeEstado = 'CANCELADO', DDeImportePendiente = 0
-          WHERE OrdIdOrden = @OrdId AND CueIdCuenta = @Cue AND DDeEstado IN ('PENDIENTE', 'PARCIAL', 'VENCIDO')
-        `);
+      await svc.cancelarDeuda({ ordId: mov.OrdIdOrden, cueId: mov.CueIdCuenta });
     }
 
     // 6. Recalcular totales del ciclo si la orden pertenecía a uno
@@ -2534,11 +2493,9 @@ exports.consumirRecursoAdelantado = async (req, res) => {
           VALUES (@C,'COBERTURA_RETROACTIVA',@Imp,@Con,@SP,GETDATE(),@Usr,@Ord,@Mid,@Cic)
         `);
 
-      // 4e. Escenario A: cancelar DeudaDocumento completo (cobertura total garantizada)
+      // 4e. Cancelar DeudaDocumento (cobertura total garantizada)
       if (deudaDoc) {
-        await new sql.Request(transaction)
-          .input('Id', sql.Int, deudaDoc.DDeIdDocumento)
-          .query("UPDATE dbo.DeudaDocumento SET DDeEstado='CANCELADO', DDeImportePendiente=0 WHERE DDeIdDocumento=@Id");
+        await svc.cancelarDeuda({ ddeId: deudaDoc.DDeIdDocumento }, transaction);
       }
 
       // 4f. Escenario B: actualizar acumulados del ciclo abierto (semanal)
