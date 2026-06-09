@@ -1534,7 +1534,15 @@ const procesarPagoDeuda = async (req, res) => {
                     .query(`
                       UPDATE dbo.DeudaDocumento
                       SET DocIdDocumento = @DocId
-                      WHERE DDeIdDocumento = @DdeId AND DocIdDocumento IS NULL
+                      WHERE DDeIdDocumento = @DdeId AND DocIdDocumento IS NULL;
+
+                      UPDATE m
+                      SET m.DocIdDocumento = @DocId
+                      FROM dbo.MovimientosCuenta m
+                      JOIN dbo.DeudaDocumento d ON d.OrdIdOrden = m.OrdIdOrden
+                      WHERE d.DDeIdDocumento = @DdeId
+                        AND m.MovTipo IN ('ORDEN', 'ORDEN_ANTICIPO')
+                        AND m.DocIdDocumento IS NULL;
                     `);
                 }
               }
@@ -1868,7 +1876,7 @@ const generarNotaCredito = async (req, res) => {
         ];
 
         await contabilidadCore.generarAsientoCompleto({
-          concepto: `Nota de CrÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â©dito ${fullNcNumero} ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â ${motivo || 'Reverso'}`,
+          concepto: `Nota de Crédito ${fullNcNumero} - ${motivo || 'Reverso'}`,
           usuarioId,
           tcaIdTransaccion: null,
           origen: 'NOTA_CREDITO',
@@ -1879,9 +1887,9 @@ const generarNotaCredito = async (req, res) => {
       }
 
       await transaction.commit();
-      logger.info(`[NOTA-CREDITO] Doc #${docIdOrigen} ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¾Ãƒâ€šÃ‚Â¢ NC #${ncId} (${fullNcNumero}) Monto:${montoNum}`);
+      logger.info(`[NOTA-CREDITO] Doc #${docIdOrigen} -> NC #${ncId} (${fullNcNumero}) Monto:${montoNum}`);
       const s = io(req); if (s) s.emit('actualizado', { type: 'nota-credito' });
-      return res.status(201).json({ success: true, ncId, ncNumero: fullNcNumero, ncTipo, message: `Nota de CrÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â©dito ${fullNcNumero} generada` });
+      return res.status(201).json({ success: true, ncId, ncNumero: fullNcNumero, ncTipo, message: `Nota de Crédito ${fullNcNumero} generada` });
     } catch (errTx) { await transaction.rollback(); throw errTx; }
   } catch (err) { logger.error('[NOTA-CREDITO]', err.message); return res.status(500).json({ error: err.message }); }
 };
@@ -1894,7 +1902,7 @@ const generarNotaDebito = async (req, res) => {
   try {
     const { docIdOrigen, monto, motivo, clienteId, cuentaId, monedaId, Lineas, Totales } = req.body;
     if (!docIdOrigen || !clienteId || !cuentaId)
-      return res.status(400).json({ error: 'Faltan parÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡metros: docIdOrigen, clienteId, cuentaId' });
+      return res.status(400).json({ error: 'Faltan parámetros: docIdOrigen, clienteId, cuentaId' });
 
     const pool = await getPool();
     const transaction = pool.transaction();
@@ -1914,7 +1922,7 @@ const generarNotaDebito = async (req, res) => {
       }
 
       if (montoNum > Number(docOrigen.DocTotal)) {
-        throw new Error(`El total de la Nota de DÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â©bito (${montoNum}) no puede superar al total del documento original (${docOrigen.DocTotal})`);
+        throw new Error(`El total de la Nota de Débito (${montoNum}) no puede superar al total del documento original (${docOrigen.DocTotal})`);
       }
 
       // '11' = E-Ticket Nota De Debito, '06' = E-Factura Nota De Debito
@@ -1951,8 +1959,8 @@ const generarNotaDebito = async (req, res) => {
       const tipoCtaReal = monId === 2 ? 'DINERO_USD' : 'DINERO_UYU';
       let cueIdReal = null;
       if (!esConsumidorFinalGenerico) {
-        const contabilidadService = require('../services/contabilidadService');
-        cueIdReal = await contabilidadService.obtenerOCrearCuenta(cliIdNum, tipoCtaReal, {
+        const contabilidadSvc = require('../services/contabilidadService');
+        cueIdReal = await contabilidadSvc.obtenerOCrearCuenta(cliIdNum, tipoCtaReal, {
             MonIdMoneda: monId,
             UsuarioAlta: usuarioId
         }, transaction);
@@ -1976,7 +1984,7 @@ const generarNotaDebito = async (req, res) => {
         .input('MonId', sql.Int,           monId)
         .input('Usr',   sql.Int,           usuarioId)
         .input('DocRef',sql.Int,           parseInt(docIdOrigen))
-        .input('Motivo',sql.NVarChar(300), motivo || 'Nota de dÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â©bito')
+        .input('Motivo',sql.NVarChar(300), motivo || 'Nota de débito')
         .input('Subtotal', sql.Decimal(18,2), subtotalVal)
         .input('TotalDescuentos', sql.Decimal(18,2), totalDescVal)
         .input('TotalRecargos', sql.Decimal(18,2), totalRecVal)
@@ -2069,6 +2077,7 @@ const generarNotaDebito = async (req, res) => {
 
       // Asiento Contable
       try {
+        const contabilidadCore = require('../services/contabilidadCore');
         const cuentaCliente = monId === 2 ? contabilidadCore.CUENTAS.CLIENTE_USD : contabilidadCore.CUENTAS.CLIENTE_UYU;
         const cuentaVentas  = contabilidadCore.CUENTAS.VENTA_SERV;
 
@@ -2078,7 +2087,7 @@ const generarNotaDebito = async (req, res) => {
         ];
 
         await contabilidadCore.generarAsientoCompleto({
-          concepto: `Nota de DÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â©bito ${fullNdNumero} ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â ${motivo || 'Reverso NC'}`,
+          concepto: `Nota de Débito ${fullNdNumero} - ${motivo || 'Reverso NC'}`,
           usuarioId,
           tcaIdTransaccion: null,
           origen: 'NOTA_DEBITO',
@@ -2089,7 +2098,7 @@ const generarNotaDebito = async (req, res) => {
       }
 
       await transaction.commit();
-      logger.info(`[NOTA-DEBITO] Doc #${docIdOrigen} ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¾Ãƒâ€šÃ‚Â¢ ND #${ndId} (${fullNdNumero}) Monto:${montoNum}`);
+      logger.info(`[NOTA-DEBITO] Doc #${docIdOrigen} -> ND #${ndId} (${fullNdNumero}) Monto:${montoNum}`);
       const s = io(req); if (s) s.emit('actualizado', { type: 'nota-debito' });
       return res.status(201).json({ success: true, ndId, ndNumero: fullNdNumero, ndTipo, message: 'Nota de Debito ' + fullNdNumero + ' generada' });
     } catch (errTx) { await transaction.rollback(); throw errTx; }

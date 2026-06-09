@@ -647,11 +647,21 @@ export const generarPdfEstadoCuenta = (cliente, cuentas, secciones, planes, desd
 
         // (Se eliminó el subtitulo Pendiente de facturar de la cabecera)
 
-        const ordenesPendientes = rawMovs.filter(m => 
-          (m.MovTipo === 'ORDEN' || m.MovTipo === 'ORDEN_ANTICIPO') && 
-          !m.MovAnulado && 
-          Number(m.MovImporte) < 0
-        );
+        const ordenesPendientes = rawMovs.filter(m => {
+          if (m.MovTipo !== 'ORDEN' && m.MovTipo !== 'ORDEN_ANTICIPO') return false;
+          if (m.MovAnulado) return false;
+          
+          // Si tiene documento contable directo, está facturada
+          if (m.DocIdDocumento) return false;
+          
+          // Si pertenece a un ciclo, hay que ver si el ciclo está cerrado
+          if (m.CicIdCiclo) {
+            const ciclo = planes.find(p => p.CicIdCiclo === m.CicIdCiclo);
+            if (ciclo && ciclo.CicEstado !== 'ABIERTO') return false;
+          }
+          
+          return true;
+        });
 
         if (movs.length === 0) {
             pdf.setFont('helvetica', 'italic');

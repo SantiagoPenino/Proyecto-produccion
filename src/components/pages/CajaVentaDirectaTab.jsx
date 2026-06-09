@@ -441,8 +441,8 @@ export default function CajaVentaDirectaTab({
                             </Listbox.Button>
                             <Transition as={Fragment} leave="transition ease-in duration-100" leaveFrom="opacity-100" leaveTo="opacity-0">
                               <Listbox.Options className="absolute z-50 mt-1 max-h-60 w-full overflow-auto rounded-xl bg-white py-1 text-base shadow-lg ring-1 ring-black/5 focus:outline-none sm:text-sm">
-                                {(productosAgrupados[it.grupo] || []).map(p => (
-                                  <Listbox.Option key={p.CodArticulo} className={({ active }) => `relative cursor-pointer select-none py-2 pl-8 pr-4 transition-colors text-sm ${active ? 'bg-zinc-100 text-zinc-900' : 'text-zinc-700'}`} value={p.CodArticulo}>
+                                {(productosAgrupados[it.grupo] || []).map((p, idx) => (
+                                  <Listbox.Option key={p.ProIdProducto || `${p.CodArticulo}-${idx}`} className={({ active }) => `relative cursor-pointer select-none py-2 pl-8 pr-4 transition-colors text-sm ${active ? 'bg-zinc-100 text-zinc-900' : 'text-zinc-700'}`} value={p.CodArticulo}>
                                     {({ selected }) => (
                                       <>
                                         <span className={`block truncate ${selected ? 'font-bold text-zinc-900' : 'font-medium'}`}>[{p.CodArticulo}] {p.Descripcion}</span>

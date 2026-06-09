@@ -918,11 +918,12 @@ async function getSaldoCliente(CliIdCliente) {
              ELSE ISNULL(mon.MonSimbolo, '$') END AS MonSimbolo,
         cp.CPaNombre    AS CondicionPago,
         ISNULL((
-          SELECT SUM(DDeImportePendiente)
-          FROM   dbo.DeudaDocumento WITH(NOLOCK)
+          SELECT ABS(SUM(MovImporte))
+          FROM   dbo.MovimientosCuenta WITH(NOLOCK)
           WHERE  CueIdCuenta = cc.CueIdCuenta
-            AND  DDeEstado IN ('PENDIENTE', 'VENCIDO', 'PARCIAL')
+            AND  MovTipo IN ('ORDEN', 'ORDEN_ANTICIPO')
             AND  DocIdDocumento IS NULL
+            AND  (MovAnulado IS NULL OR MovAnulado = 0)
         ), 0) AS PendienteFacturar,
         ISNULL((
           SELECT SUM(DDeImportePendiente)
@@ -1142,6 +1143,7 @@ async function getMovimientos(CueIdCuenta, FechaDesde = null, FechaHasta = null,
       importeVirtual = Number(m.MovImporte); // negativo (consumo)
     } else if (['ORDEN', 'ORDEN_ANTICIPO'].includes(m.MovTipo)) {
       // ORDEN/ORDEN_ANTICIPO: en cuentas monetarias son débitos internos consolidados en CIERRE_CICLO
+      // Se ocultan de la tabla principal (Historial) para mostrarse en su propia tabla de Pendientes
       isVisible = false;
       importeVirtual = 0;
     } else {

@@ -43,24 +43,32 @@ router.patch('/planes/:PlaIdPlan/desactivar', ctrl.desactivarPlan);
 router.get('/reportes/antiguedad-deuda', ctrl.getAntiguedadDeuda);
 router.get('/reportes/estado-cuenta/:CliIdCliente', ctrl.getEstadoCuentaCliente);
 router.get('/reportes/deuda-consolidada', ctrl.getDeudaConsolidada);
-router.get('/cola', ctrl.getColaEstados);
-router.get('/cola/:ColIdCola/preview', ctrl.previewEstadoCola);
-router.post('/cola/generar', ctrl.generarEstadosManual);
-router.post('/cola/enviar-aprobados', ctrl.enviarAprobados);
-router.patch('/cola/:ColIdCola/estado', ctrl.cambiarEstadoCola);
-router.post('/cola/:ColIdCola/enviar', ctrl.enviarEstadoCola);
-router.get('/tipos-movimiento', ctrl.getTiposMovimiento);
-router.post('/tipos-movimiento', ctrl.createTipoMovimiento);
-router.patch('/tipos-movimiento/:TmoId', ctrl.updateTipoMovimiento);
-router.delete('/tipos-movimiento/:TmoId', ctrl.deleteTipoMovimiento);
 
-// ── MOTOR DE REGLAS ──────────────────────────────────────────────────
+// ────────────────────────────────────────────────────────────────────────────
+// RUTAS: COLA DE ESTADOS DE CUENTA
+// ────────────────────────────────────────────────────────────────────────────
+router.get('/cola', ctrl.getColaEstados);
+router.post('/cola/:ColIdCola/estado', ctrl.cambiarEstadoCola);
+router.post('/cola/:ColIdCola/enviar', ctrl.enviarEstadoCola);
+router.post('/cola/enviar-aprobados', ctrl.enviarAprobados);
+router.post('/cola/run-batch', ctrl.generarEstadosManual);
+router.delete('/cola/:ColIdCola', ctrl.eliminarItemCola);
+router.post('/cola/manual', ctrl.generarColaManual);
+router.get('/cola/:ColIdCola/pdf', ctrl.descargarPdfCola);
+
+// ────────────────────────────────────────────────────────────────────────────
+// RUTAS: CUENTAS CLIENTE
+// ────────────────────────────────────────────────────────────────────────────
 const motorCtrl = require('../controllers/motorContableController');
 router.get('/motor/transacciones', motorCtrl.getTiposTransaccion);
 router.get('/motor/transacciones/:codigo/reglas', motorCtrl.getReglasPorTransaccion);
 router.post('/motor/transacciones', motorCtrl.saveReglasTransaccion);
 router.delete('/motor/transacciones/:codigo', motorCtrl.deleteTransaccion);
 
+router.get('/tipos-movimiento', ctrl.getTiposMovimiento);
+router.post('/tipos-movimiento', ctrl.createTipoMovimiento);
+router.patch('/tipos-movimiento/:TmoId', ctrl.updateTipoMovimiento);
+router.delete('/tipos-movimiento/:TmoId', ctrl.deleteTipoMovimiento);
 
 // ── Módulo Caja y Pagos ────────────────────────────────────────────────
 const caja = require('../controllers/cajaController');

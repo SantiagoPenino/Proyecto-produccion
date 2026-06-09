@@ -6,9 +6,11 @@
 import { useState, useEffect, useCallback } from 'react';
 import {
   RefreshCw, Send, CheckCircle2, XCircle, Clock, AlertTriangle,
-  Mail, ChevronDown, Filter, Eye, Zap, X, Printer,
+  Mail, ChevronDown, Filter, Eye, Zap, X, Printer, Trash2, Calendar
 } from 'lucide-react';
 import { toast } from 'sonner';
+
+import { generarPdfEstadoCuenta } from '../../utils/pdfGenerator';
 
 const API = import.meta.env.VITE_API_URL || '';
 const tok = () => { try { return JSON.parse(localStorage.getItem('user'))?.token || ''; } catch { return ''; } };
@@ -49,25 +51,31 @@ const EstadoBadge = ({ estado }) => {
 
 // ── Modal de previsualización ─────────────────────────────────────────────────
 const PreviewModal = ({ item, onClose }) => {
-  const [html, setHtml] = useState('');
+  const [pdfUrl, setPdfUrl] = useState(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     const cargar = async () => {
       try {
-        const data = await req(`/api/contabilidad/cola/${item.ColIdCola}/preview`);
-        setHtml(data.html || '');
+        const response = await fetch(`${API}/api/contabilidad/cola/${item.ColIdCola}/pdf`, {
+          headers: { Authorization: `Bearer ${tok()}` }
+        });
+        if (!response.ok) throw new Error('Error al generar o cargar el PDF');
+        const blob = await response.blob();
+        const url = URL.createObjectURL(blob);
+        setPdfUrl(url);
       } catch (e) { toast.error(e.message); onClose(); }
       finally { setLoading(false); }
     };
     cargar();
   }, [item.ColIdCola]);
 
-  const imprimir = () => {
-    const w = window.open('', '_blank');
-    w.document.write(html);
-    w.document.close();
-    setTimeout(() => w.print(), 400);
+  const descargarPDF = () => {
+    if (!pdfUrl) return;
+    const a = document.createElement('a');
+    a.href = pdfUrl;
+    a.download = `EstadoCuenta_${item.NombreCliente.replace(/[^a-zA-Z0-9]/g, '_')}.pdf`;
+    a.click();
   };
 
   return (
@@ -79,9 +87,9 @@ const PreviewModal = ({ item, onClose }) => {
           <p className="text-sm font-mono text-slate-500 mt-1">{item.ColEmailDestino}</p>
         </div>
         <div className="flex items-center gap-3">
-          <button onClick={imprimir}
-            className="flex items-center gap-2 text-sm font-bold px-4 py-2 bg-slate-50 border border-slate-200 hover:bg-slate-100 text-slate-700 rounded-xl transition-colors shadow-lg">
-            <Printer size={16} className="text-indigo-600" /> Imprimir
+          <button onClick={descargarPDF} disabled={!pdfUrl}
+            className="flex items-center gap-2 text-sm font-bold px-4 py-2 bg-emerald-50 border border-emerald-200 hover:bg-emerald-100 text-emerald-700 rounded-xl transition-colors shadow-lg disabled:opacity-50">
+            <Printer size={16} className="text-emerald-600" /> Descargar PDF
           </button>
           <button onClick={onClose}
             className="flex items-center gap-2 text-sm font-bold px-4 py-2 bg-rose-50 hover:bg-rose-100 border border-rose-200 text-rose-600 rounded-xl transition-colors shadow-lg">
@@ -95,17 +103,17 @@ const PreviewModal = ({ item, onClose }) => {
         {loading ? (
           <div className="flex flex-col items-center justify-center gap-4 text-slate-500 mt-20">
             <div className="animate-spin h-12 w-12 border-4 border-indigo-600 border-t-transparent rounded-full shadow-[0_0_15px_rgba(79,70,229,0.5)]" />
-            <p className="text-sm font-bold tracking-widest uppercase text-indigo-600">Generando previsualización ERP...</p>
+            <p className="text-sm font-bold tracking-widest uppercase text-indigo-600">Generando PDF del ERP...</p>
           </div>
         ) : (
-          <div className="w-full max-w-3xl bg-white rounded-xl shadow-2xl overflow-hidden ring-1 ring-slate-200">
-            <iframe
-              srcDoc={html}
-              title="Vista previa Estado de Cuenta"
-              className="w-full border-0"
-              style={{ minHeight: '850px' }}
-              sandbox="allow-same-origin"
-            />
+          <div className="w-full max-w-4xl bg-white rounded-xl shadow-2xl overflow-hidden ring-1 ring-slate-200 h-full min-h-[850px]">
+            {pdfUrl && (
+              <iframe
+                src={pdfUrl}
+                title="Vista previa Estado de Cuenta PDF"
+                className="w-full h-full border-0"
+              />
+            )}
           </div>
         )}
       </div>
@@ -114,7 +122,7 @@ const PreviewModal = ({ item, onClose }) => {
 };
 
 // ── Fila de la cola ───────────────────────────────────────────────────────────
-const FilaCola = ({ item, seleccionado, onToggle, onCambiarEstado, onEnviar, onPreview, loadingId }) => {
+const FilaCola = ({ item, seleccionado, onToggle, onCambiarEstado, onEnviar, onPreview, onEliminar, loadingId }) => {
   const [expandido, setExpandido] = useState(false);
   const loading = loadingId === item.ColIdCola;
 
@@ -161,9 +169,14 @@ const FilaCola = ({ item, seleccionado, onToggle, onCambiarEstado, onEnviar, onP
               </button>
             )}
             {/* Vista previa del documento */}
-            <button onClick={() => onPreview(item)} title="Ver Preview HTML"
+            <button onClick={() => onPreview(item)} title="Ver Preview PDF"
               className="p-2 rounded-lg bg-indigo-50 text-indigo-600 hover:bg-indigo-100 transition-colors border border-indigo-200 shadow-sm">
               <Eye size={16} />
+            </button>
+            {/* Eliminar registro */}
+            <button onClick={() => onEliminar(item.ColIdCola)} title="Eliminar registro"
+              className="p-2 rounded-lg bg-rose-50 text-rose-600 hover:bg-rose-100 transition-colors border border-rose-200 shadow-sm ml-2">
+              <Trash2 size={16} />
             </button>
             {/* Expandir detalle técnico */}
             <button onClick={() => setExpandido(e => !e)} title="Ver info técnica extendida"
@@ -203,6 +216,61 @@ const FilaCola = ({ item, seleccionado, onToggle, onCambiarEstado, onEnviar, onP
   );
 };
 
+// ── Modal de Generación Manual ───────────────────────────────────────────────
+const ManualGenerationModal = ({ onClose, onGenerar }) => {
+  const [clientes, setClientes] = useState([]);
+  const [fechaDesde, setFechaDesde] = useState('');
+  const [fechaHasta, setFechaHasta] = useState('');
+  const [seleccionados, setSeleccionados] = useState([]);
+  const [todos, setTodos] = useState(true);
+
+  useEffect(() => {
+    req('/api/contabilidad/clientes-activos').then(res => setClientes(res.data || []));
+  }, []);
+
+  const handleSubmit = (e) => {
+    e.preventDefault();
+    onGenerar({ fechaDesde, fechaHasta, clientesIds: todos ? [] : seleccionados });
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+      <div className="bg-white p-8 rounded-2xl w-full max-w-lg shadow-2xl border border-slate-200">
+        <h2 className="text-2xl font-black text-indigo-900 mb-6 flex items-center gap-3">
+          <Calendar className="text-indigo-600" /> Generación Manual
+        </h2>
+        <form onSubmit={handleSubmit} className="flex flex-col gap-6">
+          <div className="flex gap-4">
+            <label className="flex-1 text-sm font-bold text-slate-700">Desde:
+              <input type="date" required={!todos} className="w-full mt-2 border border-slate-300 rounded-xl p-3 focus:ring-2 focus:ring-indigo-500" value={fechaDesde} onChange={e => setFechaDesde(e.target.value)} />
+            </label>
+            <label className="flex-1 text-sm font-bold text-slate-700">Hasta:
+              <input type="date" required className="w-full mt-2 border border-slate-300 rounded-xl p-3 focus:ring-2 focus:ring-indigo-500" value={fechaHasta} onChange={e => setFechaHasta(e.target.value)} />
+            </label>
+          </div>
+          <label className="flex items-center gap-3 mt-2 bg-slate-50 p-4 rounded-xl border border-slate-200 cursor-pointer hover:bg-slate-100">
+            <input type="checkbox" className="w-5 h-5 text-indigo-600 rounded" checked={todos} onChange={e => setTodos(e.target.checked)} />
+            <span className="font-bold text-slate-700">Generar para todos los clientes activos</span>
+          </label>
+          {!todos && (
+            <label className="text-sm font-bold text-slate-700">Seleccionar Clientes <span className="text-xs text-slate-400 font-normal">(Ctrl+Click para múltiples)</span>:
+              <select multiple className="w-full mt-2 border border-slate-300 rounded-xl p-3 h-48 focus:ring-2 focus:ring-indigo-500 custom-scrollbar" value={seleccionados} onChange={e => setSeleccionados([...e.target.selectedOptions].map(o => o.value))}>
+                {clientes.map(c => <option key={c.CliIdCliente} value={c.CliIdCliente} className="p-2 border-b border-slate-100 last:border-0 hover:bg-indigo-50">{c.Nombre}</option>)}
+              </select>
+            </label>
+          )}
+          <div className="flex justify-end gap-3 mt-2">
+            <button type="button" onClick={onClose} className="px-5 py-2.5 rounded-xl font-bold text-slate-600 hover:bg-slate-100 transition-colors">Cancelar</button>
+            <button type="submit" className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-bold transition-all shadow-lg shadow-indigo-600/30 flex items-center gap-2">
+              <Zap size={18} /> Poner en Cola
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+};
+
 // ── VISTA PRINCIPAL ────────────────────────────────────────────────────────────
 export default function ContabilidadColaEstadosView() {
   const [items, setItems] = useState([]);
@@ -214,6 +282,7 @@ export default function ContabilidadColaEstadosView() {
   const [seleccionados, setSeleccionados] = useState(new Set());
   const [page, setPage] = useState(1);
   const [previewItem, setPreviewItem] = useState(null);
+  const [showManualModal, setShowManualModal] = useState(false);
 
   const cargar = useCallback(async () => {
     setLoading(true);
@@ -273,14 +342,34 @@ export default function ContabilidadColaEstadosView() {
     finally { setLoadingBatch(false); }
   };
 
-  const generarManual = async () => {
+  const ejecutarCron = async () => {
     setLoadingBatch(true);
     try {
-      const r = await req('/api/contabilidad/cola/generar', { method: 'POST' });
-      toast.success(r.message);
+      const r = await req('/api/contabilidad/cola/run-batch', { method: 'POST' });
+      toast.success(r.message || 'Cron ejecutado correctamente');
       setTimeout(cargar, 3000);
     } catch (e) { toast.error(e.message); }
     finally { setLoadingBatch(false); }
+  };
+
+  const handleGenerarManual = async (payload) => {
+    setShowManualModal(false);
+    setLoadingBatch(true);
+    try {
+      const r = await req('/api/contabilidad/cola/manual', { method: 'POST', body: JSON.stringify(payload) });
+      toast.success(`Generación manual exitosa. Se encolaron ${r.generados} estados de cuenta.`);
+      cargar();
+    } catch (e) { toast.error(e.message); }
+    finally { setLoadingBatch(false); }
+  };
+
+  const eliminarItemCola = async (id) => {
+    if (!window.confirm('¿Seguro que deseas eliminar este registro de la cola? No se enviará.')) return;
+    try {
+      await req(`/api/contabilidad/cola/${id}`, { method: 'DELETE' });
+      toast.success('Registro eliminado');
+      cargar();
+    } catch (e) { toast.error(e.message); }
   };
 
   const ESTADOS = ['', 'PENDIENTE', 'APROBADO', 'ENVIADO', 'ERROR', 'RECHAZADO'];
@@ -307,10 +396,14 @@ export default function ContabilidadColaEstadosView() {
               </p>
             </div>
             <div className="flex items-center gap-3">
-              <button onClick={generarManual} disabled={loadingBatch}
+              <button onClick={() => setShowManualModal(true)} disabled={loadingBatch}
+                className="flex items-center gap-2 px-5 py-2.5 text-sm border border-indigo-300 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 rounded-xl transition-all shadow-sm font-bold">
+                <Calendar size={16} /> Generación Manual
+              </button>
+              <button onClick={ejecutarCron} disabled={loadingBatch}
                 className="flex items-center gap-2 px-5 py-2.5 text-sm border border-slate-300 bg-white hover:bg-slate-50 text-slate-700 rounded-xl transition-all shadow-md disabled:opacity-50 font-bold">
                 <Zap size={16} className={loadingBatch ? 'animate-pulse text-yellow-500' : 'text-yellow-500'} />
-                Ejecutar CRON
+                Forzar CRON Total
               </button>
               <button onClick={cargar} disabled={loading}
                 className="flex items-center gap-2 px-5 py-2.5 text-sm bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl font-bold transition-all shadow-md shadow-indigo-600/20 disabled:opacity-50">
@@ -421,6 +514,7 @@ export default function ContabilidadColaEstadosView() {
                         onCambiarEstado={cambiarEstado}
                         onEnviar={enviarUno}
                         onPreview={setPreviewItem}
+                        onEliminar={eliminarItemCola}
                         loadingId={loadingId}
                       />
                     ))}
@@ -458,6 +552,8 @@ export default function ContabilidadColaEstadosView() {
           </div>
         </div>
       </div>
+
+      {showManualModal && <ManualGenerationModal onClose={() => setShowManualModal(false)} onGenerar={handleGenerarManual} />}
     </>
   );
 }

@@ -2544,3 +2544,140 @@ exports.consumirRecursoAdelantado = async (req, res) => {
     return res.status(500).json({ success: false, error: err.message });
   }
 };
+
+// ============================================================================
+// COLA DE ESTADOS DE CUENTA - NUEVOS ENDPOINTS (MANUAL Y PDF)
+// ============================================================================
+
+exports.eliminarItemCola = async (req, res) => {
+  try {
+    const { ColIdCola } = req.params;
+    const pool = await getPool();
+    await pool.request()
+      .input('ColIdCola', sql.Int, ColIdCola)
+      .query(`DELETE FROM dbo.ColaEstadosCuenta WHERE ColIdCola = @ColIdCola`);
+    res.json({ success: true, message: 'Item eliminado correctamente de la cola.' });
+  } catch (err) {
+    logger.error('[CONTABILIDAD] eliminarItemCola:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+};
+
+exports.generarColaManual = async (req, res) => {
+  try {
+    const { clientesIds, fechaDesde, fechaHasta } = req.body;
+    const pool = await getPool();
+    const svc = require('../services/contabilidadService');
+    const emailSvc = require('../services/contabilidadEmailService'); // Solo para requerimientos extra si es necesario
+    
+    let queryClientes = `
+      SELECT DISTINCT c.CliIdCliente, c.Nombre, c.Email
+      FROM dbo.CuentasCliente cc WITH(NOLOCK)
+      JOIN dbo.Clientes c WITH(NOLOCK) ON c.CliIdCliente = cc.CliIdCliente
+      WHERE cc.CueActiva = 1 AND c.Email IS NOT NULL AND LEN(LTRIM(RTRIM(c.Email))) > 5
+    `;
+    
+    if (clientesIds && clientesIds.length > 0) {
+      queryClientes += ` AND c.CliIdCliente IN (${clientesIds.join(',')})`;
+    }
+
+    const result = await pool.request().query(queryClientes);
+    const clientes = result.recordset;
+    
+    let generados = 0;
+    const fDesde = fechaDesde ? new Date(fechaDesde) : new Date(new Date().getFullYear(), new Date().getMonth(), 1);
+    const fHasta = fechaHasta ? new Date(fechaHasta) : new Date();
+
+    for (const cliente of clientes) {
+      const snapshot = await svc.getEstadoCuentaCompleto(
+        cliente.CliIdCliente,
+        fDesde,
+        fHasta,
+        { top: 500, soloActivas: true }
+      );
+
+      if (!snapshot.cuentas.length) continue;
+
+      const fechaStr = fHasta.toLocaleDateString('es-UY', { day: '2-digit', month: '2-digit', year: 'numeric' });
+      const asunto = `Estado de cuenta — ${cliente.Nombre} — ${fechaStr}`;
+
+      const cueReq = await pool.request().input('CliIdCliente', sql.Int, cliente.CliIdCliente).query(`
+        SELECT TOP 1 CueIdCuenta FROM dbo.CuentasCliente WHERE CliIdCliente = @CliIdCliente AND CueActiva = 1 ORDER BY CueIdCuenta
+      `);
+      const cueId = cueReq.recordset[0]?.CueIdCuenta || null;
+
+      await pool.request()
+        .input('CliIdCliente',     sql.Int,              cliente.CliIdCliente)
+        .input('CueIdCuenta',      sql.Int,              cueId)
+        .input('ColContenidoJSON', sql.NVarChar(sql.MAX), JSON.stringify(snapshot))
+        .input('ColAsunto',        sql.NVarChar(300),     asunto)
+        .input('ColEmailDestino',  sql.NVarChar(300),     cliente.Email || '')
+        .input('ColFechaDesde',    sql.Date,              fDesde)
+        .input('ColFechaHasta',    sql.Date,              fHasta)
+        .query(`
+          INSERT INTO dbo.ColaEstadosCuenta
+            (CliIdCliente, CueIdCuenta, ColContenidoJSON, ColAsunto,
+             ColEmailDestino, ColFechaDesde, ColFechaHasta,
+             ColEstado, ColFechaGeneracion, ColTipoDisparo)
+          VALUES
+            (@CliIdCliente, @CueIdCuenta, @ColContenidoJSON, @ColAsunto,
+             @ColEmailDestino, @ColFechaDesde, @ColFechaHasta,
+             'PENDIENTE', GETDATE(), 'MANUAL')
+        `);
+      generados++;
+    }
+
+    res.json({ success: true, generados });
+  } catch (err) {
+    logger.error('[CONTABILIDAD] generarColaManual:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+};
+
+exports.descargarPdfCola = async (req, res) => {
+  try {
+    const { ColIdCola } = req.params;
+    const pool = await getPool();
+    const result = await pool.request()
+      .input('ColIdCola', sql.Int, ColIdCola)
+      .query(`SELECT ColContenidoJSON, ColRutaPDF, CliIdCliente, ColFechaDesde, ColFechaHasta FROM dbo.ColaEstadosCuenta WHERE ColIdCola = @ColIdCola`);
+      
+    if (result.recordset.length === 0) {
+      return res.status(404).json({ error: 'Item no encontrado en la cola.' });
+    }
+    
+    const item = result.recordset[0];
+    const fs = require('fs');
+
+    // 1. Si ya existe la ruta en BD y el archivo físico, servirlo directo
+    if (item.ColRutaPDF && fs.existsSync(item.ColRutaPDF)) {
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', `inline; filename="EstadoCuenta_${item.CliIdCliente}.pdf"`);
+      return res.send(fs.readFileSync(item.ColRutaPDF));
+    }
+
+    // 2. Si no existe físicamente, generarlo on the fly
+    const emailSvc = require('../services/contabilidadEmailService');
+    const { generarPDFDesdeHTML } = require('../utils/pdfPuppeteerGenerator');
+
+    let datos;
+    try { datos = JSON.parse(item.ColContenidoJSON); } catch { datos = {}; }
+
+    const html = emailSvc.generarHTMLEstadoCuenta(datos);
+    const filename = `Estado_de_Cuenta_Manual_${item.CliIdCliente}_${Date.now()}.pdf`;
+    const { pdfBytes, filePath } = await generarPDFDesdeHTML(html, filename);
+
+    // Guardar ruta en la DB para futuras descargas
+    await pool.request()
+      .input('ColIdCola', sql.Int, ColIdCola)
+      .input('ColRutaPDF', sql.NVarChar(500), filePath)
+      .query(`UPDATE dbo.ColaEstadosCuenta SET ColRutaPDF = @ColRutaPDF WHERE ColIdCola = @ColIdCola`);
+
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `inline; filename="${filename}"`);
+    res.send(pdfBytes);
+  } catch (err) {
+    logger.error('[CONTABILIDAD] descargarPdfCola:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+};

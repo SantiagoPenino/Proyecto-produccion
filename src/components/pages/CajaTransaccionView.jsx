@@ -2106,7 +2106,7 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
                       </div>
                     </div>
 
-                    <div className="col-span-1">
+                    <div className="col-span-2">
                       <label className="text-[10px] font-black text-zinc-400 uppercase tracking-widest block mb-2 px-1">Monto de Salida</label>
                       <div className="flex group shadow-sm rounded-[1rem] overflow-hidden border-2 border-zinc-200 focus-within:border-brand-magenta transition-all bg-zinc-50 focus-within:bg-white">
                         <select value={egresoMoneda} onChange={e => setEgresoMoneda(e.target.value)} className="bg-white border-r border-zinc-200 px-4 font-black text-zinc-700 outline-none text-base cursor-pointer hover:bg-zinc-100 transition-colors appearance-none">
@@ -2116,59 +2116,6 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
                       </div>
                     </div>
 
-                    <div className="col-span-1">
-                      <label className="text-[10px] font-black text-zinc-400 uppercase tracking-widest block mb-2 px-1">Método de Retiro</label>
-                      <Listbox value={egresoMetodoId} onChange={setEgresoMetodoId}>
-                        {({ open }) => (
-                          <div className="relative group">
-                            <CreditCard className={`absolute left-4 top-1/2 -translate-y-1/2 transition-colors z-10 ${open ? 'text-brand-magenta' : 'text-zinc-300 group-hover:text-zinc-400'}`} size={18} />
-                            <Listbox.Button className={`w-full text-left bg-zinc-50 border-2 rounded-[1rem] pl-12 pr-10 py-3 text-sm font-bold outline-none transition-all shadow-inner cursor-pointer ${open ? 'border-brand-magenta bg-white text-zinc-800' : 'border-zinc-200 text-zinc-700 hover:border-zinc-300'}`}>
-                              <span className="block truncate">
-                                {egresoMetodoId 
-                                  ? metodosPago.find(m => String(m.MPaIdMetodoPago) === String(egresoMetodoId))?.MPaDescripcionMetodo || "Seleccione forma..." 
-                                  : "Seleccione forma..."}
-                              </span>
-                              <span className="pointer-events-none absolute inset-y-0 right-0 flex items-center pr-4">
-                                <ChevronDown size={18} className={`transition-transform duration-200 ${open ? 'rotate-180 text-brand-magenta' : 'text-zinc-300'}`} />
-                              </span>
-                            </Listbox.Button>
-                            
-                            <Listbox.Options className="absolute z-50 mt-2 max-h-60 w-full overflow-auto rounded-[1rem] bg-white py-2 shadow-2xl border border-zinc-200 focus:outline-none">
-                              <Listbox.Option value="" className={({ active }) => `relative cursor-pointer select-none py-3 pl-12 pr-4 text-sm font-bold transition-colors ${active ? 'bg-brand-magenta/5 text-brand-magenta' : 'text-zinc-500'}`}>
-                                <span className="block truncate">Seleccione forma...</span>
-                              </Listbox.Option>
-                              {metodosPago.filter(m => m.MPaAfectaCaja).map((m) => (
-                                <Listbox.Option
-                                  key={m.MPaIdMetodoPago}
-                                  value={String(m.MPaIdMetodoPago)}
-                                  className={({ active }) =>
-                                    `relative cursor-pointer select-none py-3 pl-12 pr-4 text-sm font-bold transition-colors ${
-                                      active ? 'bg-brand-magenta/5 text-brand-magenta' : 'text-zinc-700'
-                                    }`
-                                  }
-                                >
-                                  {({ selected }) => (
-                                    <>
-                                      <span className={`block truncate ${selected ? 'text-brand-magenta' : ''}`}>{m.MPaDescripcionMetodo}</span>
-                                      {selected ? (
-                                        <span className="absolute inset-y-0 left-0 flex items-center pl-4 text-brand-magenta">
-                                          <Check size={18} />
-                                        </span>
-                                      ) : null}
-                                    </>
-                                  )}
-                                </Listbox.Option>
-                              ))}
-                            </Listbox.Options>
-                          </div>
-                        )}
-                      </Listbox>
-                    </div>
-
-                    <div className="col-span-2">
-                      <label className="text-[10px] font-black text-zinc-400 uppercase tracking-widest block mb-2 px-1">Referencia / Observaciones de Salida</label>
-                      <textarea value={egresoObs} onChange={e => setEgresoObs(e.target.value)} placeholder="Explique brevemente el destino del dinero..." className="w-full bg-zinc-50 border-2 border-zinc-200 hover:border-zinc-300 focus:border-brand-magenta focus:bg-white rounded-[1.2rem] px-5 py-4 text-sm text-zinc-700 font-bold outline-none h-24 resize-none transition-all shadow-inner placeholder-zinc-400" />
-                    </div>
                   </div>
               </div>
 

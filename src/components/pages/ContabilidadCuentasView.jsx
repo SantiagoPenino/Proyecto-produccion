@@ -589,12 +589,12 @@ const MenuAccionesDoc = ({ m, cuenta, cliente, onRefresh, onPrint, onCobrar, hid
   }
 
   // ── Registrar Pago / Anticipo (solo si tiene deuda pendiente o es anticipo) ─────────────────────
-  if (!anulado) {
-    if (m.EsPendientePago === 1) {
-      acciones.push({id:'pago',label:'Registrar Pago',icon:<DollarSign size={13}/>,cls:'text-green-700 hover:bg-green-50'});
-    }
-    acciones.push({id:'anticipo',label:'Pago anticipado',icon:<PlusCircle size={13}/>,cls:'text-blue-700 hover:bg-blue-50'});
-  }
+  // if (!anulado) {
+  //   if (m.EsPendientePago === 1) {
+  //     acciones.push({id:'pago',label:'Registrar Pago',icon:<DollarSign size={13}/>,cls:'text-green-700 hover:bg-green-50'});
+  //   }
+  //   // acciones.push({id:'anticipo',label:'Pago anticipado',icon:<PlusCircle size={13}/>,cls:'text-blue-700 hover:bg-blue-50'});
+  // }
 
   // ── Acciones de documento ──────────────────────────────────────────────
   if (esDoc && !anulado) {
@@ -605,9 +605,9 @@ const MenuAccionesDoc = ({ m, cuenta, cliente, onRefresh, onPrint, onCobrar, hid
     } else {
       if (!esContado) acciones.push({id:'nc',label:'Nota de crédito',icon:<FileMinus size={13}/>,cls:'text-amber-700 hover:bg-amber-50'});
       // Solo se permite reversar localmente si el documento NO fue aceptado por DGI
-      if (m.CfeEstado !== 'ACEPTADO_DGI') {
-        acciones.push({id:'reversar',label:'Reversar / Anular',icon:<RotateCcw size={13}/>,cls:'text-rose-700 hover:bg-rose-50'});
-      }
+      // if (m.CfeEstado !== 'ACEPTADO_DGI') {
+      //   acciones.push({id:'reversar',label:'Reversar / Anular',icon:<RotateCcw size={13}/>,cls:'text-rose-700 hover:bg-rose-50'});
+      // }
     }
   }
 
@@ -1203,7 +1203,11 @@ const MovimientosPanel = ({ CueIdCuenta, simbolo = '$', onClose, cuenta, onRegis
                       'E-Ticket Contado': 'E-TICKET', 'E-Factura Contado': 'E-FACTURA',
                     };
                     const docTipoLabel = m.DocTipo ? (DOC_TIPO_LABEL[m.DocTipo.trim()] || m.DocTipo.trim()) : null;
-                    let docFull = docTipoLabel ? `${docTipoLabel} ${m.DocSerie}-${m.DocNumero}` : (m.CodigoOrdenStr ? m.CodigoOrdenStr : (m.OReIdOrdenRetiro ? `RET: ${m.OReIdOrdenRetiro}` : 'N/D'));
+                    let fallbackText = 'N/D';
+                    if (['PAGO', 'COBRO'].includes(m.MovTipo)) fallbackText = 'Recibo de Pago';
+                    else if (m.MovTipo === 'VTA_CAJA') fallbackText = 'Pedido Caja';
+                    
+                    let docFull = docTipoLabel ? `${docTipoLabel} ${m.DocSerie}-${m.DocNumero}` : (m.CodigoOrdenStr ? m.CodigoOrdenStr : (m.OReIdOrdenRetiro ? `RET: ${m.OReIdOrdenRetiro}` : fallbackText));
                     if (ORDEN_TYPES.includes(m.MovTipo)) {
                         if (m.DocIdDocumento) {
                             docFull = `Facturado (${docTipoLabel || m.DocTipo || 'CFE'} ${m.DocSerie || ''}-${m.DocNumero || ''})`;
@@ -1329,11 +1333,15 @@ const MovimientosPanel = ({ CueIdCuenta, simbolo = '$', onClose, cuenta, onRegis
                   const esDebe  = importe < 0;
                   const isFacturado = m.CicIdCiclo && cicloInfo && cicloInfo.CicEstado !== 'ABIERTO';
 
+                  let fallbackText = 'N/D';
+                  if (['PAGO', 'COBRO'].includes(m.MovTipo)) fallbackText = 'Recibo de Pago';
+                  else if (m.MovTipo === 'VTA_CAJA') fallbackText = 'Pedido Caja';
+
                   let docFull = m.DocTipo
                     ? `${m.DocTipo} ${m.DocSerie}-${m.DocNumero}`
                     : (m.CodigoOrdenStr
                       ? m.CodigoOrdenStr
-                      : (m.OReIdOrdenRetiro ? `RET: ${m.OReIdOrdenRetiro}` : (m.MovTipo === 'ORDEN' ? 'Orden no facturada' : 'N/D')));
+                      : (m.OReIdOrdenRetiro ? `RET: ${m.OReIdOrdenRetiro}` : (m.MovTipo === 'ORDEN' ? 'Orden no facturada' : fallbackText)));
                   if (ORDEN_TYPES.includes(m.MovTipo)) {
                     if (m.DocIdDocumento) {
                       docFull = `Facturado (${m.DocTipo || 'CFE'} ${m.DocSerie || ''}-${m.DocNumero || ''})`;

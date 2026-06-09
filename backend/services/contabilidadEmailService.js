@@ -60,7 +60,7 @@ const FROM_ADDRESS = process.env.EMAIL_FROM_ADDRESS || 'no-reply@macrosoft.local
 /**
  * enviarEmail — función base genérica
  */
-async function enviarEmail({ to, subject, html, text = '' }) {
+async function enviarEmail({ to, subject, html, text = '', attachments = [] }) {
   const transporter = getTransporter();
 
   if (!transporter) {
@@ -74,6 +74,7 @@ async function enviarEmail({ to, subject, html, text = '' }) {
     subject,
     html,
     text,
+    attachments,
   });
 
   logger.info(`[CONT-EMAIL] ✅ Enviado a ${to} | MessageId: ${info.messageId}`);
@@ -83,6 +84,8 @@ async function enviarEmail({ to, subject, html, text = '' }) {
 // ============================================================
 // SECCIÓN 3: ENVÍO DE ESTADO DE CUENTA DESDE LA COLA
 // ============================================================
+
+const { generarPDFDesdeHTML } = require('../utils/pdfPuppeteerGenerator');
 
 /**
  * enviarDesdeCola
@@ -98,16 +101,30 @@ async function enviarEmail({ to, subject, html, text = '' }) {
  */
 async function enviarDesdeCola({ ColIdCola, destinatario, asunto, datos, pool, sql }) {
   const html = generarHTMLEstadoCuenta(datos);
+  let attachments = [];
 
   try {
-    await enviarEmail({ to: destinatario, subject: asunto, html });
+    // Generar PDF y adjuntarlo
+    const filename = `Estado_de_Cuenta_${datos.cliente?.Nombre ? datos.cliente.Nombre.replace(/[^a-zA-Z0-9]/g, '_') : 'Cliente'}_${Date.now()}.pdf`;
+    const { filePath } = await generarPDFDesdeHTML(html, filename);
+
+    attachments.push({
+      filename: filename,
+      path: filePath,
+      contentType: 'application/pdf'
+    });
+
+    // Enviar correo
+    await enviarEmail({ to: destinatario, subject: asunto, html, attachments });
 
     await pool.request()
       .input('ColIdCola', sql.Int, ColIdCola)
+      .input('ColRutaPDF', sql.NVarChar(500), filePath)
       .query(`
         UPDATE dbo.ColaEstadosCuenta
         SET ColEstado     = 'ENVIADO',
-            ColFechaEnvio = GETDATE()
+            ColFechaEnvio = GETDATE(),
+            ColRutaPDF    = @ColRutaPDF
         WHERE ColIdCola = @ColIdCola
       `);
 

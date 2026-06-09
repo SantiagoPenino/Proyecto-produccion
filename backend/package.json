@@ -30,6 +30,7 @@
     "nodemailer": "^8.0.3",
     "pdf-lib": "^1.17.1",
     "pdf-parse": "1.1.1",
+    "puppeteer": "^25.1.0",
     "resend": "^6.9.2",
     "sharp": "^0.34.5",
     "soap": "^1.9.2",
