@@ -2575,27 +2575,38 @@ exports.handyWebhook = async (req, res) => {
                             .query('SELECT CliIdCliente FROM Clientes WITH(NOLOCK) WHERE CodCliente = @CodCli');
                         const CliIdCliente = cliRes.recordset[0]?.CliIdCliente;
 
-                        // ── Pago completo igual que Caja (imputa deudas, crea TCA, asiento) ──
-                        const { registrarPagoCompleto } = require('../services/pagoService');
-                        const result = await registrarPagoCompleto({
-                            clienteId:     CliIdCliente,
-                            ordenRetiroId: ordenRetiroId,
-                            ordIds:        [],          // el servicio los resuelve desde el retiro
-                            pagos:         [{ metodoPagoId: 9, monedaId, monto: tx.TotalAmount, cotizacion: 1 }],
-                            totalMonto:    tx.TotalAmount,
-                            moneda,
-                            monedaId,
-                            usuarioId,
-                            observaciones: `Cobro Handy (Tx: ${transactionId})`,
-                            handyTxId:     transactionId,
-                            issuerName:    issuerName,
+                        // ── Pago unificado a través de cajaService (Caja Administrativa online) ──
+                        // usuarioId=999 identifica pagos online automáticos;
+                        // esAdministrativa=true fuerza StuIdSesion=NULL (sin sesión de cajero).
+                        // cajaService resuelve solo las órdenes hijas y cruza DeudaDocumento exacto.
+                        const { procesarTransaccion } = require('../services/cajaService');
+                        const result = await procesarTransaccion({
+                            usuarioId: 999,
+                            header: {
+                                clienteId:        CliIdCliente,
+                                esAdministrativa:  true,
+                                tipoDocumento:     '07',   // E-Ticket Contado
+                                moneda,
+                                observaciones:     `Cobro Handy (Tx: ${transactionId})`,
+                            },
+                            aplicaciones: [{
+                                tipo:           'ORDEN_RETIRO',
+                                referenciaId:   ordenRetiroId,
+                                montoOriginal:  tx.TotalAmount,
+                                descripcion:    `Retiro diferido RW-${ordenRetiroId}`,
+                                // orderNumbers vacío → cajaService los descubre solo en BD
+                            }],
+                            pagos: [{
+                                metodoPagoId:  9,   // Handy
+                                monedaId,
+                                moneda,
+                                montoOriginal: tx.TotalAmount,
+                                cotizacion:    1,
+                            }],
                         });
 
-                        const pagoId = result.pagoId;
-                        logger.info(`[HANDY WEBHOOK] ✅ Pago completo: PagoId=${pagoId} TcaId=${result.tcaId} Imputado=${result.totalImputado} Retiro=${ordenRetiroId}`);
-
-
-                        // (submayor, asiento contable e imputación de DeudaDocumento ya procesados por pagoService)
+                        const pagoId = result.pagosCreados[0]?.pagIdPago;
+                        logger.info(`[HANDY WEBHOOK] ✅ Pago procesado vía Caja: PagoId=${pagoId} TcaId=${result.tcaIdTransaccion} Retiro=${ordenRetiroId}`);
 
 
 
@@ -3210,23 +3221,35 @@ exports.mpWebhook = async (req, res) => {
             .query('SELECT CliIdCliente FROM Clientes WITH(NOLOCK) WHERE CodCliente = @CodCli');
         const CliIdCliente = cliRes2.recordset[0]?.CliIdCliente;
 
-        const { registrarPagoCompleto } = require('../services/pagoService');
-        const mpResult = await registrarPagoCompleto({
-            clienteId:     CliIdCliente,
-            ordenRetiroId: ordenRetiroId,
-            ordIds:        [],
-            pagos:         [{ metodoPagoId: 10, monedaId, monto: totalAmountPaid, cotizacion: 1 }],
-            totalMonto:    totalAmountPaid,
-            moneda,
-            monedaId,
-            usuarioId,
-            observaciones: `Cobro MercadoPago (Tx: ${externalRef})`,
-            mpTxId:        externalRef,
-            issuerName:    'MercadoPago',
+        // ── Pago unificado a través de cajaService (Caja Administrativa online) ──
+        const { procesarTransaccion } = require('../services/cajaService');
+        const mpResult = await procesarTransaccion({
+            usuarioId: 999,
+            header: {
+                clienteId:        CliIdCliente,
+                esAdministrativa:  true,
+                tipoDocumento:     '07',   // E-Ticket Contado
+                moneda,
+                observaciones:     `Cobro MercadoPago (Tx: ${externalRef})`,
+            },
+            aplicaciones: [{
+                tipo:           'ORDEN_RETIRO',
+                referenciaId:   ordenRetiroId,
+                montoOriginal:  totalAmountPaid,
+                descripcion:    `Retiro diferido RW-${ordenRetiroId}`,
+                // orderNumbers vacío → cajaService los descubre solo en BD
+            }],
+            pagos: [{
+                metodoPagoId:  10,  // MercadoPago
+                monedaId,
+                moneda,
+                montoOriginal: totalAmountPaid,
+                cotizacion:    1,
+            }],
         });
 
-        const pagoId = mpResult.pagoId;
-        logger.info(`[MP WEBHOOK] ✅ Pago completo: PagoId=${pagoId} TcaId=${mpResult.tcaId} Imputado=${mpResult.totalImputado} Retiro=${ordenRetiroId}`);
+        const pagoId = mpResult.pagosCreados[0]?.pagIdPago;
+        logger.info(`[MP WEBHOOK] ✅ Pago procesado vía Caja: PagoId=${pagoId} TcaId=${mpResult.tcaIdTransaccion} Retiro=${ordenRetiroId}`);
 
         // Guardar también ReferenciaPagoOnline en OrdenesRetiro
         await pool.request()

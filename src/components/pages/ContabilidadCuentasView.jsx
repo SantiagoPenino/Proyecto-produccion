@@ -2240,11 +2240,17 @@ const CuentaCard = ({ cuenta, CliIdCliente, panelActivo, onToggle, onCicloChange
           </div>
 
           {/* Info Extra Condensada (Solo si no es recurso y tiene deuda/docs) */}
-          {!esRecursos && (deuda > 0 || cuenta.DocumentosVencidos > 0) && (
+          {!esRecursos && (deuda > 0 || cuenta.DocumentosVencidos > 0 || Number(cuenta.PendienteFacturar || 0) > 0) && (
             <div className="flex items-center gap-3 pl-4 ml-2 border-l border-slate-200">
+              {Number(cuenta.PendienteFacturar || 0) > 0 && (
+                <div className="flex flex-col border-r border-slate-100 pr-3 mr-1">
+                  <span className="text-[9px] text-slate-400 font-bold uppercase tracking-widest">Pendiente Facturar</span>
+                  <span className="text-sm font-bold text-amber-600">{fmt(Number(cuenta.PendienteFacturar), cuenta.MonSimbolo)}</span>
+                </div>
+              )}
               {deuda > 0 && (
                 <div className="flex flex-col">
-                  <span className="text-[9px] text-slate-400 font-bold uppercase tracking-widest">Deuda Pendiente</span>
+                  <span className="text-[9px] text-slate-400 font-bold uppercase tracking-widest">Deuda Vencida/Facturada</span>
                   <span className="text-sm font-bold text-rose-600">{fmt(deuda, cuenta.MonSimbolo)}</span>
                 </div>
               )}

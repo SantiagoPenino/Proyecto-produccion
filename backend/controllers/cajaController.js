@@ -1001,11 +1001,6 @@ const registrarOperacionManual = async (req, res) => {
 
       // El importe tiene el signo segun EvtAfectaSaldo (+1 acredita, -1 debita)
       const importeMov = montoNum * evento.EvtAfectaSaldo;
-      const updSaldo = await new sql.Request(transaction)
-        .input('C', sql.Int, cuentaId).input('D', sql.Decimal(18,4), importeMov)
-        .query('UPDATE dbo.CuentasCliente SET CueSaldoActual=CueSaldoActual+@D OUTPUT INSERTED.CueSaldoActual WHERE CueIdCuenta=@C');
-      const nuevoSaldo = updSaldo.recordset[0].CueSaldoActual;
-
       // Documento de deuda si aplica
       if (evento.EvtGeneraDeuda) {
         const rDoc = await new sql.Request(transaction)
@@ -1035,13 +1030,14 @@ const registrarOperacionManual = async (req, res) => {
           `);
       }
 
-      await new sql.Request(transaction)
-        .input('Cue', sql.Int, cuentaId).input('Tip', sql.VarChar(30), evtCodigo)
-        .input('Con', sql.NVarChar(500), `${evento.EvtNombre}${observaciones ? ': '+observaciones : ''}`)
-        .input('Imp', sql.Decimal(18,4), importeMov).input('Sal', sql.Decimal(18,4), nuevoSaldo)
-        .input('Usr', sql.Int, usuarioId).input('Doc', sql.Int, docId)
-        .query(`INSERT INTO dbo.MovimientosCuenta (CueIdCuenta,MovTipo,MovConcepto,MovImporte,MovSaldoPosterior,DocIdDocumento,MovUsuarioAlta,MovFecha,MovAnulado)
-                VALUES (@Cue,@Tip,@Con,@Imp,@Sal,@Doc,@Usr,GETDATE(),0)`);
+      await contabilidadSvc.registrarMovimiento({
+        CueIdCuenta: cuentaId,
+        MovTipo: evtCodigo,
+        MovConcepto: `${evento.EvtNombre}${observaciones ? ': '+observaciones : ''}`,
+        MovImporte: importeMov,
+        MovUsuarioAlta: usuarioId,
+        DocIdDocumento: docId
+      }, transaction);
     }
 
     // 4. Asiento en Libro Mayor usando reglas del Motor
@@ -1147,8 +1143,9 @@ const procesarPagoDeuda = async (req, res) => {
         }
 
         const dde = ddeRes.recordset[0];
-        // Guardar OrdIdOrden en la aplicaciÃƒÂ³n para usarlo despuÃƒÂ©s en la generaciÃƒÂ³n de ÃƒÂ­tems de PEDIDO CAJA
+        // Guardar OrdIdOrden y cueIdCuenta en la aplicación
         ap.ordIdOrden = dde.OrdIdOrden || ap.ordIdOrden || null;
+        ap.cueIdCuenta = dde.CueIdCuenta;
         const pendienteActual = Number(dde.DDeImportePendiente);
         // Aplicar solo lo que hay disponible en el pago restante, sin exceder la deuda pendiente
         const montoAplicar   = Math.min(pagoRestante, pendienteActual);
@@ -1156,17 +1153,8 @@ const procesarPagoDeuda = async (req, res) => {
         const nuevoEstado    = nuevoPendiente < 0.01 ? 'COBRADO' : 'PARCIAL';
         pagoRestante -= montoAplicar;
 
-        await new sql.Request(transaction)
-          .input('ddeId',    sql.Int,          ddeId)
-          .input('pend',     sql.Decimal(18,4), nuevoPendiente)
-          .input('estado',   sql.VarChar(20),  nuevoEstado)
-          .query(`
-            UPDATE dbo.DeudaDocumento
-            SET DDeImportePendiente = @pend,
-                DDeEstado           = @estado,
-                DDeFechaCobro       = CASE WHEN @estado = 'COBRADO' THEN GETDATE() ELSE DDeFechaCobro END
-            WHERE DDeIdDocumento = @ddeId
-          `);
+        // Centralizado: reduce pendiente y ajusta estado automáticamente
+        await contabilidadSvc.reducirDeuda({ ddeId, monto: montoAplicar }, transaction);
 
         // ─────────────────────────────────────────────
         await contabilidadSvc.registrarMovimiento({
@@ -1551,6 +1539,25 @@ const procesarPagoDeuda = async (req, res) => {
                 }
               }
               logger.info("[PAGO-DEUDA] PEDIDO CAJA #" + docId + " vinculado a " + sinFactura.length + " DeudaDocumento(s).");
+
+              // Insertar movimiento de débito VTA_CAJA en la cuenta del cliente para contrarrestar el PAGO
+              // ya que la orden ya no debita el saldo por defecto hasta que se factura.
+              try {
+                const cueIdCuenta = sinFactura[0].cueIdCuenta;
+                if (cueIdCuenta) {
+                  await contabilidadSvc.registrarMovimiento({
+                    CueIdCuenta: cueIdCuenta,
+                    MovTipo: 'VTA_CAJA',
+                    MovConcepto: 'Facturado (' + tipoDocVal + ' ' + serieTransaccion + '-' + docNumero + ')',
+                    MovImporte: -docTotal, // débito por el total del Pedido Caja
+                    MovUsuarioAlta: usuarioId,
+                    DocIdDocumento: docId
+                  }, transaction);
+                  logger.info(`[PAGO-DEUDA] Movimiento VTA_CAJA insertado por ${docTotal} en cuenta ${cueIdCuenta}`);
+                }
+              } catch (eMov) {
+                logger.error(`[PAGO-DEUDA] Error al insertar VTA_CAJA: ${eMov.message}`);
+              }
             }
           }
         } catch (eDoc) {
@@ -1827,23 +1834,18 @@ const generarNotaCredito = async (req, res) => {
 
       // ─────────────────────────────────────────────
       if (!esConsumidorFinalGenerico) {
-        await new sql.Request(transaction)
-          .input('Cue',sql.Int,cueIdReal)
-          .input('Imp',sql.Decimal(18,4),montoNum)
-          .input('Doc',sql.Int,ncId).input('Usr',sql.Int,usuarioId)
-          .input('Mot',sql.NVarChar(300),motivo || `NC ${fullNcNumero}`)
-          .query(`DECLARE @SA DECIMAL(18,4); SELECT @SA=CueSaldoActual FROM dbo.CuentasCliente WHERE CueIdCuenta=@Cue;
-                  UPDATE dbo.CuentasCliente SET CueSaldoActual=CueSaldoActual+@Imp WHERE CueIdCuenta=@Cue;
-                  DECLARE @SP DECIMAL(18,4); SELECT @SP=CueSaldoActual FROM dbo.CuentasCliente WHERE CueIdCuenta=@Cue;
-                  INSERT INTO dbo.MovimientosCuenta(CueIdCuenta,MovTipo,MovImporte,MovConcepto,MovSaldoPosterior,MovFecha,MovUsuarioAlta,DocIdDocumento,MovAnulado)
-                  VALUES (@Cue,'NOTA_CREDITO',@Imp,@Mot,@SP,GETDATE(),@Usr,@Doc,0)`);
+        // Registro centralizado: saldo calculado por SP, no a mano
+        await contabilidadSvc.registrarMovimiento({
+          CueIdCuenta:    cueIdReal,
+          MovTipo:        'NOTA_CREDITO',
+          MovConcepto:    motivo || `NC ${fullNcNumero}`,
+          MovImporte:     montoNum,
+          MovUsuarioAlta: usuarioId,
+          DocIdDocumento: ncId,
+        }, transaction);
 
-        await new sql.Request(transaction)
-          .input('DocRef',sql.Int,parseInt(docIdOrigen)).input('Monto',sql.Decimal(18,4),montoNum)
-          .query(`UPDATE dbo.DeudaDocumento
-                  SET DDeImportePendiente=CASE WHEN DDeImportePendiente-@Monto<0 THEN 0 ELSE DDeImportePendiente-@Monto END,
-                      DDeEstado=CASE WHEN DDeImportePendiente-@Monto<=0 THEN 'CANCELADA' ELSE DDeEstado END
-                  WHERE DocIdDocumento=@DocRef AND DDeEstado='PENDIENTE'`);
+        // NC reduce la deuda del documento al que hace referencia
+        await contabilidadSvc.reducirDeuda({ docId: parseInt(docIdOrigen), monto: montoNum }, transaction);
       }
 
       // ─────────────────────────────────────────────
@@ -2032,18 +2034,25 @@ const generarNotaDebito = async (req, res) => {
       // ─────────────────────────────────────────────
       if (!esConsumidorFinalGenerico) {
         // ─────────────────────────────────────────────
-        await new sql.Request(transaction)
-          .input('Cue',sql.Int,cueIdReal)
-          .input('Imp',sql.Decimal(18,4),-montoNum) // Negativo para restar del saldo
-          .input('Doc',sql.Int,ndId).input('Usr',sql.Int,usuarioId)
-          .input('Mot',sql.NVarChar(300),motivo || `ND ${fullNdNumero}`)
-          .query(`DECLARE @SA DECIMAL(18,4); SELECT @SA=CueSaldoActual FROM dbo.CuentasCliente WHERE CueIdCuenta=@Cue;
-                  UPDATE dbo.CuentasCliente SET CueSaldoActual=CueSaldoActual+@Imp WHERE CueIdCuenta=@Cue;
-                  DECLARE @SP DECIMAL(18,4); SELECT @SP=CueSaldoActual FROM dbo.CuentasCliente WHERE CueIdCuenta=@Cue;
-                  INSERT INTO dbo.MovimientosCuenta(CueIdCuenta,MovTipo,MovImporte,MovConcepto,MovSaldoPosterior,MovFecha,MovUsuarioAlta,DocIdDocumento,MovAnulado)
-                  VALUES (@Cue,'NOTA_DEBITO',@Imp,@Mot,@SP,GETDATE(),@Usr,@Doc,0)`);
+        // Registro centralizado: saldo calculado por SP, no a mano
+        await contabilidadSvc.registrarMovimiento({
+          CueIdCuenta:    cueIdReal,
+          MovTipo:        'NOTA_DEBITO',
+          MovConcepto:    motivo || `ND ${fullNdNumero}`,
+          MovImporte:     -montoNum,    // negativo: genera deuda al cliente
+          MovUsuarioAlta: usuarioId,
+          DocIdDocumento: ndId,
+        }, transaction);
 
         // ─────────────────────────────────────────────
+        // ND: crear nueva deuda con la función centralizada
+        await contabilidadSvc.crearDeudaDocumento({
+          CueIdCuenta:    cueIdReal,
+          DocIdDocumento: ndId,
+          Importe:        montoNum,
+        }, transaction);
+        /*
+          --- bloque SQL original reemplazado ---
         await new sql.Request(transaction)
           .input('Cue', sql.Int, cueIdReal)
           .input('DocId', sql.Int, ndId)
@@ -2054,6 +2063,8 @@ const generarNotaDebito = async (req, res) => {
             VALUES
               (@Cue, @DocId, @Monto, @Monto, GETDATE(), DATEADD(DAY, 7, GETDATE()), 'PENDIENTE')
           `);
+        --- fin bloque SQL original ---
+        */
       }
 
       // Asiento Contable
@@ -2125,19 +2136,18 @@ const reversarDocumento = async (req, res) => {
       .input('DocId', sql.Int, docRef)
       .query(`UPDATE dbo.DocumentosContables SET DocEstado='ANULADO' WHERE DocIdDocumento=@DocId`);
 
-    await pool.request()
-      .input('Cue',sql.Int,cueId).input('Imp',sql.Decimal(18,4),ajusteImporte)
-      .input('Usr',sql.Int,usuarioId).input('Doc',sql.Int,docRef)
-      .input('Mot',sql.NVarChar(300),motivo || `Reverso ${doc.DocTipo} ${doc.DocSerie}-${doc.DocNumero}`)
-      .query(`DECLARE @SA DECIMAL(18,4); SELECT @SA=CueSaldoActual FROM dbo.CuentasCliente WHERE CueIdCuenta=@Cue;
-              UPDATE dbo.CuentasCliente SET CueSaldoActual=CueSaldoActual+@Imp WHERE CueIdCuenta=@Cue;
-              DECLARE @SP DECIMAL(18,4); SELECT @SP=CueSaldoActual FROM dbo.CuentasCliente WHERE CueIdCuenta=@Cue;
-              INSERT INTO dbo.MovimientosCuenta(CueIdCuenta,MovTipo,MovImporte,MovConcepto,MovSaldoPosterior,MovFecha,MovUsuarioAlta,DocIdDocumento,MovAnulado)
-              VALUES (@Cue,'REVERSO',@Imp,@Mot,@SP,GETDATE(),@Usr,@Doc,0)`);
+    // Registro centralizado — sin SQL crudo
+    await contabilidadSvc.registrarMovimiento({
+      CueIdCuenta:    cueId,
+      MovTipo:        'REVERSO',
+      MovConcepto:    motivo || `Reverso ${doc.DocTipo} ${doc.DocSerie}-${doc.DocNumero}`,
+      MovImporte:     ajusteImporte,
+      MovUsuarioAlta: usuarioId,
+      DocIdDocumento: docRef,
+    });
 
-    await pool.request()
-      .input('DocId', sql.Int, docRef)
-      .query(`UPDATE dbo.DeudaDocumento SET DDeEstado='CANCELADA',DDeImportePendiente=0 WHERE DocIdDocumento=@DocId`);
+    // Reverso: cancelar la deuda del documento revertido
+    await contabilidadSvc.cancelarDeuda({ docId: docRef });
 
     logger.info(`[REVERSAR-DOC] Doc #${docId} anulado`);
     const s = io(req); if (s) s.emit('actualizado', { type: 'reverso-doc' });
@@ -2308,19 +2318,14 @@ const registrarPagoAnticipo = async (req, res) => {
         if (metR2.recordset.length) metodoDesc = ` (${metR2.recordset[0].MPaDescripcionMetodo})`;
       }
 
-      const movResult = await new sql.Request(transaction)
-        .input('Cue',sql.Int,cueId)
-        .input('Imp',sql.Decimal(18,4),montoNum)
-        .input('Usr',sql.Int,usuarioId)
-        .input('Obs',sql.NVarChar(300), `Pago: ${conceptoFull}${metodoDesc}`)
-        .input('DocId', sql.Int, docId)
-        .query(`DECLARE @SP DECIMAL(18,4);
-                UPDATE dbo.CuentasCliente SET CueSaldoActual=CueSaldoActual+@Imp WHERE CueIdCuenta=@Cue;
-                SELECT @SP=CueSaldoActual FROM dbo.CuentasCliente WHERE CueIdCuenta=@Cue;
-                INSERT INTO dbo.MovimientosCuenta(CueIdCuenta,MovTipo,MovImporte,MovConcepto,MovSaldoPosterior,MovFecha,MovUsuarioAlta,DocIdDocumento,MovAnulado)
-                OUTPUT INSERTED.MovIdMovimiento
-                VALUES(@Cue,'ANTICIPO',@Imp,@Obs,@SP,GETDATE(),@Usr,@DocId,0)`);
-      const movId = movResult.recordset[0]?.MovIdMovimiento || null;
+      const { MovIdGenerado: movId } = await contabilidadSvc.registrarMovimiento({
+        CueIdCuenta:    cueId,
+        MovTipo:        'ANTICIPO',
+        MovConcepto:    `Pago: ${conceptoFull}${metodoDesc}`,
+        MovImporte:     montoNum,
+        MovUsuarioAlta: usuarioId,
+        DocIdDocumento: docId,
+      }, transaction);
 
       // ─────────────────────────────────────────────
       // DEBE: Caja (dinero que entra)
@@ -2373,14 +2378,8 @@ const registrarPagoAnticipo = async (req, res) => {
           const nuevoPend = Math.max(0, pendiente - aplicar);
           const nuevoEstado = nuevoPend < 0.01 ? 'COBRADO' : 'PARCIAL';
 
-          await new sql.Request(transaction)
-            .input('ddeId', sql.Int, d.DDeIdDocumento)
-            .input('pend', sql.Decimal(18,4), nuevoPend)
-            .input('estado', sql.VarChar(20), nuevoEstado)
-            .query(`UPDATE dbo.DeudaDocumento
-                    SET DDeImportePendiente=@pend, DDeEstado=@estado,
-                        DDeFechaCobro=CASE WHEN @estado='COBRADO' THEN GETDATE() ELSE DDeFechaCobro END
-                    WHERE DDeIdDocumento=@ddeId`);
+          // Imputar anticipo a deuda: centralizado
+          await contabilidadSvc.reducirDeuda({ ddeId: d.DDeIdDocumento, monto: aplicar }, transaction);
 
           saldoDisponible -= aplicar;
           montoImputado += aplicar;
@@ -2462,24 +2461,22 @@ const anularFactura = async (req, res) => {
                 SET DDeEstado='CANCELADA', DDeImportePendiente=0
                 WHERE DocIdDocumento=@DocId`);
 
-      // 4. Marcar el movimiento original CIERRE_CICLO como anulado
-      await new sql.Request(transaction)
-        .input('DocId', sql.Int, docRef)
-        .query(`UPDATE dbo.MovimientosCuenta SET MovAnulado=1 WHERE DocIdDocumento=@DocId`);
+      // 4. Anular el movimiento original CIERRE_CICLO usando el helper centralizado
+      await contabilidadSvc.anularMovimientosPorFiltro(
+        { docId: docRef, excluirTipos: ['ORDEN', 'ENTREGA'] },
+        transaction
+      );
 
-      // ─────────────────────────────────────────────
-      await new sql.Request(transaction)
-        .input('Cue', sql.Int, cueId)
-        .input('Imp', sql.Decimal(18,4), monto)
-        .input('Usr', sql.Int, usuarioId)
-        .input('Mot', sql.NVarChar(300), motivoFull)
-        .input('DocId', sql.Int, docRef)
-        .input('Cic', sql.Int, cicId || null)
-        .query(`DECLARE @SP DECIMAL(18,4);
-                UPDATE dbo.CuentasCliente SET CueSaldoActual=CueSaldoActual+@Imp WHERE CueIdCuenta=@Cue;
-                SELECT @SP=CueSaldoActual FROM dbo.CuentasCliente WHERE CueIdCuenta=@Cue;
-                INSERT INTO dbo.MovimientosCuenta(CueIdCuenta,MovTipo,MovImporte,MovConcepto,MovSaldoPosterior,MovFecha,MovUsuarioAlta,DocIdDocumento,CicIdCiclo,MovAnulado)
-                VALUES (@Cue,'AJUSTE',@Imp,@Mot,@SP,GETDATE(),@Usr,@DocId,@Cic,0)`);
+      // Registro centralizado del AJUSTE tras anular ciclo
+      await contabilidadSvc.registrarMovimiento({
+        CueIdCuenta:    cueId,
+        MovTipo:        'AJUSTE',
+        MovConcepto:    motivoFull,
+        MovImporte:     monto,
+        MovUsuarioAlta: usuarioId,
+        DocIdDocumento: docRef,
+        CicIdCiclo:     cicId || null,
+      }, transaction);
 
       // 6. Marcar ciclo como ANULADO (NO reabrirlo) para mantener trazabilidad
       if (cicId) {
@@ -2627,30 +2624,25 @@ async function imputarAnticipoADeuda(req, res) {
     if (montoAplicar <= 0.009) throw new Error('Monto a imputar debe ser mayor a 0.');
     const monStr = monedaId === 2 ? 'U$S' : '$';
 
-    await new sql.Request(transaction)
-      .input('CueId', sql.Int, cuentaId).input('Monto', sql.Decimal(18,4), montoAplicar)
-      .query('UPDATE dbo.CuentasCliente SET CueSaldoActual=CueSaldoActual-@Monto WHERE CueIdCuenta=@CueId');
-    const saldoR = await new sql.Request(transaction).input('CueId', sql.Int, cuentaId)
-      .query('SELECT CueSaldoActual FROM dbo.CuentasCliente WHERE CueIdCuenta=@CueId');
-    const saldoPosterior = Number(saldoR.recordset[0].CueSaldoActual);
-
+    // Centralizado: reduce pendiente y maneja estado automáticamente
+    await contabilidadSvc.reducirDeuda({ ddeId: ddeIdDocumento, monto: montoAplicar }, transaction);
     const nuevoPendiente = Math.max(0, pendiente - montoAplicar);
     const nuevoEstado = nuevoPendiente < 0.01 ? 'COBRADO' : 'PARCIAL';
-    await new sql.Request(transaction)
-      .input('DdeId', sql.Int, ddeIdDocumento).input('Pend', sql.Decimal(18,4), nuevoPendiente).input('Estado', sql.VarChar(20), nuevoEstado)
-      .query('UPDATE dbo.DeudaDocumento SET DDeImportePendiente=@Pend, DDeEstado=@Estado, DDeFechaCobro=CASE WHEN @Estado=\'COBRADO\' THEN GETDATE() ELSE DDeFechaCobro END WHERE DDeIdDocumento=@DdeId');
 
     if (nuevoEstado === 'COBRADO' && deuda.DocIdDocumento) {
       await new sql.Request(transaction).input('DocId', sql.Int, deuda.DocIdDocumento)
         .query('UPDATE dbo.DocumentosContables SET DocPagado=1 WHERE DocIdDocumento=@DocId');
     }
 
-    await new sql.Request(transaction)
-      .input('CueId', sql.Int, cuentaId).input('Monto', sql.Decimal(18,4), montoAplicar)
-      .input('Saldo', sql.Decimal(18,4), saldoPosterior).input('Usr', sql.Int, usuarioId)
-      .input('DocId', sql.Int, deuda.DocIdDocumento || null)
-      .input('Obs', sql.NVarChar(300), `ImputaciÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â³n anticipo a deuda #${ddeIdDocumento}`)
-      .query('INSERT INTO dbo.MovimientosCuenta(CueIdCuenta,MovTipo,MovImporte,MovConcepto,MovSaldoPosterior,MovFecha,MovUsuarioAlta,DocIdDocumento,MovAnulado) VALUES(@CueId,\'PAGO\',-@Monto,@Obs,@Saldo,GETDATE(),@Usr,@DocId,0)');
+    const resMov = await contabilidadSvc.registrarMovimiento({
+      CueIdCuenta: cuentaId,
+      MovTipo: 'PAGO',
+      MovConcepto: `Imputación anticipo a deuda #${ddeIdDocumento}`,
+      MovImporte: -montoAplicar,
+      MovUsuarioAlta: usuarioId,
+      DocIdDocumento: deuda.DocIdDocumento || null
+    }, transaction);
+    const saldoPosterior = resMov.SaldoResultante;
 
     await transaction.commit();
     logger.info(`[IMPUTAR-ANT] Cue=${cuentaId} Deuda=${ddeIdDocumento} Aplicado=${montoAplicar} SaldoRestante=${saldoPosterior}`);

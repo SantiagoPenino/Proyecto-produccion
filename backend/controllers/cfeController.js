@@ -316,81 +316,36 @@ exports.crearFacturaManual = async (req, res) => {
             const cicId = cicloActivoObj ? cicloActivoObj.CicIdCiclo : null;
 
             // 2.7.1 Cargar el Cargo (Venta)
-            const reqCargo = transaction.request();
-            const rUpdCta1 = await reqCargo
-                .input('C', sql.Int, ctaMonedaId)
-                .input('Dif', sql.Decimal(18, 4), -Totales.total)
-                .query(`
-                    UPDATE dbo.CuentasCliente 
-                    SET CueSaldoActual = CueSaldoActual + @Dif 
-                    OUTPUT INSERTED.CueSaldoActual 
-                    WHERE CueIdCuenta = @C
-                `);
-            const saldoP1 = rUpdCta1.recordset[0].CueSaldoActual;
-
-            const conceptCargo = `${config.CodDocumento || DocTipo} Manual ${serie}-${numero}`;
-            const reqMov1 = transaction.request();
-            await reqMov1
-                .input('Cue', sql.Int, ctaMonedaId)
-                .input('Imp', sql.Decimal(18, 4), -Totales.total)
-                .input('Sal', sql.Decimal(18, 4), saldoP1)
-                .input('Usr', sql.Int, req.user?.id || 1)
-                .input('DocId', sql.Int, docId)
-                .input('Concepto', sql.VarChar(200), conceptCargo)
-                .input('CicId', sql.Int, cicId)
-                .query(`
-                    INSERT INTO dbo.MovimientosCuenta 
-                        (CueIdCuenta, MovTipo, MovConcepto, MovImporte, MovSaldoPosterior, DocIdDocumento, MovUsuarioAlta, MovFecha, CicIdCiclo, MovAnulado)
-                    VALUES 
-                        (@Cue, 'VTA_CAJA', @Concepto, @Imp, @Sal, @DocId, @Usr, GETDATE(), @CicId, 0)
-                `);
+            const conceptCargo = `Venta ${config.Detalle || config.CodDocumento || DocTipo}: ${serie}-${numero}${DocCliNombre ? ' (' + DocCliNombre + ')' : ''}`;
+            await contabilidadService.registrarMovimiento({
+                CueIdCuenta: ctaMonedaId,
+                MovTipo: 'VTA_CAJA',
+                MovConcepto: conceptCargo,
+                MovImporte: -Totales.total,
+                MovUsuarioAlta: req.user?.id || 1,
+                DocIdDocumento: docId,
+                CicIdCiclo: cicId
+            }, transaction);
 
             // 2.7.2 Si es Contado, registrar el Abono (Pago)
             if (isPaid) {
-                const reqAbono = transaction.request();
-                const rUpdCta2 = await reqAbono
-                    .input('C', sql.Int, ctaMonedaId)
-                    .input('Dif', sql.Decimal(18, 4), Totales.total)
-                    .query(`
-                        UPDATE dbo.CuentasCliente 
-                        SET CueSaldoActual = CueSaldoActual + @Dif 
-                        OUTPUT INSERTED.CueSaldoActual 
-                        WHERE CueIdCuenta = @C
-                    `);
-                const saldoP2 = rUpdCta2.recordset[0].CueSaldoActual;
-
-                const conceptPago = `Pago ${config.CodDocumento || DocTipo} Manual ${serie}-${numero}`;
-                const reqMov2 = transaction.request();
-                await reqMov2
-                    .input('Cue', sql.Int, ctaMonedaId)
-                    .input('Imp', sql.Decimal(18, 4), Totales.total)
-                    .input('Sal', sql.Decimal(18, 4), saldoP2)
-                    .input('Usr', sql.Int, req.user?.id || 1)
-                    .input('DocId', sql.Int, docId)
-                    .input('Concepto', sql.VarChar(200), conceptPago)
-                    .input('CicId', sql.Int, cicId)
-                    .query(`
-                        INSERT INTO dbo.MovimientosCuenta 
-                            (CueIdCuenta, MovTipo, MovConcepto, MovImporte, MovSaldoPosterior, DocIdDocumento, MovUsuarioAlta, MovFecha, CicIdCiclo, MovAnulado)
-                        VALUES 
-                            (@Cue, 'PAGO', @Concepto, @Imp, @Sal, @DocId, @Usr, GETDATE(), @CicId, 0)
-                    `);
+                const conceptPago = `Pago (${config.Detalle || config.CodDocumento || DocTipo}): ${serie}-${numero}`;
+                await contabilidadService.registrarMovimiento({
+                    CueIdCuenta: ctaMonedaId,
+                    MovTipo: 'PAGO',
+                    MovConcepto: conceptPago,
+                    MovImporte: Totales.total,
+                    MovUsuarioAlta: req.user?.id || 1,
+                    DocIdDocumento: docId,
+                    CicIdCiclo: cicId
+                }, transaction);
             } else {
-                // 2.7.3 Si es Crédito, registrar en DeudaDocumento para visibilidad de deuda viva
-                const reqDeuda = transaction.request();
-                await reqDeuda
-                    .input('Cue', sql.Int, ctaMonedaId)
-                    .input('DocId', sql.Int, docId)
-                    .input('Orig', sql.Decimal(18, 4), Totales.total)
-                    .input('Pend', sql.Decimal(18, 4), Totales.total)
-                    .query(`
-                        INSERT INTO dbo.DeudaDocumento
-                            (CueIdCuenta, DocIdDocumento, DDeImporteOriginal, DDeImportePendiente,
-                             DDeFechaEmision, DDeFechaVencimiento, DDeEstado)
-                        VALUES
-                            (@Cue, @DocId, @Orig, @Pend,
-                             GETDATE(), DATEADD(DAY, 7, GETDATE()), 'PENDIENTE')
-                    `);
+                // 2.7.3 Si es Crédito → crear deuda centralizada
+                await contabilidadService.crearDeudaDocumento({
+                    CueIdCuenta:    ctaMonedaId,
+                    DocIdDocumento: docId,
+                    Importe:        Totales.total,
+                }, transaction);
             }
         }
 
@@ -576,25 +531,11 @@ exports.anularFactura = async (req, res) => {
                 `);
         }
 
-        // Revertir de MovimientosCuenta y saldo de CuentasCliente si existieran (exceptuando órdenes/entregas que se liberan)
-        const movsRes = await transaction.request()
-            .input('id', sql.Int, id)
-            .input('tcaId', sql.Int, tcaId || 0)
-            .query("SELECT CueIdCuenta, MovImporte FROM dbo.MovimientosCuenta WHERE (DocIdDocumento = @id OR (@tcaId > 0 AND PagIdPago IN (SELECT PagIdPago FROM dbo.Pagos WHERE PagTcaIdTransaccion = @tcaId))) AND (MovAnulado IS NULL OR MovAnulado = 0) AND MovTipo NOT IN ('ORDEN', 'ENTREGA')");
-        
-        if (movsRes.recordset.length > 0) {
-            await transaction.request()
-                .input('id', sql.Int, id)
-                .input('tcaId', sql.Int, tcaId || 0)
-                .query("UPDATE dbo.MovimientosCuenta SET MovAnulado = 1 WHERE (DocIdDocumento = @id OR (@tcaId > 0 AND PagIdPago IN (SELECT PagIdPago FROM dbo.Pagos WHERE PagTcaIdTransaccion = @tcaId))) AND MovTipo NOT IN ('ORDEN', 'ENTREGA')");
-
-            for (const mov of movsRes.recordset) {
-                await transaction.request()
-                    .input('cueId', sql.Int, mov.CueIdCuenta)
-                    .input('importe', sql.Decimal(18, 4), mov.MovImporte)
-                    .query("UPDATE dbo.CuentasCliente SET CueSaldoActual = CueSaldoActual - @importe WHERE CueIdCuenta = @cueId");
-            }
-        }
+        // Anulación centralizada: revierte automáticamente los saldos en CuentasCliente
+        await contabilidadService.anularMovimientosPorFiltro(
+            { docId: parseInt(id), tcaId: tcaId || null, excluirTipos: ['ORDEN', 'ENTREGA'] },
+            transaction
+        );
 
         // Si hay deudas individuales de las órdenes que fueron absorbidas, restaurarlas a PENDIENTE
         await transaction.request()
@@ -816,125 +757,141 @@ exports.editarFactura = async (req, res) => {
             }
         }
 
-        // 3. Revertir y actualizar cuenta corriente de clientes (MovimientosCuenta y CuentasCliente)
-        const oldMovs = await transaction.request()
-            .input('id', sql.Int, id)
-            .input('tcaId', sql.Int, doc.TcaIdTransaccion || 0)
-            .query("SELECT CueIdCuenta, MovImporte FROM dbo.MovimientosCuenta WHERE (DocIdDocumento = @id OR (@tcaId > 0 AND PagIdPago IN (SELECT PagIdPago FROM dbo.Pagos WHERE PagTcaIdTransaccion = @tcaId))) AND (MovAnulado IS NULL OR MovAnulado = 0) AND MovTipo NOT IN ('ORDEN', 'ENTREGA')");
+        // ── Estrategia de movimientos ───────────────────────────────────────────────
+        // El endpoint ya bloquea documentos enviados a DGI (ACEPTADO, COBRADO, etc.)
+        // Cualquier documento que llega aquí (BORRADOR o PENDIENTE) es editable.
+        // Política: siempre actualizamos en el lugar — sin rastro de anulación.
+        const tipoChanged  = cleanDocTipo !== cleanOldDocTipo;
+        const montoChanged = Math.abs(DocTotal - (doc.DocTotal || 0)) > 0.001;
+        const paidChanged  = newPaid !== oldPaid;
 
-        for (const mov of oldMovs.recordset) {
-            await transaction.request()
-                .input('cueId', sql.Int, mov.CueIdCuenta)
-                .input('importe', sql.Decimal(18, 4), mov.MovImporte)
-                .query("UPDATE dbo.CuentasCliente SET CueSaldoActual = CueSaldoActual - @importe WHERE CueIdCuenta = @cueId");
-        }
-
-        await transaction.request()
-            .input('id', sql.Int, id)
-            .input('tcaId', sql.Int, doc.TcaIdTransaccion || 0)
-            .query("UPDATE dbo.MovimientosCuenta SET MovAnulado = 1 WHERE (DocIdDocumento = @id OR (@tcaId > 0 AND PagIdPago IN (SELECT PagIdPago FROM dbo.Pagos WHERE PagTcaIdTransaccion = @tcaId))) AND MovTipo NOT IN ('ORDEN', 'ENTREGA')");
-
-        // Insertar los nuevos movimientos para el cliente actual si es cliente real
-        const cliIdNum = parseInt(CliIdCliente) || 0;
+        const cliIdNum     = parseInt(CliIdCliente) || 0;
         const isRealClient = cliIdNum > 0 && cliIdNum !== CONSUMIDOR_FINAL_ID && cliIdNum !== 100101;
-        if (isRealClient) {
-            const cueTipo = MonIdMoneda === 2 ? 'DINERO_USD' : 'DINERO_UYU';
-            const ctaMonedaId = await contabilidadService.obtenerOCrearCuenta(CliIdCliente, cueTipo, {
-                MonIdMoneda,
-                UsuarioAlta: req.user?.id || 1
+
+        if (isRealClient && (tipoChanged || montoChanged || paidChanged)) {
+          const cueTipoEdit = MonIdMoneda === 2 ? 'DINERO_USD' : 'DINERO_UYU';
+          const ctaEditId   = await contabilidadService.obtenerOCrearCuenta(cliIdNum, cueTipoEdit, {
+            MonIdMoneda, UsuarioAlta: req.user?.id || 1
+          }, transaction);
+          const cicloObj = await contabilidadService.obtenerCicloActivo(ctaEditId, transaction);
+          const cicId    = cicloObj ? cicloObj.CicIdCiclo : null;
+
+          // 1. Actualizar concepto e importe del movimiento de CARGO (siempre)
+          const nuevoConcepto = `Venta ${newConfig?.Detalle || DocTipo}: ${newSerie}-${newNumero}${DocCliNombre ? ' (' + DocCliNombre + ')' : ''}`;
+          await transaction.request()
+            .input('docId',    sql.Int,          parseInt(id))
+            .input('imp',      sql.Decimal(18,4), -DocTotal)
+            .input('concepto', sql.VarChar(200),  nuevoConcepto)
+            .query(`
+              UPDATE dbo.MovimientosCuenta
+              SET MovImporte  = @imp,
+                  MovConcepto = @concepto
+              WHERE DocIdDocumento = @docId
+                AND MovTipo IN ('VTA_CAJA','VENTA','CARGO')
+                AND (MovAnulado IS NULL OR MovAnulado = 0)
+            `);
+
+          // 2. Transición de pago
+          if (oldPaid && !newPaid) {
+            // ── Contado → Crédito ──────────────────────────────────────────────
+            // 2a. Eliminar el movimiento de PAGO (el efectivo se "devuelve")
+            // El PAGO puede estar vinculado de DOS formas distintas según quién lo creó:
+            //   · Por DocIdDocumento  → cuando lo creó editarFactura/crearFacturaManual
+            //   · Por PagIdPago→TcaId → cuando lo creó Caja, pagoService o procesarTransaccion
+            // Buscamos ambos para no dejar ningún PAGO huérfano.
+            const tcaIdViejo = doc.TcaIdTransaccion || null;
+            await transaction.request()
+              .input('docId', sql.Int, parseInt(id))
+              .input('tcaId', sql.Int, tcaIdViejo)
+              .query(`
+                DELETE mc FROM dbo.MovimientosCuenta mc
+                WHERE mc.MovTipo = 'PAGO'
+                  AND (mc.MovAnulado IS NULL OR mc.MovAnulado = 0)
+                  AND (
+                    mc.DocIdDocumento = @docId
+                    OR (
+                      @tcaId IS NOT NULL
+                      AND mc.PagIdPago IN (
+                        SELECT p.PagIdPago FROM dbo.Pagos p
+                        WHERE p.PagTcaIdTransaccion = @tcaId
+                      )
+                    )
+                  )
+              `);
+
+            // 2b. Ajustar saldo de CuentasCliente: el cliente ahora debe el monto
+            await transaction.request()
+              .input('Dif', sql.Decimal(18,4), -DocTotal)
+              .input('C',   sql.Int,            ctaEditId)
+              .query(`UPDATE dbo.CuentasCliente SET CueSaldoActual = CueSaldoActual + @Dif WHERE CueIdCuenta = @C`);
+
+            // 2c. Crear DeudaDocumento
+            await contabilidadService.crearDeudaDocumento({
+              CueIdCuenta:    ctaEditId,
+              DocIdDocumento: parseInt(id),
+              Importe:        DocTotal,
             }, transaction);
 
-            const cicloActivoObj = await contabilidadService.obtenerCicloActivo(ctaMonedaId, transaction);
-            const cicId = cicloActivoObj ? cicloActivoObj.CicIdCiclo : null;
+          } else if (!oldPaid && newPaid) {
+            // ── Crédito → Contado ──────────────────────────────────────────────
+            const conceptoPago = `Pago (${newConfig?.Detalle || DocTipo}): ${newSerie}-${newNumero}`;
+            await contabilidadService.registrarMovimiento({
+                CueIdCuenta: ctaEditId,
+                MovTipo: 'PAGO',
+                MovConcepto: conceptoPago,
+                MovImporte: DocTotal,
+                MovUsuarioAlta: req.user?.id || 1,
+                DocIdDocumento: parseInt(id),
+                CicIdCiclo: cicId
+            }, transaction);
 
-            // Registrar el Cargo (Venta)
-            const rUpdCta1 = await transaction.request()
-                .input('C', sql.Int, ctaMonedaId)
-                .input('Dif', sql.Decimal(18, 4), -DocTotal)
-                .query(`
-                    UPDATE dbo.CuentasCliente 
-                    SET CueSaldoActual = CueSaldoActual + @Dif 
-                    OUTPUT INSERTED.CueSaldoActual 
-                    WHERE CueIdCuenta = @C
-                `);
-            const saldoP1 = rUpdCta1.recordset[0].CueSaldoActual;
 
-            const configRes = await transaction.request()
-                .input('codDoc', sql.NVarChar(100), DocTipo)
-                .query(`SELECT Detalle, CodDocumento FROM Config_TiposDocumento WHERE CodDocumento = @codDoc OR Detalle = @codDoc`);
-            const config = configRes.recordset[0] || { Detalle: DocTipo, CodDocumento: DocTipo };
-            const serie = newSerie;
-            const numero = newNumero;
 
-            const conceptCargo = `${config.CodDocumento || DocTipo} Manual ${serie}-${numero}`;
+            // 2d. Eliminar DeudaDocumento existente (ya pagó)
             await transaction.request()
-                .input('Cue', sql.Int, ctaMonedaId)
-                .input('Imp', sql.Decimal(18, 4), -DocTotal)
-                .input('Sal', sql.Decimal(18, 4), saldoP1)
-                .input('Usr', sql.Int, req.user?.id || 1)
-                .input('DocId', sql.Int, id)
-                .input('Concepto', sql.VarChar(200), conceptCargo)
-                .input('CicId', sql.Int, cicId)
-                .query(`
-                    INSERT INTO dbo.MovimientosCuenta 
-                        (CueIdCuenta, MovTipo, MovConcepto, MovImporte, MovSaldoPosterior, DocIdDocumento, MovUsuarioAlta, MovFecha, CicIdCiclo, MovAnulado)
-                    VALUES 
-                        (@Cue, 'VTA_CAJA', @Concepto, @Imp, @Sal, @DocId, @Usr, GETDATE(), @CicId, 0)
-                `);
+              .input('docId', sql.Int, parseInt(id))
+              .query(`DELETE FROM dbo.DeudaDocumento WHERE DocIdDocumento = @docId AND DDeEstado IN ('PENDIENTE','PARCIAL','VENCIDO')`);
 
-            // Registrar el Abono (Pago) si es Contado
-            if (newPaid) {
-                const rUpdCta2 = await transaction.request()
-                    .input('C', sql.Int, ctaMonedaId)
-                    .input('Dif', sql.Decimal(18, 4), DocTotal)
-                    .query(`
-                        UPDATE dbo.CuentasCliente 
-                        SET CueSaldoActual = CueSaldoActual + @Dif 
-                        OUTPUT INSERTED.CueSaldoActual 
-                        WHERE CueIdCuenta = @C
-                    `);
-                const saldoP2 = rUpdCta2.recordset[0].CueSaldoActual;
+          } else if (newPaid && montoChanged) {
+            // ── Sigue Contado pero cambió el monto ────────────────────────────
+            const conceptoPago = `Pago (${newConfig?.Detalle || DocTipo}): ${newSerie}-${newNumero}`;
+            await transaction.request()
+              .input('docId',    sql.Int,          parseInt(id))
+              .input('imp',      sql.Decimal(18,4), DocTotal)
+              .input('concepto', sql.VarChar(200),  conceptoPago)
+              .query(`
+                UPDATE dbo.MovimientosCuenta
+                SET MovImporte  = @imp, MovConcepto = @concepto
+                WHERE DocIdDocumento = @docId
+                  AND MovTipo = 'PAGO'
+                  AND (MovAnulado IS NULL OR MovAnulado = 0)
+              `);
+            // Ajustar saldo por diferencia
+            const dif = DocTotal - (doc.DocTotal || 0);
+            await transaction.request()
+              .input('Dif', sql.Decimal(18,4), -dif) // cargo neto: cargo sube pero pago también
+              .input('C',   sql.Int,            ctaEditId)
+              .query(`UPDATE dbo.CuentasCliente SET CueSaldoActual = CueSaldoActual + @Dif WHERE CueIdCuenta = @C`);
 
-                const conceptPago = `Pago ${config.CodDocumento || DocTipo} Manual ${serie}-${numero}`;
-                await transaction.request()
-                    .input('Cue', sql.Int, ctaMonedaId)
-                    .input('Imp', sql.Decimal(18, 4), DocTotal)
-                    .input('Sal', sql.Decimal(18, 4), saldoP2)
-                    .input('Usr', sql.Int, req.user?.id || 1)
-                    .input('DocId', sql.Int, id)
-                    .input('Concepto', sql.VarChar(200), conceptPago)
-                    .input('CicId', sql.Int, cicId)
-                    .query(`
-                        INSERT INTO dbo.MovimientosCuenta 
-                            (CueIdCuenta, MovTipo, MovConcepto, MovImporte, MovSaldoPosterior, DocIdDocumento, MovUsuarioAlta, MovFecha, CicIdCiclo, MovAnulado)
-                        VALUES 
-                            (@Cue, 'PAGO', @Concepto, @Imp, @Sal, @DocId, @Usr, GETDATE(), @CicId, 0)
-                    `);
+          } else if (!newPaid && montoChanged) {
+            // ── Sigue Crédito pero cambió el monto ────────────────────────────
+            const dif = DocTotal - (doc.DocTotal || 0);
+            await transaction.request()
+              .input('Dif', sql.Decimal(18,4), -dif)
+              .input('C',   sql.Int,            ctaEditId)
+              .query(`UPDATE dbo.CuentasCliente SET CueSaldoActual = CueSaldoActual + @Dif WHERE CueIdCuenta = @C`);
 
-                // Eliminar cualquier deuda activa de este documento ya que ahora está pagado
-                await transaction.request()
-                    .input('id', sql.Int, id)
-                    .query("DELETE FROM dbo.DeudaDocumento WHERE DocIdDocumento = @id");
-            } else {
-                // Si es crédito, registrar o actualizar en DeudaDocumento
-                await transaction.request()
-                    .input('id', sql.Int, id)
-                    .query("DELETE FROM dbo.DeudaDocumento WHERE DocIdDocumento = @id");
-
-                await transaction.request()
-                    .input('Cue', sql.Int, ctaMonedaId)
-                    .input('DocId', sql.Int, id)
-                    .input('Orig', sql.Decimal(18, 4), DocTotal)
-                    .input('Pend', sql.Decimal(18, 4), DocTotal)
-                    .query(`
-                        INSERT INTO dbo.DeudaDocumento
-                            (CueIdCuenta, DocIdDocumento, DDeImporteOriginal, DDeImportePendiente,
-                             DDeFechaEmision, DDeFechaVencimiento, DDeEstado)
-                        VALUES
-                            (@Cue, @DocId, @Orig, @Pend,
-                             GETDATE(), DATEADD(DAY, 7, GETDATE()), 'PENDIENTE')
-                    `);
-            }
+            await transaction.request()
+              .input('docId',    sql.Int,          parseInt(id))
+              .input('nuevoImp', sql.Decimal(18,4), DocTotal)
+              .query(`
+                UPDATE dbo.DeudaDocumento
+                SET DDeImporteOriginal  = @nuevoImp,
+                    DDeImportePendiente = @nuevoImp
+                WHERE DocIdDocumento = @docId
+                  AND DDeEstado IN ('PENDIENTE','PARCIAL','VENCIDO')
+              `);
+          }
         }
 
         // 4. Actualizar Transacciones de Caja e Historial de Cobros

@@ -645,14 +645,23 @@ export const generarPdfEstadoCuenta = (cliente, cuentas, secciones, planes, desd
         pdf.text(`Cuenta: ${cuentaLabel} - Saldo Actual: ${saldoStr}${suffix}`, 14, currentY);
         currentY += 6;
 
+        // (Se eliminó el subtitulo Pendiente de facturar de la cabecera)
+
+        const ordenesPendientes = rawMovs.filter(m => 
+          (m.MovTipo === 'ORDEN' || m.MovTipo === 'ORDEN_ANTICIPO') && 
+          !m.MovAnulado && 
+          Number(m.MovImporte) < 0
+        );
+
         if (movs.length === 0) {
             pdf.setFont('helvetica', 'italic');
             pdf.setFontSize(10);
             pdf.setTextColor(...COLOR_SECONDARY);
             pdf.text("Sin movimientos en el período seleccionado.", 14, currentY);
             currentY += 15;
-            return;
-        }
+            // No hacemos return porque igual puede haber órdenes pendientes de facturar abajo
+        } else {
+
 
         // Si hay arrastre, mostramos una fila de saldo inicial del período
         if (arrastre !== 0) {
@@ -749,9 +758,67 @@ export const generarPdfEstadoCuenta = (cliente, cuentas, secciones, planes, desd
                 6: { cellWidth: 20, halign: 'right' },
                 7: { cellWidth: 22, halign: 'right' }
             }
-        });
+            });
 
-        currentY = pdf.lastAutoTable.finalY + 15;
+            currentY = pdf.lastAutoTable.finalY + 15;
+        }
+
+        // --- Detalle de Órdenes pendientes de facturar ---
+        if (ordenesPendientes.length > 0 && !esRecurso) {
+            if (currentY > 250) {
+                pdf.addPage();
+                currentY = 20;
+            }
+
+            pdf.setFont('helvetica', 'bold');
+            pdf.setFontSize(10);
+            pdf.setTextColor(217, 119, 6); // amber-600
+            pdf.text(`Detalle de Órdenes Pendientes de Facturar (${ordenesPendientes.length})`, 14, currentY);
+            currentY += 4;
+
+            const opBody = ordenesPendientes.map(o => {
+                const docFull = o.OrdCodigoOrden || o.MovConcepto || `Mov #${o.MovIdMovimiento}`;
+                const importeStr = `${c.MonSimbolo || '$'} ${fmtNum(Math.abs(Number(o.MovImporte)))}`;
+                return [
+                    fmtFecha(o.MovFecha),
+                    docFull,
+                    o.OrdNombreTrabajo || '—',
+                    importeStr
+                ];
+            });
+
+            const totalPendiente = ordenesPendientes.reduce((acc, o) => acc + Math.abs(Number(o.MovImporte)), 0);
+            opBody.push([
+                { content: 'TOTAL PENDIENTE A FACTURAR', colSpan: 3, styles: { halign: 'right', fontStyle: 'bold', fillColor: [253, 246, 227], textColor: [217, 119, 6] } },
+                { content: `${c.MonSimbolo || '$'} ${fmtNum(totalPendiente)}`, styles: { halign: 'right', fontStyle: 'bold', fillColor: [253, 246, 227], textColor: [217, 119, 6] } }
+            ]);
+
+            autoTable(pdf, {
+                startY: currentY,
+                head: [['Fecha', 'Orden', 'Trabajo / Descripción', 'Importe']],
+                body: opBody,
+                theme: 'grid',
+                headStyles: {
+                    fillColor: [245, 158, 11], // amber-500
+                    textColor: [255, 255, 255],
+                    fontStyle: 'bold'
+                },
+                styles: {
+                    font: 'helvetica',
+                    fontSize: 8,
+                    cellPadding: 3
+                },
+                columnStyles: {
+                    0: { cellWidth: 25 },
+                    1: { cellWidth: 40 },
+                    2: { cellWidth: 'auto' },
+                    3: { cellWidth: 30, halign: 'right' }
+                }
+            });
+
+            currentY = pdf.lastAutoTable.finalY + 15;
+            pdf.setTextColor(0, 0, 0); // reset
+        }
     });
 
     // Footer

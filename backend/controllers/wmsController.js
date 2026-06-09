@@ -114,7 +114,7 @@ exports.getCatalog = async (req, res) => {
     try {
         const pool = await getPool();
         
-        // 1. Get mapped local catalog
+        // 1. Get ALL local catalog where SupFlia = 2 (LEFT JOIN for WMS data)
         const result = await pool.request().query(`
             SELECT 
                 a.ProIdProducto, a.Descripcion, a.SupFlia,
@@ -124,51 +124,26 @@ exports.getCatalog = async (req, res) => {
                 loc.pasillo, loc.estante,
                 pb.Precio, pb.Moneda
             FROM Articulos a
-            INNER JOIN Articulos_Wms aw ON a.ProIdProducto = aw.Idproid
-            INNER JOIN Articulos_WMS_Variantes v ON aw.Idproid = v.Idproid
+            LEFT JOIN Articulos_Wms aw ON a.ProIdProducto = aw.Idproid
+            LEFT JOIN Articulos_WMS_Variantes v ON aw.Idproid = v.Idproid
             LEFT JOIN PreciosBase pb ON a.ProIdProducto = pb.ProIdProducto
             LEFT JOIN Articulos_Imagenes img ON a.ProIdProducto = img.Idproid AND img.orden = 1
             LEFT JOIN Articulos_UbicacionLocal loc ON a.ProIdProducto = loc.Idproid
-            WHERE a.SupFlia = '2' OR aw.producto_maestro_id IS NOT NULL
+            WHERE a.SupFlia = '2'
         `);
 
-        // 2. Fetch live stock from WMS
-        const wmsUrl = process.env.WMS_API_URL;
-        let stockMap = {};
-        if (wmsUrl) {
-            try {
-                const stockQuery = `
-                    USE Ventas_Dev;
-                    SELECT e.variante_id, SUM(e.cantidad_actual) as stock
-                    FROM Stock_Etiquetas e
-                    WHERE e.estado = 'activo' AND e.cantidad_actual > 0
-                    GROUP BY e.variante_id;
-                `;
-                const response = await fetch(`${wmsUrl}/sql`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ query: stockQuery })
-                });
-                const wmsData = await response.json();
-                if (wmsData.data) {
-                    wmsData.data.forEach(row => {
-                        stockMap[row.variante_id.toString()] = Number(row.stock || 0);
-                    });
-                }
-            } catch (e) {
-                logger.warn('No se pudo traer el stock en vivo del WMS', e);
-            }
-        }
+        // 2. Fetch live stock from WMS (REMOVED as requested by user)
+        // No we don't connect to WMS for live stock anymore.
 
-        // 3. Group by Product Master
+        // 3. Group by Product
         const productsMap = {};
         result.recordset.forEach(row => {
             if (!productsMap[row.ProIdProducto]) {
                 productsMap[row.ProIdProducto] = {
                     ProIdProducto: row.ProIdProducto,
                     Descripcion: row.Descripcion,
-                    nombre_wms: row.nombre_wms,
-                    producto_maestro_id: row.producto_maestro_id,
+                    nombre_wms: row.nombre_wms || row.Descripcion,
+                    producto_maestro_id: row.producto_maestro_id || null,
                     imagen: row.url_imagen || null,
                     es_generica: row.es_generica,
                     ubicacion: { pasillo: row.pasillo, estante: row.estante },
@@ -179,13 +154,14 @@ exports.getCatalog = async (req, res) => {
                 };
             }
             
-            const variantStock = stockMap[row.wms_variante_id.toString()] || 0;
+            // As no WMS is queried, we set arbitrary high stock so frontend can sell it
+            const variantStock = 9999;
             productsMap[row.ProIdProducto].total_stock += variantStock;
             
             productsMap[row.ProIdProducto].variantes.push({
-                wms_variante_id: row.wms_variante_id,
-                sku: row.sku,
-                nombre_variante: row.nombre_variante,
+                wms_variante_id: row.wms_variante_id || row.ProIdProducto, // fallback to local ID if not mapped
+                sku: row.sku || '',
+                nombre_variante: row.nombre_variante || 'Única',
                 stock: variantStock
             });
         });

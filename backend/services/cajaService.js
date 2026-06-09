@@ -1,4 +1,4 @@
-﻿'use strict';
+'use strict';
 /**
  * cajaService.js
  * ─────────────────────────────────────────────────────────────────────────
@@ -424,57 +424,17 @@ async function procesarVentaDirecta(payload) {
     const generaDeuda = evtConfig ? !!evtConfig.EvtGeneraDeuda : true;
     const afectaSaldo = evtConfig ? (evtConfig.EvtAfectaSaldo || 0) : -1;
 
-    if (totalAbonadoDeuda < totalBruto) {
-      let importePendiente = totalBruto - totalAbonadoDeuda;
-      
-      if (importePendiente > 0.01 && generaDeuda) {
-        // Nace en el importe real pendiente
-        const insertRes = await new sql.Request(transaction)
-          .input('Cue', sql.Int, ctaMonedaId)
-          .input('DocId', sql.Int, dId)
-          .input('Orig', sql.Decimal(18,4), totalBruto)
-          .input('Pend', sql.Decimal(18,4), importePendiente)
-          .query(`
-            INSERT INTO dbo.DeudaDocumento
-              (CueIdCuenta, DocIdDocumento, DDeImporteOriginal, DDeImportePendiente,
-               DDeFechaEmision, DDeFechaVencimiento, DDeEstado)
-            OUTPUT INSERTED.DDeIdDocumento
-            VALUES
-              (@Cue, @DocId, @Orig, @Pend,
-               GETDATE(), DATEADD(DAY, 7, GETDATE()), 'PENDIENTE')
-          `);
-        
-        const newDDeId = insertRes.recordset[0].DDeIdDocumento;
-
-        // Auto-consumir saldo a favor existente EXPLÍCITAMENTE
-        if (saldoAFavor > 0) {
-            const montoAAplicar = Math.min(saldoAFavor, importePendiente);
-            
-            // Pago sintético de aplicación
-            const pagRes = await new sql.Request(transaction)
-              .input('Metodo', sql.Int, 1)
-              .input('Moneda', sql.Int, monIdDeuda || 1)
-              .input('Monto', sql.Decimal(18,4), montoAAplicar)
-              .query(`
-                INSERT INTO dbo.Pagos
-                  (MPaIdMetodoPago, PagIdMonedaPago, PagMontoPago, PagFechaPago, 
-                   PagUsuarioAlta, PagCotizacion, PagMontoConvertido, PagTipoMovimiento)
-                OUTPUT INSERTED.PagIdPago
-                VALUES
-                  (@Metodo, @Moneda, @Monto, GETDATE(), 
-                   1, 1, @Monto, 'ANTICIPO_APLICADO')
-              `);
-            const pagId = pagRes.recordset[0].PagIdPago;
-
-            await new sql.Request(transaction)
-              .input('PagIdPago',       sql.Int,          pagId)
-              .input('MontoDisponible', sql.Decimal(18,4), montoAAplicar)
-              .input('CueIdCuenta',     sql.Int,          ctaMonedaId)
-              .input('UsuarioAlta',     sql.Int,          usuarioId)
-              .output('MontoExcedente', sql.Decimal(18,4))
-              .execute('dbo.SP_ImputarPagoPEPS');
-        }
-      }
+    // Registrar DeudaDocumento centralizado
+    // crearDeudaDocumento ya maneja: cálculo de días de vencimiento,
+    // detección de saldo a favor, y auto-consumo via SP_ImputarPagoPEPS
+    const importePendiente = Math.max(0, totalBruto - totalAbonadoDeuda);
+    if (importePendiente > 0.01 && generaDeuda) {
+      await contabilidadSvc.crearDeudaDocumento({
+        CueIdCuenta:    ctaMonedaId,
+        DocIdDocumento: dId,
+        Importe:        totalBruto,
+        ImportePendiente: importePendiente,
+      }, transaction);
     }
 
     const cicloActivoObj = await contabilidadSvc.obtenerCicloActivo(ctaMonedaId);
@@ -784,6 +744,139 @@ async function procesarTransaccion(payload) {
     }
 
 
+    // ── PASO 3.5: Cruce Exacto de DeudaDocumento ────────────────────────
+    // Replicamos la lógica precisa de pagoService.registrarPagoCompleto:
+    //  1º Buscar deudas PENDIENTE/PARCIAL filtrando por los OrdIdOrden exactos
+    //  2º Fallback PEPS por CueIdCuenta si no hubo match exacto (órdenes muy viejas)
+    // Esto reemplaza la dependencia al SP_ImputarPagoPEPS ciego que usaba caja antes.
+    {
+      // Recolectar TODOS los OrdIdOrden involucrados en este pago:
+      // - Las que vienen explícitas como ORDEN_DEPOSITO
+      // - Las hijas de cada ORDEN_RETIRO (via ap.orderNumbers o descubriéndolas en BD)
+      const allOrdIdsParaDeuda = [];
+
+      for (const ap of aplicaciones) {
+        if (ap.tipo === 'ORDEN_DEPOSITO' && ap.referenciaId) {
+          const refId = parseInt(String(ap.referenciaId).replace(/\D/g, ''), 10);
+          if (!isNaN(refId)) allOrdIdsParaDeuda.push(refId);
+        }
+        if (ap.tipo === 'ORDEN_RETIRO' && ap.referenciaId) {
+          const refId = parseInt(String(ap.referenciaId).replace(/\D/g, ''), 10);
+          if (!isNaN(refId)) {
+            if (ap.orderNumbers && ap.orderNumbers.length > 0) {
+              // El Frontend ya resolvió los hijos
+              ap.orderNumbers.forEach(id => allOrdIdsParaDeuda.push(id));
+            } else {
+              // Auto-descubrimiento: buscar hijos en BD
+              const hijasRes = await new sql.Request(transaction)
+                .input('RID', sql.Int, refId)
+                .query('SELECT OrdIdOrden FROM dbo.OrdenesDeposito WHERE OReIdOrdenRetiro = @RID');
+              const hijasIds = hijasRes.recordset.map(x => x.OrdIdOrden);
+              // Guardar en ap.orderNumbers para que PASO 4 los use al actualizar estados
+              ap.orderNumbers = hijasIds;
+              hijasIds.forEach(id => allOrdIdsParaDeuda.push(id));
+            }
+          }
+        }
+      }
+
+      const isOrdenUSD_deuda = (header.moneda === 'USD');
+      const cueTipoDeuda     = isOrdenUSD_deuda ? 'DINERO_USD' : 'DINERO_UYU';
+      let pagoRestanteDeuda  = totalNeto;
+      let totalImputadoDeuda = 0;
+
+      // 1º – Cruce exacto por OrdIdOrden
+      if (allOrdIdsParaDeuda.length > 0) {
+        const inListDeuda = allOrdIdsParaDeuda.join(',');
+        const ddRes = await new sql.Request(transaction).query(`
+          SELECT dd.DDeIdDocumento, dd.DDeImportePendiente, dd.DDeEstado, dd.CueIdCuenta
+          FROM   dbo.DeudaDocumento dd WITH (UPDLOCK, ROWLOCK)
+          WHERE  dd.OrdIdOrden IN (${inListDeuda})
+            AND  dd.DDeEstado IN ('PENDIENTE','PARCIAL')
+          ORDER  BY dd.DDeFechaEmision ASC
+        `);
+
+        for (const dd of ddRes.recordset) {
+          if (pagoRestanteDeuda <= 0) break;
+          const pendiente      = Number(dd.DDeImportePendiente);
+          const aplicar        = Math.min(pagoRestanteDeuda, pendiente);
+          const nuevoPendiente = Math.max(0, pendiente - aplicar);
+          const nuevoEstado    = nuevoPendiente < 0.01 ? 'COBRADO' : 'PARCIAL';
+          pagoRestanteDeuda   -= aplicar;
+          totalImputadoDeuda  += aplicar;
+
+          await new sql.Request(transaction)
+            .input('ID',     sql.Int,           dd.DDeIdDocumento)
+            .input('pend',   sql.Decimal(18,4),  nuevoPendiente)
+            .input('estado', sql.VarChar(20),    nuevoEstado)
+            .query(`
+              UPDATE dbo.DeudaDocumento
+              SET    DDeImportePendiente = @pend,
+                     DDeEstado           = @estado,
+                     DDeFechaCobro       = CASE WHEN @estado = 'COBRADO' THEN GETDATE() ELSE DDeFechaCobro END
+              WHERE  DDeIdDocumento = @ID
+            `);
+
+          logger.info(`[CAJA-DEUDA] DeudaDoc #${dd.DDeIdDocumento}: aplicado=${aplicar.toFixed(2)} nuevo_estado=${nuevoEstado}`);
+        }
+      }
+
+      // 2º – Fallback PEPS: aplicar el saldo restante (si queda) contra las deudas del cliente
+      //    por CueIdCuenta (orden cronológico – PEPS).
+      //    Esto cubre:
+      //      a) Órdenes sin OrdIdOrden registrado en DeudaDocumento (datos históricos)
+      //      b) El remanente cuando el match exacto cubrió solo PARTE del pago
+      if (pagoRestanteDeuda > 0.01 && header.clienteId) {
+        const cueFallback = await new sql.Request(transaction)
+          .input('Cli', sql.Int,         header.clienteId)
+          .input('T',   sql.VarChar(20), cueTipoDeuda)
+          .query('SELECT CueIdCuenta FROM dbo.CuentasCliente WHERE CliIdCliente=@Cli AND CueTipo=@T AND CueActiva=1');
+
+        if (cueFallback.recordset.length) {
+          const cueIdFb = cueFallback.recordset[0].CueIdCuenta;
+          logger.info(`[CAJA-DEUDA] Fallback PEPS: buscando deudas por CueIdCuenta=${cueIdFb} (OrdIdOrden no matcheó)`);
+
+          const ddFb = await new sql.Request(transaction)
+            .input('CueId', sql.Int, cueIdFb)
+            .query(`
+              SELECT dd.DDeIdDocumento, dd.DDeImportePendiente, dd.DDeEstado, dd.CueIdCuenta
+              FROM   dbo.DeudaDocumento dd WITH (UPDLOCK, ROWLOCK)
+              WHERE  dd.CueIdCuenta = @CueId
+                AND  dd.DDeEstado IN ('PENDIENTE','PARCIAL')
+              ORDER  BY dd.DDeFechaEmision ASC
+            `);
+
+          for (const dd of ddFb.recordset) {
+            if (pagoRestanteDeuda <= 0) break;
+            const pendiente      = Number(dd.DDeImportePendiente);
+            const aplicar        = Math.min(pagoRestanteDeuda, pendiente);
+            const nuevoPendiente = Math.max(0, pendiente - aplicar);
+            const nuevoEstado    = nuevoPendiente < 0.01 ? 'COBRADO' : 'PARCIAL';
+            pagoRestanteDeuda   -= aplicar;
+            totalImputadoDeuda  += aplicar;
+
+            await new sql.Request(transaction)
+              .input('ID',     sql.Int,           dd.DDeIdDocumento)
+              .input('pend',   sql.Decimal(18,4),  nuevoPendiente)
+              .input('estado', sql.VarChar(20),    nuevoEstado)
+              .query(`
+                UPDATE dbo.DeudaDocumento
+                SET    DDeImportePendiente = @pend,
+                       DDeEstado           = @estado,
+                       DDeFechaCobro       = CASE WHEN @estado = 'COBRADO' THEN GETDATE() ELSE DDeFechaCobro END
+                WHERE  DDeIdDocumento = @ID
+              `);
+
+            logger.info(`[CAJA-DEUDA] Fallback CueId DeudaDoc #${dd.DDeIdDocumento}: aplicado=${aplicar.toFixed(2)} estado=${nuevoEstado}`);
+          }
+        }
+      }
+
+      // Propagamos si imputamos algo, para que _lanzarHooksContables no duplique el débito
+      header._imputadoDeuda = totalImputadoDeuda;
+    }
+
+
     // ── PASO 4: Actualizar órdenes (estado + FKs) ──────────────────────
     const ordenesRetiro  = aplicaciones.filter(a => a.tipo === 'ORDEN_RETIRO'   && a.referenciaId);
     const ordenesDeposito = aplicaciones.filter(a => a.tipo === 'ORDEN_DEPOSITO' && a.referenciaId);
@@ -794,7 +887,8 @@ async function procesarTransaccion(payload) {
       const realRefId = parseInt(refStr.replace(/\D/g, ''), 10);
       const isVirtual = isNaN(realRefId) || refStr.toUpperCase().startsWith('RL');
 
-      // 1. Marcar siempre como pagas las OrdenesDeposito hijas (tanto reales como virtuales)
+      // 1. Marcar siempre como pagas las OrdenesDeposito hijas
+      //    ap.orderNumbers ya fue poblado en PASO 3.5 si estaba vacío (auto-descubrimiento)
       if (ap.orderNumbers && ap.orderNumbers.length > 0) {
           const reqOd = new sql.Request(transaction).input('PagId', sql.Int, primerPagIdPago).input('TcaId', sql.Int, tcaIdTransaccion);
           ap.orderNumbers.forEach((id, i) => reqOd.input(`id${i}`, sql.Int, id));
@@ -1126,13 +1220,16 @@ async function procesarTransaccion(payload) {
 
              header.docIdDocumento = docIdDocumento;
 
-             // ── RECIBO de caja automatico (correlativo RC-) ───────────────
+             // ── RECIBO de caja automatico (correlativo RC-) DESACTIVADO ──
+             // Se desactiva porque generaba duplicados en el Estado de Cuentas,
+             // y los E-Tickets/Facturas ya funcionan como comprobante de pago directo.
+             /*
              if (docIdDocumento && totalCobrado > 0) {
                try {
                  const recSeq = await new sql.Request(transaction)
-                   .query(`UPDATE dbo.SecuenciaDocumentos SET SecUltimoNumero = SecUltimoNumero + 1
+                   .query(\`UPDATE dbo.SecuenciaDocumentos SET SecUltimoNumero = SecUltimoNumero + 1
                            OUTPUT INSERTED.SecUltimoNumero
-                           WHERE SecTipoDoc = 'RECIBO' AND SecSerie = 'RC'`);
+                           WHERE SecTipoDoc = 'RECIBO' AND SecSerie = 'RC'\`);
                  const numRecibo = recSeq.recordset[0]?.SecUltimoNumero;
                  if (numRecibo) {
                    const cueCajaCode = isOrdenUSD ? '1.1.2' : '1.1.1';
@@ -1169,12 +1266,13 @@ async function procesarTransaccion(payload) {
                        total:          totalCobrado
                      }]
                    }, transaction);
-                   logger.info(`[CAJA-CFE] Recibo RC-${String(numRecibo).padStart(6,'0')} (ID=${reciboId}) generado para Doc #${docIdDocumento}`);
+                   logger.info(\`[CAJA-CFE] Recibo RC-\${String(numRecibo).padStart(6,'0')} (ID=\${reciboId}) generado para Doc #\${docIdDocumento}\`);
                  }
                } catch (eRecibo) {
-                 logger.warn(`[CAJA-CFE] Recibo no generado (no critico): ${eRecibo.message}`);
+                 logger.warn(\`[CAJA-CFE] Recibo no generado (no critico): \${eRecibo.message}\`);
                }
              }
+             */
              // ──────────────────────────────────────────────────────────────
 
 
@@ -1649,36 +1747,12 @@ async function _lanzarHooksContables({ aplicaciones, pagosNorm, pagosCreados, he
     // EXCEPCIÓN: si las aplicaciones referencian órdenes existentes (OrdIdOrden), esas órdenes
     // ya fueron debitadas por hookOrdenCreada con MovTipo='ORDEN'. Registrar VTA_CAJA de nuevo
     // sería un doble débito que deja el saldo negativo aunque el pago se haya recibido.
-    // ── Anti-doble-débito: calcular cuánto del totalNeto no está cubierto por movimiento ORDEN previo ──
-    // Si la orden ya fue debitada cuando entró (hookOrdenCreada), no se vuelve a debitar.
-    // Para órdenes viejas sin ORDEN registrado, se usa el totalNeto completo (comportamiento original).
+    // El importe a debitar vía VTA_CAJA será siempre el totalNeto de la orden,
+    // ya que el movimiento previo ORDEN no debita el CueSaldoActual (se cambió para que no afecte saldo).
     let importeADebitarVtaCaja = totalNeto;
-    const ordIdsAplicacion = (aplicaciones || [])
-      .map(ap => ap.ordIdOrden || ap.OrdIdOrden || (ap.tipo === 'ORDEN_DEPOSITO' ? ap.referenciaId : null))
-      .filter(id => id != null && !isNaN(Number(id)))
-      .map(Number);
-
-    if (ordIdsAplicacion.length > 0) {
-      try {
-        const poolHook = await getPool();
-        const idListOrd = [...new Set(ordIdsAplicacion)].join(',');
-        const resOrden = await poolHook.request().query(`
-          SELECT ISNULL(SUM(ABS(MovImporte)), 0) AS TotalOrden
-          FROM dbo.MovimientosCuenta WITH(NOLOCK)
-          WHERE OrdIdOrden IN (${idListOrd})
-            AND MovTipo = 'ORDEN'
-            AND (MovAnulado IS NULL OR MovAnulado = 0)
-        `);
-        const yaDebitado = Number(resOrden.recordset[0]?.TotalOrden || 0);
-        importeADebitarVtaCaja = Math.round(Math.max(0, totalNeto - yaDebitado) * 10000) / 10000;
-        logger.info(`[CAJA-HOOK] Anti-doble-débito: totalNeto=${totalNeto} yaDebitadoViaORDEN=${yaDebitado} => VTA_CAJA a registrar: ${importeADebitarVtaCaja}`);
-      } catch (errCheck) {
-        logger.warn(`[CAJA-HOOK] No se pudo verificar ORDEN previo (${errCheck.message}). Usando totalNeto completo.`);
-        importeADebitarVtaCaja = totalNeto;
-      }
-    }
 
     if (!header._creoDeuda && importeADebitarVtaCaja > 0.01) {
+
        let detailDesc = '';
        if (aplicaciones && aplicaciones.length > 0) {
          detailDesc = aplicaciones.map(ap => {
@@ -1987,44 +2061,23 @@ async function generarCFEDesdeOrdenesDirectas({ orderIds, clienteId, monto, mone
       `);
     logger.info(`[CFE-MOSTRADOR] DeudaDocumento (PAGADO) creada para DocId=${docId} Cli=${clienteId}`);
 
-    // ── Igual que _lanzarHooksContables de Caja (sin deuda previa) ──────────
-    // Anti-doble-débito: si las órdenes ya tienen movimiento ORDEN registrado,
-    // el saldo ya fue impactado. Solo registrar VTA_CAJA por el delta no cubierto.
-    try {
       let importeCFEVtaCaja = monto;
-      if (mcIdList && mcIdList.length > 0) {
-        try {
-          const resOrdenCFE = await pool.request().query(`
-            SELECT ISNULL(SUM(ABS(MovImporte)), 0) AS TotalOrden
-            FROM dbo.MovimientosCuenta WITH(NOLOCK)
-            WHERE OrdIdOrden IN (${mcIdList})
-              AND MovTipo = 'ORDEN'
-              AND (MovAnulado IS NULL OR MovAnulado = 0)
-          `);
-          const yaDebitadoCFE = Number(resOrdenCFE.recordset[0]?.TotalOrden || 0);
-          importeCFEVtaCaja = Math.round(Math.max(0, monto - yaDebitadoCFE) * 10000) / 10000;
-          logger.info(`[CFE-MOSTRADOR] Anti-doble-débito: monto=${monto} yaDebitadoViaORDEN=${yaDebitadoCFE} => VTA_CAJA a registrar: ${importeCFEVtaCaja}`);
-        } catch (errCheck) {
-          logger.warn(`[CFE-MOSTRADOR] No se pudo verificar ORDEN previo (${errCheck.message}). Usando monto completo.`);
-        }
-      }
 
       if (importeCFEVtaCaja > 0.01) {
-        await contabilidadSvc.registrarMovimiento({
-          CueIdCuenta:    cueIdCuenta,
-          MovTipo:        'VTA_CAJA',
-          MovConcepto:    conceptoContadoDirect,
-          MovImporte:     -importeCFEVtaCaja,
-          MovUsuarioAlta: usuarioId || 1,
-          DocIdDocumento: docId,
-        });
-        logger.info(`[CFE-MOSTRADOR] VTA_CAJA (-${importeCFEVtaCaja}) registrado para balancear PAGO en Cli=${clienteId}`);
-      } else {
-        logger.info(`[CFE-MOSTRADOR] VTA_CAJA omitido — ORDEN previo ya cubrió el débito para Cli=${clienteId}`);
+        try {
+          await contabilidadSvc.registrarMovimiento({
+            CueIdCuenta:    cueIdCuenta,
+            MovTipo:        'VTA_CAJA',
+            MovConcepto:    conceptoContadoDirect,
+            MovImporte:     -importeCFEVtaCaja,
+            MovUsuarioAlta: usuarioId || 1,
+            DocIdDocumento: docId,
+          });
+          logger.info(`[CFE-MOSTRADOR] VTA_CAJA (-${importeCFEVtaCaja}) registrado para balancear PAGO en Cli=${clienteId}`);
+        } catch (movErr) {
+          logger.warn(`[CFE-MOSTRADOR] No se pudo registrar movimiento VTA_CAJA: ${movErr.message}`);
+        }
       }
-    } catch (movErr) {
-      logger.warn(`[CFE-MOSTRADOR] No se pudo registrar movimiento VTA_CAJA: ${movErr.message}`);
-    }
     // ─────────────────────────────────────────────────────────────────────────
   }
 

@@ -1,7 +1,21 @@
 /**
  * pagoService.js
  * ─────────────────────────────────────────────────────────────────────────────
- * Servicio unificado de pago. Replica exactamente el flujo de
+ * @deprecated 2026-06-08
+ *
+ * ESTE SERVICIO ESTÁ REEMPLAZADO POR cajaService.procesarTransaccion
+ * que desde la versión actual incluye:
+ *   - Auto-descubrimiento de órdenes hijas de un ORDEN_RETIRO
+ *   - Cruce exacto de DeudaDocumento por OrdIdOrden (+ fallback PEPS)
+ *   - Generación de CFE (E-Ticket Contado)
+ *   - Asiento contable (Partida Doble)
+ *
+ * Los webhooks Handy y MercadoPago ya migrados a cajaService.
+ * Este archivo se conserva solo como referencia histórica.
+ * NO agregues llamadas nuevas a registrarPagoCompleto.
+ * ─────────────────────────────────────────────────────────────────────────────
+ *
+ * Servicio original de pago. Replicaba el flujo de
  * procesarPagoDeuda de Caja para pagos online (Handy, MercadoPago) y logística.
  *
  * Operaciones realizadas (igual que Caja):
