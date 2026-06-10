@@ -1,1 +1,0 @@
-const { sql, getPool } = require('./config/db'); async function run() { try { const pool = await getPool(); await pool.request().query(` DELETE FROM dbo.OrdenesDeposito WHERE OrdIdOrden IN (138746, 138748); `); console.log('Borrados exitosamente'); } catch(e) { console.error(e); } finally { process.exit(); } } run();

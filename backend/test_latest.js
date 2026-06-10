@@ -1,1 +1,0 @@
-const { sql, getPool } = require('./config/db'); async function run() { try { const pool = await getPool(); const r = await pool.request().query("SELECT TOP 10 MovIdMovimiento, CueIdCuenta, MovTipo, MovImporte, DocIdDocumento FROM dbo.MovimientosCuenta ORDER BY MovIdMovimiento DESC"); console.log(r.recordset); } catch(e) { console.error(e); } finally { process.exit(); } } run();
