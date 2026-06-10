@@ -341,7 +341,7 @@ export default function LandingNavbar({ onOpenLoginModal }) {
         display: 'flex', alignItems: 'center', justifyContent: 'space-between',
         padding: isMobile ? '0 20px' : '0 48px',
         height: '70px',
-        background: (!isMobile && isPortalPage) ? 'rgba(254,24,27,0.75)' : (isPortalPage || menuOpen || scrolled) ? 'rgba(13,13,13,0.98)' : 'transparent',
+        background: (!isMobile && isPortalPage) ? 'rgba(24,24,27,0.75)' : (isPortalPage || menuOpen || scrolled) ? 'rgba(13,13,13,0.98)' : 'transparent',
         backdropFilter: 'none',
         WebkitBackdropFilter: 'none',
         borderBottom: ((isPortalPage || scrolled) && !menuOpen && isMobile) ? '1px solid rgba(255,255,255,0.08)' : 'none',
@@ -352,7 +352,7 @@ export default function LandingNavbar({ onOpenLoginModal }) {
           {isPortalPage && (
             <>
               <div style={{ width: '1px', height: isMobile ? '28px' : '36px', background: 'rgba(255,255,255,0.2)' }}></div>
-              <span style={{ fontFamily: "'Barlow', sans-serif", fontWeight: 700, fontSize: isMobile ? '15px' : '17px', color: '#fff', letterSpacing: '0.04em' }}>ENTORNO DE PRUEBAS</span>
+              <span style={{ fontFamily: "'Barlow', sans-serif", fontWeight: 700, fontSize: isMobile ? '15px' : '17px', color: '#fff', letterSpacing: '0.04em' }}>AUTOGESTIÓN</span>
             </>
           )}
         </div>
@@ -509,13 +509,31 @@ export default function LandingNavbar({ onOpenLoginModal }) {
 
             {!sessionType && <div style={{ height: 1, background: 'rgba(255,255,255,0.08)', margin: '4px 0' }} />}
             <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12, marginTop: 12 }}>
-              <button onClick={() => { setMenuOpen(false); handleSessionBtn(); }} style={{
-                width: '85%', padding: '14px', border: '1px solid rgba(0, 174, 239, 0.3)',
-                borderRadius: 12, background: 'rgba(0, 174, 239, 0.08)', color: '#00AEEF',
-                fontSize: 15, fontWeight: 600, cursor: 'pointer',
-              }}>{sessionLabel}</button>
+              {sessionType ? (
+                <div style={{ width: '85%', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+                  <button onClick={() => { setMenuOpen(false); navigate('/portal/profile'); }} style={{
+                    height: 48, padding: '0 10px', border: '1px solid rgba(0, 174, 239, 0.3)',
+                    borderRadius: 12, background: 'rgba(0, 174, 239, 0.08)', color: '#00AEEF',
+                    fontSize: 14, fontWeight: 600, cursor: 'pointer',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  }}>Mi Perfil</button>
+                  <button onClick={() => { setMenuOpen(false); navigate('/portal/factory'); }} style={{
+                    height: 48, padding: '0 10px', border: '1px solid rgba(0, 174, 239, 0.3)',
+                    borderRadius: 12, background: 'rgba(0, 174, 239, 0.08)', color: '#00AEEF',
+                    fontSize: 14, fontWeight: 600, cursor: 'pointer',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  }}>Mi Fábrica</button>
+                </div>
+              ) : (
+                <button onClick={() => { setMenuOpen(false); handleSessionBtn(); }} style={{
+                  width: '85%', height: 48, padding: '0 10px', border: '1px solid rgba(0, 174, 239, 0.3)',
+                  borderRadius: 12, background: 'rgba(0, 174, 239, 0.08)', color: '#00AEEF',
+                  fontSize: 14, fontWeight: 600, cursor: 'pointer',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                }}>{sessionLabel}</button>
+              )}
 
-              {/* Portal links debajo del botón Mi Portal */}
+              {/* Portal links debajo (Servicios, Retiro, etc.) */}
               {sessionType && (
                 <div style={{ width: '85%', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
                   {PORTAL_ITEMS.filter(i => i.label !== 'Mi Perfil').map(item => (
@@ -525,8 +543,8 @@ export default function LandingNavbar({ onOpenLoginModal }) {
                       navigate(item.path);
                     }} style={{
                       color: '#00AEEF',
-                      fontSize: 13, fontWeight: 600, textDecoration: 'none',
-                      padding: '12px 10px', borderRadius: 12, textAlign: 'center',
+                      fontSize: 14, fontWeight: 600, textDecoration: 'none',
+                      height: 48, padding: '0 10px', borderRadius: 12, textAlign: 'center',
                       border: '1px solid rgba(0,174,239,0.3)',
                       background: 'rgba(0,174,239,0.06)',
                       cursor: 'pointer',

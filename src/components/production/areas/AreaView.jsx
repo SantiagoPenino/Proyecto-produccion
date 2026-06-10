@@ -7,6 +7,7 @@ import { LayoutGrid, CalendarCheck, ScanLine, Truck } from "lucide-react";
 import Tippy from '@tippyjs/react';
 import 'tippy.js/dist/tippy.css';
 import Swal from 'sweetalert2';
+import { toast } from 'react-toastify';
 // Componentes de Vistas
 import ProductionTable from "../../production/components/ProductionTable"; // Restored
 // import OrderCard from "../../production/components/OrderCard"; // Grid components commented out
@@ -115,6 +116,7 @@ export default function AreaView({ areaKey, areaConfig, onSwitchTab }) {
     const [sidebarMode, setSidebarMode] = useState("rolls");
     const [isSidebarOpen, setIsSidebarOpen] = useState(true);
     const [clientFilter, setClientFilter] = useState("");
+    const [globalSearch, setGlobalSearch] = useState("");
     const [activeFilters, setActiveFilters] = useState({
         priorities: [],
         statuses: [],
@@ -137,6 +139,10 @@ export default function AreaView({ areaKey, areaConfig, onSwitchTab }) {
         if (showCancelled) {
             setShowCancelled(false);
             setCancelledOrders([]);
+        }
+        if (showPronto) {
+            setShowPronto(false);
+            setProntoOrders([]);
         }
         setActiveFilters(prev => {
             const current = prev[category] || [];
@@ -164,9 +170,14 @@ export default function AreaView({ areaKey, areaConfig, onSwitchTab }) {
     const [cancelledOrders, setCancelledOrders] = useState([]);
     const [loadingCancelled, setLoadingCancelled] = useState(false);
 
+    const [showPronto, setShowPronto] = useState(false);
+    const [prontoOrders, setProntoOrders] = useState([]);
+    const [loadingPronto, setLoadingPronto] = useState(false);
+
     const handleToggleCancelled = async () => {
         const next = !showCancelled;
         setShowCancelled(next);
+        if (next) setShowPronto(false);
         setIsFilterDropdownOpen(false);
         if (next && areaKey && areaKey.toLowerCase() !== 'area') {
             setLoadingCancelled(true);
@@ -182,6 +193,27 @@ export default function AreaView({ areaKey, areaConfig, onSwitchTab }) {
             }
         } else {
             setCancelledOrders([]);
+        }
+    };
+
+    const handleTogglePronto = async () => {
+        const next = !showPronto;
+        setShowPronto(next);
+        if (next) setShowCancelled(false);
+        setIsFilterDropdownOpen(false);
+        if (next && areaKey && areaKey.toLowerCase() !== 'area') {
+            setLoadingPronto(true);
+            try {
+                const data = await ordersService.getByArea(areaKey, 'pronto');
+                setProntoOrders(Array.isArray(data) ? data : []);
+            } catch (e) {
+                console.error('Error cargando prontas:', e);
+                setProntoOrders([]);
+            } finally {
+                setLoadingPronto(false);
+            }
+        } else {
+            setProntoOrders([]);
         }
     };
 
@@ -241,10 +273,42 @@ export default function AreaView({ areaKey, areaConfig, onSwitchTab }) {
     // Socket.io: escuchar actualizaciones en tiempo real
     useEffect(() => {
         const socket = io(SOCKET_URL);
-        socket.on('server:order_updated', (payload) => {
-            console.log('🔔 Evento socket order_updated:', payload);
+
+        const handleSocketUpdate = (payload) => {
+            console.log('🔔 Evento socket update:', payload);
             
-            if (payload.movedIds && Array.isArray(payload.movedIds)) {
+            // Mostrar Toast para nuevas ordenes
+            if (payload && payload.orders && Array.isArray(payload.orders)) {
+                payload.orders.forEach(o => {
+                    const orderArea = (o.area || '').toUpperCase();
+                    const viewArea = (areaKey || '').toUpperCase();
+                    const isSameArea = orderArea === viewArea || 
+                                     (orderArea === 'DF' && viewArea === 'DTF') || 
+                                     (orderArea === 'DTF' && viewArea === 'DF') || 
+                                     (orderArea === 'SB' && viewArea === 'SUB') || 
+                                     (orderArea === 'SUB' && viewArea === 'SB');
+                    
+                    if (isSameArea) {
+                        const isUrgent = ['Urgente', 'Reposición', 'Falla'].includes(o.prioridad);
+                        
+                        toast(`¡Se ha creado la orden ${o.variante || 'N/A'} (${o.codigo || 'ORD-' + o.id}) con prioridad ${o.prioridad || 'Normal'}!`, {
+                            position: "top-right",
+                            autoClose: 5000,
+                            style: {
+                                background: isUrgent ? '#EC008C' : '#00AEEF',
+                                color: '#fff',
+                                fontWeight: 'bold',
+                            },
+                            progressStyle: {
+                                background: 'rgba(255,255,255,0.5)',
+                            },
+                            icon: isUrgent ? '🔥' : '✅'
+                        });
+                    }
+                });
+            }
+
+            if (payload && payload.movedIds && Array.isArray(payload.movedIds)) {
                 setFlashingRows(payload.movedIds);
                 setTimeout(() => setFlashingRows([]), 3000);
             }
@@ -256,7 +320,13 @@ export default function AreaView({ areaKey, areaConfig, onSwitchTab }) {
                 queryClient.invalidateQueries(['rollsBoard', areaKey]);
                 queryClient.invalidateQueries(['productionBoard', areaKey]);
             }
-        });
+        };
+
+        socket.on('server:order_updated', handleSocketUpdate);
+        socket.on('server:ordersUpdated', handleSocketUpdate);
+        socket.on('server:new_order', handleSocketUpdate);
+        socket.on('lotes:updated', handleSocketUpdate);
+
         return () => {
             socket.disconnect();
         };
@@ -318,10 +388,10 @@ export default function AreaView({ areaKey, areaConfig, onSwitchTab }) {
     const isDTF = ['DF', 'DTF'].includes((areaKey || '').toUpperCase());
 
     // 5. FILTRADO
-    const displayOrders = showCancelled ? cancelledOrders : dbOrders;
+    const displayOrders = showCancelled ? cancelledOrders : (showPronto ? prontoOrders : dbOrders);
     const filteredOrders = useMemo(() => {
-        // En modo canceladas: mostrar todas sin aplicar filtros activos de la sesión normal
-        if (showCancelled) {
+        // En modo canceladas o prontas: mostrar todas sin aplicar filtros activos de la sesión normal
+        if (showCancelled || showPronto) {
             return [...displayOrders].sort((a, b) =>
                 new Date(b.entryDate || 0) - new Date(a.entryDate || 0)
             );
@@ -334,9 +404,6 @@ export default function AreaView({ areaKey, areaConfig, onSwitchTab }) {
         // Reposiciones: por priority='Reposición' O por código con -R
         const isReposicion = (o) => (o.priority || '').toLowerCase() === 'reposición' || (o.code || '').toUpperCase().includes('-R');
 
-        const allFallas = displayOrders.filter(isFalla);
-        const allReposiciones = displayOrders.filter(o => !isFalla(o) && isReposicion(o));
-
         if (sidebarFilter !== 'ALL') {
             let filterField = sidebarMode === 'rolls' ? 'rollId' : 'printer';
             if (areaKey === 'BORD' && sidebarMode === 'rolls') filterField = 'matrixStatus';
@@ -345,6 +412,15 @@ export default function AreaView({ areaKey, areaConfig, onSwitchTab }) {
         }
         if (clientFilter) result = result.filter(o => o.client?.toLowerCase().includes(clientFilter.toLowerCase()));
         
+        if (globalSearch) {
+            const term = globalSearch.toLowerCase().trim();
+            result = result.filter(o => 
+                (o.client && o.client.toLowerCase().includes(term)) || 
+                (o.code && o.code.toLowerCase().includes(term)) ||
+                (o.clientId && o.clientId.toString().toLowerCase().includes(term))
+            );
+        }
+
         if (activeFilters.variants && activeFilters.variants.length > 0) {
             result = result.filter(o => activeFilters.variants.includes((o.variantCode || '').trim().toUpperCase()));
         }
@@ -355,7 +431,9 @@ export default function AreaView({ areaKey, areaConfig, onSwitchTab }) {
             result = result.filter(o => activeFilters.priorities.some(p => p.toLowerCase() === (o.priority || 'Normal').toLowerCase()));
         }
 
-        // Quitar fallas y reposiciones del resultado filtrado (para no duplicarlas)
+        // Quitar fallas y reposiciones del resultado filtrado para ponerlas al inicio
+        const allFallas = result.filter(isFalla);
+        const allReposiciones = result.filter(o => !isFalla(o) && isReposicion(o));
         const resultWithoutFallas = result.filter(o => !isFalla(o) && !isReposicion(o));
 
         // Ordenar por defecto: Las de estado "Pendiente" primero (solo en el grupo normal)
@@ -370,7 +448,7 @@ export default function AreaView({ areaKey, areaConfig, onSwitchTab }) {
 
         // Fallas 1°, Reposiciones 2°, resto
         return [...allFallas, ...allReposiciones, ...resultWithoutFallas];
-    }, [displayOrders, sidebarFilter, sidebarMode, clientFilter, activeFilters, areaKey, showCancelled]);
+    }, [displayOrders, sidebarFilter, sidebarMode, clientFilter, activeFilters, areaKey, showCancelled, showPronto, globalSearch]);
 
     const renderSidebar = () => null;
 
@@ -513,8 +591,19 @@ export default function AreaView({ areaKey, areaConfig, onSwitchTab }) {
                                 )
                             )}
 
-                            {/* Separador + Cancelados */}
-                            <div className="border-t border-zinc-200 pt-4">
+                            {/* Separador + Cancelados / Prontas */}
+                            <div className="border-t border-zinc-200 pt-4 flex flex-col gap-2">
+                                <button
+                                    onClick={handleTogglePronto}
+                                    className={`w-full flex items-center gap-2 px-3 py-2 text-xs font-bold border rounded-lg transition-colors shadow-sm ${
+                                        showPronto
+                                            ? 'bg-emerald-600 text-white border-emerald-600'
+                                            : 'bg-white text-emerald-600 border-emerald-200 hover:bg-emerald-50 hover:border-emerald-300'
+                                    }`}
+                                >
+                                    <i className="fa-solid fa-check-circle"></i>
+                                    {showPronto ? 'Ocultar órdenes prontas' : 'Ver órdenes prontas'}
+                                </button>
                                 <button
                                     onClick={handleToggleCancelled}
                                     className={`w-full flex items-center gap-2 px-3 py-2 text-xs font-bold border rounded-lg transition-colors shadow-sm ${
@@ -524,11 +613,34 @@ export default function AreaView({ areaKey, areaConfig, onSwitchTab }) {
                                     }`}
                                 >
                                     <i className="fa-solid fa-ban"></i>
-                                    {showCancelled ? 'Ocultar cancelados' : 'Ver órdenes canceladas'}
+                                    {showCancelled ? 'Ocultar canceladas' : 'Ver órdenes canceladas'}
                                 </button>
                             </div>
                         </div>
                     </div>
+                )}
+            </div>
+
+            <div className="w-px h-5 bg-zinc-200 mx-1"></div>
+
+            {/* Buscador */}
+            <div className="relative">
+                <i className="fa-solid fa-search absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400 text-xs"></i>
+                <input
+                    type="text"
+                    placeholder="Buscar orden o cliente..."
+                    value={globalSearch}
+                    onChange={(e) => setGlobalSearch(e.target.value)}
+                    className="pl-8 pr-8 py-1.5 h-[30px] w-56 text-xs font-medium border border-zinc-200 rounded-lg bg-white focus:outline-none focus:border-brand-cyan focus:ring-1 focus:ring-brand-cyan transition-all shadow-sm placeholder:text-zinc-400"
+                />
+                {globalSearch && (
+                    <button 
+                        onClick={() => setGlobalSearch("")}
+                        className="absolute right-2 top-1/2 -translate-y-1/2 text-zinc-400 hover:text-zinc-600 p-1"
+                        title="Limpiar búsqueda"
+                    >
+                        <i className="fa-solid fa-xmark text-xs"></i>
+                    </button>
                 )}
             </div>
 

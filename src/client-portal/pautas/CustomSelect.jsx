@@ -2,7 +2,7 @@ import { Fragment } from 'react';
 import { Listbox, Transition } from '@headlessui/react';
 import { ChevronDown, Check } from 'lucide-react';
 
-export function CustomSelect({ value, onChange, options, placeholder, disabled, size = 'normal', direction = 'down', className = '', variant = 'dark' }) {
+export function CustomSelect({ value, onChange, options, placeholder, disabled, size = 'normal', direction = 'down', className = '', variant = 'dark', name, 'aria-label': ariaLabel }) {
     const selected = options.find(o => String(o.value) === String(value)) || null;
 
     const isLight = variant === 'light';
@@ -43,9 +43,10 @@ export function CustomSelect({ value, onChange, options, placeholder, disabled, 
     const checkColor = isLight ? 'text-blue-500' : 'text-[#00AEEF]';
 
     return (
-        <Listbox value={value} onChange={onChange} disabled={disabled}>
+        <Listbox value={value} onChange={onChange} disabled={disabled} name={name}>
             <div className="relative">
                 <Listbox.Button
+                    aria-label={ariaLabel}
                     className={`relative w-full ${sizeClasses} pr-10 border ${buttonColors} text-left font-medium
                         focus:outline-none focus:ring-2 ${focusRing} cursor-pointer transition-all duration-200
                         ${disabled ? 'opacity-50 cursor-not-allowed' : ''}

@@ -906,7 +906,7 @@ const OrderForm = ({ serviceId: propServiceId }) => {
                             <FormInput label="Nombre del Proyecto / Trabajo *" placeholder="Ej: Camisetas Verano 2024" value={jobName} onChange={(e) => actions.setJobName(e.target.value)} required />
                         </div>
                         <div>
-                            <label className="block text-sm font-medium text-zinc-400 mb-2">Prioridad *</label>
+                            <p className="block text-sm font-medium text-zinc-400 mb-2">Prioridad *</p>
                             <div className="flex bg-brand-dark p-1 rounded-lg gap-1 border border-zinc-700">
                                 {(prioritiesList || []).map(p => {
                                     const isUrgent = p.Nombre.toLowerCase() === 'urgente';
@@ -945,8 +945,10 @@ const OrderForm = ({ serviceId: propServiceId }) => {
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-6 p-4 bg-custom-dark md:rounded-2xl rounded-none border-y border-x-0 md:border-x border-zinc-700/50 -mx-4 md:mx-0">
                                 {config.variantMode === 'select' && serviceId !== 'bordado' && serviceId !== 'EMB' && (
                                     <div>
-                                        <label className="block text-xs font-bold uppercase text-zinc-400 mb-2">Variante / Sub-Categoría *</label>
+                                        <p className="block text-xs font-bold uppercase text-zinc-400 mb-2">Variante / Sub-Categoría *</p>
                                         <CustomSelect
+                                            name="serviceSubType"
+                                            aria-label="Variante / Sub-Categoría"
                                             value={serviceSubType}
                                             onChange={(val) => actions.handleSubTypeChange(val)}
                                             options={(uniqueVariants.length > 0 ? uniqueVariants : (serviceInfo?.subtypes || [])).map(t => ({ value: t, label: t }))}
@@ -959,8 +961,10 @@ const OrderForm = ({ serviceId: propServiceId }) => {
                                 {/* Global Material Selector - Hidden for Bordado and Sublimacion */}
                                 {config.materialMode === 'single' && serviceId !== 'bordado' && serviceId !== 'EMB' && serviceId !== 'sublimacion' && (
                                     <div>
-                                        <label className="block text-xs font-bold uppercase text-zinc-400 mb-2">{serviceInfo?.config?.materialLabel || 'Material / Soporte'} *</label>
+                                        <p className="block text-xs font-bold uppercase text-zinc-400 mb-2">{serviceInfo?.config?.materialLabel || 'Material / Soporte'} *</p>
                                         <CustomSelect
+                                            name="globalMaterial"
+                                            aria-label={serviceInfo?.config?.materialLabel || 'Material / Soporte'}
                                             value={globalMaterial}
                                             onChange={(val) => actions.setGlobalMaterial(val)}
                                             options={(dynamicMaterials.length > 0 ? dynamicMaterials : (serviceInfo?.materials || [])).map(m => {
@@ -975,8 +979,10 @@ const OrderForm = ({ serviceId: propServiceId }) => {
 
                                 {isTpuEtiquetaOficial && (
                                     <div className="md:col-span-2 mt-2 animate-in slide-in-from-top-2 p-3 bg-amber-50 rounded-xl border border-amber-200">
-                                        <label className="block text-xs font-bold uppercase text-amber-800 mb-2">Forma de Etiqueta *</label>
+                                        <p className="block text-xs font-bold uppercase text-amber-800 mb-2">Forma de Etiqueta *</p>
                                         <CustomSelect
+                                            name="tpuForma"
+                                            aria-label="Forma de Etiqueta"
                                             value={tpuForma || ''}
                                             onChange={(val) => actions.setTpuForma(val)}
                                             options={['Ovalado', 'Rectangular', 'Redondo', 'Cuadrado Redondeado', 'Triangulo Redondeado', 'Hexagonal'].map(f => ({ value: f, label: f }))}
@@ -1045,7 +1051,7 @@ const OrderForm = ({ serviceId: propServiceId }) => {
                             {config.requiresProductionFiles && (
                                 <div>
                                     <div className="flex justify-between items-center mb-4">
-                                        <label className="text-sm font-bold uppercase text-zinc-400">Archivos para Producción ({items.length}/15)</label>
+                                        <p className="text-sm font-bold uppercase text-zinc-400">Archivos para Producción ({items.length}/15)</p>
                                     </div>
                                     <div className="space-y-4">
                                         {items.map((item, index) => (
@@ -1058,7 +1064,7 @@ const OrderForm = ({ serviceId: propServiceId }) => {
                                                 {config.materialMode === 'multiple' && (
                                                     <div className="mb-4 px-1">
                                                         <div className="flex items-center justify-between mb-1">
-                                                            <label className="block text-[9px] uppercase font-black text-zinc-400">Material (Específico)</label>
+                                                            <span className="block text-[9px] uppercase font-black text-zinc-400">Material (Específico)</span>
                                                             {index === 0 && (
                                                                 <label className="flex items-center gap-1.5 cursor-pointer select-none">
                                                                     <input
@@ -1363,8 +1369,8 @@ const OrderForm = ({ serviceId: propServiceId }) => {
 
                 {/* Observaciones Finales */}
                 <div className="mt-8">
-                    <label className="block text-lg font-black text-zinc-200 mb-4 px-2">OBSERVACIONES GENERALES</label>
-                    <textarea rows="3" className="w-full p-4 border border-zinc-700 rounded-2xl text-sm bg-custom-dark text-zinc-200 placeholder-zinc-500 focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500/30 outline-none transition-all resize-none" placeholder="Detalles importantes, instrucciones de entrega o notas adicionales..." value={generalNote} onChange={(e) => actions.setGeneralNote(e.target.value)} />
+                    <p className="block text-lg font-black text-zinc-200 mb-4 px-2">OBSERVACIONES GENERALES</p>
+                    <textarea id="observaciones-generales" name="observaciones" rows="3" className="w-full p-4 border border-zinc-700 rounded-2xl text-sm bg-custom-dark text-zinc-200 placeholder-zinc-500 focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500/30 outline-none transition-all resize-none" placeholder="Detalles importantes, instrucciones de entrega o notas adicionales..." value={generalNote} onChange={(e) => actions.setGeneralNote(e.target.value)} />
                 </div>
 
                 {/* Footer */}
@@ -1389,47 +1395,68 @@ const OrderForm = ({ serviceId: propServiceId }) => {
             <ErrorModal isOpen={errorModalOpen} onClose={() => actions.setErrorModalOpen(false)} message={errorModalMessage} />
 
             {showSuccessModal && createPortal(
-                <div className="fixed inset-0 z-[99999] flex items-center justify-center p-4 bg-black/70 animate-in fade-in">
-                    <div className="bg-zinc-900 border border-zinc-700/60 rounded-3xl shadow-2xl shadow-black/60 max-w-md w-full p-10 text-center animate-in zoom-in-95 slide-in-from-bottom-4 duration-300">
+                <div 
+                    className="fixed inset-0 z-[10000] flex items-center justify-center bg-black/80 animate-in fade-in duration-300"
+                    onClick={(e) => {
+                        if (e.target === e.currentTarget) {
+                            actions.setShowSuccessModal(false);
+                            setTimeout(() => navigate('/portal/factory'), 50);
+                        }
+                    }}
+                >
+                    <div className="bg-zinc-900/90 rounded-[3rem] shadow-2xl p-10 max-w-md w-full mx-4 border border-zinc-700/50 relative overflow-hidden animate-in zoom-in-95 slide-in-from-bottom-4 duration-300">
+                        {/* Background Decoration */}
+                        <div className="absolute top-0 left-0 w-full h-2 bg-gradient-to-r from-cyan-500 via-blue-500 to-indigo-500 animate-gradient-x" />
 
-                        {/* Icono con halo cyan */}
-                        <div className="relative w-24 h-24 mx-auto mb-8">
-                            <div className="absolute inset-0 rounded-full bg-cyan-400/10 border border-cyan-500/30 animate-pulse" />
-                            <div className="absolute inset-2 rounded-full bg-cyan-400/5 flex items-center justify-center">
-                                <CheckCircle className="w-12 h-12 text-cyan-400 drop-shadow-[0_0_12px_rgba(34,211,238,0.5)]" />
+                        <div className="flex flex-col items-center text-center gap-6 relative z-10">
+                            {/* Icono con halo cyan */}
+                            <div className="w-24 h-24 bg-cyan-500/10 rounded-full flex items-center justify-center text-cyan-400 mb-2 border border-cyan-500/20 shadow-lg shadow-cyan-500/10 relative">
+                                <CheckCircle size={48} className="drop-shadow-[0_0_12px_rgba(34,211,238,0.5)]" />
+                                <div className="absolute inset-0 rounded-full border-4 border-cyan-400/30 animate-pulse" style={{ animationDuration: '2s' }} />
                             </div>
-                        </div>
 
-                        <h2 className="text-4xl font-black text-zinc-50 tracking-tighter mb-2">¡Genial!</h2>
-                        <p className="text-zinc-400 font-medium mb-8 text-sm uppercase tracking-widest">Pedido recibido y sincronizado</p>
-
-                        {/* Órdenes generadas */}
-                        <div className="bg-zinc-800/60 border border-zinc-700/50 rounded-2xl p-5 mb-8">
-                            <p className="text-[10px] uppercase tracking-[0.25em] text-zinc-500 font-black mb-4">Órdenes Generadas</p>
-                            <div className="flex flex-wrap justify-center gap-2">
-                                {createdOrderIds.map(id => (
-                                    <span key={id} className="bg-zinc-900 border border-cyan-500/30 text-cyan-300 rounded-xl py-2.5 px-5 font-mono font-bold text-sm shadow-inner shadow-cyan-500/5">
-                                        {id}
-                                    </span>
-                                ))}
+                            <div>
+                                <h2 className="text-3xl font-black text-zinc-100 tracking-widest uppercase mb-3">¡Genial!</h2>
+                                <p className="text-xs text-zinc-400 font-bold leading-relaxed px-4 tracking-widest uppercase">
+                                    Pedido recibido y sincronizado
+                                </p>
                             </div>
-                        </div>
 
-                        {/* Acciones */}
-                        <div className="flex flex-col gap-3">
-                            <CustomButton
-                                variant="primary"
-                                className="w-full py-4 rounded-2xl font-black text-base !bg-cyan-400 !text-zinc-900 hover:!bg-cyan-300 shadow-lg shadow-cyan-500/20"
-                                onClick={() => navigate('/portal/factory')}
-                            >
-                                Ver mis pedidos
-                            </CustomButton>
-                            <button
-                                onClick={() => window.location.reload()}
-                                className="text-zinc-500 hover:text-cyan-400 text-xs font-bold uppercase tracking-[0.2em] transition-colors py-2"
-                            >
-                                + Crear otro pedido
-                            </button>
+                            {/* Órdenes generadas */}
+                            <div className="w-full bg-zinc-800/40 border border-zinc-700/30 rounded-2xl p-5 mb-2">
+                                <p className="text-[10px] uppercase tracking-[0.25em] text-zinc-500 font-black mb-4">Órdenes Generadas</p>
+                                <div className="flex flex-wrap justify-center gap-2">
+                                    {createdOrderIds.map(id => (
+                                        <span key={id} className="bg-zinc-900 border border-cyan-500/30 text-cyan-300 rounded-xl py-2 px-4 font-mono font-bold text-sm shadow-inner shadow-cyan-500/5">
+                                            {id}
+                                        </span>
+                                    ))}
+                                </div>
+                            </div>
+
+                            {/* Acciones */}
+                            <div className="w-full space-y-3">
+                                <button
+                                    className="w-full py-5 bg-cyan-400 hover:bg-cyan-300 text-zinc-900 font-black rounded-[2rem] transition-all shadow-[0_0_20px_rgba(34,211,238,0.3)] hover:shadow-[0_0_25px_rgba(34,211,238,0.5)] active:scale-95 flex items-center justify-center gap-3 uppercase tracking-widest"
+                                    onClick={(e) => {
+                                        e.stopPropagation();
+                                        actions.setShowSuccessModal(false);
+                                        setTimeout(() => navigate('/portal/factory'), 50);
+                                    }}
+                                >
+                                    Ver mis pedidos
+                                </button>
+                                <button
+                                    onClick={(e) => {
+                                        e.stopPropagation();
+                                        actions.setShowSuccessModal(false);
+                                        setTimeout(() => window.location.reload(), 50);
+                                    }}
+                                    className="w-full text-zinc-500 hover:text-cyan-400 text-[10px] font-black uppercase tracking-[0.2em] transition-colors py-3"
+                                >
+                                    + Crear otro pedido
+                                </button>
+                            </div>
                         </div>
                     </div>
                 </div>,

@@ -52,7 +52,7 @@ const Navbar = ({ onSwitchTab, currentView, onToggleMobileMenu, isMobileMenuOpen
   };
 
   return (
-    <nav className="h-14 px-4 sm:px-6 bg-red-600 border-b border-zinc-700 flex items-center justify-between sticky top-0 z-[5010] shadow-md gap-4">
+    <nav className="h-14 px-4 sm:px-6 bg-zinc-900 border-b border-zinc-700 flex items-center justify-between sticky top-0 z-[5010] shadow-md gap-4">
       {/* Móvil: Logo Centrado Flotante */}
       <div 
         className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 cursor-pointer group md:hidden flex items-center justify-center z-0"
@@ -91,7 +91,7 @@ const Navbar = ({ onSwitchTab, currentView, onToggleMobileMenu, isMobileMenuOpen
           <img src={logoMini} alt="Logo" className="h-8 w-auto mr-4 opacity-90 group-hover:opacity-100 transition-opacity shrink-0 drop-shadow-sm" />
           <div className="w-px h-6 bg-zinc-600 mr-4 opacity-50 shrink-0"></div>
           <h1 className="font-black text-white tracking-tighter text-lg leading-none transition-colors uppercase mt-0.5 truncate">
-            entorno de pruebas
+            GESTIÓN DE PRODUCCIÓN
           </h1>
         </div>
       </div>
@@ -143,7 +143,7 @@ const Navbar = ({ onSwitchTab, currentView, onToggleMobileMenu, isMobileMenuOpen
             <Bell size={20} className="group-hover:hidden" />
             <BellRing size={20} className="hidden group-hover:block animate-[bell-ring_0.5s_ease-in-out]" />
           </div>
-          <span className="absolute -top-1 -right-1 flex h-4 w-4 items-center justify-center rounded-full bg-brand-magenta text-[9px] font-bold text-white border-2 border-red-600 shadow-sm">
+          <span className="absolute -top-1 -right-1 flex h-4 w-4 items-center justify-center rounded-full bg-brand-magenta text-[9px] font-bold text-white border-2 border-white shadow-sm">
             3
           </span>
         </div>

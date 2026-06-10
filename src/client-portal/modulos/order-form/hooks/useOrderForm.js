@@ -287,6 +287,7 @@ export const useOrderForm = (serviceId, overrides = {}) => {
     const setErrorModalMessage = (v) => setField('errorModalMessage', v);
     const setLoading = (v) => setField('loading', v);
     const setCreatedOrderIds = (v) => setField('createdOrderIds', v);
+    const setShowSuccessModal = (v) => setField('showSuccessModal', v);
 
     // --- Effects ---
 
@@ -654,7 +655,8 @@ export const useOrderForm = (serviceId, overrides = {}) => {
             setErrorModalOpen,
             setErrorModalMessage,
             setLoading,
-            setCreatedOrderIds
+            setCreatedOrderIds,
+            setShowSuccessModal
         }
     };
 };

@@ -1,5 +1,5 @@
 // Service Worker — PWA + Web Push Notifications
-const CACHE_NAME = 'user-pwa-v3';
+const CACHE_NAME = 'user-pwa-v4';
 const OFFLINE_URL = '/offline.html';
 
 // Assets to pre-cache on install
@@ -66,7 +66,8 @@ self.addEventListener('fetch', (event) => {
             return fetch(request)
                 .then((response) => {
                     // Guardar en cache solo assets estáticos exitosos
-                    if (response.ok && request.url.match(/\.(css|js|woff2?|png|svg|jpg|ico)$/)) {
+                    // Excluir chunks de Vite dev (node_modules/.vite) para evitar cachear versiones stale de React
+                    if (response.ok && request.url.match(/\.(css|js|woff2?|png|svg|jpg|ico)$/) && !request.url.includes('node_modules') && !request.url.includes('.vite')) {
                         const clone = response.clone();
                         caches.open(CACHE_NAME).then(cache => cache.put(request, clone));
                     }

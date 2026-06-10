@@ -81,6 +81,9 @@ export default function ProductionTable({ rowData = [], onRowSelected, selectedR
         if (params.value === 'Urgente') {
             return <span className="text-xs font-bold text-brand-magenta uppercase tracking-wide">URGENTE</span>;
         }
+        if (params.value === 'Reposición' || params.value === 'Reposicion' || params.value === 'REPOSICIÓN') {
+            return <span className="text-xs font-bold text-orange-500 uppercase tracking-wide">REPOSICIÓN</span>;
+        }
         return <span className="text-xs text-zinc-500 font-medium">{params.value || 'Normal'}</span>;
     };
 

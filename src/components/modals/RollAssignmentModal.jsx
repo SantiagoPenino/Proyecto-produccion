@@ -4,6 +4,7 @@ import { Check, ChevronsUpDown, Layers, X, Plus, List, Loader2 } from 'lucide-re
 import { useNavigate } from 'react-router-dom';
 import { ordersService, rollsService } from '../../services/api';
 import { useQueryClient } from '@tanstack/react-query';
+import { toast } from 'react-toastify';
 
 const RollAssignmentModal = ({ isOpen, onClose, selectedIds = [], selectedOrders = [], areaCode, onSuccess }) => {
 
@@ -62,10 +63,16 @@ const RollAssignmentModal = ({ isOpen, onClose, selectedIds = [], selectedOrders
             };
             await ordersService.assignRoll(payload);
             
-            // Invalidar queries para que planeación se recargue inmediatamente
             queryClient.invalidateQueries(['rollsBoard', areaCode]);
             queryClient.invalidateQueries(['productionBoard', areaCode]);
             
+            const rollDisplayName = mode === 'existing' ? selectedRoll?.nombre : rollName;
+            const msg = selectedIds.length === 1 
+                ? `Orden asignada correctamente al lote ${rollDisplayName}`
+                : `${selectedIds.length} órdenes asignadas al lote ${rollDisplayName}`;
+            
+            toast.success(msg);
+
             if (onSuccess) onSuccess();
             onClose();
             // Navegar a la tab de planeación del área actual

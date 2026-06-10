@@ -116,14 +116,19 @@ async function crearRetiro(transaction, { ordIds, totalCost, lugarRetiro, usuari
     }
 
     // ── VALIDACIÓN: excluir órdenes que ya pertenecen a un retiro activo ──
+    // Un retiro se considera "activo" si su estado NO es cancelado (6) ni anulado (10).
+    // NO excluimos estado 9 de OrdenesDeposito porque ese estado se usa también para
+    // marcar entregas, y excluirlo permitía pisar órdenes ya entregadas (bug RW13394).
     const checkParams = ordIds.map((_, i) => `@dup${i}`).join(',');
     const dupReq = transaction.request();
     ordIds.forEach((id, i) => dupReq.input(`dup${i}`, sql.Int, id));
     const dupRes = await dupReq.query(`
-        SELECT OrdIdOrden FROM OrdenesDeposito WITH(NOLOCK)
-        WHERE OrdIdOrden IN (${checkParams})
-          AND OReIdOrdenRetiro IS NOT NULL
-          AND OrdEstadoActual NOT IN (6, 9)
+        SELECT od.OrdIdOrden FROM OrdenesDeposito od WITH(NOLOCK)
+        JOIN OrdenesRetiro r WITH(NOLOCK) ON r.OReIdOrdenRetiro = od.OReIdOrdenRetiro
+        WHERE od.OrdIdOrden IN (${checkParams})
+          AND od.OReIdOrdenRetiro IS NOT NULL
+          AND od.OrdEstadoActual NOT IN (6)
+          AND r.OReEstadoActual NOT IN (6)
     `);
     const yaAsignadas = new Set(dupRes.recordset.map(r => r.OrdIdOrden));
     const ordIdsLibres = ordIds.filter(id => !yaAsignadas.has(id));

@@ -1,7 +1,7 @@
 import React from 'react';
 import { Layers, Eye } from 'lucide-react';
 
-const RollCard = ({ roll, onViewDetails, isSelected, onToggleSelect, isMachineView, machineName }) => {
+const RollCard = ({ roll, index, onViewDetails, isSelected, onToggleSelect, isMachineView, machineName }) => {
     if (!roll) return null;
 
     return (
@@ -18,10 +18,10 @@ const RollCard = ({ roll, onViewDetails, isSelected, onToggleSelect, isMachineVi
                     </div>
                 </div>
                 {roll.status && (
-                    <span className={`px-2 py-0.5 text-[10px] font-bold rounded-full uppercase border ${roll.status.includes('En maquina') || roll.status === 'Asignado' ? 'bg-brand-cyan/10 text-brand-cyan border-brand-cyan/20' :
+                    <span className={`px-2 py-0.5 text-[10px] font-bold rounded-full uppercase border ${roll.status.includes('En maquina') || roll.status === 'Asignado' || (isMachineView && isSelected && roll.status.toLowerCase() === 'en cola') ? 'bg-brand-cyan/10 text-brand-cyan border-brand-cyan/20' :
                             'bg-zinc-50 text-zinc-500 border-zinc-100'
                         }`}>
-                        {roll.status}
+                        {isMachineView && isSelected && roll.status.toLowerCase() === 'en cola' ? 'Actual' : roll.status}
                     </span>
                 )}
             </div>

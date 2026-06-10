@@ -122,12 +122,14 @@ exports.getOrdersByArea = async (req, res) => {
             query += ` AND o.Estado IN (${estadosFinales})`;
         } else if (mode === 'cancelled') {
             query += ` AND o.Estado IN ('Cancelado', 'CANCELADO', 'Anulado', 'RECHAZADO')`;
+        } else if (mode === 'pronto') {
+            query += ` AND UPPER(LTRIM(RTRIM(o.Estado))) = 'PRONTO'`;
         } else if (mode === 'all') {
             // No filtrar por estado
         } else {
             query += ` AND o.Estado NOT IN (${estadosFinales})`;
-            // Excluir fallas/reposiciones ya completadas (Pronto)
-            query += ` AND NOT (o.Prioridad = 'Falla' AND o.Estado = 'Pronto')`;
+            // Excluir Pronto por completo de la vista activa (asegurando sin espacios ni mayúsculas locas)
+            query += ` AND UPPER(LTRIM(RTRIM(o.Estado))) != 'PRONTO'`;
         }
 
         if (q) {
@@ -221,6 +223,7 @@ exports.createOrder = async (req, res) => {
         // Generar un ID Agrupador Único para todo el "Pedido" (Header)
         const commonUUID = require('crypto').randomUUID();
         const createdIds = [];
+        const createdOrdersData = [];
 
         // Validar que hay servicios
         if (!servicios || !Array.isArray(servicios) || servicios.length === 0) {
@@ -272,7 +275,19 @@ exports.createOrder = async (req, res) => {
                 `);
 
             const newOrderId = resultOrder.recordset[0].OrdenID;
+            
+            // Traer el CodigoOrden que fue generado por la BD o Trigger
+            const codeReq = await new sql.Request(transaction).input('OID', sql.Int, newOrderId).query(`SELECT CodigoOrden FROM Ordenes WHERE OrdenID = @OID`);
+            const generatedCode = codeReq.recordset.length > 0 ? codeReq.recordset[0].CodigoOrden : (areaId + '-' + newOrderId);
+
             createdIds.push(newOrderId);
+            createdOrdersData.push({
+                id: newOrderId,
+                area: areaId,
+                variante: variante,
+                prioridad: prioridad,
+                codigo: generatedCode
+            });
 
             // Insertar Archivos del Servicio
             if (srv.archivos && Array.isArray(srv.archivos)) {
@@ -327,7 +342,10 @@ exports.createOrder = async (req, res) => {
         await transaction.commit();
 
         const io = req.app.get('socketio');
-        if (io) io.emit('server:ordersUpdated', { count: createdIds.length });
+        if (io) {
+            io.emit('server:ordersUpdated', { count: createdIds.length });
+            io.emit('server:new_order', { orders: createdOrdersData });
+        }
 
         res.json({ success: true, orderIds: createdIds, groupId: commonUUID, message: "Pedido Multi-Servicio creado correctamente." });
 
@@ -591,6 +609,7 @@ exports.assignRoll = async (req, res) => {
                 if (isNew) io.emit('server:rollCreated', { rollId });
                 io.emit('server:rollsUpdated', { count: 1 });
                 io.emit('server:ordersUpdated', { count: targetOrderIds.length });
+                io.emit('lotes:updated', { action: isNew ? 'created' : 'assigned', rollId });
             }
             res.json({ success: true, rollId });
         } catch (inner) {
@@ -1029,12 +1048,38 @@ exports.getIntegralPedidoDetailsV2 = async (req, res) => {
         // O si parece un ID o Codigo específico
         request.input('Ref', sql.VarChar, ref);
 
-        // Estrategia: Buscar todo lo que coincida con el ERP o el Código exacto
+        // Estrategia: Buscar el documento ancla (NoDocERP) y luego traer todas sus sub-órdenes
         const queryOrders = `
-            SELECT * FROM Ordenes 
-            WHERE NoDocERP = @Ref 
-               OR CodigoOrden LIKE @Ref + '%' 
-               OR CAST(OrdenID AS VARCHAR) = @Ref
+            DECLARE @RefTrimmed NVARCHAR(50) = LTRIM(RTRIM(@Ref));
+            DECLARE @AnchorDoc NVARCHAR(50);
+
+            -- 1. Búsqueda exacta por NoDocERP o CodigoOrden
+            SELECT TOP 1 @AnchorDoc = NoDocERP 
+            FROM Ordenes 
+            WHERE LTRIM(RTRIM(NoDocERP)) = @RefTrimmed 
+               OR LTRIM(RTRIM(CodigoOrden)) = @RefTrimmed;
+
+            -- 2. Si no encuentra, busca sub-órdenes (ej: el número después del guión) o por ID
+            IF @AnchorDoc IS NULL
+            BEGIN
+                SELECT TOP 1 @AnchorDoc = NoDocERP 
+                FROM Ordenes 
+                WHERE LTRIM(RTRIM(CodigoOrden)) LIKE '%-' + @RefTrimmed 
+                   OR CAST(OrdenID AS VARCHAR) = @RefTrimmed
+                ORDER BY 
+                   CASE WHEN LTRIM(RTRIM(CodigoOrden)) LIKE '%-' + @RefTrimmed THEN 1 ELSE 2 END;
+            END
+
+            -- Si encontramos el ancla, traemos todos sus hermanos
+            IF @AnchorDoc IS NOT NULL AND LTRIM(RTRIM(@AnchorDoc)) != ''
+            BEGIN
+                SELECT * FROM Ordenes WHERE LTRIM(RTRIM(NoDocERP)) = LTRIM(RTRIM(@AnchorDoc));
+            END
+            ELSE
+            BEGIN
+                -- Fallback estricto
+                SELECT * FROM Ordenes WHERE LTRIM(RTRIM(CodigoOrden)) LIKE @RefTrimmed + '%';
+            END
         `;
 
         const result = await request.query(queryOrders);

@@ -387,10 +387,20 @@ const printEtiquetas = async (req, res) => {
             }
 
             const isUrgente = (label.Prioridad || '').toUpperCase() === 'URGENTE';
+            const priorityStr = (label.Prioridad || '').toUpperCase();
+            const isReposicion = priorityStr === 'REPOSICIÓN' || priorityStr === 'REPOSICION' || label.CodigoOrden.includes('-R');
+            const isFalla = priorityStr === 'FALLA' || label.CodigoOrden.includes('-F');
+
+            let bigBanner = '';
+            if (isReposicion) {
+                bigBanner = '<div style="font-size: 32px; font-weight: 900; background: #000; color: #fff; text-align: center; padding: 4px 0; margin-bottom: 8px; letter-spacing: 2px; width: 100%;">REPOSICIÓN</div>';
+            } else if (isFalla) {
+                bigBanner = '<div style="font-size: 32px; font-weight: 900; background: #000; color: #fff; text-align: center; padding: 4px 0; margin-bottom: 8px; letter-spacing: 2px; width: 100%;">FALLA</div>';
+            }
 
             return `
                 <div class="label-page">
-                    <div class="header">
+                    <div class="header" style="margin-bottom: ${bigBanner ? '6px' : '12px'};">
                         <div class="header-left">
                             <div class="label-bold">CLIENTE</div>
                             <div class="value-text" style="font-size: 18px;">${label.IDClienteMacrosoft}</div>
@@ -406,6 +416,8 @@ const printEtiquetas = async (req, res) => {
                             <div class="date-text" style="margin-top: 8px;">${formattedDate}</div>
                         </div>
                     </div>
+
+                    ${bigBanner}
 
                     <div class="layout-main">
                         <div class="left-col">

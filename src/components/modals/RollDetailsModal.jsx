@@ -1,6 +1,9 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { toast } from 'sonner';
+import { jsPDF } from "jspdf";
+import "jspdf-autotable";
+import { saveDirectoryHandle, getDirectoryHandle, verifyPermission } from '../../utils/fsStorage';
+import { toast } from 'react-toastify';
 import api, { ordersService, rollsService, insumosService, productionService } from '../../services/api';
 import { printLabelsHelper } from '../../utils/printHelper';
 import { DragDropContext, Droppable, Draggable } from '@hello-pangea/dnd';
@@ -427,6 +430,34 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { } }) 
         );
     };
 
+    // Función auxiliar para obtener el directorio base de descargas
+    const getBaseDirectory = async () => {
+        const supportsFileSystem = 'showDirectoryPicker' in window;
+        if (!supportsFileSystem) return null;
+
+        try {
+            // Intentar recuperar el handle guardado
+            let handle = await getDirectoryHandle('defaultRollsDownloadDir');
+            
+            if (handle) {
+                const hasPermission = await verifyPermission(handle);
+                if (hasPermission) return handle;
+            }
+            
+            // Si no teníamos guardado o perdimos acceso, pedimos al usuario que elija la carpeta
+            handle = await window.showDirectoryPicker({ mode: 'readwrite', id: 'rollsDownloadDir' });
+            if (handle) {
+                // Lo guardamos para la próxima vez
+                await saveDirectoryHandle('defaultRollsDownloadDir', handle);
+                return handle;
+            }
+        } catch (err) {
+            console.error("Error obteniendo directorio:", err);
+            return null;
+        }
+        return null;
+    };
+
     // Acción de Desasignar (Undo)
     const handleUnassign = async (order) => {
         const isBusy = freshRoll.status === 'Producción' || freshRoll.status === 'Imprimiendo' || (freshRoll.maquinaId && freshRoll.maquinaId !== null);
@@ -486,11 +517,8 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { } }) 
         let dirHandle = null;
 
         if (supportsFileSystem) {
-            try {
-                dirHandle = await window.showDirectoryPicker({ mode: 'readwrite' });
-            } catch (err) {
-                return;
-            }
+            dirHandle = await getBaseDirectory();
+            if (!dirHandle) return; // Usuario canceló
         } else {
             const isChrome = /Chrome/.test(navigator.userAgent) && /Google Inc/.test(navigator.vendor);
             const message = `⚠️ FUNCIÓN DE CARPETA AUTOMÁTICA NO DISPONIBLE\n\n` +
@@ -502,52 +530,65 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { } }) 
 
         try {
             setLoading(true);
-            toast.info("Descargando y preparando medición...");
 
-            // 1. DESCARGA ZIP (Igual que handleDownloadFiles)
-            const blob = await rollsService.downloadZip(selectedOrderIds);
+            const measureTask = async () => {
+                // 1. DESCARGA ZIP
+                const blob = await rollsService.downloadZip(selectedOrderIds);
 
-            if (supportsFileSystem && dirHandle) {
-                const JSZip = (await import("jszip")).default;
-                const zip = await JSZip.loadAsync(blob);
+                if (supportsFileSystem && dirHandle) {
+                    const JSZip = (await import("jszip")).default;
+                    const zip = await JSZip.loadAsync(blob);
 
-                const rollFolderName = freshRoll.name || `Lote ${freshRoll.id || 'Nuevo'}`;
-                const safeFolderName = rollFolderName.replace(/[<>:"/\\|?*]/g, '_').trim();
+                    const rollFolderName = freshRoll.name || `Lote ${freshRoll.id || 'Nuevo'}`;
+                    const safeFolderName = rollFolderName.replace(/[<>:"/\\|?*]/g, '_').trim();
 
-                let rollHandle;
-                try {
-                    rollHandle = await dirHandle.getDirectoryHandle(safeFolderName, { create: true });
-                } catch (e) {
-                    rollHandle = dirHandle;
-                    toast.warning(`No se pudo crear carpeta "${safeFolderName}", usando raíz.`);
-                }
-
-                let fileCount = 0;
-                for (const [relativePath, zipEntry] of Object.entries(zip.files)) {
-                    if (zipEntry.dir) continue;
-                    const fileName = relativePath.split('/').pop();
+                    let rollHandle;
                     try {
-                        const fileHandle = await rollHandle.getFileHandle(fileName, { create: true });
-                        const writable = await fileHandle.createWritable();
-                        const content = await zipEntry.async('blob');
-                        await writable.write(content);
-                        await writable.close();
-                        fileCount++;
-                    } catch (writeErr) {
-                        toast.error(`Error al guardar ${fileName}`);
+                        rollHandle = await dirHandle.getDirectoryHandle(safeFolderName, { create: true });
+                    } catch (e) {
+                        rollHandle = dirHandle;
                     }
-                }
-                toast.success(`✅ Archivos guardados localmente: ${fileCount} en carpeta "${safeFolderName}"`);
-            } else {
-                saveAsZip(blob);
-            }
 
-            // 2. MEDICIÓN SERVIDOR
-            const res = await api.post('/measurements/process-server-orders', { orderIds: selectedOrderIds });
-            if (res.data.success) {
-                toast.success("Medición iniciada en el servidor.");
-                setSelectedOrderIds([]);
-            }
+                    let fileCount = 0;
+                    for (const [relativePath, zipEntry] of Object.entries(zip.files)) {
+                        if (zipEntry.dir) continue;
+                        const fileName = relativePath.split('/').pop();
+                        try {
+                            const fileHandle = await rollHandle.getFileHandle(fileName, { create: true });
+                            const writable = await fileHandle.createWritable();
+                            const content = await zipEntry.async('blob');
+                            await writable.write(content);
+                            await writable.close();
+                            fileCount++;
+                        } catch (writeErr) {
+                            console.error("❌ Error escribiendo:", fileName, writeErr);
+                        }
+                    }
+                } else {
+                    saveAsZip(blob);
+                }
+
+                // 2. MEDICIÓN SERVIDOR
+                const res = await api.post('/measurements/process-server-orders', { orderIds: selectedOrderIds });
+                if (res.data.success) {
+                    setSelectedOrderIds([]);
+                    return "Medición iniciada en el servidor.";
+                }
+                throw new Error("Error iniciando medición");
+            };
+
+            await toast.promise(measureTask(), {
+                pending: 'Descargando y preparando medición...',
+                success: {
+                    render({ data }) {
+                        return data;
+                    }
+                },
+                error: 'Error al procesar medición'
+            }, {
+                toastId: 'measure-toast'
+            });
+
         } catch (error) {
             console.error("Error process server:", error);
             toast.error("Error: " + (error.response?.data?.error || error.message));
@@ -563,14 +604,8 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { } }) 
         let dirHandle = null;
 
         if (supportsFileSystem) {
-            try {
-                // 1. Pedir ruta INMEDIATAMENTE con permisos de ESCRITURA explícitos
-                dirHandle = await window.showDirectoryPicker({ mode: 'readwrite' });
-                // Verificar permisos (opcional, pero readwrite debería ser suficiente)
-            } catch (err) {
-                // Usuario canceló el diálogo o error de permisos
-                return;
-            }
+            dirHandle = await getBaseDirectory();
+            if (!dirHandle) return; // Usuario canceló
         } else {
             // Fallback para navegadores antiguos o Inseguros (HTTP)
             const isChrome = /Chrome/.test(navigator.userAgent) && /Google Inc/.test(navigator.vendor);
@@ -584,56 +619,57 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { } }) 
 
         try {
             setLoading(true);
-            toast.info("Descargando y procesando archivos...");
 
-            // 2. Descargar ZIP del servidor
-            const blob = await rollsService.downloadZip(selectedOrderIds);
-            console.log("DEBUG: Blob Size", blob.size);
+            const downloadTask = async () => {
+                const blob = await rollsService.downloadZip(selectedOrderIds);
 
-            if (supportsFileSystem && dirHandle) {
-                // 3. Descomprimir y guardar en la carpeta seleccionada
-                const JSZip = (await import("jszip")).default;
-                const zip = await JSZip.loadAsync(blob);
-                console.log("DEBUG: Zip Files", Object.keys(zip.files));
+                if (supportsFileSystem && dirHandle) {
+                    const JSZip = (await import("jszip")).default;
+                    const zip = await JSZip.loadAsync(blob);
 
-                // A. Crear carpeta del Rollo dentro de la ruta elegida
-                const rollFolderName = freshRoll.name || `Lote ${freshRoll.id || 'Nuevo'}`;
-                // Sanitizar nombre de carpeta
-                const safeFolderName = rollFolderName.replace(/[<>:"/\\|?*]/g, '_').trim();
+                    const rollFolderName = freshRoll.name || `Lote ${freshRoll.id || 'Nuevo'}`;
+                    const safeFolderName = rollFolderName.replace(/[<>:"/\\|?*]/g, '_').trim();
 
-                let rollHandle;
-                try {
-                    rollHandle = await dirHandle.getDirectoryHandle(safeFolderName, { create: true });
-                } catch (e) {
-                    console.error("Error creando carpeta del rollo, usando raíz:", e);
-                    rollHandle = dirHandle; // Fallback
-                    toast.warning(`No se pudo crear carpeta "${safeFolderName}", usando raíz.`);
-                }
-
-                let fileCount = 0;
-
-                for (const [relativePath, zipEntry] of Object.entries(zip.files)) {
-                    if (zipEntry.dir) continue;
-
-                    // Aplanar estructura: Usar solo el nombre del archivo final
-                    const fileName = relativePath.split('/').pop();
-
+                    let rollHandle;
                     try {
-                        const fileHandle = await rollHandle.getFileHandle(fileName, { create: true });
-                        const writable = await fileHandle.createWritable();
-                        const content = await zipEntry.async('blob');
-                        await writable.write(content);
-                        await writable.close();
-                        fileCount++;
-                    } catch (writeErr) {
-                        console.error("❌ Error escribiendo:", fileName, writeErr);
-                        toast.error(`Error al guardar ${fileName}`);
+                        rollHandle = await dirHandle.getDirectoryHandle(safeFolderName, { create: true });
+                    } catch (e) {
+                        rollHandle = dirHandle;
                     }
+
+                    let fileCount = 0;
+                    for (const [relativePath, zipEntry] of Object.entries(zip.files)) {
+                        if (zipEntry.dir) continue;
+                        const fileName = relativePath.split('/').pop();
+                        try {
+                            const fileHandle = await rollHandle.getFileHandle(fileName, { create: true });
+                            const writable = await fileHandle.createWritable();
+                            const content = await zipEntry.async('blob');
+                            await writable.write(content);
+                            await writable.close();
+                            fileCount++;
+                        } catch (writeErr) {
+                            console.error("❌ Error escribiendo:", fileName, writeErr);
+                        }
+                    }
+                    return `${fileCount} archivos descargados en "${safeFolderName}"`;
+                } else {
+                    saveAsZip(blob);
+                    return "ZIP descargado";
                 }
-                toast.success(`✅ Listo: ${fileCount} archivos en carpeta "${safeFolderName}".`);
-            } else {
-                saveAsZip(blob);
-            }
+            };
+
+            await toast.promise(downloadTask(), {
+                pending: 'Descargando y procesando archivos...',
+                success: {
+                    render({ data }) {
+                        return data;
+                    }
+                },
+                error: 'Error al procesar descarga'
+            }, {
+                toastId: 'download-toast'
+            });
 
         } catch (error) {
             console.error("Download Error:", error);
@@ -1118,10 +1154,12 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { } }) 
                             {selectedOrderIds.length > 0 && (
                                 <>
                                     <button
-                                        className="px-3 py-2 bg-brand-cyan hover:bg-brand-cyan/90 text-white rounded-xl text-xs font-black flex items-center gap-1.5 transition-all shadow-md shadow-brand-cyan/20 active:scale-95 animate-in fade-in"
                                         onClick={handleDownloadFiles}
+                                        disabled={selectedOrderIds.length === 0 || loading}
+                                        className="px-4 py-2 bg-brand-cyan hover:bg-brand-cyan/90 text-white font-bold rounded-lg text-sm transition-all shadow-md shadow-brand-cyan/20 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
                                     >
-                                        <i className="fa-solid fa-download" /> Descargar ({selectedOrderIds.length})
+                                        {loading ? <i className="fa-solid fa-circle-notch fa-spin" /> : <i className="fa-solid fa-download" />} 
+                                        Descargar ({selectedOrderIds.length})
                                     </button>
                                     <button
                                         className="px-3 py-2 bg-brand-magenta hover:bg-brand-magenta/90 text-white rounded-xl text-xs font-black flex items-center gap-1.5 transition-all shadow-md shadow-brand-magenta/20 active:scale-95 animate-in fade-in"

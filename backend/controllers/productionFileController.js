@@ -625,8 +625,8 @@ const postControlArchivo = async (req, res) => {
         } else {
             // C. PEDIDO COMPLETO EN ÁREA (Orden Local Done + Grupo Area Completo)
 
-            // Si todos los archivos de la orden actual están cancelados, y no hay cabezal, la orden se cancela.
-            if (Cancelados === Total && !noDocERP) {
+            // Si todos los archivos de la orden actual están cancelados, la orden se cancela.
+            if (Cancelados === Total && Total > 0) {
                 await new sql.Request(transaction).input('OID', sql.Int, ordenId)
                     .query("UPDATE Ordenes SET Estado = 'CANCELADO', EstadoenArea = 'Cancelado', EstadoLogistica='Cancelado', Observaciones = 'Cancelada de oficio (Todos archivos cancelados)' WHERE OrdenID = @OID");
             } else {
@@ -1550,7 +1550,25 @@ async function completarOrden(req, res) {
             `);
 
         const { Total, Completed } = checkOrder.recordset[0];
-        if (Total === 0 || Total !== Completed) {
+        
+        // Si todos los archivos están cancelados (Total de válidos = 0), cancelar la orden entera
+        if (Total === 0) {
+            await new sql.Request(transaction)
+                .input('OID', sql.Int, ordenId)
+                .query("UPDATE Ordenes SET Estado = 'CANCELADO', EstadoenArea = 'Cancelado', EstadoLogistica='Cancelado', Observaciones = CONCAT(ISNULL(Observaciones,''), ' [Cancelada de oficio: Todos archivos cancelados]') WHERE OrdenID = @OID");
+            
+            await transaction.commit();
+
+            const io = req.app.get('socketio');
+            if (io) {
+                io.emit('server:order_updated', { orderId: ordenId, status: 'CANCELADO', timestamp: new Date() });
+                io.emit('server:ordersUpdated', { count: 1 });
+            }
+
+            return res.json({ success: true, nuevoEstado: 'CANCELADO', estadoLogistica: 'Cancelado', totalBultos: 0 });
+        }
+
+        if (Total !== Completed) {
             await transaction.rollback();
             return res.status(400).json({ error: 'La orden aún tiene archivos sin completar.' });
         }
@@ -1627,7 +1645,14 @@ async function completarOrden(req, res) {
                     .input('OID', sql.Int, ordenId)
                     .query("SELECT SUM(Cantidad) as TotalCantidad FROM PedidosCobranzaDetalle WHERE OrdenID = @OID");
                 const magVal = parseFloat(checkMag.recordset[0]?.TotalCantidad) || 0;
-                if (magVal > 0) {
+                
+                const prioridadRes = await pool.request()
+                    .input('OID', sql.Int, ordenId)
+                    .query("SELECT Prioridad FROM Ordenes WHERE OrdenID = @OID");
+                const prioridadStr = (prioridadRes.recordset[0]?.Prioridad || '').toUpperCase();
+                const esReposicion = codigoOrden.includes('-R') || prioridadStr === 'REPOSICIÓN' || prioridadStr === 'REPOSICION';
+
+                if (magVal > 0 || esReposicion) {
                     const labelResult = await LabelGenerationService.regenerateLabelsForOrder(ordenId, (req.user?.id || 1), (req.user?.usuario || 'Sistema'));
                     if (labelResult.success) totalBultos = labelResult.totalBultos;
                 }

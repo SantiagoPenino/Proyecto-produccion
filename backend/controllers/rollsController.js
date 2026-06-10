@@ -1174,15 +1174,19 @@ exports.getRollosActivos = async (req, res) => {
             WHERE (@AreaID IS NULL OR r.AreaID = @AreaID)
             AND r.Estado NOT IN ('Cerrado', 'Cancelado')
             AND (
-                ${isControlView ? 1 : 0} = 0
-                OR r.Estado IN ('En maquina', 'Produccion', 'Imprimiendo')
-                -- Incluir Finalizado solo si aún tiene órdenes no completadas
+                (${isControlView ? 1 : 0} = 0 AND r.Estado != 'Finalizado')
                 OR (
-                    r.Estado = 'Finalizado'
-                    AND EXISTS (
-                        SELECT 1 FROM dbo.Ordenes o WITH (NOLOCK)
-                        WHERE o.RolloID = r.RolloID
-                          AND o.Estado NOT IN ('Pronto', 'Finalizado', 'CANCELADO', 'Entregado')
+                    ${isControlView ? 1 : 0} = 1 AND (
+                        r.Estado IN ('En maquina', 'Produccion', 'Imprimiendo')
+                        -- Incluir Finalizado solo si aún tiene órdenes no completadas
+                        OR (
+                            r.Estado = 'Finalizado'
+                            AND EXISTS (
+                                SELECT 1 FROM dbo.Ordenes o WITH (NOLOCK)
+                                WHERE o.RolloID = r.RolloID
+                                  AND o.Estado NOT IN ('Pronto', 'Finalizado', 'CANCELADO', 'Entregado')
+                            )
+                        )
                     )
                 )
             )

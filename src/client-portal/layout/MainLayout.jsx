@@ -248,6 +248,9 @@ export const MainLayout = ({ children }) => {
                     {/* 1. Mi Perfil (Primero según maqueta) */}
                     <NavItem to="/portal/profile" icon={User} label="Mi Perfil" />
 
+                    {/* 1.5 Mi Fábrica */}
+                    <NavItem to="/portal/factory" icon={Factory} label="Mi Fábrica" />
+
                     {/* 2. Servicios (Link directo a catálogo) */}
                     <NavItem to="/portal" icon={Package} label="Servicios" />
 

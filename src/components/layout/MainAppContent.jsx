@@ -3,6 +3,8 @@ import { LayoutDashboard, Warehouse, Printer, ClipboardList, Terminal, CircleUse
 import { Routes, Route, Navigate, useNavigate, useLocation } from 'react-router-dom';
 import { AnimatePresence, motion } from 'framer-motion';
 import { Toaster, toast } from 'sonner';
+import { ToastContainer } from 'react-toastify';
+import 'react-toastify/dist/ReactToastify.css';
 import { useAuth } from '../../context/AuthContext';
 import { apiClient } from '../../client-portal/api/apiClient';
 import { socket } from '../../services/socketService';
@@ -671,6 +673,7 @@ const MainAppContent = ({ menuItems = [] }) => {
                     }
                 }}
             />
+            <ToastContainer limit={1} position="top-right" autoClose={5000} />
             <Navbar 
                 onToggleMobileMenu={() => setIsMobileMenuOpen(prev => !prev)} 
                 isMobileMenuOpen={isMobileMenuOpen} 

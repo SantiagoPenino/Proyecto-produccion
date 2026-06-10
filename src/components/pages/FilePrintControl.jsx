@@ -516,7 +516,7 @@ const FilePrintControl = ({ areaCode }) => {
         fetchRollos();
       }
     } catch (e) {
-      setToast({ visible: true, message: 'Error de conexión al finalizar', type: 'error' });
+      setToast({ visible: true, message: e?.response?.data?.error || e?.message || 'Error de conexión al finalizar', type: 'error' });
     } finally {
       setFinalizandoOrden(false);
     }

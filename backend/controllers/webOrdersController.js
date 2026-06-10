@@ -1210,9 +1210,31 @@ exports.uploadOrderFile = async (req, res) => {
                 // TAMBIEN EstadoenArea = 'Pendiente'
                 await pool.request().input('OID', sql.Int, orderID).query(`UPDATE Ordenes SET Estado = 'Pendiente', EstadoenArea = 'Pendiente' WHERE OrdenID = @OID AND Estado = 'Cargando...'`);
 
+                // Obtener datos de la orden para el Toast
+                const orderDataReq = await pool.request().input('OID', sql.Int, orderID).query(`
+                    SELECT AreaID, DescripcionTrabajo, Prioridad, CodigoOrden
+                    FROM Ordenes 
+                    WHERE OrdenID = @OID
+                `);
+
                 // Notificar sockets
                 const io = req.app.get('socketio');
-                if (io) io.emit('server:ordersUpdated', { count: 1, source: 'web-upload' });
+                if (io) {
+                    io.emit('server:ordersUpdated', { count: 1, source: 'web-upload' });
+                    
+                    if (orderDataReq.recordset.length > 0) {
+                        const row = orderDataReq.recordset[0];
+                        io.emit('server:new_order', { 
+                            orders: [{
+                                id: orderID,
+                                area: row.AreaID,
+                                variante: row.DescripcionTrabajo,
+                                prioridad: row.Prioridad || 'Normal',
+                                codigo: row.CodigoOrden
+                            }] 
+                        });
+                    }
+                }
             }
         }
 
@@ -2325,6 +2347,19 @@ const performCheckoutRollback = async (pool, transactionId, ordenRetiroId, gatew
             return;
         }
 
+        // Verificar que el pago a revertir es efectivamente de la pasarela que dispara el rollback.
+        // Si el PagIdPago fue heredado de otro canal (ej: débito de caja), no lo tocamos.
+        const pagMetodRes = await pool.request()
+            .input('PagoIdChk', sql.Int, pagoId)
+            .query('SELECT MPaIdMetodoPago FROM Pagos WITH(NOLOCK) WHERE PagIdPago = @PagoIdChk');
+        const metodoDelPago = pagMetodRes.recordset[0]?.MPaIdMetodoPago;
+        const esHandy = gatewayName === 'Handy' && metodoDelPago === 9;
+        const esMercadoPago = gatewayName === 'MercadoPago' && metodoDelPago === 8;
+        if (!esHandy && !esMercadoPago) {
+            logger.warn(`[ROLLBACK] El PagIdPago ${pagoId} (método ${metodoDelPago}) no corresponde a ${gatewayName}. Rollback abortado para evitar anular un pago de otro canal.`);
+            return;
+        }
+
         const rollbackT = new sql.Transaction(pool);
         await rollbackT.begin();
 
@@ -2550,7 +2585,8 @@ exports.handyWebhook = async (req, res) => {
                             await pool.request()
                                 .input('txId3', sql.VarChar(100), transactionId)
                                 .input('jsonStr', sql.NVarChar(sql.MAX), updatedOrdersJson)
-                                .query('UPDATE HandyTransactions SET OrdersJson = @jsonStr WHERE TransactionId = @txId3');
+                                .input('codigoRetiro', sql.VarChar(20), codigoRetiro)
+                                .query('UPDATE HandyTransactions SET OrdersJson = @jsonStr, OrdenRetiroCreada = @codigoRetiro WHERE TransactionId = @txId3');
                         } catch (retiroErr) {
                             if (retiroTransaction) {
                                 try { await retiroTransaction.rollback(); } catch (e) { /* ignore */ }
@@ -2563,14 +2599,21 @@ exports.handyWebhook = async (req, res) => {
                     // --- FLUJO DE PAGO UNIFICADO (igual que Caja) ---
                     const ordenRetiroId = parseInt(String(payloadPago.ordenRetiro).replace(/^[A-Za-z]+-0*/, ''), 10);
                     if (!isNaN(ordenRetiroId)) {
-                        // Guard de idempotencia: si ya tiene PagIdPago → webhook duplicado
                         const retiroState = await pool.request()
                             .input('RID', sql.Int, ordenRetiroId)
                             .query('SELECT OReEstadoActual, PagIdPago FROM OrdenesRetiro WITH(NOLOCK) WHERE OReIdOrdenRetiro = @RID');
 
                         if (retiroState.recordset.length > 0 && retiroState.recordset[0].PagIdPago) {
-                            logger.info(`[HANDY WEBHOOK] Retiro ${ordenRetiroId} ya pagado. Ignorando webhook duplicado.`);
-                            return;
+                            const existingPagId = retiroState.recordset[0].PagIdPago;
+                            const pagMetodRes = await pool.request()
+                                .input('PagId', sql.Int, existingPagId)
+                                .query('SELECT MPaIdMetodoPago FROM Pagos WITH(NOLOCK) WHERE PagIdPago = @PagId');
+                            const metodoExistente = pagMetodRes.recordset[0]?.MPaIdMetodoPago;
+                            if (metodoExistente === 9) {
+                                logger.info(`[HANDY WEBHOOK] La orden de retiro ${ordenRetiroId} ya tiene un pago Handy asignado (PagIdPago: ${existingPagId}). Ignorando webhook duplicado de pago exitoso.`);
+                                return;
+                            }
+                            logger.warn(`[HANDY WEBHOOK] La orden de retiro ${ordenRetiroId} tiene PagIdPago ${existingPagId} de método ${metodoExistente} (no Handy). Se registra el pago Handy de todas formas.`);
                         }
 
                         const usuarioId = 70;

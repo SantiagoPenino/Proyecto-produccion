@@ -31,8 +31,12 @@ class LabelGenerationService {
                 .query(`SELECT SUM(Cantidad) as TotalCantidad FROM PedidosCobranzaDetalle WHERE OrdenID = @OID`);
             
             const magnitudValor = parseFloat(pcdRes.recordset[0]?.TotalCantidad) || 0;
+            
+            const codOrdLocal = (o.CodigoOrden || '').trim().toUpperCase();
+            const prioridadLocal = (o.Prioridad || '').trim().toUpperCase();
+            const esRepoLocal = codOrdLocal.includes('-R') || prioridadLocal === 'REPOSICIÓN' || prioridadLocal === 'REPOSICION';
 
-            if (magnitudValor <= 0) {
+            if (magnitudValor <= 0 && !esRepoLocal) {
                 return { success: false, error: `No se pueden generar etiquetas: La magnitud cotizada es 0 o inválida. Revise la cotización de los items para esta área en 'Cotizar Productos'.` };
             }
 
@@ -86,7 +90,9 @@ class LabelGenerationService {
 
             // Validar costo > 0, EXCEPTO para órdenes de Reposición o Prepago.
             // En Reposición o Prepago el $0 es intencional, se permite imprimir igual.
-            const esReposicion = (o.CodigoOrden || o.NoDocERP || '').trim().toUpperCase().startsWith('R');
+            const codOrd = (o.CodigoOrden || '').trim().toUpperCase();
+            const prioridad = (o.Prioridad || '').trim().toUpperCase();
+            const esReposicion = codOrd.includes('-R') || prioridad === 'REPOSICIÓN' || prioridad === 'REPOSICION';
             const esPrepago = (dbPerfilesPrecio && dbPerfilesPrecio.toLowerCase().includes('prepago')) || (dbDetalleCostos && dbDetalleCostos.toLowerCase().includes('prepago'));
             
             if (!esReposicion && !esPrepago && (importeTotalStr === '0.00' || importeTotalStr === '0' || Number(importeTotalStr) <= 0)) {
