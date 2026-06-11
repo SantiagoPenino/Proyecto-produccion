@@ -124,16 +124,18 @@ router.get('/drive/save-token-get', async (req, res) => {
     else res.status(500).send("<h1>❌ ERROR</h1><p>El código podría haber expirado. Intenta obtener uno nuevo.</p>");
 });
 
-// --- EXPERIMENTO DE STREAMING DE ARCHIVOS ---
+// DiskStorage temporal: evita cargar 300MB en RAM
 const multer = require('multer');
-// Usamos memoria RAM temporal para recibir el buffer (límite por defecto de Node, cuidado con archivos >1GB)
-// Para producción REAL con archivos GIGANTES, mejor usar DiskStorage y borrar luego.
-// Pero para empezar, memoria es lo más rápido y fácil de implementar.
-const upload = multer({
-    storage: multer.memoryStorage(),
-    limits: { fileSize: 500 * 1024 * 1024 } // Límite de 500MB por archivo para seguridad
-});
+const uploadTmpDir = path.join(__dirname, '../uploads/tmp');
+if (!fs.existsSync(uploadTmpDir)) fs.mkdirSync(uploadTmpDir, { recursive: true });
 
+const upload = multer({
+    storage: multer.diskStorage({
+        destination: (req, file, cb) => cb(null, uploadTmpDir),
+        filename: (req, file, cb) => cb(null, Date.now() + '-' + file.originalname)
+    }),
+    limits: { fileSize: 5 * 1024 * 1024 * 1024 } // 5GB
+});
 
 router.post('/upload-stream', verifyToken, upload.single('file'), webOrdersController.uploadOrderFile);
 

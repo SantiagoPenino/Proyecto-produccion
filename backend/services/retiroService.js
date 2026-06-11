@@ -346,17 +346,10 @@ async function marcarEntregado(transactionOrReq, OReIdOrdenRetiro, fecha, usuari
 
             UPDATE OrdenesDeposito SET OrdEstadoActual = 9, OrdFechaEstadoActual = @Fec WHERE OReIdOrdenRetiro = @ID;
 
-            UPDATE OrdenesRetiro 
-            SET OReEstadoActual = CASE 
-                WHEN OReEstadoActual IN (3, 4, 8, 9) THEN 8 
-                ELSE 5 
-            END, 
-            ORePasarPorCaja = 0, 
-            OReFechaEstadoActual = @Fec 
-            WHERE OReIdOrdenRetiro = @ID;
+            UPDATE OrdenesRetiro SET OReEstadoActual = 5, ORePasarPorCaja = 0, OReFechaEstadoActual = @Fec WHERE OReIdOrdenRetiro = @ID;
 
             INSERT INTO HistoricoEstadosOrdenesRetiro (OReIdOrdenRetiro, EORIdEstadoOrden, HEOFechaEstado, HEOUsuarioAlta) 
-            SELECT @ID, CASE WHEN OReEstadoActual IN (3, 4, 8, 9) THEN 8 ELSE 5 END, @Fec, @Usr FROM OrdenesRetiro WHERE OReIdOrdenRetiro = @ID;
+            VALUES (@ID, 5, @Fec, @Usr);
 
             -- Liberar estante automáticamente al entregar
             DELETE FROM OcupacionEstantes

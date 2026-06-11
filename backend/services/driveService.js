@@ -163,11 +163,13 @@ exports.uploadToDrive = async (fileInput, fileName, areaName, retries = 2) => {
         let mimeType = 'application/octet-stream';
 
         if (Buffer.isBuffer(fileInput)) {
-            // --- FLUJO BUFFER (STREAMING) ---
+            // --- FLUJO BUFFER (memoryStorage) ---
             mediaBody = Readable.from(fileInput);
-            // Podríamos tratar de detectar mimetype, pero Drive suele ser inteligente.
-            // Si el filename tiene extensión, Drive lo usa.
+        } else if (fileInput && typeof fileInput.pipe === 'function') {
+            // --- FLUJO STREAM (diskStorage / ReadStream) ---
+            mediaBody = fileInput;
         } else if (typeof fileInput === 'string') {
+
             // --- FLUJO BASE64 (LEGACY) ---
             const cleanData = fileInput.trim();
 

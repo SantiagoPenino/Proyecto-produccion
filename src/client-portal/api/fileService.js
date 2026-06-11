@@ -6,7 +6,7 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker;
 
 export const STORAGE_TYPE = 'BASE64';
 
-const MAX_FILE_SIZE = 500 * 1024 * 1024; // 500MB
+const MAX_FILE_SIZE = 5 * 1024 * 1024 * 1024; // 5GB
 const ALLOWED_FORMATS = [
     'image/png', 'image/jpeg', 'image/jpg', 'application/pdf',
     'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
@@ -228,11 +228,19 @@ export const fileService = {
         if (!validation.valid) throw new Error(validation.error);
 
         try {
-            // Leemos Base64 para preview (opcional/necesario para imgs)
-            const base64Data = await fileToBase64(file);
+            const LARGE_FILE = 500 * 1024 * 1024; // 500MB
+            const isLarge = file.size > LARGE_FILE;
 
-            // Detectar tipo: Confiar en extensión si es PDF para forzar intento
-            let detectedType = getMimeTypeFromMagic(base64Data) || file.type;
+            // Archivos grandes: object URL (sin copiar a RAM). Chicos: base64 para preview.
+            const previewData = isLarge ? URL.createObjectURL(file) : await fileToBase64(file);
+
+            // Detectar tipo: para archivos grandes confiar en extensión, para chicos usar magic bytes
+            let detectedType;
+            if (isLarge) {
+                detectedType = file.type || 'application/octet-stream';
+            } else {
+                detectedType = getMimeTypeFromMagic(previewData) || file.type;
+            }
             if (file.name.toLowerCase().endsWith('.pdf')) detectedType = 'application/pdf';
 
             let dimensions = { width: null, height: null, unit: null };
@@ -240,7 +248,9 @@ export const fileService = {
             let pageCount = null;
 
             if (detectedType.startsWith('image/')) {
-                const dims = await getImageDimensions(base64Data);
+                // Para imágenes grandes, crear object URL temporal para getImageDimensions
+                const imgSrc = isLarge ? previewData : previewData;
+                const dims = await getImageDimensions(imgSrc);
                 if (dims) {
                     // Leer DPI real del archivo (no asumir 300)
                     const { dpiX, dpiY } = await getImageDPI(file);
@@ -378,7 +388,7 @@ export const fileService = {
 
             return {
                 name: file.name,
-                preview: base64Data.substring(0, 500) + '...',
+                preview: isLarge ? previewData : previewData.substring(0, 500) + '...',
                 fileData: file,
                 size: file.size,
                 type: detectedType,

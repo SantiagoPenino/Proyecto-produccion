@@ -1161,8 +1161,18 @@ exports.uploadOrderFile = async (req, res) => {
 
     logger.info(`🚀 [UploadStream] Recibiendo archivo: ${finalName} (${file.size} bytes)`);
 
+    let tmpPath = null;
     try {
-        const driveUrl = await driveService.uploadToDrive(file.buffer, finalName, area || 'GENERAL');
+        // Soporta tanto diskStorage (file.path) como memoryStorage (file.buffer)
+        let fileInput;
+        if (file.path) {
+            tmpPath = file.path;
+            fileInput = require('fs').createReadStream(file.path);
+        } else {
+            fileInput = file.buffer;
+        }
+
+        const driveUrl = await driveService.uploadToDrive(fileInput, finalName, area || 'GENERAL');
 
         const pool = await getPool();
         let orderID = null;
@@ -1243,6 +1253,11 @@ exports.uploadOrderFile = async (req, res) => {
     } catch (error) {
         logger.error("❌ Error en subida streaming:", error);
         res.status(500).json({ error: "Fallo subida a Drive: " + error.message });
+    } finally {
+        // Borrar archivo temporal del disco
+        if (tmpPath) {
+            try { require('fs').unlinkSync(tmpPath); } catch (_) {}
+        }
     }
 };
 // --- OBTENER ESTADO EN FÁBRICA ---

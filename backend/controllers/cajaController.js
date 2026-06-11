@@ -865,6 +865,12 @@ const autorizarSinPago = async (req, res) => {
   const { oreIdOrdenRetiro, motivo, montoDeuda=0, fechaVencimiento } = req.body;
   if (!oreIdOrdenRetiro || !motivo?.trim())
     return res.status(400).json({ success:false, error:'oreIdOrdenRetiro y motivo son obligatorios.' });
+
+  // Soporta número plano (123) o string formateado ("R-123", "RW-0018")
+  const numMatch = String(oreIdOrdenRetiro).match(/(\d+)$/);
+  const OReId = numMatch ? parseInt(numMatch[1], 10) : NaN;
+  if (isNaN(OReId)) return res.status(400).json({ success:false, error:`ID de retiro inválido: ${oreIdOrdenRetiro}` });
+
   try {
     const pool = await getPool();
     const transaction = pool.transaction();
@@ -872,7 +878,7 @@ const autorizarSinPago = async (req, res) => {
     try {
       // Cambiar estado de la orden a 9 (Autorizado sin pago)
       await new sql.Request(transaction)
-        .input('Id',  sql.Int, parseInt(oreIdOrdenRetiro))
+        .input('Id',  sql.Int, OReId)
         .input('Usr', sql.Int, usuarioId)
         .query(`
           UPDATE dbo.OrdenesRetiro
@@ -883,7 +889,7 @@ const autorizarSinPago = async (req, res) => {
         `);
       // Registrar en la tabla de autorizaciones
       const auzRes = await new sql.Request(transaction)
-        .input('OReId',    sql.Int,           parseInt(oreIdOrdenRetiro))
+        .input('OReId',    sql.Int,           OReId)
         .input('Usr',      sql.Int,           usuarioId)
         .input('Motivo',   sql.NVarChar(300),  motivo.trim())
         .input('Monto',    sql.Decimal(18,2),  parseFloat(montoDeuda) || 0)
