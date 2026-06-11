@@ -93,6 +93,7 @@ export const ordersService = {
                 nextService: o.ProximoServicio || o.nextService || '',
                 entryDate: o.FechaIngreso || o.entryDate || null,
                 deliveryDate: o.FechaEstimadaEntrega || o.deliveryDate || null,
+                note: o.Nota || o.note || '',
                 filesData: o.filesData || o.files || [],
             };
         } catch (e) {

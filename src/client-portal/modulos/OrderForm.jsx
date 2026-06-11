@@ -914,15 +914,20 @@ const OrderForm = ({ serviceId: propServiceId }) => {
                                     const selectedClass = isUrgent
                                         ? 'shadow-sm bg-custom-magenta/20 text-custom-magenta border border-custom-magenta/30'
                                         : 'shadow-sm bg-cyan-400/20 text-cyan-300 border border-cyan-500/30';
+                                    const isDisabled = isUrgent && serviceId?.toUpperCase() === 'DF';
                                     return (
-                                    <button key={p.Nombre} type="button" onClick={() => actions.setUrgency(p.Nombre)}
-                                        className={`flex-1 py-1.5 px-3 rounded-md text-sm font-medium transition-all ${isSelected ? selectedClass : 'text-zinc-400 hover:bg-zinc-700 hover:text-zinc-200'} `}
+                                    <button key={p.Nombre} type="button" onClick={() => !isDisabled && actions.setUrgency(p.Nombre)}
+                                        disabled={isDisabled}
+                                        className={`flex-1 py-1.5 px-3 rounded-md text-sm font-medium transition-all ${isDisabled ? 'text-zinc-600 cursor-not-allowed opacity-40' : isSelected ? selectedClass : 'text-zinc-400 hover:bg-zinc-700 hover:text-zinc-200'} `}
                                     >
                                         {p.Nombre}
                                     </button>
                                     );
                                 })}
                             </div>
+                            {serviceId?.toUpperCase() === 'DF' && (
+                                <p className="text-[11px] text-amber-400/70 mt-1.5 italic">⚠ La prioridad urgente se encuentra temporalmente desactivada.</p>
+                            )}
                         </div>
 
                     </div>
