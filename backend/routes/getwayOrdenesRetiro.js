@@ -1,11 +1,16 @@
 // apiordenesRetiro.js
 const express = require('express');
 const router = express.Router();
-const { createOrdenRetiro, getOrdenesRetiroPorEstados, actualizarOrdenRetiroEstado, marcarOrdenRetiroPronto, ordenesRetiroCaja, marcarOrdenRetiroEntregado, getOrdenesRetiroPasarPorCaja, ordenesRetiroMarcarPasarPorCaja, getOrdenesRetiroPorFecha, getOrdenesRetiroPorLugar, marcarDespachoEntregadoAutorizado, buscarParaMostrador, getClienteEnvioDatos, getTodasSinRetiro, backfillLugarRetiro, getOrdenesRetiroPorRemito } = require('../controllers/ordenesRetiroController');
+const { createOrdenRetiro, getOrdenesRetiroPorEstados, actualizarOrdenRetiroEstado, marcarOrdenRetiroPronto, ordenesRetiroCaja, marcarOrdenRetiroEntregado, getOrdenesRetiroPasarPorCaja, ordenesRetiroMarcarPasarPorCaja, getOrdenesRetiroPorFecha, getOrdenesRetiroPorLugar, marcarDespachoEntregadoAutorizado, buscarParaMostrador, getClienteEnvioDatos, getTodasSinRetiro, backfillLugarRetiro, getOrdenesRetiroPorRemito, editarCostoOrden, desvincularOrdenRetiro, cancelarOrdenCaja } = require('../controllers/ordenesRetiroController');
 const { verifyToken } = require('../middleware/authMiddleware');
 
 // Ruta para crear una Orden de Retiro
 router.post('/crear', verifyToken, createOrdenRetiro);
+
+// Rutas de edición desde la Caja
+router.post('/caja/orden/editar', verifyToken, editarCostoOrden);
+router.post('/caja/orden/desvincular', verifyToken, desvincularOrdenRetiro);
+router.post('/caja/orden/cancelar', verifyToken, cancelarOrdenCaja);
 
 // Ruta para obtener todas las órdenes de retiro en estado "Ingresado"
 router.get('/estados', getOrdenesRetiroPorEstados);

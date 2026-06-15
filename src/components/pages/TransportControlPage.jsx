@@ -18,6 +18,7 @@ const TransportControlPage = () => {
     const [itemInput, setItemInput] = useState('');
     const [lastScanMsg, setLastScanMsg] = useState(null); // { type: 'success'|'error', text: '' }
     const [loading, setLoading] = useState(false);
+    const [showOnlyPending, setShowOnlyPending] = useState(false);
 
     // Auth Modal
     const [showAuth, setShowAuth] = useState(false);
@@ -25,6 +26,9 @@ const TransportControlPage = () => {
 
     // Refs
     const itemInputRef = useRef(null);
+    const scanTimeoutRef = useRef(null);
+    const lastKeyTime = useRef(Date.now());
+    const isScannerRef = useRef(false);
 
     // Refocus scanner when modal closes
     useEffect(() => {
@@ -59,10 +63,43 @@ const TransportControlPage = () => {
     };
 
     // --- STEP 2: SCAN ITEMS ---
-    const handleScanItem = (e) => {
-        e.preventDefault();
-        const code = itemInput.trim(); // Case sensitive match usually best for IDs, or normalize
+    const handleKeyDown = (e) => {
+        if (e.key === 'Enter') return;
+        const now = Date.now();
+        const timeDiff = now - lastKeyTime.current;
+        if (timeDiff < 50) {
+            isScannerRef.current = true;
+        } else {
+            isScannerRef.current = false;
+        }
+        lastKeyTime.current = now;
+    };
+
+    const handleScanInputChange = (e) => {
+        const val = e.target.value;
+        setItemInput(val);
+        if (lastScanMsg?.type === 'error' || lastScanMsg?.type === 'warning') {
+            setLastScanMsg(null);
+        }
+
+        if (scanTimeoutRef.current) clearTimeout(scanTimeoutRef.current);
+        
+        if (isScannerRef.current) {
+            scanTimeoutRef.current = setTimeout(() => {
+                if (val.trim().length > 2) {
+                    handleScanItem(null, val);
+                    isScannerRef.current = false;
+                }
+            }, 100);
+        }
+    };
+
+    const handleScanItem = (e, overrideCode) => {
+        if (e) e.preventDefault();
+        const code = (overrideCode !== undefined ? overrideCode : itemInput).trim(); // Case sensitive match usually best for IDs, or normalize
         if (!code) return;
+
+        if (scanTimeoutRef.current) clearTimeout(scanTimeoutRef.current);
 
         // Check availability in Remito
         // remitoData.items contains { CodigoEtiqueta, ... }
@@ -154,14 +191,6 @@ const TransportControlPage = () => {
                         </h1>
                         <p className="text-slate-500 text-sm font-medium">Validación de carga por transportista/cadete</p>
                     </div>
-                    {step === 2 && (
-                        <div className="text-right">
-                            <div className={`text-4xl font-black ${progressColor}`}>
-                                {scannedCount} <span className="text-slate-300 text-2xl">/ {totalItems}</span>
-                            </div>
-                            <div className="text-xs font-bold text-slate-400 uppercase tracking-widest">Bultos Verificados</div>
-                        </div>
-                    )}
                 </div>
 
                 {/* STEP 1: SELECT REMITO */}
@@ -193,89 +222,74 @@ const TransportControlPage = () => {
                     </div>
                 )}
 
-                {/* STEP 2: SCANNING INTERFACE (3 COLS) */}
+                {/* STEP 2: SCANNING INTERFACE (COMPACT VERTICAL) */}
                 {step === 2 && remitoData && (
-                    <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 h-[70vh]">
-
-                        {/* COL 1: REMITO INFO */}
-                        <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-6 flex flex-col gap-6">
-                            <div className="text-center pb-6 border-b border-slate-100">
-                                <div className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-1">Remito Activo</div>
-                                <div className="text-3xl font-black font-mono text-slate-800 break-all">{remitoData.CodigoRemito}</div>
+                    <div className="flex flex-col gap-2 pb-20 mt-4">
+                        {/* HEADER DETAIL */}
+                        <div className="flex justify-between items-center bg-white px-4 py-3 rounded-xl shadow-sm border border-slate-200">
+                            <div>
+                                <h1 className="text-lg font-black text-slate-800 uppercase tracking-tight flex items-center gap-2">
+                                    <i className="fa-solid fa-truck-fast text-indigo-600"></i>
+                                    {remitoData.CodigoRemito}
+                                </h1>
+                                <p className="text-slate-500 text-[10px] font-medium">Origen: {remitoData.AreaOrigenID} • Destino: {remitoData.AreaDestinoID}</p>
                             </div>
+                            <div className="text-right flex items-center gap-2 sm:gap-4">
+                                <button onClick={() => setStep(1)} className="bg-slate-100 hover:bg-slate-200 text-slate-600 px-3 py-1.5 rounded-lg font-bold text-[10px] sm:text-xs transition-colors uppercase shadow-sm mr-2 whitespace-nowrap">
+                                    Cambiar
+                                </button>
+                                
+                                <button onClick={handleConfirmClick} className="bg-slate-800 text-white px-4 py-2 rounded-lg font-bold text-[10px] sm:text-xs hover:bg-slate-900 transition-colors uppercase shadow-sm flex items-center gap-2 whitespace-nowrap">
+                                    Confirmar Retiro
+                                    <i className="fa-solid fa-file-signature"></i>
+                                </button>
 
-                            <div className="space-y-4 flex-1">
-                                <div className="flex justify-between items-center p-3 bg-slate-50 rounded-lg">
-                                    <div className="text-sm text-slate-500 font-bold uppercase">Origen</div>
-                                    <div className="font-bold text-slate-800">{remitoData.AreaOrigenID}</div>
-                                </div>
-                                <div className="flex justify-between items-center p-3 bg-slate-50 rounded-lg">
-                                    <div className="text-sm text-slate-500 font-bold uppercase">Destino</div>
-                                    <div className="font-bold text-slate-800">{remitoData.AreaDestinoID}</div>
-                                </div>
-                                <div className="p-3 bg-yellow-50 border border-yellow-100 rounded-lg">
-                                    <div className="text-[10px] font-bold text-yellow-600 uppercase mb-1">Instrucciones</div>
-                                    <div className="text-sm text-yellow-800 font-medium leading-tight">
-                                        Escanea cada bulto físico para confirmar que coincide con el remito digital.
+                                {scannedCount === totalItems && (
+                                    <div className="text-center text-emerald-600 font-bold text-xs py-1 px-2"><i className="fa-solid fa-check-circle mr-1"></i> Completo</div>
+                                )}
+                                
+                                <div className="border-l border-slate-200 pl-4 ml-2">
+                                    <div className={`text-2xl font-black leading-none ${progressColor}`}>
+                                        {scannedCount} <span className="text-slate-300 text-lg">/ {totalItems}</span>
                                     </div>
-                                </div>
-                            </div>
-
-                            <button
-                                onClick={() => setStep(1)}
-                                className="w-full py-3 rounded-lg border border-slate-300 text-slate-500 font-bold hover:bg-slate-50 transition-colors"
-                            >
-                                Cambiar Remito
-                            </button>
-                        </div>
-
-                        {/* COL 2: SCANNER INPUT */}
-                        <div className="bg-slate-800 rounded-xl shadow-lg border border-slate-700 p-8 flex flex-col justify-center items-center text-center relative overflow-hidden">
-                            {/* Background decoration */}
-                            <i className="fa-solid fa-qrcode text-[200px] text-slate-700 absolute opacity-20 rotate-12 -right-10 -bottom-10 pointer-events-none"></i>
-
-                            <div className="relative z-10 w-full max-w-xs space-y-6">
-                                <h3 className="text-slate-300 font-bold uppercase tracking-wider text-sm">Escáner de Bultos</h3>
-
-                                <form onSubmit={handleScanItem}>
-                                    <input
-                                        ref={itemInputRef}
-                                        autoFocus
-                                        type="text"
-                                        value={itemInput}
-                                        onChange={e => setItemInput(e.target.value)}
-                                        // Removed aggressive onBlur focus to prevent stealing focus from Auth Modal
-                                        className="w-full bg-slate-900 border-2 border-slate-600 rounded-xl py-4 px-6 text-center text-white font-mono text-xl focus:border-emerald-500 focus:ring-4 focus:ring-emerald-500/20 outline-none transition-all placeholder:text-slate-700"
-                                        placeholder="Escanear aquí..."
-                                    />
-                                </form>
-
-                                {/* FEEDBACK */}
-                                <div className={`min-h-[60px] flex items-center justify-center rounded-lg p-3 font-bold transition-all ${lastScanMsg?.type === 'success' ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/50' :
-                                    lastScanMsg?.type === 'error' ? 'bg-red-500/20 text-red-400 border border-red-500/50' :
-                                        lastScanMsg?.type === 'warning' ? 'bg-yellow-500/20 text-yellow-400 border border-yellow-500/50' :
-                                            'bg-transparent'
-                                    }`}>
-                                    {lastScanMsg ? (
-                                        <div className="flex items-center gap-2">
-                                            <i className={`fa-solid ${lastScanMsg.type === 'success' ? 'fa-check' : lastScanMsg.type === 'warning' ? 'fa-exclamation' : 'fa-xmark'}`}></i>
-                                            <span>{lastScanMsg.text}</span>
-                                        </div>
-                                    ) : (
-                                        <span className="text-slate-600 text-sm">Esperando lectura...</span>
-                                    )}
+                                    <div className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mt-1">Verificados</div>
                                 </div>
                             </div>
                         </div>
 
-                        {/* COL 3: CHECKLIST & ACTIONS */}
-                        <div className="bg-white rounded-xl shadow-sm border border-slate-200 flex flex-col overflow-hidden">
-                            <div className="p-4 bg-slate-50 border-b border-slate-100 font-bold text-slate-700 flex justify-between items-center">
-                                <span>Lista de Carga</span>
-                                <div className="flex gap-2">
+                        {/* SCANNER COMPACT */}
+                        <div className="bg-slate-800 rounded-xl shadow-lg border border-slate-700 p-3 flex flex-col sm:flex-row justify-center items-center gap-3 relative overflow-hidden">
+                            <h3 className="text-slate-300 font-bold uppercase tracking-wider text-xs whitespace-nowrap">Escáner</h3>
+                            <form onSubmit={(e) => handleScanItem(e)} className="w-full max-w-md">
+                                <input
+                                    ref={itemInputRef}
+                                    autoFocus
+                                    type="text"
+                                    value={itemInput}
+                                    onChange={handleScanInputChange}
+                                    onKeyDown={handleKeyDown}
+                                    className="w-full bg-slate-900 border-2 border-slate-600 rounded-lg py-2 px-4 text-center text-white font-mono text-lg focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20 outline-none transition-all placeholder:text-slate-700"
+                                    placeholder="Escanear QR..."
+                                />
+                            </form>
+                            <div className={`min-w-[180px] flex items-center justify-center rounded-lg p-1.5 font-bold transition-all text-xs ${lastScanMsg?.type === 'success' ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/50' : lastScanMsg?.type === 'error' ? 'bg-red-500/20 text-red-400 border border-red-500/50' : lastScanMsg?.type === 'warning' ? 'bg-yellow-500/20 text-yellow-400 border border-yellow-500/50' : 'bg-transparent text-slate-500'}`}>
+                                {lastScanMsg ? lastScanMsg.text : <span>Esperando...</span>}
+                            </div>
+                        </div>
+
+                        {/* LIST */}
+                        <div className="bg-white rounded-xl shadow-sm border border-slate-200 flex flex-col overflow-hidden max-h-[600px]">
+                            <div className="p-3 bg-slate-50 border-b border-slate-100 font-bold text-slate-700 text-sm flex justify-between items-center">
+                                <div className="flex items-center gap-4">
+                                    <span>Lista de Carga ({totalItems})</span>
+                                    <label className="flex items-center gap-2 cursor-pointer text-xs font-medium text-slate-600 bg-white px-2 py-1 rounded border shadow-sm">
+                                        <input type="checkbox" checked={showOnlyPending} onChange={e => setShowOnlyPending(e.target.checked)} className="form-checkbox text-indigo-600 rounded cursor-pointer" />
+                                        Solo Pendientes
+                                    </label>
+                                </div>
+                                <div className="flex items-center gap-2">
                                     <button
                                         onClick={() => {
-                                            // Toggle All
                                             if (scannedCodes.size === remitoData.items.length) {
                                                 setScannedCodes(new Set());
                                             } else {
@@ -284,58 +298,56 @@ const TransportControlPage = () => {
                                         }}
                                         className="text-[10px] bg-slate-200 hover:bg-slate-300 text-slate-700 font-bold px-2 py-1 rounded transition-colors uppercase"
                                     >
-                                        {scannedCodes.size === remitoData.items.length ? 'Deseleccionar' : 'Todos'}
+                                        {scannedCodes.size === remitoData.items.length ? 'Deseleccionar' : 'Marcar Todos'}
                                     </button>
-                                    <span className="text-xs bg-slate-200 text-slate-600 px-2 py-1 rounded-full">{totalItems - scannedCount} Faltantes</span>
+                                    
+                                    {(() => {
+                                        const faltanCount = totalItems - scannedCount;
+                                        return faltanCount > 0 ? (
+                                            <span className="text-rose-500 font-bold uppercase text-[10px] bg-rose-50 px-2 py-1 rounded border border-rose-100">
+                                                Faltan {faltanCount}
+                                            </span>
+                                        ) : null;
+                                    })()}
                                 </div>
                             </div>
-
-                            <div className="flex-1 overflow-y-auto p-2 space-y-2">
-                                {remitoData.items.map((item, idx) => {
-                                    const scanned = scannedCodes.has(item.CodigoEtiqueta);
-                                    return (
-                                        <div
-                                            key={idx}
-                                            onClick={() => {
-                                                // Toggle manual scan
-                                                if (scanned) {
-                                                    const next = new Set(scannedCodes);
-                                                    next.delete(item.CodigoEtiqueta);
-                                                    setScannedCodes(next);
-                                                } else {
-                                                    setScannedCodes(prev => new Set(prev).add(item.CodigoEtiqueta));
-                                                }
-                                            }}
-                                            className={`p-3 rounded-lg border flex justify-between items-center transition-all cursor-pointer select-none ${scanned
-                                                ? 'bg-emerald-50 border-emerald-200 active:scale-95'
-                                                : 'bg-white border-slate-100 hover:border-slate-300 hover:bg-slate-50 active:bg-slate-100'
-                                                }`}>
-                                            <div className="flex items-center gap-3">
-                                                <div className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold shadow-sm transition-colors ${scanned ? 'bg-emerald-500 text-white' : 'bg-slate-100 text-slate-400'
-                                                    }`}>
-                                                    {scanned ? <i className="fa-solid fa-check"></i> : (idx + 1)}
-                                                </div>
-                                                <div>
-                                                    <div className={`font-bold font-mono ${scanned ? 'text-emerald-900' : 'text-slate-700'}`}>
-                                                        {item.CodigoEtiqueta}
+                            <div className="flex-1 overflow-y-auto p-3">
+                                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-2">
+                                    {remitoData.items.filter(item => {
+                                        const scanned = scannedCodes.has(item.CodigoEtiqueta);
+                                        if (showOnlyPending && scanned) return false;
+                                        return true;
+                                    }).map((item, idx) => {
+                                        const scanned = scannedCodes.has(item.CodigoEtiqueta);
+                                        return (
+                                            <div
+                                                key={idx}
+                                                onClick={() => {
+                                                    if (scanned) {
+                                                        const next = new Set(scannedCodes);
+                                                        next.delete(item.CodigoEtiqueta);
+                                                        setScannedCodes(next);
+                                                    } else {
+                                                        setScannedCodes(prev => new Set(prev).add(item.CodigoEtiqueta));
+                                                    }
+                                                }}
+                                                className={`p-2 rounded-lg border flex flex-col gap-1 transition-all cursor-pointer select-none text-xs ${scanned
+                                                    ? 'bg-emerald-50 border-emerald-200 opacity-75'
+                                                    : 'bg-white border-slate-100 hover:border-slate-300'
+                                                    }`}
+                                            >
+                                                <div className="flex justify-between items-start gap-2">
+                                                    <div className="font-bold font-mono text-slate-700 truncate">{item.CodigoEtiqueta}</div>
+                                                    <div className={`w-5 h-5 shrink-0 rounded-full flex items-center justify-center text-[10px] font-bold ${scanned ? 'bg-emerald-500 text-white' : 'bg-slate-100 text-slate-400'}`}>
+                                                        {scanned ? <i className="fa-solid fa-check"></i> : (idx + 1)}
                                                     </div>
-                                                    <div className="text-xs text-slate-500 truncate w-32">{item.Descripcion || "Sin descripción"}</div>
                                                 </div>
+                                                <div className="text-[10px] text-slate-500 truncate w-full">{item.Descripcion || "Sin descripción"}</div>
+                                                {scanned && <span className="text-[9px] font-bold text-emerald-600 uppercase mt-0.5">Verificado</span>}
                                             </div>
-                                            {scanned && <span className="text-xs font-bold text-emerald-600 uppercase">Listo</span>}
-                                        </div>
-                                    );
-                                })}
-                            </div>
-
-                            <div className="p-4 border-t border-slate-100 bg-slate-50">
-                                <button
-                                    onClick={handleConfirmClick}
-                                    className="w-full bg-slate-800 text-white py-3 rounded-xl font-bold shadow-lg shadow-slate-300 hover:bg-slate-900 active:scale-95 transition-all text-sm flex justify-center items-center gap-2"
-                                >
-                                    Confirmar Retiro
-                                    <i className="fa-solid fa-file-signature"></i>
-                                </button>
+                                        );
+                                    })}
+                                </div>
                             </div>
                         </div>
                     </div>

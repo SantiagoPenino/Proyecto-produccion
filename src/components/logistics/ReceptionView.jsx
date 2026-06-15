@@ -32,9 +32,13 @@ const ReceptionView = ({ onClose, areaContext, areaFilter }) => {
 
     // Manual Selection for Batch Processing
     const [manualSelection, setManualSelection] = useState([]);
+    const [showOnlyPending, setShowOnlyPending] = useState(false);
 
     const inputRef = useRef(null);
     const scannerRef = useRef(null);
+    const scanTimeoutRef = useRef(null);
+    const lastKeyTime = useRef(Date.now());
+    const isScannerRef = useRef(false);
 
     // --- NEW: Incoming Remitos List ---
     const { data: incomingRemitos, isLoading: loadingIncoming } = useQuery({
@@ -275,10 +279,47 @@ const ReceptionView = ({ onClose, areaContext, areaFilter }) => {
     });
 
     // --- STEP 2: SCANNER LOGIC ---
-    const handleScanItem = async (e) => {
-        e.preventDefault();
-        const code = scanInput.trim();
+    const handleKeyDown = (e) => {
+        if (e.key === 'Enter') return;
+        
+        const now = Date.now();
+        const timeDiff = now - lastKeyTime.current;
+        
+        // Si el tiempo entre teclas es menor a 50ms, asumimos que es un escáner.
+        if (timeDiff < 50) {
+            isScannerRef.current = true;
+        } else {
+            isScannerRef.current = false;
+        }
+        lastKeyTime.current = now;
+    };
+
+    const handleScanInputChange = (e) => {
+        const val = e.target.value;
+        setScanInput(val);
+        if (lastScanMsg?.type === 'error' || lastScanMsg?.type === 'warning') {
+            setLastScanMsg(null);
+        }
+
+        if (scanTimeoutRef.current) clearTimeout(scanTimeoutRef.current);
+        
+        // Solo aplicar el auto-submit si detectamos que es un escáner
+        if (isScannerRef.current) {
+            scanTimeoutRef.current = setTimeout(() => {
+                if (val.trim().length > 2) {
+                    handleScanItem(null, val);
+                    isScannerRef.current = false; // reiniciar
+                }
+            }, 100);
+        }
+    };
+
+    const handleScanItem = async (e, overrideCode) => {
+        if (e) e.preventDefault();
+        const code = (overrideCode !== undefined ? overrideCode : scanInput).trim();
         if (!code) return;
+
+        if (scanTimeoutRef.current) clearTimeout(scanTimeoutRef.current);
 
         if (itemMap[code]) {
             if (itemMap[code].scanned) {
@@ -514,96 +555,113 @@ const ReceptionView = ({ onClose, areaContext, areaFilter }) => {
                 {step === 2 && loadedRemito ? (
                     <div className="flex-1 overflow-y-auto p-6">
                         <div className="max-w-6xl mx-auto space-y-6">
-                            {/* HEADER DETAIL */}
-                            <div className="flex justify-between items-center bg-white p-4 rounded-xl shadow-sm border border-slate-200">
-                                <div>
-                                    <h1 className="text-xl font-black text-slate-800 uppercase tracking-tight flex items-center gap-2">
-                                        <i className="fa-solid fa-dolly text-indigo-600"></i>
-                                        {loadedRemito.CodigoRemito}
-                                    </h1>
-                                    <p className="text-slate-500 text-xs font-medium">Validando ingreso desde {loadedRemito.AreaOrigenID}</p>
-                                </div>
-                                <div className="text-right">
-                                    <div className={`text-3xl font-black ${progressColor}`}>
-                                        {scannedCount} <span className="text-slate-300 text-xl">/ {totalItems}</span>
+                            {/* LAYOUT VERTICAL COMPACTO */}
+                            <div className="flex flex-col gap-2 pb-20">
+                                
+                                {/* HEADER DETAIL */}
+                                <div className="flex justify-between items-center bg-white px-4 py-3 rounded-xl shadow-sm border border-slate-200">
+                                    <div>
+                                        <h1 className="text-lg font-black text-slate-800 uppercase tracking-tight flex items-center gap-2">
+                                            <i className="fa-solid fa-dolly text-indigo-600"></i>
+                                            {loadedRemito.CodigoRemito}
+                                        </h1>
+                                        <p className="text-slate-500 text-[10px] font-medium">Validando ingreso desde {loadedRemito.AreaOrigenID}</p>
                                     </div>
-                                    <div className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Ingresados</div>
-                                </div>
-                            </div>
-
-                            {/* GRID LAYOUT */}
-                            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 pb-20">
-                                {/* SCANNER */}
-                                <div className="bg-slate-800 rounded-xl shadow-lg border border-slate-700 p-8 flex flex-col justify-center items-center text-center relative overflow-hidden h-fit">
-                                    <div className="relative z-10 w-full max-w-xs space-y-6">
-                                        <h3 className="text-slate-300 font-bold uppercase tracking-wider text-sm">Escáner de Bultos</h3>
-                                        <form onSubmit={handleScanItem}>
-                                            <input
-                                                ref={scannerRef}
-                                                autoFocus
-                                                type="text"
-                                                value={scanInput}
-                                                onChange={e => setScanInput(e.target.value)}
-                                                className="w-full bg-slate-900 border-2 border-slate-600 rounded-xl py-4 px-6 text-center text-white font-mono text-xl focus:border-indigo-500 focus:ring-4 focus:ring-indigo-500/20 outline-none transition-all placeholder:text-slate-700"
-                                                placeholder="Escanear QR..."
-                                            />
-                                        </form>
-                                        <div className={`min-h-[40px] flex items-center justify-center rounded-lg p-2 font-bold transition-all text-sm ${lastScanMsg?.type === 'success' ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/50' : lastScanMsg?.type === 'error' ? 'bg-red-500/20 text-red-400 border border-red-500/50' : lastScanMsg?.type === 'warning' ? 'bg-yellow-500/20 text-yellow-400 border border-yellow-500/50' : 'bg-transparent'}`}>
-                                            {lastScanMsg ? lastScanMsg.text : <span className="text-slate-600">Esperando lectura...</span>}
+                                    <div className="text-right flex items-center gap-2 sm:gap-4">
+                                        {manualSelection.length > 0 ? (
+                                            <button onClick={confirmManualSelection} className="bg-indigo-600 text-white px-4 py-2 rounded-lg font-bold text-[10px] sm:text-xs hover:bg-indigo-700 transition-colors uppercase shadow-sm">
+                                                Confirmar ({manualSelection.length})
+                                            </button>
+                                        ) : (
+                                            scannedCount < totalItems && (
+                                                <button onClick={handleMarkMissing} className="bg-white border border-red-200 text-red-500 px-3 py-1.5 rounded-lg font-bold text-[10px] sm:text-xs hover:bg-red-50 transition-colors uppercase shadow-sm whitespace-nowrap">
+                                                    Cerrar Faltantes
+                                                </button>
+                                            )
+                                        )}
+                                        {scannedCount === totalItems && manualSelection.length === 0 && (
+                                            <div className="text-center text-emerald-600 font-bold text-xs py-1 px-2"><i className="fa-solid fa-check-circle mr-1"></i> Completo</div>
+                                        )}
+                                        
+                                        <div className="border-l border-slate-200 pl-4 ml-2">
+                                            <div className={`text-2xl font-black leading-none ${progressColor}`}>
+                                                {scannedCount} <span className="text-slate-300 text-lg">/ {totalItems}</span>
+                                            </div>
+                                            <div className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mt-1">Ingresados</div>
                                         </div>
+                                    </div>
+                                </div>
+
+                                {/* SCANNER COMPACT */}
+                                <div className="bg-slate-800 rounded-xl shadow-lg border border-slate-700 p-3 flex flex-col sm:flex-row justify-center items-center gap-3 relative overflow-hidden">
+                                    <h3 className="text-slate-300 font-bold uppercase tracking-wider text-xs whitespace-nowrap">Escáner</h3>
+                                    <form onSubmit={handleScanItem} className="w-full max-w-md">
+                                        <input
+                                            ref={scannerRef}
+                                            autoFocus
+                                            type="text"
+                                            value={scanInput}
+                                            onChange={handleScanInputChange}
+                                            onKeyDown={handleKeyDown}
+                                            className="w-full bg-slate-900 border-2 border-slate-600 rounded-lg py-2 px-4 text-center text-white font-mono text-lg focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20 outline-none transition-all placeholder:text-slate-700"
+                                            placeholder="Escanear QR..."
+                                        />
+                                    </form>
+                                    <div className={`min-w-[180px] flex items-center justify-center rounded-lg p-1.5 font-bold transition-all text-xs ${lastScanMsg?.type === 'success' ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/50' : lastScanMsg?.type === 'error' ? 'bg-red-500/20 text-red-400 border border-red-500/50' : lastScanMsg?.type === 'warning' ? 'bg-yellow-500/20 text-yellow-400 border border-yellow-500/50' : 'bg-transparent text-slate-500'}`}>
+                                        {lastScanMsg ? lastScanMsg.text : <span>Esperando...</span>}
                                     </div>
                                 </div>
 
                                 {/* LIST */}
                                 <div className="bg-white rounded-xl shadow-sm border border-slate-200 flex flex-col overflow-hidden max-h-[600px]">
                                     <div className="p-3 bg-slate-50 border-b border-slate-100 font-bold text-slate-700 text-sm flex justify-between items-center">
-                                        <span>Items ({totalItems})</span>
-                                        {manualSelection.length > 0 && <span className="text-indigo-600">{manualSelection.length} selec.</span>}
+                                        <div className="flex items-center gap-4">
+                                            <span>Items ({totalItems})</span>
+                                            <label className="flex items-center gap-2 cursor-pointer text-xs font-medium text-slate-600 bg-white px-2 py-1 rounded border shadow-sm">
+                                                <input type="checkbox" checked={showOnlyPending} onChange={e => setShowOnlyPending(e.target.checked)} className="form-checkbox text-indigo-600 rounded cursor-pointer" />
+                                                Solo Pendientes
+                                            </label>
+                                        </div>
+                                        {(() => {
+                                            const faltanCount = Object.values(itemMap).filter(item => !item.scanned && !manualSelection.includes(item.BultoID)).length;
+                                            return faltanCount > 0 ? (
+                                                <span className="text-rose-500 font-bold uppercase text-[10px] bg-rose-50 px-2 py-1 rounded border border-rose-100">
+                                                    Faltan {faltanCount}
+                                                </span>
+                                            ) : null;
+                                        })()}
                                     </div>
-                                    <div className="flex-1 overflow-y-auto p-2 space-y-2">
-                                        {Object.values(itemMap).map((item, idx) => {
-                                            const isSelected = manualSelection.includes(item.BultoID);
-                                            return (
-                                                <div
-                                                    key={item.CodigoEtiqueta}
-                                                    onClick={() => handleManualToggle(item.CodigoEtiqueta)}
-                                                    className={`p-2 rounded-lg border flex justify-between items-center transition-all cursor-pointer select-none text-sm ${item.scanned
-                                                        ? 'bg-emerald-50 border-emerald-200 opacity-75'
-                                                        : isSelected
-                                                            ? 'bg-indigo-50 border-indigo-200 ring-1 ring-indigo-200'
-                                                            : 'bg-white border-slate-100 hover:border-slate-300'
-                                                        }`}
-                                                >
-                                                    <div className="flex items-center gap-3">
-                                                        <div className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold ${item.scanned ? 'bg-emerald-500 text-white' : isSelected ? 'bg-indigo-500 text-white' : 'bg-slate-100 text-slate-400'}`}>
-                                                            {item.scanned ? <i className="fa-solid fa-check"></i> : (idx + 1)}
+                                    <div className="flex-1 overflow-y-auto p-3">
+                                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-2">
+                                            {Object.values(itemMap).filter(item => {
+                                                if (!showOnlyPending) return true;
+                                                const isSelected = manualSelection.includes(item.BultoID);
+                                                return !item.scanned && !isSelected;
+                                            }).map((item, idx) => {
+                                                const isSelected = manualSelection.includes(item.BultoID);
+                                                return (
+                                                    <div
+                                                        key={item.CodigoEtiqueta}
+                                                        onClick={() => handleManualToggle(item.CodigoEtiqueta)}
+                                                        className={`p-2 rounded-lg border flex flex-col gap-1 transition-all cursor-pointer select-none text-xs ${item.scanned
+                                                            ? 'bg-emerald-50 border-emerald-200 opacity-75'
+                                                            : isSelected
+                                                                ? 'bg-indigo-50 border-indigo-200 ring-1 ring-indigo-200'
+                                                                : 'bg-white border-slate-100 hover:border-slate-300'
+                                                            }`}
+                                                    >
+                                                        <div className="flex justify-between items-start gap-2">
+                                                            <div className="font-bold font-mono text-slate-700 truncate">{item.CodigoEtiqueta}</div>
+                                                            <div className={`w-5 h-5 shrink-0 rounded-full flex items-center justify-center text-[10px] font-bold ${item.scanned ? 'bg-emerald-500 text-white' : isSelected ? 'bg-indigo-500 text-white' : 'bg-slate-100 text-slate-400'}`}>
+                                                                {item.scanned ? <i className="fa-solid fa-check"></i> : (idx + 1)}
+                                                            </div>
                                                         </div>
-                                                        <div>
-                                                            <div className="font-bold font-mono text-slate-700">{item.CodigoEtiqueta}</div>
-                                                            <div className="text-[10px] text-slate-500 truncate w-32">{item.Descripcion}</div>
-                                                        </div>
+                                                        <div className="text-[10px] text-slate-500 truncate w-full">{item.Descripcion}</div>
+                                                        {item.scanned && <span className="text-[9px] font-bold text-emerald-600 uppercase mt-0.5">Recibido</span>}
                                                     </div>
-                                                    {item.scanned && <span className="text-[10px] font-bold text-emerald-600 uppercase">Recibido</span>}
-                                                </div>
-                                            );
-                                        })}
-                                    </div>
-                                    {/* ACTIONS FOOTER */}
-                                    <div className="p-3 border-t border-slate-100 bg-slate-50 space-y-2">
-
-                                        {manualSelection.length > 0 ? (
-                                            <button onClick={confirmManualSelection} className="w-full bg-indigo-600 text-white py-2 rounded-lg font-bold text-xs hover:bg-indigo-700 transition-colors uppercase">
-                                                Confirmar Selección
-                                            </button>
-                                        ) : (
-                                            scannedCount < totalItems ? (
-                                                <button onClick={handleMarkMissing} className="w-full bg-white border border-red-200 text-red-500 py-2 rounded-lg font-bold text-xs hover:bg-red-50 transition-colors uppercase">
-                                                    Cerrar con Faltantes
-                                                </button>
-                                            ) : (
-                                                <div className="text-center text-emerald-600 font-bold text-xs"><i className="fa-solid fa-check-circle mr-1"></i> Completo</div>
-                                            )
-                                        )}
+                                                );
+                                            })}
+                                        </div>
                                     </div>
                                 </div>
                             </div>

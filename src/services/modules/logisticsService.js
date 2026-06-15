@@ -42,6 +42,11 @@ const logisticsService = {
         return response.data;
     },
 
+    searchRemitos: async (query) => {
+        const response = await api.get('/logistics/remitos/search', { params: { query } });
+        return response.data;
+    },
+
     getIncomingRemitos: async (areaId) => {
         const response = await api.get('/logistics/remitos/incoming', { params: { areaId } });
         return response.data;
