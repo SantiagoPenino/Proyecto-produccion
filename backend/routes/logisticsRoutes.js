@@ -20,6 +20,7 @@ router.post('/remitos/from-orders', logisticsController.createRemitoFromOrders);
 router.post('/remitos/validate', logisticsController.validateDispatch);
 router.get('/remitos/incoming', logisticsController.getIncomingRemitos);
 router.get('/remitos/outgoing', logisticsController.getOutgoingRemitos);
+router.get('/remitos/search', logisticsController.searchRemitos);
 router.get('/remitos/:code', logisticsController.getRemitoByCode);
 
 // Recepción

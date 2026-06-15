@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { logisticsService, authService } from '../../services/api';
+import api from '../../services/api';
 import { useAuth } from '../../context/AuthContext';
 import { useQuery } from '@tanstack/react-query';
 import QRCode from "react-qr-code";
@@ -21,6 +22,10 @@ const DispatchView = ({ selectedOrders: initialOrders = [], areaFilter, originAr
     // History Selection (Only used if viewMode === 'history')
     const [selectedHistoryCode, setSelectedHistoryCode] = useState(null);
     const [historyDetail, setHistoryDetail] = useState(null);
+
+    // History Search
+    const [historySearchQuery, setHistorySearchQuery] = useState('');
+    const [historySearchResults, setHistorySearchResults] = useState(null);
 
     // --- FETCH HISTORY ---
     const { data: outgoingRemitos, isLoading: loadingHistory, refetch: refetchHistory } = useQuery({
@@ -198,6 +203,31 @@ const DispatchView = ({ selectedOrders: initialOrders = [], areaFilter, originAr
         }
     };
 
+    const handleSearchHistory = async (e) => {
+        if (e) e.preventDefault();
+        if (!historySearchQuery.trim()) {
+            setHistorySearchResults(null);
+            return;
+        }
+        console.log('[BUSQUEDA] Iniciando búsqueda:', historySearchQuery.trim());
+        setLoading(true);
+        try {
+            const res = await api.get('/logistics/remitos/search', { params: { query: historySearchQuery.trim() } }).then(r => r.data);
+            console.log('[BUSQUEDA] Resultado:', res);
+            setHistorySearchResults(res);
+            if (res.length === 1) {
+                handleSelectHistory(res[0].CodigoRemito);
+            }
+        } catch (err) {
+            console.error('[BUSQUEDA] Error completo:', err);
+            console.error('[BUSQUEDA] Response data:', err?.response?.data);
+            console.error('[BUSQUEDA] Status:', err?.response?.status);
+            toast.error(`Error en la búsqueda: ${err?.response?.data?.error || err.message}`);
+        } finally {
+            setLoading(false);
+        }
+    };
+
     const handleCreateBatch = async (e) => {
         if (e) e.preventDefault();
         setLoading(true);
@@ -333,7 +363,7 @@ const DispatchView = ({ selectedOrders: initialOrders = [], areaFilter, originAr
         };
 
         return (
-            <div className="flex flex-col w-full max-w-3xl bg-slate-100 print:bg-white h-auto rounded-xl overflow-hidden shadow-sm">
+            <div className="flex flex-col w-full bg-slate-100 print:bg-white h-auto rounded-xl overflow-hidden shadow-sm">
                 <style>{`
                     @media print {
                         body > *:not(#print-detail) { display: none !important; }
@@ -361,7 +391,7 @@ const DispatchView = ({ selectedOrders: initialOrders = [], areaFilter, originAr
                     <button onClick={handlePrint} className="px-6 py-2 bg-slate-800 text-white rounded-lg font-bold"><i className="fa-solid fa-print mr-2"></i> Imprimir</button>
                 </div>
 
-                <div id="print-detail" className="p-8 flex flex-col items-center print:p-0">
+                <div id="print-detail" className="hidden print:flex p-8 flex-col items-center print:p-0">
                     <div className="w-full bg-white p-8 rounded-xl border-dashed border-2 border-slate-300 print:border-none print:shadow-none shadow-sm pb-10">
                         <div className="text-center mb-6 border-b-2 border-black pb-4">
                             <h1 className="text-4xl font-black uppercase tracking-tight">Remito</h1>
@@ -377,38 +407,84 @@ const DispatchView = ({ selectedOrders: initialOrders = [], areaFilter, originAr
 
                         <div className="text-center text-xs text-slate-500 mb-6 font-bold">FECHA EMISIÓN: {res.date}</div>
 
-                        {/* Item List */}
-                        <div className="text-center border-t-2 border-slate-200 pt-6 mt-4 mb-8">
+                        {/* ONLY Print Total Count, not the full list */}
+                        <div className="text-center border-t-2 border-slate-200 pt-6 mt-4 pb-2">
                             <h3 className="text-xs font-bold uppercase mb-2 text-slate-400">Cantidad Total</h3>
                             <div className="text-5xl font-black text-slate-900">{historyDetail.items?.length || 0}</div>
                             <div className="text-sm font-bold uppercase text-slate-500 mt-1">Bultos</div>
                         </div>
+                    </div>
+                </div>
 
-                        {historyDetail.items && historyDetail.items.length > 0 && (
-                            <div className="w-full text-left mt-6">
-                                <h4 className="text-xs font-bold uppercase text-slate-500 mb-2 border-b-2 border-black pb-1">Detalle de Bultos</h4>
-                                <table className="w-full text-xs">
-                                    <thead>
-                                        <tr className="border-b border-slate-200 text-slate-400">
-                                            <th className="py-2 text-left">Código Bulto</th>
-                                            <th className="py-2 text-left">Nro. Orden</th>
-                                            <th className="py-2 text-left">Cliente</th>
+                {/* Detailed Item List (Screen Only, NOT printed) */}
+                {historyDetail.items && historyDetail.items.length > 0 && (
+                    <div className="p-4 print:hidden w-full">
+                        <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+                            <div className="bg-slate-50 border-b border-slate-200 px-6 py-4 flex justify-between items-center">
+                                <h3 className="font-bold text-slate-800 uppercase tracking-tight flex items-center gap-2">
+                                    <i className="fa-solid fa-boxes-stacked text-indigo-500"></i>
+                                    Detalle de Órdenes y Bultos ({historyDetail.items.length})
+                                </h3>
+                            </div>
+                            <div className="overflow-x-auto">
+                                <table className="w-full text-left text-sm">
+                                    <thead className="bg-slate-50 text-slate-500 text-xs uppercase font-bold border-b border-slate-200">
+                                        <tr>
+                                            <th className="px-4 py-3 whitespace-nowrap">Código Bulto</th>
+                                            <th className="px-4 py-3 whitespace-nowrap">Nro. Orden</th>
+                                            <th className="px-4 py-3">Cliente</th>
+                                            <th className="px-4 py-3">Trabajo</th>
+                                            <th className="px-4 py-3 whitespace-nowrap">Origen / Destino</th>
+                                            <th className="px-4 py-3 text-right">Estado</th>
                                         </tr>
                                     </thead>
                                     <tbody className="divide-y divide-slate-100">
-                                        {historyDetail.items.map((item, idx) => (
-                                            <tr key={idx} className="font-bold text-slate-700">
-                                                <td className="py-1.5 font-mono text-[11px]">{item.displayCode || '-'}</td>
-                                                <td className="py-1.5">{item.orderCode || '-'}</td>
-                                                <td className="py-1.5 uppercase truncate max-w-[150px]">{item.clientName || 'S/D'}</td>
+                                        {historyDetail.items.map((item, idx) => {
+                                            const q = historySearchQuery.trim().toLowerCase();
+                                            const isMatch = q && (
+                                                String(item.OrdenID || '').includes(q) ||
+                                                String(item.CodigoOrden || '').toLowerCase().includes(q) ||
+                                                String(item.NoDocERP || '').toLowerCase().includes(q) ||
+                                                (item.CodigoEtiqueta || '').toLowerCase().includes(q) ||
+                                                (item.Cliente || '').toLowerCase().includes(q)
+                                            );
+                                            return (
+                                            <tr key={idx} className={`transition-colors ${isMatch ? 'bg-amber-50 border-l-4 border-amber-400' : 'hover:bg-slate-50'}`}>
+                                                <td className="px-4 py-3 font-mono font-bold text-slate-700">
+                                                    {isMatch && <i className="fa-solid fa-circle-dot text-amber-500 mr-2 text-xs"></i>}
+                                                    {item.CodigoEtiqueta || item.displayCode || item.BultoID || 'N/A'}
+                                                </td>
+                                                <td className={`px-4 py-3 font-bold ${isMatch ? 'text-amber-700' : ''}`}>
+                                                    <div>{item.CodigoOrden || item.NoDocERP || item.RetiroAsociado || '-'}</div>
+                                                    <div className="text-[10px] text-slate-400 font-normal">ID: {item.OrdenID || item.RetiroID || '-'}</div>
+                                                </td>
+                                                <td className="px-4 py-3 font-bold text-slate-800 whitespace-nowrap">
+                                                    {item.Cliente || item.ClienteRetiro || item.ReceptorNombre || 'S/D'}
+                                                </td>
+                                                <td className="px-4 py-3 text-xs text-slate-500 max-w-xs truncate" title={item.DescripcionTrabajo || item.Descripcion}>
+                                                    {item.DescripcionTrabajo || item.Descripcion || '-'}
+                                                </td>
+                                                <td className="px-4 py-3 text-xs">
+                                                    <div className="flex items-center gap-2 font-bold text-slate-600">
+                                                        <span className="uppercase">{historyDetail.AreaOrigenID}</span>
+                                                        <i className="fa-solid fa-arrow-right text-slate-400"></i>
+                                                        <span className="uppercase text-slate-500">{historyDetail.AreaDestinoID}</span>
+                                                    </div>
+                                                </td>
+                                                <td className="px-4 py-3 text-right">
+                                                    <span className={`text-[10px] font-bold px-2 py-1 rounded uppercase ${item.BultoEstado === 'EN_TRANSITO' ? 'bg-amber-100 text-amber-700' : item.BultoEstado === 'ENTREGADO' ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-600'}`}>
+                                                        {item.BultoEstado?.replace('_', ' ') || historyDetail.Estado?.replace('_', ' ')}
+                                                    </span>
+                                                </td>
                                             </tr>
-                                        ))}
+                                            );
+                                        })}
                                     </tbody>
                                 </table>
                             </div>
-                        )}
+                        </div>
                     </div>
-                </div>
+                )}
             </div>
         );
     };
@@ -696,19 +772,46 @@ const DispatchView = ({ selectedOrders: initialOrders = [], areaFilter, originAr
     // --- RENDER: HISTORY MODE ---
     if (viewMode === 'history') {
         return (
-            <div className="flex h-full bg-slate-100 font-sans min-h-screen">
+            <div className="flex bg-slate-100 font-sans" style={{height: 'calc(100vh - 130px)'}}>
                 {/* LIST SIDEBAR */}
-                <div className="w-1/3 min-w-[350px] max-w-md bg-white border-r border-slate-200 flex flex-col h-full sticky top-0 print:hidden">
-                    <div className="p-6 border-b border-slate-100 bg-slate-50 flex justify-between items-center">
-                        <h2 className="font-bold text-slate-800 text-lg">Historial de Envíos</h2>
-                        <button onClick={() => refetchHistory()} className="text-slate-400 hover:text-indigo-600"><i className="fa-solid fa-sync"></i></button>
+                <div className="w-80 min-w-[300px] max-w-sm bg-white border-r border-slate-200 flex flex-col overflow-hidden print:hidden">
+                    <div className="p-6 border-b border-slate-100 bg-slate-50 flex flex-col gap-4">
+                        <div className="flex justify-between items-center">
+                            <h2 className="font-bold text-slate-800 text-lg">Historial de Envíos</h2>
+                            <button onClick={() => { refetchHistory(); setHistorySearchResults(null); setHistorySearchQuery(''); }} className="text-slate-400 hover:text-indigo-600"><i className="fa-solid fa-sync"></i></button>
+                        </div>
+                        <form onSubmit={handleSearchHistory} className="relative w-full">
+                            <i className="fa-solid fa-search absolute left-3 top-3 text-slate-400 text-sm"></i>
+                            <input 
+                                type="text"
+                                value={historySearchQuery}
+                                onChange={e => {
+                                    setHistorySearchQuery(e.target.value);
+                                    if (!e.target.value) setHistorySearchResults(null);
+                                }}
+                                placeholder="Buscar Nro. Orden, Bulto..."
+                                className="w-full pl-9 pr-8 py-2 border border-slate-200 rounded-lg text-sm focus:border-indigo-500 outline-none shadow-inner"
+                            />
+                            {historySearchQuery && (
+                                <button type="button" onClick={() => { setHistorySearchQuery(''); setHistorySearchResults(null); }} className="absolute right-3 top-3 text-slate-400 hover:text-red-500">
+                                    <i className="fa-solid fa-xmark"></i>
+                                </button>
+                            )}
+                        </form>
                     </div>
                     <div className="flex-1 overflow-y-auto p-4 space-y-3">
-                        {loadingHistory && <div className="p-4 text-center text-slate-400"><i className="fa-solid fa-circle-notch fa-spin"></i></div>}
-                        {outgoingRemitos?.length === 0 && <div className="p-4 text-center text-slate-400 text-sm">No hay envíos registrados.</div>}
-                        {outgoingRemitos?.map(rem => (
+                        {loadingHistory && !historySearchResults && <div className="p-4 text-center text-slate-400"><i className="fa-solid fa-circle-notch fa-spin"></i></div>}
+                        
+                        {historySearchResults && (
+                            <div className="mb-4">
+                                <h3 className="text-xs font-bold uppercase text-slate-500 mb-2 border-b border-slate-200 pb-1">Resultados de Búsqueda ({historySearchResults.length})</h3>
+                                {historySearchResults.length === 0 && <div className="text-sm text-slate-400">No se encontraron remitos</div>}
+                            </div>
+                        )}
+
+                        {(!historySearchResults ? outgoingRemitos : historySearchResults)?.map(rem => (
                             <div
-                                key={rem.EnvioID}
+                                key={rem.EnvioID || rem.CodigoRemito}
                                 onClick={() => handleSelectHistory(rem.CodigoRemito)}
                                 className={`p-4 rounded-xl border cursor-pointer transition-all hover:shadow-md ${selectedHistoryCode === rem.CodigoRemito ? 'bg-brand-cyan/5 border-brand-cyan ring-1 ring-brand-cyan/30' : 'bg-white border-slate-100 hover:border-slate-300'}`}
                             >
@@ -718,21 +821,27 @@ const DispatchView = ({ selectedOrders: initialOrders = [], areaFilter, originAr
                                 </div>
                                 <div className="flex items-center gap-2 text-xs text-slate-500 mb-2">
                                     <i className="fa-solid fa-arrow-right-long text-slate-300"></i>
-                                    <span>Hacia: <strong className="text-slate-700 text-sm">{rem.AreaDestinoID}</strong></span>
+                                    <span>Hacia: <strong className="text-slate-700 text-sm">{rem.AreaDestinoID || 'S/D'}</strong></span>
                                 </div>
                                 <div className="flex justify-between items-end border-t border-slate-50 pt-2 mt-2">
                                     <div className="text-[10px] text-slate-400">{new Date(rem.FechaSalida).toLocaleString()}</div>
-                                    <div className="text-[10px] font-bold text-slate-500">{rem.TotalItems || rem.items?.length || 0} bultos</div>
+                                    {rem.TotalItems !== undefined || rem.items ? (
+                                        <div className="text-[10px] font-bold text-slate-500">{rem.TotalItems || rem.items?.length || 0} bultos</div>
+                                    ) : (
+                                        <div className="text-[10px] font-bold text-slate-500">Orden asociada: {rem.OrdenID}</div>
+                                    )}
                                 </div>
                             </div>
                         ))}
+                        
+                        {!historySearchResults && outgoingRemitos?.length === 0 && <div className="p-4 text-center text-slate-400 text-sm">No hay envíos registrados.</div>}
                     </div>
                 </div>
 
                 {/* DETAIL VIEW */}
-                <div className="flex-1 flex flex-col h-full overflow-hidden relative bg-slate-50">
+                <div className="flex-1 flex flex-col overflow-hidden relative bg-slate-50">
                     {selectedHistoryCode ? (
-                        <div className="h-full overflow-auto p-6 flex justify-center">{renderHistoryDetail()}</div>
+                        <div className="flex-1 overflow-y-auto">{renderHistoryDetail()}</div>
                     ) : (
                         <div className="flex-1 flex flex-col items-center justify-center text-slate-400">
                             <i className="fa-solid fa-file-invoice text-6xl mb-4 opacity-20"></i>

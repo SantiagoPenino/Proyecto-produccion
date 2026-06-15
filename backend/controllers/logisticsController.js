@@ -584,21 +584,57 @@ exports.getRemitoByCode = async (req, res) => {
         const items = await pool.request().input('EID', sql.Int, envio.EnvioID)
             .query(`
                 SELECT i.*, b.Estado as BultoEstado, b.CodigoEtiqueta, b.Descripcion, b.OrdenID, b.ComprobantePath,
-                       b.Tipocontenido, o.Cliente, o.DescripcionTrabajo,
+                       b.Tipocontenido, o.Cliente, o.DescripcionTrabajo, o.CodigoOrden, o.NoDocERP,
                        CASE 
                            WHEN b.Tipocontenido = 'ENCOMIENDA' AND ret.OReIdOrdenRetiro IS NOT NULL 
                            THEN ISNULL(ret.FormaRetiro, 'R') + '-' + CAST(ret.OReIdOrdenRetiro AS VARCHAR)
                            ELSE NULL 
-                       END AS RetiroAsociado
+                       END AS RetiroAsociado,
+                       ret.OReIdOrdenRetiro AS RetiroID,
+                       ret.ReceptorNombre,
+                       cli.Nombre AS ClienteRetiro
                 FROM Logistica_EnvioItems i
                 INNER JOIN Logistica_Bultos b ON i.BultoID = b.BultoID
                 LEFT JOIN Ordenes o ON b.OrdenID = o.OrdenID
                 LEFT JOIN OrdenesRetiro ret ON b.OrdenID = ret.OReIdOrdenRetiro
+                LEFT JOIN Clientes cli ON ret.CodCliente = cli.CodCliente
                 WHERE i.EnvioID = @EID
             `);
 
         res.json({ ...envio, items: items.recordset });
     } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+};
+
+exports.searchRemitos = async (req, res) => {
+    const { query } = req.query;
+    console.log('[SEARCH REMITOS] query recibida:', query);
+    if (!query) return res.status(400).json({ error: 'Missing query' });
+
+    try {
+        const pool = await getPool();
+        const r = await pool.request()
+            .input('Q', sql.VarChar, `%${query}%`)
+            .input('QExact', sql.VarChar, query)
+            .query(`
+                SELECT DISTINCT TOP 10 
+                    e.EnvioID, e.CodigoRemito, e.Estado, e.FechaSalida, e.AreaDestinoID
+                FROM Logistica_Envios e
+                INNER JOIN Logistica_EnvioItems i ON e.EnvioID = i.EnvioID
+                INNER JOIN Logistica_Bultos b ON i.BultoID = b.BultoID
+                LEFT JOIN Ordenes o ON b.OrdenID = o.OrdenID
+                WHERE b.CodigoEtiqueta LIKE @Q 
+                   OR CAST(b.OrdenID AS VARCHAR) = @QExact 
+                   OR e.CodigoRemito = @QExact
+                   OR o.CodigoOrden LIKE @Q
+                   OR CAST(o.NoDocERP AS VARCHAR) LIKE @Q
+                ORDER BY e.FechaSalida DESC
+            `);
+        console.log('[SEARCH REMITOS] resultados:', r.recordset.length);
+        res.json(r.recordset);
+    } catch (err) {
+        console.error('[SEARCH REMITOS] ERROR:', err.message);
         res.status(500).json({ error: err.message });
     }
 };
@@ -1627,9 +1663,19 @@ exports.getActiveTransports = async (req, res) => {
                 e.CodigoRemito,
                 e.Estado,
                 e.Observaciones,
+                e.AreaOrigenID,
+                e.AreaDestinoID,
                 e.FechaSalida as FechaCreacion,
+                e.FechaSalida as Fecha,
                 (SELECT COUNT(*) FROM Logistica_EnvioItems WHERE EnvioID = e.EnvioID) as TotalBultos,
-                e.FechaSalida as Fecha
+                CASE 
+                    WHEN EXISTS (
+                        SELECT 1 FROM Logistica_EnvioItems ei
+                        INNER JOIN Logistica_Bultos b ON ei.BultoID = b.BultoID
+                        WHERE ei.EnvioID = e.EnvioID AND b.Tipocontenido = 'ENCOMIENDA'
+                    ) THEN 'ENCOMIENDA'
+                    ELSE 'PRODUCCION'
+                END AS TipoEnvio
             FROM Logistica_Envios e
             ORDER BY e.FechaSalida DESC
         `);

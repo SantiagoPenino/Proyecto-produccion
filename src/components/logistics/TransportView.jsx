@@ -15,6 +15,7 @@ const TransportView = () => {
     const [loading, setLoading] = useState(false);
     const [searchTerm, setSearchTerm] = useState('');
     const [filterStatus, setFilterStatus] = useState('ACTIVE'); // 'ACTIVE' | 'ALL'
+    const [filterTipo, setFilterTipo] = useState('TODOS'); // 'TODOS' | 'PRODUCCION' | 'ENCOMIENDA'
 
     useEffect(() => {
         loadData();
@@ -252,8 +253,9 @@ const TransportView = () => {
             (t.Observaciones || '').toLowerCase().includes(searchTerm.toLowerCase());
         if (!matchesSearch) return false;
         if (filterStatus === 'ACTIVE') {
-            return ['EN_TRANSITO', 'EN_TRANSITO_PARCIAL', 'ESPERANDO_RETIRO'].includes(t.Estado);
+            if (!['EN_TRANSITO', 'EN_TRANSITO_PARCIAL', 'ESPERANDO_RETIRO'].includes(t.Estado)) return false;
         }
+        if (filterTipo !== 'TODOS' && t.TipoEnvio !== filterTipo) return false;
         return true;
     });
 
@@ -270,10 +272,15 @@ const TransportView = () => {
                         <p className="text-slate-500 text-sm">Mercadería en poder de transportistas</p>
                     </div>
                 </div>
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 flex-wrap">
                     <div className="bg-slate-100 p-1 rounded-lg flex text-sm font-bold">
                         <button onClick={() => setFilterStatus('ACTIVE')} className={`px-3 py-1.5 rounded transition-all ${filterStatus === 'ACTIVE' ? 'bg-white shadow text-brand-cyan' : 'text-slate-500'}`}>En Viaje</button>
                         <button onClick={() => setFilterStatus('ALL')} className={`px-3 py-1.5 rounded transition-all ${filterStatus === 'ALL' ? 'bg-white shadow text-brand-cyan' : 'text-slate-500'}`}>Todos</button>
+                    </div>
+                    <div className="bg-slate-100 p-1 rounded-lg flex text-sm font-bold">
+                        <button onClick={() => setFilterTipo('TODOS')} className={`px-3 py-1.5 rounded transition-all ${filterTipo === 'TODOS' ? 'bg-white shadow text-slate-700' : 'text-slate-500'}`}>Todos</button>
+                        <button onClick={() => setFilterTipo('PRODUCCION')} className={`px-3 py-1.5 rounded transition-all ${filterTipo === 'PRODUCCION' ? 'bg-white shadow text-indigo-600' : 'text-slate-500'}`}>Producción</button>
+                        <button onClick={() => setFilterTipo('ENCOMIENDA')} className={`px-3 py-1.5 rounded transition-all ${filterTipo === 'ENCOMIENDA' ? 'bg-white shadow text-emerald-600' : 'text-slate-500'}`}>Encomiendas</button>
                     </div>
                     <button onClick={loadData} className="p-2 text-brand-cyan hover:bg-brand-cyan/10 rounded-lg">
                         <RefreshCw size={16} className={loading ? 'animate-spin' : ''} />
@@ -335,6 +342,20 @@ const TransportView = () => {
                                         <Clock size={11} className="shrink-0" />
                                         {new Date(t.Fecha).toLocaleString('es-UY', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}
                                         &nbsp;·&nbsp;{t.TotalBultos} bulto{t.TotalBultos !== 1 ? 's' : ''}
+                                    </div>
+                                    <div className="mt-1.5 flex items-center gap-2">
+                                        {(t.AreaOrigenID || t.AreaDestinoID) && (
+                                            <div className="text-xs font-bold flex items-center gap-1 text-slate-600">
+                                                <span className="uppercase bg-slate-100 px-1.5 py-0.5 rounded">{t.AreaOrigenID || '?'}</span>
+                                                <i className="fa-solid fa-arrow-right text-slate-400 text-[10px]"></i>
+                                                <span className="uppercase bg-slate-100 px-1.5 py-0.5 rounded">{t.AreaDestinoID || '?'}</span>
+                                            </div>
+                                        )}
+                                        {t.TipoEnvio && (
+                                            <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded uppercase ${t.TipoEnvio === 'ENCOMIENDA' ? 'bg-emerald-100 text-emerald-700' : 'bg-indigo-100 text-indigo-700'}`}>
+                                                {t.TipoEnvio}
+                                            </span>
+                                        )}
                                     </div>
                                 </div>
                             </div>
