@@ -254,7 +254,7 @@ const MachineControl = ({ machine, onAssign, onToggleStatus, onViewDetails, onUn
                     <div 
                         ref={provided.innerRef} 
                         {...provided.droppableProps}
-                        className={`p-0 flex-1 flex flex-col -space-y-px overflow-y-auto custom-scrollbar transition-colors ${snapshot.isDraggingOver ? 'bg-brand-cyan/5 rounded-b-xl' : 'bg-zinc-50/50'}`}
+                        className={`p-2 flex-1 flex flex-col gap-2 overflow-y-auto custom-scrollbar transition-colors ${snapshot.isDraggingOver ? 'bg-brand-cyan/5 rounded-b-xl' : 'bg-zinc-50/50'}`}
                     >
                         {machine.rolls.map((roll, index) => (
                             <Draggable key={roll.id} draggableId={String(roll.id)} index={index}>

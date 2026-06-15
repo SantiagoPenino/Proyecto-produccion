@@ -8,7 +8,7 @@ import confettiAnim from '../../../assets/animations/confetti.json';
 
 const API_BASE = import.meta.env.VITE_API_URL || '/api';
 
-const BASE_PREFIXES = ['SB', 'DF', 'UVDF', 'ECOUV', 'TWC', 'EMB', 'TP', 'IMD', 'PRO', 'VEN'];
+const BASE_PREFIXES = ['SB', 'DF', 'DTF', 'UVDF', 'ECOUV', 'TWC', 'EMB', 'TP', 'IMD', 'PRO', 'VEN'];
 
 // Print ticket (80mm thermal - same technique as PrintStationPage)
 const printTotemTicket = ({ ordenRetiro, client, orders, title = 'COMPROBANTE DE RETIRO' }) => {
@@ -440,7 +440,7 @@ export const TotemDashboard = ({ onLogout }) => {
                         animate={{ opacity: 1, y: 0, scale: 1 }}
                         exit={{ opacity: 0, y: -20, scale: 0.97 }}
                         transition={{ duration: 0.3, ease: [0.4, 0, 0.2, 1] }}
-                        className="bg-white/[0.06] border border-white/10 rounded-3xl p-7 w-full max-w-[520px] shadow-2xl"
+                        className="bg-white/[0.06] border border-white/10 rounded-3xl p-7 w-full max-w-[620px] shadow-2xl"
                     >
                         <div className="text-center mb-6">
                             <Logo className="h-16 w-auto text-white mx-auto mb-3" />
@@ -498,7 +498,7 @@ export const TotemDashboard = ({ onLogout }) => {
                         animate={{ opacity: 1, y: 0, scale: 1 }}
                         exit={{ opacity: 0, y: -20, scale: 0.97 }}
                         transition={{ duration: 0.3, ease: [0.4, 0, 0.2, 1] }}
-                        className="bg-white/[0.06] border border-white/10 rounded-3xl p-7 w-full max-w-[520px] shadow-2xl"
+                        className="bg-white/[0.06] border border-white/10 rounded-3xl p-7 w-full max-w-[620px] shadow-2xl"
                     >
                         <div className="text-center mb-6">
                             <h2 className="text-xl font-bold text-white uppercase">Ingresá tu número de orden</h2>
@@ -541,7 +541,7 @@ export const TotemDashboard = ({ onLogout }) => {
                         </div>
                         <div className="border-t border-white/10 my-2" />
 
-                        <div className="grid grid-cols-5 gap-2 mb-5">
+                        <div className="grid grid-cols-6 gap-2 mb-5">
                             {BASE_PREFIXES.map(p => (
                                 <button
                                     key={p}

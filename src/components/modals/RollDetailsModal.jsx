@@ -287,7 +287,13 @@ const MoveOrderModal = ({ isOpen, onClose, onConfirm, currentRollId, areaCode })
             setLoading(true);
             productionService.getBoard(areaCode)
                 .then(data => {
-                    const availableRolls = (data.pendingRolls || []).filter(r => String(r.id) !== String(currentRollId));
+                    const allRolls = [...(data.pendingRolls || [])];
+                    (data.machines || []).forEach(m => {
+                        if (m.rolls && Array.isArray(m.rolls)) {
+                            allRolls.push(...m.rolls);
+                        }
+                    });
+                    const availableRolls = allRolls.filter(r => String(r.id) !== String(currentRollId));
                     setRolls(availableRolls);
                 })
                 .catch(err => toast.error('Error cargando lotes'))

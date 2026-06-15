@@ -63,7 +63,14 @@ const SmallRollMetrics = ({ roll, metrics }) => {
 const FilePrintControl = ({ areaCode }) => {
   const { user } = useAuth(); // for fallback logic if needed
   // --- STATES ---
-  const [activeRoll, setActiveRoll] = useState(null);
+  const [activeRoll, setActiveRoll] = useState(() => {
+    try {
+      const saved = localStorage.getItem(`activeRoll_${areaCode || 'DTF'}`);
+      return saved ? JSON.parse(saved) : null;
+    } catch {
+      return null;
+    }
+  });
   const [rollos, setRollos] = useState([]);
   const [orders, setOrders] = useState([]);
   const [selectedOrder, setSelectedOrder] = useState(null);
@@ -98,6 +105,15 @@ const FilePrintControl = ({ areaCode }) => {
   const [metersToReprint, setMetersToReprint] = useState('');
   const [reponerCompleto, setReponerCompleto] = useState(false);
   const [actionReason, setActionReason] = useState('');
+
+  // Persist selected activeRoll across tab changes
+  useEffect(() => {
+    if (activeRoll) {
+      localStorage.setItem(`activeRoll_${areaCode || 'DTF'}`, JSON.stringify(activeRoll));
+    } else {
+      localStorage.removeItem(`activeRoll_${areaCode || 'DTF'}`);
+    }
+  }, [activeRoll, areaCode]);
 
   // --- DERIVED STATE ---
   const sortedOrders = useMemo(() => {
@@ -973,8 +989,9 @@ const FilePrintControl = ({ areaCode }) => {
               )}
             </div>
 
-            {/* BOTTOM COMPLETION BUTTON - aparece cuando todos los archivos están listos */}
-            {orderMetrics.done === orderMetrics.total && orderMetrics.total > 0 && !['PRONTO', 'FINALIZADO', 'ENTREGADO'].includes(selectedOrder.status?.toUpperCase()) && (
+            {/* BOTTOM COMPLETION BUTTON - aparece cuando todos los archivos están listos o el lote entero está controlado */}
+            {((orderMetrics.done === orderMetrics.total && orderMetrics.total > 0 && selectedOrder && !['FINALIZADO', 'ENTREGADO'].includes(selectedOrder.status?.toUpperCase())) || 
+              (orders.length > 0 && orders.every(o => o.controlled) && orders.every(o => (o.failures || 0) === 0))) && (
               <div className="fixed bottom-6 right-6 z-50 animate-in slide-in-from-bottom duration-500">
                 {isFallaOrder ? (
                   <button

@@ -203,8 +203,23 @@ exports.uploadToDrive = async (fileInput, fileName, areaName, retries = 2) => {
             supportsAllDrives: true
         });
 
+        // Hacer el archivo públicamente visible (cualquier persona con el link puede ver)
+        try {
+            await drive.permissions.create({
+                fileId: file.data.id,
+                supportsAllDrives: true,
+                requestBody: {
+                    role: 'reader',
+                    type: 'anyone'
+                }
+            });
+        } catch (permErr) {
+            logger.warn(`⚠️ [Drive] No se pudo hacer público el archivo ${fileName}: ${permErr.message}`);
+        }
+
         logger.info(`✅ [Drive] Archivo subido: ${fileName} -> ${file.data.webViewLink}`);
         return file.data.webViewLink;
+
 
     } catch (error) {
         // Reintentos automáticos para errores de red

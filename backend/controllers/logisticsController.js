@@ -1755,6 +1755,9 @@ exports.getAreaStock = async (req, res) => {
             )
             
             WHERE b.Estado = 'EN_STOCK'
+            AND NOT EXISTS (
+                SELECT 1 FROM Logistica_EnvioItems ei WHERE ei.BultoID = b.BultoID
+            )
         `;
 
         if (areaId && areaId !== 'TODOS') {

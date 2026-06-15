@@ -230,6 +230,93 @@ class LabelGenerationService {
             throw err;
         }
     }
+    /**
+     * Agrega UN bulto adicional a una orden sin regenerar los existentes.
+     * Preserva los CodigoEtiqueta ya impresos. Usa UPDLOCK para evitar race conditions.
+     */
+    static async addOneBulto(ordenId, userId, userName) {
+        let transaction;
+        try {
+            const pool = await getPool();
+
+            // Obtener info de la orden
+            const orderRes = await pool.request()
+                .input('OID', sql.Int, ordenId)
+                .query(`SELECT * FROM Ordenes WHERE OrdenID = @OID`);
+
+            if (orderRes.recordset.length === 0) {
+                return { success: false, error: 'Orden no encontrada' };
+            }
+            const o = orderRes.recordset[0];
+
+            if (!o.NoDocERP) {
+                return { success: false, error: 'La orden no tiene NoDocERP asignado. Sincronice con el ERP primero.' };
+            }
+
+            transaction = new sql.Transaction(pool);
+            await transaction.begin();
+
+            // UPDLOCK: bloquea durante el SELECT para evitar race condition
+            const cntRes = await new sql.Request(transaction)
+                .input('OID', sql.Int, ordenId)
+                .query(`SELECT COUNT(*) as cnt FROM Etiquetas WITH (UPDLOCK) WHERE OrdenID = @OID`);
+
+            const nuevoNumero = (cntRes.recordset[0]?.cnt || 0) + 1;
+
+            // Obtener datos para el nuevo bulto (QR, tipo, etc. de etiquetas existentes)
+            const existingRes = await new sql.Request(transaction)
+                .input('OID', sql.Int, ordenId)
+                .query(`SELECT TOP 1 CodigoQR, DetalleCostos, PerfilesPrecio FROM Etiquetas WHERE OrdenID = @OID`);
+
+            const existingData = existingRes.recordset[0] || {};
+            const proximoServicio = (o.ProximoServicio || 'DEPOSITO').trim().toUpperCase();
+            const esUltimoServicio = proximoServicio.includes('DEPOSITO') || proximoServicio === '';
+            const tipoBulto = esUltimoServicio ? 'PROD_TERMINADO' : 'EN_PROCESO';
+            const doc = (o.NoDocERP || o.CodigoOrden || String(ordenId)).trim();
+
+            // Insertar el nuevo bulto
+            await new sql.Request(transaction)
+                .input('OID', sql.Int, ordenId)
+                .input('Num', sql.Int, nuevoNumero)
+                .input('Tot', sql.Int, nuevoNumero)
+                .input('QR', sql.NVarChar(sql.MAX), existingData.CodigoQR || '')
+                .input('User', sql.VarChar(100), userName)
+                .input('Area', sql.VarChar(20), o.AreaID || 'GEN')
+                .input('UID', sql.Int, userId)
+                .input('Job', sql.NVarChar(255), (o.DescripcionTrabajo || '').substring(0, 255))
+                .input('Tipo', sql.VarChar(50), tipoBulto)
+                .input('DC', sql.NVarChar(sql.MAX), existingData.DetalleCostos || null)
+                .input('PP', sql.NVarChar(sql.MAX), existingData.PerfilesPrecio || null)
+                .input('Doc', sql.VarChar(50), doc)
+                .query(`
+                    INSERT INTO Etiquetas(OrdenID, NumeroBulto, TotalBultos, CodigoQR, FechaGeneracion, Usuario, CreadoPor, DetalleCostos, PerfilesPrecio)
+                    VALUES(@OID, @Num, @Tot, @QR, GETDATE(), @User, @User, @DC, @PP);
+
+                    DECLARE @NewID INT = SCOPE_IDENTITY();
+                    DECLARE @Code NVARCHAR(50) = LTRIM(RTRIM(@Doc)) + '/B' + CAST(@NewID AS NVARCHAR);
+                    
+                    UPDATE Etiquetas SET CodigoEtiqueta = @Code WHERE EtiquetaID = @NewID;
+
+                    INSERT INTO Logistica_Bultos (CodigoEtiqueta, Tipocontenido, OrdenID, Descripcion, UbicacionActual, Estado, UsuarioCreador)
+                    VALUES (@Code, @Tipo, @OID, @Job, @Area, 'EN_STOCK', @UID);
+                `);
+
+            // Actualizar TotalBultos en TODOS los bultos de la orden
+            await new sql.Request(transaction)
+                .input('OID', sql.Int, ordenId)
+                .input('Tot', sql.Int, nuevoNumero)
+                .query(`UPDATE Etiquetas SET TotalBultos = @Tot WHERE OrdenID = @OID`);
+
+            await transaction.commit();
+            logger.info(`[LabelService] addOneBulto OK. Orden ${ordenId} ahora tiene ${nuevoNumero} bulto(s).`);
+
+            return { success: true, totalBultos: nuevoNumero };
+
+        } catch (err) {
+            if (transaction) try { await transaction.rollback(); } catch (e) {}
+            throw err;
+        }
+    }
 }
 
 module.exports = LabelGenerationService;

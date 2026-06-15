@@ -55,7 +55,7 @@ exports.getBoardData = async (req, res) => {
         // if (area === 'DF') area = 'DTF'; // DISABLED: User requested no forced conversion
 
         logger.info(`[getBoardData] Buscando rollos para Area: '${area}'`);
-        logger.info("[getBoardData] 🔴 EJECUTANDO SQL CON @AreaID =", area);
+        logger.info(`[getBoardData] 🔴 EJECUTANDO SQL CON @AreaID = ${area}`);
         // Se asume que area viene limpia (AreaKey) desde el frontend
 
         const pool = await getPool();
@@ -183,14 +183,7 @@ exports.getBoardData = async (req, res) => {
                 r.name = `${r.rawName || ('Lote ' + r.id)} - ${r.material}`;
             }
 
-            // DEBUG LOG for Roll 8
-            if (String(r.id).includes('8') || r.name.includes('8')) {
-                logger.info(`------ DEBUG ROLL ${r.id} (${r.name}) ------`);
-                r.orders.forEach(o => logger.info(`   [Ord ${o.code}] Mat: '${o.material}'`));
-                logger.info(`   -> Unique Valid: ${JSON.stringify(uniqueMaterials)}`);
-                logger.info(`   -> Final: '${r.material}'`);
-                logger.info('---------------------------------------------');
-            }
+
         });
 
         res.json({ rolls, pendingOrders });
@@ -375,13 +368,10 @@ exports.moveOrder = async (req, res) => {
             // Obtenemos los IDs de los rollos afectados por el movimiento (los "orígenes" que ahora podrían estar vacíos)
             // Ojo: No tenemos el origen explícito en el body, así que hacemos un barrido rápido de rollos abiertos sin órdenes.
 
-            // Estrategia más segura: Buscar rollos activos que tengan 0 órdenes asociadas y cancelarlos + desmontarlos.
+            // Estrategia más segura: Buscar rollos que tengan 0 órdenes asociadas y eliminarlos físicamente de la base de datos.
             await new sql.Request(transaction).query(`
-                UPDATE dbo.Rollos
-                SET Estado = 'Cancelado',
-                    MaquinaID = NULL
-                WHERE Estado IN ('Abierto', 'En Cola', 'En maquina', 'Pausado')
-                AND (SELECT COUNT(*) FROM dbo.Ordenes WHERE RolloID = dbo.Rollos.RolloID) = 0
+                DELETE FROM dbo.Rollos
+                WHERE (SELECT COUNT(*) FROM dbo.Ordenes WHERE RolloID = CAST(dbo.Rollos.RolloID AS VARCHAR(50))) = 0
             `);
 
             await transaction.commit();
@@ -783,13 +773,11 @@ exports.dismantleRoll = async (req, res) => {
                     AND Estado != 'Finalizado' 
                 `);
 
-            // 2. Cancelar el Rollo y Liberar Máquina
+            // 2. Eliminar el Rollo físicamente
             await new sql.Request(transaction)
                 .input('RID', sql.VarChar(50), rollId.toString())
                 .query(`
-                    UPDATE dbo.Rollos 
-                    SET Estado = 'Cancelado',
-                        MaquinaID = NULL
+                    DELETE FROM dbo.Rollos 
                     WHERE CAST(RolloID AS VARCHAR(50)) = @RID
                 `);
 

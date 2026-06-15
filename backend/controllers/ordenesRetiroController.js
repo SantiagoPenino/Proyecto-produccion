@@ -308,7 +308,7 @@ const marcarOrdenRetiroPronto = async (req, res) => {
       await transaction.request()
         .input('ID', sql.Int, OReIdOrdenRetiro).input('EstID', sql.Int, nuevoEstado).input('Fec', sql.DateTime, new Date(fechaActual)).input('Usr', sql.Int, UsuarioAlta)
         .query(`
-          UPDATE OrdenesRetiro SET OReEstadoActual = @EstID, OReFechaEstadoActual = @Fec WHERE OReIdOrdenRetiro = @ID;
+          UPDATE OrdenesRetiro SET OReEstadoActual = CASE WHEN OReEstadoActual = 5 THEN 5 ELSE @EstID END, OReFechaEstadoActual = @Fec WHERE OReIdOrdenRetiro = @ID;
           INSERT INTO HistoricoEstadosOrdenesRetiro (OReIdOrdenRetiro, EORIdEstadoOrden, HEOFechaEstado, HEOUsuarioAlta) VALUES (@ID, @EstID, @Fec, @Usr);
         `);
     }

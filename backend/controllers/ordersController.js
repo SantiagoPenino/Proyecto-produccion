@@ -1538,10 +1538,10 @@ exports.unassignOrder = async (req, res) => {
 
                     const maqId = rollInfo.recordset[0]?.MaquinaID;
 
-                    // B. Actualizar Rollo a Cancelado y quitar Máquina
+                    // B. Eliminar el rollo físicamente (ya que quedó vacío)
                     await new sql.Request(transaction)
                         .input('RID', sql.VarChar(50), String(rollId))
-                        .query("UPDATE Rollos SET Estado = 'Cancelado', MaquinaID = NULL WHERE RolloID = @RID");
+                        .query("DELETE FROM Rollos WHERE RolloID = @RID");
 
                     // C. Resetear EstadoProceso de la Máquina (si tenía)
                     if (maqId) {
@@ -1590,13 +1590,14 @@ exports.cancelOrder = async (req, res) => {
         await transaction.begin();
 
         try {
-            // 1. Obtener NoDocERP antes de cancelar
+            // 1. Obtener NoDocERP y RolloID antes de cancelar
             const docRes = await new sql.Request(transaction)
                 .input('ID', sql.Int, orderId)
-                .query("SELECT NoDocERP FROM Ordenes WHERE OrdenID = @ID");
+                .query("SELECT NoDocERP, RolloID FROM Ordenes WHERE OrdenID = @ID");
             const noDocERP = docRes.recordset[0]?.NoDocERP;
+            const rollId = docRes.recordset[0]?.RolloID;
 
-            // 1b. Cancelar la Orden
+            // 1b. Cancelar la Orden y desasignar del lote
             await new sql.Request(transaction)
                 .input('ID', sql.Int, orderId)
                 .input('Obs', sql.NVarChar, obsText)
@@ -1606,12 +1607,27 @@ exports.cancelOrder = async (req, res) => {
                     UPDATE Ordenes 
                     SET Estado = 'Cancelado', 
                         EstadoenArea = 'Cancelado', 
+                        RolloID = NULL,
                         Nota = CONCAT(ISNULL(Nota, ''), @Obs),
                         Observaciones = CONCAT(ISNULL(Observaciones, ''), @Obs),
                         MotivoCancelacionID = @MotivoID,
                         DetallesCancelacion = @Detalles
                     WHERE OrdenID = @ID
                 `);
+
+            // 1c. Verificar si el lote quedó vacío y eliminarlo
+            if (rollId) {
+                const countRes = await new sql.Request(transaction)
+                    .input('RID', sql.VarChar(50), String(rollId))
+                    .query("SELECT COUNT(*) as Cnt FROM Ordenes WHERE RolloID = @RID");
+                
+                if (countRes.recordset[0].Cnt === 0) {
+                    logger.info(`[AutoCleanup] Rollo ${rollId} quedó vacío tras cancelar orden. Eliminando...`);
+                    await new sql.Request(transaction)
+                        .input('RID', sql.VarChar(50), String(rollId))
+                        .query("DELETE FROM Rollos WHERE RolloID = @RID");
+                }
+            }
 
             // 2. Cancelar sus archivos
             await new sql.Request(transaction)

@@ -109,19 +109,19 @@ const createExtraLabel = async (req, res) => {
 
     if (!ordenId) return res.status(400).json({ error: 'ID de orden requerido' });
 
-    logger.info(`[etiquetasController] Creando/Regenerando etiquetas para Orden: ${ordenId}`);
+    logger.info(`[etiquetasController] Agregando bulto extra a Orden: ${ordenId}`);
 
     try {
-        const result = await LabelGenerationService.regenerateLabelsForOrder(ordenId, userId, userName);
+        const result = await LabelGenerationService.addOneBulto(ordenId, userId, userName);
 
         if (!result.success) {
             return res.status(400).json({ error: result.error });
         }
 
-        res.json({ success: true, message: `Generadas ${result.totalBultos} etiquetas.`, details: result });
+        res.json({ success: true, message: `Bulto agregado. Total: ${result.totalBultos} bulto(s).`, details: result });
 
     } catch (err) {
-        logger.error("[etiquetasController] Error:", err);
+        logger.error("[etiquetasController] Error en createExtraLabel:", err);
         res.status(500).json({ error: err.message });
     }
 };

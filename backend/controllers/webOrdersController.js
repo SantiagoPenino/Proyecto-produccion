@@ -1289,8 +1289,11 @@ exports.getClientOrders = async (req, res) => {
                         o.AreaID        AS AreaID,
                         NULL            AS Total,
                         NULL            AS Moneda,
-                        'WEB'           AS Origen
+                        'WEB'           AS Origen,
+                        mc.Titulo       AS MotivoCancelacion,
+                        o.DetallesCancelacion AS DetallesCancelacion
                     FROM Ordenes o WITH(NOLOCK)
+                    LEFT JOIN MotivosCancelacion mc ON mc.MotivoID = o.MotivoCancelacionID
                     WHERE o.CodCliente = @cod
 
                     UNION ALL
@@ -1307,7 +1310,9 @@ exports.getClientOrders = async (req, res) => {
                         NULL                AS AreaID,
                         o.OrdCostoFinal     AS Total,
                         m.MonSimbolo        AS Moneda,
-                        'ERP'               AS Origen
+                        'ERP'               AS Origen,
+                        NULL                AS MotivoCancelacion,
+                        NULL                AS DetallesCancelacion
                     FROM OrdenesDeposito o WITH(NOLOCK)
                     INNER JOIN Clientes c WITH(NOLOCK) ON c.CliIdCliente = o.CliIdCliente
                     LEFT JOIN EstadosOrdenes e WITH(NOLOCK) ON e.EOrIdEstadoOrden = o.OrdEstadoActual
@@ -1709,10 +1714,11 @@ exports.totemLookup = async (req, res) => {
         if (!orderCode) return res.status(400).json({ success: false, message: 'Código de orden requerido' });
 
         const pool = await getPool();
+        const code = orderCode.trim();
 
-        // 1. Buscar la orden por CodigoOrden para obtener el cliente
+        // 1. Buscar la orden y al cliente
         const orderRes = await pool.request()
-            .input('code', sql.VarChar(50), orderCode.trim())
+            .input('code', sql.VarChar(50), code)
             .query(`
                 SELECT TOP 1 o.CliIdCliente, o.OReIdOrdenRetiro, c.IDCliente, c.Nombre, c.NombreFantasia
                 FROM OrdenesDeposito o WITH(NOLOCK)
@@ -1723,18 +1729,17 @@ exports.totemLookup = async (req, res) => {
         if (!orderRes.recordset.length) {
             return res.json({ success: false, message: 'Orden no encontrada' });
         }
-
         if (orderRes.recordset[0].OReIdOrdenRetiro) {
             return res.json({ success: false, message: 'Esta orden ya tiene un retiro asociado' });
         }
 
         const client = orderRes.recordset[0];
 
-        // 2. Traer TODAS las órdenes de ese cliente con estado Ingresado/Avisado/Para avisar
-        const ordersResult = await pool.request()
+        // 2. Traer todas las órdenes listas para retirar del mismo cliente
+        const allOrdersRes = await pool.request()
             .input('cliId', sql.Int, client.CliIdCliente)
             .query(`
-                SELECT 
+                SELECT
                     o.OrdIdOrden AS IdOrden,
                     o.OrdCodigoOrden AS CodigoOrden,
                     o.OrdNombreTrabajo AS NombreTrabajo,
@@ -1752,8 +1757,7 @@ exports.totemLookup = async (req, res) => {
             `);
 
         // 3. Cruzar con PedidosCobranza para estado de pago
-        const externalOrders = ordersResult.recordset;
-        const codigosList = externalOrders.map(o => o.CodigoOrden).filter(Boolean);
+        const codigosList = allOrdersRes.recordset.map(o => o.CodigoOrden).filter(Boolean);
         let cobranzasMap = {};
         if (codigosList.length > 0) {
             try {
@@ -1770,8 +1774,7 @@ exports.totemLookup = async (req, res) => {
         }
 
         // 4. Mapear
-        const seen = new Set();
-        const orders = externalOrders.map(o => {
+        const orders = allOrdersRes.recordset.map(o => {
             const docId = o.CodigoOrden || `#${o.IdOrden}`;
             const cob = cobranzasMap[docId];
             return {
@@ -1786,7 +1789,7 @@ exports.totemLookup = async (req, res) => {
                 isPaid: cob?.EstadoCobro === 'Pagado' || false,
                 currency: cob ? cob.Moneda : (o.MonSimbolo || '$'),
             };
-        }).filter(o => { if (seen.has(o.id)) return false; seen.add(o.id); return true; });
+        });
 
         res.json({
             success: true,
@@ -1823,18 +1826,17 @@ exports.totemCreatePickup = async (req, res) => {
         // 1. Buscar CodCliente a partir del IDCliente
         const clientRes = await pool.request()
             .input('idCliente', sql.VarChar, clientId)
-            .query("SELECT CodCliente, FormaEnvioID FROM Clientes WHERE IDCliente = @idCliente");
+            .query("SELECT CodCliente, CliIdCliente, FormaEnvioID FROM Clientes WHERE IDCliente = @idCliente");
 
         if (!clientRes.recordset.length) {
             return res.status(404).json({ success: false, error: "Cliente no encontrado." });
         }
         const codCliente = clientRes.recordset[0].CodCliente;
-        // Resolver lugarRetiro: del body o del FormaEnvioID del cliente
         const clientFormaEnvio = clientRes.recordset[0].FormaEnvioID || 5;
         const lugarRetiroFinal = lugarRetiro ? parseInt(lugarRetiro, 10) : clientFormaEnvio;
 
-        // 2. Resolver IDs numéricos de las órdenes seleccionadas
-        const ordersResult = await pool.request()
+        // 2. Resolver IDs de OrdenesDeposito seleccionadas
+        const depositoResult = await pool.request()
             .input('idCli', sql.VarChar, clientId)
             .query(`
                 SELECT o.OrdIdOrden, o.OrdCodigoOrden
@@ -1846,15 +1848,15 @@ exports.totemCreatePickup = async (req, res) => {
                 AND o.OReIdOrdenRetiro IS NULL
             `);
 
-        const rawOrderIds = [];
-        for (const o of ordersResult.recordset) {
+        const rawIds = [];
+        for (const o of depositoResult.recordset) {
             const docId = o.OrdCodigoOrden || `#${o.OrdIdOrden}`;
             if (selectedOrderIds.includes(docId) || selectedOrderIds.includes(o.OrdCodigoOrden)) {
-                rawOrderIds.push(o.OrdIdOrden);
+                rawIds.push(o.OrdIdOrden);
             }
         }
 
-        if (rawOrderIds.length === 0) {
+        if (rawIds.length === 0) {
             return res.status(400).json({ success: false, error: "Órdenes no encontradas." });
         }
 
@@ -1865,7 +1867,7 @@ exports.totemCreatePickup = async (req, res) => {
 
         try {
             const OReIdOrdenRetiro = await crearRetiro(transaction, {
-                ordIds: rawOrderIds,
+                ordIds: rawIds,
                 totalCost: totalCost || 0,
                 lugarRetiro: lugarRetiroFinal,
                 usuarioAlta: 70,

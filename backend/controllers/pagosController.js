@@ -88,7 +88,7 @@ const realizarPago = async (req, res) => {
         .query(`
           UPDATE OrdenesRetiro 
           SET PagIdPago = @pagoId, 
-              OReEstadoActual = @nuevoEstado, 
+              OReEstadoActual = CASE WHEN OReEstadoActual = 5 THEN 5 ELSE @nuevoEstado END, 
               OReFechaEstadoActual = GETDATE(),
               ORePasarPorCaja = 0
           WHERE OReIdOrdenRetiro = @ordenRetiroId;
@@ -158,7 +158,7 @@ const realizarPago = async (req, res) => {
           .query(`
             UPDATE OrdenesRetiro 
             SET PagIdPago = @pagoId,
-                OReEstadoActual = 4,
+                OReEstadoActual = CASE WHEN OReEstadoActual = 5 THEN 5 ELSE 4 END,
                 OReFechaEstadoActual = GETDATE(),
                 ORePasarPorCaja = 0
             WHERE OReIdOrdenRetiro = @ordenRetiroId

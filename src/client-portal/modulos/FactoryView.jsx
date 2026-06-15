@@ -40,7 +40,7 @@ const STATUS_CONFIG = {
         border: 'border-emerald-500/30',
         glow: 'shadow-[0_0_12px_rgba(52,211,153,0.15)]',
         icon: <Check size={15} strokeWidth={3} />,
-        label: 'PRONTO',
+        label: 'EN TRÁNSITO',
         dot: 'bg-emerald-400',
     },
     activo: {
@@ -382,6 +382,23 @@ export const FactoryView = () => {
                                             })}
                                         </span>
                                     </div>
+
+                                    {/* Motivo de cancelación */}
+                                    {projectStatus === 'cancelado' && (() => {
+                                        const cancelledOrder = project.subOrders.find(so => so.MotivoCancelacion || so.DetallesCancelacion);
+                                        const motivo = cancelledOrder?.MotivoCancelacion;
+                                        const detalles = cancelledOrder?.DetallesCancelacion;
+                                        if (!motivo && !detalles) return null;
+                                        return (
+                                            <div className="flex items-start gap-2 mt-1 px-2.5 py-2 rounded-lg bg-red-500/5 border border-red-500/15">
+                                                <Ban size={13} className="text-red-400/60 shrink-0 mt-0.5" />
+                                                <div className="min-w-0">
+                                                    {motivo && <p className="text-[11px] font-bold text-red-400/80">{motivo}</p>}
+                                                    {detalles && <p className="text-[11px] text-zinc-400 mt-0.5">{detalles}</p>}
+                                                </div>
+                                            </div>
+                                        );
+                                    })()}
                                 </div>
 
                                 {/* Toggle pipeline */}

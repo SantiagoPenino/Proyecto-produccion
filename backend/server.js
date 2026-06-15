@@ -41,7 +41,7 @@ const WHITELISTED_IPS = (process.env.RATE_LIMIT_WHITELIST || '').split(',').map(
 
 const limiter = rateLimit({
     windowMs: 15 * 60 * 1000,
-    max: 1000,
+    max: 10000,
     standardHeaders: true,
     legacyHeaders: false,
     message: "Demasiadas peticiones desde esta IP, por favor intente nuevamente en 15 minutos.",

@@ -392,7 +392,16 @@ export default function AreaView({ areaKey, areaConfig, onSwitchTab }) {
     const filteredOrders = useMemo(() => {
         // En modo canceladas o prontas: mostrar todas sin aplicar filtros activos de la sesión normal
         if (showCancelled || showPronto) {
-            return [...displayOrders].sort((a, b) =>
+            let result = [...displayOrders];
+            if (globalSearch) {
+                const term = globalSearch.toLowerCase().trim();
+                result = result.filter(o => 
+                    (o.client && o.client.toLowerCase().includes(term)) || 
+                    (o.code && o.code.toLowerCase().includes(term)) ||
+                    (o.clientId && o.clientId.toString().toLowerCase().includes(term))
+                );
+            }
+            return result.sort((a, b) =>
                 new Date(b.entryDate || 0) - new Date(a.entryDate || 0)
             );
         }

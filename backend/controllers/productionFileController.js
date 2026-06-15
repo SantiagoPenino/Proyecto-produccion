@@ -518,6 +518,20 @@ const postControlArchivo = async (req, res) => {
                         SET ArchivosCount = (SELECT COUNT(*) FROM dbo.ArchivosOrden WHERE OrdenID = @FallaOrderID)
                         WHERE OrdenID = @FallaOrderID
                     `);
+
+                // Actualizar Magnitud con la suma real de metros de los archivos de la falla
+                // (la orden madre puede haber tenido Magnitud=0 si el ERP sync ocurrió después)
+                await new sql.Request(transaction)
+                    .input('FallaOrderID2', sql.Int, newOrderId)
+                    .query(`
+                        UPDATE dbo.Ordenes
+                        SET Magnitud = ISNULL(
+                            (SELECT SUM(ISNULL(Metros, 0)) FROM dbo.ArchivosOrden WHERE OrdenID = @FallaOrderID2),
+                            Magnitud
+                        )
+                        WHERE OrdenID = @FallaOrderID2
+                          AND (Magnitud IS NULL OR Magnitud = 0)
+                    `);
             }
 
             // ── Capturar hermanas que ya estaban en Canasto Produccion (retroactivas) ──
@@ -1638,23 +1652,35 @@ async function completarOrden(req, res) {
         }
 
         // Generar etiquetas si corresponde
+        // Guard: si ya tienen etiquetas (generadas en postControlArchivo) no regenerar para evitar descalce de códigos
         let totalBultos = 0;
         if (!tieneFallas) {
             try {
-                const checkMag = await pool.request()
+                const existingLabels = await pool.request()
                     .input('OID', sql.Int, ordenId)
-                    .query("SELECT SUM(Cantidad) as TotalCantidad FROM PedidosCobranzaDetalle WHERE OrdenID = @OID");
-                const magVal = parseFloat(checkMag.recordset[0]?.TotalCantidad) || 0;
-                
-                const prioridadRes = await pool.request()
-                    .input('OID', sql.Int, ordenId)
-                    .query("SELECT Prioridad FROM Ordenes WHERE OrdenID = @OID");
-                const prioridadStr = (prioridadRes.recordset[0]?.Prioridad || '').toUpperCase();
-                const esReposicion = codigoOrden.includes('-R') || prioridadStr === 'REPOSICIÓN' || prioridadStr === 'REPOSICION';
+                    .query("SELECT COUNT(*) as cnt FROM Etiquetas WHERE OrdenID = @OID");
+                const yaExisten = (existingLabels.recordset[0]?.cnt || 0) > 0;
 
-                if (magVal > 0 || esReposicion) {
-                    const labelResult = await LabelGenerationService.regenerateLabelsForOrder(ordenId, (req.user?.id || 1), (req.user?.usuario || 'Sistema'));
-                    if (labelResult.success) totalBultos = labelResult.totalBultos;
+                if (yaExisten) {
+                    // Ya tienen etiquetas → no regenerar, solo contabilizar
+                    totalBultos = existingLabels.recordset[0].cnt;
+                    logger.info(`[completarOrden] Orden ${ordenId} ya tiene ${totalBultos} etiqueta(s). Se omite regeneración.`);
+                } else {
+                    const checkMag = await pool.request()
+                        .input('OID', sql.Int, ordenId)
+                        .query("SELECT SUM(Cantidad) as TotalCantidad FROM PedidosCobranzaDetalle WHERE OrdenID = @OID");
+                    const magVal = parseFloat(checkMag.recordset[0]?.TotalCantidad) || 0;
+
+                    const prioridadRes = await pool.request()
+                        .input('OID', sql.Int, ordenId)
+                        .query("SELECT Prioridad FROM Ordenes WHERE OrdenID = @OID");
+                    const prioridadStr = (prioridadRes.recordset[0]?.Prioridad || '').toUpperCase();
+                    const esReposicion = codigoOrden.includes('-R') || prioridadStr === 'REPOSICIÓN' || prioridadStr === 'REPOSICION';
+
+                    if (magVal > 0 || esReposicion) {
+                        const labelResult = await LabelGenerationService.regenerateLabelsForOrder(ordenId, (req.user?.id || 1), (req.user?.usuario || 'Sistema'));
+                        if (labelResult.success) totalBultos = labelResult.totalBultos;
+                    }
                 }
             } catch (eLabels) {
                 logger.warn(`[completarOrden] Error etiquetas: ${eLabels.message}`);

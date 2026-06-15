@@ -475,8 +475,8 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated }) => {
     };
 
     const handleConfirmCancel = async () => {
-        if (!selectedMotivo && !cancelDetails.trim()) {
-            toast.error("Debe seleccionar un motivo o ingresar detalles para cancelar.");
+        if (!selectedMotivo) {
+            toast.error("Debe seleccionar un motivo de cancelación.");
             return;
         }
 

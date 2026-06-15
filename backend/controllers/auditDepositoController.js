@@ -194,6 +194,16 @@ exports.performAction = async (req, res) => {
           )
         `);
 
+        // Marcar bultos como DESPACHADO
+        await tran.request().query(`
+          UPDATE lb
+          SET lb.Estado = 'DESPACHADO'
+          FROM dbo.Logistica_Bultos lb
+          INNER JOIN dbo.Ordenes o ON o.OrdenID = lb.OrdenID
+          WHERE o.CodigoOrden IN (${sqlCodes})
+          AND lb.Estado NOT IN ('DESPACHADO', 'PERDIDO')
+        `);
+
         await tran.commit();
         return res.json({ success: true, message: `${codigos.length} órdenes entregadas con éxito.` });
 
@@ -225,6 +235,16 @@ exports.performAction = async (req, res) => {
           FROM dbo.OrdenesDeposito d
           INNER JOIN dbo.OrdenesRetiro r ON d.OReIdOrdenRetiro = r.OReIdOrdenRetiro
           WHERE d.OrdCodigoOrden IN (${sqlCodes})
+        `);
+
+        // Marcar bultos como DESPACHADO al pasar al depósito (salen del área de producción)
+        await tran.request().query(`
+          UPDATE lb
+          SET lb.Estado = 'DESPACHADO'
+          FROM dbo.Logistica_Bultos lb
+          INNER JOIN dbo.Ordenes o ON o.OrdenID = lb.OrdenID
+          WHERE o.CodigoOrden IN (${sqlCodes})
+          AND lb.Estado NOT IN ('DESPACHADO', 'PERDIDO')
         `);
 
         // ── 3. AUTO-APROBACIÓN POR ANTICIPO ─────────────────────────────────────

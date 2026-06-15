@@ -344,7 +344,7 @@ export const HistorialView = () => {
             <div className="flex items-center gap-3 mb-2">
                 <History size={48} strokeWidth={1} className="text-brand-gold" />
                 <div>
-                    <h2 className="text-lg font-bold text-zinc-300 uppercase">Historial de <span className="text-custom-cyan">Pedidos</span></h2>
+                    <h2 className="text-lg font-bold text-zinc-300 uppercase">Historial de <span className="text-custom-cyan">Retiros</span></h2>
                     <p className="text-zinc-500 uppercase text-xs">Todos tus retiros.</p>
                 </div>
             </div>

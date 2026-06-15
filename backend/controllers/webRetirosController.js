@@ -456,6 +456,7 @@ exports.obtenerMapaEstantes = async (req, res) => {
         `);
         res.json(result.recordset);
     } catch (err) {
+        logger.error('[obtenerMapaEstantes] Error:', err.message);
         res.status(500).json({ error: 'Error al obtener mapa estantes', details: err.message });
     }
 };
@@ -555,7 +556,7 @@ exports.asignarRetiroAEstante = async (req, res) => {
                     .input('Fec', sql.DateTime, new Date(fechaPronto))
                     .input('Usr', sql.Int, UsuarioAlta)
                     .query(`
-                        UPDATE OrdenesRetiro SET OReEstadoActual = @EstID, OReFechaEstadoActual = @Fec WHERE OReIdOrdenRetiro = @ID;
+                        UPDATE OrdenesRetiro SET OReEstadoActual = CASE WHEN OReEstadoActual = 5 THEN 5 ELSE @EstID END, OReFechaEstadoActual = @Fec WHERE OReIdOrdenRetiro = @ID;
                         INSERT INTO HistoricoEstadosOrdenesRetiro (OReIdOrdenRetiro, EORIdEstadoOrden, HEOFechaEstado, HEOUsuarioAlta) VALUES (@ID, @EstID, @Fec, @Usr);
                     `);
             }

@@ -590,7 +590,7 @@ const PlaneacionTrabajo = ({ AreaID }) => {
                                     <div 
                                         ref={provided.innerRef} 
                                         {...provided.droppableProps}
-                                        className={`flex-1 overflow-y-auto p-0 flex flex-col -space-y-px custom-scrollbar transition-colors ${snapshot.isDraggingOver ? 'bg-brand-cyan/5' : 'bg-zinc-50/30'}`}
+                                        className={`flex-1 overflow-y-auto p-2 flex flex-col gap-2 custom-scrollbar transition-colors ${snapshot.isDraggingOver ? 'bg-brand-cyan/5' : 'bg-zinc-50/30'}`}
                                     >
                                         {pendingRolls.map((roll, index) => {
                                             const isMine = isMyRoll(roll);

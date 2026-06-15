@@ -1164,7 +1164,7 @@ const OrderForm = ({ serviceId: propServiceId }) => {
                                             type="file"
                                             id="add-item-file-input"
                                             className="hidden"
-                                            accept=".jpg,.jpeg,.png,.pdf"
+                                            accept="image/png, image/jpeg, application/pdf, .jpg, .jpeg, .png, .pdf"
                                             onChange={async (e) => {
                                                 const file = e.target.files[0];
                                                 if (!file) return;

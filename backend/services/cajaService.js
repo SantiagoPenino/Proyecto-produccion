@@ -927,7 +927,7 @@ async function procesarTransaccion(payload) {
 
       const estadoActual   = estadoRes.recordset[0].OReEstadoActual;
       // Estado 1(Pendiente)→3(Abonado)  | Estado 5(Listo)→8(Listo y abonado) | otros→sin cambio de estado
-      const nuevoEstado = estadoActual === 1 ? 3 : estadoActual === 5 ? 8 : estadoActual;
+      const nuevoEstado = estadoActual === 1 ? 3 : estadoActual;
 
       await new sql.Request(transaction)
         .input('PagId',    sql.Int, primerPagIdPago)

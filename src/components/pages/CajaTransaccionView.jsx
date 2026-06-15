@@ -2482,7 +2482,7 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
       )}
 
       {retiroSelectAut && (
-        <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-in fade-in duration-200">
+        <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/60 p-4 animate-in fade-in duration-200">
           <div className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl flex flex-col gap-5 border border-zinc-200 animate-in zoom-in-95 duration-200 text-slate-800">
             <div className="flex justify-between items-center">
               <h3 className="font-black text-zinc-800 text-lg uppercase tracking-wider flex items-center gap-2">
