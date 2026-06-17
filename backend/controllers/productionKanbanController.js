@@ -43,7 +43,7 @@ exports.getBoard = async (req, res) => {
                     u.IdUsuario AS CreadorId
                 FROM dbo.[Rollos] r
                 LEFT JOIN dbo.Usuarios u ON r.UsuarioID = u.IdUsuario
-                WHERE r.AreaID = @Area AND r.Estado NOT IN ('Cerrado', 'Finalizado')
+                WHERE r.AreaID = @Area AND r.Estado NOT IN ('Cerrado', 'Finalizado', 'Cancelado')
             `);
 
         // Inicializamos usage a 0 para recalcularlo basado en órdenes reales

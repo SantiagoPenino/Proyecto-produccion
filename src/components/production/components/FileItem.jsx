@@ -1,6 +1,6 @@
 import React from 'react';
 import { API_URL } from '../../../services/apiClient';
-import { FileImage, FileBox, FileText, Download } from 'lucide-react';
+import { FileImage, FileBox, FileText, Download, FileWarning } from 'lucide-react';
 
 /**
  * Componente "FileItem" Unificado.
@@ -188,6 +188,23 @@ const FileItem = ({ file, readOnly = false, onAction, extraInfo, actions, editin
                                         Producto
                                     </span>
                                 )}
+                                {(() => {
+                                    const isDpiForced = file.SinDPI == 1 || file.sinDpi == 1 || file.SinDPI === true;
+                                    if (isDpiForced) {
+                                        return (
+                                            <div className="inline-flex items-center gap-1 ml-2 bg-amber-100 text-amber-800 text-[9px] px-1.5 py-0.5 rounded border border-amber-300 uppercase font-black tracking-tighter align-middle shadow-sm cursor-help group/dpi relative">
+                                                <FileWarning size={11} className="text-amber-600" />
+                                                Verificar medidas
+                                                {/* Tooltip */}
+                                                <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1 px-2 py-1 bg-zinc-800 text-white text-[10px] rounded opacity-0 group-hover/dpi:opacity-100 pointer-events-none whitespace-nowrap z-40 shadow-lg font-medium normal-case">
+                                                    Medida calculada asumiendo 300 DPI y confirmada por el cliente a ciegas.
+                                                    <div className="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-zinc-800"></div>
+                                                </div>
+                                            </div>
+                                        );
+                                    }
+                                    return null;
+                                })()}
                             </div>
                         );
                     })()}

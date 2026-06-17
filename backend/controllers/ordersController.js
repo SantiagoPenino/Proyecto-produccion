@@ -1514,32 +1514,43 @@ exports.unassignOrder = async (req, res) => {
             // 1. Obtener RolloID actual antes de quitarlo
             const current = await new sql.Request(transaction)
                 .input('OID', sql.Int, orderId)
-                .query("SELECT RolloID, CodigoOrden FROM Ordenes WHERE OrdenID = @OID");
+                .query("SELECT RolloID, CodigoOrden, Estado, EstadoenArea FROM Ordenes WHERE OrdenID = @OID");
 
             const rollId = current.recordset[0]?.RolloID;
             const codOrden = current.recordset[0]?.CodigoOrden;
+            const estadoActual = current.recordset[0]?.Estado || '';
+            const estadoAreaActual = current.recordset[0]?.EstadoenArea || '';
 
-            // 2. Desasignar Orden (Volver a pendiente)
+            // Solo volver a Pendiente si la orden no está terminada o cancelada
+            const isProtectedState = estadoActual === 'CANCELADO' || estadoActual === 'Terminado';
+            const nuevoEstado = isProtectedState ? estadoActual : 'Pendiente';
+            const nuevoEstadoArea = isProtectedState ? estadoAreaActual : 'Pendiente';
+            const estadoLog = isProtectedState ? estadoActual : 'PREPARACION';
+
+            // 2. Desasignar Orden (Volver a pendiente solo si corresponde)
             await new sql.Request(transaction)
                 .input('OID', sql.Int, orderId)
+                .input('NuevoEstado', sql.NVarChar, nuevoEstado)
+                .input('NuevoEstadoArea', sql.NVarChar, nuevoEstadoArea)
                 .query(`
                     UPDATE Ordenes 
                     SET RolloID = NULL, 
-                        Estado = 'Pendiente', 
+                        Estado = @NuevoEstado, 
                         Secuencia = NULL, 
                         MaquinaID = NULL,
-                        EstadoenArea = 'Pendiente'
+                        EstadoenArea = @NuevoEstadoArea
                     WHERE OrdenID = @OID
                 `);
 
             // LOG
             await new sql.Request(transaction)
                 .input('OID', sql.Int, orderId)
+                .input('Est', sql.VarChar, estadoLog)
                 .input('User', sql.VarChar, String(userId))
                 .input('Det', sql.NVarChar, `Retirado del Rollo ${rollId || '?'}`)
                 .query(`
                     INSERT INTO HistorialOrdenes (OrdenID, Estado, FechaInicio, FechaFin, Usuario, Detalle)
-                    VALUES (@OID, 'PREPARACION', GETDATE(), GETDATE(), @User, @Det)
+                    VALUES (@OID, @Est, GETDATE(), GETDATE(), @User, @Det)
                 `);
 
             // 3. Verificar si el rollo quedó vacío
@@ -1974,6 +1985,9 @@ exports.cancelRequest = async (req, res) => {
                         UPDATE Ordenes 
                         SET Estado = 'CANCELADO', 
                             EstadoenArea = 'Cancelado',
+                            RolloID = NULL,
+                            MaquinaID = NULL,
+                            Secuencia = NULL,
                             Observaciones = CONCAT(ISNULL(Observaciones, ''), @Obs),
                             MotivoCancelacionID = @MotivoID,
                             DetallesCancelacion = @Detalles
@@ -2010,6 +2024,9 @@ exports.cancelRequest = async (req, res) => {
                         UPDATE Ordenes 
                         SET Estado = 'CANCELADO', 
                             EstadoenArea = 'Cancelado',
+                            RolloID = NULL,
+                            MaquinaID = NULL,
+                            Secuencia = NULL,
                             Observaciones = CONCAT(ISNULL(Observaciones, ''), @Obs),
                             MotivoCancelacionID = @MotivoID,
                             DetallesCancelacion = @Detalles
@@ -2150,6 +2167,9 @@ exports.cancelFile = async (req, res) => {
                             UPDATE Ordenes 
                             SET Estado = 'CANCELADO', 
                                 EstadoenArea = 'Cancelado',
+                                RolloID = NULL,
+                                MaquinaID = NULL,
+                                Secuencia = NULL,
                                 Observaciones = CONCAT(Observaciones, ' [AUTO-CANCEL: ', @Obs, ']')
                             WHERE OrdenID = @OID
                         `);

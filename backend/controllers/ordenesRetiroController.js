@@ -867,8 +867,22 @@ const getOrdenesRetiroPorRemito = async (req, res) => {
   }
 };
 
+// TODO: Implementar lógica completa
+const editarCostoOrden = async (req, res) => {
+    res.status(501).json({ error: 'editarCostoOrden: No implementado aún' });
+};
+
+const desvincularOrdenRetiro = async (req, res) => {
+    res.status(501).json({ error: 'desvincularOrdenRetiro: No implementado aún' });
+};
+
+const cancelarOrdenCaja = async (req, res) => {
+    res.status(501).json({ error: 'cancelarOrdenCaja: No implementado aún' });
+};
+
 module.exports = {
   createOrdenRetiro, getOrdenesRetiroPorEstados, actualizarOrdenRetiroEstado, marcarOrdenRetiroPronto,
   marcarOrdenRetiroEntregado, ordenesRetiroCaja, getOrdenesRetiroPasarPorCaja, ordenesRetiroMarcarPasarPorCaja, getOrdenesRetiroPorFecha,
-  getOrdenesRetiroPorLugar, marcarDespachoEntregadoAutorizado, buscarParaMostrador, getClienteEnvioDatos, getTodasSinRetiro, backfillLugarRetiro, getOrdenesRetiroPorRemito
+  getOrdenesRetiroPorLugar, marcarDespachoEntregadoAutorizado, buscarParaMostrador, getClienteEnvioDatos, getTodasSinRetiro, backfillLugarRetiro, getOrdenesRetiroPorRemito,
+  editarCostoOrden, desvincularOrdenRetiro, cancelarOrdenCaja
 };

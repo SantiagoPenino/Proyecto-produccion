@@ -237,8 +237,8 @@ export const ProfileView = () => {
                                             No tenés pedidos recientes
                                         </td>
                                     </tr>
-                                ) : recentActivity.map(order => (
-                                    <tr key={order.id} className="hover:bg-white/5 transition-colors">
+                                ) : recentActivity.map((order, index) => (
+                                    <tr key={`${order.id}-${index}`} className="hover:bg-white/5 transition-colors">
                                         <td className="p-4 font-medium text-white">{order.id}</td>
                                         <td className="p-4 text-zinc-400">{order.date}</td>
                                         <td className="p-4 text-zinc-300">{order.type}</td>
@@ -261,8 +261,8 @@ export const ProfileView = () => {
                                 <Package size={32} className="mx-auto mb-2 opacity-50 text-white" />
                                 No tenés pedidos recientes
                             </div>
-                        ) : recentActivity.map(order => (
-                            <div key={order.id} className="p-4 space-y-3">
+                        ) : recentActivity.map((order, index) => (
+                            <div key={`${order.id}-${index}`} className="p-4 space-y-3">
                                 <div className="flex justify-between items-start">
                                     <div>
                                         <p className="text-xs font-bold text-brand-cyan uppercase tracking-wider">{order.id}</p>

@@ -4,7 +4,20 @@ import { UploadCloud, AlertTriangle, Zap } from 'lucide-react';
 
 export const UploadProgressModal = ({ isOpen, progress, isError, onRetry }) => {
     if (!isOpen) return null;
-    const percentage = Math.round((progress.current / progress.total) * 100) || 0;
+    
+    // El porcentaje SIEMPRE se basa en bytes subidos / total de bytes.
+    // Nunca usar current/total (cantidad de archivos) porque con 1/1 da 100% inmediato.
+    const percentage = (progress.totalBytes && progress.totalBytes > 0)
+        ? Math.min(100, Math.round((progress.bytesUploaded / progress.totalBytes) * 100))
+        : 0;
+
+    const formatETA = (seconds) => {
+        if (!seconds || seconds <= 0 || !isFinite(seconds)) return 'Calculando...';
+        if (seconds < 60) return `${seconds} seg`;
+        const mins = Math.floor(seconds / 60);
+        const secs = seconds % 60;
+        return `${mins}m ${secs}s`;
+    };
 
     return createPortal(
         <div className="fixed inset-0 z-[10000] flex items-center justify-center bg-black/80 animate-in fade-in duration-300">
@@ -41,16 +54,34 @@ export const UploadProgressModal = ({ isOpen, progress, isError, onRetry }) => {
                                 <span>Progreso Total</span>
                                 <span className="text-cyan-400">{percentage}%</span>
                             </div>
-                            <div className="h-4 bg-zinc-800/50 rounded-full overflow-hidden border border-zinc-700/30">
+                            <div className="h-4 bg-zinc-800/50 rounded-full overflow-hidden border border-zinc-700/30 relative">
                                 <div
                                     className="h-full bg-gradient-to-r from-cyan-500 via-blue-500 to-indigo-600 transition-all duration-700 ease-out shadow-[0_0_15px_rgba(6,182,212,0.5)]"
                                     style={{ width: `${percentage}%` }}
                                 />
                             </div>
-                            <div className="bg-zinc-800/40 py-2 px-4 rounded-xl border border-zinc-700/30 overflow-hidden">
-                                <p className="text-[10px] text-zinc-500 truncate font-mono uppercase tracking-tighter">
-                                    {progress.filename || 'Preparando archivos...'}
-                                </p>
+
+                            {/* Detalle del archivo actual */}
+                            <div className="bg-zinc-800/40 rounded-xl border border-zinc-700/30 overflow-hidden flex flex-col mt-2">
+                                <div className="flex justify-between items-center py-2 px-4 border-b border-zinc-700/30 bg-zinc-800/60">
+                                    <p className="text-[10px] text-zinc-400 truncate font-mono uppercase tracking-tighter max-w-[60%]">
+                                        Archivo actual: <span className="text-zinc-200">{progress.filename || 'Preparando...'}</span>
+                                    </p>
+                                    <p className="text-[10px] text-cyan-400 font-mono font-bold uppercase tracking-tighter">
+                                        {percentage === 100 ? 'Guardando en Drive...' : `Tiempo est: ${formatETA(progress.etaSeconds)}`}
+                                    </p>
+                                </div>
+                                {/* Barra de progreso individual del archivo */}
+                                {progress.currentFileTotal > 0 && (
+                                    <div className="h-1.5 w-full bg-zinc-800/80 relative">
+                                        <div
+                                            className="h-full bg-cyan-400 transition-all duration-300 ease-out"
+                                            style={{ 
+                                                width: `${Math.round((progress.currentFileBytes / progress.currentFileTotal) * 100) || 0}%` 
+                                            }}
+                                        />
+                                    </div>
+                                )}
                             </div>
                         </div>
                     )}

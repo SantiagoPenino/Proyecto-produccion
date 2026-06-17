@@ -7,6 +7,7 @@ import { toast } from 'react-toastify';
 import api, { ordersService, rollsService, insumosService, productionService } from '../../services/api';
 import { printLabelsHelper } from '../../utils/printHelper';
 import { DragDropContext, Droppable, Draggable } from '@hello-pangea/dnd';
+import Swal from 'sweetalert2';
 
 // --- SUB-COMPONENT: MODAL DE SELECCIÓN DE BOBINA ---
 const BobinaAssignmentModal = ({ isOpen, onClose, onSelect, currentMetros, areaCode = 'ECOUV' }) => {
@@ -728,6 +729,36 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { } }) 
         } finally { setLoading(false); }
     };
 
+    const handleCancelRoll = async () => {
+        const result = await Swal.fire({
+            title: '¿Cancelar lote vacío?',
+            text: "Esta acción no se puede revertir y el lote desaparecerá.",
+            icon: 'warning',
+            showCancelButton: true,
+            confirmButtonColor: '#ef4444',
+            cancelButtonColor: '#3f3f46',
+            confirmButtonText: 'Sí, cancelar lote',
+            cancelButtonText: 'Cerrar',
+            background: '#18181b',
+            color: '#f4f4f5'
+        });
+
+        if (!result.isConfirmed) return;
+
+        try {
+            setLoading(true);
+            await rollsService.update(freshRoll.id, { estado: 'Cancelado' });
+            toast.success("Lote cancelado correctamente.");
+            onUpdate();
+            onClose();
+        } catch (error) {
+            console.error("Error cancelando lote:", error);
+            toast.error("Error al cancelar el lote.");
+        } finally {
+            setLoading(false);
+        }
+    };
+
     // Función de exportación
     const handleExportExcel = async () => {
         try {
@@ -1157,6 +1188,15 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { } }) 
 
                         {/* Right group */}
                         <div className="flex items-center gap-2">
+                            {orders.length === 0 && (
+                                <button
+                                    className="px-3 py-2 bg-red-500 hover:bg-red-600 text-white rounded-xl text-xs font-black flex items-center gap-1.5 transition-all shadow-md shadow-red-500/20 active:scale-95"
+                                    onClick={handleCancelRoll}
+                                    disabled={loading}
+                                >
+                                    <i className="fa-solid fa-trash" /> Cancelar Lote
+                                </button>
+                            )}
                             {selectedOrderIds.length > 0 && (
                                 <>
                                     <button

@@ -568,6 +568,15 @@ export const useOrderForm = (serviceId, overrides = {}) => {
 
         let completed = 0;
         const total = manifest.length;
+        
+        // Calcular tamaño total para ETA
+        const totalBytes = manifest.reduce((acc, item) => {
+            const fileObj = fileMap[item.originalName];
+            return acc + (fileObj?.size || 0);
+        }, 0);
+        
+        let bytesUploadedForCompletedFiles = 0;
+        const startTime = Date.now();
 
         try {
             for (let i = 0; i < manifest.length; i++) {
@@ -581,14 +590,47 @@ export const useOrderForm = (serviceId, overrides = {}) => {
 
                 dispatch({
                     type: actionTypes.UPDATE_UPLOAD_PROGRESS,
-                    progress: { current: i + 1, total, filename: item.originalName }
+                    progress: { 
+                        current: i + 1, 
+                        total, 
+                        filename: item.originalName, 
+                        bytesUploaded: bytesUploadedForCompletedFiles, 
+                        totalBytes, 
+                        etaSeconds: 0,
+                        currentFileBytes: 0,
+                        currentFileTotal: fileObj.size
+                    }
                 });
 
                 try {
-                    await fileService.uploadStream(fileObj, item);
+                    await fileService.uploadStream(fileObj, item, (loaded, eventTotal) => {
+                        const currentTotalBytesUploaded = bytesUploadedForCompletedFiles + loaded;
+                        const elapsedMs = Date.now() - startTime;
+                        let etaSeconds = 0;
+                        if (currentTotalBytesUploaded > 0 && elapsedMs > 500) {
+                            const bytesPerMs = currentTotalBytesUploaded / elapsedMs;
+                            const remainingBytes = totalBytes - currentTotalBytesUploaded;
+                            etaSeconds = Math.round((remainingBytes / bytesPerMs) / 1000);
+                        }
+                        
+                        dispatch({
+                            type: actionTypes.UPDATE_UPLOAD_PROGRESS,
+                            progress: { 
+                                current: i + 1, 
+                                total, 
+                                filename: item.originalName,
+                                bytesUploaded: currentTotalBytesUploaded,
+                                totalBytes: totalBytes,
+                                etaSeconds: etaSeconds,
+                                currentFileBytes: loaded,
+                                currentFileTotal: eventTotal
+                            }
+                        });
+                    });
                 } catch (e) {
                     throw e;
                 }
+                bytesUploadedForCompletedFiles += fileObj.size;
                 completed++;
             }
             dispatch({ type: actionTypes.UPLOAD_SUCCESS });

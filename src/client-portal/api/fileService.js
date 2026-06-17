@@ -64,7 +64,7 @@ const getImageDPI = (file) => {
                                 const dpiX = Math.round(ppuX / 39.3701); // px/m → px/inch
                                 const dpiY = Math.round(ppuY / 39.3701);
                                 console.log(`[DPI] PNG pHYs: ${dpiX}x${dpiY} DPI`);
-                                resolve({ dpiX, dpiY });
+                                resolve({ dpiX, dpiY, hasDPI: true });
                                 return;
                             }
                             break;
@@ -87,13 +87,13 @@ const getImageDPI = (file) => {
                                 const yDensity = (buf[i + 12] << 8) | buf[i + 13];
                                 if (densityUnit === 1 && xDensity > 0) { // DPI
                                     console.log(`[DPI] JPEG JFIF: ${xDensity}x${yDensity} DPI`);
-                                    resolve({ dpiX: xDensity, dpiY: yDensity });
+                                    resolve({ dpiX: xDensity, dpiY: yDensity, hasDPI: true });
                                     return;
                                 } else if (densityUnit === 2 && xDensity > 0) { // dots/cm
                                     const dpiX = Math.round(xDensity * 2.54);
                                     const dpiY = Math.round(yDensity * 2.54);
                                     console.log(`[DPI] JPEG JFIF (cm): ${dpiX}x${dpiY} DPI`);
-                                    resolve({ dpiX, dpiY });
+                                    resolve({ dpiX, dpiY, hasDPI: true });
                                     return;
                                 }
                             }
@@ -104,13 +104,13 @@ const getImageDPI = (file) => {
 
                 // No se encontró DPI → default 300
                 console.log('[DPI] No se detectó DPI, usando 300 por defecto');
-                resolve({ dpiX: 300, dpiY: 300 });
+                resolve({ dpiX: 300, dpiY: 300, hasDPI: false });
             } catch (err) {
                 console.warn('[DPI] Error leyendo DPI:', err);
-                resolve({ dpiX: 300, dpiY: 300 });
+                resolve({ dpiX: 300, dpiY: 300, hasDPI: false });
             }
         };
-        reader.onerror = () => resolve({ dpiX: 300, dpiY: 300 });
+        reader.onerror = () => resolve({ dpiX: 300, dpiY: 300, hasDPI: false });
     });
 };
 
@@ -246,6 +246,7 @@ export const fileService = {
             let dimensions = { width: null, height: null, unit: null };
             let measurementError = null;
             let pageCount = null;
+            let hasDPI = true; // Por defecto true (para pdfs o si no aplica)
 
             if (detectedType.startsWith('image/')) {
                 // Para imágenes grandes, crear object URL temporal para getImageDimensions
@@ -253,10 +254,11 @@ export const fileService = {
                 const dims = await getImageDimensions(imgSrc);
                 if (dims) {
                     // Leer DPI real del archivo (no asumir 300)
-                    const { dpiX, dpiY } = await getImageDPI(file);
-                    const widthM = (dims.width / dpiX) * 0.0254;
-                    const heightM = (dims.height / dpiY) * 0.0254;
-                    console.log(`[IMG] ${dims.width}x${dims.height}px @ ${dpiX}DPI → ${widthM.toFixed(3)}x${heightM.toFixed(3)}m`);
+                    const dpiResult = await getImageDPI(file);
+                    hasDPI = dpiResult.hasDPI !== false;
+                    const widthM = (dims.width / dpiResult.dpiX) * 0.0254;
+                    const heightM = (dims.height / dpiResult.dpiY) * 0.0254;
+                    console.log(`[IMG] ${dims.width}x${dims.height}px @ ${dpiResult.dpiX}DPI → ${widthM.toFixed(3)}x${heightM.toFixed(3)}m`);
                     dimensions = {
                         width: parseFloat(widthM.toFixed(3)),
                         height: parseFloat(heightM.toFixed(3)),
@@ -396,7 +398,8 @@ export const fileService = {
                 height: dimensions.height,
                 unit: dimensions.unit,
                 pageCount: pageCount,
-                measurementError: measurementError
+                measurementError: measurementError,
+                hasDPI: hasDPI
             };
         } catch (error) {
             console.error("Error converting file:", error);
@@ -405,34 +408,51 @@ export const fileService = {
     },
 
     // Nueva función para subir por Streaming (FormData)
-    uploadStream: async (file, metadata) => {
-        const formData = new FormData();
-        formData.append('file', file);
-        formData.append('dbId', metadata.dbId);
-        formData.append('type', metadata.type);
-        formData.append('finalName', metadata.finalName);
-        formData.append('area', metadata.area);
+    uploadStream: async (file, metadata, onProgress) => {
+        return new Promise((resolve, reject) => {
+            const formData = new FormData();
+            formData.append('file', file);
+            formData.append('dbId', metadata.dbId);
+            formData.append('type', metadata.type);
+            formData.append('finalName', metadata.finalName);
+            formData.append('area', metadata.area);
 
-        const token = localStorage.getItem('auth_token'); // CORREGIDO: key 'auth_token'
-        const apiUrl = import.meta.env.VITE_API_URL || '/api';
+            const token = localStorage.getItem('auth_token'); // CORREGIDO: key 'auth_token'
+            const apiUrl = import.meta.env.VITE_API_URL || '/api';
 
-        const response = await fetch(`${apiUrl}/web-orders/upload-stream`, {
-            method: 'POST',
-            headers: {
-                'Authorization': `Bearer ${token}`
-            },
-            body: formData
+            const xhr = new XMLHttpRequest();
+            xhr.open('POST', `${apiUrl}/web-orders/upload-stream`, true);
+            if (token) {
+                xhr.setRequestHeader('Authorization', `Bearer ${token}`);
+            }
+
+            if (onProgress) {
+                xhr.upload.onprogress = (event) => {
+                    if (event.lengthComputable) {
+                        onProgress(event.loaded, event.total);
+                    }
+                };
+            }
+
+            xhr.onload = () => {
+                if (xhr.status >= 200 && xhr.status < 300) {
+                    try {
+                        resolve(JSON.parse(xhr.responseText));
+                    } catch (e) {
+                        resolve(xhr.responseText);
+                    }
+                } else {
+                    let errorMsg = 'Error en subida';
+                    try {
+                        const err = JSON.parse(xhr.responseText);
+                        errorMsg = err.error || errorMsg;
+                    } catch (e) { }
+                    reject(new Error(errorMsg));
+                }
+            };
+
+            xhr.onerror = () => reject(new Error('Network error during upload'));
+            xhr.send(formData);
         });
-
-        if (!response.ok) {
-            let errorMsg = 'Error en subida';
-            try {
-                const err = await response.json();
-                errorMsg = err.error || errorMsg;
-            } catch (e) { }
-            throw new Error(errorMsg);
-        }
-
-        return await response.json();
     }
 };

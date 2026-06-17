@@ -288,7 +288,9 @@ export default function AreaView({ areaKey, areaConfig, onSwitchTab }) {
                                      (orderArea === 'SB' && viewArea === 'SUB') || 
                                      (orderArea === 'SUB' && viewArea === 'SB');
                     
-                    if (isSameArea) {
+                    const isDFPath = window.location.pathname.toLowerCase().startsWith('/area/df');
+
+                    if (isSameArea && isDFPath) {
                         const isUrgent = ['Urgente', 'Reposición', 'Falla'].includes(o.prioridad);
                         
                         toast(`¡Se ha creado la orden ${o.variante || 'N/A'} (${o.codigo || 'ORD-' + o.id}) con prioridad ${o.prioridad || 'Normal'}!`, {
@@ -398,7 +400,8 @@ export default function AreaView({ areaKey, areaConfig, onSwitchTab }) {
                 result = result.filter(o => 
                     (o.client && o.client.toLowerCase().includes(term)) || 
                     (o.code && o.code.toLowerCase().includes(term)) ||
-                    (o.clientId && o.clientId.toString().toLowerCase().includes(term))
+                    (o.idClienteReact && o.idClienteReact.toString().includes(term)) ||
+                    (o.codCliente && o.codCliente.toString().toLowerCase().includes(term))
                 );
             }
             return result.sort((a, b) =>
@@ -426,7 +429,8 @@ export default function AreaView({ areaKey, areaConfig, onSwitchTab }) {
             result = result.filter(o => 
                 (o.client && o.client.toLowerCase().includes(term)) || 
                 (o.code && o.code.toLowerCase().includes(term)) ||
-                (o.clientId && o.clientId.toString().toLowerCase().includes(term))
+                (o.idClienteReact && o.idClienteReact.toString().includes(term)) ||
+                (o.codCliente && o.codCliente.toString().toLowerCase().includes(term))
             );
         }
 
@@ -641,7 +645,7 @@ export default function AreaView({ areaKey, areaConfig, onSwitchTab }) {
                 <i className="fa-solid fa-search absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400 text-xs"></i>
                 <input
                     type="text"
-                    placeholder="Buscar orden o cliente..."
+                    placeholder="Buscar orden, cliente o ID cliente..."
                     value={globalSearch}
                     onChange={(e) => setGlobalSearch(e.target.value)}
                     className="pl-8 pr-8 py-1.5 h-[30px] w-56 text-xs font-medium border border-zinc-200 rounded-lg bg-white focus:outline-none focus:border-brand-cyan focus:ring-1 focus:ring-brand-cyan transition-all shadow-sm placeholder:text-zinc-400"

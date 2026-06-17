@@ -209,6 +209,28 @@ exports.register = asyncHandler(async (req, res) => {
         }
     }
 
+    // 2.1 Verificar si el teléfono ya existe
+    if (phone) {
+        const checkPhone = await pool.request()
+            .input('Tel', sql.NVarChar, phone.trim())
+            .query("SELECT CodCliente FROM Clientes WHERE TelefonoTrabajo = @Tel AND TelefonoTrabajo IS NOT NULL AND TelefonoTrabajo != ''");
+
+        if (checkPhone.recordset.length > 0) {
+            return res.status(409).json({ success: false, message: 'Este teléfono ya se encuentra registrado en el sistema.' });
+        }
+    }
+
+    // 2.2 Verificar si el RUT/Documento ya existe
+    if (ruc) {
+        const checkRuc = await pool.request()
+            .input('Ruc', sql.NVarChar, ruc.trim())
+            .query("SELECT CodCliente FROM Clientes WHERE CioRuc = @Ruc AND CioRuc IS NOT NULL AND CioRuc != ''");
+
+        if (checkRuc.recordset.length > 0) {
+            return res.status(409).json({ success: false, message: 'Este documento (RUT/CI) ya se encuentra registrado en el sistema.' });
+        }
+    }
+
     // 3. Crear cliente nuevo
     const idQuery = await pool.request().query("SELECT ISNULL(MAX(CodCliente), 0) + 1 as NextID FROM Clientes");
     let codClienteInterno = idQuery.recordset[0].NextID;

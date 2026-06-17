@@ -24,7 +24,7 @@ export default defineConfig({
     drop: ['console', 'debugger'],
   },
   optimizeDeps: {
-    include: ['ag-grid-community', 'ag-grid-react', 'jspdf', 'jspdf-autotable']
+    include: ['ag-grid-community', 'ag-grid-react', 'jspdf', 'jspdf-autotable', '@tanstack/react-query', '@tanstack/react-table', 'axios']
   },
   server: {
     host: true,  // Permite conexiones externas (celular en red local)

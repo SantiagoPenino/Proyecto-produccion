@@ -14,6 +14,8 @@ import { useToast } from '../pautas/Toast';
 // Services
 import { fileService } from '../api/fileService';
 import { apiClient } from '../api/apiClient';
+import Swal from 'sweetalert2';
+import { toast } from 'react-toastify';
 
 // UI Components
 import { GlassCard } from '../pautas/GlassCard';
@@ -231,6 +233,69 @@ const OrderForm = ({ serviceId: propServiceId }) => {
 
         try {
             const result = await fileService.uploadFile(file);
+
+            // Interceptar si no tiene DPI
+            if (result.hasDPI === false && result.width && result.height) {
+                const isConfirmed = await Swal.fire({
+                    title: 'ATENCIÓN: VERIFICAR MEDIDAS',
+                    html: `
+                        <div class="text-left font-medium text-zinc-400 mt-2">
+                            <p class="mb-4 text-sm text-center">No pudimos leer los DPI originales de tu archivo. Para evitar errores, calculamos su medida asumiendo <span class="text-white font-bold">300 DPI</span>:</p>
+                            
+                            <div class="relative overflow-hidden bg-[#0a0a0a] border border-brand-cyan/30 rounded-xl p-5 my-6 flex flex-col items-center justify-center">
+                                <div class="absolute inset-0 bg-gradient-to-r from-brand-cyan/5 via-transparent to-brand-cyan/5 opacity-50"></div>
+                                <div class="relative flex items-center justify-center gap-8 text-3xl font-black font-mono text-white">
+                                    <div class="flex flex-col items-center">
+                                        <span class="text-[10px] uppercase tracking-widest text-brand-cyan mb-1 font-sans">Ancho</span>
+                                        <span>${result.width.toFixed(2)}<span class="text-zinc-600 text-lg ml-1 font-sans">m</span></span>
+                                    </div>
+                                    <div class="w-px h-12 bg-zinc-800"></div>
+                                    <div class="flex flex-col items-center">
+                                        <span class="text-[10px] uppercase tracking-widest text-brand-cyan mb-1 font-sans">Largo</span>
+                                        <span>${result.height.toFixed(2)}<span class="text-zinc-600 text-lg ml-1 font-sans">m</span></span>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <p class="text-center text-zinc-200 text-base font-bold mb-2">¿Es esta la medida exacta que querés imprimir?</p>
+                            <p class="text-center text-[10px] text-zinc-500 uppercase tracking-widest mt-4">
+                                La medida será inspeccionada en producción
+                            </p>
+                        </div>
+                    `,
+                    icon: 'warning',
+                    iconColor: '#006E97',
+                    background: '#18181b', // zinc-900
+                    color: '#f4f4f5',
+                    showCancelButton: true,
+                    confirmButtonText: 'SÍ, CONFIRMAR MEDIDA',
+                    cancelButtonText: 'CANCELAR Y REVISAR',
+                    buttonsStyling: false,
+                    customClass: {
+                        popup: 'border border-zinc-800 rounded-3xl shadow-2xl',
+                        title: 'text-xl font-black tracking-tighter text-white pt-4',
+                        htmlContainer: 'px-2',
+                        actions: 'w-full mt-6 px-6 pb-2 gap-3 flex flex-col-reverse sm:flex-row',
+                        confirmButton: 'w-full bg-brand-cyan hover:bg-cyan-500 text-[#0a0a0a] font-black tracking-wide py-3.5 px-4 rounded-xl transition-all',
+                        cancelButton: 'w-full bg-zinc-800 hover:bg-zinc-700 text-zinc-300 font-bold tracking-wide py-3.5 px-4 rounded-xl border border-zinc-700 transition-all'
+                    }
+                });
+
+                if (!isConfirmed.isConfirmed) {
+                    toast.error('Carga cancelada. Te recomendamos exportar el archivo como PDF para garantizar medidas exactas.', {
+                        position: "top-right",
+                        autoClose: 5000,
+                        hideProgressBar: false,
+                        closeOnClick: true,
+                        pauseOnHover: true,
+                        draggable: true,
+                        theme: "dark",
+                    });
+                    return false;
+                } else {
+                    result.dpiConfirmedByUser = true;
+                }
+            }
 
             // Validation of Printable Width
             if (result.width && !result.measurementError) {
@@ -520,13 +585,15 @@ const OrderForm = ({ serviceId: propServiceId }) => {
                         name: it.file.name,
                         width: finalWidthM,
                         height: finalHeightM,
-                        observaciones: it.printSettings?.observation || ''
+                        observaciones: it.printSettings?.observation || '',
+                        sinDPI: it.file.dpiConfirmedByUser ? 1 : null
                     } : null,
                     archivoDorso: fileBackEffective ? {
                         name: fileBackEffective.name, // ENVIAR NOMBRE ORIGINAL para que el backend encuentre el archivo
                         width: finalWidthM, // Enviar dimensiones correctas
                         height: finalHeightM,
-                        observaciones: (it.printSettings?.observation || '') + ' [DORSO]' // Agregar DORSO a observaciones
+                        observaciones: (it.printSettings?.observation || '') + ' [DORSO]', // Agregar DORSO a observaciones
+                        sinDPI: fileBackEffective.dpiConfirmedByUser ? 1 : null
                     } : null,
                     cantidad: finalQty,
                     nota: (it.note || '') + printNote + (shouldUseSame ? ' [TWINFACE: MISMA IMAGEN DORSO]' : ''),
@@ -663,7 +730,10 @@ const OrderForm = ({ serviceId: propServiceId }) => {
                         printSettings: sl.printSettings,
                         widthBack: sl.widthBack, // Pass back dimensions
                         heightBack: sl.heightBack,
-                        observacionesBack: sl.archivoDorso?.observaciones // Pass back observations if any
+                        observaciones: sl.archivoPrincipal?.observaciones, // Pass main observations
+                        observacionesBack: sl.archivoDorso?.observaciones, // Pass back observations if any
+                        sinDPI: sl.archivoPrincipal?.sinDPI,
+                        sinDPIBack: sl.archivoDorso?.sinDPI
                     })),
                     metadata: metadata, // NUEVO CAMPO METADATA
                     notas: generalNote
@@ -914,20 +984,17 @@ const OrderForm = ({ serviceId: propServiceId }) => {
                                     const selectedClass = isUrgent
                                         ? 'shadow-sm bg-custom-magenta/20 text-custom-magenta border border-custom-magenta/30'
                                         : 'shadow-sm bg-cyan-400/20 text-cyan-300 border border-cyan-500/30';
-                                    const isDisabled = isUrgent && serviceId?.toUpperCase() === 'DF';
+                                    const isDisabled = false;
                                     return (
-                                    <button key={p.Nombre} type="button" onClick={() => !isDisabled && actions.setUrgency(p.Nombre)}
-                                        disabled={isDisabled}
-                                        className={`flex-1 py-1.5 px-3 rounded-md text-sm font-medium transition-all ${isDisabled ? 'text-zinc-600 cursor-not-allowed opacity-40' : isSelected ? selectedClass : 'text-zinc-400 hover:bg-zinc-700 hover:text-zinc-200'} `}
+                                    <button key={p.Nombre} type="button" onClick={() => actions.setUrgency(p.Nombre)}
+                                        className={`flex-1 py-1.5 px-3 rounded-md text-sm font-medium transition-all ${isSelected ? selectedClass : 'text-zinc-400 hover:bg-zinc-700 hover:text-zinc-200'} `}
                                     >
                                         {p.Nombre}
                                     </button>
                                     );
                                 })}
                             </div>
-                            {serviceId?.toUpperCase() === 'DF' && (
-                                <p className="text-[11px] text-amber-400/70 mt-1.5 italic">⚠ La prioridad urgente se encuentra temporalmente desactivada.</p>
-                            )}
+
                         </div>
 
                     </div>

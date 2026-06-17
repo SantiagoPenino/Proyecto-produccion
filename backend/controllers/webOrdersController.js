@@ -361,7 +361,9 @@ exports.createWebOrder = async (req, res) => {
                         observaciones: obsTecnicas,
                         widthBack: it.widthBack,
                         heightBack: it.heightBack,
-                        observacionesBack: it.observacionesBack
+                        observacionesBack: it.observacionesBack,
+                        sinDPI: it.sinDPI,
+                        sinDPIBack: it.sinDPIBack
                     };
                 });
 
@@ -451,7 +453,10 @@ exports.createWebOrder = async (req, res) => {
                         height: sl.height,
                         widthBack: sl.widthBack,
                         heightBack: sl.heightBack,
-                        observaciones: sl.archivoPrincipal?.observaciones || ''
+                        observaciones: sl.archivoPrincipal?.observaciones || '',
+                        observacionesBack: sl.archivoDorso?.observaciones || '',
+                        sinDPI: sl.archivoPrincipal?.sinDPI,
+                        sinDPIBack: sl.archivoDorso?.sinDPI
                     })),
                     referencias: [], // Legacy no maneja refs por linea asi
                     isExtra: false,
@@ -842,15 +847,16 @@ exports.createWebOrder = async (req, res) => {
                             .input('Alto', sql.Decimal(10, 2), hM)
                             .input('Obs', sql.NVarChar(sql.MAX), item.observaciones || '')
                             .input('CodArt', sql.VarChar(50), exec.codArticulo || null)
+                            .input('SinDPI', sql.Bit, item.sinDPI || null)
                             .query(`
                                 INSERT INTO ArchivosOrden (
                                     OrdenID, NombreArchivo, TipoArchivo, Copias, Metros, EstadoArchivo, FechaSubida,
-                                    Ancho, Alto, Observaciones, CodigoArticulo
+                                    Ancho, Alto, Observaciones, CodigoArticulo, SinDPI
                                 ) 
                                 OUTPUT INSERTED.ArchivoID 
                                 VALUES (
                                     @OID, @Nom, @Tipo, @Cop, @Met, 'Pendiente', GETDATE(),
-                                    @Ancho, @Alto, @Obs, @CodArt
+                                    @Ancho, @Alto, @Obs, @CodArt, @SinDPI
                                 )
                             `);
 
@@ -904,15 +910,16 @@ exports.createWebOrder = async (req, res) => {
                             .input('Alto', sql.Decimal(10, 2), hMBack)
                             .input('Obs', sql.NVarChar(sql.MAX), obsBack)
                             .input('CodArt', sql.VarChar(50), exec.codArticulo || null)
+                            .input('SinDPI', sql.Bit, item.sinDPIBack || null)
                             .query(`
                                 INSERT INTO ArchivosOrden (
                                     OrdenID, NombreArchivo, TipoArchivo, Copias, Metros, EstadoArchivo, FechaSubida,
-                                    Ancho, Alto, Observaciones, CodigoArticulo
+                                    Ancho, Alto, Observaciones, CodigoArticulo, SinDPI
                                 ) 
                                 OUTPUT INSERTED.ArchivoID 
                                 VALUES (
                                     @OID, @Nom, @Tipo, @Cop, @Met, 'Pendiente', GETDATE(),
-                                    @Ancho, @Alto, @Obs, @CodArt
+                                    @Ancho, @Alto, @Obs, @CodArt, @SinDPI
                                 )
                             `);
 
@@ -1265,18 +1272,80 @@ exports.getClientOrders = async (req, res) => {
     const codCliente = req.user?.codCliente;
     if (!codCliente) {
         // If the user is an internal admin testing the portal, don't throw 401 to avoid breaking the UI.
-        if (req.user?.userType === 'INTERNAL' || req.user?.role !== 'WEB_CLIENT') {
-            return res.json({ success: true, data: [] });
-        }
-        return res.status(401).json({ error: "Usuario no identificado como cliente." });
     }
+
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 20;
+    const offset = (page - 1) * limit;
 
     try {
         const pool = await getPool();
+
+        // 1. Calcular contadores globales (solo en la página 1 para no repetir trabajo)
+        let counts = null;
+        if (page === 1) {
+            const countsQuery = await pool.request()
+                .input('cod', sql.Int, codCliente)
+                .query(`
+                    SELECT ISNULL(o.NoDocERP, o.CodigoOrden) AS DocID, o.Estado
+                    FROM Ordenes o WITH(NOLOCK)
+                    WHERE o.CodCliente = @cod
+                    UNION ALL
+                    SELECT o.OrdCodigoOrden AS DocID, e.EOrNombreEstado AS Estado
+                    FROM OrdenesDeposito o WITH(NOLOCK)
+                    INNER JOIN Clientes c WITH(NOLOCK) ON c.CliIdCliente = o.CliIdCliente
+                    LEFT JOIN EstadosOrdenes e WITH(NOLOCK) ON e.EOrIdEstadoOrden = o.OrdEstadoActual
+                    WHERE c.CodCliente = @cod
+                `);
+            
+            const docs = {};
+            countsQuery.recordset.forEach(r => {
+                const docId = r.DocID || 'SIN_DOC';
+                if (!docs[docId]) docs[docId] = [];
+                docs[docId].push(r);
+            });
+
+            const getStatusKey = (status) => {
+                const s = (status || '').toUpperCase();
+                if (s.includes('CARGANDO')) return 'zombie';
+                if (s.includes('PENDIENTE')) return 'pendiente';
+                if (s.includes('CANCELADO')) return 'cancelado';
+                if (s.includes('ENTREGADO')) return 'entregado';
+                if (s.includes('AVISADO') || s.includes('PARA AVISAR')) return 'avisado';
+                if (s.includes('FINALIZADO') || s.includes('PRONTO') || s.includes('INGRESADO')) return 'finalizado';
+                return 'activo';
+            };
+
+            const getProjectStatus = (subOrders) => {
+                const statuses = subOrders.map(so => getStatusKey(so.Estado));
+                if (statuses.every(s => s === 'cancelado')) return 'cancelado';
+                if (statuses.every(s => s === 'entregado')) return 'entregado';
+                if (statuses.every(s => s === 'avisado')) return 'avisado';
+                if (statuses.every(s => ['finalizado', 'entregado', 'avisado'].includes(s))) return 'finalizado';
+                if (statuses.every(s => s === 'pendiente' || s === 'zombie')) return 'pendiente';
+                if (statuses.some(s => s === 'zombie')) return 'zombie';
+                if (statuses.some(s => s === 'activo')) return 'activo';
+                return 'pendiente';
+            };
+
+            const acc = { ALL: 0, ACTIVE: 0, PENDING: 0, DONE: 0, CANCELLED: 0 };
+            Object.values(docs).forEach(subOrders => {
+                const s = getProjectStatus(subOrders);
+                if (s === 'activo') acc.ACTIVE++;
+                else if (s === 'pendiente' || s === 'zombie') acc.PENDING++;
+                else if (['finalizado', 'entregado', 'avisado'].includes(s)) acc.DONE++;
+                else if (s === 'cancelado') acc.CANCELLED++;
+                acc.ALL++;
+            });
+            counts = acc;
+        }
+
         const result = await pool.request()
             .input('cod', sql.Int, codCliente)
+            .input('Offset', sql.Int, offset)
+            .input('Limit', sql.Int, limit)
             .query(`
-                SELECT TOP 100 * FROM (
+                SELECT * FROM (
                     -- Órdenes web (tabla interna Ordenes)
                     SELECT
                         o.OrdenID       AS OrdenID,
@@ -1286,7 +1355,7 @@ exports.getClientOrders = async (req, res) => {
                         o.Material      AS Material,
                         o.FechaIngreso  AS FechaIngreso,
                         o.Estado        AS Estado,
-                        o.AreaID        AS AreaID,
+                        COALESCE(ar.Nombre, o.AreaID) AS AreaID,
                         NULL            AS Total,
                         NULL            AS Moneda,
                         'WEB'           AS Origen,
@@ -1294,6 +1363,7 @@ exports.getClientOrders = async (req, res) => {
                         o.DetallesCancelacion AS DetallesCancelacion
                     FROM Ordenes o WITH(NOLOCK)
                     LEFT JOIN MotivosCancelacion mc ON mc.MotivoID = o.MotivoCancelacionID
+                    LEFT JOIN Areas ar WITH(NOLOCK) ON ar.AreaID = o.AreaID
                     WHERE o.CodCliente = @cod
 
                     UNION ALL
@@ -1320,10 +1390,11 @@ exports.getClientOrders = async (req, res) => {
                     LEFT JOIN Articulos art WITH(NOLOCK) ON art.ProIdProducto = o.ProIdProducto
                     WHERE c.CodCliente = @cod
                 ) combined
-                ORDER BY combined.FechaIngreso DESC
+                ORDER BY combined.FechaIngreso DESC, combined.OrdenID DESC
+                OFFSET @Offset ROWS FETCH NEXT @Limit ROWS ONLY
             `);
 
-        res.json({ success: true, data: result.recordset });
+        res.json({ success: true, data: result.recordset, counts });
     } catch (err) {
         logger.error("❌ Error al obtener órdenes del cliente:", err);
         res.status(500).json({ error: "Error al consultar la base de datos." });

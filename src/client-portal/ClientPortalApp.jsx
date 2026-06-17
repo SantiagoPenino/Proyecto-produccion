@@ -4,6 +4,8 @@ import { Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider } from './auth/AuthContext';
 import { ToastProvider } from './pautas/Toast';
 import { ProtectedRoute } from './auth/ProtectedRoute';
+import { ToastContainer } from 'react-toastify';
+import 'react-toastify/dist/ReactToastify.css';
 import { MainLayout } from './layout/MainLayout';
 import { Dashboard } from './modulos/Dashboard';
 import { ProfileView } from './modulos/ProfileView';
@@ -24,6 +26,7 @@ export const ClientPortalApp = () => {
     return (
         <AuthProvider>
             <ToastProvider>
+                <ToastContainer style={{ zIndex: 999999 }} />
                 <Routes>
 
                     <Route path="/" element={

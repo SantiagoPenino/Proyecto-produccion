@@ -97,6 +97,8 @@ const RegisterPage = () => {
             case 'idCliente':
                 if (v && /\s/.test(v))
                     return 'No puede contener espacios';
+                if (v && !/^[a-zA-Z0-9]+$/.test(v))
+                    return 'No puede contener símbolos, solo letras y números';
                 break;
             case 'email':
                 if (v && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v))

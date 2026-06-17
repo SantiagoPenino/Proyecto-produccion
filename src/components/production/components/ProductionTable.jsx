@@ -202,7 +202,7 @@ export default function ProductionTable({ rowData = [], onRowSelected, selectedR
                 cell: (info) => {
                     if (col.cellRenderer) {
                         const Renderer = col.cellRenderer;
-                        return <div className="flex justify-center w-full"><Renderer value={info.getValue()} data={info.row.original} /></div>;
+                        return <div className="flex justify-center w-full"><Renderer value={info.getValue()} data={info.row.original} row={info.row} /></div>;
                     }
                     if (col.field === 'code') {
                         return <span className="text-xs font-bold text-brand-cyan">{info.getValue() || '-'}</span>;

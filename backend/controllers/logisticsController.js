@@ -172,7 +172,7 @@ exports.processBatch = async (req, res) => {
                 let isRecepcion = codNorm.startsWith('PRE');
 
                 // Update Legacy Tables
-                let nuevoEstado = (type === 'INGRESO') ? 'EN PROCESO' : 'EN TRANSITO';
+                let nuevoEstado = (type === 'INGRESO') ? (areaId === 'LOCAL' ? 'PRONTO PARA ENTREGAR' : 'EN PROCESO') : 'EN TRANSITO';
                 let nuevaUbicacion = areaId;
 
                 // ALSO Update Logistica_Bultos if exists

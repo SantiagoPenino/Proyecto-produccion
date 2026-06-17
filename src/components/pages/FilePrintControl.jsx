@@ -501,7 +501,6 @@ const FilePrintControl = ({ areaCode }) => {
         const res = await fileControlService.completarOrden(order.id);
         if (res.success) {
           lastRes = res;
-          handlePrintLabels(order.id);
         } else {
           someError = res.error || `Error al finalizar la orden ${order.code || order.id}`;
           setToast({ visible: true, message: someError, type: 'error' });

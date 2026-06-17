@@ -1,8 +1,9 @@
 import React, { useEffect, useState } from 'react';
 import { GlassCard } from '../pautas/GlassCard';
 import { apiClient } from '../api/apiClient';
-import { Loader2, RefreshCw, Layers, Trash2, Check, Settings, Circle, Ban, AlertTriangle, Search, Factory } from 'lucide-react';
+import { Loader2, RefreshCw, Layers, Trash2, Check, Settings, Circle, Ban, AlertTriangle, Search, Factory, Truck } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
+import { useNavigate } from 'react-router-dom';
 import { ConfirmationModal } from '../pautas/ConfirmationModal';
 import { socket } from '../../services/socketService';
 
@@ -40,7 +41,25 @@ const STATUS_CONFIG = {
         border: 'border-emerald-500/30',
         glow: 'shadow-[0_0_12px_rgba(52,211,153,0.15)]',
         icon: <Check size={15} strokeWidth={3} />,
-        label: 'EN TRÁNSITO',
+        label: 'PRONTO',
+        dot: 'bg-emerald-400',
+    },
+    avisado: {
+        color: 'text-emerald-400',
+        bg: 'bg-emerald-500/10',
+        border: 'border-emerald-500/30',
+        glow: 'shadow-[0_0_12px_rgba(52,211,153,0.15)]',
+        icon: <Check size={15} strokeWidth={3} />,
+        label: 'RETIRAR',
+        dot: 'bg-emerald-400',
+    },
+    entregado: {
+        color: 'text-emerald-400',
+        bg: 'bg-emerald-500/10',
+        border: 'border-emerald-500/30',
+        glow: 'shadow-[0_0_12px_rgba(52,211,153,0.15)]',
+        icon: <Check size={15} strokeWidth={3} />,
+        label: 'ENTREGADO',
         dot: 'bg-emerald-400',
     },
     activo: {
@@ -59,14 +78,18 @@ const getStatusKey = (status) => {
     if (s.includes('CARGANDO')) return 'zombie';
     if (s.includes('PENDIENTE')) return 'pendiente';
     if (s.includes('CANCELADO')) return 'cancelado';
-    if (s.includes('FINALIZADO') || s.includes('PRONTO') || s.includes('ENTREGADO')) return 'finalizado';
+    if (s.includes('ENTREGADO')) return 'entregado';
+    if (s.includes('AVISADO') || s.includes('PARA AVISAR')) return 'avisado';
+    if (s.includes('FINALIZADO') || s.includes('PRONTO') || s.includes('INGRESADO')) return 'finalizado';
     return 'activo';
 };
 
 const getProjectStatus = (subOrders) => {
     const statuses = subOrders.map(so => getStatusKey(so.Estado));
     if (statuses.every(s => s === 'cancelado')) return 'cancelado';
-    if (statuses.every(s => s === 'finalizado')) return 'finalizado';
+    if (statuses.every(s => s === 'entregado')) return 'entregado';
+    if (statuses.every(s => s === 'avisado')) return 'avisado';
+    if (statuses.every(s => ['finalizado', 'entregado', 'avisado'].includes(s))) return 'finalizado';
     if (statuses.every(s => s === 'pendiente' || s === 'zombie')) return 'pendiente';
     if (statuses.some(s => s === 'zombie')) return 'zombie';
     if (statuses.some(s => s === 'activo')) return 'activo';
@@ -82,11 +105,19 @@ const FILTER_TABS = [
 ];
 
 export const FactoryView = () => {
+    const navigate = useNavigate();
     const [orders, setOrders] = useState([]);
     const [loading, setLoading] = useState(true);
     const [searchTerm, setSearchTerm] = useState('');
     const [statusFilter, setStatusFilter] = useState('ALL');
     const [expandedProject, setExpandedProject] = useState(null);
+
+    // Infinite scroll states
+    const [page, setPage] = useState(1);
+    const [hasMore, setHasMore] = useState(true);
+    const [loadingMore, setLoadingMore] = useState(false);
+    const [globalCounts, setGlobalCounts] = useState({ ALL: 0, ACTIVE: 0, PENDING: 0, DONE: 0, CANCELLED: 0 });
+    const observer = React.useRef();
 
     const [modal, setModal] = useState({
         isOpen: false,
@@ -97,17 +128,30 @@ export const FactoryView = () => {
         confirmText: 'Confirmar'
     });
 
-    const fetchOrders = async () => {
-        setLoading(true);
+    const fetchOrders = async (pageNum = 1, shouldAppend = false) => {
+        if (pageNum === 1) setLoading(true);
+        else setLoadingMore(true);
+
         try {
-            const res = await apiClient.get('/web-orders/my-orders');
+            const res = await apiClient.get(`/web-orders/my-orders?page=${pageNum}&limit=20`);
             if (res.success) {
-                setOrders(res.data || []);
+                if (shouldAppend) {
+                    setOrders(prev => [...prev, ...res.data]);
+                } else {
+                    setOrders(res.data || []);
+                }
+                
+                setHasMore((res.data || []).length === 20);
+
+                if (res.counts) {
+                    setGlobalCounts(res.counts);
+                }
             }
         } catch (error) {
             console.error("Error fetching orders:", error);
         } finally {
-            setLoading(false);
+            if (pageNum === 1) setLoading(false);
+            setLoadingMore(false);
         }
     };
 
@@ -123,7 +167,8 @@ export const FactoryView = () => {
                 setLoading(true);
                 try {
                     await apiClient.delete(`/web-orders/bundle/${docId}`);
-                    await fetchOrders();
+                    setPage(1);
+                    if (page === 1) await fetchOrders(1, false);
                 } catch (err) {
                     alert("Error: " + err.message);
                     setLoading(false);
@@ -148,7 +193,8 @@ export const FactoryView = () => {
                             await apiClient.delete(`/web-orders/incomplete/${so.OrdenID}`);
                         }
                     }
-                    await fetchOrders();
+                    setPage(1);
+                    if (page === 1) await fetchOrders(1, false);
                 } catch (err) {
                     alert("Error al cancelar proyecto: " + err.message);
                     setLoading(false);
@@ -158,8 +204,8 @@ export const FactoryView = () => {
     };
 
     useEffect(() => {
-        fetchOrders();
-    }, []);
+        fetchOrders(page, page > 1);
+    }, [page]);
 
     // ── Socket: actualización en tiempo real cuando cambia estado de una orden ──
     useEffect(() => {
@@ -169,7 +215,8 @@ export const FactoryView = () => {
             // Debounce: si llegan múltiples eventos seguidos, solo hacemos un fetch
             clearTimeout(debounceTimer);
             debounceTimer = setTimeout(() => {
-                fetchOrders();
+                setPage(1);
+                if (page === 1) fetchOrders(1, false);
             }, 600);
         };
 
@@ -217,18 +264,22 @@ export const FactoryView = () => {
         return true;
     });
 
-    // Count badges
-    const statusCounts = Object.values(projects).reduce((acc, p) => {
-        const s = getProjectStatus(p.subOrders);
-        if (s === 'activo') acc.ACTIVE++;
-        else if (s === 'pendiente' || s === 'zombie') acc.PENDING++;
-        else if (s === 'finalizado') acc.DONE++;
-        else if (s === 'cancelado') acc.CANCELLED++;
-        acc.ALL++;
-        return acc;
-    }, { ALL: 0, ACTIVE: 0, PENDING: 0, DONE: 0, CANCELLED: 0 });
+    // Count badges replaced by globalCounts
+    const statusCounts = globalCounts;
 
-    if (loading) return (
+    // Observer ref
+    const lastElementRef = React.useCallback(node => {
+        if (loading || loadingMore) return;
+        if (observer.current) observer.current.disconnect();
+        observer.current = new IntersectionObserver(entries => {
+            if (entries[0].isIntersecting && hasMore) {
+                setPage(prevPage => prevPage + 1);
+            }
+        });
+        if (node) observer.current.observe(node);
+    }, [loading, loadingMore, hasMore]);
+
+    if (loading && page === 1) return (
         <div className="flex flex-col items-center justify-center py-32 gap-4">
             <div className="relative">
                 <div className="w-12 h-12 rounded-full border-2 border-zinc-700 border-t-custom-cyan animate-spin" />
@@ -316,6 +367,7 @@ export const FactoryView = () => {
             ) : (
                 <div className="space-y-3">
                     {filteredProjects.map((project, pIdx) => {
+                        const isLast = pIdx === filteredProjects.length - 1;
                         const projectStatus = getProjectStatus(project.subOrders);
                         const statusConf = STATUS_CONFIG[projectStatus];
                         const hasZombies = project.subOrders.some(so => so.Estado === 'Cargando...');
@@ -325,6 +377,7 @@ export const FactoryView = () => {
                         return (
                             <motion.div
                                 key={project.id}
+                                ref={isLast ? lastElementRef : null}
                                 initial={{ opacity: 0, y: 12 }}
                                 animate={{ opacity: 1, y: 0 }}
                                 transition={{ delay: pIdx * 0.04, duration: 0.3 }}
@@ -357,6 +410,11 @@ export const FactoryView = () => {
                                                 {statusConf.icon}
                                                 {statusConf.label}
                                             </span>
+                                            {projectStatus === 'finalizado' && (
+                                                <button onClick={(e) => { e.stopPropagation(); navigate('/portal/pickup'); }} className="p-1.5 rounded-lg text-emerald-400 border border-emerald-500/20 bg-emerald-500/5 hover:bg-emerald-500/10 transition-all" title="Crear Retiro">
+                                                    <Truck size={12} />
+                                                </button>
+                                            )}
                                             {(hasZombies || allPending) && (
                                                 hasZombies ? (
                                                     <button onClick={(e) => handleDeleteBundle(project.id, e)} className="p-1.5 rounded-lg text-red-400 border border-red-500/20 bg-red-500/5 hover:bg-red-500/10 transition-all" title="Eliminar error">
@@ -474,6 +532,13 @@ export const FactoryView = () => {
                             </motion.div>
                         );
                     })}
+                </div>
+            )}
+            
+            {loadingMore && (
+                <div className="flex flex-col items-center justify-center py-8 gap-3">
+                    <div className="w-8 h-8 rounded-full border-2 border-zinc-700 border-t-custom-cyan animate-spin" />
+                    <span className="text-zinc-500 text-[10px] font-bold tracking-widest uppercase">Cargando más pedidos...</span>
                 </div>
             )}
 
