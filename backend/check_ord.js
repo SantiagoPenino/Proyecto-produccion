@@ -1,1 +1,0 @@
-const { getPool } = require('./config/db'); getPool().then(async pool => { try { const result = await pool.request().query(` SELECT OrdenID, CodigoOrden, DescripcionTrabajo FROM dbo.Ordenes WHERE OrdenID = 213 `); console.table(result.recordset); } catch(e) { console.error('SQL Error', e); } process.exit(); });
