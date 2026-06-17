@@ -924,6 +924,7 @@ async function getSaldoCliente(CliIdCliente) {
             AND  MovTipo IN ('ORDEN', 'ORDEN_ANTICIPO')
             AND  DocIdDocumento IS NULL
             AND  (MovAnulado IS NULL OR MovAnulado = 0)
+            AND  (MovObservaciones IS NULL OR NOT (MovObservaciones LIKE 'CUBIERTO%'))
         ), 0) AS PendienteFacturar,
         ISNULL((
           SELECT SUM(DDeImportePendiente)
@@ -1100,6 +1101,11 @@ async function getMovimientos(CueIdCuenta, FechaDesde = null, FechaHasta = null,
       ) AS NombreTrabajo
     ) oa
     WHERE m.CueIdCuenta = @CueIdCuenta
+      AND (
+        -- Excluir \u00f3rdenes anuladas: no aportan valor contable y confunden el historial
+        (m.MovAnulado IS NULL OR m.MovAnulado = 0)
+        OR m.MovTipo NOT IN ('ORDEN','ORDEN_ANTICIPO','ENTREGA')
+      )
       ${filtroFecha}
     ORDER BY m.MovFecha DESC, m.MovIdMovimiento DESC
   `);

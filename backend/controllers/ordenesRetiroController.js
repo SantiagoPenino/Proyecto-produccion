@@ -867,8 +867,369 @@ const getOrdenesRetiroPorRemito = async (req, res) => {
   }
 };
 
+const { registrarHistorialOrden } = require('../services/trackingService');
+const contabilidadSvc = require('../services/contabilidadService');
+
+// ─── Función auxiliar: cancela el retiro completo (estado 6) ────────────────
+async function cancelarRetiroCompleto(transaction, retiroId, formaRetiro, usuarioId) {
+  await transaction.request()
+    .input('RetiroId', sql.Int, retiroId)
+    .input('Usr', sql.Int, usuarioId)
+    .query(`
+      UPDATE dbo.OrdenesRetiro
+      SET OReEstadoActual = 6, OReFechaEstadoActual = GETDATE()
+      WHERE OReIdOrdenRetiro = @RetiroId;
+
+      INSERT INTO dbo.HistoricoEstadosOrdenesRetiro (OReIdOrdenRetiro, EORIdEstadoOrden, HEOFechaEstado, HEOUsuarioAlta)
+      VALUES (@RetiroId, 6, GETDATE(), @Usr);
+    `);
+
+  const codigoRetiro = (formaRetiro || 'R') + '-' + retiroId;
+  await transaction.request()
+    .input('Cod', sql.VarChar(50), codigoRetiro)
+    .query('DELETE FROM dbo.OcupacionEstantes WHERE OrdenRetiro = @Cod');
+}
+
+// ─── Función auxiliar: busca OrdenID en la tabla Ordenes ERP ─────────────────
+async function buscarOrdenErpId(transaction, orderId) {
+  try {
+    const r = await transaction.request()
+      .input('OrdId', sql.Int, orderId)
+      .query(`
+        SELECT TOP 1 erp.OrdenID
+        FROM dbo.Ordenes erp
+        JOIN dbo.OrdenesDeposito od ON od.OrdCodigoOrden = erp.CodigoOrden
+        WHERE od.OrdIdOrden = @OrdId
+      `);
+    return r.recordset.length ? r.recordset[0].OrdenID : null;
+  } catch { return null; }
+}
+
+// ─── Función auxiliar: busca movimiento contable activo para una orden ────────
+async function buscarMovContable(transaction, orderId) {
+  const r = await transaction.request()
+    .input('OrdId', sql.Int, orderId)
+    .query(`
+      SELECT TOP 1 m.MovIdMovimiento, m.MovImporte, m.CueIdCuenta, m.CicIdCiclo
+      FROM dbo.MovimientosCuenta m
+      WHERE m.OrdIdOrden = @OrdId
+        AND m.MovTipo = 'ORDEN'
+        AND (m.MovAnulado IS NULL OR m.MovAnulado = 0)
+        AND m.DocIdDocumento IS NULL
+    `);
+  return r.recordset.length ? r.recordset[0] : null;
+}
+
+const editarCostoOrden = async (req, res) => {
+  const { orderId, nuevoCosto, OReIdOrdenRetiro } = req.body;
+  const UsuarioModif = req.user?.id || 70;
+
+  if (!orderId || nuevoCosto === undefined) {
+    return res.status(400).json({ error: 'Faltan datos requeridos (orderId, nuevoCosto).' });
+  }
+
+  let cleanRetiroId = null;
+  if (OReIdOrdenRetiro !== undefined && OReIdOrdenRetiro !== null) {
+    cleanRetiroId = parseInt(String(OReIdOrdenRetiro).replace(/[^0-9]/g, ''), 10);
+  }
+
+  const nuevoCostoNum = parseFloat(nuevoCosto);
+  let transaction;
+  try {
+    const pool = await getPool();
+    transaction = await pool.transaction();
+    await transaction.begin();
+
+    const ordenRes = await transaction.request()
+      .input('OrderId', sql.Int, orderId)
+      .query('SELECT OrdCostoFinal, OrdCodigoOrden FROM dbo.OrdenesDeposito WHERE OrdIdOrden = @OrderId');
+    const costoAnterior = parseFloat(ordenRes.recordset[0]?.OrdCostoFinal || 0);
+    const codigoOrden = ordenRes.recordset[0]?.OrdCodigoOrden || '';
+
+    await transaction.request()
+      .input('OrderId', sql.Int, orderId)
+      .input('Costo', sql.Decimal(18, 2), nuevoCostoNum)
+      .query('UPDATE dbo.OrdenesDeposito SET OrdCostoFinal = @Costo WHERE OrdIdOrden = @OrderId');
+
+    const mov = await buscarMovContable(transaction, orderId);
+    if (mov) {
+      const delta = nuevoCostoNum - costoAnterior;
+
+      await transaction.request()
+        .input('MovId', sql.Int, mov.MovIdMovimiento)
+        .input('NuevoImporte', sql.Decimal(18, 4), -nuevoCostoNum)
+        .query('UPDATE dbo.MovimientosCuenta SET MovImporte = @NuevoImporte WHERE MovIdMovimiento = @MovId');
+
+      await transaction.request()
+        .input('CueId', sql.Int, mov.CueIdCuenta)
+        .input('Delta', sql.Decimal(18, 4), delta)
+        .query('UPDATE dbo.CuentasCliente SET CueSaldoActual = CueSaldoActual - @Delta WHERE CueIdCuenta = @CueId');
+
+      await transaction.request()
+        .input('OrdId', sql.Int, orderId)
+        .input('Delta', sql.Decimal(18, 4), delta)
+        .query(`
+          UPDATE dbo.DeudaDocumento
+          SET DDeImportePendiente = CASE
+                WHEN DDeImportePendiente + @Delta <= 0 THEN 0
+                ELSE DDeImportePendiente + @Delta
+              END,
+              DDeEstado = CASE
+                WHEN DDeImportePendiente + @Delta <= 0 THEN 'COBRADO'
+                ELSE DDeEstado
+              END
+          WHERE OrdIdOrden = @OrdId
+            AND DDeEstado NOT IN ('CANCELADA', 'COBRADO')
+        `);
+
+      if (mov.CicIdCiclo) {
+        await transaction.request()
+          .input('CicId', sql.Int, mov.CicIdCiclo)
+          .query(`
+            UPDATE c SET
+              c.CicTotalOrdenes = ISNULL((SELECT SUM(ABS(MovImporte)) FROM dbo.MovimientosCuenta
+                WHERE CicIdCiclo = c.CicIdCiclo AND MovTipo IN ('ORDEN','ENTREGA','ORDEN_ANTICIPO')
+                AND (MovAnulado IS NULL OR MovAnulado = 0)), 0)
+            FROM dbo.CiclosCredito c WHERE c.CicIdCiclo = @CicId
+          `);
+      }
+
+      logger.info(`[CAJA] Ajuste contable orden ${codigoOrden}: $${costoAnterior} -> $${nuevoCostoNum}`);
+    }
+
+    if (cleanRetiroId) {
+      const sumRes = await transaction.request()
+        .input('RetiroId', sql.Int, cleanRetiroId)
+        .query('SELECT SUM(OrdCostoFinal) AS Total FROM dbo.OrdenesDeposito WHERE OReIdOrdenRetiro = @RetiroId');
+      const nuevoTotal = sumRes.recordset[0].Total || 0;
+      await transaction.request()
+        .input('RetiroId', sql.Int, cleanRetiroId)
+        .input('Total', sql.Decimal(18, 2), nuevoTotal)
+        .query('UPDATE dbo.OrdenesRetiro SET OReCostoTotalOrden = @Total WHERE OReIdOrdenRetiro = @RetiroId');
+    }
+
+    await transaction.commit();
+
+    try {
+      const erpId = await buscarOrdenErpId(pool, orderId);
+      if (erpId) {
+        await registrarHistorialOrden(pool, erpId, 'Ajuste de Costo', UsuarioModif,
+          `Ajuste de costo en Caja. Anterior: $${costoAnterior.toFixed(2)} -> Nuevo: $${nuevoCostoNum.toFixed(2)}${mov ? ' (billetera actualizada)' : ''}`);
+      }
+    } catch (hErr) {
+      logger.warn('[CAJA] No se pudo registrar HistorialOrdenes para editar costo:', hErr.message);
+    }
+
+    res.status(200).json({ success: true, message: 'Costo de la orden actualizado correctamente.' });
+  } catch (err) {
+    if (transaction) try { await transaction.rollback(); } catch (e) {}
+    logger.error('[EDITAR COSTO ORDEN ERROR]', err);
+    res.status(500).json({ error: err.message });
+  }
+};
+
+const desvincularOrdenRetiro = async (req, res) => {
+  const { orderId, OReIdOrdenRetiro, formaRetiro } = req.body;
+  const UsuarioModif = req.user?.id || 70;
+
+  if (!orderId || !OReIdOrdenRetiro) {
+    return res.status(400).json({ error: 'Faltan datos requeridos (orderId, OReIdOrdenRetiro).' });
+  }
+
+  let cleanRetiroId = parseInt(String(OReIdOrdenRetiro).replace(/[^0-9]/g, ''), 10);
+
+  let transaction;
+  try {
+    const pool = await getPool();
+    transaction = await pool.transaction();
+    await transaction.begin();
+
+    const countRes = await transaction.request()
+      .input('RetiroId', sql.Int, cleanRetiroId)
+      .query('SELECT COUNT(*) AS Total FROM dbo.OrdenesDeposito WHERE OReIdOrdenRetiro = @RetiroId');
+    const retiroQuedaVacio = (countRes.recordset[0].Total <= 1);
+
+    await transaction.request()
+      .input('OrderId', sql.Int, orderId)
+      .query('UPDATE dbo.OrdenesDeposito SET OReIdOrdenRetiro = NULL WHERE OrdIdOrden = @OrderId');
+
+    if (retiroQuedaVacio) {
+      await cancelarRetiroCompleto(transaction, cleanRetiroId, formaRetiro, UsuarioModif);
+    } else {
+      const sumRes = await transaction.request()
+        .input('RetiroId', sql.Int, cleanRetiroId)
+        .query('SELECT SUM(OrdCostoFinal) AS Total FROM dbo.OrdenesDeposito WHERE OReIdOrdenRetiro = @RetiroId');
+      const nuevoTotal = sumRes.recordset[0].Total || 0;
+      await transaction.request()
+        .input('RetiroId', sql.Int, cleanRetiroId)
+        .input('Total', sql.Decimal(18, 2), nuevoTotal)
+        .query('UPDATE dbo.OrdenesRetiro SET OReCostoTotalOrden = @Total WHERE OReIdOrdenRetiro = @RetiroId');
+    }
+
+    await transaction.commit();
+
+    try {
+      const erpId = await buscarOrdenErpId(pool, orderId);
+      if (erpId) {
+        const detalle = retiroQuedaVacio
+          ? `Orden removida del retiro en Caja (retiro ${cleanRetiroId} cancelado por quedar vacio).`
+          : `Orden removida del retiro en Caja (para retirar en otro momento).`;
+        await registrarHistorialOrden(pool, erpId, 'Desvinculado de Retiro', UsuarioModif, detalle);
+      }
+    } catch (hErr) {
+      logger.warn('[CAJA] No se pudo registrar HistorialOrdenes para desvincular:', hErr.message);
+    }
+
+    const msg = retiroQuedaVacio
+      ? 'Orden desvinculada. El retiro quedo vacio y fue cancelado.'
+      : 'Orden desvinculada del retiro correctamente.';
+    res.status(200).json({ success: true, message: msg, retiroCancelado: retiroQuedaVacio });
+  } catch (err) {
+    if (transaction) try { await transaction.rollback(); } catch (e) {}
+    logger.error('[DESVINCULAR ORDEN RETIRO ERROR]', err);
+    res.status(500).json({ error: err.message });
+  }
+};
+
+const cancelarOrdenCaja = async (req, res) => {
+  const { orderId, OReIdOrdenRetiro, formaRetiro } = req.body;
+  const UsuarioModif = req.user?.id || 70;
+
+  if (!orderId) {
+    return res.status(400).json({ error: 'Falta dato requerido (orderId).' });
+  }
+
+  let cleanRetiroId = null;
+  if (OReIdOrdenRetiro !== undefined && OReIdOrdenRetiro !== null) {
+    cleanRetiroId = parseInt(String(OReIdOrdenRetiro).replace(/[^0-9]/g, ''), 10);
+  }
+
+  let transaction;
+  try {
+    const pool = await getPool();
+    transaction = await pool.transaction();
+    await transaction.begin();
+
+    let retiroQuedaVacio = false;
+    if (cleanRetiroId) {
+      const countRes = await transaction.request()
+        .input('RetiroId', sql.Int, cleanRetiroId)
+        .query('SELECT COUNT(*) AS Total FROM dbo.OrdenesDeposito WHERE OReIdOrdenRetiro = @RetiroId');
+      retiroQuedaVacio = (countRes.recordset[0].Total <= 1);
+    }
+
+    const mov = await buscarMovContable(transaction, orderId);
+
+    await transaction.request()
+      .input('OrderId', sql.Int, orderId)
+      .query('UPDATE dbo.OrdenesDeposito SET OrdEstadoActual = 10, OrdFechaEstadoActual = GETDATE(), OReIdOrdenRetiro = NULL WHERE OrdIdOrden = @OrderId');
+
+    await transaction.request()
+      .input('OrderId', sql.Int, orderId)
+      .input('Usr', sql.Int, UsuarioModif)
+      .query('INSERT INTO dbo.HistoricoEstadosOrdenes (OrdIdOrden, EOrIdEstadoOrden, HEOFechaEstado, HEOUsuarioAlta) VALUES (@OrderId, 10, GETDATE(), @Usr)');
+
+    let contabilidadRevertida = false;
+    if (mov) {
+      const revertir = Math.abs(Number(mov.MovImporte));
+
+      await transaction.request()
+        .input('MovId', sql.Int, mov.MovIdMovimiento)
+        .query('UPDATE dbo.MovimientosCuenta SET MovAnulado = 1 WHERE MovIdMovimiento = @MovId');
+
+      await transaction.request()
+        .input('CueId', sql.Int, mov.CueIdCuenta)
+        .input('Imp', sql.Decimal(18, 4), revertir)
+        .query('UPDATE dbo.CuentasCliente SET CueSaldoActual = CueSaldoActual + @Imp WHERE CueIdCuenta = @CueId');
+
+      const saldoRes = await transaction.request()
+        .input('CueId', sql.Int, mov.CueIdCuenta)
+        .query('SELECT CueSaldoActual FROM dbo.CuentasCliente WHERE CueIdCuenta = @CueId');
+      const nuevoSaldo = saldoRes.recordset[0].CueSaldoActual;
+
+      await transaction.request()
+        .input('CueId', sql.Int, mov.CueIdCuenta)
+        .input('Imp', sql.Decimal(18, 4), revertir)
+        .input('SP', sql.Decimal(18, 4), nuevoSaldo)
+        .input('Usr', sql.Int, UsuarioModif)
+        .input('MovIdAnula', sql.Int, mov.MovIdMovimiento)
+        .input('OrdId', sql.Int, orderId)
+        .query(`
+          INSERT INTO dbo.MovimientosCuenta
+            (CueIdCuenta, MovTipo, MovImporte, MovConcepto, MovSaldoPosterior, MovFecha, MovUsuarioAlta, MovIdAnula, OrdIdOrden, MovAnulado)
+          VALUES
+            (@CueId, 'AJUSTE', @Imp, 'Cancelacion en Caja', @SP, GETDATE(), @Usr, @MovIdAnula, @OrdId, 0)
+        `);
+
+      await transaction.request()
+        .input('OrdId', sql.Int, orderId)
+        .query(`
+          UPDATE dbo.DeudaDocumento
+          SET DDeEstado = 'CANCELADA', DDeImportePendiente = 0
+          WHERE OrdIdOrden = @OrdId
+            AND DDeEstado IN ('PENDIENTE', 'PARCIAL', 'VENCIDO')
+        `);
+
+      if (mov.CicIdCiclo) {
+        await transaction.request()
+          .input('CicId', sql.Int, mov.CicIdCiclo)
+          .query(`
+            UPDATE c SET
+              c.CicTotalOrdenes = ISNULL((SELECT SUM(ABS(MovImporte)) FROM dbo.MovimientosCuenta
+                WHERE CicIdCiclo = c.CicIdCiclo AND MovTipo IN ('ORDEN','ENTREGA','ORDEN_ANTICIPO')
+                AND (MovAnulado IS NULL OR MovAnulado = 0)), 0)
+            FROM dbo.CiclosCredito c WHERE c.CicIdCiclo = @CicId
+          `);
+      }
+
+      contabilidadRevertida = true;
+      logger.info(`[CAJA] Mov contable #${mov.MovIdMovimiento} revertido por cancelacion en Caja`);
+    }
+
+    if (cleanRetiroId) {
+      if (retiroQuedaVacio) {
+        await cancelarRetiroCompleto(transaction, cleanRetiroId, formaRetiro, UsuarioModif);
+      } else {
+        const sumRes = await transaction.request()
+          .input('RetiroId', sql.Int, cleanRetiroId)
+          .query('SELECT SUM(OrdCostoFinal) AS Total FROM dbo.OrdenesDeposito WHERE OReIdOrdenRetiro = @RetiroId');
+        const nuevoTotal = sumRes.recordset[0].Total || 0;
+        await transaction.request()
+          .input('RetiroId', sql.Int, cleanRetiroId)
+          .input('Total', sql.Decimal(18, 2), nuevoTotal)
+          .query('UPDATE dbo.OrdenesRetiro SET OReCostoTotalOrden = @Total WHERE OReIdOrdenRetiro = @RetiroId');
+      }
+    }
+
+    await transaction.commit();
+
+    try {
+      const erpId = await buscarOrdenErpId(pool, orderId);
+      if (erpId) {
+        let detalle = 'Orden cancelada en Caja.';
+        if (contabilidadRevertida) detalle += ' Saldo de billetera revertido.';
+        if (retiroQuedaVacio) detalle += ` Retiro ${cleanRetiroId} cancelado por quedar vacio.`;
+        await registrarHistorialOrden(pool, erpId, 'Cancelado', UsuarioModif, detalle);
+      }
+    } catch (hErr) {
+      logger.warn('[CAJA] No se pudo registrar HistorialOrdenes para cancelar:', hErr.message);
+    }
+
+    const msg = retiroQuedaVacio
+      ? 'Orden cancelada. El retiro quedo vacio y fue cancelado.'
+      : 'Orden cancelada y desvinculada del retiro correctamente.';
+    res.status(200).json({ success: true, message: msg, retiroCancelado: retiroQuedaVacio, contabilidadRevertida });
+  } catch (err) {
+    if (transaction) try { await transaction.rollback(); } catch (e) {}
+    logger.error('[CANCELAR ORDEN CAJA ERROR]', err);
+    res.status(500).json({ error: err.message });
+  }
+};
+
 module.exports = {
   createOrdenRetiro, getOrdenesRetiroPorEstados, actualizarOrdenRetiroEstado, marcarOrdenRetiroPronto,
   marcarOrdenRetiroEntregado, ordenesRetiroCaja, getOrdenesRetiroPasarPorCaja, ordenesRetiroMarcarPasarPorCaja, getOrdenesRetiroPorFecha,
-  getOrdenesRetiroPorLugar, marcarDespachoEntregadoAutorizado, buscarParaMostrador, getClienteEnvioDatos, getTodasSinRetiro, backfillLugarRetiro, getOrdenesRetiroPorRemito
+  getOrdenesRetiroPorLugar, marcarDespachoEntregadoAutorizado, buscarParaMostrador, getClienteEnvioDatos, getTodasSinRetiro, backfillLugarRetiro, getOrdenesRetiroPorRemito,
+  editarCostoOrden, desvincularOrdenRetiro, cancelarOrdenCaja
 };
+

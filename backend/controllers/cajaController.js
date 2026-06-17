@@ -308,8 +308,8 @@ const getMovimientosTurno = async (req, res) => {
       LEFT JOIN dbo.Clientes c WITH(NOLOCK) ON c.CliIdCliente = t.TcaClienteId
       LEFT JOIN dbo.Usuarios u WITH(NOLOCK) ON u.IdUsuario = t.TcaUsuarioId
       WHERE (
-         (@IsAdmin = 0 AND t.StuIdSesion = @Sid) OR
-         (@IsAdmin = 1 AND t.StuIdSesion IS NULL AND t.TcaFecha >= @FecA AND t.TcaFecha <= @FecH)
+         (@IsAdmin = 0 AND t.StuIdSesion = @Sid AND t.EsCajaAdmin = 0) OR
+         (@IsAdmin = 1 AND t.EsCajaAdmin = 1 AND t.TcaFecha >= @FecA AND t.TcaFecha <= @FecH)
       ) AND t.TcaEstado IN ('COMPLETADO', 'COMPLETADA', 'COBRADO') AND p.PagTipoMovimiento != 'ANULADO'
       UNION ALL
       SELECT 
@@ -328,8 +328,8 @@ const getMovimientosTurno = async (req, res) => {
       LEFT JOIN dbo.Config_TiposDocumento ct2 WITH(NOLOCK) ON ct2.CodDocumento = e.EgrTipoDocumento
       LEFT JOIN dbo.Usuarios u WITH(NOLOCK) ON u.IdUsuario = e.EgrUsuarioId
       WHERE (
-         (@IsAdmin = 0 AND e.StuIdSesion = @Sid) OR
-         (@IsAdmin = 1 AND e.StuIdSesion IS NULL AND e.EgrFecha >= @FecA AND e.EgrFecha <= @FecH)
+         (@IsAdmin = 0 AND e.StuIdSesion = @Sid AND e.EsCajaAdmin = 0) OR
+         (@IsAdmin = 1 AND e.EsCajaAdmin = 1 AND e.EgrFecha >= @FecA AND e.EgrFecha <= @FecH)
       ) AND e.EgrEstado = 'REGISTRADO'
       ORDER BY Fecha ASC
     `);
@@ -507,18 +507,19 @@ const registrarEgreso = async (req, res) => {
       .input('EgrNumeroDoc',     sql.VarChar(20),    numeroDocFinal)
       .input('EgrTipoEgreso',    sql.VarChar(30),    tipoEgreso    || null)
       .input('EgrObservaciones', sql.NVarChar(300),  observaciones || null)
+      .input('EsAdmin',          sql.Bit,            admin ? 1 : 0)
       .query(`
         INSERT INTO dbo.EgresosCaja
           (StuIdSesion, EgrFecha, EgrUsuarioId, EgrConcepto, EgrProveedor,
            EgrMonto, EgrMoneda, EgrCotizacion, EgrMontoConvertido,
            MPaIdMetodoPago, EgrTipoDocumento, EgrSerieDoc, EgrNumeroDoc,
-           EgrTipoEgreso, EgrEstado, EgrObservaciones)
+           EgrTipoEgreso, EgrEstado, EgrObservaciones, EsCajaAdmin)
         OUTPUT INSERTED.EgrIdEgreso
         VALUES
           (@StuIdSesion, GETDATE(), @EgrUsuarioId, @EgrConcepto, @EgrProveedor,
            @EgrMonto, @EgrMoneda, @EgrCotizacion, @EgrConvertido,
            @MPaIdMetodoPago, @EgrTipoDoc, @EgrSerieDoc, @EgrNumeroDoc,
-           @EgrTipoEgreso, 'REGISTRADO', @EgrObservaciones)
+           @EgrTipoEgreso, 'REGISTRADO', @EgrObservaciones, @EsAdmin)
       `);
     
     const idEgreso = result.recordset[0].EgrIdEgreso;
@@ -785,14 +786,15 @@ const registrarIngresoGenerico = async (req, res) => {
       .input('TcaCobrado',       sql.Decimal(18,4), montoNum)
       .input('TcaMonedaBase',    sql.VarChar(10),   moneda)
       .input('TcaObservaciones', sql.NVarChar(300), observaciones || concepto)
+      .input('EsAdmin',          sql.Bit,           admin ? 1 : 0)
       .query(`
         INSERT INTO dbo.TransaccionesCaja
           (StuIdSesion, TcaFecha, TcaUsuarioId, TcaClienteId, TcaTipoDocumento, TcaSerieDoc, TcaNumeroDoc,
-           TcaTotalBruto, TcaTotalAjuste, TcaTotalNeto, TcaTotalCobrado, TcaMonedaBase, TcaEstado, TcaObservaciones)
+           TcaTotalBruto, TcaTotalAjuste, TcaTotalNeto, TcaTotalCobrado, TcaMonedaBase, TcaEstado, TcaObservaciones, EsCajaAdmin)
         OUTPUT INSERTED.TcaIdTransaccion
         VALUES
           (@StuIdSesion, GETDATE(), @TcaUsuarioId, @TcaClienteId, @TcaTipoDoc, @TcaSerieDoc, @TcaNumeroDoc,
-           @TcaBruto, 0, @TcaNeto, @TcaCobrado, @TcaMonedaBase, 'COBRADO', @TcaObservaciones)
+           @TcaBruto, 0, @TcaNeto, @TcaCobrado, @TcaMonedaBase, 'COBRADO', @TcaObservaciones, @EsAdmin)
       `);
     const tcaId = tcaRes.recordset[0].TcaIdTransaccion;
 
@@ -980,10 +982,11 @@ const registrarOperacionManual = async (req, res) => {
       .input('Cob',   sql.Decimal(18,2), convertido)
       .input('Moneda',sql.VarChar(10),   moneda || 'UYU')
       .input('Obs',   sql.NVarChar(500), observaciones || evento.EvtNombre)
+      .input('AdminFlag', sql.Bit, admin ? 1 : 0)
       .query(`INSERT INTO dbo.TransaccionesCaja
-        (StuIdSesion,TcaUsuarioId,TcaClienteId,TcaFecha,TcaTipoDocumento,TcaSerieDoc,TcaNumeroDoc,TcaEstado,TcaTotalBruto,TcaTotalAjuste,TcaTotalNeto,TcaTotalCobrado,TcaMonedaBase,TcaObservaciones)
+        (StuIdSesion,TcaUsuarioId,TcaClienteId,TcaFecha,TcaTipoDocumento,TcaSerieDoc,TcaNumeroDoc,TcaEstado,TcaTotalBruto,TcaTotalAjuste,TcaTotalNeto,TcaTotalCobrado,TcaMonedaBase,TcaObservaciones,EsCajaAdmin)
         OUTPUT INSERTED.TcaIdTransaccion
-        VALUES (@Ses,@Usr,@Cli,GETDATE(),@TipoD,@Serie,@Num,'COMPLETADO',@Bruto,0,@Neto,@Cob,@Moneda,@Obs)`);
+        VALUES (@Ses,@Usr,@Cli,GETDATE(),@TipoD,@Serie,@Num,'COMPLETADO',@Bruto,0,@Neto,@Cob,@Moneda,@Obs,@AdminFlag)`);
     const tcaId = rTca.recordset[0].TcaIdTransaccion;
 
     // 3. Movimiento en Submayor del cliente (si el evento afecta saldo y hay cliente)
@@ -1344,16 +1347,17 @@ const procesarPagoDeuda = async (req, res) => {
         .input('neto',     sql.Decimal(18,4), totalImputado)
         .input('monedaBase', sql.VarChar(10), monedaBaseStr)
         .input('obs',      sql.VarChar(500), header.observaciones || 'Pago de deuda cuenta corriente')
+        .input('AdminFlag', sql.Bit, (header.admin || header.esAdministrativa) ? 1 : 0)
         .query(`
           INSERT INTO dbo.TransaccionesCaja
             (StuIdSesion, TcaUsuarioId, TcaClienteId, TcaFecha,
              TcaTipoDocumento, TcaSerieDoc, TcaNumeroDoc, TcaEstado,
-             TcaTotalBruto, TcaTotalAjuste, TcaTotalNeto, TcaTotalCobrado, TcaMonedaBase, TcaObservaciones)
+             TcaTotalBruto, TcaTotalAjuste, TcaTotalNeto, TcaTotalCobrado, TcaMonedaBase, TcaObservaciones, EsCajaAdmin)
           OUTPUT INSERTED.TcaIdTransaccion
           VALUES
             (@sesId, @usuario, @cliente, GETDATE(),
              @tipo, @serie, @num, 'COBRADO',
-             @neto, 0, @neto, @neto, @monedaBase, @obs)
+             @neto, 0, @neto, @neto, @monedaBase, @obs, @AdminFlag)
         `);
       const tcaIdPago = tcaRes.recordset[0].TcaIdTransaccion;
 
@@ -1456,7 +1460,19 @@ const procesarPagoDeuda = async (req, res) => {
                 const itemsR = await new sql.Request(transaction)
                   .input('OrdId', sql.Int, ap.ordIdOrden)
                   .input('DocId', sql.Int, docId)
+                  .input('MontoApli', sql.Decimal(18,4), Number(ap.montoOriginal) || 0)
                   .query(`
+                    WITH CTE_Suma AS (
+                        SELECT SUM(pcd2.Subtotal) as TotalOriginal
+                        FROM dbo.OrdenesDeposito od2
+                        JOIN dbo.PedidosCobranza pc2
+                            ON CAST(pc2.NoDocERP AS VARCHAR(100)) = LEFT(od2.OrdCodigoOrden,
+                                   CASE WHEN CHARINDEX(' ', od2.OrdCodigoOrden) > 0
+                                        THEN CHARINDEX(' ', od2.OrdCodigoOrden) - 1
+                                        ELSE LEN(od2.OrdCodigoOrden) END)
+                        JOIN dbo.PedidosCobranzaDetalle pcd2 ON pcd2.PedidoCobranzaID = pc2.ID
+                        WHERE od2.OrdIdOrden = @OrdId
+                    )
                     INSERT INTO dbo.DocumentosContablesDetalle
                       (DocIdDocumento, OrdCodigoOrden, DcdNomItem, DcdDscItem,
                        DcdCantidad, DcdPrecioUnitario, DcdSubtotal, DcdImpuestos, DcdTotal)
@@ -1472,10 +1488,10 @@ const procesarPagoDeuda = async (req, res) => {
                         LEFT('Orden: ' + od.OrdCodigoOrden
                              + ISNULL(' (' + od.OrdNombreTrabajo + ')', ''), 500),
                         CAST(ISNULL(pcd.Cantidad, ISNULL(od.OrdCantidad, 1.0)) AS DECIMAL(18,4)),
-                        ROUND(pcd.Subtotal / NULLIF(ISNULL(pcd.Cantidad, ISNULL(od.OrdCantidad, 1.0)), 0) / 1.22, 4),
-                        ROUND(pcd.Subtotal / 1.22, 4),
-                        ROUND(pcd.Subtotal - pcd.Subtotal / 1.22, 4),
-                        pcd.Subtotal
+                        ROUND((pcd.Subtotal * (CASE WHEN (SELECT TotalOriginal FROM CTE_Suma) > 0 THEN (@MontoApli / (SELECT TotalOriginal FROM CTE_Suma)) ELSE 1 END)) / NULLIF(ISNULL(pcd.Cantidad, ISNULL(od.OrdCantidad, 1.0)), 0) / 1.22, 4),
+                        ROUND((pcd.Subtotal * (CASE WHEN (SELECT TotalOriginal FROM CTE_Suma) > 0 THEN (@MontoApli / (SELECT TotalOriginal FROM CTE_Suma)) ELSE 1 END)) / 1.22, 4),
+                        ROUND((pcd.Subtotal * (CASE WHEN (SELECT TotalOriginal FROM CTE_Suma) > 0 THEN (@MontoApli / (SELECT TotalOriginal FROM CTE_Suma)) ELSE 1 END)) - (pcd.Subtotal * (CASE WHEN (SELECT TotalOriginal FROM CTE_Suma) > 0 THEN (@MontoApli / (SELECT TotalOriginal FROM CTE_Suma)) ELSE 1 END)) / 1.22, 4),
+                        ROUND(pcd.Subtotal * (CASE WHEN (SELECT TotalOriginal FROM CTE_Suma) > 0 THEN (@MontoApli / (SELECT TotalOriginal FROM CTE_Suma)) ELSE 1 END), 4)
                     FROM dbo.OrdenesDeposito od
                     JOIN dbo.PedidosCobranza pc
                         ON CAST(pc.NoDocERP AS VARCHAR(100)) = LEFT(od.OrdCodigoOrden,
@@ -2243,11 +2259,12 @@ const registrarPagoAnticipo = async (req, res) => {
         .input('Mon',  sql.VarChar(10),   monStr)
         .input('Monto',sql.Decimal(18,4), montoNum)
         .input('Obs',  sql.VarChar(500),  conceptoFull)
+        .input('AdminFlag', sql.Bit, admin ? 1 : 0)
         .query(`INSERT INTO dbo.TransaccionesCaja
                   (StuIdSesion,TcaUsuarioId,TcaClienteId,TcaFecha,TcaTipoDocumento,TcaSerieDoc,TcaNumeroDoc,
-                   TcaEstado,TcaTotalBruto,TcaTotalAjuste,TcaTotalNeto,TcaTotalCobrado,TcaMonedaBase,TcaObservaciones)
+                   TcaEstado,TcaTotalBruto,TcaTotalAjuste,TcaTotalNeto,TcaTotalCobrado,TcaMonedaBase,TcaObservaciones,EsCajaAdmin)
                 OUTPUT INSERTED.TcaIdTransaccion
-                VALUES(@Ses,@Usr,@Cli,GETDATE(),'ANTICIPO','A',@Num,'COBRADO',@Monto,0,@Monto,@Monto,@Mon,@Obs)`);
+                VALUES(@Ses,@Usr,@Cli,GETDATE(),'ANTICIPO','A',@Num,'COBRADO',@Monto,0,@Monto,@Monto,@Mon,@Obs,@AdminFlag)`);
       const tcaId = tcaR.recordset[0].TcaIdTransaccion;
 
       // ─────────────────────────────────────────────

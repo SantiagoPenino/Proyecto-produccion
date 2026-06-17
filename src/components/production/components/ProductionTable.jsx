@@ -122,10 +122,9 @@ export default function ProductionTable({ rowData = [], onRowSelected, selectedR
         { field: 'desc', headerName: 'Trabajo', width: 180 },
         { field: 'variantCode', headerName: 'Variante', width: 110 },
         { field: 'material', headerName: 'Material', minWidth: 250 },
-        { field: 'magnitude', headerName: 'Cantidad', width: 100, cellRenderer: ({ row }) => {
-            const mag = row.original?.magnitude ?? '';
-            const unit = row.original?.unit ?? '';
-            // Extraer solo la parte numérica (para registros legacy con '2 u' en Magnitud)
+        { field: 'magnitude', headerName: 'Cantidad', width: 100, cellRenderer: ({ value, data }) => {
+            const mag = data?.magnitude ?? value ?? '';
+            const unit = data?.unit ?? '';
             const numStr = String(mag).replace(/[^\d.]/g, '');
             const display = numStr || mag;
             const unitDisplay = unit || (String(mag).replace(/[\d. ]/g, '') || '');

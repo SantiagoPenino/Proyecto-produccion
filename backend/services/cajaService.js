@@ -164,11 +164,12 @@ async function procesarVentaDirecta(payload) {
     // Re-bind exact values for insert
     tHeader.parameters.Serie.value = serieDocStr;
     tHeader.input('Num', sql.VarChar(20), numeroDocString);
+    tHeader.input('AdminFlag', sql.Bit, header.esAdministrativa ? 1 : 0);
 
     const rHeader = await tHeader.query(`
-      INSERT INTO dbo.TransaccionesCaja (StuIdSesion, TcaUsuarioId, TcaClienteId, TcaFecha, TcaTipoDocumento, TcaSerieDoc, TcaNumeroDoc, TcaEstado, TcaTotalBruto, TcaTotalAjuste, TcaTotalNeto, TcaTotalCobrado, TcaMonedaBase, TcaObservaciones)
+      INSERT INTO dbo.TransaccionesCaja (StuIdSesion, TcaUsuarioId, TcaClienteId, TcaFecha, TcaTipoDocumento, TcaSerieDoc, TcaNumeroDoc, TcaEstado, TcaTotalBruto, TcaTotalAjuste, TcaTotalNeto, TcaTotalCobrado, TcaMonedaBase, TcaObservaciones, EsCajaAdmin)
       OUTPUT INSERTED.TcaIdTransaccion
-      VALUES (@Sesion, @TcaUsuarioId, @Cli, @Fecha, @TipoD, @Serie, @Num, @Estado, @Bruto, @Ajuste, @Neto, @Cobrado, @TcaMonedaBase, @Obs)
+      VALUES (@Sesion, @TcaUsuarioId, @Cli, @Fecha, @TipoD, @Serie, @Num, @Estado, @Bruto, @Ajuste, @Neto, @Cobrado, @TcaMonedaBase, @Obs, @AdminFlag)
     `);
     const tcaId = rHeader.recordset[0].TcaIdTransaccion;
 
@@ -658,18 +659,19 @@ async function procesarTransaccion(payload) {
       .input('TcaTotalCobrado',  sql.Decimal(18,2), totalCobrado)
       .input('TcaMonedaBase',    sql.VarChar(10),   header.moneda || header.monedaBase || 'UYU')
       .input('TcaObservaciones', sql.NVarChar(500), header.observaciones || null)
+      .input('AdminFlag', sql.Bit, (header.admin || header.esAdministrativa) ? 1 : 0)
       .query(`
         INSERT INTO dbo.TransaccionesCaja
           (StuIdSesion, TcaFecha, TcaUsuarioId, TcaClienteId, TcaTipoDocumento,
            TcaSerieDoc, TcaNumeroDoc,
            TcaTotalBruto, TcaTotalAjuste, TcaTotalNeto, TcaTotalCobrado,
-           TcaMonedaBase, TcaEstado, TcaObservaciones)
+           TcaMonedaBase, TcaEstado, TcaObservaciones, EsCajaAdmin)
         OUTPUT INSERTED.TcaIdTransaccion
         VALUES
           (@StuIdSesion, GETDATE(), @TcaUsuarioId, @TcaClienteId, @TcaTipoDocumento,
            @TcaSerieDoc, @TcaNumeroDoc,
            @TcaTotalBruto, @TcaTotalAjuste, @TcaTotalNeto, @TcaTotalCobrado,
-           @TcaMonedaBase, 'COMPLETADO', @TcaObservaciones)
+           @TcaMonedaBase, 'COMPLETADO', @TcaObservaciones, @AdminFlag)
       `);
 
     tcaIdTransaccion = tcaRes.recordset[0].TcaIdTransaccion;

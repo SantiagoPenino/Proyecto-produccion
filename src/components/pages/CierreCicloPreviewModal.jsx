@@ -1,8 +1,39 @@
 import React, { useState, useEffect } from 'react';
-import { X, CheckCircle2, RefreshCw, Edit3, DollarSign, Percent } from 'lucide-react';
+import { X, CheckCircle2, RefreshCw, Edit3, DollarSign, Percent, ShoppingBag, Receipt, Building2, Pen } from 'lucide-react';
 import api from '../../services/api';
 import toast from 'react-hot-toast';
 import { generarPdfFacturaDGI } from '../../utils/pdfGenerator';
+
+// Input simple para precios — sin flechas, sin formateo automático
+const SimpleInput = ({ value, onChange, placeholder = '0' }) => {
+  const [local, setLocal] = React.useState(String(value ?? ''));
+
+  React.useEffect(() => {
+    // Solo sincronizar si el valor externo cambió significativamente (no durante tipeo)
+    const num = parseFloat(local);
+    const ext = parseFloat(value);
+    if (isNaN(num) || Math.abs(num - ext) > 0.00001) {
+      setLocal(value != null && !isNaN(value) ? String(value) : '');
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [value]);
+
+  return (
+    <input
+      type="text"
+      inputMode="decimal"
+      value={local}
+      placeholder={placeholder}
+      onChange={e => {
+        setLocal(e.target.value);
+        const n = parseFloat(e.target.value.replace(',', '.'));
+        if (!isNaN(n)) onChange(n);
+      }}
+      onFocus={e => e.target.select()}
+      className="w-20 bg-white border border-slate-300 hover:border-indigo-400 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-300 text-right outline-none font-mono text-slate-800 font-bold rounded px-2 py-0.5"
+    />
+  );
+};
 
 export default function CierreCicloPreviewModal({
   ciclo,
@@ -10,7 +41,8 @@ export default function CierreCicloPreviewModal({
   cuenta,
   cliente,
   onClose,
-  onConfirm
+  onConfirm,
+  pageMode = false,   // true → se muestra como página completa sin overlay
 }) {
   const [working, setWorking] = useState(false);
   const [movs, setMovs] = useState([]);
@@ -30,11 +62,14 @@ export default function CierreCicloPreviewModal({
   // Tipo Documento
   const tieneRUT = cliente?.CioRuc && String(cliente.CioRuc).replace(/\D/g, '').length === 12;
   const isAnticipo = ciclo?.CicIdCiclo === 'ANTICIPO';
-  const [tipoDocumento, setTipoDocumento] = useState(
-    isAnticipo
-      ? (tieneRUT ? 'E-FACTURA CONTADO' : 'E-TICKET CONTADO')
-      : (tieneRUT ? 'E-FACTURA CREDITO' : 'E-TICKET CREDITO')
-  );
+  const [docType, setDocType] = useState(tieneRUT ? 'E-FACTURA' : 'E-TICKET');
+  const [docCond, setDocCond] = useState(isAnticipo ? 'CONTADO' : 'CREDITO');
+
+  const tipoDocumento = docType === 'FACTURA' 
+    ? 'FACTURA' 
+    : docType === 'PEDIDO_CAJA' 
+      ? 'E-TICKET CONTADO' 
+      : `${docType} ${docCond}`;
   
   // Datos DGI Consumidor Final (si supera umbral)
   const [cliDgiNombre, setCliDgiNombre] = useState(cliente?.Nombre || cliente?.NombreFantasia || '');
@@ -52,6 +87,9 @@ export default function CierreCicloPreviewModal({
   // Agrupar PDF por Orden
   const [agruparFactura, setAgruparFactura] = useState(false);
   const [valError, setValError] = useState('');
+  const [guardando, setGuardando] = useState(false);
+  const [guardadoOk, setGuardadoOk] = useState(false); // feedback visual tras guardar
+  const [confirmGuardar, setConfirmGuardar] = useState(false); // modal de confirmación
 
   useEffect(() => {
     let primeraMoneda = null;
@@ -90,14 +128,14 @@ export default function CierreCicloPreviewModal({
 
   const handleEditDetalle = (detalleId, nuevoPrecio, cant, descValor = 0, descTipo = '%') => {
     const p = Number(nuevoPrecio);
+    const c = Number(cant);
     const v = Number(descValor);
-    
-    let subt = p * cant;
+
+    let subt = p * c;
     if (descTipo === '%') {
       subt = subt * (1 - v / 100);
     } else {
-      // Calculamos el equivalente en porcentaje por trasfondo y se lo restamos al total de la línea
-      const equivalentPorc = (p * cant) > 0 ? (v / (p * cant)) : 0;
+      const equivalentPorc = (p * c) > 0 ? (v / (p * c)) : 0;
       subt = subt * (1 - equivalentPorc);
     }
 
@@ -105,6 +143,7 @@ export default function CierreCicloPreviewModal({
       ...prev,
       [detalleId]: {
         PrecioUnitario: p,
+        Cantidad: c,
         DescValor: v,
         DescTipo: descTipo,
         Subtotal: subt,
@@ -153,6 +192,66 @@ export default function CierreCicloPreviewModal({
 
   const totalUYU = monedaFactura === 'UYU' ? granTotalNeto : granTotalNeto * cotDolar;
   const requiereDatosDGI = tipoDocumento.includes('TICKET') && totalUYU > DGI_UMBRAL_UYU;
+
+  // Paso 1: abre el modal de confirmación (siempre que haya cambios)
+  const handleGuardarPrecios = () => {
+    if (Object.keys(detallesEditados).length === 0) {
+      alert('No hay cambios de precio para guardar.');
+      return;
+    }
+    setConfirmGuardar(true);
+  };
+
+  // Paso 2: ejecuta el guardado real — guarda directo en PedidosCobranzaDetalle sin importar si hay ciclo
+  const ejecutarGuardarPrecios = async () => {
+    setConfirmGuardar(false);
+    const editPayload = Object.keys(detallesEditados).map(id => ({
+      DetalleID: Number(id),
+      PrecioUnitario: detallesEditados[id].PrecioUnitario,
+      Cantidad: detallesEditados[id].Cantidad,
+      Subtotal: detallesEditados[id].Subtotal,
+    }));
+    setGuardando(true);
+    try {
+      const cicIdCiclo = (ciclo?.CicIdCiclo && !isNaN(Number(ciclo.CicIdCiclo)))
+        ? Number(ciclo.CicIdCiclo)
+        : null;
+      const res = await api.post('/contabilidad/guardar-precios', {
+        detallesEditados: editPayload,
+        cicIdCiclo,
+      });
+      setGuardadoOk(true);
+      toast.success(`✓ ${res.data?.actualizados ?? editPayload.length} precio(s) guardado(s) correctamente.`);
+
+      // ── Auto-refresh: recargar órdenes desde la BD ──────────────────────
+      // Así los valores reflejan exactamente lo que quedó guardado, igual que
+      // al hacer refresh manual.
+      if (cliente?.CliIdCliente) {
+        try {
+          const refreshRes = await api.get(
+            `/contabilidad/clientes/${cliente.CliIdCliente}/ordenes-anticipo`
+          );
+          const frescas = (refreshRes.data || []).filter(m => m.MovImporte < 0);
+          const listFresca = frescas.map(m => {
+            let detalles = [];
+            if (m.DetallesJSON) {
+              try { detalles = JSON.parse(m.DetallesJSON); } catch(e) {}
+            }
+            return { ...m, detalles };
+          });
+          setMovs(listFresca);
+          setDetallesEditados({}); // limpiar ediciones ya persistidas
+        } catch (_) { /* silencioso — los datos locales siguen siendo válidos */ }
+      }
+
+      setTimeout(() => setGuardadoOk(false), 4000);
+    } catch (err) {
+      toast.error('Error al guardar precios: ' + (err.response?.data?.error || err.message));
+    } finally {
+      setGuardando(false);
+    }
+  };
+
 
   const handleFacturar = async () => {
     setWorking(true);
@@ -208,7 +307,12 @@ export default function CierreCicloPreviewModal({
 
       const detallesParaPDF = getDetallesParaPDF();
 
+      const ordenesIds = movs
+        .filter(m => !excluidos.has(m.MovIdMovimiento))
+        .map(m => String(m.OrdIdOrden || m.MovIdMovimiento));
+
       const payload = {
+        ordenesIds,
         excluidos: Array.from(excluidos),
         monedaFactura: monedaFactura,
         cotDolar: cotDolar,
@@ -357,6 +461,68 @@ export default function CierreCicloPreviewModal({
     return detallesParaPDF;
   };
 
+  const handleDownloadExcel = async () => {
+    try {
+      const XLSX = await import('xlsx');
+      const detalles = getDetallesParaPDF();
+      const fmt2 = (val) => Number(val || 0).toFixed(2);
+      const simbolo2 = monedaFactura === 'USD' ? 'US$' : '$U';
+
+      const docTotal = granTotalNeto;
+      const docSubtotal = docTotal / 1.22;
+      const docIva = docTotal - docSubtotal;
+
+      const periodoStr = (ciclo?.CicIdCiclo && !isNaN(Number(ciclo.CicIdCiclo)))
+        ? `${new Date(ciclo.CicFechaInicio).toLocaleDateString('es-UY')} al ${new Date(ciclo.CicFechaCierre).toLocaleDateString('es-UY')}`
+        : new Date().toLocaleDateString('es-UY');
+
+      const sheetData = [
+        ['PRE-FACTURA'],
+        [`Cliente: ${cliDgiNombre || cliente?.Nombre || 'Cliente'}`],
+        [`Documento: ${cliDgiDocumento || cliente?.CodCliente || '-'}`],
+        [`Dirección: ${cliDgiDireccion || ''}${cliDgiCiudad ? ', ' + cliDgiCiudad : ''}`],
+        [`Tipo Comprobante: ${tipoDocumento}`],
+        [`Moneda: ${monedaFactura}`],
+        [`Período: ${periodoStr}`],
+        [`Generado: ${new Date().toLocaleDateString('es-UY')} ${new Date().toLocaleTimeString('es-UY')}`],
+        [],
+        ['Item / Trabajo', 'Descripción / Orden', 'Cantidad', 'Precio Unitario', 'Descuento', 'Subtotal'],
+      ];
+
+      detalles.forEach(d => {
+        sheetData.push([
+          d.DcdNomItem || '',
+          d.DcdDscItem || '',
+          d.DcdCantidad != null ? Number(d.DcdCantidad) : 1,
+          d.DcdPrecioUnitario != null ? fmt2(d.DcdPrecioUnitario) : '',
+          d.DcdTotalDescuentos != null ? fmt2(d.DcdTotalDescuentos) : '',
+          fmt2(d.DcdSubtotal || 0),
+        ]);
+      });
+
+      sheetData.push([]);
+      sheetData.push(['', '', '', '', 'Subtotal Neto (sin IVA):', fmt2(docSubtotal)]);
+      sheetData.push(['', '', '', '', 'IVA 22%:', fmt2(docIva)]);
+      sheetData.push(['', '', '', '', `Total ${simbolo2}:`, fmt2(docTotal)]);
+
+      if (observaciones) {
+        sheetData.push([]);
+        sheetData.push([`Observaciones: ${observaciones}`]);
+      }
+
+      const ws = XLSX.utils.aoa_to_sheet(sheetData);
+      ws['!cols'] = [{ wch: 40 }, { wch: 36 }, { wch: 10 }, { wch: 16 }, { wch: 16 }, { wch: 16 }];
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, 'Pre-Factura');
+
+      const nombreCliente = (cliDgiNombre || cliente?.Nombre || 'Cliente').replace(/\s+/g, '_').slice(0, 30);
+      XLSX.writeFile(wb, `PreFactura_${nombreCliente}_${new Date().toISOString().slice(0, 10)}.xlsx`);
+      toast.success('Excel descargado correctamente.');
+    } catch (err) {
+      toast.error('Error al generar Excel: ' + err.message);
+    }
+  };
+
   const handlePreviewPDF = () => {
     setValError('');
     // Validación de obligatoriedad de campos siempre activa (Requerimiento interno del cliente)
@@ -419,42 +585,99 @@ export default function CierreCicloPreviewModal({
     generarPdfFacturaDGI(fakeDoc, detallesParaPDF);
   };
 
+  // Contenedor exterior: en pageMode = full screen, en modal = overlay oscuro
+  const outerClass = pageMode
+    ? 'w-full h-full flex items-stretch'
+    : 'fixed inset-0 z-[60] flex items-center justify-center bg-slate-800/40 backdrop-blur-sm p-4';
+  const innerClass = pageMode
+    ? 'w-full flex flex-col bg-white'
+    : 'bg-white rounded-2xl shadow-2xl w-full max-w-5xl overflow-hidden flex flex-col max-h-[95vh] border border-slate-200';
+
+  const headerClass = pageMode
+    ? 'flex items-center justify-between px-8 py-4 bg-gradient-to-r from-indigo-600 via-indigo-700 to-violet-700 border-b border-indigo-800/20'
+    : 'flex items-center justify-between px-6 py-5 bg-white border-b border-slate-100';
+
+  const titleClass    = pageMode ? 'text-xl font-black text-white' : 'text-xl font-black text-slate-800';
+  const subtitleClass = pageMode ? 'text-sm text-indigo-200 mt-0.5' : 'text-sm text-slate-500 mt-1';
   return (
-    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-800/40 backdrop-blur-sm p-4">
-      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-5xl overflow-hidden flex flex-col max-h-[95vh] border border-slate-200">
+    <>
+    <div className={outerClass}>
+      <div className={innerClass}>
         
         {/* Header */}
-        <div className="flex items-center justify-between px-6 py-5 bg-white border-b border-slate-100">
-          <div>
-            <h3 className="text-xl font-black text-slate-800">Vista Previa de Facturación</h3>
-            <p className="text-sm text-slate-500 mt-1">
-              {ciclo?.CicIdCiclo && !isNaN(Number(ciclo.CicIdCiclo))
-                ? `Revisa, edita precios y aplica descuentos antes de cerrar el ciclo de ${cliente?.Nombre}.`
-                : `Revisa, edita precios y aplica descuentos antes de facturar las órdenes de ${cliente?.Nombre}.`
-              }
-            </p>
+        <div className={headerClass}>
+          <div className="flex items-center gap-4">
+            {pageMode && (
+              <div className="w-10 h-10 rounded-xl bg-white/20 flex items-center justify-center shrink-0">
+                <i className="fa-solid fa-file-invoice-dollar text-white text-lg" />
+              </div>
+            )}
+            <div>
+              <h3 className={titleClass}>Vista Previa de Facturación</h3>
+              <p className={subtitleClass}>
+                {ciclo?.CicIdCiclo && !isNaN(Number(ciclo.CicIdCiclo))
+                  ? `Ciclo de ${cliente?.Nombre} — revisá y confirmá antes de cerrar.`
+                  : `${cliente?.Nombre || 'Cliente'} — revisá precios antes de facturar.`
+                }
+              </p>
+            </div>
           </div>
           <div className="flex items-center gap-4">
             
-            <select 
-              value={tipoDocumento} 
-              onChange={e => setTipoDocumento(e.target.value)}
-              className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm font-bold text-slate-700 outline-none focus:ring-2 focus:ring-indigo-500/50 transition-shadow"
-            >
-              {isAnticipo ? (
-                <>
-                  <option value="E-FACTURA CONTADO">e-Factura Contado</option>
-                  <option value="E-TICKET CONTADO">e-Ticket Contado</option>
-                  <option value="FACTURA">Factura Manual</option>
-                </>
-              ) : (
-                <>
-                  <option value="E-FACTURA CREDITO">e-Factura Crédito</option>
-                  <option value="E-TICKET CREDITO">e-Ticket CREDITO</option>
-                  <option value="FACTURA">Factura Manual</option>
-                </>
+            <div className="flex flex-col items-end gap-1.5">
+              {/* FILA 1: Tipo de Documento */}
+              <div className={`flex rounded-xl p-1 border gap-1 select-none ${pageMode ? 'bg-white/10 border-white/20' : 'bg-slate-100 border-slate-200'}`}>
+                {[
+                  { val: 'PEDIDO_CAJA', label: 'Pedido Caja', icon: ShoppingBag },
+                  { val: 'E-TICKET', label: 'e-Ticket', icon: Receipt },
+                  { val: 'E-FACTURA', label: 'e-Factura', icon: Building2 }
+                ].map(opt => {
+                  const Icon = opt.icon;
+                  return (
+                    <button
+                      key={opt.val}
+                      onClick={() => setDocType(opt.val)}
+                      className={`flex items-center gap-1.5 px-3 py-1.5 text-[10px] uppercase tracking-wider font-black rounded-lg transition-all whitespace-nowrap ${
+                        docType === opt.val 
+                          ? 'bg-purple-600 text-white shadow-md border-transparent'
+                          : (pageMode ? 'text-indigo-100 hover:text-white hover:bg-white/10' : 'text-slate-500 hover:text-slate-700 hover:bg-slate-200/50')
+                      }`}
+                    >
+                      <Icon size={12} />
+                      {opt.label}
+                    </button>
+                  );
+                })}
+              </div>
+
+              {/* FILA 2: Condición de Venta (Oculto en Manual) */}
+              {docType !== 'FACTURA' && (
+                <div className={`flex rounded-xl p-1 border gap-1 select-none w-full ${pageMode ? 'bg-white/10 border-white/20' : 'bg-slate-100 border-slate-200'}`}>
+                  {[
+                    { val: 'CONTADO', label: 'Contado', activeClass: 'bg-emerald-500 text-white shadow-md' },
+                    { val: 'CREDITO', label: 'Crédito', activeClass: 'bg-amber-500 text-white shadow-md', disabled: isAnticipo || docType === 'PEDIDO_CAJA' }
+                  ].map(opt => {
+                    const isActive = docType === 'PEDIDO_CAJA' ? opt.val === 'CONTADO' : docCond === opt.val;
+                    return (
+                      <button
+                        key={opt.val}
+                        disabled={opt.disabled}
+                        onClick={() => !opt.disabled && setDocCond(opt.val)}
+                        className={`flex-1 px-4 py-1.5 text-[10px] uppercase tracking-wider font-black rounded-lg transition-all whitespace-nowrap text-center ${
+                          isActive 
+                            ? opt.activeClass
+                            : opt.disabled
+                              ? 'opacity-30 cursor-not-allowed text-slate-400'
+                              : (pageMode ? 'text-indigo-100 hover:text-white hover:bg-white/10' : 'text-slate-500 hover:text-slate-700 hover:bg-slate-200/50')
+                        }`}
+                      >
+                        {opt.label}
+                      </button>
+                    );
+                  })}
+                </div>
               )}
-            </select>
+            </div>
 
             <div className="flex items-center gap-2">
               <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wide flex items-center gap-1.5 cursor-pointer">
@@ -472,7 +695,7 @@ export default function CierreCicloPreviewModal({
               <button onClick={() => setMonedaFactura('USD')} className={`px-4 py-1.5 text-xs font-bold rounded-md transition-all ${monedaFactura==='USD' ? 'bg-white text-indigo-600 shadow-sm border border-slate-200/50' : 'text-slate-500 hover:text-slate-700'}`}>USD</button>
               <button onClick={() => setMonedaFactura('UYU')} className={`px-4 py-1.5 text-xs font-bold rounded-md transition-all ${monedaFactura==='UYU' ? 'bg-white text-indigo-600 shadow-sm border border-slate-200/50' : 'text-slate-500 hover:text-slate-700'}`}>UYU</button>
             </div>
-            <button onClick={onClose} className="p-2 hover:bg-slate-100 rounded-full transition-colors text-slate-400 hover:text-slate-600">
+            <button onClick={onClose} className={`p-2 rounded-full transition-colors ${pageMode ? 'hover:bg-white/20 text-white/80 hover:text-white' : 'hover:bg-slate-100 text-slate-400 hover:text-slate-600'}`}>
               <X size={20} />
             </button>
           </div>
@@ -575,7 +798,37 @@ export default function CierreCicloPreviewModal({
                         </td>
                       </tr>
                       
-                      {/* Desglose de Servicios */}
+                      {/* Desglose de Servicios o Total Fijo */}
+                      {!isExcluido && (!m.detalles || m.detalles.length === 0) && (
+                        <tr className="group hover:bg-slate-50 text-[13px]">
+                          <td></td>
+                          <td className="px-6 py-2.5 text-slate-500 pl-8 flex items-center gap-2">
+                            <div className="w-1.5 h-1.5 rounded-full bg-slate-300"></div>
+                            {m.OrdNombreTrabajo || m.MovConcepto || 'Servicio General'}
+                          </td>
+                          <td className="px-4 py-2.5 text-center">1</td>
+                          <td className="px-4 py-2.5 text-right font-mono text-[11px]">
+                            {(() => {
+                               const importe = Math.abs(Number(m.MovImporte));
+                               const monBase = Number(cuenta?.MonIdMoneda) === 1 ? 'UYU' : 'USD';
+                               const rate = (monedaFactura === 'UYU' && monBase === 'USD') ? cotDolar : (monedaFactura === 'USD' && monBase === 'UYU' ? (1/cotDolar) : 1);
+                               const finalSub = importe * rate;
+                               return (monedaFactura === 'USD' ? 'US$ ' : '$U ') + finalSub.toFixed(2);
+                            })()}
+                          </td>
+                          <td className="px-4 py-2.5 text-center">0</td>
+                          <td className="px-4 py-2.5 text-right font-mono font-bold text-slate-700">
+                            {(() => {
+                               const importe = Math.abs(Number(m.MovImporte));
+                               const monBase = Number(cuenta?.MonIdMoneda) === 1 ? 'UYU' : 'USD';
+                               const rate = (monedaFactura === 'UYU' && monBase === 'USD') ? cotDolar : (monedaFactura === 'USD' && monBase === 'UYU' ? (1/cotDolar) : 1);
+                               const finalSub = importe * rate;
+                               return (monedaFactura === 'USD' ? 'US$ ' : '$U ') + finalSub.toFixed(2);
+                            })()}
+                          </td>
+                        </tr>
+                      )}
+
                       {!isExcluido && m.detalles?.map(d => {
                         const ed = detallesEditados[d.DetalleID];
                         const punit = ed ? ed.PrecioUnitario : d.PrecioUnitario;
@@ -598,18 +851,23 @@ export default function CierreCicloPreviewModal({
                               {d.ArticuloNombre ? d.ArticuloNombre.trim() + ' - ' : ''}
                               {d.Descripcion || d.LogPrecioAplicado || 'Servicio'}
                             </td>
-                            <td className="px-4 py-2.5 text-center font-mono font-medium">{d.Cantidad}</td>
+                            <td className="px-4 py-2.5 text-center">
+                              {/* Cantidad editable */}
+                              <SimpleInput
+                                value={ed?.Cantidad ?? d.Cantidad}
+                                onChange={val => handleEditDetalle(d.DetalleID, punit, val, descValor, descTipo)}
+                                placeholder={String(d.Cantidad)}
+                              />
+                            </td>
                             <td className="px-4 py-2.5 text-right relative">
-                              <div className="flex items-center justify-end gap-2">
-                                <Edit3 size={12} className="text-slate-400 opacity-0 group-hover:opacity-100 transition-opacity" />
-                                <input 
-                                  type="number" 
-                                  value={vPunit ? fmt(vPunit) : ''}
-                                  onChange={(e) => {
-                                    const val = Number(e.target.value) / rate;
-                                    handleEditDetalle(d.DetalleID, val, d.Cantidad, descValor, descTipo);
+                              <div className="flex items-center justify-end gap-1">
+                                {/* Precio unitario editable */}
+                                <SimpleInput
+                                  value={vPunit}
+                                  onChange={val => {
+                                    const rawVal = val / rate;
+                                    handleEditDetalle(d.DetalleID, rawVal, ed?.Cantidad ?? d.Cantidad, descValor, descTipo);
                                   }}
-                                  className="w-20 bg-transparent border-b border-transparent hover:border-slate-300 focus:border-indigo-500 text-right outline-none font-mono text-slate-700 font-medium"
                                 />
                               </div>
                             </td>
@@ -708,22 +966,126 @@ export default function CierreCicloPreviewModal({
         </div>
 
         {/* Acciones */}
-        <div className="bg-slate-50 px-6 py-4 flex justify-end gap-3 border-t border-slate-200">
-          <button onClick={onClose} className="px-5 py-2.5 text-sm font-bold text-slate-500 hover:text-slate-800 transition-colors">
-            Cancelar
-          </button>
-          <button onClick={handlePreviewPDF}
-            className="flex items-center gap-2 px-6 py-2.5 bg-white border border-slate-300 hover:bg-slate-50 text-slate-700 text-sm font-bold rounded-xl transition-all shadow-sm">
-            <i className="fa-regular fa-file-pdf text-red-500"></i>
-            Ver Pre-factura
-          </button>
-          <button onClick={handleFacturar} disabled={working}
-            className="flex items-center gap-2 px-8 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-black rounded-xl transition-all shadow-md hover:shadow-lg disabled:opacity-50">
-            {working ? <RefreshCw size={18} className="animate-spin" /> : <CheckCircle2 size={18} />}
-            Generar Factura y Cerrar
-          </button>
+        <div className="bg-slate-50 px-6 py-4 flex justify-between items-center gap-3 border-t border-slate-200">
+          {/* Izquierda: indicador de cambios pendientes */}
+          <div className="flex items-center gap-2">
+            {Object.keys(detallesEditados).length > 0 && !guardadoOk && (
+              <span className="flex items-center gap-1.5 text-amber-600 text-xs font-bold bg-amber-50 border border-amber-200 rounded-lg px-2.5 py-1.5">
+                <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse"></span>
+                {Object.keys(detallesEditados).length} precio(s) sin guardar
+              </span>
+            )}
+            {guardadoOk && (
+              <span className="flex items-center gap-1.5 text-emerald-600 text-xs font-bold bg-emerald-50 border border-emerald-200 rounded-lg px-2.5 py-1.5">
+                ✓ Cambios guardados
+              </span>
+            )}
+          </div>
+
+          {/* Derecha: botones de acción */}
+          <div className="flex items-center gap-3">
+            <button onClick={onClose} className="px-5 py-2.5 text-sm font-bold text-slate-500 hover:text-slate-800 transition-colors">
+              Cancelar
+            </button>
+            <button
+              onClick={handleGuardarPrecios}
+              disabled={guardando || Object.keys(detallesEditados).length === 0}
+              className="flex items-center gap-2 px-6 py-2.5 bg-amber-500 hover:bg-amber-600 disabled:opacity-40 text-white text-sm font-bold rounded-xl transition-all shadow-sm"
+            >
+              {guardando
+                ? <RefreshCw size={15} className="animate-spin" />
+                : <span className="text-base leading-none">💾</span>
+              }
+              Guardar Cambios
+            </button>
+            <button onClick={handleDownloadExcel}
+              className="flex items-center gap-2 px-6 py-2.5 bg-white border border-emerald-300 hover:bg-emerald-50 text-emerald-700 text-sm font-bold rounded-xl transition-all shadow-sm">
+              <i className="fa-regular fa-file-excel text-emerald-600"></i>
+              Exportar Excel
+            </button>
+            <button onClick={handlePreviewPDF}
+              className="flex items-center gap-2 px-6 py-2.5 bg-white border border-slate-300 hover:bg-slate-50 text-slate-700 text-sm font-bold rounded-xl transition-all shadow-sm">
+              <i className="fa-regular fa-file-pdf text-red-500"></i>
+              Ver Pre-factura
+            </button>
+            <button onClick={handleFacturar} disabled={working}
+              className="flex items-center gap-2 px-8 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-black rounded-xl transition-all shadow-md hover:shadow-lg disabled:opacity-50">
+              {working ? <RefreshCw size={18} className="animate-spin" /> : <CheckCircle2 size={18} />}
+              Generar Factura y Cerrar
+            </button>
+          </div>
         </div>
       </div>
     </div>
+
+    {/* ── Modal de Confirmación: Guardar Precios ─────────────────────── */}
+    {confirmGuardar && (
+      <div className="fixed inset-0 z-[9999] flex items-center justify-center" style={{backgroundColor:'rgba(0,0,0,0.6)'}}>
+        <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md mx-4 overflow-hidden">
+          {/* Header */}
+          <div className="bg-amber-500 px-6 py-4 flex items-center gap-3">
+            <span className="text-2xl">💾</span>
+            <div>
+              <h3 className="text-white font-black text-base">Confirmar Guardado de Precios</h3>
+              <p className="text-amber-100 text-xs mt-0.5">Esta acción actualiza los precios en la base de datos</p>
+            </div>
+          </div>
+
+          {/* Body */}
+          <div className="px-6 py-5">
+            <p className="text-slate-700 text-sm mb-4">
+              Se van a guardar <strong className="text-amber-600">{Object.keys(detallesEditados).length} cambio(s) de precio</strong> en la base de datos para el ciclo <strong>#{ciclo?.CicIdCiclo}</strong>:
+            </p>
+
+            {/* Listado de cambios */}
+            <div className="bg-slate-50 border border-slate-200 rounded-xl divide-y divide-slate-100 max-h-48 overflow-y-auto mb-4">
+              {Object.entries(detallesEditados).map(([id, val]) => {
+                // Buscar el detalle original para mostrar su nombre
+                let nombre = `Detalle #${id}`;
+                movs.forEach(m => {
+                  (m.detalles || []).forEach(d => {
+                    if (String(d.DetalleID) === String(id)) {
+                      nombre = d.ArticuloNombre
+                        ? `${d.ArticuloNombre.trim()} – ${(d.Descripcion || d.LogPrecioAplicado || 'Servicio').trim()}`
+                        : (d.Descripcion || d.LogPrecioAplicado || `Detalle #${id}`);
+                    }
+                  });
+                });
+                const simbolo2 = monedaFactura === 'USD' ? 'US$' : '$U';
+                return (
+                  <div key={id} className="px-4 py-2.5 flex items-center justify-between text-xs">
+                    <span className="text-slate-600 truncate max-w-[200px]" title={nombre}>{nombre}</span>
+                    <span className="font-bold text-amber-700 ml-2 shrink-0">
+                      {simbolo2} {Number(val.PrecioUnitario).toFixed(2)} × subtotal {Number(val.Subtotal).toFixed(2)}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+
+            <p className="text-xs text-slate-500 bg-blue-50 border border-blue-100 rounded-lg px-3 py-2">
+              ℹ️ Los precios quedarán guardados en la BD. Podés cerrar el modal y volver después — los cambios no se perderán.
+            </p>
+          </div>
+
+          {/* Footer */}
+          <div className="px-6 py-4 bg-slate-50 border-t border-slate-200 flex justify-end gap-3">
+            <button
+              onClick={() => setConfirmGuardar(false)}
+              className="px-5 py-2.5 text-sm font-bold text-slate-500 hover:text-slate-800 transition-colors"
+            >
+              Cancelar
+            </button>
+            <button
+              onClick={ejecutarGuardarPrecios}
+              className="flex items-center gap-2 px-6 py-2.5 bg-amber-500 hover:bg-amber-600 text-white text-sm font-black rounded-xl transition-all shadow-md"
+            >
+              <span>💾</span> Confirmar Guardado
+            </button>
+          </div>
+        </div>
+      </div>
+    )}
+    </>
   );
 }

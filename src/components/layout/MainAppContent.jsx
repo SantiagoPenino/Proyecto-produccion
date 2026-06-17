@@ -74,6 +74,7 @@ const SysAdminPage = lazyWithRetry(() => import('../pages/admin/SysAdminPage'));
 const LeadsCRMView = lazyWithRetry(() => import('../pages/ventas/LeadsCRMView'));
 const AuditDepositoView = lazyWithRetry(() => import('../pages/AuditDepositoView'));
 const ContabilidadCuentasView    = lazyWithRetry(() => import('../pages/ContabilidadCuentasView'));
+const PreFacturaPage             = lazyWithRetry(() => import('../pages/PreFacturaPage'));
 const ContabilidadAntiguedadView  = lazyWithRetry(() => import('../pages/ContabilidadAntiguedadView'));
 const ContabilidadColaEstadosView = lazyWithRetry(() => import('../pages/ContabilidadColaEstadosView'));
 const ImportadorManualView         = lazyWithRetry(() => import('../production/ImportadorManualView'));
@@ -636,6 +637,7 @@ const MainAppContent = ({ menuItems = [] }) => {
                 <Route path="/caja/cuadre" element={<CuadreDiarioView />} />
                 <Route path="/admin/consola" element={<SysAdminPage />} />
                 <Route path="/contabilidad/cuentas"          element={<ContabilidadCuentasView />} />
+                <Route path="/contabilidad/prefactura"        element={<PreFacturaPage />} />
                 <Route path="/contabilidad/antiguedad"        element={<ContabilidadAntiguedadView />} />
                 <Route path="/contabilidad/cola-estados"      element={<ContabilidadColaEstadosView />} />
                 <Route path="/contabilidad/recursos"          element={<Navigate to="/contabilidad/cuentas" replace />} />

@@ -1,0 +1,1 @@
+const { getPool } = require('./config/db'); getPool().then(async pool => { try { await pool.request().query("EXEC SP_CerrarSesionCaja @StuIdSesion=0, @UsuarioId=1, @MontoFinal=0, @MontoFinalUSD=0, @Observaciones='Test'"); console.log('OK'); } catch(e) { console.error('SQL ERROR:', e.message); } process.exit(); });

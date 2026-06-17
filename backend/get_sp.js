@@ -1,0 +1,1 @@
+const { getPool } = require('./config/db'); getPool().then(async pool => { try { const result = await pool.request().query("EXEC sp_helptext 'SP_CerrarSesionCaja'"); console.log(result.recordset.map(r => r.Text).join('')); } catch(e) { console.error('SQL ERROR:', e.message); } process.exit(); });

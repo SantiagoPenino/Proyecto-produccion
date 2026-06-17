@@ -14,7 +14,6 @@ import {
   ArrowDownCircle, ArrowUpCircle, ShieldCheck, DoorClosed, LockKeyhole, DollarSign, BookOpen, Power, Calendar, ShoppingBag,
   Landmark, Package
 } from 'lucide-react';
-import CajaArqueoModal from './CajaArqueoModal';
 import CajaVentaDirectaTab from './CajaVentaDirectaTab';
 import CajaCobroLibreTab from './CajaCobroLibreTab';
 import CajaSaldoAnticipoTab from './CajaSaldoAnticipoTab';
@@ -107,7 +106,6 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
 
   const [retiros, setRetiros] = useState([]);
   const [monedaExhibicion, setMonedaExhibicion] = useState('UYU');
-  const [showArqueo, setShowArqueo] = useState(false);
   const [busquedaGlobalRes, setBusquedaGlobalRes] = useState(null);
   const navigate = useNavigate();
   const location = useLocation();
@@ -359,63 +357,246 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
   const [fechaHastaAdmin, setFechaHastaAdmin] = useState(() => { const d = new Date(); return d.toISOString().split('T')[0]; });
   const [movimientosAdmin, setMovimientosAdmin] = useState([]);
   const [cargandoMovsAdmin, setCargandoMovsAdmin] = useState(false);
+  const [procesandoCierre, setProcesandoCierre] = useState(false);
 
-  const [denominaciones, setDenominaciones] = useState({
-    2000: '', 1000: '', 500: '', 200: '', 100: '', 50: '', 20: '',
-    10: '', 5: '', 2: '', 1: ''
+  const [denominaciones, setDenominaciones] = useState(() => {
+    try { 
+      const s = localStorage.getItem('cajaDen_UYU'); 
+      if (s) {
+        const p = JSON.parse(s);
+        if ('2000' in p || '1000' in p) {
+          localStorage.removeItem('cajaDen_UYU');
+          return { b2000: '', b1000: '', b500: '', b200: '', b100: '', b50: '', b20: '', m50: '', m10: '', m5: '', m2: '', m1: '' };
+        }
+        return p;
+      }
+      return { b2000: '', b1000: '', b500: '', b200: '', b100: '', b50: '', b20: '', m50: '', m10: '', m5: '', m2: '', m1: '' }; 
+    } catch(e) { return { b2000: '', b1000: '', b500: '', b200: '', b100: '', b50: '', b20: '', m50: '', m10: '', m5: '', m2: '', m1: '' }; }
   });
 
-  const [denominacionesUSD, setDenominacionesUSD] = useState({
-    100: '', 50: '', 20: '', 10: '', 5: '', 2: '', 1: ''
+  const [denominacionesUSD, setDenominacionesUSD] = useState(() => {
+    try { 
+      const s = localStorage.getItem('cajaDen_USD'); 
+      if (s) {
+        const p = JSON.parse(s);
+        if ('100' in p || '50' in p) {
+          localStorage.removeItem('cajaDen_USD');
+          return { b100: '', b50: '', b20: '', b10: '', b5: '', b2: '', b1: '' };
+        }
+        return p;
+      }
+      return { b100: '', b50: '', b20: '', b10: '', b5: '', b2: '', b1: '' }; 
+    } catch(e) { return { b100: '', b50: '', b20: '', b10: '', b5: '', b2: '', b1: '' }; }
   });
 
-  useEffect(() => {
-    setDenominaciones({ 2000: '', 1000: '', 500: '', 200: '', 100: '', 50: '', 20: '', 10: '', 5: '', 2: '', 1: '' });
-    setDenominacionesUSD({ 100: '', 50: '', 20: '', 10: '', 5: '', 2: '', 1: '' });
-  }, [isAdminCaja]);
+  useEffect(() => { localStorage.setItem('cajaDen_UYU', JSON.stringify(denominaciones)); }, [denominaciones]);
+  useEffect(() => { localStorage.setItem('cajaDen_USD', JSON.stringify(denominacionesUSD)); }, [denominacionesUSD]);
 
   const [monedaCierre, setMonedaCierre] = useState('UYU'); // 'UYU' o 'USD'
   const [movimientosTurno, setMovimientosTurno] = useState([]);
 
   const totalDenominaciones = useMemo(() => {
-    return Object.entries(denominaciones).reduce((acc, [den, qty]) => acc + (parseFloat(den) * (parseInt(qty) || 0)), 0);
+    return Object.entries(denominaciones).reduce((acc, [den, qty]) => acc + (parseFloat(den.replace(/\D/g, '')) * (parseInt(qty) || 0)), 0);
   }, [denominaciones]);
 
   const totalDenominacionesUSD = useMemo(() => {
-    return Object.entries(denominacionesUSD).reduce((acc, [den, qty]) => acc + (parseFloat(den) * (parseInt(qty) || 0)), 0);
+    return Object.entries(denominacionesUSD).reduce((acc, [den, qty]) => acc + (parseFloat(den.replace(/\D/g, '')) * (parseInt(qty) || 0)), 0);
   }, [denominacionesUSD]);
 
-  // Expected USD and UYU cash drawer balance calculations
-  const UYUUSD_Totals = useMemo(() => {
+  // Agrupar y procesar totales para Arqueo
+  const agrupado = useMemo(() => {
+    const res = {};
+    let saldoTotalUYU = 0;
+    let saldoTotalUSD = 0;
     let cashIngressUYU = 0;
     let cashEgressUYU = 0;
     let cashIngressUSD = 0;
     let cashEgressUSD = 0;
 
-    movimientosTurno.forEach(m => {
+    (movimientosTurno || []).forEach(m => {
       const isEgreso = m.TipoOperacion === 'EGRESO';
       const fp = m.MedioDePago || 'INDEFINIDO';
       const isUSD = m.Moneda === 'USD';
       const isCash = /efectivo|contado/i.test(fp);
 
-      if (isCash) {
-        if (isEgreso) {
-          if (isUSD) cashEgressUSD += m.Salida;
-          else cashEgressUYU += m.Salida;
-        } else {
-          if (isUSD) cashIngressUSD += m.Entrada;
-          else cashIngressUYU += m.Entrada;
+      if (!res[fp]) res[fp] = { UYU_in: 0, UYU_out: 0, USD_in: 0, USD_out: 0 };
+
+      if (isEgreso) {
+        if (isUSD) { 
+          res[fp].USD_out += m.Salida; 
+          saldoTotalUSD -= m.Salida; 
+          if (isCash) cashEgressUSD += m.Salida;
+        } else { 
+          res[fp].UYU_out += m.Salida; 
+          saldoTotalUYU -= m.Salida; 
+          if (isCash) cashEgressUYU += m.Salida;
+        }
+      } else {
+        if (isUSD) { 
+          res[fp].USD_in += m.Entrada; 
+          saldoTotalUSD += m.Entrada; 
+          if (isCash) cashIngressUSD += m.Entrada;
+        } else { 
+          res[fp].UYU_in += m.Entrada; 
+          saldoTotalUYU += m.Entrada; 
+          if (isCash) cashIngressUYU += m.Entrada;
         }
       }
     });
 
-    return {
-      cashIngressUYU,
-      cashEgressUYU,
+    return { 
+      porForma: res, 
+      saldoUYU: saldoTotalUYU, 
+      saldoUSD: saldoTotalUSD,
+      cashIngress: cashIngressUYU,
+      cashEgress: cashEgressUYU,
       cashIngressUSD,
-      cashEgressUSD,
+      cashEgressUSD
     };
   }, [movimientosTurno]);
+
+  const handlePrint = () => {
+    const win = window.open('', '_blank');
+    if (!win) return;
+    const d = new Date().toLocaleString('es-UY');
+
+    const groupedMovs = {};
+    (movimientosTurno || []).forEach(m => {
+      const fp = (m.MedioDePago || 'INDEFINIDO') + ' | ' + m.Moneda;
+      if (!groupedMovs[fp]) groupedMovs[fp] = [];
+      groupedMovs[fp].push(m);
+    });
+
+    const fmtDate = (date) => new Date(date).toLocaleString('es-UY', { dateStyle: 'short', timeStyle: 'short' });
+
+    const detailedRowsHTML = Object.entries(groupedMovs).map(([fp, movs]) => {
+      const sortedMovs = [...movs].sort((a, b) => new Date(a.Fecha) - new Date(b.Fecha));
+      const rowsHtml = sortedMovs.map(m => {
+        const inStr = m.Entrada > 0 ? `${m.Moneda} ${fmt(m.Entrada)}` : '-';
+        const outStr = m.Salida > 0 ? `${m.Moneda} ${fmt(m.Salida)}` : '-';
+        return `
+        <tr>
+          <td style="padding:6px 8px;font-size:11px">${fmtDate(m.Fecha)}</td>
+          <td style="padding:6px 8px;font-weight:bold">${m.TipoOperacion}</td>
+          <td style="padding:6px 8px">${m.TipoComprobante || ''} ${m.Comprobante || ''}</td>
+          <td style="padding:6px 8px">${m.Concepto || ''}</td>
+          <td style="padding:6px 8px">${m.Usuario || 'Sistema'}</td>
+          <td style="padding:6px 8px;font-weight:bold;color:#065f46">${inStr}</td>
+          <td style="padding:6px 8px;font-weight:bold;color:#991b1b">${outStr}</td>
+        </tr>
+      `}).join('');
+
+      return `
+        <tr>
+          <td colspan="7" style="background:#e2e8f0; font-weight:bold; padding:8px 12px; font-size:13px; color:#1e293b;">
+            MEDIO DE PAGO: <span style="color:#4338ca">${fp}</span>
+          </td>
+        </tr>
+        ${rowsHtml}
+      `;
+    }).join('');
+
+    const sumRows = Object.entries(agrupado.porForma).map(([k, v]) => `
+      <tr>
+        <td style="padding:6px 8px;font-weight:bold">${k}</td>
+        <td style="padding:6px 8px;color:#065f46">UYU ${fmt(v.UYU_in)}</td>
+        <td style="padding:6px 8px;color:#991b1b">UYU ${fmt(v.UYU_out)}</td>
+        <td style="padding:6px 8px;font-weight:bold">UYU ${fmt(v.UYU_in - v.UYU_out)}</td>
+        <td style="padding:6px 8px;color:#065f46">USD ${fmt(v.USD_in)}</td>
+        <td style="padding:6px 8px;color:#991b1b">USD ${fmt(v.USD_out)}</td>
+        <td style="padding:6px 8px;font-weight:bold">USD ${fmt(v.USD_in - v.USD_out)}</td>
+      </tr>
+    `).join('');
+
+    const desgloseHtmlRows = Object.entries(denominaciones || {})
+      .filter(([_, cant]) => cant && parseInt(cant) > 0)
+      .map(([den, cant]) => `<tr><td style="padding:6px 8px;">${den.startsWith('b') ? 'Billete' : 'Moneda'} de $ ${den.replace(/\D/g, '')}</td><td style="text-align:center;">${cant}</td><td style="text-align:right;">$ ${fmt(parseFloat(den.replace(/\D/g, '')) * parseInt(cant))}</td></tr>`)
+      .join('');
+
+    const desgloseHtmlRowsUSD = Object.entries(denominacionesUSD || {})
+      .filter(([_, cant]) => cant && parseInt(cant) > 0)
+      .map(([den, cant]) => `<tr><td style="padding:6px 8px;">Billete de U$S ${den.replace(/\D/g, '')}</td><td style="text-align:center;">${cant}</td><td style="text-align:right;">U$S ${fmt(parseFloat(den.replace(/\D/g, '')) * parseInt(cant))}</td></tr>`)
+      .join('');
+
+    const html = `
+      <html>
+        <head>
+          <title>Arqueo de Caja - ${d}</title>
+          <style>
+            body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; color: #334155; padding: 20px; font-size: 12px; }
+            h1 { color: #0f172a; margin-bottom: 5px; font-size: 20px; }
+            h2 { color: #475569; margin-bottom: 15px; font-size: 14px; border-bottom: 2px solid #e2e8f0; padding-bottom: 5px; }
+            table { width: 100%; border-collapse: collapse; margin-bottom: 20px; }
+            th, td { border: 1px solid #cbd5e1; text-align: left; }
+            th { background-color: #f1f5f9; padding: 8px; font-weight: bold; color: #475569; font-size: 11px; }
+            .header-info { margin-bottom: 20px; font-size: 13px; background: #f8fafc; padding: 10px; border: 1px solid #e2e8f0; border-radius: 4px; }
+          </style>
+        </head>
+        <body>
+          <h1>Arqueo de Caja</h1>
+          <div class="header-info">
+            <strong>Fecha de Impresión:</strong> ${d}<br/>
+            <strong>Caja:</strong> ${isAdminCaja ? 'Caja Administrativa' : 'Caja Central'}
+          </div>
+
+          <h2>1. Resumen por Medio de Pago</h2>
+          <table>
+            <thead>
+              <tr>
+                <th>MEDIO DE PAGO</th>
+                <th>INGRESO (UYU)</th>
+                <th>EGRESO (UYU)</th>
+                <th>NETO (UYU)</th>
+                <th>INGRESO (USD)</th>
+                <th>EGRESO (USD)</th>
+                <th>NETO (USD)</th>
+              </tr>
+            </thead>
+            <tbody>${sumRows}</tbody>
+          </table>
+
+          <div style="display:flex; gap: 20px;">
+            <div style="flex:1;">
+              <h2>2A. Desglose Físico en Cajón (Pesos UYU)</h2>
+              <table>
+                <thead><tr><th>Billete/Moneda</th><th style="text-align:center;">Cantidad</th><th style="text-align:right;">Subtotal</th></tr></thead>
+                <tbody>${desgloseHtmlRows || '<tr><td colspan="3" style="text-align:center;padding:10px;">Sin desglose de pesos.</td></tr>'}</tbody>
+                <tfoot><tr><td colspan="2" style="text-align:right;font-weight:bold;padding:6px 8px;">TOTAL FÍSICO UYU:</td><td style="text-align:right;font-weight:bold;padding:6px 8px;">$ ${fmt(totalDenominaciones)}</td></tr></tfoot>
+              </table>
+            </div>
+            <div style="flex:1;">
+              <h2>2B. Desglose Físico en Cajón (Dólares USD)</h2>
+              <table>
+                <thead><tr><th>Billete/Moneda</th><th style="text-align:center;">Cantidad</th><th style="text-align:right;">Subtotal</th></tr></thead>
+                <tbody>${desgloseHtmlRowsUSD || '<tr><td colspan="3" style="text-align:center;padding:10px;">Sin desglose de dólares.</td></tr>'}</tbody>
+                <tfoot><tr><td colspan="2" style="text-align:right;font-weight:bold;padding:6px 8px;">TOTAL FÍSICO USD:</td><td style="text-align:right;font-weight:bold;padding:6px 8px;">U$S ${fmt(totalDenominacionesUSD)}</td></tr></tfoot>
+              </table>
+            </div>
+          </div>
+
+          <h2>3. Detalle Analítico de Movimientos del Turno</h2>
+          <table>
+            <thead>
+              <tr>
+                <th>FECHA HORA</th>
+                <th>TIPO</th>
+                <th>N° COMPROBANTE / DOC</th>
+                <th>RUBRO / CONCEPTO</th>
+                <th>USUARIO</th>
+                <th>ENTRADA</th>
+                <th>SALIDA</th>
+              </tr>
+            </thead>
+            <tbody>${detailedRowsHTML || '<tr><td colspan="7" style="text-align:center;padding:10px;">No hay movimientos.</td></tr>'}</tbody>
+          </table>
+        </body>
+      </html>
+    `;
+    win.document.write(html);
+    win.document.close();
+    win.focus();
+    setTimeout(() => { win.print(); }, 1000);
+  };
 
   useEffect(() => {
     if (totalDenominaciones > 0) {
@@ -627,24 +808,36 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
     }
   }, [fechaDesdeAdmin, fechaHastaAdmin, activeTab, cotizacion]);
 
+  const handleLimpiarDenominaciones = () => {
+    const emptyUyu = { b2000: '', b1000: '', b500: '', b200: '', b100: '', b50: '', b20: '', m50: '', m10: '', m5: '', m2: '', m1: '' };
+    const emptyUsd = { b100: '', b50: '', b20: '', b10: '', b5: '', b2: '', b1: '' };
+    setDenominaciones(emptyUyu);
+    setDenominacionesUSD(emptyUsd);
+    localStorage.removeItem('cajaDen_UYU');
+    localStorage.removeItem('cajaDen_USD');
+    setCierreObs('');
+  };
+
   const handleCerrarCaja = async () => {
     if (!cierreMontoFisico) return toast.warning('Ingrese el efectivo contado final.');
+    if (procesandoCierre) return;
     
     // Auto-append USD desglose and difference details to observations
     let finalObs = cierreObs;
-    const expectedUSD = UYUUSD_Totals.cashIngressUSD - UYUUSD_Totals.cashEgressUSD;
+    const expectedUSD = agrupado.cashIngressUSD - agrupado.cashEgressUSD;
     const diffUSD = totalDenominacionesUSD - expectedUSD;
     
     if (totalDenominacionesUSD > 0 || expectedUSD > 0) {
       const formattedDesgloseUSD = Object.entries(denominacionesUSD)
         .filter(([_, cant]) => cant && parseInt(cant) > 0)
-        .map(([den, cant]) => `U$S ${den}x${cant}`)
+        .map(([den, cant]) => `U$S ${den.replace(/\D/g, '')}x${cant}`)
         .join(', ');
       
       const usdAuditMessage = `\n[AUDITORÍA USD - Físico: U$S ${fmt(totalDenominacionesUSD)} | Esperado: U$S ${fmt(expectedUSD)} | Dif: ${diffUSD >= 0 ? '+' : ''}${fmt(diffUSD)} (${Math.abs(diffUSD) < 0.05 ? 'BALANCEADO' : diffUSD > 0 ? 'SOBRANTE' : 'FALTANTE'}) | Desglose: ${formattedDesgloseUSD || 'Sin desglose'}]`;
       finalObs = finalObs ? `${finalObs}${usdAuditMessage}` : usdAuditMessage.trim();
     }
 
+    setProcesandoCierre(true);
     try {
       await api.post(`/contabilidad/caja/sesion/${sesion.StuIdSesion}/cerrar`, {
         montoFinal: parseFloat(cierreMontoFisico), 
@@ -652,19 +845,17 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
         observaciones: finalObs
       });
       toast.success('Sesión de caja cerrada.');
+      handlePrint(); // Imprimir y guardar el reporte automáticamente
+      
       setSesion(null); setModalApertura(true); setActiveTab('COBRO');
       
-      // Clear breakdown states on close
-      setDenominaciones({
-        2000: '', 1000: '', 500: '', 200: '', 100: '', 50: '', 20: '',
-        10: '', 5: '', 2: '', 1: ''
-      });
-      setDenominacionesUSD({
-        100: '', 50: '', 20: '', 10: '', 5: '', 2: '', 1: ''
-      });
+      handleLimpiarDenominaciones();
       setMonedaCierre('UYU');
-      setCierreObs('');
-    } catch (e) { toast.error(e.response?.data?.error || 'Error al cerrar caja'); }
+    } catch (e) { 
+      toast.error(e.response?.data?.error || 'Error al cerrar caja'); 
+    } finally {
+      setProcesandoCierre(false);
+    }
   };
 
   useEffect(() => { if (activeTab === 'OPERACIONES') cargarResumenCierre(); }, [activeTab]);
@@ -983,6 +1174,7 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
         evtCodigo: opSeleccionada.EvtCodigo, clienteId: opClienteId || null,
         importe: parseFloat(opImporte), moneda: opMoneda, monedaId: opMoneda === 'USD' ? 2 : 1,
         cotizacion: opMoneda === 'USD' ? cotizacion : null, metodoPagoId: opMetodoId || null, observaciones: opObs,
+        admin: isAdminCaja
       });
       toast.success(`Operacion "${opSeleccionada.EvtNombre}" registrada correctamente.`);
       setOpSeleccionada(null); setOpClienteId(''); setOpClienteNombre(''); setOpImporte(''); setOpObs(''); setOpMetodoId(''); setBusquedaClientes([]);
@@ -1589,7 +1781,7 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
                             setProcesandoVenta(true);
                             try {
                               const esCred = String(ventaTipoDoc).toUpperCase().includes('CREDITO') || ventaTipoDoc === '08' || ventaTipoDoc === '02';
-                              const ventaPayload = { ...payload, pagos: esCred ? [] : ventaPagos.filter(p => p.monto && p.metodoPagoId).map(p => ({ metodoPagoId: parseInt(p.metodoPagoId), montoOriginal: parseFloat(p.monto), monedaId: p.moneda === 'USD' ? 2 : 1, cotizacion: p.moneda === 'USD' ? cotizacion : null, referenciaNumero: '' })) };
+                              const ventaPayload = { ...payload, header: { ...payload.header, admin: isAdminCaja }, pagos: esCred ? [] : ventaPagos.filter(p => p.monto && p.metodoPagoId).map(p => ({ metodoPagoId: parseInt(p.metodoPagoId), montoOriginal: parseFloat(p.monto), monedaId: p.moneda === 'USD' ? 2 : 1, cotizacion: p.moneda === 'USD' ? cotizacion : null, referenciaNumero: '' })) };
                               const res = await api.post('/contabilidad/caja/venta-directa', ventaPayload);
                               toast.success(`Venta procesada. Comprobante: ${res.data.numeroDocFormato || res.data.tcaIdTransaccion}`);
 
@@ -1697,7 +1889,7 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
                             setProcesandoVenta(true);
                             try {
                               const esCred = String(ventaTipoDoc).toUpperCase().includes('CREDITO') || ventaTipoDoc === '08' || ventaTipoDoc === '02';
-                              const ventaPayload = { ...payload, pagos: esCred ? [] : ventaPagos.filter(p => p.monto && p.metodoPagoId).map(p => ({ metodoPagoId: parseInt(p.metodoPagoId), montoOriginal: parseFloat(p.monto), monedaId: p.moneda === 'USD' ? 2 : 1, cotizacion: p.moneda === 'USD' ? cotizacion : null, referenciaNumero: '' })) };
+                              const ventaPayload = { ...payload, header: { ...payload.header, admin: isAdminCaja }, pagos: esCred ? [] : ventaPagos.filter(p => p.monto && p.metodoPagoId).map(p => ({ metodoPagoId: parseInt(p.metodoPagoId), montoOriginal: parseFloat(p.monto), monedaId: p.moneda === 'USD' ? 2 : 1, cotizacion: p.moneda === 'USD' ? cotizacion : null, referenciaNumero: '' })) };
                               const res = await api.post('/contabilidad/caja/venta-directa', ventaPayload);
                               toast.success(`Venta procesada. Comprobante: ${res.data.numeroDocFormato || res.data.tcaIdTransaccion}`);
 
@@ -2176,28 +2368,23 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
           {activeTab === 'OPERACIONES' && (
             <div className="flex-1 flex flex-col overflow-hidden">
               <div className="bg-white border-b border-slate-200 px-6 py-4 flex justify-between items-center shrink-0">
-                <button onClick={() => setShowArqueo(true)} className="flex items-center gap-2 px-4 py-2 rounded-xl font-black text-xs transition-all border whitespace-nowrap bg-white border-slate-200 text-slate-500 hover:border-slate-300 hover:text-slate-800 hover:bg-slate-50">
-                  <FileText size={16} /> Arqueo de Turno
+                <button onClick={handlePrint} className="flex items-center gap-2 px-4 py-2 rounded-xl font-black text-xs transition-all border whitespace-nowrap bg-[#006097] border-[#006097] text-white hover:bg-[#004e7a] shadow-sm">
+                  <FileText size={16} /> Imprimir Archivo
                 </button>
-                <button className="flex items-center gap-2 px-4 py-2 rounded-xl font-black text-xs transition-all border whitespace-nowrap bg-brand-cyan border-brand-cyan text-white shadow-md shadow-brand-cyan/20">
-                  <DoorClosed size={16} /> {isAdminCaja ? 'Movimientos Realizados' : 'Cierre de Turno'}
-                </button>
+                {isAdminCaja ? (
+                  <span className="text-[10px] font-black bg-slate-100 text-slate-500 px-3 py-1.5 rounded-lg uppercase tracking-widest border border-slate-200 shadow-sm">Movimientos Administrativos</span>
+                ) : (
+                  <div className="text-right flex items-center justify-end gap-3">
+                    <span className="text-[10px] font-black bg-slate-100 text-slate-500 px-3 py-1.5 rounded-lg uppercase tracking-widest border border-slate-200 shadow-sm hidden md:inline-block">Turno Actual</span>
+                    <button id="btn-finalizar-turno" disabled={procesandoCierre} onClick={handleCerrarCaja} className={`bg-brand-magenta hover:bg-pink-600 text-white font-black px-5 py-2.5 rounded-xl shadow-lg shadow-brand-magenta/20 transition-all active:scale-[0.98] text-sm tracking-tight flex items-center justify-center gap-2 ${procesandoCierre ? 'opacity-50 cursor-not-allowed' : ''}`}>
+                      {procesandoCierre ? <Loader2 size={18} className="animate-spin" /> : <><Power size={18} /> FINALIZAR TURNO</>}
+                    </button>
+                  </div>
+                )}
               </div>
 
               <div className="flex-1 bg-white flex flex-col overflow-y-auto border-t-8 border-t-brand-cyan animate-in fade-in duration-300">
                   <div className="relative w-full flex flex-col">
-
-                    <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200 bg-white">
-                      <div>
-                        <h2 className="text-2xl font-black text-slate-800 flex items-center gap-3 tracking-tighter"><DoorClosed className="text-brand-cyan" size={32} /> {isAdminCaja ? 'Movimientos Administrativos' : 'Cierre de Caja'}</h2>
-                        <p className="text-slate-400 font-bold mt-1 uppercase tracking-[0.2em] text-[10px]">{isAdminCaja ? 'Operaciones por rango de fecha' : 'Arqueo y finalización de jornada'}</p>
-                      </div>
-                      {!isAdminCaja && (
-                        <div className="text-right">
-                          <span className="text-[10px] font-black bg-slate-100 text-slate-500 px-3 py-1.5 rounded-lg uppercase tracking-widest border border-slate-200 shadow-sm">Turno Actual</span>
-                        </div>
-                      )}
-                    </div>
 
                     {/* Si es Caja Administrativa, mostramos los inputs de fecha arriba */}
                     {isAdminCaja && (
@@ -2223,19 +2410,30 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
                         <div className="bg-slate-50/50 px-6 py-3 grid grid-cols-2 lg:grid-cols-4 gap-4 border-b border-slate-200">
                           <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
                             <p className="text-[9px] text-slate-400 font-black uppercase tracking-widest mb-1">Monto Inicial Apertura</p>
-                            <p className="text-xl font-black text-slate-800 tracking-tight">${fmt(resumenCierre.sesion?.StuMontoInicial || 0)}</p>
+                            <p className="text-xl font-black text-slate-800 tracking-tight">
+                              {monedaCierre === 'USD' ? 'U$S 0,00' : `$${fmt(resumenCierre.sesion?.StuMontoInicial || 0)}`}
+                            </p>
                           </div>
                           <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
-                            <p className="text-[9px] text-emerald-600/60 font-black uppercase tracking-widest mb-1">Total Cobrado (+)</p>
-                            <p className="text-xl font-black text-emerald-600 tracking-tight">${fmt(resumenCierre.cobros?.TotalCobrado || 0)}</p>
+                            <p className="text-[9px] text-emerald-600/60 font-black uppercase tracking-widest mb-1">Ingresos Efectivo (+)</p>
+                            <p className="text-xl font-black text-emerald-600 tracking-tight">
+                              {monedaCierre === 'USD' ? `U$S ${fmt(agrupado.cashIngressUSD)}` : `$${fmt(agrupado.cashIngress)}`}
+                            </p>
                           </div>
                           <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
-                            <p className="text-[9px] text-brand-magenta/60 font-black uppercase tracking-widest mb-1">Gastos / Egresos (-)</p>
-                            <p className="text-xl font-black text-brand-magenta tracking-tight">${fmt(resumenCierre.egresos?.TotalEgresos || 0)}</p>
+                            <p className="text-[9px] text-brand-magenta/60 font-black uppercase tracking-widest mb-1">Egresos Efectivo (-)</p>
+                            <p className="text-xl font-black text-brand-magenta tracking-tight">
+                              {monedaCierre === 'USD' ? `U$S ${fmt(agrupado.cashEgressUSD)}` : `$${fmt(agrupado.cashEgress)}`}
+                            </p>
                           </div>
                           <div className="col-span-1 bg-brand-cyan p-4 rounded-xl shadow-md shadow-brand-cyan/20 flex flex-col justify-center">
-                            <p className="text-[9px] text-white/80 font-black uppercase tracking-widest mb-1">Saldo Esperado en Sistema</p>
-                            <p className="text-2xl font-black text-white tracking-tight">${fmt((resumenCierre.sesion?.StuMontoInicial || 0) + (resumenCierre.cobros?.TotalCobrado || 0) - (resumenCierre.egresos?.TotalEgresos || 0))}</p>
+                            <p className="text-[9px] text-white/80 font-black uppercase tracking-widest mb-1">Saldo Esperado Físico</p>
+                            <p className="text-2xl font-black text-white tracking-tight">
+                              {monedaCierre === 'USD' 
+                                ? `U$S ${fmt(agrupado.cashIngressUSD - agrupado.cashEgressUSD)}` 
+                                : `$${fmt((resumenCierre.sesion?.StuMontoInicial || 0) + agrupado.cashIngress - agrupado.cashEgress)}`
+                              }
+                            </p>
                           </div>
                         </div>
 
@@ -2250,6 +2448,9 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
                                 <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest mt-1">Conteo y conciliación de valores físicos en cajón</p>
                               </div>
                               <div className="flex items-center gap-3">
+                                <button onClick={handleLimpiarDenominaciones} className="text-xs font-bold text-slate-400 hover:text-rose-500 bg-slate-50 hover:bg-rose-50 border border-slate-200 hover:border-rose-200 px-3 py-1.5 rounded-lg transition-all" title="Limpiar todos los campos de denominaciones">
+                                  Limpiar Campos
+                                </button>
                                 <span className="text-sm font-black text-brand-cyan tracking-tight bg-brand-cyan/5 px-3 py-1.5 rounded-lg border border-brand-cyan/25">
                                   {monedaCierre === 'UYU' ? `Total UYU: $ ${fmt(totalDenominaciones)}` : `Total USD: U$S ${fmt(totalDenominacionesUSD)}`}
                                 </span>
@@ -2289,8 +2490,8 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
                                         <input 
                                           type="number" 
                                           min="0" 
-                                          value={denominaciones[den] || ''} 
-                                          onChange={e => setDenominaciones(p => ({ ...p, [den]: e.target.value }))} 
+                                          value={denominaciones['b' + den] || ''} 
+                                          onChange={e => setDenominaciones(p => ({ ...p, ['b' + den]: e.target.value }))} 
                                           placeholder="0" 
                                           className="w-full bg-transparent text-xs font-black text-slate-800 outline-none text-right" 
                                         />
@@ -2311,8 +2512,8 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
                                           <input 
                                             type="number" 
                                             min="0" 
-                                            value={denominaciones[den] || ''} 
-                                            onChange={e => setDenominaciones(p => ({ ...p, [den]: e.target.value }))} 
+                                            value={denominaciones['m' + den] || ''} 
+                                            onChange={e => setDenominaciones(p => ({ ...p, ['m' + den]: e.target.value }))} 
                                             placeholder="0" 
                                             className="w-full bg-transparent text-xs font-black text-slate-800 outline-none text-right" 
                                           />
@@ -2323,7 +2524,7 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
 
                                   {/* Tarjeta de Comparación / Diferencia UYU */}
                                   {(() => {
-                                    const sis = resumenCierre.sesion.StuMontoInicial + resumenCierre.cobros.TotalCobrado - resumenCierre.egresos.TotalEgresos;
+                                    const sis = (resumenCierre.sesion?.StuMontoInicial || 0) + agrupado.cashIngress - agrupado.cashEgress;
                                     const real = totalDenominaciones;
                                     const diff = real - sis;
                                     return (
@@ -2377,8 +2578,8 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
                                         <input 
                                           type="number" 
                                           min="0" 
-                                          value={denominacionesUSD[den] || ''} 
-                                          onChange={e => setDenominacionesUSD(p => ({ ...p, [den]: e.target.value }))} 
+                                          value={denominacionesUSD['b' + den] || ''} 
+                                          onChange={e => setDenominacionesUSD(p => ({ ...p, ['b' + den]: e.target.value }))} 
                                           placeholder="0" 
                                           className="w-full bg-transparent text-xs font-black text-slate-800 outline-none text-right" 
                                         />
@@ -2390,7 +2591,7 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
                                 {/* Tarjeta de Comparación / Diferencia USD */}
                                 <div className="h-full flex flex-col justify-end">
                                   {(() => {
-                                    const sis = UYUUSD_Totals.cashIngressUSD - UYUUSD_Totals.cashEgressUSD;
+                                    const sis = agrupado.cashIngressUSD - agrupado.cashEgressUSD;
                                     const real = totalDenominacionesUSD;
                                     const diff = real - sis;
                                     return (
@@ -2439,16 +2640,110 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
                             </div>
                           </div>
 
-                          {!isAdminCaja && (
-                            <div className="p-8 bg-zinc-50/50">
-                              <button onClick={handleCerrarCaja} className="w-full bg-brand-magenta hover:opacity-90 text-white font-black py-6 rounded-2xl shadow-xl shadow-brand-magenta/20 transition-all active:scale-[0.98] text-xl tracking-tighter flex items-center justify-center gap-4">
-                                <Power size={28} /> FINALIZAR TURNO Y CERRAR SESIÓN
-                              </button>
+                          {/* TABLA: Resumen por Medio de Pago */}
+                          <div className="bg-white p-6 relative border-b border-slate-200">
+                            <h3 className="font-black text-slate-800 flex items-center gap-4 text-xl tracking-tight mb-6">
+                              <FileText size={24} className="text-brand-cyan" /> 
+                              Resumen por Medio de Pago
+                            </h3>
+                            <div className="overflow-x-auto">
+                              <table className="w-full text-left border-collapse text-xs">
+                                <thead>
+                                  <tr className="bg-slate-50 border-y border-slate-200">
+                                    <th className="py-3 px-4 font-black text-slate-400 uppercase tracking-widest">Medio de Pago</th>
+                                    <th className="py-3 px-4 font-black text-slate-400 uppercase tracking-widest text-right">Ingreso UYU</th>
+                                    <th className="py-3 px-4 font-black text-slate-400 uppercase tracking-widest text-right">Egreso UYU</th>
+                                    <th className="py-3 px-4 font-black text-slate-400 uppercase tracking-widest text-right">Neto UYU</th>
+                                    <th className="py-3 px-4 font-black text-slate-400 uppercase tracking-widest text-right">Ingreso USD</th>
+                                    <th className="py-3 px-4 font-black text-slate-400 uppercase tracking-widest text-right">Egreso USD</th>
+                                    <th className="py-3 px-4 font-black text-slate-400 uppercase tracking-widest text-right">Neto USD</th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {Object.entries(agrupado.porForma).map(([k, v], idx) => (
+                                    <tr key={idx} className="border-b border-slate-100 hover:bg-slate-50/50 transition-colors">
+                                      <td className="py-3 px-4 font-bold text-slate-700">{k}</td>
+                                      <td className="py-3 px-4 font-bold text-emerald-600 text-right">{v.UYU_in > 0 ? '$ ' + fmt(v.UYU_in) : '-'}</td>
+                                      <td className="py-3 px-4 font-bold text-brand-magenta text-right">{v.UYU_out > 0 ? '$ ' + fmt(v.UYU_out) : '-'}</td>
+                                      <td className="py-3 px-4 font-black text-slate-800 text-right bg-slate-50/30">${fmt(v.UYU_in - v.UYU_out)}</td>
+                                      <td className="py-3 px-4 font-bold text-emerald-600 text-right">{v.USD_in > 0 ? 'US$ ' + fmt(v.USD_in) : '-'}</td>
+                                      <td className="py-3 px-4 font-bold text-brand-magenta text-right">{v.USD_out > 0 ? 'US$ ' + fmt(v.USD_out) : '-'}</td>
+                                      <td className="py-3 px-4 font-black text-slate-800 text-right bg-slate-50/30">US${fmt(v.USD_in - v.USD_out)}</td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                                <tfoot>
+                                  <tr className="bg-slate-100/50">
+                                    <td className="py-4 px-4 font-black text-slate-800 uppercase tracking-widest">TOTALES</td>
+                                    <td className="py-4 px-4 font-black text-emerald-600 text-right text-sm">
+                                      ${fmt(Object.values(agrupado.porForma).reduce((a, b) => a + b.UYU_in, 0))}
+                                    </td>
+                                    <td className="py-4 px-4 font-black text-brand-magenta text-right text-sm">
+                                      ${fmt(Object.values(agrupado.porForma).reduce((a, b) => a + b.UYU_out, 0))}
+                                    </td>
+                                    <td className="py-4 px-4 font-black text-slate-800 text-right text-sm bg-slate-200/50">
+                                      ${fmt(Object.values(agrupado.porForma).reduce((a, b) => a + (b.UYU_in - b.UYU_out), 0))}
+                                    </td>
+                                    <td className="py-4 px-4 font-black text-emerald-600 text-right text-sm">
+                                      US${fmt(Object.values(agrupado.porForma).reduce((a, b) => a + b.USD_in, 0))}
+                                    </td>
+                                    <td className="py-4 px-4 font-black text-brand-magenta text-right text-sm">
+                                      US${fmt(Object.values(agrupado.porForma).reduce((a, b) => a + b.USD_out, 0))}
+                                    </td>
+                                    <td className="py-4 px-4 font-black text-slate-800 text-right text-sm bg-slate-200/50">
+                                      US${fmt(Object.values(agrupado.porForma).reduce((a, b) => a + (b.USD_in - b.USD_out), 0))}
+                                    </td>
+                                  </tr>
+                                </tfoot>
+                              </table>
                             </div>
-                          )}
-                        </>
+                          </div>
 
-                      </div>
+                          {/* TABLA: Detalle Analítico de Movimientos */}
+                          <div className="bg-white p-6 relative border-b border-slate-200">
+                            <h3 className="font-black text-slate-800 flex items-center gap-4 text-xl tracking-tight mb-6">
+                              <History size={24} className="text-brand-cyan" /> 
+                              Detalle Analítico de Movimientos
+                            </h3>
+                            <div className="overflow-x-auto">
+                              <table className="w-full text-left border-collapse text-[11px]">
+                                <thead>
+                                  <tr className="bg-slate-50 border-y border-slate-200">
+                                    <th className="py-2.5 px-3 font-black text-slate-400 uppercase tracking-widest whitespace-nowrap">Fecha / Hora</th>
+                                    <th className="py-2.5 px-3 font-black text-slate-400 uppercase tracking-widest">Tipo</th>
+                                    <th className="py-2.5 px-3 font-black text-slate-400 uppercase tracking-widest">N° Comprobante</th>
+                                    <th className="py-2.5 px-3 font-black text-slate-400 uppercase tracking-widest min-w-[200px]">Rubro / Concepto</th>
+                                    <th className="py-2.5 px-3 font-black text-slate-400 uppercase tracking-widest">Forma Pago</th>
+                                    <th className="py-2.5 px-3 font-black text-slate-400 uppercase tracking-widest">Usuario</th>
+                                    <th className="py-2.5 px-3 font-black text-emerald-600/70 uppercase tracking-widest text-right">Entrada</th>
+                                    <th className="py-2.5 px-3 font-black text-brand-magenta/70 uppercase tracking-widest text-right">Salida</th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {(movimientosTurno || []).map((m, idx) => (
+                                    <tr key={idx} className="border-b border-slate-100 hover:bg-slate-50/80 transition-colors">
+                                      <td className="py-2 px-3 font-bold text-slate-500 whitespace-nowrap">{new Date(m.Fecha).toLocaleString('es-UY', { dateStyle: 'short', timeStyle: 'short' })}</td>
+                                      <td className="py-2 px-3 font-black text-slate-700">{m.TipoOperacion}</td>
+                                      <td className="py-2 px-3 font-bold text-brand-cyan">{m.TipoComprobante || ''} {m.Comprobante || ''}</td>
+                                      <td className="py-2 px-3 font-bold text-slate-600 line-clamp-2" title={m.Concepto || ''}>{m.Concepto || ''}</td>
+                                      <td className="py-2 px-3 font-bold text-slate-500">{m.MedioDePago || 'INDEFINIDO'}</td>
+                                      <td className="py-2 px-3 font-bold text-slate-500">{m.Usuario || 'Sistema'}</td>
+                                      <td className="py-2 px-3 font-black text-emerald-600 text-right">{m.Entrada > 0 ? `${m.Moneda} ${fmt(m.Entrada)}` : '-'}</td>
+                                      <td className="py-2 px-3 font-black text-brand-magenta text-right">{m.Salida > 0 ? `${m.Moneda} ${fmt(m.Salida)}` : '-'}</td>
+                                    </tr>
+                                  ))}
+                                  {(!movimientosTurno || movimientosTurno.length === 0) && (
+                                    <tr>
+                                      <td colSpan="8" className="py-8 text-center text-slate-400 font-bold">
+                                        No hay movimientos en este turno.
+                                      </td>
+                                    </tr>
+                                  )}
+                                </tbody>
+                              </table>
+                            </div>
+                          </div>
+                        </>                      </div>
                     ) : null}
                   </div>
               </div>
@@ -2456,19 +2751,6 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
           )}
         </div>
       </div>
-
-      {showArqueo && (
-        <CajaArqueoModal 
-          onClose={() => setShowArqueo(false)} 
-          isAdmin={isAdminCaja} 
-          denominaciones={denominaciones}
-          setDenominaciones={setDenominaciones}
-          denominacionesUSD={denominacionesUSD}
-          setDenominacionesUSD={setDenominacionesUSD}
-          movimientos={movimientosTurno}
-          sesion={sesion}
-        />
-      )}
 
       {chequeIndexActivo !== null && (
         <ChequeRecibirModal

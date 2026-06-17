@@ -283,6 +283,56 @@ function generarHTMLEstadoCuenta(datos, empresa = {}) {
          </table>`
       : `<p style="padding:14px 16px;color:#888;font-size:13px;margin:0;">✅ Sin deudas pendientes en esta cuenta.</p>`;
 
+    // ── Órdenes pendientes de facturar (semanales) ──────────────────
+    const ordenesPendientes = (c.movimientos ?? []).filter(m =>
+      ['ORDEN', 'ORDEN_ANTICIPO'].includes(m.MovTipo) &&
+      !m.DocIdDocumento &&
+      !m.MovAnulado &&
+      !(m.MovObservaciones && m.MovObservaciones.startsWith('CUBIERTO'))
+    );
+
+    const filasOrdenes = ordenesPendientes.map((o, idx) => {
+      const codigo  = o.CodigoOrdenStr || o.OrdCodigoOrden || '-';
+      const trabajo = o.NombreTrabajo  || o.OrdNombreTrabajo || '';
+      const importe = Math.abs(Number(o.MovImporte || 0));
+      const fecha   = o.MovFecha ? new Date(o.MovFecha).toLocaleDateString('es-UY') : '-';
+      return `
+        <tr style="background:${idx % 2 === 1 ? '#fffdf5' : '#fff'};">
+          <td style="padding:8px 12px;border-bottom:1px solid #fde;font-size:12px;color:#555;">${fecha}</td>
+          <td style="padding:8px 12px;border-bottom:1px solid #fde;font-size:12px;font-weight:600;color:#333;">${codigo}</td>
+          <td style="padding:8px 12px;border-bottom:1px solid #fde;font-size:12px;color:#555;">${trabajo}</td>
+          <td style="padding:8px 12px;border-bottom:1px solid #fde;font-size:12px;text-align:right;font-weight:700;color:#e65100;">${simbolo} ${fmt(importe)}</td>
+        </tr>`;
+    }).join('');
+
+    const totalOrdenes = ordenesPendientes.reduce((s, o) => s + Math.abs(Number(o.MovImporte || 0)), 0);
+
+    const bloqueOrdenes = ordenesPendientes.length ? `
+      <div style="margin-top:16px;">
+        <div style="background:#e65100;padding:10px 16px;border-radius:6px 6px 0 0;">
+          <span style="font-weight:700;font-size:12px;color:#fff;text-transform:uppercase;letter-spacing:.5px;">
+            Detalle de Órdenes Pendientes de Facturar (${ordenesPendientes.length})
+          </span>
+        </div>
+        <table style="width:100%;border-collapse:collapse;border:1px solid #ffe0b2;border-top:none;">
+          <thead>
+            <tr style="background:#fff3e0;">
+              <th style="padding:8px 12px;text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:#e65100;">Fecha</th>
+              <th style="padding:8px 12px;text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:#e65100;">Orden</th>
+              <th style="padding:8px 12px;text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:#e65100;">Trabajo / Descripción</th>
+              <th style="padding:8px 12px;text-align:right;font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:#e65100;">Importe</th>
+            </tr>
+          </thead>
+          <tbody>${filasOrdenes}</tbody>
+          <tfoot>
+            <tr style="background:#fff3e0;">
+              <td colspan="3" style="padding:10px 12px;font-size:13px;font-weight:700;color:#e65100;text-align:right;">TOTAL PENDIENTE A FACTURAR</td>
+              <td style="padding:10px 12px;font-size:14px;font-weight:800;color:#e65100;text-align:right;">${simbolo} ${fmt(totalOrdenes)}</td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>` : '';
+
     return `
       <div style="margin-bottom:24px;border:1px solid #e0e0e0;border-radius:8px;overflow:hidden;box-shadow:0 1px 4px rgba(0,0,0,.06);">
         <div style="background:${colorSec};padding:10px 16px;display:flex;justify-content:space-between;align-items:center;border-bottom:2px solid ${colorOsc};">
@@ -295,6 +345,7 @@ function generarHTMLEstadoCuenta(datos, empresa = {}) {
           </span>
         </div>
         ${tablaDeudas}
+        ${bloqueOrdenes}
       </div>`;
   }).join('');
 

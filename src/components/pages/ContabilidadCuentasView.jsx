@@ -10,13 +10,14 @@ import {
   Calendar, PlayCircle, StopCircle, X,
   ArrowUpCircle, ArrowDownCircle, Info, Users, Zap,
   DollarSign, PlusCircle, Package, RotateCcw, Layers, Download, Printer, ChevronDown, FileMinus, Trash2,
-  Lock, Unlock, User
+  Lock, Unlock, User, Edit2, Plus
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { useLocation, useNavigate } from 'react-router-dom';
 
 import api from '../../services/api';
 import { generarPdfEstadoCuenta, generarPdfPrefactura, generarPdfFacturaDGI } from '../../utils/pdfGenerator';
+import { exportarExcelEstadoCuenta } from '../../utils/excelGenerator';
 import CierreCicloPreviewModal from './CierreCicloPreviewModal';
 
 const ORDEN_TYPES = ['ORDEN', 'ENTREGA', 'ORDEN_ANTICIPO'];
@@ -262,7 +263,6 @@ const ModalAnularFactura = ({ mov, cuenta, cliente, onClose, onSuccess }) => {
 
   const submit = async (e) => {
     e.preventDefault();
-    if (!window.confirm('¿Confirmar anulación? El ciclo se reabrirá y las órdenes volverán a estar pendientes de facturar.')) return;
     setSaving(true);
     try {
       // Resolver DocIdDocumento si no viene directo
@@ -324,7 +324,6 @@ const ModalReversarDoc = ({ mov, cuenta, cliente, onClose, onSuccess }) => {
   useEffect(()=>{ api.get('/contabilidad/metodos-pago').then(r=>{const l=r.data?.data||r.data||[];setMetodos(l);if(l.length)setMetodoId(String(l[0].MPaIdMetodoPago));}).catch(()=>{}); },[]);
   const submit = async (e) => {
     e.preventDefault();
-    if (!window.confirm('¿Confirmar reversión? El documento quedará ANULADO.')) return;
     setSaving(true);
     try {
       // Resolver DocIdDocumento si no viene directo
@@ -1041,8 +1040,67 @@ const ModalPago = ({ cuenta, onClose, onSuccess }) => {
   );
 };
 
+// ── Órdenes pendientes en vista Estado de Cuenta ─────────────────────────────
+const OrdenesEstadoCuenta = ({ movs, simbolo }) => {
+  const pendientes = movs.filter(m =>
+    ['ORDEN','ORDEN_ANTICIPO'].includes(m.MovTipo) &&
+    !m.DocIdDocumento && !m.MovAnulado &&
+    !(m.MovObservaciones?.startsWith('CUBIERTO'))
+  );
+  if (!pendientes.length) return null;
+  const total = pendientes.reduce((s, m) => s + Math.abs(Number(m.MovImporte || 0)), 0);
+  return (
+    <div className="border-t-2 border-orange-200">
+      <div className="flex items-center justify-between px-5 py-2.5 bg-orange-500">
+        <span className="text-xs font-black uppercase tracking-widest text-white">
+          Órdenes Pendientes de Facturar · {pendientes.length}
+        </span>
+        <span className="text-xs font-bold text-white/80">No afectan el saldo monetario</span>
+      </div>
+      <table className="w-full text-xs">
+        <thead>
+          <tr className="bg-orange-50 text-orange-700 text-[10px] uppercase tracking-wider">
+            <th className="px-4 py-2 text-left">Fecha</th>
+            <th className="px-4 py-2 text-left">Orden</th>
+            <th className="px-4 py-2 text-left">Trabajo</th>
+            <th className="px-4 py-2 text-right">Importe</th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-orange-100">
+          {pendientes.map(m => {
+            const codigo  = m.CodigoOrdenStr || m.OrdCodigoOrden || '—';
+            const trabajo = m.OrdNombreTrabajo || m.MovConcepto || '—';
+            const imp     = Math.abs(Number(m.MovImporte || 0));
+            const fecha   = m.MovFecha ? new Date(m.MovFecha).toLocaleDateString('es-UY') : '—';
+            return (
+              <tr key={m.MovIdMovimiento} className="hover:bg-orange-50/60 transition-colors">
+                <td className="px-4 py-2 text-slate-400">{fecha}</td>
+                <td className="px-4 py-2 font-semibold text-slate-700">{codigo}</td>
+                <td className="px-4 py-2 text-slate-500">{trabajo}</td>
+                <td className="px-4 py-2 text-right font-bold text-orange-700">
+                  {simbolo} {imp.toLocaleString('es-UY', {minimumFractionDigits:2})}
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+        <tfoot>
+          <tr className="bg-orange-100">
+            <td colSpan={3} className="px-4 py-2.5 text-right font-black text-orange-700 uppercase tracking-wider text-[10px]">
+              Total Pendiente a Facturar
+            </td>
+            <td className="px-4 py-2.5 text-right font-black text-orange-700">
+              {simbolo} {total.toLocaleString('es-UY', {minimumFractionDigits:2})}
+            </td>
+          </tr>
+        </tfoot>
+      </table>
+    </div>
+  );
+};
+
 // ── Panel movimientos ─────────────────────────────────────────────────────────
-const MovimientosPanel = ({ CueIdCuenta, simbolo = '$', onClose, cuenta, onRegistrarPago, CliIdCliente, cliente, desde, hasta, trigger }) => {
+const MovimientosPanel = ({ CueIdCuenta, simbolo = '$', onClose, cuenta, onRegistrarPago, CliIdCliente, cliente, desde, hasta, trigger, ordenesPendientes }) => {
   const [movs, setMovs]           = useState([]);
   const [ciclosInfo, setCiclosInfo] = useState({});
   const [loading, setLoading]     = useState(false);
@@ -1106,6 +1164,13 @@ const MovimientosPanel = ({ CueIdCuenta, simbolo = '$', onClose, cuenta, onRegis
   // visualSaldoAntes, visualImporte, visualSaldoDespues y visualIsVisible.
   const sortedMovs = useMemo(() => [...movs].reverse(), [movs]);
   const movsParaEstadoCuenta = sortedMovs;
+
+  // Órdenes cubiertas por un plan — detectadas por MovObservaciones='CUBIERTO_POR_PLAN_X'
+  const coveredMovIds = useMemo(() => new Set(
+    sortedMovs
+      .filter(m => m.MovObservaciones && m.MovObservaciones.startsWith('CUBIERTO'))
+      .map(m => m.MovIdMovimiento)
+  ), [sortedMovs]);
 
   return (
     <div className="mt-4 rounded-2xl border border-slate-200 overflow-hidden shadow-lg bg-white">
@@ -1193,7 +1258,8 @@ const MovimientosPanel = ({ CueIdCuenta, simbolo = '$', onClose, cuenta, onRegis
                     const esHaber = importe > 0;
                     const esDebe  = importe < 0;
                     const info = ciclosInfo[m.CicIdCiclo];
-                    const isFacturado = m.CicIdCiclo && info && info.CicEstado !== 'ABIERTO';
+                    const isCovered   = coveredMovIds.has(m.MovIdMovimiento);
+                    const isFacturado = (m.CicIdCiclo && info && info.CicEstado !== 'ABIERTO') || isCovered;
                     // Mapa de códigos DGI → nombres legibles
                     const DOC_TIPO_LABEL = {
                       '07': 'E-TICKET', '08': 'E-TICKET CRED.', '10': 'N.CRÉDITO ET',
@@ -1211,6 +1277,8 @@ const MovimientosPanel = ({ CueIdCuenta, simbolo = '$', onClose, cuenta, onRegis
                     if (ORDEN_TYPES.includes(m.MovTipo)) {
                         if (m.DocIdDocumento) {
                             docFull = `Facturado (${docTipoLabel || m.DocTipo || 'CFE'} ${m.DocSerie || ''}-${m.DocNumero || ''})`;
+                        } else if (isCovered) {
+                            docFull = `Cubierto por Plan`;
                         } else if (m.CicIdCiclo) {
                             docFull = isFacturado ? `Facturado (${info?.CicNumeroFactura || 'En proc.'})` : 'Pendiente de facturar (Ciclo)';
                         } else {
@@ -1331,7 +1399,8 @@ const MovimientosPanel = ({ CueIdCuenta, simbolo = '$', onClose, cuenta, onRegis
                   const importe = m.visualImporte; // PRE-CALCULADO EN EL BACKEND
                   const esHaber = importe > 0;
                   const esDebe  = importe < 0;
-                  const isFacturado = m.CicIdCiclo && cicloInfo && cicloInfo.CicEstado !== 'ABIERTO';
+                  const isCovered   = coveredMovIds.has(m.MovIdMovimiento);
+                  const isFacturado = (m.CicIdCiclo && cicloInfo && cicloInfo.CicEstado !== 'ABIERTO') || isCovered;
 
                   let fallbackText = 'N/D';
                   if (['PAGO', 'COBRO'].includes(m.MovTipo)) fallbackText = 'Recibo de Pago';
@@ -1345,6 +1414,8 @@ const MovimientosPanel = ({ CueIdCuenta, simbolo = '$', onClose, cuenta, onRegis
                   if (ORDEN_TYPES.includes(m.MovTipo)) {
                     if (m.DocIdDocumento) {
                       docFull = `Facturado (${m.DocTipo || 'CFE'} ${m.DocSerie || ''}-${m.DocNumero || ''})`;
+                    } else if (isCovered) {
+                      docFull = `Cubierto por Plan`;
                     } else {
                       docFull = isFacturado
                         ? `Facturado (${cicloInfo?.CicNumeroFactura || 'En proc.'})`
@@ -1471,11 +1542,14 @@ const MovimientosPanel = ({ CueIdCuenta, simbolo = '$', onClose, cuenta, onRegis
           </table>
         </div>
       )}
+      {/* ── Órdenes pendientes (solo en vista Estado de Cuenta) ── */}
+      {viewMode === 'ESTADO_CUENTA' && (
+        <OrdenesEstadoCuenta movs={ordenesPendientes || []} simbolo={simbolo} />
+      )}
     </div>
   );
 };
 
-// ── Panel deudas ──────────────────────────────────────────────────────────────
 const DeudasPanel = ({ CueIdCuenta, simbolo, onClose }) => {
   const [deudas, setDeudas]   = useState([]);
   const [loading, setLoading] = useState(false);
@@ -1689,6 +1763,22 @@ const PlanesPanel = ({ cuenta, CliIdCliente, cliente, desde, hasta, onClose, onC
   const [working, setWorking]     = useState(false);
   const [movsPlan, setMovsPlan]   = useState({});  // { [planId]: [] }
 
+  // Modales de acciones manuales
+  const [modalEditarMetros, setModalEditarMetros] = useState(false);
+  const [modalNuevaOrden,   setModalNuevaOrden]   = useState(false);
+  const [modalConfirmar,    setModalConfirmar]    = useState(null); // { movId, concepto, saldoIn, consumo }
+  const [confirmWorking,    setConfirmWorking]    = useState(false);
+
+  // Form editar metros
+  const [editMovId,       setEditMovId]       = useState(null);
+  const [editCodigoOrden, setEditCodigoOrden] = useState('');
+  const [editMetros,      setEditMetros]      = useState('');
+  const [editWorking,     setEditWorking]     = useState(false);
+
+  // Form nueva orden
+  const [nuevaOrden,   setNuevaOrden]   = useState({ codigoOrden: '', nombreTrabajo: '', metros: '', planId: '' });
+  const [nuevaWorking, setNuevaWorking] = useState(false);
+
   const unidadLabel = cuenta.UnidadLabel || cuenta.CueTipo || '';
 
   const cargar = useCallback(async () => {
@@ -1710,14 +1800,19 @@ const PlanesPanel = ({ cuenta, CliIdCliente, cliente, desde, hasta, onClose, onC
       const grouped = {};
       deCuenta.forEach(p => {
         const id = p.PlaIdPlan;
-        grouped[id] = todosMovs.filter(m =>
-          m.MovConcepto?.includes(`(Plan ${id})`) ||
-          m.MovConcepto?.includes(`Plan #${id}`) ||
-          m.MovConcepto?.includes(`plan ${id}`) ||
-          m.MovConcepto?.toLowerCase().includes(`plan${id}`) ||
-          m.MovObservaciones?.includes(`Plan #${id}`) ||
-          m.MovObservaciones?.includes(`plan ${id}`)
-        );
+        grouped[id] = todosMovs.filter(m => {
+          const matchPlan = m.MovConcepto?.match(/Plan\s*#?\s*(\d+)/i) || m.MovObservaciones?.match(/Plan\s*#?\s*(\d+)/i);
+          if (matchPlan) {
+            return parseInt(matchPlan[1]) === id;
+          }
+          if (p.PlaActivo) {
+            return true;
+          }
+          if (deCuenta.length === 1) {
+            return true;
+          }
+          return false;
+        });
       });
       setMovsPlan(grouped);
     } catch (e) { toast.error(e.message); }
@@ -1729,36 +1824,49 @@ const PlanesPanel = ({ cuenta, CliIdCliente, cliente, desde, hasta, onClose, onC
   const planActivo = planes.find(p => p.PlaActivo);
 
   return (
-    <div className="mt-3 rounded-xl border border-violet-200 overflow-hidden">
-      <div className="flex items-center justify-between px-4 py-3 bg-violet-600 text-white">
-        <div className="flex items-center gap-2">
-          <Layers size={14} /><span className="text-sm font-semibold">Planes de Recursos</span>
-          {planActivo && <Badge color="green"><span className="animate-pulse">●</span> ACTIVO</Badge>}
-        </div>
-        <button 
-          title="Imprimir Estado de Cuenta (Recursos)"
-          onClick={async () => {
-            try {
-              const t = toast.loading('Generando PDF de Recursos...');
-              const p = new URLSearchParams({ top: 500 });
-              if (desde) p.append('desde', desde);
-              if (hasta) p.append('hasta', hasta);
-              const resp = await fetchAPI(`/api/contabilidad/cuentas/${cuenta.CueIdCuenta}/movimientos?${p}`);
-              const planesRes = await fetchAPI(`/api/contabilidad/planes/${CliIdCliente}`).catch(() => ({ data: [] }));
-              const sec = { [cuenta.CueIdCuenta]: { cue: cuenta, movs: resp.data || [], saldoArrastre: Number(resp.saldoArrastre ?? 0) } };
-              generarPdfEstadoCuenta(cliente || { Nombre: 'Cliente', CliIdCliente }, [cuenta], sec, planesRes.data || [], desde, hasta);
-              toast.success('PDF descargado', { id: t });
-            } catch (err) {
-              toast.error('Error al generar PDF: ' + err.message);
-            }
-          }}
-          className="p-1.5 bg-violet-500/50 hover:bg-white/20 rounded-lg transition-colors"
-        >
-          <Printer size={14} />
-        </button>
-      </div>
+    <>
+      <div className="mt-3 rounded-xl border border-violet-200 overflow-hidden">
+        <div className="flex items-center justify-between px-4 py-3 bg-violet-600 text-white">
+          <div className="flex items-center gap-2">
+            <Layers size={14} /><span className="text-sm font-semibold">Planes de Recursos</span>
+            {planActivo && <Badge color="green"><span className="animate-pulse">●</span> ACTIVO</Badge>}
+          </div>
+          <div className="flex items-center gap-1.5">
 
-      {loading ? (
+            {/* Insertar orden manual */}
+            <button
+              title="Insertar orden manual en la cuenta MTS"
+              onClick={() => { setNuevaOrden({ codigoOrden: '', nombreTrabajo: '', metros: '', planId: planActivo?.PlaIdPlan?.toString() || '' }); setModalNuevaOrden(true); }}
+              className="flex items-center gap-1 px-2 py-1 text-[11px] font-semibold bg-white/20 hover:bg-white/30 text-white rounded-lg transition-colors"
+            >
+              <Plus size={11} /> Nueva orden
+            </button>
+            {/* Imprimir */}
+            <button
+              title="Imprimir Estado de Cuenta (Recursos)"
+              onClick={async () => {
+                try {
+                  const t = toast.loading('Generando PDF de Recursos...');
+                  const p = new URLSearchParams({ top: 500 });
+                  if (desde) p.append('desde', desde);
+                  if (hasta) p.append('hasta', hasta);
+                  const resp = await fetchAPI(`/api/contabilidad/cuentas/${cuenta.CueIdCuenta}/movimientos?${p}`);
+                  const planesRes = await fetchAPI(`/api/contabilidad/planes/${CliIdCliente}`).catch(() => ({ data: [] }));
+                  const sec = { [cuenta.CueIdCuenta]: { cue: cuenta, movs: resp.data || [], saldoArrastre: Number(resp.saldoArrastre ?? 0) } };
+                  generarPdfEstadoCuenta(cliente || { Nombre: 'Cliente', CliIdCliente }, [cuenta], sec, planesRes.data || [], desde, hasta);
+                  toast.success('PDF descargado', { id: t });
+                } catch (err) {
+                  toast.error('Error al generar PDF: ' + err.message);
+                }
+              }}
+              className="p-1.5 bg-violet-500/50 hover:bg-white/20 rounded-lg transition-colors"
+            >
+              <Printer size={14} />
+            </button>
+          </div>
+        </div>
+
+        {loading ? (
         <div className="flex justify-center py-5 bg-[#f1f5f9]"><div className="animate-spin h-5 w-5 border-2 border-violet-400 border-t-transparent rounded-full" /></div>
       ) : (
         <div className="divide-y divide-slate-100 bg-[#f1f5f9]">
@@ -1809,31 +1917,89 @@ const PlanesPanel = ({ cuenta, CliIdCliente, cliente, desde, hasta, onClose, onC
                           <th className="px-3 py-1.5 text-left">Fecha</th>
                           <th className="px-3 py-1.5 text-left">Orden / Trabajo</th>
                           <th className="px-3 py-1.5 text-right">Saldo In.</th>
-                          <th className="px-3 py-1.5 text-right">Consumo</th>
+                          <th className="px-3 py-1.5 text-right">Movimiento</th>
                           <th className="px-3 py-1.5 text-right">Saldo Fn.</th>
+                          <th className="px-3 py-1.5 text-center w-8"></th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-50">
                         {[...movsDelPlan].reverse().reduce((acc, m) => {
-                          const consumo = Math.abs(Number(m.MovImporte));
-                          const basePlanAcum = acc.planAcum || 0;
-                          const currentPlanAcum = basePlanAcum + consumo;
-                          const quedan = (p.PlaCantidadTotal || 0) - currentPlanAcum;
+                          const importe = Number(m.MovImporte);
+                          const isNeg = importe < 0;
                           
-                          acc.push({ ...m, _movImporteAbs: consumo, _quedan: quedan, _saldoIn: (p.PlaCantidadTotal || 0) - basePlanAcum });
-                          acc.planAcum = currentPlanAcum;
+                          const hasEntrada = movsDelPlan.some(x => Number(x.MovImporte) > 0);
+                          const baseSaldo = acc.saldoRunning === undefined
+                            ? (hasEntrada ? 0 : Number(p.PlaCantidadTotal || 0))
+                            : acc.saldoRunning;
+
+                          const currentSaldo = baseSaldo + importe;
+
+                          acc.push({
+                            ...m,
+                            _movImporteAbs: Math.abs(importe),
+                            _quedan: currentSaldo,
+                            _saldoIn: baseSaldo,
+                            _isNeg: isNeg
+                          });
+                          acc.saldoRunning = currentSaldo;
                           return acc;
-                        }, []).reverse().map(m => (
+                        }, []).reverse().map(m => {
+                          // Extraer código de orden del concepto para mostrarlo en bold
+                          const match = m.MovConcepto?.match(/(?:DF|SB|RM)-?\d+/i) || m.MovConcepto?.match(/#\d+/);
+                          const cod = match ? match[0] : '';
+                          let obs = m.MovConcepto || '—';
+                          if (cod) obs = obs.replace(cod, '').replace(/^[ :\-.]+|[ :\-.]+$/g, '').trim();
+
+                          return (
                           <tr key={m.MovIdMovimiento} className="hover:bg-slate-50/50">
                             <td className="px-3 py-2 text-slate-500">{fmtFecha(m.MovFecha)}</td>
-                            <td className="px-3 py-2 max-w-xs" title={m.MovConcepto}><span className="block truncate text-xs text-slate-700">{m.MovConcepto || '—'}</span></td>
+                            <td className="px-3 py-2 max-w-xs" title={m.MovConcepto}>
+                              <span className="block truncate text-xs text-slate-700">
+                                {cod ? <><span className="font-bold">{cod.toUpperCase()}</span> {obs}</> : obs}
+                              </span>
+                            </td>
                             <td className="px-3 py-2 text-right text-slate-500 font-medium">{fmtNum(m._saldoIn)} {p.PlaUnidad}</td>
-                            <td className="px-3 py-2 text-right text-rose-600 font-semibold">-{fmtNum(m._movImporteAbs)} {p.PlaUnidad}</td>
+                            <td className={`px-3 py-2 text-right font-semibold ${m._isNeg ? 'text-rose-600' : 'text-emerald-600'}`}>
+                              {m._isNeg ? '-' : '+'}{fmtNum(m._movImporteAbs)} {p.PlaUnidad}
+                            </td>
                             <td className={`px-3 py-2 text-right font-bold ${m._quedan < (p.PlaCantidadTotal || 0) * 0.1 ? 'text-amber-600' : 'text-violet-700'}`}>
                               {fmtNum(m._quedan)} {p.PlaUnidad}
                             </td>
+                            <td className="px-3 py-2 text-center">
+                              <div className="flex items-center justify-center gap-1">
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setEditMovId(m.MovIdMovimiento);
+                                    setEditCodigoOrden(m.MovConcepto);
+                                    setEditMetros(m._movImporteAbs.toString());
+                                    setModalEditarMetros(true);
+                                  }}
+                                  className="p-1 hover:bg-slate-200 rounded text-slate-400 hover:text-amber-600 transition-colors"
+                                  title="Editar metros de esta orden"
+                                >
+                                  <Edit2 size={12} />
+                                </button>
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setModalConfirmar({
+                                      movId:   m.MovIdMovimiento,
+                                      concepto: m.MovConcepto,
+                                      consumo:  m._movImporteAbs,
+                                      unidad:   p.PlaUnidad
+                                    });
+                                  }}
+                                  className="p-1 hover:bg-slate-200 rounded text-slate-400 hover:text-rose-600 transition-colors"
+                                  title="Eliminar este movimiento"
+                                >
+                                  <Trash2 size={12} />
+                                </button>
+                              </div>
+                            </td>
                           </tr>
-                        ))}
+                          );
+                        })}
                         </tbody>
                       </table>
                     )}
@@ -1846,7 +2012,243 @@ const PlanesPanel = ({ cuenta, CliIdCliente, cliente, desde, hasta, onClose, onC
           )}
         </div>
       )}
-    </div>
+      </div>
+
+    {/* ── Modal: Editar metros ──────────────────────────────────────── */}
+    {modalEditarMetros && (
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm">
+        <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm mx-4 overflow-hidden">
+          <div className="flex items-center justify-between px-5 py-4 bg-amber-400">
+            <div className="flex items-center gap-2">
+              <Edit2 size={16} className="text-amber-900" />
+              <span className="font-bold text-amber-900 text-sm">Editar metros de orden</span>
+            </div>
+            <button onClick={() => setModalEditarMetros(false)} className="p-1 hover:bg-amber-300 rounded-lg transition-colors">
+              <X size={14} className="text-amber-900" />
+            </button>
+          </div>
+          <div className="px-5 py-5 space-y-4">
+            <div>
+              <label className="block text-xs font-semibold text-slate-600 mb-1">Concepto / Orden</label>
+              <input
+                type="text"
+                disabled
+                value={editCodigoOrden}
+                className="w-full border border-slate-200 bg-slate-50 rounded-lg px-3 py-2 text-sm text-slate-500 outline-none"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-semibold text-slate-600 mb-1">Nuevos metros</label>
+              <input
+                type="number"
+                step="0.01"
+                min="0"
+                value={editMetros}
+                onChange={e => setEditMetros(e.target.value)}
+                placeholder="Ej: 1.50"
+                className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-amber-400"
+              />
+            </div>
+            <p className="text-[11px] text-slate-400">Actualiza la cantidad en el movimiento y ajusta el saldo del plan automáticamente.</p>
+          </div>
+          <div className="px-5 pb-5 flex gap-2 justify-end">
+            <button
+              onClick={() => setModalEditarMetros(false)}
+              className="px-4 py-2 text-xs font-semibold text-slate-600 bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors"
+            >Cancelar</button>
+            <button
+              disabled={editWorking || !editMetros}
+              onClick={async () => {
+                if (!editMetros) return;
+                setEditWorking(true);
+                try {
+                  await fetchAPI(`/api/contabilidad/ordenes/editar-metros`, {
+                    method: 'POST',
+                    body: JSON.stringify({ MovIdMovimiento: editMovId, metros: parseFloat(editMetros) })
+                  });
+                  toast.success('Metros actualizados correctamente');
+                  setModalEditarMetros(false);
+                  cargar();
+                  if (onChanged) onChanged();
+                } catch (e) {
+                  toast.error(e.message);
+                } finally {
+                  setEditWorking(false);
+                }
+              }}
+              className="px-4 py-2 text-xs font-bold text-amber-900 bg-amber-400 hover:bg-amber-300 rounded-lg transition-colors disabled:opacity-50"
+            >
+              {editWorking ? 'Guardando...' : 'Guardar cambios'}
+            </button>
+          </div>
+        </div>
+      </div>
+    )}
+
+    {/* ── Modal: Insertar orden manual ──────────────────────────────── */}
+    {modalNuevaOrden && (
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm">
+        <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm mx-4 overflow-hidden">
+          <div className="flex items-center justify-between px-5 py-4 bg-violet-600">
+            <div className="flex items-center gap-2">
+              <Plus size={16} className="text-white" />
+              <span className="font-bold text-white text-sm">Insertar orden manual</span>
+            </div>
+            <button onClick={() => setModalNuevaOrden(false)} className="p-1 hover:bg-violet-500 rounded-lg transition-colors">
+              <X size={14} className="text-white" />
+            </button>
+          </div>
+          <div className="px-5 py-5 space-y-3">
+            <div>
+              <label className="block text-xs font-semibold text-slate-600 mb-1">Código de Orden</label>
+              <input
+                type="text"
+                value={nuevaOrden.codigoOrden}
+                onChange={e => setNuevaOrden(o => ({ ...o, codigoOrden: e.target.value.toUpperCase() }))}
+                placeholder="Ej: DF-101834"
+                className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-violet-400"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-semibold text-slate-600 mb-1">Nombre / Trabajo</label>
+              <input
+                type="text"
+                value={nuevaOrden.nombreTrabajo}
+                onChange={e => setNuevaOrden(o => ({ ...o, nombreTrabajo: e.target.value }))}
+                placeholder="Ej: Tongatex"
+                className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-violet-400"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-semibold text-slate-600 mb-1">Metros</label>
+              <input
+                type="number"
+                step="0.01"
+                min="0"
+                value={nuevaOrden.metros}
+                onChange={e => setNuevaOrden(o => ({ ...o, metros: e.target.value }))}
+                placeholder="0.00"
+                className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-violet-400"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-semibold text-slate-600 mb-1">Plan</label>
+              <select
+                value={nuevaOrden.planId}
+                onChange={e => setNuevaOrden(o => ({ ...o, planId: e.target.value }))}
+                className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-violet-400"
+              >
+                <option value="">— Sin plan específico —</option>
+                {planes.map(p => (
+                  <option key={p.PlaIdPlan} value={p.PlaIdPlan}>
+                    Plan #{p.PlaIdPlan} — {p.NombreArticulo || p.PlaUnidad} ({fmtNum(p.PlaCantidadRestante)} {p.PlaUnidad} disponibles)
+                  </option>
+                ))}
+              </select>
+            </div>
+            <p className="text-[11px] text-slate-400">Si seleccionás un plan, el movimiento aparecerá en la lista de entregas.</p>
+          </div>
+          <div className="px-5 pb-5 flex gap-2 justify-end">
+            <button
+              onClick={() => setModalNuevaOrden(false)}
+              className="px-4 py-2 text-xs font-semibold text-slate-600 bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors"
+            >Cancelar</button>
+            <button
+              disabled={nuevaWorking || !nuevaOrden.codigoOrden.trim() || !nuevaOrden.metros}
+              onClick={async () => {
+                if (!nuevaOrden.codigoOrden.trim() || !nuevaOrden.metros) return;
+                setNuevaWorking(true);
+                try {
+                  await fetchAPI(`/api/contabilidad/ordenes/insertar-manual`, {
+                    method: 'POST',
+                    body: JSON.stringify({
+                      CueIdCuenta: cuenta.CueIdCuenta,
+                      CliIdCliente,
+                      codigoOrden: nuevaOrden.codigoOrden.trim(),
+                      nombreTrabajo: nuevaOrden.nombreTrabajo.trim(),
+                      metros: parseFloat(nuevaOrden.metros),
+                      planId: nuevaOrden.planId ? parseInt(nuevaOrden.planId) : null,
+                      importe: 0
+                    })
+                  });
+                  toast.success(`Orden ${nuevaOrden.codigoOrden} insertada`);
+                  setModalNuevaOrden(false);
+                  cargar();
+                  if (onChanged) onChanged();
+                } catch (e) {
+                  toast.error(e.message);
+                } finally {
+                  setNuevaWorking(false);
+                }
+              }}
+              className="px-4 py-2 text-xs font-bold text-white bg-violet-600 hover:bg-violet-700 rounded-lg transition-colors disabled:opacity-50"
+            >
+              {nuevaWorking ? 'Insertando...' : 'Insertar orden'}
+            </button>
+          </div>
+        </div>
+      </div>
+    )}
+    {/* ── Modal: Confirmar eliminación ─────────────────────────────── */}
+    {modalConfirmar && (
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
+        <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm mx-4 overflow-hidden">
+          <div className="flex items-center gap-3 px-5 py-4 bg-rose-50 border-b border-rose-100">
+            <div className="w-9 h-9 rounded-full bg-rose-100 flex items-center justify-center flex-shrink-0">
+              <Trash2 size={18} className="text-rose-600" />
+            </div>
+            <div>
+              <p className="font-bold text-rose-700 text-sm">Eliminar movimiento</p>
+              <p className="text-[11px] text-rose-500">Esta acción restaura los metros al plan</p>
+            </div>
+          </div>
+          <div className="px-5 py-4 space-y-3">
+            <div className="bg-slate-50 rounded-xl p-3 border border-slate-100">
+              <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-1">Concepto</p>
+              <p className="text-sm font-semibold text-slate-700 truncate">{modalConfirmar.concepto}</p>
+            </div>
+            <div className="bg-rose-50 rounded-xl p-3 border border-rose-100 flex items-center gap-3">
+              <div className="text-center flex-1">
+                <p className="text-[10px] text-rose-400 font-semibold uppercase">Metros a restaurar</p>
+                <p className="text-lg font-black text-rose-600">+{fmtNum(modalConfirmar.consumo)} <span className="text-xs font-normal">{modalConfirmar.unidad}</span></p>
+              </div>
+            </div>
+            <p className="text-[11px] text-slate-400 text-center">El saldo del plan volverá a aumentar por esta cantidad.</p>
+          </div>
+          <div className="px-5 pb-5 flex gap-2">
+            <button
+              onClick={() => setModalConfirmar(null)}
+              disabled={confirmWorking}
+              className="flex-1 px-4 py-2 text-xs font-semibold text-slate-600 bg-slate-100 hover:bg-slate-200 rounded-xl transition-colors disabled:opacity-50"
+            >Cancelar</button>
+            <button
+              disabled={confirmWorking}
+              onClick={async () => {
+                setConfirmWorking(true);
+                try {
+                  await fetchAPI(`/api/contabilidad/ordenes/eliminar-metros`, {
+                    method: 'POST',
+                    body: JSON.stringify({ MovIdMovimiento: modalConfirmar.movId })
+                  });
+                  toast.success('Movimiento eliminado. Saldo restaurado.');
+                  setModalConfirmar(null);
+                  cargar();
+                  if (onChanged) onChanged();
+                } catch (err) {
+                  toast.error(err.message);
+                } finally {
+                  setConfirmWorking(false);
+                }
+              }}
+              className="flex-1 px-4 py-2 text-xs font-bold text-white bg-rose-600 hover:bg-rose-700 rounded-xl transition-colors disabled:opacity-50"
+            >
+              {confirmWorking ? <span className="flex items-center justify-center gap-1"><RefreshCw size={11} className="animate-spin" /> Eliminando...</span> : 'Sí, eliminar'}
+            </button>
+          </div>
+        </div>
+      </div>
+    )}
+  </>
   );
 };
 
@@ -1955,6 +2357,20 @@ const ModalEstadoCuenta = ({ cliente, cuentas, onClose, globalDesde, globalHasta
               <button onClick={() => generarPdfEstadoCuenta(cliente, cuentas, secciones, planes, desde, hasta)} className="flex items-center gap-2 p-2 hover:bg-blue-50 hover:text-blue-600 rounded-lg text-slate-500 text-xs font-bold transition-colors">
                 <Printer size={16} /> Descargar PDF
               </button>
+              <button
+                onClick={async () => {
+                  const t = toast.loading('Generando Excel...');
+                  try {
+                    await exportarExcelEstadoCuenta(cliente, cuentas, secciones, planes, desde, hasta);
+                    toast.success('Excel descargado', { id: t });
+                  } catch (err) {
+                    toast.error('Error al generar Excel: ' + err.message, { id: t });
+                  }
+                }}
+                className="flex items-center gap-2 p-2 hover:bg-emerald-50 hover:text-emerald-600 rounded-lg text-slate-500 text-xs font-bold transition-colors"
+              >
+                <Download size={16} /> Exportar Excel
+              </button>
               <button onClick={onClose} className="p-2 hover:bg-slate-700/50 rounded-lg text-slate-500"><X size={16} /></button>
             </div>
           </div>
@@ -2024,64 +2440,72 @@ const ModalEstadoCuenta = ({ cliente, cuentas, onClose, globalDesde, globalHasta
                         <div className="p-4 bg-slate-50/50">
                           <CiclosPanel cuenta={c} CliIdCliente={c.CliIdCliente} cliente={cliente} onClose={() => {}} onCicloChanged={cargar} />
                         </div>
-                        {movs.length === 0 ? (
-                          <p className="text-xs text-slate-500 text-center py-5">Sin movimientos en el período</p>
-                        ) : (
-                          <table className="w-full text-xs">
-                            <thead>
-                              <tr className="bg-slate-50/50 text-slate-500 uppercase tracking-wide text-[10px]">
-                                <th className="px-5 py-2 text-left font-semibold">Fecha</th>
-                                <th className="px-4 py-2 text-left font-semibold">Tipo</th>
-                                <th className="px-4 py-2 text-left font-semibold">Concepto</th>
-                                <th className="px-4 py-2 text-right font-semibold">Saldo In.</th>
-                                <th className="px-4 py-2 text-right font-semibold">Importe</th>
-                                <th className="px-4 py-2 text-right font-semibold">Saldo Fn.</th>
-                                <th className="px-4 py-2 text-center font-semibold w-12">Recibo</th>
-                              </tr>
-                            </thead>
-                            <tbody className="divide-y divide-slate-50">
-                              {movs.map(m => {
-                                const cred = esCreditoTipo(m.MovTipo);
-                                const cicloInfo = ciclosInfo[m.CicIdCiclo];
-                                const isFacturado = m.CicIdCiclo && cicloInfo && cicloInfo.CicEstado !== 'ABIERTO';
-                                return (
-                                  <tr key={m.MovIdMovimiento} className="hover:bg-slate-50/50 transition-colors">
-                                    <td className="px-5 py-2.5 text-slate-500 whitespace-nowrap">{fmtFecha(m.MovFecha)}</td>
-                                    <td className="px-4 py-2.5">
-                                      <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-slate-100 text-slate-600">
-                                        {ETIQUETA_TIPO[m.MovTipo] || m.MovTipo}
-                                      </span>
-                                    </td>
-                                    <td className="px-4 py-2.5 text-slate-600 max-w-[200px] truncate" title={m.MovConcepto}>
-                                      {m.MovConcepto}
-                                    </td>
-                                    <td className="px-4 py-2.5 text-right text-slate-500 font-medium whitespace-nowrap">
-                                      {fmtNum(Number(m.MovSaldoPosterior) - Number(m.MovImporte))} {c.MonSimbolo}
-                                    </td>
-                                    <td className={`px-4 py-2.5 text-right font-semibold whitespace-nowrap ${cred ? 'text-emerald-600' : 'text-red-500'}`}>
-                                      {cred ? '+' : '-'}{fmtNum(Math.abs(Number(m.MovImporte)))} {c.MonSimbolo}
-                                    </td>
-                                    <td className="px-4 py-2.5 text-right text-slate-800 font-bold whitespace-nowrap">
-                                      {fmtNum(Number(m.MovSaldoPosterior))} {c.MonSimbolo}
-                                    </td>
-                                    <td className="px-4 py-2.5 text-center">
-                                      <MenuAccionesDoc
-                                        m={m}
-                                        cuenta={c}
-                                        cliente={cliente}
-                                        onRefresh={cargar}
-                                        onPrint={handleDescargarRecibo}
-                                        onCobrar={onRegistrarPago}
-                                        hideActionsDropdown={true}
-                                        hidePrinter={ORDEN_TYPES.includes(m.MovTipo) && (!!m.DocIdDocumento || isFacturado)}
-                                      />
-                                    </td>
-                                  </tr>
-                                );
-                              })}
-                            </tbody>
-                          </table>
-                        )}
+                        {(() => {
+                          const visibleMovs = movs.filter(m => m.visualIsVisible !== false);
+                          if (visibleMovs.length === 0) {
+                            return <p className="text-xs text-slate-500 text-center py-5">Sin movimientos en el período</p>;
+                          }
+                          return (
+                            <table className="w-full text-xs">
+                              <thead>
+                                <tr className="bg-slate-50/50 text-slate-500 uppercase tracking-wide text-[10px]">
+                                  <th className="px-5 py-2 text-left font-semibold">Fecha</th>
+                                  <th className="px-4 py-2 text-left font-semibold">Tipo</th>
+                                  <th className="px-4 py-2 text-left font-semibold">Concepto</th>
+                                  <th className="px-4 py-2 text-right font-semibold">Saldo In.</th>
+                                  <th className="px-4 py-2 text-right font-semibold">Importe</th>
+                                  <th className="px-4 py-2 text-right font-semibold">Saldo Fn.</th>
+                                  <th className="px-4 py-2 text-center font-semibold w-12">Recibo</th>
+                                </tr>
+                              </thead>
+                              <tbody className="divide-y divide-slate-50">
+                                {visibleMovs.map(m => {
+                                  const cred = esCreditoTipo(m.MovTipo);
+                                  const cicloInfo = ciclosInfo[m.CicIdCiclo];
+                                  const isFacturado = m.CicIdCiclo && cicloInfo && cicloInfo.CicEstado !== 'ABIERTO';
+                                  return (
+                                    <tr key={m.MovIdMovimiento} className="hover:bg-slate-50/50 transition-colors">
+                                      <td className="px-5 py-2.5 text-slate-500 whitespace-nowrap">{fmtFecha(m.MovFecha)}</td>
+                                      <td className="px-4 py-2.5">
+                                        <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-slate-100 text-slate-600">
+                                          {ETIQUETA_TIPO[m.MovTipo] || m.MovTipo}
+                                        </span>
+                                      </td>
+                                      <td className="px-4 py-2.5 text-slate-600 max-w-[200px] truncate" title={m.MovConcepto}>
+                                        {m.MovConcepto}
+                                      </td>
+                                      <td className="px-4 py-2.5 text-right text-slate-500 font-medium whitespace-nowrap">
+                                        {fmtNum(Number(m.visualSaldoAntes ?? (Number(m.MovSaldoPosterior) - Number(m.MovImporte))))} {c.MonSimbolo}
+                                      </td>
+                                      <td className={`px-4 py-2.5 text-right font-semibold whitespace-nowrap ${cred ? 'text-emerald-600' : 'text-red-500'}`}>
+                                        {cred ? '+' : '-'}{fmtNum(Math.abs(Number(m.visualImporte ?? m.MovImporte)))} {c.MonSimbolo}
+                                      </td>
+                                      <td className="px-4 py-2.5 text-right text-slate-800 font-bold whitespace-nowrap">
+                                        {fmtNum(Number(m.visualSaldoDespues ?? m.MovSaldoPosterior))} {c.MonSimbolo}
+                                      </td>
+                                      <td className="px-4 py-2.5 text-center">
+                                        <MenuAccionesDoc
+                                          m={m}
+                                          cuenta={c}
+                                          cliente={cliente}
+                                          onRefresh={cargar}
+                                          onPrint={handleDescargarRecibo}
+                                          onCobrar={onRegistrarPago}
+                                          hideActionsDropdown={true}
+                                          hidePrinter={ORDEN_TYPES.includes(m.MovTipo) && (!!m.DocIdDocumento || isFacturado)}
+                                        />
+                                      </td>
+                                    </tr>
+                                  );
+                                })}
+                              </tbody>
+                            </table>
+                          );
+                        })()}
+                        {/* Seccion de ordenes pendientes de facturar dentro del modal de Estado de Cuenta */}
+                        <div className="bg-white border-t border-slate-200">
+                          <OrdenesEstadoCuenta movs={movs} simbolo={c.MonSimbolo} />
+                        </div>
                       </div>
                     )}
                   </div>
@@ -2094,10 +2518,10 @@ const ModalEstadoCuenta = ({ cliente, cuentas, onClose, globalDesde, globalHasta
                 const movs    = sec?.movs || [];
                 const abierto = expandidos[c.CueIdCuenta];
                 const plan    = planDeCuenta(c);
-                const saldoCuenta = Math.abs(Number(c.CueSaldoActual ?? 0)); // consumido acumulado
+                const restante    = Number(c.CueSaldoActual ?? 0);
                 const totalPlan   = plan ? Number(plan.PlaCantidadTotal) : null;
-                const restante    = totalPlan !== null ? totalPlan - saldoCuenta : null;
-                const pct         = totalPlan ? Math.min(100, (saldoCuenta / totalPlan) * 100) : 0;
+                const usado       = totalPlan !== null ? Math.max(0, totalPlan - restante) : 0;
+                const pct         = totalPlan ? Math.min(100, Math.max(0, (usado / totalPlan) * 100)) : 0;
                 const uni         = c.UniSimbolo || c.UnidadLabel || '';
 
                 return (
@@ -2125,12 +2549,12 @@ const ModalEstadoCuenta = ({ cliente, cuentas, onClose, globalDesde, globalHasta
                               <div className="h-1.5 bg-violet-500 rounded-full transition-all"
                                 style={{ width: `${pct}%` }} />
                             </div>
-                            <p className="text-[10px] text-slate-500 mt-0.5">{fmtNum(saldoCuenta)} / {fmtNum(totalPlan)} {uni} usados</p>
+                            <p className="text-[10px] text-slate-500 mt-0.5">{fmtNum(usado)} / {fmtNum(totalPlan)} {uni} usados</p>
                           </div>
                         ) : (
                           <div className="text-right">
                             <p className="text-[10px] text-slate-500 uppercase">Consumido</p>
-                            <p className="text-base font-black text-slate-700">{fmtNum(saldoCuenta)} {uni}</p>
+                            <p className="text-base font-black text-slate-700">{fmtNum(restante)} {uni}</p>
                           </div>
                         )}
                         <div className={`w-5 h-5 rounded flex items-center justify-center text-slate-500 transition-transform ${abierto ? 'rotate-180' : ''}`}>
@@ -2158,10 +2582,11 @@ const ModalEstadoCuenta = ({ cliente, cuentas, onClose, globalDesde, globalHasta
                             <tbody className="divide-y divide-slate-50">
                               {/* Mostrar en orden cronológico para calcular acumulado */}
                               {[...movs].reverse().reduce((acc, m) => {
-                                const consumo = Math.abs(Number(m.MovImporte));
-                                const acumUsado = Math.abs(Number(m.MovSaldoPosterior));
-                                const quedan = totalPlan !== null ? totalPlan - acumUsado : null;
-                                acc.push({ ...m, _consumo: consumo, _acum: acumUsado, _quedan: quedan });
+                                const quedan = Number(m.MovSaldoPosterior ?? 0);
+                                const acumUsado = totalPlan !== null ? Math.max(0, totalPlan - quedan) : 0;
+                                const importe = Number(m.MovImporte);
+                                const isNeg = importe < 0;
+                                acc.push({ ...m, _quedan: quedan, _acum: acumUsado, _isNeg: isNeg, _importeAbs: Math.abs(importe) });
                                 return acc;
                               }, []).reverse().map(m => (
                                 <tr key={m.MovIdMovimiento} className="hover:bg-slate-50/50 transition-colors">
@@ -2174,8 +2599,8 @@ const ModalEstadoCuenta = ({ cliente, cuentas, onClose, globalDesde, globalHasta
                                   <td className="px-4 py-2.5 text-slate-600 max-w-[180px] truncate" title={m.MovConcepto}>
                                     {m.MovConcepto}
                                   </td>
-                                  <td className="px-4 py-2.5 text-right font-semibold text-slate-700 whitespace-nowrap">
-                                    {fmtNum(m._consumo)} {uni}
+                                  <td className={`px-4 py-2.5 text-right font-semibold whitespace-nowrap ${m._isNeg ? 'text-rose-600' : 'text-emerald-600'}`}>
+                                    {m._isNeg ? '-' : '+'}{fmtNum(m._importeAbs)} {uni}
                                   </td>
                                   <td className="px-4 py-2.5 text-right text-slate-400 whitespace-nowrap">
                                     {fmtNum(m._acum)} {uni}
@@ -2321,6 +2746,7 @@ export default function ContabilidadCuentasView() {
   const [paneles, setPaneles]                 = useState({});
   const [modalPago, setModalPago]             = useState(null);
   const [tabCuentas, setTabCuentas]           = useState('SALDOS');
+  const [refreshBilletera, setRefreshBilletera] = useState(0);
 
   const [ordenesAnticipo, setOrdenesAnticipo] = useState([]);
   const [showFacturarAnticipo, setShowFacturarAnticipo] = useState(false);
@@ -2330,7 +2756,10 @@ export default function ContabilidadCuentasView() {
   const [globalFiltroTrigger, setGlobalFiltroTrigger] = useState(0);
 
   const location = useLocation();
+  const navigate = useNavigate();
   const [hasAutoSelected, setHasAutoSelected] = useState(false);
+  const [modalCancelarOrden, setModalCancelarOrden] = useState(null); // { orden }
+  const [cancelWorking, setCancelWorking] = useState(false);
 
   const cargarClientesActivos = useCallback(async (q = '', tipo = '') => {
     setLoadingLista(true);
@@ -2398,6 +2827,7 @@ export default function ContabilidadCuentasView() {
       setCuentas(data.data || []);
       setOrdenesAnticipo(anticiposRes.data || []);
       await cargarClientesActivos(busqueda);
+      setRefreshBilletera(prev => prev + 1);
     } catch (e) { toast.error(e.message); }
     finally { setLoadingCuentas(false); }
   };
@@ -2463,6 +2893,42 @@ export default function ContabilidadCuentasView() {
       toast.error('Error al generar el PDF: ' + e.message, { id: toastId });
     } finally {
       setGenerandoPdf(false);
+    }
+  };
+
+  const [exportandoExcel, setExportandoExcel] = useState(false);
+
+  const handleExportarExcel = async () => {
+    if (!clienteSel || cuentas.length === 0) return;
+    setExportandoExcel(true);
+    const toastId = toast.loading('Generando Excel del Estado de Cuenta...');
+    try {
+      const p = new URLSearchParams({ top: 300 });
+      if (globalDesde) p.append('desde', globalDesde);
+      if (globalHasta) p.append('hasta', globalHasta);
+
+      const [planesRes, ...movsRes] = await Promise.all([
+        fetchAPI(`/api/contabilidad/planes/${clienteSel.CliIdCliente}`).catch(() => ({ data: [] })),
+        ...cuentas.map(c =>
+          fetchAPI(`/api/contabilidad/cuentas/${c.CueIdCuenta}/movimientos?${p}`)
+            .then(d => ({ cue: c, movs: d.data || [], saldoArrastre: d.saldoArrastre ?? 0 }))
+            .catch(() => ({ cue: c, movs: [], saldoArrastre: 0 }))
+        ),
+      ]);
+
+      const planes = planesRes.data || [];
+      const seccionesExcel = {};
+      movsRes.forEach(({ cue, movs, saldoArrastre }) => {
+        seccionesExcel[cue.CueIdCuenta] = { cue, movs, saldoArrastre: saldoArrastre ?? 0 };
+      });
+
+      await exportarExcelEstadoCuenta(clienteSel, cuentas, seccionesExcel, planes, globalDesde, globalHasta);
+      toast.success('Excel descargado con éxito.', { id: toastId });
+    } catch (e) {
+      console.error(e);
+      toast.error('Error al generar Excel: ' + e.message, { id: toastId });
+    } finally {
+      setExportandoExcel(false);
     }
   };
 
@@ -2671,6 +3137,15 @@ export default function ContabilidadCuentasView() {
                         >
                           {generandoPdf ? <RefreshCw size={14} className="animate-spin" /> : <Printer size={14} />}
                         </button>
+                        <button
+                          type="button"
+                          onClick={handleExportarExcel}
+                          title="Exportar Estado de Cuenta a Excel"
+                          disabled={cuentas.length === 0 || exportandoExcel}
+                          className="p-2.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 rounded-lg transition-colors disabled:opacity-40 border border-emerald-200 hover:border-emerald-300 shadow-sm"
+                        >
+                          {exportandoExcel ? <RefreshCw size={14} className="animate-spin" /> : <Download size={14} />}
+                        </button>
                         <button 
                           type="button"
                           onClick={recargarCuentas} 
@@ -2685,7 +3160,7 @@ export default function ContabilidadCuentasView() {
 
                     {/* Componente de Billetera y Recursos en tiempo real */}
                     <div className="flex-1 flex items-center min-h-[60px]">
-                      <ClienteBilletera clienteId={clienteSel.CliIdCliente} clienteNombre={clienteSel.Nombre} />
+                      <ClienteBilletera key={`${clienteSel.CliIdCliente}_${refreshBilletera}`} clienteId={clienteSel.CliIdCliente} clienteNombre={clienteSel.Nombre} />
                     </div>
                   </div>
 
@@ -2728,7 +3203,21 @@ export default function ContabilidadCuentasView() {
                           </span>
                         </div>
                         <button 
-                          onClick={() => setShowFacturarAnticipo(true)}
+                          onClick={() => {
+                            // Navegar a la página completa de pre-factura
+                            navigate('/contabilidad/prefactura', {
+                              state: {
+                                ciclo: { CicIdCiclo: (cuentaActiva && Number(cuentaActiva.CueSaldoActual || 0) > 0) ? 'ANTICIPO' : 'CREDITO', CicFechaInicio: new Date().toISOString(), CicFechaCierre: new Date().toISOString() },
+                                cliente: clienteSel,
+                                cuenta: cuentaActiva || cuentas[0],
+                                movsOriginales: ordenesFiltradas.map(m => ({
+                                  ...m,
+                                  MovImporte: m.MovImporte < 0 ? m.MovImporte : -Math.abs(m.MovImporte)
+                                })),
+                                returnTo: '/contabilidad/cuentas',
+                              }
+                            });
+                          }}
                           className="flex items-center gap-1.5 text-xs px-3.5 py-2 bg-white/20 hover:bg-white/30 text-white rounded-lg transition-colors font-bold">
                           <i className="fa-solid fa-file-invoice-dollar"></i>
                           Revisar y Facturar Todas
@@ -2753,16 +3242,9 @@ export default function ContabilidadCuentasView() {
                                 {cuentaActiva?.MonSimbolo || '$'} {new Intl.NumberFormat('es-UY', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(Math.abs(orden.MovImporte))}
                               </span>
                               <button
-                                onClick={async (e) => {
+                                onClick={(e) => {
                                   e.stopPropagation();
-                                  if (!window.confirm(`¿Cancelar la orden ${orden.OrdCodigoOrden || orden.MovConcepto}? Se revertirá el saldo y no podrá facturarse.`)) return;
-                                  try {
-                                    const res = await api.post(`/contabilidad/movimientos/${orden.MovIdMovimiento}/anular-orden`);
-                                    toast.success(res.data?.message || 'Orden cancelada');
-                                    recargarCuentas();
-                                  } catch (err) {
-                                    toast.error(err.response?.data?.error || err.message || 'Error al cancelar');
-                                  }
+                                  setModalCancelarOrden({ orden });
                                 }}
                                 title="Cancelar esta orden"
                                 className="opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-1 px-2 py-1 text-[10px] font-bold text-rose-600 bg-rose-50 hover:bg-rose-100 rounded border border-rose-200">
@@ -2798,6 +3280,7 @@ export default function ContabilidadCuentasView() {
                         desde={globalDesde}
                         hasta={globalHasta}
                         trigger={globalFiltroTrigger}
+                        ordenesPendientes={ordenesFiltradas}
                       />
                     </div>
                   )}
@@ -2840,19 +3323,72 @@ export default function ContabilidadCuentasView() {
         </div>
       </div>
 
-      {showFacturarAnticipo && (
-        <CierreCicloPreviewModal 
-          ciclo={{ CicIdCiclo: (cuentaActiva && Number(cuentaActiva.CueSaldoActual || 0) > 0) ? 'ANTICIPO' : 'CREDITO', CicFechaInicio: new Date().toISOString(), CicFechaCierre: new Date().toISOString() }}
-          cliente={clienteSel}
-          cuenta={cuentaActiva || cuentas[0]}
-          movsOriginales={ordenesFiltradas.map(m => ({
-            ...m,
-            MovImporte: m.MovImporte < 0 ? m.MovImporte : -Math.abs(m.MovImporte) // Asegurar que sea negativo para que el modal lo tome como deuda
-          }))}
-          onClose={() => setShowFacturarAnticipo(false)}
-          onConfirm={handleFacturarAnticipoConfirm}
-        />
-      )}
+      {/* Pre-factura ahora es una página completa (/contabilidad/prefactura) — se abre via navigate */}
+      {/* ── Modal: Confirmar cancelación de orden ───────────────────────── */}
+      {modalCancelarOrden && (() => {
+        const ord = modalCancelarOrden.orden;
+        const codigo = ord.OrdCodigoOrden || ord.MovConcepto || `Mov#${ord.MovIdMovimiento}`;
+        const importe = Math.abs(Number(ord.MovImporte || 0));
+        return (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
+            <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm mx-4 overflow-hidden">
+              <div className="flex items-center gap-3 px-5 py-4 bg-amber-50 border-b border-amber-100">
+                <div className="w-10 h-10 rounded-full bg-amber-100 flex items-center justify-center flex-shrink-0">
+                  <AlertTriangle size={20} className="text-amber-600" />
+                </div>
+                <div>
+                  <p className="font-bold text-amber-800 text-sm">Cancelar orden</p>
+                  <p className="text-[11px] text-amber-600">Esta acción no se puede deshacer</p>
+                </div>
+              </div>
+              <div className="px-5 py-4 space-y-3">
+                <div className="bg-slate-50 rounded-xl p-3 border border-slate-100">
+                  <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-1">Orden</p>
+                  <p className="text-sm font-bold text-slate-800">{codigo}</p>
+                  {ord.OrdNombreTrabajo && <p className="text-xs text-slate-500 mt-0.5">{ord.OrdNombreTrabajo}</p>}
+                </div>
+                {importe > 0 && (
+                  <div className="bg-amber-50 rounded-xl p-3 border border-amber-100 flex items-center gap-3">
+                    <div className="text-center flex-1">
+                      <p className="text-[10px] text-amber-500 font-semibold uppercase">Importe a revertir</p>
+                      <p className="text-lg font-black text-amber-700">{cuentaActiva?.MonSimbolo || '$'} {new Intl.NumberFormat('es-UY', { minimumFractionDigits: 2 }).format(importe)}</p>
+                    </div>
+                  </div>
+                )}
+                <p className="text-[11px] text-slate-400 text-center">El saldo se revertirá y la orden no podrá facturarse.</p>
+              </div>
+              <div className="px-5 pb-5 flex gap-2">
+                <button
+                  onClick={() => setModalCancelarOrden(null)}
+                  disabled={cancelWorking}
+                  className="flex-1 px-4 py-2 text-xs font-semibold text-slate-600 bg-slate-100 hover:bg-slate-200 rounded-xl transition-colors disabled:opacity-50"
+                >Volver</button>
+                <button
+                  disabled={cancelWorking}
+                  onClick={async () => {
+                    setCancelWorking(true);
+                    try {
+                      const res = await api.post(`/contabilidad/movimientos/${ord.MovIdMovimiento}/anular-orden`);
+                      toast.success(res.data?.message || 'Orden cancelada correctamente');
+                      setModalCancelarOrden(null);
+                      recargarCuentas();
+                    } catch (err) {
+                      toast.error(err.response?.data?.error || err.message || 'Error al cancelar');
+                    } finally {
+                      setCancelWorking(false);
+                    }
+                  }}
+                  className="flex-1 px-4 py-2 text-xs font-bold text-white bg-amber-600 hover:bg-amber-700 rounded-xl transition-colors disabled:opacity-50"
+                >
+                  {cancelWorking
+                    ? <span className="flex items-center justify-center gap-1"><RefreshCw size={11} className="animate-spin" /> Cancelando...</span>
+                    : 'Sí, cancelar orden'}
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
     </>
   );
 }

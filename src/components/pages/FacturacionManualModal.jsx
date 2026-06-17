@@ -163,12 +163,35 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
             monto: String(p.PagMontoPago || p.monto || '')
           })));
         }
+
+        const docTotalReal = parseFloat(d.DocTotal) || 0;
+        let sumLineas = 0;
+        lineas.forEach(l => { sumLineas += parseFloat(l.DcdTotal) || 0; });
+        
+        let factorConversion = 1;
+        if (d.MonIdMoneda === 1 && docTotalReal > 0 && sumLineas > 0) {
+            const ratio = docTotalReal / sumLineas;
+            // Si el ratio entre el total del documento (UYU) y la suma de las líneas (USD) es como el tipo de cambio
+            if (ratio > 30 && ratio < 55) {
+                factorConversion = ratio;
+            }
+        }
+
         const lineasMapeadas = lineas.map((l, idx) => {
+          let sub = parseFloat(l.DcdSubtotal) || 0;
+          let imp = parseFloat(l.DcdImpuestos) || 0;
+          let total = parseFloat(l.DcdTotal) || (sub + imp);
+          let rawUnitPrice = parseFloat(l.DcdPrecioUnitario) || 0;
+
+          if (factorConversion !== 1) {
+             sub = sub * factorConversion;
+             imp = imp * factorConversion;
+             total = total * factorConversion;
+             rawUnitPrice = rawUnitPrice * factorConversion;
+          }
+
           const qty = parseFloat(l.DcdCantidad) || 1;
-          const sub = parseFloat(l.DcdSubtotal) || 0;   // neto sin IVA (si está bien guardado)
-          const imp = parseFloat(l.DcdImpuestos) || 0;  // IVA
-          const total = parseFloat(l.DcdTotal) || (sub + imp);
-          const unitPrice = qty > 0 ? (total / qty) : (parseFloat(l.DcdPrecioUnitario) || 0);
+          const unitPrice = qty > 0 ? (total / qty) : rawUnitPrice;
           let ivaRate = 22; // default
           if (imp > 0 && sub > 0) {
             // Caso normal: IVA y neto correctamente guardados

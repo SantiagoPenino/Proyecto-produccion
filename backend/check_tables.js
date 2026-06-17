@@ -1,0 +1,1 @@
+const { getPool } = require('./config/db'); getPool().then(async pool => { try { const result = await pool.request().query(` SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME LIKE '%Doc%' OR TABLE_NAME LIKE '%Factura%' `); console.table(result.recordset); } catch(e) { console.error('SQL Error', e); } process.exit(); });

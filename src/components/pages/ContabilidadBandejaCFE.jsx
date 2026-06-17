@@ -154,7 +154,7 @@ const ContabilidadBandejaCFE = () => {
     // Filtros
     const [clientes, setClientes] = useState([]);
     const [filtros, setFiltros] = useState({
-        fechaDesde: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
+        fechaDesde: new Date().toISOString().split('T')[0],
         fechaHasta: new Date().toISOString().split('T')[0],
         estado: '',
         tipo: '',

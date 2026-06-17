@@ -650,9 +650,8 @@ export const generarPdfEstadoCuenta = (cliente, cuentas, secciones, planes, desd
         const ordenesPendientes = rawMovs.filter(m => 
           (m.MovTipo === 'ORDEN' || m.MovTipo === 'ORDEN_ANTICIPO') && 
           !m.MovAnulado && 
-          Number(m.MovImporte) < 0 &&
           !m.DocIdDocumento &&
-          (!m.CicIdCiclo || (planes.find(p => p.CicIdCiclo === m.CicIdCiclo)?.CicEstado === 'ABIERTO'))
+          !(m.MovObservaciones && m.MovObservaciones.startsWith('CUBIERTO'))
         );
 
         if (movs.length === 0) {

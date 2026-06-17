@@ -1,0 +1,1 @@
+const { getPool } = require('./config/db'); getPool().then(async pool => { try { const result = await pool.request().query("SELECT TOP 1 * FROM PedidosCobranzaDetalle"); console.log(Object.keys(result.recordset[0])); } catch(e) { console.error('SQL Error', e); } process.exit(); });
