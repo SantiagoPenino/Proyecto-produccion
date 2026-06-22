@@ -247,7 +247,7 @@ const printEtiquetas = async (req, res) => {
 
         // Fetch all routing services for the selected orders based on NoDocERP
         const routingResult = await request.query(`
-            SELECT o2.OrdenID as BaseOrdenID, o.AreaID as AreaDestino, o.Estado
+            SELECT o2.OrdenID as BaseOrdenID, o.AreaID as AreaDestino, o.Estado, o.EstadoenArea
             FROM Ordenes o
             JOIN Ordenes o2 ON o.NoDocERP = o2.NoDocERP AND o2.NoDocERP IS NOT NULL
             WHERE o2.OrdenID IN (${idsStr})
@@ -436,8 +436,12 @@ const printEtiquetas = async (req, res) => {
                                     const srvs = serviciosPorOrden[label.OrdenID] || [];
                                     let listHtml = '';
                                     srvs.forEach(srv => {
-                                        // Solo marcar si el estado es PRONTO
-                                        const isCompleted = (srv.Estado || '').toUpperCase() === 'PRONTO';
+                                        const estadoArea = (srv.EstadoenArea || '').toUpperCase().trim();
+                                        const estadoGen  = (srv.Estado     || '').toUpperCase().trim();
+                                        const isCompleted = 
+                                            estadoArea === 'PRONTO' ||
+                                            estadoArea === 'EN TRANSITO' ||
+                                            estadoGen  === 'FINALIZADO';
                                         const checkMark = isCompleted ? '✔' : '';
                                         const colorStyle = isCompleted ? 'color: #000;' : 'color: #666;';
                                         

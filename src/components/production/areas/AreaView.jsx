@@ -120,6 +120,7 @@ export default function AreaView({ areaKey, areaConfig, onSwitchTab }) {
     const [activeFilters, setActiveFilters] = useState({
         priorities: [],
         statuses: [],
+        areaStatuses: [],
         variants: []
     });
     const [isFilterDropdownOpen, setIsFilterDropdownOpen] = useState(false);
@@ -154,10 +155,10 @@ export default function AreaView({ areaKey, areaConfig, onSwitchTab }) {
     };
 
     const clearFilters = () => {
-        setActiveFilters({ priorities: [], statuses: [], variants: [] });
+        setActiveFilters({ priorities: [], statuses: [], areaStatuses: [], variants: [] });
     };
 
-    const activeFilterCount = (activeFilters.priorities?.length || 0) + (activeFilters.statuses?.length || 0) + (activeFilters.variants?.length || 0);
+    const activeFilterCount = (activeFilters.priorities?.length || 0) + (activeFilters.statuses?.length || 0) + (activeFilters.areaStatuses?.length || 0) + (activeFilters.variants?.length || 0);
 
     const [isNewOrderOpen, setIsNewOrderOpen] = useState(false);
     const [isStockOpen, setIsStockOpen] = useState(false);
@@ -352,10 +353,26 @@ export default function AreaView({ areaKey, areaConfig, onSwitchTab }) {
         })];
     }, [dbOrders]);
 
+    const availableAreaStatuses = useMemo(() => {
+        const orderPreference = ['Pendiente', 'En Lote', 'Produccion', 'Imprimiendo', 'En Transito', 'Control y Calidad', 'Pronto', 'Finalizado', 'Cancelado'];
+        const unique = new Set(dbOrders
+            .map(o => (o.areaStatus || '').trim())
+            .filter(v => v && v !== '')
+        );
+        return [...Array.from(unique).sort((a, b) => {
+            const idxA = orderPreference.findIndex(p => p.toLowerCase() === a.toLowerCase());
+            const idxB = orderPreference.findIndex(p => p.toLowerCase() === b.toLowerCase());
+            if (idxA !== -1 && idxB !== -1) return idxA - idxB;
+            if (idxA !== -1) return -1;
+            if (idxB !== -1) return 1;
+            return a.localeCompare(b);
+        })];
+    }, [dbOrders]);
+
     const availableStatuses = useMemo(() => {
         const orderPreference = ['Pendiente', 'Produccion', 'En Lote', 'Imprimiendo', 'Control y Calidad', 'Pronto', 'Entregado', 'Finalizado', 'Cancelado'];
         const unique = new Set(dbOrders.map(o => {
-            const raw = o.status || 'Pendiente';
+            const raw = o.areaStatus || o.status || 'Pendiente';
             const preferred = orderPreference.find(p => p.toLowerCase() === raw.toLowerCase());
             return preferred || (raw.charAt(0).toUpperCase() + raw.slice(1).toLowerCase());
         }));
@@ -442,7 +459,10 @@ export default function AreaView({ areaKey, areaConfig, onSwitchTab }) {
             }
         }
         if (activeFilters.statuses && activeFilters.statuses.length > 0) {
-            result = result.filter(o => activeFilters.statuses.some(s => s.toLowerCase() === (o.status || 'Pendiente').toLowerCase()));
+            result = result.filter(o => activeFilters.statuses.some(s => s.toLowerCase() === (o.areaStatus || o.status || 'Pendiente').toLowerCase()));
+        }
+        if (activeFilters.areaStatuses && activeFilters.areaStatuses.length > 0) {
+            result = result.filter(o => activeFilters.areaStatuses.some(s => s.toLowerCase() === (o.areaStatus || '').toLowerCase()));
         }
         if (activeFilters.priorities && activeFilters.priorities.length > 0) {
             result = result.filter(o => activeFilters.priorities.some(p => p.toLowerCase() === (o.priority || 'Normal').toLowerCase()));
@@ -541,26 +561,29 @@ export default function AreaView({ areaKey, areaConfig, onSwitchTab }) {
                                     })}
                                 </div>
                             </div>
-                            {/* Estado */}
-                            <div>
-                                <span className="text-[10px] uppercase font-black text-zinc-400 tracking-wider mb-2 block">Estado</span>
-                                <div className="flex flex-wrap gap-2">
-                                    {availableStatuses.filter(s => s !== 'ALL').map(s => {
-                                        const isSelected = activeFilters.statuses.includes(s);
-                                        return (
-                                            <button
-                                                key={s}
-                                                onClick={() => toggleFilter('statuses', s)}
-                                                className={`px-3 py-1.5 text-xs font-bold border rounded-lg transition-colors capitalize shadow-sm ${
-                                                    isSelected ? 'bg-brand-cyan text-white border-brand-cyan' : 'bg-white text-zinc-600 border-zinc-200 hover:bg-zinc-50 hover:border-zinc-300'
-                                                }`}
-                                            >
-                                                {s}
-                                            </button>
-                                        );
-                                    })}
+
+                            {/* Estado en Área */}
+                            {availableAreaStatuses.length > 0 && (
+                                <div>
+                                    <span className="text-[10px] uppercase font-black text-zinc-400 tracking-wider mb-2 block">Estado en Área</span>
+                                    <div className="flex flex-wrap gap-2">
+                                        {availableAreaStatuses.map(s => {
+                                            const isSelected = activeFilters.areaStatuses.includes(s);
+                                            return (
+                                                <button
+                                                    key={s}
+                                                    onClick={() => toggleFilter('areaStatuses', s)}
+                                                    className={`px-3 py-1.5 text-xs font-bold border rounded-lg transition-colors capitalize shadow-sm ${
+                                                        isSelected ? 'bg-brand-cyan text-white border-brand-cyan' : 'bg-white text-zinc-600 border-zinc-200 hover:bg-zinc-50 hover:border-zinc-300'
+                                                    }`}
+                                                >
+                                                    {s}
+                                                </button>
+                                            );
+                                        })}
+                                    </div>
                                 </div>
-                            </div>
+                            )}
                             {/* Variante o Material según área */}
                             {isDTF ? (
                                 availableMaterials.length > 0 && (
@@ -619,7 +642,7 @@ export default function AreaView({ areaKey, areaConfig, onSwitchTab }) {
                                     }`}
                                 >
                                     <i className="fa-solid fa-check-circle"></i>
-                                    {showPronto ? 'Ocultar órdenes prontas' : 'Ver órdenes prontas'}
+                                    {showPronto ? 'Ocultar órdenes finalizadas' : 'Ver órdenes finalizadas'}
                                 </button>
                                 <button
                                     onClick={handleToggleCancelled}

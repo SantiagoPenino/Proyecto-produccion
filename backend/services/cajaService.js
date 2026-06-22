@@ -422,7 +422,7 @@ async function procesarVentaDirecta(payload) {
     // --- NUEVO: Registrar también en DeudaDocumento para Visibilidad de Deuda Viva ---
     // Consultar el Motor Contable para ver si el evento configurado genera deuda
     const evtConfig = await motorContable.getEvento(header.tipoDocumento || 'VTA_CAJA');
-    const generaDeuda = evtConfig ? !!evtConfig.EvtGeneraDeuda : true;
+    const generaDeuda = !!header.esCredito || (evtConfig ? !!evtConfig.EvtGeneraDeuda : true);
     const afectaSaldo = evtConfig ? (evtConfig.EvtAfectaSaldo || 0) : -1;
 
     // Registrar DeudaDocumento centralizado
@@ -1363,7 +1363,9 @@ async function procesarTransaccion(payload) {
 
              // ── DeudaDocumento: consultamos al Motor Contable ────
              const evtConfig = await motorContable.getEvento(header.tipoDocumento || 'F_ORDEN');
-             const generaDeuda = evtConfig ? !!evtConfig.EvtGeneraDeuda : !!config.AfectaCtaCte;
+             // header.esCredito = true cuando el operador eligió modo Crédito explícitamente
+             // (ej. PEDIDO CAJA CRÉDITO), aunque el tipo de documento no tenga AfectaCtaCte.
+             const generaDeuda = !!header.esCredito || (evtConfig ? !!evtConfig.EvtGeneraDeuda : !!config.AfectaCtaCte);
 
              let totalCobradoMoneda = isOrdenUSD ? (totalCobrado / cotizRef) : totalCobrado;
              let importePendienteMoneda = parseFloat((totalNeto - totalCobradoMoneda).toFixed(2));

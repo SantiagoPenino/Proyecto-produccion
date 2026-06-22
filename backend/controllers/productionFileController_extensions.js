@@ -17,7 +17,7 @@ const getCompletedOrdersForReplacement = async (req, res) => {
                 OrdenID, CodigoOrden, Cliente, FechaIngreso, FechaEstimadaEntrega, 
                 Estado, Material, DescripcionTrabajo, NoDocERP
             FROM Ordenes WITH (NOLOCK)
-            WHERE Estado IN ('ENTREGADO', 'FINALIZADO', 'DESPACHADO', 'PRONTO')
+            WHERE (Estado IN ('ENTREGADO', 'FINALIZADO', 'DESPACHADO') OR ISNULL(EstadoenArea,'') IN ('Pronto', 'PRONTO'))
             AND (
                 CodigoOrden LIKE @Search 
                 OR Cliente LIKE @Search 

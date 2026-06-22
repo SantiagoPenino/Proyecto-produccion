@@ -15,10 +15,28 @@ const OrderCard = ({ order, onViewDetails, isSelected, onToggleSelect, minimal =
     };
 
     if (minimal) {
+        // Determinar si la orden ya está en un estado final (no necesita más acciones aquí)
+        const sUp = (order.status || '').toUpperCase().trim();
+        const saUp = (order.statusArea || '').toUpperCase().trim();
+        const isAlreadyDone =
+            saUp === 'PRONTO' ||
+            saUp === 'EN TRANSITO' ||
+            sUp === 'FINALIZADO';
+
         // Status Icon Logic
         const getStatusIcon = () => {
-            const s = (order.status || '').toUpperCase().trim();
-            const sa = (order.statusArea || '').toUpperCase().trim();
+            // Si ya está pronta/en transito/finalizada → mostrar badge de estado, NO checkmark
+            if (isAlreadyDone) {
+                const label = saUp === 'EN TRANSITO' ? 'EN TRÁNSITO' : saUp === 'PRONTO' ? 'PRONTO' : 'FINALIZADO';
+                const colorClass = saUp === 'EN TRANSITO'
+                    ? 'bg-blue-100 text-blue-600 border-blue-200'
+                    : 'bg-emerald-100 text-emerald-600 border-emerald-200';
+                return (
+                    <span className={`text-[9px] font-black px-1.5 py-0.5 rounded border ${colorClass} whitespace-nowrap`}>
+                        {label}
+                    </span>
+                );
+            }
 
             // Todos los archivos controlados → check (listo para finalizar)
             if (order.controlled) {
@@ -26,13 +44,13 @@ const OrderCard = ({ order, onViewDetails, isSelected, onToggleSelect, minimal =
                     return <span className="inline-flex rounded-full bg-red-500 p-[3px]"><CircleX size={14} className="text-white" strokeWidth={2.5} /></span>;
                 return <span className="inline-flex rounded-full bg-emerald-500 p-[3px]"><CircleCheck size={14} className="text-white" strokeWidth={2.5} /></span>;
             }
-            if (s === 'FINALIZADO' || s === 'PRONTO SECTOR' || s === 'COMPLETO')
+            if (sUp === 'FINALIZADO' || sUp === 'PRONTO SECTOR' || sUp === 'COMPLETO')
                 return <CircleCheck size={18} className="text-brand-cyan" />;
-            if (sa.includes('CONTROL') || sa.includes('CALIDAD') || s.includes('CONTROL') || s.includes('CALIDAD'))
+            if (saUp.includes('CONTROL') || saUp.includes('CALIDAD') || sUp.includes('CONTROL') || sUp.includes('CALIDAD'))
                 return <ScanSearch size={18} className="text-brand-cyan" />;
-            if (s === 'EN PROCESO' || s.includes('IMPRIMIENDO') || s === 'PRODUCCION')
+            if (sUp === 'EN PROCESO' || sUp.includes('IMPRIMIENDO') || sUp === 'PRODUCCION')
                 return <Clock size={18} className="text-brand-cyan animate-pulse" />;
-            if (s === 'FALLA')
+            if (sUp === 'FALLA')
                 return <span className="inline-flex rounded-full bg-red-500 p-[3px]"><AlertTriangle size={14} className="text-white" strokeWidth={2.5} /></span>;
 
             return <Circle size={18} className="text-brand-cyan opacity-30" />;
@@ -62,13 +80,20 @@ const OrderCard = ({ order, onViewDetails, isSelected, onToggleSelect, minimal =
 
                         {/* Indicators Row */}
                         <div className="flex gap-1 items-center">
-                            {order.hasLabels > 0 && <i className="fa-solid fa-print text-[10px] text-brand-cyan" title="Etiquetas Generadas"></i>}
+                            {/* Impresorita: siempre visible si tiene etiquetas, con contador de bultos */}
+                            {order.hasLabels > 0 && (
+                                <span className="inline-flex items-center gap-0.5">
+                                    <i className="fa-solid fa-print text-[10px] text-brand-cyan" title={`${order.hasLabels} bulto(s) generado(s)`}></i>
+                                    <span className="text-[9px] font-black text-brand-cyan leading-none">{order.hasLabels}</span>
+                                </span>
+                            )}
                             {order.failures > 0 && <i className="fa-solid fa-triangle-exclamation text-[10px] text-red-500" title="Reporte de Fallas"></i>}
                             {/* Urgent Priority */}
                             {order.priority === 'Urgente' && <i className="fa-solid fa-fire text-[10px] text-amber-500" title="Urgente"></i>}
                             {/* Next Service Indicator */}
-                            {order.nextService && <i className="fa-solid fa-arrow-right-to-bracket text-[10px] text-brand-cyan" title={`Siguiente: ${order.nextService}`}></i>}
+                            {order.nextService && !isAlreadyDone && <i className="fa-solid fa-arrow-right-to-bracket text-[10px] text-brand-cyan" title={`Siguiente: ${order.nextService}`}></i>}
                         </div>
+
                     </div>
                     <div className="flex flex-col min-w-0">
                         <span className="text-[10px] font-black text-zinc-700 uppercase leading-tight block break-words" title={order.client}>

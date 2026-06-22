@@ -130,8 +130,8 @@ export default function ProductionTable({ rowData = [], onRowSelected, selectedR
             const unitDisplay = unit || (String(mag).replace(/[\d. ]/g, '') || '');
             return `${display}${unitDisplay ? ' ' + unitDisplay : ''}`;
         }},
-        { field: 'status', headerName: 'Estado', width: 100, cellRenderer: StatusRenderer },
-        { field: 'areaStatus', headerName: 'Estado Área', width: 120 },
+        { field: 'status', headerName: 'Estado General', width: 130, cellRenderer: StatusRenderer },
+        { field: 'areaStatus', headerName: 'Estado en Área', width: 130 },
         { field: 'filesCount', headerName: 'Archivos', width: 80, cellRenderer: FilesRenderer },
         { field: 'rollId', headerName: 'Lote', width: 100, cellRenderer: BatchRenderer },
         { field: 'printer', headerName: 'Máquina', width: 120 },

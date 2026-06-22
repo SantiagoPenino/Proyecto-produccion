@@ -32,12 +32,24 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
 
     useEffect(() => {
         if (currentOrder) {
+            let initialGeneralStatus = currentOrder.status || 'Pendiente';
+            
+            if (currentOrder.areaStatus && configEstados?.length > 0) {
+                 const selectedAreaState = configEstados.find(s => s.Nombre === currentOrder.areaStatus);
+                 if (selectedAreaState && selectedAreaState.EstadoPadreID) {
+                      const parentState = configEstados.find(s => s.EstadoID == selectedAreaState.EstadoPadreID);
+                      if (parentState) {
+                           initialGeneralStatus = parentState.Nombre;
+                      }
+                 }
+            }
+
             setDraftStates({
-                status: currentOrder.status || 'Pendiente',
+                status: initialGeneralStatus,
                 areaStatus: currentOrder.areaStatus || ''
             });
         }
-    }, [currentOrder]);
+    }, [currentOrder, configEstados]);
 
     // Estado de Edición
     const [editingFileId, setEditingFileId] = useState(null);
@@ -264,56 +276,19 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
         printLabelsHelper(labels, currentOrder);
     };
 
-    const handleRegenerate = async () => {
-        let defaultQty = 1;
-        const magClean = (currentOrder.magnitude || '').toString().toLowerCase();
-        const magVal = parseFloat(magClean.replace(/[^\d.]/g, '')) || 0;
-        if (magVal > 0) defaultQty = Math.max(1, Math.ceil(magVal / 50));
-
-        const { value: qtyS } = await Swal.fire({
-            title: 'Regenerar Etiquetas',
-            html: `¿Cuántas etiquetas (bultos) desea generar?<br><span class="text-sm text-gray-500">(Sug: <b>${defaultQty}</b> para ${currentOrder.magnitude || '0'})</span><br><br><span class="text-red-500 font-bold">IMPORTANTE: Esto BORRARÁ las etiquetas existentes.</span>`,
-            input: 'number',
-            inputValue: defaultQty,
-            showCancelButton: true,
-            confirmButtonText: '<i class="fa-solid fa-rotate"></i> Generar',
-            cancelButtonText: 'Cancelar',
-            confirmButtonColor: '#4f46e5',
-            inputAttributes: {
-                min: 1,
-                step: 1
-            },
-            inputValidator: (value) => {
-                if (!value || parseInt(value) < 1) {
-                    return 'Debes ingresar un número válido mayor a 0';
-                }
-            },
-            customClass: { container: '!z-[99999]' },
-        });
-
-        if (!qtyS) return;
-
-        const qty = parseInt(qtyS);
-
+    const handleRecalcular = async () => {
         toast.promise(
             (async () => {
-                await fileControlService.regenerateLabels(currentOrder.id, qty);
+                const result = await fileControlService.recalcularContadores(currentOrder.id);
+                if (!result.success) throw new Error(result.error);
                 const data = await fileControlService.getEtiquetas(currentOrder.id);
                 setLabels(data);
-                return data;
+                return result.totalBultos;
             })(),
             {
-                loading: 'Regenerando etiquetas...',
-                success: (data) => {
-                    toast("Etiquetas generadas.", {
-                        action: {
-                            label: 'Imprimir',
-                            onClick: () => printLabelsHelper(data, currentOrder)
-                        }
-                    });
-                    return 'Etiquetas listas';
-                },
-                error: (e) => `Error: ${e.response?.data?.error || e.response?.data?.message || e.message}`
+                loading: 'Recalculando contadores...',
+                success: (total) => `Contadores actualizados: ${total} bulto(s). Los números de etiqueta no cambiaron.`,
+                error: (e) => `Error: ${e.message}`
             }
         );
     };
@@ -847,8 +822,7 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
                             ])].sort((a, b) => a.localeCompare(b));
 
                             const allAreaNames = [...new Set([
-                                ...filteredArea.map(s => s.Nombre),
-                                ...(currentAreaStatus ? [currentAreaStatus] : [])
+                                ...filteredArea.map(s => s.Nombre)
                             ])].sort((a, b) => a.localeCompare(b));
 
                             return (
@@ -857,63 +831,28 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
                                         <label className="text-[10px] uppercase font-bold text-zinc-500 block mb-1"><i className="fa-solid fa-flag text-brand-cyan mr-1"></i> Estado General</label>
                                         <div className="flex gap-2 mb-4">
                                             <div className="relative flex-1">
-                                                <Listbox value={draftStates.status} onChange={(val) => setDraftStates({ ...draftStates, status: val })}>
-                                                    <div className="relative">
-                                                        <Listbox.Button className="relative w-full text-sm font-bold text-zinc-700 border border-zinc-300 rounded px-3 py-1.5 text-left outline-none bg-white shadow-sm hover:border-brand-cyan focus:border-brand-cyan transition-all cursor-pointer">
-                                                            <span className="block truncate">{draftStates.status || '-- Seleccionar Estado --'}</span>
-                                                            <span className="pointer-events-none absolute inset-y-0 right-0 flex items-center pr-2 text-zinc-400">
-                                                                <ChevronDown size={14} />
-                                                            </span>
-                                                        </Listbox.Button>
-                                                        <Transition
-                                                            as={Fragment}
-                                                            leave="transition ease-in duration-100"
-                                                            leaveFrom="opacity-100"
-                                                            leaveTo="opacity-0"
-                                                        >
-                                                            <Listbox.Options className="absolute mt-1 w-full rounded-xl bg-white py-1 text-sm shadow-xl border border-zinc-100 focus:outline-none z-[9999]">
-                                                                {allGeneralNames.map(name => (
-                                                                    <Listbox.Option
-                                                                        key={`gen_${name}`}
-                                                                        className={({ active }) =>
-                                                                            `relative cursor-pointer select-none py-2 pl-9 pr-4 ${
-                                                                                active ? 'bg-brand-cyan/10 text-brand-cyan' : 'text-zinc-700'
-                                                                            }`
-                                                                        }
-                                                                        value={name}
-                                                                    >
-                                                                        {({ selected }) => (
-                                                                            <>
-                                                                                <span className={`block truncate ${selected ? 'font-bold' : 'font-medium'}`}>{name}</span>
-                                                                                {selected && (
-                                                                                    <span className="absolute inset-y-0 left-0 flex items-center pl-2.5 text-brand-cyan">
-                                                                                        <Check size={14} strokeWidth={3} />
-                                                                                    </span>
-                                                                                )}
-                                                                            </>
-                                                                        )}
-                                                                    </Listbox.Option>
-                                                                ))}
-                                                            </Listbox.Options>
-                                                        </Transition>
-                                                    </div>
-                                                </Listbox>
+                                                <div className="w-full text-sm font-bold text-zinc-500 border border-zinc-200 bg-zinc-100 rounded px-3 py-1.5 text-left cursor-not-allowed flex items-center justify-between">
+                                                    <span className="block truncate">{draftStates.status || '-- Seleccionar Estado --'}</span>
+                                                    <span className="text-zinc-400"><i className="fa-solid fa-lock text-[10px]"></i></span>
+                                                </div>
                                             </div>
-                                            <button 
-                                                onClick={() => handleUpdateOrderStatus(draftStates.status)}
-                                                disabled={draftStates.status === currentOrder.status}
-                                                className={`px-3 py-1.5 rounded border transition-colors flex items-center justify-center shrink-0 ${draftStates.status !== currentOrder.status ? 'bg-brand-cyan/10 text-brand-cyan border-brand-cyan/30 hover:bg-brand-cyan/20' : 'bg-zinc-100 text-zinc-400 border-zinc-200 cursor-not-allowed'}`}
-                                                title="Actualizar Estado General"
-                                            >
-                                                <i className="fa-solid fa-save"></i>
-                                            </button>
                                         </div>
                                     </div>
                                     <div className="lg:col-span-2">
                                         <label className="text-[10px] uppercase font-bold text-zinc-500 block mb-1"><i className="fa-solid fa-layer-group text-brand-cyan mr-1"></i> Estado en su Área</label>
                                         <div className="flex gap-2">
                                             <div className="relative flex-1">
-                                                <Listbox value={draftStates.areaStatus} onChange={(val) => setDraftStates({ ...draftStates, areaStatus: val })}>
+                                                <Listbox value={draftStates.areaStatus} onChange={(val) => {
+                                                    let newGeneralStatus = draftStates.status;
+                                                    const selectedAreaState = filteredArea.find(s => s.Nombre === val);
+                                                    if (selectedAreaState && selectedAreaState.EstadoPadreID) {
+                                                        const parentState = configEstados.find(s => s.EstadoID == selectedAreaState.EstadoPadreID);
+                                                        if (parentState) {
+                                                            newGeneralStatus = parentState.Nombre;
+                                                        }
+                                                    }
+                                                    setDraftStates({ ...draftStates, areaStatus: val, status: newGeneralStatus });
+                                                }}>
                                                     <div className="relative">
                                                         <Listbox.Button className="relative w-full text-sm font-bold text-zinc-700 border border-zinc-300 rounded px-3 py-1.5 text-left outline-none bg-white shadow-sm hover:border-brand-cyan focus:border-brand-cyan transition-all cursor-pointer">
                                                             <span className="block truncate">{draftStates.areaStatus || '-- Seleccionar Estado --'}</span>
@@ -1186,7 +1125,9 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
                                             {!readOnly && (
                                                 <>
                                                     <button onClick={handleAddLabel} className="px-3 py-1.5 bg-white text-brand-cyan border border-brand-cyan/30 rounded text-xs font-bold hover:bg-brand-cyan/10 transition shadow-sm"><i className="fa-solid fa-plus mr-1"></i> Extra</button>
-                                                    <button onClick={handleRegenerate} className="px-3 py-1.5 bg-white text-amber-600 border border-brand-cyan/20 rounded text-xs font-bold hover:bg-amber-50 transition shadow-sm" title="Regenerar todo"><i className="fa-solid fa-arrows-rotate mr-1"></i> Regenerar</button>
+                                                    <button onClick={handleRecalcular} className="px-3 py-1.5 bg-white text-amber-600 border border-amber-200 rounded text-xs font-bold hover:bg-amber-50 transition shadow-sm" title="Recalcular contadores (mantiene números de etiqueta)">
+                                                        <i className="fa-solid fa-arrow-rotate-left mr-1"></i> Recalcular
+                                                    </button>
                                                 </>
                                             )}
                                             <button onClick={handlePrintLabels} className="px-3 py-1.5 bg-brand-cyan text-white rounded text-xs font-bold hover:bg-brand-cyan/80 transition shadow-sm"><i className="fa-solid fa-print mr-1"></i> Imprimir</button>

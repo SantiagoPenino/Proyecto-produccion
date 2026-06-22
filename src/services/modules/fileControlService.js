@@ -87,6 +87,11 @@ export const fileControlService = {
         return response.data;
     },
 
+    recalcularContadores: async (ordenId) => {
+        const response = await api.post(`/production-file-control/recalc-labels/${ordenId}`);
+        return response.data;
+    },
+
     createExtraLabel: async (ordenId) => {
         const response = await api.post(`/production-file-control/orden/${ordenId}/etiqueta-extra`, { ordenId });
         return response.data;

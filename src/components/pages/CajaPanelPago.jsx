@@ -68,6 +68,7 @@ export default function CajaPanelPago({
   lockMoneda = null,   // Si viene 'UYU' o 'USD', oculta el selector de moneda por línea
   layout = 'vertical',
   showSubmitButton = true,
+  onCondicionChange,   // callback(condicion: 'CONTADO'|'CREDITO') cuando el usuario cambia el toggle
 }) {
   const esEgreso = mode === 'EGRESO';
   const tiposDoc = tiposDocDisponibles.length > 0
@@ -76,11 +77,13 @@ export default function CajaPanelPago({
   const [efectivoRecibido, setEfectivoRecibido] = useState('');
   const [chequeIndexActivo, setChequeIndexActivo] = useState(null);
   const [numDocPredict, setNumDocPredict] = useState('...');
+  // Estado interno para rastrear CRÉDITO en PEDIDO CAJA (tipoDoc '40' no tiene variante crédito)
+  const [pcCredito, setPcCredito] = useState(false);
 
   // Mapeo bidireccional entre tipoDoc y los botones interactivos
   const { derivedTipoCliente, derivedCondicion } = useMemo(() => {
     if (tipoDoc === '40') {
-      return { derivedTipoCliente: 'PEDIDO_CAJA', derivedCondicion: 'CONTADO' };
+      return { derivedTipoCliente: 'PEDIDO_CAJA', derivedCondicion: pcCredito ? 'CREDITO' : 'CONTADO' };
     }
     if (tipoDoc === '07') {
       return { derivedTipoCliente: 'ETICKET', derivedCondicion: 'CONTADO' };
@@ -96,15 +99,17 @@ export default function CajaPanelPago({
     }
     // Fallback general por defecto
     return { derivedTipoCliente: 'PEDIDO_CAJA', derivedCondicion: 'CONTADO' };
-  }, [tipoDoc]);
+  }, [tipoDoc, pcCredito]);
 
   const handleSelectVoucherType = (type) => {
     let targetDoc = '40';
     if (type === 'PEDIDO_CAJA') {
       targetDoc = '40';
     } else if (type === 'ETICKET') {
+      setPcCredito(false);
       targetDoc = derivedCondicion === 'CONTADO' ? '07' : '08';
     } else if (type === 'CON_RUT') {
+      setPcCredito(false);
       targetDoc = derivedCondicion === 'CONTADO' ? '01' : '02';
     }
     if (onTipoDoc) {
@@ -116,6 +121,7 @@ export default function CajaPanelPago({
     let targetDoc = tipoDoc;
     if (derivedTipoCliente === 'PEDIDO_CAJA') {
       targetDoc = '40';
+      setPcCredito(cond === 'CREDITO');
     } else if (derivedTipoCliente === 'ETICKET') {
       targetDoc = cond === 'CONTADO' ? '07' : '08';
     } else if (derivedTipoCliente === 'CON_RUT') {
@@ -124,7 +130,10 @@ export default function CajaPanelPago({
     if (onTipoDoc) {
       onTipoDoc(targetDoc);
     }
-    
+    if (onCondicionChange) {
+      onCondicionChange(cond);
+    }
+
     // Si cambia a CRÉDITO, limpia los pagos. Si cambia a CONTADO, inicializa el pago por defecto
     if (cond === 'CREDITO') {
       if (onPagosChange) {
@@ -462,7 +471,6 @@ export default function CajaPanelPago({
                 </button>
                 <button
                   type="button"
-                  disabled={derivedTipoCliente === 'PEDIDO_CAJA'}
                   onClick={() => handleSelectCondicion('CREDITO')}
                   className={`flex-1 py-3 rounded-xl text-xs font-black uppercase tracking-wider transition-all ${
                     derivedCondicion === 'CREDITO'
@@ -1118,12 +1126,11 @@ export default function CajaPanelPago({
               </button>
               <button
                 type="button"
-                disabled={derivedTipoCliente === 'PEDIDO_CAJA'}
                 onClick={() => handleSelectCondicion('CREDITO')}
                 className={`flex-1 py-2.5 rounded-xl text-xs font-black uppercase tracking-wider transition-all border ${
                   derivedCondicion === 'CREDITO'
                     ? 'bg-amber-500 text-white shadow-md border-amber-600'
-                    : 'border-transparent text-zinc-500 hover:text-zinc-700 hover:bg-zinc-200/50 disabled:opacity-40 disabled:cursor-not-allowed'
+                    : 'border-transparent text-zinc-500 hover:text-zinc-700 hover:bg-zinc-200/50'
                 }`}
               >
                 Crédito

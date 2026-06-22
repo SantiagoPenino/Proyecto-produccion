@@ -607,7 +607,7 @@ const SysAdminPage = () => {
                             <option value="SELECT TOP 50 * FROM OrdenesDeposito ORDER BY OrdFechaIngreso DESC">Últimas 50 Órdenes</option>
                             <option value="SELECT TOP 50 * FROM Pagos ORDER BY PagFechaPago DESC">Últimos Pagos</option>
                             <option value="SELECT UsuTipoUsuario, COUNT(*) as Total FROM Usuarios GROUP BY UsuTipoUsuario">Tipos de Usuarios</option>
-                            <option value="SELECT * FROM OrdenesDeposito WHERE OrdEstado = 'Ingresada' AND OrdFechaIngreso < DATEADD(day, -3, GETDATE())">Órdenes trancadas (>3 días)</option>
+                            <option value="SELECT * FROM Ordenes WHERE Estado = 'PENDIENTE' AND FechaIngreso < DATEADD(day, -3, GETDATE())">Órdenes trancadas (&gt;3 días)</option>
                         </select>
                     </div>
                     <div className="flex items-center gap-2">

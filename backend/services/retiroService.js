@@ -358,6 +358,32 @@ async function marcarEntregado(transactionOrReq, OReIdOrdenRetiro, fecha, usuari
                 'R'
             ) + '-' + CAST(@ID AS VARCHAR);
         `);
+
+    // Sincronización global con stateManagerService
+    try {
+        const { changeOrderState } = require('./stateManagerService');
+        // Make sure to reuse the same request or create a new one safely
+        const syncReq = typeof transactionOrReq.request === 'function' ? transactionOrReq.request() : new (require('mssql')).Request(transactionOrReq);
+        const mainOrdersRes = await syncReq
+            .input('RetiroID', require('mssql').Int, OReIdOrdenRetiro)
+            .query(`
+                SELECT o.OrdenID 
+                FROM Ordenes o WITH(NOLOCK)
+                INNER JOIN OrdenesDeposito od WITH(NOLOCK) ON (od.OrdCodigoOrden = o.NoDocERP OR od.OrdCodigoOrden = o.CodigoOrden)
+                WHERE od.OReIdOrdenRetiro = @RetiroID
+            `);
+            
+        for (const row of mainOrdersRes.recordset) {
+            await changeOrderState(transactionOrReq, {
+                target: { type: 'ORDER', id: row.OrdenID },
+                estado: 'Entregado',
+                userObj: usuarioId || 'Sistema',
+                detalle: 'Estado global sincronizado (Retiro Entregado)'
+            });
+        }
+    } catch (syncErr) {
+        console.error('Error sincronizando estado global a Entregado en marcarEntregado:', syncErr);
+    }
 }
 
 /**

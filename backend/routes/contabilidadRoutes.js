@@ -119,7 +119,9 @@ router.get('/caja/egreso/:id/voucher',        caja.getVoucherEgreso);
 router.post('/caja/ingreso-generico',         caja.registrarIngresoGenerico);
 
 // Autorizaciones sin pago
-router.post('/caja/autorizar',                caja.autorizarSinPago);
+router.post('/caja/autorizar',                          caja.autorizarSinPago);
+router.get('/caja/autorizaciones-sin-pago',              caja.getAutorizacionesSinPago);
+router.put('/caja/autorizaciones-sin-pago/:id',          caja.gestionarAutorizacionSinPago);
 
 // ── OPERACIONES DEL MOTOR disponibles para elegir en Caja ─────────────────
 // Devuelve los eventos contables que tienen prefijo (son documentales) y activos
@@ -409,7 +411,7 @@ router.post('/ordenes/insertar-manual', async (req, res) => {
         INSERT INTO dbo.MovimientosCuenta
           (CueIdCuenta, MovTipo, MovImporte, MovConcepto, MovSaldoPosterior, MovFecha, MovUsuarioAlta)
         VALUES
-          (@CueId, 'ORDEN', @Importe, @Concepto, @SaldoPost, GETDATE(), @Usr)
+          (@CueId, 'ENTREGA', @Importe, @Concepto, @SaldoPost, GETDATE(), @Usr)
       `);
 
     // Descontar saldo
@@ -419,8 +421,9 @@ router.post('/ordenes/insertar-manual', async (req, res) => {
       .query('UPDATE dbo.CuentasCliente SET CueSaldoActual = CueSaldoActual - @Metros WHERE CueIdCuenta = @CueId');
 
     // Actualizar cantidad usada en el plan
-    let targetPlanId = planId ? parseInt(planId) : null;
-    if (!targetPlanId) {
+    // OJO: PlaIdPlan puede ser 0 (válido). No usar chequeos "truthy" que lo descarten.
+    let targetPlanId = (planId !== undefined && planId !== null && String(planId).trim() !== '') ? parseInt(planId) : null;
+    if (targetPlanId === null || Number.isNaN(targetPlanId)) {
       const activePlanRes = await transaction.request()
         .input('CueId', sqlOrd.Int, CueIdCuenta)
         .query('SELECT TOP 1 PlaIdPlan FROM dbo.PlanesMetros WHERE CueIdCuenta = @CueId AND PlaActivo = 1');
@@ -429,13 +432,13 @@ router.post('/ordenes/insertar-manual', async (req, res) => {
       }
     }
 
-    if (targetPlanId) {
+    if (targetPlanId !== null && !Number.isNaN(targetPlanId)) {
       await transaction.request()
         .input('PlanId', sqlOrd.Int,          targetPlanId)
         .input('Metros', sqlOrd.Decimal(18,4), metrosNum)
         .query(`
-          UPDATE dbo.PlanesMetros 
-          SET PlaCantidadUsada = PlaCantidadUsada + @Metros 
+          UPDATE dbo.PlanesMetros
+          SET PlaCantidadUsada = PlaCantidadUsada + @Metros
           WHERE PlaIdPlan = @PlanId;
           
           UPDATE dbo.PlanesMetros

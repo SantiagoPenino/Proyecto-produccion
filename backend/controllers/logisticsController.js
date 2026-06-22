@@ -1,6 +1,7 @@
 const contabilidadService = require('../services/contabilidadService');
 const { getPool, sql } = require('../config/db');
 const logger = require('../utils/logger');
+const { changeOrderState } = require('../services/stateManagerService');
 
 
 
@@ -182,7 +183,7 @@ exports.processBatch = async (req, res) => {
                     .input('Cod', sql.VarChar, codNorm)
                     .query(`UPDATE Logistica_Bultos SET Estado = @Est, UbicacionActual = @Ubi WHERE CodigoEtiqueta = @Cod`);
 
-                // Update Ordenes/Recepciones
+                // Update Ordenes/Recepciones (dominio logística: estado propio, NO pasa por el servicio de estados de producción)
                 const qryUpdate = isRecepcion
                     ? `UPDATE Recepciones SET Estado = @Est, UbicacionActual = @Ubi WHERE Codigo = @Cod`
                     : `UPDATE Ordenes SET Estado = @Est, UbicacionActual = @Ubi WHERE CodigoOrden = @Cod`;
@@ -437,6 +438,7 @@ exports.createRemito = async (req, res) => {
             const envioId = headRes.recordset[0].EnvioID;
 
             // 2. Insertar Items y Actualizar Bultos
+            const dispatchedOrders = new Set();
             for (const bid of finalBultosIds) {
                 // Link
                 await new sql.Request(transaction)
@@ -476,8 +478,20 @@ exports.createRemito = async (req, res) => {
                                 SET OReEstadoActual = 10, OReFechaEstadoActual = GETDATE() 
                                 WHERE OReIdOrdenRetiro = @OID
                             `);
+                    } else if (row.Tipocontenido !== 'ENCOMIENDA' && row.OrdenID) {
+                        dispatchedOrders.add(row.OrdenID);
                     }
                 }
+            }
+
+            for (const oid of dispatchedOrders) {
+                await changeOrderState(transaction, {
+                    target   : { type: 'ORDER', id: oid },
+                    estado   : 'En transito',
+                    userObj  : req.user || req.body.usuario || usuarioId || 'Sistema',
+                    detalle  : `Asignado a remito y numero del remito ${codigoRemito}`,
+                    io       : req.app.get('socketio')
+                });
             }
 
             await transaction.commit();
@@ -615,20 +629,30 @@ exports.searchRemitos = async (req, res) => {
     try {
         const pool = await getPool();
         const r = await pool.request()
-            .input('Q', sql.VarChar, `%${query}%`)
+            .input('Q',      sql.VarChar, `%${query}%`)
             .input('QExact', sql.VarChar, query)
             .query(`
-                SELECT DISTINCT TOP 10 
-                    e.EnvioID, e.CodigoRemito, e.Estado, e.FechaSalida, e.AreaDestinoID
+                SELECT DISTINCT TOP 20
+                    e.EnvioID,
+                    e.CodigoRemito,
+                    e.Estado,
+                    e.FechaSalida,
+                    e.AreaOrigenID,
+                    e.AreaDestinoID,
+                    (SELECT COUNT(*) FROM Logistica_EnvioItems WHERE EnvioID = e.EnvioID) AS TotalItems,
+                    -- Código de la orden que coincidió con la búsqueda
+                    COALESCE(od.OrdCodigoOrden, o.CodigoOrden, CAST(b.OrdenID AS VARCHAR)) AS OrdenEncontrada
                 FROM Logistica_Envios e
-                INNER JOIN Logistica_EnvioItems i ON e.EnvioID = i.EnvioID
-                INNER JOIN Logistica_Bultos b ON i.BultoID = b.BultoID
-                LEFT JOIN Ordenes o ON b.OrdenID = o.OrdenID
-                WHERE b.CodigoEtiqueta LIKE @Q 
-                   OR CAST(b.OrdenID AS VARCHAR) = @QExact 
-                   OR e.CodigoRemito = @QExact
-                   OR o.CodigoOrden LIKE @Q
-                   OR CAST(o.NoDocERP AS VARCHAR) LIKE @Q
+                INNER JOIN Logistica_EnvioItems i  ON e.EnvioID  = i.EnvioID
+                INNER JOIN Logistica_Bultos     b  ON i.BultoID  = b.BultoID
+                LEFT  JOIN Ordenes              o  ON o.OrdenID  = b.OrdenID
+                LEFT  JOIN OrdenesDeposito      od ON od.OrdIdOrden = b.OrdenID
+                WHERE b.CodigoEtiqueta   LIKE @Q
+                   OR CAST(b.OrdenID AS VARCHAR) = @QExact
+                   OR e.CodigoRemito              = @QExact
+                   OR o.CodigoOrden               LIKE @Q
+                   OR CAST(o.NoDocERP AS VARCHAR)  LIKE @Q
+                   OR od.OrdCodigoOrden            LIKE @Q
                 ORDER BY e.FechaSalida DESC
             `);
         console.log('[SEARCH REMITOS] resultados:', r.recordset.length);
@@ -734,6 +758,7 @@ exports.receiveDispatch = async (req, res) => {
             }
 
             let receivedCount = 0;
+            const receivedOrdersSet = new Set();
 
             for (const item of itemsRecibidos) {
                 // Update Logistica_EnvioItems
@@ -789,6 +814,10 @@ exports.receiveDispatch = async (req, res) => {
                             const combined = (bultoInfo.Referencias || '') + ' ' + (bultoInfo.Descripcion || '');
                             const match = combined.match(/Ord(?:en)?:?\s*(\d+)/i);
                             if (match) OrdenID = parseInt(match[1]);
+                        }
+                        
+                        if (OrdenID && areaReceptora === 'DEPOSITO' && item.estado === 'ESCANEADO') {
+                            receivedOrdersSet.add(OrdenID);
                         }
 
                         const { Cliente } = bultoInfo;
@@ -1289,7 +1318,17 @@ if (triggerReversal || triggerForward) {
                     throw eCont;
                 }
             }
-            await transaction.commit();
+            for (const oid of receivedOrdersSet) {
+                await changeOrderState(transaction, {
+                    target   : { type: 'ORDER', id: oid },
+                    estado   : 'Finalizado',
+                    userObj  : req.user || req.body.usuario || usuarioId || 'Sistema',
+                    detalle  : `Orden Finalizada (Recepción en ${areaReceptora})`,
+                    io       : req.app.get('socketio')
+                });
+            }
+
+            await transaction.commit();
             res.json({ success: true, status: newStatus });
 
         }         catch (inner) {
@@ -2497,7 +2536,14 @@ exports.releaseDepositStock = async (req, res) => {
                 const pendingRes = await new sql.Request(transaction).input('OID', sql.Int, oid).query("SELECT COUNT(*) as C FROM Logistica_Bultos WHERE OrdenID = @OID AND Estado != 'ENTREGADO'");
 
                 if (pendingRes.recordset[0].C === 0) {
-                    await new sql.Request(transaction).input('OID', sql.Int, oid).query("UPDATE Ordenes SET Estado = 'Finalizado', EstadoLogistica = 'ENTREGADO', UbicacionActual = 'CLIENTE' WHERE OrdenID = @OID");
+                    await changeOrderState(transaction, {
+                        target  : { type: 'ORDER', id: oid },
+                        estado  : 'Finalizado',
+                        userObj : req.user || 'Sistema',
+                        detalle : 'Entrega completa al cliente',
+                        extraSet: { EstadoLogistica: 'ENTREGADO', UbicacionActual: 'CLIENTE' },
+                        io      : req.app.get('socketio'),
+                    });
                 }
             }
 

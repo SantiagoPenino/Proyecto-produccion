@@ -21,7 +21,8 @@ const universalColDefs = [
     { field: 'variantCode', headerName: 'Cod. Stock', width: 120 },
     
     // Columnas de estado y tiempo
-    { field: 'status', headerName: 'Estado', width: 120 },
+    { field: 'status', headerName: 'Estado General', width: 130 },
+    { field: 'areaStatus', headerName: 'Estado en Área', width: 130 },
     { field: 'priority', headerName: 'Prioridad', width: 100 },
     { field: 'deliveryDate', headerName: 'Entrega Est.', width: 150 },
     

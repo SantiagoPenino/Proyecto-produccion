@@ -782,30 +782,48 @@ const DispatchView = ({ selectedOrders: initialOrders = [], areaFilter, originAr
                         </div>
                         <form onSubmit={handleSearchHistory} className="relative w-full">
                             <i className="fa-solid fa-search absolute left-3 top-3 text-slate-400 text-sm"></i>
-                            <input 
+                            <input
                                 type="text"
                                 value={historySearchQuery}
                                 onChange={e => {
                                     setHistorySearchQuery(e.target.value);
                                     if (!e.target.value) setHistorySearchResults(null);
                                 }}
-                                placeholder="Buscar Nro. Orden, Bulto..."
-                                className="w-full pl-9 pr-8 py-2 border border-slate-200 rounded-lg text-sm focus:border-indigo-500 outline-none shadow-inner"
+                                placeholder="Ej: PRO-1332, REM-045, bulto..."
+                                className="w-full pl-9 pr-20 py-2 border border-slate-200 rounded-lg text-sm focus:border-indigo-500 outline-none shadow-inner"
                             />
-                            {historySearchQuery && (
-                                <button type="button" onClick={() => { setHistorySearchQuery(''); setHistorySearchResults(null); }} className="absolute right-3 top-3 text-slate-400 hover:text-red-500">
-                                    <i className="fa-solid fa-xmark"></i>
+                            <div className="absolute right-2 top-1.5 flex items-center gap-1">
+                                {historySearchQuery && (
+                                    <button type="button" onClick={() => { setHistorySearchQuery(''); setHistorySearchResults(null); }} className="text-slate-400 hover:text-red-500 px-1">
+                                        <i className="fa-solid fa-xmark text-xs"></i>
+                                    </button>
+                                )}
+                                <button type="submit" className="bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold px-2 py-1 rounded-md transition-colors">
+                                    Buscar
                                 </button>
-                            )}
+                            </div>
                         </form>
+                        <p className="text-[10px] text-slate-400 -mt-1">Buscá una orden para saber en qué remito se fue</p>
                     </div>
                     <div className="flex-1 overflow-y-auto p-4 space-y-3">
                         {loadingHistory && !historySearchResults && <div className="p-4 text-center text-slate-400"><i className="fa-solid fa-circle-notch fa-spin"></i></div>}
                         
                         {historySearchResults && (
-                            <div className="mb-4">
-                                <h3 className="text-xs font-bold uppercase text-slate-500 mb-2 border-b border-slate-200 pb-1">Resultados de Búsqueda ({historySearchResults.length})</h3>
-                                {historySearchResults.length === 0 && <div className="text-sm text-slate-400">No se encontraron remitos</div>}
+                            <div className="mb-3">
+                                <div className="flex items-center gap-2 border-b border-slate-200 pb-2 mb-2">
+                                    <i className="fa-solid fa-magnifying-glass text-indigo-400 text-xs"></i>
+                                    <h3 className="text-xs font-bold uppercase text-slate-500">
+                                        {historySearchResults.length === 0
+                                            ? 'Sin resultados'
+                                            : `${historySearchResults.length} remito${historySearchResults.length > 1 ? 's' : ''} encontrado${historySearchResults.length > 1 ? 's' : ''}`}
+                                    </h3>
+                                </div>
+                                {historySearchResults.length === 0 && (
+                                    <div className="text-sm text-slate-400 text-center py-4">
+                                        <i className="fa-solid fa-inbox text-2xl mb-2 block opacity-30"></i>
+                                        La orden no aparece en ningún remito registrado
+                                    </div>
+                                )}
                             </div>
                         )}
 
@@ -815,21 +833,28 @@ const DispatchView = ({ selectedOrders: initialOrders = [], areaFilter, originAr
                                 onClick={() => handleSelectHistory(rem.CodigoRemito)}
                                 className={`p-4 rounded-xl border cursor-pointer transition-all hover:shadow-md ${selectedHistoryCode === rem.CodigoRemito ? 'bg-brand-cyan/5 border-brand-cyan ring-1 ring-brand-cyan/30' : 'bg-white border-slate-100 hover:border-slate-300'}`}
                             >
+                                {/* Orden encontrada (solo en resultados de búsqueda) */}
+                                {historySearchResults && rem.OrdenEncontrada && (
+                                    <div className="flex items-center gap-1.5 mb-2 bg-indigo-50 border border-indigo-100 rounded-lg px-2 py-1">
+                                        <i className="fa-solid fa-box text-indigo-400 text-xs"></i>
+                                        <span className="text-xs font-bold text-indigo-700 font-mono">{rem.OrdenEncontrada}</span>
+                                        <span className="text-[10px] text-indigo-400 ml-auto">en este remito</span>
+                                    </div>
+                                )}
                                 <div className="flex justify-between items-start mb-2">
                                     <span className="font-bold text-slate-800 font-mono text-lg">{rem.CodigoRemito}</span>
-                                    <span className={`text-[10px] font-bold px-2 py-0.5 rounded uppercase ${rem.Estado === 'ENTREGADO' ? 'bg-brand-cyan/10 text-brand-cyan' : 'bg-slate-100 text-slate-600'}`}>{rem.Estado?.replace('_', ' ')}</span>
+                                    <span className={`text-[10px] font-bold px-2 py-0.5 rounded uppercase ${rem.Estado === 'RECIBIDO_TOTAL' || rem.Estado === 'ENTREGADO' ? 'bg-green-100 text-green-700' : rem.Estado?.startsWith('EN_') ? 'bg-amber-100 text-amber-700' : 'bg-slate-100 text-slate-600'}`}>
+                                        {rem.Estado?.replace(/_/g, ' ')}
+                                    </span>
                                 </div>
                                 <div className="flex items-center gap-2 text-xs text-slate-500 mb-2">
+                                    {rem.AreaOrigenID && <span className="font-semibold text-slate-600">{rem.AreaOrigenID}</span>}
                                     <i className="fa-solid fa-arrow-right-long text-slate-300"></i>
-                                    <span>Hacia: <strong className="text-slate-700 text-sm">{rem.AreaDestinoID || 'S/D'}</strong></span>
+                                    <span className="font-bold text-slate-700">{rem.AreaDestinoID || 'S/D'}</span>
                                 </div>
                                 <div className="flex justify-between items-end border-t border-slate-50 pt-2 mt-2">
-                                    <div className="text-[10px] text-slate-400">{new Date(rem.FechaSalida).toLocaleString()}</div>
-                                    {rem.TotalItems !== undefined || rem.items ? (
-                                        <div className="text-[10px] font-bold text-slate-500">{rem.TotalItems || rem.items?.length || 0} bultos</div>
-                                    ) : (
-                                        <div className="text-[10px] font-bold text-slate-500">Orden asociada: {rem.OrdenID}</div>
-                                    )}
+                                    <div className="text-[10px] text-slate-400">{rem.FechaSalida ? new Date(rem.FechaSalida).toLocaleString() : '—'}</div>
+                                    <div className="text-[10px] font-bold text-slate-500">{rem.TotalItems ?? rem.items?.length ?? 0} bultos</div>
                                 </div>
                             </div>
                         ))}

@@ -1483,7 +1483,7 @@ async function getAntiguedadDeuda(modo = 'TODO') {
                                     AND d.DDeEstado IN ('PENDIENTE', 'VENCIDO', 'PARCIAL')
                                     ${filtroCondicion}
     WHERE c.CueActiva = 1
-      AND c.CueTipo IN ('DINERO_UYU', 'DINERO_USD', 'CORRIENTE')
+      AND c.CueTipo IN ('DINERO_UYU', 'DINERO_USD', 'CORRIENTE', 'CREDITO')
     GROUP BY c.CliIdCliente, cli.Nombre, c.CueTipo, mon.MonSimbolo
     HAVING SUM(d.DDeImportePendiente) > 0
     ORDER BY TotalDeuda DESC

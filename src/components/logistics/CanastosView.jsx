@@ -237,7 +237,7 @@ const CanastoDetail = ({ canasto, areaFilter, onClose, onMoved }) => {
                                                 <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
                                                     o.Estado === 'Produccion' ? 'bg-blue-100 text-blue-700' :
                                                     o.Estado === 'Pendiente'  ? 'bg-zinc-100 text-zinc-600' :
-                                                    o.Estado === 'Pronto'     ? 'bg-emerald-100 text-emerald-700' :
+                                                    (o.Estado === 'Pronto' || o.EstadoenArea === 'Pronto')     ? 'bg-emerald-100 text-emerald-700' :
                                                     'bg-zinc-100 text-zinc-500'
                                                 }`}>{o.Estado}</span>
                                             </td>

@@ -168,6 +168,27 @@ exports.performAction = async (req, res) => {
           FROM dbo.OrdenesDeposito WHERE OrdCodigoOrden IN (${sqlCodes})
         `);
         
+        // Sincronizar con Estado global en Ordenes
+        try {
+            const mainOrdersRes = await tran.request().query(`
+                SELECT OrdenID FROM Ordenes WITH(NOLOCK) WHERE CodigoOrden IN (${sqlCodes}) OR NoDocERP IN (${sqlCodes})
+            `);
+            if (mainOrdersRes.recordset.length > 0) {
+                const { changeOrderState } = require('../services/stateManagerService');
+                for (const row of mainOrdersRes.recordset) {
+                    await changeOrderState(tran, {
+                        target: { type: 'ORDER', id: row.OrdenID },
+                        estado: 'Entregado',
+                        userObj: req.user || 'Sistema',
+                        detalle: 'Estado global sincronizado (Entregado en depósito)',
+                        io: req.app.get('socketio')
+                    });
+                }
+            }
+        } catch (syncErr) {
+            console.error('Error sincronizando estado global a Entregado en auditDeposito:', syncErr);
+        }
+
         // OrdenesRetiro -> 5 (Entregado)
         await tran.request().query(`
           UPDATE r

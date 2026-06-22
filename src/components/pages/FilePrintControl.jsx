@@ -240,14 +240,14 @@ const FilePrintControl = ({ areaCode }) => {
             client: o.Cliente,
             material: o.Material,
             status: o.Estado,
+            statusArea: o.EstadoenArea,
+            controlled: o.Controlada === 1,
             sequence: o.Secuencia || 0,
             failures: o.CantidadFallas || 0,
             hasLabels: o.CantidadEtiquetas || 0,
-
+            rolloId: o.RolloID || null,
             nextService: o.ProximoServicio,
             meters: parseFloat(o.Magnitud) || 0
-
-
           }));
           setOrders(normalized);
 
@@ -263,8 +263,8 @@ const FilePrintControl = ({ areaCode }) => {
 
               // AUTO ADVANCE LOGIC
               // Check if status changed to a completed state
-              const isCompleted = ['PRONTO', 'FINALIZADO', 'ENTREGADO'].includes(fresh.status?.toUpperCase());
-              const wasCompleted = ['PRONTO', 'FINALIZADO', 'ENTREGADO'].includes(selectedOrder.status?.toUpperCase());
+              const isCompleted = ['PRONTO', 'FINALIZADO', 'ENTREGADO'].includes(fresh.status?.toUpperCase()) || (fresh.EstadoenArea || fresh.areaStatus || '').toUpperCase() === 'PRONTO';
+              const wasCompleted = ['PRONTO', 'FINALIZADO', 'ENTREGADO'].includes(selectedOrder.status?.toUpperCase()) || (selectedOrder.EstadoenArea || selectedOrder.areaStatus || '').toUpperCase() === 'PRONTO';
 
               // Solo mostrar el modal si NO es una orden de reposición (-F)
               // Las -F se completan silenciosamente durante "CORREGIR FALLA" para navegar a la madre.
@@ -490,9 +490,22 @@ const FilePrintControl = ({ areaCode }) => {
     if (!selectedOrder || finalizandoOrden) return;
     setFinalizandoOrden(true);
 
-    const loteCompleto = orders.length > 0 && orders.every(o => o.controlled) && orders.every(o => (o.failures || 0) === 0);
-    const ordersToComplete = loteCompleto ? orders : [selectedOrder];
-    
+    // Excluir órdenes ya en estado final de todos los cálculos
+    // (Pronto/En Transito/Finalizado quedan en la lista visual pero no son "pendientes")
+    const isFinalState = (o) => {
+      const saUp = (o.statusArea || '').toUpperCase().trim();
+      const sUp  = (o.status     || '').toUpperCase().trim();
+      return saUp === 'PRONTO' || saUp === 'EN TRANSITO' || sUp === 'FINALIZADO';
+    };
+
+    const ordenesPendientes = orders.filter(o => !isFinalState(o));
+
+    const loteCompleto = ordenesPendientes.length > 0
+      && ordenesPendientes.every(o => o.controlled)
+      && ordenesPendientes.every(o => (o.failures || 0) === 0);
+
+    const ordersToComplete = loteCompleto ? ordenesPendientes : [selectedOrder];
+
     try {
       let lastRes = null;
       let someError = null;
@@ -508,26 +521,42 @@ const FilePrintControl = ({ areaCode }) => {
       }
 
       if (lastRes && !someError) {
-        const completedIds = ordersToComplete.map(o => o.id);
-        
-        setOrders(prev => {
-          const nextOrders = prev.filter(o => !completedIds.includes(o.id));
-          
-          const isLastInRoll = nextOrders.length === 0 && activeRoll && activeRoll.id && activeRoll.id !== 'todo';
+        // isLastInRoll: quedan pendientes que NO son las que acabamos de completar
+        // y que tampoco estaban ya en estado final
+        const completedIds = new Set(ordersToComplete.map(x => x.id));
+        const aunPendientes = ordenesPendientes.filter(o => !completedIds.has(o.id));
+        const isLastInRoll = aunPendientes.length === 0 && activeRoll && activeRoll.id && activeRoll.id !== 'todo';
 
-          setCompletedOrderData({
-            ordenId: selectedOrder.id,
-            destino: lastRes.estadoLogistica || 'LOGÍSTICA',
-            proximoServicio: selectedOrder.nextService,
-            isLastInRoll: isLastInRoll
-          });
-          
-          return nextOrders;
+        setCompletedOrderData({
+          ordenId: selectedOrder.id,
+          destino: lastRes.estadoLogistica || 'LOGÍSTICA',
+          proximoServicio: selectedOrder.nextService,
+          isLastInRoll
         });
+
+        // NO eliminar la orden de la lista — refrescar para que muestre su nuevo estado (Pronto)
+        const rId = activeRoll?.id === 'todo' ? '' : (activeRoll?.id || '');
+        fileControlService.getOrdenes('', rId, areaCode || 'DTF').then(data => {
+          const normalized = (data || []).map(o => ({
+            id: o.OrdenID,
+            code: o.CodigoOrden,
+            client: o.Cliente,
+            material: o.Material,
+            status: o.Estado,
+            statusArea: o.EstadoenArea,
+            controlled: o.Controlada === 1,
+            sequence: o.Secuencia || 0,
+            failures: o.CantidadFallas || 0,
+            hasLabels: o.CantidadEtiquetas || 0,
+            rolloId: o.RolloID || null,
+            nextService: o.ProximoServicio,
+            meters: parseFloat(o.Magnitud) || 0
+          }));
+          setOrders(normalized);
+        }).catch(console.error);
 
         setSelectedOrder(null);
         setFiles([]);
-        // Refrescar el selector de lotes para que desaparezcan los vacíos
         fetchRollos();
       }
     } catch (e) {
@@ -537,22 +566,35 @@ const FilePrintControl = ({ areaCode }) => {
     }
   };
 
+
   const handlePrintLabels = async (ordenIdToPrint) => {
     const id = ordenIdToPrint || selectedOrder?.id;
     if (!id) return;
     setToast({ visible: true, message: 'Obteniendo etiquetas...', type: 'info' });
+
+    // GUARD: si la orden ya está en estado final, solo imprimir — nunca regenerar
+    const saUp = (selectedOrder?.statusArea || '').toUpperCase().trim();
+    const sUp  = (selectedOrder?.status     || '').toUpperCase().trim();
+    const isAlreadyDone = saUp === 'PRONTO' || saUp === 'EN TRANSITO' || sUp === 'FINALIZADO';
+
     try {
       let data = await fileControlService.getEtiquetas(id);
-      
+
       if (!data || !data.etiquetas || data.etiquetas.length === 0) {
-          setToast({ visible: true, message: 'Generando etiquetas por primera vez...', type: 'info' });
-          const regenRes = await fileControlService.regenerateLabels(id);
-          if (regenRes.success) {
-             data = await fileControlService.getEtiquetas(id);
-          } else {
-             setToast({ visible: true, message: `Error al generar: ${regenRes.error}`, type: 'error' });
-             return;
-          }
+        if (isAlreadyDone) {
+          // Orden ya despachada: no regenerar, solo avisar
+          setToast({ visible: true, message: 'La orden ya fue despachada. Las etiquetas originales pueden no estar disponibles.', type: 'warning' });
+          return;
+        }
+        // Primera vez (orden no despachada) → generar
+        setToast({ visible: true, message: 'Generando etiquetas por primera vez...', type: 'info' });
+        const regenRes = await fileControlService.regenerateLabels(id);
+        if (regenRes.success) {
+           data = await fileControlService.getEtiquetas(id);
+        } else {
+           setToast({ visible: true, message: `Error al generar: ${regenRes.error}`, type: 'error' });
+           return;
+        }
       }
 
       if (data && data.etiquetas && data.etiquetas.length > 0) {
@@ -572,6 +614,7 @@ const FilePrintControl = ({ areaCode }) => {
       setToast({ visible: true, message: `Error de conexión: ${e.message}`, type: 'error' });
     }
   };
+
 
   const openActionModal = (file, action) => {
     setSelectedFileForAction(file);
@@ -895,7 +938,7 @@ const FilePrintControl = ({ areaCode }) => {
                     <span className="px-2 py-0.5 rounded bg-brand-cyan/10 text-brand-cyan text-[10px] font-black uppercase tracking-widest border border-brand-cyan/20">
                       SEC: {selectedOrder.sequence || '-'}
                     </span>
-                    {selectedOrder.status === 'PRONTO' && <span className="px-2 py-0.5 rounded bg-brand-cyan text-white text-[10px] font-black uppercase tracking-widest">COMPLETA</span>}
+                    {(selectedOrder.status === 'PRONTO' || (selectedOrder.EstadoenArea || selectedOrder.areaStatus) === 'Pronto') && <span className="px-2 py-0.5 rounded bg-brand-cyan text-white text-[10px] font-black uppercase tracking-widest">COMPLETA</span>}
                   </div>
 
                   {/* STEPPER (Ruta) INLINE */}
@@ -1215,12 +1258,15 @@ const FilePrintControl = ({ areaCode }) => {
               </div>
 
               <div className="space-y-3 w-full">
-                <button onClick={() => { 
-                  const id = completedOrderData?.ordenId; 
+                <button onClick={() => {
+                  const id = completedOrderData?.ordenId;
                   const wasLast = completedOrderData?.isLastInRoll;
-                  setCompletedOrderData(null); 
+                  setCompletedOrderData(null);
                   if (wasLast) setActiveRoll(null);
-                  handlePrintLabels(id); 
+                  // Usar printLabelsHelper directamente: las etiquetas acaban de generarse
+                  // por completarOrden, NO llamar handlePrintLabels que podría regenerar
+                  // si selectedOrder es null (isAlreadyDone = false en ese momento).
+                  printLabelsHelper(null, { id });
                 }} className="w-full py-3 rounded-xl bg-brand-cyan text-white font-black text-lg shadow-lg shadow-brand-cyan/30 hover:bg-brand-cyan hover:scale-[1.02] transition-all active:scale-95">
                   <i className="fa-solid fa-print mr-2"></i> IMPRIMIR ETIQUETAS
                 </button>

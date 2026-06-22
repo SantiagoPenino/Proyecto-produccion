@@ -53,7 +53,7 @@ async function registrarAuditoria(transactionOrPool, userId, action, details, ip
  * @param {string} detalle - Detalle del cambio
  */
 async function registrarHistorialOrden(transactionOrPool, ordenId, nuevoEstado, usuarioId, detalle) {
-    const uid = usuarioId ? parseInt(usuarioId) : null;
+    const safeUser = String(usuarioId || 'Sistema').substring(0, 99);
 
     // 1. Cerrar historial anterior (Update FechaFin)
     const reqUpdate = new sql.Request(transactionOrPool);
@@ -71,7 +71,7 @@ async function registrarHistorialOrden(transactionOrPool, ordenId, nuevoEstado, 
     await reqInsert
         .input('OID', sql.Int, ordenId)
         .input('Estado', sql.NVarChar, nuevoEstado)
-        .input('Usuario', sql.Int, uid)
+        .input('Usuario', sql.NVarChar, safeUser)
         .input('Detalle', sql.NVarChar, detalle || '')
         .query(`
             INSERT INTO HistorialOrdenes (OrdenID, Estado, FechaInicio, Usuario, Detalle)

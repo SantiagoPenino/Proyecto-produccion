@@ -136,6 +136,7 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
   const [seleccionados, setSeleccionados] = useState([]);
   const [ajustes, setAjustes] = useState({});
   const [carritosPago, setCarritosPago] = useState([{ id: Date.now(), metodoPagoId: 1, moneda: 'UYU', monedaId: 1, monto: '' }]);
+  const [condicionCobro, setCondicionCobro] = useState('CONTADO');
   const [tipoDocCobro, setTipoDocCobro] = useState('40');
   const [serieDocCobro, setSerieDocCobro] = useState('A');
   const [numDocCobro, setNumDocCobro] = useState('');
@@ -352,6 +353,7 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
   const [resumenCierre, setResumenCierre] = useState(null);
   const [cierreMontoFisico, setCierreMontoFisico] = useState('');
   const [cierreObs, setCierreObs] = useState('');
+  const [autorizacionesCierre, setAutorizacionesCierre] = useState([]);
 
   const [fechaDesdeAdmin, setFechaDesdeAdmin] = useState(() => { const d = new Date(); d.setDate(d.getDate() - 7); return d.toISOString().split('T')[0]; });
   const [fechaHastaAdmin, setFechaHastaAdmin] = useState(() => { const d = new Date(); return d.toISOString().split('T')[0]; });
@@ -784,6 +786,11 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
           egresos: { TotalEgresos: totalEgresos }
         });
 
+        try {
+          const resAut = await api.get(`/contabilidad/caja/autorizaciones-sin-pago?desde=${fechaDesdeAdmin}&hasta=${fechaHastaAdmin}`);
+          setAutorizacionesCierre(resAut.data?.data || []);
+        } catch (e) { setAutorizacionesCierre([]); }
+
         setCargandoMovsAdmin(false);
       } else {
         const path = `/contabilidad/caja/sesion/${sesion.StuIdSesion}/resumen`;
@@ -795,6 +802,10 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
         } catch (e) {
           console.error('Error fetching movements for closure', e);
         }
+        try {
+          const resAut = await api.get(`/contabilidad/caja/autorizaciones-sin-pago?sesionId=${sesion.StuIdSesion}`);
+          setAutorizacionesCierre(resAut.data?.data || []);
+        } catch (e) { setAutorizacionesCierre([]); }
       }
     } catch {
       toast.error('No se pudo cargar el resumen/movimientos.');
@@ -966,7 +977,7 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
     }, 0);
   }, [carritosPago, cotizacion, monedaExhibicion]);
 
-  const cobroBalanceado = Math.abs(totalesCobro.neto - totalIngresado) < (monedaExhibicion === 'UYU' ? 1.0 : 0.05);
+  const cobroBalanceado = condicionCobro === 'CREDITO' || Math.abs(totalesCobro.neto - totalIngresado) < (monedaExhibicion === 'UYU' ? 1.0 : 0.05);
 
   const totalEfectivoMonto = useMemo(() => {
     const cashPayments = carritosPago.filter(p => {
@@ -987,8 +998,9 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
 
   const handleRealizarCobro = async () => {
     if (seleccionados.length === 0) return toast.warning('Seleccione retiros a cobrar.');
-    if (!cobroBalanceado) return toast.warning('Pagos no cuadran con el total.');
-    if (carritosPago.some(p => !p.metodoPagoId)) return toast.warning('Debe seleccionar Método de pago en todas las líneas.');
+    const esCobroCredito = condicionCobro === 'CREDITO';
+    if (!esCobroCredito && !cobroBalanceado) return toast.warning('Pagos no cuadran con el total.');
+    if (!esCobroCredito && carritosPago.some(p => !p.metodoPagoId)) return toast.warning('Debe seleccionar Método de pago en todas las líneas.');
     const chequeFaltante = carritosPago.some(p => {
       const isCheque = metodosPago.find(m => m.MPaIdMetodoPago === parseInt(p.metodoPagoId))?.MPaDescripcionMetodo?.toLowerCase()?.includes('cheque');
       return isCheque && !p.idCheque;
@@ -1017,8 +1029,8 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
       });
       const pags = carritosPago.map(p => ({ metodoPagoId: parseInt(p.metodoPagoId), moneda: p.moneda, monedaId: p.moneda === 'USD' ? 2 : 1, montoOriginal: parseFloat(p.monto), cotizacion: p.moneda === 'USD' ? cotizacion : null }));
       const res = await api.post('/contabilidad/caja/transaccion', {
-        header: { clienteId: seleccionados[0]?.retiro?.CliIdCliente, tipoDocumento: tipoDocCobro, serieDoc: serieDocCobro, numeroDoc: numDocCobro || null, observaciones: obsCobro, deudaPuraUSD, deudaPuraUYU, admin: isAdminCaja, moneda: monedaExhibicion, cotizacion: cotizacion },
-        aplicaciones: apps, pagos: pags
+        header: { clienteId: seleccionados[0]?.retiro?.CliIdCliente, tipoDocumento: tipoDocCobro, serieDoc: serieDocCobro, numeroDoc: numDocCobro || null, observaciones: obsCobro, deudaPuraUSD, deudaPuraUYU, admin: isAdminCaja, moneda: monedaExhibicion, cotizacion: cotizacion, esCredito: esCobroCredito },
+        aplicaciones: apps, pagos: esCobroCredito ? [] : pags
       });
 
       const newTicket = {
@@ -1359,6 +1371,7 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
                         onPagosChange={setCarritosPago}
                         tipoDoc={tipoDocCobro}
                         onTipoDoc={setTipoDocCobro}
+                        onCondicionChange={setCondicionCobro}
                         serieDoc={serieDocCobro}
                         onSerieDoc={setSerieDocCobro}
                         numDoc=""
@@ -1780,8 +1793,8 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
 
                             setProcesandoVenta(true);
                             try {
-                              const esCred = String(ventaTipoDoc).toUpperCase().includes('CREDITO') || ventaTipoDoc === '08' || ventaTipoDoc === '02';
-                              const ventaPayload = { ...payload, header: { ...payload.header, admin: isAdminCaja }, pagos: esCred ? [] : ventaPagos.filter(p => p.monto && p.metodoPagoId).map(p => ({ metodoPagoId: parseInt(p.metodoPagoId), montoOriginal: parseFloat(p.monto), monedaId: p.moneda === 'USD' ? 2 : 1, cotizacion: p.moneda === 'USD' ? cotizacion : null, referenciaNumero: '' })) };
+                              const esCred = String(ventaTipoDoc).toUpperCase().includes('CREDITO') || ventaTipoDoc === '08' || ventaTipoDoc === '02' || pagosFilt.length === 0;
+                              const ventaPayload = { ...payload, header: { ...payload.header, admin: isAdminCaja, esCredito: esCred }, pagos: esCred ? [] : ventaPagos.filter(p => p.monto && p.metodoPagoId).map(p => ({ metodoPagoId: parseInt(p.metodoPagoId), montoOriginal: parseFloat(p.monto), monedaId: p.moneda === 'USD' ? 2 : 1, cotizacion: p.moneda === 'USD' ? cotizacion : null, referenciaNumero: '' })) };
                               const res = await api.post('/contabilidad/caja/venta-directa', ventaPayload);
                               toast.success(`Venta procesada. Comprobante: ${res.data.numeroDocFormato || res.data.tcaIdTransaccion}`);
 
@@ -1888,8 +1901,9 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
                             if (!payload.items.every(i => i.codigo && i.precioTotal && i.cantidad)) { toast.warning('Complete todos los campos de los ítems.'); return; }
                             setProcesandoVenta(true);
                             try {
-                              const esCred = String(ventaTipoDoc).toUpperCase().includes('CREDITO') || ventaTipoDoc === '08' || ventaTipoDoc === '02';
-                              const ventaPayload = { ...payload, header: { ...payload.header, admin: isAdminCaja }, pagos: esCred ? [] : ventaPagos.filter(p => p.monto && p.metodoPagoId).map(p => ({ metodoPagoId: parseInt(p.metodoPagoId), montoOriginal: parseFloat(p.monto), monedaId: p.moneda === 'USD' ? 2 : 1, cotizacion: p.moneda === 'USD' ? cotizacion : null, referenciaNumero: '' })) };
+                              const pagosFiltV = ventaPagos.filter(p => p.monto && p.metodoPagoId);
+                              const esCred = String(ventaTipoDoc).toUpperCase().includes('CREDITO') || ventaTipoDoc === '08' || ventaTipoDoc === '02' || pagosFiltV.length === 0;
+                              const ventaPayload = { ...payload, header: { ...payload.header, admin: isAdminCaja, esCredito: esCred }, pagos: esCred ? [] : pagosFiltV.map(p => ({ metodoPagoId: parseInt(p.metodoPagoId), montoOriginal: parseFloat(p.monto), monedaId: p.moneda === 'USD' ? 2 : 1, cotizacion: p.moneda === 'USD' ? cotizacion : null, referenciaNumero: '' })) };
                               const res = await api.post('/contabilidad/caja/venta-directa', ventaPayload);
                               toast.success(`Venta procesada. Comprobante: ${res.data.numeroDocFormato || res.data.tcaIdTransaccion}`);
 
@@ -2742,6 +2756,75 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
                                 </tbody>
                               </table>
                             </div>
+                          </div>
+
+                          {/* TABLA: Autorizaciones Sin Pago del Turno */}
+                          <div className="bg-white p-6 relative">
+                            <h3 className="font-black text-slate-800 flex items-center gap-4 text-xl tracking-tight mb-2">
+                              <ShieldCheck size={24} className="text-amber-500" />
+                              Autorizaciones Sin Pago del Turno
+                            </h3>
+                            <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-6">
+                              Retiros entregados sin cobrar durante este turno — deuda pendiente de gestión
+                            </p>
+                            {autorizacionesCierre.length === 0 ? (
+                              <div className="flex items-center justify-center py-8 gap-3 text-slate-300">
+                                <ShieldCheck size={32} />
+                                <span className="font-black uppercase tracking-widest text-sm">Sin autorizaciones en este turno</span>
+                              </div>
+                            ) : (
+                              <div className="overflow-x-auto">
+                                <table className="w-full text-left border-collapse text-[11px]">
+                                  <thead>
+                                    <tr className="bg-amber-50 border-y border-amber-100">
+                                      <th className="py-2.5 px-3 font-black text-amber-600/80 uppercase tracking-widest whitespace-nowrap">Fecha / Hora</th>
+                                      <th className="py-2.5 px-3 font-black text-amber-600/80 uppercase tracking-widest">Orden</th>
+                                      <th className="py-2.5 px-3 font-black text-amber-600/80 uppercase tracking-widest">Cliente</th>
+                                      <th className="py-2.5 px-3 font-black text-amber-600/80 uppercase tracking-widest">Motivo</th>
+                                      <th className="py-2.5 px-3 font-black text-amber-600/80 uppercase tracking-widest">Vencimiento</th>
+                                      <th className="py-2.5 px-3 font-black text-amber-600/80 uppercase tracking-widest">Autorizó</th>
+                                      <th className="py-2.5 px-3 font-black text-amber-600/80 uppercase tracking-widest text-right">Monto Deuda</th>
+                                      <th className="py-2.5 px-3 font-black text-amber-600/80 uppercase tracking-widest text-center">Estado</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {autorizacionesCierre.map((a, idx) => (
+                                      <tr key={idx} className="border-b border-amber-50 hover:bg-amber-50/40 transition-colors">
+                                        <td className="py-2 px-3 font-bold text-slate-500 whitespace-nowrap">
+                                          {new Date(a.AuzFecha).toLocaleString('es-UY', { dateStyle: 'short', timeStyle: 'short' })}
+                                        </td>
+                                        <td className="py-2 px-3 font-black text-brand-cyan">{a.OrdenCodigo}</td>
+                                        <td className="py-2 px-3 font-bold text-slate-700">{a.NombreCliente || a.CodigoCliente || '—'}</td>
+                                        <td className="py-2 px-3 font-bold text-slate-600 max-w-[220px]" title={a.AuzMotivo}>{a.AuzMotivo}</td>
+                                        <td className="py-2 px-3 font-bold text-slate-500 whitespace-nowrap">
+                                          {a.AuzFechaVencimiento ? new Date(a.AuzFechaVencimiento).toLocaleDateString('es-UY') : '—'}
+                                        </td>
+                                        <td className="py-2 px-3 font-bold text-slate-500">{a.NombreAutorizador || '—'}</td>
+                                        <td className="py-2 px-3 font-black text-amber-600 text-right">
+                                          $ {parseFloat(a.AuzMontoDeuda || 0).toLocaleString('es-UY', { minimumFractionDigits: 2 })}
+                                        </td>
+                                        <td className="py-2 px-3 text-center">
+                                          <span className={`px-2 py-0.5 rounded-full text-[9px] font-black uppercase tracking-widest ${a.AuzEstado === 'ACTIVA' ? 'bg-amber-100 text-amber-700' : 'bg-emerald-100 text-emerald-700'}`}>
+                                            {a.AuzEstado}
+                                          </span>
+                                        </td>
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                  <tfoot>
+                                    <tr className="bg-amber-50/70">
+                                      <td colSpan="6" className="py-3 px-3 font-black text-amber-700 uppercase tracking-widest text-right">
+                                        Total Deuda Sin Cobrar:
+                                      </td>
+                                      <td className="py-3 px-3 font-black text-amber-700 text-right text-sm">
+                                        $ {autorizacionesCierre.reduce((s, a) => s + parseFloat(a.AuzMontoDeuda || 0), 0).toLocaleString('es-UY', { minimumFractionDigits: 2 })}
+                                      </td>
+                                      <td />
+                                    </tr>
+                                  </tfoot>
+                                </table>
+                              </div>
+                            )}
                           </div>
                         </>                      </div>
                     ) : null}

@@ -1,7 +1,7 @@
 const { getPool, sql } = require('../config/db');
 const logger = require('../utils/logger');
 const pushService = require('../services/pushNotificationService');
-
+const { changeOrderState } = require('../services/stateManagerService');
 // HELPER: Recalcular Magnitud de la Orden (Suma de piezas de Archivos + Servicios)
 // Se usa en add, update, delete y cancel para mantener la coherencia.
 const recalculateOrderMagnitude = async (transaction, ordenId) => {
@@ -134,15 +134,13 @@ exports.getOrdersByArea = async (req, res) => {
         if (mode === 'history') {
             query += ` AND o.Estado IN (${estadosFinales})`;
         } else if (mode === 'cancelled') {
-            query += ` AND o.Estado IN ('Cancelado', 'CANCELADO', 'Anulado', 'RECHAZADO')`;
+            query += ` AND UPPER(LTRIM(RTRIM(o.Estado))) IN ('CANCELADO', 'ANULADO', 'RECHAZADO')`;
         } else if (mode === 'pronto') {
-            query += ` AND UPPER(LTRIM(RTRIM(o.Estado))) = 'PRONTO'`;
+            query += ` AND UPPER(LTRIM(RTRIM(o.Estado))) = 'FINALIZADO'`;
         } else if (mode === 'all') {
             // No filtrar por estado
         } else {
             query += ` AND o.Estado NOT IN (${estadosFinales})`;
-            // Excluir Pronto por completo de la vista activa (asegurando sin espacios ni mayúsculas locas)
-            query += ` AND UPPER(LTRIM(RTRIM(o.Estado))) != 'PRONTO'`;
         }
 
         if (q) {
@@ -339,17 +337,14 @@ exports.createOrder = async (req, res) => {
             // Recalcular magnitud inicial de la orden
             await recalculateOrderMagnitude(transaction, newOrderId);
 
-            // LOG HISTORIAL
-            const safeUser = String((req.body.usuario && (req.body.usuario.id || req.body.usuario.UsuarioID)) || 'Sistema');
-            await new sql.Request(transaction)
-                .input('OID', sql.Int, newOrderId)
-                .input('Est', sql.VarChar, 'Pendiente')
-                .input('User', sql.VarChar, safeUser)
-                .input('Det', sql.NVarChar, `Orden Creada (Multi-Servicio). Parte de Grupo: ${commonUUID}`)
-                .query(`
-                    INSERT INTO [SecureAppDB].[dbo].[HistorialOrdenes] (OrdenID, Estado, FechaInicio, FechaFin, Usuario, Detalle)
-                    VALUES (@OID, @Est, GETDATE(), GETDATE(), @User, @Det)
-                 `);
+            // Historial via servicio central
+            await changeOrderState(transaction, {
+                target  : { type: 'ORDER', id: newOrderId },
+                estado  : 'Pendiente',
+                userObj : req.user || req.body.usuario,
+                detalle : `Orden Creada (Multi-Servicio). Parte de Grupo: ${commonUUID}`,
+                io       : req.app.get('socketio')
+            });
         }
 
         await transaction.commit();
@@ -537,31 +532,23 @@ exports.assignRoll = async (req, res) => {
                         UPDATE dbo.Ordenes 
                         SET 
                             RolloID = @RID,
-                            Estado = CASE 
-                                WHEN @RID IS NOT NULL THEN 'En Lote'
-                                ELSE 'Pendiente'
-                            END,
-                            EstadoenArea = CASE 
-                                WHEN @RID IS NOT NULL THEN 'En Lote'
-                                ELSE 'Pendiente'
-                            END,
+
+
                             -- Importante: Si la orden es 'Reposicion' o tiene 'falla' en true, aseguramos su marca.
                             -- Pero aqui solo actualizamos la vinculacion.
                             Observaciones = Observaciones -- No-op
                         WHERE OrdenID = @OID
                     `);
 
-                // LOG HISTORIAL
-                const safeUserRoll = String((req.body.usuario && (req.body.usuario.id || req.body.usuario.UsuarioID)) || req.body.usuario || 'Sistema');
-                await new sql.Request(transaction)
-                    .input('OID', sql.Int, oid)
-                    .input('Est', sql.VarChar, 'Asignado')
-                    .input('User', sql.VarChar, safeUserRoll)
-                    .input('Det', sql.NVarChar, `Asignado a Rollo/Lote ${rollId}`)
-                    .query(`
-                        INSERT INTO [SecureAppDB].[dbo].[HistorialOrdenes] (OrdenID, Estado, FechaInicio, FechaFin, Usuario, Detalle)
-                        VALUES (@OID, 'PREPARACION', GETDATE(), GETDATE(), @User, @Det)
-                     `);
+                // Historial via servicio central
+                await changeOrderState(transaction, {
+                    target  : { type: 'ORDER', id: oid },
+                    estado  : rollId ? 'En Lote' : 'Pendiente',
+                    userObj : req.user || req.body.usuario,
+                    detalle : rollId ? 'Asignado a Lote {rollo}' : 'Retirado de Lote',
+                    rolloId : rollId,
+                io       : req.app.get('socketio')
+            });
             }
 
             // 3. RECALCULAR SECUENCIA INTELIGENTE (Priority Rules)
@@ -689,7 +676,7 @@ exports.updateFile = async (req, res) => {
                     .input('Det', sql.NVarChar, `Archivo modificado (ID: ${fileId})`)
                     .query(`
                         INSERT INTO [SecureAppDB].[dbo].[HistorialOrdenes] (OrdenID, Estado, FechaInicio, FechaFin, Usuario, Detalle)
-                        VALUES (@OID, 'EN PROCESO', GETDATE(), GETDATE(), @User, @Det)
+                        SELECT @OID, ISNULL(EstadoenArea, 'Pendiente'), GETDATE(), GETDATE(), @User, @Det FROM Ordenes WHERE OrdenID = @OID
                     `).catch(e => logger.error("Log Error:", e));
             }
 
@@ -759,7 +746,7 @@ exports.addFile = async (req, res) => {
                 .input('Det', sql.NVarChar, `Archivo agregado: ${nombre}`)
                 .query(`
                     INSERT INTO [SecureAppDB].[dbo].[HistorialOrdenes] (OrdenID, Estado, FechaInicio, FechaFin, Usuario, Detalle)
-                    VALUES (@OID, 'EN PROCESO', GETDATE(), GETDATE(), @User, @Det)
+                    SELECT @OID, ISNULL(EstadoenArea, 'Pendiente'), GETDATE(), GETDATE(), @User, @Det FROM Ordenes WHERE OrdenID = @OID
                  `);
 
             await transaction.commit();
@@ -823,11 +810,7 @@ exports.updateStatus = async (req, res) => {
         await transaction.begin();
 
         try {
-            // 1. Update Estado
-            await new sql.Request(transaction)
-                .input('OrdenID', sql.Int, id)
-                .input('NuevoEstado', sql.VarChar(50), status)
-                .query("UPDATE dbo.Ordenes SET Estado = @NuevoEstado WHERE OrdenID = @OrdenID");
+            // 1. El cambio de Estado/EstadoenArea lo hace changeOrderState (abajo). Se quitó el UPDATE crudo redundante.
 
             // Preparar datos de usuario
             const rawUser = (usuario && typeof usuario === 'object') ? (usuario.UsuarioID || usuario.id || 'Sistema') : usuario;
@@ -836,16 +819,14 @@ exports.updateStatus = async (req, res) => {
             if (typeof usuario === 'object' && usuario.UsuarioID) userIdInt = parseInt(usuario.UsuarioID);
             else if (typeof usuario === 'number') userIdInt = usuario;
 
-            // 2. Insertar Historial
-            await new sql.Request(transaction)
-                .input('OID', sql.Int, id)
-                .input('Est', sql.VarChar, status)
-                .input('User', sql.VarChar, safeUser)
-                .input('Det', sql.NVarChar, `Cambio de estado a ${status}`)
-                .query(`
-                   INSERT INTO HistorialOrdenes (OrdenID, Estado, FechaInicio, FechaFin, Usuario, Detalle)
-                   VALUES (@OID, @Est, GETDATE(), GETDATE(), @User, @Det)
-               `);
+            // Historial via servicio central
+            await changeOrderState(transaction, {
+                target  : { type: 'ORDER', id },
+                estado  : status,
+                userObj : req.user || req.body.usuario,
+                detalle : `Cambio de estado a ${status}`,
+                io       : req.app.get('socketio')
+            });
 
             // 3. Insertar Auditoria
             await new sql.Request(transaction)
@@ -897,23 +878,19 @@ exports.updateAreaStatus = async (req, res) => {
         await transaction.begin();
 
         try {
-            await new sql.Request(transaction)
-                .input('OrdenID', sql.Int, id)
-                .input('NuevoEstadoArea', sql.VarChar(50), areaStatus)
-                .query("UPDATE dbo.Ordenes SET EstadoenArea = @NuevoEstadoArea WHERE OrdenID = @OrdenID");
-
+            // El UPDATE de EstadoenArea lo realiza changeOrderState (abajo). Se eliminó aquí un
+            // UPDATE crudo redundante que el servicio pisaba con el mismo valor (migración previa a medias).
             const rawUser = (usuario && typeof usuario === 'object') ? (usuario.UsuarioID || usuario.id || 'Sistema') : usuario;
             const safeUser = String(rawUser || 'Sistema').substring(0, 99);
 
-            await new sql.Request(transaction)
-                .input('OID', sql.Int, id)
-                .input('Est', sql.VarChar(50), areaStatus)
-                .input('User', sql.VarChar, safeUser)
-                .input('Det', sql.NVarChar, `Cambio de estado en area a ${areaStatus}`)
-                .query(`
-                   INSERT INTO HistorialOrdenes (OrdenID, Estado, FechaInicio, FechaFin, Usuario, Detalle)
-                   VALUES (@OID, @Est, GETDATE(), GETDATE(), @User, @Det)
-               `);
+            // Historial via servicio central
+            await changeOrderState(transaction, {
+                target  : { type: 'ORDER', id },
+                estado  : areaStatus,
+                userObj : req.user || req.body.usuario,
+                detalle : `Cambio de estado en area a ${areaStatus}`,
+                io       : req.app.get('socketio')
+            });
 
             await transaction.commit();
 
@@ -961,7 +938,7 @@ exports.advancedSearchOrders = async (req, res) => {
         let query = `
             SELECT 
                 o.OrdenID, o.CodigoOrden, o.Cliente, o.DescripcionTrabajo, o.AreaID, 
-                o.Estado, o.Prioridad, o.FechaIngreso, o.FechaEstimadaEntrega,
+                o.Estado, o.EstadoenArea, o.Prioridad, o.FechaIngreso, o.FechaEstimadaEntrega,
                 o.Material, o.Variante, o.Tinta, o.ModoRetiro, o.ArchivosCount, o.ProximoServicio,
                 c.IDCliente, c.NombreFantasia, c.TelefonoTrabajo, c.Email, c.DireccionTrabajo
             FROM dbo.Ordenes o
@@ -1025,6 +1002,7 @@ exports.advancedSearchOrders = async (req, res) => {
             desc: o.DescripcionTrabajo || '',
             area: o.AreaID || '',
             status: o.Estado || 'Pendiente',
+            estadoArea: o.EstadoenArea || '',
             priority: o.Prioridad || 'Normal',
 
             // Sanitización de Fechas
@@ -1119,15 +1097,22 @@ exports.getIntegralPedidoDetailsV2 = async (req, res) => {
         // 2. Construir Header (Datos Agregados)
         const first = orders[0];
         const total = orders.length;
-        const terminados = orders.filter(o => ['Finalizado', 'Entregado', 'Cancelado'].includes(o.Estado)).length;
+        const terminados = orders.filter(o => ['FINALIZADO', 'ENTREGADO', 'CANCELADO'].includes((o.Estado || '').toUpperCase())).length;
         const avance = total > 0 ? Math.round((terminados / total) * 100) : 0;
+
+        // Buscar la orden que coincide exactamente con la referencia buscada
+        // (el pedido puede tener sub-órdenes: DF-1162, DTF-1162, etc.)
+        const matchedOrder = orders.find(o =>
+            (o.CodigoOrden || '').trim() === ref.trim() ||
+            (o.NoDocERP || '').trim() === ref.trim()
+        ) || first;
 
         const header = {
             pedidoRef: first.NoDocERP || ref,
             cliente: first.Cliente,
             descripcion: first.DescripcionTrabajo,
             avance: avance,
-            estadoGlobal: avance === 100 ? 'COMPLETADO' : 'EN PROCESO'
+            estadoGlobal: matchedOrder.Estado || 'PENDIENTE'
         };
 
         // 3. Mapear Órdenes para la tabla
@@ -1181,7 +1166,8 @@ exports.getIntegralPedidoDetailsV2 = async (req, res) => {
                     LB.UbicacionActual as Ubicacion, 
                     LB.Estado, 
                     O.CodigoOrden,
-                    LB.OrdenID
+                    LB.OrdenID,
+                    (SELECT TOP 1 LE.CodigoRemito FROM Logistica_EnvioItems LEI INNER JOIN Logistica_Envios LE ON LEI.EnvioID = LE.EnvioID WHERE LEI.BultoID = LB.BultoID ORDER BY LE.FechaSalida DESC) as CodigoRemito
                 FROM Logistica_Bultos LB
                 INNER JOIN Ordenes O ON LB.OrdenID = O.OrdenID
                 WHERE LB.OrdenID IN (${safeIds})
@@ -1283,43 +1269,48 @@ exports.getIntegralPedidoDetailsV2 = async (req, res) => {
             }
         }
 
+        // --- Pre-consulta DEPOSITO (fuera del .map sincrónico) ---
+        let depoStatusResult = 'Pendiente';
+        try {
+            const orderIdsForDepo = orders.map(o => o.OrdenID);
+            const noDocERPs = [...new Set(orders.map(o => o.NoDocERP).filter(Boolean))];
+            let depoRow = null;
+
+            const codigos = orders.map(o => `'${(o.CodigoOrden || '').replace(/'/g, "''").trim()}'`).join(',');
+            if (codigos) {
+                const depoRes = await pool.request().query(`
+                    SELECT TOP 1
+                        OD.OrdEstadoActual,
+                        COALESCE(LTRIM(RTRIM(EO.Nombre)), CAST(OD.OrdEstadoActual AS VARCHAR)) as NombreEstado
+                    FROM dbo.OrdenesDeposito OD
+                    LEFT JOIN dbo.EstadosOrdenes EO ON EO.EstadoID = OD.OrdEstadoActual
+                    WHERE LTRIM(RTRIM(OD.OrdCodigoOrden)) IN (${codigos})
+                `);
+                if (depoRes.recordset.length > 0) depoRow = depoRes.recordset[0];
+            }
+
+            if (depoRow) {
+                depoStatusResult = depoRow.NombreEstado || 'PENDIENTE';
+            } else if (bultosData.length > 0) {
+                const primerBulto = bultosData[0];
+                depoStatusResult = primerBulto.Estado || primerBulto.Ubicacion || 'PENDIENTE';
+            }
+        } catch (depoErr) {
+            logger.warn(`[IntegralV2] Error consultando OrdenesDeposito: ${depoErr.message}`);
+        }
+
         const ruta = Array.from(areaSteps.values()).map(step => {
-            const statuses = step.orders.map(o => (o.Estado || '').toUpperCase());
-
-            // Lógica de Prioridad: VIVO > CANCELADO
-            const isCancelled = (s) => ['CANCELADO', 'ANULADO', 'RECHAZADO'].includes(s);
-            const isCompleted = (s) => ['FINALIZADO', 'ENTREGADO', 'TERMINADO', 'PRONTO', 'COMPLETADO', 'DESPACHADO'].includes(s);
-            const isInProcess = (s) => ['PRODUCCION', 'IMPRIMIENDO', 'EN PROCESO', 'EN LOTE', 'CONTROL Y CALIDAD', 'EN_PROCESO', 'DEPOSITO'].includes(s);
-
-            const allCancelled = statuses.every(s => isCancelled(s));
-            // Si hay alguna viva (no cancelada), el estado NO es cancelado.
-            const hasAlive = statuses.some(s => !isCancelled(s));
-
             let stepStatus = 'PENDIENTE';
 
-            // Check robusto para detectar si es paso de Depósito (con o sin tilde, espacios, etc)
             const isStorageStep = /(DEPOSITO|DEPÓSITO|LOGISTICA|LOGÍSTICA)/i.test(step.label || step.id);
 
             if (isStorageStep) {
-                // Lógica Especial WMS para Depósito (Enganchada al nodo existente)
-                if (hasDepoDelivered && !hasDepoStock) stepStatus = 'COMPLETADO';
-                else if (hasDepoStock) stepStatus = 'EN PROCESO'; // Stock disponible
-                else if (hasAlive) {
-                    const aliveStatuses = statuses.filter(s => !isCancelled(s));
-                    if (aliveStatuses.every(s => isCompleted(s))) stepStatus = 'COMPLETADO';
-                    else if (aliveStatuses.some(s => isInProcess(s))) stepStatus = 'EN PROCESO';
-                }
+                // Estado directo de la tabla OrdenesDeposito
+                stepStatus = depoStatusResult;
             } else {
-                // Lógica Standard
-                if (allCancelled && statuses.length > 0) {
-                    stepStatus = 'CANCELADO';
-                } else if (hasAlive) {
-                    // Analizamos el estado de las vivas
-                    const aliveStatuses = statuses.filter(s => !isCancelled(s));
-                    if (aliveStatuses.every(s => isCompleted(s))) stepStatus = 'COMPLETADO';
-                    else if (aliveStatuses.some(s => isInProcess(s))) stepStatus = 'EN PROCESO';
-                    else stepStatus = 'PENDIENTE';
-                }
+                // Estado directo de la tabla Ordenes (primer orden viva del área)
+                const estadoDirecto = step.orders.find(o => o.Estado)?.Estado;
+                stepStatus = estadoDirecto || 'PENDIENTE';
             }
 
             return {
@@ -1327,9 +1318,10 @@ exports.getIntegralPedidoDetailsV2 = async (req, res) => {
                 label: step.label,
                 status: stepStatus,
                 date: step.date,
-                count: step.orders.length // Info extra útil
+                count: step.orders.length
             };
         });
+
 
 
 
@@ -1503,7 +1495,7 @@ exports.getFailedOrdersSummary = async (req, res) => {
 };
 exports.unassignOrder = async (req, res) => {
     const { orderId } = req.body;
-    const userId = (req.user && req.user.id) ? req.user.id : 1;
+    if (!req.user && !req.body.usuario) return res.status(400).json({ error: 'Usuario no autenticado' });
 
     try {
         const pool = await getPool();
@@ -1530,28 +1522,22 @@ exports.unassignOrder = async (req, res) => {
             // 2. Desasignar Orden (Volver a pendiente solo si corresponde)
             await new sql.Request(transaction)
                 .input('OID', sql.Int, orderId)
-                .input('NuevoEstado', sql.NVarChar, nuevoEstado)
-                .input('NuevoEstadoArea', sql.NVarChar, nuevoEstadoArea)
                 .query(`
                     UPDATE Ordenes 
                     SET RolloID = NULL, 
-                        Estado = @NuevoEstado, 
                         Secuencia = NULL, 
-                        MaquinaID = NULL,
-                        EstadoenArea = @NuevoEstadoArea
+                        MaquinaID = NULL
                     WHERE OrdenID = @OID
                 `);
 
-            // LOG
-            await new sql.Request(transaction)
-                .input('OID', sql.Int, orderId)
-                .input('Est', sql.VarChar, estadoLog)
-                .input('User', sql.VarChar, String(userId))
-                .input('Det', sql.NVarChar, `Retirado del Rollo ${rollId || '?'}`)
-                .query(`
-                    INSERT INTO HistorialOrdenes (OrdenID, Estado, FechaInicio, FechaFin, Usuario, Detalle)
-                    VALUES (@OID, @Est, GETDATE(), GETDATE(), @User, @Det)
-                `);
+            // Historial y Estado a través del servicio
+            await changeOrderState(transaction, {
+                target: { type: 'ORDER', id: orderId },
+                estado: nuevoEstadoArea,
+                userObj: req.user || req.body.usuario,
+                detalle: `Retirado del Lote ${rollId || '?'}`,
+                io       : req.app.get('socketio')
+            });
 
             // 3. Verificar si el rollo quedó vacío
             let rollCancelled = false;
@@ -1640,7 +1626,7 @@ exports.cancelOrder = async (req, res) => {
                 .query(`INSERT INTO HistorialOrdenes (OrdenID, Estado, FechaInicio, FechaFin, Usuario, Detalle)
                         VALUES (@OID, 'SNAPSHOT_PRE_CANCEL', GETDATE(), GETDATE(), @User, @Det)`);
 
-            // 1b. Cancelar la Orden y desasignar del lote
+            // 1b. Limpiar lote y notas extras
             await new sql.Request(transaction)
                 .input('ID', sql.Int, orderId)
                 .input('Obs', sql.NVarChar, obsText)
@@ -1648,9 +1634,7 @@ exports.cancelOrder = async (req, res) => {
                 .input('Detalles', sql.NVarChar, detalles || null)
                 .query(`
                     UPDATE Ordenes 
-                    SET Estado = 'Cancelado', 
-                        EstadoenArea = 'Cancelado', 
-                        RolloID = NULL,
+                    SET RolloID = NULL,
                         Nota = CONCAT(ISNULL(Nota, ''), @Obs),
                         Observaciones = CONCAT(ISNULL(Observaciones, ''), @Obs),
                         MotivoCancelacionID = @MotivoID,
@@ -1701,16 +1685,15 @@ exports.cancelOrder = async (req, res) => {
                 .input('IP', sql.VarChar, req.ip || '::1')
                 .query(`INSERT INTO Auditoria (IdUsuario, Accion, Detalles, DireccionIP, FechaHora) VALUES (@IdUser, @Accion, @Detalle, @IP, GETDATE())`);
 
-            // 4. Insertar HistorialOrdenes (Restored)
-            await new sql.Request(transaction)
-                .input('OID', sql.Int, orderId)
-                .input('Est', sql.VarChar, 'Cancelado')
-                .input('User', sql.VarChar, safeUser)
-                .input('Det', sql.NVarChar, safeReason)
-                .query(`
-                   INSERT INTO HistorialOrdenes (OrdenID, Estado, FechaInicio, FechaFin, Usuario, Detalle)
-                   VALUES (@OID, @Est, GETDATE(), GETDATE(), @User, @Det)
-               `);
+            // Historial via servicio central
+            await changeOrderState(transaction, {
+                target  : { type: 'ORDER', id: orderId },
+                estado  : 'Cancelado',
+                userObj : req.user || req.body.usuario,
+                detalle : safeReason,
+                io      : req.app.get('socketio'),
+                io       : req.app.get('socketio')
+            });
 
             await transaction.commit();
 
@@ -1813,7 +1796,7 @@ exports.updateService = async (req, res) => {
                     .input('Det', sql.NVarChar, `Servicio Extra Actualizado ID: ${serviceId}`)
                     .query(`
                         INSERT INTO [SecureAppDB].[dbo].[HistorialOrdenes] (OrdenID, Estado, FechaInicio, FechaFin, Usuario, Detalle)
-                        VALUES (@OID, 'EN PROCESO', GETDATE(), GETDATE(), @User, @Det)
+                        SELECT @OID, ISNULL(EstadoenArea, 'Pendiente'), GETDATE(), GETDATE(), @User, @Det FROM Ordenes WHERE OrdenID = @OID
                     `);
             }
 
@@ -1965,14 +1948,24 @@ exports.cancelRequest = async (req, res) => {
                     .input('NoDoc', sql.VarChar(50), noDoc)
                     .query(`SELECT OrdenID, Estado, EstadoenArea FROM Ordenes WHERE NoDocERP = @NoDoc AND Estado != 'CANCELADO'`);
 
-                // Guardar snapshot de estado anterior por cada orden
+                // Guardar snapshot y aplicar estado cancelado
                 for (const ord of ordenesActivas.recordset) {
+                    // Snapshot pre-cancel
                     await new sql.Request(transaction)
                         .input('OID', sql.Int, ord.OrdenID)
                         .input('User', sql.VarChar(100), safeUser)
                         .input('Det', sql.NVarChar, JSON.stringify({ __snapshot__: true, Estado: ord.Estado || 'En Proceso', EstadoenArea: ord.EstadoenArea || 'En Proceso' }))
                         .query(`INSERT INTO HistorialOrdenes (OrdenID, Estado, FechaInicio, FechaFin, Usuario, Detalle)
                                 VALUES (@OID, 'SNAPSHOT_PRE_CANCEL', GETDATE(), GETDATE(), @User, @Det)`);
+
+                    // Aplicar estado Cancelado via servicio
+                    await changeOrderState(transaction, {
+                        target  : { type: 'ORDER', id: ord.OrdenID },
+                        estado  : 'Cancelado',
+                        userObj : req.user || req.body.usuario,
+                        detalle : safeReason,
+                io       : req.app.get('socketio')
+            });
                 }
 
                 // Cancelar TODAS las órdenes con ese NoDocERP
@@ -1983,9 +1976,7 @@ exports.cancelRequest = async (req, res) => {
                     .input('Detalles', sql.NVarChar, detalles || null)
                     .query(`
                         UPDATE Ordenes 
-                        SET Estado = 'CANCELADO', 
-                            EstadoenArea = 'Cancelado',
-                            RolloID = NULL,
+                        SET RolloID = NULL,
                             MaquinaID = NULL,
                             Secuencia = NULL,
                             Observaciones = CONCAT(ISNULL(Observaciones, ''), @Obs),
@@ -2022,9 +2013,7 @@ exports.cancelRequest = async (req, res) => {
                     .input('Detalles', sql.NVarChar, detalles || null)
                     .query(`
                         UPDATE Ordenes 
-                        SET Estado = 'CANCELADO', 
-                            EstadoenArea = 'Cancelado',
-                            RolloID = NULL,
+                        SET RolloID = NULL,
                             MaquinaID = NULL,
                             Secuencia = NULL,
                             Observaciones = CONCAT(ISNULL(Observaciones, ''), @Obs),
@@ -2033,6 +2022,16 @@ exports.cancelRequest = async (req, res) => {
                         WHERE OrdenID = @ID
                     `);
                 rowsAffected = r2.rowsAffected[0];
+
+                // Aplicar estado Cancelado via servicio
+                await changeOrderState(transaction, {
+                    target  : { type: 'ORDER', id: orderId },
+                    estado  : 'Cancelado',
+                    userObj : req.user || req.body.usuario,
+                    detalle : safeReason,
+                io       : req.app.get('socketio')
+            });
+
                 // Cancelar archivos
                 await new sql.Request(transaction)
                     .input('ID', sql.Int, orderId)
@@ -2104,7 +2103,8 @@ exports.getOrderHistory = async (req, res) => {
 };
 exports.cancelFile = async (req, res) => {
     const { fileId, reason, motivoId, detalles, usuario } = req.body;
-    logger.info(`🚫 Cancelando Archivo ID: ${fileId} | Motivo: ${reason}`);
+    const userName = req.user ? (req.user.nombre || req.user.name || req.user.username || req.user.Nombre || String(usuario || 'Sistema')) : String(usuario || 'Sistema');
+    logger.info(`🚫 Cancelando Archivo ID: ${fileId} | Motivo: ${reason} | Usuario: ${userName}`);
 
     try {
         const pool = await getPool();
@@ -2116,7 +2116,7 @@ exports.cancelFile = async (req, res) => {
             await new sql.Request(transaction)
                 .input('ID', sql.Int, fileId)
                 .input('Obs', sql.NVarChar, reason || 'Cancelado por usuario')
-                .input('User', sql.VarChar(100), String(usuario || 'Sistema'))
+                .input('User', sql.VarChar(100), userName)
                 .input('MotivoID', sql.Int, motivoId || null)
                 .input('Detalles', sql.NVarChar, detalles || null)
                 .query(`
@@ -2165,25 +2165,21 @@ exports.cancelFile = async (req, res) => {
                         .input('Obs', sql.NVarChar, 'Todos los archivos fueron cancelados.')
                         .query(`
                             UPDATE Ordenes 
-                            SET Estado = 'CANCELADO', 
-                                EstadoenArea = 'Cancelado',
-                                RolloID = NULL,
+                            SET RolloID = NULL,
                                 MaquinaID = NULL,
                                 Secuencia = NULL,
                                 Observaciones = CONCAT(Observaciones, ' [AUTO-CANCEL: ', @Obs, ']')
                             WHERE OrdenID = @OID
                         `);
 
-                    // LOG ORDER CANCELADO
-                    await new sql.Request(transaction)
-                        .input('OID', sql.Int, ordenId)
-                        .input('Est', sql.VarChar, 'Cancelado')
-                        .input('User', sql.VarChar, String(usuario || 'Sistema'))
-                        .input('Det', sql.NVarChar, 'Orden Auto-Cancelada (Sin archivos activos)')
-                        .query(`
-                           INSERT INTO [SecureAppDB].[dbo].[HistorialOrdenes] (OrdenID, Estado, FechaInicio, FechaFin, Usuario, Detalle)
-                           VALUES (@OID, @Est, GETDATE(), GETDATE(), @User, @Det)
-                       `);
+                    // LOG via servicio central
+                    await changeOrderState(transaction, {
+                        target  : { type: 'ORDER', id: ordenId },
+                        estado  : 'Cancelado',
+                        userObj : req.user || req.body.usuario,
+                        detalle : 'Orden Auto-Cancelada (Sin archivos activos)',
+                io       : req.app.get('socketio')
+            });
                     orderCancelled = true;
                 }
 
@@ -2191,11 +2187,11 @@ exports.cancelFile = async (req, res) => {
                 await new sql.Request(transaction)
                     .input('OID', sql.Int, ordenId)
                     .input('Est', sql.VarChar, 'Archivo Cancelado')
-                    .input('User', sql.VarChar, String(usuario || 'Sistema'))
+                    .input('User', sql.VarChar, userName)
                     .input('Det', sql.NVarChar, `Archivo cancelado: ${reason}`)
                     .query(`
                        INSERT INTO [SecureAppDB].[dbo].[HistorialOrdenes] (OrdenID, Estado, FechaInicio, FechaFin, Usuario, Detalle)
-                       VALUES (@OID, 'EN PROCESO', GETDATE(), GETDATE(), @User, @Det)
+                       SELECT @OID, ISNULL(EstadoenArea, 'Pendiente'), GETDATE(), GETDATE(), @User, @Det FROM Ordenes WHERE OrdenID = @OID
                    `);
             }
 
@@ -2207,7 +2203,7 @@ exports.cancelFile = async (req, res) => {
                     let userIdInt = 1;
                     if (typeof usuario === 'object' && usuario.UsuarioID) userIdInt = parseInt(usuario.UsuarioID);
                     else if (typeof usuario === 'number') userIdInt = usuario;
-                    await ERPSyncService.syncFinalOrderIntegration(noDocERP, userIdInt, String(usuario || 'Sistema').substring(0,99), null, { skipDeposito: true });
+                    await ERPSyncService.syncFinalOrderIntegration(noDocERP, userIdInt, userName.substring(0,99), null, { skipDeposito: true });
                 }
             } catch (errSync) {
                 logger.error("❌ Error recotizando orden tras cancelar Archivo:", errSync);
@@ -2364,9 +2360,7 @@ exports.reactivateFile = async (req, res) => {
                         .input('Obs', sql.NVarChar, obsLimpia)
                         .query(`
                             UPDATE Ordenes
-                            SET Estado = 'En Proceso',
-                                EstadoenArea = 'En Proceso',
-                                Nota = @Nota,
+                            SET Nota = @Nota,
                                 Observaciones = @Obs,
                                 MotivoCancelacionID = NULL,
                                 DetallesCancelacion = NULL
@@ -2380,13 +2374,14 @@ exports.reactivateFile = async (req, res) => {
             await recalculateOrderMagnitude(transaction, OrdenID);
 
             // 6. Log en historial
-            await new sql.Request(transaction)
-                .input('OID', sql.Int, OrdenID)
-                .input('User', sql.VarChar(100), safeUser)
-                .query(`
-                    INSERT INTO HistorialOrdenes (OrdenID, Estado, FechaInicio, FechaFin, Usuario, Detalle)
-                    VALUES (@OID, 'EN PROCESO', GETDATE(), GETDATE(), @User, 'Archivo reactivado manualmente')
-                `);
+            // Historial via servicio central
+            await changeOrderState(transaction, {
+                target  : { type: 'ORDER', id: OrdenID },
+                estado  : 'Pendiente',
+                userObj : req.user || req.body.usuario,
+                detalle : 'Archivo reactivado manualmente',
+                io       : req.app.get('socketio')
+            });
 
             await transaction.commit();
 
@@ -2495,18 +2490,14 @@ exports.reactivateOrder = async (req, res) => {
                 .replace(/ \[AUTO-CANCEL:[^\]]*\]/g, '')
                 .trim();
 
-            // 5. Restaurar la orden con los estados reales previos
+            // 5. Limpiar notas de cancelacion
             await new sql.Request(transaction)
                 .input('OID', sql.Int, orderId)
-                .input('EstadoRest', sql.VarChar(100), estadoRestaurar)
-                .input('EstadoAreaRest', sql.VarChar(100), estadoAreaRestaurar)
                 .input('Nota', sql.NVarChar, notaLimpia)
                 .input('Obs', sql.NVarChar, obsLimpia)
                 .query(`
                     UPDATE Ordenes
-                    SET Estado = @EstadoRest,
-                        EstadoenArea = @EstadoAreaRest,
-                        Nota = @Nota,
+                    SET Nota = @Nota,
                         Observaciones = @Obs,
                         MotivoCancelacionID = NULL,
                         DetallesCancelacion = NULL
@@ -2516,14 +2507,14 @@ exports.reactivateOrder = async (req, res) => {
             // 6. Recalcular magnitud
             await recalculateOrderMagnitude(transaction, orderId);
 
-            // 7. Log
-            await new sql.Request(transaction)
-                .input('OID', sql.Int, orderId)
-                .input('User', sql.VarChar(100), safeUser)
-                .query(`
-                    INSERT INTO HistorialOrdenes (OrdenID, Estado, FechaInicio, FechaFin, Usuario, Detalle)
-                    VALUES (@OID, 'EN PROCESO', GETDATE(), GETDATE(), @User, 'Orden reactivada manualmente')
-                `);
+            // Historial via servicio central
+            await changeOrderState(transaction, {
+                target  : { type: 'ORDER', id: orderId },
+                estado  : estadoAreaRestaurar,
+                userObj : req.user || req.body.usuario,
+                detalle : 'Orden reactivada manualmente',
+                io       : req.app.get('socketio')
+            });
 
             await transaction.commit();
 
@@ -2642,15 +2633,11 @@ exports.reactivateRequest = async (req, res) => {
 
                 await new sql.Request(transaction)
                     .input('OID', sql.Int, orden.OrdenID)
-                    .input('EstadoRest', sql.VarChar(100), estadoRestaurar)
-                    .input('EstadoAreaRest', sql.VarChar(100), estadoAreaRestaurar)
                     .input('Nota', sql.NVarChar, notaLimpia)
                     .input('Obs', sql.NVarChar, obsLimpia)
                     .query(`
                         UPDATE Ordenes
-                        SET Estado = @EstadoRest,
-                            EstadoenArea = @EstadoAreaRest,
-                            Nota = @Nota,
+                        SET Nota = @Nota,
                             Observaciones = @Obs,
                             MotivoCancelacionID = NULL,
                             DetallesCancelacion = NULL
@@ -2660,14 +2647,14 @@ exports.reactivateRequest = async (req, res) => {
                 // 3d. Recalcular magnitud
                 await recalculateOrderMagnitude(transaction, orden.OrdenID);
 
-                // 3e. Log
-                await new sql.Request(transaction)
-                    .input('OID', sql.Int, orden.OrdenID)
-                    .input('User', sql.VarChar(100), safeUser)
-                    .query(`
-                        INSERT INTO HistorialOrdenes (OrdenID, Estado, FechaInicio, FechaFin, Usuario, Detalle)
-                        VALUES (@OID, 'EN PROCESO', GETDATE(), GETDATE(), @User, 'Pedido reactivado manualmente')
-                    `);
+                // Historial via servicio central
+                await changeOrderState(transaction, {
+                    target  : { type: 'ORDER', id: orden.OrdenID },
+                    estado  : estadoAreaRestaurar,
+                    userObj : req.user || req.body.usuario,
+                    detalle : 'Pedido reactivado manualmente',
+                io       : req.app.get('socketio')
+            });
             }
 
             await transaction.commit();

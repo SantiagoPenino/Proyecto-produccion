@@ -132,6 +132,31 @@ class LabelGenerationService {
                 return { success: false, error: 'No se pueden generar etiquetas: El pedido no tiene asignado un NoDocERP. Sincronice con el ERP primero.' };
             }
 
+            // ══════════════════════════════════════════════════════════════
+            // LOG FORENSE: etiquetas que van a ser ELIMINADAS
+            // ══════════════════════════════════════════════════════════════
+            try {
+                const preDeleteRes = await pool.request()
+                    .input('OID', sql.Int, ordenId)
+                    .query('SELECT EtiquetaID, CodigoEtiqueta, NumeroBulto, TotalBultos, FechaGeneracion FROM Etiquetas WHERE OrdenID = @OID');
+                const preDelete = preDeleteRes.recordset;
+                const callerStack = new Error().stack
+                    .split('\n')
+                    .slice(2, 6) // primeras 4 líneas del stack (excluye Error itself)
+                    .map(l => l.trim())
+                    .join(' | ');
+
+                logger.warn(
+                    `[LabelService:FORENSIC] ⚠️  ANTES DEL DELETE — OrdenID=${ordenId} | Etiquetas existentes: ${preDelete.length}` +
+                    (preDelete.length > 0
+                        ? ' | IDs: ' + preDelete.map(e => `${e.CodigoEtiqueta}(ID=${e.EtiquetaID})`).join(', ')
+                        : ' | (ninguna)') +
+                    ` | Caller: ${callerStack}`
+                );
+            } catch (logErr) {
+                logger.warn(`[LabelService:FORENSIC] Error en log pre-delete: ${logErr.message}`);
+            }
+
             // Limpieza de datos logísticos previos
             try {
                 await new sql.Request(transaction).input('OID', sql.Int, ordenId).query(`
@@ -149,6 +174,7 @@ class LabelGenerationService {
 
             await new sql.Request(transaction).input('OID', sql.Int, ordenId).query("DELETE FROM Logistica_Bultos WHERE OrdenID = @OID");
             await new sql.Request(transaction).input('OID', sql.Int, ordenId).query("DELETE FROM Etiquetas WHERE OrdenID = @OID");
+            logger.warn(`[LabelService:FORENSIC] 🗑️  DELETE ejecutado — OrdenID=${ordenId}`);
 
             // Insertar Nuevos Bultos/Etiquetas
             const proximoServicio = (o.ProximoServicio || 'DEPOSITO').trim().toUpperCase();
@@ -221,6 +247,25 @@ class LabelGenerationService {
             }
 
             await transaction.commit();
+
+            // ══════════════════════════════════════════════════════════════
+            // LOG FORENSE: etiquetas recién creadas
+            // ══════════════════════════════════════════════════════════════
+            try {
+                const postInsertRes = await pool.request()
+                    .input('OID', sql.Int, ordenId)
+                    .query('SELECT EtiquetaID, CodigoEtiqueta, NumeroBulto, TotalBultos FROM Etiquetas WHERE OrdenID = @OID');
+                const postInsert = postInsertRes.recordset;
+                logger.warn(
+                    `[LabelService:FORENSIC] ✅  DESPUÉS DEL INSERT — OrdenID=${ordenId} | Etiquetas nuevas: ${postInsert.length}` +
+                    (postInsert.length > 0
+                        ? ' | IDs: ' + postInsert.map(e => `${e.CodigoEtiqueta}(ID=${e.EtiquetaID})`).join(', ')
+                        : '')
+                );
+            } catch (logErr) {
+                logger.warn(`[LabelService:FORENSIC] Error en log post-insert: ${logErr.message}`);
+            }
+
             logger.info(`[LabelService] Exito. ${totalBultos} bultos generados para Orden ${ordenId}.`);
 
             return { success: true, totalBultos };
@@ -316,6 +361,31 @@ class LabelGenerationService {
             if (transaction) try { await transaction.rollback(); } catch (e) {}
             throw err;
         }
+    }
+    /**
+     * Recalcula los contadores (TotalBultos) de todas las etiquetas existentes de una orden.
+     * NO borra ni crea etiquetas. NO cambia NumeroBulto ni CodigoEtiqueta.
+     * Solo actualiza TotalBultos = COUNT(*) actual para que los contadores queden consistentes.
+     */
+    static async recalcularContadores(ordenId) {
+        const pool = await getPool();
+        const cntRes = await pool.request()
+            .input('OID', sql.Int, ordenId)
+            .query(`SELECT COUNT(*) as cnt FROM Etiquetas WHERE OrdenID = @OID`);
+
+        const total = cntRes.recordset[0]?.cnt || 0;
+
+        if (total === 0) {
+            return { success: false, error: 'La orden no tiene etiquetas. Use Regenerar para crearlas.' };
+        }
+
+        await pool.request()
+            .input('OID', sql.Int, ordenId)
+            .input('Tot', sql.Int, total)
+            .query(`UPDATE Etiquetas SET TotalBultos = @Tot WHERE OrdenID = @OID`);
+
+        logger.info(`[LabelService] recalcularContadores OK. Orden ${ordenId}: ${total} bulto(s), TotalBultos actualizado.`);
+        return { success: true, totalBultos: total };
     }
 }
 

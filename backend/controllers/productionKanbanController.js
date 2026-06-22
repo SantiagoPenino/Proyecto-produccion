@@ -1,15 +1,15 @@
 const { getPool, sql } = require('../config/db');
+const { changeOrderState } = require('../services/stateManagerService');
+const { registrarAuditoria } = require('../services/trackingService');
 const logger = require('../utils/logger');
 
 exports.getBoard = async (req, res) => {
     let { area } = req.query;
     logger.info("--- Cargando Tablero para Área:", area);
-    // if (area === 'DF') area = 'DTF'; // DISABLED: User requested no forced conversion
 
     try {
         const POOL = await getPool();
 
-        // 1. Obtener Máquinas (Columnas reales: EquipoID, Nombre, EstadoProceso)
         const machinesRes = await POOL.request()
             .input('Area', sql.VarChar, area)
             .query(`
@@ -25,7 +25,6 @@ exports.getBoard = async (req, res) => {
 
         const machines = machinesRes.recordset;
 
-        // 2. Obtener Rollos
         const rollsRes = await POOL.request()
             .input('Area', sql.VarChar, area)
             .query(`
@@ -46,7 +45,6 @@ exports.getBoard = async (req, res) => {
                 WHERE r.AreaID = @Area AND r.Estado NOT IN ('Cerrado', 'Finalizado', 'Cancelado')
             `);
 
-        // Inicializamos usage a 0 para recalcularlo basado en órdenes reales
         let allRolls = rollsRes.recordset.map(r => ({ 
             ...r, 
             creador: r.CreadorNombre,
@@ -55,7 +53,6 @@ exports.getBoard = async (req, res) => {
             usage: 0 
         }));
 
-        // 3. Obtener Órdenes de esos Rollos
         const ordersRes = await POOL.request()
             .input('Area', sql.VarChar, area)
             .query(`
@@ -77,55 +74,37 @@ exports.getBoard = async (req, res) => {
                   AND o.Estado NOT IN ('Finalizado', 'Entregado', 'Cancelado')
             `);
 
-        // 4. Asignar Órdenes y SUMAR Metros
         const orders = ordersRes.recordset;
         orders.forEach(order => {
             const roll = allRolls.find(r => String(r.id) === String(order.rollId));
             if (roll) {
-                // Mejora robusta para parseo de Magnitud (soporta "2,5 m", "2.5m", "100 u")
                 const rawMag = String(order.magnitude || '0').replace(',', '.');
                 const mag = parseFloat(rawMag.replace(/[^\d.]/g, '')) || 0;
-
-                roll.orders.push({
-                    ...order,
-                    desc: order.descr,
-                    magnitude: mag // Enviamos el valor numérico limpio al front
-                });
-
-                // Sumamos al uso total del rollo
+                roll.orders.push({ ...order, desc: order.descr, magnitude: mag });
                 roll.usage += mag;
-
-                // Actualizamos el contador real de órdenes en memoria
                 roll.ordersCount = roll.orders.length;
             }
         });
 
-        // 4.5 Calcular Material Predominante (Lógica compartida con rollsController)
         allRolls.forEach(r => {
             const ignored = ['SIN MATERIAL ESPECIFICADO', 'SIN MATERIAL', 'NINGUNO', 'N/A', 'VARIOS'];
-
             const rawMaterials = r.orders.map(o => (o.material || '').trim());
             const validMaterials = rawMaterials.filter(m => m && !ignored.includes(m.toUpperCase()));
             const uniqueMaterials = [...new Set(validMaterials)];
-
             if (uniqueMaterials.length === 0) r.material = '-';
             else if (uniqueMaterials.length === 1) r.material = uniqueMaterials[0];
             else r.material = 'Varios Materiales';
         });
 
-        // 5. Unir los datos para el Frontend
         const finalMachines = machines.map(m => {
             const assignedRolls = allRolls.filter(r => String(r.machineId) === String(m.id));
             return {
                 ...m,
                 rolls: assignedRolls,
-                // Si hay algún rollo en estado 'En maquina', la máquina está ocupada
                 isBusy: assignedRolls.some(r => r.status.includes('En maquina'))
             };
         });
 
-        // Rollos que no tienen MaquinaID asignado
-        // Rollos que no tienen MaquinaID asignado (Mesa de Armado)
         const pendingRolls = allRolls.filter(r =>
             !r.machineId ||
             String(r.machineId).toUpperCase() === 'NULL' ||
@@ -141,17 +120,13 @@ exports.getBoard = async (req, res) => {
     }
 };
 
-const { registrarAuditoria, registrarHistorialOrden } = require('../services/trackingService');
-
-// ... existing getBoard ...
-
 exports.assignRoll = async (req, res) => {
     const { rollId, rollIds, machineId } = req.body;
-    // Attempt to get user info, fallback to 1 or null
-    const userId = req.user ? req.user.id : (req.body.userId || 1);
+    const userObj = req.user || req.body.usuario || req.body.userId;
+    if (!userObj) return res.status(400).json({ error: "Usuario no autenticado o no proporcionado" });
     const ip = req.ip || req.connection.remoteAddress;
+    const mid = machineId || null;
 
-    // Normalize to array
     let targets = [];
     if (rollIds && Array.isArray(rollIds)) {
         targets = rollIds;
@@ -163,7 +138,7 @@ exports.assignRoll = async (req, res) => {
         return res.status(400).json({ error: "No se indicaron rollos para asignar." });
     }
 
-    logger.info(`[assignRoll-Kanban] Request received. Rolls: [${targets.join(', ')}], MachineID: ${machineId}`);
+    logger.info(`[assignRoll-Kanban] Rolls: [${targets.join(', ')}], MachineID: ${machineId}`);
 
     let transaction;
     try {
@@ -171,41 +146,38 @@ exports.assignRoll = async (req, res) => {
         transaction = new sql.Transaction(pool);
         await transaction.begin();
 
-        // 1. Obtener EstadoProceso de la Máquina (aunque por regla ponemos En cola Eq)
-        let machineStatus = 'En cola Eq';
-        const mid = machineId || null;
-
         for (const currentRollId of targets) {
-            // 2. Actualizar Rollo
-            const reqRoll = new sql.Request(transaction);
-            await reqRoll.input('RID', sql.Int, currentRollId)
-                .input('MID', sql.Int, mid)
-                .query(`UPDATE dbo.Rollos SET MaquinaID = @MID, Estado = 'En cola' WHERE RolloID = @RID`);
-
-            // 3. Obtener Ordenes afectadas para Historial
-            const reqGetOrders = new sql.Request(transaction);
-            const ordersCheck = await reqGetOrders.input('RID', sql.Int, currentRollId)
-                .query("SELECT OrdenID FROM dbo.Ordenes WHERE RolloID = @RID");
-
-            const affectedOrderIds = ordersCheck.recordset.map(o => o.OrdenID);
-
-            // 4. Actualizar Ordenes
-            const reqOrders = new sql.Request(transaction);
-            await reqOrders.input('MID', sql.Int, mid)
-                .input('StatusArea', sql.VarChar, machineStatus)
+            // Actualizar Rollo (gestión de equipo, no de estado)
+            await new sql.Request(transaction)
                 .input('RID', sql.Int, currentRollId)
-                .query(`UPDATE dbo.Ordenes SET MaquinaID = @MID, EstadoenArea = @StatusArea WHERE RolloID = @RID`);
+                .input('MID', sql.Int, mid)
+                .query("UPDATE dbo.Rollos SET MaquinaID = @MID, Estado = 'En cola' WHERE RolloID = @RID");
 
-            // 5. Registrar Historial y Auditoria
-            for (const oid of affectedOrderIds) {
-                await registrarHistorialOrden(transaction, oid, machineStatus, userId, `Asignado a Maquina #${machineId}`);
-            }
+            // Actualizar solo MaquinaID en Ordenes (Estado/EstadoenArea via stateManager)
+            await new sql.Request(transaction)
+                .input('MID', sql.Int, mid)
+                .input('RID', sql.Int, currentRollId)
+                .query('UPDATE dbo.Ordenes SET MaquinaID = @MID WHERE RolloID = @RID');
+
+            // Estado + historial via servicio central
+            await changeOrderState(transaction, {
+                target   : { type: 'ROLL', id: currentRollId },
+                estado   : 'En Maquina',
+                userObj  : userObj,
+                detalle  : 'Asignado a Maquina {maquina}',
+                maquinaId: mid,
+                rolloId  : currentRollId,
+                io       : req.app.get('socketio'),
+                io       : req.app.get('socketio'),
+                io       : req.app.get('socketio')
+            });
         }
 
-        await registrarAuditoria(transaction, userId, 'ASIGNACION_MASIVA', `${targets.length} rollos asignados a Maquina ${machineId}`, ip);
+        const { userIdNum } = require('../services/stateManagerService').extractUser(userObj);
+        await registrarAuditoria(transaction, userIdNum, 'ASIGNACION_MASIVA', `${targets.length} rollos asignados a Maquina ${machineId}`, ip);
 
         await transaction.commit();
-        res.json({ success: true, machineStatus });
+        res.json({ success: true });
     } catch (err) {
         if (transaction) await transaction.rollback();
         logger.error("❌ ERROR AL ASIGNAR (Kanban):", err.message);
@@ -215,42 +187,45 @@ exports.assignRoll = async (req, res) => {
 
 exports.unassignRoll = async (req, res) => {
     const { rollId } = req.body;
-    const userId = req.user ? req.user.id : (req.body.userId || 1);
+    const userObj = req.user || req.body.usuario || req.body.userId;
+    if (!userObj) return res.status(400).json({ error: "Usuario no autenticado o no proporcionado" });
     const ip = req.ip || req.connection.remoteAddress;
 
-    logger.info(`[unassignRoll-Kanban] Request received. RollID: ${rollId}`);
+    logger.info(`[unassignRoll-Kanban] RollID: ${rollId}`);
+    let transaction;
     try {
         const pool = await getPool();
-        const transaction = new sql.Transaction(pool);
+        transaction = new sql.Transaction(pool);
         await transaction.begin();
 
-        const request = new sql.Request(transaction);
+        // 1. Desmontar Rollo (gestión de equipo)
+        await new sql.Request(transaction)
+            .input('RID', sql.Int, rollId)
+            .query("UPDATE dbo.Rollos SET MaquinaID = NULL, Estado = 'Abierto' WHERE RolloID = @RID");
 
-        // 1. Desmontar Rollo
-        await request.input('RID', sql.Int, rollId)
-            .query(`UPDATE dbo.Rollos SET MaquinaID = NULL, Estado = 'Abierto' WHERE RolloID = @RID`);
+        // 2. Limpiar MaquinaID en Ordenes (gestión de equipo)
+        await new sql.Request(transaction)
+            .input('RID', sql.Int, rollId)
+            .query('UPDATE dbo.Ordenes SET MaquinaID = NULL WHERE RolloID = @RID');
 
-        // 2. Obtener Ordenes para Historial
-        const reqGetOrders = new sql.Request(transaction);
-        const ordersCheck = await reqGetOrders.input('RID', sql.Int, rollId)
-            .query("SELECT OrdenID FROM dbo.Ordenes WHERE RolloID = @RID");
+        // 3. Estado + historial via servicio central
+        await changeOrderState(transaction, {
+            target  : { type: 'ROLL', id: rollId },
+            estado  : 'En Lote',
+            userObj : userObj,
+            detalle : 'Desmontado de Maquina - Lote {rollo}',
+            rolloId : rollId,
+                io       : req.app.get('socketio'),
+                io       : req.app.get('socketio')
+            });
 
-        const affectedOrderIds = ordersCheck.recordset.map(o => o.OrdenID);
-
-        // 3. Actualizar Ordenes
-        const reqOrders = new sql.Request(transaction);
-        await reqOrders.input('RID', sql.Int, rollId)
-            .query(`UPDATE dbo.Ordenes SET MaquinaID = NULL, EstadoenArea = 'En Rollo' WHERE RolloID = @RID`);
-
-        // 4. Registrar Historial y Auditoria
-        for (const oid of affectedOrderIds) {
-            await registrarHistorialOrden(transaction, oid, 'En Rollo', userId, 'Desmontado de Maquina');
-        }
-        await registrarAuditoria(transaction, userId, 'DESMONTAJE_ROLLO', `Rollo ${rollId} desmontado`, ip);
+        const { userIdNum } = require('../services/stateManagerService').extractUser(userObj);
+        await registrarAuditoria(transaction, userIdNum, 'DESMONTAJE_ROLLO', `Rollo ${rollId} desmontado`, ip);
 
         await transaction.commit();
         res.json({ success: true });
     } catch (err) {
+        if (transaction) await transaction.rollback();
         logger.error("❌ ERROR AL DESASIGNAR:", err.message);
         res.status(500).json({ error: err.message });
     }

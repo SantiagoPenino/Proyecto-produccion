@@ -3,6 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const driveService = require('../services/driveService');
 const logger = require('../utils/logger');
+const { registrarHistorialOrden } = require('../services/trackingService');
 
 // Helper to save base64 file to Google Drive
 const saveFileToDrive = async (base64Data, fileName, areaName) => {
@@ -140,14 +141,7 @@ exports.createClientOrder = async (req, res) => {
         }
 
         // 3. Log History
-        await new sql.Request(transaction)
-            .input('OID', sql.Int, newOrderId)
-            .input('User', sql.VarChar, String(userId || 'Guest'))
-            .input('Det', sql.NVarChar, 'Pedido Web Creado')
-            .query(`
-                INSERT INTO HistorialOrdenes (OrdenID, Estado, FechaInicio, FechaFin, Usuario, Detalle)
-                VALUES (@OID, 'Pendiente', GETDATE(), GETDATE(), @User, @Det)
-            `);
+        await registrarHistorialOrden(transaction, newOrderId, 'Pendiente', String(userId || 'Guest'), 'Pedido Web Creado');
 
         await transaction.commit();
         res.json({ success: true, orderId: newOrderId });

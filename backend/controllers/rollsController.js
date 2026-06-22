@@ -96,7 +96,7 @@ exports.getBoardData = async (req, res) => {
 
                 FROM dbo.Ordenes o 
                 WHERE o.AreaID = @AreaID
-                AND o.Estado NOT IN ('Entregado', 'Finalizado', 'Cancelado', 'Pronto')
+                AND o.Estado NOT IN ('Entregado', 'Finalizado', 'Cancelado') AND ISNULL(o.EstadoenArea,'') NOT IN ('Pronto', 'PRONTO')
                 
                 -- Ordenamos por Secuencia para mantener el orden del Drag & Drop
                 ORDER BY ISNULL(o.Secuencia, 999999), o.OrdenID ASC
@@ -325,42 +325,27 @@ exports.moveOrder = async (req, res) => {
             await transaction.begin();
 
         try {
+            const { changeOrderState } = require('../services/stateManagerService');
             for (const id of idsToMove) {
+                // Columnas estructurales (rollo/secuencia/máquina) en UPDATE directo (no son "estado")
                 await new sql.Request(transaction)
                     .input('OrdenID', sql.Int, id)
                     .input('RolloID', sql.VarChar(20), targetRollId ? String(targetRollId) : null)
                     .query(`
-                        UPDATE dbo.Ordenes 
-                        SET 
-                            RolloID = @RolloID,
-                            -- Si es a Pendientes (null), NULL. Si es a un Rollo, calculamos nueva secuencia al final
-                            Secuencia = CASE 
-                                WHEN @RolloID IS NULL THEN NULL 
-                                ELSE (SELECT ISNULL(MAX(Secuencia), 0) + 1 FROM dbo.Ordenes WHERE RolloID = @RolloID) 
-                            END,
-                            
-                            -- Heredar máquina del nuevo rollo
-                            MaquinaID = CASE 
-                                WHEN @RolloID IS NULL THEN NULL 
-                                ELSE (SELECT MaquinaID FROM dbo.Rollos WHERE RolloID = @RolloID) 
-                            END,
-
-                            -- Actualizar estado según el estado del rollo destino
-                            Estado = CASE 
-                                WHEN @RolloID IS NULL THEN 'Pendiente'
-                                ELSE 
-                                    CASE 
-                                        WHEN EXISTS(SELECT 1 FROM dbo.Rollos WHERE RolloID = @RolloID AND Estado = 'Producción') 
-                                        THEN 'Imprimiendo' 
-                                        ELSE 'En Lote' 
-                                    END
-                                END,
-                            EstadoenArea = CASE 
-                                WHEN @RolloID IS NULL THEN 'Pendiente'
-                                ELSE 'En Lote'
-                            END
+                        UPDATE dbo.Ordenes
+                        SET RolloID = @RolloID,
+                            Secuencia = CASE WHEN @RolloID IS NULL THEN NULL ELSE (SELECT ISNULL(MAX(Secuencia), 0) + 1 FROM dbo.Ordenes WHERE RolloID = @RolloID) END,
+                            MaquinaID = CASE WHEN @RolloID IS NULL THEN NULL ELSE (SELECT MaquinaID FROM dbo.Rollos WHERE RolloID = @RolloID) END
                         WHERE OrdenID = @OrdenID
                     `);
+                // Estado/EstadoenArea vía servicio central ('En Lote' deriva a Produccion)
+                await changeOrderState(transaction, {
+                    target : { type: 'ORDER', id },
+                    estado : targetRollId ? 'En Lote' : 'Pendiente',
+                    userObj: req.user || 'Sistema',
+                    detalle: targetRollId ? 'Movida a lote' : 'Movida a Pendientes',
+                    io     : req.app.get('socketio'),
+                });
             }
 
 
@@ -757,21 +742,17 @@ exports.dismantleRoll = async (req, res) => {
         await transaction.begin();
 
         try {
-            // 1. Liberar Ordenes (Vuelta a Pendientes)
-            await new sql.Request(transaction)
-                .input('RID', sql.VarChar(50), rollId.toString())
-                .query(`
-                    UPDATE dbo.Ordenes 
-                    SET 
-                        RolloID = NULL, 
-                        BobinaID = NULL, -- ✅ Limpiar BobinaID
-                        MaquinaID = NULL,
-                        Secuencia = NULL, 
-                        Estado = 'Pendiente', 
-                        EstadoenArea = 'Pendiente'
-                    WHERE CAST(RolloID AS VARCHAR(50)) = @RID
-                    AND Estado != 'Finalizado' 
-                `);
+            // 1. Liberar Ordenes (Vuelta a Pendientes) — vía servicio central (guarda: no tocar finalizadas)
+            const { changeOrderState } = require('../services/stateManagerService');
+            await changeOrderState(transaction, {
+                target  : { type: 'ROLL', id: rollId },
+                estado  : 'Pendiente',
+                userObj : req.user || 'Sistema',
+                detalle : 'Lote desarmado',
+                guard   : "Estado != 'Finalizado'",
+                extraSet: { RolloID: null, BobinaID: null, MaquinaID: null, Secuencia: null },
+                io      : req.app.get('socketio'),
+            });
 
             // 2. Eliminar el Rollo físicamente
             await new sql.Request(transaction)
@@ -861,20 +842,16 @@ exports.splitRoll = async (req, res) => {
 
             const cutOffSeq = seqRes.recordset[0]?.Secuencia || 0;
 
-            await new sql.Request(transaction)
-                .input('OldID', sql.VarChar(20), rollId)
-                .input('NewID', sql.VarChar(20), newRollId)
-                .input('NewBob', sql.Int, newBobinaId || null)
-                .input('CutSeq', sql.Int, cutOffSeq)
-                .query(`
-                    UPDATE Ordenes 
-                    SET RolloID = @NewID,
-                        Estado = 'Pendiente', -- Vuelven a estado inicial del lote nuevo
-                        EstadoenArea = 'En Lote',
-                        MaquinaID = NULL -- Se desasignan de la máquina actual
-                    WHERE RolloID = @OldID 
-                    AND (Secuencia > @CutSeq OR (Secuencia IS NULL AND OrdenID > ${lastOrderId}))
-                `);
+            const { changeOrderState } = require('../services/stateManagerService');
+            await changeOrderState(transaction, {
+                target  : { type: 'ROLL', id: rollId },
+                estado  : 'En Lote',
+                userObj : req.user || 'Sistema',
+                detalle : 'Lote dividido: órdenes movidas al nuevo lote',
+                guard   : `(Secuencia > ${cutOffSeq} OR (Secuencia IS NULL AND OrdenID > ${lastOrderId}))`,
+                extraSet: { RolloID: newRollId, MaquinaID: null },
+                io      : req.app.get('socketio'),
+            });
 
             // 4. ACTUALIZAR ROLLO VIEJO (FINALIZAR)
             await new sql.Request(transaction)
@@ -883,9 +860,13 @@ exports.splitRoll = async (req, res) => {
 
             // Marcar ordenes viejas como finalizadas/impresas
             // IMPORTANTE: Solo las que quedaron en el rollo viejo (las que tienen secuencia <= cutOffSeq)
-            await new sql.Request(transaction)
-                .input('RID', sql.VarChar(20), rollId)
-                .query("UPDATE Ordenes SET Estado = 'Finalizado' WHERE RolloID = @RID");
+            await changeOrderState(transaction, {
+                target : { type: 'ROLL', id: rollId },
+                estado : 'Finalizado',
+                userObj: req.user || 'Sistema',
+                detalle: 'Lote impreso, órdenes finalizadas',
+                io     : req.app.get('socketio'),
+            });
 
             await transaction.commit();
 
@@ -949,7 +930,7 @@ exports.getRolloMetrics = async (req, res) => {
                 SELECT 
                     -- Contadores de Ordenes
                     COUNT(DISTINCT O.OrdenID) as TotalOrders,
-                    SUM(CASE WHEN O.Estado IN ('Completo', 'Finalizado', 'PRONTO', 'PRONTO SECTOR') THEN 1 ELSE 0 END) as CompletedOrders,
+                    SUM(CASE WHEN O.Estado IN ('Completo', 'Finalizado', 'PRONTO SECTOR') OR ISNULL(O.EstadoenArea,'') IN ('Pronto', 'PRONTO') THEN 1 ELSE 0 END) as CompletedOrders,
                     SUM(CASE WHEN O.Estado IN ('Falla', 'FALLA') THEN 1 ELSE 0 END) as FailOrders,
 
                     -- Contadores de Archivos
@@ -1172,7 +1153,8 @@ exports.getRollosActivos = async (req, res) => {
                             AND EXISTS (
                                 SELECT 1 FROM dbo.Ordenes o WITH (NOLOCK)
                                 WHERE o.RolloID = r.RolloID
-                                  AND o.Estado NOT IN ('Pronto', 'Finalizado', 'CANCELADO', 'Entregado')
+                                  AND o.Estado NOT IN ('Finalizado', 'CANCELADO', 'Entregado')
+                                  AND ISNULL(o.EstadoenArea,'') NOT IN ('Pronto', 'PRONTO', 'En Transito', 'EN TRANSITO')
                             )
                         )
                     )
@@ -1471,19 +1453,23 @@ exports.magicRollAssignment = async (req, res) => {
                 rollsCreated++;
 
                 // C. Asignar Órdenes al Rollo (Con secuencia ordenada)
+                const { changeOrderState } = require('../services/stateManagerService');
                 let seq = 1;
                 for (const ord of groupOrders) {
+                    // Estructural: rollo + secuencia
                     await new sql.Request(transaction)
                         .input('OrdenID', sql.Int, ord.OrdenID)
                         .input('RolloID', sql.VarChar(20), rollId)
                         .input('Secuencia', sql.Int, seq)
-                        .query(`
-                            UPDATE dbo.Ordenes 
-                            SET RolloID = @RolloID, 
-                                Estado = 'En Lote', 
-                                Secuencia = @Secuencia
-                            WHERE OrdenID = @OrdenID
-                        `);
+                        .query(`UPDATE dbo.Ordenes SET RolloID = @RolloID, Secuencia = @Secuencia WHERE OrdenID = @OrdenID`);
+                    // Estado/EstadoenArea vía servicio central ('En Lote' deriva a Produccion)
+                    await changeOrderState(transaction, {
+                        target : { type: 'ORDER', id: ord.OrdenID },
+                        estado : 'En Lote',
+                        userObj: req.user || 'Sistema',
+                        detalle: 'Asignada a lote',
+                        io     : req.app.get('socketio'),
+                    });
                     seq++;
                     ordersAssigned++;
                 }

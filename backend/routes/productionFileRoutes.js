@@ -6,6 +6,7 @@ const pedidosController = require('../controllers/pedidosController');
 const etiquetasController = require('../controllers/etiquetasController');
 const rollsController = require('../controllers/rollsController'); // Updated to new controller
 const equiposController = require('../controllers/equiposController');
+const { verifyToken } = require('../middleware/authMiddleware');
 
 // --- ROLLOS ---
 router.get('/rollos', rollsController.getRollosActivos);
@@ -29,12 +30,13 @@ router.get('/orden/:ordenId/archivos', productionFileController.getArchivosPorOr
 router.get('/view-drive-file', productionFileController.viewDriveFile);
 router.get('/tipos-falla', productionFileController.getTiposFalla);
 router.get('/motivos-cancelacion', productionFileController.getMotivosCancelacion);
-router.post('/controlar', productionFileController.postControlArchivo);
+router.post('/controlar', verifyToken, productionFileController.postControlArchivo);
 router.post('/update-copy-count', productionFileController.updateFileCopyCount);
-router.post('/orden/:ordenId/completar', productionFileController.completarOrden);
+router.post('/orden/:ordenId/completar', verifyToken, productionFileController.completarOrden);
 // --- ETIQUETAS y Vista Dividida ---
 router.get('/ordenes-labels', etiquetasController.getOrdersForLabels);
 router.post('/regen-labels/:ordenId', productionFileController.regenerateEtiquetas);
+router.post('/recalc-labels/:ordenId', productionFileController.recalcularContadoresEtiquetas);
 router.get('/orden/:ordenId/etiquetas/print', etiquetasController.printEtiquetas);
 router.get('/orden/:id/pending-services', etiquetasController.getPendingServices);
 router.post('/orden/:id/next-service', etiquetasController.updateOrderNextService);

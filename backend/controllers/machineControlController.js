@@ -36,7 +36,11 @@ exports.handleSlotAction = async (req, res) => {
     const { action, bobinaId, insumoId, cantidad, comment } = req.body;
     // action: 'MOUNT', 'UNMOUNT', 'REFILL'
 
-    const userId = req.user ? req.user.id : 1; // Asumimos user 1 si no auth
+    const userObj = req.user || req.body.usuario || req.body.userId;
+        if (!userObj) return res.status(400).json({ error: "Usuario no autenticado o no proporcionado" });
+        const userName = typeof userObj === 'object' ? (userObj.Nombre || userObj.nombre || userObj.name || userObj.username || String(userObj.id || userObj.UsuarioID)) : String(userObj);
+        const userIdNum = typeof userObj === 'object' ? (userObj.UsuarioID || userObj.id) : parseInt(userObj);
+        if (!userName || !userIdNum || isNaN(userIdNum) || userName === 'undefined') return res.status(400).json({ error: "Datos de usuario inválidos" });
 
     try {
         const pool = await getPool();
@@ -95,7 +99,7 @@ exports.handleSlotAction = async (req, res) => {
                         .input('BID', sql.Int, realBobinaId)
                         .query("UPDATE InventarioBobinas SET Estado = 'En Uso' WHERE BobinaID = @BID");
 
-                    await logAction(transaction, slotId, machineId, userId, 'MONTAJE', null, realBobinaId, null, comment);
+                    await logAction(transaction, slotId, machineId, userIdNum, 'MONTAJE', null, realBobinaId, null, comment);
 
                 } else if (action === 'UNMOUNT') {
                     if (!slot.BobinaMontadaID) throw new Error("No hay bobina montada para desmontar.");
@@ -113,7 +117,7 @@ exports.handleSlotAction = async (req, res) => {
                         .input('Est', sql.VarChar(20), estadoFinal)
                         .query("UPDATE InventarioBobinas SET Estado = @Est WHERE BobinaID = @BID");
 
-                    await logAction(transaction, slotId, machineId, userId, 'DESMONTAJE', null, oldBobinaId, null, comment || `Estado final: ${estadoFinal}`);
+                    await logAction(transaction, slotId, machineId, userIdNum, 'DESMONTAJE', null, oldBobinaId, null, comment || `Estado final: ${estadoFinal}`);
                 }
             }
             // --- LÓGICA DE CONSUMIBLES (TINTAS) ---
@@ -125,7 +129,7 @@ exports.handleSlotAction = async (req, res) => {
                     // Opcionalmente podríamos descontar de un inventario maestro de "Botellas" si existiera.
                     // Por ahora, bitácora.
 
-                    await logAction(transaction, slotId, machineId, userId, 'RECARGA', insumoId, null, cantidad, comment);
+                    await logAction(transaction, slotId, machineId, userIdNum, 'RECARGA', insumoId, null, cantidad, comment);
                 }
             }
 
@@ -149,7 +153,7 @@ async function logAction(transaction, slotId, teamId, userId, action, insumoId, 
     await new sql.Request(transaction)
         .input('SID', sql.Int, slotId)
         .input('EID', sql.Int, teamId)
-        .input('UID', sql.Int, userId)
+        .input('UID', sql.Int, userIdNum)
         .input('Acc', sql.NVarChar(50), action)
         .input('IID', sql.Int, insumoId || null)
         .input('BID', sql.Int, bobinaId || null)

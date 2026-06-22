@@ -1,4 +1,5 @@
 const { getPool, sql } = require('../config/db');
+const { changeOrderState } = require('../services/stateManagerService');
 const fs = require('fs');
 const path = require('path');
 const sharp = require('sharp');
@@ -140,13 +141,17 @@ exports.toggleRollStatus = async (req, res) => {
                     .query(`INSERT INTO dbo.BitacoraProduccion (BitacoraID, RolloID, MaquinaID, UsuarioID, FechaInicio) 
                         VALUES (@BID, @RID, @MID, @UID, GETDATE())`);
 
-                // Update Orders
-                await new sql.Request(transaction)
-                    .input('RID', sql.VarChar(50), currentRoll.RolloID.toString())
-                    .input('StArea', sql.VarChar(50), machineStatus)
-                    .query(`UPDATE dbo.Ordenes SET Estado = 'Produccion', EstadoenArea = @StArea WHERE CAST(RolloID AS VARCHAR(50)) = @RID`);
-
-                await registerHistoryForOrders(transaction, currentRoll.RolloID, 'Produccion', userId, 'Inicio Produccion en Maquina');
+                // Estado + historial via servicio central
+                await changeOrderState(transaction, {
+                    target   : { type: 'ROLL', id: currentRoll.RolloID },
+                    estado   : 'En Maquina',
+                    userObj  : req.user,
+                    detalle  : 'Inicio Produccion - Maquina {maquina} / Lote {rollo}',
+                    maquinaId: currentRoll.MaquinaID,
+                    rolloId  : currentRoll.RolloID,
+                io       : req.app.get('socketio'),
+                io       : req.app.get('socketio')
+            });
                 await registrarAuditoria(transaction, userId, 'INICIO_PRODUCCION', `Rollo ${rollId} iniciado`, ip);
 
             } else if (action === 'pause') {
@@ -160,12 +165,16 @@ exports.toggleRollStatus = async (req, res) => {
                     .input('RID', sql.VarChar(50), currentRoll.RolloID.toString())
                     .query("UPDATE dbo.BitacoraProduccion SET FechaFin = GETDATE() WHERE CAST(RolloID AS VARCHAR(50)) = @RID AND FechaFin IS NULL");
 
-                // Update Orders (Back to 'En Cola' or similar?) Keep 'Produccion' but 'En Pausa'?
-                await new sql.Request(transaction)
-                    .input('RID', sql.VarChar(50), currentRoll.RolloID.toString())
-                    .query(`UPDATE dbo.Ordenes SET EstadoenArea = 'En Cola' WHERE CAST(RolloID AS VARCHAR(50)) = @RID`); // Volver a cola virtual de la maquina
-
-                await registerHistoryForOrders(transaction, currentRoll.RolloID, 'Pausado', userId, 'Produccion Pausada');
+                // Estado + historial via servicio central (sigue En Maquina, detenida)
+                await changeOrderState(transaction, {
+                    target  : { type: 'ROLL', id: currentRoll.RolloID },
+                    estado  : 'En Maquina',
+                    userObj : req.user,
+                    detalle : 'Produccion Pausada - Lote {rollo}',
+                    rolloId : currentRoll.RolloID,
+                io       : req.app.get('socketio'),
+                io       : req.app.get('socketio')
+            });
                 await registrarAuditoria(transaction, userId, 'PAUSA_PRODUCCION', `Rollo ${rollId} pausado`, ip);
 
             } else if (action === 'finish') {
@@ -180,12 +189,21 @@ exports.toggleRollStatus = async (req, res) => {
                     await new sql.Request(transaction).input('RID', sql.VarChar(50), currentRoll.RolloID.toString())
                         .query("UPDATE dbo.BitacoraProduccion SET FechaFin = GETDATE() WHERE CAST(RolloID AS VARCHAR(50)) = @RID AND FechaFin IS NULL");
 
-                    // Vuelve a produccion: limpiamos MaquinaID de las ordenes (la máquina queda libre)
+                    // Limpiar MaquinaID (gestion de equipo)
                     await new sql.Request(transaction)
                         .input('RID', sql.VarChar(50), currentRoll.RolloID.toString())
-                        .query(`UPDATE dbo.Ordenes SET Estado = 'Produccion', EstadoenArea = 'En Lote', MaquinaID = NULL WHERE CAST(RolloID AS VARCHAR(50)) = @RID`);
+                        .query('UPDATE dbo.Ordenes SET MaquinaID = NULL WHERE CAST(RolloID AS VARCHAR(50)) = @RID');
 
-                    await registerHistoryForOrders(transaction, currentRoll.RolloID, 'En Lote', userId, 'Fin Proceso Máquina - Retorna a Cola');
+                    // Estado + historial via servicio central
+                    await changeOrderState(transaction, {
+                        target  : { type: 'ROLL', id: currentRoll.RolloID },
+                        estado  : 'En Lote',
+                        userObj : req.user,
+                        detalle : 'Fin Proceso - Retorna a Cola / Lote {rollo}',
+                        rolloId : currentRoll.RolloID,
+                io       : req.app.get('socketio'),
+                io       : req.app.get('socketio')
+            });
 
                 } else {
                     // Opción B: FINALIZAR COMPLETAMENTE (ENVIAR A CALIDAD) - Default
@@ -197,16 +215,17 @@ exports.toggleRollStatus = async (req, res) => {
                     await new sql.Request(transaction).input('RID', sql.VarChar(50), currentRoll.RolloID.toString())
                         .query("UPDATE dbo.BitacoraProduccion SET FechaFin = GETDATE() WHERE CAST(RolloID AS VARCHAR(50)) = @RID AND FechaFin IS NULL");
 
-                    // Las órdenes van a Control y Calidad CONSERVANDO RolloID y MaquinaID
-                    // (Control de calidad necesita saber en qué máquina y lote se imprimieron)
-                    await new sql.Request(transaction)
-                        .input('RID', sql.VarChar(50), currentRoll.RolloID.toString())
-                        .query(`UPDATE dbo.Ordenes
-                            SET Estado        = 'Produccion',
-                                EstadoenArea  = 'Control y Calidad'
-                            WHERE CAST(RolloID AS VARCHAR(50)) = @RID`);
-
-                    await registerHistoryForOrders(transaction, currentRoll.RolloID, 'Control y Calidad', userId, 'Fin Producción - Enviado a Control');
+                    // Estado + historial via servicio central (MaquinaID y RolloID se conservan en Ordenes)
+                    await changeOrderState(transaction, {
+                        target   : { type: 'ROLL', id: currentRoll.RolloID },
+                        estado   : 'Control y Calidad',
+                        userObj  : req.user,
+                        detalle  : 'Fin Impresion - Enviado a Control / Lote {rollo} - Maquina {maquina}',
+                        rolloId  : currentRoll.RolloID,
+                        maquinaId: currentRoll.MaquinaID,
+                io       : req.app.get('socketio'),
+                io       : req.app.get('socketio')
+            });
                     await registrarAuditoria(transaction, userId, 'FIN_PRODUCCION', `Rollo ${rollId} finalizado`, ip);
                 }
             }
@@ -277,124 +296,6 @@ exports.registerFileAction = async (req, res) => {
 // ==========================================
 // 4. FUNCIONES DE APOYO (ASIGNACIÓN Y TABLA)
 // ==========================================
-exports.assignRoll = async (req, res) => {
-    const { rollId, machineId } = req.body;
-    logger.info(`[assignRoll] Request received. RollID: ${rollId}, MachineID: ${machineId}`);
-
-    let transaction;
-    try {
-        const pool = await getPool();
-        transaction = new sql.Transaction(pool);
-        await transaction.begin();
-
-        // Estado inicial al asignar: 'En Cola'
-        const machineStatus = 'En Cola';
-
-        const mid = machineId || null;
-
-        // 2. Actualizar Rollo
-        logger.info(`[assignRoll] Updating Roll ${rollId} with MaquinaID=${mid}, EstadoEnArea=${machineStatus}...`);
-        // Parse RID safely
-        let finalRollId = rollId;
-        if (!isNaN(parseInt(rollId))) finalRollId = parseInt(rollId);
-
-        const reqRoll = new sql.Request(transaction);
-        // Use VarChar for RID to be safe for both String and Int IDs
-        // SQL Server will implicit cast if column is Int.
-        const rollRes = await reqRoll.input('RID', sql.VarChar(20), finalRollId)
-            .input('MID', sql.Int, mid)
-            .input('StatusArea', sql.VarChar, machineStatus)
-            .query(`UPDATE dbo.Rollos 
-                             SET MaquinaID = @MID
-                             WHERE RolloID = @RID`);
-        logger.info(`[assignRoll] Roll updated. Rows affected: ${rollRes.rowsAffected}`);
-
-        // 3. Actualizar Ordenes asociadas al Rollo
-        logger.info(`[assignRoll] Updating Orders for Roll ${rollId} with MaquinaID=${mid}, EstadoenArea=${machineStatus}...`);
-        const reqOrders = new sql.Request(transaction);
-        const orderRes = await reqOrders.input('MID', sql.Int, mid)
-            .input('StatusArea', sql.VarChar, machineStatus)
-            .input('RID', sql.Int, rollId)
-            .query(`UPDATE dbo.Ordenes 
-                               SET MaquinaID = @MID, 
-                                   Estado = 'Produccion',
-                                   EstadoenArea = @StatusArea 
-                               WHERE RolloID = @RID`);
-
-        logger.info(`[assignRoll] Orders updated. Rows affected: ${orderRes.rowsAffected}`);
-        if (orderRes.rowsAffected[0] === 0) {
-            logger.warn(`⚠️ ALERTA: No se actualizaron órdenes para el Rollo ${rollId}. Verificar integridad referencial.`);
-        }
-
-        await transaction.commit();
-        logger.info(`[assignRoll] Transaction committed successfully.`);
-        res.json({ success: true, machineStatus });
-    } catch (err) {
-        if (transaction) await transaction.rollback();
-        logger.error("Error en assignRoll:", err);
-        res.status(500).json({ error: err.message });
-    }
-};
-
-exports.unassignRoll = async (req, res) => {
-    const { rollId } = req.body;
-    logger.info(`[unassignRoll] Request received. RollID: ${rollId}`);
-    let transaction;
-    try {
-        const pool = await getPool();
-        transaction = new sql.Transaction(pool);
-        await transaction.begin();
-        const request = new sql.Request(transaction);
-
-        // 1. Validar Estado Actual
-        const checkRes = await request
-            .input('RID_Check', sql.VarChar(50), String(rollId))
-            .query("SELECT Estado, Nombre, MaquinaID FROM dbo.Rollos WHERE CAST(RolloID AS VARCHAR(50)) = @RID_Check OR Nombre = @RID_Check");
-
-        if (checkRes.recordset.length === 0) {
-            await transaction.rollback();
-            logger.error(`[unassignRoll] ❌ Rollo no encontrado. ID buscado: ${rollId}`);
-            return res.status(404).json({ error: `No se encontró el rollo con ID: ${rollId}` });
-        }
-
-        const currentRoll = checkRes.recordset[0];
-        logger.info(`[unassignRoll] Rollo encontrado: ${currentRoll.Nombre} (Estado: ${currentRoll.Estado}, MaquinaID: ${currentRoll.MaquinaID})`);
-
-        // Si está 'En maquina', está corriendo. Debe pausarse antes de devolver.
-        if (currentRoll.Estado === 'En maquina') {
-            await transaction.rollback();
-            return res.status(400).json({ error: `⛔ El rollo '${currentRoll.Nombre}' está CORRIENDO (Estado: ${currentRoll.Estado}). Debes pausarlo primero.` });
-        }
-
-        // 2. Desmontar Rollo
-        logger.info(`[unassignRoll] Unmounting Roll ${rollId}...`);
-        const rollRes = await new sql.Request(transaction)
-            .input('RID', sql.VarChar(50), String(rollId))
-            .query(`UPDATE dbo.Rollos 
-                    SET MaquinaID = NULL, 
-                    Estado = 'Abierto' 
-                    WHERE CAST(RolloID AS VARCHAR(50)) = @RID`);
-
-        // 3. Limpiar Órdenes
-        const reqOrders = new sql.Request(transaction);
-        await reqOrders
-            .input('RID', sql.VarChar(50), String(rollId))
-            .query(`UPDATE dbo.Ordenes 
-                    SET MaquinaID = NULL,
-                    Estado = 'Produccion',
-                    EstadoenArea = 'En Lote'
-                    WHERE CAST(RolloID AS VARCHAR(50)) = @RID`);
-
-        await transaction.commit();
-        res.json({ success: true, message: `Rollo ${currentRoll.Nombre} desmontado correctamente.` });
-        logger.info(`[unassignRoll] Transaction committed successfully.`);
-        res.json({ success: true });
-    } catch (err) {
-        if (transaction) await transaction.rollback();
-        logger.error("Error en unassignRoll:", err);
-        res.status(500).json({ error: err.message });
-    }
-};
 
 exports.getOrderDetails = async (req, res) => {
     const { orderId } = req.query;
@@ -568,9 +469,18 @@ exports.magicSort = async (req, res) => {
                     .input('OID', sql.Int, order.OrdenID)
                     .input('RID', sql.Int, newRollId)
                     .input('Seq', sql.Int, seq)
-                    .query(`UPDATE dbo.Ordenes SET RolloID = @RID, Secuencia = @Seq, Estado = 'Pendiente', EstadoenArea = 'En Lote', MaquinaID = NULL WHERE OrdenID = @OID`);
+                    .query('UPDATE dbo.Ordenes SET RolloID = @RID, Secuencia = @Seq, MaquinaID = NULL WHERE OrdenID = @OID');
 
-                await registrarHistorialOrden(transaction, order.OrdenID, 'Pendiente', userId, `Lote Creado Automat. (Rollo ${newRollId})`);
+                // Estado + historial via servicio central
+                await changeOrderState(transaction, {
+                    target  : { type: 'ORDER', id: order.OrdenID },
+                    estado  : 'En Lote',
+                    userObj : req.user,
+                    detalle : 'Asignado a Lote {rollo}',
+                    rolloId : newRollId,
+                io       : req.app.get('socketio'),
+                io       : req.app.get('socketio')
+            });
                 seq++;
             }
 
@@ -599,16 +509,23 @@ exports.magicSort = async (req, res) => {
             await new sql.Request(transaction).input('RID', sql.Int, rollId).input('MID', sql.Int, machine.EquipoID).input('St', sql.VarChar, machineStatus)
                 .query("UPDATE dbo.Rollos SET MaquinaID = @MID WHERE RolloID = @RID"); // Nota: Estado del rollo suele mantenerse 'Abierto' hasta que entra a produccion real o se pausa, o segun logica manual.
 
-            // Update Ordenes
-            await new sql.Request(transaction).input('RID', sql.Int, rollId).input('MID', sql.Int, machine.EquipoID).input('St', sql.VarChar, machineStatus)
-                .query(`UPDATE dbo.Ordenes SET MaquinaID = @MID, Estado = 'Produccion', EstadoenArea = @St WHERE RolloID = @RID`);
+            // Actualizar solo MaquinaID (gestion de equipo)
+            await new sql.Request(transaction)
+                .input('RID', sql.Int, rollId)
+                .input('MID', sql.Int, machine.EquipoID)
+                .query('UPDATE dbo.Ordenes SET MaquinaID = @MID WHERE RolloID = @RID');
 
-            // Historial
-            // Retrieve orders to log history
-            const ords = await new sql.Request(transaction).input('RID', sql.Int, rollId).query("SELECT OrdenID FROM Ordenes WHERE RolloID = @RID");
-            for (const o of ords.recordset) {
-                await registrarHistorialOrden(transaction, o.OrdenID, 'Produccion', userId, `Asignado a Equipo ${machine.Nombre}`);
-            }
+            // Estado + historial via servicio central
+            await changeOrderState(transaction, {
+                target   : { type: 'ROLL', id: rollId },
+                estado   : 'En Maquina',
+                userObj  : req.user,
+                detalle  : 'Asignado a Maquina {maquina} / Lote {rollo}',
+                maquinaId: machine.EquipoID,
+                rolloId  : rollId,
+                io       : req.app.get('socketio'),
+                io       : req.app.get('socketio')
+            });
 
             assignedRollsCount++;
             return true;

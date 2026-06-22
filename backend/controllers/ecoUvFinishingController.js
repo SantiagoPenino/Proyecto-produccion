@@ -120,17 +120,21 @@ exports.controlOrder = async (req, res) => {
     const { id } = req.params; // OrdenID
     try {
         const pool = await getPool();
-        // 1. Update Estado: Usar "Pronto" para que Logística lo vea (igual que AreaView)
-        // para que avance al flujo de despacho.
-        await pool.request()
-            .input('OID', sql.Int, id)
-            .query(`
-                UPDATE Ordenes 
-                SET EstadoenArea = 'Pronto', 
-                    Estado = 'Pronto',
-                    EstadoLogistica = 'Canasto Produccion'
-                WHERE OrdenID = @OID
-            `);
+        const { changeOrderState } = require('../services/stateManagerService');
+        // Acabado UV finalizado: pasa a 'Pronto' (detalle de Producción) + Canasto Producción, vía servicio central.
+        const txUv = new sql.Transaction(pool);
+        await txUv.begin();
+        try {
+            await changeOrderState(txUv, {
+                target  : { type: 'ORDER', id },
+                estado  : 'Pronto',
+                userObj : req.user || 'Sistema',
+                detalle : 'Acabado UV finalizado',
+                extraSet: { EstadoLogistica: 'Canasto Produccion' },
+                io      : req.app.get('socketio'),
+            });
+            await txUv.commit();
+        } catch (e) { await txUv.rollback(); throw e; }
 
         // 2. Intentar Update Fecha Fin
         try {

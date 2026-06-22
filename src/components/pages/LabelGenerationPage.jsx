@@ -449,7 +449,7 @@ const LabelGenerationPage = ({ initialArea = '' }) => {
                                             </td>
                                             <td className="p-3">
                                                 <div className="font-bold text-slate-700 font-mono">{order.CodigoOrden}</div>
-                                                <div className={`text-[10px] px-1.5 py-0.5 rounded inline-block font-bold mt-1 ${order.Estado === 'Pronto' ? 'bg-green-100 text-green-700' : (notInProd ? 'bg-red-100 text-red-700' : 'bg-blue-50 text-blue-600')}`}>
+                                                <div className={`text-[10px] px-1.5 py-0.5 rounded inline-block font-bold mt-1 ${(order.Estado === 'Pronto' || order.EstadoenArea === 'Pronto') ? 'bg-green-100 text-green-700' : (notInProd ? 'bg-red-100 text-red-700' : 'bg-blue-50 text-blue-600')}`}>
                                                     {order.Estado}
                                                 </div>
                                             </td>

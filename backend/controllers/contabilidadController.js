@@ -2355,11 +2355,30 @@ exports.emitirFacturaAnticipo = async (req, res) => {
     }
 
     const targetCueTipo = (monedaFactura === 'USD') ? 'DINERO_USD' : 'DINERO_UYU';
-    const cueRes = await pool.request()
+    let cueRes = await pool.request()
       .input('Cli', sql.Int, CliIdCliente)
       .input('Tipo', sql.VarChar, targetCueTipo)
       .query(`SELECT TOP 1 CueIdCuenta FROM dbo.CuentasCliente WHERE CliIdCliente = @Cli AND CueTipo = @Tipo`);
-    if (!cueRes.recordset.length) throw new Error(`Cliente no tiene cuenta en ${monedaFactura === 'USD' ? 'USD' : 'UYU'}`);
+      
+    if (!cueRes.recordset.length) {
+      // Create account automatically
+      const monId = monedaFactura === 'USD' ? 2 : 1;
+      await pool.request()
+        .input('Cli', sql.Int, CliIdCliente)
+        .input('Tipo', sql.VarChar, targetCueTipo)
+        .input('MonId', sql.Int, monId)
+        .input('User', sql.Int, UsuarioAlta)
+        .query(`
+          INSERT INTO dbo.CuentasCliente (CliIdCliente, CueTipo, MonIdMoneda, CueSaldoActual, CuePuedeNegativo, CueActiva, CueFechaAlta, CueUsuarioAlta)
+          VALUES (@Cli, @Tipo, @MonId, 0, 1, 1, GETDATE(), @User)
+        `);
+      // Re-query to get the new ID
+      cueRes = await pool.request()
+        .input('Cli', sql.Int, CliIdCliente)
+        .input('Tipo', sql.VarChar, targetCueTipo)
+        .query(`SELECT TOP 1 CueIdCuenta FROM dbo.CuentasCliente WHERE CliIdCliente = @Cli AND CueTipo = @Tipo`);
+    }
+    
     const CueIdCuenta = cueRes.recordset[0].CueIdCuenta;
 
     let cicRes = await pool.request()

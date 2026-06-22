@@ -20,6 +20,11 @@ const OrderCard = ({ order, onClick }) => {
                     <span className={`px-2 py-1 rounded text-[10px] uppercase font-bold tracking-wide shadow-sm ${order.status === 'FALLA' ? 'bg-red-100 text-red-700 border border-red-200' : order.status === 'PENDIENTE' ? 'bg-orange-100 text-orange-700 border border-orange-200' : 'bg-green-100 text-green-700 border border-green-200'}`}>
                         ESTADO: {order.status}
                     </span>
+                    {order.estadoArea && (
+                        <span className="bg-white border border-gray-200 text-gray-600 px-2 py-0.5 rounded text-[10px] font-bold shadow-sm">
+                            ESTADO EN ÁREA: {order.estadoArea}
+                        </span>
+                    )}
                     <span className="bg-white border border-gray-200 text-gray-600 px-2 py-0.5 rounded text-[10px] font-bold shadow-sm">
                         ÁREA: {order.area}
                     </span>
@@ -259,9 +264,16 @@ const OrdersQueryView = () => {
                                         </td>
                                         <td className="px-4 py-3 text-slate-500">{order.entryDate ? new Date(order.entryDate).toLocaleDateString() : '-'}</td>
                                         <td className="px-4 py-3">
-                                            <span className={`px-2 py-1 rounded text-[10px] uppercase font-bold ${order.status === 'FALLA' ? 'bg-red-100 text-red-600' : 'bg-green-100 text-green-700'}`}>
-                                                {order.status}
-                                            </span>
+                                            <div className="flex flex-col gap-1 items-start">
+                                                <span className={`px-2 py-1 rounded text-[10px] uppercase font-bold shadow-sm ${order.status === 'FALLA' ? 'bg-red-100 text-red-700 border border-red-200' : order.status === 'PENDIENTE' ? 'bg-orange-100 text-orange-700 border border-orange-200' : 'bg-green-100 text-green-700 border border-green-200'}`}>
+                                                    ESTADO: {order.status}
+                                                </span>
+                                                {order.estadoArea && (
+                                                    <span className="bg-white border border-gray-200 text-gray-600 px-2 py-0.5 rounded text-[10px] font-bold shadow-sm">
+                                                        ESTADO EN ÁREA: {order.estadoArea}
+                                                    </span>
+                                                )}
+                                            </div>
                                         </td>
                                         <td className="px-4 py-3 text-slate-500 font-mono text-xs">{order.nextService || '-'}</td>
                                         <td className="px-4 py-3 text-slate-400 text-xs">{order.filesCount} arch.</td>

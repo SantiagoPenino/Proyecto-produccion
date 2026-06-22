@@ -310,7 +310,15 @@ app.get('/api/drive-callback', async (req, res) => {
 const publicPath = path.join(__dirname, 'public');
 if (require('fs').existsSync(publicPath)) {
     logger.info('📂 Sirviendo archivos estáticos desde:', publicPath);
-    app.use(express.static(publicPath));
+    app.use(express.static(publicPath, {
+        etag: false,
+        lastModified: false,
+        setHeaders: (res) => {
+            res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+            res.setHeader('Pragma', 'no-cache');
+            res.setHeader('Expires', '0');
+        }
+    }));
 
     // Cualquier ruta que no sea API, devuelve el index.html (SPA)
     app.get('*', (req, res) => {

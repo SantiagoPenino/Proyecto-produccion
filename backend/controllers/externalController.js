@@ -87,6 +87,114 @@ exports.updateVendedor = async (req, res) => {
     }
 };
 
+// GET /api/external/ordenes
+// Devuelve las órdenes de la tabla OrdenesDeposito (con importe) para consumo externo.
+// Auth: header x-api-key = EXTERNAL_API_KEY
+// Filtros opcionales (query string): fechaDesde, fechaHasta (YYYY-MM-DD), codigoOrden, estado, idCliente, material
+// Paginación: page (>=1, default 1), pageSize (1-1000, default 100)
+exports.getOrdenes = async (req, res) => {
+    const apiKey = req.headers['x-api-key'];
+    const EXTERNAL_API_KEY = process.env.EXTERNAL_API_KEY;
+
+    if (!apiKey || apiKey !== EXTERNAL_API_KEY) {
+        return res.status(401).json({ error: 'No autorizado. API Key inválida o faltante.' });
+    }
+
+    // --- Paginación ---
+    let page = parseInt(req.query.page, 10);
+    let pageSize = parseInt(req.query.pageSize, 10);
+    if (!Number.isInteger(page) || page < 1) page = 1;
+    if (!Number.isInteger(pageSize) || pageSize < 1) pageSize = 100;
+    if (pageSize > 1000) pageSize = 1000;
+    const offset = (page - 1) * pageSize;
+
+    const { fechaDesde, fechaHasta, codigoOrden, estado, idCliente, material } = req.query;
+
+    try {
+        const pool = await getPool();
+        const request = pool.request();
+
+        // Construcción dinámica del WHERE (compartido entre el conteo y la página)
+        let where = ' WHERE 1 = 1';
+        if (fechaDesde) {
+            where += ' AND CONVERT(DATE, o.OrdFechaIngresoOrden) >= @fechaDesde';
+            request.input('fechaDesde', sql.Date, new Date(fechaDesde));
+        }
+        if (fechaHasta) {
+            where += ' AND CONVERT(DATE, o.OrdFechaIngresoOrden) <= @fechaHasta';
+            request.input('fechaHasta', sql.Date, new Date(fechaHasta));
+        }
+        if (codigoOrden) {
+            where += ` AND o.OrdCodigoOrden LIKE '%' + @codigoOrden + '%'`;
+            request.input('codigoOrden', sql.NVarChar, codigoOrden);
+        }
+        if (estado) {
+            where += ' AND eo.EOrNombreEstado = @estado';
+            request.input('estado', sql.NVarChar, estado);
+        }
+        if (idCliente) {
+            where += ` AND (c.IDCliente LIKE '%' + @idCliente + '%' OR c.Nombre LIKE '%' + @idCliente + '%')`;
+            request.input('idCliente', sql.NVarChar, idCliente);
+        }
+        if (material) {
+            // "material" = producto (Articulos): busca por descripción o código de artículo
+            where += ` AND (p.Descripcion LIKE '%' + @material + '%' OR p.CodArticulo LIKE '%' + @material + '%')`;
+            request.input('material', sql.NVarChar, material);
+        }
+
+        const fromJoins = `
+            FROM OrdenesDeposito o WITH(NOLOCK)
+            LEFT JOIN Clientes c WITH(NOLOCK) ON o.CliIdCliente = c.CliIdCliente
+            LEFT JOIN Articulos p WITH(NOLOCK) ON o.ProIdProducto = p.ProIdProducto
+            LEFT JOIN Monedas mon WITH(NOLOCK) ON o.MonIdMoneda = mon.MonIdMoneda
+            LEFT JOIN EstadosOrdenes eo WITH(NOLOCK) ON o.OrdEstadoActual = eo.EOrIdEstadoOrden
+            LEFT JOIN ModosOrdenes mo WITH(NOLOCK) ON o.MOrIdModoOrden = mo.MOrIdModoOrden
+        `;
+
+        // Total de registros que cumplen el filtro
+        const countResult = await request.query(`SELECT COUNT(*) AS total ${fromJoins} ${where}`);
+        const total = countResult.recordset[0].total;
+
+        // Página de datos
+        request.input('offset', sql.Int, offset);
+        request.input('pageSize', sql.Int, pageSize);
+
+        const dataQuery = `
+            SELECT
+                LTRIM(RTRIM(o.OrdCodigoOrden))             AS codigoOrden,
+                LTRIM(RTRIM(c.IDCliente))                  AS idCliente,
+                LTRIM(RTRIM(o.OrdNombreTrabajo))           AS trabajo,
+                LTRIM(RTRIM(ISNULL(p.Descripcion, '')))    AS producto,
+                LTRIM(RTRIM(ISNULL(p.CodArticulo, '')))    AS codigoProducto,
+                LTRIM(RTRIM(mo.MOrNombreModo))             AS modo,
+                o.OrdCantidad                              AS cantidad,
+                LTRIM(RTRIM(eo.EOrNombreEstado))           AS estado,
+                o.OrdFechaIngresoOrden                     AS fechaIngreso,
+                CAST(o.OrdCostoFinal AS DECIMAL(10,2))     AS importe,
+                LTRIM(RTRIM(mon.MonSimbolo))               AS moneda
+            ${fromJoins}
+            ${where}
+            ORDER BY o.OrdFechaIngresoOrden DESC, o.OrdIdOrden DESC
+            OFFSET @offset ROWS FETCH NEXT @pageSize ROWS ONLY
+        `;
+
+        const result = await request.query(dataQuery);
+
+        res.json({
+            success: true,
+            page,
+            pageSize,
+            total,
+            totalPages: Math.ceil(total / pageSize),
+            count: result.recordset.length,
+            data: result.recordset
+        });
+    } catch (error) {
+        console.error('Error obteniendo órdenes para sistema externo:', error);
+        res.status(500).json({ error: 'Error interno del servidor al obtener órdenes.' });
+    }
+};
+
 // GET /api/external/vendedores
 exports.getVendedores = async (req, res) => {
     const apiKey = req.headers['x-api-key'];

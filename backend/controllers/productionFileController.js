@@ -3,6 +3,7 @@ const PricingService = require('../services/pricingService');
 const LabelGenerationService = require('../services/LabelGenerationService');
 const driveService = require('../services/driveService');
 const logger = require('../utils/logger');
+const { changeOrderState } = require('../services/stateManagerService');
 
 /**
  * 1. Obtiene las Órdenes de un Rollo (o todas, o filtradas)
@@ -85,25 +86,25 @@ AND(
         -- EXCEPCIÓN: si se seleccionó un lote específico, las 'Pronto' de ESE lote siguen visibles
         -- para que al corregir una falla la orden madre no desaparezca.
         (${isControlView ? 1 : 0} = 1 AND (
-            O.Estado NOT IN ('Pronto', 'PRONTO', 'Retenido', 'RETENIDO')
+            ISNULL(O.EstadoenArea,'') NOT IN ('Pronto', 'PRONTO', 'Retenido', 'RETENIDO')
             OR (
-                O.Estado IN ('Pronto', 'PRONTO')
+                ISNULL(O.EstadoenArea,'') IN ('Pronto', 'PRONTO')
                 AND @RolloID IS NOT NULL AND @RolloID <> '' AND @RolloID <> 'todo'
                 AND CAST(O.RolloID AS NVARCHAR(50)) = @RolloID
             )
             OR (
-                O.Estado IN ('Retenido', 'RETENIDO')
+                ISNULL(O.EstadoenArea,'') IN ('Retenido', 'RETENIDO')
                 AND EXISTS (
                     SELECT 1 FROM dbo.Ordenes Repo
                     WHERE Repo.CodigoOrden LIKE O.CodigoOrden + '-F%'
-                      AND Repo.Estado NOT IN ('Pronto', 'PRONTO', 'Finalizado', 'CANCELADO')
+                      AND ISNULL(Repo.EstadoenArea,'') NOT IN ('Pronto', 'PRONTO') AND Repo.Estado NOT IN ('Finalizado', 'CANCELADO')
                 )
             )
         ))
         OR
         -- En otras vistas: comportamiento original (ocultar si no hay archivos pendientes)
         (${isControlView ? 0 : 1} = 1 AND
-            LTRIM(RTRIM(O.Estado)) != 'PRONTO' 
+            LTRIM(RTRIM(ISNULL(O.EstadoenArea,''))) != 'PRONTO'
             AND(
                 EXISTS(SELECT 1 FROM ArchivosOrden AO WITH(NOLOCK) WHERE AO.OrdenID = O.OrdenID AND(AO.EstadoArchivo = 'Pendiente' OR AO.EstadoArchivo IS NULL))
                 OR 
@@ -395,7 +396,7 @@ const postControlArchivo = async (req, res) => {
                     SELECT TOP 1 OrdenID, CodigoOrden, ArchivosCount
                     FROM dbo.Ordenes
                     WHERE CodigoOrden LIKE @BaseCode + '-F%'
-                      AND Estado NOT IN ('CANCELADO', 'Pronto', 'Finalizado')
+                      AND Estado NOT IN ('CANCELADO', 'Finalizado') AND ISNULL(EstadoenArea,'') NOT IN ('Pronto', 'PRONTO')
                     ORDER BY OrdenID DESC
                 `);
 
@@ -472,6 +473,19 @@ const postControlArchivo = async (req, res) => {
                 newOrderId = newOrderRes.recordset[0]?.OrdenID;
             }
 
+            try {
+                const { changeOrderState } = require('../services/stateManagerService');
+                await changeOrderState(transaction, {
+                    target: { type: 'ORDER', id: ordenId },
+                    estado: 'Con Falla',
+                    userObj: req.user || usuario || 'Sistema',
+                    detalle: 'Falla de impresión reportada',
+                    io: req.app.get('socketio')
+                });
+            } catch (errSync) {
+                logger.error('Error sincronizando estado a En falla la orden madre:', errSync);
+            }
+
             if (newOrderId) {
                 const metrosSQL = metrosReponer !== null ? `@MetrosReponer` : `Metros`;
 
@@ -546,7 +560,7 @@ const postControlArchivo = async (req, res) => {
                                AND AreaID   = @AreaID
                                AND OrdenID != @OID
                                AND EstadoLogistica = 'Canasto Produccion'
-                               AND Estado NOT IN ('CANCELADO', 'Retenido')`);
+                               AND Estado NOT IN ('CANCELADO') AND ISNULL(EstadoenArea,'') NOT IN ('Retenido', 'RETENIDO')`);
                 ordenesRetroactivas = retRes.recordset.map(r => r.CodigoOrden);
             }
 
@@ -560,7 +574,7 @@ const postControlArchivo = async (req, res) => {
                                SET EstadoLogistica = 'Canasto Falla'
                              WHERE NoDocERP = @NoDoc
                                AND AreaID   = @AreaID
-                               AND Estado  NOT IN ('CANCELADO', 'Retenido')`);
+                               AND Estado  NOT IN ('CANCELADO') AND ISNULL(EstadoenArea,'') NOT IN ('Retenido', 'RETENIDO')`);
             } else {
                 await new sql.Request(transaction)
                     .input('OID', sql.Int, ordenId)
@@ -624,17 +638,32 @@ const postControlArchivo = async (req, res) => {
             // A. ORDEN INCOMPLETA LOCALMENTE -> Estado 'Produccion'
             // Diferenciar entre "Sin Tocar" y "En Curso"
             let nuevoEstadoArea = 'Control y Calidad';
+            let detalleEstado = 'Control parcial (Pedido incompleto)';
+            
             if (safeControlados > 0) {
                 nuevoEstadoArea = 'En Curso';
             }
+            if (Fallas > 0) {
+                nuevoEstadoArea = 'Con Falla';
+                detalleEstado = 'Control parcial (Con fallas)';
+            }
 
             await new sql.Request(transaction).input('OID', sql.Int, ordenId)
-                .query(`UPDATE Ordenes SET Estado = 'Produccion', EstadoenArea = '${nuevoEstadoArea}', EstadoLogistica = 'Canasto Incompletos' WHERE OrdenID = @OID`);
+                .query(`UPDATE Ordenes SET EstadoLogistica = 'Canasto Incompletos' WHERE OrdenID = @OID`);
+            await changeOrderState(transaction, { target: { type: 'ORDER', id: ordenId }, estado: nuevoEstadoArea, userObj: req.user || 'Sistema', detalle: detalleEstado,
+                io       : req.app.get('socketio')
+            });
 
         } else if (!groupCompleted) {
             // B. ORDEN COMPLETA LOCALMENTE, PERO PEDIDO INCOMPLETO EN ÁREA -> Estado 'Produccion' (Espera)
-            await new sql.Request(transaction).input('OID', sql.Int, ordenId)
-                .query("UPDATE Ordenes SET Estado='Produccion', EstadoenArea='Control y Calidad' WHERE OrdenID = @OID");
+            // 'Control y Calidad' deriva a Estado general 'Produccion' (ConfigEstados) -> mismo valor que el crudo anterior.
+            await changeOrderState(transaction, {
+                target : { type: 'ORDER', id: ordenId },
+                estado : 'Control y Calidad',
+                userObj: req.user || 'Sistema',
+                detalle: 'Pedido incompleto en área (espera)',
+                io     : req.app.get('socketio'),
+            });
 
         } else {
             // C. PEDIDO COMPLETO EN ÁREA (Orden Local Done + Grupo Area Completo)
@@ -642,7 +671,10 @@ const postControlArchivo = async (req, res) => {
             // Si todos los archivos de la orden actual están cancelados, la orden se cancela.
             if (Cancelados === Total && Total > 0) {
                 await new sql.Request(transaction).input('OID', sql.Int, ordenId)
-                    .query("UPDATE Ordenes SET Estado = 'CANCELADO', EstadoenArea = 'Cancelado', EstadoLogistica='Cancelado', Observaciones = 'Cancelada de oficio (Todos archivos cancelados)' WHERE OrdenID = @OID");
+                    .query("UPDATE Ordenes SET EstadoLogistica='Cancelado', Observaciones = 'Cancelada de oficio (Todos archivos cancelados)' WHERE OrdenID = @OID");
+                await changeOrderState(transaction, { target: { type: 'ORDER', id: ordenId }, estado: 'Cancelado', userObj: req.user || 'Sistema', detalle: 'Cancelada de oficio (Todos archivos cancelados)',
+                io       : req.app.get('socketio')
+            });
             } else {
 
                 // Definir estados finales
@@ -652,7 +684,7 @@ const postControlArchivo = async (req, res) => {
 
                 if (Fallas > 0) {
                     nuevoEstado = 'Retenido';
-                    nuevoEstadoArea = 'Retenido';
+                    nuevoEstadoArea = 'Con Falla';
                     destinoLogistica = 'Esperando Reposición';
                 } else if (isReposicion) {
                     destinoLogistica = 'Canasto Reposiciones';
@@ -723,17 +755,32 @@ const postControlArchivo = async (req, res) => {
                     // Reposición solo se actualiza a sí misma
                     await new sql.Request(transaction)
                         .input('OID', sql.Int, ordenId)
-                        .query(`UPDATE Ordenes SET Estado = '${nuevoEstado}', EstadoenArea = '${nuevoEstadoArea}', EstadoLogistica = '${destinoLogistica}' WHERE OrdenID = @OID`);
+                        .query(`UPDATE Ordenes SET EstadoLogistica = '${destinoLogistica}' WHERE OrdenID = @OID`);
+                    await changeOrderState(transaction, { target: { type: 'ORDER', id: ordenId }, estado: nuevoEstadoArea, userObj: req.user || 'Sistema', detalle: 'Control finalizado (Reposición)',
+                io       : req.app.get('socketio')
+            });
                 } else {
                     // Orden Normal -> Actualizar al Grupo Completo en el AREA
                     if (noDocERP) {
+                        const grp = await new sql.Request(transaction)
+                            .input('NoDoc', sql.VarChar(50), noDocERP)
+                            .input('AreaID', sql.VarChar(50), areaId)
+                            .query(`SELECT OrdenID FROM Ordenes WHERE NoDocERP = @NoDoc AND AreaID = @AreaID AND Estado != 'CANCELADO' AND ISNULL(EstadoenArea,'') != 'Retenido'`);
                         await new sql.Request(transaction)
                             .input('NoDoc', sql.VarChar(50), noDocERP)
                             .input('AreaID', sql.VarChar(50), areaId)
-                            .query(`UPDATE Ordenes SET Estado = '${nuevoEstado}', EstadoenArea = '${nuevoEstadoArea}', EstadoLogistica = '${destinoLogistica}' WHERE NoDocERP = @NoDoc AND AreaID = @AreaID AND Estado != 'CANCELADO' AND Estado != 'Retenido'`);
+                            .query(`UPDATE Ordenes SET EstadoLogistica = '${destinoLogistica}' WHERE NoDocERP = @NoDoc AND AreaID = @AreaID AND Estado != 'CANCELADO' AND ISNULL(EstadoenArea,'') != 'Retenido'`);
+                        for (const o of grp.recordset) {
+                            await changeOrderState(transaction, { target: { type: 'ORDER', id: o.OrdenID }, estado: nuevoEstadoArea, userObj: req.user || 'Sistema', detalle: 'Control finalizado en Área',
+                io       : req.app.get('socketio')
+            });
+                        }
                     } else {
                         await new sql.Request(transaction).input('OID', sql.Int, ordenId)
-                            .query(`UPDATE Ordenes SET Estado = '${nuevoEstado}', EstadoenArea = '${nuevoEstadoArea}', EstadoLogistica = '${destinoLogistica}' WHERE OrdenID = @OID`);
+                            .query(`UPDATE Ordenes SET EstadoLogistica = '${destinoLogistica}' WHERE OrdenID = @OID`);
+                        await changeOrderState(transaction, { target: { type: 'ORDER', id: ordenId }, estado: nuevoEstadoArea, userObj: req.user || 'Sistema', detalle: 'Control finalizado en Área',
+                io       : req.app.get('socketio')
+            });
                     }
                 }
 
@@ -747,8 +794,8 @@ const postControlArchivo = async (req, res) => {
                             const reqMadre = new sql.Request(transaction);
                             reqMadre.input('CodeParent', sql.NVarChar, codigoMadre);
                             reqMadre.input('CurrentOrderID', sql.Int, ordenId);
+                            // 1 + 1b. Sanar archivos y servicios de la madre (no son estado de orden)
                             await reqMadre.query(`
---1. Sanar Archivos de la Madre
                                 UPDATE ParentFiles
                                 SET EstadoArchivo = 'OK', Observaciones = CONCAT(ISNULL(ParentFiles.Observaciones, ''), ' [Repuesto]')
                                 FROM dbo.ArchivosOrden AS ParentFiles
@@ -757,7 +804,6 @@ const postControlArchivo = async (req, res) => {
                                   AND ParentFiles.EstadoArchivo = 'FALLA'
                                   AND ParentFiles.NombreArchivo IN(SELECT NombreArchivo FROM dbo.ArchivosOrden WHERE OrdenID = @CurrentOrderID);
 
--- 1b. Sanar Servicios de la Madre
                                 UPDATE ParentServices
                                 SET Estado = 'OK', Observaciones = CONCAT(ISNULL(ParentServices.Observaciones, ''), ' [Repuesto]')
                                 FROM dbo.ServiciosExtraOrden AS ParentServices
@@ -765,19 +811,36 @@ const postControlArchivo = async (req, res) => {
                                 WHERE ParentOrder.CodigoOrden = @CodeParent
                                   AND ParentServices.Estado = 'FALLA'
                                   AND ParentServices.Descripcion IN(SELECT Descripcion FROM dbo.ServiciosExtraOrden WHERE OrdenID = @CurrentOrderID);
+                            `);
 
---2. Liberar Orden Madre
-                                IF NOT EXISTS(
-                                    SELECT 1 FROM dbo.ArchivosOrden AO INNER JOIN dbo.Ordenes O ON AO.OrdenID = O.OrdenID WHERE O.CodigoOrden = @CodeParent AND AO.EstadoArchivo = 'FALLA'
-                                    UNION ALL
-                                    SELECT 1 FROM dbo.ServiciosExtraOrden SEO INNER JOIN dbo.Ordenes O ON SEO.OrdenID = O.OrdenID WHERE O.CodigoOrden = @CodeParent AND SEO.Estado = 'FALLA'
-                                )
-BEGIN
-                                    UPDATE dbo.Ordenes
-                                    SET Estado = 'Pronto', EstadoenArea = 'Pronto', EstadoLogistica = 'Canasto Produccion', Observaciones = CONCAT(Observaciones, ' [Reposición Completada]')
-                                    WHERE CodigoOrden = @CodeParent AND Estado = 'Retenido';
-END
-    `);
+                            // 2. Liberar Orden Madre SOLO si ya no le quedan fallas (chequeo en JS)
+                            const fallasMadre = await new sql.Request(transaction)
+                                .input('CodeParent', sql.NVarChar, codigoMadre)
+                                .query(`
+                                    SELECT COUNT(*) AS c FROM (
+                                        SELECT 1 FROM dbo.ArchivosOrden AO INNER JOIN dbo.Ordenes O ON AO.OrdenID = O.OrdenID WHERE O.CodigoOrden = @CodeParent AND AO.EstadoArchivo = 'FALLA'
+                                        UNION ALL
+                                        SELECT 1 FROM dbo.ServiciosExtraOrden SEO INNER JOIN dbo.Ordenes O ON SEO.OrdenID = O.OrdenID WHERE O.CodigoOrden = @CodeParent AND SEO.Estado = 'FALLA'
+                                    ) x
+                                `);
+                            if ((fallasMadre.recordset[0]?.c || 0) === 0) {
+                                // Estado vía servicio central: 'Pronto' (área) -> deriva Produccion. Guarda: solo si estaba Retenida.
+                                const relRes = await changeOrderState(transaction, {
+                                    target  : { type: 'CODE', id: codigoMadre },
+                                    estado  : 'Pronto',
+                                    userObj : req.user || 'Sistema',
+                                    detalle : 'Reposición completada — madre liberada',
+                                    guard   : "ISNULL(EstadoenArea,'') = 'Retenido'",
+                                    extraSet: { EstadoLogistica: 'Canasto Produccion' },
+                                    io      : req.app.get('socketio'),
+                                });
+                                // Observaciones (no es estado) -> update directo solo sobre la orden liberada
+                                if (relRes.ordenesAfectadas.length > 0) {
+                                    await new sql.Request(transaction)
+                                        .input('OID', sql.Int, relRes.ordenesAfectadas[0])
+                                        .query(`UPDATE dbo.Ordenes SET Observaciones = CONCAT(ISNULL(Observaciones,''), ' [Reposición Completada]') WHERE OrdenID = @OID`);
+                                }
+                            }
                         } catch (e) { logger.error("Error liberando madre", e); }
                     }
                 }
@@ -802,7 +865,7 @@ END
                         SELECT COUNT(*) as OrdenesActivas
                         FROM dbo.Ordenes
                         WHERE RolloID = @RID
-                          AND Estado NOT IN ('Pronto', 'Finalizado', 'CANCELADO', 'Entregado')
+                          AND Estado NOT IN ('Finalizado', 'CANCELADO', 'Entregado') AND ISNULL(EstadoenArea,'') NOT IN ('Pronto', 'PRONTO')
                     `);
                 const ordenesActivas = cleanupRes.recordset[0]?.OrdenesActivas || 0;
                 if (ordenesActivas === 0) {
@@ -828,24 +891,36 @@ END
         // --- GENERACIÓN DE ETIQUETAS POST-COMMIT (SI CORRESPONDE) ---
         if (orderCompleted) {
             try {
-                // Verificar magnitud desde PedidosCobranzaDetalle (cotización real del ERP Sync)
-                const checkMag = await pool.request()
+                // GUARD ANTI-DUPLICADO: verificar si ya existen etiquetas antes de generar.
+                // Protege contra race conditions (doble-click, retry de red, socket concurrente).
+                const existCheck = await pool.request()
                     .input('OID', sql.Int, ordenId)
-                    .query("SELECT SUM(Cantidad) as TotalCantidad FROM PedidosCobranzaDetalle WHERE OrdenID = @OID");
-                
-                const magVal = parseFloat(checkMag.recordset[0]?.TotalCantidad) || 0;
+                    .query("SELECT COUNT(*) as cnt FROM Etiquetas WHERE OrdenID = @OID");
+                const yaExisten = (existCheck.recordset[0]?.cnt || 0) > 0;
 
-                if (magVal > 0) {
-                    logger.info(`[postControlArchivo] Llamando LabelGenerationService para Orden ${ordenId}...`);
-                    const labelResult = await LabelGenerationService.regenerateLabelsForOrder(ordenId, (req.user?.id || 1), (req.user?.usuario || 'Sistema'));
-                    if (labelResult.success) {
-                        totalBultos = labelResult.totalBultos; // Para devolver en el JSON
-                        logger.info(`[postControlArchivo] Etiquetas generadas OK: ${totalBultos}`);
-                    } else {
-                        logger.warn(`[postControlArchivo] Fallo generación etiquetas: ${labelResult.error}`);
-                    }
+                if (yaExisten) {
+                    totalBultos = existCheck.recordset[0].cnt;
+                    logger.info(`[postControlArchivo] Orden ${ordenId} ya tiene ${totalBultos} etiqueta(s). Se omite regeneración (anti-duplicado).`);
                 } else {
-                    logger.info(`[postControlArchivo] Magnitud 0, saltando etiquetas.`);
+                    // Verificar magnitud desde PedidosCobranzaDetalle (cotización real del ERP Sync)
+                    const checkMag = await pool.request()
+                        .input('OID', sql.Int, ordenId)
+                        .query("SELECT SUM(Cantidad) as TotalCantidad FROM PedidosCobranzaDetalle WHERE OrdenID = @OID");
+
+                    const magVal = parseFloat(checkMag.recordset[0]?.TotalCantidad) || 0;
+
+                    if (magVal > 0) {
+                        logger.info(`[postControlArchivo] Llamando LabelGenerationService para Orden ${ordenId}...`);
+                        const labelResult = await LabelGenerationService.regenerateLabelsForOrder(ordenId, (req.user?.id || 1), (req.user?.usuario || 'Sistema'));
+                        if (labelResult.success) {
+                            totalBultos = labelResult.totalBultos;
+                            logger.info(`[postControlArchivo] Etiquetas generadas OK: ${totalBultos}`);
+                        } else {
+                            logger.warn(`[postControlArchivo] Fallo generación etiquetas: ${labelResult.error}`);
+                        }
+                    } else {
+                        logger.info(`[postControlArchivo] Magnitud 0, saltando etiquetas.`);
+                    }
                 }
             } catch (eLabels) {
                 logger.error(`[postControlArchivo] Error generando etiquetas post-control: ${eLabels.message}`);
@@ -950,6 +1025,18 @@ const regenerateEtiquetas = async (req, res) => {
     }
 };
 
+const recalcularContadoresEtiquetas = async (req, res) => {
+    const ordenId = req.params.ordenId;
+    if (!ordenId) return res.status(400).json({ error: 'OrdenID es requerido' });
+    try {
+        const result = await LabelGenerationService.recalcularContadores(parseInt(ordenId));
+        if (!result.success) return res.json({ success: false, error: result.error });
+        res.json({ success: true, message: `Contadores actualizados: ${result.totalBultos} bulto(s).`, totalBultos: result.totalBultos });
+    } catch (error) {
+        logger.error("[recalcularContadores] Error:", error);
+        res.status(500).json({ error: "Error recalculando contadores: " + error.message });
+    }
+};
 /**
  * 5. Proxy de Visualización de archivos en Drive
  * Utiliza el token del servidor para descargar y servir el archivo sin depender de permisos publicos.
@@ -1221,7 +1308,7 @@ const getCompletedOrdersForReplacement = async (req, res) => {
                 OrdenID, CodigoOrden, Cliente, FechaIngreso, FechaEstimadaEntrega, 
                 Estado, Material, DescripcionTrabajo, NoDocERP
             FROM Ordenes WITH (NOLOCK)
-            WHERE Estado IN ('ENTREGADO', 'FINALIZADO', 'DESPACHADO', 'PRONTO')
+            WHERE (Estado IN ('ENTREGADO', 'FINALIZADO', 'DESPACHADO') OR ISNULL(EstadoenArea,'') IN ('Pronto', 'PRONTO'))
             AND (
                 CodigoOrden LIKE @Search 
                 OR Cliente LIKE @Search 
@@ -1549,6 +1636,28 @@ async function completarOrden(req, res) {
     let transaction;
     try {
         const pool = await getPool();
+
+        // ── GUARD: no re-procesar órdenes que ya están prontas o finalizadas ──
+        // Se considera "ya lista" si: EstadoenArea IN ('Pronto', 'En Transito')
+        //                           O Estado = 'Finalizado'
+        const guardCheck = await pool.request()
+            .input('OID', sql.Int, ordenId)
+            .query(`
+                SELECT TOP 1 Estado, EstadoenArea
+                FROM Ordenes
+                WHERE OrdenID = @OID
+                  AND (
+                      UPPER(LTRIM(RTRIM(EstadoenArea))) IN ('PRONTO', 'EN TRANSITO')
+                      OR UPPER(LTRIM(RTRIM(Estado)))    = 'FINALIZADO'
+                  )
+            `);
+
+        if (guardCheck.recordset.length > 0) {
+            const { Estado, EstadoenArea } = guardCheck.recordset[0];
+            logger.info(`[completarOrden] Orden ${ordenId} ya está en estado final (Estado=${Estado}, EstadoenArea=${EstadoenArea}). Se omite.`);
+            return res.json({ success: true, skipped: true, nuevoEstado: Estado, estadoArea: EstadoenArea });
+        }
+
         transaction = new sql.Transaction(pool);
         await transaction.begin();
 
@@ -1569,7 +1678,10 @@ async function completarOrden(req, res) {
         if (Total === 0) {
             await new sql.Request(transaction)
                 .input('OID', sql.Int, ordenId)
-                .query("UPDATE Ordenes SET Estado = 'CANCELADO', EstadoenArea = 'Cancelado', EstadoLogistica='Cancelado', Observaciones = CONCAT(ISNULL(Observaciones,''), ' [Cancelada de oficio: Todos archivos cancelados]') WHERE OrdenID = @OID");
+                .query("UPDATE Ordenes SET EstadoLogistica='Cancelado', Observaciones = CONCAT(ISNULL(Observaciones,''), ' [Cancelada de oficio: Todos archivos cancelados]') WHERE OrdenID = @OID");
+            await changeOrderState(transaction, { target: { type: 'ORDER', id: ordenId }, estado: 'Cancelado', userObj: req.user || 'Sistema', detalle: 'Cancelada de oficio',
+                io       : req.app.get('socketio')
+            });
             
             await transaction.commit();
 
@@ -1609,7 +1721,10 @@ async function completarOrden(req, res) {
         // Actualizar la orden
         await new sql.Request(transaction)
             .input('OID', sql.Int, ordenId)
-            .query(`UPDATE Ordenes SET Estado = '${nuevoEstado}', EstadoenArea = '${nuevoEstadoArea}', EstadoLogistica = '${estadoLogistica}' WHERE OrdenID = @OID`);
+            .query(`UPDATE Ordenes SET EstadoLogistica = '${estadoLogistica}' WHERE OrdenID = @OID`);
+        await changeOrderState(transaction, { target: { type: 'ORDER', id: ordenId }, estado: nuevoEstadoArea, userObj: req.user || 'Sistema', detalle: 'Completada manualmente',
+                io       : req.app.get('socketio')
+            });
 
         await transaction.commit();
 
@@ -1639,9 +1754,12 @@ async function completarOrden(req, res) {
                     if (FallasRestantes === 0) {
                         // Solo desbloquear: Retenido → Pendiente (vuelve al lote de Control)
                         // El operador la finalizará manualmente junto con el resto del lote.
-                        await pool.request()
+                        const mdCheck = await pool.request()
                             .input('MID', sql.Int, madreId)
-                            .query(`UPDATE Ordenes SET Estado = 'Pendiente', EstadoenArea = 'Pendiente' WHERE OrdenID = @MID AND Estado IN ('Retenido', 'RETENIDO')`);
+                            .query(`SELECT Estado FROM Ordenes WHERE OrdenID = @MID AND Estado IN ('Retenido', 'RETENIDO')`);
+                        if (mdCheck.recordset.length > 0) {
+                            await changeOrderState(pool, { target: { type: 'ORDER', id: madreId }, estado: 'Pendiente', userObj: req.user || 'Sistema', detalle: 'Desbloqueo automático post-reposición' });
+                        }
                         if (io) io.emit('server:order_updated', { orderId: madreId, status: 'Pendiente' });
                         logger.info(`[completarOrden] Madre ${codigoMadre} desbloqueada → Pendiente (esperando finalización manual en lote)`);
                     }
@@ -1653,39 +1771,48 @@ async function completarOrden(req, res) {
 
         // Generar etiquetas si corresponde
         // Guard: si ya tienen etiquetas (generadas en postControlArchivo) no regenerar para evitar descalce de códigos
+        // IMPORTANTE: también se generan para órdenes con fallas (Retenido) para que circulen físicamente
         let totalBultos = 0;
-        if (!tieneFallas) {
-            try {
-                const existingLabels = await pool.request()
+        try {
+            const existingLabels = await pool.request()
+                .input('OID', sql.Int, ordenId)
+                .query("SELECT COUNT(*) as cnt FROM Etiquetas WHERE OrdenID = @OID");
+            const yaExisten = (existingLabels.recordset[0]?.cnt || 0) > 0;
+
+            if (yaExisten) {
+                // Ya tienen etiquetas → no regenerar, solo contabilizar
+                totalBultos = existingLabels.recordset[0].cnt;
+                logger.info(`[completarOrden] Orden ${ordenId} ya tiene ${totalBultos} etiqueta(s). Se omite regeneración.`);
+            } else {
+                const checkMag = await pool.request()
                     .input('OID', sql.Int, ordenId)
-                    .query("SELECT COUNT(*) as cnt FROM Etiquetas WHERE OrdenID = @OID");
-                const yaExisten = (existingLabels.recordset[0]?.cnt || 0) > 0;
+                    .query("SELECT SUM(Cantidad) as TotalCantidad FROM PedidosCobranzaDetalle WHERE OrdenID = @OID");
+                const magVal = parseFloat(checkMag.recordset[0]?.TotalCantidad) || 0;
 
-                if (yaExisten) {
-                    // Ya tienen etiquetas → no regenerar, solo contabilizar
-                    totalBultos = existingLabels.recordset[0].cnt;
-                    logger.info(`[completarOrden] Orden ${ordenId} ya tiene ${totalBultos} etiqueta(s). Se omite regeneración.`);
-                } else {
-                    const checkMag = await pool.request()
-                        .input('OID', sql.Int, ordenId)
-                        .query("SELECT SUM(Cantidad) as TotalCantidad FROM PedidosCobranzaDetalle WHERE OrdenID = @OID");
-                    const magVal = parseFloat(checkMag.recordset[0]?.TotalCantidad) || 0;
+                const prioridadRes = await pool.request()
+                    .input('OID', sql.Int, ordenId)
+                    .query("SELECT Prioridad FROM Ordenes WHERE OrdenID = @OID");
+                const prioridadStr = (prioridadRes.recordset[0]?.Prioridad || '').toUpperCase();
+                const esReposicion = codigoOrden.includes('-R') || prioridadStr === 'REPOSICIÓN' || prioridadStr === 'REPOSICION';
 
-                    const prioridadRes = await pool.request()
-                        .input('OID', sql.Int, ordenId)
-                        .query("SELECT Prioridad FROM Ordenes WHERE OrdenID = @OID");
-                    const prioridadStr = (prioridadRes.recordset[0]?.Prioridad || '').toUpperCase();
-                    const esReposicion = codigoOrden.includes('-R') || prioridadStr === 'REPOSICIÓN' || prioridadStr === 'REPOSICION';
-
-                    if (magVal > 0 || esReposicion) {
-                        const labelResult = await LabelGenerationService.regenerateLabelsForOrder(ordenId, (req.user?.id || 1), (req.user?.usuario || 'Sistema'));
-                        if (labelResult.success) totalBultos = labelResult.totalBultos;
+                if (magVal > 0 || esReposicion) {
+                    const labelResult = await LabelGenerationService.regenerateLabelsForOrder(
+                        ordenId, (req.user?.id || 1), (req.user?.usuario || 'Sistema')
+                    );
+                    if (labelResult.success) {
+                        totalBultos = labelResult.totalBultos;
+                        logger.info(`[completarOrden] Etiquetas generadas para orden ${nuevoEstado} ${ordenId}: ${totalBultos} bulto(s).`);
+                    } else {
+                        logger.warn(`[completarOrden] No se pudieron generar etiquetas: ${labelResult.error}`);
                     }
+                } else {
+                    logger.info(`[completarOrden] Orden ${ordenId} sin magnitud cotizada, no se generan etiquetas.`);
                 }
-            } catch (eLabels) {
-                logger.warn(`[completarOrden] Error etiquetas: ${eLabels.message}`);
             }
+        } catch (eLabels) {
+            logger.warn(`[completarOrden] Error etiquetas: ${eLabels.message}`);
         }
+
 
         res.json({ success: true, nuevoEstado, estadoLogistica, totalBultos });
 
@@ -1795,6 +1922,7 @@ module.exports = {
     completarOrden,
     getMotivosCancelacion,
     confirmarFalla,
-    liberarCanastaFalla
+    liberarCanastaFalla,
+    recalcularContadoresEtiquetas
 };
 

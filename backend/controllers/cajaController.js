@@ -33,7 +33,8 @@ const procesarTransaccion = async (req, res) => {
     }
 
     // ─────────────────────────────────────────────
-    if (!esCredito && (!pagos || pagos.length === 0))
+    // Crédito explícito: el frontend envía esCredito:true cuando el usuario eligió modo Crédito en PEDIDO CAJA
+    if (!esCredito && !header.esCredito && (!pagos || pagos.length === 0))
       return res.status(400).json({ success:false, error:'Debe incluir al menos un método de pago para documentos de contado.' });
 
     const resultado = await cajaService.procesarTransaccion({ header, aplicaciones, pagos: pagos || [], usuarioId });
@@ -52,9 +53,8 @@ const procesarVentaDirecta = async (req, res) => {
     if (!data.header || !data.items?.length)
       return res.status(400).json({ success:false, error:'Faltan datos de la venta.' });
 
-    const esPedidoCaja = data.header.tipoDocumento === 'PC';
-    const esCredito = data.header.tipoDocumento === '02' || data.header.tipoDocumento === '08' || data.header.tipoDocumento === 'FACT_CREDITO';
-    if (!esCredito && !esPedidoCaja && (!data.pagos || data.pagos.length === 0)) {
+    const esCredito = ['02', '08', 'FACT_CREDITO'].includes(data.header.tipoDocumento) || !!data.header.esCredito;
+    if (!esCredito && (!data.pagos || data.pagos.length === 0)) {
       return res.status(400).json({ success:false, error:'Debe incluir al menos un metodo de pago valido para ventas al contado.' });
     }
 
@@ -2601,6 +2601,139 @@ const guardarComprobante = async (req, res) => {
 };
 
 // ─────────────────────────────────────────────
+
+/** GET /api/contabilidad/caja/autorizaciones-sin-pago
+ *  Devuelve registros de AutorizacionesSinPago con datos del retiro, cliente y usuario.
+ *  Params opcionales: desde (ISO), hasta (ISO), sesionId (Int)
+ */
+const getAutorizacionesSinPago = async (req, res) => {
+  try {
+    const { desde, hasta, sesionId } = req.query;
+    const pool = await getPool();
+    const request = pool.request();
+
+    let dateFilter = '';
+    if (sesionId) {
+      request.input('SesId', sql.Int, parseInt(sesionId, 10));
+      dateFilter = `AND a.AuzFecha >= (SELECT StuFechaApertura FROM dbo.SesionesTurno WHERE StuIdSesion = @SesId)
+                   AND (@SesId IS NULL OR a.AuzFecha <= COALESCE((SELECT StuFechaCierre FROM dbo.SesionesTurno WHERE StuIdSesion = @SesId), GETDATE()))`;
+    } else if (desde) {
+      request.input('Desde', sql.DateTime, new Date(desde));
+      dateFilter = 'AND a.AuzFecha >= @Desde';
+      if (hasta) {
+        request.input('Hasta', sql.DateTime, new Date(hasta + 'T23:59:59'));
+        dateFilter += ' AND a.AuzFecha <= @Hasta';
+      }
+    }
+
+    const result = await request.query(`
+      SELECT
+        a.AuzIdAutorizacion,
+        a.OReIdOrdenRetiro,
+        COALESCE(r.FormaRetiro, 'R') + '-' + CAST(a.OReIdOrdenRetiro AS VARCHAR) AS OrdenCodigo,
+        a.AuzFecha,
+        a.AuzMotivo,
+        a.AuzMontoDeuda,
+        a.AuzFechaVencimiento,
+        a.AuzEstado,
+        a.AuzNotaGestion,
+        u.Nombre AS NombreAutorizador,
+        COALESCE(
+          (SELECT TOP 1 LTRIM(RTRIM(cx.Nombre))
+           FROM dbo.OrdenesDeposito odx WITH(NOLOCK)
+           JOIN dbo.Clientes cx WITH(NOLOCK) ON cx.CliIdCliente = odx.CliIdCliente
+           WHERE odx.OReIdOrdenRetiro = a.OReIdOrdenRetiro),
+          (SELECT TOP 1 LTRIM(RTRIM(crx.Nombre))
+           FROM dbo.Clientes crx WITH(NOLOCK)
+           WHERE crx.CodCliente = r.CodCliente)
+        ) AS NombreCliente,
+        COALESCE(r.CodCliente, '') AS CodigoCliente,
+        r.OReCostoTotalOrden,
+        r.OReEstadoActual,
+        er.EORNombreEstado AS EstadoRetiro,
+        (
+          SELECT rel.OrdIdOrden AS orderId,
+                 od.OrdCodigoOrden AS codigo,
+                 art.Descripcion AS producto,
+                 CAST(od.OrdCantidad AS DECIMAL(10,2)) AS cantidad,
+                 CAST(od.OrdCostoFinal AS FLOAT) AS monto,
+                 mon.MonSimbolo AS moneda,
+                 mo.MOrNombreModo AS modo,
+                 od.OrdEstadoActual AS estado,
+                 eo.EOrNombreEstado AS estadoNombre
+          FROM dbo.RelOrdenesRetiroOrdenes rel WITH(NOLOCK)
+          JOIN dbo.OrdenesDeposito od WITH(NOLOCK) ON od.OrdIdOrden = rel.OrdIdOrden
+          LEFT JOIN dbo.Monedas mon WITH(NOLOCK) ON mon.MonIdMoneda = od.MonIdMoneda
+          LEFT JOIN dbo.Articulos art WITH(NOLOCK) ON art.ProIdProducto = od.ProIdProducto
+          LEFT JOIN dbo.ModosOrdenes mo WITH(NOLOCK) ON mo.MOrIdModoOrden = od.MOrIdModoOrden
+          LEFT JOIN dbo.EstadosOrdenes eo WITH(NOLOCK) ON eo.EOrIdEstadoOrden = od.OrdEstadoActual
+          WHERE rel.OReIdOrdenRetiro = a.OReIdOrdenRetiro
+          FOR JSON PATH
+        ) AS OrdenesJSON,
+        (
+          SELECT COUNT(*)
+          FROM dbo.RelOrdenesRetiroOrdenes rel WITH(NOLOCK)
+          WHERE rel.OReIdOrdenRetiro = a.OReIdOrdenRetiro
+        ) AS CantOrdenes
+      FROM dbo.AutorizacionesSinPago a WITH(NOLOCK)
+      LEFT JOIN dbo.OrdenesRetiro r WITH(NOLOCK) ON r.OReIdOrdenRetiro = a.OReIdOrdenRetiro
+      LEFT JOIN dbo.EstadosOrdenesRetiro er WITH(NOLOCK) ON er.EORIdEstadoOrden = r.OReEstadoActual
+      LEFT JOIN dbo.Usuarios u WITH(NOLOCK) ON u.IdUsuario = a.AuzUsuarioId
+      WHERE 1=1 ${dateFilter}
+      ORDER BY a.AuzFecha DESC
+    `);
+
+    const data = result.recordset.map(row => ({
+      ...row,
+      Ordenes: row.OrdenesJSON ? JSON.parse(row.OrdenesJSON) : [],
+      OrdenesJSON: undefined,
+    }));
+    res.json({ success: true, data });
+  } catch (err) {
+    logger.error('[CAJA] getAutorizacionesSinPago:', err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+};
+
+// ─────────────────────────────────────────────
+
+/** PUT /api/contabilidad/caja/autorizaciones-sin-pago/:id
+ *  Actualiza estado de una autorización sin pago (Pendiente→Cobrado/Condonado).
+ */
+const gestionarAutorizacionSinPago = async (req, res) => {
+  const { id } = req.params;
+  const { estado, nota } = req.body;
+  const usuarioId = req.user?.id || 70;
+
+  const ESTADOS_VALIDOS = { Pendiente: 'ACTIVA', Cobrado: 'COBRADA', Condonado: 'CONDONADA' };
+  if (!ESTADOS_VALIDOS[estado])
+    return res.status(400).json({ success: false, error: 'Estado inválido. Valores: Pendiente, Cobrado, Condonado' });
+
+  try {
+    const pool = await getPool();
+    await pool.request()
+      .input('Id',       sql.Int,          parseInt(id, 10))
+      .input('Estado',   sql.VarChar(20),   ESTADOS_VALIDOS[estado])
+      .input('Nota',     sql.NVarChar(500), nota?.trim() || null)
+      .input('Usr',      sql.Int,           usuarioId)
+      .input('FechaCob', sql.DateTime,      estado === 'Cobrado' ? new Date() : null)
+      .query(`
+        UPDATE dbo.AutorizacionesSinPago
+        SET AuzEstado       = @Estado,
+            AuzFechaCobro   = @FechaCob,
+            AuzNotaGestion  = @Nota
+        WHERE AuzIdAutorizacion = @Id
+      `);
+
+    logger.info(`[CAJA] Autorización ${id} → ${estado} por usuario ${usuarioId}`);
+    res.json({ success: true });
+  } catch (err) {
+    logger.error('[CAJA] gestionarAutorizacionSinPago:', err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+};
+
+// ─────────────────────────────────────────────
 module.exports = {
   // Transacciones
   procesarTransaccion, procesarVentaDirecta, procesarPagoDeuda, getProductosVenta, anularTransaccion, getTransaccion, getHistorialCliente,
@@ -2611,7 +2744,7 @@ module.exports = {
   // Egresos e Ingresos
   registrarEgreso, getTiposEgreso, getVoucherEgreso, registrarIngresoGenerico,
   // Autorizaciones
-  autorizarSinPago,
+  autorizarSinPago, getAutorizacionesSinPago, gestionarAutorizacionSinPago,
   // ─────────────────────────────────────────────
   registrarOperacionManual,
   // Operaciones desde Estado de Cuenta (Caja Administrativa)

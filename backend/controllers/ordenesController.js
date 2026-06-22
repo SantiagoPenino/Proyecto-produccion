@@ -832,6 +832,38 @@ const updateOrdenEstado = async (req, res) => {
           INSERT INTO HistoricoEstadosOrdenes(OrdIdOrden, EOrIdEstadoOrden, HEOFechaEstado, HEOUsuarioAlta)
 VALUES(@orderId, @estadoId, @fecha, @usuario);
 `);
+
+      // --- Sincronizar EstadoenArea a nivel global si pasa a Avisado (6) o Entregado (9) ---
+      if (estadoId === 6 || estadoId === 9) {
+          try {
+              const mainOrderRes = await transaction.request()
+                  .input('orderId', sql.Int, orderId)
+                  .query(`
+                      SELECT TOP 1 o.OrdenID 
+                      FROM OrdenesDeposito od WITH(NOLOCK)
+                      INNER JOIN Ordenes o WITH(NOLOCK) ON (od.OrdCodigoOrden = o.NoDocERP OR od.OrdCodigoOrden = o.CodigoOrden)
+                      WHERE od.OrdIdOrden = @orderId
+                  `);
+
+              if (mainOrderRes.recordset.length > 0) {
+                  const mainOrdenId = mainOrderRes.recordset[0].OrdenID;
+                  const estadoStr = estadoId === 6 ? 'Avisado' : 'Entregado';
+                  
+                  // Requerir aquí si no estuviera al inicio, aunque está importado arriba
+                  const { changeOrderState } = require('../services/stateManagerService');
+                  
+                  await changeOrderState(transaction, {
+                      target: { type: 'ORDER', id: mainOrdenId },
+                      estado: estadoStr,
+                      userObj: req.user || 'Sistema',
+                      detalle: `Estado sincronizado (${estadoStr})`,
+                      io: req.app.get('socketio')
+                  });
+              }
+          } catch (syncErr) {
+              logger.error(`Error al sincronizar estado global para OrdenesDeposito ${orderId}:`, syncErr);
+          }
+      }
     }
 
     await transaction.commit();
@@ -1228,6 +1260,34 @@ const omitirWsp = async (req, res) => {
             OrdEstadoActual = 6
         WHERE OrdIdOrden = @id
       `);
+
+    try {
+        const mainOrderRes = await pool.request()
+            .input('id', sql.Int, ordId)
+            .query(`
+                SELECT TOP 1 o.OrdenID 
+                FROM OrdenesDeposito od WITH(NOLOCK)
+                INNER JOIN Ordenes o WITH(NOLOCK) ON (od.OrdCodigoOrden = o.NoDocERP OR od.OrdCodigoOrden = o.CodigoOrden)
+                WHERE od.OrdIdOrden = @id
+            `);
+            
+        if (mainOrderRes.recordset.length > 0) {
+            const mainOrdenId = mainOrderRes.recordset[0].OrdenID;
+            const { changeOrderState } = require('../services/stateManagerService');
+            
+            // Note: omitirWsp doesn't use a transaction, so we pass pool instead of transaction.
+            await changeOrderState(pool, {
+                target: { type: 'ORDER', id: mainOrdenId },
+                estado: 'Avisado',
+                userObj: req.user || 'Sistema',
+                detalle: 'Estado global sincronizado (Omitir envío WSP)',
+                io: req.app.get('socketio')
+            });
+        }
+    } catch (syncErr) {
+        logger.error(`Error al sincronizar estado global a Avisado en omitirWsp para OrdId ${ordId}:`, syncErr);
+    }
+
     res.json({ success: true });
   } catch (err) {
     logger.error('Error en omitirWsp:', err);

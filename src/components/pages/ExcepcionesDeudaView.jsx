@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { AlertCircle, RefreshCw, CheckCircle, Clock, XCircle, FileText, User, DollarSign, Search, Calendar, ChevronDown, ChevronRight, Package } from 'lucide-react';
+import { AlertCircle, RefreshCw, CheckCircle, Clock, XCircle, FileText, User, DollarSign, Search, Calendar, ChevronDown, ChevronRight, Package, ShieldCheck } from 'lucide-react';
 import api from '../../services/api';
 import { toast } from 'sonner';
 
@@ -20,8 +20,26 @@ const EstadoBadge = ({ estado }) => {
     );
 };
 
-// Obtiene el monto efectivo: usa MontoOrden si Monto guardado es 0
 const getMonto = (item) => Number(item.MontoOrden || item.Monto || 0);
+
+const normalizeAutorizacion = (a) => ({
+    Id: `AUZ-${a.AuzIdAutorizacion}`,
+    OrdenRetiro: a.OrdenCodigo,
+    NombreCliente: a.NombreCliente,
+    CodigoCliente: a.CodigoCliente,
+    Monto: parseFloat(a.AuzMontoDeuda || 0),
+    MontoOrden: parseFloat(a.AuzMontoDeuda || 0),
+    Explicacion: a.AuzMotivo,
+    NombreAutorizador: a.NombreAutorizador,
+    Estado: a.AuzEstado === 'ACTIVA' ? 'Pendiente' : a.AuzEstado === 'CONDONADA' ? 'Condonado' : 'Cobrado',
+    Fecha: a.AuzFecha,
+    FechaVencimiento: a.AuzFechaVencimiento || null,
+    NotaGestion: a.AuzNotaGestion || null,
+    TipoCliente: null,
+    Ordenes: a.Ordenes || [],
+    CantOrdenes: a.CantOrdenes || 0,
+    _origen: 'CAJA',
+});
 
 const GestionModal = ({ item, onClose, onSaved }) => {
     const [estado, setEstado] = useState(item?.Estado || 'Pendiente');
@@ -31,7 +49,12 @@ const GestionModal = ({ item, onClose, onSaved }) => {
     const handleGuardar = async () => {
         setLoading(true);
         try {
-            await api.put(`/web-retiros/excepciones/${item.Id}/gestionar`, { estado, nota });
+            if (item._origen === 'CAJA') {
+                const numId = String(item.Id).replace('AUZ-', '');
+                await api.put(`/contabilidad/caja/autorizaciones-sin-pago/${numId}`, { estado, nota });
+            } else {
+                await api.put(`/web-retiros/excepciones/${item.Id}/gestionar`, { estado, nota });
+            }
             toast.success('Estado actualizado correctamente.');
             onSaved();
             onClose();
@@ -139,15 +162,16 @@ const GestionModal = ({ item, onClose, onSaved }) => {
 };
 
 const ExcepcionesDeudaView = () => {
-    const [excepciones, setExcepciones] = useState([]);
-    const [loading, setLoading]         = useState(true);
-    const [error, setError]             = useState(null);
-    const [filtroEstado, setFiltroEstado] = useState('todos');
-    const [itemGestion, setItemGestion] = useState(null);
-    const [expandedId, setExpandedId]   = useState(null);
+    const [excepciones, setExcepciones]       = useState([]);
+    const [autorizaciones, setAutorizaciones] = useState([]);
+    const [loading, setLoading]               = useState(true);
+    const [error, setError]                   = useState(null);
+    const [filtroEstado, setFiltroEstado]     = useState('todos');
+    const [filtroOrigen, setFiltroOrigen]     = useState('todos'); // 'todos' | 'HISTORICO' | 'CAJA'
+    const [itemGestion, setItemGestion]       = useState(null);
+    const [expandedId, setExpandedId]         = useState(null);
 
-    // Filtros
-    const [busqueda, setBusqueda] = useState('');
+    const [busqueda, setBusqueda]     = useState('');
     const [fechaDesde, setFechaDesde] = useState('');
     const [fechaHasta, setFechaHasta] = useState('');
 
@@ -155,8 +179,12 @@ const ExcepcionesDeudaView = () => {
         setLoading(true);
         setError(null);
         try {
-            const res = await api.get('/web-retiros/excepciones');
-            setExcepciones(res.data);
+            const [resExc, resAut] = await Promise.all([
+                api.get('/web-retiros/excepciones'),
+                api.get('/contabilidad/caja/autorizaciones-sin-pago').catch(() => ({ data: { data: [] } })),
+            ]);
+            setExcepciones(resExc.data || []);
+            setAutorizaciones((resAut.data?.data || []).map(normalizeAutorizacion));
         } catch (err) {
             console.error(err);
             setError('Error al cargar la tabla de retiros con deuda.');
@@ -167,29 +195,31 @@ const ExcepcionesDeudaView = () => {
 
     useEffect(() => { fetchExcepciones(); }, []);
 
-    const filtered = useMemo(() => {
-        let arr = excepciones;
+    // Unión de ambas fuentes
+    const allItems = useMemo(() => {
+        const excWithOrigen = excepciones.map(e => ({ ...e, _origen: 'HISTORICO' }));
+        return [...excWithOrigen, ...autorizaciones];
+    }, [excepciones, autorizaciones]);
 
-        // Filtro estado
+    const filtered = useMemo(() => {
+        let arr = allItems;
+
+        if (filtroOrigen !== 'todos') arr = arr.filter(e => e._origen === filtroOrigen);
         if (filtroEstado !== 'todos') arr = arr.filter(e => e.Estado === filtroEstado);
 
-        // Filtro búsqueda
         if (busqueda.trim()) {
             const t = busqueda.toLowerCase();
             arr = arr.filter(e => [
                 e.OrdenRetiro, e.NombreCliente, e.CodigoCliente,
                 e.TipoCliente, e.Explicacion, e.NombreAutorizador,
-                ...(e.Ordenes||[]).map(o => o.codigo)
+                ...(e.Ordenes || []).map(o => o.codigo)
             ].some(v => String(v || '').toLowerCase().includes(t)));
         }
 
-        // Filtro fecha desde
         if (fechaDesde) {
             const desde = new Date(fechaDesde);
             arr = arr.filter(e => new Date(e.Fecha) >= desde);
         }
-
-        // Filtro fecha hasta
         if (fechaHasta) {
             const hasta = new Date(fechaHasta);
             hasta.setHours(23, 59, 59);
@@ -197,16 +227,17 @@ const ExcepcionesDeudaView = () => {
         }
 
         return arr;
-    }, [excepciones, filtroEstado, busqueda, fechaDesde, fechaHasta]);
+    }, [allItems, filtroEstado, filtroOrigen, busqueda, fechaDesde, fechaHasta]);
 
-    const resumen = {
-        total: excepciones.length,
-        pendiente: excepciones.filter(e => e.Estado === 'Pendiente').length,
-        cobrado: excepciones.filter(e => e.Estado === 'Cobrado').length,
-        montoPendiente: excepciones.filter(e => e.Estado === 'Pendiente').reduce((a, e) => a + getMonto(e), 0),
-    };
+    const resumen = useMemo(() => ({
+        total:         allItems.length,
+        pendiente:     allItems.filter(e => e.Estado === 'Pendiente').length,
+        cobrado:       allItems.filter(e => e.Estado === 'Cobrado').length,
+        montoPendiente: allItems.filter(e => e.Estado === 'Pendiente').reduce((a, e) => a + getMonto(e), 0),
+        nuevasCaja:    autorizaciones.length,
+    }), [allItems, autorizaciones]);
 
-    const hayFiltros = busqueda || fechaDesde || fechaHasta || filtroEstado !== 'todos';
+    const hayFiltros = busqueda || fechaDesde || fechaHasta || filtroEstado !== 'todos' || filtroOrigen !== 'todos';
 
     return (
         <div className="min-h-screen bg-slate-50 p-4 md:p-8">
@@ -231,12 +262,13 @@ const ExcepcionesDeudaView = () => {
                 </div>
 
                 {/* TARJETAS RESUMEN */}
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
                     {[
                         { label: 'Total registros',  value: resumen.total,          color: 'bg-slate-800',   icon: <FileText size={20} className="text-white" /> },
                         { label: 'Pendientes',        value: resumen.pendiente,      color: 'bg-rose-500',    icon: <Clock size={20} className="text-white" /> },
                         { label: 'Cobrados',          value: resumen.cobrado,        color: 'bg-emerald-500', icon: <CheckCircle size={20} className="text-white" /> },
-                        { label: 'Monto pendiente',   value: `$ ${resumen.montoPendiente.toLocaleString()}`, color: 'bg-orange-500', icon: <DollarSign size={20} className="text-white" /> },
+                        { label: 'Monto pendiente',   value: `$ ${resumen.montoPendiente.toLocaleString('es-UY', { minimumFractionDigits: 2 })}`, color: 'bg-orange-500', icon: <DollarSign size={20} className="text-white" /> },
+                        { label: 'Nuevas vía caja',   value: resumen.nuevasCaja,     color: 'bg-amber-500',   icon: <ShieldCheck size={20} className="text-white" /> },
                     ].map(c => (
                         <div key={c.label} className="bg-white rounded-2xl border border-slate-200 p-5 flex flex-col gap-2 shadow-sm">
                             <div className={`w-10 h-10 ${c.color} rounded-xl flex items-center justify-center`}>{c.icon}</div>
@@ -256,11 +288,12 @@ const ExcepcionesDeudaView = () => {
                                 Historial de Retiros con Deuda
                                 {hayFiltros && (
                                     <span className="ml-2 text-sm font-semibold text-blue-600">
-                                        · {filtered.length} de {excepciones.length}
+                                        · {filtered.length} de {allItems.length}
                                     </span>
                                 )}
                             </h2>
                             <div className="flex flex-wrap gap-2">
+                                {/* Filtro por estado */}
                                 {['todos', ...ESTADOS].map(e => (
                                     <button key={e} onClick={() => setFiltroEstado(e)}
                                         className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all border ${
@@ -270,6 +303,23 @@ const ExcepcionesDeudaView = () => {
                                         }`}
                                     >
                                         {e === 'todos' ? '⭐ Todos' : e}
+                                    </button>
+                                ))}
+                                {/* Filtro por origen */}
+                                <div className="w-px bg-slate-200 mx-1" />
+                                {[
+                                    { key: 'todos',     label: 'Todas las fuentes' },
+                                    { key: 'HISTORICO', label: '📋 Históricas' },
+                                    { key: 'CAJA',      label: '🛡️ Vía Caja' },
+                                ].map(o => (
+                                    <button key={o.key} onClick={() => setFiltroOrigen(o.key)}
+                                        className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all border ${
+                                            filtroOrigen === o.key
+                                                ? 'bg-amber-600 text-white border-amber-600'
+                                                : 'bg-white text-slate-500 border-slate-200 hover:border-slate-400'
+                                        }`}
+                                    >
+                                        {o.label}
                                     </button>
                                 ))}
                             </div>
@@ -299,7 +349,7 @@ const ExcepcionesDeudaView = () => {
                                     title="Fecha hasta"
                                 />
                                 {hayFiltros && (
-                                    <button onClick={() => { setBusqueda(''); setFechaDesde(''); setFechaHasta(''); setFiltroEstado('todos'); }}
+                                    <button onClick={() => { setBusqueda(''); setFechaDesde(''); setFechaHasta(''); setFiltroEstado('todos'); setFiltroOrigen('todos'); }}
                                         className="px-3 py-2 text-xs font-bold text-rose-600 border border-rose-200 rounded-xl hover:bg-rose-50 transition-colors whitespace-nowrap"
                                     >
                                         ✕ Limpiar
@@ -319,13 +369,13 @@ const ExcepcionesDeudaView = () => {
                                 <tr className="bg-slate-50 text-slate-500 text-[11px] font-black uppercase tracking-wider border-b border-slate-200">
                                     <th className="p-4">Fecha</th>
                                     <th className="p-4">Orden / Cliente</th>
-                                    <th className="p-4">Tipo</th>
+                                    <th className="p-4">Tipo / Origen</th>
                                     <th className="p-4">Monto</th>
                                     <th className="p-4">Órdenes</th>
                                     <th className="p-4">Motivo</th>
                                     <th className="p-4">Autorizó</th>
                                     <th className="p-4">Estado Cobro</th>
-                                    <th className="p-4">Nota</th>
+                                    <th className="p-4">Nota / Vencimiento</th>
                                     <th className="p-4 text-center">Acción</th>
                                 </tr>
                             </thead>
@@ -335,13 +385,19 @@ const ExcepcionesDeudaView = () => {
                                 ) : filtered.length === 0 ? (
                                     <tr><td colSpan="10" className="text-center p-10 text-slate-400 font-bold">No hay registros con ese filtro.</td></tr>
                                 ) : (
-                                    filtered.map(item => {
-                                        const monto = getMonto(item);
+                                    filtered.map((item, rowIdx) => {
+                                        const monto      = getMonto(item);
                                         const isExpanded = expandedId === item.Id;
                                         const hasOrdenes = item.Ordenes?.length > 0;
+                                        const esCaja     = item._origen === 'CAJA';
+                                        const rowKey     = `${item._origen}-${item.Id}-${rowIdx}`;
                                         return (
-                                            <React.Fragment key={item.Id}>
-                                            <tr className={`hover:bg-slate-50 transition-colors cursor-default ${item.Estado !== 'Pendiente' ? 'opacity-70' : ''} ${isExpanded ? 'bg-blue-50/40' : ''}`}>
+                                            <React.Fragment key={rowKey}>
+                                            <tr className={`hover:bg-slate-50 transition-colors cursor-default
+                                                ${item.Estado !== 'Pendiente' ? 'opacity-70' : ''}
+                                                ${isExpanded ? 'bg-blue-50/40' : ''}
+                                                ${esCaja ? 'border-l-4 border-l-amber-400' : ''}
+                                            `}>
                                                 {/* Fecha */}
                                                 <td className="p-4 text-slate-500 whitespace-nowrap text-xs">
                                                     {new Date(item.Fecha).toLocaleString('es-UY', { dateStyle: 'short', timeStyle: 'short' })}
@@ -353,19 +409,30 @@ const ExcepcionesDeudaView = () => {
                                                     <div className="text-xs text-slate-500">{item.NombreCliente || item.CodigoCliente || '—'}</div>
                                                 </td>
 
-                                                {/* Tipo de cliente */}
+                                                {/* Tipo + Origen */}
                                                 <td className="p-4">
-                                                    {item.TipoCliente ? (
-                                                        <span className="inline-block px-2 py-0.5 rounded-lg text-xs font-bold bg-indigo-50 text-indigo-700 border border-indigo-200">
-                                                            {item.TipoCliente}
-                                                        </span>
-                                                    ) : <span className="text-slate-300">—</span>}
+                                                    <div className="flex flex-col gap-1">
+                                                        {item.TipoCliente ? (
+                                                            <span className="inline-block px-2 py-0.5 rounded-lg text-xs font-bold bg-indigo-50 text-indigo-700 border border-indigo-200">
+                                                                {item.TipoCliente}
+                                                            </span>
+                                                        ) : null}
+                                                        {esCaja ? (
+                                                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-xs font-black bg-amber-50 text-amber-700 border border-amber-200">
+                                                                <ShieldCheck size={11} /> VÍA CAJA
+                                                            </span>
+                                                        ) : (
+                                                            <span className="inline-block px-2 py-0.5 rounded-lg text-xs font-bold bg-slate-100 text-slate-500 border border-slate-200">
+                                                                Historial
+                                                            </span>
+                                                        )}
+                                                    </div>
                                                 </td>
 
                                                 {/* Monto */}
                                                 <td className="p-4 whitespace-nowrap">
                                                     <span className={`font-black text-base ${monto > 0 ? 'text-rose-600' : 'text-slate-400'}`}>
-                                                        $ {monto.toLocaleString()}
+                                                        $ {monto.toLocaleString('es-UY', { minimumFractionDigits: 2 })}
                                                     </span>
                                                 </td>
 
@@ -408,15 +475,32 @@ const ExcepcionesDeudaView = () => {
                                                     )}
                                                 </td>
 
-                                                {/* Nota */}
-                                                <td className="p-4 max-w-[140px]">
-                                                    <div className="text-xs text-slate-500 whitespace-pre-wrap line-clamp-2">{item.NotaGestion || '—'}</div>
+                                                {/* Nota / Vencimiento */}
+                                                <td className="p-4 max-w-[160px]">
+                                                    <div className="flex flex-col gap-1">
+                                                        {esCaja && item.FechaVencimiento && (
+                                                            <div>
+                                                                <span className="text-[10px] font-black text-amber-600 uppercase tracking-widest">Vence: </span>
+                                                                <span className="text-xs font-bold text-slate-700">
+                                                                    {new Date(item.FechaVencimiento).toLocaleDateString('es-UY')}
+                                                                </span>
+                                                            </div>
+                                                        )}
+                                                        {item.NotaGestion
+                                                            ? <div className="text-xs text-slate-600 whitespace-pre-wrap line-clamp-3 italic">"{item.NotaGestion}"</div>
+                                                            : (!esCaja || !item.FechaVencimiento) && <span className="text-slate-300">—</span>
+                                                        }
+                                                    </div>
                                                 </td>
 
                                                 {/* Acción */}
                                                 <td className="p-4 text-center">
                                                     <button onClick={() => setItemGestion(item)}
-                                                        className="px-3 py-1.5 bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 rounded-xl text-xs font-bold transition-colors"
+                                                        className={`px-3 py-1.5 border rounded-xl text-xs font-bold transition-colors ${
+                                                            esCaja
+                                                                ? 'bg-amber-50 hover:bg-amber-100 text-amber-700 border-amber-200'
+                                                                : 'bg-blue-50 hover:bg-blue-100 text-blue-700 border-blue-200'
+                                                        }`}
                                                     >
                                                         Gestionar
                                                     </button>
@@ -482,7 +566,6 @@ const ExcepcionesDeudaView = () => {
                                                                     ))}
                                                                 </tbody>
                                                                 <tfoot>
-                                                                    {/* Totales agrupados por moneda */}
                                                                     {Object.entries(
                                                                         item.Ordenes.reduce((acc, o) => {
                                                                             const sym = o.moneda || '$';

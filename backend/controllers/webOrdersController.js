@@ -1107,10 +1107,20 @@ exports.createWebOrder = async (req, res) => {
                 if (checkRes.recordset.length > 0) {
                     const { PendProd, PendRef } = checkRes.recordset[0];
                     if ((PendProd + PendRef) === 0) {
-                        // Si no hay nada pendiente, activar.
-                        await new sql.Request(transaction)
+                        // Si no hay nada pendiente, activar (solo si sigue en 'Cargando...', preserva el guard original).
+                        const { changeOrderState } = require('../services/stateManagerService');
+                        const estadoActual = await new sql.Request(transaction)
                             .input('OID', sql.Int, oid)
-                            .query(`UPDATE Ordenes SET Estado = 'Pendiente', EstadoenArea = 'Pendiente' WHERE OrdenID = @OID AND Estado = 'Cargando...'`);
+                            .query(`SELECT Estado FROM Ordenes WHERE OrdenID = @OID`);
+                        if (estadoActual.recordset[0]?.Estado === 'Cargando...') {
+                            await changeOrderState(transaction, {
+                                target : { type: 'ORDER', id: oid },
+                                estado : 'Pendiente',
+                                userObj: req.user || 'Sistema',
+                                detalle: 'Archivos completos, orden activada',
+                                io     : req.app.get('socketio'),
+                            });
+                        }
                     }
                 }
             }
@@ -1223,9 +1233,21 @@ exports.uploadOrderFile = async (req, res) => {
 
             if (pendientes === 0) {
                 logger.info(`✅ [Pedido Completo] Orden ${orderID} tiene todos sus archivos. Activando...`);
-                // Cambiar estado de 'Cargando...' a 'Pendiente'
-                // TAMBIEN EstadoenArea = 'Pendiente'
-                await pool.request().input('OID', sql.Int, orderID).query(`UPDATE Ordenes SET Estado = 'Pendiente', EstadoenArea = 'Pendiente' WHERE OrdenID = @OID AND Estado = 'Cargando...'`);
+                // Cambiar estado de 'Cargando...' a 'Pendiente' (vía servicio central, con guarda y transacción)
+                const { changeOrderState } = require('../services/stateManagerService');
+                const txAct = new sql.Transaction(pool);
+                await txAct.begin();
+                try {
+                    await changeOrderState(txAct, {
+                        target : { type: 'ORDER', id: orderID },
+                        estado : 'Pendiente',
+                        userObj: req.user || 'Sistema',
+                        detalle: 'Archivos completos, orden activada',
+                        guard  : "Estado = 'Cargando...'",
+                        io     : req.app.get('socketio'),
+                    });
+                    await txAct.commit();
+                } catch (e) { await txAct.rollback(); throw e; }
 
                 // Obtener datos de la orden para el Toast
                 const orderDataReq = await pool.request().input('OID', sql.Int, orderID).query(`
@@ -1432,8 +1454,15 @@ exports.deleteIncompleteOrder = async (req, res) => {
             const reqTx = new sql.Request(transaction);
 
             if (estado === 'Pendiente') {
-                // SOFT DELETE (Cancelar) - Queda en historial
-                await reqTx.input('OID_C', sql.Int, id).query("UPDATE Ordenes SET Estado = 'Cancelado' WHERE OrdenID = @OID_C");
+                // SOFT DELETE (Cancelar) - Queda en historial, vía servicio central
+                const { changeOrderState } = require('../services/stateManagerService');
+                await changeOrderState(transaction, {
+                    target : { type: 'ORDER', id },
+                    estado : 'Cancelado',
+                    userObj: req.user || 'Sistema',
+                    detalle: 'Pedido incompleto cancelado',
+                    io     : req.app.get('socketio'),
+                });
                 await transaction.commit();
                 return res.json({ success: true, message: "Pedido cancelado correctamente." });
             }

@@ -158,7 +158,7 @@ exports.toggleInsumoArea = async (req, res) => {
 
 // AGREGAR ESTADO
 exports.addStatus = async (req, res) => {
-    const { areaId, nombre, colorHex, orden, esFinal, tipoEstado } = req.body;
+    const { areaId, nombre, colorHex, orden, esFinal, tipoEstado, estadoPadreId } = req.body;
     try {
         const pool = await getPool();
         
@@ -174,7 +174,8 @@ exports.addStatus = async (req, res) => {
             .input('Orden', sql.Int, orden || 0)
             .input('Final', sql.Bit, esFinal ? 1 : 0)
             .input('TipoEstado', sql.NVarChar(50), tipoEstado || 'ESTADOENAREA')
-            .query("INSERT INTO dbo.ConfigEstados (EstadoID, AreaID, Nombre, ColorHex, Orden, EsFinal, TipoEstado) VALUES (@EstadoID, @AreaID, @Nombre, @Color, @Orden, @Final, @TipoEstado)");
+            .input('EstadoPadreID', sql.Int, estadoPadreId || null)
+            .query("INSERT INTO dbo.ConfigEstados (EstadoID, AreaID, Nombre, ColorHex, Orden, EsFinal, TipoEstado, EstadoPadreID) VALUES (@EstadoID, @AreaID, @Nombre, @Color, @Orden, @Final, @TipoEstado, @EstadoPadreID)");
 
         res.json({ success: true, message: 'Estado agregado', insertId: nextId });
     } catch (err) {
@@ -186,7 +187,7 @@ exports.addStatus = async (req, res) => {
 // ACTUALIZAR ESTADO
 exports.updateStatus = async (req, res) => {
     const { id } = req.params;
-    const { areaId, nombre, colorHex, orden, esFinal, tipoEstado } = req.body;
+    const { areaId, nombre, colorHex, orden, esFinal, tipoEstado, estadoPadreId } = req.body;
     try {
         const pool = await getPool();
         await pool.request()
@@ -197,6 +198,7 @@ exports.updateStatus = async (req, res) => {
             .input('Orden', sql.Int, orden)
             .input('Final', sql.Bit, esFinal ? 1 : 0)
             .input('TipoEstado', sql.NVarChar(50), tipoEstado)
+            .input('EstadoPadreID', sql.Int, estadoPadreId === null ? null : estadoPadreId)
             .query(`
                 UPDATE dbo.ConfigEstados
                 SET AreaID = ISNULL(@AreaID, AreaID),
@@ -204,7 +206,8 @@ exports.updateStatus = async (req, res) => {
                     ColorHex = ISNULL(@Color, ColorHex),
                     Orden = ISNULL(@Orden, Orden),
                     EsFinal = ISNULL(@Final, EsFinal),
-                    TipoEstado = ISNULL(@TipoEstado, TipoEstado)
+                    TipoEstado = ISNULL(@TipoEstado, TipoEstado),
+                    EstadoPadreID = CASE WHEN @EstadoPadreID IS NULL AND '${estadoPadreId}'='null' THEN NULL ELSE ISNULL(@EstadoPadreID, EstadoPadreID) END
                 WHERE EstadoID = @ID
             `);
         res.json({ success: true, message: 'Estado actualizado' });
