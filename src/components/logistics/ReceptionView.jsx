@@ -553,7 +553,7 @@ const ReceptionView = ({ onClose, areaContext, areaFilter }) => {
                 )}
 
                 {step === 2 && loadedRemito ? (
-                    <div className="flex-1 overflow-y-auto p-6">
+                    <div className="flex-1 overflow-y-auto p-6 min-h-0">
                         <div className="max-w-6xl mx-auto space-y-6">
                             {/* LAYOUT VERTICAL COMPACTO */}
                             <div className="flex flex-col gap-2 pb-20">

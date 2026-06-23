@@ -1155,7 +1155,10 @@ if (triggerReversal || triggerForward) {
                                            const depCheck = await poolLocal.request().input('Cod', require('mssql').VarChar, oRow.CodigoOrden)
                                                .query("SELECT OrdIdOrden FROM OrdenesDeposito WITH(NOLOCK) WHERE OrdCodigoOrden = @Cod");
                                            
-                                           if (depCheck.recordset.length === 0 && details.recordset.length > 0) {
+                                           // Las fallas (-F) son internas: su material se incorpora a la madre,
+                                           // no deben crear registro propio en OrdenesDeposito (sino el job WSP las avisaría).
+                                           const esFallaInterna = (oRow.CodigoOrden || '').includes('-F');
+                                           if (depCheck.recordset.length === 0 && details.recordset.length > 0 && !esFallaInterna) {
                                                const dTop = details.recordset[0];
                                                const lugarReq = await poolLocal.request().input('CID', require('mssql').Int, cliPKForDep).query("SELECT FormaEnvioID FROM Clientes WITH(NOLOCK) WHERE CliIdCliente = @CID");
                                                const lugarRetiro = lugarReq.recordset[0]?.FormaEnvioID ? parseInt(lugarReq.recordset[0].FormaEnvioID) : null;

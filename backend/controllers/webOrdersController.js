@@ -1337,6 +1337,7 @@ exports.getClientOrders = async (req, res) => {
                     SELECT ISNULL(o.NoDocERP, o.CodigoOrden) AS DocID, o.Estado, 'WEB' AS Origen
                     FROM Ordenes o WITH(NOLOCK)
                     WHERE o.CodCliente = @cod
+                      AND o.CodigoOrden NOT LIKE '%-F%'   -- las fallas (-F) son internas: no cuentan para el cliente
                     UNION ALL
                     SELECT o.OrdCodigoOrden AS DocID, e.EOrNombreEstado AS Estado, 'ERP' AS Origen
                     FROM OrdenesDeposito o WITH(NOLOCK)
@@ -1419,6 +1420,7 @@ exports.getClientOrders = async (req, res) => {
                     LEFT JOIN Areas ar WITH(NOLOCK) ON ar.AreaID = o.AreaID
                     LEFT JOIN ConfigEquipos m WITH(NOLOCK) ON m.EquipoID = o.MaquinaID
                     WHERE o.CodCliente = @cod
+                      AND o.CodigoOrden NOT LIKE '%-F%'   -- las fallas (-F) son internas: no se muestran al cliente
 
                     UNION ALL
 

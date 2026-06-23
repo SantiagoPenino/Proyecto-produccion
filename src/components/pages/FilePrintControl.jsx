@@ -272,7 +272,9 @@ const FilePrintControl = ({ areaCode }) => {
               // AUTO ADVANCE LOGIC
               // Check if status changed to a completed state
               const isCompleted = ['PRONTO', 'FINALIZADO', 'ENTREGADO'].includes(fresh.status?.toUpperCase()) || (fresh.EstadoenArea || fresh.areaStatus || '').toUpperCase() === 'PRONTO';
-              const wasCompleted = ['PRONTO', 'FINALIZADO', 'ENTREGADO'].includes(selectedOrder.status?.toUpperCase()) || (selectedOrder.EstadoenArea || selectedOrder.areaStatus || '').toUpperCase() === 'PRONTO';
+              // Estado ANTERIOR de la orden: usar el ref (currentSelected), no selectedOrder del
+              // closure (que está stale/null porque el effect no tiene selectedOrder en sus deps).
+              const wasCompleted = ['PRONTO', 'FINALIZADO', 'ENTREGADO'].includes(currentSelected.status?.toUpperCase()) || (currentSelected.EstadoenArea || currentSelected.areaStatus || '').toUpperCase() === 'PRONTO';
 
               // Solo mostrar el modal si NO es una orden de reposición (-F)
               // Las -F se completan silenciosamente durante "CORREGIR FALLA" para navegar a la madre.

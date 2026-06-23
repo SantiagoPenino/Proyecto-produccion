@@ -207,7 +207,7 @@ exports.getDailyMetrics = async (req, res) => {
             SELECT
                 COUNT(*) as total,
                 SUM(CASE WHEN OReEstadoActual = 1 THEN 1 ELSE 0 END) as ingresadas,
-                SUM(CASE WHEN OReEstadoActual = 3 THEN 1 ELSE 0 END) as empaquetadas,
+                SUM(CASE WHEN OReEstadoActual IN (7, 8) THEN 1 ELSE 0 END) as empaquetadas,
                 SUM(CASE WHEN OReEstadoActual = 5 THEN 1 ELSE 0 END) as entregadas,
                 SUM(CASE WHEN OReEstadoActual = 6 THEN 1 ELSE 0 END) as canceladas,
                 SUM(CASE WHEN OReEstadoActual = 9 THEN 1 ELSE 0 END) as autorizadas

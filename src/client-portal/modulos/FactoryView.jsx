@@ -14,7 +14,7 @@ const STATUS_CONFIG = {
         border: 'border-red-500/30',
         glow: 'shadow-[0_0_12px_rgba(239,68,68,0.2)]',
         icon: <AlertTriangle size={15} />,
-        label: 'ERROR',
+        label: 'CARGANDO',
         dot: 'bg-red-500',
     },
     pendiente: {
@@ -41,25 +41,7 @@ const STATUS_CONFIG = {
         border: 'border-emerald-500/30',
         glow: 'shadow-[0_0_12px_rgba(52,211,153,0.15)]',
         icon: <Check size={15} strokeWidth={3} />,
-        label: 'PRONTO',
-        dot: 'bg-emerald-400',
-    },
-    avisado: {
-        color: 'text-emerald-400',
-        bg: 'bg-emerald-500/10',
-        border: 'border-emerald-500/30',
-        glow: 'shadow-[0_0_12px_rgba(52,211,153,0.15)]',
-        icon: <Check size={15} strokeWidth={3} />,
-        label: 'RETIRAR',
-        dot: 'bg-emerald-400',
-    },
-    entregado: {
-        color: 'text-emerald-400',
-        bg: 'bg-emerald-500/10',
-        border: 'border-emerald-500/30',
-        glow: 'shadow-[0_0_12px_rgba(52,211,153,0.15)]',
-        icon: <Check size={15} strokeWidth={3} />,
-        label: 'ENTREGADO',
+        label: 'FINALIZADO',
         dot: 'bg-emerald-400',
     },
     activo: {
@@ -68,7 +50,7 @@ const STATUS_CONFIG = {
         border: 'border-brand-cyan/30',
         glow: 'shadow-[0_0_12px_rgba(0,174,239,0.15)]',
         icon: <Settings size={15} className="animate-[spin_3s_linear_infinite]" />,
-        label: 'EN PROCESO',
+        label: 'PRODUCCION',
         dot: 'bg-custom-cyan',
     },
 };
@@ -76,20 +58,17 @@ const STATUS_CONFIG = {
 const getStatusKey = (status) => {
     const s = (status || '').toUpperCase();
     if (s.includes('CARGANDO')) return 'zombie';
-    if (s.includes('PENDIENTE')) return 'pendiente';
     if (s.includes('CANCELADO')) return 'cancelado';
-    if (s.includes('ENTREGADO')) return 'entregado';
-    if (s.includes('AVISADO') || s.includes('PARA AVISAR')) return 'avisado';
-    if (s.includes('FINALIZADO') || s.includes('PRONTO') || s.includes('INGRESADO')) return 'finalizado';
+    if (s.includes('PENDIENTE')) return 'pendiente';
+    if (s.includes('FINALIZADO') || s.includes('AVISADO') || s.includes('ENTREGADO') || s.includes('PRONTO')) return 'finalizado';
+    if (s.includes('PRODUCCION') || s.includes('PRODUCCIÓN')) return 'activo';
     return 'activo';
 };
 
 const getProjectStatus = (subOrders) => {
     const statuses = subOrders.map(so => getStatusKey(so.Estado));
     if (statuses.every(s => s === 'cancelado')) return 'cancelado';
-    if (statuses.every(s => s === 'entregado')) return 'entregado';
-    if (statuses.every(s => s === 'avisado')) return 'avisado';
-    if (statuses.every(s => ['finalizado', 'entregado', 'avisado'].includes(s))) return 'finalizado';
+    if (statuses.every(s => s === 'finalizado')) return 'finalizado';
     if (statuses.every(s => s === 'pendiente' || s === 'zombie')) return 'pendiente';
     if (statuses.some(s => s === 'zombie')) return 'zombie';
     if (statuses.some(s => s === 'activo')) return 'activo';
@@ -98,10 +77,10 @@ const getProjectStatus = (subOrders) => {
 
 const FILTER_TABS = [
     { key: 'ALL', label: 'Todos' },
-    { key: 'ACTIVE', label: 'En Proceso' },
-    { key: 'PENDING', label: 'Pendientes' },
-    { key: 'DONE', label: 'Finalizados' },
-    { key: 'CANCELLED', label: 'Cancelados' },
+    { key: 'ACTIVE', label: 'Produccion' },
+    { key: 'PENDING', label: 'Pendiente' },
+    { key: 'DONE', label: 'Finalizado' },
+    { key: 'CANCELLED', label: 'Cancelado' },
 ];
 
 export const FactoryView = () => {
@@ -169,7 +148,7 @@ export const FactoryView = () => {
             onConfirm: async (razon) => {
                 setLoading(true);
                 try {
-                    await apiClient.delete(`/web-orders/bundle/${docId}`, { data: { razon } });
+                    await apiClient.delete(`/web-orders/bundle/${docId}`, { razon });
                     setPage(1);
                     if (page === 1) await fetchOrders(1, false);
                 } catch (err) {
@@ -192,7 +171,7 @@ export const FactoryView = () => {
                 try {
                     for (const so of subOrders) {
                         if (['Pendiente', 'Cargando...'].includes(so.Estado)) {
-                            await apiClient.delete(`/web-orders/incomplete/${so.OrdenID}`, { data: { razon } });
+                            await apiClient.delete(`/web-orders/incomplete/${so.OrdenID}`, { razon });
                         }
                     }
                     setPage(1);
@@ -251,10 +230,15 @@ export const FactoryView = () => {
     const projects = {};
     orders.filter(order => {
         const code = (order.CodigoOrden || '').toUpperCase();
-        return !/-[RF]\d*$/i.test(code) && !code.includes('-F') && !code.includes('-R');
+        // Ocultar solo las FALLAS (-F, internas/efímeras). Las REPOSICIONES (-R) el cliente SÍ las ve.
+        return !code.includes('-F');
     }).forEach(order => {
-        // Agrupar por el número extraído del CodigoOrden (no NoDocERP que puede ser otro valor)
-        const groupKey = normalizeDocId(order.CodigoOrden) || order.CodigoOrden;
+        // Agrupar por el número del CodigoOrden. Las reposiciones (DTF-571-R1) usan su código completo
+        // como grupo propio: son una orden nueva, no se mezclan con la madre.
+        const isRepoOrder = /-R\d+$/i.test(order.CodigoOrden || '');
+        const groupKey = isRepoOrder
+            ? order.CodigoOrden
+            : (normalizeDocId(order.CodigoOrden) || order.CodigoOrden);
         if (!projects[groupKey]) {
             projects[groupKey] = {
                 id: order.CodigoOrden,
@@ -289,7 +273,12 @@ export const FactoryView = () => {
     Object.values(projects).forEach(p => {
         const webCodes = new Set(p.subOrders.filter(o => o.Origen === 'WEB').map(o => normalizeDocId(o.CodigoOrden)));
         if (webCodes.size > 0) {
-            p.subOrders = p.subOrders.filter(o => o.Origen === 'WEB' || !webCodes.has(normalizeDocId(o.CodigoOrden)));
+            // Las reposiciones (-R) nunca son duplicados: son órdenes nuevas legítimas, no quitarlas.
+            p.subOrders = p.subOrders.filter(o =>
+                o.Origen === 'WEB'
+                || /-R\d+$/i.test(o.CodigoOrden || '')
+                || !webCodes.has(normalizeDocId(o.CodigoOrden))
+            );
         }
     });
 
@@ -601,6 +590,7 @@ export const FactoryView = () => {
                                                             const sConf = STATUS_CONFIG[sKey];
                                                             const isDone = sKey === 'finalizado';
                                                             const isZombie = so.Estado === 'Cargando...';
+                                                            const isRepo = (so.Prioridad === 'Reposición') || /-R\d+$/i.test(so.CodigoOrden || '');
 
                                                             return (
                                                                 <React.Fragment key={so.OrdenID}>
@@ -621,6 +611,11 @@ export const FactoryView = () => {
                                                                             <div className={`text-[9px] font-bold uppercase tracking-wider ${sConf.color}`}>
                                                                                 {isZombie ? 'ERROR' : so.Estado}
                                                                             </div>
+                                                                            {isRepo && (
+                                                                                <div className="text-[8px] font-black uppercase tracking-wider text-amber-400 bg-amber-400/10 rounded px-1 mt-0.5 inline-block">
+                                                                                    Reposición
+                                                                                </div>
+                                                                            )}
                                                                         </div>
                                                                     </div>
                                                                     {idx < arr.length - 1 && (
@@ -664,7 +659,7 @@ export const FactoryView = () => {
 
             {/* Modal de Cancelación con razón obligatoria */}
             {cancelModal.isOpen && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm">
+                <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70">
                     <div className="bg-zinc-900 border border-zinc-700 rounded-2xl p-6 w-full max-w-md shadow-2xl">
                         <div className="flex items-start gap-3 mb-4">
                             <div className="w-10 h-10 rounded-full bg-amber-500/15 flex items-center justify-center flex-shrink-0">

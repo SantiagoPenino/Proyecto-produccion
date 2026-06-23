@@ -115,7 +115,17 @@ const OrderForm = ({ serviceId: propServiceId }) => {
 
     const serviceId = propServiceId || paramServiceId;
 
-    // Use the custom hook for all state management
+    // Modal de anuncio: se muestra una sola vez por sesión para DF
+    const [showDFAnnouncement, setShowDFAnnouncement] = useState(() => {
+        if (serviceId?.toUpperCase() !== 'DF') return false;
+        const seen = sessionStorage.getItem('df_announcement_seen');
+        return !seen;
+    });
+    const closeDFAnnouncement = () => {
+        sessionStorage.setItem('df_announcement_seen', '1');
+        setShowDFAnnouncement(false);
+    };
+
     const { state, actions, config, serviceInfo, userStock, visibleComplementaryOptions } = useOrderForm(serviceId, overrideConfig);
 
     // Destructure state for easier access in render
@@ -1530,6 +1540,37 @@ const OrderForm = ({ serviceId: propServiceId }) => {
                                 </button>
                             </div>
                         </div>
+                    </div>
+                </div>,
+                document.body
+            )}
+
+            {/* Modal anuncio DTF UV 57cm — solo para serviceId DF, una vez por sesión */}
+            {showDFAnnouncement && createPortal(
+                <div className="fixed inset-0 z-[99999] flex items-center justify-center p-4 bg-black/70">
+                    <div className="relative bg-zinc-900 border border-zinc-700 rounded-3xl shadow-2xl max-w-sm w-full p-8 flex flex-col items-center gap-5 animate-[fadeInScale_0.25s_ease]">
+                        {/* Ícono */}
+                        <div className="w-16 h-16 rounded-2xl bg-cyan-400/10 border border-cyan-400/30 flex items-center justify-center">
+                            <span className="text-3xl">🎉</span>
+                        </div>
+
+                        {/* Texto */}
+                        <div className="text-center space-y-2">
+                            <h2 className="text-xl font-black text-white leading-tight">
+                                ¡Volvió el DTF UV de 57&nbsp;cm!
+                            </h2>
+                            <p className="text-zinc-400 text-sm leading-relaxed">
+                                Ya podés realizar pedidos de DTF UV en ancho de <span className="text-cyan-400 font-semibold">57&nbsp;cm</span> nuevamente.
+                            </p>
+                        </div>
+
+                        {/* Botón */}
+                        <button
+                            onClick={closeDFAnnouncement}
+                            className="w-full py-3 rounded-2xl bg-cyan-400 text-zinc-900 font-black text-sm tracking-wide hover:bg-cyan-300 active:scale-95 transition-all"
+                        >
+                            ¡Entendido!
+                        </button>
                     </div>
                 </div>,
                 document.body

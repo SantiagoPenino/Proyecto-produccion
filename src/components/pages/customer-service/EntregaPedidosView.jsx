@@ -241,8 +241,9 @@ const EntregaPedidosView = () => {
     const loadHistorialHoy = async () => {
         setLoadingHistorial(true);
         try {
-            // Fetch all states: Generado(1), Armando(2), Preparado(3), Autorizado(4), Entregado(5), Cancelado(6), Abonado(8), Pronto(9), Despachado/En Viaje(10)
-            const res = await api.get(`/apiordenesRetiro/estados?estados=1,2,3,4,5,6,8,9,10&date=${filtroFechaHistorial}`);
+            // Estados (tabla EstadosOrdenesRetiro): 1 Ingresado, 2 Pasar por caja, 3 Abonado, 4 Abonado de antemano,
+            // 5 Entregado, 6 Cancelado, 7 Empaquetado sin abonar, 8 Empaquetado y abonado, 9 Autorizado, 10 En viaje
+            const res = await api.get(`/apiordenesRetiro/estados?estados=1,2,3,4,5,6,7,8,9,10&date=${filtroFechaHistorial}`);
 
             let filtrados = res.data || [];
             if (filtroLugarHistorial && filtroLugarHistorial !== 'todas') {
@@ -295,7 +296,7 @@ const EntregaPedidosView = () => {
 
             let url;
             if (!lugar || lugar === 'todas') {
-                url = `/apiordenesRetiro/estados?estados=1,2,3,4,8,9${pagas ? '&pagas=true' : ''}${nopagas ? '&no_pagas=true' : ''}`;
+                url = `/apiordenesRetiro/estados?estados=1,2,3,4,7,8,9${pagas ? '&pagas=true' : ''}${nopagas ? '&no_pagas=true' : ''}`;
             } else {
                 url = `/apiordenesRetiro/lugar/${lugar}?pagas=${pagas}&no_pagas=${nopagas}`;
             }

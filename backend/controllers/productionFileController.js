@@ -638,7 +638,8 @@ const postControlArchivo = async (req, res) => {
         }
 
         // LÓGICA DE ACTUALIZACIÓN DE ESTADOS
-        const isReposicion = codigoOrden.includes('-F');
+        const isReposicion = codigoOrden.includes('-F');   // (mal nombrada: -F = FALLA, no reposición)
+        const esRepoCliente = codigoOrden.includes('-R');  // -R = reposición de cliente (orden independiente)
         let nuevoEstado = null;
         let destinoLogistica = null;
 
@@ -695,6 +696,11 @@ const postControlArchivo = async (req, res) => {
                     nuevoEstadoArea = 'Con Falla';
                     destinoLogistica = 'Esperando Reposición';
                 } else if (isReposicion) {
+                    // -F (falla interna): su material se incorpora a la madre y NO se despacha sola,
+                    // por lo que nunca pasa por recepción/logística → si quedaba en 'Pronto' se colgaba
+                    // en general 'Produccion' para siempre. Al completar sin fallas finaliza directo.
+                    nuevoEstado = 'Finalizado';
+                    nuevoEstadoArea = 'Finalizado';
                     destinoLogistica = 'Canasto Reposiciones';
                 }
 
@@ -759,8 +765,8 @@ const postControlArchivo = async (req, res) => {
                 }
 
                 // ACTUALIZACIÓN DE ESTADOS
-                if (isReposicion) {
-                    // Reposición solo se actualiza a sí misma
+                if (isReposicion || esRepoCliente) {
+                    // Falla o reposición: solo se actualiza a sí misma (no cascadea al pedido madre)
                     await new sql.Request(transaction)
                         .input('OID', sql.Int, ordenId)
                         .query(`UPDATE Ordenes SET EstadoLogistica = '${destinoLogistica}' WHERE OrdenID = @OID`);
@@ -1739,8 +1745,10 @@ async function completarOrden(req, res) {
         const codigoOrden = codigoRes.recordset[0]?.CodigoOrden || '';
         const isFallaOrder = /-F\d+$/.test(codigoOrden);
 
-        const nuevoEstado = tieneFallas ? 'Retenido' : 'Pronto';
-        const nuevoEstadoArea = tieneFallas ? 'Retenido' : 'Pronto';
+        // -F (falla interna) completada sin fallas → Finalizado (su material se incorpora a la
+        // madre, no se despacha sola). Orden/reposición común → Pronto.
+        const nuevoEstado     = tieneFallas ? 'Retenido' : (isFallaOrder ? 'Finalizado' : 'Pronto');
+        const nuevoEstadoArea = tieneFallas ? 'Retenido' : (isFallaOrder ? 'Finalizado' : 'Pronto');
         const estadoLogistica = tieneFallas
             ? 'Esperando Reposición'
             : (isFallaOrder ? 'Canasto Reposiciones' : 'Canasto Produccion');
@@ -1762,9 +1770,8 @@ async function completarOrden(req, res) {
             io.emit('server:ordersUpdated', { count: 1 });
         }
 
-        // Si es una orden -F completada sin fallas, desbloquear la madre (NO auto-finalizar).
-        // La madre vuelve al lote de Control como "controlada" para que el operador
-        // pueda verificarla y finalizar el lote completo manualmente.
+        // Si es una orden -F completada sin fallas: ya quedó Finalizada (arriba) y además
+        // desbloqueamos la madre (Retenido → Pendiente) para que vuelva al lote de Control.
         if (isFallaOrder && !tieneFallas) {
             try {
                 const codigoMadre = codigoOrden.replace(/-F\d+$/, '');
