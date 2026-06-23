@@ -1315,6 +1315,51 @@ if (triggerReversal || triggerForward) {
                                     }
                                      }  // fin if (triggerReversal || triggerForward)
                                  }  // fin if (pcReq)
+
+                                 // Fallback: órdenes de reposición (-R1, -R2...) u órdenes sin PedidosCobranza
+                                 // no entran al bloque contable, pero igual deben insertarse en OrdenesDeposito
+                                 // para que el aviso funcione.
+                                 try {
+                                     const fallbackCheck = await poolLocal.request()
+                                         .input('Cod', require('mssql').VarChar, oRow.CodigoOrden)
+                                         .query("SELECT OrdIdOrden FROM OrdenesDeposito WITH(NOLOCK) WHERE OrdCodigoOrden = @Cod");
+
+                                     if (fallbackCheck.recordset.length === 0) {
+                                         const cliPKFb = oRow.CliIdCliente || oRow.CodCliente;
+                                         const lugarFbReq = await poolLocal.request()
+                                             .input('CID', require('mssql').Int, cliPKFb)
+                                             .query("SELECT FormaEnvioID FROM Clientes WITH(NOLOCK) WHERE CliIdCliente = @CID");
+                                         const lugarFb = lugarFbReq.recordset[0]?.FormaEnvioID ? parseInt(lugarFbReq.recordset[0].FormaEnvioID) : null;
+
+                                         const fbInsert = await poolLocal.request()
+                                             .input('Cod', require('mssql').VarChar, oRow.CodigoOrden)
+                                             .input('Cli', require('mssql').Int, cliPKFb)
+                                             .input('Trab', require('mssql').VarChar, oRow.DescripcionTrabajo)
+                                             .input('Usr', require('mssql').Int, usuarioId || 1)
+                                             .input('Lugar', require('mssql').Int, lugarFb)
+                                             .query(`
+                                                 INSERT INTO OrdenesDeposito (
+                                                     OrdCodigoOrden, OrdCantidad, CliIdCliente, OrdNombreTrabajo,
+                                                     MOrIdModoOrden, MonIdMoneda, OrdCostoFinal,
+                                                     OrdFechaIngresoOrden, OrdUsuarioAlta, OrdEstadoActual, OrdFechaEstadoActual, LReIdLugarRetiro
+                                                 )
+                                                 OUTPUT INSERTED.OrdIdOrden
+                                                 VALUES (
+                                                     @Cod, 0, @Cli, @Trab, 1, 1, 0,
+                                                     GETDATE(), @Usr, 1, GETDATE(), @Lugar
+                                                 )
+                                             `);
+                                         if (fbInsert.recordset[0]?.OrdIdOrden) {
+                                             await poolLocal.request()
+                                                 .input('OID', require('mssql').Int, fbInsert.recordset[0].OrdIdOrden)
+                                                 .input('Usr', require('mssql').Int, usuarioId || 1)
+                                                 .query("INSERT INTO HistoricoEstadosOrdenes (OrdIdOrden, EOrIdEstadoOrden, HEOFechaEstado, HEOUsuarioAlta) VALUES (@OID, 1, GETDATE(), @Usr)");
+                                             console.log(`[WMS-FALLBACK] Creado OrdenesDeposito para repo/sin-PC: ${oRow.CodigoOrden}`);
+                                         }
+                                     }
+                                 } catch (eFb) {
+                                     console.error(`[WMS-FALLBACK] Error insertando OrdenesDeposito fallback para ${oRow.CodigoOrden}:`, eFb.message);
+                                 }
                              }  // fin for items
                 } catch (eCont) {
                     console.error("[CONTABILIDAD-WMS] Error al procesar evento en DEPOSITO:", eCont);
