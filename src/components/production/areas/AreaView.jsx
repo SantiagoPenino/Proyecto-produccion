@@ -314,7 +314,7 @@ export default function AreaView({ areaKey: rawAreaKey, areaConfig, onSwitchTab 
                         
                         toast(`¡Se ha creado la orden ${o.variante || 'N/A'} (${o.codigo || 'ORD-' + o.id}) con prioridad ${o.prioridad || 'Normal'}!`, {
                             position: "top-right",
-                            autoClose: 5000,
+                            autoClose: 2500,
                             style: {
                                 background: isUrgent ? '#EC008C' : '#00AEEF',
                                 color: '#fff',

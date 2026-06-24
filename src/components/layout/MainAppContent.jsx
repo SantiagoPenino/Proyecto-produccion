@@ -691,7 +691,7 @@ const MainAppContent = ({ menuItems = [] }) => {
                     }
                 }}
             />
-            <ToastContainer limit={1} position="top-right" autoClose={5000} transition={Slide} />
+            <ToastContainer limit={5} position="top-right" autoClose={2500} transition={Slide} />
             <Navbar 
                 onToggleMobileMenu={() => setIsMobileMenuOpen(prev => !prev)} 
                 isMobileMenuOpen={isMobileMenuOpen} 
