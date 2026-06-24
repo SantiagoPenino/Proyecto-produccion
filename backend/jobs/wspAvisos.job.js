@@ -185,7 +185,7 @@ async function procesarAvisosBatch(io) {
     ISNULL(Cd.CotDolar, NULL)                  AS CotDolarDia
   FROM OrdenesDeposito Ord WITH (NOLOCK)
   JOIN Clientes Cli WITH (NOLOCK) ON Cli.CliIdCliente = Ord.CliIdCliente
-  JOIN Articulos Pro WITH (NOLOCK) ON Pro.ProIdProducto = Ord.ProIdProducto
+  LEFT JOIN Articulos Pro WITH (NOLOCK) ON Pro.ProIdProducto = Ord.ProIdProducto
   JOIN Monedas Mon WITH (NOLOCK) ON Mon.MonIdMoneda = Ord.MonIdMoneda
   LEFT JOIN CotiDia Cd ON 1 = 1
   WHERE (Ord.OrdEstadoActual IN (@Estado, 6) AND ISNULL(Ord.OrdAvisoWsp, 0) = 0 AND Cli.TelefonoTrabajo IS NOT NULL)

@@ -150,7 +150,7 @@ export default function CajaVentaDirectaTab({
       let articulosPermitidos = null;
       if (i.tipo === 'RECURSO') {
         if (i.esMixto) {
-          articulosPermitidos = [247, 255]; // DTF Común (247) y DTF UV (255)
+          articulosPermitidos = [247, 255, 479]; // DTF Común (247), DTF UV 57cm (255), UV Rígidos 0,27 (479)
         } else if (i.proId) {
           articulosPermitidos = [i.proId];
         }

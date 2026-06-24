@@ -160,17 +160,32 @@ exports.saveQuotation = async (req, res) => {
     try {
         await transaction.begin();
 
-        // Verificar existencia de la cabecera
-        const cabRes = await new sql.Request(transaction)
+        // Verificar existencia de la cabecera — si no existe, crearla desde Ordenes
+        let cabRes = await new sql.Request(transaction)
             .input('Doc', sql.NVarChar, noDocERP)
             .query(`SELECT * FROM PedidosCobranza WHERE LTRIM(RTRIM(NoDocERP)) = LTRIM(RTRIM(@Doc))`);
 
         if (cabRes.recordset.length === 0) {
-            await transaction.rollback();
-            return res.status(404).json({ error: `No existe cotización para ${noDocERP}` });
+            const ordCabRes = await new sql.Request(transaction)
+                .input('Doc', sql.NVarChar, noDocERP)
+                .query(`SELECT TOP 1 CliIdCliente FROM Ordenes WITH(NOLOCK) WHERE LTRIM(RTRIM(CAST(NoDocERP AS VARCHAR))) = LTRIM(RTRIM(@Doc))`);
+            const clienteId = ordCabRes.recordset[0]?.CliIdCliente || null;
+            await new sql.Request(transaction)
+                .input('Doc', sql.NVarChar, noDocERP)
+                .input('Cli', sql.Int, clienteId)
+                .query(`INSERT INTO PedidosCobranza (NoDocERP, ClienteID, MontoTotal, Moneda, FechaGeneracion, EstadoCobro) VALUES (LTRIM(RTRIM(@Doc)), @Cli, 0, 'UYU', GETDATE(), 'PENDIENTE')`);
+            cabRes = await new sql.Request(transaction)
+                .input('Doc', sql.NVarChar, noDocERP)
+                .query(`SELECT * FROM PedidosCobranza WHERE LTRIM(RTRIM(NoDocERP)) = LTRIM(RTRIM(@Doc))`);
         }
         const cabecera = cabRes.recordset[0];
         const pedidoId = cabecera.ID;
+
+        // Descubrir OrdenID desde Ordenes usando NoDocERP (para líneas que lleguen sin OrdenID)
+        const ordIdRes = await new sql.Request(transaction)
+            .input('Doc', sql.NVarChar, noDocERP)
+            .query(`SELECT TOP 1 OrdenID FROM Ordenes WITH(NOLOCK) WHERE LTRIM(RTRIM(CAST(NoDocERP AS VARCHAR))) = LTRIM(RTRIM(@Doc))`);
+        const discoveredOrdenID = ordIdRes.recordset[0]?.OrdenID || null;
         const moneda = cabecera.Moneda || 'UYU';
 
         // Si el usuario NO es admin, solo puede eliminar/agregar líneas de SU área.
@@ -218,7 +233,7 @@ exports.saveQuotation = async (req, res) => {
 
             await new sql.Request(transaction)
                 .input('PID', sql.Int, pedidoId)
-                .input('OID', sql.Int, linea.OrdenID || null)
+                .input('OID', sql.Int, linea.OrdenID || discoveredOrdenID || null)
                 .input('Cod', sql.NVarChar, linea.CodArticulo || '')
                 .input('ProId', sql.Int, linea.ProIdProducto || null)
                 .input('Cant', sql.Decimal(18, 2), parseFloat(linea.Cantidad) || 0)
