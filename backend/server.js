@@ -270,6 +270,14 @@ io.on('connection', (socket) => {
     // Si el cliente ya conocía otro timestamp → detecta restart y hace hard-reload.
     socket.emit('server:started', { startTime: SERVER_START_TIME });
 
+    // Si hay un aviso de mantenimiento activo, mandárselo al recién conectado.
+    // (El broadcast original es one-shot; esto cubre a quien abre la app DESPUÉS del aviso.)
+    try {
+        const maintenanceState = require('./utils/maintenanceState');
+        const aviso = maintenanceState.getActive();
+        if (aviso) socket.emit('server:maintenance', aviso);
+    } catch (_) {}
+
     // --- HELPDESK ROOMS ---
     socket.on('join:helpdesk_admin', () => {
         socket.join('helpdesk:admin');

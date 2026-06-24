@@ -1648,8 +1648,8 @@ exports.getAreaMapping = async (req, res) => {
         const pool = await getPool(); // Fix internal function usage
         // Usamos CodOrden porque es el código que el frontend conoce (DF, EMB, SB, etc.)
         const result = await pool.request().query(`
-            SELECT DISTINCT CodOrden, NombreReferencia, VisibleWeb, DescripcionWeb, ImagenWeb, ActivosComplementarios
-            FROM ConfigMapeoERP 
+            SELECT DISTINCT CodOrden, AreaID_Interno, NombreReferencia, VisibleWeb, DescripcionWeb, ImagenWeb, ActivosComplementarios
+            FROM ConfigMapeoERP
             WHERE NombreReferencia IS NOT NULL AND CodOrden IS NOT NULL
         `);
 
@@ -1674,6 +1674,10 @@ exports.getAreaMapping = async (req, res) => {
 
                     visibility[code] = {
                         visible: (row.VisibleWeb === false || row.VisibleWeb === 0) ? false : true,
+                        // El portal referencia los servicios por su área interna (EMB, TWC, TWT...),
+                        // no por CodOrden (BOR, COR, COS...). Exponer AreaID_Interno permite re-indexar
+                        // la visibilidad por área en el front sin hardcodear el mapeo.
+                        area: (row.AreaID_Interno || '').trim(),
                         description: row.DescripcionWeb || '',
                         image: row.ImagenWeb || '',
                         complementarios: row.ActivosComplementarios ? JSON.parse(row.ActivosComplementarios) : null

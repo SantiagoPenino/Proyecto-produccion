@@ -374,13 +374,13 @@ export default function AreaView({ areaKey: rawAreaKey, areaConfig, onSwitchTab 
         })];
     }, [dbOrders]);
 
-    // Filtro por ESTADO GENERAL (o.status). Se omiten Finalizado y Cancelado porque
-    // tienen su propio botón aparte ("Ver órdenes finalizadas" / "canceladas").
-    const availableGeneralStatuses = useMemo(() => {
-        const orderPreference = ['Pendiente', 'Produccion', 'Retenido', 'Cargando'];
-        const excluded = ['finalizado', 'cancelado'];
+    // Filtro por ESTADO EN ÁREA (o.areaStatus). Se omiten los terminales (Finalizado,
+    // Cancelado, Avisado, Entregado) porque van en su botón aparte ("Ver finalizadas/canceladas").
+    const availableAreaStatuses = useMemo(() => {
+        const orderPreference = ['Pendiente', 'En Lote', 'En Maquina', 'Control y Calidad', 'Pronto', 'En transito'];
+        const excluded = ['finalizado', 'cancelado', 'avisado', 'entregado'];
         const unique = new Set(dbOrders
-            .map(o => (o.status || '').trim())
+            .map(o => (o.areaStatus || '').trim())
             .filter(v => v && !excluded.includes(v.toLowerCase()))
         );
         return [...Array.from(unique).sort((a, b) => {
@@ -486,8 +486,7 @@ export default function AreaView({ areaKey: rawAreaKey, areaConfig, onSwitchTab 
             result = result.filter(o => activeFilters.statuses.some(s => s.toLowerCase() === (o.areaStatus || o.status || 'Pendiente').toLowerCase()));
         }
         if (activeFilters.areaStatuses && activeFilters.areaStatuses.length > 0) {
-            // 'areaStatuses' ahora filtra por ESTADO GENERAL (o.status), no por estado en área
-            result = result.filter(o => activeFilters.areaStatuses.some(s => s.toLowerCase() === (o.status || '').toLowerCase()));
+            result = result.filter(o => activeFilters.areaStatuses.some(s => s.toLowerCase() === (o.areaStatus || '').toLowerCase()));
         }
         if (activeFilters.priorities && activeFilters.priorities.length > 0) {
             result = result.filter(o => activeFilters.priorities.some(p => p.toLowerCase() === (o.priority || 'Normal').toLowerCase()));
@@ -587,12 +586,12 @@ export default function AreaView({ areaKey: rawAreaKey, areaConfig, onSwitchTab 
                                 </div>
                             </div>
 
-                            {/* Estado General */}
-                            {availableGeneralStatuses.length > 0 && (
+                            {/* Estado en Área */}
+                            {availableAreaStatuses.length > 0 && (
                                 <div>
-                                    <span className="text-[10px] uppercase font-black text-zinc-400 tracking-wider mb-2 block">Estado General</span>
+                                    <span className="text-[10px] uppercase font-black text-zinc-400 tracking-wider mb-2 block">Estado en Área</span>
                                     <div className="flex flex-wrap gap-2">
-                                        {availableGeneralStatuses.map(s => {
+                                        {availableAreaStatuses.map(s => {
                                             const isSelected = activeFilters.areaStatuses.includes(s);
                                             return (
                                                 <button

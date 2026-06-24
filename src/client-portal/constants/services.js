@@ -50,7 +50,8 @@ export const SERVICES_LIST = [
         },
 
         complementaryOptions: [
-            { id: 'EMB', label: 'Servicio de Bordado', hasFile: true, fullWidth: true, inputLabel: 'Adjuntar Ponchado/Logo' },
+            // Bordado deshabilitado como complementario en Sublimación (a pedido)
+            // { id: 'EMB', label: 'Servicio de Bordado', hasFile: true, fullWidth: true, inputLabel: 'Adjuntar Ponchado/Logo' },
             { id: 'EST', label: 'Estampado', fullWidth: true }
         ]
     },

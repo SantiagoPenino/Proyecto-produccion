@@ -70,7 +70,8 @@ const initialState = {
     errorModalMessage: '',
 
     // Loaded/Dynamic Data
-    visibleConfig: {},
+    visibleConfig: {},          // indexado por CodOrden (BOR, COR...) tal como viene del backend
+    visibleConfigByArea: {},    // mismo dato re-indexado por AreaID_Interno (EMB, TWC...) = lo que usa el portal
     prioritiesList: [],
     uniqueVariants: [],
     dynamicMaterials: [],
@@ -105,6 +106,7 @@ function orderFormReducer(state, action) {
                 // Preserve loaded configuration that is global (not service specific if needed, but here we reset mostly)
                 prioritiesList: state.prioritiesList,
                 visibleConfig: state.visibleConfig,
+                visibleConfigByArea: state.visibleConfigByArea,
                 // Apply defaults from action if provided
                 ...action.defaults
             };
@@ -185,12 +187,14 @@ export const useOrderForm = (serviceId, overrides = {}) => {
     // 3. Runtime Overrides (props/navigation state)
     const visibleComplementaryOptions = (serviceInfo?.complementaryOptions || []).filter(opt => {
         // 1. Global Disable via Backend (if loaded)
-        const globalVisibility = state.visibleConfig?.[opt.id]?.visible;
+        // opt.id = AreaID_Interno (EMB, TWC, TWT...). La visibilidad viene re-indexada por área
+        // (visibleConfigByArea) porque el backend la entrega por CodOrden (BOR, COR, COS...).
+        const globalVisibility = state.visibleConfigByArea?.[opt.id]?.visible;
         if (globalVisibility === false) return false;
 
         // 1.5 Local Config: Allowed Complementary Services for THIS Service
-        const currentServiceCode = serviceInfo?.codOrden || serviceInfo?.id?.toUpperCase();
-        const allowedComplementaries = state.visibleConfig?.[currentServiceCode]?.complementarios;
+        const currentArea = serviceInfo?.areaId || serviceInfo?.codOrden || serviceInfo?.id?.toUpperCase();
+        const allowedComplementaries = state.visibleConfigByArea?.[currentArea]?.complementarios;
         if (allowedComplementaries && Array.isArray(allowedComplementaries)) {
             // If configuration exists, only show allowed ones.
             // Note: opt.id must match the ID stored in DB (e.g. 'EMB', 'EST').
@@ -214,6 +218,12 @@ export const useOrderForm = (serviceId, overrides = {}) => {
 
         return true;
     });
+
+    // Corte (TWC) y Costura (TWT) se renderizan como bloques propios en el OrderForm (no salen del
+    // .map de arriba), así que su visibilidad como servicio se chequea aparte con estos flags.
+    // Default a visible mientras la config no cargó (evita ocultarlos por un parpadeo inicial).
+    const corteServicioVisible   = state.visibleConfigByArea?.['TWC']?.visible !== false;
+    const costuraServicioVisible = state.visibleConfigByArea?.['TWT']?.visible !== false;
 
     // --- Actions Wrappers ---
     const setField = (field, value) => dispatch({ type: actionTypes.SET_FIELD, field, value });
@@ -315,8 +325,16 @@ export const useOrderForm = (serviceId, overrides = {}) => {
                 let updates = {};
                 if (visRes.success && visRes.data?.visibility) {
                     updates.visibleConfig = visRes.data.visibility;
+                    // Re-indexar por AreaID_Interno: el portal referencia los servicios por área
+                    // (EMB, TWC, TWT...) mientras el backend los devuelve por CodOrden (BOR, COR, COS...).
+                    const byArea = {};
+                    Object.values(visRes.data.visibility).forEach(v => {
+                        if (v && v.area) byArea[v.area] = v;
+                    });
+                    updates.visibleConfigByArea = byArea;
                 } else {
                     updates.visibleConfig = {};
+                    updates.visibleConfigByArea = {};
                 }
 
                 if (prioRes?.success && prioRes.data?.length > 0) {
@@ -332,10 +350,11 @@ export const useOrderForm = (serviceId, overrides = {}) => {
             } catch (err) {
                 console.error("Error loading initial data", err);
                 // Set defaults on error
-                dispatch({ 
-                    type: actionTypes.SET_DATA, 
-                    data: { 
-                        visibleConfig: {}, 
+                dispatch({
+                    type: actionTypes.SET_DATA,
+                    data: {
+                        visibleConfig: {},
+                        visibleConfigByArea: {},
                         urgency: 'Normal',
                         prioritiesList: [{ IdPrioridad: 0, Nombre: 'Normal', Color: '#fff' }, { IdPrioridad: 1, Nombre: 'Urgente', Color: '#fbbf24' }]
                     } 
@@ -664,6 +683,8 @@ export const useOrderForm = (serviceId, overrides = {}) => {
         serviceInfo,
         config,
         visibleComplementaryOptions, // New exposed property
+        corteServicioVisible,        // toggle del modal (Servicios Web) para Corte
+        costuraServicioVisible,      // toggle del modal (Servicios Web) para Costura
         userStock: user?.stock || [], // Fallback if not in user
         actions: {
             setJobName,

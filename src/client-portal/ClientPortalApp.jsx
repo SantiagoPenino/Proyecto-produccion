@@ -19,6 +19,7 @@ import { HistorialView } from './modulos/HistorialView';
 import { ClubView } from './modulos/ClubView';
 import { PricesView } from './modulos/PricesView';
 import PaymentResult from '../components/pages/PaymentResult';
+import MaintenanceBanner from '../components/common/MaintenanceBanner';
 import { TicketsClienteView } from './modulos/tickets/TicketsClienteView';
 import { TicketThreadWindow } from './modulos/tickets/TicketThreadWindow';
 
@@ -27,6 +28,7 @@ export const ClientPortalApp = () => {
         <AuthProvider>
             <ToastProvider>
                 <ToastContainer style={{ zIndex: 999999 }} />
+                <MaintenanceBanner />
                 <Routes>
 
                     <Route path="/" element={

@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { GlassCard } from '../pautas/GlassCard';
 import { apiClient } from '../api/apiClient';
-import { Loader2, RefreshCw, Layers, Trash2, Check, Settings, Circle, Ban, AlertTriangle, Search, Factory, Truck } from 'lucide-react';
+import { Loader2, RefreshCw, Layers, Trash2, Check, Settings, Circle, Ban, AlertTriangle, Search, Factory, Truck, MessageSquareWarning } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useNavigate } from 'react-router-dom';
 import { ConfirmationModal } from '../pautas/ConfirmationModal';
@@ -82,6 +82,9 @@ const FILTER_TABS = [
     { key: 'DONE', label: 'Finalizado' },
     { key: 'CANCELLED', label: 'Cancelado' },
 ];
+
+// Ventana (en días) tras la entrega durante la cual el cliente puede abrir un reclamo.
+const RECLAMO_WINDOW_DAYS = 20;
 
 export const FactoryView = () => {
     const navigate = useNavigate();
@@ -184,6 +187,15 @@ export const FactoryView = () => {
         });
     };
 
+    // Iniciar un reclamo sobre un pedido entregado: lleva al centro de soporte con el modal de
+    // nuevo ticket abierto y la orden ya seleccionada (vía state de navegación).
+    const iniciarReclamo = (project, e) => {
+        e?.stopPropagation();
+        navigate('/portal/soporte', {
+            state: { nuevoReclamo: { ordenId: project.ordenId, codigoOrden: project.id } }
+        });
+    };
+
     useEffect(() => {
         fetchOrders(page, page > 1);
     }, [page]);
@@ -242,6 +254,7 @@ export const FactoryView = () => {
         if (!projects[groupKey]) {
             projects[groupKey] = {
                 id: order.CodigoOrden,
+                ordenId: null,        // OrdenID de la fila WEB, para preseleccionar en el reclamo
                 title: order.DescripcionTrabajo,
                 date: order.FechaIngreso,
                 materials: new Set(),
@@ -251,6 +264,7 @@ export const FactoryView = () => {
                 um: null,
                 driveFileId: null,
                 primerArchivoId: null,
+                fechaEntrega: null,   // fecha real de entrega (tomada de la fila ERP entregada)
             };
         }
         // Preferir la info de la orden WEB (más completa: tiene área, descripción, etc.)
@@ -267,6 +281,21 @@ export const FactoryView = () => {
         }
         projects[groupKey].subOrders.push(order);
         if (order.Material) projects[groupKey].materials.add(order.Material);
+
+        // OrdenID para preseleccionar en el reclamo: el primero disponible de cualquier sub-orden
+        // (el UNION del backend trae la fila WEB antes que la ERP, así que toma la WEB si existe).
+        if (projects[groupKey].ordenId == null && order.OrdenID != null) {
+            projects[groupKey].ordenId = order.OrdenID;
+        }
+
+        // Fecha de entrega: la fila ERP entregada trae OrdFechaEstadoActual (fecha real de entrega)
+        // como FechaIngreso. Se captura acá, antes del dedup que descarta las filas ERP.
+        if (order.Origen === 'ERP' && (order.Estado || '').toUpperCase().includes('ENTREGADO') && order.FechaIngreso) {
+            const fEnt = new Date(order.FechaIngreso);
+            if (!isNaN(fEnt.getTime()) && (!projects[groupKey].fechaEntrega || fEnt > projects[groupKey].fechaEntrega)) {
+                projects[groupKey].fechaEntrega = fEnt;
+            }
+        }
     });
 
     // Deduplicar: si un proyecto tiene órdenes WEB y ERP con el mismo código numérico, quitar la ERP duplicada
@@ -409,6 +438,12 @@ export const FactoryView = () => {
                         const allPending = project.subOrders.every(so => ['Pendiente', 'Cargando...'].includes(so.Estado));
                         const materialList = Array.from(project.materials);
 
+                        // Reclamo: solo si el pedido está entregado y la entrega fue hace ≤ RECLAMO_WINDOW_DAYS días.
+                        const relevantSubs = project.subOrders.filter(so => !(so.CodigoOrden || '').toUpperCase().includes('-F'));
+                        const isDelivered = relevantSubs.length > 0 && relevantSubs.every(so => (so.Estado || '').toUpperCase().includes('ENTREGADO'));
+                        const puedeReclamar = isDelivered && project.fechaEntrega
+                            && ((Date.now() - project.fechaEntrega.getTime()) / 86400000) <= RECLAMO_WINDOW_DAYS;
+
                         return (
                             <motion.div
                                 key={project.id}
@@ -448,6 +483,11 @@ export const FactoryView = () => {
                                             {projectStatus === 'finalizado' && (
                                                 <button onClick={(e) => { e.stopPropagation(); navigate('/portal/pickup'); }} className="p-1.5 rounded-lg text-emerald-400 border border-emerald-500/20 bg-emerald-500/5 hover:bg-emerald-500/10 transition-all" title="Crear Retiro">
                                                     <Truck size={12} />
+                                                </button>
+                                            )}
+                                            {puedeReclamar && (
+                                                <button onClick={(e) => iniciarReclamo(project, e)} className="p-1.5 rounded-lg text-amber-400 border border-amber-500/20 bg-amber-500/5 hover:bg-amber-500/10 transition-all" title="Iniciar un reclamo">
+                                                    <MessageSquareWarning size={12} />
                                                 </button>
                                             )}
                                             {(hasZombies || allPending) && (

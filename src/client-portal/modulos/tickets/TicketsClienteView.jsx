@@ -4,16 +4,18 @@ import { CustomButton } from '../../pautas/CustomButton';
 import { CustomSelect } from '../../pautas/CustomSelect';
 import { apiClient } from '../../api/apiClient';
 import { Plus, MessageSquare, Clock, CheckCircle, XCircle, Search } from 'lucide-react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router-dom';
 import CreateTicketModal from './CreateTicketModal';
 import { socket } from '../../../services/socketService';
 
 export const TicketsClienteView = () => {
     const navigate = useNavigate();
+    const location = useLocation();
     const [tickets, setTickets] = useState([]);
     const [filterStatus, setFilterStatus] = useState('0');
     const [loading, setLoading] = useState(true);
     const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
+    const [reclamoOrden, setReclamoOrden] = useState(null); // orden preseleccionada al venir de "Iniciar reclamo"
 
     const fetchTickets = async () => {
         setLoading(true);
@@ -32,6 +34,17 @@ export const TicketsClienteView = () => {
     useEffect(() => {
         fetchTickets();
     }, []);
+
+    // Si se llegó desde "Iniciar reclamo" (FactoryView), abrir el modal con la orden preseleccionada.
+    useEffect(() => {
+        const nr = location.state?.nuevoReclamo;
+        if (nr) {
+            setReclamoOrden(nr);
+            setIsCreateModalOpen(true);
+            // Limpiar el state para que no se reabra al refrescar o volver atrás.
+            navigate(location.pathname, { replace: true, state: {} });
+        }
+    }, [location.state]);
 
     // Suscribirse en tiempo real a las actualizaciones de cada ticket de la lista
     useEffect(() => {
@@ -196,11 +209,13 @@ export const TicketsClienteView = () => {
                     )}
                 </div>
 
-            <CreateTicketModal 
-                isOpen={isCreateModalOpen} 
-                onClose={() => setIsCreateModalOpen(false)} 
+            <CreateTicketModal
+                isOpen={isCreateModalOpen}
+                initialOrden={reclamoOrden}
+                onClose={() => { setIsCreateModalOpen(false); setReclamoOrden(null); }}
                 onCreated={() => {
                     setIsCreateModalOpen(false);
+                    setReclamoOrden(null);
                     fetchTickets();
                 }}
             />

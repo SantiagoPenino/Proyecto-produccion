@@ -9,6 +9,7 @@ import { useAuth } from '../../context/AuthContext';
 import { apiClient } from '../../client-portal/api/apiClient';
 import { socket } from '../../services/socketService';
 import Navbar from './Navbar';
+import MaintenanceBanner from '../common/MaintenanceBanner';
 
 // ── Auto-reload en caso de chunks desactualizados (cache stale post-deploy) ──
 const lazyWithRetry = (importFn) => lazy(() =>
@@ -691,6 +692,7 @@ const MainAppContent = ({ menuItems = [] }) => {
                     }
                 }}
             />
+            <MaintenanceBanner />
             <ToastContainer limit={5} position="top-right" autoClose={2500} transition={Slide} />
             <Navbar 
                 onToggleMobileMenu={() => setIsMobileMenuOpen(prev => !prev)} 

@@ -336,6 +336,41 @@ exports.getSlowQueries = async (req, res) => {
     }
 };
 
+// ─── POST /api/sysadmin/maintenance ───────────────────────
+// Avisa a TODOS los clientes conectados que el sistema se va a reiniciar (banner +
+// cuenta regresiva). NO reinicia nada: el reinicio real lo hace el deploy. Con
+// { cancel: true } oculta el banner. Al volver el server, server:started recarga solo.
+exports.broadcastMaintenance = (req, res) => {
+    const io = req.app.get('socketio');
+    if (!io) return res.status(500).json({ error: 'Socket.io no disponible' });
+
+    const maintenanceState = require('../utils/maintenanceState');
+    const { mensaje, segundos, cancel } = req.body || {};
+
+    if (cancel) {
+        maintenanceState.clear();
+        io.emit('server:maintenance', { cancel: true });
+        return res.json({ success: true, cancelled: true });
+    }
+
+    const secs = Number(segundos);
+    const payload = {
+        mensaje: (mensaje && String(mensaje).trim())
+            || 'El sistema se reiniciará para una actualización. Guardá tu trabajo.',
+        segundos: (Number.isFinite(secs) && secs > 0) ? Math.min(secs, 3600) : 120,
+    };
+
+    maintenanceState.set(payload.mensaje, payload.segundos);
+
+    try {
+        const { audit } = require('../utils/auditLogger');
+        audit('MAINTENANCE_NOTICE', { user: req.user?.username, segundos: payload.segundos, ip: req.ip });
+    } catch (_) {}
+
+    io.emit('server:maintenance', payload);
+    return res.json({ success: true, ...payload });
+};
+
 // ─── POST /api/sysadmin/restart ───────────────────────────
 exports.restartServer = async (req, res) => {
     try {

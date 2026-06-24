@@ -5,7 +5,7 @@ import { apiClient } from '../../api/apiClient';
 import { CustomButton } from '../../pautas/CustomButton';
 import { CustomSelect } from '../../pautas/CustomSelect';
 
-export default function CreateTicketModal({ isOpen, onClose, onCreated }) {
+export default function CreateTicketModal({ isOpen, onClose, onCreated, initialOrden }) {
     const [asunto, setAsunto] = useState('');
     const [descripcion, setDescripcion] = useState('');
     const [departamentoId, setDepartamentoId] = useState('');
@@ -37,7 +37,18 @@ export default function CreateTicketModal({ isOpen, onClose, onCreated }) {
             apiClient.get('/web-orders/my-orders')
                 .then(res => {
                     if (res.success && res.data) {
-                        setOrdenes(res.data.slice(0, 10));
+                        let lista = res.data.slice(0, 10);
+                        // Si venimos de "Iniciar reclamo", la orden va SIEMPRE en el select (aunque no
+                        // esté entre las recientes) y queda preseleccionada. El value se setea acá,
+                        // junto con las opciones, para que el option exista cuando se aplica.
+                        if (initialOrden?.ordenId != null) {
+                            if (!lista.some(o => String(o.OrdenID) === String(initialOrden.ordenId))) {
+                                const enData = res.data.find(o => String(o.OrdenID) === String(initialOrden.ordenId));
+                                lista = [enData || { OrdenID: initialOrden.ordenId, CodigoOrden: initialOrden.codigoOrden }, ...lista];
+                            }
+                            setOrdenId(String(initialOrden.ordenId));
+                        }
+                        setOrdenes(lista);
                     }
                 })
                 .catch(err => console.error(err));

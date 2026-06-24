@@ -1534,8 +1534,55 @@ const WebRetirosPage = () => {
       return () => window.removeEventListener('keydown', handleGlobalKeyDown);
     }, []);
 
-    const toggle = (id) => setScannedBultos(prev => ({ ...prev, [id]: !prev[id] }));
-    const allChecked = selectedRetiro.orders?.every(o => scannedBultos[o.orderNumber]);
+    // Agrupar los bultos por código: si una orden trae N bultos (p. ej. DTF-2282 ×2), aparece
+    // UNA vez con su total, y hay que escanearla N veces para completarla.
+    const bultoGroups = React.useMemo(() => {
+      const map = new Map();
+      (selectedRetiro.orders || []).forEach(o => {
+        const key = o.orderNumber;
+        if (!map.has(key)) map.set(key, { orderNumber: key, total: 0 });
+        map.get(key).total += 1;
+      });
+      return Array.from(map.values());
+    }, [selectedRetiro.orders]);
+
+    // scannedBultos pasa a ser un CONTADOR por código: { [orderNumber]: cantidadEscaneada }.
+    const allChecked = bultoGroups.length > 0 && bultoGroups.every(g => (scannedBultos[g.orderNumber] || 0) >= g.total);
+
+    // Registro de escaneo UNIFICADO (lo usan el submit con Enter y el auto-match del input).
+    // Devuelve true si el código coincide con un bulto. Guarda anti-rebote: un mismo escaneo
+    // físico dispara onChange + Enter casi a la vez, así que ignoramos el re-disparo del mismo
+    // código dentro de 150ms para no contar dos veces.
+    const lastScanRef = React.useRef({ code: null, t: 0 });
+    const registrarEscaneo = (rawValue) => {
+      const rawCode = (rawValue || '').trim().toUpperCase();
+      if (!rawCode) return false;
+      const code = rawCode.replace(/^([A-Z]+)(\d+)$/, '$1-$2');
+
+      const matches = bultoGroups.filter(g => {
+        const n = g.orderNumber.toUpperCase();
+        return n === code || (/^\d+$/.test(code) && n.endsWith(`-${code}`));
+      });
+      if (matches.length !== 1) return false; // sin match o ambiguo
+      const grupo = matches[0];
+
+      const now = Date.now();
+      if (lastScanRef.current.code === grupo.orderNumber && (now - lastScanRef.current.t) < 150) return true;
+      lastScanRef.current = { code: grupo.orderNumber, t: now };
+
+      if ((scannedBultos[grupo.orderNumber] || 0) >= grupo.total) {
+        // Ya completo → feedback de "escaneo de más", sin pasarse del total.
+        setDuplicateWarn(grupo.orderNumber);
+        setTimeout(() => setDuplicateWarn(null), 200);
+        return true;
+      }
+      setScannedBultos(prev => {
+        const actual = prev[grupo.orderNumber] || 0;
+        if (actual >= grupo.total) return prev;
+        return { ...prev, [grupo.orderNumber]: actual + 1 };
+      });
+      return true;
+    };
 
     // Auto-asignar a estante cuando todas las órdenes están verdes
     useEffect(() => {
@@ -1587,24 +1634,7 @@ const WebRetirosPage = () => {
 
     const handleScanSubmit = (e) => {
       e.preventDefault();
-      const rawCode = barcodeInput.trim().toUpperCase();
-      if (!rawCode) return;
-      const code = rawCode.replace(/^([A-Z]+)(\d+)$/, '$1-$2');
-
-      // Find matches (exact or numeric suffix if unique)
-      const possibleMatches = selectedRetiro.orders?.filter(o => {
-        const oNum = o.orderNumber.toUpperCase();
-        return oNum === code || (code.match(/^\d+$/) && oNum.endsWith(`-${code}`));
-      }) || [];
-      const found = possibleMatches.length === 1 ? possibleMatches[0] : null;
-      if (found) {
-        if (scannedBultos[found.orderNumber]) {
-          setDuplicateWarn(found.orderNumber);
-          setTimeout(() => setDuplicateWarn(null), 200);
-        } else {
-          setScannedBultos(prev => ({ ...prev, [found.orderNumber]: true }));
-        }
-      }
+      registrarEscaneo(barcodeInput);
       setBarcodeInput('');
     };
 
@@ -1632,24 +1662,10 @@ const WebRetirosPage = () => {
               onChange={(e) => {
                 const val = e.target.value;
                 setBarcodeInput(val);
-                const rawCode = val.trim().toUpperCase();
-                const code = rawCode.replace(/^([A-Z]+)(\d+)$/, '$1-$2');
-                if (code && selectedRetiro?.orders) {
-                  const possibleMatches = selectedRetiro.orders.filter(o => {
-                    const oNum = o.orderNumber.toUpperCase();
-                    return oNum === code || (code.match(/^\d+$/) && oNum.endsWith(`-${code}`));
-                  });
-                  const found = possibleMatches.length === 1 ? possibleMatches[0] : null;
-
-                  if (found) {
-                    if (scannedBultos[found.orderNumber]) {
-                      setDuplicateWarn(found.orderNumber);
-                      setTimeout(() => setDuplicateWarn(null), 200);
-                    } else {
-                      setScannedBultos(prev => ({ ...prev, [found.orderNumber]: true }));
-                    }
-                    setTimeout(() => setBarcodeInput(''), 0);
-                  }
+                // Auto-match en vivo: si el texto ya coincide con un bulto, lo registra y limpia
+                // para el próximo. El re-disparo con Enter se deduplica dentro de registrarEscaneo.
+                if (registrarEscaneo(val)) {
+                  setTimeout(() => setBarcodeInput(''), 0);
                 }
               }}
               className="block w-full pl-12 pr-4 py-3 border-2 border-slate-200 rounded-xl bg-slate-50 placeholder-slate-400 focus:outline-none focus:border-blue-500 focus:bg-white text-base font-bold transition-all text-slate-700"
@@ -1663,23 +1679,34 @@ const WebRetirosPage = () => {
               <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Checklist de Bultos</p>
             </div>
             <div className="grid grid-cols-3 gap-3 p-1 max-h-64 overflow-y-auto">
-              {selectedRetiro.orders?.map(o => (
-                <motion.div key={o.orderNumber}
-                  animate={duplicateWarn === o.orderNumber ? { rotate: [0, -3, 3, -3, 3, 0] } : {}}
-                  transition={duplicateWarn === o.orderNumber ? { duration: 0.2 } : { duration: 0 }}
-                  onClick={() => {
-                    if (scannedBultos[o.orderNumber]) {
-                      setScannedBultos(prev => ({ ...prev, [o.orderNumber]: false }));
-                    }
-                  }}
-                  className={`flex flex-row items-center justify-center gap-2 p-3 rounded-xl border-2 transition-colors ${scannedBultos[o.orderNumber] ? 'bg-green-100 border-green-500 shadow-sm cursor-pointer hover:opacity-80' : 'bg-white border-slate-200'
-                    }`}>
-                  <div className={`shrink-0 ${scannedBultos[o.orderNumber] ? 'text-green-700' : 'text-slate-400'}`}>
-                    {scannedBultos[o.orderNumber] ? <PackageCheck size={24} /> : <Package size={24} />}
-                  </div>
-                  <div className="text-base font-black text-slate-800 truncate">{o.orderNumber}</div>
-                </motion.div>
-              ))}
+              {bultoGroups.map(g => {
+                const escaneados = scannedBultos[g.orderNumber] || 0;
+                const completo = escaneados >= g.total;
+                return (
+                  <motion.div key={g.orderNumber}
+                    animate={duplicateWarn === g.orderNumber ? { rotate: [0, -3, 3, -3, 3, 0] } : {}}
+                    transition={duplicateWarn === g.orderNumber ? { duration: 0.2 } : { duration: 0 }}
+                    onClick={() => {
+                      // Click manual: si está completo, resetea a 0; si no, suma uno.
+                      setScannedBultos(prev => {
+                        const actual = prev[g.orderNumber] || 0;
+                        return { ...prev, [g.orderNumber]: actual >= g.total ? 0 : actual + 1 };
+                      });
+                    }}
+                    className={`flex flex-row items-center justify-center gap-2 p-3 rounded-xl border-2 transition-colors cursor-pointer ${completo ? 'bg-green-100 border-green-500 shadow-sm hover:opacity-80' : 'bg-white border-slate-200 hover:border-slate-300'
+                      }`}>
+                    <div className={`shrink-0 ${completo ? 'text-green-700' : 'text-slate-400'}`}>
+                      {completo ? <PackageCheck size={24} /> : <Package size={24} />}
+                    </div>
+                    <div className="text-base font-black text-slate-800 truncate">{g.orderNumber}</div>
+                    {g.total > 1 && (
+                      <span className={`shrink-0 text-xs font-black px-2 py-0.5 rounded-full ${completo ? 'bg-green-600 text-white' : 'bg-amber-100 text-amber-700'}`}>
+                        {completo ? `×${g.total}` : `${escaneados}/${g.total}`}
+                      </span>
+                    )}
+                  </motion.div>
+                );
+              })}
             </div>
           </div>
           <div className="flex gap-3 justify-center">

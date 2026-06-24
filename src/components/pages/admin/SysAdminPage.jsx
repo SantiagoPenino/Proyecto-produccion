@@ -246,6 +246,38 @@ const SysAdminPage = () => {
         }
     };
 
+    const handleMaintenance = async () => {
+        const result = await Swal.fire({
+            title: 'Aviso de mantenimiento',
+            html:
+                '<input id="swal-min" type="number" min="1" value="2" class="swal2-input" placeholder="Minutos">' +
+                '<textarea id="swal-msg" class="swal2-textarea" placeholder="Mensaje (opcional)"></textarea>',
+            focusConfirm: false,
+            showCancelButton: true,
+            showDenyButton: true,
+            confirmButtonText: 'Avisar a todos',
+            denyButtonText: 'Ocultar aviso',
+            cancelButtonText: 'Cerrar',
+            preConfirm: () => {
+                const min = parseFloat(document.getElementById('swal-min').value);
+                const msg = document.getElementById('swal-msg').value;
+                if (!min || min <= 0) { Swal.showValidationMessage('Indicá los minutos'); return false; }
+                return { segundos: Math.round(min * 60), mensaje: msg };
+            }
+        });
+        try {
+            if (result.isConfirmed) {
+                await api.post('/sysadmin/maintenance', result.value);
+                Swal.fire('Aviso enviado', 'Todos los usuarios conectados ven la cuenta regresiva.', 'success');
+            } else if (result.isDenied) {
+                await api.post('/sysadmin/maintenance', { cancel: true });
+                Swal.fire('Aviso ocultado', 'Se quitó el banner para todos.', 'success');
+            }
+        } catch (e) {
+            Swal.fire('Error', e.response?.data?.error || 'No se pudo enviar el aviso', 'error');
+        }
+    };
+
     const fetchAudit = async (action = '') => {
         try {
             const params = action ? `?action=${action}` : '';
@@ -397,6 +429,11 @@ const SysAdminPage = () => {
                         className="p-2 disabled:opacity-50 transition-all hover:bg-zinc-100 rounded-xl"
                         title="Limpiar Logs">
                         {clearLogsRunning ? <Loader2 size={24} className="animate-spin" style={{ color: '#eab308' }} /> : <Trash2 size={24} style={{ color: '#eab308' }} />}
+                    </button>
+                    <button onClick={handleMaintenance}
+                        className="p-2 transition-all hover:bg-zinc-100 rounded-xl"
+                        title="Avisar mantenimiento">
+                        <AlertCircle size={24} style={{ color: '#f59e0b' }} />
                     </button>
                     <button onClick={handleRestart}
                         className="p-2 transition-all hover:bg-zinc-100 rounded-xl"

@@ -126,7 +126,7 @@ const OrderForm = ({ serviceId: propServiceId }) => {
         setShowDFAnnouncement(false);
     };
 
-    const { state, actions, config, serviceInfo, userStock, visibleComplementaryOptions } = useOrderForm(serviceId, overrideConfig);
+    const { state, actions, config, serviceInfo, userStock, visibleComplementaryOptions, corteServicioVisible, costuraServicioVisible } = useOrderForm(serviceId, overrideConfig);
 
     // Destructure state for easier access in render
     const {
@@ -1284,8 +1284,8 @@ const OrderForm = ({ serviceId: propServiceId }) => {
                         </div>
                     </ServiceAccordion>
 
-                    {/* Corte (Complementario) - Ocultar si es Principal */}
-                    {config.hasCuttingWorkflow && serviceId !== 'corte' && (
+                    {/* Corte (Complementario) - Ocultar si es Principal o si está OCULTO en Servicios Web */}
+                    {config.hasCuttingWorkflow && serviceId !== 'corte' && corteServicioVisible && (
                         <ServiceAccordion
                             title="Servicio de Corte"
                             isActive={enableCorte}
@@ -1321,8 +1321,8 @@ const OrderForm = ({ serviceId: propServiceId }) => {
                         </ServiceAccordion>
                     )}
 
-                    {/* Costura */}
-                    {config.hasCuttingWorkflow && (
+                    {/* Costura - Ocultar si está OCULTO en Servicios Web */}
+                    {config.hasCuttingWorkflow && costuraServicioVisible && (
                         <ServiceAccordion
                             title="Servicio de Costura"
                             isActive={enableCostura}

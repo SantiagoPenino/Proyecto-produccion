@@ -28,6 +28,7 @@ router.get('/sessions', ctrl.getSessions);
 router.delete('/sessions/:userId', ctrl.killSession);
 router.post('/sql', ctrl.executeSql);
 router.post('/restart', ctrl.restartServer);
+router.post('/maintenance', ctrl.broadcastMaintenance);
 
 // Phase 3
 router.get('/services', ctrl.testServices);
