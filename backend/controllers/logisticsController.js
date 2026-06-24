@@ -1084,7 +1084,7 @@ exports.receiveDispatch = async (req, res) => {
                         if (reqOrd.recordset.length === 0 || !reqOrd.recordset[0].OrdenID) continue;
                         const L_OrdenID = reqOrd.recordset[0].OrdenID;
                         
-                        const oData = await poolLocal.request().input('OID', require('mssql').Int, L_OrdenID).query("SELECT Cliente, CodCliente, CliIdCliente, CodigoOrden, DescripcionTrabajo FROM Ordenes WITH(NOLOCK) WHERE OrdenID = @OID");
+                        const oData = await poolLocal.request().input('OID', require('mssql').Int, L_OrdenID).query("SELECT Cliente, CodCliente, CliIdCliente, CodigoOrden, DescripcionTrabajo, ProIdProducto, TRY_CAST(Magnitud AS FLOAT) AS Magnitud FROM Ordenes WITH(NOLOCK) WHERE OrdenID = @OID");
                         if (oData.recordset.length === 0) continue;
                         const oRow = oData.recordset[0];
                         const logPrefix = `[CONTABILIDAD-WMS] [${oRow.CodigoOrden}] ${oRow.DescripcionTrabajo.substring(0,30)}`;
@@ -1165,10 +1165,10 @@ if (triggerReversal || triggerForward) {
                                                
                                                const insertResult = await poolLocal.request()
                                                    .input('Cod', require('mssql').VarChar, oRow.CodigoOrden)
-                                                   .input('Cant', require('mssql').Float, totalMetros)
+                                                   .input('Cant', require('mssql').Float, totalMetros || oRow.Magnitud || 0)
                                                    .input('Cli', require('mssql').Int, cliPKForDep)
                                                    .input('Trab', require('mssql').VarChar, oRow.DescripcionTrabajo)
-                                                   .input('Prod', require('mssql').Int, dTop.IDProdReact || null)
+                                                   .input('Prod', require('mssql').Int, dTop.IDProdReact || oRow.ProIdProducto || null)
                                                    .input('Mon', require('mssql').Int, finalMonId)
                                                    .input('Costo', require('mssql').Float, currentMonto)
                                                    .input('Usr', require('mssql').Int, usuarioId || 1)
@@ -1335,17 +1335,19 @@ if (triggerReversal || triggerForward) {
                                              .input('Cod', require('mssql').VarChar, oRow.CodigoOrden)
                                              .input('Cli', require('mssql').Int, cliPKFb)
                                              .input('Trab', require('mssql').VarChar, oRow.DescripcionTrabajo)
+                                             .input('Prod', require('mssql').Int, oRow.ProIdProducto || null)
+                                             .input('Cant', require('mssql').Float, oRow.Magnitud || 0)
                                              .input('Usr', require('mssql').Int, usuarioId || 1)
                                              .input('Lugar', require('mssql').Int, lugarFb)
                                              .query(`
                                                  INSERT INTO OrdenesDeposito (
                                                      OrdCodigoOrden, OrdCantidad, CliIdCliente, OrdNombreTrabajo,
-                                                     MOrIdModoOrden, MonIdMoneda, OrdCostoFinal,
+                                                     MOrIdModoOrden, ProIdProducto, MonIdMoneda, OrdCostoFinal,
                                                      OrdFechaIngresoOrden, OrdUsuarioAlta, OrdEstadoActual, OrdFechaEstadoActual, LReIdLugarRetiro
                                                  )
                                                  OUTPUT INSERTED.OrdIdOrden
                                                  VALUES (
-                                                     @Cod, 0, @Cli, @Trab, 1, 1, 0,
+                                                     @Cod, @Cant, @Cli, @Trab, 1, @Prod, 1, 0,
                                                      GETDATE(), @Usr, 1, GETDATE(), @Lugar
                                                  )
                                              `);
