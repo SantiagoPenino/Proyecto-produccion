@@ -20,15 +20,24 @@ export default function OrdersCard({ title, icon, bgColor, borderColor = "border
     useEffect(() => {
         const socket = io(SOCKET_URL, { reconnectionAttempts: 5 });
 
-        socket.on("connect_error", (err) => {
+        // Handlers con nombre para poder quitarlos en el cleanup. Antes eran anónimos +
+        // socket.disconnect(): el socket es el singleton compartido (socket.io multiplexa
+        // por URL), así que disconnect() bajaba el socket de TODA la app y dejaba los
+        // listeners colgados → se acumulaban en cada montaje (fuga → N refetches por evento).
+        const handleConnectError = (err) => {
             console.error("🔴 Connection Error Socket.io:", err);
-        });
-
-        socket.on("server:order_updated", () => {
+        };
+        const handleOrderUpdated = () => {
             refetch();
-        });
+        };
 
-        return () => socket.disconnect();
+        socket.on("connect_error", handleConnectError);
+        socket.on("server:order_updated", handleOrderUpdated);
+
+        return () => {
+            socket.off("connect_error", handleConnectError);
+            socket.off("server:order_updated", handleOrderUpdated);
+        };
     }, [refetch]);
 
     const loading = isLoading;

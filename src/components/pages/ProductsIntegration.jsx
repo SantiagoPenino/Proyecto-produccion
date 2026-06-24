@@ -180,7 +180,7 @@ const EditModal = ({ article, allArticles, onClose, onSaved }) => {
     const labelCls = "block text-xs font-bold tracking-wide text-slate-500 uppercase mb-1.5";
 
     return (
-        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={onClose}>
+        <div className="fixed inset-0 bg-slate-900/60 z-50 flex items-center justify-center p-4" onClick={onClose}>
             <div className="bg-white rounded-3xl shadow-2xl w-full max-w-4xl max-h-[90vh] flex flex-col overflow-hidden" onClick={e => e.stopPropagation()}>
                 {/* Header */}
                 <div className="flex items-center justify-between p-6 bg-slate-50 border-b border-slate-100 shrink-0">

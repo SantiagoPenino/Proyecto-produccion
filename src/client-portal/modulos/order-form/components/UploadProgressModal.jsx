@@ -11,6 +11,14 @@ export const UploadProgressModal = ({ isOpen, progress, isError, onRetry }) => {
         ? Math.min(100, Math.round((progress.bytesUploaded / progress.totalBytes) * 100))
         : 0;
 
+    // Fase "processing": los bytes ya salieron del navegador y el servidor está
+    // subiendo a Drive (parte lenta que el navegador NO puede medir). En vez de
+    // dejar la barra congelada en 100%, mostramos una barra indeterminada animada.
+    const isProcessing = !isError && (
+        progress.phase === 'processing' ||
+        (percentage >= 100 && progress.totalBytes > 0)
+    );
+
     const formatETA = (seconds) => {
         if (!seconds || seconds <= 0 || !isFinite(seconds)) return 'Calculando...';
         if (seconds < 60) return `${seconds} seg`;
@@ -52,13 +60,17 @@ export const UploadProgressModal = ({ isOpen, progress, isError, onRetry }) => {
                         <div className="w-full space-y-4">
                             <div className="flex justify-between text-[10px] font-black text-zinc-500 uppercase tracking-widest">
                                 <span>Progreso Total</span>
-                                <span className="text-cyan-400">{percentage}%</span>
+                                <span className="text-cyan-400">{isProcessing ? 'Guardando…' : `${percentage}%`}</span>
                             </div>
                             <div className="h-4 bg-zinc-800/50 rounded-full overflow-hidden border border-zinc-700/30 relative">
-                                <div
-                                    className="h-full bg-gradient-to-r from-cyan-500 via-blue-500 to-indigo-600 transition-all duration-700 ease-out shadow-[0_0_15px_rgba(6,182,212,0.5)]"
-                                    style={{ width: `${percentage}%` }}
-                                />
+                                {isProcessing ? (
+                                    <div className="absolute inset-y-0 animate-indeterminate bg-gradient-to-r from-cyan-500 via-blue-500 to-indigo-600 rounded-full shadow-[0_0_15px_rgba(6,182,212,0.5)]" />
+                                ) : (
+                                    <div
+                                        className="h-full bg-gradient-to-r from-cyan-500 via-blue-500 to-indigo-600 transition-all duration-700 ease-out shadow-[0_0_15px_rgba(6,182,212,0.5)]"
+                                        style={{ width: `${percentage}%` }}
+                                    />
+                                )}
                             </div>
 
                             {/* Detalle del archivo actual */}
@@ -68,11 +80,11 @@ export const UploadProgressModal = ({ isOpen, progress, isError, onRetry }) => {
                                         Archivo actual: <span className="text-zinc-200">{progress.filename || 'Preparando...'}</span>
                                     </p>
                                     <p className="text-[10px] text-cyan-400 font-mono font-bold uppercase tracking-tighter">
-                                        {percentage === 100 ? 'Guardando en Drive...' : `Tiempo est: ${formatETA(progress.etaSeconds)}`}
+                                        {isProcessing ? 'Guardando en Drive...' : `Tiempo est: ${formatETA(progress.etaSeconds)}`}
                                     </p>
                                 </div>
-                                {/* Barra de progreso individual del archivo */}
-                                {progress.currentFileTotal > 0 && (
+                                {/* Barra de progreso individual del archivo (solo durante la transferencia) */}
+                                {!isProcessing && progress.currentFileTotal > 0 && (
                                     <div className="h-1.5 w-full bg-zinc-800/80 relative">
                                         <div
                                             className="h-full bg-cyan-400 transition-all duration-300 ease-out"

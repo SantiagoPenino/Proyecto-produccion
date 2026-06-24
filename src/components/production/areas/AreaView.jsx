@@ -77,7 +77,12 @@ const MagicButton = ({ areaKey, onSuccess }) => {
     );
 };
 
-export default function AreaView({ areaKey, areaConfig, onSwitchTab }) {
+export default function AreaView({ areaKey: rawAreaKey, areaConfig, onSwitchTab }) {
+    // Normalizar a MAYÚSCULA: si la URL viene '/area/df', areaKey llegaba en minúscula
+    // y disparaba queries duplicadas (df + DF) en el board (RollsKanban/ProductionKanban,
+    // que reciben areaCode={areaKey}) + un retry inútil en la lista. Con una sola
+    // capitalización, todo el árbol pide 'DF' una vez.
+    const areaKey = (rawAreaKey || '').toUpperCase();
     const navigate = useNavigate();
     const location = useLocation();
     const { user } = useAuth();
@@ -226,11 +231,9 @@ export default function AreaView({ areaKey, areaConfig, onSwitchTab }) {
         queryFn: async () => {
             if (!areaKey || areaKey.toLowerCase() === 'area') return [];
             console.log(`📡 API: Pidiendo datos para área [${areaKey}]`);
+            // areaKey ya viene normalizado a MAYÚSCULA, así que una sola llamada alcanza
+            // (antes se reintentaba con toUpperCase porque podía venir en minúscula).
             let data = await ordersService.getByArea(areaKey, 'active');
-            if (!data || data.length === 0) {
-                // Retry with Uppercase if empty (preserve original logic)
-                data = await ordersService.getByArea(areaKey.toUpperCase(), 'active');
-            }
 
             // --- CROSS-COMPATIBILITY PATCH ---
             // El portal usa códigos diferentes ('DF', 'SB') que los de AreaView ('DTF', 'SUB').
@@ -274,6 +277,21 @@ export default function AreaView({ areaKey, areaConfig, onSwitchTab }) {
     // Socket.io: escuchar actualizaciones en tiempo real
     useEffect(() => {
         const socket = io(SOCKET_URL);
+        let refetchTimer = null;
+
+        // Debounce de la parte pesada: una ráfaga de eventos (ej. entrega masiva)
+        // se coalesce en UN solo refetch en vez de uno por evento → evita saturar el backend.
+        const scheduleRefetch = () => {
+            clearTimeout(refetchTimer);
+            refetchTimer = setTimeout(() => {
+                refetch(); // refrescar lista principal
+                // Refrescar también los tableros hijos (Planeación, Kanban, etc)
+                if (areaKey) {
+                    queryClient.invalidateQueries(['rollsBoard', areaKey]);
+                    queryClient.invalidateQueries(['productionBoard', areaKey]);
+                }
+            }, 800);
+        };
 
         const handleSocketUpdate = (payload) => {
             console.log('🔔 Evento socket update:', payload);
@@ -316,13 +334,8 @@ export default function AreaView({ areaKey, areaConfig, onSwitchTab }) {
                 setTimeout(() => setFlashingRows([]), 3000);
             }
 
-            refetch(); // refrescar lista principal
-            
-            // Refrescar también los tableros hijos (Planeación, Kanban, etc)
-            if (areaKey) {
-                queryClient.invalidateQueries(['rollsBoard', areaKey]);
-                queryClient.invalidateQueries(['productionBoard', areaKey]);
-            }
+            // Parte pesada (refetch + invalidaciones): debounced para coalescer ráfagas
+            scheduleRefetch();
         };
 
         socket.on('server:order_updated', handleSocketUpdate);
@@ -331,7 +344,15 @@ export default function AreaView({ areaKey, areaConfig, onSwitchTab }) {
         socket.on('lotes:updated', handleSocketUpdate);
 
         return () => {
-            socket.disconnect();
+            clearTimeout(refetchTimer);
+            // socket es el singleton compartido (socket.io multiplexa por URL): NO hacer
+            // socket.disconnect() — eso baja el socket de TODA la app y deja los listeners
+            // colgados, que se acumulan en cada montaje → un evento dispara N refetches
+            // (degradación progresiva). Solo quitar los listeners de ESTE componente.
+            socket.off('server:order_updated', handleSocketUpdate);
+            socket.off('server:ordersUpdated', handleSocketUpdate);
+            socket.off('server:new_order', handleSocketUpdate);
+            socket.off('lotes:updated', handleSocketUpdate);
         };
     }, [refetch, areaKey, queryClient]);
 
@@ -353,11 +374,14 @@ export default function AreaView({ areaKey, areaConfig, onSwitchTab }) {
         })];
     }, [dbOrders]);
 
-    const availableAreaStatuses = useMemo(() => {
-        const orderPreference = ['Pendiente', 'En Lote', 'Produccion', 'Imprimiendo', 'En Transito', 'Control y Calidad', 'Pronto', 'Finalizado', 'Cancelado'];
+    // Filtro por ESTADO GENERAL (o.status). Se omiten Finalizado y Cancelado porque
+    // tienen su propio botón aparte ("Ver órdenes finalizadas" / "canceladas").
+    const availableGeneralStatuses = useMemo(() => {
+        const orderPreference = ['Pendiente', 'Produccion', 'Retenido', 'Cargando'];
+        const excluded = ['finalizado', 'cancelado'];
         const unique = new Set(dbOrders
-            .map(o => (o.areaStatus || '').trim())
-            .filter(v => v && v !== '')
+            .map(o => (o.status || '').trim())
+            .filter(v => v && !excluded.includes(v.toLowerCase()))
         );
         return [...Array.from(unique).sort((a, b) => {
             const idxA = orderPreference.findIndex(p => p.toLowerCase() === a.toLowerCase());
@@ -462,7 +486,8 @@ export default function AreaView({ areaKey, areaConfig, onSwitchTab }) {
             result = result.filter(o => activeFilters.statuses.some(s => s.toLowerCase() === (o.areaStatus || o.status || 'Pendiente').toLowerCase()));
         }
         if (activeFilters.areaStatuses && activeFilters.areaStatuses.length > 0) {
-            result = result.filter(o => activeFilters.areaStatuses.some(s => s.toLowerCase() === (o.areaStatus || '').toLowerCase()));
+            // 'areaStatuses' ahora filtra por ESTADO GENERAL (o.status), no por estado en área
+            result = result.filter(o => activeFilters.areaStatuses.some(s => s.toLowerCase() === (o.status || '').toLowerCase()));
         }
         if (activeFilters.priorities && activeFilters.priorities.length > 0) {
             result = result.filter(o => activeFilters.priorities.some(p => p.toLowerCase() === (o.priority || 'Normal').toLowerCase()));
@@ -562,12 +587,12 @@ export default function AreaView({ areaKey, areaConfig, onSwitchTab }) {
                                 </div>
                             </div>
 
-                            {/* Estado en Área */}
-                            {availableAreaStatuses.length > 0 && (
+                            {/* Estado General */}
+                            {availableGeneralStatuses.length > 0 && (
                                 <div>
-                                    <span className="text-[10px] uppercase font-black text-zinc-400 tracking-wider mb-2 block">Estado en Área</span>
+                                    <span className="text-[10px] uppercase font-black text-zinc-400 tracking-wider mb-2 block">Estado General</span>
                                     <div className="flex flex-wrap gap-2">
-                                        {availableAreaStatuses.map(s => {
+                                        {availableGeneralStatuses.map(s => {
                                             const isSelected = activeFilters.areaStatuses.includes(s);
                                             return (
                                                 <button

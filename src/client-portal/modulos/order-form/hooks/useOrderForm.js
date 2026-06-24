@@ -134,6 +134,18 @@ function orderFormReducer(state, action) {
                 ...state,
                 uploading: true,
                 uploadError: false,
+                // Reset del progreso: si no, una segunda subida arranca mostrando el 100% de la anterior
+                uploadProgress: {
+                    current: 0,
+                    total: action.manifest?.length || 0,
+                    filename: '',
+                    phase: 'uploading',
+                    bytesUploaded: 0,
+                    totalBytes: 0,
+                    currentFileBytes: 0,
+                    currentFileTotal: 0,
+                    etaSeconds: 0
+                },
                 pendingManifest: action.manifest,
                 localFileMap: action.fileMap
             };
@@ -590,12 +602,13 @@ export const useOrderForm = (serviceId, overrides = {}) => {
 
                 dispatch({
                     type: actionTypes.UPDATE_UPLOAD_PROGRESS,
-                    progress: { 
-                        current: i + 1, 
-                        total, 
-                        filename: item.originalName, 
-                        bytesUploaded: bytesUploadedForCompletedFiles, 
-                        totalBytes, 
+                    progress: {
+                        current: i + 1,
+                        total,
+                        filename: item.originalName,
+                        phase: 'uploading',
+                        bytesUploaded: bytesUploadedForCompletedFiles,
+                        totalBytes,
                         etaSeconds: 0,
                         currentFileBytes: 0,
                         currentFileTotal: fileObj.size
@@ -615,10 +628,13 @@ export const useOrderForm = (serviceId, overrides = {}) => {
                         
                         dispatch({
                             type: actionTypes.UPDATE_UPLOAD_PROGRESS,
-                            progress: { 
-                                current: i + 1, 
-                                total, 
+                            progress: {
+                                current: i + 1,
+                                total,
                                 filename: item.originalName,
+                                // Cuando los bytes ya salieron del navegador, el servidor está
+                                // guardando en Drive (tramo que el navegador no puede medir).
+                                phase: (eventTotal > 0 && loaded >= eventTotal) ? 'processing' : 'uploading',
                                 bytesUploaded: currentTotalBytesUploaded,
                                 totalBytes: totalBytes,
                                 etaSeconds: etaSeconds,

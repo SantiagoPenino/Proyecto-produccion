@@ -1285,9 +1285,9 @@ exports.getIntegralPedidoDetailsV2 = async (req, res) => {
                 const depoRes = await pool.request().query(`
                     SELECT TOP 1
                         OD.OrdEstadoActual,
-                        COALESCE(LTRIM(RTRIM(EO.Nombre)), CAST(OD.OrdEstadoActual AS VARCHAR)) as NombreEstado
+                        COALESCE(LTRIM(RTRIM(EO.EOrNombreEstado)), CAST(OD.OrdEstadoActual AS VARCHAR)) as NombreEstado
                     FROM dbo.OrdenesDeposito OD
-                    LEFT JOIN dbo.EstadosOrdenes EO ON EO.EstadoID = OD.OrdEstadoActual
+                    LEFT JOIN dbo.EstadosOrdenes EO ON EO.EOrIdEstadoOrden = OD.OrdEstadoActual
                     WHERE LTRIM(RTRIM(OD.OrdCodigoOrden)) IN (${codigos})
                 `);
                 if (depoRes.recordset.length > 0) depoRow = depoRes.recordset[0];
