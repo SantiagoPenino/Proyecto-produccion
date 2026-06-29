@@ -3,6 +3,7 @@ const express = require('express');
 const router = express.Router();
 const ctrl = require('../controllers/contabilidadController');
 const { verifyToken } = require('../middleware/authMiddleware');
+const upload = require('../middleware/multerConfig');
 
 router.use(verifyToken);
 
@@ -89,6 +90,7 @@ router.get('/erp/libro-mayor',    erp.getLibroMayor);
 // Transacciones
 router.post('/caja/transaccion',              caja.procesarTransaccion);
 router.post('/caja/guardar-comprobante',      caja.guardarComprobante);
+router.post('/caja/upload-comprobante-transferencia', upload.single('comprobante'), caja.subirComprobanteTransferencia);
 router.post('/caja/venta-directa',            caja.procesarVentaDirecta); // NUEVO
 router.post('/caja/pago-deuda',               caja.procesarPagoDeuda);    // Pago de deudas por cuenta corriente
 router.get('/caja/productos-venta',           caja.getProductosVenta); // NUEVO

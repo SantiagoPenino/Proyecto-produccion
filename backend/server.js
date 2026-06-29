@@ -88,7 +88,8 @@ app.use('/api/audit', require('./routes/auditRoutes'));
 app.use('/api/audit-deposito', require('./routes/auditDepositoRoutes'));
 app.use('/api/auth', require('./routes/authRoutes'));
 app.use('/api/dashboard', require('./routes/dashboardRoutes'));
-app.use('/api/reportes',  require('./routes/reportesRoutes'));
+app.use('/api/reportes',              require('./routes/reportesRoutes'));
+app.use('/api/produccion-analytics',  require('./routes/produccionAnalyticsRoutes'));
 app.use('/api/google', require('./routes/googleAuthRoutes'));
 
 

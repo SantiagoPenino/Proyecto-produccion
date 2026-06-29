@@ -69,6 +69,7 @@ export default function CajaPanelPago({
   layout = 'vertical',
   showSubmitButton = true,
   onCondicionChange,   // callback(condicion: 'CONTADO'|'CREDITO') cuando el usuario cambia el toggle
+  locked = false,      // Bloquea tipo doc, condición y método de pago (para vendedores)
 }) {
   const esEgreso = mode === 'EGRESO';
   const tiposDoc = tiposDocDisponibles.length > 0
@@ -357,11 +358,14 @@ export default function CajaPanelPago({
               <div className="flex bg-zinc-100 border border-zinc-200 rounded-2xl p-1 gap-1">
                 <button
                   type="button"
-                  onClick={() => handleSelectVoucherType('PEDIDO_CAJA')}
+                  onClick={() => !locked && handleSelectVoucherType('PEDIDO_CAJA')}
+                  disabled={locked && derivedTipoCliente !== 'PEDIDO_CAJA'}
                   className={`flex-1 flex items-center justify-center gap-2 py-3 rounded-xl text-xs font-black uppercase tracking-wider transition-all ${
                     derivedTipoCliente === 'PEDIDO_CAJA'
                       ? 'bg-purple-600 text-white shadow-md'
-                      : 'text-zinc-500 hover:text-zinc-700 bg-transparent hover:bg-zinc-200/50'
+                      : locked
+                        ? 'text-zinc-300 bg-transparent cursor-not-allowed opacity-40'
+                        : 'text-zinc-500 hover:text-zinc-700 bg-transparent hover:bg-zinc-200/50'
                   }`}
                 >
                   <ShoppingBag size={14} />
@@ -369,11 +373,14 @@ export default function CajaPanelPago({
                 </button>
                 <button
                   type="button"
-                  onClick={() => handleSelectVoucherType('ETICKET')}
+                  onClick={() => !locked && handleSelectVoucherType('ETICKET')}
+                  disabled={locked && derivedTipoCliente !== 'ETICKET'}
                   className={`flex-1 flex items-center justify-center gap-2 py-3 rounded-xl text-xs font-black uppercase tracking-wider transition-all ${
                     derivedTipoCliente === 'ETICKET'
                       ? 'bg-purple-600 text-white shadow-md'
-                      : 'text-zinc-500 hover:text-zinc-700 bg-transparent hover:bg-zinc-200/50'
+                      : locked
+                        ? 'text-zinc-300 bg-transparent cursor-not-allowed opacity-40'
+                        : 'text-zinc-500 hover:text-zinc-700 bg-transparent hover:bg-zinc-200/50'
                   }`}
                 >
                   <Receipt size={14} />
@@ -381,11 +388,14 @@ export default function CajaPanelPago({
                 </button>
                 <button
                   type="button"
-                  onClick={() => handleSelectVoucherType('CON_RUT')}
+                  onClick={() => !locked && handleSelectVoucherType('CON_RUT')}
+                  disabled={locked && derivedTipoCliente !== 'CON_RUT'}
                   className={`flex-1 flex items-center justify-center gap-2 py-3 rounded-xl text-xs font-black uppercase tracking-wider transition-all ${
                     derivedTipoCliente === 'CON_RUT'
                       ? 'bg-purple-600 text-white shadow-md'
-                      : 'text-zinc-500 hover:text-zinc-700 bg-transparent hover:bg-zinc-200/50'
+                      : locked
+                        ? 'text-zinc-300 bg-transparent cursor-not-allowed opacity-40'
+                        : 'text-zinc-500 hover:text-zinc-700 bg-transparent hover:bg-zinc-200/50'
                   }`}
                 >
                   <Building2 size={14} />
@@ -460,7 +470,7 @@ export default function CajaPanelPago({
               <div className="flex bg-zinc-100 border border-zinc-200 rounded-2xl p-1 gap-1">
                 <button
                   type="button"
-                  onClick={() => handleSelectCondicion('CONTADO')}
+                  onClick={() => !locked && handleSelectCondicion('CONTADO')}
                   className={`flex-1 py-3 rounded-xl text-xs font-black uppercase tracking-wider transition-all ${
                     derivedCondicion === 'CONTADO'
                       ? 'bg-emerald-500 text-white shadow-md'
@@ -471,11 +481,14 @@ export default function CajaPanelPago({
                 </button>
                 <button
                   type="button"
-                  onClick={() => handleSelectCondicion('CREDITO')}
+                  onClick={() => !locked && handleSelectCondicion('CREDITO')}
+                  disabled={locked}
                   className={`flex-1 py-3 rounded-xl text-xs font-black uppercase tracking-wider transition-all ${
                     derivedCondicion === 'CREDITO'
                       ? 'bg-amber-500 text-white shadow-md'
-                      : 'text-zinc-500 hover:text-zinc-700 bg-transparent hover:bg-zinc-200/50 disabled:opacity-40 disabled:cursor-not-allowed'
+                      : locked
+                        ? 'text-zinc-300 bg-transparent cursor-not-allowed opacity-40'
+                        : 'text-zinc-500 hover:text-zinc-700 bg-transparent hover:bg-zinc-200/50'
                   }`}
                 >
                   Crédito
@@ -508,13 +521,15 @@ export default function CajaPanelPago({
                     <div className="w-36 shrink-0">
                       <select
                         value={p.metodoPagoId}
+                        disabled={locked}
                         onChange={(e) => {
+                          if (locked) return;
                           const val = e.target.value;
                           updatePago(p.id, 'metodoPagoId', val);
                           const isNowCheque = metodosPago.find(m => m.MPaIdMetodoPago === parseInt(val))?.MPaDescripcionMetodo?.toLowerCase()?.includes('cheque');
                           if (isNowCheque && !p.idCheque) setChequeIndexActivo(p.id);
                         }}
-                        className="w-full bg-white border border-zinc-200 rounded-xl px-3 py-2 text-xs font-black text-zinc-800 font-archivo outline-none hover:border-zinc-300 focus:border-brand-cyan transition-all shadow-sm cursor-pointer appearance-none pr-8"
+                        className={`w-full bg-white border border-zinc-200 rounded-xl px-3 py-2 text-xs font-black text-zinc-800 font-archivo outline-none transition-all shadow-sm appearance-none pr-8 ${locked ? 'cursor-not-allowed opacity-70 bg-zinc-50' : 'hover:border-zinc-300 focus:border-brand-cyan cursor-pointer'}`}
                         style={{
                           backgroundImage: `url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 20 20'%3E%3Cpath stroke='%236b7280' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.5' d='m6 8 4 4 4-4'/%3E%3C/svg%3E")`,
                           backgroundPosition: `right 0.5rem center`,
@@ -594,7 +609,7 @@ export default function CajaPanelPago({
                       </button>
                     )}
 
-                    {pagos.length > 1 && (
+                    {pagos.length > 1 && !locked && (
                       <button
                         type="button"
                         onClick={() => removePago(p.id)}
@@ -610,6 +625,7 @@ export default function CajaPanelPago({
 
             {/* Agregar medio / Completar saldo */}
             <div className="flex gap-2 items-center flex-wrap">
+              {!locked && (
               <button
                 type="button"
                 onClick={addPago}
@@ -617,6 +633,7 @@ export default function CajaPanelPago({
               >
                 <Plus size={12} /> Agregar Medio
               </button>
+              )}
               {totalACubrir > 0 && diferencia > 0.01 && (
                 <button
                   type="button"

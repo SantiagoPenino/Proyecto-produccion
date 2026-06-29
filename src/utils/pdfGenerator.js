@@ -357,7 +357,19 @@ export const generarPdfFacturaDGI = async (doc, detalles) => {
     // ==========================================
     // TOTALES (FOOTER)
     // ==========================================
-    const finalY = pdf.lastAutoTable.finalY + 10;
+    // Space needed: totals (~28mm) + DGI footer (~40mm) + adenda (~35mm) = ~103mm
+    const FOOTER_SPACE_NEEDED = 103;
+    const PAGE_HEIGHT = 287; // A4 usable height in mm
+    let tableEndY = pdf.lastAutoTable.finalY;
+    let currentPage = pdf.internal.getCurrentPageInfo().pageNumber;
+
+    if (tableEndY + FOOTER_SPACE_NEEDED > PAGE_HEIGHT) {
+        pdf.addPage();
+        tableEndY = 15;
+        currentPage += 1;
+    }
+
+    const finalY = tableEndY + 10;
 
     pdf.setFontSize(9);
     pdf.text("Gravado 22%", 150, finalY);
@@ -479,7 +491,8 @@ export const generarPdfFacturaDGI = async (doc, detalles) => {
     pdf.setTextColor(60, 60, 60);
     const codSeg = doc.DocCodSeguridad ? `Código de Seguridad: ${doc.DocCodSeguridad}` : '';
     if (codSeg) pdf.text(codSeg, 15, qrY + 33);
-    pdf.text('Página 1 de 1', 195, qrY + 33, { align: 'right' });
+    const totalPages = pdf.internal.getNumberOfPages();
+    pdf.text(`Página ${currentPage} de ${totalPages}`, 195, qrY + 33, { align: 'right' });
 
     // ==========================================
     // ADENDA

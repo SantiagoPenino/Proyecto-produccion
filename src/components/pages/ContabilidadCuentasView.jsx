@@ -1788,6 +1788,7 @@ const PlanesPanel = ({ cuenta, CliIdCliente, cliente, desde, hasta, onClose, onC
   // Form nueva orden
   const [nuevaOrden,   setNuevaOrden]   = useState({ codigoOrden: '', nombreTrabajo: '', metros: '', planId: '' });
   const [nuevaWorking, setNuevaWorking] = useState(false);
+  const [mostrarCerrados, setMostrarCerrados] = useState(false);
 
   const unidadLabel = cuenta.UnidadLabel || cuenta.CueTipo || '';
 
@@ -1840,6 +1841,15 @@ const PlanesPanel = ({ cuenta, CliIdCliente, cliente, desde, hasta, onClose, onC
           <div className="flex items-center gap-2">
             <Layers size={14} /><span className="text-sm font-semibold">Planes de Recursos</span>
             {planActivo && <Badge color="green"><span className="animate-pulse">●</span> ACTIVO</Badge>}
+            {planes.some(p => !p.PlaActivo) && (
+              <button
+                onClick={() => setMostrarCerrados(v => !v)}
+                title={mostrarCerrados ? 'Ocultar planes cerrados' : 'Ver planes cerrados'}
+                className={`text-[10px] font-semibold px-2 py-0.5 rounded-full transition-colors ${mostrarCerrados ? 'bg-white text-violet-700' : 'bg-white/20 text-white/70 hover:bg-white/30 hover:text-white'}`}
+              >
+                {mostrarCerrados ? 'Ocultar cerrados' : `+ ${planes.filter(p => !p.PlaActivo).length} cerrado${planes.filter(p => !p.PlaActivo).length > 1 ? 's' : ''}`}
+              </button>
+            )}
           </div>
           <div className="flex items-center gap-1.5">
 
@@ -1887,11 +1897,21 @@ const PlanesPanel = ({ cuenta, CliIdCliente, cliente, desde, hasta, onClose, onC
             </div>
           )}
 
+          {planes.length > 0 && planes.filter(p => p.PlaActivo).length === 0 && !mostrarCerrados && (
+            <div className="text-center py-5 text-slate-400 text-xs">
+              <Package size={18} className="mx-auto mb-1 opacity-30" />No hay planes activos —{' '}
+              <button onClick={() => setMostrarCerrados(true)} className="underline text-violet-500 hover:text-violet-700">
+                ver cerrados
+              </button>
+            </div>
+          )}
+
           {/* ── Una sección por material; dentro: resúmenes de planes + tabla unificada ── */}
           {(() => {
+            const planesVisibles = mostrarCerrados ? planes : planes.filter(p => p.PlaActivo);
             // Agrupar planes por ProIdProducto (mismo material = mismo estado de cuenta)
             const materialesMap = new Map();
-            planes.forEach(p => {
+            planesVisibles.forEach(p => {
               const key = p.ProIdProducto != null ? String(p.ProIdProducto) : `__sin_${p.PlaIdPlan}`;
               if (!materialesMap.has(key)) {
                 materialesMap.set(key, {

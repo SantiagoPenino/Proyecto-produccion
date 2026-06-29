@@ -2870,6 +2870,39 @@ exports.consumirRecursoAdelantado = async (req, res) => {
       }
     }
 
+    // Sin plan activo: buscar el último plan histórico para registrar negativos
+    // Aplica a ROLLO y SEMANAL con recursos prepagados
+    let esRolloSinPlan = false;
+    if (!planPreviewRes.recordset.length) {
+      const ultimoPlanRolloRes = await pool.request()
+        .input('CliId', sql.Int, CliIdCliente)
+        .input('ProId', sql.Int, ProIdProducto)
+        .query(`
+          SELECT TOP 1
+            pm.PlaIdPlan,
+            pm.CueIdCuenta  AS CueMTS,
+            pm.PlaCantidadTotal,
+            pm.PlaCantidadUsada,
+            0.0             AS SaldoDisponible,
+            art.Descripcion AS NombreArticulo
+          FROM dbo.PlanesMetros pm WITH(NOLOCK)
+          LEFT JOIN dbo.Articulos art WITH(NOLOCK) ON art.ProIdProducto = pm.ProIdProducto
+          WHERE pm.CliIdCliente = @CliId
+            AND (
+              pm.ProIdProducto = @ProId
+              OR EXISTS (
+                SELECT 1 FROM dbo.PlanesMetrosArticulosPermitidos pap WITH(NOLOCK)
+                WHERE pap.PlaIdPlan = pm.PlaIdPlan AND pap.ProIdProducto = @ProId
+              )
+            )
+          ORDER BY pm.PlaFechaAlta DESC
+        `);
+      if (ultimoPlanRolloRes.recordset.length) {
+        esRolloSinPlan = true;
+        planPreviewRes.recordset.push(...ultimoPlanRolloRes.recordset);
+      }
+    }
+
     if (!planPreviewRes.recordset.length)
       return res.status(422).json({
         success: false,
@@ -2881,8 +2914,11 @@ exports.consumirRecursoAdelantado = async (req, res) => {
     const plan      = planPreviewRes.recordset[0];
     const saldoDisp = Number(plan.SaldoDisponible);
 
-    // ── REGLA: si no hay NADA, rechazar ──────────────────────────────────────
-    if (saldoDisp <= 0)
+    // SEMANAL con plan comprado también usa mecánica negativa (metros, no deuda monetaria)
+    const debeNegativo = esRolloAdelantado || (esClienteSemanal && planPreviewRes.recordset.length > 0);
+
+    // saldo 0 es válido cuando el cliente usa mecánica de recursos (irá como metros negativos)
+    if (saldoDisp <= 0 && !debeNegativo)
       return res.status(422).json({
         success: false,
         error: ('Plan #' + plan.PlaIdPlan + ' (' + (plan.NombreArticulo || 'sin nombre') + ') no tiene saldo disponible.')
@@ -2894,9 +2930,10 @@ exports.consumirRecursoAdelantado = async (req, res) => {
     const metrosCubiertos   = Math.min(saldoDisp, cantidadMetros);
     const metrosDeuda       = Math.round((cantidadMetros - metrosCubiertos) * 10000) / 10000; // metros sin cubrir
 
-    // La proporción del importe a cancelar es proporcional a los metros cubiertos
+    // Cliente con recursos: cancela el importe monetario completo siempre
+    // (el resto va como metros negativos en la cuenta de recursos, no como deuda monetaria)
     const proporcion        = cantidadMetros > 0 ? metrosCubiertos / cantidadMetros : 1;
-    const importeACancelar  = esCoberturaTotal
+    const importeACancelar  = (esCoberturaTotal || debeNegativo)
       ? importeDeuda
       : Math.round(importeDeuda * proporcion * 100) / 100;
     const importeRestante   = Math.round((importeDeuda - importeACancelar) * 100) / 100;
@@ -2904,19 +2941,21 @@ exports.consumirRecursoAdelantado = async (req, res) => {
     // ── MODO PREVIEW: devolver cálculo sin ejecutar la transacción ──────────
     if (req.query.preview === '1') {
       return res.json({
-        success:          true,
-        preview:          true,
-        esCoberturaTotal: esCoberturaTotal,
-        metrosConsumidos: metrosCubiertos,
-        metrosEnDeuda:    metrosDeuda,
-        importeCancelado: importeACancelar,
-        importeRestante:  importeRestante,
-        deudaRestante:    importeRestante,
-        planRestante:     Math.max(0, saldoDisp - metrosCubiertos),
-        planId:           plan.PlaIdPlan,
-        planNombre:       plan.NombreArticulo || 'Plan #' + plan.PlaIdPlan,
-        escenario:        deudaDoc ? 'DEUDA_DOCUMENTO' : (cicloAbierto ? 'CICLO_ABIERTO' : 'ROLLO_ADELANTADO'),
-        tipoCliente:      esClienteSemanal ? 'SEMANAL' : 'COMUN',
+        success:           true,
+        preview:           true,
+        esCoberturaTotal:  debeNegativo ? true : esCoberturaTotal,
+        metrosConsumidos:  metrosCubiertos,
+        metrosEnDeuda:     debeNegativo ? 0 : metrosDeuda,
+        metrosNegativo:    debeNegativo ? metrosDeuda : 0,
+        importeCancelado:  importeACancelar,
+        importeRestante:   debeNegativo ? 0 : importeRestante,
+        deudaRestante:     debeNegativo ? 0 : importeRestante,
+        planRestante:      Math.max(0, saldoDisp - metrosCubiertos),
+        planId:            plan.PlaIdPlan,
+        planNombre:        plan.NombreArticulo || 'Plan #' + plan.PlaIdPlan,
+        escenario:         deudaDoc ? 'DEUDA_DOCUMENTO' : (cicloAbierto && !debeNegativo ? 'CICLO_ABIERTO' : (esRolloAdelantado ? 'ROLLO_ADELANTADO' : 'SEMANAL_RECURSOS')),
+        tipoCliente:       esClienteSemanal ? 'SEMANAL' : 'COMUN',
+        esRolloSinPlan:    esRolloSinPlan,
       });
     }
 
@@ -2944,12 +2983,14 @@ exports.consumirRecursoAdelantado = async (req, res) => {
       // Si el saldo cayó entre el preview y la TX, ajustamos la cobertura parcial
       const metrosFinal   = Math.min(saldoReal, metrosCubiertos);
       const esTotalFinal  = metrosFinal >= cantidadMetros;
-      const impCancelar   = esTotalFinal
+      // Cliente con recursos: cancela el importe monetario completo (el resto va como metros negativos)
+      const impCancelar   = (esTotalFinal || debeNegativo)
         ? importeDeuda
         : Math.round(importeDeuda * (metrosFinal / cantidadMetros) * 100) / 100;
       const impRestante   = Math.round((importeDeuda - impCancelar) * 100) / 100;
 
-      if (metrosFinal <= 0)
+      // metrosFinal=0 es válido cuando el cliente usa mecánica de recursos (todo va negativo)
+      if (metrosFinal <= 0 && !debeNegativo)
         throw new Error('El plan quedó sin saldo disponible (condición de carrera). Reintente.');
 
       // 4b. Actualizar plan
@@ -2962,7 +3003,7 @@ exports.consumirRecursoAdelantado = async (req, res) => {
         .input('Activo', sql.Bit,           nuevoActivo)
         .query('UPDATE dbo.PlanesMetros SET PlaCantidadUsada = @Usada, PlaActivo = @Activo WHERE PlaIdPlan = @PlaId');
 
-      // 4c. Movimiento ENTREGA en cuenta MTS
+      // 4c. Movimiento ENTREGA en cuenta MTS (solo si hubo metros desde el plan)
       const smtsRes = await new sql.Request(transaction)
         .input('C', sql.Int, CueMTS)
         .query('SELECT CueSaldoActual FROM dbo.CuentasCliente WITH(UPDLOCK) WHERE CueIdCuenta = @C');
@@ -2970,36 +3011,38 @@ exports.consumirRecursoAdelantado = async (req, res) => {
       const saldoMTSActual = Number(smtsRes.recordset[0].CueSaldoActual);
       const nuevoSaldoMTS  = Math.round((saldoMTSActual - metrosFinal) * 10000) / 10000;
 
-      await new sql.Request(transaction)
-        .input('C', sql.Int, CueMTS).input('S', sql.Decimal(18,4), nuevoSaldoMTS)
-        .query('UPDATE dbo.CuentasCliente SET CueSaldoActual = @S WHERE CueIdCuenta = @C');
+      if (metrosFinal > 0) {
+        await new sql.Request(transaction)
+          .input('C', sql.Int, CueMTS).input('S', sql.Decimal(18,4), nuevoSaldoMTS)
+          .query('UPDATE dbo.CuentasCliente SET CueSaldoActual = @S WHERE CueIdCuenta = @C');
 
-      const conceptoEntrega = esTotalFinal
-        ? 'Cobertura retroactiva: ' + CodigoOrden
-        : 'Cobertura parcial (' + metrosFinal.toFixed(2) + '/' + cantidadMetros.toFixed(2) + ' mts): ' + CodigoOrden;
+        const conceptoEntrega = esTotalFinal
+          ? 'Cobertura retroactiva: ' + CodigoOrden
+          : 'Cobertura parcial (' + metrosFinal.toFixed(2) + '/' + cantidadMetros.toFixed(2) + ' mts): ' + CodigoOrden;
 
-      await new sql.Request(transaction)
-        .input('C',  sql.Int,           CueMTS)
-        .input('Imp',sql.Decimal(18,4), -metrosFinal)
-        .input('SP', sql.Decimal(18,4),  nuevoSaldoMTS)
-        .input('Usr',sql.Int,            UsuarioAlta)
-        .input('Con',sql.NVarChar(300),  conceptoEntrega)
-        .input('Ord',sql.Int,            mov.OrdIdOrden || null)
-        .input('Ref',sql.Int,            movId)
-        .input('PlaIdPlan', sql.Int,     planTx.PlaIdPlan)
-        .query(`
-          INSERT INTO dbo.MovimientosCuenta
-            (CueIdCuenta,MovTipo,MovImporte,MovConcepto,MovSaldoPosterior,
-             MovFecha,MovUsuarioAlta,OrdIdOrden,MovObservaciones)
-          VALUES (@C,'ENTREGA',@Imp,@Con,@SP,GETDATE(),@Usr,@Ord,
-                  CONCAT('Cobertura retroactiva Ref#',@Ref, ' \u2014 Plan #',@PlaIdPlan))
-        `);
+        await new sql.Request(transaction)
+          .input('C',  sql.Int,           CueMTS)
+          .input('Imp',sql.Decimal(18,4), -metrosFinal)
+          .input('SP', sql.Decimal(18,4),  nuevoSaldoMTS)
+          .input('Usr',sql.Int,            UsuarioAlta)
+          .input('Con',sql.NVarChar(300),  conceptoEntrega)
+          .input('Ord',sql.Int,            mov.OrdIdOrden || null)
+          .input('Ref',sql.Int,            movId)
+          .input('PlaIdPlan', sql.Int,     planTx.PlaIdPlan)
+          .query(`
+            INSERT INTO dbo.MovimientosCuenta
+              (CueIdCuenta,MovTipo,MovImporte,MovConcepto,MovSaldoPosterior,
+               MovFecha,MovUsuarioAlta,OrdIdOrden,MovObservaciones)
+            VALUES (@C,'ENTREGA',@Imp,@Con,@SP,GETDATE(),@Usr,@Ord,
+                    CONCAT('Cobertura retroactiva Ref#',@Ref, ' \u2014 Plan #',@PlaIdPlan))
+          `);
+      }
 
       // 4d. Detectar servicios complementarios (costura, corte, etc.) en PedidosCobranzaDetalle.
       //     Si el plan cubre el material pero quedan servicios, se ajusta el MovImporte en lugar
       //     de marcar la orden como CUBIERTO, para que los servicios sigan visibles como pendientes.
       let totalServicios = 0;
-      if (esTotalFinal && mov.OrdIdOrden) {
+      if (mov.OrdIdOrden && (esTotalFinal || debeNegativo)) {
         const serviciosRes = await new sql.Request(transaction)
           .input('OrdId',         sql.Int,          mov.OrdIdOrden)
           .input('ProIdMaterial', sql.Int,          ProIdProducto)
@@ -3014,7 +3057,9 @@ exports.consumirRecursoAdelantado = async (req, res) => {
           `);
         totalServicios = Math.round(Number(serviciosRes.recordset[0]?.TotalServicios || 0) * 100) / 100;
       }
-      const hayServicios = totalServicios > 0 && esTotalFinal;
+      const hayServicios    = totalServicios > 0 && esTotalFinal;
+      // Plan agotado + servicios: material cubre en negativo, servicios siguen en billing
+      const hayServiciosNeg = totalServicios > 0 && !esTotalFinal && debeNegativo;
 
       // 4e. Marcar / ajustar la ORDEN original
       const cicloIdInsertar = (esClienteSemanal && mov.CicIdCiclo) ? mov.CicIdCiclo : null;
@@ -3058,17 +3103,99 @@ exports.consumirRecursoAdelantado = async (req, res) => {
                     CONCAT('Material cubierto Plan #', @PlaId, ' — servicios pendientes'))
           `);
       } else {
-        await new sql.Request(transaction)
-          .input('Mid', sql.Int,           movId)
-          .input('Obs', sql.NVarChar(300), esTotalFinal
-            ? 'CUBIERTO_POR_PLAN_' + planTx.PlaIdPlan
-            : 'CUBIERTO_PARCIAL_' + metrosFinal.toFixed(2) + '/' + cantidadMetros.toFixed(2) + '_PLAN_' + planTx.PlaIdPlan)
-          .query('UPDATE dbo.MovimientosCuenta SET MovObservaciones = @Obs WHERE MovIdMovimiento = @Mid');
+        // Cliente con recursos y metros sobrantes: registrar negativo en cuenta de recursos
+        // (no queda deuda monetaria — metros prepagados nunca generan deuda en dinero)
+        // Usar metrosFinal (ajustado por TX) no metrosDeuda (del preview)
+        const metrosNegRollo = debeNegativo
+          ? Math.round((cantidadMetros - metrosFinal) * 10000) / 10000
+          : 0;
+        if (metrosNegRollo > 0) {
+          const saldoNegRes = await new sql.Request(transaction)
+            .input('C', sql.Int, CueMTS)
+            .query('SELECT CueSaldoActual FROM dbo.CuentasCliente WITH(UPDLOCK) WHERE CueIdCuenta = @C');
+          const saldoNegActual = Number(saldoNegRes.recordset[0].CueSaldoActual);
+          const nuevoSaldoNeg  = Math.round((saldoNegActual - metrosNegRollo) * 10000) / 10000;
+
+          await new sql.Request(transaction)
+            .input('C', sql.Int, CueMTS)
+            .input('S', sql.Decimal(18,4), nuevoSaldoNeg)
+            .query('UPDATE dbo.CuentasCliente SET CueSaldoActual = @S WHERE CueIdCuenta = @C');
+
+          await new sql.Request(transaction)
+            .input('C',    sql.Int,           CueMTS)
+            .input('Imp',  sql.Decimal(18,4), -metrosNegRollo)
+            .input('SP',   sql.Decimal(18,4),  nuevoSaldoNeg)
+            .input('Usr',  sql.Int,            UsuarioAlta)
+            .input('Con',  sql.NVarChar(300), 'Saldo negativo Rec.: ' + CodigoOrden)
+            .input('Ord',  sql.Int,            mov.OrdIdOrden || null)
+            .input('Ref',  sql.Int,            movId)
+            .input('PlaId',sql.Int,            planTx.PlaIdPlan)
+            .query(`
+              INSERT INTO dbo.MovimientosCuenta
+                (CueIdCuenta,MovTipo,MovImporte,MovConcepto,MovSaldoPosterior,
+                 MovFecha,MovUsuarioAlta,OrdIdOrden,MovObservaciones)
+              VALUES (@C,'ENTREGA',@Imp,@Con,@SP,GETDATE(),@Usr,@Ord,
+                      CONCAT('Negativo retroactivo Ref#',@Ref,' — Plan #',@PlaId))
+            `);
+        }
+
+        if (hayServiciosNeg) {
+          // Plan agotado + servicios: misma lógica que hayServicios pero con MATERIAL_CUBIERTO_NEG
+          // Los servicios quedan visibles en billing; el material va cubierto con metros negativos
+          const importeMaterial = Math.round((importeOrden - totalServicios) * 100) / 100;
+
+          await new sql.Request(transaction)
+            .input('Mid', sql.Int,           movId)
+            .input('Imp', sql.Decimal(18,4), -totalServicios)
+            .input('Obs', sql.NVarChar(300), 'MATERIAL_CUBIERTO_NEG_' + metrosNegRollo.toFixed(2) + '_PLAN_' + planTx.PlaIdPlan)
+            .query(`UPDATE dbo.MovimientosCuenta
+                    SET MovImporte = @Imp, MovObservaciones = @Obs
+                    WHERE MovIdMovimiento = @Mid`);
+
+          const saldoMonNegRes = await new sql.Request(transaction)
+            .input('C', sql.Int, mov.CueIdCuenta)
+            .query('SELECT CueSaldoActual FROM dbo.CuentasCliente WITH(UPDLOCK) WHERE CueIdCuenta = @C');
+          const saldoMonNegActual = Number(saldoMonNegRes.recordset[0].CueSaldoActual);
+          const nuevoSaldoMonNeg  = Math.round((saldoMonNegActual + importeMaterial) * 100) / 100;
+
+          await new sql.Request(transaction)
+            .input('C', sql.Int, mov.CueIdCuenta)
+            .input('S', sql.Decimal(18,4), nuevoSaldoMonNeg)
+            .query('UPDATE dbo.CuentasCliente SET CueSaldoActual = @S WHERE CueIdCuenta = @C');
+
+          await new sql.Request(transaction)
+            .input('C',     sql.Int,           mov.CueIdCuenta)
+            .input('Imp',   sql.Decimal(18,4), importeMaterial)
+            .input('SP',    sql.Decimal(18,4), nuevoSaldoMonNeg)
+            .input('Usr',   sql.Int,           UsuarioAlta)
+            .input('Con',   sql.NVarChar(300), 'Cobertura material neg Plan #' + planTx.PlaIdPlan + ': ' + CodigoOrden)
+            .input('Ord',   sql.Int,           mov.OrdIdOrden || null)
+            .input('PlaId', sql.Int,           planTx.PlaIdPlan)
+            .query(`
+              INSERT INTO dbo.MovimientosCuenta
+                (CueIdCuenta, MovTipo, MovImporte, MovConcepto, MovSaldoPosterior,
+                 MovFecha, MovUsuarioAlta, OrdIdOrden, MovObservaciones)
+              VALUES (@C, 'CREDITO_PLAN', @Imp, @Con, @SP, GETDATE(), @Usr, @Ord,
+                      CONCAT('Material cubierto neg Plan #', @PlaId, ' — servicios pendientes'))
+            `);
+        } else {
+          // Sin servicios (o cobertura total): observación CUBIERTO normal
+          const obsMovimiento = (debeNegativo && !esTotalFinal)
+            ? 'CUBIERTO_NEG_' + metrosNegRollo.toFixed(2) + '_PLAN_' + planTx.PlaIdPlan
+            : esTotalFinal
+              ? 'CUBIERTO_POR_PLAN_' + planTx.PlaIdPlan
+              : 'CUBIERTO_PARCIAL_' + metrosFinal.toFixed(2) + '/' + cantidadMetros.toFixed(2) + '_PLAN_' + planTx.PlaIdPlan;
+
+          await new sql.Request(transaction)
+            .input('Mid', sql.Int,           movId)
+            .input('Obs', sql.NVarChar(300), obsMovimiento)
+            .query('UPDATE dbo.MovimientosCuenta SET MovObservaciones = @Obs WHERE MovIdMovimiento = @Mid');
+        }
       }
 
       // 4f. Cancelar/ajustar DeudaDocumento
       if (deudaDoc) {
-        if (hayServicios) {
+        if (hayServicios || hayServiciosNeg) {
           // El material está cubierto por el plan; solo queda la deuda de servicios
           await new sql.Request(transaction)
             .input('DdeId',     sql.Int,          deudaDoc.DDeIdDocumento)
@@ -3092,7 +3219,7 @@ exports.consumirRecursoAdelantado = async (req, res) => {
 
       // 4g. Ciclo abierto (semanal)
       if (cicloAbierto) {
-        const impReducirCiclo = hayServicios
+        const impReducirCiclo = (hayServicios || hayServiciosNeg)
           ? Math.round((importeOrden - totalServicios) * 100) / 100
           : impCancelar;
         await new sql.Request(transaction)
@@ -3108,34 +3235,45 @@ exports.consumirRecursoAdelantado = async (req, res) => {
 
       await transaction.commit();
 
+      const metrosNegFinal = debeNegativo ? Math.round((cantidadMetros - metrosFinal) * 10000) / 10000 : 0;
       const mensajeFinal = hayServicios
         ? 'Material de ' + CodigoOrden + ' cubierto por Plan #' + planTx.PlaIdPlan + ' — ' + metrosFinal.toFixed(2) +
           ' mts consumidos. Servicios complementarios ($' + totalServicios.toFixed(2) + ') quedan pendientes de facturar.'
+        : hayServiciosNeg
+          ? 'Material de ' + CodigoOrden + ': ' + metrosFinal.toFixed(2) + ' mts plan + ' + metrosNegFinal.toFixed(2) +
+            ' mts negativos en Plan #' + planTx.PlaIdPlan + '. Servicios ($' + totalServicios.toFixed(2) + ') quedan pendientes de facturar.'
         : esTotalFinal
           ? 'Orden ' + CodigoOrden + ' cubierta totalmente por Plan #' + planTx.PlaIdPlan + ' — ' + metrosFinal.toFixed(2) + ' mts consumidos.'
-          : 'Cobertura parcial: ' + metrosFinal.toFixed(2) + ' de ' + cantidadMetros.toFixed(2) + ' mts cubiertos. ' +
-            impRestante.toFixed(2) + ' acumulados como deuda.';
+          : debeNegativo
+            ? 'Rec.: ' + metrosFinal.toFixed(2) + ' mts desde plan + ' + metrosNegFinal.toFixed(2) + ' mts negativos registrados en Plan #' + planTx.PlaIdPlan + '. Sin deuda monetaria.'
+            : 'Cobertura parcial: ' + metrosFinal.toFixed(2) + ' de ' + cantidadMetros.toFixed(2) + ' mts cubiertos. ' +
+              impRestante.toFixed(2) + ' acumulados como deuda.';
 
       logger.info(
         '[COBERTURA_RETROACTIVA] MovId=' + movId + ' Orden=' + CodigoOrden +
         ' Plan#' + planTx.PlaIdPlan + ' -> ' + metrosFinal + ' mts / $' + impCancelar +
         (hayServicios ? ' SERVICIOS_PENDIENTES=$' + totalServicios : '') +
-        (esTotalFinal ? ' TOTAL' : ' PARCIAL (' + metrosDeuda.toFixed(2) + ' mts en deuda)')
+        (esTotalFinal ? ' TOTAL' :
+          debeNegativo
+            ? ' NEGATIVO (' + metrosNegFinal.toFixed(2) + ' mts negativos, sin deuda monetaria)'
+            : ' PARCIAL (' + metrosDeuda.toFixed(2) + ' mts en deuda)')
       );
 
       return res.json({
         success:            true,
-        esCoberturaTotal:   esTotalFinal,
+        esCoberturaTotal:   debeNegativo ? true : esTotalFinal,
         metrosConsumidos:   metrosFinal,
-        metrosEnDeuda:      esTotalFinal ? 0 : metrosDeuda,
+        metrosEnDeuda:      debeNegativo ? 0 : (esTotalFinal ? 0 : metrosDeuda),
+        metrosNegativo:     metrosNegFinal,
         importeCancelado:   hayServicios ? Math.round((importeOrden - totalServicios) * 100) / 100 : impCancelar,
-        importeRestante:    hayServicios ? totalServicios : (esTotalFinal ? 0 : impRestante),
-        deudaRestante:      hayServicios ? totalServicios : (esTotalFinal ? 0 : impRestante),
+        importeRestante:    debeNegativo ? 0 : (hayServicios ? totalServicios : (esTotalFinal ? 0 : impRestante)),
+        deudaRestante:      debeNegativo ? 0 : (hayServicios ? totalServicios : (esTotalFinal ? 0 : impRestante)),
         serviciosRestantes: totalServicios,
         hayServicios,
         planRestante:       Math.max(0, saldoReal - metrosFinal),
-        escenario:          deudaDoc ? 'DEUDA_DOCUMENTO' : 'CICLO_ABIERTO',
+        escenario:          deudaDoc ? 'DEUDA_DOCUMENTO' : (debeNegativo ? (esRolloAdelantado ? 'ROLLO_ADELANTADO' : 'SEMANAL_RECURSOS') : 'CICLO_ABIERTO'),
         tipoCliente:        esClienteSemanal ? 'SEMANAL' : 'COMUN',
+        esRolloSinPlan:     esRolloSinPlan,
         mensaje:            mensajeFinal,
       });
 

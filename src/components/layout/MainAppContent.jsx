@@ -42,6 +42,7 @@ const InventoryPage = lazyWithRetry(() => import('../pages/InventoryPage'));
 const InsumosCatalogPage = lazyWithRetry(() => import('../pages/InsumosCatalogPage'));
 const StockRequestsPage = lazyWithRetry(() => import('../pages/StockRequestsPage'));
 const ReceptionPage = lazyWithRetry(() => import('../pages/customer-service/ReceptionPage'));
+const VentaRolloAdelantoPage = lazyWithRetry(() => import('../pages/customer-service/VentaRolloAdelantoPage'));
 const LogisticsPage = lazyWithRetry(() => import('../pages/customer-service/LogisticsPage'));
 const ActiveStockPage = lazyWithRetry(() => import('../pages/customer-service/ActiveStockPage'));
 const TransportControlPage = lazyWithRetry(() => import('../pages/TransportControlPage'));
@@ -94,6 +95,8 @@ const CronAdminView                = lazyWithRetry(() => import('../pages/CronAd
 const CoordinacionView             = lazyWithRetry(() => import('../pages/CoordinacionView'));
 const ColorMatcherPage             = lazyWithRetry(() => import('../pages/ColorMatcherPage'));
 const ReportesPage                 = lazyWithRetry(() => import('../pages/ReportesPage'));
+const ProduccionAnalyticsDashboard = lazyWithRetry(() => import('../pages/produccionAnalytics/ProduccionAnalyticsDashboard'));
+const ProduccionAnalyticsReportes  = lazyWithRetry(() => import('../pages/produccionAnalytics/ProduccionAnalyticsReportes'));
 
 // ============================================
 // 1. LUCIDE ICON MAP (override FA icons)
@@ -620,6 +623,7 @@ const MainAppContent = ({ menuItems = [] }) => {
                 <Route path="/consultas/rollos" element={<RollHistory />} />
                 <Route path="/production/machine/:area/:machineId" element={<MachineDetailView />} />
                 <Route path="/area/:areaId/*" element={<DynamicRouter menuItems={menuItems} />} />
+                <Route path="/atencion-cliente/venta-rollo" element={<VentaRolloAdelantoPage />} />
                 <Route path="/atencion-cliente/despachos" element={<ActiveStockPage />} />
                 <Route path="/atencion-cliente/reposiciones" element={<CustomerReplacementPage />} />
                 <Route path="/logistica/transporte" element={<TransportControlPage />} />
@@ -672,6 +676,8 @@ const MainAppContent = ({ menuItems = [] }) => {
                 <Route path="/coordinacion"                   element={<CoordinacionView />} />
                 <Route path="/color"                          element={<ColorMatcherPage />} />
                 <Route path="/reportes"                      element={<ReportesPage />} />
+                <Route path="/produccion/analytics-dashboard" element={<ProduccionAnalyticsDashboard />} />
+                <Route path="/produccion/analytics-reportes"  element={<ProduccionAnalyticsReportes />} />
                 <Route path="/*" element={<DynamicRouter menuItems={menuItems} />} />
             </Routes>
         </Suspense>
@@ -901,6 +907,7 @@ const DynamicRouter = ({ menuItems }) => {
     if (menuItem.Ruta === '/insumos') return <InsumosCatalogPage />;
     if (menuItem.Ruta === '/solicitudes') return <StockRequestsPage />;
     if (menuItem.Ruta === '/atencion-cliente/recepcion') return <ReceptionPage />;
+    if (menuItem.Ruta === '/atencion-cliente/venta-rollo') return <VentaRolloAdelantoPage />;
     if (menuItem.Ruta === '/atencion-cliente/control') return <LogisticsPage />;
     if (menuItem.Ruta === '/atencion-cliente/despachos') return <ActiveStockPage />;
     if (menuItem.Ruta === '/atencion-cliente/reposiciones') return <CustomerReplacementPage />;

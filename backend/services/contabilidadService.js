@@ -918,11 +918,11 @@ async function hookEntregaMetros(params) {
       }
     }
 
-    // 3a. ROLLO POR ADELANTADO: el exceso se registra como saldo negativo en la cuenta de recursos
-    //     No se genera deuda monetaria; el cliente "debe" metros que se cubren con el próximo rollo.
-    if (esRolloAdelantado && cantidadPendiente > 0 && planRes.recordset.length > 0) {
+    // 3a. Cliente con plan comprado: el exceso va negativo en la cuenta de recursos.
+    //     Aplica a ROLLO y SEMANAL con recursos — nunca genera deuda monetaria por exceso de metros.
+    if (cantidadPendiente > 0 && planRes.recordset.length > 0) {
       const lastPlan = planRes.recordset[planRes.recordset.length - 1];
-      logger.info(`[HOOK:METROS] ROLLO_ADELANTADO — registrando exceso negativo de ${cantidadPendiente} uds en cuenta ${lastPlan.CueIdCuenta}`);
+      logger.info(`[HOOK:METROS] CON_RECURSOS — registrando exceso negativo de ${cantidadPendiente} uds en cuenta ${lastPlan.CueIdCuenta}`);
       await registrarMovimiento({
         CueIdCuenta:     lastPlan.CueIdCuenta,
         MovTipo:         'ENTREGA',
@@ -935,8 +935,8 @@ async function hookEntregaMetros(params) {
       cantidadPendiente = 0;
     }
 
-    // 3b. Clientes normales: generar cargo monetario por los metros no cubiertos por planes
-    if (!esRolloAdelantado && params.Importe > 0) {
+    // 3b. Clientes sin plan de recursos: generar cargo monetario por metros no cubiertos
+    if (!esRolloAdelantado && planRes.recordset.length === 0 && params.Importe > 0) {
       let deudaACobrar = 0;
 
       if (cantidadPendiente > 0) {
@@ -1044,7 +1044,17 @@ async function getSaldoCliente(CliIdCliente) {
       LEFT JOIN dbo.Monedas         mon ON mon.MonIdMoneda   = cc.MonIdMoneda
       LEFT JOIN dbo.CondicionesPago cp  ON cp.CPaIdCondicion = cc.CPaIdCondicion
       WHERE cc.CliIdCliente = @CliIdCliente
-        AND cc.CueActiva    = 1
+        AND (
+          cc.CueActiva = 1
+          -- Incluir cuentas de recursos aunque estén inactivas (tienen historial de metros)
+          OR (cc.CueActiva = 0
+              AND (cc.ProIdProducto IS NOT NULL
+                   OR cc.CueTipo NOT IN (
+                     'USD','UYU','ARS','EUR','PYG','BRL',
+                     'CORRIENTE','CREDITO','DEBITO','CAJA',
+                     'DINERO_USD','DINERO_UYU'
+                   )))
+        )
       ORDER BY cc.CueTipo, art.Descripcion
     `);
 

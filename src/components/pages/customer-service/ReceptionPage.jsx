@@ -327,6 +327,8 @@ const ReceptionPage = () => {
                     operario:          operadorFinal,
                     // Nombre del cliente para mostrar en ticket (no el ID)
                     clienteNombre:     clienteObj?.Nombre || clienteObj?.RazonSocial || payload.clienteId,
+                    // IDCliente numérico de la tabla Clientes (no CliIdCliente)
+                    idCliente:         clienteObj?.IDCliente || clienteObj?.CliIdCliente || payload.clienteId,
                 };
                 // 2. Print etiqueta de bodega
                 await printLabel(printData);
@@ -518,11 +520,11 @@ const ReceptionPage = () => {
                     .info { display:grid; grid-template-columns: auto 1fr; column-gap:2mm; row-gap:1mm; font-size:10pt; line-height:1.1; }
                     .info b { font-weight:700; white-space:nowrap; }
                     .info span { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-                    .bultoInfo { font-size:11pt; font-weight:700; text-align:left; margin-top:3px; border-top:1px solid #000; padding-top:3px; }
+                    .bultoInfo { font-size:20pt; font-weight:800; text-align:center; margin-top:4px; padding-top:4px; line-height:1; }
                     .sectionTitle { text-align:center; font-size:10pt; font-weight:700; text-transform:uppercase; margin-top:5px; background:#000; color:#fff; padding:1px; }
                     .content { text-align:center; font-size:12pt; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; margin: 3px 0; font-weight:bold; }
                     .qrbox { flex:1; display:flex; align-items:center; justify-content:center; min-height:0; }
-                    .qrbox img { width:100%; height:100%; object-fit:contain; max-height:60mm; }
+                    .qrbox img { width:100%; height:100%; object-fit:contain; max-height:55mm; }
                 </style>
             </head>
             <body>
@@ -530,7 +532,7 @@ const ReceptionPage = () => {
                 <div class="page">
                     <div class="orden">${orden}</div>
                     <div class="info">
-                        <b>Cliente:</b> <span>${clienteId}</span>
+                        <b>Cliente:</b> <span>${data.idCliente || clienteId}</span>
                         <b>Tipo:</b>    <span>${tipo.substring(0, 20)}</span>
                         <b>Fecha:</b>   <span>${fechaHora}</span>
                         <b>Refs:</b>    <span>${(refsText || '-')}</span>
@@ -540,15 +542,15 @@ const ReceptionPage = () => {
                         ${p.bDatos && p.bDatos.ancho  ? `<b>Ancho:</b>  <span>${parseFloat(p.bDatos.ancho).toFixed(2)} m</span>` : ''}
                         ${p.bDatos && p.bDatos.peso   ? `<b>Peso:</b>   <span>${parseFloat(p.bDatos.peso).toFixed(2)} kg</span>` : ''}
                     </div>
-                    
-                    <div class="bultoInfo">Bulto ${p.bultoStr}</div>
-                    
-                    <div class="sectionTitle">${tituloContenido}</div>
-                    <div class="content">${contenido}</div>
-                    
+
                     <div class="qrbox">
                         <img src="${p.qrUrl}" />
                     </div>
+
+                    <div class="bultoInfo">Bulto ${p.bultoStr}</div>
+
+                    <div class="sectionTitle">${tituloContenido}</div>
+                    <div class="content">${contenido}</div>
                 </div>
                 `).join('')}
                 <script>
@@ -718,32 +720,28 @@ const ReceptionPage = () => {
                                             {(clienteObj.Direccion || clienteObj.DireccionTrabajo) && <div>Dirección: <span className="text-slate-700">{clienteObj.Direccion || clienteObj.DireccionTrabajo}</span></div>}
                                         </div>
 
-                                        {/* ── Badges informativos de tela (solo display) ── */}
+                                        {/* ── Badges informativos de tela (solo display, compactos) ── */}
                                         {formData.tipo === 'TELA DE CLIENTE' && saldosTela.length > 0 && (
                                             <div className="border-t border-slate-200/60 pt-2.5">
                                                 <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-2">Stock de tela actual</p>
-                                                <div className="space-y-1">
+                                                <div className="flex flex-wrap gap-1.5">
                                                     {saldosTela.map(s => {
                                                         const libre = parseFloat(s.MetrosLibres || s.MetrosDisponibles || 0);
                                                         const pct   = parseFloat(s.PorcentajeConsumido || 0);
-                                                        const barColor = pct >= 80 ? 'bg-rose-400' : pct >= 50 ? 'bg-amber-400' : 'bg-cyan-400';
+                                                        const dotColor = pct >= 80 ? 'bg-rose-400' : pct >= 50 ? 'bg-amber-400' : 'bg-cyan-400';
                                                         return (
-                                                            <div key={s.InsumoID}
-                                                                className="flex items-center gap-3 px-3 py-2 rounded-xl bg-slate-800 border border-slate-700">
-                                                                <div className="shrink-0 text-cyan-500">
-                                                                    <svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="currentColor"><path d="M13 2L4.09 12.97 12 12 11 22l8.91-10.97L12 12l1-10z"/></svg>
-                                                                </div>
-                                                                <span className="text-slate-300 font-black text-[10px] uppercase tracking-tight truncate flex-1">{s.TipoTela}</span>
-                                                                <span className="text-white font-black font-mono text-xs shrink-0">
-                                                                    {Number(libre).toLocaleString('es-UY', { minimumFractionDigits: 2 })}
-                                                                    <span className="text-cyan-400 text-[8px] ml-1 uppercase">mts</span>
-                                                                </span>
-                                                                <div className="w-10 shrink-0">
-                                                                    <div className="w-full h-1 bg-slate-600 rounded-full overflow-hidden">
-                                                                        <div className={`h-full ${barColor}`} style={{ width: `${Math.min(pct,100)}%` }} />
-                                                                    </div>
-                                                                </div>
-                                                            </div>
+                                                            <span key={s.InsumoID}
+                                                                className="inline-flex items-center gap-1.5 px-2 py-1 rounded-lg bg-slate-800 border border-slate-700 text-[10px] font-bold text-slate-200 whitespace-nowrap">
+                                                                <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${dotColor}`} />
+                                                                <span className="uppercase tracking-tight text-slate-300">{s.TipoTela}</span>
+                                                                <span className="font-mono text-cyan-400">{Number(libre).toFixed(2)}m</span>
+                                                                {s.CantidadBultos > 0 && (
+                                                                    <span className="text-slate-500 font-normal">·</span>
+                                                                )}
+                                                                {s.CantidadBultos > 0 && (
+                                                                    <span className="text-amber-400 font-mono">{s.CantidadBultos} bob</span>
+                                                                )}
+                                                            </span>
                                                         );
                                                     })}
                                                 </div>
@@ -805,37 +803,8 @@ const ReceptionPage = () => {
                                                     {errors.insumoId && <p className="text-xs text-red-500 mt-1">{errors.insumoId}</p>}
                                                 </div>
 
-                                                {/* ── 2. Pregunta: ¿Sumar a tela existente? (aparece apenas hay telas previas) ── */}
-                                                {saldosTela.length > 0 && (
-                                                    <div className="rounded-xl border border-indigo-100 bg-indigo-50/60 p-3 space-y-3">
-                                                        <div className="flex items-start gap-2">
-                                                            <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="text-indigo-500 mt-0.5 shrink-0"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg>
-                                                            <p className="text-xs font-bold text-slate-700">
-                                                                Este cliente tiene <span className="text-indigo-600">{saldosTela.length} tipo{saldosTela.length > 1 ? 's' : ''} de tela</span> registrada. ¿Desea sumar los metros a una tela existente?
-                                                            </p>
-                                                        </div>
-                                                        <div className="flex gap-2">
-                                                            <button type="button"
-                                                                onClick={() => { setSumarAExistente(true); setTelaSeleccionada(null); setFormData(p => ({ ...p, telaCliente: '' })); }}
-                                                                className={`flex-1 py-2 px-3 rounded-xl text-xs font-black border transition-all ${
-                                                                    sumarAExistente === true
-                                                                        ? 'bg-indigo-600 text-white border-indigo-600 shadow-md'
-                                                                        : 'bg-white text-slate-600 border-slate-200 hover:border-indigo-300 hover:bg-indigo-50'
-                                                                }`}>
-                                                                ✦ SÍ, sumar a existente
-                                                            </button>
-                                                            <button type="button"
-                                                                onClick={() => { setSumarAExistente(false); setTelaSeleccionada(null); setFormData(p => ({ ...p, telaCliente: '' })); }}
-                                                                className={`flex-1 py-2 px-3 rounded-xl text-xs font-black border transition-all ${
-                                                                    sumarAExistente === false
-                                                                        ? 'bg-slate-700 text-white border-slate-700 shadow-md'
-                                                                        : 'bg-white text-slate-600 border-slate-200 hover:border-slate-400 hover:bg-slate-50'
-                                                                }`}>
-                                                                + NO, tipo nuevo
-                                                            </button>
-                                                        </div>
-                                                    </div>
-                                                )}
+                                                {/* Pregunta sumar-a-existente eliminada — cada ingreso es una bobina nueva independiente */}
+
 
                                                 {/* ── 3. Selector de tela existente (solo si sumarAExistente=true) ── */}
                                                 {sumarAExistente === true && saldosTela.length > 0 && (
@@ -886,8 +855,8 @@ const ReceptionPage = () => {
                                                     </div>
                                                 )}
 
-                                                {/* ── 4. Tabla de Bobinas (Largo × Ancho × Peso) — solo TELA DE CLIENTE ── */}
-                                                {(saldosTela.length === 0 || sumarAExistente !== null) && (
+                                                {/* ── 4. Tabla de Bobinas (Largo × Ancho × Peso) ── */}
+                                                {(
                                                     <div className="space-y-3">
                                                         <div className="flex items-center justify-between">
                                                             <label className="block text-xs font-bold text-slate-500 uppercase">Medidas por Bobina *</label>
@@ -981,7 +950,7 @@ const ReceptionPage = () => {
                                                 )}
 
                                                 {/* ── 5. Tipo de Tela / Descripción ── */}
-                                                {(saldosTela.length === 0 || sumarAExistente === false || (sumarAExistente === true && telaSeleccionada)) && (
+                                                {(
                                                     <div>
                                                         <div className="flex items-center justify-between mb-2">
                                                             <label className="text-xs font-bold text-slate-500 uppercase">Tipo de Tela / Descripción *</label>
@@ -1054,13 +1023,21 @@ const ReceptionPage = () => {
                                         <label className="block text-xs font-bold text-slate-500 uppercase mb-1">
                                             Bultos
                                         </label>
-                                        <input
-                                            type="number"
-                                            min="1"
-                                            className="w-full p-2.5 border border-slate-300 rounded-lg font-bold text-slate-700 focus:ring-2 focus:ring-blue-500 outline-none"
-                                            value={formData.bultos}
-                                            onChange={(e) => setFormData({ ...formData, bultos: Math.max(1, parseInt(e.target.value) || 1) })}
-                                        />
+                                        {formData.tipo === 'TELA DE CLIENTE' ? (
+                                            // Para tela de cliente: se actualiza automáticamente con la cantidad de bobinas
+                                            <div className="w-full p-2.5 border border-slate-200 bg-slate-100 rounded-lg font-black text-slate-700 text-center select-none">
+                                                {formData.bobinas?.length ?? 1}
+                                                <span className="text-[10px] font-normal text-slate-400 ml-1">bobina{(formData.bobinas?.length ?? 1) !== 1 ? 's' : ''}</span>
+                                            </div>
+                                        ) : (
+                                            <input
+                                                type="number"
+                                                min="1"
+                                                className="w-full p-2.5 border border-slate-300 rounded-lg font-bold text-slate-700 focus:ring-2 focus:ring-blue-500 outline-none"
+                                                value={formData.bultos}
+                                                onChange={(e) => setFormData({ ...formData, bultos: Math.max(1, parseInt(e.target.value) || 1) })}
+                                            />
+                                        )}
                                     </div>
 
                                     {/* NUEVO: Total Prendas (Solo para Paquetes) */}
