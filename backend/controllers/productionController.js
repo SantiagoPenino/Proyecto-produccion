@@ -124,10 +124,19 @@ exports.toggleRollStatus = async (req, res) => {
                 // Roll: Estado -> 'En maquina', FechaInicioProduccion -> Now
                 await new sql.Request(transaction)
                     .input('RID', sql.VarChar(50), currentRoll.RolloID.toString())
-                    .query(`UPDATE dbo.Rollos 
-                        SET Estado = 'En maquina', 
-                        FechaInicioProduccion = GETDATE() 
+                    .query(`UPDATE dbo.Rollos
+                        SET Estado = 'En maquina',
+                        FechaInicioProduccion = GETDATE()
                         WHERE CAST(RolloID AS VARCHAR(50)) = @RID`);
+
+                // Estampar la máquina en TODAS las órdenes del lote al iniciar producción.
+                // Garantiza que toda orden que se produce registre en qué máquina se hizo, sin depender
+                // de cómo/cuándo entró al lote (al asignar el lote podían no quedar cubiertas las órdenes
+                // agregadas después). Este es el momento real de producción.
+                await new sql.Request(transaction)
+                    .input('RID', sql.VarChar(50), currentRoll.RolloID.toString())
+                    .input('MID', sql.Int, currentRoll.MaquinaID)
+                    .query('UPDATE dbo.Ordenes SET MaquinaID = @MID WHERE CAST(RolloID AS VARCHAR(50)) = @RID');
 
                 // Bitacora Logic
                 const resID = await new sql.Request(transaction).query("SELECT ISNULL(MAX(BitacoraID), 0) + 1 as NewID FROM dbo.BitacoraProduccion");

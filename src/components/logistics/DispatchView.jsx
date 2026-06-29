@@ -6,7 +6,7 @@ import { useQuery } from '@tanstack/react-query';
 import QRCode from "react-qr-code";
 import { toast } from 'sonner';
 
-const DispatchView = ({ selectedOrders: initialOrders = [], areaFilter, originArea, onClose, onSuccess, mode: viewMode = 'create', onActionOverride }) => {
+const DispatchView = ({ selectedOrders: initialOrders = [], areaFilter, originArea, onClose, onSuccess, mode: viewMode = 'create', onActionOverride, selectedStockItems: extSelectedStockItems, setSelectedStockItems: extSetSelectedStockItems }) => {
     const { user } = useAuth();
     const currentArea = areaFilter || originArea || user?.areaKey || user?.areaId;
 
@@ -35,7 +35,10 @@ const DispatchView = ({ selectedOrders: initialOrders = [], areaFilter, originAr
     });
 
     // --- CREATION STATE ---
-    const [selectedStockItems, setSelectedStockItems] = useState([]); // Flat list of BultoIDs or Items
+    // Selección: si el padre la controla (para que persista entre tabs) usamos esa; si no, estado interno.
+    const [internalSelectedStockItems, setInternalSelectedStockItems] = useState([]); // Flat list of BultoIDs or Items
+    const selectedStockItems = extSelectedStockItems ?? internalSelectedStockItems;
+    const setSelectedStockItems = extSetSelectedStockItems ?? setInternalSelectedStockItems;
     const [stockSearch, setStockSearch] = useState('');
     const [loading, setLoading] = useState(false);
     const [results, setResults] = useState([]);
@@ -55,6 +58,17 @@ const DispatchView = ({ selectedOrders: initialOrders = [], areaFilter, originAr
             console.log("DEBUG FRONT STOCK ROW 0 KEYS:", Object.keys(areaStock[0]));
             console.log("DEBUG FRONT STOCK ROW 0 DATA:", areaStock[0]);
         }
+    }, [areaStock]);
+
+    // Al cargar el stock (p.ej. al volver a Logística), descartar de la selección los bultos que
+    // ya no están en stock (despachados por otra vía), para que el contador no quede desfasado.
+    useEffect(() => {
+        if (!areaStock) return; // aún no cargó: no tocar la selección
+        const stockIds = new Set(areaStock.map(item => item.BultoID));
+        setSelectedStockItems(prev => {
+            const filtered = prev.filter(s => stockIds.has(s.BultoID));
+            return filtered.length === prev.length ? prev : filtered;
+        });
     }, [areaStock]);
 
     // --- FLATTENED STOCK VIEW (Vista por Bultos) ---
@@ -289,6 +303,7 @@ const DispatchView = ({ selectedOrders: initialOrders = [], areaFilter, originAr
             refetchStock();
             refetchHistory();
             setCredentials({ username: '', password: '' });
+            setSelectedStockItems([]); // limpiar selección tras generar el remito (también la elevada al padre)
 
         } catch (error) {
             toast.error("Error: " + error.message);

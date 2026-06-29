@@ -181,7 +181,10 @@ export const HelpDeskAdminView = () => {
 
     const displayTickets = tickets.filter(t => {
         let matchDep = filterDep === 'ALL' || t.DepIdDepartamento === parseInt(filterDep);
-        let matchEst = filterEstado === 'ALL' || String(t.TicEstado) === String(filterEstado);
+        // "Todos" omite los estados terminales (Resuelto=4 y Cerrado=5); se ven con su filtro específico.
+        let matchEst = filterEstado === 'ALL'
+            ? (Number(t.TicEstado) !== 4 && Number(t.TicEstado) !== 5)
+            : String(t.TicEstado) === String(filterEstado);
         return matchDep && matchEst;
     });
 
@@ -526,9 +529,9 @@ const TicketAdminInterface = ({ ticketId, onUpdate, departamentos }) => {
                         {ticket.DepNombre}
                     </div>
                     <span className="text-sm font-semibold text-zinc-600 truncate">{ticket.TicAsunto}</span>
-                    {ticket.OrdIdOrden && (
+                    {(ticket.OrdCodigoOrden || ticket.OrdIdOrden) && (
                         <div className="flex items-center gap-1 text-xs text-brand-gold font-medium border-l border-zinc-300 pl-2 shrink-0">
-                            <Package size={13} /> {ticket.OrdIdOrden}
+                            <Package size={13} /> {ticket.OrdCodigoOrden || ticket.OrdIdOrden}
                         </div>
                     )}
                     {ticket.ClienteNombre && (

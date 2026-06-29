@@ -159,10 +159,12 @@ exports.getTickets = async (req, res) => {
         let query = `
             SELECT 
                 T.TicIdTicket, T.TicAsunto, T.TicPrioridad, T.TicEstado, T.TicFechaActualizacion, T.DepIdDepartamento, T.OrdIdOrden,
+                OD.OrdCodigoOrden,
                 D.DepNombre as Departamento,
                 (SELECT COUNT(*) FROM Tickets_Mensajes M WHERE M.TicIdTicket = T.TicIdTicket) as TotalMensajes
             FROM Tickets T
             LEFT JOIN Tickets_Departamentos D ON T.DepIdDepartamento = D.DepIdDepartamento
+            LEFT JOIN OrdenesDeposito OD ON OD.OrdIdOrden = T.OrdIdOrden
             WHERE 1=1
         `;
 
@@ -199,10 +201,12 @@ exports.getTicketDetails = async (req, res) => {
         const tReq = pool.request().input('Id', sql.Int, ticketId);
         
         let tQuery = `
-            SELECT T.*, D.DepNombre, C.Nombre as ClienteNombre, C.TelefonoTrabajo as ClienteCelular, C.Email as ClienteEmail
+            SELECT T.*, D.DepNombre, C.Nombre as ClienteNombre, C.TelefonoTrabajo as ClienteCelular, C.Email as ClienteEmail,
+                OD.OrdCodigoOrden
             FROM Tickets T
             LEFT JOIN Tickets_Departamentos D ON T.DepIdDepartamento = D.DepIdDepartamento
             LEFT JOIN Clientes C ON T.CliIdCliente = C.CodCliente
+            LEFT JOIN OrdenesDeposito OD ON OD.OrdIdOrden = T.OrdIdOrden
             WHERE TicIdTicket = @Id
         `;
         // Seguridad cliente

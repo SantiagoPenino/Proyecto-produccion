@@ -7,7 +7,7 @@ import ParticlesCanvas from '../ui/ParticlesCanvas';
 import waWhite from '../../assets/images/social/whatsappwhite.svg';
 import waColor from '../../assets/images/social/whatsapp.svg';
 const CONTACTS = [
-    { label: 'Atención al cliente', href: 'https://wa.me/59898665571' },
+    { label: 'Atención al cliente', href: 'https://wa.me/59899503501' },
     /*
     { label: 'Asesores', divider: true },
     { label: 'Matías', boldLabel: 'Siri',      href: 'https://wa.me/59892284262' },
@@ -82,7 +82,7 @@ export default function ContactPage() {
                 </p>
 
                 {/* Formulario de Contacto Directo estilo Login */}
-                <div className="relative w-full max-w-3xl rounded-3xl p-[2px] bg-gradient-to-br from-[#00AEEF] via-[#EC008C] to-[#FFF200] mb-16 shadow-2xl">
+                <div className="relative w-full max-w-3xl rounded-3xl p-[2px] login-gradient-border mb-16 shadow-2xl shadow-black/50">
                     <form className="w-full text-left flex flex-col gap-5 bg-custom-dark p-6 md:p-10 rounded-[22px] overflow-hidden">
                         <h2 className="text-2xl font-bold text-white mb-2">Dejanos un mensaje</h2>
                         <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">

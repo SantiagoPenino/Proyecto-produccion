@@ -164,7 +164,7 @@ export default function Footer() {
           <div style={{ display: 'flex', flexDirection: 'column', gap: 16, width: '100%', maxWidth: 280 }}>
             {/* 1. Botón WhatsApp */}
             <a 
-              href="https://wa.me/59898665571"
+              href="https://wa.me/59899503501"
               target="_blank"
               rel="noreferrer"
               style={{

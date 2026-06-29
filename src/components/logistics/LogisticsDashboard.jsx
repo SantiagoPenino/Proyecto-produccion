@@ -41,6 +41,16 @@ const LogisticsDashboard = ({ areaCode }) => {
     const [globalArea, setGlobalArea] = useState(areaCode || 'TODOS');
     const [areasList, setAreasList] = useState(areaCode ? [areaCode] : ['TODOS']);
 
+    // Selección de "Crear Remito" persistida en sessionStorage: sobrevive aunque salgas de
+    // Logística (a Planilla/Planeación/etc.) y vuelvas. Se limpia al generar el remito.
+    const dispatchStorageKey = `wms_dispatch_selection_${areaCode || 'all'}`;
+    const [dispatchSelection, setDispatchSelection] = useState(() => {
+        try { return JSON.parse(sessionStorage.getItem(dispatchStorageKey)) || []; } catch { return []; }
+    });
+    useEffect(() => {
+        try { sessionStorage.setItem(dispatchStorageKey, JSON.stringify(dispatchSelection)); } catch {}
+    }, [dispatchSelection, dispatchStorageKey]);
+
     // 1. Fetch Dynamic Areas
     useEffect(() => {
         const loadAreas = async () => {
@@ -120,7 +130,7 @@ const LogisticsDashboard = ({ areaCode }) => {
             case 'dashboard':
                 return <DepositoDashboard />;
             case 'dispatch':
-                return <DispatchView {...commonProps} mode="create" />;
+                return <DispatchView {...commonProps} mode="create" selectedStockItems={dispatchSelection} setSelectedStockItems={setDispatchSelection} />;
             case 'history':
                 return <DispatchView {...commonProps} mode="history" />;
             case 'transport':

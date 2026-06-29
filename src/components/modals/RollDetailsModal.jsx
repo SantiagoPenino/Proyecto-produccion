@@ -332,7 +332,7 @@ const MoveOrderModal = ({ isOpen, onClose, onConfirm, currentRollId, areaCode })
                             >
                                 <div>
                                     <div className="font-bold text-zinc-800" style={{ color: r.color || '#333' }}>{r.name}</div>
-                                    <div className="text-xs text-zinc-500 mt-1">{r.currentUsage?.toFixed(1)}m / {r.capacity}m • {r.orders?.length || 0} órdenes</div>
+                                    <div className="text-xs text-zinc-500 mt-1">{(r.usage ?? r.currentUsage ?? 0).toFixed(1)}m / {r.capacity}m • {r.orders?.length || 0} órdenes</div>
                                 </div>
                                 <i className="fa-solid fa-chevron-right text-zinc-300 ml-3 group-hover:text-brand-cyan"></i>
                             </div>
@@ -459,15 +459,113 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { } }) 
     const totalFiles = orders.reduce((sum, o) => sum + (o.fileCount || 0), 0);
     const capacityPercent = freshRoll.capacity > 0 ? Math.min((freshRoll.currentUsage / freshRoll.capacity) * 100, 100) : 0;
 
-    // State for Checkboxes
-    const [selectedOrderIds, setSelectedOrderIds] = useState([]);
+    // State for Checkboxes — la selección persiste por lote (sessionStorage), así sobrevive
+    // cierre/reapertura del modal y navegación entre tabs.
+    const selectionStorageKey = `lote_order_selection_${roll?.id ?? freshRoll?.id ?? 'x'}`;
+    const [selectedOrderIds, setSelectedOrderIds] = useState(() => {
+        try { return JSON.parse(sessionStorage.getItem(selectionStorageKey)) || []; } catch { return []; }
+    });
+    useEffect(() => {
+        try { sessionStorage.setItem(selectionStorageKey, JSON.stringify(selectedOrderIds)); } catch {}
+    }, [selectedOrderIds, selectionStorageKey]);
+    // Descartar de la selección las órdenes que ya no estén en el lote (movidas/sacadas).
+    const orderIdsKey = orders.map(o => o.id).join(',');
+    useEffect(() => {
+        setSelectedOrderIds(prev => {
+            const valid = prev.filter(id => orders.some(o => o.id === id));
+            return valid.length === prev.length ? prev : valid;
+        });
+    }, [orderIdsKey]);
 
-    // Marcas "Impreso" (puramente visual, no se persiste en backend)
-    const [printedOrderIds, setPrintedOrderIds] = useState([]);
+    // Marcas "Impreso" (visual, no se guarda en backend). Persiste por lote en sessionStorage.
+    const printedStorageKey = `lote_order_printed_${roll?.id ?? freshRoll?.id ?? 'x'}`;
+    const [printedOrderIds, setPrintedOrderIds] = useState(() => {
+        try { return JSON.parse(sessionStorage.getItem(printedStorageKey)) || []; } catch { return []; }
+    });
+    useEffect(() => {
+        try { sessionStorage.setItem(printedStorageKey, JSON.stringify(printedOrderIds)); } catch {}
+    }, [printedOrderIds, printedStorageKey]);
+    // Descartar marcas de impreso de órdenes que ya no estén en el lote (movidas/sacadas).
+    useEffect(() => {
+        setPrintedOrderIds(prev => {
+            const valid = prev.filter(id => orders.some(o => o.id === id));
+            return valid.length === prev.length ? prev : valid;
+        });
+    }, [orderIdsKey]);
     const printedMeters = orders.reduce((sum, o) => sum + (printedOrderIds.includes(o.id) ? (o.magnitude || 0) : 0), 0);
     const printedCount = orders.filter(o => printedOrderIds.includes(o.id)).length;
     const printedPercent = totalMeters > 0 ? Math.min((printedMeters / totalMeters) * 100, 100) : 0;
     const allPrinted = totalOrders > 0 && printedCount === totalOrders;
+
+    const materialOf = (o) => (o?.material || o?.Material || '').trim();
+    const selectedOrders = orders.filter(o => selectedOrderIds.includes(o.id));
+    const selectedMaterials = [...new Set(selectedOrders.map(materialOf).filter(Boolean))];
+    // "Agrupar" solo se habilita con 2+ órdenes seleccionadas del MISMO material.
+    const canGroup = selectedOrders.length >= 2 && selectedMaterials.length === 1;
+
+    // Grupos manuales (visual): cada uno = lista de OrdenIDs del mismo material. Persisten por lote.
+    const groupsStorageKey = `lote_groups_${roll?.id ?? freshRoll?.id ?? 'x'}`;
+    const [manualGroups, setManualGroups] = useState(() => {
+        try { return JSON.parse(sessionStorage.getItem(groupsStorageKey)) || []; } catch { return []; }
+    });
+    useEffect(() => {
+        try { sessionStorage.setItem(groupsStorageKey, JSON.stringify(manualGroups)); } catch {}
+    }, [manualGroups, groupsStorageKey]);
+    // Reconciliar: sacar de los grupos las órdenes que ya no están, y disolver los que queden con <2.
+    useEffect(() => {
+        setManualGroups(prev => {
+            const cleaned = prev.map(g => g.filter(id => orders.some(o => o.id === id))).filter(g => g.length >= 2);
+            return JSON.stringify(cleaned) === JSON.stringify(prev) ? prev : cleaned;
+        });
+    }, [orderIdsKey]);
+
+    const handleAgrupar = () => {
+        if (!canGroup) return;
+        const ids = [...selectedOrderIds];
+        setManualGroups(prev => {
+            const cleaned = prev.map(g => g.filter(id => !ids.includes(id))).filter(g => g.length >= 2);
+            return [...cleaned, ids];
+        });
+        setSelectedOrderIds([]);
+    };
+    const handleDesagrupar = (ids) => {
+        setManualGroups(prev => prev.filter(g => !(g.length === ids.length && g.every(id => ids.includes(id)))));
+    };
+
+    // Orden custom de los grupos/bloques (drag del grupo). Persiste por lote.
+    const unitsOrderStorageKey = `lote_units_order_${roll?.id ?? freshRoll?.id ?? 'x'}`;
+    const [unitOrder, setUnitOrder] = useState(() => {
+        try { return JSON.parse(sessionStorage.getItem(unitsOrderStorageKey)) || []; } catch { return []; }
+    });
+    useEffect(() => {
+        try { sessionStorage.setItem(unitsOrderStorageKey, JSON.stringify(unitOrder)); } catch {}
+    }, [unitOrder, unitsOrderStorageKey]);
+
+    // Unidades de render: grupo manual, grupo auto (material con 1 sola orden) u orden suelta.
+    // En áreas que NO son SB no se agrupa (todo suelto), como antes.
+    const renderUnits = (() => {
+        const matCount = {};
+        orders.forEach(o => { const m = materialOf(o) || '—'; matCount[m] = (matCount[m] || 0) + 1; });
+        const manualIdxOf = {};
+        manualGroups.forEach((g, gi) => g.forEach(id => { manualIdxOf[id] = gi; }));
+        const list = [];
+        const byKey = {};
+        orders.forEach(o => {
+            let key, kind;
+            if (!isSB) { key = 'l:' + o.id; kind = 'loose'; }
+            else if (manualIdxOf[o.id] !== undefined) { key = 'm' + manualIdxOf[o.id]; kind = 'manual'; }
+            else if (matCount[materialOf(o) || '—'] === 1) { key = 'a:' + (materialOf(o) || '—'); kind = 'auto'; }
+            else { key = 'lm:' + (materialOf(o) || '—'); kind = 'loose'; } // sueltas del mismo material = un bloque
+            if (!byKey[key]) { byKey[key] = { key, kind, material: materialOf(o) || '—', orders: [] }; list.push(byKey[key]); }
+            byKey[key].orders.push(o);
+        });
+        // Firma estable por unidad (ids ordenados) para recordar el orden custom de grupos.
+        list.forEach(u => { u.sig = u.orders.map(o => o.id).slice().sort((a, b) => a - b).join(','); });
+        // Aplicar orden custom (drag); las unidades nuevas quedan al final en su orden natural.
+        const oIdx = (sig) => { const i = unitOrder.indexOf(sig); return i === -1 ? Infinity : i; };
+        list.sort((a, b) => { const ia = oIdx(a.sig), ib = oIdx(b.sig); return ia === ib ? 0 : ia - ib; });
+        return list;
+    })();
 
     // Checkbox Handlers
     const handleToggleAll = () => {
@@ -992,6 +1090,21 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { } }) 
         if (!result.destination) return;
         if (result.source.index === result.destination.index) return;
 
+        // SB: el drag mueve el GRUPO/bloque entero (unidad), no la orden individual.
+        if (isSB) {
+            const rowUnit = [];
+            renderUnits.forEach((u, ui) => u.orders.forEach(() => rowUnit.push(ui)));
+            const fromU = rowUnit[result.source.index];
+            let toU = rowUnit[result.destination.index];
+            if (toU === undefined) toU = renderUnits.length - 1;
+            if (fromU === undefined || fromU === toU) return;
+            const newUnits = [...renderUnits];
+            const [moved] = newUnits.splice(fromU, 1);
+            newUnits.splice(toU, 0, moved);
+            setUnitOrder(newUnits.map(u => u.sig));
+            return;
+        }
+
         const items = Array.from(orders);
         const [reorderedItem] = items.splice(result.source.index, 1);
         items.splice(result.destination.index, 0, reorderedItem);
@@ -1197,7 +1310,7 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { } }) 
                                         <th className="px-4 py-3 w-20 text-center">Metros</th>
                                         <th className="px-4 py-3 w-28 text-center">Prioridad</th>
                                         <th className="px-4 py-3 w-10 text-center"><i className="fa-regular fa-comment-dots" /></th>
-                                        <th className="px-4 py-3 w-32 text-center">Acciones</th>
+                                        <th className="px-4 py-3 w-44 text-center">Acciones</th>
                                     </tr>
                                 </thead>
                                 <Droppable droppableId={`roll-${freshRoll.id}`}>
@@ -1207,7 +1320,33 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { } }) 
                                             ref={provided.innerRef}
                                             {...provided.droppableProps}
                                         >
-                                            {orders.map((o, idx) => (
+                                            {/* Gap real entre la barra de columnas y el contenido */}
+                                            <tr aria-hidden="true"><td colSpan="10" className="p-0"><div className="h-3" /></td></tr>
+                                            {(() => { let dragIdx = -1; return renderUnits.map((unit, ui) => {
+                                                const isGroup = unit.kind !== 'loose';
+                                                const groupMeters = unit.orders.reduce((s, x) => s + (x.magnitude || 0), 0);
+                                                return (
+                                                <React.Fragment key={unit.key}>
+                                                {isGroup && (
+                                                    <tr className={`bg-zinc-100/70 select-none ${ui === 0 ? '' : '[&>td]:border-t-8 [&>td]:border-zinc-200'}`}>
+                                                        <td colSpan="10" className="px-4 py-2.5">
+                                                            <div className="flex items-center justify-between gap-2">
+                                                                <span className="text-xs font-black text-zinc-700 uppercase tracking-wide flex items-center gap-2 truncate">
+                                                                    <i className="fa-solid fa-layer-group text-brand-cyan" /> {unit.material}
+                                                                </span>
+                                                                <span className="text-[11px] font-bold text-zinc-500 whitespace-nowrap flex items-center gap-1.5">
+                                                                    {unit.orders.length} {unit.orders.length === 1 ? 'orden' : 'órdenes'} · <span className="text-brand-cyan font-black">{groupMeters.toFixed(2)} m</span>
+                                                                    {unit.kind === 'manual' && (
+                                                                        <button onClick={() => handleDesagrupar(unit.orders.map(o => o.id))} title="Desagrupar" className="ml-1 w-5 h-5 flex items-center justify-center rounded text-zinc-400 hover:text-brand-magenta hover:bg-brand-magenta/10">
+                                                                            <i className="fa-solid fa-link-slash text-[10px]" />
+                                                                        </button>
+                                                                    )}
+                                                                </span>
+                                                            </div>
+                                                        </td>
+                                                    </tr>
+                                                )}
+                                                {unit.orders.map((o, oi) => { dragIdx++; const idx = dragIdx; return (
                                                 <Draggable key={String(o.id || o.OrdenID)} draggableId={String(o.id || o.OrdenID)} index={idx}>
                                                     {(provided, snapshot) => (
                                                         <tr 
@@ -1217,13 +1356,15 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { } }) 
                                                                 ...provided.draggableProps.style,
                                                                 ...(snapshot.isDragging ? { display: 'table', tableLayout: 'fixed' } : {})
                                                             }}
-                                                            className={`transition-colors group ${selectedOrderIds.includes(o.id) ? 'bg-brand-cyan/10' : printedOrderIds.includes(o.id) ? 'bg-emerald-50/60' : 'hover:bg-slate-50'} ${snapshot.isDragging ? 'bg-white shadow-xl ring-1 ring-brand-cyan/50 opacity-90' : ''}`}
+                                                            className={`transition-colors group ${selectedOrderIds.includes(o.id) ? 'bg-brand-cyan/10' : printedOrderIds.includes(o.id) ? 'bg-emerald-50/60' : 'hover:bg-slate-50'} ${snapshot.isDragging ? 'bg-white shadow-xl ring-1 ring-brand-cyan/50 opacity-90' : ''} ${(!isGroup && isSB && ui !== 0 && oi === 0) ? '[&>td]:border-t-8 [&>td]:border-zinc-200' : ''}`}
                                                         >
                                                             <td className="px-2 py-0 align-middle w-10">
                                                                 <div className="flex items-center justify-center gap-1.5 h-full">
-                                                                    <div {...provided.dragHandleProps} className="flex items-center text-zinc-300 hover:text-zinc-500 cursor-grab active:cursor-grabbing">
-                                                                        <i className="fa-solid fa-grip-vertical text-xs"></i>
-                                                                    </div>
+                                                                    {!isSB && (
+                                                                        <div {...provided.dragHandleProps} className="flex items-center text-zinc-300 hover:text-zinc-500 cursor-grab active:cursor-grabbing">
+                                                                            <i className="fa-solid fa-grip-vertical text-xs"></i>
+                                                                        </div>
+                                                                    )}
                                                                     <input
                                                                         type="checkbox"
                                                                         className="w-4 h-4 rounded border-zinc-300 text-brand-cyan focus:ring-brand-cyan cursor-pointer"
@@ -1282,7 +1423,7 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { } }) 
                                                     </div>
                                                 )}
                                             </td>
-                                            <td className="px-4 py-3 text-center w-32">
+                                            <td className="px-4 py-3 text-center w-44">
                                                 <div className="flex items-center justify-center gap-1">
                                                     <button
                                                         onClick={() => onViewOrder && onViewOrder(o)}
@@ -1318,12 +1459,21 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { } }) 
                                                             onChange={() => handleTogglePrinted(o.id)}
                                                         />
                                                     </label>
+                                                    {/* Drag del GRUPO entero (solo SB), a la derecha del tick de impreso */}
+                                                    {isSB && (
+                                                        <div {...provided.dragHandleProps} className="w-7 h-7 flex items-center justify-center rounded-lg text-zinc-300 hover:text-zinc-600 cursor-grab active:cursor-grabbing" title="Arrastrar grupo">
+                                                            <i className="fa-solid fa-grip-vertical text-sm" />
+                                                        </div>
+                                                    )}
                                                 </div>
                                             </td>
                                                         </tr>
                                                     )}
                                                 </Draggable>
-                                            ))}
+                                                ); })}
+                                                </React.Fragment>
+                                                );
+                                            }); })()}
                                             {provided.placeholder}
                                             {orders.length === 0 && (
                                                 <tr>
@@ -1368,8 +1518,10 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { } }) 
                             {isSB && (
                                 <button
                                     type="button"
-                                    onClick={() => {}}
-                                    className="px-3 py-2 bg-brand-cyan hover:bg-brand-cyan/90 text-white rounded-xl text-xs font-black flex items-center gap-1.5 transition-all shadow-md shadow-brand-cyan/20 active:scale-95"
+                                    onClick={handleAgrupar}
+                                    disabled={!canGroup}
+                                    title={canGroup ? 'Agrupar las órdenes seleccionadas' : 'Seleccioná 2 o más órdenes del mismo material'}
+                                    className={`px-3 py-2 rounded-xl text-xs font-black flex items-center gap-1.5 transition-all active:scale-95 ${canGroup ? 'bg-brand-cyan hover:bg-brand-cyan/90 text-white shadow-md shadow-brand-cyan/20' : 'bg-zinc-100 text-zinc-400 cursor-not-allowed'}`}
                                 >
                                     <i className="fa-solid fa-layer-group" /> Agrupar
                                 </button>

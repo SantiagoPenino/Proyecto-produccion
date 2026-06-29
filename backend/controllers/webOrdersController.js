@@ -235,7 +235,7 @@ exports.createWebOrder = async (req, res) => {
     const user = req.user || {};
     // PRIORIDAD INTEGRACIÓN: Si viene en el body, usamos eso. Si no, del token.
     const codCliente = req.body.codCliente || user.codCliente || null;
-    const nombreCliente = req.body.nombreCliente || user.name || user.username || 'Cliente Web';
+    let nombreCliente = req.body.nombreCliente || user.name || user.username || 'Cliente Web';
     let idClienteReact = null;
     let cliIdCliente = null;
 
@@ -258,11 +258,17 @@ exports.createWebOrder = async (req, res) => {
         const erpDocNumber = `${nuevoNroPedido}`;
 
         if (codCliente) {
-            const clientRes = await pool.request().input('cod', sql.Int, codCliente).query("SELECT CliIdCliente, IDReact, ESTADO FROM Clientes WHERE CodCliente = @cod");
+            const clientRes = await pool.request().input('cod', sql.Int, codCliente).query("SELECT CliIdCliente, IDReact, ESTADO, IDCliente, Nombre FROM Clientes WHERE CodCliente = @cod");
             if (clientRes.recordset.length > 0) {
                 const clientData = clientRes.recordset[0];
                 idClienteReact = clientData.IDReact;
                 cliIdCliente = clientData.CliIdCliente;
+
+                // Cliente del nombre = campo literal IDCliente (igual que las órdenes de ERP/Sheets).
+                // Fallback al Nombre solo si IDCliente viene vacío.
+                nombreCliente = (clientData.IDCliente && clientData.IDCliente.trim().length > 0)
+                    ? clientData.IDCliente.trim()
+                    : (clientData.Nombre || nombreCliente);
 
                 // Bloquear creación de pedidos si el cliente está BLOQUEADO
                 if (clientData.ESTADO === 'BLOQUEADO') {
