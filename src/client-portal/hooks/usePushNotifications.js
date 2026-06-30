@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { apiClient } from '../api/apiClient';
 
 const DISMISSED_KEY = 'push_prompt_dismissed';
-const DISMISSED_EXPIRY_DAYS = 7; // Vuelve a preguntar cada 7 días
+const DISMISSED_EXPIRY_DAYS = 3; // Vuelve a preguntar cada 3 días
 
 export function usePushNotifications() {
     const [permission, setPermission] = useState('default');

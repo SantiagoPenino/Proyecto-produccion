@@ -1873,11 +1873,13 @@ exports.getAreaStock = async (req, res) => {
                 o.CodigoOrden,
                 COALESCE(r.Codigo, '') as CodigoRecepcion,
                 COALESCE(r.Cliente, o.Cliente, 'CLIENTE_NOT_FOUND') as Cliente,
+                cliord.IDCliente AS IDCliente,
                 COALESCE(CONCAT(r.Tipo, ' - ', r.Detalle), r.Detalle, o.DescripcionTrabajo, b.Descripcion) as DescripcionTrabajo,
                 COALESCE(r.FechaRecepcion, o.FechaIngreso, b.FechaCreacion) as FechaIngreso,
                 COALESCE(r.ProximoServicio, o.ProximoServicio, 'LOGISTICA') as ProximoServicio
             FROM Logistica_Bultos b
             LEFT JOIN Ordenes o ON b.OrdenID = o.OrdenID
+            LEFT JOIN dbo.Clientes cliord WITH(NOLOCK) ON o.CliIdCliente = cliord.CliIdCliente
             -- ROBUST JOIN: Priority to Explicit ID, Fallback to String Match
             LEFT JOIN Recepciones r ON (
                 b.RecepcionID = r.RecepcionID 

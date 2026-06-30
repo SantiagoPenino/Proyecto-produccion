@@ -22,6 +22,14 @@ export const rollsService = {
         const response = await api.post('/rolls/reorder', { rollId, orderIds });
         return response.data;
     },
+    setPrinted: async (orderId, printed) => {
+        const { data } = await api.post('/rolls/order-printed', { orderId, printed });
+        return data;
+    },
+    setOrderGroup: async (rollId, orderIds, group) => {
+        const { data } = await api.post('/rolls/order-group', { rollId, orderIds, group });
+        return data;
+    },
     updateName: async (id, name, color) => {
         const { data } = await api.post('/rolls/update-name', { id, name, color });
         return data;

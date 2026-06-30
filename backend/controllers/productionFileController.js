@@ -1435,13 +1435,18 @@ const createCustomerReplacementOrder = async (req, res) => {
         }
 
         // 2. Crear Nueva Orden de Reposición
-        // Número secuencial: contar cuántas reposiciones ya existen para esta orden
+        // El código se construye sobre la RAÍZ (sin sufijos -R previos): la reposición de una
+        // reposición debe incrementar (-R2), no apilar (-R1-R1). Se strippean TODOS los -R\d+ del
+        // final, así también se normalizan casos legacy ya apilados ("-R1-R1" → raíz).
+        const stripRepoSuffix = (c) => (c || '').replace(/(-R\d+)+$/i, '');
+        const rootCode = stripRepoSuffix(originalOrder.CodigoOrden);
+        // Número secuencial: contar cuántas reposiciones existen para la RAÍZ
         const countRepRes = await new sql.Request(transaction)
-            .input('BaseCode', sql.NVarChar, originalOrder.CodigoOrden)
+            .input('BaseCode', sql.NVarChar, rootCode)
             .query(`SELECT COUNT(*) as total FROM Ordenes WHERE CodigoOrden LIKE @BaseCode + '-R%'`);
         const nextRepNum = (countRepRes.recordset[0].total || 0) + 1;
         const suffix = `-R${nextRepNum}`;
-        const newCode = `${originalOrder.CodigoOrden}${suffix}`;
+        const newCode = `${rootCode}${suffix}`;
 
         // Construir NOTA DE LA ORDEN: obs del defecto (campo global del form) + contexto máquina/lote
         const maquinaInfo = originalOrder.NombreMaquina ? `Máquina: ${originalOrder.NombreMaquina}` : '';
@@ -1567,7 +1572,7 @@ const createCustomerReplacementOrder = async (req, res) => {
 
                 if (relRes.recordset.length > 0) {
                     const relOrder = relRes.recordset[0];
-                    const relNewCode = `${relOrder.CodigoOrden}${suffix}`; // Mismo sufijo para consistencia
+                    const relNewCode = `${stripRepoSuffix(relOrder.CodigoOrden)}${suffix}`; // Mismo sufijo, sobre la raíz (evita apilar -R)
 
                     await new sql.Request(transaction)
                         .input('RelNewCode', sql.NVarChar, relNewCode)

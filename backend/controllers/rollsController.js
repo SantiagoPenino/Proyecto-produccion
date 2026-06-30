@@ -1,6 +1,22 @@
 const { getPool, sql } = require('../config/db');
 const logger = require('../utils/logger');
 
+// Asegura columnas para impreso (todas las áreas) y agrupado manual (SB) de órdenes en el lote.
+// Se ejecuta una sola vez por proceso (el flag evita el chequeo en cada request).
+let _orderColsEnsured = false;
+async function ensureOrderColumns(pool) {
+    if (_orderColsEnsured) return;
+    await pool.request().query(`
+        IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE Name = 'Impreso' AND Object_ID = Object_ID('dbo.Ordenes'))
+            ALTER TABLE dbo.Ordenes ADD Impreso BIT NOT NULL CONSTRAINT DF_Ordenes_Impreso DEFAULT 0;
+        IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE Name = 'GrupoManual' AND Object_ID = Object_ID('dbo.Ordenes'))
+            ALTER TABLE dbo.Ordenes ADD GrupoManual INT NULL;
+        IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE Name = 'OrdenadoSB' AND Object_ID = Object_ID('dbo.Rollos'))
+            ALTER TABLE dbo.Rollos ADD OrdenadoSB BIT NOT NULL CONSTRAINT DF_Rollos_OrdenadoSB DEFAULT 0;
+    `);
+    _orderColsEnsured = true;
+}
+
 // ==========================================
 // 0. SIGUIENTE NOMBRE DE LOTE (GET)
 // Formato: YYYYMMDD-{area}{N}  — secuencia diaria por área
@@ -1016,6 +1032,7 @@ exports.getRollDetails = async (req, res) => {
     const { rolloId } = req.params;
     try {
         const pool = await getPool();
+        await ensureOrderColumns(pool);
 
         // A. TRAER ROLLO
         const rollsRes = await pool.request()
@@ -1026,6 +1043,23 @@ exports.getRollDetails = async (req, res) => {
             return res.status(404).json({ error: 'Rollo no encontrado' });
         }
         const r = rollsRes.recordset[0];
+
+        // SB: la PRIMERA vez que se abre el lote, fijar la Secuencia por Material A-Z (default
+        // histórico) y marcarlo. Después se respeta el orden manual que guarde el usuario.
+        if (String(r.AreaID || '').toUpperCase() === 'SB' && !r.OrdenadoSB) {
+            await pool.request()
+                .input('RID', sql.VarChar(50), rolloId)
+                .query(`
+                    ;WITH O AS (
+                        SELECT OrdenID, ROW_NUMBER() OVER (
+                            ORDER BY LTRIM(RTRIM(ISNULL(Material,''))), LTRIM(RTRIM(ISNULL(Variante,''))), CodigoOrden
+                        ) AS rn
+                        FROM dbo.Ordenes WHERE CAST(RolloID AS VARCHAR(50)) = @RID
+                    )
+                    UPDATE ord SET Secuencia = O.rn FROM dbo.Ordenes ord JOIN O ON ord.OrdenID = O.OrdenID;
+                    UPDATE dbo.Rollos SET OrdenadoSB = 1 WHERE CAST(RolloID AS VARCHAR(50)) = @RID;
+                `);
+        }
 
         // NEW: Get Labels Count for Roll
         const labelsCountRes = await pool.request()
@@ -1052,7 +1086,7 @@ exports.getRollDetails = async (req, res) => {
                 SELECT 
                     o.OrdenID, o.CodigoOrden, o.Cliente, o.DescripcionTrabajo, 
                     o.Magnitud, o.Material, o.Variante, o.RolloID, 
-                    o.Prioridad, o.Estado, o.FechaIngreso, o.Secuencia, o.Tinta, o.NoDocERP, o.IdCabezalERP, o.Nota,
+                    o.Prioridad, o.Estado, o.FechaIngreso, o.Secuencia, o.Tinta, o.NoDocERP, o.IdCabezalERP, o.Nota, o.Impreso, o.GrupoManual,
                     (SELECT COUNT(*) FROM dbo.ArchivosOrden WHERE OrdenID = o.OrdenID) AS CantidadArchivos,
                     (SELECT COUNT(*) FROM dbo.ArchivosOrden WHERE OrdenID = o.OrdenID) AS fileCount,
                     -- ✅ SUBQUERY FOR GLOBAL STATUS (Sibling Orders via Root Match)
@@ -1092,6 +1126,8 @@ exports.getRollDetails = async (req, res) => {
                 status: o.Estado,
                 rollId: o.RolloID,
                 sequence: o.Secuencia,
+                printed: !!o.Impreso,
+                groupId: o.GrupoManual,
                 ink: o.Tinta,
                 fileCount: o.CantidadArchivos || o.fileCount || 0,
                 note: o.Nota,
@@ -1105,6 +1141,59 @@ exports.getRollDetails = async (req, res) => {
 
     } catch (err) {
         logger.error("Error obteniendo detalle rollo:", err);
+        res.status(500).json({ error: err.message });
+    }
+};
+
+// ==========================================
+// Marcar / desmarcar una orden como IMPRESA (persistente, todas las áreas)
+// ==========================================
+exports.setOrderPrinted = async (req, res) => {
+    const { orderId, printed } = req.body;
+    if (!orderId) return res.status(400).json({ error: 'orderId requerido' });
+    try {
+        const pool = await getPool();
+        await ensureOrderColumns(pool);
+        await pool.request()
+            .input('OID', sql.Int, Number(orderId))
+            .input('P', sql.Bit, printed ? 1 : 0)
+            .query('UPDATE dbo.Ordenes SET Impreso = @P WHERE OrdenID = @OID');
+        res.json({ ok: true });
+    } catch (err) {
+        logger.error('Error seteando Impreso:', err);
+        res.status(500).json({ error: err.message });
+    }
+};
+
+// ==========================================
+// Agrupar / desagrupar órdenes dentro de un lote (GrupoManual, visual SB)
+// ==========================================
+exports.setOrderGroup = async (req, res) => {
+    const { rollId, orderIds, group } = req.body; // group: true = agrupar, false = desagrupar
+    if (!rollId || !Array.isArray(orderIds) || orderIds.length === 0) {
+        return res.status(400).json({ error: 'rollId y orderIds requeridos' });
+    }
+    try {
+        const pool = await getPool();
+        await ensureOrderColumns(pool);
+        const ids = orderIds.map(Number).filter(n => Number.isFinite(n));
+        if (ids.length === 0) return res.status(400).json({ error: 'orderIds inválidos' });
+        const inList = ids.join(',');
+        if (group) {
+            const gidRes = await pool.request()
+                .input('RID', sql.VarChar(50), String(rollId))
+                .query('SELECT ISNULL(MAX(GrupoManual), 0) + 1 AS Gid FROM dbo.Ordenes WHERE CAST(RolloID AS VARCHAR(50)) = @RID');
+            const gid = gidRes.recordset[0].Gid;
+            await pool.request()
+                .input('G', sql.Int, gid)
+                .query(`UPDATE dbo.Ordenes SET GrupoManual = @G WHERE OrdenID IN (${inList})`);
+        } else {
+            await pool.request()
+                .query(`UPDATE dbo.Ordenes SET GrupoManual = NULL WHERE OrdenID IN (${inList})`);
+        }
+        res.json({ ok: true });
+    } catch (err) {
+        logger.error('Error agrupando/desagrupando órdenes:', err);
         res.status(500).json({ error: err.message });
     }
 };

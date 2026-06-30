@@ -2,13 +2,15 @@ import React, { useState, useEffect } from 'react';
 import { useAuth } from '../auth/AuthContext';
 import { useNavigate } from 'react-router-dom';
 import { GlassCard } from '../pautas/GlassCard';
-import { Crown, DollarSign, TrendingUp, CheckCircle, Smartphone, Mail, MapPin, Pencil, UserCheck, Package, FileText, User } from 'lucide-react';
+import { Crown, DollarSign, TrendingUp, CheckCircle, Smartphone, Mail, MapPin, Pencil, UserCheck, Package, FileText, User, Bell } from 'lucide-react';
 import { StatusBadge } from '../pautas/StatusBadge';
 import { apiClient } from '../api/apiClient';
+import { usePushNotifications } from '../hooks/usePushNotifications';
 
 export const ProfileView = () => {
     const { user } = useAuth();
     const navigate = useNavigate();
+    const { permission, subscribe, unsubscribe, isSupported } = usePushNotifications();
     const [recentActivity, setRecentActivity] = useState([]);
     const [loadingOrders, setLoadingOrders] = useState(true);
 
@@ -206,6 +208,39 @@ export const ProfileView = () => {
                                 </div>
                             )}
                         </div>
+
+                        {/* Notificaciones Push */}
+                        {isSupported && (
+                            <div className="pt-3 border-t border-white/5 mt-1">
+                                {permission === 'granted' ? (
+                                    <div className="flex items-center justify-between p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/20">
+                                        <div className="flex items-center gap-3 min-w-0">
+                                            <div className="shrink-0 w-8 h-8 rounded-lg bg-emerald-500/20 flex items-center justify-center">
+                                                <Bell size={16} className="text-emerald-400" />
+                                            </div>
+                                            <div className="min-w-0">
+                                                <p className="text-white font-bold text-xs">Notificaciones activadas</p>
+                                                <p className="text-[10px] text-zinc-400 truncate">Te avisaremos sobre tus pedidos</p>
+                                            </div>
+                                        </div>
+                                        <button 
+                                            onClick={unsubscribe} 
+                                            className="text-[10px] text-zinc-400 hover:text-zinc-300 font-medium px-2 py-1 rounded-md hover:bg-white/5 transition-all"
+                                        >
+                                            Desactivar
+                                        </button>
+                                    </div>
+                                ) : (
+                                    <button
+                                        onClick={subscribe}
+                                        className="flex items-center justify-center gap-2 w-full py-2.5 rounded-xl font-bold text-xs bg-brand-cyan/10 border border-brand-cyan/30 text-brand-cyan hover:bg-brand-cyan/20 transition-all duration-200"
+                                    >
+                                        <Bell size={14} className="animate-bounce" />
+                                        Activar Notificaciones Push
+                                    </button>
+                                )}
+                            </div>
+                        )}
                     </div>
                 </GlassCard>
 

@@ -602,8 +602,19 @@ const DispatchView = ({ selectedOrders: initialOrders = [], areaFilter, originAr
                                                         <div className="font-bold font-mono text-slate-800">{row.displayCode}</div>
                                                         {row.orderCode && <div className="text-xs text-brand-cyan font-bold">{row.orderCode}</div>}
                                                     </td>
-                                                    <td className="p-4 font-bold text-slate-600 uppercase">
-                                                        {row.client && row.client !== '-' ? row.client : <span className="text-slate-400 italic font-normal">S/D</span>}
+                                                    <td className="p-4">
+                                                        {row.IDCliente ? (
+                                                            <>
+                                                                <div className="font-bold font-mono text-brand-cyan">{row.IDCliente}</div>
+                                                                {row.client && row.client !== '-' && (
+                                                                    <div className="text-[11px] text-slate-500 uppercase font-medium mt-0.5">{row.client}</div>
+                                                                )}
+                                                            </>
+                                                        ) : (
+                                                            <div className="font-bold text-slate-600 uppercase">
+                                                                {row.client && row.client !== '-' ? row.client : <span className="text-slate-400 italic font-normal">S/D</span>}
+                                                            </div>
+                                                        )}
                                                     </td>
                                                     <td className="p-4">
                                                         <div className="font-bold text-slate-700">{row.desc}</div>

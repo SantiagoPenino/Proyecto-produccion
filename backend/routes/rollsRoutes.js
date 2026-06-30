@@ -8,6 +8,8 @@ router.get('/list', controller.getRollosActivos); // Endpoint específico para c
 router.post('/move', controller.moveOrder);
 router.post('/create', verifyToken, controller.createRoll);
 router.post('/reorder', controller.reorderOrders);
+router.post('/order-printed', controller.setOrderPrinted); // Marcar impreso (todas las áreas)
+router.post('/order-group', controller.setOrderGroup);     // Agrupar/desagrupar en el lote (SB)
 
 // 👇 CORREGIDO: Debe decir "controller" (singular), igual que arriba
 router.post('/update-name', controller.updateRollName);
