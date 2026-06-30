@@ -317,11 +317,11 @@ export default function AreaView({ areaKey: rawAreaKey, areaConfig, onSwitchTab 
                     if (isSameArea && isDFPath) {
                         const isUrgent = ['Urgente', 'Reposición', 'Falla'].includes(o.prioridad);
                         
-                        toast(`¡Se ha creado la orden ${o.variante || 'N/A'} (${o.codigo || 'ORD-' + o.id}) con prioridad ${o.prioridad || 'Normal'}!`, {
+                        toast(`Se ha creado la orden ${o.codigo || 'ORD-' + o.id}.`, {
                             position: "top-right",
-                            autoClose: 2500,
+                            autoClose: 1500,
                             style: {
-                                background: isUrgent ? '#EC008C' : '#00AEEF',
+                                background: isUrgent ? '#BD0C7E' : '#006E97', // brand-magenta / brand-cyan
                                 color: '#fff',
                                 fontWeight: 'bold',
                             },
@@ -350,6 +350,7 @@ export default function AreaView({ areaKey: rawAreaKey, areaConfig, onSwitchTab 
 
         return () => {
             clearTimeout(refetchTimer);
+            toast.dismiss(); // al salir de la vista de área, descolgar toasts de orden que sigan en pantalla (no deben verse fuera de /area/df)
             // socket es el singleton compartido (socket.io multiplexa por URL): NO hacer
             // socket.disconnect() — eso baja el socket de TODA la app y deja los listeners
             // colgados, que se acumulan en cada montaje → un evento dispara N refetches
