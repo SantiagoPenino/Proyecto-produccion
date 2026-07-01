@@ -124,6 +124,7 @@ exports.getCatalog = async (req, res) => {
                 a.ProIdProducto, a.Descripcion, a.SupFlia,
                 aw.producto_maestro_id, aw.nombre_wms,
                 v.wms_variante_id, v.sku, v.nombre_variante,
+                v.precio_excepcion, v.moneda_excepcion,
                 img.url_imagen, img.es_generica,
                 loc.pasillo, loc.estante,
                 pb.Precio, pb.Moneda
@@ -177,8 +178,8 @@ exports.getCatalog = async (req, res) => {
             if (!productsMap[row.ProIdProducto]) {
                 productsMap[row.ProIdProducto] = {
                     ProIdProducto: row.ProIdProducto,
-                    Descripcion: row.Descripcion,
-                    nombre_wms: row.nombre_wms || row.Descripcion,
+                    Descripcion: (row.Descripcion || '').trim(),
+                    nombre_wms: (row.nombre_wms || row.Descripcion || '').trim(),
                     producto_maestro_id: row.producto_maestro_id || null,
                     imagen: row.url_imagen || null,
                     es_generica: row.es_generica,
@@ -198,7 +199,11 @@ exports.getCatalog = async (req, res) => {
                 wms_variante_id: row.wms_variante_id || row.ProIdProducto, // fallback to local ID if not mapped
                 sku: row.sku || '',
                 nombre_variante: row.nombre_variante || 'Única',
-                stock: variantStock
+                stock: variantStock,
+                // Precio por variante: usa precio_excepcion si existe, sino el precio base del artículo
+                precio_excepcion: row.precio_excepcion != null ? parseFloat(row.precio_excepcion) : null,
+                // moneda_excepcion: 1=UYU, 2=USD
+                moneda_excepcion: row.moneda_excepcion === 2 ? 'USD' : (row.moneda_excepcion === 1 ? 'UYU' : null)
             });
         });
 
@@ -231,7 +236,7 @@ exports.createOrder = async (req, res) => {
             // 1. Insert header
             const insertHeader = await transaction.request()
                 .input('NoDocERP', sql.NVarChar, codigoVenta)
-                .input('ClienteID', sql.Int, clienteId || 1) // Default to 1 if empty
+                .input('ClienteID', sql.Int, clienteId || 2089) // 2089 = CONSUMIDOR FINAL
                 .input('MontoTotal', sql.Decimal(18,2), total)
                 .input('Moneda', sql.VarChar, moneda || 'UYU')
                 .input('EstadoCobro', sql.NVarChar, 'PENDIENTE')
@@ -321,5 +326,46 @@ exports.getExchangeRate = async (req, res) => {
     } catch (err) {
         logger.error('Error fetching exchange rate:', err);
         res.status(500).json({ error: err.message });
+    }
+};
+exports.getMasterVariants = async (req, res) => {
+    try {
+        const { idproid } = req.params;
+        const pool = await getPool();
+        const result = await pool.request()
+            .input('Idproid', sql.Int, idproid)
+            .query(`
+                SELECT wms_variante_id, sku, nombre_variante, precio_excepcion, moneda_excepcion
+                FROM Articulos_WMS_Variantes
+                WHERE Idproid = @Idproid
+                ORDER BY nombre_variante
+            `);
+        res.json({ success: true, data: result.recordset });
+    } catch (err) {
+        logger.error(`Error getMasterVariants: ${err.message}`);
+        res.status(500).json({ success: false, error: 'Server error' });
+    }
+};
+
+exports.updateVariantPrice = async (req, res) => {
+    try {
+        const { wms_variante_id } = req.params;
+        const { precio_excepcion, moneda_excepcion } = req.body;
+        
+        const pool = await getPool();
+        await pool.request()
+            .input('WmsVarianteId', sql.Int, wms_variante_id)
+            .input('PrecioExcepcion', sql.Decimal(18,2), precio_excepcion === '' ? null : precio_excepcion)
+            .input('MonedaExcepcion', sql.Int, moneda_excepcion === '' ? null : moneda_excepcion)
+            .query(`
+                UPDATE Articulos_WMS_Variantes
+                SET precio_excepcion = @PrecioExcepcion, moneda_excepcion = @MonedaExcepcion
+                WHERE wms_variante_id = @WmsVarianteId
+            `);
+            
+        res.json({ success: true, message: 'Precio actualizado exitosamente.' });
+    } catch (err) {
+        logger.error(`Error updateVariantPrice: ${err.message}`);
+        res.status(500).json({ success: false, error: 'Server error' });
     }
 };

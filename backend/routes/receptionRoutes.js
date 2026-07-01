@@ -10,6 +10,8 @@ router.get('/orders-by-client', receptionController.getOrdersByClient);
 router.get('/stock', receptionController.getStock);
 router.get('/orders-for-fabric', receptionController.getPotentialOrdersForFabric);
 router.post('/guardar-comprobante', receptionController.guardarComprobante);
+router.get('/bobinas-by-orden/:orden',  receptionController.getBobinasByOrden);
+
 
 
 module.exports = router;

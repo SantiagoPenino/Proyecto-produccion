@@ -290,14 +290,18 @@ export const generarPdfFacturaDGI = async (doc, detalles) => {
             const originalSub = lineTotal + descBruto;
             const pUnitario = lineCantidad > 0 ? (originalSub / lineCantidad) : 0;
 
-            let descuentoStr = d.DcdDescuentoStr || '';
-            if (!descuentoStr && descBruto > 0.01) {
+            let descPct = '';
+            let descImp = '';
+            if (descBruto > 0.01) {
                 const pct = originalSub > 0 ? (descBruto / originalSub) * 100 : 0;
-                descuentoStr = `${fmtNum(descBruto)} (${fmtNum(pct)}%)`;
+                descPct = `${fmtNum(pct)}%`;
+                descImp = fmtNum(descBruto);
+            } else if (d.DcdDescuentoStr) {
+                descImp = d.DcdDescuentoStr;
             }
 
             const puNeto = pUnitario - (descBruto / lineCantidad);
-            
+
             const currencySymbol = doc.MonIdMoneda === 2 ? 'U$S' : '$';
             const descText = d.DcdNomItem + (d.DcdDscItem ? `\n${d.DcdDscItem}` : '') + ` (Neto: ${currencySymbol} ${fmtNum(lineNeto)})`;
 
@@ -305,21 +309,22 @@ export const generarPdfFacturaDGI = async (doc, detalles) => {
                 index + 1,
                 descText,
                 `${lineRate}%`,
-                fmtNum(pUnitario),        // P. Unitario (bruto con IVA)
-                fmtNum(lineCantidad),     // Cantidad exacta
-                descuentoStr,             // Descuentos
-                fmtNum(puNeto),           // P.U. Neto (bruto - descuento)
-                fmtNum(lineTotal)         // Importe = total línea con IVA incluido
+                fmtNum(pUnitario),   // P. Unitario (bruto con IVA)
+                fmtNum(lineCantidad),
+                descPct,             // % descuento
+                descImp,             // $ descuento
+                fmtNum(puNeto),      // P.U. Neto
+                fmtNum(lineTotal)    // Importe
             ];
         });
     } else {
         const servSub = doc.DocTotal || doc.DocSubtotal;
-        tableBody = [['1', 'Servicios', '22%', fmtNum(servSub), '1', '', fmtNum(servSub), fmtNum(servSub)]];
+        tableBody = [['1', 'Servicios', '22%', fmtNum(servSub), '1', '', '', fmtNum(servSub), fmtNum(servSub)]];
     }
 
     autoTable(pdf, {
         startY: startY,
-        head: [['Código', 'Descripción', 'IVA', 'P. Unitario', 'Cantidad', 'Descuentos', 'P.U. Neto', 'Importe']],
+        head: [['No.', 'Descripción', 'IVA', 'P. Unitario', 'Cantidad', '%', 'Descuento', 'P.U. Neto', 'Importe']],
         body: tableBody,
         theme: 'grid',
         headStyles: {
@@ -342,14 +347,15 @@ export const generarPdfFacturaDGI = async (doc, detalles) => {
             valign: 'middle'
         },
         columnStyles: {
-            0: { cellWidth: 20, halign: 'left' },
+            0: { cellWidth: 10, halign: 'center' },
             1: { cellWidth: 'auto', halign: 'left' },
-            2: { cellWidth: 12, halign: 'right' },
+            2: { cellWidth: 10, halign: 'right' },
             3: { cellWidth: 20, halign: 'right' },
-            4: { cellWidth: 18, halign: 'right' },
-            5: { cellWidth: 20, halign: 'right' },
-            6: { cellWidth: 20, halign: 'right' },
-            7: { cellWidth: 22, halign: 'right' }
+            4: { cellWidth: 16, halign: 'right' },
+            5: { cellWidth: 14, halign: 'right' },
+            6: { cellWidth: 18, halign: 'right' },
+            7: { cellWidth: 18, halign: 'right' },
+            8: { cellWidth: 20, halign: 'right' }
         },
         margin: { left: 15, right: 15 }
     });

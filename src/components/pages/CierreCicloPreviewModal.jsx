@@ -407,12 +407,19 @@ export default function CierreCicloPreviewModal({
 
         if (agruparFactura) {
           let orderSubtotal = 0;
+          // cuentaEsUSD: si la cuenta NO es explícitamente UYU (=1), asumimos USD.
+          // Igual que granTotalBase. Aplica solo como fallback cuando OrdMonIdMoneda es null.
+          const cuentaEsUSD = Number(cuenta?.MonIdMoneda) !== 1;
           detallesFiltrados.forEach(d => {
             const ed = detallesEditados[d.DetalleID];
             const sub = ed ? ed.Subtotal : d.Subtotal;
-            // d.Moneda viene de PedidosCobranza.Moneda, que puede ser NULL en registros viejos.
-            // Fallback: si la cuenta es USD (MonIdMoneda=2), todas sus órdenes son USD.
-            const orderCurrency = (d.Moneda === 'USD' || Number(cuenta?.MonIdMoneda) === 2) ? 'USD' : 'UYU';
+            // OrdMonIdMoneda=2: explícitamente USD (OrdenesDeposito). Fiable.
+            // null: orden en tabla Ordenes o sin registro → usar d.Moneda o cuenta como fallback.
+            // OrdMonIdMoneda=1: explícitamente UYU → NO convertir aunque la cuenta sea USD.
+            const esOrdenUSD = Number(m.OrdMonIdMoneda) === 2
+                            || d.Moneda === 'USD'
+                            || (m.OrdMonIdMoneda == null && cuentaEsUSD);
+            const orderCurrency = esOrdenUSD ? 'USD' : 'UYU';
             const rate = (monedaFactura === 'UYU' && orderCurrency === 'USD') ? cotDolar : (monedaFactura === 'USD' && orderCurrency === 'UYU' ? (1/cotDolar) : 1);
             orderSubtotal += sub * rate;
           });
@@ -424,19 +431,24 @@ export default function CierreCicloPreviewModal({
           });
         } else {
           let orderSubtotal = 0;
+          const cuentaEsUSD = Number(cuenta?.MonIdMoneda) !== 1;
 
           detallesFiltrados.forEach(d => {
             const ed = detallesEditados[d.DetalleID];
             const sub = ed ? ed.Subtotal : d.Subtotal;
 
-            // d.Moneda puede ser NULL en registros viejos de PedidosCobranza.
-            // Fallback: si la cuenta es USD (MonIdMoneda=2), todas sus órdenes son USD.
-            const orderCurrency = (d.Moneda === 'USD' || Number(cuenta?.MonIdMoneda) === 2) ? 'USD' : 'UYU';
+            const esOrdenUSD = Number(m.OrdMonIdMoneda) === 2
+                            || d.Moneda === 'USD'
+                            || (m.OrdMonIdMoneda == null && cuentaEsUSD);
+            const orderCurrency = esOrdenUSD ? 'USD' : 'UYU';
             const rate = (monedaFactura === 'UYU' && orderCurrency === 'USD') ? cotDolar : (monedaFactura === 'USD' && orderCurrency === 'UYU' ? (1/cotDolar) : 1);
             const finalSub = sub * rate;
-            const unitario = (d.PrecioUnitario || (d.Subtotal / d.Cantidad)) * rate;
-            const originalSub = (d.Subtotal) * rate;
-            const descItem = originalSub - finalSub;
+            // Usar precio y descuento editados (no el precio original de DB)
+            const editedPrice = ed ? ed.PrecioUnitario : (d.PrecioUnitario || (d.Subtotal / d.Cantidad));
+            const editedCant  = ed?.Cantidad ?? d.Cantidad;
+            const editedDescPct = (ed && ed.DescTipo === '%') ? ed.DescValor : 0;
+            const unitario = editedPrice * rate;
+            const descItem = editedPrice * editedCant * (editedDescPct / 100) * rate;
             orderSubtotal += finalSub;
 
             const descArticulo = `${d.ArticuloNombre ? d.ArticuloNombre.trim() + ' - ' : ''}${(d.Descripcion || d.LogPrecioAplicado || 'Servicio').trim()}`;
@@ -453,9 +465,11 @@ export default function CierreCicloPreviewModal({
           });
         }
       } else {
-        // Sin detalles de orden: usar MovImporte que ya está en la moneda de la cuenta
+        // Sin detalles de orden: usar MovImporte. Misma lógica de moneda que granTotalBase.
         const importe = Math.abs(Number(m.MovImporte));
-        const monBase = Number(cuenta?.MonIdMoneda) === 1 ? 'UYU' : 'USD';
+        const cuentaEsUSD2 = Number(cuenta?.MonIdMoneda) !== 1;
+        const esMovUSD = Number(m.OrdMonIdMoneda) === 2 || (m.OrdMonIdMoneda == null && cuentaEsUSD2);
+        const monBase = esMovUSD ? 'USD' : 'UYU';
         const rate = (monedaFactura === 'UYU' && monBase === 'USD') ? cotDolar : (monedaFactura === 'USD' && monBase === 'UYU' ? (1/cotDolar) : 1);
         const finalSub = importe * rate;
         
@@ -796,7 +810,8 @@ export default function CierreCicloPreviewModal({
                   <th className="px-4 py-3">Descripción del Item</th>
                   <th className="px-4 py-3 text-center">Cant.</th>
                   <th className="px-4 py-3 text-right">P. Unitario</th>
-                  <th className="px-4 py-3 text-center">Desc.</th>
+                  <th className="px-4 py-3 text-right">% Desc.</th>
+                  <th className="px-4 py-3 text-right">P.U. Neto</th>
                   <th className="px-4 py-3 text-right">Subtotal</th>
                 </tr>
               </thead>
@@ -852,16 +867,18 @@ export default function CierreCicloPreviewModal({
                       {!isExcluido && m.detalles?.map(d => {
                         const ed = detallesEditados[d.DetalleID];
                         const punit = ed ? ed.PrecioUnitario : d.PrecioUnitario;
-                        const descValor = ed ? ed.DescValor : 0;
-                        const descTipo  = ed ? ed.DescTipo : '%';
+                        const cant  = ed?.Cantidad ?? d.Cantidad;
+                        // Descuento siempre en % (sin toggle)
+                        const descPct = ed ? (ed.DescTipo === '%' ? ed.DescValor : 0) : 0;
                         const subt  = ed ? ed.Subtotal : d.Subtotal;
-                        
+
                         // Conversión visual si se pide en UYU
                         const monBase = Number(cuenta?.MonIdMoneda) === 1 ? 'UYU' : 'USD';
                         const rate = (monedaFactura === 'UYU' && monBase === 'USD') ? cotDolar : (monedaFactura === 'USD' && monBase === 'UYU' ? (1/cotDolar) : 1);
-                        const vPunit = punit * rate;
-                        const vSubt  = subt * rate;
-                        const vDescValor = descTipo === '$' ? descValor * rate : descValor;
+                        const vPunit  = punit * rate;
+                        const vSubt   = subt  * rate;
+                        const puNeto  = punit * (1 - descPct / 100);
+                        const vPuNeto = puNeto * rate;
 
                         return (
                           <tr key={d.DetalleID} className="group hover:bg-slate-50 text-[13px]">
@@ -872,51 +889,45 @@ export default function CierreCicloPreviewModal({
                               {d.Descripcion || d.LogPrecioAplicado || 'Servicio'}
                             </td>
                             <td className="px-4 py-2.5 text-center">
-                              {/* Cantidad editable */}
                               <SimpleInput
-                                value={ed?.Cantidad ?? d.Cantidad}
-                                onChange={val => handleEditDetalle(d.DetalleID, punit, val, descValor, descTipo)}
+                                value={cant}
+                                onChange={val => handleEditDetalle(d.DetalleID, punit, val, descPct, '%')}
                                 placeholder={String(d.Cantidad)}
                               />
                             </td>
-                            <td className="px-4 py-2.5 text-right relative">
-                              <div className="flex items-center justify-end gap-1">
-                                {/* Precio unitario editable */}
-                                <SimpleInput
-                                  value={vPunit}
-                                  onChange={val => {
-                                    const rawVal = val / rate;
-                                    handleEditDetalle(d.DetalleID, rawVal, ed?.Cantidad ?? d.Cantidad, descValor, descTipo);
-                                  }}
-                                />
-                              </div>
+                            <td className="px-4 py-2.5 text-right">
+                              <SimpleInput
+                                value={vPunit}
+                                onChange={val => {
+                                  const rawVal = val / rate;
+                                  handleEditDetalle(d.DetalleID, rawVal, cant, descPct, '%');
+                                }}
+                              />
                             </td>
-                            <td className="px-4 py-2.5 text-center relative">
-                              <div className="flex items-center justify-center gap-1">
-                                <button 
-                                  onClick={() => {
-                                    const nextTipo = descTipo === '%' ? '$' : '%';
-                                    handleEditDetalle(d.DetalleID, punit, d.Cantidad, 0, nextTipo);
-                                  }}
-                                  className={`text-[10px] font-bold px-1.5 py-0.5 rounded cursor-pointer transition-colors ${descTipo === '%' ? 'bg-indigo-100 text-indigo-600' : 'bg-emerald-100 text-emerald-600'}`}
-                                >
-                                  {descTipo}
-                                </button>
-                                <input 
-                                  type="number" 
-                                  value={vDescValor || ''}
+                            <td className="px-4 py-2.5 text-right">
+                              <div className="flex items-center justify-end gap-0.5">
+                                <input
+                                  type="number"
+                                  min="0"
+                                  max="100"
+                                  value={descPct || ''}
                                   placeholder="0"
-                                  onChange={(e) => {
-                                    const val = Number(e.target.value);
-                                    const baseVal = descTipo === '$' ? val / rate : val;
-                                    handleEditDetalle(d.DetalleID, punit, d.Cantidad, baseVal, descTipo);
+                                  onChange={e => {
+                                    const pct = Math.min(100, Math.max(0, Number(e.target.value)));
+                                    handleEditDetalle(d.DetalleID, punit, cant, pct, '%');
                                   }}
-                                  className="w-16 bg-white border border-slate-200 hover:border-slate-300 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 text-center outline-none font-mono text-slate-700 rounded py-0.5 shadow-sm font-bold"
+                                  className="w-16 bg-white border border-slate-200 hover:border-slate-300 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 text-right outline-none font-mono text-slate-700 rounded py-0.5 px-1.5 shadow-sm font-bold"
                                 />
+                                <span className="text-[10px] font-bold text-slate-400">%</span>
                               </div>
                             </td>
                             <td className="px-4 py-2.5 text-right">
-                              <span className={`font-mono text-sm font-bold ${descValor > 0 ? 'text-emerald-600' : 'text-slate-800'}`}>
+                              <span className={`font-mono text-sm font-bold ${descPct > 0 ? 'text-emerald-600' : 'text-slate-500'}`}>
+                                {simbolo} {fmt(vPuNeto)}
+                              </span>
+                            </td>
+                            <td className="px-4 py-2.5 text-right">
+                              <span className={`font-mono text-sm font-bold ${descPct > 0 ? 'text-emerald-600' : 'text-slate-800'}`}>
                                 {simbolo} {fmt(vSubt)}
                               </span>
                             </td>

@@ -60,9 +60,11 @@ export default function EstadoTelaModal({ bobinaId, onClose }) {
         ? null
         : declarados + ajusteConfirmacion;
 
-    // Consumido real = solo movimientos de CONSUMO y MERMA (no ajuste de confirmación)
+    // Consumido real = todo movimiento que reduce el stock (cantidad negativa),
+    // excluyendo INGRESO y CONFIRMACION_MEDIDA (que son entradas o ajustes de medición)
+    const EXCLUIR_DE_CONSUMO = ['INGRESO', 'CONFIRMACION_MEDIDA', 'LIBERACION_RESERVA'];
     const consumidoReal = movs
-        .filter(m => m.TipoMovimiento?.startsWith('CONSUMO') || m.TipoMovimiento?.startsWith('MERMA'))
+        .filter(m => !EXCLUIR_DE_CONSUMO.includes(m.TipoMovimiento) && parseFloat(m.Cantidad) < 0)
         .reduce((acc, m) => acc + Math.abs(parseFloat(m.Cantidad) || 0), 0);
 
     const base = confirmados ?? declarados;
@@ -71,7 +73,7 @@ export default function EstadoTelaModal({ bobinaId, onClose }) {
     return (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4"
              style={{ background: "rgba(15,23,42,0.75)", backdropFilter: "blur(4px)" }}>
-            <div className="bg-slate-50 rounded-2xl shadow-2xl w-full max-w-3xl max-h-[90vh] flex flex-col overflow-hidden">
+            <div className="bg-slate-50 rounded-2xl shadow-2xl w-full max-w-4xl max-h-[90vh] flex flex-col overflow-hidden">
 
                 {/* HEADER */}
                 <div className="bg-gradient-to-r from-slate-800 to-slate-700 text-white px-6 py-4 flex items-start justify-between flex-shrink-0">
@@ -193,15 +195,29 @@ export default function EstadoTelaModal({ bobinaId, onClose }) {
                                                         </span>
                                                     </div>
 
-                                                    {/* Detalle */}
+                                                    {/* Detalle: parsear Orden | Motivo y limpiar BOB-xxx */}
                                                     <div className="min-w-0 pr-2">
-                                                        <div className="text-xs text-slate-700 truncate" title={m.Detalle}>{m.Detalle || "—"}</div>
-                                                        {m.CodigoOrden && (
-                                                            <span className="text-[10px] font-mono font-bold text-indigo-600">#{m.CodigoOrden}</span>
-                                                        )}
-                                                        {m.Usuario && (
-                                                            <div className="text-[10px] text-slate-400">👤 {m.Usuario}</div>
-                                                        )}
+                                                        {(() => {
+                                                            const raw = m.Detalle || '';
+                                                            // Quitar prefijo "Ajuste BOB-xxx-xxx: " si existe
+                                                            const sinBob = raw.replace(/Ajuste\s+BOB-[\w-]+:\s*/gi, '');
+                                                            const hasPipe = sinBob.includes(' | ');
+                                                            const ordenPart = hasPipe ? sinBob.split(' | ')[0].trim() : '';
+                                                            const motivoPart = hasPipe ? sinBob.split(' | ').slice(1).join(' | ').trim() : sinBob;
+                                                            return (
+                                                                <>
+                                                                    {ordenPart && (
+                                                                        <span className="inline-block text-[10px] font-mono font-black text-indigo-600 bg-indigo-50 px-1.5 py-0.5 rounded mb-0.5">
+                                                                            #{ordenPart}
+                                                                        </span>
+                                                                    )}
+                                                                    <div className="text-xs text-slate-700 truncate" title={motivoPart}>{motivoPart || '—'}</div>
+                                                                    {m.Usuario && (
+                                                                        <div className="text-[10px] text-slate-400">👤 {m.Usuario}</div>
+                                                                    )}
+                                                                </>
+                                                            );
+                                                        })()}
                                                     </div>
 
                                                     {/* Tipo badge */}

@@ -1801,6 +1801,12 @@ const PriceProfiles = () => {
                 >
                     <i className="fa-solid fa-ban mr-2"></i> Excepciones Urgencia
                 </button>
+                <button
+                    onClick={() => setActiveTab('variante-precios')}
+                    className={`pb-3 font-bold text-sm border-b-2 transition-colors ${activeTab === 'variante-precios' ? 'border-emerald-600 text-emerald-700' : 'border-transparent text-slate-500 hover:text-slate-700'}`}
+                >
+                    <i className="fa-solid fa-layer-group mr-2"></i> Precios x Variante
+                </button>
             </div>
 
             {/* CONTENIDO */}
@@ -2342,6 +2348,378 @@ const PriceProfiles = () => {
 
                         </div>
                     </div>
+                )}
+
+                {activeTab === 'variante-precios' && (
+                    <VariantePreciosTab />
+                )}
+            </div>
+        </div>
+    );
+};
+
+// ─── Pestaña Precios por Variante ───────────────────────────────────────────────
+const VariantePreciosTab = () => {
+    const [articles, setArticles]         = React.useState([]);
+    const [search, setSearch]             = React.useState('');
+    const [varSearch, setVarSearch]       = React.useState('');
+    const [selected, setSelected]         = React.useState(null);
+    const [variants, setVariants]         = React.useState([]);
+    const [loadingVars, setLoadingVars]   = React.useState(false);
+    const [saving, setSaving]             = React.useState({});
+    const [savingAll, setSavingAll]       = React.useState(false);
+    const [edits, setEdits]               = React.useState({});
+    const [checkedIds, setCheckedIds]     = React.useState(new Set());
+    const [bulkPrecio, setBulkPrecio]     = React.useState('');
+    const [bulkMoneda, setBulkMoneda]     = React.useState('UYU');
+    const [applyingBulk, setApplyingBulk] = React.useState(false);
+
+    React.useEffect(() => {
+        api.get('/products-integration/local')
+            .then(res => {
+                // Todos los productos que tienen variantes WMS importadas
+                const prods = (res.data || []).filter(a => (a.CantidadVariantes || 0) > 0);
+                setArticles(prods);
+            })
+            .catch(() => {});
+    }, []);
+
+    const loadVariants = (art) => {
+        setSelected(art);
+        setVariants([]);
+        setEdits({});
+        setCheckedIds(new Set());
+        setBulkPrecio('');
+        setVarSearch('');
+        setLoadingVars(true);
+        api.get(`/products-integration/article-variants/${art.ProIdProducto}`)
+            .then(res => {
+                if (res.data.success) {
+                    setVariants(res.data.data);
+                    const init = {};
+                    res.data.data.forEach(v => {
+                        // moneda_excepcion viene como int: 1=UYU, 2=USD
+                        const monedaStr = v.moneda_excepcion === 2 ? 'USD' : 'UYU';
+                        init[v.id] = {
+                            precio: v.precio_excepcion != null ? String(v.precio_excepcion) : '',
+                            moneda: monedaStr
+                        };
+                    });
+                    setEdits(init);
+                }
+            })
+            .finally(() => setLoadingVars(false));
+    };
+
+    const saveVariant = async (varId) => {
+        setSaving(p => ({ ...p, [varId]: true }));
+        try {
+            const e = edits[varId];
+            await api.put(`/products-integration/article-variants/${varId}/price`, {
+                precio_excepcion: e.precio !== '' ? parseFloat(e.precio) : null,
+                moneda_excepcion: e.precio !== '' ? e.moneda : null
+            });
+            setVariants(prev => prev.map(v => v.id === varId
+                ? { ...v, precio_excepcion: e.precio !== '' ? parseFloat(e.precio) : null, moneda_excepcion: e.precio !== '' ? e.moneda : null }
+                : v
+            ));
+        } catch { /* silent */ }
+        finally { setSaving(p => ({ ...p, [varId]: false })); }
+    };
+
+    const saveAll = async () => {
+        setSavingAll(true);
+        for (const varId of Object.keys(edits)) {
+            await saveVariant(parseInt(varId));
+        }
+        setSavingAll(false);
+    };
+
+    // Aplicar precio masivo a los seleccionados
+    const applyBulk = async () => {
+        if (bulkPrecio === '' || checkedIds.size === 0) return;
+        setApplyingBulk(true);
+        const precio = parseFloat(bulkPrecio);
+        setEdits(prev => {
+            const next = { ...prev };
+            checkedIds.forEach(id => { next[id] = { precio: String(precio), moneda: bulkMoneda }; });
+            return next;
+        });
+        for (const varId of checkedIds) {
+            try {
+                await api.put(`/products-integration/article-variants/${varId}/price`, {
+                    precio_excepcion: precio, moneda_excepcion: bulkMoneda
+                });
+                setVariants(prev => prev.map(v => v.id === varId
+                    ? { ...v, precio_excepcion: precio, moneda_excepcion: bulkMoneda } : v
+                ));
+            } catch { /* silent */ }
+        }
+        setApplyingBulk(false);
+        setCheckedIds(new Set());
+        setBulkPrecio('');
+    };
+
+    // Quitar precio propio de los seleccionados (vuelven al precio base)
+    const clearBulk = async () => {
+        if (checkedIds.size === 0) return;
+        setApplyingBulk(true);
+        setEdits(prev => {
+            const next = { ...prev };
+            checkedIds.forEach(id => { next[id] = { ...next[id], precio: '' }; });
+            return next;
+        });
+        for (const varId of checkedIds) {
+            try {
+                await api.put(`/products-integration/article-variants/${varId}/price`, {
+                    precio_excepcion: null, moneda_excepcion: null
+                });
+                setVariants(prev => prev.map(v => v.id === varId
+                    ? { ...v, precio_excepcion: null, moneda_excepcion: null } : v
+                ));
+            } catch { /* silent */ }
+        }
+        setApplyingBulk(false);
+        setCheckedIds(new Set());
+    };
+
+    const toggleCheck = (id) => {
+        setCheckedIds(prev => {
+            const next = new Set(prev);
+            next.has(id) ? next.delete(id) : next.add(id);
+            return next;
+        });
+    };
+
+    const filteredArticles = articles.filter(a =>
+        (a.Descripcion || '').toLowerCase().includes(search.toLowerCase()) ||
+        (a.CodArticulo || '').toLowerCase().includes(search.toLowerCase())
+    );
+
+    const displayVariants = varSearch.trim()
+        ? variants.filter(v => v.nombre_variante.toLowerCase().includes(varSearch.toLowerCase()))
+        : variants;
+
+    const allChecked = displayVariants.length > 0 && displayVariants.every(v => checkedIds.has(v.id));
+    const someChecked = displayVariants.some(v => checkedIds.has(v.id));
+
+    const toggleAll = () => {
+        if (allChecked) {
+            setCheckedIds(prev => { const next = new Set(prev); displayVariants.forEach(v => next.delete(v.id)); return next; });
+        } else {
+            setCheckedIds(prev => { const next = new Set(prev); displayVariants.forEach(v => next.add(v.id)); return next; });
+        }
+    };
+
+    const filtered = filteredArticles; // alias para claridad
+
+    return (
+        <div className="h-full flex gap-6 overflow-hidden">
+            {/* Panel izquierdo */}
+            <div className="w-72 bg-white rounded-xl border border-slate-200 shadow-sm flex flex-col shrink-0 overflow-hidden">
+                <div className="p-4 border-b bg-slate-50">
+                    <h3 className="font-bold text-slate-700 text-sm mb-3 flex items-center gap-2">
+                        <i className="fa-solid fa-layer-group text-emerald-600"></i>
+                        Productos con variantes
+                    </h3>
+                    <div className="relative">
+                        <i className="fa-solid fa-search absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-xs"></i>
+                        <input className="w-full pl-8 pr-3 py-2 border border-slate-200 bg-white rounded-lg text-sm outline-none focus:border-emerald-500"
+                            placeholder="Buscar producto..." value={search} onChange={e => setSearch(e.target.value)} />
+                    </div>
+                </div>
+                <div className="flex-1 overflow-y-auto p-2 space-y-1">
+                    {filtered.length === 0 ? (
+                        <div className="p-6 text-center text-slate-400 text-sm">
+                            <i className="fa-solid fa-box-open text-3xl mb-2 block text-slate-200"></i>
+                            Sin productos con variantes
+                        </div>
+                    ) : filtered.map(art => (
+                        <div key={art.ProIdProducto} onClick={() => loadVariants(art)}
+                            className={`p-3 rounded-lg cursor-pointer transition-all border ${
+                                selected?.ProIdProducto === art.ProIdProducto
+                                    ? 'bg-emerald-50 border-emerald-300 shadow-sm'
+                                    : 'border-transparent hover:bg-slate-50 hover:border-slate-200'
+                            }`}>
+                            <p className="font-bold text-sm text-slate-800 truncate">{art.Descripcion?.trim()}</p>
+                            <div className="flex items-center gap-2 mt-1 flex-wrap">
+                                <span className="text-[10px] font-bold text-emerald-600 bg-emerald-50 px-1.5 py-0.5 rounded">
+                                    {art.CantidadVariantes} var.
+                                </span>
+                                {art.PrecioBase != null && (
+                                    <span className="text-[10px] font-bold text-blue-600 bg-blue-50 px-1.5 py-0.5 rounded">
+                                        Base: {art.MonIdMoneda === 2 ? 'U$S' : '$'} {parseFloat(art.PrecioBase).toFixed(2)}
+                                    </span>
+                                )}
+                            </div>
+                        </div>
+                    ))}
+                </div>
+            </div>
+
+            {/* Panel derecho */}
+            <div className="flex-1 bg-white rounded-xl border border-slate-200 shadow-sm flex flex-col overflow-hidden min-w-0">
+                {!selected ? (
+                    <div className="flex flex-col items-center justify-center h-full text-slate-400">
+                        <i className="fa-solid fa-hand-pointer text-5xl mb-4 text-slate-200"></i>
+                        <p className="font-bold text-lg text-slate-500">Seleccioná un producto</p>
+                        <p className="text-sm mt-1 text-center max-w-xs">Elegí un producto de la izquierda para ver y editar los precios de sus variantes.</p>
+                    </div>
+                ) : (
+                    <>
+                        {/* Header */}
+                        <div className="p-4 border-b bg-slate-50 shrink-0">
+                            <div className="flex items-center justify-between gap-4">
+                                <div className="min-w-0">
+                                    <h2 className="text-base font-black text-slate-800 truncate">{selected.Descripcion?.trim()}</h2>
+                                    <p className="text-xs text-slate-500 mt-0.5">
+                                        Precio base:
+                                        <span className="font-bold text-slate-700 ml-1">
+                                            {selected.PrecioBase != null ? `${selected.MonIdMoneda === 2 ? 'U$S' : '$'} ${parseFloat(selected.PrecioBase).toFixed(2)}` : 'Sin precio'}
+                                        </span>
+                                        <span className="ml-1 text-blue-500">— variantes sin precio propio lo heredan</span>
+                                    </p>
+                                </div>
+                                <div className="flex items-center gap-2 shrink-0">
+                                    <div className="relative">
+                                        <i className="fa-solid fa-search absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 text-xs"></i>
+                                        <input className="pl-7 pr-3 py-1.5 border border-slate-200 rounded-lg text-xs outline-none focus:border-emerald-400 w-40"
+                                            placeholder="Filtrar variantes..." value={varSearch} onChange={e => setVarSearch(e.target.value)} />
+                                    </div>
+                                    <button onClick={saveAll} disabled={savingAll}
+                                        className="px-4 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-lg transition-all shadow-sm disabled:opacity-50 flex items-center gap-1.5">
+                                        {savingAll ? <i className="fa-solid fa-spinner fa-spin"></i> : <i className="fa-solid fa-floppy-disk"></i>}
+                                        Guardar todos
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+
+                        {/* Barra de acción masiva — solo aparece cuando hay seleccionados */}
+                        {checkedIds.size > 0 && (
+                            <div className="px-4 py-3 bg-indigo-50 border-b border-indigo-200 flex items-center gap-3 shrink-0 flex-wrap">
+                                <span className="inline-flex items-center gap-1.5 bg-indigo-600 text-white text-xs font-bold px-2.5 py-1 rounded-full">
+                                    <i className="fa-solid fa-check-square text-[10px]"></i>
+                                    {checkedIds.size} seleccionadas
+                                </span>
+                                <div className="flex items-center gap-2 ml-auto flex-wrap">
+                                    <span className="text-xs font-bold text-slate-600">Aplicar a todas:</span>
+                                    <select value={bulkMoneda} onChange={e => setBulkMoneda(e.target.value)}
+                                        className="text-xs font-bold px-2 py-1.5 border border-slate-300 rounded-lg bg-white outline-none focus:border-indigo-400">
+                                        <option value="UYU">$ UYU</option>
+                                        <option value="USD">U$S USD</option>
+                                    </select>
+                                    <input type="number" step="0.01" min="0" placeholder="Precio..."
+                                        value={bulkPrecio} onChange={e => setBulkPrecio(e.target.value)}
+                                        className="w-28 text-sm font-bold px-3 py-1.5 border border-slate-300 rounded-lg bg-white outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100" />
+                                    <button onClick={applyBulk} disabled={applyingBulk || bulkPrecio === ''}
+                                        className="px-4 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded-lg transition-all disabled:opacity-50 flex items-center gap-1.5 shadow-sm">
+                                        {applyingBulk ? <i className="fa-solid fa-spinner fa-spin"></i> : <i className="fa-solid fa-bolt"></i>}
+                                        Aplicar
+                                    </button>
+                                    <button onClick={clearBulk} disabled={applyingBulk}
+                                        className="px-3 py-1.5 bg-white border border-red-200 hover:border-red-400 text-red-500 hover:text-red-700 text-xs font-bold rounded-lg transition-all disabled:opacity-50"
+                                        title="Quitar precio propio — usar precio base">
+                                        <i className="fa-solid fa-trash-can mr-1"></i>Quitar precio
+                                    </button>
+                                    <button onClick={() => setCheckedIds(new Set())} className="text-slate-400 hover:text-slate-600 text-xs px-2">
+                                        <i className="fa-solid fa-xmark"></i>
+                                    </button>
+                                </div>
+                            </div>
+                        )}
+
+                        {/* Info bar cuando no hay selección */}
+                        {checkedIds.size === 0 && (
+                            <div className="px-4 py-2 bg-blue-50 border-b border-blue-100 text-xs text-blue-700 flex items-center gap-2 shrink-0">
+                                <i className="fa-solid fa-circle-info"></i>
+                                Marcá variantes con el ☑ para aplicar un precio masivo.
+                                Las filas en <strong className="text-emerald-700 mx-1">verde</strong> ya tienen precio propio.
+                            </div>
+                        )}
+
+                        {/* Tabla */}
+                        <div className="flex-1 overflow-y-auto">
+                            {loadingVars ? (
+                                <div className="flex items-center justify-center py-16 text-slate-400">
+                                    <i className="fa-solid fa-circle-notch fa-spin text-3xl"></i>
+                                </div>
+                            ) : (
+                                <table className="w-full text-sm">
+                                    <thead className="sticky top-0 bg-white border-b border-slate-200 z-10 shadow-sm">
+                                        <tr className="text-xs text-slate-500 uppercase">
+                                            <th className="px-4 py-3 w-10">
+                                                <input type="checkbox" checked={allChecked}
+                                                    ref={el => { if (el) el.indeterminate = someChecked && !allChecked; }}
+                                                    onChange={toggleAll}
+                                                    className="w-4 h-4 rounded accent-indigo-600 cursor-pointer" />
+                                            </th>
+                                            <th className="text-left px-4 py-3">Variante</th>
+                                            <th className="text-left px-4 py-3 w-28">Moneda</th>
+                                            <th className="text-left px-4 py-3 w-40">Precio excepción</th>
+                                            <th className="text-left px-4 py-3 w-32">Precio efectivo</th>
+                                            <th className="px-4 py-3 w-16"></th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {displayVariants.map(v => {
+                                            const e = edits[v.id] || { precio: '', moneda: 'UYU' };
+                                            const hasCustom = v.precio_excepcion != null;
+                                            const isChecked = checkedIds.has(v.id);
+                                            const efectivo = e.precio !== '' ? parseFloat(e.precio) : (selected.PrecioBase != null ? parseFloat(selected.PrecioBase) : null);
+                                            const monEfectiva = e.precio !== '' ? e.moneda : (selected.MonIdMoneda === 2 ? 'U$S' : '$');
+                                            return (
+                                                <tr key={v.id} className={`border-b last:border-0 transition-colors ${
+                                                    isChecked ? 'bg-indigo-50' :
+                                                    hasCustom ? 'bg-emerald-50 hover:bg-emerald-100/60' :
+                                                    'hover:bg-slate-50'
+                                                }`}>
+                                                    <td className="px-4 py-2.5">
+                                                        <input type="checkbox" checked={isChecked} onChange={() => toggleCheck(v.id)}
+                                                            className="w-4 h-4 rounded accent-indigo-600 cursor-pointer" />
+                                                    </td>
+                                                    <td className="px-4 py-2.5">
+                                                        <p className="font-semibold text-slate-800">{v.nombre_variante}</p>
+                                                    </td>
+                                                    <td className="px-4 py-2.5">
+                                                        <select value={e.moneda}
+                                                            onChange={ev => setEdits(prev => ({ ...prev, [v.id]: { ...prev[v.id], moneda: ev.target.value } }))}
+                                                            className="text-xs font-bold px-2 py-1.5 border border-slate-200 rounded-lg bg-white outline-none focus:border-emerald-400 w-full">
+                                                            <option value="UYU">$ UYU</option>
+                                                            <option value="USD">U$S USD</option>
+                                                        </select>
+                                                    </td>
+                                                    <td className="px-4 py-2.5">
+                                                        <input type="number" step="0.01" min="0"
+                                                            placeholder={selected.PrecioBase != null ? `Base: ${parseFloat(selected.PrecioBase).toFixed(2)}` : 'Sin base'}
+                                                            value={e.precio}
+                                                            onChange={ev => setEdits(prev => ({ ...prev, [v.id]: { ...prev[v.id], precio: ev.target.value } }))}
+                                                            className="w-full text-sm font-bold px-3 py-1.5 border border-slate-200 rounded-lg bg-white outline-none focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100" />
+                                                    </td>
+                                                    <td className="px-4 py-2.5">
+                                                        {efectivo != null ? (
+                                                            <span className={`font-black text-sm ${ e.precio !== '' ? 'text-emerald-700' : 'text-slate-400' }`}>
+                                                                {monEfectiva} {efectivo.toFixed(2)}
+                                                            </span>
+                                                        ) : (
+                                                            <span className="text-slate-300 text-xs italic">sin precio</span>
+                                                        )}
+                                                    </td>
+                                                    <td className="px-4 py-2.5 text-right">
+                                                        <button onClick={() => saveVariant(v.id)} disabled={saving[v.id]}
+                                                            className="px-2.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-lg transition-all disabled:opacity-50"
+                                                            title="Guardar esta variante">
+                                                            {saving[v.id] ? <i className="fa-solid fa-spinner fa-spin"></i> : <i className="fa-solid fa-floppy-disk"></i>}
+                                                        </button>
+                                                    </td>
+                                                </tr>
+                                            );
+                                        })}
+                                    </tbody>
+                                </table>
+                            )}
+                        </div>
+                    </>
                 )}
             </div>
         </div>

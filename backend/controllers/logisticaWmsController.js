@@ -89,6 +89,41 @@ exports.confirmPreparation = async (req, res) => {
         const items = itemsRes.recordset;
         if (items.length === 0) throw new Error('El pedido no tiene items');
 
+        // 2. Descontar stock via API WMS externa
+        const wmsUrl = process.env.WMS_API_URL;
+        const wmsErrors = [];
+        
+        if (wmsUrl) {
+            for (const item of items) {
+                try {
+                    const decrementQuery = `
+                        USE Ventas_Dev;
+                        UPDATE Stock_Etiquetas
+                        SET cantidad_actual = cantidad_actual - ${parseFloat(item.Cantidad)}
+                        WHERE variante_id = ${parseInt(item.wms_variante_id)}
+                          AND estado = 'activo'
+                          AND cantidad_actual >= ${parseFloat(item.Cantidad)};
+                        SELECT @@ROWCOUNT AS filas_afectadas;
+                    `;
+                    const response = await fetch(`${wmsUrl}/sql`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ query: decrementQuery })
+                    });
+                    const result = await response.json();
+                    if (!response.ok || !result.success) {
+                        wmsErrors.push(`variante ${item.wms_variante_id}: ${result.error || 'error desconocido'}`);
+                    } else {
+                        logger.info(`✅ Stock WMS descontado: variante ${item.wms_variante_id} x ${item.Cantidad}`);
+                    }
+                } catch (e) {
+                    wmsErrors.push(`variante ${item.wms_variante_id}: ${e.message}`);
+                }
+            }
+        } else {
+            logger.warn('WMS_API_URL no configurada — stock NO descontado del WMS');
+        }
+
         // 3. Update Order State
         await pool.request()
             .input('PedidoID', sql.Int, pedidoId)
@@ -98,12 +133,17 @@ exports.confirmPreparation = async (req, res) => {
                 WHERE ID = @PedidoID AND NoDocERP LIKE 'VEN-%'
             `);
 
-        res.json({ success: true, message: 'Pedido confirmado y marcado como PREPARADO' });
+        const msg = wmsErrors.length > 0
+            ? `Pedido PREPARADO con advertencias en stock WMS: ${wmsErrors.join('; ')}`
+            : 'Pedido confirmado, stock WMS descontado y marcado como PREPARADO';
+
+        res.json({ success: true, message: msg, wmsErrors });
     } catch (err) {
         logger.error('Error en confirmPreparation (Logistica):', err);
         res.status(500).json({ error: err.message });
     }
 };
+
 
 exports.markDelivered = async (req, res) => {
     try {

@@ -114,7 +114,6 @@ exports.createReception = async (req, res) => {
 
                 // 2. Inventario (Tela de Cliente)
                 if (isTelaInventory) {
-                    const bobinaCode = `BOB-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
                     const areaFinal  = areaDestino || 'RECEPCION';
 
                     const req2 = new sql.Request(transaction)
@@ -122,7 +121,7 @@ exports.createReception = async (req, res) => {
                         .input('Area',  sql.VarChar(50),    areaFinal)
                         .input('Met',   sql.Decimal(10,2),  bLargo)
                         .input('Lote',  sql.NVarChar(100),  loteProv || 'S/L')
-                        .input('Code',  sql.NVarChar(100),  bobinaCode)
+                        .input('Code',  sql.NVarChar(100),  'BOB-TEMP')   // se actualiza tras conocer BobinaID
                         .input('Ref',   sql.NVarChar(100),  uniqueCode)
                         .input('Cli',   sql.VarChar(255),   clienteId)
                         .input('Desc',  sql.NVarChar(200),  telaCliente || null);  // Nombre de la tela
@@ -142,7 +141,14 @@ exports.createReception = async (req, res) => {
                             ${bPeso  !== null ? ', @Peso'  : ''});
                     `);
 
-                    const bobinaId = invRes.recordset[0].BobinaID;
+                    const bobinaId  = invRes.recordset[0].BobinaID;
+                    const shortCode = `BOB-${bobinaId}`;
+
+                    // Actualizar CodigoEtiqueta con el código corto definitivo
+                    await new sql.Request(transaction)
+                        .input('BID',  sql.Int,          bobinaId)
+                        .input('Code', sql.NVarChar(100), shortCode)
+                        .query('UPDATE InventarioBobinas SET CodigoEtiqueta = @Code WHERE BobinaID = @BID');
 
                     // Descripción del movimiento incluyendo dimensiones
                     const dimStr = [bAncho !== null ? `A:${bAncho.toFixed(2)}m` : '', bPeso !== null ? `P:${bPeso.toFixed(2)}kg` : '']
@@ -320,36 +326,48 @@ exports.getHistory = async (req, res) => {
         const pool = await getPool();
         const request = pool.request();
 
-        let query = `
-            SELECT * FROM Recepciones WHERE 1=1
-        `;
+        let whereClauses = ['1=1'];
 
         if (cliente) {
             request.input('Cli', sql.VarChar(255), `%${cliente}%`);
-            query += " AND Cliente LIKE @Cli";
+            whereClauses.push("(r.Cliente LIKE @Cli OR c.Nombre LIKE @Cli OR c.NombreFantasia LIKE @Cli)");
         }
         if (orden) {
             request.input('Ord', sql.VarChar(50), `%${orden}%`);
-            query += " AND Codigo LIKE @Ord";
+            whereClauses.push("r.Codigo LIKE @Ord");
         }
         if (fechaDesde) {
             request.input('FD', sql.DateTime, fechaDesde);
-            query += " AND FechaRecepcion >= @FD";
+            whereClauses.push("r.FechaRecepcion >= @FD");
         }
         if (fechaHasta) {
             request.input('FH', sql.DateTime, new Date(fechaHasta + 'T23:59:59'));
-            query += " AND FechaRecepcion <= @FH";
+            whereClauses.push("r.FechaRecepcion <= @FH");
         }
 
+        const where = whereClauses.join(' AND ');
+
+        const baseQuery = `
+            FROM Recepciones r
+            LEFT JOIN dbo.Clientes c WITH(NOLOCK)
+                ON TRY_CAST(r.Cliente AS INT) = c.CliIdCliente
+            WHERE ${where}
+        `;
+
         // Count Total
-        const countQuery = query.replace('SELECT *', 'SELECT COUNT(*) as Total');
-        const countRes = await request.query(countQuery);
+        const countRes = await request.query(`SELECT COUNT(*) as Total ${baseQuery}`);
         const total = countRes.recordset[0].Total;
 
         // Paging
-        query += ` ORDER BY RecepcionID DESC OFFSET ${offset} ROWS FETCH NEXT ${pageSize} ROWS ONLY`;
-
-        const result = await request.query(query);
+        const result = await request.query(`
+            SELECT
+                r.*,
+                RTRIM(LTRIM(COALESCE(NULLIF(c.NombreFantasia,''), c.Nombre, r.Cliente))) AS ClienteNombre,
+                RTRIM(LTRIM(c.IDCliente)) AS IDCliente
+            ${baseQuery}
+            ORDER BY r.RecepcionID DESC
+            OFFSET ${offset} ROWS FETCH NEXT ${pageSize} ROWS ONLY
+        `);
 
         res.json({
             rows: result.recordset,
@@ -360,6 +378,34 @@ exports.getHistory = async (req, res) => {
 
     } catch (err) {
         logger.error("Error getHistory:", err);
+        res.status(500).json({ error: err.message });
+    }
+};
+
+// ==========================================
+// 3b. BOBINAS POR ORDEN (para reimpresion desde historial)
+// ==========================================
+exports.getBobinasByOrden = async (req, res) => {
+    const { orden } = req.params;
+    try {
+        const pool = await getPool();
+        const result = await pool.request()
+            .input('Ref', sql.VarChar(50), orden)
+            .query(`
+                SELECT
+                    ib.BobinaID,
+                    ib.Referencia,
+                    ib.MetrosIniciales  AS largo,
+                    ib.Ancho            AS ancho,
+                    ib.Peso             AS peso,
+                    ib.DescripcionTela  AS tela
+                FROM InventarioBobinas ib
+                WHERE ib.Referencia LIKE @Ref + '%'
+                ORDER BY ib.BobinaID
+            `);
+        res.json({ bobinas: result.recordset });
+    } catch (err) {
+        logger.error('Error getBobinasByOrden:', err.message);
         res.status(500).json({ error: err.message });
     }
 };

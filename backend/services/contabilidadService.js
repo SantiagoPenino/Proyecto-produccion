@@ -433,6 +433,27 @@ async function hookOrdenCreada(params, transaction = null) {
               OrdIdOrden,
               MovObservaciones: `Exceso s/ Plan #${PlaIdPlan} (sin plan activo)`,
             }, transaction);
+            // Marcar ORDEN monetaria existente como CUBIERTO_NEG para excluirla del billing
+            if (OrdIdOrden) {
+              const obsNegRollo = `CUBIERTO_NEG_${Math.abs(Cantidad).toFixed(2)}_PLAN_${PlaIdPlan}`;
+              const markRolloReq = transaction ? new sql.Request(transaction) : pool.request();
+              await markRolloReq
+                .input('OrdId', sql.Int, OrdIdOrden)
+                .input('CliId', sql.Int, CliIdCliente)
+                .input('Obs', sql.NVarChar(500), obsNegRollo)
+                .query(`
+                  UPDATE m SET m.MovObservaciones = @Obs
+                  FROM   dbo.MovimientosCuenta m
+                  JOIN   dbo.CuentasCliente cc ON cc.CueIdCuenta = m.CueIdCuenta
+                  WHERE  m.OrdIdOrden = @OrdId
+                    AND  cc.CliIdCliente = @CliId
+                    AND  cc.CueTipo IN ('DINERO_USD','DINERO_UYU')
+                    AND  m.MovTipo IN ('ORDEN','ORDEN_ANTICIPO')
+                    AND  (m.MovAnulado IS NULL OR m.MovAnulado = 0)
+                    AND  m.DocIdDocumento IS NULL
+                    AND  (m.MovObservaciones IS NULL OR m.MovObservaciones NOT LIKE 'CUBIERTO%')
+                `);
+            }
           } else {
             // No hay ningún plan histórico para este producto y cliente.
             // Último recurso: deuda monetaria como placeholder hasta que se asigne un plan.
@@ -920,6 +941,7 @@ async function hookEntregaMetros(params) {
 
     // 3a. Cliente con plan comprado: el exceso va negativo en la cuenta de recursos.
     //     Aplica a ROLLO y SEMANAL con recursos — nunca genera deuda monetaria por exceso de metros.
+    const excessoFinal = cantidadPendiente; // capturar antes de zeroing para la obs CUBIERTO
     if (cantidadPendiente > 0 && planRes.recordset.length > 0) {
       const lastPlan = planRes.recordset[planRes.recordset.length - 1];
       logger.info(`[HOOK:METROS] CON_RECURSOS — registrando exceso negativo de ${cantidadPendiente} uds en cuenta ${lastPlan.CueIdCuenta}`);
@@ -933,6 +955,33 @@ async function hookEntregaMetros(params) {
         MovObservaciones: `Exceso s/ Plan #${lastPlan.PlaIdPlan}`,
       }, transaction);
       cantidadPendiente = 0;
+    }
+
+    // Marcar la ORDEN monetaria existente como CUBIERTO (si existe y no está ya marcada).
+    // Cubre el caso donde la ORDEN fue creada por otra vía (PREPAGO, motor externo) antes de
+    // que el plan descuente los metros. Sin esta marca, aparece en "Pendientes de Facturar".
+    if (planRes.recordset.length > 0 && OrdIdOrden) {
+      const lastPlanMark = planRes.recordset[planRes.recordset.length - 1];
+      const obsMarcar = excessoFinal > 0
+        ? `CUBIERTO_NEG_${excessoFinal.toFixed(2)}_PLAN_${lastPlanMark.PlaIdPlan}`
+        : `CUBIERTO_POR_PLAN_${lastPlanMark.PlaIdPlan}`;
+      await mkReq()
+        .input('OrdId', sql.Int, OrdIdOrden)
+        .input('CliId', sql.Int, CliIdCliente)
+        .input('Obs', sql.NVarChar(500), obsMarcar)
+        .query(`
+          UPDATE m
+          SET    m.MovObservaciones = @Obs
+          FROM   dbo.MovimientosCuenta m
+          JOIN   dbo.CuentasCliente cc ON cc.CueIdCuenta = m.CueIdCuenta
+          WHERE  m.OrdIdOrden = @OrdId
+            AND  cc.CliIdCliente = @CliId
+            AND  cc.CueTipo IN ('DINERO_USD','DINERO_UYU')
+            AND  m.MovTipo IN ('ORDEN','ORDEN_ANTICIPO')
+            AND  (m.MovAnulado IS NULL OR m.MovAnulado = 0)
+            AND  m.DocIdDocumento IS NULL
+            AND  (m.MovObservaciones IS NULL OR m.MovObservaciones NOT LIKE 'CUBIERTO%')
+        `);
     }
 
     // 3b. Clientes sin plan de recursos: generar cargo monetario por metros no cubiertos
@@ -1647,6 +1696,7 @@ async function getCicloMovimientos(CicIdCiclo) {
              ISNULL(od.OrdCantidad, 1) AS OrdCantidad,
              ISNULL(od.OrdDescuentoAplicado, 0) AS OrdDescuentoAplicado,
              od.OrdMaterialPlanilla,
+             od.MonIdMoneda AS OrdMonIdMoneda,
              p.Descripcion AS ProNombre,
              s.Articulo AS ProSubFamilia,
              s.CodStock AS ProCodStock,
@@ -2032,7 +2082,7 @@ async function cerrarCicloCompleto({
       // Si la moneda de factura difiere de la cuenta, buscar/crear la cuenta en la moneda destino
       let cueIdFactura = ciclo.CueIdCuenta;  // por defecto la misma cuenta
       if (esCrossMoneda) {
-        const targetTipo = targetMonId === 2 ? 'USD' : 'UYU';
+        const targetTipo = targetMonId === 2 ? 'DINERO_USD' : 'DINERO_UYU';
         cueIdFactura = await obtenerOCrearCuenta(ciclo.CliIdCliente, targetTipo, {
           MonIdMoneda: targetMonId,
           CPaIdCondicion: 1,

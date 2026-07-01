@@ -285,7 +285,7 @@ exports.closeBobina = async (req, res) => {
 // 4.1 AJUSTE MANUAL (REBAJA SIN CIERRE)
 // ==========================================
 exports.adjustBobina = async (req, res) => {
-    const { bobinaId, cantidad, motivo } = req.body; // Cantidad negativa = resta, positiva = suma
+    const { bobinaId, cantidad, motivo, orden } = req.body; // Cantidad negativa = resta, positiva = suma
     const userId = req.user ? req.user.id : 1;
 
     try {
@@ -316,7 +316,7 @@ exports.adjustBobina = async (req, res) => {
                 .input('IID', sql.Int, InsumoID)
                 .input('BID', sql.Int, bobinaId)
                 .input('Cant', sql.Decimal(10, 2), cantidad) // Save the delta
-                .input('Ref', sql.NVarChar(200), `Ajuste ${CodigoEtiqueta}: ${motivo}`)
+                .input('Ref', sql.NVarChar(200), orden ? `${orden} | ${motivo}` : motivo)
                 .input('UID', sql.Int, userId)
                 .query("INSERT INTO MovimientosInsumos (InsumoID, BobinaID, TipoMovimiento, Cantidad, Referencia, UsuarioID) VALUES (@IID, @BID, 'AJUSTE_MANUAL', @Cant, @Ref, @UID)");
 

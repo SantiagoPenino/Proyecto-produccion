@@ -1,4 +1,4 @@
-import React, { useState, useEffect, Fragment } from 'react';
+import React, { useState, useEffect, Fragment, useRef } from 'react';
 import { Search, Plus, Trash2, Loader2, User, CheckCircle, ArrowRight, Wallet, History, ChevronDown, Check } from 'lucide-react';
 import { Listbox, Transition } from '@headlessui/react';
 import api from '../../services/apiClient';
@@ -60,6 +60,41 @@ export default function CajaVentaDirectaTab({
     { id: Date.now(), tipo: defaultTipo, grupo: defaultTipo === 'VENTA_INSUMOS' ? 'Insumos' : defaultTipo === 'VENTA_PRODUCTOS' ? 'Productos en el local' : '', codigo: '', descripcion: '', cantidad: 1, precioUnitario: '', precioTotal: '' }
   ]);
   const [productosBase, setProductosBase] = useState([]);
+  const [preciosCargando, setPreciosCargando] = useState({}); // { [itemId]: true }
+  const precioDebounceRefs = useRef({}); // timers de debounce por itemId
+
+  const fetchPrecioMotor = async (itemId, codArticulo, cantidad, clienteId) => {
+    if (!codArticulo || !cantidad || Number(cantidad) <= 0) return;
+    setPreciosCargando(p => ({ ...p, [itemId]: true }));
+    try {
+      const res = await api.post('/prices/calculate', {
+        codArticulo: String(codArticulo),
+        cantidad: Number(cantidad),
+        clienteId: clienteId || null,
+        targetCurrency: monedaExhibicion === 'USD' ? 'USD' : 'UYU',
+      });
+      const data = res.data;
+      const precioUnit = data.precioUnitario ?? data.precio ?? null;
+      if (precioUnit !== null && precioUnit !== undefined) {
+        // Construir nota con descuento aplicado si lo hay
+        const descuentoLinea = data.breakdown?.find(b => b.tipo === 'DISCOUNT');
+        const notaDescuento = descuentoLinea ? `Descuento aplicado: ${descuentoLinea.desc}` : null;
+
+        setItems(p => p.map(x => {
+          if (x.id !== itemId) return x;
+          const unit = Number(precioUnit);
+          return { ...x, precioUnitario: unit.toFixed(2), precioTotal: (unit * Number(x.cantidad || 1)).toFixed(2) };
+        }));
+
+        setObs(notaDescuento || '');
+      }
+    } catch (e) {
+      // Si falla el motor dejamos el precio base sin mostrar error
+      console.warn('Motor de precios no disponible:', e?.response?.status);
+    } finally {
+      setPreciosCargando(p => { const n = { ...p }; delete n[itemId]; return n; });
+    }
+  };
 
   // Estado interno para cuando NO se usan props externas
   const [pagosInternal, setPagosInternal] = useState([]);
@@ -427,6 +462,7 @@ export default function CajaVentaDirectaTab({
                                    precio = precio / (cotizacion || 40);
                                }
                                newObj.precioUnitario = Number(precio).toFixed(2);
+                               newObj.precioBase = Number(precio).toFixed(2);
                                newObj.precioTotal = Number(precio * (x.cantidad || 1)).toFixed(2);
                             }
                             return newObj;
@@ -467,28 +503,55 @@ export default function CajaVentaDirectaTab({
                     </div>
                     <div className="flex flex-col gap-1 text-center">
                       <label className="text-[10px] font-archivo uppercase font-black text-zinc-400 tracking-widest">Cantidad</label>
-                      <input type="number" step="0.5" value={it.cantidad} onChange={e=>{
+                      <input type="number" step="0.5" value={it.cantidad}
+                        onChange={e=>{
                           const val = e.target.value;
                           setItems(p=>p.map(x=>{
                             if (x.id !== it.id) return x;
-                            let newObj = { ...x, cantidad: val };
                             const unit = Number(x.precioUnitario) || 0;
-                            newObj.precioTotal = Number(unit * (val || 0)).toFixed(2);
-                            return newObj;
+                            return { ...x, cantidad: val, precioTotal: Number(unit * (val || 0)).toFixed(2) };
                           }));
-                      }} className="bg-zinc-100 border-2 border-zinc-200 rounded-xl px-4 py-2 text-sm font-black text-emerald-600 text-center outline-none focus:border-emerald-500 shadow-inner" />
+                        }}
+                        onBlur={e=>{
+                          const val = e.target.value;
+                          if (it.codigo && Number(val) > 0)
+                            fetchPrecioMotor(it.id, it.codigo, val, clienteSel?.IdCliente || clienteSel?.id || null);
+                        }}
+                        onKeyDown={e=>{
+                          if (e.key === 'Enter' && it.codigo && Number(e.target.value) > 0)
+                            fetchPrecioMotor(it.id, it.codigo, e.target.value, clienteSel?.IdCliente || clienteSel?.id || null);
+                        }}
+                        className={`bg-zinc-100 border-2 rounded-xl px-4 py-2 text-sm font-black text-emerald-600 text-center outline-none focus:border-emerald-500 shadow-inner transition-colors ${preciosCargando[it.id] ? 'border-amber-300 animate-pulse' : 'border-zinc-200'}`} />
                     </div>
                     <div className="flex flex-col gap-1">
                       <label className="text-[10px] font-archivo uppercase font-black text-zinc-400 tracking-widest">Precio U. {monedaExhibicion}</label>
-                      <input type="number" step="0.1" value={it.precioUnitario || ''} onChange={e=>{
-                          const val = e.target.value;
-                          setItems(p=>p.map(x=>{
-                            if(x.id===it.id) {
-                               return {...x, precioUnitario: val, precioTotal: Number((val || 0) * (x.cantidad || 1)).toFixed(2)};
+                      <div className="relative">
+                        {preciosCargando[it.id] && (
+                          <div className="absolute inset-y-0 left-2 flex items-center pointer-events-none">
+                            <Loader2 size={12} className="text-amber-400 animate-spin" />
+                          </div>
+                        )}
+                        <input type="number" step="0.1" value={it.precioUnitario || ''} onChange={e=>{
+                            const val = e.target.value;
+                            setItems(p=>p.map(x=>{
+                              if(x.id===it.id) {
+                                 return {...x, precioUnitario: val, precioTotal: Number((val || 0) * (x.cantidad || 1)).toFixed(2)};
+                              }
+                              return x;
+                            }));
+                            // Calcular % descuento/recargo vs precio base
+                            const base = Number(it.precioBase);
+                            const nuevo = Number(val);
+                            if (base > 0 && nuevo > 0 && nuevo !== base) {
+                              const pct = ((nuevo - base) / base * 100).toFixed(1);
+                              const signo = pct > 0 ? '+' : '';
+                              const nota = `Precio manual: ${signo}${pct}% vs precio de lista`;
+                              setObs(nota);
+                            } else if (base > 0 && Number(val) === base) {
+                              setObs('');
                             }
-                            return x;
-                          }));
-                      }} className="bg-zinc-50 border-2 border-zinc-200 rounded-xl px-4 py-2 text-sm font-black text-zinc-900 outline-none focus:border-brand-cyan text-right shadow-sm" />
+                        }} className={`w-full bg-zinc-50 border-2 rounded-xl px-4 py-2 text-sm font-black text-zinc-900 outline-none focus:border-brand-cyan text-right shadow-sm transition-colors ${preciosCargando[it.id] ? 'border-amber-300' : 'border-zinc-200'}`} />
+                      </div>
                     </div>
                     <div className="flex flex-col gap-1">
                       <label className="text-[10px] font-archivo uppercase font-black text-zinc-400 tracking-widest">Total {monedaExhibicion}</label>

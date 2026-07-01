@@ -70,6 +70,11 @@ export default function CajaPanelPago({
   showSubmitButton = true,
   onCondicionChange,   // callback(condicion: 'CONTADO'|'CREDITO') cuando el usuario cambia el toggle
   locked = false,      // Bloquea tipo doc, condición y método de pago (para vendedores)
+  onNumDocPredict,     // Callback opcional para recibir el número de doc generado (para mostrarlo afuera)
+  comprobanteFile = null,   // Archivo de comprobante (cuando locked=true, se muestra inline)
+  onComprobanteFile,        // Setter del archivo
+  comprobanteError = false, // Borde rojo si no hay comprobante al intentar procesar
+  comprobanteRef = null,    // Ref del input file
 }) {
   const esEgreso = mode === 'EGRESO';
   const tiposDoc = tiposDocDisponibles.length > 0
@@ -178,9 +183,8 @@ export default function CajaPanelPago({
         .then(r => {
           if (r.data.success) {
             setNumDocPredict(r.data.NumeroFormato);
-            if (r.data.Serie && onSerieDoc) {
-              onSerieDoc(r.data.Serie);
-            }
+            if (r.data.Serie && onSerieDoc) onSerieDoc(r.data.Serie);
+            if (onNumDocPredict) onNumDocPredict(r.data.NumeroFormato);
           }
         })
         .catch(() => setNumDocPredict('?'));
@@ -287,7 +291,8 @@ export default function CajaPanelPago({
     return (
       <div className="bg-white rounded-3xl border border-zinc-200 shadow-lg p-6 w-full mb-4 animate-in fade-in duration-300 font-sans select-none text-zinc-700">
         
-        {/* Cabecera del Documento Resultante y Balance */}
+        {/* Cabecera del Documento Resultante y Balance — oculta cuando locked */}
+        {!locked && (
         <div className="flex justify-between items-center mb-5 border-b border-zinc-100 pb-3 gap-3 flex-wrap">
           <div className="flex flex-col gap-1">
             <span className="text-[9px] font-black text-zinc-450 uppercase tracking-widest leading-none">Documento a Generar:</span>
@@ -335,11 +340,12 @@ export default function CajaPanelPago({
             )}
           </div>
         </div>
+        )}
 
-        {/* Rejilla de 3 Columnas */}
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8 items-start">
-          
-          {/* COLUMNA 1: Toggles de Comprobantes & Condición (Sin Etiquetas) */}
+        {/* Rejilla de 3 Columnas — cuando locked, col-1 se colapsa a contenido */}
+        <div className={`grid gap-8 items-start ${locked ? 'grid-cols-1 md:grid-cols-[auto_1fr_1fr]' : 'grid-cols-1 md:grid-cols-2 lg:grid-cols-3'}`}>
+
+          {/* COLUMNA 1: Toggles de Comprobantes & Condición */}
           <div className="flex flex-col gap-4">
             
             {esEgreso ? (
@@ -355,6 +361,18 @@ export default function CajaPanelPago({
                 </div>
               </div>
             ) : hasStandardVouchers ? (
+              locked ? (
+                /* Modo bloqueado: chips tipo + condición en fila compacta */
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="inline-flex items-center gap-1.5 bg-purple-600 text-white text-[10px] font-black px-3 py-1.5 rounded-lg uppercase tracking-wide whitespace-nowrap">
+                    <ShoppingBag size={11} />
+                    {derivedTipoCliente === 'PEDIDO_CAJA' ? 'Pedido Caja' : derivedTipoCliente === 'ETICKET' ? 'e-Ticket' : 'E-Factura'}
+                  </span>
+                  <span className={`inline-flex items-center text-[10px] font-black px-3 py-1.5 rounded-lg uppercase tracking-wide whitespace-nowrap ${derivedCondicion === 'CONTADO' ? 'bg-emerald-500 text-white' : 'bg-amber-500 text-white'}`}>
+                    {derivedCondicion === 'CONTADO' ? 'Contado' : 'Crédito'}
+                  </span>
+                </div>
+              ) : (
               <div className="flex bg-zinc-100 border border-zinc-200 rounded-2xl p-1 gap-1">
                 <button
                   type="button"
@@ -402,6 +420,7 @@ export default function CajaPanelPago({
                   E-Factura
                 </button>
               </div>
+              ) /* fin locked ? chip : botones */
             ) : hasReciboVouchers ? (
               <div className="flex bg-zinc-100 border border-zinc-200 rounded-2xl p-1 gap-1">
                 <button
@@ -443,8 +462,8 @@ export default function CajaPanelPago({
               />
             )}
 
-            {/* SERIE & NÚMERO (solo para no-egreso) */}
-            {!esEgreso && tipoDoc !== 'NINGUNO' && (
+            {/* SERIE & NÚMERO (oculto cuando locked) */}
+            {!esEgreso && tipoDoc !== 'NINGUNO' && !locked && (
               <div className="flex gap-3">
                 <div className="flex-1 flex items-center gap-2 bg-zinc-50 border border-zinc-200 rounded-xl px-3.5 py-2 shadow-inner">
                   <span className="text-[10px] font-black text-slate-400 uppercase tracking-wider shrink-0 select-none">Serie:</span>
@@ -465,12 +484,12 @@ export default function CajaPanelPago({
               </div>
             )}
 
-            {/* CONDICIÓN DE VENTA TABS (Solo para facturas estándar) */}
-            {!esEgreso && hasStandardVouchers && (
+            {/* CONDICIÓN DE VENTA TABS (Solo para facturas estándar, oculto en locked porque ya se muestra en el chip del tipo) */}
+            {!esEgreso && hasStandardVouchers && !locked && (
               <div className="flex bg-zinc-100 border border-zinc-200 rounded-2xl p-1 gap-1">
                 <button
                   type="button"
-                  onClick={() => !locked && handleSelectCondicion('CONTADO')}
+                  onClick={() => handleSelectCondicion('CONTADO')}
                   className={`flex-1 py-3 rounded-xl text-xs font-black uppercase tracking-wider transition-all ${
                     derivedCondicion === 'CONTADO'
                       ? 'bg-emerald-500 text-white shadow-md'
@@ -481,14 +500,11 @@ export default function CajaPanelPago({
                 </button>
                 <button
                   type="button"
-                  onClick={() => !locked && handleSelectCondicion('CREDITO')}
-                  disabled={locked}
+                  onClick={() => handleSelectCondicion('CREDITO')}
                   className={`flex-1 py-3 rounded-xl text-xs font-black uppercase tracking-wider transition-all ${
                     derivedCondicion === 'CREDITO'
                       ? 'bg-amber-500 text-white shadow-md'
-                      : locked
-                        ? 'text-zinc-300 bg-transparent cursor-not-allowed opacity-40'
-                        : 'text-zinc-500 hover:text-zinc-700 bg-transparent hover:bg-zinc-200/50'
+                      : 'text-zinc-500 hover:text-zinc-700 bg-transparent hover:bg-zinc-200/50'
                   }`}
                 >
                   Crédito
@@ -546,6 +562,37 @@ export default function CajaPanelPago({
                       </select>
                     </div>
                     
+                    {/* Comprobante inline (solo cuando locked y se pasaron props) */}
+                    {locked && onComprobanteFile && (
+                      comprobanteFile ? (
+                        <div className="flex items-center gap-1.5 bg-emerald-50 border border-emerald-300 rounded-xl px-2.5 py-1.5 min-w-0 flex-1">
+                          <CheckCircle size={13} className="text-emerald-500 shrink-0" />
+                          <span className="text-[10px] font-black text-emerald-700 truncate flex-1">{comprobanteFile.name}</span>
+                          <button
+                            type="button"
+                            onClick={() => { onComprobanteFile(null); if (comprobanteRef?.current) comprobanteRef.current.value = ''; }}
+                            className="text-emerald-400 hover:text-red-500 shrink-0 transition-colors"
+                          >
+                            <X size={12} />
+                          </button>
+                        </div>
+                      ) : (
+                        <label className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl border cursor-pointer text-[10px] font-black uppercase tracking-wide whitespace-nowrap transition-colors flex-1 justify-center
+                          ${comprobanteError ? 'border-red-400 bg-red-50 text-red-600 hover:bg-red-100' : 'border-dashed border-zinc-300 bg-zinc-50 text-zinc-500 hover:border-zinc-400 hover:bg-zinc-100'}`}>
+                          <Receipt size={12} />
+                          Adjuntar comprobante
+                          <input
+                            ref={comprobanteRef}
+                            type="file"
+                            accept="image/*,application/pdf"
+                            capture="environment"
+                            className="hidden"
+                            onChange={e => onComprobanteFile(e.target.files[0] || null)}
+                          />
+                        </label>
+                      )
+                    )}
+
                     {/* Toggles de moneda sin tipo de cambio arriba (User Request #5) */}
                     {!lockMoneda && (
                       <div className="flex bg-zinc-200 rounded-lg p-0.5 border border-zinc-300 select-none shrink-0 text-[10px] shadow-sm">
@@ -703,21 +750,23 @@ export default function CajaPanelPago({
             })()}
           </div>
 
-          {/* COLUMNA 3: Observaciones Internas & Botón de Procesar (Arriba y Abajo, User Request #4) */}
-          <div className="flex flex-col justify-between gap-4 h-full min-h-[170px] self-stretch">
-            
-            {/* Observaciones (En un bloque/cuadradito) */}
-            <div className="flex flex-col gap-1.5 flex-1">
-              <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest px-1">
-                Observaciones Internas
-              </label>
-              <textarea
-                value={notas}
-                onChange={(e) => onNotas && onNotas(e.target.value)}
-                placeholder="Añada notas informativas..."
-                className="w-full bg-zinc-50 border border-zinc-200 rounded-2xl px-4 py-3 text-xs font-bold text-zinc-800 outline-none resize-none focus:border-brand-cyan transition-all shadow-sm placeholder-zinc-300 flex-1 min-h-[96px] h-full"
-              />
-            </div>
+          {/* COLUMNA 3: Observaciones (solo si no locked) & Botón de Procesar */}
+          <div className={`flex flex-col gap-4 h-full self-stretch ${locked ? 'justify-end' : 'justify-between min-h-[170px]'}`}>
+
+            {/* Observaciones — ocultas aquí cuando locked, se muestran abajo del grid */}
+            {!locked && (
+              <div className="flex flex-col gap-1.5 flex-1">
+                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest px-1">
+                  Observaciones Internas
+                </label>
+                <textarea
+                  value={notas}
+                  onChange={(e) => onNotas && onNotas(e.target.value)}
+                  placeholder="Añada notas informativas..."
+                  className="w-full bg-zinc-50 border border-zinc-200 rounded-2xl px-4 py-3 text-xs font-bold text-zinc-800 outline-none resize-none focus:border-brand-cyan transition-all shadow-sm placeholder-zinc-300 flex-1 min-h-[96px] h-full"
+                />
+              </div>
+            )}
 
             {/* Botón Procesar abajo */}
             {showSubmitButton && onConfirmar && (
@@ -731,7 +780,7 @@ export default function CajaPanelPago({
                   <Loader2 className="animate-spin" size={16} />
                 ) : (
                   <>
-                    <CheckCircle size={16} /> 
+                    <CheckCircle size={16} />
                     {confirmBtnText}
                   </>
                 )}
@@ -740,6 +789,21 @@ export default function CajaPanelPago({
           </div>
 
         </div>
+
+        {/* Observaciones debajo del grid (solo cuando locked) */}
+        {locked && (
+          <div className="flex flex-col gap-1.5">
+            <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest px-1">
+              Observaciones Internas
+            </label>
+            <textarea
+              value={notas}
+              onChange={(e) => onNotas && onNotas(e.target.value)}
+              placeholder="Añada notas informativas..."
+              className="w-full bg-zinc-50 border border-zinc-200 rounded-2xl px-4 py-3 text-xs font-bold text-zinc-800 outline-none resize-none focus:border-brand-cyan transition-all shadow-sm placeholder-zinc-300 min-h-[72px]"
+            />
+          </div>
+        )}
 
         {chequeIndexActivo !== null && (
           <ChequeRecibirModal

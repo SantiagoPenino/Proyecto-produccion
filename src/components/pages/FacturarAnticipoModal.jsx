@@ -12,24 +12,33 @@ export default function FacturarAnticipoModal({
 }) {
   const [working, setWorking] = useState(false);
   const [monedaFactura, setMonedaFactura] = useState(cuenta.MonIdMoneda === 2 ? 'USD' : 'UYU');
-  
+  const [cotDolar, setCotDolar] = useState(40);
+
   // Tipo Documento (CONTADO porque ya está pagado)
   const tieneRUT = cliente?.CioRuc && String(cliente.CioRuc).replace(/\D/g, '').length === 12;
   const [tipoDocumento, setTipoDocumento] = useState(tieneRUT ? 'E-FACTURA CONTADO' : 'E-TICKET CONTADO');
-  
+
   // Datos DGI
   const [cliDgiNombre, setCliDgiNombre] = useState(cliente?.Nombre || cliente?.NombreFantasia || '');
   const [cliDgiDocumento, setCliDgiDocumento] = useState(cliente?.CioRuc || '');
   const [cliDgiDireccion, setCliDgiDireccion] = useState(cliente?.DireccionTrabajo || '');
   const [cliDgiCiudad, setCliDgiCiudad] = useState(String(cliente?.DepartamentoID || 10));
-  
+
   const [observaciones, setObservaciones] = useState('Pago Anticipado');
   const [valError, setValError] = useState('');
 
-  // Total
-  const total = ordenes.reduce((acc, o) => acc + Number(o.OReCostoTotalOrden || 0), 0);
+  useEffect(() => {
+    api.get('/contabilidad/cotizacion-hoy').then(res => {
+      if (res.data?.success && res.data?.data?.CotDolar) setCotDolar(res.data.data.CotDolar);
+    }).catch(() => {});
+  }, []);
+
+  // Los montos de OReCostoTotalOrden vienen en UYU (ERP siempre en UYU)
+  const totalUYU = ordenes.reduce((acc, o) => acc + Number(o.OReCostoTotalOrden || 0), 0);
+  const total = monedaFactura === 'USD' ? totalUYU / cotDolar : totalUYU;
   const simbolo = monedaFactura === 'USD' ? 'US$' : '$U';
   const fmt = (val) => Number(val).toFixed(2);
+  const fmtOrden = (val) => monedaFactura === 'USD' ? fmt(Number(val) / cotDolar) : fmt(val);
 
   const handleFacturar = async () => {
     setWorking(true);
@@ -61,6 +70,8 @@ export default function FacturarAnticipoModal({
     try {
       const payload = {
         ordenesIds: ordenes.map(o => o.OrdIdOrden),
+        monedaFactura,
+        cotDolar,
         tipoDocumento,
         observaciones,
         cliDgiNombre,
@@ -173,7 +184,7 @@ export default function FacturarAnticipoModal({
                     <tr key={o.OrdIdOrden} className="hover:bg-slate-50">
                       <td className="px-4 py-3 font-mono font-medium text-indigo-600">{o.OrdCodigoOrden}</td>
                       <td className="px-4 py-3 text-slate-600">{o.OrdNombreTrabajo || 'Sin descripción'}</td>
-                      <td className="px-4 py-3 text-right font-mono font-medium text-slate-700">{simbolo} {fmt(o.OReCostoTotalOrden)}</td>
+                      <td className="px-4 py-3 text-right font-mono font-medium text-slate-700">{simbolo} {fmtOrden(o.OReCostoTotalOrden)}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -184,9 +195,9 @@ export default function FacturarAnticipoModal({
 
         {/* Footer */}
         <div className="bg-white px-6 py-5 border-t border-slate-100 flex items-center justify-between">
-           <div className="flex items-center gap-4">
-              <select 
-                value={tipoDocumento} 
+           <div className="flex items-center gap-3">
+              <select
+                value={tipoDocumento}
                 onChange={e => setTipoDocumento(e.target.value)}
                 className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm font-bold text-slate-700 outline-none focus:border-indigo-500"
               >
@@ -194,6 +205,21 @@ export default function FacturarAnticipoModal({
                 <option value="E-TICKET CONTADO">e-Ticket Contado</option>
                 <option value="FACTURA">Factura Manual</option>
               </select>
+              <div className="flex rounded-lg border border-slate-200 overflow-hidden text-xs font-black">
+                <button
+                  onClick={() => setMonedaFactura('UYU')}
+                  className={`px-3 py-2 transition-colors ${monedaFactura === 'UYU' ? 'bg-indigo-600 text-white' : 'bg-slate-50 text-slate-500 hover:bg-slate-100'}`}
+                >$U UYU</button>
+                <button
+                  onClick={() => setMonedaFactura('USD')}
+                  className={`px-3 py-2 transition-colors ${monedaFactura === 'USD' ? 'bg-indigo-600 text-white' : 'bg-slate-50 text-slate-500 hover:bg-slate-100'}`}
+                >US$ USD</button>
+              </div>
+              {monedaFactura !== (cuenta.MonIdMoneda === 2 ? 'USD' : 'UYU') && (
+                <span className="text-[10px] text-amber-600 font-bold bg-amber-50 border border-amber-200 px-2 py-1 rounded">
+                  Cross · 1 USD = $U {Number(cotDolar).toFixed(2)}
+                </span>
+              )}
            </div>
            <div className="text-right">
              <p className="text-indigo-500 uppercase font-black text-[11px] mb-1">Total a Facturar</p>
