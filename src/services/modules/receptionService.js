@@ -52,4 +52,14 @@ export const receptionService = {
         }
     },
 
+    getBobinasByOrden: async (orden) => {
+        try {
+            const response = await api.get(`/reception/bobinas-by-orden/${encodeURIComponent(orden)}`);
+            return response.data?.bobinas || [];
+        } catch {
+            return [];
+        }
+    },
+
+
 };

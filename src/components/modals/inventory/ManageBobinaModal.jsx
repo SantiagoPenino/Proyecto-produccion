@@ -13,8 +13,9 @@ const ManageBobinaModal = ({ bobina, insumoName, onClose, onSuccess }) => {
     const [loadingHistory, setLoadingHistory] = useState(false);
 
     // ADJUST STATE
-    const [adjustType, setAdjustType] = useState('subtract'); // 'subtract' (rebaja) | 'correction' (fijar)
+    const [adjustType, setAdjustType] = useState('subtract');
     const [amount, setAmount] = useState('');
+    const [orden, setOrden] = useState('');
     const [concept, setConcept] = useState('Producción');
     const [customConcept, setCustomConcept] = useState('');
 
@@ -67,7 +68,8 @@ const ManageBobinaModal = ({ bobina, insumoName, onClose, onSuccess }) => {
                 await inventoryService.adjustBobina({
                     bobinaId: bobina.BobinaID,
                     cantidad: delta,
-                    motivo: finalConcept
+                    motivo: finalConcept,
+                    orden: orden.trim() || undefined,
                 });
             }
 
@@ -189,6 +191,23 @@ const ManageBobinaModal = ({ bobina, insumoName, onClose, onSuccess }) => {
                                 >
                                     Corrección (Fijar)
                                 </button>
+                            </div>
+
+                            {/* ORDEN — siempre visible */}
+                            <div>
+                                <label className="block text-sm font-medium text-zinc-700 mb-1">
+                                    Orden <span className="text-zinc-400 font-normal text-xs">(opcional)</span>
+                                </label>
+                                <input
+                                    type="text"
+                                    className="w-full border rounded p-2 text-sm font-mono text-zinc-700 bg-zinc-50 focus:bg-white focus:ring-2 focus:ring-blue-200 outline-none transition"
+                                    value={orden}
+                                    onChange={e => setOrden(e.target.value)}
+                                    placeholder="Ej: ORD-1234 / OC-556 / Pedido..."
+                                />
+                                {orden.trim() && (
+                                    <p className="text-[10px] text-blue-500 font-mono mt-0.5">Se guardará como: {orden.trim()} | ...</p>
+                                )}
                             </div>
 
                             <div>
@@ -322,17 +341,41 @@ const ManageBobinaModal = ({ bobina, insumoName, onClose, onSuccess }) => {
                                         <div key={idx} className="flex gap-3 items-start border-b border-zinc-100 pb-3 last:border-0">
                                             <div className={`mt-1 w-2 h-2 rounded-full shrink-0 ${mov.Cantidad > 0 ? 'bg-green-500' : 'bg-red-500'}`}></div>
                                             <div className="flex-1">
-                                                <div className="flex justify-between">
-                                                    <span className="font-medium text-zinc-700 text-sm">{mov.TipoMovimiento}</span>
-                                                    <span className={`font-mono text-sm ${mov.Cantidad > 0 ? 'text-green-600' : 'text-red-600'}`}>
-                                                        {mov.Cantidad > 0 ? '+' : ''}{mov.Cantidad}m
-                                                    </span>
-                                                </div>
-                                                <p className="text-xs text-zinc-500 mt-1">{mov.Referencia}</p>
-                                                <div className="text-[10px] text-zinc-400 mt-1 flex justify-between">
-                                                    <span>{new Date(mov.Fecha).toLocaleString()}</span>
-                                                    <span>{mov.Usuario || 'Sistema'}</span>
-                                                </div>
+                                                {/* Parsear Referencia: puede ser "ORD-xx | Ajuste BOB: Motivo" o solo "Ajuste BOB: Motivo" */}
+                                                {(() => {
+                                                    const ref = mov.Referencia || '';
+                                                    const hasPipe = ref.includes(' | ');
+                                                    const ordenPart  = hasPipe ? ref.split(' | ')[0].trim() : '';
+                                                    const motivoPart = hasPipe ? ref.split(' | ').slice(1).join(' | ').trim() : ref;
+                                                    return (
+                                                        <>
+                                                            {/* Fila 1: Tipo + Cantidad */}
+                                                            <div className="flex justify-between items-center">
+                                                                <span className="font-medium text-zinc-700 text-sm">{mov.TipoMovimiento}</span>
+                                                                <span className={`font-mono text-sm font-bold ${mov.Cantidad > 0 ? 'text-green-600' : 'text-red-600'}`}>
+                                                                    {mov.Cantidad > 0 ? '+' : ''}{mov.Cantidad}m
+                                                                </span>
+                                                            </div>
+                                                            {/* Fila 2: Orden (si existe) */}
+                                                            {ordenPart && (
+                                                                <div className="mt-1 flex items-center gap-1">
+                                                                    <span className="text-[9px] font-black uppercase tracking-widest text-blue-400">Orden</span>
+                                                                    <span className="text-xs font-mono font-bold text-blue-600 bg-blue-50 px-1.5 py-0.5 rounded">{ordenPart}</span>
+                                                                </div>
+                                                            )}
+                                                            {/* Fila 3: Motivo */}
+                                                            <p className="text-xs text-zinc-500 mt-0.5">
+                                                                <span className="text-[9px] font-black uppercase tracking-widest text-zinc-400 mr-1">Motivo</span>
+                                                                {motivoPart}
+                                                            </p>
+                                                            {/* Fila 4: Fecha + Usuario */}
+                                                            <div className="text-[10px] text-zinc-400 mt-1 flex justify-between">
+                                                                <span>{new Date(mov.Fecha).toLocaleString()}</span>
+                                                                <span>{mov.Usuario || 'Sistema'}</span>
+                                                            </div>
+                                                        </>
+                                                    );
+                                                })()}
                                             </div>
                                         </div>
                                     ))}

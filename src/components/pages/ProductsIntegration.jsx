@@ -299,56 +299,25 @@ const EditModal = ({ article, allArticles, onClose, onSaved }) => {
                                 </h3>
                                 <div>
                                     <label className="block text-xs font-bold text-blue-700 uppercase mb-2">WMS Master ID</label>
-                                    <div className="relative">
-                                        <div className="flex items-center w-full px-4 py-3 border border-blue-200 rounded-xl text-sm font-bold text-blue-900 bg-white focus-within:border-blue-500 focus-within:ring-4 focus-within:ring-blue-500/20 transition-all shadow-inner">
-                                            <input 
-                                                type="text" 
-                                                className="w-full bg-transparent outline-none placeholder-blue-300"
-                                                placeholder="Buscar producto maestro..."
-                                                value={wmsSearch}
-                                                onChange={(e) => {
-                                                    setWmsSearch(e.target.value);
-                                                    setWmsDropdownOpen(true);
-                                                    if (e.target.value === '') setForm(prev => ({...prev, producto_maestro_id: ''}));
-                                                }}
-                                                onFocus={() => setWmsDropdownOpen(true)}
-                                                onBlur={() => setTimeout(() => setWmsDropdownOpen(false), 200)}
-                                            />
-                                            <i className={`fa-solid fa-chevron-down text-blue-400 transition-transform ${wmsDropdownOpen ? 'rotate-180' : ''}`}></i>
+                                    {form.producto_maestro_id ? (
+                                        <div className="px-4 py-3 border border-blue-200 rounded-xl text-sm font-bold text-blue-900 bg-white">
+                                            {wmsSearch || `ID: ${form.producto_maestro_id}`}
                                         </div>
-                                        
-                                        {wmsDropdownOpen && (
-                                            <div className="absolute z-50 w-full mt-1 bg-white border border-blue-100 rounded-xl shadow-xl max-h-48 overflow-y-auto">
-                                                {wmsMasters.filter(m => `${m.id} ${m.nombre}`.toLowerCase().includes(wmsSearch.toLowerCase())).map(m => (
-                                                    <div 
-                                                        key={m.id} 
-                                                        className="px-4 py-2 hover:bg-blue-50 cursor-pointer text-sm font-medium text-slate-700 transition-colors"
-                                                        onClick={() => {
-                                                            setForm(prev => ({...prev, producto_maestro_id: String(m.id)}));
-                                                            setWmsSearch(`${m.id} - ${m.nombre}`);
-                                                            setWmsDropdownOpen(false);
-                                                        }}
-                                                    >
-                                                        <span className="font-bold text-blue-600 mr-2">#{m.id}</span>
-                                                        {m.nombre}
-                                                    </div>
-                                                ))}
-                                                {wmsMasters.filter(m => `${m.id} ${m.nombre}`.toLowerCase().includes(wmsSearch.toLowerCase())).length === 0 && (
-                                                    <div className="px-4 py-3 text-sm text-slate-500 italic text-center">No se encontraron resultados</div>
-                                                )}
-                                            </div>
-                                        )}
-                                    </div>
-                                    <p className="text-[10px] text-blue-600/80 font-medium mt-2 leading-tight">Busca y selecciona el producto maestro en el WMS para leer el stock en tiempo real.</p>
+                                    ) : (
+                                        <div className="px-4 py-3 border border-slate-200 rounded-xl text-sm text-slate-400 bg-slate-50 italic">
+                                            Sin vinculación WMS
+                                        </div>
+                                    )}
+                                    <p className="text-[10px] text-blue-600/80 font-medium mt-2 leading-tight">Vinculación de solo lectura. Stock en tiempo real desde el WMS.</p>
                                 </div>
                                 
-                                {/* Display Variants */}
+                                {/* Variantes - solo lectura */}
                                 {wmsVariants.length > 0 && (
                                     <div className="mt-4 pt-4 border-t border-blue-200/50">
-                                        <label className="block text-[10px] font-bold text-blue-700 uppercase mb-2">Variantes Encontradas ({wmsVariants.length})</label>
+                                        <label className="block text-[10px] font-bold text-blue-700 uppercase mb-2">Variantes ({wmsVariants.length})</label>
                                         <div className="flex flex-wrap gap-2 max-h-32 overflow-y-auto pr-1">
                                             {wmsVariants.map(v => (
-                                                <span key={v.variante_id} className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md bg-blue-100 text-blue-800 text-[10px] font-bold border border-blue-200" title={v.codigo_variante}>
+                                                <span key={v.variante_id} className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md bg-blue-100 text-blue-800 text-[10px] font-bold border border-blue-200">
                                                     {v.nombre_variante || v.codigo_variante}
                                                 </span>
                                             ))}
@@ -400,7 +369,106 @@ const EditModal = ({ article, allArticles, onClose, onSaved }) => {
 };
 
 // ─── Componente de Tarjeta de Artículo (Modern Card) ──────────────────────────
-const ArticleCard = ({ art, onEdit, showImages }) => {
+
+// ─── Modal de Precios por Variante (SOLO LECTURA) ──────────────────────────────
+const VariantPriceModal = ({ art, onClose }) => {
+    const [variants, setVariants] = React.useState([]);
+    const [loading, setLoading]   = React.useState(true);
+
+    React.useEffect(() => {
+        api.get(`/products-integration/article-variants/${art.ProIdProducto}`)
+            .then(res => {
+                if (res.data.success) setVariants(res.data.data);
+            })
+            .catch(() => toast.error('Error al cargar variantes'))
+            .finally(() => setLoading(false));
+    }, [art.ProIdProducto]);
+
+    const basePrice = art.PrecioBase != null ? parseFloat(art.PrecioBase) : null;
+    const baseMoneda = art.MonIdMoneda === 2 ? 'USD' : 'UYU';
+
+    return (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+            <div className="bg-white rounded-3xl shadow-2xl w-full max-w-2xl max-h-[90vh] flex flex-col overflow-hidden">
+                {/* Header */}
+                <div className="p-6 border-b border-slate-100 flex items-center justify-between shrink-0">
+                    <div>
+                        <div className="flex items-center gap-2 mb-1">
+                            <span className="bg-blue-100 text-blue-700 text-xs font-bold px-2 py-0.5 rounded-full uppercase tracking-wide">Solo lectura</span>
+                        </div>
+                        <h2 className="text-xl font-black text-slate-800">{art.Descripcion?.trim()}</h2>
+                        <p className="text-sm text-slate-500 mt-0.5">
+                            Precio base:
+                            <span className="font-bold text-slate-700 ml-1">
+                                {basePrice != null ? `${baseMoneda === 'USD' ? 'U$S' : '$'} ${basePrice.toFixed(2)}` : 'Sin precio'}
+                            </span>
+                            <span className="ml-2 text-xs text-blue-500">— Para editar precios ir a Gestión de Precios › Precios x Variante</span>
+                        </p>
+                    </div>
+                    <button onClick={onClose} className="w-9 h-9 rounded-full bg-slate-100 hover:bg-slate-200 flex items-center justify-center text-slate-500 transition-colors">
+                        <i className="fa-solid fa-xmark"></i>
+                    </button>
+                </div>
+
+                {/* Body */}
+                <div className="flex-1 overflow-y-auto p-6">
+                    {loading ? (
+                        <div className="flex items-center justify-center py-16 text-slate-400">
+                            <i className="fa-solid fa-circle-notch fa-spin text-3xl"></i>
+                        </div>
+                    ) : variants.length === 0 ? (
+                        <div className="flex flex-col items-center justify-center py-16 text-slate-400">
+                            <i className="fa-solid fa-layer-group text-5xl mb-3 text-slate-200"></i>
+                            <p className="font-bold">Este producto no tiene variantes WMS</p>
+                        </div>
+                    ) : (
+                        <div className="space-y-2">
+                            {variants.map(v => {
+                                const hasCustomPrice = v.precio_excepcion != null;
+                                const moneda = v.moneda_excepcion === 2 ? 'U$S' : '$';
+                                const precio = hasCustomPrice
+                                    ? `${moneda} ${parseFloat(v.precio_excepcion).toFixed(2)}`
+                                    : (basePrice != null ? `${baseMoneda === 'USD' ? 'U$S' : '$'} ${basePrice.toFixed(2)}` : 'Sin precio');
+                                return (
+                                    <div key={v.id} className={`flex items-center justify-between gap-3 p-3 rounded-xl border ${
+                                        hasCustomPrice ? 'border-emerald-200 bg-emerald-50' : 'border-slate-200 bg-slate-50'
+                                    }`}>
+                                        <div className="flex-1 min-w-0">
+                                            <p className="text-sm font-bold text-slate-800 truncate">{v.nombre_variante}</p>
+                                        </div>
+                                        <div className="flex items-center gap-2 shrink-0">
+                                            {hasCustomPrice && (
+                                                <span className="text-[10px] bg-emerald-100 text-emerald-700 font-bold px-2 py-0.5 rounded-full">precio propio</span>
+                                            )}
+                                            <span className={`text-sm font-black ${ hasCustomPrice ? 'text-emerald-700' : 'text-slate-500' }`}>
+                                                {precio}
+                                            </span>
+                                        </div>
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    )}
+                </div>
+
+                {/* Footer */}
+                <div className="p-4 border-t border-slate-100 flex items-center gap-2 shrink-0 bg-slate-50">
+                    <i className="fa-solid fa-circle-info text-blue-400"></i>
+                    <p className="text-xs text-slate-500">
+                        Las variantes en <strong className="text-emerald-700">verde</strong> tienen precio propio.
+                        Las demás usan el precio base del artículo.
+                        Para editar, ir a <strong>Gestión de Precios › Precios x Variante</strong>.
+                    </p>
+                </div>
+            </div>
+        </div>
+    );
+};
+
+
+
+
+const ArticleCard = ({ art, onEdit, onVariants, showImages }) => {
     const ancho = art.anchoimprimible != null ? parseFloat(Number(art.anchoimprimible).toFixed(4)) : 0;
     const isWmsSynced = art.producto_maestro_id != null;
     
@@ -427,11 +495,6 @@ const ArticleCard = ({ art, onEdit, showImages }) => {
                                 <i className="fa-solid fa-eye-slash"></i> Oculto
                             </div>
                         )}
-                    </div>
-                    <div className="absolute top-3 right-3">
-                        <button onClick={() => onEdit(art)} className="w-9 h-9 rounded-full bg-white/90 backdrop-blur-md text-slate-400 hover:text-blue-600 hover:bg-white shadow-sm flex items-center justify-center transition-all opacity-0 group-hover:opacity-100 translate-y-2 group-hover:translate-y-0" title="Editar Artículo">
-                            <i className="fa-solid fa-pen"></i>
-                        </button>
                     </div>
                 </div>
             )}
@@ -522,6 +585,24 @@ const ArticleCard = ({ art, onEdit, showImages }) => {
                         </div>
                     )}
                 </div>
+
+                {/* Botones de acción */}
+                <div className="mt-3 pt-3 border-t border-slate-100 flex gap-2">
+                    <button
+                        onClick={() => onEdit(art)}
+                        className="flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded-lg text-xs font-bold text-slate-600 bg-slate-100 hover:bg-slate-200 transition-colors"
+                    >
+                        <i className="fa-solid fa-pen"></i> Editar
+                    </button>
+                    {art.CantidadVariantes > 0 && (
+                        <button
+                            onClick={() => onVariants(art)}
+                            className="flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded-lg text-xs font-bold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 transition-colors"
+                        >
+                            <i className="fa-solid fa-tag"></i> Precios
+                        </button>
+                    )}
+                </div>
             </div>
         </div>
     );
@@ -539,7 +620,21 @@ const ProductsIntegration = () => {
     // UI States
     const [showImages, setShowImages] = useState(true);
     const [filterStatus, setFilterStatus] = useState('active'); // 'active', 'all', 'inactive'
+    const [filterType, setFilterType] = useState('all'); // 'all', 'products', 'services'
     const [sortBy, setSortBy] = useState('name_asc');
+
+    // WMS Importer states
+    const [wmsMasters, setWmsMasters] = useState([]);
+    const [wmsSearchInput, setWmsSearchInput] = useState('');
+    const [importingId, setImportingId] = useState(null);
+    const [variantArt, setVariantArt] = useState(null); // artículo para el modal de precios por variante
+
+    useEffect(() => {
+        api.get('/products-integration/wms/masters')
+            .then(res => { if (res.data?.success) setWmsMasters(res.data.data); })
+            .catch(err => console.error('Error fetching WMS Masters:', err));
+    }, []);
+
 
     const load = useCallback(() => {
         setLoading(true);
@@ -548,6 +643,23 @@ const ProductsIntegration = () => {
             .catch(() => toast.error('Error al cargar artículos'))
             .finally(() => setLoading(false));
     }, []);
+
+    const handleImportWms = async (id) => {
+        setImportingId(id);
+        try {
+            const res = await api.post(`/products-integration/wms/import/${id}`);
+            if (res.data.success) {
+                toast.success('Producto importado exitosamente');
+                load();
+            } else {
+                toast.error(res.data.message || 'Error al importar');
+            }
+        } catch (error) {
+            toast.error(error.response?.data?.message || 'Error en el servidor');
+        } finally {
+            setImportingId(null);
+        }
+    };
 
     useEffect(() => { load(); }, [load]);
 
@@ -618,6 +730,13 @@ const ProductsIntegration = () => {
     // Filtro para el Grid Principal
     const displayArticles = useMemo(() => {
         let list = articles;
+
+        // Filtro por tipo (Productos = SupFlia 2, Servicios = SupFlia 1)
+        if (filterType === 'products') {
+            list = list.filter(a => (a.SupFlia || '').trim() === '2');
+        } else if (filterType === 'services') {
+            list = list.filter(a => (a.SupFlia || '').trim() === '1');
+        }
         
         // Filtro por activo/inactivo
         if (filterStatus === 'active') {
@@ -658,7 +777,7 @@ const ProductsIntegration = () => {
         });
 
         return list;
-    }, [articles, search, selectedNode, filterStatus, sortBy]);
+    }, [articles, search, selectedNode, filterStatus, filterType, sortBy]);
 
     return (
         <div className="h-full flex flex-col bg-slate-50 overflow-hidden">
@@ -779,26 +898,20 @@ const ProductsIntegration = () => {
                             <i className="fa-solid fa-circle-notch fa-spin text-4xl mb-4 text-blue-500"></i>
                             <p className="font-bold">Cargando catálogo...</p>
                         </div>
-                    ) : displayArticles.length === 0 ? (
-                        <div className="flex flex-col items-center justify-center h-full text-slate-400">
-                            <i className="fa-solid fa-box-open text-6xl mb-4 text-slate-200"></i>
-                            <p className="font-bold text-lg text-slate-500">No se encontraron artículos</p>
-                        </div>
                     ) : (
                         <div>
+                            {/* Barra de filtros SIEMPRE visible */}
                             <div className="mb-6 bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex flex-col gap-4">
                                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
                                     <h2 className="text-lg font-bold text-slate-800">
-                                        {selectedNode === 'all' && 'Todos los Productos'}
+                                        {selectedNode === 'all' && 'Todos los Artículos'}
                                         {selectedNode.startsWith('sup') && `Familia ${selectedNode.split('||')[1]}`}
                                         {selectedNode.startsWith('grp') && `Grupo ${selectedNode.split('||')[2]}`}
                                     </h2>
                                     <span className="bg-slate-100 text-slate-600 text-xs font-bold px-3 py-1.5 rounded-lg border border-slate-200">{displayArticles.length} resultados</span>
                                 </div>
                                 
-                                {/* Filters and Options Bar */}
                                 <div className="flex flex-wrap items-center justify-between gap-4 pt-4 border-t border-slate-100">
-                                    {/* Search */}
                                     <div className="relative flex-1 min-w-[250px] max-w-md">
                                         <i className="fa-solid fa-search absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-sm"></i>
                                         <input className="w-full pl-9 pr-3 py-2 border border-slate-200 bg-slate-50 hover:bg-white rounded-lg text-sm outline-none focus:border-blue-500 focus:bg-white transition-all shadow-inner"
@@ -806,8 +919,7 @@ const ProductsIntegration = () => {
                                             value={search} onChange={e => setSearch(e.target.value)} />
                                     </div>
 
-                                    <div className="flex flex-wrap items-center gap-6">
-                                        {/* Sort */}
+                                    <div className="flex flex-wrap items-center gap-4">
                                         <div className="flex items-center gap-2">
                                             <span className="text-xs font-bold text-slate-500"><i className="fa-solid fa-sort"></i></span>
                                             <select className="px-3 py-2 border border-slate-200 bg-slate-50 hover:bg-white rounded-lg text-sm outline-none focus:border-blue-500 transition-all font-semibold text-slate-600 shadow-sm"
@@ -819,8 +931,7 @@ const ProductsIntegration = () => {
                                             </select>
                                         </div>
 
-                                        {/* Switches */}
-                                        <div className="flex items-center gap-5 border-l border-slate-200 pl-5">
+                                        <div className="flex items-center gap-4 border-l border-slate-200 pl-4">
                                             <label className="flex items-center gap-2 cursor-pointer group">
                                                 <div className="relative flex items-center justify-center">
                                                     <input type="checkbox" checked={showImages} onChange={e => setShowImages(e.target.checked)} className="peer sr-only" />
@@ -830,42 +941,102 @@ const ProductsIntegration = () => {
                                             </label>
 
                                             <div className="flex items-center gap-2">
+                                                <span className="text-xs font-bold text-slate-500">Tipo:</span>
+                                                <div className="flex bg-slate-100 p-1 rounded-lg border border-slate-200 shadow-inner text-xs font-bold">
+                                                    <button onClick={() => setFilterType('all')} className={`px-3 py-1.5 rounded-md transition-all ${filterType === 'all' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>Todos</button>
+                                                    <button onClick={() => setFilterType('products')} className={`px-3 py-1.5 rounded-md transition-all ${filterType === 'products' ? 'bg-white text-emerald-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>Productos</button>
+                                                    <button onClick={() => setFilterType('services')} className={`px-3 py-1.5 rounded-md transition-all ${filterType === 'services' ? 'bg-white text-purple-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>Servicios</button>
+                                                </div>
+                                            </div>
+
+                                            <div className="flex items-center gap-2">
                                                 <span className="text-xs font-bold text-slate-500">Estado:</span>
                                                 <div className="flex bg-slate-100 p-1 rounded-lg border border-slate-200 shadow-inner text-xs font-bold">
-                                                    <button 
-                                                        onClick={() => setFilterStatus('active')}
-                                                        className={`px-3 py-1.5 rounded-md transition-all ${filterStatus === 'active' ? 'bg-white text-emerald-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
-                                                    >
-                                                        Activos
-                                                    </button>
-                                                    <button 
-                                                        onClick={() => setFilterStatus('all')}
-                                                        className={`px-3 py-1.5 rounded-md transition-all ${filterStatus === 'all' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
-                                                    >
-                                                        Todos
-                                                    </button>
-                                                    <button 
-                                                        onClick={() => setFilterStatus('inactive')}
-                                                        className={`px-3 py-1.5 rounded-md transition-all ${filterStatus === 'inactive' ? 'bg-white text-red-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
-                                                    >
-                                                        Inactivos
-                                                    </button>
+                                                    <button onClick={() => setFilterStatus('active')} className={`px-3 py-1.5 rounded-md transition-all ${filterStatus === 'active' ? 'bg-white text-emerald-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>Activos</button>
+                                                    <button onClick={() => setFilterStatus('all')} className={`px-3 py-1.5 rounded-md transition-all ${filterStatus === 'all' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>Todos</button>
+                                                    <button onClick={() => setFilterStatus('inactive')} className={`px-3 py-1.5 rounded-md transition-all ${filterStatus === 'inactive' ? 'bg-white text-red-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>Inactivos</button>
                                                 </div>
                                             </div>
                                         </div>
                                     </div>
                                 </div>
                             </div>
-                            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-5">
-                                {displayArticles.map(art => (
-                                    <ArticleCard
-                                        key={art.ProIdProducto ?? art.CodArticulo}
-                                        art={art}
-                                        onEdit={setEditing}
-                                        showImages={showImages}
-                                    />
-                                ))}
-                            </div>
+
+                            {/* WMS Importer — solo visible al filtrar Productos */}
+                            {filterType === 'products' && (
+                                <div className="mb-6 bg-blue-50 p-5 rounded-xl border border-blue-200 shadow-inner">
+                                    <div className="flex items-center gap-3 mb-4">
+                                        <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center text-white shrink-0">
+                                            <i className="fa-solid fa-cloud-arrow-down"></i>
+                                        </div>
+                                        <div>
+                                            <h3 className="text-sm font-bold text-slate-800">Importar Producto desde WMS</h3>
+                                            <p className="text-xs text-slate-500">Busca y trae productos del WMS que aún no tienes locales.</p>
+                                        </div>
+                                    </div>
+                                    <div className="relative mb-3">
+                                        <i className="fa-solid fa-search absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"></i>
+                                        <input
+                                            className="w-full pl-10 pr-4 py-2.5 border border-slate-300 rounded-lg text-sm focus:border-blue-500 focus:ring-2 focus:ring-blue-100 outline-none transition-all bg-white"
+                                            placeholder="Escribe el nombre del producto WMS..."
+                                            value={wmsSearchInput}
+                                            onChange={e => setWmsSearchInput(e.target.value)}
+                                        />
+                                    </div>
+                                    {wmsSearchInput.trim().length > 1 && (
+                                        <div className="bg-white border border-slate-200 rounded-lg shadow-sm max-h-60 overflow-y-auto">
+                                            {wmsMasters.filter(m => m.nombre.toLowerCase().includes(wmsSearchInput.toLowerCase())).map(m => {
+                                                const isImported = articles.some(a => a.producto_maestro_id == m.id);
+                                                return (
+                                                    <div key={m.id} className="flex items-center justify-between p-3 border-b border-slate-100 last:border-0 hover:bg-slate-50">
+                                                        <div className="flex flex-col">
+                                                            <span className="text-sm font-bold text-slate-700">{m.nombre}</span>
+                                                            <span className="text-[10px] text-slate-400 uppercase tracking-wider">ID WMS: {m.id}</span>
+                                                        </div>
+                                                        <button
+                                                            disabled={isImported || importingId === m.id}
+                                                            onClick={() => handleImportWms(m.id)}
+                                                            className={`px-4 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-2 ${
+                                                                isImported
+                                                                    ? 'bg-emerald-50 text-emerald-600 border border-emerald-200 cursor-not-allowed'
+                                                                    : importingId === m.id
+                                                                    ? 'bg-blue-100 text-blue-500 cursor-wait'
+                                                                    : 'bg-blue-600 text-white hover:bg-blue-700 shadow-md shadow-blue-500/20'
+                                                            }`}
+                                                        >
+                                                            {importingId === m.id ? (<><i className="fa-solid fa-spinner fa-spin"></i> Importando...</>) : isImported ? (<><i className="fa-solid fa-check"></i> Ya existe</>) : (<><i className="fa-solid fa-download"></i> Importar</>)}
+                                                        </button>
+                                                    </div>
+                                                );
+                                            })}
+                                            {wmsMasters.filter(m => m.nombre.toLowerCase().includes(wmsSearchInput.toLowerCase())).length === 0 && (
+                                                <div className="p-4 text-center text-sm text-slate-500">No se encontraron productos en el WMS.</div>
+                                            )}
+                                        </div>
+                                    )}
+                                </div>
+                            )}
+
+                            {/* Grid de artículos */}
+                            {displayArticles.length === 0 ? (
+                                <div className="flex flex-col items-center justify-center py-20 text-slate-400">
+                                    <i className="fa-solid fa-box-open text-6xl mb-4 text-slate-200"></i>
+                                    <p className="font-bold text-lg text-slate-500">No se encontraron artículos</p>
+                                    {filterType === 'products' && <p className="text-sm text-slate-400 mt-1">Usá el importador de arriba para traer productos del WMS</p>}
+                                </div>
+                            ) : (
+                                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-5">
+                                    {displayArticles.map(art => (
+                                        <ArticleCard
+                                            key={art.ProIdProducto ?? art.CodArticulo}
+                                            art={art}
+                                            onEdit={setEditing}
+                                            onVariants={setVariantArt}
+                                            showImages={showImages}
+                                        />
+                                    ))}
+                                </div>
+                            )}
                         </div>
                     )}
                 </div>
@@ -879,6 +1050,12 @@ const ProductsIntegration = () => {
                     allArticles={articles}
                     onClose={() => setEditing(null)}
                     onSaved={handleSaved}
+                />
+            )}
+            {variantArt !== null && (
+                <VariantPriceModal
+                    art={variantArt}
+                    onClose={() => setVariantArt(null)}
                 />
             )}
         </div>

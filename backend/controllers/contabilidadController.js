@@ -2568,32 +2568,30 @@ exports.emitirFacturaAnticipo = async (req, res) => {
       return res.status(400).json({ success: false, error: "No se seleccionaron órdenes." });
     }
 
-    const targetCueTipo = (monedaFactura === 'USD') ? 'DINERO_USD' : 'DINERO_UYU';
-    let cueRes = await pool.request()
+    // Detectar la cuenta real de los movimientos seleccionados.
+    // getOrdenesAnticipo devuelve movimientos de CUALQUIER cuenta del cliente,
+    // por eso no se puede buscar la cuenta por monedaFactura — los movimientos
+    // pueden estar en una cuenta USD aunque el usuario quiera facturar en UYU.
+    // cerrarCicloCompleto maneja la conversión de moneda internamente.
+    const inClause = ordenesIds.map(id => parseInt(id, 10)).join(',');
+    const movCueRes = await pool.request()
       .input('Cli', sql.Int, CliIdCliente)
-      .input('Tipo', sql.VarChar, targetCueTipo)
-      .query(`SELECT TOP 1 CueIdCuenta FROM dbo.CuentasCliente WHERE CliIdCliente = @Cli AND CueTipo = @Tipo`);
-      
-    if (!cueRes.recordset.length) {
-      // Create account automatically
-      const monId = monedaFactura === 'USD' ? 2 : 1;
-      await pool.request()
-        .input('Cli', sql.Int, CliIdCliente)
-        .input('Tipo', sql.VarChar, targetCueTipo)
-        .input('MonId', sql.Int, monId)
-        .input('User', sql.Int, UsuarioAlta)
-        .query(`
-          INSERT INTO dbo.CuentasCliente (CliIdCliente, CueTipo, MonIdMoneda, CueSaldoActual, CuePuedeNegativo, CueActiva, CueFechaAlta, CueUsuarioAlta)
-          VALUES (@Cli, @Tipo, @MonId, 0, 1, 1, GETDATE(), @User)
-        `);
-      // Re-query to get the new ID
-      cueRes = await pool.request()
-        .input('Cli', sql.Int, CliIdCliente)
-        .input('Tipo', sql.VarChar, targetCueTipo)
-        .query(`SELECT TOP 1 CueIdCuenta FROM dbo.CuentasCliente WHERE CliIdCliente = @Cli AND CueTipo = @Tipo`);
+      .query(`
+        SELECT TOP 1 m.CueIdCuenta
+        FROM dbo.MovimientosCuenta m
+        WHERE m.OrdIdOrden IN (${inClause})
+          AND m.CueIdCuenta IN (SELECT CueIdCuenta FROM dbo.CuentasCliente WHERE CliIdCliente = @Cli)
+          AND m.MovTipo IN ('ORDEN', 'ORDEN_ANTICIPO')
+          AND m.DocIdDocumento IS NULL
+          AND (m.MovAnulado IS NULL OR m.MovAnulado = 0)
+        ORDER BY m.MovIdMovimiento DESC
+      `);
+
+    if (!movCueRes.recordset.length) {
+      return res.status(400).json({ success: false, error: 'No se encontraron movimientos pendientes para las órdenes seleccionadas.' });
     }
-    
-    const CueIdCuenta = cueRes.recordset[0].CueIdCuenta;
+
+    const CueIdCuenta = movCueRes.recordset[0].CueIdCuenta;
 
     let cicRes = await pool.request()
       .input('Cue', sql.Int, CueIdCuenta)
@@ -2608,11 +2606,14 @@ exports.emitirFacturaAnticipo = async (req, res) => {
       CicIdCiclo = nuevoCiclo.CicIdCiclo;
     }
 
-    // Sincronizar MovImporte con MontoTotal actual antes de facturar
+    // Sincronizar MovImporte con MontoTotal actual antes de facturar.
+    // Si la moneda del PedidosCobranza difiere de la cuenta, convertir usando cotDolar
+    // para que cerrarCicloCompleto reciba amounts en la moneda de la cuenta.
     const accCurRes = await pool.request()
       .input('CueId', sql.Int, CueIdCuenta)
       .query('SELECT MonIdMoneda FROM dbo.CuentasCliente WHERE CueIdCuenta = @CueId');
     const accMon = (accCurRes.recordset[0]?.MonIdMoneda || 1) === 2 ? 'USD' : 'UYU';
+    const cotRate = parseFloat(cotDolar) || 40;
 
     for (const rawId of ordenesIds) {
       const ordId = parseInt(rawId, 10);
@@ -2627,9 +2628,19 @@ exports.emitirFacturaAnticipo = async (req, res) => {
           `);
         if (pcRes.recordset.length > 0) {
           const { MontoTotal, Moneda } = pcRes.recordset[0];
+          let imp;
           if (Moneda === accMon) {
+            imp = -Math.abs(parseFloat(MontoTotal));
+          } else if (Moneda === 'UYU' && accMon === 'USD') {
+            // PedidosCobranza en UYU, cuenta en USD → convertir a USD
+            imp = -Math.abs(parseFloat(MontoTotal) / cotRate);
+          } else if (Moneda === 'USD' && accMon === 'UYU') {
+            // PedidosCobranza en USD, cuenta en UYU → convertir a UYU
+            imp = -Math.abs(parseFloat(MontoTotal) * cotRate);
+          }
+          if (imp !== undefined) {
             await pool.request()
-              .input('Imp', sql.Decimal(18, 2), -Math.abs(parseFloat(MontoTotal)))
+              .input('Imp', sql.Decimal(18, 2), imp)
               .input('OrdId', sql.Int, ordId)
               .input('CueId', sql.Int, CueIdCuenta)
               .query(`
@@ -2647,7 +2658,6 @@ exports.emitirFacturaAnticipo = async (req, res) => {
       }
     }
 
-    const inClause = ordenesIds.map(id => parseInt(id, 10)).join(',');
     await pool.request()
       .input('Cic', sql.Int, CicIdCiclo)
       .input('CueId', sql.Int, CueIdCuenta)

@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import QRCode from 'qrcode';
 import { jsPDF } from 'jspdf';
 import { receptionService } from '../../../services/api';
+import api from '../../../services/apiClient';
 import ClienteTelaMetros from '../../common/ClienteTelaMetros';
 
 import ActiveStockPage from './ActiveStockPage';
@@ -320,16 +321,27 @@ const ReceptionPage = () => {
                 // Nombre del operario: usar el que devuelve el backend, o el local
                 const operadorFinal = res.operario || operarioNombre;
                 setMessage({ type: 'success', text: `Orden ${res.ordenAsignada} guardada. Operario: ${operadorFinal}` });
+                const nombreCliente = clienteObj?.NombreFantasia || clienteObj?.Nombre || clienteObj?.RazonSocial || payload.clienteId;
+                const areaLabelResuelto = areasList.find(a => a.AreaID === payload.areaDestino)?.Nombre || payload.areaDestino || 'Recepción';
                 const printData = {
                     orden:             res.ordenAsignada,
                     ...payload,
+                    bobinas:           formData.bobinas,   // garantizar que llegan las bobinas con largo/ancho/peso
                     fechaHora:         new Date().toLocaleString(),
                     operario:          operadorFinal,
-                    // Nombre del cliente para mostrar en ticket (no el ID)
-                    clienteNombre:     clienteObj?.Nombre || clienteObj?.RazonSocial || payload.clienteId,
-                    // IDCliente numérico de la tabla Clientes (no CliIdCliente)
+                    clienteNombre:     nombreCliente,
+                    areaLabelResuelto, // nombre ya resuelto del área
                     idCliente:         clienteObj?.IDCliente || clienteObj?.CliIdCliente || payload.clienteId,
                 };
+                console.log('[DEBUG printData]', {
+                    clienteObj_Nombre: clienteObj?.Nombre,
+                    clienteObj_NombreFantasia: clienteObj?.NombreFantasia,
+                    clienteNombre: printData.clienteNombre,
+                    areaLabelResuelto: printData.areaLabelResuelto,
+                    areaDestino: payload.areaDestino,
+                    bobinas: printData.bobinas,
+                    tipo: printData.tipo,
+                });
                 // 2. Print etiqueta de bodega
                 await printLabel(printData);
                 // 3. Si es TELA DE CLIENTE, imprimir también el ticket para el cliente
@@ -357,208 +369,249 @@ const ReceptionPage = () => {
         const { orden, clienteId, clienteNombre, bultos, metros, telaCliente,
                 bobinas,
                 areaDestino, loteProv, observaciones, fechaHora, operario, sumaTelaExistente } = data;
+        const idClienteLabel = data.idCliente || clienteId || '';
 
-        const areaLabel      = areasList.find(a => a.AreaID === areaDestino)?.Nombre || areaDestino || '-';
-        // Nombre real del operario desde AuthContext (key: "nombre")
+        const areaLabel      = data.areaLabelResuelto || areasList.find(a => a.AreaID === areaDestino)?.Nombre || areaDestino || '-';
         const localUser      = (() => { try { return JSON.parse(localStorage.getItem('user') || '{}'); } catch { return {}; } })();
-        const operadorFinal  = operario
-            || localUser?.nombre || localUser?.usuario || localUser?.name
-            || 'Operario';
+        const operadorFinal  = localUser?.nombre || localUser?.usuario || localUser?.name || operario || 'Operario';
         const clienteFinal   = clienteNombre || clienteId;
 
-        // Línea opcional: "SUMA A: Seda Americana"
-        const sumaLine = sumaTelaExistente
-            ? `<p><strong>SUMA A   :</strong> ${sumaTelaExistente}</p>`
-            : '';
+        // Bobinas detalle
+        const bolinasHtml = (() => {
+            if (Array.isArray(bobinas) && bobinas.length > 0 && bobinas.some(b => b.largo)) {
+                const totalMts = bobinas.reduce((s,b) => s + (parseFloat(b.largo)||0), 0);
+                const rows = bobinas.map((b,i) => {
+                    const partes = [`L:${parseFloat(b.largo||0).toFixed(2)}m`];
+                    if (b.ancho) partes.push(`A:${parseFloat(b.ancho).toFixed(2)}m`);
+                    if (b.peso)  partes.push(`P:${parseFloat(b.peso).toFixed(2)}kg`);
+                    return `<p><strong>BOB. ${i+1}  :</strong> ${partes.join(' \u00b7 ')}</p>`;
+                }).join('');
+                return `<p><strong>MTS TOTAL  :</strong> ${totalMts.toFixed(2)} m</p>${rows}`;
+            }
+            return `<p><strong>MTS DECL.  :</strong> ${metros ? parseFloat(metros).toFixed(2) + ' m' : '-'}</p>`;
+        })();
 
-        // ── 1. IMPRIMIR en ventana nueva — mismo patrón exacto que caja ──────────
-        const win = window.open('', '_blank', 'width=340,height=600');
+        // Una copia del ticket (duplicamos el HTML con page-break)
+        const ticketHtml = `
+<div class="ticket">
+  <div class="header">USER</div>
+  <div class="sub">Atencion al Cliente<br>Comprobante de Recepcion de Tela</div>
+  <div class="sep"></div>
+  <div class="orden-num">${orden}</div>
+  <div class="sep"></div>
+  <p><strong>FECHA  :</strong> ${fechaHora}</p>
+  <p><strong>AREA   :</strong> ${areaLabel}</p>
+  <p><strong>RECIBIO:</strong> ${operadorFinal}</p>
+  <p><strong>CLIENTE:</strong> ${clienteFinal}</p>
+  <p><strong>ID     :</strong> ${idClienteLabel}</p>
+  <div class="sep"></div>
+  <p><strong>TIPO TELA  :</strong> ${telaCliente || '-'}</p>
+  ${bolinasHtml}
+  <p><strong>BULTOS     :</strong> ${Array.isArray(bobinas) && bobinas.length > 0 ? bobinas.length : bultos}</p>
+  ${loteProv      ? `<p><strong>LOTE PROV. :</strong> ${loteProv}</p>` : ''}
+  ${observaciones ? `<p><strong>OBS        :</strong> ${observaciones}</p>` : ''}
+  <div class="sep"></div>
+  <div class="firmas">
+    <div class="firma-box">
+      <div class="firma-linea"></div>
+      <div class="firma-label">ENTREGA</div>
+    </div>
+    <div class="firma-box">
+      <div class="firma-linea"></div>
+      <div class="firma-label">RECIBE</div>
+    </div>
+  </div>
+  <div class="pie"><p>Conserve este comprobante</p><p>Servicio brindado por USER ERP</p></div>
+</div>`;
+
+        const win = window.open('', '_blank', 'width=360,height=700');
         if (win) {
             win.document.write(`<html><head><title>Comprobante ${orden}</title>
             <style>
               *{margin:0;padding:0;box-sizing:border-box}
-              body{font-family:'Courier New',Courier,monospace;font-size:12px;line-height:1.2;padding:5mm;width:80mm;background:#fff;color:#000}
-              h2{font-size:18px;font-weight:bold;text-align:center;margin:0 0 3px}
-              .sub{text-align:center;font-size:10px;color:#444;margin-bottom:8px}
-              .sep{border-bottom:1px dashed #000;margin:8px 0}
+              body{font-family:'Courier New',Courier,monospace;font-size:12px;line-height:1.3;background:#fff;color:#000}
+              .ticket{padding:5mm;width:80mm}
+              .header{font-size:20px;font-weight:bold;text-align:center;margin-bottom:2px}
+              .sub{text-align:center;font-size:10px;color:#444;margin-bottom:6px}
+              .sep{border-bottom:1px dashed #000;margin:6px 0}
+              .orden-num{font-size:28px;font-weight:900;text-align:center;letter-spacing:1px;margin:4px 0}
               p{margin:2px 0}
-              .pie{text-align:center;font-size:10px;color:#999;margin-top:16px}
+              .firmas{display:flex;gap:8mm;margin-top:8mm;margin-bottom:4mm}
+              .firma-box{flex:1;text-align:center}
+              .firma-linea{border-bottom:1px solid #000;height:10mm;margin-bottom:2px}
+              .firma-label{font-size:9px;font-weight:bold;text-transform:uppercase;letter-spacing:1px}
+              .pie{text-align:center;font-size:10px;color:#999;margin-top:8px}
+              .copy-sep{border-top:2px dashed #555;margin:4mm 0;text-align:center;font-size:9px;color:#888;padding-top:2mm;letter-spacing:2px}
               @page{size:80mm auto;margin:0}
             </style></head><body>
-            <h2>USER</h2>
-            <div class="sub">Atencion al Cliente<br>Comprobante de Recepcion de Tela</div>
-            <div class="sep"></div>
-            <p><strong>FECHA  :</strong> ${fechaHora}</p>
-            <p><strong>TICKET :</strong> ${orden}</p>
-            <p><strong>AREA   :</strong> ${areaLabel}</p>
-            <p><strong>RECIBIO:</strong> ${operadorFinal}</p>
-            <p><strong>CLIENTE:</strong> ${clienteFinal}</p>
-            <div class="sep"></div>
-            <p><strong>TIPO TELA  :</strong> ${telaCliente || '-'}</p>
-            ${sumaLine}
-            ${(() => {
-                // Si hay bobinas con medidas individuales, mostramos tabla por bobina
-                if (Array.isArray(bobinas) && bobinas.length > 0 && bobinas.some(b => b.largo)) {
-                    const totalMts = bobinas.reduce((s,b) => s + (parseFloat(b.largo)||0), 0);
-                    const rows = bobinas.map((b,i) => {
-                        const partes = [`L:${parseFloat(b.largo||0).toFixed(2)}m`];
-                        if (b.ancho) partes.push(`A:${parseFloat(b.ancho).toFixed(2)}m`);
-                        if (b.peso)  partes.push(`P:${parseFloat(b.peso).toFixed(2)}kg`);
-                        return `<p><strong>BOB. ${i+1}  :</strong> ${partes.join(' · ')}</p>`;
-                    }).join('');
-                    return `<p><strong>MTS TOTAL  :</strong> ${totalMts.toFixed(2)} m</p>${rows}`;
-                }
-                return `<p><strong>MTS DECL.  :</strong> ${metros ? parseFloat(metros).toFixed(2) + ' m' : '-'}</p>`;
-            })()}
-            <p><strong>BULTOS     :</strong> ${Array.isArray(bobinas) && bobinas.length > 0 ? bobinas.length : bultos}</p>
-            ${loteProv      ? `<p><strong>LOTE PROV. :</strong> ${loteProv}</p>` : ''}
-            ${observaciones ? `<p><strong>OBS        :</strong> ${observaciones}</p>` : ''}
-            <div class="sep"></div>
-            <div class="pie"><p>Conserve este comprobante</p><p>Servicio brindado por USER ERP</p></div>
-            <div style="height:10mm"></div>
+              ${ticketHtml}
+              <div class="copy-sep">- - - COPIA CLIENTE - - -</div>
+              ${ticketHtml}
             </body></html>`);
             win.document.close();
             win.focus();
             win.addEventListener('afterprint', () => win.close());
             setTimeout(() => win.print(), 800);
         }
-        // NOTA: El PDF se guardó automáticamente en el BACKEND (comprobantesPagos/recepciones/PRE-XX.pdf)
-        // No es necesario volver a guardar desde el frontend.
     };
 
     const printLabel = async (data) => {
         const { orden, tipo, clienteId, bultos, servicios, telaCliente, referencias, fechaHora } = data;
-
-        const contenido = tipo === 'TELA DE CLIENTE' ? telaCliente : servicios.join('/'); // Fixed type string check
-        const tituloContenido = tipo === 'TELA DE CLIENTE' ? 'TELA' : 'SERVICIO'; // Fixed type string check
-        const refsText = Array.isArray(referencias) ? referencias.join(' | ') : referencias;
+        const clienteNombreFinal = data.clienteNombre || data.clienteId || clienteId;
+        const areaLabel = data.areaLabelResuelto || areasList.find(a => a.AreaID === data.areaDestino)?.Nombre || data.areaDestino || '';
+        const refsText = Array.isArray(referencias) ? referencias.filter(Boolean).join(' | ') : (referencias || '');
 
         try {
-            // HTML Template embedded
-            // Update loop for pages to include QR per page with specific bulto info
-            // We need to generate QR for each page if we want the unique bulto info encoded in QR? 
-            // "en el codigo QR incluye la referencia, y el numero de bulto 1/2"
-            // Yes, QR changes per page.
-
-            // This requires generating N QRs.
-            // Or we can generate them inside the HTML using a library, but iframe isolation might block scripts or be slow.
-            // Better: Generate N data URLs in JSLoop.
-
             const pages = [];
-            // Para TELA DE CLIENTE con bobinas individuales, iteramos el array
+            // Bobinas: si es TELA DE CLIENTE, usar data.bobinas que llegan con largo/ancho/peso
             const bobinasList = (tipo === 'TELA DE CLIENTE' && Array.isArray(data.bobinas) && data.bobinas.length > 0)
                 ? data.bobinas
                 : null;
-            const totalBultos = bobinasList ? bobinasList.length : parseInt(bultos);
-
+            const totalBultos = bobinasList ? bobinasList.length : Math.max(1, parseInt(bultos) || 1);
+            const esTela  = tipo === 'TELA DE CLIENTE';
+            const esSub   = areaLabel.toUpperCase().includes('SUBLIM') || areaLabel.toUpperCase() === 'SB';
+            const esCorte = areaLabel.toUpperCase().includes('CORTE')  || areaLabel.toUpperCase() === 'TWC';
             for (let i = 0; i < totalBultos; i++) {
                 const bultoStr = `${i + 1}/${totalBultos}`;
                 const bDatos  = bobinasList ? bobinasList[i] : null;
-
-                // --- MODIFICATION FOR USER REQUEST ---
-                // "necesito que me dejes solo el codigo del bulto"
-                // Code Format: PRE-ID-Index (e.g. PRE-9-1)
-                // If orden is PRE-9: then PRE-9-1 is orden + '-' + (i+1)
-                // BUT wait, is 'orden' the base "PRE-9" or the full code? 
-                // createReception returns "codigoBase" (PRE-ID).
-                // So here 'orden' is "PRE-9".
-                // We construct the unique code.
-                let uniqueCode = `${orden}`;
-                if (parseInt(bultos) > 1) {
-                    uniqueCode = `${orden}-${i + 1}`;
-                } else {
-                    // Even if 1 bulto, logic in controller says: if qty>1 then suffix, else just base?
-                    // Let's check controller. 
-                    // Controller: const uniqueCode = qty > 1 ? `${codigoBase}-${i + 1}` : codigoBase;
-                    // BUT Logistica_Bultos inserts:
-                    // PRE-9-1 even if only 1? No.
-                    // Controller line 62: const uniqueCode = qty > 1 ? `${codigoBase}-${i + 1}` : codigoBase;
-                    // Wait, if 1 bulto, it's just PRE-9. 
-                    // BUT User said: "en el codigo qr de la etiqueta genera solo PRE-9-1 el bulto"
-                    // And previously said "aca se pierde porque ya no es pre-5, sino pre-5-1".
-                    // If I put just "PRE-9" for a single bulto, it's fine.
-                    // If multiple, "PRE-9-1".
-                    // Let's replicate Controller Logic exactly to match what is stored in DB.
-                }
-
-                // REPLICATING CONTROLLER LOGIC:
-                let dbCode = orden;
-                if (parseInt(bultos) > 1) {
-                    dbCode = `${orden}-${i + 1}`;
-                } else {
-                    // Single bulto usually keeps base code in this system design OR has -1. 
-                    // Controller: const uniqueCode = qty > 1 ? ... : codigoBase;
-                    // So single bulto = PRE-9.
-                    // Multiple = PRE-9-1, PRE-9-2.
-                    // CAREFUL: User image showed PRE-9-1, 9-2, 9-3. This implies multiple.
-                    // If user enters 1 bulto, code is PRE-10.
-                    // The scanner expects what is in Logistica_Bultos.CodigoEtiqueta.
-                    dbCode = parseInt(bultos) > 1 ? `${orden}-${i + 1}` : orden;
-                }
-
-                // QR Content: JUST THE CODE
-                const qrTxt = dbCode;
-                const qrUrl = await QRCode.toDataURL(qrTxt, { width: 300, margin: 2 });
+                // Código por bulto — igual que lo guarda el controller
+                const dbCode = totalBultos > 1 ? `${orden}-${i + 1}` : orden;
+                const qrUrl = await QRCode.toDataURL(dbCode, { width: 300, margin: 2 });
                 pages.push({ i, qrUrl, bultoStr, dbCode, bDatos });
             }
 
             const htmlContent = `
-            <!DOCTYPE html>
-            <html>
-            <head>
-                <meta charset="utf-8">
-                <title>Etiqueta ${orden}</title>
-                <style>
-                    @page { size: 100mm 150mm; margin: 0; }
-                    body { margin:0; padding:0; background:#fff; font-family: Arial, Helvetica, sans-serif; }
-                    .page {
-                        width:100mm; height:150mm; box-sizing:border-box;
-                        page-break-after: always; display:flex; flex-direction:column; gap:2mm;
-                        padding:5mm; overflow:hidden;
-                    }
-                    .orden { font-size:20pt; font-weight:800; text-align:center; line-height:1; margin-bottom:2px; }
-                    .info { display:grid; grid-template-columns: auto 1fr; column-gap:2mm; row-gap:1mm; font-size:10pt; line-height:1.1; }
-                    .info b { font-weight:700; white-space:nowrap; }
-                    .info span { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-                    .bultoInfo { font-size:20pt; font-weight:800; text-align:center; margin-top:4px; padding-top:4px; line-height:1; }
-                    .sectionTitle { text-align:center; font-size:10pt; font-weight:700; text-transform:uppercase; margin-top:5px; background:#000; color:#fff; padding:1px; }
-                    .content { text-align:center; font-size:12pt; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; margin: 3px 0; font-weight:bold; }
-                    .qrbox { flex:1; display:flex; align-items:center; justify-content:center; min-height:0; }
-                    .qrbox img { width:100%; height:100%; object-fit:contain; max-height:55mm; }
-                </style>
-            </head>
-            <body>
-                ${pages.map(p => `
-                <div class="page">
-                    <div class="orden">${orden}</div>
-                    <div class="info">
-                        <b>Cliente:</b> <span>${data.idCliente || clienteId}</span>
-                        <b>Tipo:</b>    <span>${tipo.substring(0, 20)}</span>
-                        <b>Fecha:</b>   <span>${fechaHora}</span>
-                        <b>Refs:</b>    <span>${(refsText || '-')}</span>
-                        ${data.cantidadPrendas ? `<b>Prendas:</b> <span>${data.cantidadPrendas}</span>` : ''}
-                        ${data.observaciones ? `<b>Obs:</b> <span>${data.observaciones}</span>` : ''}
-                        ${p.bDatos && p.bDatos.largo  ? `<b>Largo:</b>  <span>${parseFloat(p.bDatos.largo).toFixed(2)} m</span>` : ''}
-                        ${p.bDatos && p.bDatos.ancho  ? `<b>Ancho:</b>  <span>${parseFloat(p.bDatos.ancho).toFixed(2)} m</span>` : ''}
-                        ${p.bDatos && p.bDatos.peso   ? `<b>Peso:</b>   <span>${parseFloat(p.bDatos.peso).toFixed(2)} kg</span>` : ''}
-                    </div>
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Etiqueta ${orden}</title>
+  <style>
+    @page { size: 100mm 150mm; margin: 0; }
+    * { box-sizing: border-box; margin:0; padding:0; }
+    body { font-family: Arial, Helvetica, sans-serif; background:#fff; }
 
-                    <div class="qrbox">
-                        <img src="${p.qrUrl}" />
-                    </div>
+    /* ── Página principal de etiqueta ── */
+    .page {
+        width:100mm; height:150mm;
+        padding:4mm 5mm;
+        page-break-after: always;
+        display:flex; flex-direction:column;
+        overflow:hidden;
+    }
+    .hdr { display:flex; justify-content:space-between; align-items:flex-start; border-bottom:1.5px solid #000; padding-bottom:2mm; margin-bottom:2mm; }
+    .hdr-left .lbl { font-size:6pt; font-weight:700; text-transform:uppercase; color:#555; letter-spacing:.5px; }
+    .hdr-left .val { font-size:10pt; font-weight:900; line-height:1.1; }
+    .hdr-left .id  { font-size:7pt; color:#777; }
+    .hdr-right { text-align:right; }
+    .hdr-right .lbl  { font-size:6pt; font-weight:700; text-transform:uppercase; color:#555; letter-spacing:.5px; }
+    .hdr-right .area { font-size:12pt; font-weight:900; }
+    .hdr-right .fecha{ font-size:7pt; color:#555; }
+    /* QR grande a la izquierda, datos a la derecha */
+    .mid { display:flex; gap:2mm; flex:1; min-height:0; margin-bottom:1.5mm; align-items:flex-start; }
+    .qrbox { width:44mm; flex-shrink:0; display:flex; flex-direction:column; align-items:center; justify-content:center; }
+    .qrbox img { width:42mm; height:42mm; object-fit:contain; }
+    .qrbox .qrlbl { font-size:6pt; font-weight:700; text-align:center; margin-top:0.5mm; color:#333; }
+    .details { flex:1; display:flex; flex-direction:column; gap:0.8mm; }
+    /* TELA en fila completa */
+    .detail-row { display:flex; justify-content:space-between; font-size:7.5pt; border-bottom:0.5px solid #ddd; padding-bottom:0.4mm; }
+    .detail-row b { color:#555; font-weight:700; white-space:nowrap; }
+    .detail-row span { font-weight:900; text-align:right; }
+    /* LARGO ANCHO PESO en fila única */
+    .dims { display:flex; gap:1mm; margin-bottom:0.8mm; border-bottom:0.5px solid #ddd; padding-bottom:0.4mm; }
+    .dim  { flex:1; text-align:center; }
+    .dim .dlbl { font-size:5.5pt; font-weight:700; color:#555; text-transform:uppercase; }
+    .dim .dval { font-size:8pt; font-weight:900; }
+    /* Servicios pequeños */
+    .svcs { margin-top:1mm; }
+    .svcs-title { font-size:5.5pt; font-weight:700; text-transform:uppercase; color:#555; letter-spacing:.5px; margin-bottom:0.5mm; }
+    .svc-item { display:flex; align-items:center; gap:1mm; font-size:7pt; font-weight:700; margin-bottom:0.3mm; }
+    .chk { width:3mm; height:3mm; border:1.5px solid #000; display:inline-flex; align-items:center; justify-content:center; font-size:6pt; }
+    /* Código grande abajo */
+    .footer { border-top:1.5px solid #000; padding-top:1.5mm; text-align:center; }
+    .footer .code  { font-size:22pt; font-weight:900; letter-spacing:1px; line-height:1; }
+    .footer .bulto { font-size:7.5pt; font-weight:700; color:#777; text-transform:uppercase; letter-spacing:2px; }
 
-                    <div class="bultoInfo">Bulto ${p.bultoStr}</div>
+    /* ── Página instruccion ── */
+    .page-inst {
+        width:100mm; height:150mm;
+        page-break-after: always;
+        display:flex; flex-direction:column;
+        align-items:center; justify-content:center;
+        padding:8mm; overflow:hidden;
+    }
+    .inst-code  { font-size:36pt; font-weight:900; text-align:center; letter-spacing:2px; line-height:1; margin-bottom:5mm; }
+    .inst-sub   { font-size:9pt; color:#777; text-align:center; margin-bottom:4mm; font-weight:700; letter-spacing:1px; }
+    .inst-arrow { font-size:40pt; color:#bbb; margin-bottom:4mm; }
+    .inst-text  { font-size:18pt; font-weight:900; text-align:center; text-transform:uppercase; letter-spacing:2px; line-height:1.2; border:3px solid #000; padding:4mm 6mm; white-space:pre-line; }
+    .inst-bulto { margin-top:6mm; font-size:8pt; font-weight:700; color:#777; text-transform:uppercase; letter-spacing:1px; text-align:center; }
+  </style>
+</head>
+<body>
+  ${pages.map(p => {
+    const largo = p.bDatos?.largo ? parseFloat(p.bDatos.largo).toFixed(2) + ' m'  : '-';
+    const ancho = p.bDatos?.ancho ? parseFloat(p.bDatos.ancho).toFixed(2) + ' m'  : '-';
+    const peso  = p.bDatos?.peso  ? parseFloat(p.bDatos.peso ).toFixed(2) + ' kg' : '-';
+    const idClienteLabel = data.idCliente || data.clienteId || clienteId || '';
+    return `
+    <!-- Etiqueta principal bobina ${p.i+1} -->
+    <div class="page">
+      <div class="hdr">
+        <div class="hdr-left">
+          <div class="lbl">CLIENTE</div>
+          <div class="val">${clienteNombreFinal}</div>
+          <div class="id">ID: ${idClienteLabel}</div>
+        </div>
+        <div class="hdr-right">
+          <div class="lbl">SERVICIO</div>
+          <div class="area">${areaLabel}</div>
+          <div class="fecha">${fechaHora}</div>
+        </div>
+      </div>
 
-                    <div class="sectionTitle">${tituloContenido}</div>
-                    <div class="content">${contenido}</div>
-                </div>
-                `).join('')}
-                <script>
-                    window.onload = () => { window.print(); }
-                </script>
-            </body>
-            </html>
-            `;
+      <div class="mid">
+        <div class="qrbox">
+          <img src="${p.qrUrl}" />
+          <div class="qrlbl">${p.dbCode}</div>
+        </div>
+        <div class="details">
+          ${esTela ? `
+          <div class="detail-row"><b>TELA</b><span>${(telaCliente || '-').substring(0,20)}</span></div>
+          <div class="dims">
+            <div class="dim"><div class="dlbl">LARGO</div><div class="dval">${largo}</div></div>
+            <div class="dim"><div class="dlbl">ANCHO</div><div class="dval">${ancho}</div></div>
+            <div class="dim"><div class="dlbl">PESO</div><div class="dval">${peso}</div></div>
+          </div>
+          ` : `
+          <div class="detail-row"><b>SERVICIO</b><span>${(servicios||[]).join('/')}</span></div>
+          `}
+          <div class="svcs">
+            <div class="svcs-title">PROCESO</div>
+            <div class="svc-item"><div class="chk">${esSub ? '\u2713' : ''}</div> SUBLIMACI\u00d3N</div>
+            <div class="svc-item"><div class="chk">${esCorte ? '\u2713' : ''}</div> CORTE</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="footer">
+        <div class="code">${p.dbCode}</div>
+        <div class="bulto">BULTO ${p.bultoStr}</div>
+      </div>
+    </div>
+
+    <!-- Hoja instruccion bobina ${p.i+1} -->
+    <div class="page-inst">
+      <div class="inst-code">${p.dbCode}</div>
+      <div class="inst-sub">${(telaCliente || '').toUpperCase()} &nbsp;&bull;&nbsp; ID: ${idClienteLabel}</div>
+      <div class="inst-arrow">\u2193</div>
+      <div class="inst-text">${esSub ? 'SUBLIMAR\nPOR ESTE LADO' : esCorte ? 'CORTAR\nPOR ESTE LADO' : 'PROCESAR\nPOR ESTE LADO'}</div>
+      <div class="inst-bulto">BULTO ${p.bultoStr}</div>
+    </div>
+    `;
+  }).join('')}
+  <script>window.onload = () => { window.print(); }<\/script>
+</body>
+</html>`;
 
             const iframe = iframeRef.current;
             if (iframe) {
@@ -1181,29 +1234,77 @@ const ReceptionPage = () => {
                                             <div className="flex justify-between items-start">
                                                 <div>
                                                     <span className="text-xs font-bold text-slate-500 block">{item.Codigo}</span>
-                                                    <h4 className="font-bold text-slate-800 text-sm">{item.Cliente}</h4>
+                                                    <h4 className="font-bold text-slate-800 text-sm">{item.ClienteNombre || item.Cliente}</h4>
                                                     <p className="text-xs text-slate-600 mt-1 line-clamp-2">{item.Detalle}</p>
                                                     <p className="text-[10px] text-slate-400 mt-1">{new Date(item.FechaRecepcion).toLocaleDateString()} {new Date(item.FechaRecepcion).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</p>
                                                 </div>
-                                                <button
-                                                    onClick={() => {
-                                                        const isTela = item.Tipo === 'TELA CLIENTE';
-                                                        printLabel({
-                                                            orden: item.Codigo,
-                                                            clienteId: item.Cliente,
-                                                            tipo: item.Tipo,
-                                                            bultos: item.CantidadBultos,
-                                                            servicios: isTela ? [] : (item.Detalle || '').split('/'),
-                                                            telaCliente: isTela ? (item.Detalle || '').replace('TELA: ', '') : '',
-                                                            referencias: item.Referencias,
-                                                            fechaHora: new Date(item.FechaRecepcion).toLocaleString()
-                                                        });
-                                                    }}
-                                                    className="opacity-0 group-hover:opacity-100 p-2 bg-white border rounded shadow text-slate-600 hover:text-blue-600 transition-all"
-                                                    title="Reimprimir Etiqueta"
-                                                >
-                                                    <i className="fa-solid fa-print"></i>
-                                                </button>
+                                                <div className="flex flex-col gap-1 ml-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                                                    <button
+                                                        onClick={async () => {
+                                                            try {
+                                                                const isTela = item.Tipo === 'TELA CLIENTE' || item.Tipo === 'TELA DE CLIENTE';
+                                                                const bobinas = isTela
+                                                                    ? await api.get(`/reception/bobinas-by-orden/${encodeURIComponent(item.Codigo)}`).then(r => r.data?.bobinas || []).catch(() => [])
+                                                                    : [];
+                                                                await printLabel({
+                                                                    orden:             item.Codigo,
+                                                                    clienteId:         item.Cliente,
+                                                                    clienteNombre:     item.ClienteNombre || item.Cliente,
+                                                                    idCliente:         item.IDCliente || item.Cliente,
+                                                                    areaLabelResuelto: item.ProximoServicio || '',
+                                                                    tipo:              isTela ? 'TELA DE CLIENTE' : item.Tipo,
+                                                                    bultos:            item.CantidadBultos,
+                                                                    servicios:         isTela ? [] : (item.Detalle || '').split('/'),
+                                                                    telaCliente:       isTela ? (item.Detalle || '').replace('TELA: ', '') : '',
+                                                                    referencias:       item.Referencias ? [item.Referencias] : [],
+                                                                    fechaHora:         new Date(item.FechaRecepcion).toLocaleString(),
+                                                                    bobinas,
+                                                                });
+                                                            } catch(e) {
+                                                                console.error('Error reimprimir etiqueta:', e);
+                                                                alert('Error al reimprimir etiqueta: ' + e.message);
+                                                            }
+                                                        }}
+                                                        className="p-1.5 bg-white border rounded shadow text-slate-600 hover:text-blue-600 hover:border-blue-400 transition-all text-xs"
+                                                        title="Reimprimir Etiqueta"
+                                                    >
+                                                        <i className="fa-solid fa-tag"></i>
+                                                    </button>
+                                                    <button
+                                                        onClick={async () => {
+                                                            try {
+                                                                const isTela = item.Tipo === 'TELA CLIENTE' || item.Tipo === 'TELA DE CLIENTE';
+                                                                const localUser = (() => { try { return JSON.parse(localStorage.getItem('user') || '{}'); } catch { return {}; } })();
+                                                                const bobinas = isTela
+                                                                    ? await api.get(`/reception/bobinas-by-orden/${encodeURIComponent(item.Codigo)}`).then(r => r.data?.bobinas || []).catch(() => [])
+                                                                    : [];
+                                                                await printClientTicket({
+                                                                    orden:             item.Codigo,
+                                                                    clienteId:         item.Cliente,
+                                                                    clienteNombre:     item.ClienteNombre || item.Cliente,
+                                                                    idCliente:         item.IDCliente || item.Cliente,
+                                                                    areaLabelResuelto: item.ProximoServicio || '',
+                                                                    areaDestino:       item.ProximoServicio || '',
+                                                                    telaCliente:       isTela ? (item.Detalle || '').replace('TELA: ', '') : '',
+                                                                    bobinas,
+                                                                    metros:            item.TotalMetros || 0,
+                                                                    bultos:            item.CantidadBultos,
+                                                                    observaciones:     item.Observaciones || '',
+                                                                    fechaHora:         new Date(item.FechaRecepcion).toLocaleString(),
+                                                                    operario:          localUser?.nombre || localUser?.usuario || '',
+                                                                });
+                                                            } catch(e) {
+                                                                console.error('Error reimprimir comprobante:', e);
+                                                                alert('Error al reimprimir comprobante: ' + e.message);
+                                                            }
+                                                        }}
+                                                        className="p-1.5 bg-white border rounded shadow text-slate-600 hover:text-amber-600 hover:border-amber-400 transition-all text-xs"
+                                                        title="Reimprimir Comprobante"
+                                                    >
+                                                        <i className="fa-solid fa-receipt"></i>
+                                                    </button>
+                                                </div>
+
                                             </div>
                                         </div>
                                     ))

@@ -134,8 +134,9 @@ const WmsOrderPage = () => {
                 ProIdProducto: product.ProIdProducto,
                 nombre: variant.nombre_variante === 'Única' ? product.Descripcion : `${product.Descripcion} - ${variant.nombre_variante}`,
                 cantidad: qty,
-                precio: product.precio,
-                moneda: product.moneda,
+                // Precio: usa precio_excepcion de la variante si existe, sino el precio base del producto
+                precio: variant.precio_excepcion != null ? variant.precio_excepcion : product.precio,
+                moneda: variant.precio_excepcion != null && variant.moneda_excepcion ? variant.moneda_excepcion : product.moneda,
                 stock: variant.stock
             }];
         });
@@ -319,8 +320,14 @@ const WmsOrderPage = () => {
             };
         });
 
+        const clienteId = selectedClient.CliIdCliente 
+            || selectedClient.CodCliente 
+            || selectedClient.ClienteID 
+            || selectedClient.id 
+            || 2089; // fallback: CONSUMIDOR FINAL
+
         const orderData = {
-            clienteId: selectedClient.ClienteID || selectedClient.id || 1,
+            clienteId,
             moneda: orderCurrency,
             items: convertedItems,
             total: totalCart
@@ -342,10 +349,9 @@ const WmsOrderPage = () => {
     };
 
     const filteredCatalog = catalog.filter(p => {
-        const hasStock = p.total_stock > 0;
         const matchesSearch = p.Descripcion.toLowerCase().includes(searchTerm.toLowerCase()) ||
                               (p.nombre_wms && p.nombre_wms.toLowerCase().includes(searchTerm.toLowerCase()));
-        return hasStock && matchesSearch;
+        return matchesSearch;
     });
 
     // const totalCart = ... calculated at the top
@@ -514,6 +520,15 @@ const WmsOrderPage = () => {
                                                                     Stock: {v.stock}
                                                                 </span>
                                                             )}
+                                                            <span className="text-[11px] font-black text-blue-700 mt-0.5">
+                                                                {v.precio_excepcion != null
+                                                                    ? `${v.moneda_excepcion === 'USD' ? 'U$S' : '$'} ${Number(v.precio_excepcion).toFixed(2)}`
+                                                                    : `${variantModalItem.moneda === 'USD' ? 'U$S' : '$'} ${Number(variantModalItem.precio || 0).toFixed(2)}`
+                                                                }
+                                                                {v.precio_excepcion != null && (
+                                                                    <span className="text-[9px] text-slate-400 ml-1 font-normal">(precio propio)</span>
+                                                                )}
+                                                            </span>
                                                             {selectedColor === v.color && (
                                                                 <div className="absolute top-2 right-2 w-4 h-4 bg-blue-500 rounded-full flex items-center justify-center">
                                                                     <CheckCircle size={10} className="text-white" />
@@ -540,7 +555,18 @@ const WmsOrderPage = () => {
                                     >
                                         <Minus size={16} />
                                     </button>
-                                    <span className="w-12 text-center text-sm font-bold text-slate-800">{variantQty}</span>
+                                    <input
+                                        type="number"
+                                        min="1"
+                                        value={variantQty}
+                                        onChange={e => {
+                                            const v = parseInt(e.target.value) || 1;
+                                            const variant = selectedVariantId ? variantModalItem.variantes.find(v2 => v2.wms_variante_id === selectedVariantId) : null;
+                                            setVariantQty(variant ? Math.min(Math.max(1, v), variant.stock) : Math.max(1, v));
+                                        }}
+                                        disabled={!selectedVariantId}
+                                        className="w-16 text-center text-sm font-bold text-slate-800 bg-transparent border-none outline-none"
+                                    />
                                     <button 
                                         onClick={() => {
                                             const variant = variantModalItem.variantes.find(v => v.wms_variante_id === selectedVariantId);
@@ -783,7 +809,20 @@ const WmsOrderPage = () => {
                                                     <button onClick={() => updateQuantity(item.wms_variante_id, -1)} className="p-1.5 hover:bg-slate-700 rounded-md transition-colors text-white">
                                                         <Minus size={14} />
                                                     </button>
-                                                    <span className="w-8 text-center text-xs font-bold text-white">{item.cantidad}</span>
+                                                    <input
+                                                        type="number"
+                                                        min="1"
+                                                        value={item.cantidad}
+                                                        onChange={e => {
+                                                            const v = parseInt(e.target.value) || 1;
+                                                            setCart(prev => prev.map(ci =>
+                                                                ci.wms_variante_id === item.wms_variante_id
+                                                                    ? { ...ci, cantidad: Math.min(Math.max(1, v), ci.stock) }
+                                                                    : ci
+                                                            ));
+                                                        }}
+                                                        className="w-12 text-center text-xs font-bold text-white bg-transparent border-none outline-none"
+                                                    />
                                                     <button onClick={() => updateQuantity(item.wms_variante_id, 1)} className="p-1.5 hover:bg-slate-700 rounded-md transition-colors text-white">
                                                         <Plus size={14} />
                                                     </button>
@@ -849,14 +888,18 @@ const WmsOrderPage = () => {
                                 </button>
                                 <button 
                                     onClick={handleCheckout}
-                                    disabled={cart.length === 0}
+                                    disabled={cart.length === 0 || !selectedClient}
+                                    title={!selectedClient ? 'Debes seleccionar un cliente antes de confirmar' : ''}
                                     className={`w-2/3 py-4 rounded-2xl font-bold text-white text-lg transition-all duration-300 flex items-center justify-center gap-2 ${
-                                        cart.length > 0 
+                                        cart.length > 0 && selectedClient
                                         ? 'bg-blue-600 hover:bg-blue-500 shadow-lg shadow-blue-600/30 hover:-translate-y-1' 
                                         : 'bg-slate-800 text-slate-600 cursor-not-allowed'
                                     }`}
                                 >
-                                    Confirmar
+                                    {!selectedClient && cart.length > 0 
+                                        ? <><i className="fa-solid fa-user-slash text-sm"></i> Sin cliente</>
+                                        : 'Confirmar'
+                                    }
                                 </button>
                             </div>
                         </div>

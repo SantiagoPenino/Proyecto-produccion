@@ -18,11 +18,20 @@ const getLocalArticles = async (req, res) => {
                 a.IDProdReact, a.Mostrar, a.anchoimprimible, a.LLEVAPAPEL, a.MonIdMoneda,
                 map.NombreReferencia AS DescripcionGrupo,
                 LTRIM(RTRIM(sa.Articulo)) AS DescripcionStock,
-                pb.Precio AS PrecioBase
+                pb.Precio AS PrecioBase,
+                wm.producto_maestro_id,
+                wm.nombre_wms,
+                ISNULL(vc.CantidadVariantes, 0) AS CantidadVariantes
             FROM Articulos a
             LEFT JOIN ConfigMapeoERP map ON LTRIM(RTRIM(map.CodigoERP)) = LTRIM(RTRIM(a.Grupo)) COLLATE Database_Default
             LEFT JOIN StockArt sa ON LTRIM(RTRIM(sa.CodStock)) = LTRIM(RTRIM(a.CodStock))
             LEFT JOIN PreciosBase pb WITH(NOLOCK) ON pb.ProIdProducto = a.ProIdProducto
+            LEFT JOIN Articulos_Wms wm ON wm.Idproid = a.ProIdProducto
+            LEFT JOIN (
+                SELECT Idproid, COUNT(*) AS CantidadVariantes
+                FROM Articulos_WMS_Variantes
+                GROUP BY Idproid
+            ) vc ON vc.Idproid = a.ProIdProducto
             ORDER BY a.SupFlia, a.Grupo, a.CodStock, a.Descripcion
         `);
         res.json(result.recordset);
@@ -373,6 +382,148 @@ const getWmsVariants = async (req, res) => {
     }
 };
 
+const importWmsMaster = async (req, res) => {
+    const { getPool, sql } = require('../config/db');
+    try {
+        const { id } = req.params;
+        const wmsUrl = process.env.WMS_API_URL || 'https://administracionuser.uy/api';
+
+        // 1. Fetch Master info from WMS
+        const resMaestro = await fetch(`${wmsUrl}/sql`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ query: `USE Ventas_Dev; SELECT id, nombre FROM Stock_Productos_Maestros WHERE id = ${id}` })
+        });
+        const wmsMaestro = (await resMaestro.json()).data?.[0];
+
+        if (!wmsMaestro) {
+            return res.status(404).json({ success: false, message: 'Producto Maestro no encontrado en WMS.' });
+        }
+
+        // 2. Fetch variants
+        const resVariantes = await fetch(`${wmsUrl}/sql`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ query: `USE Ventas_Dev; SELECT id, producto_maestro_id, nombre_variante, codigo_variante FROM Stock_Variantes WHERE producto_maestro_id = ${id}` })
+        });
+        const wmsVariantes = (await resVariantes.json()).data || [];
+
+        const pool = await getPool();
+        const transaction = new sql.Transaction(pool);
+        await transaction.begin();
+
+        try {
+            // Check if already mapped
+            const checkMapping = await transaction.request()
+                .input('WmsMasterId', sql.Int, id)
+                .query(`SELECT Idproid FROM Articulos_Wms WHERE producto_maestro_id = @WmsMasterId`);
+
+            if (checkMapping.recordset.length > 0) {
+                await transaction.rollback();
+                return res.status(400).json({ success: false, message: 'El producto ya está importado.' });
+            }
+
+            // Create new Article
+            const insertArt = await transaction.request()
+                .input('Nombre', sql.VarChar, wmsMaestro.nombre)
+                .input('CodArticulo', sql.VarChar, `WMS-${id}`)
+                .query(`
+                    INSERT INTO Articulos (CodArticulo, Descripcion, SupFlia, Grupo, Mostrar, MonIdMoneda, borrar)
+                    OUTPUT INSERTED.ProIdProducto
+                    VALUES (@CodArticulo, @Nombre, '2', '2.1', 1, 2, 0)
+                `);
+            const localId = insertArt.recordset[0].ProIdProducto;
+
+            // Mapping
+            await transaction.request()
+                .input('Idproid', sql.Int, localId)
+                .input('WmsMasterId', sql.Int, id)
+                .input('NombreWms', sql.VarChar, wmsMaestro.nombre)
+                .query(`
+                    INSERT INTO Articulos_Wms (Idproid, producto_maestro_id, nombre_wms, fecha_sync)
+                    VALUES (@Idproid, @WmsMasterId, @NombreWms, GETDATE())
+                `);
+
+            // Variants
+            for (const variant of wmsVariantes) {
+                await transaction.request()
+                    .input('Idproid', sql.Int, localId)
+                    .input('WmsVarianteId', sql.Int, variant.id)
+                    .input('Sku', sql.VarChar, variant.codigo_variante || '')
+                    .input('NombreVariante', sql.VarChar, variant.nombre_variante || '')
+                    .query(`
+                        INSERT INTO Articulos_WMS_Variantes (Idproid, wms_variante_id, sku, nombre_variante)
+                        VALUES (@Idproid, @WmsVarianteId, @Sku, @NombreVariante)
+                    `);
+            }
+
+            await transaction.commit();
+            res.json({ success: true, message: 'Producto y variantes importados correctamente.', newId: localId });
+
+        } catch (dbErr) {
+            await transaction.rollback();
+            throw dbErr;
+        }
+
+    } catch (err) {
+        console.error('Error in importWmsMaster:', err);
+        res.status(500).json({ success: false, error: err.message });
+    }
+};
+
+
+// Obtener variantes locales de un artículo (por ProIdProducto)
+const getArticleVariants = async (req, res) => {
+    const { getPool, sql } = require('../config/db');
+    try {
+        const { id } = req.params;
+        const pool = await getPool();
+        const result = await pool.request()
+            .input('id', sql.Int, parseInt(id))
+            .query(`
+                SELECT v.id, v.wms_variante_id, v.sku, v.nombre_variante,
+                       v.precio_excepcion, v.moneda_excepcion
+                FROM Articulos_WMS_Variantes v
+                WHERE v.Idproid = @id
+                ORDER BY v.nombre_variante
+            `);
+        res.json({ success: true, data: result.recordset });
+    } catch (err) {
+        console.error('Error in getArticleVariants:', err);
+        res.status(500).json({ success: false, error: err.message });
+    }
+};
+
+// Actualizar precio de una variante
+const updateVariantPrice = async (req, res) => {
+    const { getPool, sql } = require('../config/db');
+    try {
+        const { id } = req.params;
+        const { precio_excepcion, moneda_excepcion } = req.body;
+        const pool = await getPool();
+        // moneda_excepcion puede venir como 'UYU'/'USD' (string) o como 1/2 (int)
+        let monedaId = null;
+        if (precio_excepcion !== null && precio_excepcion !== undefined && precio_excepcion !== '') {
+            if (moneda_excepcion === 'USD' || moneda_excepcion === 2) monedaId = 2;
+            else monedaId = 1; // UYU por defecto
+        }
+        await pool.request()
+            .input('id', sql.Int, parseInt(id))
+            .input('precio', sql.Decimal(18,2), precio_excepcion !== '' && precio_excepcion !== null && precio_excepcion !== undefined ? parseFloat(precio_excepcion) : null)
+            .input('moneda', sql.Int, monedaId)
+            .query(`
+                UPDATE Articulos_WMS_Variantes
+                SET precio_excepcion = @precio,
+                    moneda_excepcion = @moneda
+                WHERE id = @id
+            `);
+        res.json({ success: true, message: 'Precio actualizado correctamente' });
+    } catch (err) {
+        console.error('Error in updateVariantPrice:', err);
+        res.status(500).json({ success: false, error: err.message });
+    }
+};
+
 module.exports = {
     getLocalArticles,
     getRemoteProducts,
@@ -383,6 +534,8 @@ module.exports = {
     updateWmsMasterId,
     uploadArticleImage,
     getWmsMasters,
-    getWmsVariants
+    getWmsVariants,
+    importWmsMaster,
+    getArticleVariants,
+    updateVariantPrice
 };
-

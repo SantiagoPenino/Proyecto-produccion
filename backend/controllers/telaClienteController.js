@@ -107,6 +107,9 @@ exports.getEstadoCuenta = async (req, res) => {
         if (insumoId) { request.input('InsumoID', sql.Int, parseInt(insumoId)); filtros += ' AND mi.InsumoID = @InsumoID'; }
         if (tipo) { request.input('Tipo', sql.VarChar(50), tipo); filtros += ' AND mi.TipoMovimiento = @Tipo'; }
 
+        const { tela } = req.query;
+        if (tela) { request.input('Tela', sql.NVarChar(200), `%${tela}%`); filtros += ' AND (ib.DescripcionTela LIKE @Tela OR ins.Nombre LIKE @Tela)'; }
+
         const result = await request.query(`
             SELECT
                 mi.MovimientoID,
@@ -116,22 +119,27 @@ exports.getEstadoCuenta = async (req, res) => {
                 mi.Referencia,
                 ib.BobinaID,
                 ib.CodigoEtiqueta                                           AS Bulto,
+                ib.MetrosIniciales                                          AS MetrosIniciales,
+                ib.Ancho                                                    AS Ancho,
+                ib.Peso                                                     AS Peso,
                 ib.MetrosRestantes                                          AS SaldoBulto,
                 ib.Estado                                                   AS EstadoBulto,
-                ins.Nombre                                                  AS TipoTela,
+                COALESCE(NULLIF(ib.DescripcionTela,''), ins.Nombre)         AS TipoTela,
+                ib.Referencia                                               AS ReferenciaOrden,
                 ins.InsumoID,
                 r.Codigo                                                    AS CodigoRecepcion,
-                r.Fecha                                                     AS FechaRecepcion,
-                u.UserName                                                  AS Operario
+                r.FechaRecepcion                                            AS FechaRecepcion,
+                u.Nombre                                                    AS Operario
             FROM MovimientosInsumos mi
             JOIN InventarioBobinas ib   ON mi.BobinaID  = ib.BobinaID
             JOIN Insumos ins            ON mi.InsumoID  = ins.InsumoID
             LEFT JOIN Recepciones r     ON ib.Referencia LIKE r.Codigo + '%'
-            LEFT JOIN Usuarios u        ON mi.UsuarioID = u.UserID
+            LEFT JOIN Usuarios u        ON mi.UsuarioID = u.IdUsuario
             WHERE ib.ClienteID = @ClienteID
             ${filtros}
             ORDER BY mi.FechaMovimiento DESC
         `);
+
 
         // Calcular saldo acumulado (running balance) por tipo de tela
         const rows = result.recordset;
