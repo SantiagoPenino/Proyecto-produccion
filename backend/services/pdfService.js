@@ -42,30 +42,89 @@ const guardarPDF = (pdfBytes, nombreArchivo, subcarpeta = '') => {
   return filePath;
 };
 
-// ─── Cabecera común ───────────────────────────────────────────────────────────
-const dibujarCabecera = (page, { empresaNombre, empresaRuc, titulo, numero, fontBold, font, width, height }) => {
-  // Banda superior oscura
-  page.drawRectangle({ x: 0, y: height - 90, width, height: 90, color: rgb(0.08, 0.08, 0.12) });
+// ─── Cabecera común (emisor idéntico a la factura electrónica) ──────────────────
+/**
+ * Dibuja el bloque emisor sobre fondo blanco, replicando la cabecera de la factura
+ * (src/utils/pdfGenerator.js). Si la empresa tiene logo PNG local lo embebe; si no,
+ * dibuja el wordmark "user" + los 4 cuadritos CMYK. Debajo: nombre fantasía, razón
+ * social, dirección/ciudad y RUC. A la derecha, título + número del comprobante.
+ *
+ * pdf-lib usa origen abajo-izquierda (y crece hacia arriba); posicionamos desde `height`.
+ */
+const dibujarCabecera = async (page, { doc, fantasia, razon, dir, ciudad, ruc, logoUrl, titulo, numero, fontBold, font, width, height }) => {
+  // Fallbacks (mismos valores históricos que la factura)
+  const eFantasia = fantasia || 'Centro de Impresión Digital';
+  const eRazon    = razon    || 'LALINDE MORALES HECTOR ARTIGAS, LALINDE FALERO FELIPE Y OTROS';
+  const eDir      = dir      || 'VILARDEBO 2031';
+  const eCiudad   = ciudad   || 'MONTEVIDEO';
+  const eRuc      = ruc      || '218973270018';
 
-  // Empresa
-  page.drawText((empresaNombre || 'LA EMPRESA').toUpperCase().substring(0, 40), {
-    x: 30, y: height - 38, size: 16, font: fontBold, color: rgb(1, 1, 1),
-  });
-  if (empresaRuc) {
-    page.drawText(`RUC: ${empresaRuc}`, {
-      x: 30, y: height - 58, size: 9, font, color: rgb(0.7, 0.7, 0.7),
-    });
+  // ── Logo / wordmark (arriba-izquierda) ──────────────────────────────────────
+  const logoTop = height - 20;   // borde superior del logo
+  const logoH   = 40;            // alto del logo/wordmark
+  let logoDibujado = false;
+
+  if (logoUrl && typeof logoUrl === 'string' && logoUrl.trim() && doc) {
+    try {
+      const rel      = logoUrl.replace(/^[/\\]+/, '');           // quitar '/' inicial
+      const logoPath = path.join(__dirname, '..', 'public', rel);
+      if (fs.existsSync(logoPath) && /\.png$/i.test(logoPath)) {
+        const bytes = fs.readFileSync(logoPath);
+        const img   = await doc.embedPng(bytes);
+        const ratio = img.width && img.height ? img.width / img.height : 2.5;
+        const drawW = Math.min(150, logoH * ratio);
+        page.drawImage(img, { x: 30, y: logoTop - logoH, width: drawW, height: logoH });
+        logoDibujado = true;
+      }
+    } catch (e) {
+      logger.warn(`[PDF-SERVICE] No se pudo embeber logo (${logoUrl}): ${e.message}`);
+    }
   }
 
-  // Título + número (derecha)
+  if (!logoDibujado) {
+    // Wordmark "user" + cuadritos CMYK (rgb de pdf-lib es 0..1)
+    page.drawText('user', { x: 30, y: height - 44, size: 26, font: fontBold, color: rgb(0, 0, 0) });
+    const sqY = height - 56, sqW = 12, sqH = 4, gap = 14;
+    page.drawRectangle({ x: 30,           y: sqY, width: sqW, height: sqH, color: rgb(0, 0.682, 0.937) }); // Cyan
+    page.drawRectangle({ x: 30 + gap,     y: sqY, width: sqW, height: sqH, color: rgb(0.925, 0, 0.549) }); // Magenta
+    page.drawRectangle({ x: 30 + gap * 2, y: sqY, width: sqW, height: sqH, color: rgb(1, 0.949, 0) });     // Yellow
+    page.drawRectangle({ x: 30 + gap * 3, y: sqY, width: sqW, height: sqH, color: rgb(0, 0, 0) });         // Black
+  }
+
+  // ── Datos del emisor (debajo del logo) ──────────────────────────────────────
+  const dark = rgb(0.1, 0.1, 0.1);
+  let ty = height - 72;
+  page.drawText(eFantasia.substring(0, 45), { x: 30, y: ty, size: 13, font: fontBold, color: dark });
+
+  ty -= 13;
+  const razon1 = eRazon.substring(0, 58);
+  const razon2 = eRazon.length > 58 ? eRazon.substring(58, 116) : '';
+  page.drawText(razon1, { x: 30, y: ty, size: 8, font, color: dark });
+  if (razon2) { ty -= 10; page.drawText(razon2, { x: 30, y: ty, size: 8, font, color: dark }); }
+
+  ty -= 12;
+  const addr = `${eDir}${eCiudad ? ', ' + eCiudad : ''}`.substring(0, 60);
+  page.drawText(addr, { x: 30, y: ty, size: 9, font, color: dark });
+
+  ty -= 12;
+  page.drawText(`RUC: ${eRuc}`, { x: 30, y: ty, size: 9, font, color: dark });
+
+  // ── Título + número (derecha, texto oscuro sobre blanco) ─────────────────────
   const tituloClean = (titulo || 'COMPROBANTE').substring(0, 30);
   page.drawText(tituloClean, {
-    x: width - 30 - tituloClean.length * 5.5, y: height - 38,
-    size: 10, font: fontBold, color: rgb(0.75, 0.85, 1),
+    x: width - 30 - tituloClean.length * 5.5, y: height - 32,
+    size: 11, font: fontBold, color: rgb(0.15, 0.2, 0.35),
   });
-  page.drawText((numero || '').substring(0, 20), {
-    x: width - 30 - (numero || '').length * 9.5, y: height - 60,
-    size: 16, font: fontBold, color: rgb(1, 0.4, 0.4),
+  const numClean = (numero || '').substring(0, 20);
+  page.drawText(numClean, {
+    x: width - 30 - numClean.length * 9.5, y: height - 54,
+    size: 16, font: fontBold, color: rgb(0.7, 0.1, 0.1),
+  });
+
+  // Línea separadora bajo la cabecera
+  page.drawLine({
+    start: { x: 20, y: height - 118 }, end: { x: width - 20, y: height - 118 },
+    thickness: 0.5, color: rgb(0.8, 0.8, 0.8),
   });
 };
 
@@ -96,11 +155,16 @@ const generarPdfEgreso = async (voucher) => {
 
   const numero = `EG-${String(voucher.VoucherNumero || voucher.EgrIdEgreso || '000').padStart(6, '0')}`;
 
-  // Cabecera
-  dibujarCabecera(page, {
-    empresaNombre: voucher.EmpresaNombre,
-    empresaRuc:    voucher.EmpresaRuc,
-    titulo:        'EGRESO DE CAJA',
+  // Cabecera (emisor idéntico a la factura)
+  await dibujarCabecera(page, {
+    doc,
+    fantasia: voucher.EmpresaFantasia,
+    razon:    voucher.EmpresaRazon,
+    dir:      voucher.EmpresaDir,
+    ciudad:   voucher.EmpresaCiudad,
+    ruc:      voucher.EmpresaRuc,
+    logoUrl:  voucher.EmpresaLogo,
+    titulo:   'EGRESO DE CAJA',
     numero,
     fontBold, font, width, height,
   });
@@ -166,7 +230,9 @@ const generarPdfEgreso = async (voucher) => {
 // ═══════════════════════════════════════════════════════════════════════════════
 /**
  * Genera y guarda el PDF de un ingreso genérico.
- * @param {Object} datos - { tcaId, concepto, monto, moneda, metodoPago, empresaNombre, empresaRuc, fecha, serieDoc, numeroDoc }
+ * @param {Object} datos - { tcaId, concepto, monto, moneda, metodoPago, fecha, serieDoc, numeroDoc,
+ *   empresaFantasia, empresaRazon, empresaDir, empresaCiudad, empresaRuc, empresaLogo }
+ *   (empresaNombre sigue aceptándose como alias de empresaFantasia por compatibilidad)
  */
 const generarPdfIngreso = async (datos) => {
   const doc      = await PDFDocument.create();
@@ -177,10 +243,15 @@ const generarPdfIngreso = async (datos) => {
 
   const numero = `${datos.serieDoc || 'A'}-${String(datos.numeroDoc || datos.tcaId || '000').padStart(6, '0')}`;
 
-  dibujarCabecera(page, {
-    empresaNombre: datos.empresaNombre,
-    empresaRuc:    datos.empresaRuc,
-    titulo:        'INGRESO DE CAJA',
+  await dibujarCabecera(page, {
+    doc,
+    fantasia: datos.empresaFantasia || datos.EmpresaFantasia || datos.empresaNombre,
+    razon:    datos.empresaRazon    || datos.EmpresaRazon,
+    dir:      datos.empresaDir      || datos.EmpresaDir,
+    ciudad:   datos.empresaCiudad   || datos.EmpresaCiudad,
+    ruc:      datos.empresaRuc      || datos.EmpresaRuc,
+    logoUrl:  datos.empresaLogo     || datos.EmpresaLogo,
+    titulo:   'INGRESO DE CAJA',
     numero,
     fontBold, font, width, height,
   });

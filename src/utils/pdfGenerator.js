@@ -46,6 +46,26 @@ function numeroALetras(monto) {
 }
 // ───────────────────────────────────────────────────────────────────────────
 
+// Carga una imagen (logo del emisor) y la convierte a dataURL PNG para jsPDF.addImage.
+// Resuelve null ante cualquier error (se usa el wordmark "user" como fallback).
+const cargarImagenBase64 = (src) => new Promise((resolve) => {
+    try {
+        const img = new Image();
+        img.crossOrigin = 'anonymous';
+        img.onload = () => {
+            try {
+                const canvas = document.createElement('canvas');
+                canvas.width = img.naturalWidth || 200;
+                canvas.height = img.naturalHeight || 80;
+                canvas.getContext('2d').drawImage(img, 0, 0);
+                resolve({ dataUrl: canvas.toDataURL('image/png'), width: canvas.width, height: canvas.height });
+            } catch (e) { resolve(null); }
+        };
+        img.onerror = () => resolve(null);
+        img.src = src;
+    } catch (e) { resolve(null); }
+});
+
 export const generarPdfFacturaDGI = async (doc, detalles) => {
     // Parse SISNET DGI fields from our DB fields if they exist
     if (doc.CfeUrlImpresion && doc.CfeUrlImpresion.includes('?')) {
@@ -95,32 +115,54 @@ export const generarPdfFacturaDGI = async (doc, detalles) => {
     // ==========================================
     // LOGO Y DATOS EMPRESA (IZQUIERDA)
     // ==========================================
+    // Datos del emisor tomados del documento (multiempresa). Fallback = valores históricos.
+    const emisor = {
+        ruc:      doc.EmpRuc || '218973270018',
+        fantasia: doc.EmpNombreFantasia || 'Centro de Impresión Digital',
+        razon:    doc.EmpRazonSocial || 'LALINDE MORALES HECTOR ARTIGAS, LALINDE FALERO FELIPE Y OTROS',
+        dir:      doc.EmpDireccion || 'VILARDEBO 2031',
+        ciudad:   doc.EmpCiudad || 'MONTEVIDEO',
+        tel:      doc.EmpTelefono || '',
+        logoUrl:  doc.EmpLogoUrl || '',
+    };
+
+    // Logo del emisor: si la empresa tiene imagen configurada se usa; si no, se dibuja el wordmark "user"+CMYK.
+    let logoDibujado = false;
+    if (emisor.logoUrl) {
+        const logoData = await cargarImagenBase64(emisor.logoUrl);
+        if (logoData && logoData.dataUrl) {
+            const hMM = 18;
+            const ratio = (logoData.width && logoData.height) ? (logoData.width / logoData.height) : 2.5;
+            pdf.addImage(logoData.dataUrl, 'PNG', 15, 16, Math.min(70, hMM * ratio), hMM);
+            logoDibujado = true;
+        }
+    }
+    if (!logoDibujado) {
+        pdf.setFont('helvetica', 'bold');
+        pdf.setFontSize(48);
+        pdf.text("user", 15, 30);
+        // Cuadritos CMYK abajo de 'user'
+        pdf.setFillColor(0, 174, 239); pdf.rect(15, 35, 12, 4, 'F'); // Cyan
+        pdf.setFillColor(236, 0, 140); pdf.rect(29, 35, 12, 4, 'F'); // Magenta
+        pdf.setFillColor(255, 242, 0); pdf.rect(43, 35, 12, 4, 'F'); // Yellow
+        pdf.setFillColor(0, 0, 0);     pdf.rect(57, 35, 12, 4, 'F'); // Black
+    }
+
+    pdf.setTextColor(0, 0, 0);
     pdf.setFont('helvetica', 'bold');
-    pdf.setFontSize(48);
-    pdf.text("user", 15, 30);
-
-    // Cuadritos CMYK abajo de 'user'
-    pdf.setFillColor(0, 174, 239); // Cyan
-    pdf.rect(15, 35, 12, 4, 'F');
-    pdf.setFillColor(236, 0, 140); // Magenta
-    pdf.rect(29, 35, 12, 4, 'F');
-    pdf.setFillColor(255, 242, 0); // Yellow
-    pdf.rect(43, 35, 12, 4, 'F');
-    pdf.setFillColor(0, 0, 0); // Black
-    pdf.rect(57, 35, 12, 4, 'F');
-
     pdf.setFontSize(14);
-    pdf.text("Centro de Impresión Digital", 15, 45);
+    pdf.text(emisor.fantasia, 15, 45);
 
     pdf.setFont('helvetica', 'normal');
     pdf.setFontSize(9);
-    pdf.text("LALINDE MORALES HECTOR ARTIGAS,", 15, 50);
-    pdf.text("LALINDE FALERO FELIPE Y OTROS", 15, 54);
+    const _razonLines = pdf.splitTextToSize(emisor.razon, 82);
+    pdf.text(_razonLines[0] || '', 15, 50);
+    if (_razonLines[1]) pdf.text(_razonLines[1], 15, 54);
 
     pdf.setFontSize(10);
-    pdf.text("VILARDEBO 2031", 15, 60);
-    pdf.text("MONTEVIDEO", 15, 64);
-    pdf.text("TEL:", 15, 68);
+    pdf.text(emisor.dir || '', 15, 60);
+    pdf.text(emisor.ciudad || '', 15, 64);
+    pdf.text('TEL:' + (emisor.tel ? ' ' + emisor.tel : ''), 15, 68);
 
     // ==========================================
     // CAJAS SUPERIORES (DERECHA)
@@ -137,7 +179,7 @@ export const generarPdfFacturaDGI = async (doc, detalles) => {
     pdf.text("RUC", rightX + boxW / 4, 19, { align: 'center' });
     pdf.text("TIPO DE DOCUMENTO", rightX + boxW * 0.75, 19, { align: 'center' });
     pdf.setFontSize(10);
-    pdf.text("218973270018", rightX + boxW / 4, 24, { align: 'center' });
+    pdf.text(emisor.ruc, rightX + boxW / 4, 24, { align: 'center' });
     const DOC_TIPO_LABEL_PDF = {
       '07': 'E-Ticket Contado', '08': 'E-Ticket Crédito', '10': 'N.Crédito E-Ticket',
       '01': 'E-Factura Contado', '02': 'E-Factura Crédito', '04': 'N.Crédito E-Factura',
@@ -858,7 +900,7 @@ export const generarPdfEstadoCuenta = (cliente, cuentas, secciones, planes, desd
     window.open(url, '_blank');
 };
 
-export const generarPdfPrefactura = (ciclo, movs, excluidos, cuenta, cliente, esFinal = false) => {
+export const generarPdfPrefactura = (ciclo, movs, excluidos, cuenta, cliente, esFinal = false, empresa = null) => {
     const pdf = new jsPDF({ format: 'a4' });
     const fmtNum = (n) => new Intl.NumberFormat('es-UY', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(n);
     const fmtFecha = (dateString) => new Date(dateString).toLocaleDateString('es-UY', { timeZone: 'UTC' });
@@ -870,12 +912,12 @@ export const generarPdfPrefactura = (ciclo, movs, excluidos, cuenta, cliente, es
     pdf.setTextColor(...COLOR_PRIMARY);
 
     // Cabecera Empresa
-    pdf.text("USER S.A.", 14, 20);
+    pdf.text(empresa?.EmpNombreFantasia || 'Centro de Impresión Digital', 14, 20);
     pdf.setFont('helvetica', 'normal');
     pdf.setFontSize(10);
     pdf.setTextColor(...COLOR_SECONDARY);
-    pdf.text("RUT: 211111110015", 14, 26);
-    pdf.text("Bulevar Artigas 1234, Montevideo", 14, 31);
+    pdf.text(`RUC: ${empresa?.EmpRuc || '218973270018'}`, 14, 26);
+    pdf.text(empresa?.EmpDireccion ? `${empresa.EmpDireccion}${empresa.EmpCiudad ? ', ' + empresa.EmpCiudad : ''}` : 'VILARDEBO 2031, MONTEVIDEO', 14, 31);
 
     // Tipo Documento y Número
     pdf.setFont('helvetica', 'bold');

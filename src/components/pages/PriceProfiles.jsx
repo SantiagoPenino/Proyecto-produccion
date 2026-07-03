@@ -1120,10 +1120,75 @@ const ProfileEditor = ({ profile, onSave, onBack }) => {
     const [categoria, setCategoria] = useState(profile?.Categoria || 'Todos');
     const [esGlobal, setEsGlobal] = useState(profile?.EsGlobal || false);
     const [showBulk, setShowBulk] = useState(false);
+    const [allAreas, setAllAreas] = useState([]);
+    const [confirmDialog, setConfirmDialog] = useState(null); // { message, onConfirm }
 
     // Catalogo para lookup
     const [catalog, setCatalog] = useState([]);
     const [viewMode, setViewMode] = useState('matrix'); // 'list' | 'matrix'
+
+    useEffect(() => {
+        api.get('/profiles/urgencia-excepciones/areas?all=1')
+            .then(r => setAllAreas(r.data?.data || []))
+            .catch(() => {});
+    }, []);
+
+    // Helpers para categoria como array
+    // selectedCats usa AreaNombre como valor (legible y consistente con el sidebar)
+    const selectedCats = categoria === 'Todos' || !categoria
+        ? []
+        : categoria.split(',').map(c => c.trim()).filter(Boolean);
+
+    const saveCategoriaDB = async (newCat) => {
+        if (!profile?.ID) return;
+        try {
+            await api.patch(`/profiles/${profile.ID}/categoria`, { categoria: newCat });
+            toast.success('Categorías actualizadas.');
+        } catch {
+            toast.error('Error al guardar categorías.');
+        }
+    };
+
+    const askConfirm = (message, onConfirm) => setConfirmDialog({ message, onConfirm });
+
+    const toggleArea = (area) => {
+        const nombre = area.AreaNombre || area.CodArea;
+        const isActive = selectedCats.some(c =>
+            c.toUpperCase() === nombre.toUpperCase() || c.toUpperCase() === area.CodArea.toUpperCase()
+        );
+        if (isActive) {
+            askConfirm(
+                `¿Desactivar urgencia en "${nombre}"? Los pedidos urgentes de este servicio ya NO tendrán recargo.`,
+                () => {
+                    const remaining = selectedCats.filter(c =>
+                        c.toUpperCase() !== nombre.toUpperCase() && c.toUpperCase() !== area.CodArea.toUpperCase()
+                    );
+                    const next = remaining.length ? remaining.join(', ') : 'Todos';
+                    setCategoria(next);
+                    saveCategoriaDB(next);
+                }
+            );
+        } else {
+            askConfirm(
+                `¿Activar urgencia en "${nombre}"? Los pedidos urgentes de este servicio tendrán recargo.`,
+                () => {
+                    const next = [...selectedCats, nombre].join(', ');
+                    setCategoria(next);
+                    saveCategoriaDB(next);
+                }
+            );
+        }
+    };
+
+    const toggleTodos = () => {
+        const msg = selectedCats.length > 0
+            ? '¿Aplicar urgencia a TODOS los servicios? Se quitarán las restricciones por área.'
+            : '¿Confirmar: urgencia aplica a todos los servicios?';
+        askConfirm(msg, () => {
+            setCategoria('Todos');
+            saveCategoriaDB('Todos');
+        });
+    };
 
     useEffect(() => {
         api.get('/prices/base')
@@ -1272,6 +1337,35 @@ const ProfileEditor = ({ profile, onSave, onBack }) => {
 
     return (
         <div className="flex flex-col h-full bg-white p-6 relative">
+
+            {/* Modal de confirmación inline */}
+            {confirmDialog && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm">
+                    <div className="bg-white rounded-xl shadow-2xl border border-slate-200 p-6 max-w-sm w-full mx-4">
+                        <div className="flex items-start gap-3 mb-5">
+                            <div className="w-9 h-9 rounded-full bg-amber-100 flex items-center justify-center flex-shrink-0 mt-0.5">
+                                <i className="fa-solid fa-triangle-exclamation text-amber-500"></i>
+                            </div>
+                            <p className="text-sm text-slate-700 leading-relaxed">{confirmDialog.message}</p>
+                        </div>
+                        <div className="flex gap-2 justify-end">
+                            <button
+                                onClick={() => setConfirmDialog(null)}
+                                className="px-4 py-2 text-sm font-medium text-slate-600 bg-slate-100 hover:bg-slate-200 rounded-lg transition"
+                            >
+                                Cancelar
+                            </button>
+                            <button
+                                onClick={() => { confirmDialog.onConfirm(); setConfirmDialog(null); }}
+                                className="px-4 py-2 text-sm font-bold text-white bg-indigo-600 hover:bg-indigo-700 rounded-lg transition"
+                            >
+                                Confirmar
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
             {/* Header */}
             <div className="flex justify-between items-center mb-6 border-b pb-4">
                 <div className="flex items-center gap-4">
@@ -1313,12 +1407,57 @@ const ProfileEditor = ({ profile, onSave, onBack }) => {
                 <div className="space-y-4">
                     <div>
                         <label className="block text-xs font-bold text-slate-500 uppercase mb-1">Categoría(s)</label>
-                        <input
-                            className="w-full border border-slate-300 rounded p-2 focus:ring-2 focus:ring-indigo-100 outline-none text-slate-700"
-                            value={categoria}
-                            onChange={e => setCategoria(e.target.value)}
-                            placeholder="Ej: DTF, Sublimación o 'Todos'"
-                        />
+                        <div className="border border-slate-200 rounded-lg p-2.5 bg-slate-50 min-h-[44px] flex flex-wrap gap-1.5">
+                            {/* Chip Todos */}
+                            <button
+                                type="button"
+                                onClick={toggleTodos}
+                                className={`px-3 py-1 rounded-full text-xs font-semibold border transition-all flex items-center gap-1
+                                    ${selectedCats.length === 0
+                                        ? 'bg-indigo-600 border-indigo-600 text-white shadow-sm'
+                                        : 'bg-white border-slate-300 text-slate-500 hover:border-indigo-300 hover:text-indigo-600'
+                                    }`}
+                            >
+                                {selectedCats.length === 0 && <i className="fa-solid fa-check text-[9px]"></i>}
+                                Todos
+                            </button>
+                            {allAreas.map(a => {
+                                const nombre = a.AreaNombre || a.CodArea;
+                                // Compatibilidad: la DB puede tener CodArea ("DF") o AreaNombre ("DTF")
+                                const active = selectedCats.some(c =>
+                                    c.toUpperCase() === nombre.toUpperCase() ||
+                                    c.toUpperCase() === a.CodArea.toUpperCase()
+                                );
+                                return (
+                                    <button
+                                        key={a.CodArea}
+                                        type="button"
+                                        onClick={() => toggleArea(a)}
+                                        title={active ? 'Clic para quitar urgencia en esta área' : 'Clic para activar urgencia en esta área'}
+                                        className={`px-3 py-1 rounded-full text-xs font-semibold border transition-all flex items-center gap-1
+                                            ${active
+                                                ? 'bg-indigo-600 border-indigo-600 text-white shadow-sm'
+                                                : 'bg-white border-slate-300 text-slate-500 hover:border-indigo-300 hover:text-indigo-600'
+                                            }`}
+                                    >
+                                        {active && <i className="fa-solid fa-check text-[9px]"></i>}
+                                        {a.AreaNombre || a.CodArea}
+                                    </button>
+                                );
+                            })}
+                        </div>
+                        {selectedCats.length > 0 && (
+                            <p className="text-[11px] text-indigo-600 mt-1 flex items-center gap-1">
+                                <i className="fa-solid fa-circle-info"></i>
+                                Urgencia activa solo en: <strong>{selectedCats.map(cat => {
+                                    const found = allAreas.find(a =>
+                                        a.CodArea.toUpperCase() === cat.toUpperCase() ||
+                                        (a.AreaNombre || '').toUpperCase() === cat.toUpperCase()
+                                    );
+                                    return found ? (found.AreaNombre || found.CodArea) : cat;
+                                }).join(', ')}</strong>
+                            </p>
+                        )}
                     </div>
                     <label className="flex items-center gap-3 p-4 border rounded bg-white cursor-pointer hover:border-indigo-300 transition-colors shadow-sm w-full">
                         <input
@@ -2322,7 +2461,12 @@ const PriceProfiles = () => {
                                                         <span className="text-slate-400 text-xs ml-1.5">#{ex.CliIdCliente}</span>
                                                     </td>
                                                     <td className="px-4 py-2.5">
-                                                        {ex.ProIdProducto ? (
+                                                        {ex.CodArea ? (
+                                                            <span className="flex items-center gap-1.5 text-slate-700">
+                                                                <span className="font-mono font-bold text-xs bg-indigo-50 text-indigo-600 border border-indigo-100 px-1.5 py-0.5 rounded">{ex.CodArea}</span>
+                                                                {ex.AreaNombre || ex.CodArea}
+                                                            </span>
+                                                        ) : ex.ProIdProducto ? (
                                                             <span className="text-slate-700">{ex.ArticuloNombre || ex.CodArticulo}</span>
                                                         ) : (
                                                             <span className="inline-flex items-center gap-1 text-xs bg-orange-100 text-orange-700 font-semibold px-2 py-0.5 rounded-full">

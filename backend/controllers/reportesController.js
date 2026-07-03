@@ -225,6 +225,73 @@ exports.getReporteCancelaciones = async (req, res) => {
     }
 };
 
+// ─── GET /api/reportes/ordenes-por-dia ───────────────────────────────────────
+// Órdenes finalizadas (Estado=Finalizado ó En Produccion+EstadoEnArea=Pronto)
+// Fecha usada = última vez que pasó por Control de Calidad en HistorialOrdenes
+exports.getReporteOrdenesPorDia = async (req, res) => {
+    try {
+        const pool = await getPool();
+        const params = extractParams(req.query);
+        const { area, fechaDesde, fechaHasta, material, clienteNombre } = params;
+
+        const orConds = [];
+        if (area && area !== 'Todas') orConds.push('o.AreaID = @area');
+        if (material) orConds.push('o.Material = @material');
+        if (clienteNombre) orConds.push('o.Cliente LIKE @clienteNombre');
+        const extraWhere = orConds.length ? `AND ${orConds.join(' AND ')}` : '';
+
+        const fechaConds = [];
+        if (fechaDesde) fechaConds.push('h.FechaInicio >= @fechaDesde');
+        if (fechaHasta) fechaConds.push('h.FechaInicio <= @fechaHasta');
+        const fechaWhere = fechaConds.length ? `AND ${fechaConds.join(' AND ')}` : '';
+
+        const r = pool.request();
+        if (area && area !== 'Todas') r.input('area', sql.NVarChar(50), area);
+        if (fechaDesde) r.input('fechaDesde', sql.DateTime, new Date(fechaDesde));
+        if (fechaHasta) { const d = new Date(fechaHasta); d.setHours(23,59,59,999); r.input('fechaHasta', sql.DateTime, d); }
+        if (material) r.input('material', sql.NVarChar(100), material);
+        if (clienteNombre) r.input('clienteNombre', sql.NVarChar(150), `%${clienteNombre}%`);
+
+        const result = await r.query(`
+            WITH OrdenesFinalizadas AS (
+                SELECT o.OrdenID, ${mag()} AS _mag
+                FROM dbo.Ordenes o WITH(NOLOCK)
+                WHERE (o.Estado = 'Finalizado'
+                    OR (o.Estado = 'En Produccion' AND o.EstadoEnArea = 'Pronto'))
+                ${extraWhere}
+            ),
+            UltimoCalidad AS (
+                SELECT h.OrdenID, h.FechaInicio,
+                    ROW_NUMBER() OVER (PARTITION BY h.OrdenID ORDER BY h.FechaInicio DESC) AS rn
+                FROM dbo.HistorialOrdenes h WITH(NOLOCK)
+                INNER JOIN OrdenesFinalizadas f ON f.OrdenID = h.OrdenID
+                WHERE UPPER(LTRIM(RTRIM(h.Estado))) LIKE '%CALIDAD%'
+                ${fechaWhere}
+            )
+            SELECT
+                FORMAT(CAST(uc.FechaInicio AS DATE), 'dd/MM/yyyy') AS Dia,
+                CAST(uc.FechaInicio AS DATE) AS _sortDate,
+                SUM(CASE WHEN DATEPART(HOUR, uc.FechaInicio) < 14  THEN 1    ELSE 0 END) AS T1_Ordenes,
+                CAST(ROUND(SUM(CASE WHEN DATEPART(HOUR, uc.FechaInicio) < 14  THEN f._mag ELSE 0 END), 2) AS DECIMAL(10,2)) AS T1_Metros,
+                SUM(CASE WHEN DATEPART(HOUR, uc.FechaInicio) >= 14 THEN 1    ELSE 0 END) AS T2_Ordenes,
+                CAST(ROUND(SUM(CASE WHEN DATEPART(HOUR, uc.FechaInicio) >= 14 THEN f._mag ELSE 0 END), 2) AS DECIMAL(10,2)) AS T2_Metros,
+                COUNT(*) AS Total_Ordenes,
+                CAST(ROUND(SUM(f._mag), 2) AS DECIMAL(10,2)) AS Total_Metros
+            FROM UltimoCalidad uc
+            INNER JOIN OrdenesFinalizadas f ON f.OrdenID = uc.OrdenID
+            WHERE uc.rn = 1
+            GROUP BY CAST(uc.FechaInicio AS DATE)
+            ORDER BY CAST(uc.FechaInicio AS DATE) DESC
+        `);
+
+        const data = result.recordset.map(({ _sortDate, ...row }) => row);
+        res.json({ data });
+    } catch (e) {
+        logger.error('[REPORTES] getReporteOrdenesPorDia:', e.message);
+        res.status(500).json({ error: e.message });
+    }
+};
+
 // ─── GET /api/reportes/ordenes ────────────────────────────────────────────────
 exports.getReporteOrdenes = async (req, res) => {
     try {

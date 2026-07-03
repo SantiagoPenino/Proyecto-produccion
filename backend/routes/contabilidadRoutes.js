@@ -146,6 +146,8 @@ router.post('/caja/imputar-anticipo-deuda', caja.imputarAnticipoADeuda); // Impu
 const cfeCtrl = require('../controllers/cfeController');
 router.get('/cfe/nomencladores', cfeCtrl.getNomencladores);
 router.get('/cfe/tipos-existentes', cfeCtrl.getTiposDocumentosExistentes);
+router.get('/cfe/config-dgi', cfeCtrl.getConfigDGI);
+router.put('/cfe/config-dgi', cfeCtrl.updateConfigDGI);
 router.get('/cfe/documentos', cfeCtrl.getDocumentosCFE);
 router.post('/cfe/documentos/:id/enviar', cfeCtrl.enviarADGI);
 router.post('/cfe/manual', cfeCtrl.crearFacturaManual);

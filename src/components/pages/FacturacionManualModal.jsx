@@ -4,6 +4,8 @@ import api from '../../services/apiClient';
 import { toast } from 'sonner';
 import ClienteBilletera from '../common/ClienteBilletera';
 import CajaPanelPago from './CajaPanelPago';
+import { useEmpresas } from '../../hooks/useEmpresas';
+import { validarDocumentoUY } from '../../utils/documentoUY';
 
 
 // ID del Consumidor Final genérico (sin cuenta corriente)
@@ -44,6 +46,7 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
   const [updatingClient, setUpdatingClient] = useState(false);
   const [editDocInfo, setEditDocInfo] = useState(null);
   const esEditar = mode === 'editar' && !!editDocId;
+  const { empresas, empresaSeleccionada, setEmpresaSeleccionada } = useEmpresas();
   // Guarda si el documento ORIGINAL era contado (para mostrar alerta de anulación de pago)
   const originalPagadoRef = useRef(null);
 
@@ -63,14 +66,23 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
   // Búsqueda de clientes y pagos mixtos
   const [qCliente, setQCliente] = useState('');
   const [cotizacion, setCotizacion] = useState(40);
+  // Umbral DGI para identificar comprador en e-Tickets (configurable en BD; env como fallback)
+  const [dgiConfig, setDgiConfig] = useState({
+    limiteUI: Number(import.meta.env.VITE_DGI_LIMITE_UI) || 10000,
+    valorUI: Number(import.meta.env.VITE_DGI_VALOR_UI) || 6.5321,
+  });
   const [pagos, setPagos] = useState(() => {
     if (initialData && Array.isArray(initialData.pagos)) {
-      return initialData.pagos.map((p, idx) => ({
-        id: Date.now() + idx,
-        metodoPagoId: String(p.MPaIdMetodoPago || p.metodoPagoId || ''),
-        monedaId: p.PagIdMonedaPago || p.monedaId || 1,
-        monto: String(p.PagMontoPago || p.monto || '')
-      }));
+      return initialData.pagos.map((p, idx) => {
+        const mid = p.PagIdMonedaPago || p.monedaId || initialData.MonIdMoneda || 1;
+        return {
+          id: Date.now() + idx,
+          metodoPagoId: String(p.MPaIdMetodoPago || p.metodoPagoId || ''),
+          monedaId: mid,
+          moneda: mid === 2 ? 'USD' : 'UYU',
+          monto: String(p.PagMontoPago || p.monto || '')
+        };
+      });
     }
     return [];
   });
@@ -145,7 +157,7 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
         const d = res.data?.doc;
         const lineas = res.data?.detalles || [];
         if (!d) throw new Error('Sin datos del documento');
-        setEditDocInfo({ DocSerie: d.DocSerie, DocNumero: d.DocNumero, DocTipo: d.DocTipo });
+        setEditDocInfo({ DocSerie: d.DocSerie, DocNumero: d.DocNumero, DocTipo: d.DocTipo, EmpIdEmpresa: d.EmpIdEmpresa });
         const lbl = (d.DocTipo || '').toUpperCase();
         if (lbl.includes('PEDIDO')) setTipoCliente('PEDIDO_CAJA');
         else if (d.RutObligatorio || lbl.includes('FACTURA')) setTipoCliente('RUT');
@@ -156,12 +168,17 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
         setFormaPago(isContado ? 'CONTADO' : 'CREDITO');
         setNotas(d.DocObservaciones || '');
         if (res.data?.pagos && res.data.pagos.length > 0) {
-          setPagos(res.data.pagos.map((p, idx) => ({
-            id: Date.now() + idx,
-            metodoPagoId: String(p.MPaIdMetodoPago || p.metodoPagoId || ''),
-            monedaId: p.PagIdMonedaPago || p.monedaId || 1,
-            monto: String(p.PagMontoPago || p.monto || '')
-          })));
+          setPagos(res.data.pagos.map((p, idx) => {
+            // Si el pago guardado no trae moneda, asumir la MONEDA DEL DOCUMENTO (no UYU fijo)
+            const mid = p.PagIdMonedaPago || p.monedaId || d.MonIdMoneda || 1;
+            return {
+              id: Date.now() + idx,
+              metodoPagoId: String(p.MPaIdMetodoPago || p.metodoPagoId || ''),
+              monedaId: mid,
+              moneda: mid === 2 ? 'USD' : 'UYU',
+              monto: String(p.PagMontoPago || p.monto || '')
+            };
+          }));
         }
 
         const docTotalReal = parseFloat(d.DocTotal) || 0;
@@ -237,6 +254,14 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editDocId, mode]);
 
+  // Multiempresa: al editar, preseleccionar la empresa emisora del documento
+  useEffect(() => {
+    if (mode === 'editar' && editDocInfo?.EmpIdEmpresa && empresas.length) {
+      const m = empresas.find(e => e.EmpIdEmpresa === editDocInfo.EmpIdEmpresa);
+      if (m) setEmpresaSeleccionada(m);
+    }
+  }, [empresas, editDocInfo, mode]);
+
   // Derivar DocTipo cuando cambian tiposDocs, tipoCliente o formaPago
   useEffect(() => {
     if (tiposDocs.length === 0) return;
@@ -305,13 +330,21 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
   // Rellenar automáticamente monto en pagos si solo hay una línea y cambia el total o la moneda
   useEffect(() => {
     if (formData.DocPagado && pagos.length === 1) {
-      setPagos(prev => [
-        {
-          ...prev[0],
-          monto: totales.total.toFixed(2),
-          monedaId: formData.MonIdMoneda
-        }
-      ]);
+      setPagos(prev => {
+        const p = prev[0];
+        // Respetar la moneda elegida en el pago y CONVERTIR el monto (no forzar la del documento)
+        const esDocUSD = formData.MonIdMoneda === 2;
+        const monedaPago = p.moneda || (esDocUSD ? 'USD' : 'UYU');
+        let monto = totales.total;
+        if (esDocUSD && monedaPago === 'UYU') monto = totales.total * (cotizacion || 1);
+        if (!esDocUSD && monedaPago === 'USD') monto = totales.total / (cotizacion || 1);
+        return [{
+          ...p,
+          monto: monto.toFixed(2),
+          moneda: monedaPago,
+          monedaId: monedaPago === 'USD' ? 2 : 1
+        }];
+      });
     }
   }, [totales.total, formData.DocPagado, formData.MonIdMoneda]);
 
@@ -325,6 +358,7 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
             id: Date.now(),
             metodoPagoId: defaultMetodo ? String(defaultMetodo) : '',
             monedaId: formData.MonIdMoneda,
+            moneda: formData.MonIdMoneda === 2 ? 'USD' : 'UYU',
             monto: totales.total.toFixed(2)
           }
         ]);
@@ -339,14 +373,21 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
 
   const fetchData = async () => {
     try {
-      const [resClientes, resNomencladores, resDepartamentos, resArticulos, resMetodosPago, resCotizacion] = await Promise.all([
+      const [resClientes, resNomencladores, resDepartamentos, resArticulos, resMetodosPago, resCotizacion, resConfigDGI] = await Promise.all([
         api.get('/clients'),
         api.get('/contabilidad/cfe/nomencladores'),
         api.get('/nomenclators/departments').catch(() => ({ data: { success: false, data: [] } })),
         api.get('/contabilidad/articulos').catch(() => ({ data: { success: false, data: [] } })),
         api.get('/apipagos/metodos').catch(() => ({ data: [] })),
-        api.get('/apicotizaciones/hoy').catch(() => null)
+        api.get('/apicotizaciones/hoy').catch(() => null),
+        api.get('/contabilidad/cfe/config-dgi').catch(() => null)
       ]);
+      if (resConfigDGI?.data?.success) {
+        setDgiConfig({
+          limiteUI: Number(resConfigDGI.data.limiteUI) || 10000,
+          valorUI: Number(resConfigDGI.data.valorUI) || 6.5321,
+        });
+      }
       setClientes(resClientes.data || []);
       setMetodosPago(Array.isArray(resMetodosPago.data) ? resMetodosPago.data : []);
 
@@ -607,6 +648,7 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
         id: Date.now(),
         metodoPagoId: defaultMetodo ? String(defaultMetodo) : '',
         monedaId: formData.MonIdMoneda,
+        moneda: formData.MonIdMoneda === 2 ? 'USD' : 'UYU',
         monto: ''
       }
     ]);
@@ -620,11 +662,33 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
     setPagos(prev => prev.map(p => p.id === id ? { ...p, [field]: value } : p));
   };
 
+  // Cambiar la moneda del DOCUMENTO convirtiendo los precios con la cotización del día,
+  // para que el comprobante mantenga su valor equivalente (ej: U$S 11 ⇄ $ 449,02).
+  const cambiarMonedaDocumento = (nuevaMoneda) => {
+    if (nuevaMoneda === monedaOp) return;
+    const factor = nuevaMoneda === 'USD' ? 1 / (cotizacion || 1) : (cotizacion || 1);
+    setFormData(prev => ({
+      ...prev,
+      Lineas: prev.Lineas.map(l => {
+        const precio = parseFloat(l.precioUnitario);
+        if (isNaN(precio) || precio === 0) return l;
+        return {
+          ...l,
+          precioUnitario: parseFloat((precio * factor).toFixed(4)),
+          precioNote: `Convertido ${monedaOp === 'USD' ? 'U$S→$' : '$→U$S'} (TC ${cotizacion})`
+        };
+      })
+    }));
+    setMonedaOp(nuevaMoneda);
+  };
+
   const totalPagado = useMemo(() => {
     return pagos.reduce((acc, p) => {
       const amt = parseFloat(p.monto) || 0;
       const isComprobanteUSD = formData.MonIdMoneda === 2;
-      const isPagoUSD = String(p.monedaId) === '2';
+      // El panel de pagos usa p.moneda ('UYU'/'USD') y el modal p.monedaId (1/2):
+      // aceptar ambos, priorizando p.moneda (lo que el usuario ve y toca en pantalla)
+      const isPagoUSD = p.moneda ? p.moneda === 'USD' : String(p.monedaId) === '2';
       
       if (isComprobanteUSD) {
         if (isPagoUSD) return acc + amt;
@@ -648,7 +712,7 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
     }
     let fill = diferenciaPago;
     const isComprobanteUSD = formData.MonIdMoneda === 2;
-    const isLastUSD = String(last.monedaId) === '2';
+    const isLastUSD = last.moneda ? last.moneda === 'USD' : String(last.monedaId) === '2';
     
     if (isComprobanteUSD && !isLastUSD) {
       fill = diferenciaPago * cotizacion;
@@ -678,14 +742,48 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+
+    // ── Validaciones DGI: documento del receptor (dígito verificador) y umbral e-Ticket ──
+    const docTipoLabelV = ((tiposDocs.find(t => String(t.value) === String(formData.DocTipo))?.label) || String(formData.DocTipo || '')).toUpperCase();
+    const esEFacturaV = docTipoLabelV.includes('FACTURA') && !docTipoLabelV.includes('NOTA');
+    const esETicketV = docTipoLabelV.includes('TICKET') && !docTipoLabelV.includes('NOTA');
+    const valDocCli = validarDocumentoUY(formData.DocCliDocumento);
+    const totalUYUV = formData.MonIdMoneda === 2 ? totales.total * (cotizacion || 40) : totales.total;
+    const umbralUYUV = dgiConfig.limiteUI * dgiConfig.valorUI;
+
+    if (esEFacturaV && (!valDocCli.valido || valDocCli.tipo !== 'RUT')) {
+      return toast.error(
+        `No se puede emitir la e-Factura: ${valDocCli.motivo || 'falta el RUT del cliente'}. Solución: cargá un RUT válido de 12 dígitos en "Documento (RUT / CI)", o emití un e-Ticket si es consumidor final.`,
+        { duration: 9000 }
+      );
+    }
+    if (esETicketV) {
+      if (totalUYUV > umbralUYUV && !valDocCli.valido) {
+        return toast.error(
+          `Este e-Ticket equivale a $ ${formatMoney(totalUYUV)} UYU y supera el umbral de $ ${formatMoney(umbralUYUV)} (${dgiConfig.limiteUI} UI): DGI exige identificar al comprador. ${valDocCli.motivo}. Solución: ingresá la Cédula (6-8 dígitos) o el RUT (12 dígitos) del cliente en "Documento (RUT / CI)".`,
+          { duration: 10000 }
+        );
+      }
+      if (String(formData.DocCliDocumento || '').trim() !== '' && !valDocCli.valido) {
+        return toast.error(
+          `${valDocCli.motivo}. Solución: corregí el campo "Documento (RUT / CI)" (Cédula de 6-8 dígitos o RUT de 12, sin puntos ni guiones) o dejalo vacío si es consumidor final.`,
+          { duration: 9000 }
+        );
+      }
+    }
+
     if (formData.DocTipo.includes('FACTURA') && !formData.CliIdCliente) {
-      return toast.error('Las e-Facturas requieren un cliente con RUT seleccionado.');
+      return toast.error('Las e-Facturas requieren un cliente con RUT seleccionado. Solución: buscá y seleccioná el cliente en "1. Seleccionar Cliente".');
     }
     if (formData.DocPagado && pagos.length === 0) {
       return toast.error('Debe seleccionar al menos un método de pago si el documento está pagado.');
     }
     if (formData.DocPagado && !balanceOK) {
-      return toast.error('La suma de los pagos ingresados debe coincidir con el total de la factura.');
+      const monedaDoc = formData.MonIdMoneda === 2 ? 'U$S' : '$';
+      return toast.error(
+        `La suma de los pagos no coincide con el total de la factura. Total: ${monedaDoc} ${formatMoney(totales.total)} — Pagos ingresados (convertidos): ${monedaDoc} ${formatMoney(totalPagado)} — Diferencia: ${monedaDoc} ${formatMoney(Math.abs(diferenciaPago))}. Ojo: los pagos en otra moneda se convierten con la cotización del día ($ ${cotizacion}). Solución: revisá la moneda ($/U$S) de cada pago, ajustá el monto, o usá "Completar Saldo".`,
+        { duration: 12000 }
+      );
     }
     
     const lineasValidas = formData.Lineas.filter(l => l.concepto.trim() !== '' && parseFloat(l.precioUnitario) >= 0);
@@ -699,7 +797,7 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
         await api.put(`/contabilidad/cfe/documentos/${editDocId}`, {
           DocTipo: formData.DocTipo,
           MonIdMoneda: formData.MonIdMoneda,
-          CliIdCliente: formData.CliIdCliente ? parseInt(formData.CliIdCliente) : null,
+          CliIdCliente: formData.CliIdCliente ? parseInt(formData.CliIdCliente) : CONSUMIDOR_FINAL_ID,
           DocCliNombre: formData.DocCliNombre,
           DocCliDocumento: formData.DocCliDocumento,
           DocCliDireccion: formData.DocCliDireccion,
@@ -709,7 +807,7 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
           Pagos: formData.DocPagado ? pagos.map(p => ({
             metodoPagoId: parseInt(p.metodoPagoId),
             monto: parseFloat(p.monto),
-            monedaId: parseInt(p.monedaId)
+            monedaId: p.moneda ? (p.moneda === 'USD' ? 2 : 1) : (parseInt(p.monedaId) || 1)
           })) : null,
           lineas: lineasValidas.map(l => {
             const qty = parseFloat(l.cantidad) || 1;
@@ -731,14 +829,15 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
           DocSubtotal: totales.subtotal,
           DocImpuestos: totales.iva,
           DocTotal: totales.total,
-          DocObservaciones: notas
+          DocObservaciones: notas,
+          empresaId: empresaSeleccionada?.EmpIdEmpresa ?? null
         });
         toast.success('Documento actualizado exitosamente');
       } else {
         await api.post('/contabilidad/cfe/manual', {
           DocTipo: formData.DocTipo,
           MonIdMoneda: formData.MonIdMoneda,
-          CliIdCliente: formData.CliIdCliente ? parseInt(formData.CliIdCliente) : null,
+          CliIdCliente: formData.CliIdCliente ? parseInt(formData.CliIdCliente) : CONSUMIDOR_FINAL_ID,
           DocCliNombre: formData.DocCliNombre,
           DocCliDocumento: formData.DocCliDocumento,
           DocCliDireccion: formData.DocCliDireccion,
@@ -748,7 +847,7 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
           Pagos: formData.DocPagado ? pagos.map(p => ({
             metodoPagoId: parseInt(p.metodoPagoId),
             monto: parseFloat(p.monto),
-            monedaId: parseInt(p.monedaId)
+            monedaId: p.moneda ? (p.moneda === 'USD' ? 2 : 1) : (parseInt(p.monedaId) || 1)
           })) : null,
           Lineas: lineasValidas.map(l => ({
             concepto: l.concepto,
@@ -757,7 +856,8 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
             precioUnitario: parseFloat(l.precioUnitario),
             iva: parseFloat(l.iva)
           })),
-          Totales: totales
+          Totales: totales,
+          empresaId: empresaSeleccionada?.EmpIdEmpresa ?? null
         });
         toast.success('Documento generado exitosamente');
       }
@@ -786,6 +886,21 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
             <p className="text-xs font-semibold text-zinc-400 mt-1">Emisión directa y arqueo sin pasar por caja de mostrador</p>
           </div>
         </div>
+        {empresas.length > 0 && (
+          <div className="flex items-center gap-2 ml-auto mr-3">
+            <span className="text-[10px] font-black text-zinc-400 uppercase tracking-widest">Empresa emisora</span>
+            <select
+              value={empresaSeleccionada?.EmpIdEmpresa ?? ''}
+              onChange={(ev) => setEmpresaSeleccionada(empresas.find(e => e.EmpIdEmpresa === Number(ev.target.value)))}
+              disabled={empresas.length <= 1}
+              className="bg-white border border-zinc-200 rounded-lg px-3 py-1.5 text-sm font-bold text-zinc-800 outline-none focus:border-indigo-500 cursor-pointer disabled:cursor-default"
+            >
+              {empresas.map(e => (
+                <option key={e.EmpIdEmpresa} value={e.EmpIdEmpresa}>{e.EmpNombreFantasia || e.EmpRazonSocial}</option>
+              ))}
+            </select>
+          </div>
+        )}
         <button onClick={onClose} className="p-2 text-zinc-400 hover:text-zinc-600 hover:bg-zinc-100 rounded-xl transition-all">
           <X size={20} />
         </button>
@@ -988,6 +1103,35 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
                     onChange={e => setFormData({ ...formData, DocCliDocumento: e.target.value })}
                     className="w-full border border-zinc-200 rounded-lg px-2.5 py-1.5 text-xs font-bold focus:border-indigo-500 outline-none bg-white text-zinc-800 shadow-sm mt-0.5"
                   />
+                  {/* Feedback en vivo del documento (no aplica a Pedido Caja, que es borrador interno) */}
+                  {tipoCliente !== 'PEDIDO_CAJA' && (() => {
+                    const docStr = String(formData.DocCliDocumento || '').trim();
+                    const lblDoc = ((tiposDocs.find(t => String(t.value) === String(formData.DocTipo))?.label) || String(formData.DocTipo || '')).toUpperCase();
+                    const esFacturaLbl = lblDoc.includes('FACTURA') && !lblDoc.includes('NOTA');
+                    const esTicketLbl = lblDoc.includes('TICKET') && !lblDoc.includes('NOTA');
+
+                    if (!docStr) {
+                      if (esFacturaLbl) {
+                        return <span className="text-[9px] font-black text-rose-600 px-1 block mt-0.5">✗ La e-Factura requiere el RUT del cliente (12 dígitos, sin puntos ni guiones)</span>;
+                      }
+                      if (esTicketLbl) {
+                        const totUYU = formData.MonIdMoneda === 2 ? totales.total * (cotizacion || 40) : totales.total;
+                        if (totUYU > dgiConfig.limiteUI * dgiConfig.valorUI) {
+                          return <span className="text-[9px] font-black text-amber-600 px-1 block mt-0.5">⚠ Supera el umbral DGI ({dgiConfig.limiteUI.toLocaleString('es-UY')} UI): ingresá la CI o el RUT del comprador</span>;
+                        }
+                      }
+                      return null;
+                    }
+
+                    const v = validarDocumentoUY(formData.DocCliDocumento);
+                    if (!v.valido) {
+                      return <span className="text-[9px] font-black text-rose-600 px-1 block mt-0.5">✗ {v.motivo}</span>;
+                    }
+                    if (esFacturaLbl && v.tipo !== 'RUT') {
+                      return <span className="text-[9px] font-black text-rose-600 px-1 block mt-0.5">✗ Es una Cédula válida, pero la e-Factura requiere un RUT (12 dígitos)</span>;
+                    }
+                    return <span className="text-[9px] font-black text-emerald-600 px-1 block mt-0.5">✓ {v.tipo === 'RUT' ? 'RUT válido' : 'Cédula válida'}</span>;
+                  })()}
                 </div>
                 <div>
                   <label className="text-[8px] font-black text-zinc-400 uppercase tracking-widest px-1">Dirección DGI</label>
@@ -1032,11 +1176,11 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
                     <div className="flex items-center gap-1.5">
                       <span className="text-[9px] font-black text-zinc-400 uppercase tracking-widest">Moneda:</span>
                       <div className="flex bg-zinc-100 border border-zinc-200 rounded-lg p-0.5 gap-0.5">
-                        <button type="button" onClick={() => setMonedaOp('UYU')}
+                        <button type="button" onClick={() => cambiarMonedaDocumento('UYU')}
                           className={`px-2.5 py-1 text-[9px] font-black rounded-md transition-all ${ monedaOp === 'UYU' ? 'bg-blue-600 text-white shadow-sm' : 'text-zinc-500 hover:text-zinc-700' }`}>
                           $ UYU
                         </button>
-                        <button type="button" onClick={() => setMonedaOp('USD')}
+                        <button type="button" onClick={() => cambiarMonedaDocumento('USD')}
                           className={`px-2.5 py-1 text-[9px] font-black rounded-md transition-all ${ monedaOp === 'USD' ? 'bg-amber-500 text-white shadow-sm' : 'text-zinc-500 hover:text-zinc-700' }`}>
                           U$S USD
                         </button>

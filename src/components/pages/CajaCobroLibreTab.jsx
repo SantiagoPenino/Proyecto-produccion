@@ -6,7 +6,7 @@ import ClienteBilletera from '../common/ClienteBilletera';
 import CajaPanelPago from './CajaPanelPago';
 import { CustomSelect } from '../../client-portal/pautas/CustomSelect';
 
-export default function CajaCobroLibreTab({ sesion, onCobroCompletado, metodosPago, cotizacion, tiposDocDisponibles = [] }) {
+export default function CajaCobroLibreTab({ sesion, onCobroCompletado, metodosPago, cotizacion, tiposDocDisponibles = [], empresaId = null }) {
   const [qCliente, setQCliente] = useState('');
   const [buscandoCli, setBuscandoCli] = useState(false);
   const [clientesRes, setClientesRes] = useState([]);
@@ -116,6 +116,7 @@ export default function CajaCobroLibreTab({ sesion, onCobroCompletado, metodosPa
     setProcesando(true);
     try {
       const payload = {
+        empresaId,
         header: {
           clienteId: clienteSel.CliIdCliente,
           tipoDocumento: tipoDoc,

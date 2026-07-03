@@ -8,7 +8,7 @@ const TIPOS_DOC_PAGO = [
   { value: '05', label: 'Recibo' },
 ];
 
-export default function CajaOtrosIngresosTab({ sesion, metodosPago = [], cotizacion = 1, tiposDocDisponibles = TIPOS_DOC_PAGO, onCobroCompletado, isAdminCaja }) {
+export default function CajaOtrosIngresosTab({ sesion, metodosPago = [], cotizacion = 1, tiposDocDisponibles = TIPOS_DOC_PAGO, onCobroCompletado, isAdminCaja, empresaId = null }) {
   
   const [concepto, setConcepto] = useState('');
   const [importe, setImporte]   = useState('');
@@ -57,6 +57,7 @@ export default function CajaOtrosIngresosTab({ sesion, metodosPago = [], cotizac
     setProcesando(true);
     try {
       const res = await api.post('/contabilidad/caja/ingreso-generico', {
+        empresaId,
         stuIdSesion: isAdminCaja ? null : sesion?.StuIdSesion,
         concepto: concepto.trim(),
         monto: m,

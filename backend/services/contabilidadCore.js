@@ -241,7 +241,9 @@ const crearDocumentoContable = async ({ header, lineas }, transaction = null) =>
   const docCliDocumento = header.docCliDocumento !== undefined && header.docCliDocumento !== null ? String(header.docCliDocumento) : null;
   const docCliDireccion = header.docCliDireccion !== undefined && header.docCliDireccion !== null ? String(header.docCliDireccion) : null;
   const docCliCiudad = header.docCliCiudad !== undefined && header.docCliCiudad !== null ? String(header.docCliCiudad) : null;
-  
+  // Multiempresa: se acepta empresaId; cuando es null la BD aplica el DEFAULT (empresa primaria)
+  const empresaId = header.empresaId !== undefined ? header.empresaId : null;
+
   const resCab = await request
     .input('Cue', sql.Int, header.cueIdCuenta)
     .input('Cli', sql.Int, header.clienteId)
@@ -270,20 +272,21 @@ const crearDocumentoContable = async ({ header, lineas }, transaction = null) =>
     .input('CliDoc', sql.NVarChar(20), docCliDocumento)
     .input('CliDir', sql.NVarChar(200), docCliDireccion)
     .input('CliCiu', sql.NVarChar(100), docCliCiudad)
+    .input('Emp', sql.Int, empresaId || null)
     .query(`
-      INSERT INTO dbo.DocumentosContables 
+      INSERT INTO dbo.DocumentosContables
         (CueIdCuenta, CliIdCliente, MonIdMoneda, DocTipo, DocNumero, DocSerie,
          DocSubtotal, DocImpuestos, DocTotalDescuentos, DocTotalRecargos, DocTotal,
          DocEstado, CfeEstado, DocFechaEmision, DocUsuarioAlta, TcaIdTransaccion, AsiIdAsiento,
          DocObservaciones, DocPagado, DocIdDocumentoRef, DocMotivoRef, CicIdCiclo, DocFechaDesde, DocFechaHasta,
-         DocCliNombre, DocCliDocumento, DocCliDireccion, DocCliCiudad)
+         DocCliNombre, DocCliDocumento, DocCliDireccion, DocCliCiudad, EmpIdEmpresa)
       OUTPUT INSERTED.DocIdDocumento
-      VALUES 
+      VALUES
         (@Cue, @Cli, @MonId, @Tipo, @Num, @Serie,
          @Sub, @Imp, @TotalDesc, @TotalRec, @Tot,
          @Estado, @CfeEstado, GETDATE(), @Usr, @TcaId, @AsiId,
          @Obs, @Pagado, @DocRef, @MotRef, @CicId, @FDesde, @FHasta,
-         @CliNombre, @CliDoc, @CliDir, @CliCiu)
+         @CliNombre, @CliDoc, @CliDir, @CliCiu, ISNULL(@Emp, (SELECT TOP 1 EmpIdEmpresa FROM dbo.Empresas WHERE EmpPorDefecto=1)))
     `);
 
   const docId = resCab.recordset[0].DocIdDocumento;
@@ -347,9 +350,36 @@ const crearDocumentoContable = async ({ header, lineas }, transaction = null) =>
  * @param {object}  transaction  - Transacción mssql activa (o null para usar pool)
  * @returns {Promise<object[]>}  Array de líneas formateadas para crearDocumentoContable
  */
-const resolverLineasDetalle = async ({ tcaIdTransaccion, orderIds } = {}, transaction = null) => {
+const resolverLineasDetalle = async ({ tcaIdTransaccion, orderIds, monedaFactura = 'UYU' } = {}, transaction = null) => {
   const pool = transaction ? null : await getPool();
   const makeReq = () => transaction ? new sql.Request(transaction) : pool.request();
+
+  // Aplica cotizacion USD→UYU a líneas donde pc.Moneda='USD' cuando la factura es en UYU
+  const aplicarCotizacion = async (recordset) => {
+    if (monedaFactura !== 'UYU') return recordset;
+    if (!recordset.some(r => (r.MonedaPC || 'UYU').toUpperCase().trim() === 'USD')) return recordset;
+    const cotRes = await makeReq()
+      .query("SELECT TOP 1 CotDolar FROM dbo.Cotizaciones WITH(NOLOCK) ORDER BY CotFecha DESC");
+    const cot = parseFloat(cotRes.recordset[0]?.CotDolar) || 40;
+    return recordset.map(r => {
+      if ((r.MonedaPC || 'UYU').toUpperCase().trim() !== 'USD') return r;
+      return { ...r, _cot: cot };
+    });
+  };
+
+  const mapLinea = (r) => {
+    const f = r._cot || 1;
+    return {
+      ordCodigoOrden: r.OrdCodigoOrden  || null,
+      nomItem:        (r.NomItem        || 'Servicio').substring(0, 80),
+      dscItem:        (r.DscItem        || '').substring(0, 1000),
+      cantidad:       parseFloat(r.Cantidad)       || 1,
+      precioUnitario: parseFloat((parseFloat(r.PrecioUnitario || 0) * f).toFixed(4)),
+      subtotal:       parseFloat((parseFloat(r.Subtotal        || 0) * f).toFixed(2)),
+      impuestos:      parseFloat((parseFloat(r.Impuestos       || 0) * f).toFixed(2)),
+      total:          parseFloat((parseFloat(r.Total           || 0) * f).toFixed(2)),
+    };
+  };
 
   // ── MODO 1: desde TransaccionDetalle ──────────────────────────────────────
   if (tcaIdTransaccion) {
@@ -379,7 +409,8 @@ const resolverLineasDetalle = async ({ tcaIdTransaccion, orderIds } = {}, transa
           ROUND(ISNULL(pcd.Subtotal, ISNULL(td.TdeImporteFinal, 0)) / 1.22, 2) AS Subtotal,
           ROUND(ISNULL(pcd.Subtotal, ISNULL(td.TdeImporteFinal, 0))
                 - ISNULL(pcd.Subtotal, ISNULL(td.TdeImporteFinal, 0)) / 1.22, 2) AS Impuestos,
-          ISNULL(pcd.Subtotal, ISNULL(td.TdeImporteFinal, 0)) AS Total
+          ISNULL(pcd.Subtotal, ISNULL(td.TdeImporteFinal, 0)) AS Total,
+          ISNULL(pc.Moneda, ISNULL(pcd.Moneda, 'UYU')) AS MonedaPC
         FROM dbo.TransaccionDetalle td
         -- Intento 1: relacion moderna por tabla intermedia
         LEFT JOIN dbo.RelOrdenesRetiroOrdenes rel
@@ -403,16 +434,8 @@ const resolverLineasDetalle = async ({ tcaIdTransaccion, orderIds } = {}, transa
           AND td.TdeTipoReferencia IN ('ORDEN_RETIRO', 'ORDEN_DEPOSITO')
       `);
 
-    return res.recordset.map(r => ({
-      ordCodigoOrden:  r.OrdCodigoOrden  || null,
-      nomItem:         (r.NomItem         || 'Servicio').substring(0, 80),
-      dscItem:         (r.DscItem         || '').substring(0, 1000),
-      cantidad:        parseFloat(r.Cantidad)        || 1,
-      precioUnitario:  parseFloat(r.PrecioUnitario)  || 0,
-      subtotal:        parseFloat(r.Subtotal)         || 0,
-      impuestos:       parseFloat(r.Impuestos)        || 0,
-      total:           parseFloat(r.Total)            || 0,
-    }));
+    const withCot = await aplicarCotizacion(res.recordset);
+    return withCot.map(mapLinea);
   }
 
   // ── MODO 2: desde array de OrdIdOrden (generarCFEDesdeOrdenesDirectas) ────
@@ -448,7 +471,8 @@ const resolverLineasDetalle = async ({ tcaIdTransaccion, orderIds } = {}, transa
         ROUND(ISNULL(pcd.Subtotal, ISNULL(od.OrdCostoFinal, 0)) / 1.22, 2) AS Subtotal,
         ROUND(ISNULL(pcd.Subtotal, ISNULL(od.OrdCostoFinal, 0))
               - ISNULL(pcd.Subtotal, ISNULL(od.OrdCostoFinal, 0)) / 1.22, 2) AS Impuestos,
-        ISNULL(pcd.Subtotal, ISNULL(od.OrdCostoFinal, 0)) AS Total
+        ISNULL(pcd.Subtotal, ISNULL(od.OrdCostoFinal, 0)) AS Total,
+        ISNULL(pc.Moneda, ISNULL(pcd.Moneda, 'UYU')) AS MonedaPC
       FROM dbo.OrdenesDeposito od
       LEFT JOIN dbo.PedidosCobranza pc          ON LTRIM(RTRIM(pc.NoDocERP)) = od.OrdCodigoOrden
       LEFT JOIN dbo.PedidosCobranzaDetalle pcd  ON pcd.PedidoCobranzaID = pc.ID
@@ -457,16 +481,8 @@ const resolverLineasDetalle = async ({ tcaIdTransaccion, orderIds } = {}, transa
       WHERE od.OrdIdOrden IN (${idList})
     `);
 
-    return res.recordset.map(r => ({
-      ordCodigoOrden:  r.OrdCodigoOrden  || null,
-      nomItem:         (r.NomItem         || 'Servicio').substring(0, 80),
-      dscItem:         (r.DscItem         || '').substring(0, 1000),
-      cantidad:        parseFloat(r.Cantidad)        || 1,
-      precioUnitario:  parseFloat(r.PrecioUnitario)  || 0,
-      subtotal:        parseFloat(r.Subtotal)         || 0,
-      impuestos:       parseFloat(r.Impuestos)        || 0,
-      total:           parseFloat(r.Total)            || 0,
-    }));
+    const withCot = await aplicarCotizacion(res.recordset);
+    return withCot.map(mapLinea);
   }
 
   return [];

@@ -9,6 +9,7 @@ const WmsLogisticsPage = () => {
     const [activeTab, setActiveTab] = useState('PENDIENTE');
     const [expandedOrder, setExpandedOrder] = useState(null);
     const [confirmDialog, setConfirmDialog] = useState(null);
+    const [isConfirming, setIsConfirming] = useState(false);
     const [cancelDialog, setCancelDialog] = useState(null);
     const [deleteItemDialog, setDeleteItemDialog] = useState(null);
     const [editingItem, setEditingItem] = useState(null);
@@ -80,7 +81,9 @@ const WmsLogisticsPage = () => {
     };
 
     const handleConfirmPrep = async (pedidoId) => {
+        if (isConfirming) return; // bloquear doble click
         try {
+            setIsConfirming(true);
             setConfirmDialog(null);
             const loadingToast = toast.loading('Confirmando preparación...');
             const res = await wmsService.confirmPreparation(pedidoId);
@@ -88,6 +91,8 @@ const WmsLogisticsPage = () => {
             loadOrders();
         } catch (error) {
             toast.error(error.response?.data?.error || 'Error al confirmar');
+        } finally {
+            setIsConfirming(false);
         }
     };
 
@@ -140,10 +145,15 @@ const WmsLogisticsPage = () => {
                             </button>
                             <button 
                                 onClick={() => handleConfirmPrep(confirmDialog.id)}
-                                className="px-5 py-2.5 rounded-xl font-bold text-white bg-emerald-500 hover:bg-emerald-600 shadow-lg shadow-emerald-500/30 transition-all flex items-center gap-2"
+                                disabled={isConfirming}
+                                className={`px-5 py-2.5 rounded-xl font-bold text-white shadow-lg transition-all flex items-center gap-2 ${
+                                    isConfirming 
+                                    ? 'bg-slate-400 cursor-not-allowed' 
+                                    : 'bg-emerald-500 hover:bg-emerald-600 shadow-emerald-500/30'
+                                }`}
                             >
                                 <CheckCircle size={18} />
-                                Sí, Confirmar
+                                {isConfirming ? 'Procesando...' : 'Sí, Confirmar'}
                             </button>
                         </div>
                     </div>

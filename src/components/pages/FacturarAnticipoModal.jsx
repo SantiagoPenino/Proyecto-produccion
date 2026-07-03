@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { X, CheckCircle2, RefreshCw } from 'lucide-react';
 import api from '../../services/api';
 import toast from 'react-hot-toast';
+import { validarDocumentoUY } from '../../utils/documentoUY';
 
 export default function FacturarAnticipoModal({
   cliente,
@@ -57,12 +58,14 @@ export default function FacturarAnticipoModal({
       return;
     }
 
-    if (tipoDocumento.includes('TICKET') && docLimpio.length !== 8) {
-      setValError('Para emitir un e-Ticket, la Cédula (CI) debe tener exactamente 8 dígitos.');
+    // Validación estructural del documento (RUT/CI con dígito verificador)
+    const valDoc = validarDocumentoUY(cliDgiDocumento);
+    if (tipoDocumento.includes('FACTURA') && !(valDoc.valido && valDoc.tipo === 'RUT')) {
+      toast.error(`Las e-Facturas requieren un RUT válido de 12 dígitos. ${valDoc.motivo ? `${valDoc.motivo}. ` : ''}Solución: corregí el RUT del cliente o emití un e-Ticket.`);
       setWorking(false);
       return;
-    } else if (tipoDocumento.includes('FACTURA') && docLimpio.length !== 12) {
-      setValError('Para emitir una e-Factura, el RUT debe tener exactamente 12 dígitos.');
+    } else if (tipoDocumento.includes('TICKET') && !valDoc.valido) {
+      toast.error(`${valDoc.motivo}. Solución: ingresá la Cédula (6-8 dígitos) o RUT (12 dígitos) del cliente.`);
       setWorking(false);
       return;
     }

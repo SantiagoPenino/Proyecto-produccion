@@ -1,4 +1,5 @@
 import OrdersCard from '../dashboard/OrdersCard.jsx';
+import ProduccionDiariaChart from '../dashboard/ProduccionDiariaChart.jsx';
 import { ordersService } from '../../services/modules/ordersService';
 
 const Dashboard = ({ orders = [] }) => {
@@ -12,7 +13,7 @@ const Dashboard = ({ orders = [] }) => {
       </div>
 
       {/* Grid de KPIs */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 mb-10">
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 mb-8">
 
         <OrdersCard
           title="Activas"
@@ -45,6 +46,10 @@ const Dashboard = ({ orders = [] }) => {
         />
 
       </div>
+
+      {/* Gráfico producción por turno */}
+      <ProduccionDiariaChart />
+
     </div>
   );
 };

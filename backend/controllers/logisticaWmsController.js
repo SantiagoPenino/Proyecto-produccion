@@ -89,42 +89,85 @@ exports.confirmPreparation = async (req, res) => {
         const items = itemsRes.recordset;
         if (items.length === 0) throw new Error('El pedido no tiene items');
 
-        // 2. Descontar stock via API WMS externa
-        const wmsUrl = process.env.WMS_API_URL;
+        // Guard: verificar que el pedido aún esté en estado que permita descontar
+        const estadoRes = await pool.request()
+            .input('PedidoID', sql.Int, pedidoId)
+            .query(`SELECT EstadoCobro FROM PedidosCobranza WHERE ID = @PedidoID AND NoDocERP LIKE 'VEN-%'`);
+        const estadoActual = estadoRes.recordset[0]?.EstadoCobro;
+        if (!estadoActual || !['PENDIENTE', 'EN_PREPARACION'].includes(estadoActual)) {
+            return res.json({ success: false, message: `Pedido ya fue procesado (estado: ${estadoActual}). No se descuenta stock.` });
+        }
+
+        // 2. Descontar stock via POST /sql — IP directa Johnson (http://3.85.26.173:5005)
+        const wmsUrl = process.env.WMS_API_URL; // http://3.85.26.173:5005
+        const depositoId = parseInt(process.env.WMS_DEPOSITO_LOCAL_ID) || 5;
         const wmsErrors = [];
-        
+        let wmsDisponible = true;
+
         if (wmsUrl) {
             for (const item of items) {
                 try {
-                    const decrementQuery = `
+                    const varianteId = parseInt(item.wms_variante_id);
+                    const cantidad    = parseFloat(item.Cantidad);
+
+                    const query = `
                         USE Ventas_Dev;
                         UPDATE Stock_Etiquetas
-                        SET cantidad_actual = cantidad_actual - ${parseFloat(item.Cantidad)}
-                        WHERE variante_id = ${parseInt(item.wms_variante_id)}
+                        SET cantidad_actual = cantidad_actual - ${cantidad}
+                        WHERE variante_id = ${varianteId}
+                          AND deposito_id = ${depositoId}
                           AND estado = 'activo'
-                          AND cantidad_actual >= ${parseFloat(item.Cantidad)};
+                          AND cantidad_actual >= ${cantidad};
                         SELECT @@ROWCOUNT AS filas_afectadas;
                     `;
+
                     const response = await fetch(`${wmsUrl}/sql`, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ query: decrementQuery })
+                        body: JSON.stringify({ query }),
+                        signal: AbortSignal.timeout(10000)
                     });
+
+                    const contentType = response.headers.get('content-type') || '';
+                    if (!contentType.includes('application/json')) {
+                        wmsDisponible = false;
+                        break;
+                    }
+
                     const result = await response.json();
                     if (!response.ok || !result.success) {
-                        wmsErrors.push(`variante ${item.wms_variante_id}: ${result.error || 'error desconocido'}`);
+                        wmsErrors.push(`variante ${varianteId}: ${result.error || 'error desconocido'}`);
+                        logger.warn(`⚠️ Stock no descontado: variante ${varianteId}`);
                     } else {
-                        logger.info(`✅ Stock WMS descontado: variante ${item.wms_variante_id} x ${item.Cantidad}`);
+                        const filas = result.data?.[0]?.filas_afectadas ?? 0;
+                        if (filas === 0) {
+                            wmsErrors.push(`variante ${varianteId}: sin stock suficiente en depósito ${depositoId}`);
+                            logger.warn(`⚠️ Sin stock: variante ${varianteId} dep.${depositoId}`);
+                        } else {
+                            logger.info(`✅ Stock descontado: variante ${varianteId} x ${cantidad} (dep.${depositoId}) | filas: ${filas}`);
+                        }
                     }
                 } catch (e) {
-                    wmsErrors.push(`variante ${item.wms_variante_id}: ${e.message}`);
+                    wmsDisponible = false;
+                    logger.error(`❌ Error WMS /sql: ${e.message}`);
+                    break;
                 }
             }
         } else {
-            logger.warn('WMS_API_URL no configurada — stock NO descontado del WMS');
+            logger.warn('WMS_API_URL no configurada — stock NO descontado');
         }
 
-        // 3. Update Order State
+
+        // Si el WMS no está disponible, bloquear — no marcar PREPARADO
+        if (!wmsDisponible) {
+            return res.status(503).json({
+                success: false,
+                message: 'El WMS no está disponible aún. Esperá que Johnson despliegue el endpoint.',
+                wmsErrors
+            });
+        }
+
+        // 3. Marcar como PREPARADO
         await pool.request()
             .input('PedidoID', sql.Int, pedidoId)
             .query(`
@@ -134,10 +177,11 @@ exports.confirmPreparation = async (req, res) => {
             `);
 
         const msg = wmsErrors.length > 0
-            ? `Pedido PREPARADO con advertencias en stock WMS: ${wmsErrors.join('; ')}`
-            : 'Pedido confirmado, stock WMS descontado y marcado como PREPARADO';
+            ? `Pedido PREPARADO con advertencias: ${wmsErrors.join('; ')}`
+            : 'Pedido confirmado, stock descontado y marcado como PREPARADO';
 
         res.json({ success: true, message: msg, wmsErrors });
+
     } catch (err) {
         logger.error('Error en confirmPreparation (Logistica):', err);
         res.status(500).json({ error: err.message });

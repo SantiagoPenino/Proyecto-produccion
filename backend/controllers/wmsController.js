@@ -137,10 +137,11 @@ exports.getCatalog = async (req, res) => {
             WHERE a.SupFlia = '2'
         `);
 
-        // 2. Fetch live stock from WMS
+        // 2. Fetch live stock from WMS — solo depósito configurado (WMS_DEPOSITO_LOCAL_ID)
         const stockMap = {};
         try {
             const wmsUrl = process.env.WMS_API_URL;
+            const depositoId = process.env.WMS_DEPOSITO_LOCAL_ID || 5; // depósito de Ventas
             if (wmsUrl) {
                 const wmsQuery = `
                     USE Ventas_Dev;
@@ -148,7 +149,9 @@ exports.getCatalog = async (req, res) => {
                         variante_id, 
                         ISNULL(SUM(cantidad_actual), 0) as total_stock
                     FROM Stock_Etiquetas
-                    WHERE estado = 'activo' AND cantidad_actual > 0
+                    WHERE estado = 'activo' 
+                      AND cantidad_actual > 0
+                      AND deposito_id = ${depositoId}
                     GROUP BY variante_id
                 `;
                 const response = await fetch(`${wmsUrl}/sql`, {

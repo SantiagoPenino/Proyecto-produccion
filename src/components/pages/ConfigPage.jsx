@@ -16,6 +16,7 @@ import ConfigDeliveryTimesModal from '../modals/config/ConfigDeliveryTimesModal'
 import ConfigWebServicesModal from '../modals/config/ConfigWebServicesModal';
 import ConfigSyncModal from '../modals/config/ConfigSyncModal';
 import ConfigSincroArticulosModal from '../modals/config/ConfigSincroArticulosModal';
+import EmpresasAdminPanel from './admin/EmpresasAdminPanel';
 
 export default function ConfigPage({ onBack }) {
     const navigate = useNavigate();
@@ -244,7 +245,30 @@ export default function ConfigPage({ onBack }) {
                             colorClass="from-slate-600 to-slate-800"
                             onClick={() => navigate('/admin/audit')}
                         />
+                        <ConfigCard
+                            title="Empresas"
+                            subtitle="Datos y facturación (SISNET)"
+                            icon="fa-building"
+                            colorClass="from-teal-500 to-cyan-600"
+                            onClick={() => setActiveModal(prev => prev === 'empresas' ? null : 'empresas')}
+                        />
                     </div>
+
+                    {/* Panel de Empresas: inline, no tapa el menú ni el navbar */}
+                    {activeModal === 'empresas' && (
+                        <div className="mb-8 animate-fade-in-down">
+                            <div className="flex items-center justify-between mb-4">
+                                <h2 className="text-lg font-black text-slate-700 px-1 border-l-4 border-cyan-500 pl-3">Empresas — Datos y Facturación</h2>
+                                <button
+                                    onClick={() => setActiveModal(null)}
+                                    className="px-4 py-2 rounded-xl font-bold text-slate-500 hover:bg-slate-200 border border-slate-200 bg-white transition-all text-xs uppercase tracking-wider"
+                                >
+                                    <i className="fa-solid fa-xmark mr-1"></i> Cerrar
+                                </button>
+                            </div>
+                            <EmpresasAdminPanel />
+                        </div>
+                    )}
 
                     <h2 className="text-lg font-black text-slate-700 mb-4 px-1 border-l-4 border-indigo-500">Integraciones</h2>
                     <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">

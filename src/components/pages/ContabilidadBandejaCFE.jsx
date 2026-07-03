@@ -4,7 +4,9 @@ import { useAuth } from '../../context/AuthContext';
 import { toast } from 'sonner';
 import api from '../../services/apiClient';
 import { generarPdfFacturaDGI } from '../../utils/pdfGenerator';
+import { useEmpresas } from '../../hooks/useEmpresas';
 import FacturacionManualModal from './FacturacionManualModal';
+import ConfirmationModal from '../modals/ConfirmationModal';
 import CfeNotaCreditoModal from './CfeNotaCreditoModal';
 
 const getStatusBadge = (status) => {
@@ -150,6 +152,8 @@ const ContabilidadBandejaCFE = () => {
     const [ncDoc, setNcDoc] = useState(null);
     const [ncLineas, setNcLineas] = useState([]);
     const [ncMode, setNcMode] = useState('NC');
+    // Confirmación de envío a DGI: { tipo: 'uno', doc } | { tipo: 'lote', ids: [...] }
+    const [confirmEnvio, setConfirmEnvio] = useState(null);
 
     // Filtros
     const [clientes, setClientes] = useState([]);
@@ -158,11 +162,15 @@ const ContabilidadBandejaCFE = () => {
         fechaHasta: new Date().toISOString().split('T')[0],
         estado: '',
         tipo: '',
-        clienteId: ''
+        clienteId: '',
+        empresaId: '',
+        metodoPagoId: ''
     });
 
     const [clienteSearch, setClienteSearch] = useState('');
     const [showClienteDropdown, setShowClienteDropdown] = useState(false);
+    const { empresas } = useEmpresas(false); // todas (activas e inactivas) para el filtro
+    const [metodosPago, setMetodosPago] = useState([]);
     const dropdownRef = React.useRef(null);
 
     const handleSelectCliente = (cliente) => {
@@ -235,6 +243,8 @@ const ContabilidadBandejaCFE = () => {
             if (filtros.estado) queryParams.append('estado', filtros.estado);
             if (filtros.tipo) queryParams.append('tipo', filtros.tipo);
             if (filtros.clienteId) queryParams.append('clienteId', filtros.clienteId);
+            if (filtros.empresaId) queryParams.append('empresaId', filtros.empresaId);
+            if (filtros.metodoPagoId) queryParams.append('metodoPagoId', filtros.metodoPagoId);
             const { data } = await api.get(`/contabilidad/cfe/documentos?${queryParams.toString()}`);
             setDocs(data);
         } catch (err) {
@@ -256,10 +266,20 @@ const ContabilidadBandejaCFE = () => {
         }
     };
 
+    const fetchMetodosPago = async () => {
+        try {
+            const { data } = await api.get('/apipagos/metodos');
+            setMetodosPago(Array.isArray(data) ? data : []);
+        } catch (err) {
+            console.error('Error al cargar métodos de pago:', err);
+        }
+    };
+
     useEffect(() => {
         fetchClientes();
         fetchDocumentos();
         fetchTiposExistentes();
+        fetchMetodosPago();
         // eslint-disable-next-line
     }, []);
 
@@ -272,12 +292,11 @@ const ContabilidadBandejaCFE = () => {
         try {
             const loadingToast = toast.loading('Generando PDF...');
             
-            // Obtener el documento actual de la lista
-            const doc = docs.find(d => d.DocIdDocumento === docId);
-            if (!doc) throw new Error("Documento no encontrado en la lista actual");
-
-            // Obtener los detalles de la factura desde el backend
+            // Obtener el documento COMPLETO (con datos de empresa) desde el backend.
+            // Importante: usar response.data.doc (trae Emp*), NO el doc de la lista (que no los tiene).
             const response = await api.get(`/contabilidad/cfe/documentos/${docId}/detalle`);
+            const doc = response.data?.doc || docs.find(d => d.DocIdDocumento === docId);
+            if (!doc) throw new Error("Documento no encontrado");
             const detalles = response.data?.detalles || [];
 
             // Generar y descargar el PDF localmente en el navegador
@@ -318,8 +337,10 @@ const ContabilidadBandejaCFE = () => {
             return doc && isFiscalCfe(doc.DocTipo);
         });
         if (nonPedidoDocs.length === 0) return;
-        if (!window.confirm(`[MODO PRUEBA SISNET] ¿Seguro que deseas simular el envío de ${nonPedidoDocs.length} documentos a SISNET?`)) return;
-        
+        setConfirmEnvio({ tipo: 'lote', ids: nonPedidoDocs });
+    };
+
+    const doEnviarSeleccionados = async (nonPedidoDocs) => {
         let sentCount = 0;
         setLoading(true);
         for (const docId of nonPedidoDocs) {
@@ -355,9 +376,11 @@ const ContabilidadBandejaCFE = () => {
         }
     };
 
-    const handleEnviarDGI = async (doc) => {
-        if (!window.confirm(`¿Seguro que deseas enviar el documento ${doc.DocSerie}-${doc.DocNumero} a DGI a través de SISNET?`)) return;
-        
+    const handleEnviarDGI = (doc) => {
+        setConfirmEnvio({ tipo: 'uno', doc });
+    };
+
+    const doEnviarDGI = async (doc) => {
         try {
             setSendingId(doc.DocIdDocumento);
             const { data } = await api.post(`/contabilidad/cfe/documentos/${doc.DocIdDocumento}/enviar`);
@@ -549,6 +572,36 @@ const ContabilidadBandejaCFE = () => {
                                 <option value="">Todos</option>
                                 {tiposExistentes.map(t => (
                                     <option key={t} value={t}>{getTipoDocName(t)}</option>
+                                ))}
+                            </select>
+                        </div>
+                        {empresas.length > 1 && (
+                        <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-1">Empresa</label>
+                            <select
+                                name="empresaId"
+                                value={filtros.empresaId}
+                                onChange={handleFilterChange}
+                                className="w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 p-2 border bg-white text-sm"
+                            >
+                                <option value="">Todas</option>
+                                {empresas.map(e => (
+                                    <option key={e.EmpIdEmpresa} value={e.EmpIdEmpresa}>{e.EmpNombreFantasia || e.EmpRazonSocial}</option>
+                                ))}
+                            </select>
+                        </div>
+                        )}
+                        <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-1">Método de Pago</label>
+                            <select
+                                name="metodoPagoId"
+                                value={filtros.metodoPagoId}
+                                onChange={handleFilterChange}
+                                className="w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 p-2 border bg-white text-sm"
+                            >
+                                <option value="">Todos</option>
+                                {metodosPago.map(m => (
+                                    <option key={m.MPaIdMetodoPago} value={m.MPaIdMetodoPago}>{m.MPaDescripcionMetodo}</option>
                                 ))}
                             </select>
                         </div>
@@ -906,6 +959,22 @@ const ContabilidadBandejaCFE = () => {
             )}
 
             {/* PreviewModal eliminada — el lápiz abre el modal de edición completo */}
+
+            {/* Confirmación de envío a DGI (reemplaza el window.confirm nativo) */}
+            <ConfirmationModal
+                isOpen={!!confirmEnvio}
+                onClose={() => setConfirmEnvio(null)}
+                onConfirm={() => {
+                    if (confirmEnvio?.tipo === 'uno') doEnviarDGI(confirmEnvio.doc);
+                    else if (confirmEnvio?.tipo === 'lote') doEnviarSeleccionados(confirmEnvio.ids);
+                }}
+                title="Enviar a DGI"
+                message={confirmEnvio?.tipo === 'uno'
+                    ? `Se enviará el documento ${confirmEnvio?.doc?.DocSerie}-${confirmEnvio?.doc?.DocNumero} (${confirmEnvio?.doc?.DocTipo || ''}) a DGI a través de SISNET.\n\nUna vez aceptado por DGI, el comprobante es fiscal y ya no se puede editar (solo anular con Nota de Crédito).`
+                    : `Se enviarán ${confirmEnvio?.ids?.length || 0} documentos a DGI a través de SISNET.\n\nUna vez aceptados, los comprobantes son fiscales y ya no se pueden editar (solo anular con Nota de Crédito).`}
+                confirmText="Sí, enviar a DGI"
+                cancelText="Cancelar"
+            />
 
             {editDocId && (
                 <FacturacionManualModal

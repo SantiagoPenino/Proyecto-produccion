@@ -43,7 +43,7 @@ function MonedaSwitch({ value, onChange }) {
  * La moneda se elige UNA sola vez con el pill-switch; el panel de pago
  * hereda esa moneda y no muestra el selector por-línea (lockMoneda).
  */
-export default function CajaSaldoAnticipoTab({ sesion, metodosPago, cotizacion, onCobroCompletado, initialCliente }) {
+export default function CajaSaldoAnticipoTab({ sesion, metodosPago, cotizacion, onCobroCompletado, initialCliente, empresaId = null }) {
   /* ── cliente ─────────────────────────────────────────────────────────────── */
   const [qCliente, setQCliente]             = useState('');
   const [buscandoCli, setBuscandoCli]       = useState(false);
@@ -167,6 +167,7 @@ export default function CajaSaldoAnticipoTab({ sesion, metodosPago, cotizacion, 
     setProcesando(true);
     try {
       const res = await api.post('/contabilidad/caja/pago-anticipo', {
+        empresaId,
         clienteId:    clienteSel.CliIdCliente,
         cuentaId:     cuentaId || null,
         importe:      importeNum,
