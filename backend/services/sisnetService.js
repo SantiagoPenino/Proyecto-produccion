@@ -1,6 +1,8 @@
 const soap = require('soap');
 const logger = require('../utils/logger');
 const { getPool, sql } = require('../config/db');
+const crypto = require('./cryptoService');
+const { validarDocumentoUY } = require('../utils/documentoUY');
 
 // La URL de WSDL y las credenciales vienen del .env
 const WSDL_URL = process.env.SISNET_WSDL_URL || 'http://test.sisnet.com.uy:8062/EfacturaWeb/wsService?wsdl';
@@ -17,7 +19,17 @@ const TASA_MINIMA = process.env.SISNET_TASA_MINIMA || 'tasa_Minima';
  * @param {Number} cotDolar - Cotización del dólar actual.
  * @returns {Promise<Object>} - Devuelve un objeto con CAE, URL, Serie, etc.
  */
-exports.emitirCFE = async (doc, lineas, cotDolar = 40.0) => {
+exports.emitirCFE = async (doc, lineas, cotDolar = 40.0, empresa = null) => {
+    // 0. Config efectiva: prefiere valores de la empresa (multiempresa), cae al .env si no hay empresa
+    const WSDL_EFF = (empresa && empresa.EmpSisnetWsdlUrl) || WSDL_URL;
+    const USER_EFF = (empresa && empresa.EmpSisnetUser)    || USER;
+    const CAJA_EFF = (empresa && empresa.EmpSisnetCaja)    || CAJA;
+    const PASS_EFF = (empresa && empresa.EmpSisnetPass ? crypto.decrypt(empresa.EmpSisnetPass) : null) || PASS;
+    const TB_EFF   = (empresa && empresa.EmpSisnetTasaBasica) || TASA_BASICA;
+    const TM_EFF   = (empresa && empresa.EmpSisnetTasaMinima) || TASA_MINIMA;
+
+    logger.info('[SISNET-Service] Emisor caja=' + CAJA_EFF + (empresa ? ' empresaId=' + empresa.EmpIdEmpresa : ' (fallback .env)'));
+
     // 1. Cargar referencias si existen (Requerido por DGI para Notas de Crédito y Débito)
     let listaWsReferencias = [];
     if (doc.DocIdDocumentoRef) {
@@ -96,16 +108,16 @@ exports.emitirCFE = async (doc, lineas, cotDolar = 40.0) => {
     }
 
     return new Promise((resolve, reject) => {
-        logger.info(`[SISNET-Service] Conectando a SOAP: ${WSDL_URL}`);
-        
-        soap.createClient(WSDL_URL, (err, client) => {
+        logger.info(`[SISNET-Service] Conectando a SOAP: ${WSDL_EFF}`);
+
+        soap.createClient(WSDL_EFF, (err, client) => {
             if (err) {
                 logger.error("[SISNET-Service] Error creando cliente SOAP: ", err);
                 return reject(new Error('Error conectando a SISNET: ' + err.message));
             }
 
             // 1. Configurar seguridad básica (usuario/password) en los headers SOAP
-            const security = new soap.BasicAuthSecurity(USER, PASS);
+            const security = new soap.BasicAuthSecurity(USER_EFF, PASS_EFF);
             client.setSecurity(security);
 
             // 2. Determinar tipo de CFE y Tipo de Documento del Receptor
@@ -139,7 +151,7 @@ exports.emitirCFE = async (doc, lineas, cotDolar = 40.0) => {
 
             // 3. Solicitar CAE
             logger.info(`[SISNET-Service] Solicitando CAE para Tipo CFE: ${tipoCFE}...`);
-            const argsCAE = { tipoCFE, claveUnicaCaja: CAJA };
+            const argsCAE = { tipoCFE, claveUnicaCaja: CAJA_EFF };
 
             client.obtenerCAE(argsCAE, (errCae, resultCae) => {
                 if (errCae || resultCae?.return?.hayError) {
@@ -194,29 +206,35 @@ exports.emitirCFE = async (doc, lineas, cotDolar = 40.0) => {
                 // Calculamos el Total estrictamente a partir de lo acumulado para no fallar la regla de DGI
                 const mntTotal = fixD(mntNetoIvaTasaBasica + mntIVATasaBas + mntNoGrv);
 
+                // Receptor: e-Facturas SIEMPRE lo llevan; e-Tickets lo llevan solo cuando hay
+                // CI/RUT VÁLIDO (dígito verificador OK) — DGI exige identificar al comprador
+                // en tickets sobre el umbral de UI, y así el dato realmente llega a DGI.
+                const valReceptor = validarDocumentoUY(docCliDoc);
+                const wsReceptorData = {
+                    wsReceptor: {
+                        tipoDocRecep: valReceptor.tipo === 'RUT' ? 2 : 3, // 2=RUT, 3=CI
+                        codPaisRecep: 'UY',
+                        docRecep: valReceptor.normalizado || docCliDoc,
+                        rznSocRecep: (doc.CliRazonSocial || doc.DocCliNombre || '').trim() || 'Sin Nombre',
+                        dirRecep: (doc.CliDireccion || doc.DocCliDireccion || '').trim() || 'Sin Direccion',
+                        ciudadRecep: (doc.DocCliCiudad || '').trim() || 'Montevideo',
+                        deptoRecep: 'Montevideo'
+                    }
+                };
+                if (esETicket && valReceptor.valido) {
+                    logger.info(`[SISNET-Service] e-Ticket con receptor identificado (${valReceptor.tipo} ${valReceptor.normalizado})`);
+                }
                 const cfeData = {
-                    // Para e-Tickets (B2C) NO se incluye wsReceptor — DGI no lo requiere
-                    // Para e-Facturas (B2B) se incluye con el RUT real del comprador
-                    ...(esETicket ? {} : {
-                        wsReceptor: {
-                            tipoDocRecep: tipoDocRecep,
-                            codPaisRecep: 'UY',
-                            docRecep: docCliDoc,
-                            rznSocRecep: (doc.CliRazonSocial || doc.DocCliNombre || '').trim() || 'Sin Nombre',
-                            dirRecep: (doc.CliDireccion || doc.DocCliDireccion || '').trim() || 'Sin Direccion',
-                            ciudadRecep: (doc.DocCliCiudad || '').trim() || 'Montevideo',
-                            deptoRecep: 'Montevideo'
-                        }
-                    }),
+                    ...(esETicket ? (valReceptor.valido ? wsReceptorData : {}) : wsReceptorData),
                     wsTotales: {
                         tpoMoneda: doc.MonIdMoneda === 2 ? 'USD' : 'UYU', 
                         tpoCambio: doc.MonIdMoneda === 2 ? cotDolar : 1.0,
                         mntNoGrv: mntNoGrv, 
                         mntNetoIvaTasaBasica: mntNetoIvaTasaBasica,
-                        iVATasaBas: TASA_BASICA,
+                        iVATasaBas: TB_EFF,
                         mntIVATasaBas: mntIVATasaBas,
                         mntNetoIvaTasaMin: 0,
-                        iVATasaMin: TASA_MINIMA,
+                        iVATasaMin: TM_EFF,
                         mntIVATasaMin: 0,
                         mntTotal: mntTotal,
                         cantLinDet: listaWsItems.length,

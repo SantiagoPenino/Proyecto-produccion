@@ -4,12 +4,13 @@ const logger = require('../utils/logger');
 // ID del cliente genérico "Consumidor Final" — no tiene cuenta corriente propia
 const CONSUMIDOR_FINAL_ID = 2089;
 const { resolverLineasDesdeMotor, generarAsientoCompleto, crearDocumentoContable, actualizarFirmaCFE, anularDocumentoContable } = require('../services/contabilidadCore');
+const { validarDocumentoUY } = require('../utils/documentoUY');
 const sisnetService = require('../services/sisnetService');
 const contabilidadService = require('../services/contabilidadService');
 
 exports.getDocumentosCFE = async (req, res) => {
     try {
-        const { fechaDesde, fechaHasta, tipo, estado, clienteId } = req.query;
+        const { fechaDesde, fechaHasta, tipo, estado, clienteId, empresaId, metodoPagoId } = req.query;
         const pool = await getPool();
         const request = pool.request();
 
@@ -64,6 +65,14 @@ exports.getDocumentosCFE = async (req, res) => {
             baseQuery += ` AND d.CliIdCliente = @clienteId`;
             request.input('clienteId', sql.Int, clienteId);
         }
+        if (empresaId) {
+            baseQuery += ` AND d.EmpIdEmpresa = @empresaId`;
+            request.input('empresaId', sql.Int, empresaId);
+        }
+        if (metodoPagoId) {
+            baseQuery += ` AND EXISTS (SELECT 1 FROM dbo.Pagos p2 WITH(NOLOCK) WHERE p2.PagTcaIdTransaccion = d.TcaIdTransaccion AND p2.MPaIdMetodoPago = @metodoPagoId)`;
+            request.input('metodoPagoId', sql.Int, metodoPagoId);
+        }
 
         baseQuery += ` ORDER BY d.DocFechaEmision DESC`;
 
@@ -71,6 +80,105 @@ exports.getDocumentosCFE = async (req, res) => {
         res.json(result.recordset);
     } catch (error) {
         logger.error('Error obteniendo documentos CFE:', error);
+        res.status(500).json({ error: error.message });
+    }
+};
+
+/**
+ * Inserta una clave en ConfiguracionGlobal SOLO si no existe.
+ * La estructura de esa tabla varía según la instalación (columnas NOT NULL como AreaID),
+ * así que se descubren las columnas reales vía INFORMATION_SCHEMA y se rellenan
+ * las obligatorias sin default: números → 0, fechas → GETDATE(), texto → '' (AreaID → 'ADMIN',
+ * que es la convención de esta tabla para claves globales).
+ */
+async function asegurarClaveConfigGlobal(pool, clave, valorPorDefecto) {
+    const existe = await pool.request()
+        .input('clave', sql.VarChar(50), clave)
+        .query(`SELECT 1 AS x FROM dbo.ConfiguracionGlobal WITH(NOLOCK) WHERE Clave = @clave`);
+    if (existe.recordset.length > 0) return false;
+
+    const colsRes = await pool.request().query(`
+        SELECT COLUMN_NAME, IS_NULLABLE, COLUMN_DEFAULT, DATA_TYPE
+        FROM INFORMATION_SCHEMA.COLUMNS
+        WHERE TABLE_SCHEMA = 'dbo' AND TABLE_NAME = 'ConfiguracionGlobal'
+    `);
+    const nombres = ['[Clave]', '[Valor]'];
+    const valores = ['@clave', '@valor'];
+    for (const c of colsRes.recordset) {
+        if (c.COLUMN_NAME === 'Clave' || c.COLUMN_NAME === 'Valor') continue;
+        if (c.IS_NULLABLE === 'NO' && c.COLUMN_DEFAULT == null) {
+            const t = String(c.DATA_TYPE || '').toLowerCase();
+            nombres.push(`[${c.COLUMN_NAME}]`);
+            if (['int', 'bigint', 'smallint', 'tinyint', 'decimal', 'numeric', 'float', 'real', 'money', 'bit'].includes(t)) {
+                valores.push('0');
+            } else if (t.includes('date') || t.includes('time')) {
+                valores.push('GETDATE()');
+            } else {
+                valores.push(c.COLUMN_NAME === 'AreaID' ? "'ADMIN'" : "''");
+            }
+        }
+    }
+    await pool.request()
+        .input('clave', sql.VarChar(50), clave)
+        .input('valor', sql.VarChar(100), String(valorPorDefecto))
+        .query(`INSERT INTO dbo.ConfiguracionGlobal (${nombres.join(', ')}) VALUES (${valores.join(', ')})`);
+    return true;
+}
+
+/**
+ * GET /contabilidad/cfe/config-dgi
+ * Umbral DGI para identificar al receptor en e-Tickets (10.000 UI) y valor de la UI.
+ * Configurable en dbo.ConfiguracionGlobal (claves DGI_LIMITE_UI / DGI_VALOR_UI) sin rebuild.
+ */
+exports.getConfigDGI = async (req, res) => {
+    try {
+        const pool = await getPool();
+        // Seed idempotente: crea las claves si no existen para que queden editables en ConfiguracionGlobal
+        try {
+            await asegurarClaveConfigGlobal(pool, 'DGI_LIMITE_UI', '10000');
+            await asegurarClaveConfigGlobal(pool, 'DGI_VALOR_UI', '6.5321');
+        } catch (seedErr) {
+            logger.warn('[CFE] No se pudieron sembrar las claves DGI en ConfiguracionGlobal: ' + seedErr.message);
+        }
+        const r = await pool.request()
+            .query(`SELECT Clave, Valor FROM dbo.ConfiguracionGlobal WITH(NOLOCK) WHERE Clave IN ('DGI_LIMITE_UI','DGI_VALOR_UI')`);
+        const map = {};
+        r.recordset.forEach(x => { map[x.Clave] = x.Valor; });
+        const limiteUI = parseFloat(map.DGI_LIMITE_UI) || 10000;
+        const valorUI = parseFloat(map.DGI_VALOR_UI) || 6.5321;
+        res.json({ success: true, limiteUI, valorUI, umbralUYU: Math.round(limiteUI * valorUI * 100) / 100 });
+    } catch (error) {
+        logger.error('Error obteniendo config DGI:', error);
+        res.status(500).json({ error: error.message });
+    }
+};
+
+/**
+ * PUT /contabilidad/cfe/config-dgi
+ * Actualiza el tope (en UI) y el valor de la UI desde la pantalla de administración.
+ */
+exports.updateConfigDGI = async (req, res) => {
+    try {
+        const limiteUI = parseFloat(req.body?.limiteUI);
+        const valorUI = parseFloat(req.body?.valorUI);
+        if (!(limiteUI > 0) || !(valorUI > 0)) {
+            return res.status(400).json({ error: 'Parámetros inválidos: el tope (UI) y el valor de la UI deben ser números mayores a 0. Solución: revisá los campos (ej: 10000 y 6.5321).' });
+        }
+        const pool = await getPool();
+        // Asegurar que existan (con la estructura real de la tabla) y luego actualizar
+        await asegurarClaveConfigGlobal(pool, 'DGI_LIMITE_UI', String(limiteUI));
+        await asegurarClaveConfigGlobal(pool, 'DGI_VALOR_UI', String(valorUI));
+        await pool.request()
+            .input('lim', sql.VarChar(50), String(limiteUI))
+            .input('val', sql.VarChar(50), String(valorUI))
+            .query(`
+                UPDATE dbo.ConfiguracionGlobal SET Valor = @lim WHERE Clave = 'DGI_LIMITE_UI';
+                UPDATE dbo.ConfiguracionGlobal SET Valor = @val WHERE Clave = 'DGI_VALOR_UI';
+            `);
+        logger.info(`[CFE] Parámetros DGI actualizados: limiteUI=${limiteUI}, valorUI=${valorUI}`);
+        res.json({ success: true, limiteUI, valorUI, umbralUYU: Math.round(limiteUI * valorUI * 100) / 100 });
+    } catch (error) {
+        logger.error('Error actualizando config DGI:', error);
         res.status(500).json({ error: error.message });
     }
 };
@@ -105,6 +213,26 @@ exports.enviarADGI = async (req, res) => {
             }
         }
 
+        // 1.5 Obtener empresa emisora (multiempresa) — datos completos server-side (incluye credenciales SISNET)
+        let empresa = null;
+        if (doc.EmpIdEmpresa) {
+            const empResult = await pool.request()
+                .input('Emp', sql.Int, doc.EmpIdEmpresa)
+                .query(`SELECT * FROM dbo.Empresas WHERE EmpIdEmpresa = @Emp`);
+            empresa = empResult.recordset[0] || null;
+        }
+        if (!empresa) {
+            const empDefResult = await pool.request()
+                .query(`SELECT TOP 1 * FROM dbo.Empresas WHERE EmpPorDefecto=1 ORDER BY EmpIdEmpresa`);
+            empresa = empDefResult.recordset[0] || null;
+        }
+
+        // Validación: la empresa emisora debe existir, estar activa y tener caja SISNET configurada
+        if (!empresa || !empresa.EmpActiva || !empresa.EmpSisnetCaja) {
+            logger.warn(`Emisión a DGI bloqueada para DocId ${id}: empresa emisora no configurada (EmpIdEmpresa=${doc.EmpIdEmpresa}).`);
+            return res.status(400).json({ error: 'La empresa emisora no está configurada para facturación electrónica (requiere estar activa y tener caja SISNET).' });
+        }
+
         // 2. Obtener lineas
         const lineasResult = await pool.request()
             .input('Id', sql.Int, id)
@@ -115,9 +243,43 @@ exports.enviarADGI = async (req, res) => {
             .query(`SELECT TOP 1 CotDolar FROM Cotizaciones ORDER BY CotFecha DESC`);
         const cotDolar = cotResult.recordset.length > 0 ? cotResult.recordset[0].CotDolar : 40.0;
 
+        // 3.5 Validaciones DGI del receptor — mensajes claros ANTES de llamar a SISNET
+        const docTipoUpperV = String(doc.DocTipo || '').toUpperCase();
+        const esFacturaCFE = docTipoUpperV.includes('FACTURA');
+        const esTicketCFE = docTipoUpperV.includes('TICKET');
+        const valReceptor = validarDocumentoUY(doc.CliRUT || doc.DocCliDocumento);
+
+        if (esFacturaCFE && (!valReceptor.valido || valReceptor.tipo !== 'RUT')) {
+            return res.status(400).json({
+                error: `No se puede enviar a DGI: las e-Facturas requieren un RUT válido del cliente (12 dígitos). ${valReceptor.motivo || ''}. Solución: editá el documento y corregí el campo "Documento (RUT/CI)" del cliente, o emitilo como e-Ticket si es consumidor final.`
+            });
+        }
+
+        if (esTicketCFE) {
+            // Umbral DGI configurable (ConfiguracionGlobal: DGI_LIMITE_UI / DGI_VALOR_UI)
+            let limiteUI = 10000, valorUI = 6.5321;
+            try {
+                const cfgR = await pool.request()
+                    .query(`SELECT Clave, Valor FROM dbo.ConfiguracionGlobal WITH(NOLOCK) WHERE Clave IN ('DGI_LIMITE_UI','DGI_VALOR_UI')`);
+                for (const row of cfgR.recordset) {
+                    if (row.Clave === 'DGI_LIMITE_UI') limiteUI = parseFloat(row.Valor) || limiteUI;
+                    if (row.Clave === 'DGI_VALOR_UI') valorUI = parseFloat(row.Valor) || valorUI;
+                }
+            } catch (eCfg) {
+                logger.warn('[CFE] Config DGI no disponible, usando valores por defecto: ' + eCfg.message);
+            }
+            const umbralUYU = limiteUI * valorUI;
+            const totalUYU = doc.MonIdMoneda === 2 ? Number(doc.DocTotal || 0) * cotDolar : Number(doc.DocTotal || 0);
+            if (totalUYU > umbralUYU && !valReceptor.valido) {
+                return res.status(400).json({
+                    error: `No se puede enviar a DGI: este e-Ticket equivale a $ ${totalUYU.toFixed(2)} UYU y supera el umbral de $ ${umbralUYU.toFixed(2)} (${limiteUI} UI), por lo que DGI exige identificar al comprador. ${valReceptor.motivo}. Solución: editá el documento, cargá la Cédula (6-8 dígitos) o el RUT (12 dígitos) del cliente y reenviá.`
+                });
+            }
+        }
+
         // 4. Emitir a SISNET
         logger.info(`Iniciando emisión a SISNET para DocId: ${id} con cotización: ${cotDolar}`);
-        const resultSISNET = await sisnetService.emitirCFE(doc, lineasResult.recordset, cotDolar);
+        const resultSISNET = await sisnetService.emitirCFE(doc, lineasResult.recordset, cotDolar, empresa);
         
         // 4. Actualizar base de datos con respuesta real
         await actualizarFirmaCFE(id, {
@@ -135,7 +297,7 @@ exports.enviarADGI = async (req, res) => {
 };
 
 exports.crearFacturaManual = async (req, res) => {
-    const { DocTipo, MonIdMoneda, CliIdCliente, Lineas, Totales, DocCliNombre, DocCliDocumento, DocCliDireccion, DocCliCiudad, DocPagado, MetodoPagoId, Pagos } = req.body;
+    const { DocTipo, MonIdMoneda, CliIdCliente, Lineas, Totales, DocCliNombre, DocCliDocumento, DocCliDireccion, DocCliCiudad, DocPagado, MetodoPagoId, Pagos, empresaId } = req.body;
     const pool = await getPool();
     const transaction = new sql.Transaction(pool);
     
@@ -279,7 +441,7 @@ exports.crearFacturaManual = async (req, res) => {
         const docId = await crearDocumentoContable({
             header: {
                 cueIdCuenta: MonIdMoneda === 2 ? 119 : 118,
-                clienteId: CliIdCliente || 1,
+                clienteId: CliIdCliente || 2089, // 2089 = CONSUMIDOR FINAL genérico (1 es un cliente real)
                 monedaId: MonIdMoneda,
                 tipo: docTipoStr,
                 numero: String(numero),
@@ -295,7 +457,8 @@ exports.crearFacturaManual = async (req, res) => {
                 docCliNombre: DocCliNombre || '',
                 docCliDocumento: DocCliDocumento || '',
                 docCliDireccion: DocCliDireccion || '',
-                docCliCiudad: DocCliCiudad || ''
+                docCliCiudad: DocCliCiudad || '',
+                empresaId: empresaId || null
             },
             lineas: mappedLineas
         }, transaction);
@@ -595,7 +758,7 @@ exports.editarFactura = async (req, res) => {
         const { 
             DocTipo, CliIdCliente, MonIdMoneda, DocSubtotal, DocImpuestos, DocTotal, DocObservaciones, 
             lineas, DocCliNombre, DocCliDocumento, DocCliDireccion, DocCliCiudad, 
-            DocPagado, MetodoPagoId, Pagos 
+            DocPagado, MetodoPagoId, Pagos, empresaId
         } = req.body;
 
         const pool = await getPool();
@@ -695,7 +858,7 @@ exports.editarFactura = async (req, res) => {
         await transaction.request()
             .input('id', sql.Int, id)
             .input('docTipo', sql.NVarChar(50), savedDocTipo)
-            .input('clienteId', sql.Int, CliIdCliente || 1)
+            .input('clienteId', sql.Int, CliIdCliente || 2089) // 2089 = CONSUMIDOR FINAL genérico (1 es un cliente real)
             .input('moneda', sql.Int, MonIdMoneda)
             .input('subtotal', sql.Decimal(18, 2), DocSubtotal)
             .input('iva', sql.Decimal(18, 2), DocImpuestos)
@@ -710,6 +873,7 @@ exports.editarFactura = async (req, res) => {
             .input('serie', sql.VarChar(10), newSerie)
             .input('numero', sql.Int, newNumero)
             .input('cfeEstado', sql.VarChar(20), newCfeEstado)
+            .input('emp', sql.Int, empresaId || null)
             .query(`
                 UPDATE DocumentosContables SET
                     DocTipo           = CASE WHEN @docTipo <> '' THEN @docTipo ELSE DocTipo END,
@@ -727,7 +891,8 @@ exports.editarFactura = async (req, res) => {
                     DocPagado         = @docPagado,
                     DocSerie          = @serie,
                     DocNumero         = @numero,
-                    CfeEstado         = @cfeEstado
+                    CfeEstado         = @cfeEstado,
+                    EmpIdEmpresa      = ISNULL(@emp, EmpIdEmpresa)
                 WHERE DocIdDocumento = @id
             `);
 
@@ -938,7 +1103,7 @@ exports.editarFactura = async (req, res) => {
 
                     await transaction.request()
                         .input('tcaId', sql.Int, currentTcaId)
-                        .input('clienteId', sql.Int, CliIdCliente || 1)
+                        .input('clienteId', sql.Int, CliIdCliente || 2089) // 2089 = CONSUMIDOR FINAL genérico (1 es un cliente real)
                         .input('tipoDoc', sql.VarChar(20), (config.CodDocumento || DocTipo).substring(0, 20))
                         .input('total', sql.Decimal(18, 4), DocTotal)
                         .input('cobrado', sql.Decimal(18, 4), convertido)
@@ -1193,10 +1358,21 @@ exports.getDetalleFactura = async (req, res) => {
                     -- Config CFE global
                     (SELECT CfeCfgValor FROM dbo.Config_CFE WHERE CfeCfgClave = 'URL_VERIFICACION' AND CfeCfgActivo = 1) AS CfeUrlVerificacion,
                     (SELECT CfeCfgValor FROM dbo.Config_CFE WHERE CfeCfgClave = 'TEXTO_IVA_AL_DIA' AND CfeCfgActivo = 1) AS CfeTextoIvaDia,
+                    -- Datos de la empresa emisora (multiempresa)
+                    e.EmpRuc,
+                    e.EmpRazonSocial,
+                    e.EmpNombreFantasia,
+                    e.EmpDireccion,
+                    e.EmpCiudad,
+                    e.EmpDepartamento,
+                    e.EmpTelefono,
+                    e.EmpLogoUrl,
+                    e.EmpColorPrimario,
                     -- Total unidades del documento
                     (SELECT SUM(DcdCantidad) FROM dbo.DocumentosContablesDetalle WHERE DocIdDocumento = d.DocIdDocumento) AS DocTotalUnidades
                 FROM DocumentosContables d
                 LEFT JOIN Clientes c ON d.CliIdCliente = c.CliIdCliente
+                LEFT JOIN dbo.Empresas e ON e.EmpIdEmpresa = ISNULL(d.EmpIdEmpresa, (SELECT TOP 1 EmpIdEmpresa FROM dbo.Empresas WHERE EmpPorDefecto = 1))
                 LEFT JOIN dbo.Usuarios u ON u.IdUsuario = ISNULL(d.DocVendedorId, d.DocUsuarioAlta)
                 LEFT JOIN dbo.SecuenciaDocumentos s ON s.SecSerie = d.DocSerie
                     AND s.SecIdSecuencia = (

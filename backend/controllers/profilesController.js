@@ -81,24 +81,28 @@ const saveProfile = async (req, res) => {
                 
                 // Conversión de fallback para la UI que use 'TOTAL' o 'GRUPO:'
                 const codArtStr = (item.CodArticulo || '').toString();
+                let finalCodArticulo = codArtStr || 'TOTAL';
                 if (codArtStr === 'TOTAL') {
                     finalProIdProducto = 0;
                     finalCodGrupo = null;
+                    finalCodArticulo = 'TOTAL';
                 } else if (codArtStr.startsWith('GRUPO:')) {
                     finalProIdProducto = null;
                     finalCodGrupo = codArtStr.replace('GRUPO:', '').trim();
+                    finalCodArticulo = finalCodGrupo;
                 }
 
                 if (finalProIdProducto !== null || finalCodGrupo !== null) {
                     await new sql.Request(transaction)
-                        .input('pid', sql.Int, profileId)
-                        .input('proId', sql.Int, finalProIdProducto)
-                        .input('grupo', sql.VarChar, finalCodGrupo)
-                        .input('tipo', sql.NVarChar, item.TipoRegla || 'percentage_discount')
-                        .input('val', sql.Decimal(18, 4), item.Valor)
-                        .input('mon', sql.Int, (item.MonIdMoneda === 'USD' || item.MonIdMoneda === 2 || item.Moneda === 'USD') ? 2 : 1) // Guardar MonIdMoneda (fallback)
-                        .input('min', sql.Int, item.CantidadMinima || 1)
-                        .query("INSERT INTO PerfilesItems (PerfilID, ProIdProducto, CodGrupo, TipoRegla, Valor, MonIdMoneda, CantidadMinima) VALUES (@pid, @proId, @grupo, @tipo, @val, @mon, @min)");
+                        .input('pid',    sql.Int,          profileId)
+                        .input('proId',  sql.Int,          finalProIdProducto)
+                        .input('grupo',  sql.VarChar,      finalCodGrupo)
+                        .input('codart', sql.VarChar(50),  finalCodArticulo)
+                        .input('tipo',   sql.NVarChar,     item.TipoRegla || 'percentage_discount')
+                        .input('val',    sql.Decimal(18,4), item.Valor)
+                        .input('mon',    sql.Int,          (item.MonIdMoneda === 'USD' || item.MonIdMoneda === 2 || item.Moneda === 'USD') ? 2 : 1)
+                        .input('min',    sql.Int,          item.CantidadMinima || 1)
+                        .query("INSERT INTO PerfilesItems (PerfilID, ProIdProducto, CodGrupo, CodArticulo, TipoRegla, Valor, MonIdMoneda, CantidadMinima) VALUES (@pid, @proId, @grupo, @codart, @tipo, @val, @mon, @min)");
                 }
             }
         }
@@ -223,11 +227,28 @@ const assignProfileToCustomer = async (req, res) => {
     }
 };
 
+const updateCategoria = async (req, res) => {
+    const { id } = req.params;
+    const { categoria } = req.body;
+    if (!id) return res.status(400).json({ error: 'ID requerido.' });
+    try {
+        const pool = await getPool();
+        await pool.request()
+            .input('ID',  sql.Int,     parseInt(id))
+            .input('Cat', sql.VarChar, categoria || 'Todos')
+            .query("UPDATE PerfilesPrecios SET Categoria = @Cat WHERE ID = @ID AND Activo = 1");
+        res.json({ success: true });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+};
+
 module.exports = {
     getAllProfiles,
     getProfileDetails,
     saveProfile,
     deleteProfile,
     getAllCustomersWithProfile,
-    assignProfileToCustomer
+    assignProfileToCustomer,
+    updateCategoria
 };

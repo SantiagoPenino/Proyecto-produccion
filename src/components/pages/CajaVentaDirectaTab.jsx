@@ -27,6 +27,7 @@ export default function CajaVentaDirectaTab({
   defaultTipo = 'RECURSO',
   allowedTipos = null,
   isAdminCaja = false,
+  empresaId = null,
 }) {
   // Cliente
   const [qCliente, setQCliente] = useState('');
@@ -172,6 +173,7 @@ export default function CajaVentaDirectaTab({
 
   const buildPayload = () => ({
     _clienteNombre: getClienteDisplayName(clienteSel) || 'Cliente',
+    empresaId,
     header: {
       clienteId: clienteSel?.CliIdCliente,
       tipoDocumento,

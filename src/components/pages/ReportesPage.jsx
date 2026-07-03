@@ -82,15 +82,15 @@ const COLUMNS = {
     'metros-material': [
         { key: 'Material',       label: 'Material' },
         { key: 'Ordenes',        label: 'Órdenes' },
-        { key: 'TotalMetros',    label: 'Total Metros' },
+        { key: 'TotalMetros',    label: 'Total m lin.' },
         { key: 'Activas',        label: 'Activas' },
         { key: 'Completadas',    label: 'Completadas' },
-        { key: 'PromedioMetros', label: 'Promedio m²' },
+        { key: 'PromedioMetros', label: 'Prom. m lin.' },
     ],
     clientes: [
         { key: 'Cliente',     label: 'Cliente' },
         { key: 'Ordenes',     label: 'Órdenes' },
-        { key: 'TotalMetros', label: 'Total Metros' },
+        { key: 'TotalMetros', label: 'Total m lin.' },
         { key: 'Activas',     label: 'Activas' },
         { key: 'Completadas', label: 'Completadas' },
         { key: 'UltimaOrden', label: 'Última Orden' },
@@ -232,15 +232,15 @@ function KpisStrip({ activeReport, totales }) {
         <div className="bg-white border-b border-slate-100 px-5 py-2 flex items-center gap-6 text-xs shrink-0 flex-wrap">
             <KpiChip label="Fallas"          value={Number(totales.totalFallas || 0).toLocaleString()} cls="text-orange-600" />
             <KpiChip label="Reposiciones"    value={Number(totales.totalReposiciones || 0).toLocaleString()} cls="text-violet-600" />
-            <KpiChip label="Metros en falla" value={`${Number(totales.metrosFalla || 0).toLocaleString('es-UY', { maximumFractionDigits: 2 })} m²`} cls="text-orange-600" />
-            <KpiChip label="Metros repos."   value={`${Number(totales.metrosReposicion || 0).toLocaleString('es-UY', { maximumFractionDigits: 2 })} m²`} cls="text-violet-600" />
+            <KpiChip label="Metros en falla" value={`${Number(totales.metrosFalla || 0).toLocaleString('es-UY', { maximumFractionDigits: 2 })} m lin.`} cls="text-orange-600" />
+            <KpiChip label="Metros repos."   value={`${Number(totales.metrosReposicion || 0).toLocaleString('es-UY', { maximumFractionDigits: 2 })} m lin.`} cls="text-violet-600" />
         </div>
     );
 
     if (activeReport === 'cancelaciones') return (
         <div className="bg-white border-b border-slate-100 px-5 py-2 flex items-center gap-6 text-xs shrink-0 flex-wrap">
             <KpiChip label="Total canceladas" value={Number(totales.total || 0).toLocaleString()} cls="text-red-600" />
-            <KpiChip label="Metros totales"   value={`${Number(totales.totalMetros || 0).toLocaleString('es-UY', { maximumFractionDigits: 2 })} m²`} cls="text-slate-700" />
+            <KpiChip label="Metros totales"   value={`${Number(totales.totalMetros || 0).toLocaleString('es-UY', { maximumFractionDigits: 2 })} m lin.`} cls="text-slate-700" />
             <KpiChip label="Con motivo"       value={Number(totales.conMotivo || 0).toLocaleString()} cls="text-emerald-600" />
             <KpiChip label="Sin motivo"       value={Number(totales.sinMotivo || 0).toLocaleString()} cls="text-amber-600" />
         </div>
@@ -249,7 +249,7 @@ function KpisStrip({ activeReport, totales }) {
     if (activeReport === 'ordenes') return (
         <div className="bg-white border-b border-slate-100 px-5 py-2 flex items-center gap-6 text-xs shrink-0 flex-wrap">
             <KpiChip label="Total"       value={Number(totales.total || 0).toLocaleString()} cls="text-slate-700" />
-            <KpiChip label="Metros"      value={`${Number(totales.totalMetros || 0).toLocaleString('es-UY', { maximumFractionDigits: 2 })} m²`} cls="text-brand-cyan" />
+            <KpiChip label="Metros"      value={`${Number(totales.totalMetros || 0).toLocaleString('es-UY', { maximumFractionDigits: 2 })} m lin.`} cls="text-brand-cyan" />
             <KpiChip label="Activas"     value={Number(totales.activas || 0).toLocaleString()} cls="text-amber-600" />
             <KpiChip label="Completadas" value={Number(totales.completadas || 0).toLocaleString()} cls="text-emerald-600" />
         </div>
@@ -304,6 +304,99 @@ function Cell({ col, value, row }) {
         </span>
     );
     return <span className="text-slate-700">{value ?? '—'}</span>;
+}
+
+// ─── Tabla pivot Órdenes por Día ─────────────────────────────────────────────
+const pct  = (num, den) => den > 0 ? ((num / den) * 100).toFixed(1) + '%' : '—';
+const mlin = v => Number(v || 0).toLocaleString('es-UY', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+function OrdenesPorDiaTable({ rows }) {
+    if (!rows.length) return (
+        <div className="flex flex-col items-center justify-center h-40 gap-2">
+            <FileSpreadsheet size={36} className="text-slate-200" />
+            <p className="text-slate-400 text-sm">Sin resultados</p>
+        </div>
+    );
+
+    const tot = rows.reduce((acc, r) => ({
+        T1_Ordenes:    acc.T1_Ordenes    + Number(r.T1_Ordenes    || 0),
+        T1_Metros:     acc.T1_Metros     + Number(r.T1_Metros     || 0),
+        T2_Ordenes:    acc.T2_Ordenes    + Number(r.T2_Ordenes    || 0),
+        T2_Metros:     acc.T2_Metros     + Number(r.T2_Metros     || 0),
+        Total_Ordenes: acc.Total_Ordenes + Number(r.Total_Ordenes || 0),
+        Total_Metros:  acc.Total_Metros  + Number(r.Total_Metros  || 0),
+    }), { T1_Ordenes:0, T1_Metros:0, T2_Ordenes:0, T2_Metros:0, Total_Ordenes:0, Total_Metros:0 });
+
+    const TH = ({ children, cls='' }) =>
+        <th className={`px-3 py-2 text-center text-[10px] font-bold whitespace-nowrap border-b border-slate-200 ${cls}`}>{children}</th>;
+    const TD = ({ children, cls='' }) =>
+        <td className={`px-3 py-2 text-right text-xs whitespace-nowrap tabular-nums ${cls}`}>{children}</td>;
+
+    return (
+        <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+            <div className="overflow-x-auto">
+                <table className="w-full text-xs">
+                    <thead>
+                        <tr>
+                            <th rowSpan={2} className="px-3 py-2 text-left text-slate-500 font-bold text-[10px] border-b border-r border-slate-200 bg-slate-50 whitespace-nowrap">Día</th>
+                            <th colSpan={2} className="px-3 py-2 text-center text-[10px] font-bold text-amber-700 bg-amber-50 border-b border-r border-slate-200">T 1</th>
+                            <th colSpan={2} className="px-3 py-2 text-center text-[10px] font-bold text-blue-700 bg-blue-50 border-b border-r border-slate-200">T 2</th>
+                            <th colSpan={2} className="px-3 py-2 text-center text-[10px] font-bold text-slate-700 bg-slate-100 border-b border-r border-slate-200">TOTALES</th>
+                            <th colSpan={2} className="px-3 py-2 text-center text-[10px] font-bold text-slate-600 bg-slate-50 border-b border-r border-slate-200">% Órdenes</th>
+                            <th colSpan={2} className="px-3 py-2 text-center text-[10px] font-bold text-slate-600 bg-slate-50 border-b border-slate-200">% Metros</th>
+                        </tr>
+                        <tr className="bg-slate-50">
+                            <TH cls="text-amber-700 bg-amber-50">Órdenes</TH>
+                            <TH cls="text-amber-700 bg-amber-50 border-r border-slate-200">m lin.</TH>
+                            <TH cls="text-blue-700 bg-blue-50">Órdenes</TH>
+                            <TH cls="text-blue-700 bg-blue-50 border-r border-slate-200">m lin.</TH>
+                            <TH cls="text-slate-700">Órdenes</TH>
+                            <TH cls="text-slate-700 border-r border-slate-200">Metros</TH>
+                            <TH cls="text-amber-600">T1</TH>
+                            <TH cls="text-blue-600 border-r border-slate-200">T2</TH>
+                            <TH cls="text-amber-600">T1</TH>
+                            <TH cls="text-blue-600">T2</TH>
+                        </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                        {rows.map((r, i) => (
+                            <tr key={i} className={`hover:bg-slate-50/70 ${i % 2 !== 0 ? 'bg-slate-50/40' : ''}`}>
+                                <td className="px-3 py-2 text-slate-700 font-medium border-r border-slate-100 whitespace-nowrap">{r.Dia}</td>
+                                <TD cls="text-amber-700">{r.T1_Ordenes}</TD>
+                                <TD cls="text-amber-700 border-r border-slate-100">{mlin(r.T1_Metros)}</TD>
+                                <TD cls="text-blue-700">{r.T2_Ordenes}</TD>
+                                <TD cls="text-blue-700 border-r border-slate-100">{mlin(r.T2_Metros)}</TD>
+                                <TD cls="text-slate-800 font-semibold">{r.Total_Ordenes}</TD>
+                                <TD cls="text-slate-800 font-semibold border-r border-slate-100">{mlin(r.Total_Metros)}</TD>
+                                <TD cls="text-amber-600">{pct(r.T1_Ordenes, r.Total_Ordenes)}</TD>
+                                <TD cls="text-blue-600 border-r border-slate-100">{pct(r.T2_Ordenes, r.Total_Ordenes)}</TD>
+                                <TD cls="text-amber-600">{pct(r.T1_Metros, r.Total_Metros)}</TD>
+                                <TD cls="text-blue-600">{pct(r.T2_Metros, r.Total_Metros)}</TD>
+                            </tr>
+                        ))}
+                    </tbody>
+                    <tfoot>
+                        <tr className="bg-slate-100 border-t-2 border-slate-300 font-bold">
+                            <td className="px-3 py-2.5 text-slate-800 text-xs font-bold border-r border-slate-200">TOTALES</td>
+                            <TD cls="text-amber-700">{tot.T1_Ordenes}</TD>
+                            <TD cls="text-amber-700 border-r border-slate-200">{mlin(tot.T1_Metros)}</TD>
+                            <TD cls="text-blue-700">{tot.T2_Ordenes}</TD>
+                            <TD cls="text-blue-700 border-r border-slate-200">{mlin(tot.T2_Metros)}</TD>
+                            <TD cls="text-slate-900">{tot.Total_Ordenes}</TD>
+                            <TD cls="text-slate-900 border-r border-slate-200">{mlin(tot.Total_Metros)}</TD>
+                            <TD cls="text-amber-700">{pct(tot.T1_Ordenes, tot.Total_Ordenes)}</TD>
+                            <TD cls="text-blue-700 border-r border-slate-200">{pct(tot.T2_Ordenes, tot.Total_Ordenes)}</TD>
+                            <TD cls="text-amber-700">{pct(tot.T1_Metros, tot.Total_Metros)}</TD>
+                            <TD cls="text-blue-700">{pct(tot.T2_Metros, tot.Total_Metros)}</TD>
+                        </tr>
+                    </tfoot>
+                </table>
+            </div>
+            <div className="px-4 py-2 bg-slate-50 border-t border-slate-100 text-[11px] text-slate-400">
+                {rows.length} días · órdenes que pasaron por Control de Calidad
+            </div>
+        </div>
+    );
 }
 
 // ─── Tabla simple (otros reportes) ───────────────────────────────────────────
@@ -390,11 +483,11 @@ export default function ReportesPage() {
         area: 'Todas', fechaPreset: '30d', fechaDesde: '', fechaHasta: '',
         turno: 'Ambos', material: '', clienteSearch: '',
     });
-    const [data, setData]             = useState([]);
-    const [groupedData, setGroupedData] = useState(null); // { fallas, reposiciones } para ese reporte
-    const [totales, setTotales]       = useState({});
-    const [loading, setLoading]       = useState(false);
-    const [error, setError]           = useState(null);
+    const [data, setData]               = useState([]);
+    const [groupedData, setGroupedData] = useState(null);
+    const [totales, setTotales]         = useState({});
+    const [loading, setLoading]         = useState(false);
+    const [error, setError]             = useState(null);
     const [suggs, setSuggs]     = useState([]);
     const clienteBoxRef         = useRef(null);
 
@@ -438,7 +531,10 @@ export default function ReportesPage() {
                 pageSize: 500,
             };
 
-            const r = await api.get(`/reportes/${activeReport}`, { params });
+            const endpoint = activeReport === 'ordenes'
+                ? '/reportes/ordenes-por-dia'
+                : `/reportes/${activeReport}`;
+            const r = await api.get(endpoint, { params });
             if (activeReport === 'fallas-reposiciones') {
                 const fallas      = r.data.fallas      || [];
                 const reposiciones = r.data.reposiciones || [];
@@ -677,6 +773,8 @@ export default function ReportesPage() {
                             <FileSpreadsheet size={42} className="text-slate-200" />
                             <p className="text-slate-400 text-sm">Sin resultados para los filtros seleccionados</p>
                         </div>
+                    ) : activeReport === 'ordenes' ? (
+                        <OrdenesPorDiaTable rows={data} />
                     ) : groupedData ? (
                         /* ── Vista agrupada: Fallas / Reposiciones ── */
                         <div className="space-y-5">

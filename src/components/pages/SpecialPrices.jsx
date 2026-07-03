@@ -580,6 +580,13 @@ const SpecialPrices = () => {
     const [selectedProfileIds, setSelectedProfileIds] = useState(new Set());
     const [isProfileModalOpen, setIsProfileModalOpen] = useState(false);
 
+    // Excepciones de Urgencia del cliente seleccionado
+    const [urgExcForClient, setUrgExcForClient] = useState([]);
+    const [urgExcPanelOpen, setUrgExcPanelOpen] = useState(false);
+    const [urgExcAreas, setUrgExcAreas] = useState([]);       // lista de áreas disponibles
+    const [urgExcAreaSearch, setUrgExcAreaSearch] = useState('');
+    const [urgExcProdDropOpen, setUrgExcProdDropOpen] = useState(false);
+
     useEffect(() => {
         loadClients();
         loadProducts();
@@ -592,11 +599,61 @@ const SpecialPrices = () => {
             .catch(e => console.error("Error cargando perfiles:", e));
     };
 
+    const loadUrgExcForClient = async (cliId) => {
+        if (!cliId) { setUrgExcForClient([]); return; }
+        try {
+            const res = await api.get(`/profiles/urgencia-excepciones?cliId=${cliId}`);
+            setUrgExcForClient(res.data?.data || []);
+        } catch (e) {
+            console.error('Error cargando excepciones urgencia:', e);
+        }
+    };
+
+    const loadUrgExcAreas = async () => {
+        try {
+            const res = await api.get('/profiles/urgencia-excepciones/areas');
+            setUrgExcAreas(res.data?.data || []);
+        } catch (e) {
+            console.error('Error cargando áreas:', e);
+        }
+    };
+
+    const handleAddUrgExcArea = async (area) => {
+        const cliId = selClientId || clientData.client?.CliIdCliente;
+        if (!cliId) return;
+        try {
+            await api.post('/profiles/urgencia-excepciones', {
+                CliIdCliente: cliId,
+                CodArea:      area ? area.CodArea : null,
+            });
+            toast.success(area ? `Excepción agregada: ${area.AreaNombre}` : 'Cliente exento de urgencia en todos los servicios.');
+            setUrgExcAreaSearch('');
+            setUrgExcProdDropOpen(false);
+            loadUrgExcForClient(cliId);
+        } catch (e) {
+            toast.error(e.response?.data?.error || 'Error al guardar excepción.');
+        }
+    };
+
+    const handleDeleteUrgExc = async (id) => {
+        try {
+            await api.delete(`/profiles/urgencia-excepciones/${id}`);
+            toast.success('Excepción eliminada.');
+            loadUrgExcForClient(selClientId || clientData.client?.CliIdCliente);
+        } catch (e) {
+            toast.error('Error al eliminar.');
+        }
+    };
+
     useEffect(() => {
         setShowAllProducts(false);
         setEditingRule(null);
+        setUrgExcPanelOpen(false);
+        setUrgExcAreaSearch('');
         if (selClientId) {
             loadRules(selClientId);
+            loadUrgExcForClient(selClientId);
+            loadUrgExcAreas();
         } else {
             setClientData({ client: null });
             setRowStateMap({});
@@ -605,6 +662,7 @@ const SpecialPrices = () => {
             setExpandedGroups(new Set());
             setHiddenGroups(new Set());
             setSelectedProfileIds(new Set());
+            setUrgExcForClient([]);
         }
     }, [selClientId]);
 
@@ -1423,6 +1481,31 @@ const SpecialPrices = () => {
                                             );
                                         })}
 
+                                        {/* Badge Excepciones Urgencia */}
+                                        {(() => {
+                                            const hasTotal = urgExcForClient.some(e => e.ProIdProducto === null && e.CodArea === null);
+                                            const hasPartial = urgExcForClient.filter(e => e.ProIdProducto !== null || e.CodArea !== null);
+                                            if (urgExcForClient.length === 0) return (
+                                                <button
+                                                    onClick={() => setUrgExcPanelOpen(p => !p)}
+                                                    className="bg-sky-50 border border-sky-300 text-sky-600 hover:bg-orange-50 hover:border-orange-400 hover:text-orange-600 px-2.5 py-0.5 rounded font-semibold text-xs flex items-center gap-1.5 transition-all"
+                                                    title="Configurar excepciones de urgencia para este cliente"
+                                                >
+                                                    <i className="fa-solid fa-ban text-[10px]"></i> Sin exc. urgencia
+                                                </button>
+                                            );
+                                            return (
+                                                <button
+                                                    onClick={() => setUrgExcPanelOpen(p => !p)}
+                                                    className="bg-orange-50 border border-orange-300 text-orange-700 hover:bg-orange-100 px-2.5 py-0.5 rounded font-bold text-xs uppercase flex items-center gap-1.5 transition-all shadow-sm"
+                                                    title="Ver excepciones de urgencia activas"
+                                                >
+                                                    <i className="fa-solid fa-ban"></i>
+                                                    {hasTotal ? 'Exento Urgencia (Todo)' : `Sin Urgencia (${hasPartial.length} servicio${hasPartial.length !== 1 ? 's' : ''})`}
+                                                </button>
+                                            );
+                                        })()}
+
                                         {isDirtyMap && (
                                             <span className="text-amber-600 font-bold text-xs animate-pulse flex items-center gap-1">
                                                 <i className="fa-solid fa-circle text-[8px]"></i> Cambios sin guardar
@@ -1451,6 +1534,87 @@ const SpecialPrices = () => {
                                     </button>
                                 </div>
                             </div>
+
+                            {/* PANEL EXCEPCIONES URGENCIA */}
+                            {urgExcPanelOpen && (
+                                <div className="bg-orange-50 border border-orange-200 rounded-xl p-4 mb-1">
+                                    <div className="flex items-center justify-between mb-1">
+                                        <h4 className="font-bold text-orange-700 text-sm flex items-center gap-2">
+                                            <i className="fa-solid fa-ban"></i> Excepciones de Urgencia
+                                        </h4>
+                                        <button onClick={() => setUrgExcPanelOpen(false)} className="text-slate-400 hover:text-slate-600 p-1">
+                                            <i className="fa-solid fa-xmark text-xs"></i>
+                                        </button>
+                                    </div>
+                                    <p className="text-xs text-slate-500 mb-3">
+                                        Tildá los servicios que <strong>NO cobrarán urgencia</strong> a este cliente. Solo aparecen los que tienen urgencia activa en el sistema.
+                                    </p>
+
+                                    {urgExcAreas.length === 0 ? (
+                                        <div className="text-xs text-slate-400 text-center py-4">Cargando servicios...</div>
+                                    ) : (
+                                        <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                                            {urgExcAreas.map(area => {
+                                                const excTotal = urgExcForClient.find(e => e.ProIdProducto === null && e.CodArea === null);
+                                                const excArea  = urgExcForClient.find(e => e.CodArea === area.CodArea);
+                                                const isExento = !!(excTotal || excArea);
+
+                                                return (
+                                                    <button
+                                                        key={area.CodArea}
+                                                        onClick={() => {
+                                                            if (excTotal) return;
+                                                            if (isExento && excArea) handleDeleteUrgExc(excArea.ID);
+                                                            else if (!isExento) handleAddUrgExcArea(area);
+                                                        }}
+                                                        disabled={!!excTotal}
+                                                        title={excTotal ? 'Exento por regla global' : isExento ? 'Clic para volver a cobrar urgencia' : 'Clic para eximir urgencia'}
+                                                        className={`flex items-center gap-2 px-3 py-2.5 rounded-lg border text-left transition-all text-xs font-medium
+                                                            ${excTotal
+                                                                ? 'bg-orange-100 border-orange-200 text-orange-600 opacity-70 cursor-default'
+                                                                : isExento
+                                                                    ? 'bg-orange-100 border-orange-400 text-orange-700 shadow-sm'
+                                                                    : 'bg-white border-slate-200 text-slate-600 hover:border-orange-300 hover:bg-orange-50'
+                                                            }`}
+                                                    >
+                                                        <span className={`w-4 h-4 rounded border-2 flex items-center justify-center flex-shrink-0 transition-all
+                                                            ${isExento ? 'bg-orange-500 border-orange-500' : 'border-slate-300 bg-white'}`}>
+                                                            {isExento && <i className="fa-solid fa-check text-white" style={{fontSize:'8px'}}></i>}
+                                                        </span>
+                                                        <span className="truncate">{area.AreaNombre || area.CodArea}</span>
+                                                    </button>
+                                                );
+                                            })}
+                                        </div>
+                                    )}
+
+                                    <div className="mt-3 pt-3 border-t border-orange-200 flex items-center gap-3">
+                                        {(() => {
+                                            const excTotal = urgExcForClient.find(e => e.ProIdProducto === null && e.CodArea === null);
+                                            return excTotal ? (
+                                                <>
+                                                    <span className="text-xs bg-orange-500 text-white font-bold px-2 py-0.5 rounded-full flex items-center gap-1">
+                                                        <i className="fa-solid fa-asterisk text-[9px]"></i> Exento en TODO
+                                                    </span>
+                                                    <span className="text-xs text-slate-500 flex-1">No se cobra urgencia en ningún servicio.</span>
+                                                    <button onClick={() => handleDeleteUrgExc(excTotal.ID)}
+                                                        className="text-xs text-red-500 hover:text-red-700 font-semibold border border-red-200 hover:bg-red-50 px-2 py-1 rounded transition">
+                                                        <i className="fa-solid fa-xmark mr-1"></i>Quitar
+                                                    </button>
+                                                </>
+                                            ) : (
+                                                <>
+                                                    <span className="text-xs text-slate-400 flex-1">¿Eximir de urgencia en <strong>todos</strong> los servicios?</span>
+                                                    <button onClick={() => handleAddUrgExcArea(null)}
+                                                        className="text-xs text-orange-600 hover:text-orange-800 font-semibold border border-orange-300 hover:bg-orange-100 px-2 py-1 rounded transition">
+                                                        <i className="fa-solid fa-ban mr-1"></i>Eximir todo
+                                                    </button>
+                                                </>
+                                            );
+                                        })()}
+                                    </div>
+                                </div>
+                            )}
 
                             {/* EXCEL-LIKE TOOLBAR */}
                             <div className="flex items-center justify-between bg-slate-50 p-2 border border-slate-200 rounded-lg">

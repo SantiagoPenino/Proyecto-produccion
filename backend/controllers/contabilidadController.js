@@ -2790,15 +2790,51 @@ exports.consumirRecursoAdelantado = async (req, res) => {
     if (mov.MovObservaciones && (/^CUBIERTO/.test(mov.MovObservaciones) || /^MATERIAL_CUBIERTO/.test(mov.MovObservaciones)))
       return res.status(400).json({ success: false, error: 'Esta orden ya fue cubierta por el plan (' + mov.MovObservaciones + ').' });
 
-    const importeOrden     = Math.abs(Number(mov.MovImporte));
-    const cantidadMetros   = Number(mov.OrdCantidad) || 0;
-    const ProIdProducto    = mov.ProIdProducto;
-    const CliIdCliente     = mov.CliIdCliente;
-    const CodigoOrden      = mov.OrdCodigoOrden || ('ORD-' + mov.OrdIdOrden);
-    const esClienteSemanal = (mov.CueDiasCiclo || 0) > 0;
+    const importeOrden        = Math.abs(Number(mov.MovImporte));
+    const cantidadMetrosTotal = Number(mov.OrdCantidad) || 0;
+    const ProIdProducto       = mov.ProIdProducto;
+    const CliIdCliente        = mov.CliIdCliente;
+    const CodigoOrden         = mov.OrdCodigoOrden || ('ORD-' + mov.OrdIdOrden);
+    const esClienteSemanal    = (mov.CueDiasCiclo || 0) > 0;
+
+    if (cantidadMetrosTotal <= 0)
+      return res.status(400).json({ success: false, error: 'La orden no tiene cantidad de metros (OrdCantidad = 0).' });
+
+    // Verificar metros ya consumidos en la cuenta de recursos para esta orden.
+    // Evita doble registro cuando hookEntregaMetros ya consumió parte al crear la orden.
+    let metrosYaConsumidos = 0;
+    if (mov.OrdIdOrden) {
+      const yaConsumidoRes = await pool.request()
+        .input('OrdId', sql.Int, mov.OrdIdOrden)
+        .input('CliId', sql.Int, CliIdCliente)
+        .query(`
+          SELECT ISNULL(ABS(SUM(m.MovImporte)), 0) AS MetrosYaConsumidos
+          FROM   dbo.MovimientosCuenta m
+          JOIN   dbo.CuentasCliente cc ON cc.CueIdCuenta = m.CueIdCuenta
+          WHERE  m.OrdIdOrden = @OrdId
+            AND  cc.CliIdCliente = @CliId
+            AND  cc.CueTipo NOT IN (
+                   'DINERO_USD','DINERO_UYU','USD','UYU','ARS','EUR',
+                   'PYG','BRL','CORRIENTE','CREDITO','DEBITO','CAJA'
+                 )
+            AND  m.MovTipo = 'ENTREGA'
+            AND  (m.MovAnulado IS NULL OR m.MovAnulado = 0)
+        `);
+      metrosYaConsumidos = Math.round(
+        (parseFloat(yaConsumidoRes.recordset[0]?.MetrosYaConsumidos) || 0) * 10000
+      ) / 10000;
+    }
+
+    const cantidadMetros = Math.round(
+      Math.max(0, cantidadMetrosTotal - metrosYaConsumidos) * 10000
+    ) / 10000;
 
     if (cantidadMetros <= 0)
-      return res.status(400).json({ success: false, error: 'La orden no tiene cantidad de metros (OrdCantidad = 0).' });
+      return res.status(400).json({
+        success: false,
+        error: `Esta orden ya tiene ${metrosYaConsumidos.toFixed(2)} m registrados en la cuenta de recursos ` +
+               `(cubre los ${cantidadMetrosTotal.toFixed(2)} m del pedido). No hay metros pendientes de registrar.`
+      });
 
     // 2. Detectar escenario: DeudaDocumento vs Ciclo Abierto
     const deudaRes = await pool.request()
@@ -2966,9 +3002,11 @@ exports.consumirRecursoAdelantado = async (req, res) => {
         planRestante:      Math.max(0, saldoDisp - metrosCubiertos),
         planId:            plan.PlaIdPlan,
         planNombre:        plan.NombreArticulo || 'Plan #' + plan.PlaIdPlan,
-        escenario:         deudaDoc ? 'DEUDA_DOCUMENTO' : (cicloAbierto && !debeNegativo ? 'CICLO_ABIERTO' : (esRolloAdelantado ? 'ROLLO_ADELANTADO' : 'SEMANAL_RECURSOS')),
-        tipoCliente:       esClienteSemanal ? 'SEMANAL' : 'COMUN',
-        esRolloSinPlan:    esRolloSinPlan,
+        escenario:              deudaDoc ? 'DEUDA_DOCUMENTO' : (cicloAbierto && !debeNegativo ? 'CICLO_ABIERTO' : (esRolloAdelantado ? 'ROLLO_ADELANTADO' : 'SEMANAL_RECURSOS')),
+        tipoCliente:            esClienteSemanal ? 'SEMANAL' : 'COMUN',
+        esRolloSinPlan:         esRolloSinPlan,
+        metrosYaConsumidos:     metrosYaConsumidos,
+        cantidadMetrosTotal:    cantidadMetrosTotal,
       });
     }
 
@@ -3139,7 +3177,7 @@ exports.consumirRecursoAdelantado = async (req, res) => {
             .input('Imp',  sql.Decimal(18,4), -metrosNegRollo)
             .input('SP',   sql.Decimal(18,4),  nuevoSaldoNeg)
             .input('Usr',  sql.Int,            UsuarioAlta)
-            .input('Con',  sql.NVarChar(300), 'Saldo negativo Rec.: ' + CodigoOrden)
+            .input('Con',  sql.NVarChar(300), (CodigoOrden + (mov.OrdNombreTrabajo ? ' — ' + mov.OrdNombreTrabajo : '')).trim())
             .input('Ord',  sql.Int,            mov.OrdIdOrden || null)
             .input('Ref',  sql.Int,            movId)
             .input('PlaId',sql.Int,            planTx.PlaIdPlan)

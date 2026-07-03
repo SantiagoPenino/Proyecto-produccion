@@ -67,6 +67,8 @@ const motorContable    = require('./motorContable');     // Motor de Eventos: fu
 // ─────────────────────────────────────────────────────────────────────────
 async function procesarVentaDirecta(payload) {
   const { header, items, pagos, usuarioId } = payload;
+  // Multiempresa: empresa a la que se atribuye la venta (fallback a header/payload; null => DEFAULT en BD)
+  const empresaId = payload?.empresaId || header?.empresaId || null;
 
   if (header?.admin) header.esAdministrativa = true;
   if (!header?.clienteId) throw new Error('clienteId obligatorio');
@@ -408,7 +410,8 @@ async function procesarVentaDirecta(payload) {
         cfeEstado: cfeEstadoVal,
         usuarioId: usuarioId,
         tcaIdTransaccion: tcaId,
-        docPagado: totalAbonadoDeuda >= totalBruto
+        docPagado: totalAbonadoDeuda >= totalBruto,
+        empresaId: empresaId
       },
       lineas: lineasDocumento
     }, transaction);
@@ -575,6 +578,8 @@ async function getProductosVenta() {
  */
 async function procesarTransaccion(payload) {
   const { header, aplicaciones, pagos, usuarioId } = payload;
+  // Multiempresa: empresa a la que se atribuye el cobro (fallback a header/payload; null => DEFAULT en BD)
+  const empresaId = payload?.empresaId || header?.empresaId || null;
 
   // ── Validaciones básicas ──────────────────────────────────────────────
   if (header?.admin) header.esAdministrativa = true;
@@ -1194,7 +1199,7 @@ async function procesarTransaccion(payload) {
                // Fallback legacy: si la OrdenRetiro no tiene RelOrdenesRetiroOrdenes,
                // busca los materiales directamente en OrdenesDeposito via OReIdOrdenRetiro.
                lineasDocCFE = await contabilidadCore.resolverLineasDetalle(
-                 { tcaIdTransaccion },
+                 { tcaIdTransaccion, monedaFactura: monedaId === 1 ? 'UYU' : 'USD' },
                  transaction
                );
              }
@@ -1215,7 +1220,8 @@ async function procesarTransaccion(payload) {
                  usuarioId: usuarioId || 1,
                  tcaIdTransaccion: tcaIdTransaccion || null,
                  asiIdAsiento: asiId || null,
-                 docPagado: totalCobrado >= totalNeto
+                 docPagado: totalCobrado >= totalNeto,
+                 empresaId: empresaId
                },
                lineas: lineasDocCFE
              }, transaction);
@@ -1900,9 +1906,9 @@ async function generarCFEDesdeOrdenesDirectas({ orderIds, clienteId, monto, mone
     return null;
   }
 
-  // 2. Config del tipo de documento (E-Ticket Contado = CodDocumento '07')
+  // 2. Config del tipo de documento (Pedido Caja = CodDocumento '40', NO fiscal → se revisa/convierte antes de emitir el CFE)
   const resConfig = await pool.request()
-    .input('codDoc', sql.VarChar(10), '07')
+    .input('codDoc', sql.VarChar(10), '40')
     .query(`
       SELECT c.Detalle, c.AfectaCtaCte,
              s.SecSerie, s.SecIdSecuencia
@@ -1912,7 +1918,7 @@ async function generarCFEDesdeOrdenesDirectas({ orderIds, clienteId, monto, mone
     `);
 
   if (!resConfig.recordset.length || !resConfig.recordset[0].SecIdSecuencia) {
-    logger.warn('[CFE-MOSTRADOR] Sin config de E-Ticket Contado (CodDocumento=07). CFE omitido.');
+    logger.warn('[CFE-MOSTRADOR] Sin config de Pedido Caja (CodDocumento=40). Documento omitido.');
     return null;
   }
   const config = resConfig.recordset[0];
@@ -1949,21 +1955,24 @@ async function generarCFEDesdeOrdenesDirectas({ orderIds, clienteId, monto, mone
     : (monedaId === 2 ? 119 : 118);
 
   // 6 + 7. Resolver líneas de detalle fiscal desde OrdenesDeposito e insertar DocumentosContables
-  const lineasCFEDirectas = await contabilidadCore.resolverLineasDetalle({ orderIds });
+  const lineasCFEDirectas = await contabilidadCore.resolverLineasDetalle({
+    orderIds,
+    monedaFactura: monedaId === 1 ? 'UYU' : 'USD',
+  });
 
   const docId = await contabilidadCore.crearDocumentoContable({
     header: {
       cueIdCuenta: cueIdCuenta,
       clienteId: clienteId,
       monedaId: monedaId,
-      tipo: config.Detalle || 'E-Ticket Contado',
+      tipo: config.Detalle || 'Pedido Caja',
       numero: String(numeroCFE),
       serie: serieCFE,
       subtotal: desglose.neto,
       impuestos: desglose.ivaMonto,
       total: monto,
       estado: 1,
-      cfeEstado: 'PENDIENTE',
+      cfeEstado: 'BORRADOR',
       usuarioId: usuarioId || 1,
       docPagado: true
     },

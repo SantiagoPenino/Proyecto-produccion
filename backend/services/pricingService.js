@@ -18,6 +18,14 @@ class PricingService {
             const res = await pool.request().query("SELECT Clave, Valor FROM ConfiguracionGlobal");
             const configs = {};
             res.recordset.forEach(r => { configs[r.Clave] = r.Valor; });
+
+            // Leer Categoria del perfil de urgencia para saber a qué áreas aplica
+            const urgId = parseInt(configs['ID_PERFIL_URGENCIA']) || 2;
+            const urgRes = await pool.request()
+                .input('urgId', sql.Int, urgId)
+                .query("SELECT Categoria FROM PerfilesPrecios WHERE ID = @urgId AND Activo = 1");
+            configs['_URGENCIA_CATEGORIA'] = urgRes.recordset[0]?.Categoria || 'Todos';
+
             return configs;
         } catch (e) {
             logger.error("Error al obtener configuracion global:", e.message);
@@ -400,22 +408,42 @@ class PricingService {
         // REGLA: Si el precio ya quedó en 0 por un descuento total (ej: Reposición 100%),
         // no se aplica ningún recargo. 0 es 0.
         let surchargeRules = reglasFinales.filter(r => r.TipoRegla.includes('surcharge'));
-        const areasNoUrg = (globalConfigs['AREAS_SIN_URGENCIA'] || 'BOR,EMB,COR,TWC,COS,TWT').split(',').map(s => s.trim().toUpperCase());
-        if (areasNoUrg.includes(resolvedAreaId)) {
-            surchargeRules = surchargeRules.filter(r => r.PerfilID !== idUrgencia && r.NombrePerfil?.toLowerCase() !== 'urgente');
+        const urgCategoria = (globalConfigs['_URGENCIA_CATEGORIA'] || 'Todos').trim();
+        if (urgCategoria && urgCategoria !== 'Todos') {
+            // El perfil tiene áreas específicas — urgencia solo aplica a esas áreas
+            // Comparamos contra CodArea (ej: "DF") Y contra resolvedCategoria (ej: "DTF") por compatibilidad
+            const areasConUrg = urgCategoria.split(',').map(s => s.trim().toUpperCase());
+            const areaMatch = areasConUrg.includes((resolvedAreaId || '').toUpperCase())
+                           || areasConUrg.includes((resolvedCategoria || '').toUpperCase());
+            if (!areaMatch) {
+                surchargeRules = surchargeRules.filter(r => r.PerfilID !== idUrgencia && r.NombrePerfil?.toLowerCase() !== 'urgente');
+                traceDecision += `  [URGENCIA] Área ${resolvedAreaId} no está en las categorías del perfil (${urgCategoria}) → sin recargo urgente.\n`;
+            }
+        } else {
+            // Categoría = 'Todos' → comportamiento original: excluir áreas de AREAS_SIN_URGENCIA
+            const areasNoUrg = (globalConfigs['AREAS_SIN_URGENCIA'] || 'BOR,EMB,COR,TWC,COS,TWT').split(',').map(s => s.trim().toUpperCase());
+            if (areasNoUrg.includes((resolvedAreaId || '').toUpperCase())) {
+                surchargeRules = surchargeRules.filter(r => r.PerfilID !== idUrgencia && r.NombrePerfil?.toLowerCase() !== 'urgente');
+                traceDecision += `  [URGENCIA] Área ${resolvedAreaId} está en AREAS_SIN_URGENCIA → sin recargo urgente.\n`;
+            }
         }
 
-        // Excepción por cliente o cliente+servicio: si el cliente está en UrgenciaExcepciones, no aplica recargo urgente
+        // Excepción por cliente, cliente+área o cliente+artículo: no aplica recargo urgente
         if (numericCliId && surchargeRules.some(r => r.PerfilID === idUrgencia || r.NombrePerfil?.toLowerCase() === 'urgente')) {
             try {
                 const excRes = await pool.request()
-                    .input('CliId', sql.Int, numericCliId)
-                    .input('ProId', sql.Int, resolvedProId || -1)
+                    .input('CliId',   sql.Int,         numericCliId)
+                    .input('ProId',   sql.Int,         resolvedProId || -1)
+                    .input('CodArea', sql.VarChar(20), resolvedAreaId || '')
                     .query(`
                         SELECT TOP 1 ID FROM dbo.UrgenciaExcepciones
                         WHERE CliIdCliente = @CliId
                           AND Activo = 1
-                          AND (ProIdProducto IS NULL OR ProIdProducto = @ProId)
+                          AND (
+                              (ProIdProducto IS NULL AND CodArea IS NULL)           -- exento total
+                              OR ProIdProducto = @ProId                             -- artículo específico
+                              OR CodArea = @CodArea                                 -- área/servicio completo
+                          )
                     `);
                 if (excRes.recordset.length > 0) {
                     surchargeRules = surchargeRules.filter(r => r.PerfilID !== idUrgencia && r.NombrePerfil?.toLowerCase() !== 'urgente');

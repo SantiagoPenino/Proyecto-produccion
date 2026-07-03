@@ -3,6 +3,8 @@ import { X, CheckCircle2, RefreshCw, Edit3, DollarSign, Percent, ShoppingBag, Re
 import api from '../../services/api';
 import toast from 'react-hot-toast';
 import { generarPdfFacturaDGI } from '../../utils/pdfGenerator';
+import { useEmpresas } from '../../hooks/useEmpresas';
+import { validarDocumentoUY } from '../../utils/documentoUY';
 
 // Input simple para precios — sin flechas, sin formateo automático
 const SimpleInput = ({ value, onChange, placeholder = '0' }) => {
@@ -47,7 +49,8 @@ export default function CierreCicloPreviewModal({
   const [working, setWorking] = useState(false);
   const [movs, setMovs] = useState([]);
   const [excluidos, setExcluidos] = useState(new Set());
-  
+  const { empresaSeleccionada } = useEmpresas();
+
   // Edición manual de detalles
   const [detallesEditados, setDetallesEditados] = useState({}); // { [DetalleID]: { PrecioUnitario, Subtotal, Editado: true } }
   
@@ -77,9 +80,22 @@ export default function CierreCicloPreviewModal({
   const [cliDgiDireccion, setCliDgiDireccion] = useState(cliente?.DireccionTrabajo || '');
   const [cliDgiCiudad, setCliDgiCiudad] = useState(String(cliente?.DepartamentoID || 10));
   
-  const UI_LIMITE = Number(import.meta.env.VITE_DGI_LIMITE_UI) || 10000;
-  const UI_VALOR = Number(import.meta.env.VITE_DGI_VALOR_UI) || 6.5321;
-  const DGI_UMBRAL_UYU = UI_LIMITE * UI_VALOR;
+  // Umbral DGI: viene de la config en BD (env queda como fallback mientras carga)
+  const [dgiConf, setDgiConf] = useState({
+    limiteUI: Number(import.meta.env.VITE_DGI_LIMITE_UI) || 10000,
+    valorUI: Number(import.meta.env.VITE_DGI_VALOR_UI) || 6.5321,
+  });
+  useEffect(() => {
+    api.get('/contabilidad/cfe/config-dgi').then(r => {
+      if (r.data?.success) {
+        setDgiConf({
+          limiteUI: Number(r.data.limiteUI) || 10000,
+          valorUI: Number(r.data.valorUI) || 6.5321,
+        });
+      }
+    }).catch(() => {});
+  }, []);
+  const DGI_UMBRAL_UYU = dgiConf.limiteUI * dgiConf.valorUI;
 
   // Observaciones adicionales
   const [observaciones, setObservaciones] = useState('');
@@ -196,7 +212,8 @@ export default function CierreCicloPreviewModal({
   const fmt = (val) => Number(val).toFixed(2);
 
   const totalUYU = monedaFactura === 'UYU' ? granTotalNeto : granTotalNeto * cotDolar;
-  const requiereDatosDGI = tipoDocumento.includes('TICKET') && totalUYU > DGI_UMBRAL_UYU;
+  // Pedido Caja es borrador interno (no fiscal) → nunca exige datos DGI
+  const requiereDatosDGI = docType !== 'PEDIDO_CAJA' && tipoDocumento.includes('TICKET') && totalUYU > DGI_UMBRAL_UYU;
 
   // Paso 1: abre el modal de confirmación (siempre que haya cambios)
   const handleGuardarPrecios = () => {
@@ -280,15 +297,32 @@ export default function CierreCicloPreviewModal({
       return;
     }
 
-    if (tipoDocumento.includes('TICKET')) {
-      if (docLimpio.length !== 8) {
-        setValError('Para emitir un e-Ticket, la Cédula (CI) debe tener exactamente 8 dígitos.');
+    // Validación estructural del documento (RUT/CI con dígito verificador)
+    // Pedido Caja es borrador interno (no fiscal): NO se valida contra reglas DGI
+    if (docType !== 'PEDIDO_CAJA') {
+      const valDoc = validarDocumentoUY(cliDgiDocumento);
+
+      if (requiereDatosDGI) {
+        if (!valDoc.valido) {
+          toast.error(`Este e-Ticket supera $ ${DGI_UMBRAL_UYU.toFixed(0)} (${dgiConf.limiteUI.toLocaleString('es-UY')} UI) y DGI exige identificar al comprador. ${valDoc.motivo}. Solución: ingresá la Cédula (6-8 dígitos) o el RUT (12 dígitos) del cliente en los datos DGI.`);
+          setWorking(false);
+          return;
+        }
+        if (!cliDgiNombre || !cliDgiNombre.trim()) {
+          toast.error('Este e-Ticket supera el umbral de DGI: además del documento, ingresá el nombre del cliente en los datos DGI. Solución: completá "Nombre".');
+          setWorking(false);
+          return;
+        }
+      }
+
+      if (tipoDocumento.includes('FACTURA') && !tipoDocumento.includes('NOTA') && !(valDoc.valido && valDoc.tipo === 'RUT')) {
+        toast.error(`Las e-Facturas requieren un RUT válido de 12 dígitos. ${valDoc.motivo ? `${valDoc.motivo}. ` : ''}Solución: corregí el documento del cliente o emití un e-Ticket si es consumidor final.`);
         setWorking(false);
         return;
       }
-    } else if (tipoDocumento.includes('FACTURA')) {
-      if (docLimpio.length !== 12) {
-        setValError('Para emitir una e-Factura, el RUT debe tener exactamente 12 dígitos.');
+
+      if (String(cliDgiDocumento || '').trim() && !valDoc.valido) {
+        toast.error(`${valDoc.motivo}. Solución: corregí el documento o dejalo vacío si es consumidor final.`);
         setWorking(false);
         return;
       }
@@ -593,6 +627,14 @@ export default function CierreCicloPreviewModal({
     const docImpuestos = docTotal - docSubtotal;
     
     const fakeDoc = {
+      // Emisor (multiempresa): usa la empresa por defecto para que el borrador muestre logo/datos correctos
+      EmpRuc: empresaSeleccionada?.EmpRuc,
+      EmpNombreFantasia: empresaSeleccionada?.EmpNombreFantasia,
+      EmpRazonSocial: empresaSeleccionada?.EmpRazonSocial,
+      EmpDireccion: empresaSeleccionada?.EmpDireccion,
+      EmpCiudad: empresaSeleccionada?.EmpCiudad,
+      EmpTelefono: empresaSeleccionada?.EmpTelefono,
+      EmpLogoUrl: empresaSeleccionada?.EmpLogoUrl,
       MonIdMoneda: monedaFactura === 'UYU' ? 1 : 2,
       DocTipo: tipoDocumento,
       DocSerie: 'A',
@@ -768,6 +810,13 @@ export default function CierreCicloPreviewModal({
                 <label className="text-[10px] uppercase font-bold text-slate-400">Documento (RUT / CI)</label>
                 <input type="text" value={cliDgiDocumento} onChange={e => setCliDgiDocumento(e.target.value)}
                   className="bg-white border border-slate-200 text-slate-700 px-3 py-1.5 rounded-lg text-sm focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 font-mono" />
+                {/* Feedback en vivo: qué regla cumple/incumple el documento */}
+                {docType !== 'PEDIDO_CAJA' && String(cliDgiDocumento || '').trim() !== '' && (() => {
+                  const v = validarDocumentoUY(cliDgiDocumento);
+                  return v.valido
+                    ? <span className="text-[10px] font-bold text-emerald-600">✓ {v.tipo === 'RUT' ? 'RUT válido' : 'Cédula válida'}</span>
+                    : <span className="text-[10px] font-bold text-red-600">✗ {v.motivo}</span>;
+                })()}
               </div>
               <div className="flex flex-col gap-1">
                 <label className="text-[10px] uppercase font-bold text-slate-400">Dirección</label>

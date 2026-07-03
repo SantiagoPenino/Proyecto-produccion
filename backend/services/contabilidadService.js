@@ -2025,33 +2025,53 @@ async function cerrarCicloCompleto({
   // Para log legacy
   const saldoAFavorPrevio = Math.max(0, saldoCuentaActual);
 
-  // 2. Generar número de factura correlativo (usando la secuencia oficial)
+  // 2. Generar número de factura correlativo — UNIFICADO con la caja.
+  //    Primero se resuelve el numerador vía Config_TiposDocumento (el MISMO que usa
+  //    venta directa / factura manual), para que no existan dos contadores "ET-"
+  //    independientes que eventualmente colisionen en serie+número.
+  //    Si el tipo no está mapeado (ej. 'FACTURA' manual), se usa la lógica anterior.
   const seqRes = await pool.request()
     .input('Tipo', sql.VarChar(50), tipoDocumento)
     .query(`
-      -- Buscar la secuencia activa para este tipo de documento (la que NO sea 'A' fallback)
-      DECLARE @SecSerie VARCHAR(10);
-      SELECT TOP 1 @SecSerie = SecSerie 
-      FROM dbo.SecuenciaDocumentos 
-      WHERE SecTipoDoc = @Tipo AND SecActivo = 1 AND SecSerie <> 'A'
-      ORDER BY SecIdSecuencia ASC;
+      DECLARE @SecId INT;
 
-      -- Si no encontró ninguna distinta de 'A', usar 'A' como fallback
-      IF @SecSerie IS NULL
-        SET @SecSerie = (SELECT TOP 1 SecSerie FROM dbo.SecuenciaDocumentos WHERE SecTipoDoc = @Tipo AND SecActivo = 1);
+      -- 1) Resolver por Config_TiposDocumento (mismo numerador que la caja)
+      SELECT TOP 1 @SecId = c.SecIdSecuencia
+      FROM dbo.Config_TiposDocumento c
+      WHERE UPPER(LTRIM(RTRIM(c.Detalle))) = UPPER(LTRIM(RTRIM(@Tipo)))
+        AND c.SecIdSecuencia IS NOT NULL;
 
-      -- Si aún no existe, crear una por defecto
-      IF @SecSerie IS NULL
+      IF @SecId IS NOT NULL
       BEGIN
-        SET @SecSerie = 'A';
-        INSERT INTO dbo.SecuenciaDocumentos (SecTipoDoc, SecSerie, SecPrefijo, SecDigitos, SecUltimoNumero, SecActivo) 
-        VALUES (@Tipo, 'A', 'A-', 5, 0, 1);
+        UPDATE dbo.SecuenciaDocumentos
+        SET    SecUltimoNumero = SecUltimoNumero + 1
+        OUTPUT INSERTED.SecUltimoNumero, INSERTED.SecPrefijo, INSERTED.SecSerie
+        WHERE  SecIdSecuencia = @SecId;
       END
+      ELSE
+      BEGIN
+        -- 2) Fallback (lógica anterior): buscar la secuencia activa por SecTipoDoc
+        DECLARE @SecSerie VARCHAR(10);
+        SELECT TOP 1 @SecSerie = SecSerie
+        FROM dbo.SecuenciaDocumentos
+        WHERE SecTipoDoc = @Tipo AND SecActivo = 1 AND SecSerie <> 'A'
+        ORDER BY SecIdSecuencia ASC;
 
-      UPDATE dbo.SecuenciaDocumentos
-      SET    SecUltimoNumero = SecUltimoNumero + 1
-      OUTPUT INSERTED.SecUltimoNumero, INSERTED.SecPrefijo, INSERTED.SecSerie
-      WHERE  SecTipoDoc = @Tipo AND SecSerie = @SecSerie;
+        IF @SecSerie IS NULL
+          SET @SecSerie = (SELECT TOP 1 SecSerie FROM dbo.SecuenciaDocumentos WHERE SecTipoDoc = @Tipo AND SecActivo = 1);
+
+        IF @SecSerie IS NULL
+        BEGIN
+          SET @SecSerie = 'A';
+          INSERT INTO dbo.SecuenciaDocumentos (SecTipoDoc, SecSerie, SecPrefijo, SecDigitos, SecUltimoNumero, SecActivo)
+          VALUES (@Tipo, 'A', 'A-', 5, 0, 1);
+        END
+
+        UPDATE dbo.SecuenciaDocumentos
+        SET    SecUltimoNumero = SecUltimoNumero + 1
+        OUTPUT INSERTED.SecUltimoNumero, INSERTED.SecPrefijo, INSERTED.SecSerie
+        WHERE  SecTipoDoc = @Tipo AND SecSerie = @SecSerie;
+      END
     `);
   const numero    = seqRes.recordset[0].SecUltimoNumero;
   const prefijo   = seqRes.recordset[0].SecPrefijo || 'A-';

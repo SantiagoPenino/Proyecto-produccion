@@ -243,11 +243,15 @@ export default function CajaPanelPago({
       const p = pagos[0];
       const contadoId = metodosPago.find(m => /(contado|efectivo)/i.test(m.MPaDescripcionMetodo))?.MPaIdMetodoPago || metodosPago[0]?.MPaIdMetodoPago || '';
 
-      const fill = totalACubrir;
-      const monedaCorrecta = moneda; // la moneda de la deuda es la referencia
+      // Respetar la moneda ELEGIDA en el pago y convertir el monto con la cotización
+      // (antes se forzaba la moneda del documento y se perdía la elección del cajero)
+      const monedaPago = p.moneda || moneda;
+      let fill = totalACubrir;
+      if (moneda === 'UYU' && monedaPago === 'USD') fill = totalACubrir / (cotizacion || 1);
+      if (moneda === 'USD' && monedaPago === 'UYU') fill = totalACubrir * (cotizacion || 1);
 
       const yaEsCorrecto =
-        p.moneda === monedaCorrecta &&
+        !!p.moneda &&
         parseFloat(p.monto) === parseFloat(fill.toFixed(2)) &&
         (p.metodoPagoId || !contadoId);
 
@@ -255,7 +259,7 @@ export default function CajaPanelPago({
         onPagosChange([{
           ...p,
           metodoPagoId: p.metodoPagoId || contadoId,
-          moneda: monedaCorrecta,
+          moneda: monedaPago,
           monto: fill.toFixed(2)
         }]);
       }
@@ -699,14 +703,18 @@ export default function CajaPanelPago({
                 return m && /efectivo|contado/i.test(m.MPaDescripcionMetodo);
               });
               if (cashPayments.length > 0 && !esEgreso) {
-                const totalEfectivoUYU = cashPayments.reduce((acc, p) => {
+                // La calculadora trabaja en la MONEDA DEL PAGO en efectivo (lo que el cajero tiene en la mano)
+                const monedaEfectivo = cashPayments[0]?.moneda || moneda;
+                const simbEfectivo = monedaEfectivo === 'USD' ? 'US$' : '$';
+                let montoEfectivo = cashPayments.reduce((acc, p) => {
                   const val = parseFloat(p.monto) || 0;
-                  return acc + (p.moneda === 'USD' ? val * (cotizacion || 1) : val);
+                  if ((p.moneda || moneda) === monedaEfectivo) return acc + val;
+                  return acc + (p.moneda === 'USD' ? val * (cotizacion || 1) : val / (cotizacion || 1));
                 }, 0);
-                const totalEfectivoUSD = totalEfectivoUYU / (cotizacion || 1);
-                let montoEfectivo = moneda === 'USD' ? totalEfectivoUSD : totalEfectivoUYU;
                 if (montoEfectivo === 0 && pagos.length === 1) {
                   montoEfectivo = totalACubrir;
+                  if (moneda === 'UYU' && monedaEfectivo === 'USD') montoEfectivo = totalACubrir / (cotizacion || 1);
+                  if (moneda === 'USD' && monedaEfectivo === 'UYU') montoEfectivo = totalACubrir * (cotizacion || 1);
                 }
 
                 if (montoEfectivo > 0) {
@@ -720,7 +728,7 @@ export default function CajaPanelPago({
                       <div className="flex flex-col gap-2 mt-0.5">
                         <div className="flex justify-between items-center text-xs">
                           <span className="font-bold text-slate-500">Total:</span>
-                          <span className="font-black text-emerald-700 text-sm">{simbMoneda} {fmt(montoEfectivo)}</span>
+                          <span className="font-black text-emerald-700 text-sm">{simbEfectivo} {fmt(montoEfectivo)}</span>
                         </div>
                         <div className="flex justify-between items-center gap-2 text-xs">
                           <span className="text-slate-500">Recibido:</span>
@@ -737,7 +745,7 @@ export default function CajaPanelPago({
                             <span className="font-bold text-slate-600">Vuelto:</span>
                             <span className={`font-black text-sm ${vuelto >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
                               {vuelto >= 0 ? '+' : ''}
-                              {simbMoneda} {fmt(vuelto)}
+                              {simbEfectivo} {fmt(vuelto)}
                             </span>
                           </div>
                         )}
@@ -988,14 +996,18 @@ export default function CajaPanelPago({
               return m && /efectivo|contado/i.test(m.MPaDescripcionMetodo);
             });
             if (cashPayments.length > 0 && !esEgreso) {
-              const totalEfectivoUYU = cashPayments.reduce((acc, p) => {
+              // La calculadora trabaja en la MONEDA DEL PAGO en efectivo (lo que el cajero tiene en la mano)
+              const monedaEfectivo = cashPayments[0]?.moneda || moneda;
+              const simbEfectivo = monedaEfectivo === 'USD' ? 'US$' : '$';
+              let montoEfectivo = cashPayments.reduce((acc, p) => {
                 const val = parseFloat(p.monto) || 0;
-                return acc + (p.moneda === 'USD' ? val * (cotizacion || 1) : val);
+                if ((p.moneda || moneda) === monedaEfectivo) return acc + val;
+                return acc + (p.moneda === 'USD' ? val * (cotizacion || 1) : val / (cotizacion || 1));
               }, 0);
-              const totalEfectivoUSD = totalEfectivoUYU / (cotizacion || 1);
-              let montoEfectivo = moneda === 'USD' ? totalEfectivoUSD : totalEfectivoUYU;
               if (montoEfectivo === 0 && pagos.length === 1) {
                 montoEfectivo = totalACubrir;
+                if (moneda === 'UYU' && monedaEfectivo === 'USD') montoEfectivo = totalACubrir / (cotizacion || 1);
+                if (moneda === 'USD' && monedaEfectivo === 'UYU') montoEfectivo = totalACubrir * (cotizacion || 1);
               }
 
               if (montoEfectivo > 0) {
@@ -1005,14 +1017,14 @@ export default function CajaPanelPago({
                   <div className="bg-emerald-50 border border-emerald-100 rounded-2xl p-4 flex flex-col gap-3 shadow-inner text-emerald-800">
                     <div className="flex justify-between items-center">
                       <span className="text-[10px] font-black text-emerald-600 uppercase tracking-widest">Calculadora de Vuelto</span>
-                      <span className="text-[10px] font-black text-emerald-500 bg-emerald-500/20 px-2 py-0.5 rounded-lg border border-emerald-100">Total Efvo: {simbMoneda} {fmt(montoEfectivo)}</span>
+                      <span className="text-[10px] font-black text-emerald-500 bg-emerald-500/20 px-2 py-0.5 rounded-lg border border-emerald-100">Total Efvo: {simbEfectivo} {fmt(montoEfectivo)}</span>
                     </div>
                     <div className="flex gap-3 items-center">
                       <div className="flex-1">
                         <label className="text-[10px] font-black text-emerald-600/70 uppercase block mb-1 tracking-widest">Recibido</label>
                         <div className="relative">
-                          <span className="absolute left-3 top-1/2 -translate-y-1/2 text-emerald-500 font-black">{simbMoneda}</span>
-                          <input type="number" value={efectivoRecibido} onChange={e => setEfectivoRecibido(e.target.value)} placeholder="0.00" className={`w-full bg-zinc-50 border border-emerald-200 rounded-xl pr-3 py-2 text-sm font-black text-zinc-800 outline-none focus:border-emerald-500 focus:ring-4 focus:ring-emerald-500/10 transition-all shadow-sm ${simbMoneda === 'US$' ? 'pl-12' : 'pl-9'}`} />
+                          <span className="absolute left-3 top-1/2 -translate-y-1/2 text-emerald-500 font-black">{simbEfectivo}</span>
+                          <input type="number" value={efectivoRecibido} onChange={e => setEfectivoRecibido(e.target.value)} placeholder="0.00" className={`w-full bg-zinc-50 border border-emerald-200 rounded-xl pr-3 py-2 text-sm font-black text-zinc-800 outline-none focus:border-emerald-500 focus:ring-4 focus:ring-emerald-500/10 transition-all shadow-sm ${simbEfectivo === 'US$' ? 'pl-12' : 'pl-9'}`} />
                         </div>
                       </div>
                       {recibido > 0 && (

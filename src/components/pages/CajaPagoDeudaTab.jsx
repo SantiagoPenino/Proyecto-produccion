@@ -13,7 +13,7 @@ const fmtFecha = (f) => f ? new Date(f).toLocaleDateString('es-UY', { day:'2-dig
 const TIPOS_DOC_PAGO = [
   { value: '05', label: 'Recibo' },
 ];
-export default function CajaPagoDeudaTab({ sesion, metodosPago = [], cotizacion = 1, tiposDocDisponibles = TIPOS_DOC_PAGO, onPagoCompletado, isAdminCaja, initialCliente, initialDocumento }) {
+export default function CajaPagoDeudaTab({ sesion, metodosPago = [], cotizacion = 1, tiposDocDisponibles = TIPOS_DOC_PAGO, onPagoCompletado, isAdminCaja, initialCliente, initialDocumento, empresaId = null }) {
 
   // ─── Estado ─────────────────────────────────────────────────────────────
   const [qCliente, setQCliente]         = useState('');
@@ -246,6 +246,7 @@ export default function CajaPagoDeudaTab({ sesion, metodosPago = [], cotizacion 
     setProcesando(true);
     try {
       const res = await api.post('/contabilidad/caja/pago-deuda', {
+        empresaId,
         header: {
           clienteId: clientePrincipalId,
           tipoDocumento: tipoDoc,

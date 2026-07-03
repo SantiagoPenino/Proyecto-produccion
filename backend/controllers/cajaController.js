@@ -37,7 +37,9 @@ const procesarTransaccion = async (req, res) => {
     if (!esCredito && !header.esCredito && (!pagos || pagos.length === 0))
       return res.status(400).json({ success:false, error:'Debe incluir al menos un método de pago para documentos de contado.' });
 
-    const resultado = await cajaService.procesarTransaccion({ header, aplicaciones, pagos: pagos || [], usuarioId });
+    // Multiempresa: empresa elegida por el cajero (null => la BD aplica el DEFAULT)
+    const empresaId = req.body?.empresaId || req.user?.empresaId || null;
+    const resultado = await cajaService.procesarTransaccion({ header, aplicaciones, pagos: pagos || [], usuarioId, empresaId });
     const s = io(req); if (s) { s.emit('actualizado',{type:'actualizacion'}); s.emit('retiros:update',{type:'pago'}); }
     return res.status(201).json(resultado);
   } catch (err) {
@@ -58,7 +60,9 @@ const procesarVentaDirecta = async (req, res) => {
       return res.status(400).json({ success:false, error:'Debe incluir al menos un metodo de pago valido para ventas al contado.' });
     }
 
-    const resultado = await cajaService.procesarVentaDirecta({ ...data, usuarioId });
+    // Multiempresa: empresa elegida por el cajero (null => la BD aplica el DEFAULT)
+    const empresaId = req.body?.empresaId || req.user?.empresaId || null;
+    const resultado = await cajaService.procesarVentaDirecta({ ...data, usuarioId, empresaId });
     const s = io(req); if (s) { s.emit('actualizado',{type:'actualizacion'}); s.emit('retiros:update',{type:'venta'}); }
     return res.status(201).json(resultado);
   } catch (err) {
@@ -430,6 +434,8 @@ const registrarEgreso = async (req, res) => {
           cotizacion, metodoPagoId, tipoDocumento, serieDoc, numeroDoc, observaciones,
           // fallback para compatibilidad con llamadas antiguas
           cuentaGastoCodigo: cuentaManual, admin } = req.body;
+  // Multiempresa: empresa a la que se atribuye el egreso (null => la BD aplica el DEFAULT)
+  const empresaId = req.body?.empresaId || req.user?.empresaId || null;
 
   if (!monto) return res.status(400).json({ success:false, error:'monto es obligatorio.' });
   if (!tipoEgreso && !cuentaManual)
@@ -590,7 +596,8 @@ const registrarEgreso = async (req, res) => {
         tcaIdTransaccion: idEgreso,
         asiIdAsiento:     asiId,
         observaciones:    (cuentaGastoNombre + ' | ' + (proveedor || '') + ' | ' + (observaciones || '')).substring(0, 200),
-        docPagado:        true
+        docPagado:        true,
+        empresaId:        empresaId
       },
       lineas: [{
         nomItem:        ('Egreso: ' + cuentaGastoNombre).substring(0, 200),
@@ -629,13 +636,17 @@ const registrarEgreso = async (req, res) => {
                  cfg.CegNombreTipo AS TipoEgresoLabel,
                  cfg.CegCueCodigo AS CuentaCodigo,
                  cfg.CegCueNombre AS CuentaNombre,
-                 emp.RazSocial AS EmpresaNombre, emp.RUC AS EmpresaRuc
+                 emp.RazSocial AS EmpresaNombre, emp.RUC AS EmpresaRuc,
+                 emp.EmpNombreFantasia AS EmpresaFantasia, emp.EmpRazonSocial AS EmpresaRazon,
+                 emp.EmpDireccion AS EmpresaDir, emp.EmpCiudad AS EmpresaCiudad, emp.EmpLogoUrl AS EmpresaLogo
           FROM dbo.EgresosCaja e WITH(NOLOCK)
           LEFT JOIN dbo.DocumentosContables dc WITH(NOLOCK) ON dc.DocIdDocumento = e.DocIdDocumento
           LEFT JOIN dbo.MetodosPagos mp WITH(NOLOCK) ON mp.MPaIdMetodoPago = e.MPaIdMetodoPago
           LEFT JOIN dbo.Usuarios u WITH(NOLOCK) ON u.IdUsuario = e.EgrUsuarioId
           LEFT JOIN dbo.Config_CuentasEgreso cfg WITH(NOLOCK) ON cfg.CegTipoEgreso = e.EgrTipoEgreso
-          OUTER APPLY (SELECT TOP 1 RazSocial, RUC FROM dbo.ConfiguracionGlobal) emp
+          OUTER APPLY (SELECT TOP 1 ISNULL(EmpNombreFantasia, EmpRazonSocial) AS RazSocial, EmpRuc AS RUC,
+                              EmpNombreFantasia, EmpRazonSocial, EmpDireccion, EmpCiudad, EmpLogoUrl
+                       FROM dbo.Empresas WHERE EmpPorDefecto=1) emp
           WHERE e.EgrIdEgreso = @Id
         `);
       if (vr.recordset.length) {
@@ -697,7 +708,12 @@ const getVoucherEgreso = async (req, res) => {
           cfg.CegCueNombre    AS CuentaNombre,
           cta.CueNombre       AS CuentaContableNombre,
           emp.RazSocial       AS EmpresaNombre,
-          emp.RUC             AS EmpresaRuc
+          emp.RUC             AS EmpresaRuc,
+          emp.EmpNombreFantasia AS EmpresaFantasia,
+          emp.EmpRazonSocial    AS EmpresaRazon,
+          emp.EmpDireccion      AS EmpresaDir,
+          emp.EmpCiudad         AS EmpresaCiudad,
+          emp.EmpLogoUrl        AS EmpresaLogo
         FROM dbo.EgresosCaja e WITH(NOLOCK)
         LEFT JOIN dbo.DocumentosContables dc WITH(NOLOCK) ON dc.DocIdDocumento = e.DocIdDocumento
         LEFT JOIN dbo.MetodosPagos mp WITH(NOLOCK) ON mp.MPaIdMetodoPago = e.MPaIdMetodoPago
@@ -705,7 +721,9 @@ const getVoucherEgreso = async (req, res) => {
         LEFT JOIN dbo.SesionesTurno st WITH(NOLOCK) ON st.StuIdSesion = e.StuIdSesion
         LEFT JOIN dbo.Config_CuentasEgreso cfg WITH(NOLOCK) ON cfg.CegTipoEgreso = e.EgrTipoEgreso
         LEFT JOIN dbo.Cont_PlanCuentas cta WITH(NOLOCK) ON cta.CueCodigo = cfg.CegCueCodigo
-        OUTER APPLY (SELECT TOP 1 RazSocial, RUC FROM dbo.ConfiguracionGlobal) emp
+        OUTER APPLY (SELECT TOP 1 ISNULL(EmpNombreFantasia, EmpRazonSocial) AS RazSocial, EmpRuc AS RUC,
+                            EmpNombreFantasia, EmpRazonSocial, EmpDireccion, EmpCiudad, EmpLogoUrl
+                     FROM dbo.Empresas WHERE EmpPorDefecto=1) emp
         WHERE e.EgrIdEgreso = @Id
       `);
 
@@ -726,7 +744,7 @@ const registrarIngresoGenerico = async (req, res) => {
   let { stuIdSesion, concepto, monto, moneda='UYU', monedaId=1,
           cotizacion, metodoPagoId, tipoDocumento, serieDoc, numeroDoc, observaciones, admin } = req.body;
   if (!concepto || !monto || !metodoPagoId) return res.status(400).json({ success:false, error:'Concepto, monto y método son obligatorios.' });
-  
+
   const montoNum  = parseFloat(monto);
   const cotNum    = parseFloat(cotizacion) || null;
   const convertido = (moneda === 'USD' && cotNum) ? montoNum * cotNum : montoNum;
@@ -1020,9 +1038,9 @@ const registrarOperacionManual = async (req, res) => {
           .input('Tca', sql.Int, tcaId)
           .input('Serie', sql.VarChar(10), serieDoc)
           .input('MonId', sql.Int, monedaId || 1)
-          .query(`INSERT INTO dbo.DocumentosContables (CueIdCuenta,CliIdCliente,DocTipo,DocNumero,DocSerie,DocSubtotal,DocTotal,DocTotalDescuentos,DocTotalRecargos,MonIdMoneda,DocFechaEmision,DocEstado,DocUsuarioAlta)
+          .query(`INSERT INTO dbo.DocumentosContables (CueIdCuenta,CliIdCliente,DocTipo,DocNumero,DocSerie,DocSubtotal,DocTotal,DocTotalDescuentos,DocTotalRecargos,MonIdMoneda,DocFechaEmision,DocEstado,DocUsuarioAlta,EmpIdEmpresa)
                   OUTPUT INSERTED.DocIdDocumento
-                  VALUES (@Cta,@Cli,'${evtCodigo}',CAST(@Tca AS VARCHAR),@Serie,@Tot,@Tot,0,0,@MonId,GETDATE(),'PENDIENTE',@Usr)`);
+                  VALUES (@Cta,@Cli,'${evtCodigo}',CAST(@Tca AS VARCHAR),@Serie,@Tot,@Tot,0,0,@MonId,GETDATE(),'PENDIENTE',@Usr,(SELECT TOP 1 EmpIdEmpresa FROM dbo.Empresas WHERE EmpPorDefecto=1))`);
         docId = rDoc.recordset[0].DocIdDocumento;
 
         // Insertar detalle del documento
@@ -1101,6 +1119,8 @@ const registrarOperacionManual = async (req, res) => {
 // 3. Registra movimientos en libro mayor (MovimientosCuenta)
 const procesarPagoDeuda = async (req, res) => {
   const usuarioId = req.user?.id || 70;
+  // Multiempresa: empresa a la que se atribuye el pago (null => la BD aplica el DEFAULT)
+  const empresaId = req.body?.empresaId || req.user?.empresaId || null;
   try {
     const { header, aplicaciones, pagos } = req.body;
     if (!header?.clienteId) return res.status(400).json({ error: 'clienteId es requerido.' });
@@ -1395,7 +1415,8 @@ const procesarPagoDeuda = async (req, res) => {
               usuarioId:        usuarioId,
               tcaIdTransaccion: tcaIdPago,
               observaciones:    (header.observaciones || 'Pago de deuda cuenta corriente').substring(0, 200),
-              docPagado:        true
+              docPagado:        true,
+              empresaId:        empresaId
             },
             lineas: []
           }, transaction);
@@ -1427,7 +1448,8 @@ const procesarPagoDeuda = async (req, res) => {
                     tcaIdTransaccion:  tcaIdPago,
                     observaciones:     ('Recibo de cobro - ' + tipoDocVal + ' ' + serieTransaccion + '-' + docNumero).substring(0, 200),
                     docPagado:         true,
-                    docIdDocumentoRef: docId
+                    docIdDocumentoRef: docId,
+                    empresaId:         empresaId
                   },
                   lineas: [{
                     nomItem:        'Cobro en efectivo',
@@ -1732,7 +1754,7 @@ const generarNotaCredito = async (req, res) => {
     try {
       const docR = await new sql.Request(transaction)
         .input('DocId', sql.Int, parseInt(docIdOrigen))
-        .query(`SELECT DocTipo, DocSerie, DocNumero, DocTotal, MonIdMoneda, CueIdCuenta, DocSubtotal, DocImpuestos, DocTotalDescuentos, DocTotalRecargos, CliIdCliente
+        .query(`SELECT DocTipo, DocSerie, DocNumero, DocTotal, MonIdMoneda, CueIdCuenta, DocSubtotal, DocImpuestos, DocTotalDescuentos, DocTotalRecargos, CliIdCliente, EmpIdEmpresa
                 FROM dbo.DocumentosContables WHERE DocIdDocumento = @DocId`);
       if (!docR.recordset.length) throw new Error('Documento origen no encontrado');
       const docOrigen = docR.recordset[0];
@@ -1813,14 +1835,15 @@ const generarNotaCredito = async (req, res) => {
         .input('TotalRecargos', sql.Decimal(18,2), totalRecVal)
         .input('Total', sql.Decimal(18,2), totalVal)
         .input('Impuestos', sql.Decimal(18,2), impuestosVal)
+        .input('EmpId', sql.Int, docOrigen.EmpIdEmpresa || null)
         .query(`INSERT INTO dbo.DocumentosContables
                   (CueIdCuenta,CliIdCliente,MonIdMoneda,DocTipo,DocNumero,DocSerie,
                    DocSubtotal,DocTotalDescuentos,DocTotalRecargos,DocTotal,DocImpuestos,
-                   DocEstado,CfeEstado,DocFechaEmision,DocUsuarioAlta,DocObservaciones,DocIdDocumentoRef,DocMotivoRef,DocPagado)
+                   DocEstado,CfeEstado,DocFechaEmision,DocUsuarioAlta,DocObservaciones,DocIdDocumentoRef,DocMotivoRef,DocPagado,EmpIdEmpresa)
                 OUTPUT INSERTED.DocIdDocumento
                 VALUES (@Cue,@Cli,@MonId,@Tipo,@Num,@Serie,
                         @Subtotal,@TotalDescuentos,@TotalRecargos,@Total,@Impuestos,
-                        'COBRADO','PENDIENTE',GETDATE(),@Usr,@Motivo,@DocRef,@Motivo,1)`);
+                        'COBRADO','PENDIENTE',GETDATE(),@Usr,@Motivo,@DocRef,@Motivo,1,ISNULL(@EmpId, (SELECT TOP 1 EmpIdEmpresa FROM dbo.Empresas WHERE EmpPorDefecto=1)))`);
       const ncId = ncR.recordset[0].DocIdDocumento;
 
       if (Array.isArray(Lineas) && Lineas.length > 0) {
@@ -1932,7 +1955,7 @@ const generarNotaDebito = async (req, res) => {
     try {
       const docR = await new sql.Request(transaction)
         .input('DocId', sql.Int, parseInt(docIdOrigen))
-        .query(`SELECT DocTipo, DocSerie, DocNumero, DocTotal, MonIdMoneda, CueIdCuenta, DocSubtotal, DocImpuestos, DocTotalDescuentos, DocTotalRecargos, CliIdCliente
+        .query(`SELECT DocTipo, DocSerie, DocNumero, DocTotal, MonIdMoneda, CueIdCuenta, DocSubtotal, DocImpuestos, DocTotalDescuentos, DocTotalRecargos, CliIdCliente, EmpIdEmpresa
                 FROM dbo.DocumentosContables WHERE DocIdDocumento = @DocId`);
       if (!docR.recordset.length) throw new Error('Documento origen no encontrado');
       const docOrigen = docR.recordset[0];
@@ -2012,14 +2035,15 @@ const generarNotaDebito = async (req, res) => {
         .input('TotalRecargos', sql.Decimal(18,2), totalRecVal)
         .input('Total', sql.Decimal(18,2), totalVal)
         .input('Impuestos', sql.Decimal(18,2), impuestosVal)
+        .input('EmpId', sql.Int, docOrigen.EmpIdEmpresa || null)
         .query(`INSERT INTO dbo.DocumentosContables
                   (CueIdCuenta,CliIdCliente,MonIdMoneda,DocTipo,DocNumero,DocSerie,
                    DocSubtotal,DocTotalDescuentos,DocTotalRecargos,DocTotal,DocImpuestos,
-                   DocEstado,CfeEstado,DocFechaEmision,DocUsuarioAlta,DocObservaciones,DocIdDocumentoRef,DocMotivoRef,DocPagado)
+                   DocEstado,CfeEstado,DocFechaEmision,DocUsuarioAlta,DocObservaciones,DocIdDocumentoRef,DocMotivoRef,DocPagado,EmpIdEmpresa)
                 OUTPUT INSERTED.DocIdDocumento
                 VALUES (@Cue,@Cli,@MonId,@Tipo,@Num,@Serie,
                         @Subtotal,@TotalDescuentos,@TotalRecargos,@Total,@Impuestos,
-                        'PENDIENTE','PENDIENTE',GETDATE(),@Usr,@Motivo,@DocRef,@Motivo,0)`);
+                        'PENDIENTE','PENDIENTE',GETDATE(),@Usr,@Motivo,@DocRef,@Motivo,0,ISNULL(@EmpId, (SELECT TOP 1 EmpIdEmpresa FROM dbo.Empresas WHERE EmpPorDefecto=1)))`);
       const ndId = ndR.recordset[0].DocIdDocumento;
 
       if (Array.isArray(Lineas) && Lineas.length > 0) {
@@ -2191,6 +2215,8 @@ const reversarDocumento = async (req, res) => {
 // Body: { clienteId, cuentaId, importe, metodoPagoId, monedaId, concepto }
 const registrarPagoAnticipo = async (req, res) => {
   const usuarioId = req.user?.id || 70;
+  // Multiempresa: empresa a la que se atribuye el anticipo (null => la BD aplica el DEFAULT)
+  const empresaId = req.body?.empresaId || req.user?.empresaId || null;
   try {
     const { clienteId, cuentaId, importe, metodoPagoId, monedaId, concepto, admin } = req.body;
     if (!clienteId || !importe)
@@ -2325,7 +2351,8 @@ const registrarPagoAnticipo = async (req, res) => {
             usuarioId:        usuarioId,
             tcaIdTransaccion: tcaId,
             observaciones:    (conceptoFull + (metodoNombre ? ' - ' + metodoNombre : '')).substring(0, 200),
-            docPagado:        true
+            docPagado:        true,
+            empresaId:        empresaId
           },
           lineas: [{
             nomItem:        ('Anticipo: ' + conceptoFull).substring(0, 200),
