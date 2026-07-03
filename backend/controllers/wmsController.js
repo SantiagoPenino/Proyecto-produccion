@@ -5,8 +5,7 @@ const logger = require('../utils/logger');
 
 exports.syncCatalog = async (req, res) => {
     try {
-        const wmsUrl = process.env.WMS_API_URL;
-        if (!wmsUrl) throw new Error('WMS_API_URL no configurada en .env');
+        const wmsSqlUrl = process.env.WMS_SQL_URL || 'http://3.85.26.173:5005';
 
         // Query WMS for Familia 2 (if filtering there) or just get all and filter here
         const wmsQuery = `
@@ -20,7 +19,7 @@ exports.syncCatalog = async (req, res) => {
             ORDER BY p.nombre, v.nombre_variante;
         `;
 
-        const response = await fetch(`${wmsUrl}/sql`, {
+        const response = await fetch(`${wmsSqlUrl}/sql`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ query: wmsQuery })
@@ -140,7 +139,7 @@ exports.getCatalog = async (req, res) => {
         // 2. Fetch live stock from WMS — solo depósito configurado (WMS_DEPOSITO_LOCAL_ID)
         const stockMap = {};
         try {
-            const wmsUrl = process.env.WMS_API_URL;
+            const wmsUrl = process.env.WMS_SQL_URL || 'http://3.85.26.173:5005';
             const depositoId = process.env.WMS_DEPOSITO_LOCAL_ID || 5; // depósito de Ventas
             if (wmsUrl) {
                 const wmsQuery = `
