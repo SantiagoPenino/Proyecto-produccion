@@ -2,7 +2,7 @@ require('dotenv').config();
 const fs = require('fs');
 
 async function generateReport() {
-    const wmsUrl = process.env.WMS_API_URL || 'https://administracionuser.uy/api';
+    const wmsUrl = process.env.WMS_SQL_URL || 'http://3.85.26.173:5005';
 
     const query = `
         USE Ventas_Dev;

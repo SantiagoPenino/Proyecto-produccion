@@ -238,6 +238,9 @@ const PriceRow = ({
                     {item.Descripcion || <span className="text-slate-400 italic">Sin descripción</span>}
                 </div>
                 {item._isNew && <span className="inline-block mt-1 text-[9px] bg-green-100 text-green-700 px-1.5 py-0.5 rounded font-extrabold">NUEVO</span>}
+                {!isTotalRow && !(item.Mostrar === true || item.Mostrar === 1) && (
+                    <span className="inline-block mt-1 ml-1 text-[9px] bg-red-100 text-red-600 px-1.5 py-0.5 rounded font-extrabold">INACTIVO</span>
+                )}
                 
                 {/* Tipo de regla selector (solo si pertenece a un perfil) */}
                 {profile && (
@@ -431,6 +434,9 @@ const BasePrices = () => {
     const [tieredRules, setTieredRules] = useState([]);
     const [loading, setLoading] = useState(false);
     const [filter, setFilter] = useState('');
+
+    // Filtro por estado del artículo (Mostrar): ALL | ACTIVE | INACTIVE
+    const [activeFilter, setActiveFilter] = useState('ALL');
 
     // Categoría seleccionada (por defecto 'ALL' o la primera que cargue)
     const [selectedGroupKey, setSelectedGroupKey] = useState('ALL');
@@ -789,10 +795,17 @@ const BasePrices = () => {
             .catch(e => toast.error("Error simulación: " + e.message));
     };
 
+    // Lista según el switch Activos/Inactivos (Mostrar = 1 es activo en todo el sistema)
+    const isArticleActive = (p) => p.Mostrar === true || p.Mostrar === 1;
+    const visiblePrices = useMemo(() => {
+        if (activeFilter === 'ALL') return prices;
+        return prices.filter(p => activeFilter === 'ACTIVE' ? isArticleActive(p) : !isArticleActive(p));
+    }, [prices, activeFilter]);
+
     // Agrupación optimizada con trim() para evitar carpetas duplicadas (ej: ECOUV)
     const groupedItems = useMemo(() => {
         const groups = {};
-        prices.forEach(p => {
+        visiblePrices.forEach(p => {
             const cleanSupFlia = (p.SupFlia || '').trim();
             const cleanGrupo = (p.Grupo || '').trim();
             const cleanRef = (p.NombreReferenciaGrupo || '').trim();
@@ -816,7 +829,7 @@ const BasePrices = () => {
         sortedKeys.forEach(k => sortedGroups[k] = groups[k]);
 
         return sortedGroups;
-    }, [prices]);
+    }, [visiblePrices]);
 
     // Filtrar los productos del grupo seleccionado si se usa el buscador
     const getFilteredGroupItems = (groupName) => {
@@ -831,12 +844,12 @@ const BasePrices = () => {
 
     // Lista de productos para la pestaña 'ALL' (buscador general)
     const allFiltered = useMemo(() => {
-        if (!filter) return prices;
-        return prices.filter(p =>
+        if (!filter) return visiblePrices;
+        return visiblePrices.filter(p =>
             (p.CodArticulo || '').toLowerCase().includes(filter.toLowerCase()) ||
             (p.Descripcion || '').toLowerCase().includes(filter.toLowerCase())
         );
-    }, [prices, filter]);
+    }, [visiblePrices, filter]);
 
     const changesCount = Object.keys(pendingChanges).length + Object.keys(pendingTieredChanges).length;
 
@@ -940,6 +953,33 @@ const BasePrices = () => {
                                 value={filter}
                                 onChange={e => setFilter(e.target.value)}
                             />
+                        </div>
+
+                        {/* Switch Activos / Inactivos */}
+                        <div className="flex bg-slate-100 rounded-lg p-0.5 gap-0.5 mt-2 select-none">
+                            {[
+                                { key: 'ALL', label: 'Todos' },
+                                { key: 'ACTIVE', label: 'Activos' },
+                                { key: 'INACTIVE', label: 'Inactivos' }
+                            ].map(opt => (
+                                <button
+                                    key={opt.key}
+                                    onClick={() => setActiveFilter(opt.key)}
+                                    className={`
+                                        flex-1 text-[10px] font-bold py-1.5 rounded-md transition-all
+                                        ${activeFilter === opt.key
+                                            ? opt.key === 'INACTIVE'
+                                                ? 'bg-red-500 text-white shadow-sm'
+                                                : opt.key === 'ACTIVE'
+                                                    ? 'bg-green-500 text-white shadow-sm'
+                                                    : 'bg-white text-slate-700 shadow-sm'
+                                            : 'text-slate-500 hover:text-slate-700'
+                                        }
+                                    `}
+                                >
+                                    {opt.label}
+                                </button>
+                            ))}
                         </div>
                     </div>
 

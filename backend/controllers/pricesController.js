@@ -14,7 +14,7 @@ const getBasePrices = async (req, res) => {
                    LTRIM(RTRIM(SA.Articulo)) as GrupoNombre, 
                    MAP.NombreReferencia as NombreReferenciaGrupo,
                    PB.ID, PB.Precio, CASE WHEN PB.MonIdMoneda = 1 THEN 'UYU' ELSE 'USD' END AS Moneda, PB.MonIdMoneda,
-                   A.ProIdProducto
+                   A.ProIdProducto, A.Mostrar
             FROM Articulos A
             LEFT JOIN StockArt SA ON A.CodStock = SA.CodStock
             LEFT JOIN ConfigMapeoERP MAP ON MAP.CodigoERP = A.Grupo COLLATE Database_Default
