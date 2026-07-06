@@ -361,6 +361,9 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { }, lo
     const [metersDraft, setMetersDraft] = React.useState({});          // orderId -> string
     const [groupMetersDraft, setGroupMetersDraft] = React.useState({}); // groupKey -> string
 
+    // Panel de resumen (órdenes/archivos/bobina/capacidad) colapsable hacia arriba: más lugar para la tabla.
+    const [statsCollapsed, setStatsCollapsed] = React.useState(false);
+
     // Estado Modal Asignación y Swap
     const [isAssignModalOpen, setIsAssignModalOpen] = useState(false);
     const [isSwapConfigOpen, setIsSwapConfigOpen] = useState(false);
@@ -1313,6 +1316,7 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { }, lo
                     </div>
 
                     {/* Stats Bar */}
+                    {!statsCollapsed && (
                     <div className="px-6 py-4 bg-zinc-50/70 border-b border-zinc-100 flex gap-3 items-stretch flex-wrap shrink-0">
                         {/* Ordenes */}
                         <div className="flex items-center gap-3 bg-white border border-zinc-200 rounded-xl px-4 py-3 shadow-sm min-w-[100px]">
@@ -1435,6 +1439,18 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { }, lo
                             <div className="text-[9px] text-zinc-400 mt-1 text-right font-bold">{capacityPercent.toFixed(0)}% usado</div>
                         </div>
                     </div>
+                    )}
+
+                    {/* Toggle del panel de resumen: lo esconde hacia arriba para ganar lugar de tabla */}
+                    <button
+                        type="button"
+                        onClick={() => setStatsCollapsed(c => !c)}
+                        className="w-full flex items-center justify-center gap-2 py-1 bg-zinc-50/70 border-b border-zinc-100 text-zinc-400 hover:text-brand-cyan transition-colors shrink-0"
+                        title={statsCollapsed ? 'Mostrar panel de resumen' : 'Ocultar panel de resumen'}
+                    >
+                        <i className={`fa-solid ${statsCollapsed ? 'fa-chevron-down' : 'fa-chevron-up'} text-[10px]`} />
+                        <span className="text-[9px] font-black uppercase tracking-widest">{statsCollapsed ? 'Mostrar resumen' : 'Ocultar'}</span>
+                    </button>
 
                     {/* Body Table */}
                     <div className="flex-1 overflow-y-auto p-5 min-h-[300px] bg-zinc-50/40">
@@ -1459,7 +1475,9 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { }, lo
                                   {(provided) => (
                                     <div ref={provided.innerRef} {...provided.droppableProps} className="p-2 space-y-2">
                                       {(() => { return renderUnits.map((unit, ui) => {
-                                        const isGroup = unit.kind !== 'loose';
+                                        // Muestra header de material también para bloques 'loose' con 2+ órdenes del
+                                        // mismo material (auto-agrupado visual), no solo para 'auto'/'manual'.
+                                        const isGroup = unit.kind !== 'loose' || unit.orders.length > 1;
                                         const groupMeters = unit.orders.reduce((s, x) => s + (x.magnitude || 0), 0);
                                         // Basta UNA orden impresa para bloquear el grupo (no se puede mover ni reordenar).
                                         const groupLocked = unit.orders.some(o => printedOrderIds.includes(o.id));
@@ -1628,7 +1646,9 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { }, lo
                                             {/* Gap real entre la barra de columnas y el contenido */}
                                             <tr aria-hidden="true"><td colSpan="10" className="p-0"><div className="h-3" /></td></tr>
                                             {(() => { let dragIdx = -1; return renderUnits.map((unit, ui) => {
-                                                const isGroup = unit.kind !== 'loose';
+                                                // Muestra header de material también para bloques 'loose' con 2+ órdenes del
+                                        // mismo material (auto-agrupado visual), no solo para 'auto'/'manual'.
+                                        const isGroup = unit.kind !== 'loose' || unit.orders.length > 1;
                                                 const groupMeters = unit.orders.reduce((s, x) => s + (x.magnitude || 0), 0);
                                                 return (
                                                 <React.Fragment key={unit.key}>

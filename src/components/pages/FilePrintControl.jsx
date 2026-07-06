@@ -148,13 +148,24 @@ const FilePrintControl = ({ areaCode }) => {
 
   useEffect(() => {
     fetchRollos();
-    socket.on('server:order_updated', fetchRollos);
-    socket.on('server:ordersUpdated', fetchRollos);
-    socket.on('lotes:updated', fetchRollos);
+    // Throttle con trailing: producción emite order_updated/ordersUpdated todo el día (WSP,
+    // entregas, otras áreas) — sin esto se recargaban los rollos por CADA evento.
+    const ROLLOS_WINDOW_MS = 8000;
+    let rollosTimer = null;
+    let lastRollosRun = 0;
+    const fetchRollosThrottled = () => {
+      if (rollosTimer) return; // ya hay una ejecución agendada que cubre este evento
+      const wait = Math.max(300, ROLLOS_WINDOW_MS - (Date.now() - lastRollosRun));
+      rollosTimer = setTimeout(() => { rollosTimer = null; lastRollosRun = Date.now(); fetchRollos(); }, wait);
+    };
+    socket.on('server:order_updated', fetchRollosThrottled);
+    socket.on('server:ordersUpdated', fetchRollosThrottled);
+    socket.on('lotes:updated', fetchRollosThrottled);
     return () => {
-      socket.off('server:order_updated', fetchRollos);
-      socket.off('server:ordersUpdated', fetchRollos);
-      socket.off('lotes:updated', fetchRollos);
+      clearTimeout(rollosTimer);
+      socket.off('server:order_updated', fetchRollosThrottled);
+      socket.off('server:ordersUpdated', fetchRollosThrottled);
+      socket.off('lotes:updated', fetchRollosThrottled);
     };
   }, [fetchRollos]);
 
@@ -181,7 +192,8 @@ const FilePrintControl = ({ areaCode }) => {
           hasLabels: o.CantidadEtiquetas || 0,
           rolloId: o.RolloID || null,
           nextService: o.ProximoServicio,
-          meters: parseFloat(o.Magnitud) || 0
+          meters: parseFloat(o.Magnitud) || 0,
+          priority: o.Prioridad || 'Normal'
         }));
         setOrders(normalized);
         // Auto-select pending order after lote switch
@@ -240,11 +252,19 @@ const FilePrintControl = ({ areaCode }) => {
 
   // 4. Socket Listeners
   useEffect(() => {
-    const handleUpdate = (data) => {
-      if (activeRoll) {
-        const rId = activeRoll.id === 'todo' ? '' : activeRoll.id;
-        // Refresh orders list
-        fileControlService.getOrdenes(searchTerm, rId, areaCode || 'DTF').then(newOrders => {
+    // Parte pesada (recarga de la lista de órdenes + auto-advance) con throttle-trailing:
+    // los eventos socket llegan constantemente desde toda la producción; sin ventana, esta
+    // vista recargaba TODO por cada evento. El primer evento corre a los ~300ms (la acción
+    // del operario se siente inmediata) y la ráfaga queda cubierta por UNA ejecución final.
+    const HEAVY_WINDOW_MS = 4000;
+    let heavyTimer = null;
+    let lastHeavyRun = 0;
+
+    const runHeavyRefresh = () => {
+      if (!activeRoll) return;
+      const rId = activeRoll.id === 'todo' ? '' : activeRoll.id;
+      // Refresh orders list
+      fileControlService.getOrdenes(searchTerm, rId, areaCode || 'DTF').then(newOrders => {
           const normalized = (newOrders || []).map(o => ({
             id: o.OrdenID,
             code: o.CodigoOrden,
@@ -259,7 +279,8 @@ const FilePrintControl = ({ areaCode }) => {
             hasLabels: o.CantidadEtiquetas || 0,
             rolloId: o.RolloID || null,
             nextService: o.ProximoServicio,
-            meters: parseFloat(o.Magnitud) || 0
+            meters: parseFloat(o.Magnitud) || 0,
+          priority: o.Prioridad || 'Normal'
           }));
           setOrders(normalized);
 
@@ -271,6 +292,10 @@ const FilePrintControl = ({ areaCode }) => {
               setSelectedOrder(prev => {
                 if (!prev) return null;
                 if (prev.id !== fresh.id) return prev;
+                // Sin cambios reales → devolver prev (misma referencia). Si no, cada evento creaba
+                // un objeto nuevo y re-disparaba la recarga de archivos ("Cargando archivos" en loop).
+                const campos = ['status', 'statusArea', 'controlled', 'sequence', 'failures', 'hasLabels', 'rolloId', 'nextService', 'meters'];
+                if (campos.every(k => prev[k] === fresh[k])) return prev;
                 return { ...prev, ...fresh };
               });
 
@@ -309,8 +334,15 @@ const FilePrintControl = ({ areaCode }) => {
             }
           }
         });
+    };
+
+    const handleUpdate = (data) => {
+      if (activeRoll && !heavyTimer) {
+        const wait = Math.max(300, HEAVY_WINDOW_MS - (Date.now() - lastHeavyRun));
+        heavyTimer = setTimeout(() => { heavyTimer = null; lastHeavyRun = Date.now(); runHeavyRefresh(); }, wait);
       }
-      if (data.orderId && selectedOrderRef.current && data.orderId == selectedOrderRef.current.id) {
+      // La orden que el operario tiene seleccionada se refresca al instante (evento propio, camino barato)
+      if (data?.orderId && selectedOrderRef.current && data.orderId == selectedOrderRef.current.id) {
         refreshCurrentOrder();
       }
     };
@@ -318,6 +350,7 @@ const FilePrintControl = ({ areaCode }) => {
     socket.on('server:order_updated', handleUpdate);
     socket.on('server:ordersUpdated', handleUpdate);
     return () => {
+      clearTimeout(heavyTimer);
       socket.off('server:order_updated', handleUpdate);
       socket.off('server:ordersUpdated', handleUpdate);
       // NO cancelamos autoAdvanceTimerRef aquí — eso se maneja en su propio efecto
@@ -406,7 +439,8 @@ const FilePrintControl = ({ areaCode }) => {
           failures: o.CantidadFallas || 0,
           hasLabels: o.CantidadEtiquetas || 0,
           nextService: o.ProximoServicio,
-          meters: parseFloat(o.Magnitud) || 0
+          meters: parseFloat(o.Magnitud) || 0,
+          priority: o.Prioridad || 'Normal'
         }));
         setOrders(normalized);
       }).catch(console.error);
@@ -504,7 +538,8 @@ const FilePrintControl = ({ areaCode }) => {
           controlled: o.Controlada === 1, sequence: o.Secuencia || 0,
           failures: o.CantidadFallas || 0, hasLabels: o.CantidadEtiquetas || 0,
           rolloId: o.RolloID || null, nextService: o.ProximoServicio,
-          meters: parseFloat(o.Magnitud) || 0
+          meters: parseFloat(o.Magnitud) || 0,
+          priority: o.Prioridad || 'Normal'
         }));
         setOrders(normalized);
 
@@ -595,7 +630,8 @@ const FilePrintControl = ({ areaCode }) => {
             hasLabels: o.CantidadEtiquetas || 0,
             rolloId: o.RolloID || null,
             nextService: o.ProximoServicio,
-            meters: parseFloat(o.Magnitud) || 0
+            meters: parseFloat(o.Magnitud) || 0,
+          priority: o.Prioridad || 'Normal'
           }));
           setOrders(normalized);
         }).catch(console.error);
@@ -1084,6 +1120,27 @@ const FilePrintControl = ({ areaCode }) => {
                   <div className="flex items-center justify-between px-4 py-3 bg-slate-50">
                     <div className="text-xs font-black text-slate-500 uppercase tracking-widest">
                       {files.length} ARCHIVOS EN ORDEN
+                    </div>
+                    <div className="flex items-center gap-3">
+                      {selectedOrder?.priority && (
+                        <span className={`px-2.5 py-1 rounded-lg text-[10px] font-black uppercase tracking-wider border ${['urgente', 'falla', 'reposición', 'reposicion'].includes(String(selectedOrder.priority).toLowerCase()) ? 'bg-brand-magenta/10 text-brand-magenta border-brand-magenta/20' : 'bg-white text-zinc-400 border-zinc-200'}`}>
+                          {selectedOrder.priority}
+                        </span>
+                      )}
+                      {(() => {
+                        // Suma de lo imprimible: Metros × Copias de cada archivo (sin servicios ni cancelados),
+                        // mismo cálculo que muestra cada tarjeta.
+                        const totalMetros = files.reduce((acc, f) => {
+                          if (f.isService || String(f.EstadoArchivo || '').toUpperCase() === 'CANCELADO') return acc;
+                          return acc + ((parseFloat(f.Metros) || 0) * (parseInt(f.Copias) || 1));
+                        }, 0);
+                        if (totalMetros <= 0) return null;
+                        return (
+                          <div className="text-xs font-black text-brand-cyan uppercase tracking-widest">
+                            Total: {totalMetros.toFixed(2)} m
+                          </div>
+                        );
+                      })()}
                     </div>
                   </div>
 

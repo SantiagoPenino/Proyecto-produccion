@@ -158,7 +158,7 @@ const FileControlCard = ({ file, refreshOrder, onAction }) => {
                         {file.Material && (
                             <span className="truncate max-w-[150px] text-zinc-400" title={file.Material}>{file.Material}</span>
                         )}
-                        {area > 0 && <span className="text-brand-cyan font-bold ml-auto">{parseFloat(area).toFixed(2)} m²</span>}
+                        {area > 0 && <span className="text-brand-cyan font-bold ml-auto">{parseFloat(area).toFixed(2)} m</span>}
                     </div>
                 </div>
 

@@ -275,6 +275,27 @@ const lucideIconMapRaw = {
     'helpdesk': LifeBuoy,
     'helpdesk / tickets': LifeBuoy,
     'tickets': Ticket,
+    // Ítems que quedaban sin ícono / con círculo (íconos Lucide agregados)
+    'contabilidad': Landmark,
+    'documentos': FileText,
+    'cuenta corriente': CreditCard,
+    'operaciones': Banknote,
+    'reportes produccion': ClipboardList,
+    'reportes producción': ClipboardList,
+    'dashboard produccion': LayoutDashboard,
+    'dashboard producción': LayoutDashboard,
+    'reportes ordenes': FileText,
+    'reportes órdenes': FileText,
+    'control de tela de clientes': Boxes,
+    'estado de cuenta tela cliente': BookOpen,
+    'ventas': ShoppingCart,
+    'venta de productos': Package,
+    'bandeja tesorería': Inbox,
+    'preparar ordenes de venta': PackageCheck,
+    'preparar órdenes de venta': PackageCheck,
+    'venta de recursos adelantados': BadgeDollarSign,
+    'venta recursos adelantados': BadgeDollarSign,
+    'recursos adelantados': BadgeDollarSign,
 };
 const getLucideIcon = (name) => lucideIconMapRaw[name?.toLowerCase?.()?.trim?.()?.replace(/\s+/g, ' ')];
 
