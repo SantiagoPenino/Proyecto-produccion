@@ -124,7 +124,9 @@ function createPerRecipientThrottle(minIntervalMs) {
 
 const _warnedNoCelular = new Set();
 
-async function procesarUnaOrdenWsp(io, r, pool, throttle) {
+// `grupo`: filas de OrdenesDeposito del mismo pedido (NoDocERP). Se envía UN solo
+// mensaje (r ya viene agregado) y se marcan todas las filas/órdenes como avisadas.
+async function procesarUnaOrdenWsp(io, r, pool, throttle, grupo = [r]) {
     const codigoOrden = r.OrdCodigoOrden || "-";
     const toReal = normalizePhone(r.TelefonoTrabajo);
     const to = FORCE_TEST_TO ? normalizePhone(WA_TEST_TO) : toReal;
@@ -158,25 +160,31 @@ async function procesarUnaOrdenWsp(io, r, pool, throttle) {
         if (throttle) sendResp = await throttle(to, fnSend);
         else sendResp = await fnSend();
 
-        await marcarOrdenEnviada(pool, r.OrdIdOrden);
+        // Marcar TODAS las filas del pedido como avisadas (un solo mensaje por pedido)
+        for (const fila of grupo) {
+            await marcarOrdenEnviada(pool, fila.OrdIdOrden);
+        }
 
         // Marcar EstadoenArea = 'Avisado' en dbo.Ordenes para que quede visible en producción
         try {
             const tran = new sql.Transaction(pool);
             await tran.begin();
             try {
-                const ordRes = await new sql.Request(tran)
-                    .input('Cod', sql.NVarChar(50), r.OrdCodigoOrden)
-                    .query('SELECT OrdenID FROM dbo.Ordenes WHERE CodigoOrden = @Cod');
-                for (const ord of ordRes.recordset) {
-                    await changeOrderState(tran, {
-                        target  : { type: 'ORDER', id: ord.OrdenID },
-                        estado  : 'Avisado',
-                        userObj : 'Sistema (WSP)',
-                        detalle : `WhatsApp de aviso enviado`,
-                        guard   : "Estado NOT IN ('Entregado', 'Cancelado')",
-                        io
-                    });
+                const codigosGrupo = [...new Set(grupo.map(g => g.OrdCodigoOrden).filter(Boolean))];
+                for (const codGrupo of codigosGrupo) {
+                    const ordRes = await new sql.Request(tran)
+                        .input('Cod', sql.NVarChar(50), codGrupo)
+                        .query('SELECT OrdenID FROM dbo.Ordenes WHERE CodigoOrden = @Cod');
+                    for (const ord of ordRes.recordset) {
+                        await changeOrderState(tran, {
+                            target  : { type: 'ORDER', id: ord.OrdenID },
+                            estado  : 'Avisado',
+                            userObj : 'Sistema (WSP)',
+                            detalle : `WhatsApp de aviso enviado`,
+                            guard   : "Estado NOT IN ('Entregado', 'Cancelado')",
+                            io
+                        });
+                    }
                 }
                 await tran.commit();
             } catch (e) {
@@ -187,8 +195,12 @@ async function procesarUnaOrdenWsp(io, r, pool, throttle) {
             logger.warn(`[WHATSAPP JOB] Error iniciando transacción para Avisado (${codigoOrden}):`, e.message);
         }
 
-        if (io) io.emit("actualizado_wsp", { codigoOrden: r.OrdCodigoOrden, ordId: r.OrdIdOrden, status: 'success' });
-        logger.info(`[WHATSAPP JOB] Enviado OK ${codigoOrden}`);
+        if (io) {
+            for (const fila of grupo) {
+                io.emit("actualizado_wsp", { codigoOrden: fila.OrdCodigoOrden, ordId: fila.OrdIdOrden, status: 'success' });
+            }
+        }
+        logger.info(`[WHATSAPP JOB] Enviado OK ${codigoOrden}${grupo.length > 1 ? ` (aviso único por pedido, ${grupo.length} órdenes)` : ''}`);
     } catch (err) {
         const details = err?.response?.data ? JSON.stringify(err.response.data) : err.message;
         logger.error(`[WHATSAPP JOB] Error enviando WhatsApp - ${codigoOrden}:`, details);
@@ -206,6 +218,8 @@ async function procesarAvisosBatch(io) {
     Cli.TelefonoTrabajo,
     Ord.OrdCodigoOrden,
     Ord.OrdNombreTrabajo,
+    Ord.OrdEstadoActual,
+    Ped.NoDocERP,
     LTRIM(RTRIM(Pro.Descripcion))              AS Producto,
     CAST(Ord.OrdCantidad   AS decimal(18,2))   AS Cantidad,
     CAST(Ord.OrdCostoFinal AS decimal(18,2))   AS CostoFinal,
@@ -217,17 +231,66 @@ async function procesarAvisosBatch(io) {
   LEFT JOIN Articulos Pro WITH (NOLOCK) ON Pro.ProIdProducto = Ord.ProIdProducto
   JOIN Monedas Mon WITH (NOLOCK) ON Mon.MonIdMoneda = Ord.MonIdMoneda
   LEFT JOIN CotiDia Cd ON 1 = 1
-  WHERE (Ord.OrdEstadoActual IN (@Estado, 6) AND ISNULL(Ord.OrdAvisoWsp, 0) = 0 AND Cli.TelefonoTrabajo IS NOT NULL)
-     OR Ord.OrdEstadoActual = 12;
+  OUTER APPLY (
+    SELECT TOP 1 O2.NoDocERP
+    FROM dbo.Ordenes O2 WITH (NOLOCK)
+    WHERE O2.CodigoOrden = Ord.OrdCodigoOrden
+  ) Ped
+  WHERE (
+      Ord.OrdEstadoActual IN (@Estado, 6)
+      AND ISNULL(Ord.OrdAvisoWsp, 0) = 0
+      AND Cli.TelefonoTrabajo IS NOT NULL
+      -- GATE PEDIDO COMPLETO: no avisar si alguna orden hermana del pedido
+      -- (cualquier área) aún no llegó a depósito
+      AND (
+          Ped.NoDocERP IS NULL
+          OR NOT EXISTS (
+              SELECT 1 FROM dbo.Ordenes oh WITH (NOLOCK)
+              WHERE oh.NoDocERP = Ped.NoDocERP
+                AND UPPER(LTRIM(RTRIM(ISNULL(oh.Estado, '')))) <> 'CANCELADO'
+                AND UPPER(LTRIM(RTRIM(ISNULL(oh.EstadoenArea, '')))) <> 'CANCELADO'
+                AND UPPER(LTRIM(RTRIM(ISNULL(oh.EstadoenArea, '')))) NOT IN
+                    ('INGRESADO', 'AVISADO', 'ENTREGADO', 'FINALIZADO')
+                AND UPPER(LTRIM(RTRIM(ISNULL(oh.Estado, '')))) NOT IN
+                    ('INGRESADO', 'AVISADO', 'ENTREGADO', 'FINALIZADO')
+          )
+      )
+  )
+  OR Ord.OrdEstadoActual = 12;
   `;
     const result = await pool.request().input("Estado", sql.Int, ESTADO_POR_AVISAR).query(query);
     const rows = result.recordset || [];
     if (!rows.length) return;
 
+    // ── AVISO ÚNICO POR PEDIDO ──
+    // Agrupar por NoDocERP: pedidos con órdenes hermanas (ej. SUB-154 (1/2) y (2/2))
+    // generan UN solo WhatsApp con cantidades e importes sumados.
+    // Filas sin NoDocERP o de re-aviso manual (estado 12) van individuales.
+    const grupos = new Map();
+    for (const r of rows) {
+        const key = (r.NoDocERP && r.OrdEstadoActual !== 12) ? `PED:${r.NoDocERP}` : `ROW:${r.OrdIdOrden}`;
+        if (!grupos.has(key)) grupos.set(key, []);
+        grupos.get(key).push(r);
+    }
+
+    const buildFilaEnvio = (grupo) => {
+        if (grupo.length === 1) return grupo[0];
+        // Código base sin sufijo (n/m); si hay varias áreas, unir códigos distintos
+        const codigosBase = [...new Set(grupo.map(g => (g.OrdCodigoOrden || '').replace(/\s*\(\d+\/\d+\)\s*$/, '').trim()))];
+        return {
+            ...grupo[0],
+            OrdCodigoOrden: codigosBase.join(' + '),
+            Cantidad: grupo.reduce((s, g) => s + (parseFloat(g.Cantidad) || 0), 0),
+            CostoFinal: grupo.reduce((s, g) => s + (parseFloat(g.CostoFinal) || 0), 0),
+        };
+    };
+
     const limit = createConcurrencyLimiter(GLOBAL_CONCURRENCY);
     const throttle = createPerRecipientThrottle(PER_RECIPIENT_MIN_INTERVAL_MS);
 
-    const tasks = rows.map((r) => limit(() => procesarUnaOrdenWsp(io, r, pool, throttle)));
+    const tasks = [...grupos.values()].map((grupo) =>
+        limit(() => procesarUnaOrdenWsp(io, buildFilaEnvio(grupo), pool, throttle, grupo))
+    );
     await Promise.allSettled(tasks);
 }
 

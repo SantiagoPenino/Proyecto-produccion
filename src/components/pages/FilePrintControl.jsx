@@ -589,16 +589,27 @@ const FilePrintControl = ({ areaCode }) => {
     try {
       let lastRes = null;
       let someError = null;
+      const faltantesAcc = new Set();
+      const liberadasAcc = new Set();
 
       for (const order of ordersToComplete) {
         const res = await fileControlService.completarOrden(order.id);
         if (res.success) {
           lastRes = res;
+          if (res.pedidoCompletoEnArea === false) {
+            (res.faltantesPedido || []).forEach(c => faltantesAcc.add(c));
+          }
+          (res.ordenesLiberadas || []).forEach(c => liberadasAcc.add(c));
         } else {
           someError = res.error || `Error al finalizar la orden ${order.code || order.id}`;
           setToast({ visible: true, message: someError, type: 'error' });
         }
       }
+
+      // Si en este mismo batch se completó o liberó una orden que figuraba como
+      // faltante, ya no es faltante
+      ordersToComplete.forEach(o => faltantesAcc.delete(o.code));
+      liberadasAcc.forEach(c => faltantesAcc.delete(c));
 
       if (lastRes && !someError) {
         // isLastInRoll: quedan pendientes que NO son las que acabamos de completar
@@ -611,7 +622,9 @@ const FilePrintControl = ({ areaCode }) => {
           ordenId: selectedOrder.id,
           destino: lastRes.estadoLogistica || 'LOGÍSTICA',
           proximoServicio: selectedOrder.nextService,
-          isLastInRoll
+          isLastInRoll,
+          faltantesPedido: [...faltantesAcc],
+          ordenesLiberadas: [...liberadasAcc]
         });
 
         // NO eliminar la orden de la lista — refrescar para que muestre su nuevo estado (Pronto)
@@ -1378,12 +1391,34 @@ const FilePrintControl = ({ areaCode }) => {
 
             <div className="p-8 flex flex-col items-center text-center">
 
-              <div className="w-full bg-slate-50 rounded-2xl border-2 border-slate-100 p-4 mb-4">
-                <div className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">DESTINO FÍSICO (Canasto)</div>
-                <div className="text-xl font-black text-slate-700 leading-tight">
+              <div className={`w-full rounded-2xl border-2 p-4 mb-4 ${completedOrderData.faltantesPedido?.length > 0 ? 'bg-amber-50 border-amber-300' : 'bg-slate-50 border-slate-100'}`}>
+                <div className={`text-[10px] font-black uppercase tracking-widest mb-1 ${completedOrderData.faltantesPedido?.length > 0 ? 'text-amber-600' : 'text-slate-400'}`}>DESTINO FÍSICO (Canasto)</div>
+                <div className={`text-xl font-black leading-tight ${completedOrderData.faltantesPedido?.length > 0 ? 'text-amber-700' : 'text-slate-700'}`}>
                   {completedOrderData.destino || 'LOGÍSTICA'}
                 </div>
               </div>
+
+              {completedOrderData.faltantesPedido?.length > 0 && (
+                <div className="w-full bg-amber-50 rounded-2xl border-2 border-amber-300 p-4 mb-4 text-left">
+                  <div className="text-[10px] font-black text-amber-600 uppercase tracking-widest mb-1">
+                    <i className="fa-solid fa-hourglass-half mr-1"></i> PEDIDO INCOMPLETO
+                  </div>
+                  <div className="text-sm font-bold text-amber-800 leading-snug">
+                    Faltan del mismo pedido: {completedOrderData.faltantesPedido.join(', ')}
+                  </div>
+                </div>
+              )}
+
+              {completedOrderData.ordenesLiberadas?.length > 0 && (
+                <div className="w-full bg-emerald-50 rounded-2xl border-2 border-emerald-400 p-4 mb-4 text-left animate-pulse">
+                  <div className="text-[10px] font-black text-emerald-600 uppercase tracking-widest mb-1">
+                    <i className="fa-solid fa-box-open mr-1"></i> ¡PEDIDO COMPLETO!
+                  </div>
+                  <div className="text-sm font-bold text-emerald-800 leading-snug">
+                    Retire también del Canasto Incompletos: {completedOrderData.ordenesLiberadas.join(', ')}
+                  </div>
+                </div>
+              )}
 
               <div className="w-full bg-brand-cyan/10 rounded-2xl border-2 border-brand-cyan/20 p-4 mb-6">
                 <div className="text-[10px] font-black text-brand-cyan uppercase tracking-widest mb-1">PRÓXIMO SERVICIO</div>

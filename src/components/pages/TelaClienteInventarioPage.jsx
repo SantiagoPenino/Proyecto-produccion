@@ -42,6 +42,13 @@ const BobinaCard = ({
                         }`}>{esPendiente ? "Pendiente" : "Disponible"}</span>
                         <span className="text-xs text-slate-400 font-mono">{bob.AreaID}</span>
                     </div>
+                    {bob.Referencia && (
+                        <div className="mt-1.5">
+                            <span className="inline-block bg-indigo-600 text-white font-black font-mono text-xl px-3 py-1 rounded-lg tracking-wider shadow-sm">
+                                {bob.Referencia}
+                            </span>
+                        </div>
+                    )}
                     <h3 className="font-bold text-slate-800 mt-1 text-sm leading-tight truncate">
                         {bob.DescripcionTela || bob.TipoTela}
                     </h3>

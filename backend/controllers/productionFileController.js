@@ -6,6 +6,7 @@ const logger = require('../utils/logger');
 const { changeOrderState } = require('../services/stateManagerService');
 const { saveFallaImage } = require('../utils/thumbnailGenerator');
 const { devolverMetrosTelaCliente } = require('../utils/telaClienteDevolucion');
+const { isPedidoCompletoEnArea } = require('../services/pedidoCompletoService');
 
 // Asegura la columna para la imagen anotada de falla (una sola vez por proceso).
 let _fallaColEnsured = false;
@@ -942,12 +943,13 @@ const postControlArchivo = async (req, res) => {
         if (orderCompleted && /-R\d+$/i.test(codigoOrden)) {
             try {
                 const codigoMadreR = codigoOrden.replace(/-R\d+$/i, '');
+                // Incluye madres divididas por tela con sufijo: 'SUB-154 (1/2)', 'SUB-154 (2/2)'
                 const resetRes = await pool.request()
                     .input('CodigoMadre', sql.NVarChar, codigoMadreR)
                     .query(`
                         UPDATE OrdenesDeposito
                         SET OrdAvisoWsp = 0, OrdFechaAvisoWsp = NULL
-                        WHERE OrdCodigoOrden = @CodigoMadre
+                        WHERE (OrdCodigoOrden = @CodigoMadre OR OrdCodigoOrden LIKE @CodigoMadre + ' (%')
                           AND ISNULL(OrdAvisoWsp, 0) = 1
                     `);
                 if (resetRes.rowsAffected[0] > 0) {
@@ -1849,17 +1851,56 @@ async function completarOrden(req, res) {
         // Verificar si es una orden de reposición (-F) y obtener código
         const codigoRes = await new sql.Request(transaction)
             .input('OID', sql.Int, ordenId)
-            .query("SELECT CodigoOrden FROM Ordenes WHERE OrdenID = @OID");
+            .query("SELECT CodigoOrden, NoDocERP, AreaID FROM Ordenes WHERE OrdenID = @OID");
         const codigoOrden = codigoRes.recordset[0]?.CodigoOrden || '';
+        const noDocERP    = codigoRes.recordset[0]?.NoDocERP || null;
+        const areaOrden   = codigoRes.recordset[0]?.AreaID || null;
         const isFallaOrder = /-F\d+$/.test(codigoOrden);
 
         // -F (falla interna) completada sin fallas → Finalizado (su material se incorpora a la
         // madre, no se despacha sola). Orden/reposición común → Pronto.
         const nuevoEstado     = tieneFallas ? 'Retenido' : (isFallaOrder ? 'Finalizado' : 'Pronto');
         const nuevoEstadoArea = tieneFallas ? 'Retenido' : (isFallaOrder ? 'Finalizado' : 'Pronto');
-        const estadoLogistica = tieneFallas
+        let estadoLogistica = tieneFallas
             ? 'Esperando Reposición'
             : (isFallaOrder ? 'Canasto Reposiciones' : 'Canasto Produccion');
+
+        // ── PEDIDO COMPLETO EN ÁREA: órdenes hermanas divididas por tela (mismo NoDocERP) ──
+        // Si al pasar esta orden a Pronto todavía quedan hermanas del mismo pedido en el área
+        // sin estar prontas, la orden espera en 'Canasto Incompletos'. Si esta es la última,
+        // se libera a todas las hermanas que esperaban al 'Canasto Produccion'.
+        let pedidoCompletoEnArea = null;
+        let faltantesPedido = [];
+        let ordenesLiberadas = [];
+        if (!tieneFallas && !isFallaOrder && noDocERP) {
+            const chk = await isPedidoCompletoEnArea(transaction, noDocERP, areaOrden, { asumirProntaOrdenId: ordenId });
+            pedidoCompletoEnArea = chk.completo;
+            if (!chk.completo) {
+                estadoLogistica = 'Canasto Incompletos';
+                faltantesPedido = chk.faltantes.map(f => f.CodigoOrden);
+                logger.info(`[completarOrden] Orden ${codigoOrden} → Canasto Incompletos. Faltan del pedido ${noDocERP}: ${faltantesPedido.join(', ')}`);
+            } else {
+                const libRes = await new sql.Request(transaction)
+                    .input('NoDoc', sql.VarChar, String(noDocERP))
+                    .input('Area', sql.VarChar, areaOrden)
+                    .input('OID', sql.Int, ordenId)
+                    .query(`
+                        UPDATE Ordenes SET EstadoLogistica = 'Canasto Produccion'
+                        OUTPUT INSERTED.OrdenID, INSERTED.CodigoOrden
+                        WHERE NoDocERP = @NoDoc AND AreaID = @Area AND OrdenID != @OID
+                          AND EstadoLogistica = 'Canasto Incompletos'
+                    `);
+                ordenesLiberadas = libRes.recordset;
+                if (ordenesLiberadas.length > 0) {
+                    await new sql.Request(transaction)
+                        .input('UID', sql.Int, req.user?.id || 1)
+                        .input('Accion', sql.NVarChar, 'PEDIDO_COMPLETO_LIBERA_CANASTO')
+                        .input('Detalles', sql.NVarChar, `Pedido ${noDocERP} completo en ${areaOrden}. Liberadas de Canasto Incompletos: ${ordenesLiberadas.map(o => o.CodigoOrden).join(', ')}`)
+                        .query(`INSERT INTO dbo.Auditoria (IdUsuario, Accion, Detalles, DireccionIP, FechaHora) VALUES (@UID, @Accion, @Detalles, '127.0.0.1', GETDATE())`);
+                    logger.info(`[completarOrden] Pedido ${noDocERP} completo en ${areaOrden}. Liberadas: ${ordenesLiberadas.map(o => o.CodigoOrden).join(', ')}`);
+                }
+            }
+        }
 
         // Actualizar la orden
         await new sql.Request(transaction)
@@ -1875,7 +1916,10 @@ async function completarOrden(req, res) {
         const io = req.app.get('socketio');
         if (io) {
             io.emit('server:order_updated', { orderId: ordenId, status: nuevoEstado, timestamp: new Date() });
-            io.emit('server:ordersUpdated', { count: 1 });
+            for (const lib of ordenesLiberadas) {
+                io.emit('server:order_updated', { orderId: lib.OrdenID, status: 'Pronto', timestamp: new Date() });
+            }
+            io.emit('server:ordersUpdated', { count: 1 + ordenesLiberadas.length });
         }
 
         // Si es una orden -F completada sin fallas: ya quedó Finalizada (arriba) y además
@@ -1915,12 +1959,13 @@ async function completarOrden(req, res) {
         if (!tieneFallas && /-R\d+$/i.test(codigoOrden)) {
             try {
                 const codigoMadreR = codigoOrden.replace(/-R\d+$/i, '');
+                // Incluye madres divididas por tela con sufijo: 'SUB-154 (1/2)', 'SUB-154 (2/2)'
                 const resetRes = await pool.request()
                     .input('CodigoMadre', sql.NVarChar, codigoMadreR)
                     .query(`
                         UPDATE OrdenesDeposito
                         SET OrdAvisoWsp = 0, OrdFechaAvisoWsp = NULL
-                        WHERE OrdCodigoOrden = @CodigoMadre
+                        WHERE (OrdCodigoOrden = @CodigoMadre OR OrdCodigoOrden LIKE @CodigoMadre + ' (%')
                           AND ISNULL(OrdAvisoWsp, 0) = 1
                     `);
                 if (resetRes.rowsAffected[0] > 0) {
@@ -1976,7 +2021,12 @@ async function completarOrden(req, res) {
         }
 
 
-        res.json({ success: true, nuevoEstado, estadoLogistica, totalBultos });
+        res.json({
+            success: true, nuevoEstado, estadoLogistica, totalBultos,
+            pedidoCompletoEnArea,
+            faltantesPedido,
+            ordenesLiberadas: ordenesLiberadas.map(o => o.CodigoOrden)
+        });
 
     } catch (err) {
         if (transaction) { try { await transaction.rollback(); } catch (e) {} }
