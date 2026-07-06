@@ -2,6 +2,39 @@ const contabilidadService = require('../services/contabilidadService');
 const { getPool, sql } = require('../config/db');
 const logger = require('../utils/logger');
 const { changeOrderState } = require('../services/stateManagerService');
+const { isPedidoCompletoEnArea, isPedidoCompletoGlobal, sqlExistsHermanaNoPronta } = require('../services/pedidoCompletoService');
+
+/**
+ * Valida la regla de pedido completo para un conjunto de órdenes a despachar/recibir:
+ *  - destino DEPOSITO  → el pedido debe estar completo GLOBALMENTE (todas las áreas).
+ *  - destino otra área → el pedido debe estar completo EN EL ÁREA de la orden.
+ * Lanza Error (statusCode 400) con el detalle de las órdenes faltantes.
+ */
+const validarPedidosCompletos = async (db, ordenes, areaDestino) => {
+    const pedidosChequeados = new Set();
+    for (const ord of ordenes) {
+        if (!ord.NoDocERP) continue;
+        const key = `${ord.NoDocERP}|${ord.AreaID || ''}`;
+        if (pedidosChequeados.has(key)) continue;
+        pedidosChequeados.add(key);
+
+        const chk = (areaDestino === 'DEPOSITO')
+            ? await isPedidoCompletoGlobal(db, ord.NoDocERP)
+            : await isPedidoCompletoEnArea(db, ord.NoDocERP, ord.AreaID);
+
+        if (!chk.completo) {
+            const detalle = chk.faltantes
+                .map(f => `${f.CodigoOrden} (${f.EstadoenArea || f.Estado || 'Pendiente'})`)
+                .join(', ');
+            const err = new Error(
+                `Pedido ${ord.NoDocERP} incompleto${areaDestino === 'DEPOSITO' ? '' : ` en ${ord.AreaID}`}: faltan ${detalle}. ` +
+                `No se puede ${areaDestino === 'DEPOSITO' ? 'enviar/recibir en DEPOSITO' : 'despachar'} hasta que el pedido esté completo.`
+            );
+            err.statusCode = 400;
+            throw err;
+        }
+    }
+};
 
 
 
@@ -373,6 +406,21 @@ exports.createRemito = async (req, res) => {
                 throw new Error("No hay bultos para despachar (ni existentes ni nuevos).");
             }
 
+            // --- GATE PEDIDO COMPLETO ---
+            // Solo aplica a producto terminado: los insumos (TELA, PRENDA, etc.) que viajan
+            // entre áreas para producir no se bloquean. Encomiendas tampoco (OrdenID apunta a OrdenesRetiro).
+            const idsGate = finalBultosIds.filter(id => !isNaN(id)).join(',');
+            if (idsGate.length > 0) {
+                const ordenesGate = await new sql.Request(transaction).query(`
+                    SELECT DISTINCT o.OrdenID, o.CodigoOrden, o.NoDocERP, o.AreaID
+                    FROM Logistica_Bultos b
+                    JOIN Ordenes o ON b.OrdenID = o.OrdenID
+                    WHERE b.BultoID IN (${idsGate})
+                      AND b.Tipocontenido = 'PROD_TERMINADO'
+                `);
+                await validarPedidosCompletos(transaction, ordenesGate.recordset, areaDestino);
+            }
+
             // --- AUTO-CONSUME: Consumir Insumos Transformados ---
             // Regla: Al despachar un tipo de producto (ej: PROD_TERMINADO), consumimos los insumos (ej: TELA/PRENDA) de esa orden en el área.
             if (finalBultosIds.length > 0) {
@@ -503,7 +551,7 @@ exports.createRemito = async (req, res) => {
         }
     } catch (err) {
         logger.error("Error createRemito:", err);
-        res.status(500).json({ error: err.message });
+        res.status(err.statusCode || 500).json({ error: err.message });
     }
 };
 
@@ -757,6 +805,23 @@ exports.receiveDispatch = async (req, res) => {
 
                 const bId = bultoReq.recordset[0].BultoID;
                 itemsRecibidos = [{ bultoId: bId, estado: 'ESCANEADO' }];
+            }
+
+            // --- GATE PEDIDO COMPLETO: a DEPOSITO solo se recibe con el pedido completo (todas las áreas) ---
+            if (areaReceptora === 'DEPOSITO') {
+                const idsEscaneados = (itemsRecibidos || [])
+                    .filter(i => i.estado === 'ESCANEADO' && !isNaN(i.bultoId))
+                    .map(i => i.bultoId);
+                if (idsEscaneados.length > 0) {
+                    const ordenesGate = await new sql.Request(transaction).query(`
+                        SELECT DISTINCT o.OrdenID, o.CodigoOrden, o.NoDocERP, o.AreaID
+                        FROM Logistica_Bultos b
+                        JOIN Ordenes o ON b.OrdenID = o.OrdenID
+                        WHERE b.BultoID IN (${idsEscaneados.join(',')})
+                          AND b.Tipocontenido = 'PROD_TERMINADO'
+                    `);
+                    await validarPedidosCompletos(transaction, ordenesGate.recordset, 'DEPOSITO');
+                }
             }
 
             let receivedCount = 0;
@@ -1389,7 +1454,7 @@ if (triggerReversal || triggerForward) {
         }
     } catch (err) {
         logger.error("Error receiveDispatch:", err);
-        res.status(500).json({ error: err.message });
+        res.status(err.statusCode || 500).json({ error: err.message });
     }
 };
 
@@ -1896,6 +1961,13 @@ exports.getAreaStock = async (req, res) => {
             WHERE b.Estado = 'EN_STOCK'
             AND NOT EXISTS (
                 SELECT 1 FROM Logistica_EnvioItems ei WHERE ei.BultoID = b.BultoID
+            )
+            -- Pedido completo en área: ocultar producto terminado de pedidos con órdenes
+            -- hermanas (mismo NoDocERP, misma área) aún no prontas
+            AND NOT (
+                b.Tipocontenido = 'PROD_TERMINADO'
+                AND o.OrdenID IS NOT NULL
+                AND ${sqlExistsHermanaNoPronta('o')}
             )
         `;
 

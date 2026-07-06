@@ -476,7 +476,7 @@ const ReceptionPage = () => {
                 const bDatos  = bobinasList ? bobinasList[i] : null;
                 // Código por bulto — igual que lo guarda el controller
                 const dbCode = totalBultos > 1 ? `${orden}-${i + 1}` : orden;
-                const qrUrl = await QRCode.toDataURL(dbCode, { width: 300, margin: 2 });
+                const qrUrl = await QRCode.toDataURL(dbCode, { width: 600, margin: 2 });
                 pages.push({ i, qrUrl, bultoStr, dbCode, bDatos });
             }
 
@@ -500,37 +500,38 @@ const ReceptionPage = () => {
         overflow:hidden;
     }
     .hdr { display:flex; justify-content:space-between; align-items:flex-start; border-bottom:1.5px solid #000; padding-bottom:2mm; margin-bottom:2mm; }
-    .hdr-left .lbl { font-size:6pt; font-weight:700; text-transform:uppercase; color:#555; letter-spacing:.5px; }
-    .hdr-left .val { font-size:10pt; font-weight:900; line-height:1.1; }
-    .hdr-left .id  { font-size:7pt; color:#777; }
+    .hdr-left .lbl { font-size:7pt; font-weight:700; text-transform:uppercase; color:#555; letter-spacing:.5px; }
+    .hdr-left .val { font-size:13pt; font-weight:900; line-height:1.1; }
+    .hdr-left .id  { font-size:26pt; font-weight:900; color:#000; line-height:1; margin-top:1mm; }
+    .hdr-left .id .idlbl { font-size:8pt; font-weight:700; color:#555; vertical-align:middle; margin-right:1mm; }
     .hdr-right { text-align:right; }
-    .hdr-right .lbl  { font-size:6pt; font-weight:700; text-transform:uppercase; color:#555; letter-spacing:.5px; }
-    .hdr-right .area { font-size:12pt; font-weight:900; }
-    .hdr-right .fecha{ font-size:7pt; color:#555; }
-    /* QR grande a la izquierda, datos a la derecha */
-    .mid { display:flex; gap:2mm; flex:1; min-height:0; margin-bottom:1.5mm; align-items:flex-start; }
-    .qrbox { width:44mm; flex-shrink:0; display:flex; flex-direction:column; align-items:center; justify-content:center; }
-    .qrbox img { width:42mm; height:42mm; object-fit:contain; }
-    .qrbox .qrlbl { font-size:6pt; font-weight:700; text-align:center; margin-top:0.5mm; color:#333; }
-    .details { flex:1; display:flex; flex-direction:column; gap:0.8mm; }
+    .hdr-right .lbl  { font-size:7pt; font-weight:700; text-transform:uppercase; color:#555; letter-spacing:.5px; }
+    .hdr-right .area { font-size:15pt; font-weight:900; }
+    .hdr-right .fecha{ font-size:9pt; color:#555; }
+    /* Info a ancho completo arriba, QR grande centrado abajo */
+    .details { display:flex; flex-direction:column; gap:1.2mm; margin-bottom:2mm; }
     /* TELA en fila completa */
-    .detail-row { display:flex; justify-content:space-between; font-size:7.5pt; border-bottom:0.5px solid #ddd; padding-bottom:0.4mm; }
+    .detail-row { display:flex; justify-content:space-between; font-size:11pt; border-bottom:0.5px solid #ddd; padding-bottom:0.8mm; }
     .detail-row b { color:#555; font-weight:700; white-space:nowrap; }
     .detail-row span { font-weight:900; text-align:right; }
     /* LARGO ANCHO PESO en fila única */
-    .dims { display:flex; gap:1mm; margin-bottom:0.8mm; border-bottom:0.5px solid #ddd; padding-bottom:0.4mm; }
+    .dims { display:flex; gap:1mm; margin-bottom:0.8mm; border-bottom:0.5px solid #ddd; padding-bottom:0.8mm; }
     .dim  { flex:1; text-align:center; }
-    .dim .dlbl { font-size:5.5pt; font-weight:700; color:#555; text-transform:uppercase; }
-    .dim .dval { font-size:8pt; font-weight:900; }
-    /* Servicios pequeños */
+    .dim .dlbl { font-size:8pt; font-weight:700; color:#555; text-transform:uppercase; }
+    .dim .dval { font-size:13pt; font-weight:900; }
+    /* Servicios */
     .svcs { margin-top:1mm; }
-    .svcs-title { font-size:5.5pt; font-weight:700; text-transform:uppercase; color:#555; letter-spacing:.5px; margin-bottom:0.5mm; }
-    .svc-item { display:flex; align-items:center; gap:1mm; font-size:7pt; font-weight:700; margin-bottom:0.3mm; }
-    .chk { width:3mm; height:3mm; border:1.5px solid #000; display:inline-flex; align-items:center; justify-content:center; font-size:6pt; }
+    .svcs-title { font-size:8pt; font-weight:700; text-transform:uppercase; color:#555; letter-spacing:.5px; margin-bottom:0.8mm; }
+    .svc-item { display:flex; align-items:center; gap:1.5mm; font-size:10.5pt; font-weight:700; margin-bottom:0.5mm; }
+    .chk { width:4.5mm; height:4.5mm; border:1.5px solid #000; display:inline-flex; align-items:center; justify-content:center; font-size:9pt; }
+    /* QR grande centrado */
+    .qrbox { flex:1; min-height:0; display:flex; flex-direction:column; align-items:center; justify-content:center; }
+    .qrbox img { width:60mm; height:60mm; object-fit:contain; }
+    .qrbox .qrlbl { font-size:10pt; font-weight:700; text-align:center; margin-top:1mm; color:#333; }
     /* Código grande abajo */
     .footer { border-top:1.5px solid #000; padding-top:1.5mm; text-align:center; }
-    .footer .code  { font-size:22pt; font-weight:900; letter-spacing:1px; line-height:1; }
-    .footer .bulto { font-size:7.5pt; font-weight:700; color:#777; text-transform:uppercase; letter-spacing:2px; }
+    .footer .code  { font-size:26pt; font-weight:900; letter-spacing:1px; line-height:1; }
+    .footer .bulto { font-size:9pt; font-weight:700; color:#777; text-transform:uppercase; letter-spacing:2px; }
 
     /* ── Página instruccion ── */
     .page-inst {
@@ -560,7 +561,7 @@ const ReceptionPage = () => {
         <div class="hdr-left">
           <div class="lbl">CLIENTE</div>
           <div class="val">${clienteNombreFinal}</div>
-          <div class="id">ID: ${idClienteLabel}</div>
+          <div class="id"><span class="idlbl">ID</span>${idClienteLabel}</div>
         </div>
         <div class="hdr-right">
           <div class="lbl">SERVICIO</div>
@@ -569,28 +570,27 @@ const ReceptionPage = () => {
         </div>
       </div>
 
-      <div class="mid">
-        <div class="qrbox">
-          <img src="${p.qrUrl}" />
-          <div class="qrlbl">${p.dbCode}</div>
+      <div class="details">
+        ${esTela ? `
+        <div class="detail-row"><b>TELA</b><span>${(telaCliente || '-').substring(0,20)}</span></div>
+        <div class="dims">
+          <div class="dim"><div class="dlbl">LARGO</div><div class="dval">${largo}</div></div>
+          <div class="dim"><div class="dlbl">ANCHO</div><div class="dval">${ancho}</div></div>
+          <div class="dim"><div class="dlbl">PESO</div><div class="dval">${peso}</div></div>
         </div>
-        <div class="details">
-          ${esTela ? `
-          <div class="detail-row"><b>TELA</b><span>${(telaCliente || '-').substring(0,20)}</span></div>
-          <div class="dims">
-            <div class="dim"><div class="dlbl">LARGO</div><div class="dval">${largo}</div></div>
-            <div class="dim"><div class="dlbl">ANCHO</div><div class="dval">${ancho}</div></div>
-            <div class="dim"><div class="dlbl">PESO</div><div class="dval">${peso}</div></div>
-          </div>
-          ` : `
-          <div class="detail-row"><b>SERVICIO</b><span>${(servicios||[]).join('/')}</span></div>
-          `}
-          <div class="svcs">
-            <div class="svcs-title">PROCESO</div>
-            <div class="svc-item"><div class="chk">${esSub ? '\u2713' : ''}</div> SUBLIMACI\u00d3N</div>
-            <div class="svc-item"><div class="chk">${esCorte ? '\u2713' : ''}</div> CORTE</div>
-          </div>
+        ` : `
+        <div class="detail-row"><b>SERVICIO</b><span>${(servicios||[]).join('/')}</span></div>
+        `}
+        <div class="svcs">
+          <div class="svcs-title">PROCESO</div>
+          <div class="svc-item"><div class="chk">${esSub ? '\u2713' : ''}</div> SUBLIMACI\u00d3N</div>
+          <div class="svc-item"><div class="chk">${esCorte ? '\u2713' : ''}</div> CORTE</div>
         </div>
+      </div>
+
+      <div class="qrbox">
+        <img src="${p.qrUrl}" />
+        <div class="qrlbl">${p.dbCode}</div>
       </div>
 
       <div class="footer">

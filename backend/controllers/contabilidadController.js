@@ -1747,11 +1747,12 @@ exports.getClientesActivos = async (req, res) => {
 
     const filtroNombre = q.trim()
       ? `AND (
-          c.Nombre LIKE @Q 
-          OR c.NombreFantasia LIKE @Q 
-          OR c.Email LIKE @Q 
-          OR c.TelefonoTrabajo LIKE @Q 
-          OR c.CioRuc LIKE @Q 
+          c.IDCliente LIKE @Q
+          OR c.Nombre LIKE @Q
+          OR c.NombreFantasia LIKE @Q
+          OR c.Email LIKE @Q
+          OR c.TelefonoTrabajo LIKE @Q
+          OR c.CioRuc LIKE @Q
           OR CAST(c.CliIdCliente AS VARCHAR) = @Qexact
           OR CAST(c.CodCliente AS VARCHAR) = @Qexact
          )`
