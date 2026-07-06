@@ -1015,6 +1015,84 @@ exports.cerrarCiclo = async (req, res) => {
   }
 };
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Propagación de ediciones de precio al ESTADO DE CUENTA
+// Cuando se edita un precio DESPUÉS del cierre, el movimiento de facturación
+// (CIERRE_CICLO/VTA_CAJA) y el saldo deben reflejar el cambio. Antes solo se
+// actualizaban las líneas ORDEN (ocultas del saldo), dejando el saldo inflado.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * Aplica el delta de precio (nuevoSubtotal - viejoSubtotal) al movimiento de
+ * facturación del documento, preservando cualquier descuento del cierre.
+ * Devuelve las cuentas afectadas. No-op si el ciclo aún no fue cerrado.
+ */
+async function ajustarCierrePorDelta(makeReq, DocIdDocumento, CicIdCiclo, delta) {
+  if (!DocIdDocumento || Math.abs(delta) < 0.0001) return [];
+  const r = await makeReq()
+    .input('doc',   sql.Int,           DocIdDocumento)
+    .input('cic',   sql.Int,           CicIdCiclo)
+    .input('delta', sql.Decimal(18, 4), delta)
+    .query(`
+      UPDATE dbo.MovimientosCuenta
+      SET MovImporte = MovImporte - @delta
+      OUTPUT INSERTED.CueIdCuenta
+      WHERE DocIdDocumento = @doc AND CicIdCiclo = @cic
+        AND MovTipo IN ('CIERRE_CICLO','VTA_CAJA')
+        AND (MovAnulado IS NULL OR MovAnulado = 0) AND MovImporte <> 0
+    `);
+  return r.recordset.map(x => x.CueIdCuenta);
+}
+
+/**
+ * Recomputa el saldo corrido (MovSaldoPosterior) de todos los movimientos de la
+ * cuenta y el CueSaldoActual, tras un cambio de importe.
+ */
+async function recomputarSaldoCuenta(makeReq, CueIdCuenta) {
+  await makeReq()
+    .input('c', sql.Int, CueIdCuenta)
+    .query(`
+      ;WITH ord AS (
+        SELECT MovIdMovimiento,
+               SUM(MovImporte) OVER (ORDER BY MovFecha, MovIdMovimiento ROWS UNBOUNDED PRECEDING) AS run
+        FROM dbo.MovimientosCuenta
+        WHERE CueIdCuenta = @c AND (MovAnulado IS NULL OR MovAnulado = 0)
+      )
+      UPDATE m SET m.MovSaldoPosterior = ord.run
+      FROM dbo.MovimientosCuenta m JOIN ord ON ord.MovIdMovimiento = m.MovIdMovimiento;
+
+      UPDATE dbo.CuentasCliente
+      SET CueSaldoActual = ISNULL((SELECT SUM(MovImporte) FROM dbo.MovimientosCuenta
+        WHERE CueIdCuenta = @c AND (MovAnulado IS NULL OR MovAnulado = 0)), 0)
+      WHERE CueIdCuenta = @c;
+    `);
+}
+
+/**
+ * Devuelve el DocIdDocumento del movimiento ORDEN (ERP o depósito) de un pedido
+ * dentro de un ciclo, para saber a qué CIERRE_CICLO propagar el delta.
+ */
+async function docDeFacturacionDePedido(makeReq, PedidoCobranzaID, CicIdCiclo) {
+  const r = await makeReq()
+    .input('PID', sql.Int, PedidoCobranzaID)
+    .input('cic', sql.Int, CicIdCiclo)
+    .query(`
+      SELECT TOP 1 m.DocIdDocumento
+      FROM dbo.MovimientosCuenta m
+      JOIN dbo.PedidosCobranza pc ON pc.ID = @PID
+      WHERE m.CicIdCiclo = @cic AND m.MovTipo IN ('ORDEN','ORDEN_ANTICIPO')
+        AND m.DocIdDocumento IS NOT NULL AND (m.MovAnulado IS NULL OR m.MovAnulado = 0)
+        AND (
+          EXISTS (SELECT 1 FROM dbo.Ordenes erp
+                  WHERE erp.OrdenID = m.OrdIdOrden AND LTRIM(RTRIM(pc.NoDocERP)) = erp.CodigoOrden)
+          OR EXISTS (SELECT 1 FROM dbo.OrdenesDeposito od
+                  WHERE (od.OrdIdOrden = m.OrdIdOrden OR od.OReIdOrdenRetiro = m.OReIdOrdenRetiro)
+                    AND LTRIM(RTRIM(pc.NoDocERP)) = od.OrdCodigoOrden)
+        )
+    `);
+  return r.recordset[0]?.DocIdDocumento || null;
+}
+
 /**
  * POST /api/contabilidad/guardar-precios
  * Endpoint general: guarda precios editados en PedidosCobranzaDetalle
@@ -1022,28 +1100,34 @@ exports.cerrarCiclo = async (req, res) => {
  * Body: { detallesEditados: [{ DetalleID, PrecioUnitario, Subtotal }], cicIdCiclo? }
  */
 exports.guardarPrecios = async (req, res) => {
+  const { detallesEditados, cicIdCiclo } = req.body || {};
+
+  if (!Array.isArray(detallesEditados) || detallesEditados.length === 0) {
+    return res.status(400).json({ success: false, error: 'No hay cambios para guardar.' });
+  }
+
+  const cicloNum = (cicIdCiclo && !isNaN(Number(cicIdCiclo))) ? Number(cicIdCiclo) : null;
+  const pool = await getPool();
+  const tx = new sql.Transaction(pool);
   try {
-    const { detallesEditados, cicIdCiclo } = req.body || {};
-
-    if (!Array.isArray(detallesEditados) || detallesEditados.length === 0) {
-      return res.status(400).json({ success: false, error: 'No hay cambios para guardar.' });
-    }
-
-    const pool = await getPool();
+    await tx.begin();
+    const mk = () => new sql.Request(tx);
     let actualizados = 0;
+    const deltaPorDoc = {};   // DocIdDocumento -> delta de precio acumulado
 
     for (const d of detallesEditados) {
       const id = Number(d.DetalleID);
       if (!id) continue;
 
-      // Leer registro actual
-      const detRes = await pool.request()
+      // Leer registro actual incluyendo el Subtotal vigente (para el delta)
+      const detRes = await mk()
         .input('ID', sql.Int, id)
-        .query(`SELECT PedidoCobranzaID, LogPrecioAplicado FROM dbo.PedidosCobranzaDetalle WHERE ID = @ID`);
+        .query(`SELECT PedidoCobranzaID, LogPrecioAplicado, Subtotal FROM dbo.PedidosCobranzaDetalle WHERE ID = @ID`);
 
       if (detRes.recordset.length === 0) continue;
 
-      const { PedidoCobranzaID, LogPrecioAplicado } = detRes.recordset[0];
+      const { PedidoCobranzaID, LogPrecioAplicado, Subtotal: viejoSubtotal } = detRes.recordset[0];
+      const delta = Number(d.Subtotal) - Number(viejoSubtotal || 0);
 
       // Agregar etiqueta en log
       const logTag = '[Ajuste manual]';
@@ -1051,7 +1135,7 @@ exports.guardarPrecios = async (req, res) => {
       if (!nuevoLog.includes(logTag)) nuevoLog += ` ${logTag}`;
 
       // Actualizar PrecioUnitario y Subtotal
-      await pool.request()
+      await mk()
         .input('ID',       sql.Int,             id)
         .input('Precio',   sql.Decimal(18, 4),   d.PrecioUnitario)
         .input('Subtotal', sql.Decimal(18, 4),   d.Subtotal)
@@ -1063,7 +1147,7 @@ exports.guardarPrecios = async (req, res) => {
         `);
 
       // Recalcular MontoTotal en PedidosCobranza padre
-      await pool.request()
+      await mk()
         .input('PID', sql.Int, PedidoCobranzaID)
         .query(`
           UPDATE dbo.PedidosCobranza
@@ -1071,14 +1155,12 @@ exports.guardarPrecios = async (req, res) => {
           WHERE ID = @PID
         `);
 
-      // Actualizar MovimientosCuenta para cualquier tipo de orden (ERP o WMS/depósito)
-      const cicloNum = cicIdCiclo ? Number(cicIdCiclo) : null;
-      const cicloFilter = (cicloNum && !isNaN(cicloNum))
+      // Actualizar MovimientosCuenta ORDEN (ERP o WMS/depósito)
+      const cicloFilter = (cicloNum != null)
         ? `AND m.CicIdCiclo = ${cicloNum}`
         : `AND (m.CicIdCiclo IS NULL OR m.CicIdCiclo = 0)`;
 
-      // Query unificada: matchea por NoDocERP contra CodigoOrden (ERP) o OrdCodigoOrden (WMS)
-      await pool.request()
+      await mk()
         .input('PID', sql.Int, PedidoCobranzaID)
         .query(`
           UPDATE m
@@ -1089,14 +1171,12 @@ exports.guardarPrecios = async (req, res) => {
             AND m.MovTipo IN ('ORDEN','ORDEN_ANTICIPO')
             ${cicloFilter}
             AND (
-              -- Orden ERP
               EXISTS (
                 SELECT 1 FROM dbo.Ordenes erp
                 WHERE erp.OrdenID = m.OrdIdOrden
                   AND LTRIM(RTRIM(pc.NoDocERP)) = erp.CodigoOrden
               )
               OR
-              -- Orden Depósito/WMS (XSB, SB, etc.)
               EXISTS (
                 SELECT 1 FROM dbo.OrdenesDeposito od
                 WHERE (od.OrdIdOrden = m.OrdIdOrden OR od.OReIdOrdenRetiro = m.OReIdOrdenRetiro)
@@ -1105,12 +1185,29 @@ exports.guardarPrecios = async (req, res) => {
             )
         `);
 
+      // Si el ciclo ya fue cerrado, registrar el delta contra el documento de facturación
+      if (cicloNum != null && Math.abs(delta) > 0.0001) {
+        const docId = await docDeFacturacionDePedido(mk, PedidoCobranzaID, cicloNum);
+        if (docId) deltaPorDoc[docId] = (deltaPorDoc[docId] || 0) + delta;
+      }
 
       actualizados++;
     }
 
-    res.json({ success: true, actualizados, message: `${actualizados} detalle(s) actualizados.` });
+    // Propagar los deltas al movimiento de facturación (CIERRE_CICLO/VTA_CAJA) y recomputar saldos
+    const cuentasAfectadas = new Set();
+    if (cicloNum != null) {
+      for (const [docId, delta] of Object.entries(deltaPorDoc)) {
+        const cuentas = await ajustarCierrePorDelta(mk, parseInt(docId), cicloNum, delta);
+        cuentas.forEach(c => cuentasAfectadas.add(c));
+      }
+      for (const cue of cuentasAfectadas) await recomputarSaldoCuenta(mk, cue);
+    }
+
+    await tx.commit();
+    res.json({ success: true, actualizados, cuentasActualizadas: cuentasAfectadas.size, message: `${actualizados} detalle(s) actualizados.` });
   } catch (err) {
+    try { await tx.rollback(); } catch (_) {}
     logger.error('[CONTABILIDAD] guardarPrecios:', err);
     res.status(500).json({ success: false, error: err.message || err.toString() });
   }
@@ -1327,86 +1424,89 @@ exports.getOrdenesPendientesCliente = async (req, res) => {
  * Actualiza PedidosCobranzaDetalle (PrecioUnitario, Subtotal) y recalcula MovimientosCuenta.
  */
 exports.guardarPreciosCiclo = async (req, res) => {
+  const { CicIdCiclo } = req.params;
+  const { detallesEditados } = req.body || {};
+
+  if (!CicIdCiclo || isNaN(Number(CicIdCiclo))) {
+    return res.status(400).json({ success: false, error: 'CicIdCiclo inválido.' });
+  }
+  if (!Array.isArray(detallesEditados) || detallesEditados.length === 0) {
+    return res.status(400).json({ success: false, error: 'No hay cambios para guardar.' });
+  }
+
+  const cic = parseInt(CicIdCiclo);
+  const pool = await getPool();
+  const tx = new sql.Transaction(pool);
   try {
-    const { CicIdCiclo } = req.params;
-    const { detallesEditados } = req.body || {};
-
-    if (!CicIdCiclo || isNaN(Number(CicIdCiclo))) {
-      return res.status(400).json({ success: false, error: 'CicIdCiclo inválido.' });
-    }
-    if (!Array.isArray(detallesEditados) || detallesEditados.length === 0) {
-      return res.status(400).json({ success: false, error: 'No hay cambios para guardar.' });
-    }
-
-    const pool = await getPool();
+    await tx.begin();
+    const mk = () => new sql.Request(tx);
     let actualizados = 0;
+    const deltaPorDoc = {};   // DocIdDocumento -> delta de precio acumulado (nuevoSub - viejoSub)
 
     for (const d of detallesEditados) {
-      // Obtener PedidoCobranzaID y log actual
-      const detRes = await pool.request()
+      // Leer PedidoCobranzaID, log y Subtotal ACTUAL (para calcular el delta)
+      const detRes = await mk()
         .input('ID', sql.Int, d.DetalleID)
-        .query(`
-          SELECT PedidoCobranzaID, LogPrecioAplicado
-          FROM dbo.PedidosCobranzaDetalle
-          WHERE ID = @ID
-        `);
-
+        .query(`SELECT PedidoCobranzaID, LogPrecioAplicado, Subtotal FROM dbo.PedidosCobranzaDetalle WHERE ID = @ID`);
       if (detRes.recordset.length === 0) continue;
 
-      const { PedidoCobranzaID, LogPrecioAplicado } = detRes.recordset[0];
+      const { PedidoCobranzaID, LogPrecioAplicado, Subtotal: viejoSubtotal } = detRes.recordset[0];
+      const delta = Number(d.Subtotal) - Number(viejoSubtotal || 0);
 
-      // Enriquecer log
       const logTag = '[Ajuste manual Cierre Ciclo]';
       let nuevoLog = LogPrecioAplicado || '';
       if (!nuevoLog.includes(logTag)) nuevoLog += ` ${logTag}`;
 
       // Actualizar precio y subtotal del detalle
-      await pool.request()
+      await mk()
         .input('ID',      sql.Int,           d.DetalleID)
         .input('Precio',  sql.Decimal(18,4),  d.PrecioUnitario)
         .input('Subtotal',sql.Decimal(18,4),  d.Subtotal)
         .input('Log',     sql.NVarChar(sql.MAX), nuevoLog)
-        .query(`
-          UPDATE dbo.PedidosCobranzaDetalle
-          SET PrecioUnitario = @Precio, Subtotal = @Subtotal, LogPrecioAplicado = @Log
-          WHERE ID = @ID
-        `);
+        .query(`UPDATE dbo.PedidosCobranzaDetalle SET PrecioUnitario=@Precio, Subtotal=@Subtotal, LogPrecioAplicado=@Log WHERE ID=@ID`);
 
       // Recalcular MontoTotal del PedidosCobranza padre
-      await pool.request()
+      await mk()
         .input('PID', sql.Int, PedidoCobranzaID)
+        .query(`UPDATE dbo.PedidosCobranza SET MontoTotal = (SELECT ISNULL(SUM(Subtotal),0) FROM dbo.PedidosCobranzaDetalle WHERE PedidoCobranzaID=@PID) WHERE ID=@PID`);
+
+      // Actualizar la ORDEN del ciclo (ERP o depósito/WMS) al nuevo total del pedido
+      await mk()
+        .input('PID', sql.Int, PedidoCobranzaID)
+        .input('cic', sql.Int, cic)
         .query(`
-          UPDATE dbo.PedidosCobranza
-          SET MontoTotal = (
-            SELECT ISNULL(SUM(Subtotal), 0)
-            FROM dbo.PedidosCobranzaDetalle
-            WHERE PedidoCobranzaID = @PID
-          )
-          WHERE ID = @PID
+          UPDATE m SET m.MovImporte = -(SELECT MontoTotal FROM dbo.PedidosCobranza WHERE ID=@PID)
+          FROM dbo.MovimientosCuenta m
+          JOIN dbo.PedidosCobranza pc ON pc.ID = @PID
+          WHERE m.CicIdCiclo=@cic AND m.MovTipo IN ('ORDEN','ORDEN_ANTICIPO') AND (m.MovAnulado IS NULL OR m.MovAnulado=0)
+            AND ( EXISTS (SELECT 1 FROM dbo.Ordenes erp WHERE erp.OrdenID=m.OrdIdOrden AND LTRIM(RTRIM(pc.NoDocERP))=erp.CodigoOrden)
+               OR EXISTS (SELECT 1 FROM dbo.OrdenesDeposito od WHERE (od.OrdIdOrden=m.OrdIdOrden OR od.OReIdOrdenRetiro=m.OReIdOrdenRetiro) AND LTRIM(RTRIM(pc.NoDocERP))=od.OrdCodigoOrden) )
         `);
 
-      // Actualizar MovImporte en MovimientosCuenta asociado a la orden del ciclo
-      await pool.request()
-        .input('PID',       sql.Int, PedidoCobranzaID)
-        .input('CicIdCiclo',sql.Int, parseInt(CicIdCiclo))
-        .query(`
-          UPDATE m
-          SET m.MovImporte = -(SELECT MontoTotal FROM dbo.PedidosCobranza WHERE ID = @PID)
-          FROM dbo.MovimientosCuenta m
-          JOIN dbo.Ordenes erp ON erp.OrdenID = m.OrdIdOrden
-          JOIN dbo.PedidosCobranza pc ON LTRIM(RTRIM(pc.NoDocERP)) = erp.CodigoOrden
-          WHERE pc.ID = @PID AND m.MovTipo = 'ORDEN' AND m.CicIdCiclo = @CicIdCiclo
-        `);
+      // Registrar el delta contra el documento de facturación (para propagar al CIERRE_CICLO)
+      const docId = await docDeFacturacionDePedido(mk, PedidoCobranzaID, cic);
+      if (docId && Math.abs(delta) > 0.0001) deltaPorDoc[docId] = (deltaPorDoc[docId] || 0) + delta;
 
       actualizados++;
     }
 
+    // Propagar los deltas al movimiento de facturación (CIERRE_CICLO/VTA_CAJA) y recomputar saldos
+    const cuentasAfectadas = new Set();
+    for (const [docId, delta] of Object.entries(deltaPorDoc)) {
+      const cuentas = await ajustarCierrePorDelta(mk, parseInt(docId), cic, delta);
+      cuentas.forEach(c => cuentasAfectadas.add(c));
+    }
+    for (const cue of cuentasAfectadas) await recomputarSaldoCuenta(mk, cue);
+
+    await tx.commit();
     res.json({
       success: true,
       message: `${actualizados} detalle(s) actualizados correctamente.`,
       actualizados,
+      cuentasActualizadas: cuentasAfectadas.size,
     });
   } catch (err) {
+    try { await tx.rollback(); } catch (_) {}
     logger.error('[CONTABILIDAD] guardarPreciosCiclo:', err);
     res.status(500).json({ success: false, error: err.message || err.toString() });
   }

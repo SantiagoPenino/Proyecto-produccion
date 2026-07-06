@@ -1153,15 +1153,16 @@ const ProfileEditor = ({ profile, onSave, onBack }) => {
 
     const toggleArea = (area) => {
         const nombre = area.AreaNombre || area.CodArea;
+        const cod = area.CodArea; // siempre guardamos CodArea para matching infalible en el motor
         const isActive = selectedCats.some(c =>
-            c.toUpperCase() === nombre.toUpperCase() || c.toUpperCase() === area.CodArea.toUpperCase()
+            c.toUpperCase() === cod.toUpperCase() || c.toUpperCase() === (area.AreaNombre || '').toUpperCase()
         );
         if (isActive) {
             askConfirm(
                 `¿Desactivar urgencia en "${nombre}"? Los pedidos urgentes de este servicio ya NO tendrán recargo.`,
                 () => {
                     const remaining = selectedCats.filter(c =>
-                        c.toUpperCase() !== nombre.toUpperCase() && c.toUpperCase() !== area.CodArea.toUpperCase()
+                        c.toUpperCase() !== cod.toUpperCase() && c.toUpperCase() !== (area.AreaNombre || '').toUpperCase()
                     );
                     const next = remaining.length ? remaining.join(', ') : 'Todos';
                     setCategoria(next);
@@ -1172,7 +1173,7 @@ const ProfileEditor = ({ profile, onSave, onBack }) => {
             askConfirm(
                 `¿Activar urgencia en "${nombre}"? Los pedidos urgentes de este servicio tendrán recargo.`,
                 () => {
-                    const next = [...selectedCats, nombre].join(', ');
+                    const next = [...selectedCats, cod].join(', ');
                     setCategoria(next);
                     saveCategoriaDB(next);
                 }

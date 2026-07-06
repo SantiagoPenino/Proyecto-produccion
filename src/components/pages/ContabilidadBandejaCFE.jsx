@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { FileText, CheckCircle, AlertCircle, Search, Send, FileOutput, Plus, Edit, XCircle, Printer, Copy, RefreshCw, FileX, FilePlus } from 'lucide-react';
+import { FileText, CheckCircle, AlertCircle, Search, Send, FileOutput, Plus, Edit, XCircle, Printer, Copy, RefreshCw, FileX, FilePlus, User, Trash2 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { toast } from 'sonner';
 import api from '../../services/apiClient';
@@ -168,6 +168,7 @@ const ContabilidadBandejaCFE = () => {
     });
 
     const [clienteSearch, setClienteSearch] = useState('');
+    const [clienteSeleccionado, setClienteSeleccionado] = useState(null);
     const [showClienteDropdown, setShowClienteDropdown] = useState(false);
     const { empresas } = useEmpresas(false); // todas (activas e inactivas) para el filtro
     const [metodosPago, setMetodosPago] = useState([]);
@@ -175,6 +176,7 @@ const ContabilidadBandejaCFE = () => {
 
     const handleSelectCliente = (cliente) => {
         setFiltros(prev => ({ ...prev, clienteId: cliente ? (cliente.CliIdCliente || cliente.CodCliente || '') : '' }));
+        setClienteSeleccionado(cliente || null);
         setClienteSearch(cliente ? `${cliente.Nombre || cliente.NombreFantasia} (${cliente.CioRuc || 'RUT S/N'})` : '');
         setShowClienteDropdown(false);
     };
@@ -209,19 +211,44 @@ const ContabilidadBandejaCFE = () => {
             return clientes;
         }
 
-        return clientes.filter(c => {
-            const id = String(c.CliIdCliente || c.CodCliente || '').toLowerCase();
-            const nombre = String(c.Nombre || '').toLowerCase();
-            const nombreFantasia = String(c.NombreFantasia || '').toLowerCase();
-            const ruc = String(c.CioRuc || '').toLowerCase();
-            const tel = String(c.TelefonoTrabajo || '').toLowerCase();
-            
-            return id.includes(query) || 
-                   nombre.includes(query) || 
-                   nombreFantasia.includes(query) || 
-                   ruc.includes(query) || 
-                   tel.includes(query);
-        });
+        // Relevancia: menor score = aparece primero.
+        // Prioridad: IDCliente exacto > IDCliente empieza con > nombre exacto >
+        // nombre empieza con > el resto (coincidencia parcial).
+        const scoreCliente = (c) => {
+            const idCliente = String(c.IDCliente || '').trim().toLowerCase();
+            const nombre = String(c.Nombre || '').trim().toLowerCase();
+            const nombreFantasia = String(c.NombreFantasia || '').trim().toLowerCase();
+            if (idCliente === query) return 0;
+            if (idCliente.startsWith(query)) return 1;
+            if (nombre === query || nombreFantasia === query) return 2;
+            if (nombre.startsWith(query) || nombreFantasia.startsWith(query)) return 3;
+            if (idCliente.includes(query)) return 4;
+            return 5;
+        };
+
+        return clientes
+            .filter(c => {
+                const id = String(c.CliIdCliente || c.CodCliente || '').toLowerCase();
+                const idCliente = String(c.IDCliente || '').toLowerCase();
+                const nombre = String(c.Nombre || '').toLowerCase();
+                const nombreFantasia = String(c.NombreFantasia || '').toLowerCase();
+                const ruc = String(c.CioRuc || '').toLowerCase();
+                const tel = String(c.TelefonoTrabajo || '').toLowerCase();
+
+                return id.includes(query) ||
+                       idCliente.includes(query) ||
+                       nombre.includes(query) ||
+                       nombreFantasia.includes(query) ||
+                       ruc.includes(query) ||
+                       tel.includes(query);
+            })
+            .sort((a, b) => {
+                const sa = scoreCliente(a);
+                const sb = scoreCliente(b);
+                if (sa !== sb) return sa - sb;
+                // A igual relevancia, ordenar alfabéticamente por nombre
+                return String(a.Nombre || a.NombreFantasia || '').localeCompare(String(b.Nombre || b.NombreFantasia || ''));
+            });
     }, [clientes, clienteSearch, filtros.clienteId]);
 
     const fetchClientes = async () => {
@@ -607,26 +634,62 @@ const ContabilidadBandejaCFE = () => {
                         </div>
                         <div className="relative" ref={dropdownRef}>
                             <label className="block text-sm font-medium text-gray-700 mb-1">Cliente</label>
-                            <div className="relative">
-                                <input 
-                                    type="text"
-                                    placeholder="Buscar por nombre, ID, RUC o tel..."
-                                    value={clienteSearch}
-                                    onChange={handleInputChange}
-                                    onFocus={() => setShowClienteDropdown(true)}
-                                    className="w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 p-2 border text-sm pr-8 bg-white"
-                                />
-                                {filtros.clienteId && (
-                                    <button
-                                        type="button"
-                                        onClick={() => handleSelectCliente(null)}
-                                        className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 focus:outline-none"
-                                    >
-                                        <XCircle size={16} />
-                                    </button>
-                                )}
-                            </div>
-                            {showClienteDropdown && (
+                            {clienteSeleccionado ? (
+                                /* Card del cliente seleccionado */
+                                <div className="rounded-xl border border-emerald-200 bg-emerald-50/40 p-3 shadow-sm flex flex-col gap-2">
+                                    <div className="flex items-start justify-between">
+                                        <div className="flex items-center gap-2.5 min-w-0">
+                                            <div className="w-9 h-9 rounded-lg bg-white flex items-center justify-center text-emerald-600 border border-emerald-100 shrink-0">
+                                                <User size={18} />
+                                            </div>
+                                            <div className="min-w-0">
+                                                <p className="text-slate-900 text-sm font-extrabold leading-tight truncate">
+                                                    {clienteSeleccionado.Nombre || clienteSeleccionado.NombreFantasia}
+                                                </p>
+                                                {clienteSeleccionado.IDCliente && String(clienteSeleccionado.IDCliente).trim() && (
+                                                    <p className="text-[10px] text-slate-500 font-bold uppercase tracking-wider mt-0.5 font-mono truncate">
+                                                        IDCliente: {String(clienteSeleccionado.IDCliente).trim()}
+                                                    </p>
+                                                )}
+                                            </div>
+                                        </div>
+                                        <button
+                                            type="button"
+                                            onClick={() => handleSelectCliente(null)}
+                                            className="bg-white hover:bg-rose-50 text-gray-400 hover:text-rose-600 p-1.5 rounded-lg transition-all border border-gray-200 hover:border-rose-200 shrink-0"
+                                            title="Quitar cliente"
+                                        >
+                                            <Trash2 size={15} />
+                                        </button>
+                                    </div>
+                                    <div className="flex flex-col gap-0.5 text-[11px] text-slate-500 font-medium border-t border-emerald-100 pt-1.5">
+                                        <div>RUC / CI: <span className="font-mono font-bold text-slate-800">{clienteSeleccionado.CioRuc || 'S/N'}</span></div>
+                                        {clienteSeleccionado.Email && <div className="truncate">Email: <span className="font-mono text-slate-700">{clienteSeleccionado.Email}</span></div>}
+                                        {clienteSeleccionado.TelefonoTrabajo && <div>Teléfono: <span className="font-mono text-slate-700">{clienteSeleccionado.TelefonoTrabajo}</span></div>}
+                                    </div>
+                                </div>
+                            ) : (
+                                <div className="relative">
+                                    <input
+                                        type="text"
+                                        placeholder="Buscar por nombre, ID, RUC o tel..."
+                                        value={clienteSearch}
+                                        onChange={handleInputChange}
+                                        onFocus={() => setShowClienteDropdown(true)}
+                                        className="w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 p-2 border text-sm pr-8 bg-white"
+                                    />
+                                    {clienteSearch && (
+                                        <button
+                                            type="button"
+                                            onClick={() => { setClienteSearch(''); setFiltros(prev => ({ ...prev, clienteId: '' })); }}
+                                            className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 focus:outline-none"
+                                        >
+                                            <XCircle size={16} />
+                                        </button>
+                                    )}
+                                </div>
+                            )}
+                            {showClienteDropdown && !clienteSeleccionado && (
                                 <div className="absolute z-50 mt-1 w-full max-h-60 overflow-y-auto rounded-md bg-white py-1 text-base shadow-lg ring-1 ring-black ring-opacity-5 focus:outline-none sm:text-sm border border-gray-200">
                                     {clientesFiltrados.length === 0 ? (
                                         <div className="relative cursor-default select-none py-2 px-4 text-gray-505">
@@ -646,7 +709,7 @@ const ContabilidadBandejaCFE = () => {
                                                         {c.Nombre || c.NombreFantasia}
                                                     </span>
                                                     <span className="block truncate text-xs text-gray-400 mt-0.5">
-                                                        ID: {c.CliIdCliente || c.CodCliente} | RUC: {c.CioRuc || 'S/N'} {c.TelefonoTrabajo ? `| Tel: ${c.TelefonoTrabajo}` : ''}
+                                                        ID: {c.CliIdCliente || c.CodCliente}{c.IDCliente && String(c.IDCliente).trim() ? ` | IDCliente: ${String(c.IDCliente).trim()}` : ''} | RUC: {c.CioRuc || 'S/N'} {c.TelefonoTrabajo ? `| Tel: ${c.TelefonoTrabajo}` : ''}
                                                     </span>
                                                 </div>
                                             </div>

@@ -14,23 +14,50 @@ class PricingService {
     }
 
     static async getGlobalConfigs(pool) {
+        // Bloque base — si esto falla no hay nada que hacer
+        let configs = {};
         try {
             const res = await pool.request().query("SELECT Clave, Valor FROM ConfiguracionGlobal");
-            const configs = {};
             res.recordset.forEach(r => { configs[r.Clave] = r.Valor; });
-
-            // Leer Categoria del perfil de urgencia para saber a qué áreas aplica
-            const urgId = parseInt(configs['ID_PERFIL_URGENCIA']) || 2;
-            const urgRes = await pool.request()
-                .input('urgId', sql.Int, urgId)
-                .query("SELECT Categoria FROM PerfilesPrecios WHERE ID = @urgId AND Activo = 1");
-            configs['_URGENCIA_CATEGORIA'] = urgRes.recordset[0]?.Categoria || 'Todos';
-
-            return configs;
         } catch (e) {
             logger.error("Error al obtener configuracion global:", e.message);
             return {};
         }
+
+        // Bloque de urgencia — aislado: un fallo aquí NO borra los configs base
+        try {
+            const urgId = parseInt(configs['ID_PERFIL_URGENCIA']) || 2;
+            const urgRes = await pool.request()
+                .input('urgId', sql.Int, urgId)
+                .query("SELECT Categoria FROM PerfilesPrecios WHERE ID = @urgId AND Activo = 1");
+            const urgCategoria = urgRes.recordset[0]?.Categoria || 'Todos';
+            configs['_URGENCIA_CATEGORIA'] = urgCategoria;
+
+            if (urgCategoria && urgCategoria !== 'Todos') {
+                const urgCats = urgCategoria.split(',').map(s => s.trim().toUpperCase()).filter(Boolean);
+                const areasRes = await pool.request().query(`
+                    SELECT DISTINCT
+                        LTRIM(RTRIM(AreaID_Interno))            AS CodArea,
+                        LTRIM(RTRIM(UPPER(NombreReferencia)))   AS AreaNombre
+                    FROM dbo.ConfigMapeoERP WITH(NOLOCK)
+                    WHERE AreaID_Interno IS NOT NULL AND LTRIM(RTRIM(AreaID_Interno)) <> ''
+                `);
+                // Acepta CodArea ('SB') o AreaNombre trimmeado ('SUBLIMACION') guardado por el chip
+                const codAreas = areasRes.recordset
+                    .filter(r => urgCats.includes(r.CodArea) || urgCats.includes(r.AreaNombre))
+                    .map(r => r.CodArea);
+                configs['_URGENCIA_CODAREA_SET'] = codAreas.join(',');
+            } else {
+                configs['_URGENCIA_CODAREA_SET'] = '';
+            }
+        } catch (e) {
+            logger.error("Error al resolver CodAreas del perfil de urgencia:", e.message);
+            // Fallback: sin filtro por área específica → usa AREAS_SIN_URGENCIA
+            configs['_URGENCIA_CODAREA_SET'] = '';
+            configs['_URGENCIA_CATEGORIA'] = 'Todos';
+        }
+
+        return configs;
     }
 
     static async getPriceConfigs(pool) {
@@ -276,25 +303,42 @@ class PricingService {
         if (resolvedAreaId === 'DF') resolvedCategoria = 'DTF';
         if (resolvedAreaId === 'EST') resolvedCategoria = 'Estampados';
 
+        // Resolver AreaNombre del área actual para comparar contra perfiles que guardan nombre legible
+        // (ej: Categoria = 'Sublimacion' en vez de 'SB')
+        let resolvedAreaNombre = resolvedAreaId;
+        if (resolvedAreaId) {
+            try {
+                const areaNameRes = await pool.request()
+                    .input('codArea', sql.VarChar(20), resolvedAreaId)
+                    .query("SELECT TOP 1 NombreReferencia FROM dbo.ConfigMapeoERP WITH(NOLOCK) WHERE LTRIM(RTRIM(AreaID_Interno)) = @codArea");
+                if (areaNameRes.recordset.length > 0 && areaNameRes.recordset[0].NombreReferencia) {
+                    resolvedAreaNombre = areaNameRes.recordset[0].NombreReferencia;
+                }
+            } catch (e) {
+                logger.warn("[PricingService] No se pudo resolver AreaNombre para área: " + resolvedAreaId);
+            }
+        }
+
         const rulesRes = await pool.request()
             .input('ProId', sql.Int, resolvedProId || -1)
             .input('CleanCod', sql.VarChar, cleanCod || '')
-            .input('Qty', sql.Decimal(18, 2), volumeForRules) // <--- USAMOS EL VOLUMEN TÉCNICO SI APLICA
+            .input('Qty', sql.Decimal(18, 2), volumeForRules)
             .input('ResolvedGrupo', sql.VarChar, resolvedGrupo)
             .input('ResolvedAreaId', sql.VarChar, resolvedAreaId || '')
             .input('ResolvedCategoria', sql.VarChar, resolvedCategoria || '')
+            .input('ResolvedAreaNombre', sql.VarChar, resolvedAreaNombre || '')
             .query(`
                 -- Reglas por Perfil (Cliente, Globales y Extras)
-                SELECT DISTINCT PI.ID as PerfilItemID, PI.PerfilID, PI.ProIdProducto, PI.CodGrupo, PI.CodArticulo, PI.Valor, CASE WHEN PI.MonIdMoneda = 1 THEN 'UYU' ELSE 'USD' END AS Moneda, PI.TipoRegla, PI.CantidadMinima, 
+                SELECT DISTINCT PI.ID as PerfilItemID, PI.PerfilID, PI.ProIdProducto, PI.CodGrupo, PI.CodArticulo, PI.Valor, CASE WHEN PI.MonIdMoneda = 1 THEN 'UYU' ELSE 'USD' END AS Moneda, PI.TipoRegla, PI.CantidadMinima,
                        PP.Nombre as NombrePerfil, CASE WHEN PI.CodGrupo IS NOT NULL THEN 1 ELSE 0 END as PrioridadPerfil
                 FROM PerfilesItems PI
                 INNER JOIN PerfilesPrecios PP ON PI.PerfilID = PP.ID
                 LEFT JOIN PreciosEspeciales PE ON (
-                    PP.ID = PE.PerfilID OR 
+                    PP.ID = PE.PerfilID OR
                     EXISTS (SELECT 1 FROM STRING_SPLIT(CAST(PE.PerfilesIDs AS VARCHAR(MAX)), ',') WHERE value = CAST(PP.ID AS VARCHAR(10)))
                 )
                 WHERE (PE.CliIdCliente IN (${possibleClientIds.length > 0 ? possibleClientIds.join(',') : '0'})
-                       OR (PP.EsGlobal = 1 AND (ISNULL(PP.Categoria, 'Todos') = 'Todos' OR PP.Categoria = '' OR PP.Categoria = @ResolvedAreaId OR PP.Categoria = @ResolvedCategoria))
+                       OR (PP.EsGlobal = 1 AND (ISNULL(PP.Categoria, 'Todos') = 'Todos' OR PP.Categoria = '' OR PP.Categoria = @ResolvedAreaId OR PP.Categoria = @ResolvedCategoria OR PP.Categoria = @ResolvedAreaNombre))
                        OR PP.ID IN (${cleanedProfiles.length > 0 ? cleanedProfiles.join(',') : '0'}))
                 -- Filtro de volumen
                   AND (PI.CantidadMinima <= @Qty OR PI.CantidadMinima = 1)
@@ -326,7 +370,7 @@ class PricingService {
         // Filtro: Mejor regla por PerfilID
         const todasLasReglas = rulesRes.recordset;
         let traceDecision = `\n--- ANALISIS DE PRECIOS PARA ${cleanCod} (Cant: ${cantidad}) ---\n`;
-        traceDecision += `Perfiles Activos: ${(extraProfileIds || []).join(',')} | Area: ${resolvedAreaId}\n`;
+        traceDecision += `Perfiles Activos: ${(extraProfileIds || []).join(',')} | Area: ${resolvedAreaId} (Nombre: ${resolvedAreaNombre})\n`;
         if (typeof injectedUrgencia !== 'undefined' && injectedUrgencia) {
             traceDecision += `[INFO] Modo URGENTE Activado (Inyectando Perfil ID ${idUrgencia} a la evaluación)\n`;
         }
@@ -408,16 +452,12 @@ class PricingService {
         // REGLA: Si el precio ya quedó en 0 por un descuento total (ej: Reposición 100%),
         // no se aplica ningún recargo. 0 es 0.
         let surchargeRules = reglasFinales.filter(r => r.TipoRegla.includes('surcharge'));
-        const urgCategoria = (globalConfigs['_URGENCIA_CATEGORIA'] || 'Todos').trim();
-        if (urgCategoria && urgCategoria !== 'Todos') {
-            // El perfil tiene áreas específicas — urgencia solo aplica a esas áreas
-            // Comparamos contra CodArea (ej: "DF") Y contra resolvedCategoria (ej: "DTF") por compatibilidad
-            const areasConUrg = urgCategoria.split(',').map(s => s.trim().toUpperCase());
-            const areaMatch = areasConUrg.includes((resolvedAreaId || '').toUpperCase())
-                           || areasConUrg.includes((resolvedCategoria || '').toUpperCase());
-            if (!areaMatch) {
+        const urgCodareas = (globalConfigs['_URGENCIA_CODAREA_SET'] || '').split(',').map(s => s.trim().toUpperCase()).filter(Boolean);
+        if (urgCodareas.length > 0) {
+            // El perfil tiene áreas específicas — urgencia solo aplica a esos CodAreas
+            if (!urgCodareas.includes((resolvedAreaId || '').toUpperCase())) {
                 surchargeRules = surchargeRules.filter(r => r.PerfilID !== idUrgencia && r.NombrePerfil?.toLowerCase() !== 'urgente');
-                traceDecision += `  [URGENCIA] Área ${resolvedAreaId} no está en las categorías del perfil (${urgCategoria}) → sin recargo urgente.\n`;
+                traceDecision += `  [URGENCIA] Área ${resolvedAreaId} no está en CodAreas del perfil (${urgCodareas.join(',')}) → sin recargo urgente.\n`;
             }
         } else {
             // Categoría = 'Todos' → comportamiento original: excluir áreas de AREAS_SIN_URGENCIA

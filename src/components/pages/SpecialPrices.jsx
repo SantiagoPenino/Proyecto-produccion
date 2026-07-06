@@ -9,6 +9,29 @@ const NewRuleDrawer = ({ isOpen, onClose, baseProducts, onAddRule, onRemoveRule,
     const [selectedItem, setSelectedItem] = useState(null);
     const [customStr, setCustomStr] = useState('');
     const [discStr, setDiscStr] = useState('');
+    const [expandedFamilies, setExpandedFamilies] = useState(new Set()); // Familias abiertas en el árbol
+
+    const toggleFamily = (grupo) => {
+        setExpandedFamilies(prev => {
+            const next = new Set(prev);
+            if (next.has(grupo)) next.delete(grupo); else next.add(grupo);
+            return next;
+        });
+    };
+
+    // El endpoint /prices/base puede devolver el mismo artículo varias veces (multimoneda o
+    // filas repetidas en PreciosBase). Para el árbol nos quedamos con una sola entrada por
+    // CodArticulo: evita duplicados visuales, cuentas infladas y keys repetidas en React.
+    const catalog = useMemo(() => {
+        const seen = new Set();
+        const out = [];
+        for (const p of baseProducts) {
+            if (seen.has(p.CodArticulo)) continue;
+            seen.add(p.CodArticulo);
+            out.push(p);
+        }
+        return out;
+    }, [baseProducts]);
 
     // Pre-cargar valores si estamos en modo edición, o resetear si estamos en modo creación
     useEffect(() => {
@@ -34,38 +57,56 @@ const NewRuleDrawer = ({ isOpen, onClose, baseProducts, onAddRule, onRemoveRule,
 
     // Filtrar catálogo (productos y familias) en base a búsqueda y pestañas
     const filteredItems = useMemo(() => {
-        return baseProducts.filter(item => {
-            const term = searchQuery.toLowerCase().trim();
-            const matchSearch = item.CodArticulo.toLowerCase().includes(term) || 
+        const term = searchQuery.toLowerCase().trim();
+        // Modo "plano": al buscar texto o filtrar por pestaña mostramos todo lo coincidente
+        // sin respetar el colapso del árbol, para no esconder resultados.
+        const flatMode = term !== '' || filterTab !== 'todos';
+
+        return catalog.filter(item => {
+            const matchSearch = item.CodArticulo.toLowerCase().includes(term) ||
                                 (item.Descripcion || '').toLowerCase().includes(term);
             if (!matchSearch) return false;
 
             const stateObj = rowStateMap[item.CodArticulo];
             const isActive = stateObj?.isActive || false;
 
-            if (filterTab === 'sin_regla') {
-                return !isActive;
-            }
-            if (filterTab === 'con_regla') {
-                return isActive;
-            }
+            if (filterTab === 'sin_regla' && isActive) return false;
+            if (filterTab === 'con_regla' && !isActive) return false;
+
+            // Árbol: en modo normal, un producto hijo sólo se muestra si su familia está abierta.
+            const isFamily = item.CodArticulo.startsWith('GRUPO:');
+            const isGlobal = item.CodArticulo === 'TOTAL';
+            const isChild = !isFamily && !isGlobal;
+            if (!flatMode && isChild && !expandedFamilies.has(item.Grupo)) return false;
+
             return true;
         });
-    }, [baseProducts, searchQuery, filterTab, rowStateMap]);
+    }, [catalog, searchQuery, filterTab, rowStateMap, expandedFamilies]);
 
     // Contadores para las pestañas (en base a todo el catálogo)
     const counts = useMemo(() => {
         let sinRegla = 0;
         let conRegla = 0;
-        baseProducts.forEach(p => {
+        catalog.forEach(p => {
             if (rowStateMap[p.CodArticulo]?.isActive) {
                 conRegla++;
             } else {
                 sinRegla++;
             }
         });
-        return { todos: baseProducts.length, sinRegla, conRegla };
-    }, [baseProducts, rowStateMap]);
+        return { todos: catalog.length, sinRegla, conRegla };
+    }, [catalog, rowStateMap]);
+
+    // Cantidad de productos hijos por familia (para mostrar en el nodo carpeta)
+    const familyChildCount = useMemo(() => {
+        const m = {};
+        catalog.forEach(p => {
+            if (!p.CodArticulo.startsWith('GRUPO:') && p.CodArticulo !== 'TOTAL') {
+                m[p.Grupo] = (m[p.Grupo] || 0) + 1;
+            }
+        });
+        return m;
+    }, [catalog]);
 
     // Primeros 100 elementos de la lista filtrada para optimizar rendimiento de renderizado
     const visibleList = useMemo(() => {
@@ -254,28 +295,45 @@ const NewRuleDrawer = ({ isOpen, onClose, baseProducts, onAddRule, onRemoveRule,
                                         badgeContent = <span className="bg-slate-100 text-slate-400 text-[9px] font-bold px-1.5 py-0.5 rounded whitespace-nowrap">Sin Regla</span>;
                                     }
 
+                                    const isGlobal = item.CodArticulo === 'TOTAL';
+                                    const isFamily = item.CodArticulo.startsWith('GRUPO:');
+                                    const isChild = !isGlobal && !isFamily;
+                                    const isExpanded = isFamily && expandedFamilies.has(item.Grupo);
+                                    const searching = searchQuery.trim() !== '' || filterTab !== 'todos';
+
                                     let typeIcon = "📦";
                                     let typeLabel = "Producto";
-                                    if (item.CodArticulo === 'TOTAL') {
+                                    if (isGlobal) {
                                         typeIcon = "🌐";
                                         typeLabel = "Global";
-                                    } else if (item.CodArticulo.startsWith('GRUPO:')) {
-                                        typeIcon = "📁";
+                                    } else if (isFamily) {
+                                        typeIcon = isExpanded ? "📂" : "📁";
                                         typeLabel = "Familia";
                                     }
+
+                                    // Al hacer clic en una familia: abrir/cerrar el árbol y seleccionarla para configurar su descuento.
+                                    const handleRowClick = () => {
+                                        if (isFamily && !searching) toggleFamily(item.Grupo);
+                                        handleSelectItem(item);
+                                    };
 
                                     return (
                                         <div
                                             key={item.CodArticulo}
-                                            onClick={() => handleSelectItem(item)}
-                                            className={`flex items-center justify-between p-2 rounded-lg cursor-pointer transition-all border ${isSelected ? 'bg-indigo-50/50 border-indigo-300 shadow-sm' : 'bg-white border-slate-100 hover:border-slate-300'}`}
+                                            onClick={handleRowClick}
+                                            style={isChild && !searching ? { marginLeft: '1.25rem' } : undefined}
+                                            className={`flex items-center justify-between p-2 rounded-lg cursor-pointer transition-all border ${isSelected ? 'bg-indigo-50/50 border-indigo-300 shadow-sm' : isFamily ? 'bg-slate-50 border-slate-200 hover:border-indigo-300' : 'bg-white border-slate-100 hover:border-slate-300'} ${isChild && !searching ? 'border-l-2 border-l-slate-200' : ''}`}
                                         >
                                             <div className="flex items-center gap-2.5 min-w-0">
+                                                {isFamily && !searching && (
+                                                    <i className={`fa-solid ${isExpanded ? 'fa-chevron-down' : 'fa-chevron-right'} text-[10px] text-slate-400 w-2.5 flex-shrink-0`}></i>
+                                                )}
                                                 <span className="text-base select-none" title={typeLabel}>{typeIcon}</span>
                                                 <div className="min-w-0">
                                                     <div className="font-bold text-slate-700 text-xs truncate" title={item.Descripcion}>{item.Descripcion}</div>
                                                     <div className="text-[9px] font-mono text-slate-400 mt-0.5 truncate">
                                                         Ref: {item.CodArticulo} {item.Precio > 0 && `| Base: $${Number(item.Precio).toFixed(2)}`}
+                                                        {isFamily && familyChildCount[item.Grupo] ? ` | ${familyChildCount[item.Grupo]} productos` : ''}
                                                     </div>
                                                 </div>
                                             </div>
@@ -710,10 +768,13 @@ const SpecialPrices = () => {
 
                 Object.keys(grouped).sort().forEach(g => {
                     const firstP = grouped[g][0];
+                    // Nombre real de la familia: preferimos el mapeo del grupo (ConfigMapeoERP.NombreReferencia),
+                    // que describe al grupo completo. Solo si falta caemos al nombre de stock del primer producto.
+                    const nombreGrupo = firstP.NombreReferenciaGrupo || firstP.GrupoNombre;
                     prods.push({
                         CodArticulo: `GRUPO:${g}`,
                         ProIdProducto: null,
-                        Descripcion: `${firstP.GrupoNombre ? `${g} - ${firstP.GrupoNombre}` : g}`,
+                        Descripcion: nombreGrupo ? `${g} - ${nombreGrupo}` : g,
                         Grupo: g,
                         Precio: 0,
                         Moneda: 'UYU'

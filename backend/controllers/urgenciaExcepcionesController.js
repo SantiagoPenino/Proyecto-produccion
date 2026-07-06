@@ -90,12 +90,11 @@ exports.getAreas = async (req, res) => {
 
         let data;
         if (urgCategoria && urgCategoria !== 'Todos') {
-            // El perfil tiene áreas específicas — solo esas cobran urgencia
-            // Comparamos contra CodArea Y AreaNombre (el perfil puede guardar cualquiera de los dos)
-            const areasConUrg = urgCategoria.split(',').map(s => s.trim().toUpperCase());
+            // Resolver AreaNombre → CodArea para comparación exacta
+            const urgCats = urgCategoria.split(',').map(s => s.trim().toUpperCase()).filter(Boolean);
             data = result.recordset.filter(a =>
-                areasConUrg.includes(a.CodArea.toUpperCase()) ||
-                areasConUrg.includes((a.AreaNombre || '').toUpperCase())
+                urgCats.includes(a.CodArea.toUpperCase()) ||
+                urgCats.includes((a.AreaNombre || '').toUpperCase())
             );
         } else {
             // Categoría = 'Todos' → excluir las de AREAS_SIN_URGENCIA

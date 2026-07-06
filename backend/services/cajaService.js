@@ -557,7 +557,15 @@ async function getProductosVenta() {
              ) as GrupoNombre,
              LTRIM(RTRIM(p.CodStock)) as CodStock,
              ISNULL(pl.Precio, pb.Precio) as PrecioBase,
-             ISNULL(pl.Moneda, pb.Moneda) as MonedaBase
+             -- La moneda autoritativa de PreciosBase es MonIdMoneda (2=USD, 1=UYU).
+             -- La columna de texto pb.Moneda puede quedar desactualizada al editar precios,
+             -- por eso se deriva desde MonIdMoneda. Para lista pública se usa pl.Moneda (texto).
+             ISNULL(
+                pl.Moneda,
+                CASE WHEN pb.MonIdMoneda = 2 THEN 'USD'
+                     WHEN pb.MonIdMoneda = 1 THEN 'UYU'
+                     ELSE pb.Moneda END
+             ) as MonedaBase
       FROM dbo.Articulos p WITH(NOLOCK)
       LEFT JOIN dbo.ConfigMapeoERP c WITH(NOLOCK) ON LTRIM(RTRIM(p.Grupo)) = LTRIM(RTRIM(c.CodigoERP)) COLLATE Database_Default
       LEFT JOIN dbo.PreciosListaPublica pl WITH(NOLOCK) ON p.ProIdProducto = pl.ProIdProducto AND (pl.Activo = 1 OR p.CodStock IN ('2.2.1.1', '2.2.1.2'))

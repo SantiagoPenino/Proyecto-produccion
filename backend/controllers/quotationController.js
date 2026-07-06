@@ -160,16 +160,62 @@ exports.saveQuotation = async (req, res) => {
     try {
         await transaction.begin();
 
-        // Verificar existencia de la cabecera — si no existe, crearla desde Ordenes
+        // Verificar existencia de la cabecera con el mismo fallback multi-paso que el GET
         let cabRes = await new sql.Request(transaction)
             .input('Doc', sql.NVarChar, noDocERP)
             .query(`SELECT * FROM PedidosCobranza WHERE LTRIM(RTRIM(NoDocERP)) = LTRIM(RTRIM(@Doc))`);
 
+        // Fallback: buscar via CodigoOrden en Ordenes → NoDocERP real en PedidosCobranza
         if (cabRes.recordset.length === 0) {
+            const ordDocRes = await new sql.Request(transaction)
+                .input('Cod', sql.NVarChar, noDocERP)
+                .query(`SELECT TOP 1 NoDocERP FROM Ordenes WITH(NOLOCK)
+                        WHERE LTRIM(RTRIM(CodigoOrden)) = LTRIM(RTRIM(@Cod))
+                           OR LTRIM(RTRIM(CodigoOrden)) LIKE LTRIM(RTRIM(@Cod)) + ' %'`);
+            if (ordDocRes.recordset.length > 0 && ordDocRes.recordset[0].NoDocERP) {
+                const realDoc = ordDocRes.recordset[0].NoDocERP.trim();
+                cabRes = await new sql.Request(transaction)
+                    .input('Doc2', sql.NVarChar, realDoc)
+                    .query(`SELECT * FROM PedidosCobranza WHERE LTRIM(RTRIM(NoDocERP)) = LTRIM(RTRIM(@Doc2))`);
+            }
+        }
+
+        if (cabRes.recordset.length === 0) {
+            // No existe en ningún formato — crearla resolviendo el CliIdCliente
+            let clienteId = null;
+
+            // Intento 1: por NoDocERP en Ordenes
             const ordCabRes = await new sql.Request(transaction)
                 .input('Doc', sql.NVarChar, noDocERP)
-                .query(`SELECT TOP 1 CliIdCliente FROM Ordenes WITH(NOLOCK) WHERE LTRIM(RTRIM(CAST(NoDocERP AS VARCHAR))) = LTRIM(RTRIM(@Doc))`);
-            const clienteId = ordCabRes.recordset[0]?.CliIdCliente || null;
+                .query(`SELECT TOP 1 CliIdCliente FROM Ordenes WITH(NOLOCK)
+                        WHERE LTRIM(RTRIM(CAST(NoDocERP AS VARCHAR))) = LTRIM(RTRIM(@Doc))`);
+            clienteId = ordCabRes.recordset[0]?.CliIdCliente || null;
+
+            // Intento 2: por CodigoOrden en Ordenes
+            if (!clienteId) {
+                const cliByOrdRes = await new sql.Request(transaction)
+                    .input('Cod', sql.NVarChar, noDocERP)
+                    .query(`SELECT TOP 1 CliIdCliente FROM Ordenes WITH(NOLOCK)
+                            WHERE LTRIM(RTRIM(CodigoOrden)) = LTRIM(RTRIM(@Cod))
+                               OR LTRIM(RTRIM(CodigoOrden)) LIKE LTRIM(RTRIM(@Cod)) + ' %'`);
+                clienteId = cliByOrdRes.recordset[0]?.CliIdCliente || null;
+            }
+
+            // Intento 3: por OrdenID de la primera línea
+            if (!clienteId && lineas.length > 0) {
+                const firstOrdenID = parseInt(lineas[0].OrdenID) || 0;
+                if (firstOrdenID > 0) {
+                    const cliByOIDRes = await new sql.Request(transaction)
+                        .input('OID', sql.Int, firstOrdenID)
+                        .query(`SELECT TOP 1 CliIdCliente FROM Ordenes WITH(NOLOCK) WHERE OrdenID = @OID`);
+                    clienteId = cliByOIDRes.recordset[0]?.CliIdCliente || null;
+                }
+            }
+
+            if (!clienteId) {
+                throw new Error(`No se pudo determinar el cliente para el pedido ${noDocERP}.`);
+            }
+
             const initialMoneda = lineas.some(l => (l.Moneda || '').toUpperCase() === 'USD') ? 'USD' : 'UYU';
             await new sql.Request(transaction)
                 .input('Doc', sql.NVarChar, noDocERP)

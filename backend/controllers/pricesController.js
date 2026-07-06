@@ -59,8 +59,10 @@ const saveBasePricesBulk = async (req, res) => {
                         .input('Precio', sql.Decimal(18, 4), item.precio)
                         .input('MonIdMoneda', sql.Int, (item.moneda === 'USD' || item.moneda === 2) ? 2 : 1)
                         .query(`
-                            UPDATE PreciosBase 
-                            SET Precio = @Precio, MonIdMoneda = @MonIdMoneda, UltimaActualizacion = GETDATE()
+                            UPDATE PreciosBase
+                            SET Precio = @Precio, MonIdMoneda = @MonIdMoneda,
+                                Moneda = CASE WHEN @MonIdMoneda = 2 THEN 'USD' ELSE 'UYU' END,
+                                UltimaActualizacion = GETDATE()
                             WHERE ID = @Id
                         `);
                 } else {
@@ -79,8 +81,8 @@ const saveBasePricesBulk = async (req, res) => {
                                 WHEN MATCHED THEN
                                     UPDATE SET Precio = @Precio, UltimaActualizacion = GETDATE()
                                 WHEN NOT MATCHED THEN
-                                    INSERT (ProIdProducto, CodArticulo, Precio, MonIdMoneda, UltimaActualizacion)
-                                    VALUES (@ProId, @CodArticulo, @Precio, @MonIdMoneda, GETDATE());
+                                    INSERT (ProIdProducto, CodArticulo, Precio, MonIdMoneda, Moneda, UltimaActualizacion)
+                                    VALUES (@ProId, @CodArticulo, @Precio, @MonIdMoneda, CASE WHEN @MonIdMoneda = 2 THEN 'USD' ELSE 'UYU' END, GETDATE());
                             END
                         `);
                 }

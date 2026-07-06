@@ -958,6 +958,14 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
             else if (esRut) setTipoCliente('RUT');
             setFormaPago(esContado ? 'CONTADO' : 'CREDITO');
           }}
+          onCondicionChange={(cond) => {
+            // El toggle CONTADO/CRÉDITO es la fuente de verdad de la condición de pago.
+            // Necesario para permitir marcar un Pedido Caja (tipoDoc '40') como CRÉDITO:
+            // sin esto, DocPagado quedaba en true y la validación exigía un método de pago.
+            // Se llama después de onTipoDoc dentro del mismo handler, por lo que este
+            // setFormaPago prevalece; DocPagado se recalcula en el efecto que observa formaPago.
+            setFormaPago(cond === 'CREDITO' ? 'CREDITO' : 'CONTADO');
+          }}
           serieDoc={serieDoc}
           onSerieDoc={setSerieDoc}
           notas={notas}
