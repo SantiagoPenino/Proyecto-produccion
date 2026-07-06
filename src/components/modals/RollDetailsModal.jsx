@@ -1277,10 +1277,10 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { }, lo
 
     return createPortal(
         <>
-            <div className="fixed inset-0 bg-zinc-900/60 z-40 flex items-center justify-center pl-16 pt-14 animate-in fade-in duration-200" onClick={onClose}>
+            <div className="fixed inset-0 bg-zinc-900/60 z-40 flex items-center justify-center animate-in fade-in duration-200" onClick={onClose}>
                 <div
                     ref={modalRef}
-                    className="bg-white rounded-2xl shadow-2xl w-[90%] h-[90%] flex flex-col overflow-hidden animate-in zoom-in-95 duration-300 border border-zinc-200/80"
+                    className="bg-white shadow-2xl w-full h-full flex flex-col overflow-hidden animate-in zoom-in-95 duration-300"
                     onClick={e => e.stopPropagation()}
                 >
 

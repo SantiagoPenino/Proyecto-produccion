@@ -6,7 +6,6 @@ const logger = require('../utils/logger');
 const { changeOrderState } = require('../services/stateManagerService');
 const { saveFallaImage } = require('../utils/thumbnailGenerator');
 const { devolverMetrosTelaCliente } = require('../utils/telaClienteDevolucion');
-const { isPedidoCompletoEnArea } = require('../services/pedidoCompletoService');
 
 // Asegura la columna para la imagen anotada de falla (una sola vez por proceso).
 let _fallaColEnsured = false;
@@ -18,6 +17,7 @@ async function ensureFallaColumn(pool) {
     `);
     _fallaColEnsured = true;
 }
+const { isPedidoCompletoEnArea } = require('../services/pedidoCompletoService');
 
 /**
  * 1. Obtiene las Órdenes de un Rollo (o todas, o filtradas)
