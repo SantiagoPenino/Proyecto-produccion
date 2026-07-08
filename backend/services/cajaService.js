@@ -1239,7 +1239,10 @@ async function procesarTransaccion(payload) {
                : ((config.Codigo_Efact === null || config.Codigo_Efact === 0) ? null : 'PENDIENTE');
 
              // Resolver líneas de detalle según tipo de documento
-             const esPedidoCaja = header.tipoDocumento === 'PC' || (config.Detalle || '').toLowerCase().includes('pedido caja');
+             const detalleLower = (config.Detalle || '').toLowerCase();
+             const esPedidoCaja = header.tipoDocumento === 'PC'
+               || header.tipoDocumento === '40'
+               || (detalleLower.includes('pedido') && detalleLower.includes('caja')); // "Pedido Caja" o "Pedidos Caja"
 
              let lineasDocCFE = [];
              if (!esPedidoCaja) {
@@ -1344,8 +1347,8 @@ async function procesarTransaccion(payload) {
                        @docId,
                        LEFT(ISNULL(td.TdeDescripcion, 'Servicio'), 200),
                        td.TdeDescripcion,
-                       ISNULL(td.TdeCantidad, 1),
-                       ROUND(td.TdeImporteFinal / NULLIF(ISNULL(td.TdeCantidad, 1), 0), 4),
+                       1,
+                       td.TdeImporteFinal,
                        ROUND(td.TdeImporteFinal / 1.22, 2),
                        ROUND(td.TdeImporteFinal - td.TdeImporteFinal / 1.22, 2),
                        td.TdeImporteFinal
