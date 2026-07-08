@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import {
   ArrowDownCircle, ArrowUpCircle, Search, RefreshCw,
-  FileText, ChevronLeft, ChevronRight, Receipt, TrendingDown, TrendingUp, Printer
+  FileText, ChevronLeft, ChevronRight, Receipt, TrendingDown, TrendingUp, Printer,
+  Ban, Pencil, X, AlertTriangle
 } from 'lucide-react';
 import api from '../../services/apiClient';
 import { toast } from 'sonner';
@@ -53,6 +54,7 @@ export default function BandejaDocumentosInternos() {
     hasta: hoy,
     tipo: 'TODOS',
     cliente: '',
+    caja: 'TODOS',
   });
   const [page, setPage]         = useState(1);
   const LIMIT = 50;
@@ -62,8 +64,15 @@ export default function BandejaDocumentosInternos() {
   const [loading, setLoading]   = useState(false);
   const [hasMore, setHasMore]   = useState(false);
 
-  // Totales calculados localmente sobre la página actual
+  // Modal de acción (anular / editar monto)
+  const [modal, setModal]           = useState(null); // { tipo:'anular'|'editar', doc }
+  const [motivo, setMotivo]         = useState('');
+  const [nuevoMonto, setNuevoMonto] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+
+  // Totales calculados localmente sobre la página actual (los anulados no suman)
   const totales = docs.reduce((acc, d) => {
+    if (d.Anulado) return acc;
     const t = Number(d.Total) || 0;
     if (d.TipoOperacion === 'INGRESO') {
       if (d.Moneda === 'USD') acc.ingUSD += t; else acc.ingUYU += t;
@@ -80,6 +89,7 @@ export default function BandejaDocumentosInternos() {
         desde: f.desde,
         hasta: f.hasta,
         tipo:  f.tipo,
+        caja:  f.caja,
         page:  p,
         limit: LIMIT,
       });
@@ -144,6 +154,53 @@ export default function BandejaDocumentosInternos() {
     setTimeout(() => { win.print(); win.addEventListener('afterprint', () => win.close()); }, 600);
   };
 
+  // ── Acciones: anular / editar monto ──────────────────────────────────────────
+  const abrirAnular = (doc) => { setMotivo(''); setModal({ tipo: 'anular', doc }); };
+  const abrirEditar = (doc) => {
+    setMotivo('');
+    setNuevoMonto(String(Number(doc.Total) || ''));
+    setModal({ tipo: 'editar', doc });
+  };
+  const cerrarModal = () => { if (!submitting) setModal(null); };
+
+  const confirmarAnular = async () => {
+    if (!modal?.doc) return;
+    setSubmitting(true);
+    try {
+      await api.post('/contabilidad/caja/documentos/anular', {
+        tipoOperacion: modal.doc.TipoOperacion,
+        docId: modal.doc.DocId,
+        motivo: motivo.trim() || undefined,
+      });
+      toast.success('Documento anulado correctamente');
+      setModal(null);
+      fetchDocs(page, filtros);
+    } catch (err) {
+      toast.error('Error al anular: ' + (err.response?.data?.error || err.message));
+    } finally { setSubmitting(false); }
+  };
+
+  const confirmarEditar = async () => {
+    if (!modal?.doc) return;
+    const monto = parseFloat(nuevoMonto);
+    if (isNaN(monto) || monto <= 0) { toast.error('Ingresá un monto válido'); return; }
+    setSubmitting(true);
+    try {
+      const res = await api.post('/contabilidad/caja/documentos/modificar-monto', {
+        tipoOperacion: modal.doc.TipoOperacion,
+        docId: modal.doc.DocId,
+        nuevoMonto: monto,
+        motivo: motivo.trim() || undefined,
+      });
+      const nuevoNro = res.data?.nuevo?.numeroDoc;
+      toast.success('Monto modificado' + (nuevoNro ? ` — nuevo N° ${nuevoNro}` : ''));
+      setModal(null);
+      fetchDocs(page, filtros);
+    } catch (err) {
+      toast.error('Error al modificar: ' + (err.response?.data?.error || err.message));
+    } finally { setSubmitting(false); }
+  };
+
   // ────────────────────────────────────────────────────────────────────────────
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100">
@@ -202,6 +259,16 @@ export default function BandejaDocumentosInternos() {
                 <option value="EGRESO">Egresos / Gastos</option>
               </select>
             </div>
+            <div className="flex flex-col gap-1">
+              <label className="text-[10px] font-black text-zinc-400 uppercase tracking-widest">Caja</label>
+              <select value={filtros.caja}
+                onChange={e => setFiltros(f => ({...f, caja: e.target.value}))}
+                className="border border-zinc-200 rounded-lg px-3 py-2 text-sm font-bold text-zinc-800 outline-none focus:border-indigo-500 bg-white cursor-pointer min-w-[150px]">
+                <option value="TODOS">Todas</option>
+                <option value="ADMIN">Administrativa</option>
+                <option value="CENTRAL">Central</option>
+              </select>
+            </div>
             <div className="flex flex-col gap-1 flex-1 min-w-[180px]">
               <label className="text-[10px] font-black text-zinc-400 uppercase tracking-widest">Cliente / Proveedor</label>
               <input type="text" value={filtros.cliente}
@@ -237,12 +304,12 @@ export default function BandejaDocumentosInternos() {
               </thead>
               <tbody className="divide-y divide-zinc-100">
                 {loading && (
-                  <tr><td colSpan={8} className="text-center py-16 text-zinc-400 font-bold text-sm">
+                  <tr><td colSpan={9} className="text-center py-16 text-zinc-400 font-bold text-sm">
                     <RefreshCw size={24} className="animate-spin inline mr-2" />Cargando...
                   </td></tr>
                 )}
                 {!loading && docs.length === 0 && (
-                  <tr><td colSpan={8} className="text-center py-16 text-zinc-400">
+                  <tr><td colSpan={9} className="text-center py-16 text-zinc-400">
                     <FileText size={40} className="mx-auto mb-3 opacity-30" />
                     <p className="font-bold">Sin documentos para el período seleccionado</p>
                   </td></tr>
@@ -252,24 +319,36 @@ export default function BandejaDocumentosInternos() {
                   const simb = doc.Moneda === 'USD' ? 'U$S' : '$';
                   return (
                     <tr key={`${doc.TipoOperacion}-${doc.DocId}-${i}`}
-                      className="hover:bg-zinc-50/50 transition-colors group">
+                      className={`transition-colors group ${doc.Anulado ? 'bg-rose-50/40' : 'hover:bg-zinc-50/50'}`}>
                       {/* Fecha */}
                       <td className="px-4 py-3 whitespace-nowrap">
-                        <div className="font-bold text-zinc-800 text-xs">{fmtDate(doc.Fecha)}</div>
+                        <div className={`font-bold text-zinc-800 text-xs ${doc.Anulado ? 'line-through opacity-60' : ''}`}>{fmtDate(doc.Fecha)}</div>
                         <div className="text-[10px] text-zinc-400">{fmtTime(doc.Fecha)}</div>
                       </td>
                       {/* Tipo */}
                       <td className="px-4 py-3 whitespace-nowrap">
-                        <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-black uppercase tracking-wide ${
-                          isIngreso
-                            ? 'bg-emerald-100 text-emerald-700'
-                            : 'bg-rose-100 text-rose-700'
-                        }`}>
-                          {isIngreso
-                            ? <ArrowDownCircle size={11}/>
-                            : <ArrowUpCircle size={11}/>}
-                          {getTipoLabel(doc.TipoDoc || doc.CodTipoDoc)}
-                        </span>
+                        <div className="flex flex-col gap-1 items-start">
+                          <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-black uppercase tracking-wide ${
+                            isIngreso
+                              ? 'bg-emerald-100 text-emerald-700'
+                              : 'bg-rose-100 text-rose-700'
+                          } ${doc.Anulado ? 'opacity-50' : ''}`}>
+                            {isIngreso
+                              ? <ArrowDownCircle size={11}/>
+                              : <ArrowUpCircle size={11}/>}
+                            {getTipoLabel(doc.TipoDoc || doc.CodTipoDoc)}
+                          </span>
+                          {doc.Anulado && (
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[9px] font-black uppercase tracking-wider bg-zinc-800 text-white">
+                              <Ban size={9}/> Anulado
+                            </span>
+                          )}
+                          <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[9px] font-black uppercase tracking-wider ${
+                            Number(doc.EsCajaAdmin) === 1 ? 'bg-indigo-100 text-indigo-700' : 'bg-slate-100 text-slate-600'
+                          }`}>
+                            {Number(doc.EsCajaAdmin) === 1 ? 'Administrativa' : 'Central'}
+                          </span>
+                        </div>
                       </td>
                       {/* Nro */}
                       <td className="px-4 py-3 whitespace-nowrap font-black text-xs text-zinc-800">
@@ -278,6 +357,9 @@ export default function BandejaDocumentosInternos() {
                       {/* Cliente */}
                       <td className="px-4 py-3">
                         <div className="font-bold text-zinc-800 text-xs max-w-[160px] truncate">{doc.ClienteNombre || '—'}</div>
+                        {doc.ClienteId != null && (
+                          <div className="text-[10px] text-zinc-400 font-mono mt-0.5">ID #{doc.ClienteId}</div>
+                        )}
                       </td>
                       {/* Concepto */}
                       <td className="px-4 py-3">
@@ -291,7 +373,7 @@ export default function BandejaDocumentosInternos() {
                       </td>
                       {/* Total */}
                       <td className="px-4 py-3 whitespace-nowrap text-right">
-                        <span className={`font-black text-sm ${isIngreso ? 'text-emerald-700' : 'text-rose-700'}`}>
+                        <span className={`font-black text-sm ${isIngreso ? 'text-emerald-700' : 'text-rose-700'} ${doc.Anulado ? 'line-through opacity-60' : ''}`}>
                           {simb} {fmt(doc.Total)}
                         </span>
                       </td>
@@ -301,13 +383,33 @@ export default function BandejaDocumentosInternos() {
                       </td>
                       {/* Acciones */}
                       <td className="px-4 py-3 text-center">
-                        <button
-                          onClick={() => handleImprimir(doc)}
-                          title="Imprimir / Ver documento"
-                          className="inline-flex items-center justify-center w-8 h-8 rounded-lg border border-zinc-200 bg-white hover:bg-indigo-50 hover:border-indigo-400 hover:text-indigo-600 text-zinc-400 transition-all shadow-sm"
-                        >
-                          <Printer size={15} />
-                        </button>
+                        <div className="inline-flex items-center gap-1">
+                          <button
+                            onClick={() => handleImprimir(doc)}
+                            title="Imprimir / Ver documento"
+                            className="inline-flex items-center justify-center w-8 h-8 rounded-lg border border-zinc-200 bg-white hover:bg-indigo-50 hover:border-indigo-400 hover:text-indigo-600 text-zinc-400 transition-all shadow-sm"
+                          >
+                            <Printer size={15} />
+                          </button>
+                          {!doc.Anulado && (
+                            <>
+                              <button
+                                onClick={() => abrirEditar(doc)}
+                                title="Editar monto"
+                                className="inline-flex items-center justify-center w-8 h-8 rounded-lg border border-zinc-200 bg-white hover:bg-amber-50 hover:border-amber-400 hover:text-amber-600 text-zinc-400 transition-all shadow-sm"
+                              >
+                                <Pencil size={15} />
+                              </button>
+                              <button
+                                onClick={() => abrirAnular(doc)}
+                                title="Anular documento"
+                                className="inline-flex items-center justify-center w-8 h-8 rounded-lg border border-zinc-200 bg-white hover:bg-rose-50 hover:border-rose-400 hover:text-rose-600 text-zinc-400 transition-all shadow-sm"
+                              >
+                                <Ban size={15} />
+                              </button>
+                            </>
+                          )}
+                        </div>
                       </td>
                     </tr>
                   );
@@ -334,6 +436,77 @@ export default function BandejaDocumentosInternos() {
           </div>
         </div>
       </div>
+
+      {/* Modal: Anular / Editar monto */}
+      {modal && (
+        <div className="fixed inset-0 bg-slate-900/60 flex items-center justify-center p-4 z-[1200]" onClick={cerrarModal}>
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden" onClick={e => e.stopPropagation()}>
+            <div className={`px-6 py-4 flex items-center justify-between ${modal.tipo === 'anular' ? 'bg-rose-50' : 'bg-amber-50'}`}>
+              <div className="flex items-center gap-2">
+                {modal.tipo === 'anular'
+                  ? <Ban size={18} className="text-rose-600" />
+                  : <Pencil size={18} className="text-amber-600" />}
+                <h3 className="font-black text-zinc-800">{modal.tipo === 'anular' ? 'Anular documento' : 'Editar monto'}</h3>
+              </div>
+              <button onClick={cerrarModal} className="text-zinc-400 hover:text-zinc-700"><X size={18} /></button>
+            </div>
+
+            <div className="p-6 space-y-4">
+              {/* Resumen del documento */}
+              <div className="bg-zinc-50 rounded-xl p-3 text-xs">
+                <div className="flex justify-between">
+                  <span className="text-zinc-400 font-bold">Documento</span>
+                  <span className="font-black text-zinc-700">{nroDoc(modal.doc.Serie, modal.doc.Numero)}</span>
+                </div>
+                <div className="flex justify-between mt-1">
+                  <span className="text-zinc-400 font-bold">{modal.doc.TipoOperacion === 'INGRESO' ? 'Cliente' : 'Proveedor'}</span>
+                  <span className="font-bold text-zinc-700 truncate max-w-[180px]">{modal.doc.ClienteNombre || '—'}</span>
+                </div>
+                <div className="flex justify-between mt-1">
+                  <span className="text-zinc-400 font-bold">Total actual</span>
+                  <span className="font-black text-zinc-700">{modal.doc.Moneda === 'USD' ? 'U$S' : '$'} {fmt(modal.doc.Total)}</span>
+                </div>
+              </div>
+
+              {modal.tipo === 'editar' && (
+                <div className="space-y-1">
+                  <label className="text-[10px] font-black text-zinc-400 uppercase tracking-widest">Nuevo monto</label>
+                  <input type="number" step="0.01" min="0" value={nuevoMonto} autoFocus
+                    onChange={e => setNuevoMonto(e.target.value)}
+                    className="w-full border border-zinc-200 rounded-lg px-3 py-2 text-sm font-bold text-zinc-800 outline-none focus:border-amber-500" />
+                </div>
+              )}
+
+              <div className="space-y-1">
+                <label className="text-[10px] font-black text-zinc-400 uppercase tracking-widest">
+                  Motivo {modal.tipo === 'editar' ? '(opcional)' : ''}
+                </label>
+                <textarea rows={2} value={motivo} onChange={e => setMotivo(e.target.value)}
+                  placeholder="Motivo de la operación..."
+                  className="w-full border border-zinc-200 rounded-lg px-3 py-2 text-sm text-zinc-800 outline-none focus:border-indigo-500 resize-none" />
+              </div>
+
+              {modal.tipo === 'editar' && (
+                <div className="flex items-start gap-2 text-[11px] text-amber-700 bg-amber-50 rounded-lg p-2">
+                  <AlertTriangle size={14} className="shrink-0 mt-0.5" />
+                  <span>Se anulará el documento actual y se generará uno nuevo con el monto corregido (nuevo N°).</span>
+                </div>
+              )}
+
+              <div className="flex gap-2 pt-1">
+                <button onClick={cerrarModal} disabled={submitting}
+                  className="flex-1 py-2.5 rounded-xl border border-zinc-200 font-black text-sm text-zinc-600 hover:bg-zinc-50 disabled:opacity-50">
+                  Cancelar
+                </button>
+                <button onClick={modal.tipo === 'anular' ? confirmarAnular : confirmarEditar} disabled={submitting}
+                  className={`flex-1 py-2.5 rounded-xl font-black text-sm text-white disabled:opacity-50 ${modal.tipo === 'anular' ? 'bg-rose-600 hover:bg-rose-700' : 'bg-amber-600 hover:bg-amber-700'}`}>
+                  {submitting ? 'Procesando...' : (modal.tipo === 'anular' ? 'Anular' : 'Guardar cambios')}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

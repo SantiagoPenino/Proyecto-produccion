@@ -127,27 +127,59 @@ const ClienteBilletera = ({ clienteId, clienteNombre }) => {
         </div>
       )}
 
-      {/* Recursos (Bolsas) */}
-      {planes.map(p => {
-        const color = p.PorcentajeUsado > 90 ? 'rose' : p.PorcentajeUsado > 70 ? 'amber' : 'indigo';
-        const badgeClass = color === 'rose' ? 'bg-rose-50 border-rose-100 text-rose-600' : color === 'amber' ? 'bg-amber-50 border-amber-100 text-amber-700' : 'bg-blue-50 border-blue-100 text-blue-700';
-        const barClass = color === 'rose' ? 'bg-rose-500' : color === 'amber' ? 'bg-amber-500' : 'bg-blue-500';
-
-        return (
-          <div key={p.PlaIdPlan} className={`flex items-center gap-3 px-4 py-2 rounded-2xl border shadow-sm ${badgeClass}`}>
-            <Zap size={14} className="opacity-70" />
-            <div className="flex flex-col gap-1 min-w-0">
-               <div className="flex items-center gap-3">
-                 <span className="text-[10px] font-black uppercase tracking-tighter truncate max-w-[100px] opacity-70">{p.NombreArticulo || 'Recurso'}</span>
-                 <span className="text-sm font-black text-slate-900 font-mono tracking-tighter italic">{fmt(p.PlaCantidadRestante)}<span className="text-[9px] ml-1 opacity-60 font-bold uppercase">{p.UniSimbolo || 'MTS'}</span></span>
-               </div>
-               <div className="w-full h-1 bg-white/40 rounded-full overflow-hidden shadow-inner">
-                 <div className={`h-full ${barClass} transition-all duration-700`} style={{ width: `${100 - p.PorcentajeUsado}%` }} />
-               </div>
-            </div>
-          </div>
+      {/* Recursos (Bolsas) — se muestra el saldo NETO real de la cuenta del material
+          (CueSaldoActual), no el restante de cada plan por separado. Así el pill
+          refleja lo que realmente queda disponible, descontando el arrastre negativo
+          de planes anteriores ya cerrados. Se agrupa por cuenta (material). */}
+      {(() => {
+        // Saldo real por cuenta de recurso (id de cuenta -> CueSaldoActual)
+        const saldoRealPorCuenta = new Map(
+          cuentas.map(c => [c.CueIdCuenta, Number(c.CueSaldoActual || 0)])
         );
-      })}
+
+        // Agrupar los planes activos por cuenta (mismo material comparte cuenta)
+        const materialesMap = new Map();
+        planes.forEach(p => {
+          const key = p.CueIdCuenta;
+          if (!materialesMap.has(key)) {
+            materialesMap.set(key, {
+              nombre:   p.NombreArticulo || 'Recurso',
+              simbolo:  p.UniSimbolo || 'MTS',
+              totalCap: 0,
+            });
+          }
+          materialesMap.get(key).totalCap += Number(p.PlaCantidadTotal || 0);
+        });
+
+        return Array.from(materialesMap.entries()).map(([cueId, mat]) => {
+          // Disponible real = saldo neto de la cuenta (con arrastre de cierres previos)
+          const disponible = saldoRealPorCuenta.has(cueId)
+            ? saldoRealPorCuenta.get(cueId)
+            : mat.totalCap; // fallback si la cuenta no vino en el listado
+          const pctRestante = mat.totalCap > 0
+            ? Math.max(0, Math.min(100, (disponible / mat.totalCap) * 100))
+            : (disponible > 0 ? 100 : 0);
+
+          const color = disponible <= 0 ? 'rose' : pctRestante < 10 ? 'rose' : pctRestante < 30 ? 'amber' : 'indigo';
+          const badgeClass = color === 'rose' ? 'bg-rose-50 border-rose-100 text-rose-600' : color === 'amber' ? 'bg-amber-50 border-amber-100 text-amber-700' : 'bg-blue-50 border-blue-100 text-blue-700';
+          const barClass = color === 'rose' ? 'bg-rose-500' : color === 'amber' ? 'bg-amber-500' : 'bg-blue-500';
+
+          return (
+            <div key={cueId} className={`flex items-center gap-3 px-4 py-2 rounded-2xl border shadow-sm ${badgeClass}`}>
+              <Zap size={14} className="opacity-70" />
+              <div className="flex flex-col gap-1 min-w-0">
+                 <div className="flex items-center gap-3">
+                   <span className="text-[10px] font-black uppercase tracking-tighter truncate max-w-[100px] opacity-70">{mat.nombre}</span>
+                   <span className={`text-sm font-black font-mono tracking-tighter italic ${disponible < 0 ? 'text-rose-600' : 'text-slate-900'}`}>{fmt(disponible)}<span className="text-[9px] ml-1 opacity-60 font-bold uppercase">{mat.simbolo}</span></span>
+                 </div>
+                 <div className="w-full h-1 bg-white/40 rounded-full overflow-hidden shadow-inner">
+                   <div className={`h-full ${barClass} transition-all duration-700`} style={{ width: `${pctRestante}%` }} />
+                 </div>
+              </div>
+            </div>
+          );
+        });
+      })()}
 
       {!loading && cuentas.length === 0 && planes.length === 0 && (
         <span className="text-[11px] font-black text-slate-300 uppercase tracking-widest italic px-4">— Sin saldos activos —</span>

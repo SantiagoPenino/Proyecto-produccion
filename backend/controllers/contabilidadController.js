@@ -400,6 +400,92 @@ exports.registrarPagoAnticipado = async (req, res) => {
   }
 };
 
+/**
+ * POST /api/contabilidad/movimientos/saldo-inicial
+ * Carga el saldo inicial de un cliente en una moneda, a favor o en contra (deudor).
+ * → Resuelve/crea la cuenta de la moneda elegida (DINERO_UYU / DINERO_USD).
+ * → FAVOR: acredita (SALDO_INICIAL) e imputa deudas existentes por PEPS.
+ * → DEUDA: debita (SALDO_INICIAL_DEUDOR) Y crea el DeudaDocumento pendiente,
+ *          todo en una transacción, para que quede imputable por PEPS y en antigüedad.
+ * Body: { CliIdCliente, MonIdMoneda: 1|2, Sentido: 'FAVOR'|'DEUDA', MovImporte, MovConcepto?, Referencia? }
+ */
+exports.registrarSaldoInicial = async (req, res) => {
+  const { CliIdCliente, MonIdMoneda, Sentido, MovImporte, MovConcepto, Referencia } = req.body;
+  const UsuarioAlta = req.user?.id ?? 1;
+
+  const importe = parseFloat(MovImporte);
+  const monId   = parseInt(MonIdMoneda) === 2 ? 2 : 1;
+
+  if (!CliIdCliente || !importe || importe <= 0)
+    return res.status(400).json({ success: false, error: 'CliIdCliente e importe positivo son obligatorios.' });
+  if (!['FAVOR', 'DEUDA'].includes(Sentido))
+    return res.status(400).json({ success: false, error: "Sentido debe ser 'FAVOR' o 'DEUDA'." });
+
+  try {
+    const cueTipo  = monId === 2 ? 'DINERO_USD' : 'DINERO_UYU';
+    const cueId    = await svc.obtenerOCrearCuenta(parseInt(CliIdCliente), cueTipo, { MonIdMoneda: monId, UsuarioAlta });
+    const concepto = (MovConcepto && MovConcepto.trim())
+      || (Sentido === 'FAVOR' ? 'Saldo inicial a favor' : 'Saldo inicial deudor');
+
+    // ── A FAVOR: crédito de apertura (se imputa a deudas previas si las hubiera) ──
+    if (Sentido === 'FAVOR') {
+      const { MovIdGenerado, SaldoResultante } = await svc.registrarMovimiento({
+        CueIdCuenta:    cueId,
+        MovTipo:        'SALDO_INICIAL',
+        MovConcepto:    concepto,
+        MovImporte:     importe,                 // positivo = crédito
+        MovUsuarioAlta: UsuarioAlta,
+        MovRefExterna:  Referencia || null,
+      });
+      const { MontoExcedente } = await svc.imputarPago({
+        PagIdPago:       MovIdGenerado,
+        MontoDisponible: importe,
+        CueIdCuenta:     cueId,
+        UsuarioAlta,
+      });
+      return res.json({
+        success: true,
+        data: { CueIdCuenta: cueId, MovIdGenerado, SaldoResultante, credito: MontoExcedente },
+        message: `✅ Saldo inicial a favor de ${fmt(importe)} registrado.`,
+      });
+    }
+
+    // ── EN CONTRA (DEUDOR): débito de apertura + DeudaDocumento (transaccional) ──
+    const pool = await getPool();
+    const transaction = new sql.Transaction(pool);
+    await transaction.begin();
+    try {
+      const { MovIdGenerado, SaldoResultante } = await svc.registrarMovimiento({
+        CueIdCuenta:    cueId,
+        MovTipo:        'SALDO_INICIAL_DEUDOR',
+        MovConcepto:    concepto,
+        MovImporte:     -Math.abs(importe),      // negativo = deuda
+        MovUsuarioAlta: UsuarioAlta,
+        MovRefExterna:  Referencia || null,
+      }, transaction);
+
+      const DDeIdDocumento = await svc.crearDeudaDocumento({
+        CueIdCuenta:      cueId,
+        Importe:          importe,
+        ImportePendiente: importe,
+      }, transaction);
+
+      await transaction.commit();
+      return res.json({
+        success: true,
+        data: { CueIdCuenta: cueId, MovIdGenerado, SaldoResultante, DDeIdDocumento },
+        message: `✅ Saldo inicial deudor de ${fmt(importe)} registrado.`,
+      });
+    } catch (errTx) {
+      try { await transaction.rollback(); } catch (_) {}
+      throw errTx;
+    }
+  } catch (err) {
+    logger.error('[CONTABILIDAD] registrarSaldoInicial:', err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+};
+
 // helper fmt local (sin símbolo)
 function fmt(n) { return new Intl.NumberFormat('es-UY', { minimumFractionDigits: 2 }).format(Number(n ?? 0)); }
 

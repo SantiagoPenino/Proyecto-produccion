@@ -345,6 +345,101 @@ const getMovimientosTurno = async (req, res) => {
 };
 
 // ─────────────────────────────────────────────
+/**
+ * GET /api/contabilidad/caja/reporte-central-admin?desde=YYYY-MM-DD&hasta=YYYY-MM-DD
+ * Reporte de auditoría: lista TODOS los movimientos del rango separados por bucket
+ * (Caja Central = EsCajaAdmin 0, Administrativa = EsCajaAdmin 1) para detectar
+ * pagos administrativos que "contaminaron" el arqueo central y viceversa.
+ * NO depende de la sesión abierta: filtra puramente por fecha.
+ */
+const getReporteCentralAdmin = async (req, res) => {
+  try {
+    const pool = await getPool();
+
+    let fecA = new Date();
+    if (req.query.desde) { const [y,m,d] = req.query.desde.split('T')[0].split('-'); fecA = new Date(y, m-1, d); }
+    fecA.setHours(0,0,0,0);
+    let fecH = new Date();
+    if (req.query.hasta) { const [y,m,d] = req.query.hasta.split('T')[0].split('-'); fecH = new Date(y, m-1, d); }
+    fecH.setHours(23,59,59,999);
+
+    const result = await pool.request()
+      .input('FecA', sql.DateTime, fecA)
+      .input('FecH', sql.DateTime, fecH)
+      .query(`
+      SELECT
+        CAST(t.EsCajaAdmin AS INT) as EsCajaAdmin,
+        t.TcaIdTransaccion as Id,
+        t.StuIdSesion as Sesion,
+        t.TcaTipoDocumento as TipoDoc,
+        'INGRESO' as TipoOperacion,
+        t.TcaFecha as Fecha,
+        ISNULL(ct1.Detalle, t.TcaTipoDocumento) as TipoComprobante,
+        ISNULL(t.TcaSerieDoc,'') + '-' + ISNULL(t.TcaNumeroDoc,'Pendiente') as Comprobante,
+        ISNULL(NULLIF(t.TcaObservaciones, ''), 'Cobro Mostrador') +
+        CASE WHEN c.Nombre IS NOT NULL THEN ' (' + RTRIM(c.Nombre) + ')' ELSE '' END as Concepto,
+        mp.MPaDescripcionMetodo as MedioDePago,
+        CASE WHEN p.PagIdMonedaPago = 2 THEN 'USD' ELSE 'UYU' END as Moneda,
+        p.PagMontoPago as Entrada,
+        0 as Salida,
+        COALESCE(u.Nombre, u.Usuario, 'Sistema') as Usuario
+      FROM dbo.TransaccionesCaja t WITH(NOLOCK)
+      JOIN dbo.Pagos p WITH(NOLOCK) ON p.PagTcaIdTransaccion = t.TcaIdTransaccion
+      LEFT JOIN dbo.MetodosPagos mp WITH(NOLOCK) ON mp.MPaIdMetodoPago = p.MPaIdMetodoPago
+      LEFT JOIN dbo.Config_TiposDocumento ct1 WITH(NOLOCK) ON ct1.CodDocumento = t.TcaTipoDocumento
+      LEFT JOIN dbo.Clientes c WITH(NOLOCK) ON c.CliIdCliente = t.TcaClienteId
+      LEFT JOIN dbo.Usuarios u WITH(NOLOCK) ON u.IdUsuario = t.TcaUsuarioId
+      WHERE t.TcaFecha >= @FecA AND t.TcaFecha <= @FecH
+        AND t.TcaEstado IN ('COMPLETADO', 'COMPLETADA', 'COBRADO') AND p.PagTipoMovimiento != 'ANULADO'
+      UNION ALL
+      SELECT
+        CAST(e.EsCajaAdmin AS INT) as EsCajaAdmin,
+        e.EgrIdEgreso as Id,
+        e.StuIdSesion as Sesion,
+        e.EgrTipoDocumento as TipoDoc,
+        'EGRESO' as TipoOperacion,
+        e.EgrFecha as Fecha,
+        ISNULL(ct2.Detalle, e.EgrTipoDocumento) as TipoComprobante,
+        ISNULL(e.EgrSerieDoc,'') + '-' + ISNULL(e.EgrNumeroDoc,'Pendiente') as Comprobante,
+        e.EgrConcepto + CASE WHEN e.EgrProveedor IS NOT NULL AND e.EgrProveedor != '' THEN ' (' + e.EgrProveedor + ')' ELSE '' END as Concepto,
+        mp.MPaDescripcionMetodo as MedioDePago,
+        e.EgrMoneda as Moneda,
+        0 as Entrada,
+        e.EgrMonto as Salida,
+        COALESCE(u.Nombre, u.Usuario, 'Sistema') as Usuario
+      FROM dbo.EgresosCaja e WITH(NOLOCK)
+      LEFT JOIN dbo.MetodosPagos mp WITH(NOLOCK) ON mp.MPaIdMetodoPago = e.MPaIdMetodoPago
+      LEFT JOIN dbo.Config_TiposDocumento ct2 WITH(NOLOCK) ON ct2.CodDocumento = e.EgrTipoDocumento
+      LEFT JOIN dbo.Usuarios u WITH(NOLOCK) ON u.IdUsuario = e.EgrUsuarioId
+      WHERE e.EgrFecha >= @FecA AND e.EgrFecha <= @FecH AND e.EgrEstado = 'REGISTRADO'
+      ORDER BY Fecha ASC
+    `);
+
+    const rows = result.recordset;
+    const emptyTot = () => ({ UYU_in: 0, UYU_out: 0, USD_in: 0, USD_out: 0, cant: 0 });
+    const acumular = (tot, r) => {
+      tot.cant++;
+      const inn = Number(r.Entrada || 0), out = Number(r.Salida || 0);
+      if (r.Moneda === 'USD') { tot.USD_in += inn; tot.USD_out += out; }
+      else { tot.UYU_in += inn; tot.UYU_out += out; }
+      return tot;
+    };
+
+    const central = rows.filter(r => r.EsCajaAdmin === 0);
+    const admin   = rows.filter(r => r.EsCajaAdmin === 1);
+
+    return res.json({
+      success: true,
+      desde: fecA, hasta: fecH,
+      central: { movimientos: central, totales: central.reduce(acumular, emptyTot()) },
+      admin:   { movimientos: admin,   totales: admin.reduce(acumular, emptyTot()) },
+    });
+  } catch (err) {
+    return res.status(500).json({ success:false, error:err.message });
+  }
+};
+
+// ─────────────────────────────────────────────
 
 /** GET /api/contabilidad/caja/siguiente-numero?tipoDoc=ETICKET&serie=A */
 const getSiguienteNumero = async (req, res) => {
@@ -873,6 +968,148 @@ const registrarIngresoGenerico = async (req, res) => {
   } catch (err) {
     try { await transaction.rollback(); } catch (_) {}
     logger.error('[CAJA-ERP] registrarIngresoGenerico Error:', err.message);
+    return res.status(500).json({ success:false, error:err.message });
+  }
+};
+
+// ─────────────────────────────────────────────
+// BANDEJA DE DOCUMENTOS INTERNOS: anular / modificar monto
+// ─────────────────────────────────────────────
+
+/** Invoca internamente un handler (req,res) y captura su respuesta JSON. */
+function _invocarHandler(handler, req) {
+  return new Promise((resolve) => {
+    const res = {
+      _status: 200,
+      status(c) { this._status = c; return this; },
+      json(payload) { resolve({ status: this._status, body: payload }); return this; },
+    };
+    Promise.resolve(handler(req, res)).catch(err =>
+      resolve({ status: 500, body: { success: false, error: err.message } }));
+  });
+}
+
+/** POST /api/contabilidad/caja/documentos/anular
+ *  Body: { tipoOperacion: 'INGRESO'|'EGRESO', docId, motivo } */
+const anularDocumentoInterno = async (req, res) => {
+  const usuarioId = req.user?.id || 70;
+  const { tipoOperacion, docId, motivo } = req.body;
+  const id = parseInt(docId, 10);
+  if (!tipoOperacion || isNaN(id))
+    return res.status(400).json({ success:false, error:'tipoOperacion y docId son obligatorios.' });
+  try {
+    let r;
+    if (tipoOperacion === 'INGRESO')     r = await cajaService.anularReciboInterno({ tcaId: id, usuarioId, motivo });
+    else if (tipoOperacion === 'EGRESO') r = await cajaService.anularEgreso({ egrId: id, usuarioId, motivo });
+    else return res.status(400).json({ success:false, error:`tipoOperacion desconocido: ${tipoOperacion}` });
+    const s = io(req); if (s) s.emit('actualizado', { type:'caja-anulacion' });
+    return res.json(r);
+  } catch (err) {
+    logger.error('[CAJA] anularDocumentoInterno:', err.message);
+    return res.status(500).json({ success:false, error:err.message });
+  }
+};
+
+/** POST /api/contabilidad/caja/documentos/modificar-monto
+ *  Body: { tipoOperacion, docId, nuevoMonto, motivo }
+ *  Estrategia segura: anula el documento original y crea uno nuevo con el monto
+ *  corregido (nuevo N° de documento), reutilizando las funciones de creación probadas. */
+const modificarMontoDocumento = async (req, res) => {
+  const usuarioId = req.user?.id || 70;
+  const { tipoOperacion, docId, nuevoMonto, motivo } = req.body;
+  const id = parseInt(docId, 10);
+  const monto = parseFloat(nuevoMonto);
+  if (!tipoOperacion || isNaN(id))
+    return res.status(400).json({ success:false, error:'tipoOperacion y docId son obligatorios.' });
+  if (isNaN(monto) || monto <= 0)
+    return res.status(400).json({ success:false, error:'nuevoMonto inválido.' });
+
+  const motivoFinal = motivo && motivo.trim() ? motivo.trim() : 'Modificación de monto';
+
+  try {
+    const pool = await getPool();
+
+    if (tipoOperacion === 'INGRESO') {
+      const o = await pool.request().input('TcaId', sql.Int, id).query(`
+        SELECT TOP 1 t.TcaTipoDocumento, t.TcaSerieDoc, t.TcaObservaciones, t.TcaMonedaBase, t.TcaEstado,
+               p.MPaIdMetodoPago, p.PagIdMonedaPago, p.PagCotizacion
+        FROM dbo.TransaccionesCaja t
+        LEFT JOIN dbo.Pagos p ON p.PagTcaIdTransaccion = t.TcaIdTransaccion
+        WHERE t.TcaIdTransaccion = @TcaId`);
+      if (!o.recordset.length) return res.status(404).json({ success:false, error:'Recibo no encontrado.' });
+      const orig = o.recordset[0];
+      if (orig.TcaEstado === 'ANULADO') return res.status(400).json({ success:false, error:'El recibo ya está anulado; no se puede modificar.' });
+      // Validar datos necesarios ANTES de anular (para no dejar el original anulado sin reemplazo)
+      if (!orig.MPaIdMetodoPago) return res.status(400).json({ success:false, error:'El recibo no tiene método de pago; no se puede recrear automáticamente.' });
+
+      // 1. Anular el original
+      await cajaService.anularReciboInterno({ tcaId: id, usuarioId, motivo: motivoFinal });
+
+      // 2. Recrear con el nuevo monto
+      const mockReq = Object.create(req);
+      mockReq.body = {
+        concepto:     orig.TcaObservaciones || 'Ingreso',
+        monto,
+        moneda:       orig.TcaMonedaBase || 'UYU',
+        monedaId:     orig.PagIdMonedaPago || 1,
+        cotizacion:   orig.PagCotizacion || null,
+        metodoPagoId: orig.MPaIdMetodoPago,
+        tipoDocumento: orig.TcaTipoDocumento,
+        serieDoc:     orig.TcaSerieDoc,
+        observaciones: orig.TcaObservaciones,
+        admin: true,
+      };
+      const result = await _invocarHandler(registrarIngresoGenerico, mockReq);
+      if (result.status >= 400) {
+        return res.status(500).json({ success:false, anulado:id,
+          error:`El recibo ${id} quedó ANULADO pero falló la recreación: ${result.body?.error || 'error desconocido'}. Volvé a cargar el ingreso manualmente.` });
+      }
+      const s = io(req); if (s) s.emit('actualizado', { type:'caja-modificacion' });
+      return res.json({ success:true, mensaje:'Recibo modificado (anulado y recreado).', anulado:id, nuevo: result.body });
+    }
+
+    if (tipoOperacion === 'EGRESO') {
+      const o = await pool.request().input('EgrId', sql.Int, id).query(`
+        SELECT TOP 1 EgrTipoEgreso, EgrConcepto, EgrProveedor, EgrMoneda, EgrCotizacion, EgrEstado,
+               MPaIdMetodoPago, EgrTipoDocumento, EgrSerieDoc, EgrObservaciones
+        FROM dbo.EgresosCaja WHERE EgrIdEgreso = @EgrId`);
+      if (!o.recordset.length) return res.status(404).json({ success:false, error:'Egreso no encontrado.' });
+      const orig = o.recordset[0];
+      if (orig.EgrEstado === 'ANULADO') return res.status(400).json({ success:false, error:'El egreso ya está anulado; no se puede modificar.' });
+      // Validar datos necesarios ANTES de anular
+      if (!orig.EgrTipoEgreso) return res.status(400).json({ success:false, error:'El egreso no tiene tipo configurado; no se puede recrear automáticamente.' });
+
+      // 1. Anular el original
+      await cajaService.anularEgreso({ egrId: id, usuarioId, motivo: motivoFinal });
+
+      // 2. Recrear con el nuevo monto
+      const mockReq = Object.create(req);
+      mockReq.body = {
+        tipoEgreso:   orig.EgrTipoEgreso,
+        concepto:     orig.EgrConcepto,
+        proveedor:    orig.EgrProveedor,
+        monto,
+        moneda:       orig.EgrMoneda || 'UYU',
+        monedaId:     orig.EgrMoneda === 'USD' ? 2 : 1,
+        cotizacion:   orig.EgrCotizacion || null,
+        metodoPagoId: orig.MPaIdMetodoPago,
+        tipoDocumento: orig.EgrTipoDocumento,
+        serieDoc:     orig.EgrSerieDoc,
+        observaciones: orig.EgrObservaciones,
+        admin: true,
+      };
+      const result = await _invocarHandler(registrarEgreso, mockReq);
+      if (result.status >= 400) {
+        return res.status(500).json({ success:false, anulado:id,
+          error:`El egreso ${id} quedó ANULADO pero falló la recreación: ${result.body?.error || 'error desconocido'}. Volvé a cargar el egreso manualmente.` });
+      }
+      const s = io(req); if (s) s.emit('actualizado', { type:'caja-modificacion' });
+      return res.json({ success:true, mensaje:'Egreso modificado (anulado y recreado).', anulado:id, nuevo: result.body });
+    }
+
+    return res.status(400).json({ success:false, error:`tipoOperacion desconocido: ${tipoOperacion}` });
+  } catch (err) {
+    logger.error('[CAJA] modificarMontoDocumento:', err.message);
     return res.status(500).json({ success:false, error:err.message });
   }
 };
@@ -2629,6 +2866,149 @@ const guardarComprobante = async (req, res) => {
 };
 
 // ─────────────────────────────────────────────
+/**
+ * GET /api/contabilidad/caja/cierres?desde=YYYY-MM-DD&hasta=YYYY-MM-DD
+ * Lista las sesiones de la Caja Central que solapan el rango, con sus totales
+ * de cierre e indica si existe el PDF de cierre guardado en disco.
+ */
+const getCierresSesiones = async (req, res) => {
+  try {
+    const pool = await getPool();
+
+    let fecA = new Date();
+    if (req.query.desde) { const [y,m,d] = req.query.desde.split('T')[0].split('-'); fecA = new Date(y, m-1, d); }
+    fecA.setHours(0,0,0,0);
+    let fecH = new Date();
+    if (req.query.hasta) { const [y,m,d] = req.query.hasta.split('T')[0].split('-'); fecH = new Date(y, m-1, d); }
+    fecH.setHours(23,59,59,999);
+
+    const ses = await pool.request()
+      .input('FecA', sql.DateTime, fecA)
+      .input('FecH', sql.DateTime, fecH)
+      .query(`
+        SELECT s.StuIdSesion, s.StuFechaApertura, s.StuFechaCierre, s.StuEstado,
+               s.StuMontoInicial, s.StuMontoFinal, s.StuMontoSistema, s.StuDiferencia,
+               s.StuMontoInicialUSD, s.StuMontoFinalUSD,
+               COALESCE(ua.Nombre, ua.Usuario) AS UsuarioAbre,
+               COALESCE(uc.Nombre, uc.Usuario) AS UsuarioCierra
+        FROM dbo.SesionesTurno s WITH(NOLOCK)
+        LEFT JOIN dbo.Usuarios ua WITH(NOLOCK) ON ua.IdUsuario = s.StuUsuarioAbre
+        LEFT JOIN dbo.Usuarios uc WITH(NOLOCK) ON uc.IdUsuario = s.StuUsuarioCierra
+        WHERE s.StuFechaApertura <= @FecH
+          AND (s.StuFechaCierre IS NULL OR s.StuFechaCierre >= @FecA)
+        ORDER BY s.StuFechaApertura DESC
+      `);
+
+    const fs = require('fs');
+    let files = [];
+    try { files = fs.readdirSync(pdfService.getBaseDir('cierres')); } catch { files = []; }
+
+    const cierres = ses.recordset.map(s => {
+      const prefix = `CIERRE-${s.StuIdSesion}-`.toUpperCase();
+      const f = files.find(fn => fn.toUpperCase().startsWith(prefix) && fn.toLowerCase().endsWith('.pdf'));
+      return { ...s, tienePdf: !!f, archivoPdf: f || null };
+    });
+
+    return res.json({ success: true, cierres });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+};
+
+// ─────────────────────────────────────────────
+/**
+ * GET /api/contabilidad/caja/cierre-pdf/:sesionId
+ * Devuelve (inline) el PDF de cierre guardado de una sesión de Caja Central.
+ */
+const getCierrePdf = async (req, res) => {
+  const id = parseInt(req.params.sesionId, 10);
+  if (isNaN(id)) return res.status(400).json({ success: false, error: 'sesionId inválido.' });
+  try {
+    const fs = require('fs');
+    const path = require('path');
+    const dir = pdfService.getBaseDir('cierres');
+    let files = [];
+    try { files = fs.readdirSync(dir); } catch { files = []; }
+
+    const prefix = `CIERRE-${id}-`.toUpperCase();
+    const matches = files
+      .filter(fn => fn.toUpperCase().startsWith(prefix) && fn.toLowerCase().endsWith('.pdf'))
+      .sort();
+    if (!matches.length) {
+      return res.status(404).json({ success: false, error: `No hay PDF de cierre guardado para la sesión ${id}.` });
+    }
+    const file = matches[matches.length - 1]; // el más reciente si hubiera varios
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `inline; filename="${file}"`);
+    return fs.createReadStream(path.join(dir, file)).pipe(res);
+  } catch (err) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+};
+
+// ─────────────────────────────────────────────
+/**
+ * POST /api/contabilidad/caja/cierre-pdf/:sesionId/generar
+ * (Re)genera el PDF de cierre de una sesión: arqueo + listado de movimientos.
+ * Sobrescribe (guarda uno nuevo con timestamp) — el visor toma el más reciente.
+ */
+const regenerarCierrePdf = async (req, res) => {
+  const id = parseInt(req.params.sesionId, 10);
+  if (isNaN(id)) return res.status(400).json({ success: false, error: 'sesionId inválido.' });
+  try {
+    const pool = await getPool();
+
+    // 1. Datos de la sesión + usuarios
+    const sesRes = await pool.request().input('Id', sql.Int, id).query(`
+      SELECT s.StuIdSesion, s.StuFechaApertura, s.StuFechaCierre, s.StuEstado,
+             s.StuMontoInicial, s.StuMontoFinal, s.StuMontoSistema, s.StuDiferencia,
+             s.StuMontoInicialUSD, s.StuMontoFinalUSD,
+             COALESCE(ua.Nombre, ua.Usuario) AS UsuarioAbre,
+             COALESCE(uc.Nombre, uc.Usuario) AS UsuarioCierra
+      FROM dbo.SesionesTurno s WITH(NOLOCK)
+      LEFT JOIN dbo.Usuarios ua WITH(NOLOCK) ON ua.IdUsuario = s.StuUsuarioAbre
+      LEFT JOIN dbo.Usuarios uc WITH(NOLOCK) ON uc.IdUsuario = s.StuUsuarioCierra
+      WHERE s.StuIdSesion = @Id`);
+    if (!sesRes.recordset.length) return res.status(404).json({ success: false, error: `Sesión ${id} no encontrada.` });
+    const sesion = sesRes.recordset[0];
+
+    // 2. Movimientos de la sesión (ingresos + egresos) ordenados por fecha
+    const movRes = await pool.request().input('Id', sql.Int, id).query(`
+      SELECT t.TcaFecha AS Fecha,
+             ISNULL(t.TcaSerieDoc,'') + '-' + ISNULL(t.TcaNumeroDoc,'Pendiente') AS Comprobante,
+             ISNULL(NULLIF(t.TcaObservaciones, ''), 'Cobro Mostrador') +
+               CASE WHEN c.Nombre IS NOT NULL THEN ' (' + RTRIM(c.Nombre) + ')' ELSE '' END AS Concepto,
+             CASE WHEN p.PagIdMonedaPago = 2 THEN 'USD' ELSE 'UYU' END AS Moneda,
+             p.PagMontoPago AS Entrada, 0 AS Salida,
+             COALESCE(u.Nombre, u.Usuario, 'Sistema') AS Usuario
+      FROM dbo.TransaccionesCaja t WITH(NOLOCK)
+      JOIN dbo.Pagos p WITH(NOLOCK) ON p.PagTcaIdTransaccion = t.TcaIdTransaccion
+      LEFT JOIN dbo.Clientes c WITH(NOLOCK) ON c.CliIdCliente = t.TcaClienteId
+      LEFT JOIN dbo.Usuarios u WITH(NOLOCK) ON u.IdUsuario = t.TcaUsuarioId
+      WHERE t.StuIdSesion = @Id
+        AND t.TcaEstado IN ('COMPLETADO','COMPLETADA','COBRADO') AND p.PagTipoMovimiento != 'ANULADO'
+      UNION ALL
+      SELECT e.EgrFecha AS Fecha,
+             ISNULL(e.EgrSerieDoc,'') + '-' + ISNULL(e.EgrNumeroDoc,'Pendiente') AS Comprobante,
+             e.EgrConcepto + CASE WHEN e.EgrProveedor IS NOT NULL AND e.EgrProveedor != '' THEN ' (' + e.EgrProveedor + ')' ELSE '' END AS Concepto,
+             e.EgrMoneda AS Moneda,
+             0 AS Entrada, e.EgrMonto AS Salida,
+             COALESCE(u.Nombre, u.Usuario, 'Sistema') AS Usuario
+      FROM dbo.EgresosCaja e WITH(NOLOCK)
+      LEFT JOIN dbo.Usuarios u WITH(NOLOCK) ON u.IdUsuario = e.EgrUsuarioId
+      WHERE e.StuIdSesion = @Id AND e.EgrEstado = 'REGISTRADO'
+      ORDER BY Fecha ASC`);
+
+    const filePath = await pdfService.generarPdfCierre({ sesion, movimientos: movRes.recordset });
+    logger.info(`[CAJA] PDF de cierre regenerado para sesión ${id}: ${filePath}`);
+    return res.json({ success: true, mensaje: `PDF de cierre generado para la sesión ${id}.`, movimientos: movRes.recordset.length });
+  } catch (err) {
+    logger.error('[CAJA] regenerarCierrePdf:', err.message);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+};
+
+// ─────────────────────────────────────────────
 
 /** GET /api/contabilidad/caja/autorizaciones-sin-pago
  *  Devuelve registros de AutorizacionesSinPago con datos del retiro, cliente y usuario.
@@ -2766,11 +3146,13 @@ module.exports = {
   // Transacciones
   procesarTransaccion, procesarVentaDirecta, procesarPagoDeuda, getProductosVenta, anularTransaccion, getTransaccion, getHistorialCliente,
   // ─────────────────────────────────────────────
-  getSesionActual, abrirSesion, cerrarSesion, getResumenSesion, getResumenDiario, getMovimientosTurno,
+  getSesionActual, abrirSesion, cerrarSesion, getResumenSesion, getResumenDiario, getMovimientosTurno, getReporteCentralAdmin, getCierresSesiones, getCierrePdf, regenerarCierrePdf,
   // ─────────────────────────────────────────────
   getSiguienteNumero, getSecuencias,
   // Egresos e Ingresos
   registrarEgreso, getTiposEgreso, getVoucherEgreso, registrarIngresoGenerico,
+  // Bandeja de Documentos Internos: anular / modificar monto
+  anularDocumentoInterno, modificarMontoDocumento,
   // Autorizaciones
   autorizarSinPago, getAutorizacionesSinPago, gestionarAutorizacionSinPago,
   // ─────────────────────────────────────────────
@@ -2855,7 +3237,7 @@ module.exports.guardarComprobante = guardarComprobante;
 const getDocumentosInternos = async (req, res) => {
   try {
     const pool = await getPool();
-    const { desde = null, hasta = null, tipo = 'TODOS', cliente = '', page = 1, limit = 50 } = req.query;
+    const { desde = null, hasta = null, tipo = 'TODOS', cliente = '', caja = 'TODOS', page = 1, limit = 50 } = req.query;
     const offset = (parseInt(page) - 1) * parseInt(limit);
     const fechaDesde = desde
       ? (() => { const [y,m,d] = desde.split('T')[0].split('-'); const dt = new Date(y,m-1,d); dt.setHours(0,0,0,0); return dt; })()
@@ -2874,6 +3256,12 @@ const getDocumentosInternos = async (req, res) => {
     const clienteFilter = filtroCliente ? 'AND (c.Nombre LIKE @FiltroCliente OR c.NombreFantasia LIKE @FiltroCliente)' : '';
     const clienteFilterEgr = filtroCliente ? 'AND e.EgrProveedor LIKE @FiltroCliente' : '';
 
+    // Filtro por tipo de caja: ADMIN (administrativa, EsCajaAdmin=1) / CENTRAL (EsCajaAdmin=0 o NULL)
+    const cajaFilter    = caja === 'ADMIN' ? 'AND t.EsCajaAdmin = 1'
+                        : caja === 'CENTRAL' ? 'AND (t.EsCajaAdmin = 0 OR t.EsCajaAdmin IS NULL)' : '';
+    const cajaFilterEgr = caja === 'ADMIN' ? 'AND e.EsCajaAdmin = 1'
+                        : caja === 'CENTRAL' ? 'AND (e.EsCajaAdmin = 0 OR e.EsCajaAdmin IS NULL)' : '';
+
     const ingresoQ = `
       SELECT 'INGRESO' AS TipoOperacion, t.TcaIdTransaccion AS DocId, t.TcaFecha AS Fecha,
         ISNULL(ct1.Detalle, t.TcaTipoDocumento) AS TipoDoc, t.TcaTipoDocumento AS CodTipoDoc,
@@ -2882,7 +3270,9 @@ const getDocumentosInternos = async (req, res) => {
         CASE WHEN p.PagIdMonedaPago = 2 THEN 'USD' ELSE 'UYU' END AS Moneda,
         SUM(p.PagMontoPago) AS Total, t.TcaEstado AS Estado,
         ISNULL(t.TcaObservaciones,'') AS Observaciones, mp.MPaDescripcionMetodo AS MetodoPago,
-        COALESCE(u.Nombre, u.Usuario, 'Sistema') AS Usuario
+        COALESCE(u.Nombre, u.Usuario, 'Sistema') AS Usuario,
+        CASE WHEN t.TcaEstado = 'ANULADO' THEN 1 ELSE 0 END AS Anulado,
+        ISNULL(t.EsCajaAdmin, 0) AS EsCajaAdmin
       FROM dbo.TransaccionesCaja t WITH(NOLOCK)
       JOIN dbo.Pagos p WITH(NOLOCK) ON p.PagTcaIdTransaccion = t.TcaIdTransaccion
       LEFT JOIN dbo.MetodosPagos mp WITH(NOLOCK) ON mp.MPaIdMetodoPago = p.MPaIdMetodoPago
@@ -2890,16 +3280,17 @@ const getDocumentosInternos = async (req, res) => {
       LEFT JOIN dbo.Clientes c WITH(NOLOCK) ON c.CliIdCliente = t.TcaClienteId
       LEFT JOIN dbo.Usuarios u WITH(NOLOCK) ON u.IdUsuario = t.TcaUsuarioId
       WHERE t.TcaFecha BETWEEN @FecDesde AND @FecHasta
-        AND t.TcaEstado IN ('COMPLETADO','COMPLETADA','COBRADO')
-        AND p.PagTipoMovimiento != 'ANULADO'
+        AND t.TcaEstado IN ('COMPLETADO','COMPLETADA','COBRADO','ANULADO')
         AND NOT EXISTS (
           SELECT 1 FROM dbo.DocumentosContables dc WITH(NOLOCK)
           WHERE dc.TcaIdTransaccion = t.TcaIdTransaccion
         )
         ${clienteFilter}
+        ${cajaFilter}
       GROUP BY t.TcaIdTransaccion, t.TcaFecha, ct1.Detalle, t.TcaTipoDocumento,
                t.TcaSerieDoc, t.TcaNumeroDoc, c.Nombre, t.TcaClienteId,
-               p.PagIdMonedaPago, t.TcaEstado, t.TcaObservaciones, mp.MPaDescripcionMetodo, u.Nombre, u.Usuario
+               p.PagIdMonedaPago, t.TcaEstado, t.TcaObservaciones, mp.MPaDescripcionMetodo, u.Nombre, u.Usuario,
+               t.EsCajaAdmin
     `;
     const egresoQ = `
       SELECT 'EGRESO' AS TipoOperacion, e.EgrIdEgreso AS DocId, e.EgrFecha AS Fecha,
@@ -2908,13 +3299,16 @@ const getDocumentosInternos = async (req, res) => {
         ISNULL(e.EgrProveedor,'-') AS ClienteNombre, NULL AS ClienteId,
         e.EgrMoneda AS Moneda, e.EgrMonto AS Total, e.EgrEstado AS Estado,
         ISNULL(e.EgrConcepto,'') AS Observaciones, mp2.MPaDescripcionMetodo AS MetodoPago,
-        COALESCE(u2.Nombre, u2.Usuario, 'Sistema') AS Usuario
+        COALESCE(u2.Nombre, u2.Usuario, 'Sistema') AS Usuario,
+        CASE WHEN e.EgrEstado = 'ANULADO' THEN 1 ELSE 0 END AS Anulado,
+        ISNULL(e.EsCajaAdmin, 0) AS EsCajaAdmin
       FROM dbo.EgresosCaja e WITH(NOLOCK)
       LEFT JOIN dbo.MetodosPagos mp2 WITH(NOLOCK) ON mp2.MPaIdMetodoPago = e.MPaIdMetodoPago
       LEFT JOIN dbo.Config_TiposDocumento ct2 WITH(NOLOCK) ON ct2.CodDocumento = e.EgrTipoDocumento
       LEFT JOIN dbo.Usuarios u2 WITH(NOLOCK) ON u2.IdUsuario = e.EgrUsuarioId
-      WHERE e.EgrFecha BETWEEN @FecDesde AND @FecHasta AND e.EgrEstado = 'REGISTRADO'
+      WHERE e.EgrFecha BETWEEN @FecDesde AND @FecHasta AND e.EgrEstado IN ('REGISTRADO','ANULADO')
         ${clienteFilterEgr}
+        ${cajaFilterEgr}
     `;
 
     let finalQ;

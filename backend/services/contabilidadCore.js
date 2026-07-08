@@ -354,21 +354,29 @@ const resolverLineasDetalle = async ({ tcaIdTransaccion, orderIds, monedaFactura
   const pool = transaction ? null : await getPool();
   const makeReq = () => transaction ? new sql.Request(transaction) : pool.request();
 
-  // Aplica cotizacion USD→UYU a líneas donde pc.Moneda='USD' cuando la factura es en UYU
+  // Convierte cada línea a la moneda del documento usando la cotización del día.
+  // Documento UYU: líneas USD → ×cot (USD→UYU). Documento USD: líneas UYU → ÷cot (UYU→USD).
   const aplicarCotizacion = async (recordset) => {
-    if (monedaFactura !== 'UYU') return recordset;
-    if (!recordset.some(r => (r.MonedaPC || 'UYU').toUpperCase().trim() === 'USD')) return recordset;
+    const docMon = (monedaFactura || 'UYU').toUpperCase().trim();
+    const hayDistintas = recordset.some(r => {
+      const lineMon = (r.MonedaPC || 'UYU').toUpperCase().trim();
+      return lineMon !== docMon && (lineMon === 'USD' || lineMon === 'UYU');
+    });
+    if (!hayDistintas) return recordset;
     const cotRes = await makeReq()
       .query("SELECT TOP 1 CotDolar FROM dbo.Cotizaciones WITH(NOLOCK) ORDER BY CotFecha DESC");
     const cot = parseFloat(cotRes.recordset[0]?.CotDolar) || 40;
     return recordset.map(r => {
-      if ((r.MonedaPC || 'UYU').toUpperCase().trim() !== 'USD') return r;
-      return { ...r, _cot: cot };
+      const lineMon = (r.MonedaPC || 'UYU').toUpperCase().trim();
+      if (lineMon === docMon) return r;
+      if (docMon === 'UYU' && lineMon === 'USD') return { ...r, _factor: cot };       // USD → UYU
+      if (docMon === 'USD' && lineMon === 'UYU') return { ...r, _factor: 1 / cot };    // UYU → USD
+      return r;
     });
   };
 
   const mapLinea = (r) => {
-    const f = r._cot || 1;
+    const f = r._factor || 1;
     return {
       ordCodigoOrden: r.OrdCodigoOrden  || null,
       nomItem:        (r.NomItem        || 'Servicio').substring(0, 80),
@@ -404,13 +412,15 @@ const resolverLineasDetalle = async ({ tcaIdTransaccion, orderIds, monedaFactura
               + ISNULL(CAST(pcd.LogPrecioAplicado AS VARCHAR(1000)), ISNULL(CAST(td.TdeDescripcion AS VARCHAR(1000)), '')),
           1000) AS DscItem,
           CAST(ISNULL(pcd.Cantidad, ISNULL(od.OrdCantidad, 1.0)) AS DECIMAL(18,4)) AS Cantidad,
-          ROUND(ISNULL(pcd.Subtotal, ISNULL(td.TdeImporteFinal, 0))
+          ROUND(COALESCE(pcd.Subtotal, NULLIF(od.OrdCostoFinal, 0), td.TdeImporteFinal, 0)
                 / NULLIF(ISNULL(pcd.Cantidad, ISNULL(od.OrdCantidad, 1.0)), 0), 4) AS PrecioUnitario,
-          ROUND(ISNULL(pcd.Subtotal, ISNULL(td.TdeImporteFinal, 0)) / 1.22, 2) AS Subtotal,
-          ROUND(ISNULL(pcd.Subtotal, ISNULL(td.TdeImporteFinal, 0))
-                - ISNULL(pcd.Subtotal, ISNULL(td.TdeImporteFinal, 0)) / 1.22, 2) AS Impuestos,
-          ISNULL(pcd.Subtotal, ISNULL(td.TdeImporteFinal, 0)) AS Total,
-          ISNULL(pc.Moneda, ISNULL(pcd.Moneda, 'UYU')) AS MonedaPC
+          ROUND(COALESCE(pcd.Subtotal, NULLIF(od.OrdCostoFinal, 0), td.TdeImporteFinal, 0) / 1.22, 2) AS Subtotal,
+          ROUND(COALESCE(pcd.Subtotal, NULLIF(od.OrdCostoFinal, 0), td.TdeImporteFinal, 0)
+                - COALESCE(pcd.Subtotal, NULLIF(od.OrdCostoFinal, 0), td.TdeImporteFinal, 0) / 1.22, 2) AS Impuestos,
+          COALESCE(pcd.Subtotal, NULLIF(od.OrdCostoFinal, 0), td.TdeImporteFinal, 0) AS Total,
+          CASE WHEN od.MonIdMoneda = 2 THEN 'USD'
+               WHEN od.MonIdMoneda = 1 THEN 'UYU'
+               ELSE ISNULL(pc.Moneda, ISNULL(pcd.Moneda, 'UYU')) END AS MonedaPC
         FROM dbo.TransaccionDetalle td
         -- Intento 1: relacion moderna por tabla intermedia
         LEFT JOIN dbo.RelOrdenesRetiroOrdenes rel
@@ -472,7 +482,9 @@ const resolverLineasDetalle = async ({ tcaIdTransaccion, orderIds, monedaFactura
         ROUND(ISNULL(pcd.Subtotal, ISNULL(od.OrdCostoFinal, 0))
               - ISNULL(pcd.Subtotal, ISNULL(od.OrdCostoFinal, 0)) / 1.22, 2) AS Impuestos,
         ISNULL(pcd.Subtotal, ISNULL(od.OrdCostoFinal, 0)) AS Total,
-        ISNULL(pc.Moneda, ISNULL(pcd.Moneda, 'UYU')) AS MonedaPC
+        CASE WHEN od.MonIdMoneda = 2 THEN 'USD'
+             WHEN od.MonIdMoneda = 1 THEN 'UYU'
+             ELSE ISNULL(pc.Moneda, ISNULL(pcd.Moneda, 'UYU')) END AS MonedaPC
       FROM dbo.OrdenesDeposito od
       LEFT JOIN dbo.PedidosCobranza pc          ON LTRIM(RTRIM(pc.NoDocERP)) = od.OrdCodigoOrden
       LEFT JOIN dbo.PedidosCobranzaDetalle pcd  ON pcd.PedidoCobranzaID = pc.ID

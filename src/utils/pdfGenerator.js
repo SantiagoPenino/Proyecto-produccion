@@ -622,9 +622,18 @@ export const generarPdfFacturaDGI = async (doc, detalles) => {
     }
 
     // Visualizar en nueva pestaña
+    // Nombre sugerido: {idCliente}_CFE_{codigoEfact}_{Serie}{Numero}
+    // doc.DocSerie/doc.DocNumero ya reflejan los datos oficiales de DGI si el documento
+    // fue enviado y aceptado (se sobreescriben al inicio de esta función parseando
+    // CfeUrlImpresion); si no fue enviado, son la serie/numero local.
     const safeNum = doc.DocNumero || 'Borrador';
+    const idCliente = String(doc.StringIDCliente || doc.CliIdCliente || 'SinCliente').trim();
+    const codigoEfact = doc.CodigoEfact != null && doc.CodigoEfact !== '' ? doc.CodigoEfact : (doc.DocTipo || 'SD');
+    const nombreArchivo = `${idCliente}_CFE_${codigoEfact}_${doc.DocSerie || 'A'}${safeNum}`
+        .replace(/[<>:"/\\|?*]/g, '_')
+        .replace(/\s+/g, '_');
     pdf.setProperties({
-        title: `Factura_${doc.DocSerie || 'A'}_${safeNum}`
+        title: nombreArchivo
     });
     const blob = pdf.output('blob');
     const url = URL.createObjectURL(blob);

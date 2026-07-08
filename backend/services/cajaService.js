@@ -617,6 +617,18 @@ async function procesarTransaccion(payload) {
 
   const totalCobrado = pagosNorm.reduce((s, p) => s + p.montoConvertido, 0);
 
+  // ── Ajuste de COBRO (independiente del valor de las órdenes/factura) ──
+  // El cajero puede fijar un "importe a cobrar" distinto del total real (redondeo/pago cerrado).
+  // La factura se emite por el valor real (totalNeto); la diferencia se contabiliza como
+  // Descuento (5.2.03) o Recargo (4.2.2), sin tocar las órdenes ni la factura.
+  //   ajusteCobro < 0  → se cobró de menos → Descuento concedido
+  //   ajusteCobro > 0  → se cobró de más   → Recargo / recupero
+  const ajusteCobro = (header.importeACobrar != null && !isNaN(parseFloat(header.importeACobrar)))
+    ? parseFloat((parseFloat(header.importeACobrar) - totalNeto).toFixed(2))
+    : 0;
+  const CTA_DESCUENTO_AJUSTE = '5.2.03'; // Descuentos y Bonificaciones Concedidos (PERDIDA)
+  const CTA_RECARGO_AJUSTE   = '4.2.2';  // Recargos y Recuperos (GANANCIA)
+
   // ── Inicio de transacción SQL ─────────────────────────────────────────
   const pool        = await getPool();
   
@@ -1139,6 +1151,34 @@ async function procesarTransaccion(payload) {
         });
       }
 
+      // ── Línea de AJUSTE MONETARIO ──────────────────────────────────────
+      // Calcula el desbalance REAL del asiento (en UYU, base contable), que engloba:
+      //   • el "importe a cobrar" fijado por el cajero (redondeo / pago cerrado), y
+      //   • el redondeo por conversión de moneda (ej: pagar en UYU una venta en USD).
+      // Así el asiento SIEMPRE cuadra y la diferencia queda tipificada:
+      //   desbalance > 0 (Debe excede → se cobró de más)  → Recargo  (HABER 4.2.2)
+      //   desbalance < 0 (Haber excede → se cobró de menos) → Descuento (DEBE 5.2.03)
+      const _aUYU = (l) => {
+        const isUSD = l.monedaId === 2;
+        const cot = (isUSD && l.cotizacion) ? parseFloat(l.cotizacion) : 1;
+        return {
+          d: (parseFloat(l.debeBase)  || 0) * cot,
+          h: (parseFloat(l.haberBase) || 0) * cot,
+        };
+      };
+      let _sumD = 0, _sumH = 0;
+      for (const l of lineasContables) { const { d, h } = _aUYU(l); _sumD += d; _sumH += h; }
+      const desbalanceUYU = parseFloat((_sumD - _sumH).toFixed(2));
+
+      if (Math.abs(desbalanceUYU) > 0.005) {
+        if (desbalanceUYU > 0) {
+          lineasContables.push({ codigoCuenta: CTA_RECARGO_AJUSTE,   debeBase: 0, haberBase: desbalanceUYU,      monedaId: 1, cotizacion: 1 });
+        } else {
+          lineasContables.push({ codigoCuenta: CTA_DESCUENTO_AJUSTE, debeBase: Math.abs(desbalanceUYU), haberBase: 0, monedaId: 1, cotizacion: 1 });
+        }
+        logger.info(`[CAJA-AJUSTE] Ajuste monetario: ${desbalanceUYU > 0 ? 'Recargo' : 'Descuento'} $${Math.abs(desbalanceUYU).toFixed(2)} UYU → cuenta ${desbalanceUYU > 0 ? CTA_RECARGO_AJUSTE : CTA_DESCUENTO_AJUSTE}`);
+      }
+
       const strDoc = (header.tipoDocumento && header.tipoDocumento !== 'NINGUNO')
         ? `${header.tipoDocumento} ${header.serieDoc || ''}-${header.numeroDoc || ''}`.trim() : 'Recibo Interno';
 
@@ -1228,7 +1268,7 @@ async function procesarTransaccion(payload) {
                  usuarioId: usuarioId || 1,
                  tcaIdTransaccion: tcaIdTransaccion || null,
                  asiIdAsiento: asiId || null,
-                 docPagado: totalCobrado >= totalNeto,
+                 docPagado: (totalCobrado - ajusteCobro) >= totalNeto - 0.01,
                  empresaId: empresaId
                },
                lineas: lineasDocCFE
@@ -2108,11 +2148,179 @@ async function generarCFEDesdeOrdenesDirectas({ orderIds, clienteId, monto, mone
 
 
 // ─────────────────────────────────────────────────────────────────────────
+/**
+ * anularReciboInterno
+ * Anula un recibo / ingreso interno (sin CFE) de la Bandeja de Documentos Internos.
+ * Revierte, dentro de UNA transacción SQL:
+ *   - TransaccionesCaja  → TcaEstado = 'ANULADO'
+ *   - Pagos              → PagTipoMovimiento = 'ANULADO'
+ *   - Submayor: MovimientosCuenta (MovAnulado=1) + saldo en CuentasCliente,
+ *     acotado SÓLO a los movimientos ligados a los pagos/documentos de ESTA transacción
+ *     (para los ingresos genéricos "Consumidor Final" no hay ninguno → no-op).
+ *   - Asiento contable   → Cont_AsientosCabecera.AsiEstado = 0 (excluye el de egresos).
+ */
+async function anularReciboInterno({ tcaId, usuarioId, motivo }) {
+  if (!tcaId) throw new Error('tcaId es obligatorio.');
+
+  const pool = await getPool();
+  const transaction = pool.transaction();
+  await transaction.begin();
+
+  try {
+    // 1. Validar existencia y que no esté ya anulado
+    const tcaRes = await new sql.Request(transaction)
+      .input('TcaId', sql.Int, tcaId)
+      .query(`SELECT TcaEstado FROM dbo.TransaccionesCaja WITH(UPDLOCK) WHERE TcaIdTransaccion = @TcaId`);
+    if (!tcaRes.recordset.length) throw new Error(`Recibo ${tcaId} no encontrado.`);
+    if (tcaRes.recordset[0].TcaEstado === 'ANULADO') throw new Error('El recibo ya está anulado.');
+
+    // 2. Bloquear si existe un CFE aceptado por DGI vinculado
+    const docsRes = await new sql.Request(transaction)
+      .input('TcaId', sql.Int, tcaId)
+      .query(`
+        SELECT 1 FROM dbo.DocumentosContables WITH(NOLOCK)
+        WHERE TcaIdTransaccion = @TcaId AND CfeEstado = 'ACEPTADO_DGI'`);
+    if (docsRes.recordset.length) {
+      throw new Error('No se puede anular: existe un CFE aceptado por DGI. Se requiere emitir Nota de Crédito.');
+    }
+
+    // 3. Marcar la transacción como ANULADO
+    await new sql.Request(transaction)
+      .input('TcaId',     sql.Int,           tcaId)
+      .input('UsuarioId', sql.Int,           usuarioId)
+      .input('Motivo',    sql.NVarChar(500), motivo || null)
+      .query(`
+        UPDATE dbo.TransaccionesCaja
+        SET TcaEstado         = 'ANULADO',
+            TcaFechaAnulacion = GETDATE(),
+            TcaUsuarioAnula   = @UsuarioId,
+            TcaObservaciones  = ISNULL(TcaObservaciones, '') + ' | ANULADO: ' + ISNULL(@Motivo,'')
+        WHERE TcaIdTransaccion = @TcaId`);
+
+    // 4. Anular los pagos de la transacción
+    await new sql.Request(transaction)
+      .input('TcaId', sql.Int, tcaId)
+      .query(`UPDATE dbo.Pagos SET PagTipoMovimiento = 'ANULADO' WHERE PagTcaIdTransaccion = @TcaId`);
+
+    // 5. Revertir submayor (movimientos + saldo) acotado a ESTA transacción
+    const movsRes = await new sql.Request(transaction)
+      .input('TcaId', sql.Int, tcaId)
+      .query(`
+        SELECT MovIdMovimiento, CueIdCuenta, MovImporte
+        FROM dbo.MovimientosCuenta
+        WHERE (MovAnulado IS NULL OR MovAnulado = 0)
+          AND ( PagIdPago IN (SELECT PagIdPago FROM dbo.Pagos WHERE PagTcaIdTransaccion = @TcaId)
+             OR DocIdDocumento IN (SELECT DocIdDocumento FROM dbo.DocumentosContables WHERE TcaIdTransaccion = @TcaId) )`);
+    for (const mov of movsRes.recordset) {
+      await new sql.Request(transaction)
+        .input('Mid', sql.Int, mov.MovIdMovimiento)
+        .query(`UPDATE dbo.MovimientosCuenta SET MovAnulado = 1 WHERE MovIdMovimiento = @Mid`);
+      await new sql.Request(transaction)
+        .input('CueId',   sql.Int,           mov.CueIdCuenta)
+        .input('Importe', sql.Decimal(18,4), mov.MovImporte)
+        .query(`UPDATE dbo.CuentasCliente SET CueSaldoActual = CueSaldoActual - @Importe WHERE CueIdCuenta = @CueId`);
+    }
+
+    // 6. Anular el asiento contable del ingreso (excluye el asiento de egresos por seguridad)
+    await new sql.Request(transaction)
+      .input('TcaId', sql.Int, tcaId)
+      .query(`
+        UPDATE dbo.Cont_AsientosCabecera SET AsiEstado = 0
+        WHERE TcaIdTransaccion = @TcaId AND ISNULL(SysOrigen,'') <> 'CAJA_EGRESOS'`);
+
+    await transaction.commit();
+    logger.info(`[CAJA] 🔄 Recibo interno ${tcaId} anulado por usuario ${usuarioId} (${movsRes.recordset.length} movs revertidos).`);
+    return { success: true, mensaje: `Recibo ${tcaId} anulado correctamente.` };
+
+  } catch (err) {
+    try { await transaction.rollback(); } catch (_) {}
+    logger.error(`[CAJA] ❌ anularReciboInterno: ${err.message}`);
+    throw err;
+  }
+}
+
+/**
+ * anularEgreso
+ * Anula un egreso de caja (EgresosCaja) de la Bandeja de Documentos Internos.
+ * Revierte, dentro de UNA transacción SQL:
+ *   - EgresosCaja        → EgrEstado = 'ANULADO' (+ nota en EgrObservaciones)
+ *   - DocumentosContables→ DocEstado / CfeEstado = 'ANULADO' (el respaldo del egreso)
+ *   - Submayor ligado al documento (si lo hubiera)
+ *   - Asiento contable   → Cont_AsientosCabecera.AsiEstado = 0 (SysOrigen = 'CAJA_EGRESOS')
+ */
+async function anularEgreso({ egrId, usuarioId, motivo }) {
+  if (!egrId) throw new Error('egrId es obligatorio.');
+
+  const pool = await getPool();
+  const transaction = pool.transaction();
+  await transaction.begin();
+
+  try {
+    const egrRes = await new sql.Request(transaction)
+      .input('EgrId', sql.Int, egrId)
+      .query(`SELECT EgrEstado, DocIdDocumento FROM dbo.EgresosCaja WITH(UPDLOCK) WHERE EgrIdEgreso = @EgrId`);
+    if (!egrRes.recordset.length) throw new Error(`Egreso ${egrId} no encontrado.`);
+    if (egrRes.recordset[0].EgrEstado === 'ANULADO') throw new Error('El egreso ya está anulado.');
+    const docId = egrRes.recordset[0].DocIdDocumento || null;
+
+    // 1. Marcar el egreso como ANULADO
+    await new sql.Request(transaction)
+      .input('EgrId',  sql.Int,           egrId)
+      .input('Motivo', sql.NVarChar(300), motivo || null)
+      .query(`
+        UPDATE dbo.EgresosCaja
+        SET EgrEstado        = 'ANULADO',
+            EgrObservaciones = ISNULL(EgrObservaciones, '') + ' | ANULADO: ' + ISNULL(@Motivo,'')
+        WHERE EgrIdEgreso = @EgrId`);
+
+    // 2. Anular el documento contable de respaldo (EGRESO_CAJA)
+    if (docId) {
+      await new sql.Request(transaction)
+        .input('Id', sql.Int, docId)
+        .query(`UPDATE dbo.DocumentosContables SET DocEstado = 'ANULADO', CfeEstado = 'ANULADO' WHERE DocIdDocumento = @Id`);
+
+      // 3. Revertir submayor ligado al documento (si lo hubiera)
+      const movsRes = await new sql.Request(transaction)
+        .input('Doc', sql.Int, docId)
+        .query(`
+          SELECT MovIdMovimiento, CueIdCuenta, MovImporte FROM dbo.MovimientosCuenta
+          WHERE (MovAnulado IS NULL OR MovAnulado = 0) AND DocIdDocumento = @Doc`);
+      for (const mov of movsRes.recordset) {
+        await new sql.Request(transaction)
+          .input('Mid', sql.Int, mov.MovIdMovimiento)
+          .query(`UPDATE dbo.MovimientosCuenta SET MovAnulado = 1 WHERE MovIdMovimiento = @Mid`);
+        await new sql.Request(transaction)
+          .input('CueId',   sql.Int,           mov.CueIdCuenta)
+          .input('Importe', sql.Decimal(18,4), mov.MovImporte)
+          .query(`UPDATE dbo.CuentasCliente SET CueSaldoActual = CueSaldoActual - @Importe WHERE CueIdCuenta = @CueId`);
+      }
+    }
+
+    // 4. Anular el asiento contable del egreso
+    await new sql.Request(transaction)
+      .input('EgrId', sql.Int, egrId)
+      .query(`
+        UPDATE dbo.Cont_AsientosCabecera SET AsiEstado = 0
+        WHERE TcaIdTransaccion = @EgrId AND SysOrigen = 'CAJA_EGRESOS'`);
+
+    await transaction.commit();
+    logger.info(`[CAJA] 🔄 Egreso ${egrId} anulado por usuario ${usuarioId}.`);
+    return { success: true, mensaje: `Egreso ${egrId} anulado correctamente.` };
+
+  } catch (err) {
+    try { await transaction.rollback(); } catch (_) {}
+    logger.error(`[CAJA] ❌ anularEgreso: ${err.message}`);
+    throw err;
+  }
+}
+
 module.exports = {
   procesarTransaccion,
   procesarVentaDirecta,
   getProductosVenta,
   anularTransaccion,
+  anularReciboInterno,
+  anularEgreso,
   getTransaccion,
   getTransaccionesByCliente,
   generarCFEDesdeOrdenesDirectas,

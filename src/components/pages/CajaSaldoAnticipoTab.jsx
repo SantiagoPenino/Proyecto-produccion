@@ -43,7 +43,7 @@ function MonedaSwitch({ value, onChange }) {
  * La moneda se elige UNA sola vez con el pill-switch; el panel de pago
  * hereda esa moneda y no muestra el selector por-línea (lockMoneda).
  */
-export default function CajaSaldoAnticipoTab({ sesion, metodosPago, cotizacion, onCobroCompletado, initialCliente, empresaId = null }) {
+export default function CajaSaldoAnticipoTab({ sesion, metodosPago, cotizacion, onCobroCompletado, initialCliente, empresaId = null, isAdminCaja = false, hideClienteSelector = false, hideBilletera = false }) {
   /* ── cliente ─────────────────────────────────────────────────────────────── */
   const [qCliente, setQCliente]             = useState('');
   const [buscandoCli, setBuscandoCli]       = useState(false);
@@ -168,6 +168,7 @@ export default function CajaSaldoAnticipoTab({ sesion, metodosPago, cotizacion, 
     try {
       const res = await api.post('/contabilidad/caja/pago-anticipo', {
         empresaId,
+        admin:        isAdminCaja,   // true → EsCajaAdmin=1 (Caja Administrativa, fuera del arqueo central)
         clienteId:    clienteSel.CliIdCliente,
         cuentaId:     cuentaId || null,
         importe:      importeNum,
@@ -217,8 +218,8 @@ export default function CajaSaldoAnticipoTab({ sesion, metodosPago, cotizacion, 
 
   return (
     <div className="flex flex-col lg:flex-row flex-1 overflow-hidden h-full min-h-0 bg-zinc-100">
-      {/* ── PANEL LATERAL DE CLIENTES ── */}
-      <div className="w-full lg:w-[360px] bg-white border-b lg:border-b-0 lg:border-r border-zinc-200 flex flex-col shrink-0 overflow-y-auto p-4 client-search-container">
+      {/* ── PANEL LATERAL DE CLIENTES ── (se oculta cuando el cliente ya viene fijo, ej. Panel 360) */}
+      <div className={`w-full lg:w-[360px] bg-white border-b lg:border-b-0 lg:border-r border-zinc-200 flex-col shrink-0 overflow-y-auto p-4 client-search-container ${hideClienteSelector ? 'hidden' : 'flex'}`}>
         <h3 className="font-black text-zinc-400 text-[11px] font-archivo uppercase tracking-widest mb-3 flex items-center justify-between">
           1. Seleccionar Cliente
           {clienteSel && <span className="text-emerald-600 flex items-center gap-1 text-[9px] font-bold bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-100">Verificado <CheckCircle2 size={10}/></span>}
@@ -314,7 +315,7 @@ export default function CajaSaldoAnticipoTab({ sesion, metodosPago, cotizacion, 
       {/* ── CONTENIDO PRINCIPAL ── */}
       <div className="flex-1 flex flex-col min-h-0 h-full overflow-y-auto bg-zinc-50 p-4 gap-4">
         {/* BILLETERA DE CLIENTE STICKY */}
-        {clienteSel && (
+        {clienteSel && !hideBilletera && (
           <div className="px-5 py-1 border-b border-zinc-200 bg-white/80 sticky top-0 z-20 shrink-0 shadow-sm rounded-2xl mb-2">
             <ClienteBilletera 
               clienteId={clienteSel.CliIdCliente} 

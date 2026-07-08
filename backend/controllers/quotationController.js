@@ -165,7 +165,19 @@ exports.saveQuotation = async (req, res) => {
             .input('Doc', sql.NVarChar, noDocERP)
             .query(`SELECT * FROM PedidosCobranza WHERE LTRIM(RTRIM(NoDocERP)) = LTRIM(RTRIM(@Doc))`);
 
-        // Fallback: buscar via CodigoOrden en Ordenes → NoDocERP real en PedidosCobranza
+        // Fallback 1: strip 3-letter prefix (portal orders saved as plain number e.g. '194')
+        // Debe ir ANTES del bloque de creación para no duplicar una cabecera ya existente
+        // guardada sin prefijo (p.ej. GET encuentra "4785" pero save recibe "SUB-4785").
+        if (cabRes.recordset.length === 0) {
+            const stripped = noDocERP.replace(/^[a-zA-Z]{3}-/i, '').trim();
+            if (stripped && stripped !== noDocERP.trim()) {
+                cabRes = await new sql.Request(transaction)
+                    .input('DocStrip', sql.NVarChar, stripped)
+                    .query(`SELECT * FROM PedidosCobranza WHERE LTRIM(RTRIM(NoDocERP)) = LTRIM(RTRIM(@DocStrip))`);
+            }
+        }
+
+        // Fallback 2: buscar via CodigoOrden en Ordenes → NoDocERP real en PedidosCobranza
         if (cabRes.recordset.length === 0) {
             const ordDocRes = await new sql.Request(transaction)
                 .input('Cod', sql.NVarChar, noDocERP)
@@ -228,10 +240,13 @@ exports.saveQuotation = async (req, res) => {
         }
         const cabecera = cabRes.recordset[0];
         const pedidoId = cabecera.ID;
+        // NoDocERP real de la cabecera hallada (puede diferir del recibido si venía con prefijo,
+        // p.ej. recibido "SUB-4785" pero almacenado como "4785"). Usar este para los lookups por NoDocERP.
+        const realNoDocERP = (cabecera.NoDocERP != null ? cabecera.NoDocERP.toString().trim() : noDocERP);
 
         // Descubrir OrdenID desde Ordenes usando NoDocERP (para líneas que lleguen sin OrdenID)
         const ordIdRes = await new sql.Request(transaction)
-            .input('Doc', sql.NVarChar, noDocERP)
+            .input('Doc', sql.NVarChar, realNoDocERP)
             .query(`SELECT TOP 1 OrdenID FROM Ordenes WITH(NOLOCK) WHERE LTRIM(RTRIM(CAST(NoDocERP AS VARCHAR))) = LTRIM(RTRIM(@Doc))`);
         const discoveredOrdenID = ordIdRes.recordset[0]?.OrdenID || null;
         const moneda = cabecera.Moneda || 'UYU';
@@ -367,7 +382,7 @@ exports.saveQuotation = async (req, res) => {
         // Sincronizar MovImporte con el nuevo total para órdenes ya contabilizadas
         try {
             await pool.request()
-                .input('NoDoc', sql.NVarChar, noDocERP)
+                .input('NoDoc', sql.NVarChar, realNoDocERP)
                 .input('NewTotal', sql.Decimal(18, 2), nuevoTotal)
                 .input('MFinal', sql.VarChar(10), monedaFinal)
                 .query(`
@@ -385,7 +400,7 @@ exports.saveQuotation = async (req, res) => {
                       )
                 `);
             await pool.request()
-                .input('NoDoc', sql.NVarChar, noDocERP)
+                .input('NoDoc', sql.NVarChar, realNoDocERP)
                 .input('NewTotal', sql.Decimal(18, 2), nuevoTotal)
                 .query(`
                     UPDATE dbo.PedidosCobranza

@@ -102,6 +102,7 @@ const getOrdenesRetiroQueryBase = `
     mp.MPaDescripcionMetodo AS orderMetodoPago,
     monPago.MonSimbolo AS monetPagoSimbolo,
     p.PagMontoPago AS orderMontoPago,
+    p.PagTipoMovimiento AS orderTipoPago,
     p.PagFechaPago AS orderFechaPago,
     p.PagRutaComprobante AS comprobante,
     COALESCE(c.IDCliente, cr.IDCliente) AS CliCodigoCliente,
@@ -191,6 +192,7 @@ const processRetirosRows = (rows) => {
         monedaId: row.orderMonedaId || 1,
         orderIdMetodoPago: row.orderIdMetodoPago,
         orderMetodoPago: row.orderMetodoPago,
+        orderExonerada: row.orderTipoPago === 'EXONERACION',
         orderPago: row.monetPagoSimbolo ? `${row.monetPagoSimbolo} ${parseFloat(row.orderMontoPago).toFixed(2)}` : null,
         orderFechaPago: row.orderFechaPago,
         articuloDescripcion: row.articuloDescripcion ? row.articuloDescripcion.trim() : null
@@ -1028,13 +1030,11 @@ const editarCostoOrden = async (req, res) => {
         const oldPCTotal = parseFloat(pcRes.recordset[0].MontoTotal || 0);
 
         if (nuevaMonedaId !== null) {
-          const monNomRes = await transaction.request()
-            .input('Mid', sql.Int, nuevaMonedaId)
-            .query(`SELECT MonDescripcionMoneda FROM dbo.Monedas WHERE MonIdMoneda = @Mid`);
-          const monNom = monNomRes.recordset[0]?.MonDescripcionMoneda || '';
+          // PedidosCobranza.Moneda es varchar(3): guarda el código ISO (UYU/USD)
+          const codigoMoneda = nuevaMonedaId === 2 ? 'USD' : 'UYU';
           await transaction.request()
             .input('PID', sql.Int, pcId)
-            .input('Mon', sql.NVarChar(10), monNom)
+            .input('Mon', sql.VarChar(3), codigoMoneda)
             .query(`UPDATE dbo.PedidosCobranza SET Moneda = @Mon WHERE ID = @PID`);
         }
 
@@ -1296,10 +1296,139 @@ const cancelarOrdenCaja = async (req, res) => {
   }
 };
 
+// Exonerar una orden del pago (bonificación $0): salda la orden para que no se cobre en caja,
+// SIN cambiar su importe en OrdenesDeposito y SIN tocar la deuda contable del cliente.
+const exonerarOrdenCaja = async (req, res) => {
+  const { orderId, motivo } = req.body;
+  const UsuarioModif = req.user?.id || 70;
+
+  if (!orderId) {
+    return res.status(400).json({ error: 'Falta dato requerido (orderId).' });
+  }
+
+  let transaction;
+  try {
+    const pool = await getPool();
+    transaction = await pool.transaction();
+    await transaction.begin();
+
+    const ordenRes = await transaction.request()
+      .input('OrderId', sql.Int, orderId)
+      .query('SELECT OrdCostoFinal, MonIdMoneda, OrdCodigoOrden, PagIdPago FROM dbo.OrdenesDeposito WHERE OrdIdOrden = @OrderId');
+    if (!ordenRes.recordset.length) throw new Error('Orden no encontrada.');
+
+    const { MonIdMoneda, OrdCodigoOrden, PagIdPago } = ordenRes.recordset[0];
+    if (PagIdPago) throw new Error('La orden ya está saldada/pagada; no se puede exonerar.');
+
+    const monedaId = MonIdMoneda || 1;
+    const codigoOrden = OrdCodigoOrden || '';
+
+    // Registrar un "pago" de exoneración por $0 (sin método, sin transacción de caja).
+    // La moneda se setea para que la caja lo lea como saldado.
+    const pagoRes = await transaction.request()
+      .input('Mon', sql.Int, monedaId)
+      .input('Usr', sql.Int, UsuarioModif)
+      .query(`
+        INSERT INTO dbo.Pagos
+          (MPaIdMetodoPago, PagIdMonedaPago, PagMontoPago, PagFechaPago, PagUsuarioAlta, PagTipoMovimiento, PagMontoConvertido)
+        OUTPUT INSERTED.PagIdPago
+        VALUES
+          (NULL, @Mon, 0, GETDATE(), @Usr, 'EXONERACION', 0)
+      `);
+    const nuevoPagId = pagoRes.recordset[0].PagIdPago;
+
+    // Saldar la orden. NO se toca OrdCostoFinal, OrdEstadoActual ni OReIdOrdenRetiro.
+    await transaction.request()
+      .input('OrderId', sql.Int, orderId)
+      .input('PagId',   sql.Int, nuevoPagId)
+      .query('UPDATE dbo.OrdenesDeposito SET PagIdPago = @PagId WHERE OrdIdOrden = @OrderId');
+
+    await transaction.commit();
+
+    try {
+      const erpId = await buscarOrdenErpId(pool, orderId);
+      if (erpId) {
+        const detalle = `Orden exonerada del pago en Caja (bonificación $0). Importe conservado. ${motivo ? 'Motivo: ' + String(motivo).trim() : ''}`.trim();
+        await registrarHistorialOrden(pool, erpId, 'Exonerada', UsuarioModif, detalle);
+      }
+    } catch (hErr) {
+      logger.warn('[CAJA] No se pudo registrar HistorialOrdenes para exonerar:', hErr.message);
+    }
+
+    logger.info(`[CAJA] Orden ${codigoOrden} exonerada del pago (PagId=${nuevoPagId}) por usuario ${UsuarioModif}.`);
+    res.status(200).json({ success: true, message: 'Orden exonerada del pago correctamente.', pagIdPago: nuevoPagId });
+  } catch (err) {
+    if (transaction) try { await transaction.rollback(); } catch (e) {}
+    logger.error('[EXONERAR ORDEN CAJA ERROR]', err);
+    res.status(500).json({ error: err.message });
+  }
+};
+
+// Revertir la exoneración de una orden: la vuelve a dejar cobrable.
+// Solo actúa si el pago vinculado es de tipo 'EXONERACION' (nunca toca un pago real).
+const revertirExoneracionOrden = async (req, res) => {
+  const { orderId } = req.body;
+  const UsuarioModif = req.user?.id || 70;
+
+  if (!orderId) {
+    return res.status(400).json({ error: 'Falta dato requerido (orderId).' });
+  }
+
+  let transaction;
+  try {
+    const pool = await getPool();
+    transaction = await pool.transaction();
+    await transaction.begin();
+
+    const ordenRes = await transaction.request()
+      .input('OrderId', sql.Int, orderId)
+      .query('SELECT OrdCodigoOrden, PagIdPago FROM dbo.OrdenesDeposito WHERE OrdIdOrden = @OrderId');
+    if (!ordenRes.recordset.length) throw new Error('Orden no encontrada.');
+
+    const { OrdCodigoOrden, PagIdPago } = ordenRes.recordset[0];
+    if (!PagIdPago) throw new Error('La orden no está exonerada.');
+
+    const pagoRes = await transaction.request()
+      .input('PagId', sql.Int, PagIdPago)
+      .query('SELECT PagTipoMovimiento FROM dbo.Pagos WHERE PagIdPago = @PagId');
+    const tipo = pagoRes.recordset[0]?.PagTipoMovimiento;
+    if (tipo !== 'EXONERACION') {
+      throw new Error('La orden tiene un pago real; no es una exoneración reversible.');
+    }
+
+    // Desvincular el pago de la orden y eliminar el registro de exoneración
+    await transaction.request()
+      .input('OrderId', sql.Int, orderId)
+      .query('UPDATE dbo.OrdenesDeposito SET PagIdPago = NULL WHERE OrdIdOrden = @OrderId');
+
+    await transaction.request()
+      .input('PagId', sql.Int, PagIdPago)
+      .query("DELETE FROM dbo.Pagos WHERE PagIdPago = @PagId AND PagTipoMovimiento = 'EXONERACION'");
+
+    await transaction.commit();
+
+    try {
+      const erpId = await buscarOrdenErpId(pool, orderId);
+      if (erpId) {
+        await registrarHistorialOrden(pool, erpId, 'Exoneración revertida', UsuarioModif, `Se revirtió la exoneración de la orden ${OrdCodigoOrden || orderId}; vuelve a ser cobrable.`);
+      }
+    } catch (hErr) {
+      logger.warn('[CAJA] No se pudo registrar HistorialOrdenes para revertir exoneración:', hErr.message);
+    }
+
+    logger.info(`[CAJA] Exoneración revertida en orden ${OrdCodigoOrden} (PagId=${PagIdPago}) por usuario ${UsuarioModif}.`);
+    res.status(200).json({ success: true, message: 'Exoneración revertida. La orden vuelve a ser cobrable.' });
+  } catch (err) {
+    if (transaction) try { await transaction.rollback(); } catch (e) {}
+    logger.error('[REVERTIR EXONERACION ERROR]', err);
+    res.status(500).json({ error: err.message });
+  }
+};
+
 module.exports = {
   createOrdenRetiro, getOrdenesRetiroPorEstados, actualizarOrdenRetiroEstado, marcarOrdenRetiroPronto,
   marcarOrdenRetiroEntregado, ordenesRetiroCaja, getOrdenesRetiroPasarPorCaja, ordenesRetiroMarcarPasarPorCaja, getOrdenesRetiroPorFecha,
   getOrdenesRetiroPorLugar, marcarDespachoEntregadoAutorizado, buscarParaMostrador, getClienteEnvioDatos, getTodasSinRetiro, backfillLugarRetiro, getOrdenesRetiroPorRemito,
-  editarCostoOrden, desvincularOrdenRetiro, cancelarOrdenCaja
+  editarCostoOrden, desvincularOrdenRetiro, cancelarOrdenCaja, exonerarOrdenCaja, revertirExoneracionOrden
 };
 

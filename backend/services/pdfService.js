@@ -306,9 +306,163 @@ const guardarDesdeBase64 = (nombreDocumento, pdfBase64, subcarpeta = 'facturas')
   return filePath;
 };
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// CIERRE DE CAJA (arqueo + listado de movimientos de la sesión)
+// ═══════════════════════════════════════════════════════════════════════════════
+/**
+ * Genera y guarda el PDF del cierre de una sesión de caja.
+ * Reproduce el "archivo de cierre": encabezado con el arqueo (montos inicial/final/
+ * sistema/diferencia) + el listado completo de movimientos de la sesión.
+ * @param {Object} params
+ *   @param {Object}   params.sesion       fila de SesionesTurno
+ *   @param {Array}    params.movimientos  [{ Fecha, Comprobante, Concepto, Usuario, Moneda, Entrada, Salida }]
+ *   @param {Object}   [params.empresa]    datos de emisor opcionales
+ * @returns {string} ruta absoluta del archivo guardado
+ */
+const generarPdfCierre = async ({ sesion, movimientos = [], empresa = {} }) => {
+  const doc      = await PDFDocument.create();
+  const font     = await doc.embedFont(StandardFonts.Helvetica);
+  const fontBold = await doc.embedFont(StandardFonts.HelveticaBold);
+
+  const A4 = [595.28, 841.89]; // portrait
+  const [width, height] = A4;
+  const marginX = 30;
+
+  const dark  = rgb(0.1, 0.1, 0.1);
+  const gray  = rgb(0.45, 0.45, 0.45);
+  const green = rgb(0.1, 0.5, 0.2);
+  const red   = rgb(0.7, 0.1, 0.1);
+
+  // Columnas del listado (x de inicio; montos alineados a la derecha por endX)
+  const COL = { fecha: 32, comp: 96, concepto: 178, usuario: 372, entradaEnd: 500, salidaEnd: 566 };
+
+  const simb = (m) => (m === 'USD' ? 'US$ ' : '$ ');
+  const drawRight = (page, text, endX, y, size, f, color) => {
+    const w = f.widthOfTextAtSize(text, size);
+    page.drawText(text, { x: endX - w, y, size, font: f, color });
+  };
+  const trunc = (s, n) => { s = String(s || ''); return s.length > n ? s.substring(0, n - 1) + '…' : s; };
+
+  // ── Crear página con la cabecera de columnas ────────────────────────────────
+  const nuevaPagina = (conEncabezadoTabla = true) => {
+    const page = doc.addPage(A4);
+    let y = height - 40;
+    if (conEncabezadoTabla) {
+      page.drawRectangle({ x: marginX, y: y - 4, width: width - marginX * 2, height: 16, color: rgb(0.93, 0.93, 0.95) });
+      page.drawText('FECHA',       { x: COL.fecha,    y, size: 7.5, font: fontBold, color: gray });
+      page.drawText('COMPROBANTE', { x: COL.comp,     y, size: 7.5, font: fontBold, color: gray });
+      page.drawText('CONCEPTO',    { x: COL.concepto, y, size: 7.5, font: fontBold, color: gray });
+      page.drawText('USUARIO',     { x: COL.usuario,  y, size: 7.5, font: fontBold, color: gray });
+      drawRight(page, 'ENTRADA', COL.entradaEnd, y, 7.5, fontBold, gray);
+      drawRight(page, 'SALIDA',  COL.salidaEnd,  y, 7.5, fontBold, gray);
+      y -= 20;
+    }
+    return { page, y };
+  };
+
+  // ── Primera página: bloque de arqueo ────────────────────────────────────────
+  let page = doc.addPage(A4);
+  let y = height - 45;
+
+  page.drawText('CIERRE DE CAJA', { x: marginX, y, size: 18, font: fontBold, color: dark });
+  drawRight(page, `Sesión #${sesion.StuIdSesion}`, width - marginX, y, 13, fontBold, rgb(0.25, 0.3, 0.5));
+  y -= 16;
+  page.drawText(String(sesion.StuEstado || ''), { x: marginX, y, size: 9, font, color: gray });
+  y -= 6;
+  page.drawLine({ start: { x: marginX, y }, end: { x: width - marginX, y }, thickness: 0.7, color: rgb(0.8, 0.8, 0.8) });
+  y -= 20;
+
+  // Filas del arqueo en dos columnas
+  const colL = marginX, colR = width / 2 + 10;
+  const linea = (x, label, value, color = dark) => {
+    page.drawText(`${label}:`, { x, y, size: 8.5, font, color: gray });
+    page.drawText(String(value ?? '—'), { x: x + 110, y, size: 9, font: fontBold, color });
+  };
+  const dif = Number(sesion.StuDiferencia || 0);
+  linea(colL, 'Apertura', fmtDate(sesion.StuFechaApertura));
+  linea(colR, 'Cierre',   sesion.StuFechaCierre ? fmtDate(sesion.StuFechaCierre) : '—');
+  y -= 15;
+  linea(colL, 'Abrió', sesion.UsuarioAbre || '—');
+  linea(colR, 'Cerró', sesion.UsuarioCierra || '—');
+  y -= 15;
+  linea(colL, 'Monto inicial', `$ ${fmtNum(sesion.StuMontoInicial)}`);
+  linea(colR, 'Monto inicial USD', `US$ ${fmtNum(sesion.StuMontoInicialUSD)}`);
+  y -= 15;
+  linea(colL, 'Monto declarado', `$ ${fmtNum(sesion.StuMontoFinal)}`);
+  linea(colR, 'Monto declarado USD', `US$ ${fmtNum(sesion.StuMontoFinalUSD)}`);
+  y -= 15;
+  linea(colL, 'Monto sistema', `$ ${fmtNum(sesion.StuMontoSistema)}`);
+  linea(colR, 'Diferencia', `$ ${fmtNum(dif)}`, Math.abs(dif) < 0.01 ? green : red);
+  y -= 22;
+
+  // Encabezado de la tabla en la primera página
+  page.drawText('MOVIMIENTOS DE LA SESIÓN', { x: marginX, y, size: 10, font: fontBold, color: dark });
+  drawRight(page, `${movimientos.length} movimiento${movimientos.length !== 1 ? 's' : ''}`, width - marginX, y, 8, font, gray);
+  y -= 16;
+  page.drawRectangle({ x: marginX, y: y - 4, width: width - marginX * 2, height: 16, color: rgb(0.93, 0.93, 0.95) });
+  page.drawText('FECHA',       { x: COL.fecha,    y, size: 7.5, font: fontBold, color: gray });
+  page.drawText('COMPROBANTE', { x: COL.comp,     y, size: 7.5, font: fontBold, color: gray });
+  page.drawText('CONCEPTO',    { x: COL.concepto, y, size: 7.5, font: fontBold, color: gray });
+  page.drawText('USUARIO',     { x: COL.usuario,  y, size: 7.5, font: fontBold, color: gray });
+  drawRight(page, 'ENTRADA', COL.entradaEnd, y, 7.5, fontBold, gray);
+  drawRight(page, 'SALIDA',  COL.salidaEnd,  y, 7.5, fontBold, gray);
+  y -= 16;
+
+  // ── Filas de movimientos (con paginación) ───────────────────────────────────
+  const rowH = 13, bottomLimit = 45;
+  let totInUYU = 0, totOutUYU = 0, totInUSD = 0, totOutUSD = 0;
+
+  for (let i = 0; i < movimientos.length; i++) {
+    const m = movimientos[i];
+    if (y < bottomLimit) { const np = nuevaPagina(true); page = np.page; y = np.y; }
+
+    if (i % 2 === 0) {
+      page.drawRectangle({ x: marginX, y: y - 3, width: width - marginX * 2, height: rowH, color: rgb(0.975, 0.975, 0.975) });
+    }
+    const inn = Number(m.Entrada || 0), out = Number(m.Salida || 0);
+    if (m.Moneda === 'USD') { totInUSD += inn; totOutUSD += out; } else { totInUYU += inn; totOutUYU += out; }
+
+    page.drawText(fmtDate(m.Fecha),          { x: COL.fecha,    y, size: 6.5, font, color: dark });
+    page.drawText(trunc(m.Comprobante, 16),  { x: COL.comp,     y, size: 6.5, font, color: dark });
+    page.drawText(trunc(m.Concepto, 44),     { x: COL.concepto, y, size: 6.5, font, color: dark });
+    page.drawText(trunc(m.Usuario, 14),      { x: COL.usuario,  y, size: 6.5, font, color: dark });
+    if (inn > 0) drawRight(page, `${simb(m.Moneda)}${fmtNum(inn)}`, COL.entradaEnd, y, 6.5, fontBold, green);
+    if (out > 0) drawRight(page, `${simb(m.Moneda)}${fmtNum(out)}`, COL.salidaEnd,  y, 6.5, fontBold, red);
+    y -= rowH;
+  }
+
+  // ── Totales del listado ─────────────────────────────────────────────────────
+  if (y < bottomLimit + 40) { const np = nuevaPagina(false); page = np.page; y = np.y; }
+  y -= 6;
+  page.drawLine({ start: { x: marginX, y }, end: { x: width - marginX, y }, thickness: 0.7, color: rgb(0.8, 0.8, 0.8) });
+  y -= 14;
+  page.drawText('TOTALES', { x: marginX, y, size: 8.5, font: fontBold, color: dark });
+  drawRight(page, `$ ${fmtNum(totInUYU)}`, COL.entradaEnd, y, 8, fontBold, green);
+  drawRight(page, `$ ${fmtNum(totOutUYU)}`, COL.salidaEnd, y, 8, fontBold, red);
+  y -= 12;
+  if (totInUSD > 0 || totOutUSD > 0) {
+    page.drawText('TOTALES USD', { x: marginX, y, size: 8.5, font: fontBold, color: dark });
+    drawRight(page, `US$ ${fmtNum(totInUSD)}`, COL.entradaEnd, y, 8, fontBold, green);
+    drawRight(page, `US$ ${fmtNum(totOutUSD)}`, COL.salidaEnd, y, 8, fontBold, red);
+    y -= 12;
+  }
+
+  // Pie en todas las páginas
+  const paginas = doc.getPages();
+  paginas.forEach((p, idx) => {
+    p.drawText(`Cierre de caja · Sesión #${sesion.StuIdSesion} · Generado: ${new Date().toLocaleString('es-UY')}`,
+      { x: marginX, y: 25, size: 6.5, font, color: rgb(0.6, 0.6, 0.6) });
+    p.drawText(`Página ${idx + 1} de ${paginas.length}`, { x: width - 90, y: 25, size: 6.5, font, color: rgb(0.6, 0.6, 0.6) });
+  });
+
+  const pdfBytes = await doc.save();
+  return guardarPDF(pdfBytes, `CIERRE-${sesion.StuIdSesion}-${Date.now()}`, 'cierres');
+};
+
 module.exports = {
   generarPdfEgreso,
   generarPdfIngreso,
+  generarPdfCierre,
   guardarDesdeBase64,
   guardarPDF,
   getBaseDir,

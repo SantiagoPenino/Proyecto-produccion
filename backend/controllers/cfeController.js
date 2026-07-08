@@ -755,10 +755,10 @@ exports.anularFactura = async (req, res) => {
 exports.editarFactura = async (req, res) => {
     try {
         const { id } = req.params;
-        const { 
-            DocTipo, CliIdCliente, MonIdMoneda, DocSubtotal, DocImpuestos, DocTotal, DocObservaciones, 
-            lineas, DocCliNombre, DocCliDocumento, DocCliDireccion, DocCliCiudad, 
-            DocPagado, MetodoPagoId, Pagos, empresaId
+        const {
+            DocTipo, CliIdCliente, MonIdMoneda, DocSubtotal, DocImpuestos, DocTotal, DocObservaciones,
+            lineas, DocCliNombre, DocCliDocumento, DocCliDireccion, DocCliCiudad,
+            DocPagado, MetodoPagoId, Pagos, empresaId, preservarPagos
         } = req.body;
 
         const pool = await getPool();
@@ -1090,7 +1090,37 @@ exports.editarFactura = async (req, res) => {
                 }
             } else {
                 // Se mantiene Contado: actualizar transacciones y pagos
-                if (currentTcaId) {
+                if (currentTcaId && preservarPagos) {
+                    // ── PRESERVAR EL COBRO REAL ─────────────────────────────────
+                    // Los pagos vienen intactos de BD y pueden diferir del total de
+                    // la factura por un ajuste monetario de caja (redondeo/pago
+                    // cerrado → 5.2.03/4.2.2). NO tocar dbo.Pagos (mantiene los
+                    // PagIdPago vinculados a OrdenesDeposito/OrdenesRetiro) ni
+                    // TcaTotalCobrado (lo realmente cobrado). Solo sincronizar los
+                    // datos del documento en la transacción.
+                    const configRes = await transaction.request()
+                        .input('codDoc', sql.NVarChar(100), DocTipo)
+                        .query(`SELECT CodDocumento FROM Config_TiposDocumento WHERE CodDocumento = @codDoc OR Detalle = @codDoc`);
+                    const config = configRes.recordset[0] || { CodDocumento: DocTipo };
+
+                    await transaction.request()
+                        .input('tcaId', sql.Int, currentTcaId)
+                        .input('clienteId', sql.Int, CliIdCliente || 2089)
+                        .input('tipoDoc', sql.VarChar(20), (config.CodDocumento || DocTipo).substring(0, 20))
+                        .input('total', sql.Decimal(18, 4), DocTotal)
+                        .input('serie', sql.VarChar(5), newSerie)
+                        .input('numero', sql.VarChar(20), String(newNumero))
+                        .query(`
+                            UPDATE dbo.TransaccionesCaja
+                            SET TcaClienteId = @clienteId,
+                                TcaTipoDocumento = @tipoDoc,
+                                TcaTotalBruto = @total,
+                                TcaTotalNeto = @total,
+                                TcaSerieDoc = @serie,
+                                TcaNumeroDoc = @numero
+                            WHERE TcaIdTransaccion = @tcaId
+                        `);
+                } else if (currentTcaId) {
                     const cotResult = await transaction.request().query(`SELECT TOP 1 CotDolar FROM Cotizaciones ORDER BY CotFecha DESC`);
                     const cotDolar = cotResult.recordset.length > 0 ? cotResult.recordset[0].CotDolar : 40.0;
                     const cotNum = MonIdMoneda === 2 ? cotDolar : 1;
@@ -1355,6 +1385,8 @@ exports.getDetalleFactura = async (req, res) => {
                     s.SecRangoDesde,
                     s.SecRangoHasta,
                     s.SecFechaVencimientoCAE,
+                    -- Código de tipo de comprobante DGI (ej: 111 = e-Ticket, 101 = e-Factura)
+                    (SELECT TOP 1 ct2.Codigo_Efact FROM dbo.Config_TiposDocumento ct2 WHERE ct2.Detalle = d.DocTipo) AS CodigoEfact,
                     -- Config CFE global
                     (SELECT CfeCfgValor FROM dbo.Config_CFE WHERE CfeCfgClave = 'URL_VERIFICACION' AND CfeCfgActivo = 1) AS CfeUrlVerificacion,
                     (SELECT CfeCfgValor FROM dbo.Config_CFE WHERE CfeCfgClave = 'TEXTO_IVA_AL_DIA' AND CfeCfgActivo = 1) AS CfeTextoIvaDia,

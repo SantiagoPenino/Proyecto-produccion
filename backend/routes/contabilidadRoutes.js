@@ -24,6 +24,7 @@ router.patch('/clientes/:CliIdCliente/dgi', ctrl.actualizarClienteDGI);
 router.get('/cuentas/:CueIdCuenta/movimientos', ctrl.getMovimientos);
 router.post('/movimientos/ajuste', ctrl.registrarAjusteManual);
 router.post('/movimientos/pago-anticipado', ctrl.registrarPagoAnticipado);
+router.post('/movimientos/saldo-inicial', ctrl.registrarSaldoInicial);
 router.post('/movimientos/pago-cruzado', ctrl.registrarPagoCruzado);
 router.get('/movimientos/:MovIdMovimiento/recibo/pdf', ctrl.generarReciboPdf);
 router.post('/movimientos/:MovIdMovimiento/anular-orden', ctrl.anularOrdenPendiente);
@@ -98,7 +99,13 @@ router.post('/caja/transaccion/:id/anular',   caja.anularTransaccion);
 router.get('/caja/transaccion/:id',           caja.getTransaccion);
 router.get('/caja/historial/:clienteId',      caja.getHistorialCliente);
 router.get('/caja/movimientos-turno',         caja.getMovimientosTurno);
+router.get('/caja/reporte-central-admin',     caja.getReporteCentralAdmin); // Auditoría Central vs Administrativa por fecha
+router.get('/caja/cierres',                   caja.getCierresSesiones);     // Sesiones + PDF de cierre disponible
+router.get('/caja/cierre-pdf/:sesionId',      caja.getCierrePdf);           // Sirve el PDF de cierre guardado
+router.post('/caja/cierre-pdf/:sesionId/generar', caja.regenerarCierrePdf); // (Re)genera el PDF de cierre
 router.get('/caja/documentos',                caja.getDocumentosInternos); // Bandeja de recibos/egresos
+router.post('/caja/documentos/anular',           caja.anularDocumentoInterno);    // Anular recibo/egreso interno
+router.post('/caja/documentos/modificar-monto',  caja.modificarMontoDocumento);   // Modificar monto (anula+recrea)
 
 
 // Sesión de caja (apertura / cierre)

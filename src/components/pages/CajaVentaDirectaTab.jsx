@@ -28,12 +28,16 @@ export default function CajaVentaDirectaTab({
   allowedTipos = null,
   isAdminCaja = false,
   empresaId = null,
+  initialCliente = null,
+  hideClienteSelector = false,
 }) {
   // Cliente
   const [qCliente, setQCliente] = useState('');
   const [clientesRes, setClientesRes] = useState([]);
   const [buscandoCli, setBuscandoCli] = useState(false);
-  const [clienteSel, setClienteSel] = useState(null);
+  const [clienteSel, setClienteSel] = useState(initialCliente || null);
+  // Cliente fijo (Panel 360): preselecciona y evita re-búsqueda
+  useEffect(() => { if (initialCliente) setClienteSel(initialCliente); }, [initialCliente]);
 
   const getClienteDisplayName = (c) => {
     if (!c) return '';
@@ -254,8 +258,8 @@ export default function CajaVentaDirectaTab({
 
   return (
     <div className="flex flex-col lg:flex-row flex-1 overflow-hidden h-full min-h-0 bg-zinc-100">
-      {/* ── PANEL LATERAL DE CLIENTES ── */}
-      <div className="w-full lg:w-[360px] bg-white border-b lg:border-b-0 lg:border-r border-zinc-200 flex flex-col shrink-0 overflow-y-auto p-4 client-search-container">
+      {/* ── PANEL LATERAL DE CLIENTES ── (se oculta cuando el cliente ya viene fijo, ej. Panel 360) */}
+      <div className={`w-full lg:w-[360px] bg-white border-b lg:border-b-0 lg:border-r border-zinc-200 flex-col shrink-0 overflow-y-auto p-4 client-search-container ${hideClienteSelector ? 'hidden' : 'flex'}`}>
         <h3 className="font-black text-zinc-400 text-[11px] font-archivo uppercase tracking-widest mb-3 flex items-center justify-between">
           1. Seleccionar Cliente
           {clienteSel && <span className="text-emerald-600 flex items-center gap-1 text-[9px] font-bold bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-100">Verificado <CheckCircle size={10}/></span>}

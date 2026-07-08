@@ -23,7 +23,7 @@ import CierreCicloPreviewModal from './CierreCicloPreviewModal';
 const ORDEN_TYPES = ['ORDEN', 'ENTREGA', 'ORDEN_ANTICIPO'];
 import ClienteBilletera from '../common/ClienteBilletera';
 
-const fetchAPI = async (url, opts = {}) => {
+export const fetchAPI = async (url, opts = {}) => {
   try {
     const cleanUrl = url.startsWith('/api') ? url.replace('/api', '') : url;
     const isPostFile = opts.body instanceof FormData;
@@ -44,8 +44,8 @@ const fetchAPI = async (url, opts = {}) => {
   }
 };
 
-const fmt      = (n, sym) => `${sym || '$'} ${new Intl.NumberFormat('es-UY', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(Number(n ?? 0))}`;
-const fmtNum   = (n) => new Intl.NumberFormat('es-UY', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(Number(n ?? 0));
+export const fmt      = (n, sym) => `${sym || '$'} ${new Intl.NumberFormat('es-UY', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(Number(n ?? 0))}`;
+export const fmtNum   = (n) => new Intl.NumberFormat('es-UY', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(Number(n ?? 0));
 const fmtFecha = (f) => f ? new Date(f).toLocaleDateString('es-UY') : '—';
 const fmtFechaHora = (f) => f ? new Date(f).toLocaleString('es-UY', { dateStyle: 'short', timeStyle: 'short' }) : '—';
 const diasRestantes = (fc) => fc ? Math.ceil((new Date(fc) - new Date()) / 86400000) : null;
@@ -718,7 +718,7 @@ const Badge = ({ children, color = 'slate' }) => {
 };
 
 // ── Fila de cliente activo ────────────────────────────────────────────────────
-const FilaCliente = ({ c, seleccionado, onClick }) => {
+export const FilaCliente = ({ c, seleccionado, onClick }) => {
   return (
     <button onClick={onClick}
       className={`w-full text-left px-3 py-2.5 hover:bg-indigo-50 transition-colors border-b border-slate-200
@@ -1042,6 +1042,146 @@ const ModalPago = ({ cuenta, onClose, onSuccess }) => {
   );
 };
 
+// ── Modal Saldo Inicial (apertura por moneda: a favor o en contra) ───────────
+const ModalSaldoInicial = ({ cliente, onClose, onSuccess }) => {
+  const [form, setForm] = useState({
+    MonIdMoneda: '1',       // 1 = UYU, 2 = USD
+    Sentido:     'DEUDA',   // DEUDA = en contra (debe) · FAVOR = a favor
+    MovImporte:  '',
+    MovConcepto: '',
+    Referencia:  '',
+  });
+  const [saving, setSaving] = useState(false);
+
+  const sim     = form.MonIdMoneda === '2' ? 'US$' : '$';
+  const esDeuda = form.Sentido === 'DEUDA';
+
+  const guardar = async (e) => {
+    e.preventDefault();
+    if (!form.MovImporte || Number(form.MovImporte) <= 0) { toast.error('El importe debe ser mayor a 0'); return; }
+    setSaving(true);
+    try {
+      const res = await fetchAPI('/api/contabilidad/movimientos/saldo-inicial', {
+        method: 'POST',
+        body: JSON.stringify({
+          CliIdCliente: cliente.CliIdCliente,
+          MonIdMoneda:  Number(form.MonIdMoneda),
+          Sentido:      form.Sentido,
+          MovImporte:   Number(form.MovImporte),
+          MovConcepto:  form.MovConcepto || null,
+          Referencia:   form.Referencia || null,
+        }),
+      });
+      toast.success(res.message || '✅ Saldo inicial registrado');
+      onSuccess?.();
+      onClose();
+    } catch (err) { toast.error(err.message); }
+    finally { setSaving(false); }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
+      onClick={e => e.target === e.currentTarget && onClose()}>
+      <div className="bg-[#f1f5f9] rounded-2xl shadow-2xl w-full max-w-lg mx-4 overflow-hidden max-h-[90vh] overflow-y-auto">
+        <div className={`px-6 py-4 flex items-center justify-between bg-gradient-to-r ${esDeuda ? 'from-red-500 to-rose-500' : 'from-blue-500 to-cyan-500'} text-slate-800 sticky top-0`}>
+          <div>
+            <p className="text-xs uppercase tracking-widest opacity-80">{cliente.Nombre}</p>
+            <h2 className="text-lg font-bold mt-0.5">Cargar Saldo Inicial</h2>
+          </div>
+          <button onClick={onClose} className="p-1.5 hover:bg-slate-100 rounded-lg"><X size={16} /></button>
+        </div>
+
+        <form onSubmit={guardar} className="px-6 py-5 space-y-4">
+          {/* Moneda */}
+          <div>
+            <label className="block text-xs font-semibold text-slate-600 mb-2">Moneda</label>
+            <div className="grid grid-cols-2 gap-2">
+              {[{ v: '1', l: 'UYU  $' }, { v: '2', l: 'USD  US$' }].map(op => (
+                <button type="button" key={op.v}
+                  onClick={() => setForm(f => ({ ...f, MonIdMoneda: op.v }))}
+                  className={`px-3 py-2 rounded-lg text-xs font-semibold border transition-all
+                    ${form.MonIdMoneda === op.v ? 'bg-indigo-600 text-white border-indigo-600 shadow-sm' : 'bg-slate-50/50 text-slate-600 border-slate-200 hover:border-indigo-300 hover:bg-indigo-50'}`}>
+                  {op.l}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Sentido */}
+          <div>
+            <label className="block text-xs font-semibold text-slate-600 mb-2">Sentido del saldo</label>
+            <div className="grid grid-cols-2 gap-2">
+              <button type="button"
+                onClick={() => setForm(f => ({ ...f, Sentido: 'DEUDA' }))}
+                className={`px-3 py-2.5 rounded-lg text-xs font-semibold border transition-all flex items-center justify-center gap-1.5
+                  ${esDeuda ? 'bg-red-600 text-white border-red-600 shadow-sm' : 'bg-slate-50/50 text-slate-600 border-slate-200 hover:border-red-300 hover:bg-red-50'}`}>
+                <TrendingDown size={14} /> En contra (debe)
+              </button>
+              <button type="button"
+                onClick={() => setForm(f => ({ ...f, Sentido: 'FAVOR' }))}
+                className={`px-3 py-2.5 rounded-lg text-xs font-semibold border transition-all flex items-center justify-center gap-1.5
+                  ${!esDeuda ? 'bg-blue-600 text-white border-blue-600 shadow-sm' : 'bg-slate-50/50 text-slate-600 border-slate-200 hover:border-blue-300 hover:bg-blue-50'}`}>
+                <TrendingUp size={14} /> A favor
+              </button>
+            </div>
+            <p className="mt-2 text-[11px] text-slate-500 bg-slate-50/50 rounded-lg px-3 py-2">
+              {esDeuda
+                ? 'El cliente te debe este monto al inicio. Se crea la deuda para imputar pagos futuros y que figure en antigüedad.'
+                : 'El cliente tenía crédito a favor al inicio. Se imputa contra deudas existentes y el excedente queda como saldo a favor.'}
+            </p>
+          </div>
+
+          {/* Importe */}
+          <div>
+            <label className="block text-xs font-semibold text-slate-600 mb-1">Importe ({sim})</label>
+            <div className="relative">
+              <DollarSign size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" />
+              <input type="number" min="0.01" step="0.01" required
+                value={form.MovImporte}
+                onChange={e => setForm(f => ({ ...f, MovImporte: e.target.value }))}
+                placeholder="0,00"
+                className="w-full pl-8 pr-4 py-2.5 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-blue-400 font-mono" />
+            </div>
+          </div>
+
+          {/* Concepto */}
+          <div>
+            <label className="block text-xs font-semibold text-slate-600 mb-1">Concepto (opcional)</label>
+            <input type="text"
+              value={form.MovConcepto}
+              onChange={e => setForm(f => ({ ...f, MovConcepto: e.target.value }))}
+              placeholder={esDeuda ? 'Saldo inicial deudor' : 'Saldo inicial a favor'}
+              className="w-full px-3 py-2.5 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-blue-400" />
+          </div>
+
+          {/* Referencia */}
+          <div>
+            <label className="block text-xs font-semibold text-slate-600 mb-1">Referencia (opcional)</label>
+            <input type="text"
+              value={form.Referencia}
+              onChange={e => setForm(f => ({ ...f, Referencia: e.target.value }))}
+              placeholder="Ej: CARGA_HISTORICA, sistema anterior..."
+              className="w-full px-3 py-2.5 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-blue-400" />
+          </div>
+
+          {/* Acciones */}
+          <div className="flex gap-3 pt-2">
+            <button type="button" onClick={onClose}
+              className="flex-1 py-2.5 border border-slate-200 rounded-lg text-sm text-slate-600 hover:bg-slate-50/50 transition-colors">
+              Cancelar
+            </button>
+            <button type="submit" disabled={saving}
+              className={`flex-1 py-2.5 rounded-lg text-sm text-white font-semibold transition-colors disabled:opacity-50 flex items-center justify-center gap-2 ${esDeuda ? 'bg-red-600 hover:bg-red-700' : 'bg-blue-600 hover:bg-blue-700'}`}>
+              {saving ? <RefreshCw size={14} className="animate-spin" /> : <PlusCircle size={14} />}
+              Registrar saldo inicial
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+};
+
 // ── Órdenes pendientes en vista Estado de Cuenta ─────────────────────────────
 const OrdenesEstadoCuenta = ({ movs, simbolo }) => {
   const pendientes = movs.filter(m =>
@@ -1110,7 +1250,7 @@ const OrdenesEstadoCuenta = ({ movs, simbolo }) => {
 };
 
 // ── Panel movimientos ─────────────────────────────────────────────────────────
-const MovimientosPanel = ({ CueIdCuenta, simbolo = '$', onClose, cuenta, onRegistrarPago, CliIdCliente, cliente, desde, hasta, trigger, ordenesPendientes }) => {
+export const MovimientosPanel = ({ CueIdCuenta, simbolo = '$', onClose, cuenta, onRegistrarPago, CliIdCliente, cliente, desde, hasta, trigger, ordenesPendientes }) => {
   const [movs, setMovs]           = useState([]);
   const [ciclosInfo, setCiclosInfo] = useState({});
   const [loading, setLoading]     = useState(false);
@@ -1767,7 +1907,7 @@ const CiclosPanel = ({ cuenta, CliIdCliente, cliente, onClose, onCicloChanged })
 };
 
 // ── Panel planes de recursos (Metros / KG) ─────────────────────────────
-const PlanesPanel = ({ cuenta, CliIdCliente, cliente, desde, hasta, onClose, onChanged }) => {
+export const PlanesPanel = ({ cuenta, CliIdCliente, cliente, desde, hasta, onClose, onChanged }) => {
   const [planes, setPlanes]       = useState([]);
   const [loading, setLoading]     = useState(false);
   const [working, setWorking]     = useState(false);
@@ -2825,6 +2965,7 @@ export default function ContabilidadCuentasView() {
   const [loadingCuentas, setLoadingCuentas]   = useState(false);
   const [paneles, setPaneles]                 = useState({});
   const [modalPago, setModalPago]             = useState(null);
+  const [showSaldoInicial, setShowSaldoInicial] = useState(false);
   const [tabCuentas, setTabCuentas]           = useState('SALDOS');
   const [refreshBilletera, setRefreshBilletera] = useState(0);
 
@@ -3050,6 +3191,15 @@ export default function ContabilidadCuentasView() {
         />
       )}
 
+      {/* Modal saldo inicial (apertura por moneda: a favor / en contra) */}
+      {showSaldoInicial && clienteSel && (
+        <ModalSaldoInicial
+          cliente={clienteSel}
+          onClose={() => setShowSaldoInicial(false)}
+          onSuccess={recargarCuentas}
+        />
+      )}
+
 
 
       <div className="bg-[#f1f5f9] p-2 sm:p-4 text-slate-700 font-sans custom-scrollbar">
@@ -3208,6 +3358,22 @@ export default function ContabilidadCuentasView() {
                       </div>
 
                       <div className="flex items-center gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => navigate('/contabilidad/cliente-360', { state: { selectedClienteId: clienteSel.CliIdCliente } })}
+                          title="Abrir el nuevo Panel 360° del cliente"
+                          className="flex items-center gap-1.5 px-3 py-2.5 bg-cyan-700 hover:bg-cyan-800 text-white text-xs font-bold uppercase tracking-widest rounded-lg transition-colors shadow-sm"
+                        >
+                          <Zap size={14} /> Panel 360
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setShowSaldoInicial(true)}
+                          title="Cargar saldo inicial (a favor o en contra)"
+                          className="flex items-center gap-1.5 px-3 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold uppercase tracking-widest rounded-lg transition-colors shadow-sm"
+                        >
+                          <PlusCircle size={14} /> Saldo inicial
+                        </button>
                         <button
                           type="button"
                           onClick={handleImprimirEstadoCuenta}

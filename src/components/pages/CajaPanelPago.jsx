@@ -69,12 +69,14 @@ export default function CajaPanelPago({
   layout = 'vertical',
   showSubmitButton = true,
   onCondicionChange,   // callback(condicion: 'CONTADO'|'CREDITO') cuando el usuario cambia el toggle
+  condicion = null,    // condición controlada desde el padre ('CONTADO'|'CREDITO'); necesaria para reflejar un Pedido Caja a crédito al editar
   locked = false,      // Bloquea tipo doc, condición y método de pago (para vendedores)
   onNumDocPredict,     // Callback opcional para recibir el número de doc generado (para mostrarlo afuera)
   comprobanteFile = null,   // Archivo de comprobante (cuando locked=true, se muestra inline)
   onComprobanteFile,        // Setter del archivo
   comprobanteError = false, // Borde rojo si no hay comprobante al intentar procesar
   comprobanteRef = null,    // Ref del input file
+  ajusteMonto = 0,          // Ajuste monetario a contabilizar (en UYU): + recargo / − descuento
 }) {
   const esEgreso = mode === 'EGRESO';
   const tiposDoc = tiposDocDisponibles.length > 0
@@ -84,7 +86,16 @@ export default function CajaPanelPago({
   const [chequeIndexActivo, setChequeIndexActivo] = useState(null);
   const [numDocPredict, setNumDocPredict] = useState('...');
   // Estado interno para rastrear CRÉDITO en PEDIDO CAJA (tipoDoc '40' no tiene variante crédito)
-  const [pcCredito, setPcCredito] = useState(false);
+  const [pcCredito, setPcCredito] = useState(condicion === 'CREDITO');
+
+  // Si el padre controla la condición (ej. al editar un Pedido Caja creado a crédito),
+  // sincronizar el toggle interno. Como el tipoDoc '40' es igual para contado y crédito,
+  // esta es la única forma de que el panel refleje el crédito cargado.
+  useEffect(() => {
+    if (condicion === 'CREDITO' || condicion === 'CONTADO') {
+      setPcCredito(condicion === 'CREDITO');
+    }
+  }, [condicion]);
 
   // Mapeo bidireccional entre tipoDoc y los botones interactivos
   const { derivedTipoCliente, derivedCondicion } = useMemo(() => {
@@ -330,7 +341,9 @@ export default function CajaPanelPago({
                   {totalIngresado === 0
                     ? derivedCondicion === 'CREDITO' ? '💳 Factura a Crédito' : '⏳ Sin pago inicial'
                     : balanceOK
-                      ? '✓ Caja Balanceada'
+                      ? (Math.abs(ajusteMonto) >= 0.005
+                          ? `✓ Con ajuste ${ajusteMonto < 0 ? '▼' : '▲'} $ ${fmt(Math.abs(ajusteMonto))}`
+                          : '✓ Caja Balanceada')
                       : diferencia > 0
                         ? `Falta ${simbMoneda} ${fmt(Math.abs(diferencia))}`
                         : `Excede ${simbMoneda} ${fmt(Math.abs(diferencia))}`}
@@ -426,6 +439,16 @@ export default function CajaPanelPago({
               </div>
               ) /* fin locked ? chip : botones */
             ) : hasReciboVouchers ? (
+              !tiposDoc.some(t => t.value === 'NINGUNO') ? (
+                /* Solo Recibo: etiqueta compacta con el número (sin toggle de una sola opción) */
+                <div className="flex items-center gap-2 bg-purple-50 border border-purple-200 rounded-xl px-3.5 py-2.5">
+                  <Receipt size={15} className="text-purple-600 shrink-0" />
+                  <span className="text-xs font-black text-purple-700 uppercase tracking-wide">Recibo</span>
+                  <span className="ml-auto bg-purple-600 text-white rounded-lg px-2.5 py-1 text-[10px] font-black tracking-widest font-mono">
+                    {numDoc || numDocPredict}
+                  </span>
+                </div>
+              ) : (
               <div className="flex bg-zinc-100 border border-zinc-200 rounded-2xl p-1 gap-1">
                 <button
                   type="button"
@@ -457,6 +480,7 @@ export default function CajaPanelPago({
                   </button>
                 )}
               </div>
+              )
             ) : (
               <LightSelect
                 value={tipoDoc}
@@ -466,8 +490,8 @@ export default function CajaPanelPago({
               />
             )}
 
-            {/* SERIE & NÚMERO (oculto cuando locked) */}
-            {!esEgreso && tipoDoc !== 'NINGUNO' && !locked && (
+            {/* SERIE & NÚMERO (oculto cuando locked, o cuando es recibo compacto que ya muestra el número) */}
+            {!esEgreso && tipoDoc !== 'NINGUNO' && !locked && !(hasReciboVouchers && !tiposDoc.some(t => t.value === 'NINGUNO')) && (
               <div className="flex gap-3">
                 <div className="flex-1 flex items-center gap-2 bg-zinc-50 border border-zinc-200 rounded-xl px-3.5 py-2 shadow-inner">
                   <span className="text-[10px] font-black text-slate-400 uppercase tracking-wider shrink-0 select-none">Serie:</span>
@@ -1067,7 +1091,9 @@ export default function CajaPanelPago({
                   {totalIngresado === 0
                     ? derivedCondicion === 'CREDITO' ? '💳 Factura a Crédito' : '⏳ Sin pago inicial'
                     : balanceOK
-                      ? '✅ Caja Balanceada'
+                      ? (Math.abs(ajusteMonto) >= 0.005
+                          ? `✅ Con ajuste ${ajusteMonto < 0 ? '▼' : '▲'} $ ${fmt(Math.abs(ajusteMonto))}`
+                          : '✅ Caja Balanceada')
                       : diferencia > 0
                         ? `❌ Falta ${simbMoneda} ${fmt(Math.abs(diferencia))}`
                         : `⚡ Excede ${simbMoneda} ${fmt(Math.abs(diferencia))}`}

@@ -427,6 +427,10 @@ export default function CierreCicloPreviewModal({
     }
   };
 
+  const tieneRecargoUrgencia = (logPrecioAplicado) => {
+    return typeof logPrecioAplicado === 'string' && /urgencia/i.test(logPrecioAplicado);
+  };
+
   const getDetallesParaPDF = () => {
     const detallesParaPDF = [];
     movs.forEach(m => {
@@ -457,9 +461,10 @@ export default function CierreCicloPreviewModal({
             const rate = (monedaFactura === 'UYU' && orderCurrency === 'USD') ? cotDolar : (monedaFactura === 'USD' && orderCurrency === 'UYU' ? (1/cotDolar) : 1);
             orderSubtotal += sub * rate;
           });
+          const urgenciaOrden = detallesFiltrados.some(d => tieneRecargoUrgencia(d.LogPrecioAplicado));
           detallesParaPDF.push({
             DcdNomItem: `${m.OrdCodigoOrden || m.MovConcepto}`,
-            DcdDscItem: m.OrdNombreTrabajo ? m.OrdNombreTrabajo : '',
+            DcdDscItem: `${m.OrdNombreTrabajo ? m.OrdNombreTrabajo : ''}${urgenciaOrden ? ' (Urgencia)' : ''}`,
             DcdCantidad: 1,
             DcdSubtotal: orderSubtotal
           });
@@ -486,7 +491,7 @@ export default function CierreCicloPreviewModal({
             orderSubtotal += finalSub;
 
             const descArticulo = `${d.ArticuloNombre ? d.ArticuloNombre.trim() + ' - ' : ''}${(d.Descripcion || d.LogPrecioAplicado || 'Servicio').trim()}`;
-            const descOrden = `${m.OrdCodigoOrden || m.MovConcepto}${m.OrdNombreTrabajo ? ` - ${m.OrdNombreTrabajo}` : ''}`;
+            const descOrden = `${m.OrdCodigoOrden || m.MovConcepto}${m.OrdNombreTrabajo ? ` - ${m.OrdNombreTrabajo}` : ''}${tieneRecargoUrgencia(d.LogPrecioAplicado) ? ' (Urgencia)' : ''}`;
 
             detallesParaPDF.push({
               DcdNomItem: descArticulo,

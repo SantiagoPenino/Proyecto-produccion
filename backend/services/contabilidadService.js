@@ -1298,7 +1298,7 @@ async function getMovimientos(CueIdCuenta, FechaDesde = null, FechaHasta = null,
       if (realImporte === 0) {
         isVisible = false; // Lo ocultamos para no mostrar una fila en 0 duplicada
       }
-    } else if (['PAGO', 'VTA_CAJA', 'SALDO_INICIAL', 'SALDO_A_FAVOR', 'COBRO', 'ANTICIPO', 'AJUSTE', 'AJUSTE_POS', 'AJUSTE_NEG', 'PAGO_CRUZADO', 'NOTA_DEBITO'].includes(m.MovTipo)) {
+    } else if (['PAGO', 'VTA_CAJA', 'SALDO_INICIAL', 'SALDO_INICIAL_DEUDOR', 'SALDO_A_FAVOR', 'COBRO', 'ANTICIPO', 'AJUSTE', 'AJUSTE_POS', 'AJUSTE_NEG', 'PAGO_CRUZADO', 'NOTA_DEBITO'].includes(m.MovTipo)) {
       isVisible = true;
       importeVirtual = Number(m.MovImporte);
     } else if (['NOTA_CREDITO', 'REVERSO', 'DEVOLUCION'].includes(m.MovTipo)) {

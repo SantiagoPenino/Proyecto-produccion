@@ -13,7 +13,7 @@ const fmtFecha = (f) => f ? new Date(f).toLocaleDateString('es-UY', { day:'2-dig
 const TIPOS_DOC_PAGO = [
   { value: '05', label: 'Recibo' },
 ];
-export default function CajaPagoDeudaTab({ sesion, metodosPago = [], cotizacion = 1, tiposDocDisponibles = TIPOS_DOC_PAGO, onPagoCompletado, isAdminCaja, initialCliente, initialDocumento, empresaId = null }) {
+export default function CajaPagoDeudaTab({ sesion, metodosPago = [], cotizacion = 1, tiposDocDisponibles = TIPOS_DOC_PAGO, onPagoCompletado, isAdminCaja, initialCliente, initialDocumento, empresaId = null, clienteFijo = false }) {
 
   // ─── Estado ─────────────────────────────────────────────────────────────
   const [qCliente, setQCliente]         = useState('');
@@ -347,7 +347,8 @@ export default function CajaPagoDeudaTab({ sesion, metodosPago = [], cotizacion 
                   className={`cursor-pointer shrink-0 rounded-2xl p-4 border-2 transition-all flex flex-col gap-3.5 relative overflow-hidden group shadow-sm active:scale-[0.98]
                     ${sel ? 'border-brand-cyan bg-brand-cyan/5 ring-4 ring-brand-cyan/10' : 'border-slate-200 bg-white hover:border-brand-cyan/50 hover:shadow-md hover:-translate-y-0.5'}`}>
 
-                  {/* Datos del Cliente */}
+                  {/* Datos del Cliente — se oculta con clienteFijo (Panel 360) para no repetir el cliente en cada deuda */}
+                  {!clienteFijo && (
                   <div className="flex flex-col gap-1 border-b border-zinc-100 pb-2.5">
                     <div className="flex items-start justify-between">
                       <span className="text-zinc-900 font-extrabold text-sm group-hover:text-brand-cyan transition-colors leading-snug">
@@ -375,6 +376,7 @@ export default function CajaPagoDeudaTab({ sesion, metodosPago = [], cotizacion 
                       )}
                     </div>
                   </div>
+                  )}
 
                   {/* Datos de la Deuda */}
                   <div className="flex items-center justify-between gap-4">

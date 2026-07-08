@@ -49,6 +49,9 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
   const { empresas, empresaSeleccionada, setEmpresaSeleccionada } = useEmpresas();
   // Guarda si el documento ORIGINAL era contado (para mostrar alerta de anulación de pago)
   const originalPagadoRef = useRef(null);
+  // Snapshot de los pagos REALES cargados de BD (modo editar). Si el usuario no los toca,
+  // se preservan tal cual al guardar (pueden diferir del total por un ajuste monetario de caja).
+  const pagosOriginalesRef = useRef(null);
 
   // Selectores simplificados
   const [tipoCliente, setTipoCliente] = useState('CONSUMIDOR_FINAL'); // 'CONSUMIDOR_FINAL' | 'RUT' | 'PEDIDO_CAJA'
@@ -168,7 +171,7 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
         setFormaPago(isContado ? 'CONTADO' : 'CREDITO');
         setNotas(d.DocObservaciones || '');
         if (res.data?.pagos && res.data.pagos.length > 0) {
-          setPagos(res.data.pagos.map((p, idx) => {
+          const pagosCargados = res.data.pagos.map((p, idx) => {
             // Si el pago guardado no trae moneda, asumir la MONEDA DEL DOCUMENTO (no UYU fijo)
             const mid = p.PagIdMonedaPago || p.monedaId || d.MonIdMoneda || 1;
             return {
@@ -178,6 +181,13 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
               moneda: mid === 2 ? 'USD' : 'UYU',
               monto: String(p.PagMontoPago || p.monto || '')
             };
+          });
+          setPagos(pagosCargados);
+          // Snapshot para detectar si el usuario los modifica
+          pagosOriginalesRef.current = pagosCargados.map(p => ({
+            metodoPagoId: String(p.metodoPagoId),
+            monedaId: Number(p.monedaId),
+            monto: parseFloat(p.monto) || 0
           }));
         }
 
@@ -270,10 +280,11 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
     setFormData(prev => ({ ...prev, DocTipo: docTipo, DocPagado: esContado }));
   }, [tiposDocs, tipoCliente, formaPago]);
 
-  // Cuando cambia el tipoCliente, forzar contado en Pedido Caja
-  useEffect(() => {
-    if (tipoCliente === 'PEDIDO_CAJA') setFormaPago('CONTADO');
-  }, [tipoCliente]);
+  // NOTA: un Pedido Caja puede ir a CRÉDITO (no se fuerza CONTADO).
+  // El default a CONTADO para un Pedido Caja recién elegido ya lo aplica el handler
+  // onTipoDoc (esContado = v === '40'), y la edición carga formaPago desde el documento.
+  // Antes había un efecto que forzaba CONTADO al cambiar tipoCliente: pisaba el crédito
+  // al editar un Pedido Caja creado a crédito, por eso se quitó.
 
   // Sincronizar monedaOp con formData.MonIdMoneda
   useEffect(() => {
@@ -329,6 +340,9 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
 
   // Rellenar automáticamente monto en pagos si solo hay una línea y cambia el total o la moneda
   useEffect(() => {
+    // Modo editar con pagos reales cargados de BD: NO pisarlos con el total teórico.
+    // Pueden diferir legítimamente por un ajuste monetario de caja (redondeo/pago cerrado).
+    if (esEditar && pagosOriginalesRef.current) return;
     if (formData.DocPagado && pagos.length === 1) {
       setPagos(prev => {
         const p = prev[0];
@@ -703,6 +717,26 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
   const diferenciaPago = totales.total - totalPagado;
   const balanceOK = Math.abs(diferenciaPago) < 0.05;
 
+  // ¿Los pagos actuales son exactamente los reales cargados de BD? → se preservan al guardar
+  const pagosUntouched = useMemo(() => {
+    const orig = pagosOriginalesRef.current;
+    if (!esEditar || !orig) return false;
+    if (pagos.length !== orig.length) return false;
+    return pagos.every((p, i) =>
+      String(p.metodoPagoId) === orig[i].metodoPagoId &&
+      Number(p.monedaId) === orig[i].monedaId &&
+      Math.abs((parseFloat(p.monto) || 0) - orig[i].monto) < 0.005
+    );
+  }, [pagos, esEditar]);
+
+  // Ajuste monetario registrado en el cobro original (lo cobrado − total factura), en UYU.
+  // Misma lógica que la caja: la factura va por el valor real, la diferencia es ajuste (5.2.03/4.2.2).
+  const ajusteEdicionUYU = useMemo(() => {
+    if (!pagosUntouched || !formData.DocPagado) return 0;
+    const factor = formData.MonIdMoneda === 2 ? (cotizacion || 1) : 1;
+    return parseFloat(((totalPagado - totales.total) * factor).toFixed(2));
+  }, [pagosUntouched, formData.DocPagado, formData.MonIdMoneda, totalPagado, totales.total, cotizacion]);
+
   const autoRellenarPago = () => {
     if (diferenciaPago <= 0) return;
     const last = pagos[pagos.length - 1];
@@ -778,7 +812,7 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
     if (formData.DocPagado && pagos.length === 0) {
       return toast.error('Debe seleccionar al menos un método de pago si el documento está pagado.');
     }
-    if (formData.DocPagado && !balanceOK) {
+    if (formData.DocPagado && !balanceOK && !pagosUntouched) {
       const monedaDoc = formData.MonIdMoneda === 2 ? 'U$S' : '$';
       return toast.error(
         `La suma de los pagos no coincide con el total de la factura. Total: ${monedaDoc} ${formatMoney(totales.total)} — Pagos ingresados (convertidos): ${monedaDoc} ${formatMoney(totalPagado)} — Diferencia: ${monedaDoc} ${formatMoney(Math.abs(diferenciaPago))}. Ojo: los pagos en otra moneda se convierten con la cotización del día ($ ${cotizacion}). Solución: revisá la moneda ($/U$S) de cada pago, ajustá el monto, o usá "Completar Saldo".`,
@@ -804,6 +838,8 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
           DocCliCiudad: formData.DocCliCiudad,
           DocPagado: formData.DocPagado,
           MetodoPagoId: formData.DocPagado ? parseInt(pagos[0]?.metodoPagoId) : null,
+          // Pagos intactos de BD → el backend los preserva tal cual (no borra/recrea)
+          preservarPagos: pagosUntouched,
           Pagos: formData.DocPagado ? pagos.map(p => ({
             metodoPagoId: parseInt(p.metodoPagoId),
             monto: parseFloat(p.monto),
@@ -871,7 +907,7 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
     }
   };
 
-  const formatMoney = (val) => new Intl.NumberFormat('es-UY', { minimumFractionDigits: 2 }).format(val);
+  const formatMoney = (val) => new Intl.NumberFormat('es-UY', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(val);
 
   return (
     <div className="fixed inset-0 z-[9999] bg-zinc-100 flex flex-col w-screen h-screen overflow-hidden animate-in fade-in select-none">
@@ -938,7 +974,8 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
         <CajaPanelPago
           layout="horizontal"
           mode="COBRO"
-          totalACubrir={totales.total}
+          totalACubrir={pagosUntouched && formData.DocPagado ? totalPagado : totales.total}
+          ajusteMonto={ajusteEdicionUYU}
           moneda={monedaOp}
           onMonedaChange={setMonedaOp}
           cotizacion={cotizacion}
@@ -958,6 +995,7 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
             else if (esRut) setTipoCliente('RUT');
             setFormaPago(esContado ? 'CONTADO' : 'CREDITO');
           }}
+          condicion={formaPago}
           onCondicionChange={(cond) => {
             // El toggle CONTADO/CRÉDITO es la fuente de verdad de la condición de pago.
             // Necesario para permitir marcar un Pedido Caja (tipoDoc '40') como CRÉDITO:
@@ -1204,22 +1242,22 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
                   </button>
                 </div>
 
-                <div>
-                  <table className="w-full text-left min-w-[650px] border-collapse">
+                <div className="overflow-x-auto -mx-1 px-1">
+                  <table className="w-full text-left min-w-[680px] border-collapse table-fixed">
                     <thead className="bg-zinc-50 border-b border-zinc-200 text-[9px] font-black text-zinc-500 uppercase tracking-widest sticky top-0 z-10">
                       <tr>
-                        <th className="p-2.5 pl-4">Concepto o Descripción</th>
-                        <th className="p-2.5 w-16 text-right">Cant.</th>
-                        <th className="p-2.5 w-28 text-right">
+                        <th className="p-2.5 pl-4 w-[36%]">Concepto o Descripción</th>
+                        <th className="p-2.5 w-[9%] min-w-[52px] text-right">Cant.</th>
+                        <th className="p-2.5 w-[16%] min-w-[100px] text-right">
                           Precio Unit.
                           <span className={`ml-1 text-[9px] font-black px-1.5 py-0.5 rounded-full ${monedaOp === 'USD' ? 'bg-amber-100 text-amber-700' : 'bg-blue-100 text-blue-700'}`}>
                             {monedaOp === 'USD' ? 'U$S' : '$UY'}
                           </span>
                         </th>
-                        <th className="p-2.5 w-24 text-center">IVA %</th>
-                        <th className="p-2.5 w-24 text-right">Subtotal Neto</th>
-                        <th className="p-2.5 w-24 text-right">Total con IVA</th>
-                        <th className="p-2.5 w-10 text-center"></th>
+                        <th className="p-2.5 w-[13%] min-w-[86px] text-center">IVA %</th>
+                        <th className="p-2.5 w-[12%] min-w-[92px] text-right">Subtotal Neto</th>
+                        <th className="p-2.5 w-[14%] min-w-[100px] text-right pr-4">Total con IVA</th>
+                        <th className="p-2.5 w-[44px] text-center"></th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-zinc-100">
@@ -1326,11 +1364,11 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
                                 <option value={0}>Exento 0%</option>
                               </select>
                             </td>
-                            <td className="p-1.5 text-right font-mono text-[11px] text-zinc-500 font-semibold">
-                              <span className={`text-[8px] mr-0.5 ${monedaOp === 'USD' ? 'text-amber-500' : 'text-blue-400'}`}>{monedaOp === 'USD' ? 'U$S' : '$'}</span>{formatMoney(subtotalNeto)}
+                            <td className="p-1.5 text-right font-mono text-xs text-zinc-700 font-bold whitespace-nowrap">
+                              <span className={`text-[10px] mr-0.5 ${monedaOp === 'USD' ? 'text-amber-500' : 'text-blue-400'}`}>{monedaOp === 'USD' ? 'U$S' : '$'}</span>{formatMoney(subtotalNeto)}
                             </td>
-                            <td className="p-1.5 text-right font-mono text-xs font-black text-zinc-800">
-                              <span className={`text-[9px] mr-0.5 ${monedaOp === 'USD' ? 'text-amber-600' : 'text-blue-500'}`}>{monedaOp === 'USD' ? 'U$S' : '$'}</span>{formatMoney(subtotalConIva)}
+                            <td className="p-1.5 pr-4 text-right font-mono text-xs font-black text-zinc-900 whitespace-nowrap">
+                              <span className={`text-[10px] mr-0.5 ${monedaOp === 'USD' ? 'text-amber-600' : 'text-blue-500'}`}>{monedaOp === 'USD' ? 'U$S' : '$'}</span>{formatMoney(subtotalConIva)}
                             </td>
                             <td className="p-1.5 text-center">
                               {formData.Lineas.length > 1 && (

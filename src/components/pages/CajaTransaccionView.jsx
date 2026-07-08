@@ -136,6 +136,7 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
   const [filtroTipo, setFiltroTipo] = useState('1');
   const [seleccionados, setSeleccionados] = useState([]);
   const [ajustes, setAjustes] = useState({});
+  const [importeACobrarRaw, setImporteACobrar] = useState(''); // '' = cobrar el total real
   const [carritosPago, setCarritosPago] = useState([{ id: Date.now(), metodoPagoId: 1, moneda: 'UYU', monedaId: 1, monto: '' }]);
   const [condicionCobro, setCondicionCobro] = useState('CONTADO');
   const [tipoDocCobro, setTipoDocCobro] = useState('40');
@@ -175,6 +176,11 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
   const [autMotivo, setAutMotivo] = useState('');
   const [autVencimiento, setAutVencimiento] = useState('');
   const [procesandoAut, setProcesandoAut] = useState(false);
+
+  // ── Edición de órdenes del retiro (cantidad / precio / total) ──
+  const [editRetiro, setEditRetiro] = useState(null); // { retiroId, codigoRef, retiro }
+  const [editRows, setEditRows] = useState([]);        // filas editables de las órdenes
+  const [savingEdit, setSavingEdit] = useState(false);
   const ticketRef = useRef(null);
   const [ticketData, setTicketData] = useState(null);
 
@@ -992,6 +998,170 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
     });
   };
 
+  // ── Abrir modal de edición de órdenes de un retiro ──
+  const abrirEdicionRetiro = (s) => {
+    const rows = getOrdenes(s.retiro).map(o => {
+      const total    = parseFloat((o.orderCosto || '').replace(/[^0-9.-]/g, '')) || 0;
+      const cantidad = parseFloat(o.orderCantidad) || 1;
+      const precio   = cantidad > 0 ? total / cantidad : total;
+      const exonerada = !!o.orderExonerada;
+      const bloqueado = o.orderIdMetodoPago !== null || o.orderPago !== null || o.orderEstado === 'Abonado' || o.orderEstado === 'Autorizado';
+      return {
+        orderId: o.orderId,
+        orderNumber: o.orderNumber || o.orderId,
+        nombreTrabajo: o.orderNombreTrabajo || o.articuloDescripcion || 'Impreso',
+        simbolo: o.simbolo || (o.monedaId === 2 ? 'US$' : '$'),
+        monedaId: o.monedaId || 1,
+        bloqueado,
+        exonerada,
+        // valores originales para detectar cambios
+        origCantidad: cantidad,
+        origTotal: Number(total.toFixed(2)),
+        origMonedaId: o.monedaId || 1,
+        // valores editables (strings para inputs controlados)
+        cantidad: String(cantidad),
+        precio: precio.toFixed(2),
+        total: total.toFixed(2),
+      };
+    });
+    setEditRows(rows);
+    setEditRetiro({ retiroId: s.retiroId, codigoRef: s.codigoRef || s.retiro?.ordenDeRetiro, retiro: s.retiro });
+  };
+
+  // Recalcula una fila cuando cambia cantidad, precio o total
+  const actualizarFilaEdicion = (idx, campo, valor) => {
+    setEditRows(prev => prev.map((row, i) => {
+      if (i !== idx) return row;
+      const next = { ...row, [campo]: valor };
+      const cant   = parseFloat(next.cantidad) || 0;
+      const precio = parseFloat(next.precio)   || 0;
+      const total  = parseFloat(next.total)    || 0;
+      if (campo === 'cantidad' || campo === 'precio') {
+        next.total = (cant * precio).toFixed(2);
+      } else if (campo === 'total') {
+        next.precio = cant > 0 ? (total / cant).toFixed(2) : next.precio;
+      } else if (campo === 'monedaId') {
+        next.monedaId = parseInt(valor, 10) || 1;
+        next.simbolo = next.monedaId === 2 ? 'US$' : '$';
+      }
+      return next;
+    }));
+  };
+
+  // Guarda los cambios de las órdenes editadas y refresca la caja
+  const guardarEdicionRetiro = async () => {
+    if (!editRetiro || savingEdit) return;
+    const cambiadas = editRows.filter(r => {
+      if (r.bloqueado) return false;
+      const cant  = parseFloat(r.cantidad) || 0;
+      const total = parseFloat(r.total)    || 0;
+      return Math.abs(cant - r.origCantidad) > 0.0001
+          || Math.abs(total - r.origTotal) > 0.001
+          || Number(r.monedaId) !== Number(r.origMonedaId);
+    });
+
+    if (cambiadas.length === 0) {
+      toast.info('No hay cambios para guardar.');
+      return;
+    }
+    for (const r of cambiadas) {
+      const cant  = parseFloat(r.cantidad) || 0;
+      const total = parseFloat(r.total)    || 0;
+      if (cant <= 0)  return toast.warning(`Cantidad inválida en ${r.orderNumber}.`);
+      if (total < 0)  return toast.warning(`Total inválido en ${r.orderNumber}.`);
+    }
+
+    setSavingEdit(true);
+    try {
+      for (const r of cambiadas) {
+        const payload = {
+          orderId: r.orderId,
+          nuevoCosto: parseFloat(r.total),
+          nuevaCantidad: parseFloat(r.cantidad),
+          OReIdOrdenRetiro: editRetiro.codigoRef || editRetiro.retiroId,
+        };
+        if (Number(r.monedaId) !== Number(r.origMonedaId)) payload.nuevaMoneda = Number(r.monedaId);
+        await api.post('/apiordenesRetiro/caja/orden/editar', payload);
+      }
+      toast.success(`${cambiadas.length} orden(es) actualizada(s) correctamente.`);
+      setEditRetiro(null);
+      setEditRows([]);
+      await refrescarCajaYSeleccion();
+    } catch (e) {
+      toast.error(e.response?.data?.error || 'Error al actualizar las órdenes.');
+    } finally {
+      setSavingEdit(false);
+    }
+  };
+
+  // Exonerar una orden del pago (bonificación $0): no se cobra en caja, importe intacto
+  const exonerarOrden = async (idx) => {
+    if (savingEdit) return;
+    const row = editRows[idx];
+    if (!row || row.bloqueado) return;
+
+    const { isConfirmed, value: motivo } = await Swal.fire({
+      title: `¿Exonerar ${row.orderNumber} del pago?`,
+      html: `<p style="font-size:13px;color:#64748b">La orden <b>no se cobrará</b> en la caja. Su importe en depósito (${row.simbolo} ${row.total}) <b>no cambia</b> y la deuda del cliente <b>no se modifica</b>.</p>`,
+      input: 'text',
+      inputPlaceholder: 'Motivo (opcional)',
+      showCancelButton: true,
+      confirmButtonText: 'Sí, exonerar',
+      cancelButtonText: 'Cancelar',
+      confirmButtonColor: '#0891b2',
+    });
+    if (!isConfirmed) return;
+
+    setSavingEdit(true);
+    try {
+      await api.post('/apiordenesRetiro/caja/orden/exonerar', {
+        orderId: row.orderId,
+        motivo: motivo || '',
+      });
+      toast.success(`${row.orderNumber} exonerada del pago.`);
+      setEditRows(prev => prev.map((r, i) => i === idx ? { ...r, exonerada: true, bloqueado: true } : r));
+      await refrescarCajaYSeleccion();
+    } catch (e) {
+      toast.error(e.response?.data?.error || 'Error al exonerar la orden.');
+    } finally {
+      setSavingEdit(false);
+    }
+  };
+
+  // Revertir la exoneración: la orden vuelve a ser cobrable
+  const revertirExoneracion = async (idx) => {
+    if (savingEdit) return;
+    const row = editRows[idx];
+    if (!row || !row.exonerada) return;
+
+    setSavingEdit(true);
+    try {
+      await api.post('/apiordenesRetiro/caja/orden/exonerar/revertir', { orderId: row.orderId });
+      toast.success(`${row.orderNumber} vuelve a ser cobrable.`);
+      setEditRows(prev => prev.map((r, i) => i === idx ? { ...r, exonerada: false, bloqueado: false } : r));
+      await refrescarCajaYSeleccion();
+    } catch (e) {
+      toast.error(e.response?.data?.error || 'Error al revertir la exoneración.');
+    } finally {
+      setSavingEdit(false);
+    }
+  };
+
+  // Refresca los retiros de caja y re-sincroniza los seleccionados con los datos nuevos
+  const refrescarCajaYSeleccion = useCallback(async () => {
+    try {
+      const p = new URLSearchParams();
+      if (filtroRef.current !== 'todos') p.append('tipoCliente', filtroRef.current);
+      const res = await api.get(`/apiordenesRetiro/caja?${p}`);
+      const data = Array.isArray(res.data) ? res.data : [];
+      setRetiros(data);
+      setSeleccionados(prev => prev.map(s => {
+        const fresco = data.find(r => (r.OReIdOrdenRetiro || r.ordenDeRetiro) === s.retiroId);
+        return fresco ? { ...s, retiro: fresco } : s;
+      }));
+    } catch { }
+  }, []);
+
   const totalesCobro = useMemo(() => {
     let b = 0, ajT = 0;
     seleccionados.forEach(s => {
@@ -1022,6 +1192,7 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
     if (seleccionados.length === 0) {
       setCarritosPago([{ id: Date.now(), metodoPagoId: contadoId, moneda: 'UYU', monedaId: 1, monto: '' }]);
       setMonedaExhibicion('UYU');
+      setImporteACobrar('');
       return;
     }
 
@@ -1066,7 +1237,23 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
     }, 0);
   }, [carritosPago, cotizacion, monedaExhibicion]);
 
-  const cobroBalanceado = condicionCobro === 'CREDITO' || Math.abs(totalesCobro.neto - totalIngresado) < (monedaExhibicion === 'UYU' ? 1.0 : 0.05);
+  // Importe a cobrar: el cajero puede fijar un monto distinto del total real (redondeo / pago cerrado).
+  // La diferencia (importe − total real) es un ajuste monetario que va a contabilidad, sin tocar la factura.
+  const montoACobrar = (importeACobrarRaw !== '' && !isNaN(parseFloat(importeACobrarRaw)))
+    ? parseFloat(importeACobrarRaw)
+    : totalesCobro.neto;
+  const ajusteCobroUI = parseFloat((montoACobrar - totalesCobro.neto).toFixed(2));
+  const simboloCobro = monedaExhibicion === 'USD' ? 'US$' : '$';
+
+  // Ajuste REAL que se contabilizará = (lo que efectivamente se paga) − (total real), en UYU (base contable).
+  // Captura tanto el "importe a cobrar" como el redondeo por conversión de moneda (pagar UYU una venta USD).
+  const totalPagadoUYU = carritosPago.reduce((acc, p) => {
+    const m = parseFloat(p.monto) || 0;
+    return acc + (p.moneda === 'USD' ? m * (cotizacion || 1) : m);
+  }, 0);
+  const ajusteRealUYU = parseFloat((totalPagadoUYU - totalNetoUYU).toFixed(2));
+
+  const cobroBalanceado = condicionCobro === 'CREDITO' || Math.abs(montoACobrar - totalIngresado) < (monedaExhibicion === 'UYU' ? 1.0 : 0.05);
 
   const totalEfectivoMonto = useMemo(() => {
     const cashPayments = carritosPago.filter(p => {
@@ -1118,7 +1305,7 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
       });
       const pags = carritosPago.map(p => ({ metodoPagoId: parseInt(p.metodoPagoId), moneda: p.moneda, monedaId: p.moneda === 'USD' ? 2 : 1, montoOriginal: parseFloat(p.monto), cotizacion: p.moneda === 'USD' ? cotizacion : null }));
       const res = await api.post('/contabilidad/caja/transaccion', {
-        header: { clienteId: seleccionados[0]?.retiro?.CliIdCliente, tipoDocumento: tipoDocCobro, serieDoc: serieDocCobro, numeroDoc: numDocCobro || null, observaciones: obsCobro, deudaPuraUSD, deudaPuraUYU, admin: isAdminCaja, moneda: monedaExhibicion, cotizacion: cotizacion, esCredito: esCobroCredito },
+        header: { clienteId: seleccionados[0]?.retiro?.CliIdCliente, tipoDocumento: tipoDocCobro, serieDoc: serieDocCobro, numeroDoc: numDocCobro || null, observaciones: obsCobro, deudaPuraUSD, deudaPuraUYU, admin: isAdminCaja, moneda: monedaExhibicion, cotizacion: cotizacion, esCredito: esCobroCredito, importeACobrar: (esCobroCredito || Math.abs(ajusteCobroUI) < 0.005) ? null : montoACobrar },
         aplicaciones: apps, pagos: esCobroCredito ? [] : pags
       });
 
@@ -1174,7 +1361,7 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
 
       const clienteId = seleccionados[0]?.retiro?.CliIdCliente;
       toast.success(`Cobro registrado (${res.data?.numeroDoc || 'OK'})`);
-      setSeleccionados([]); setAjustes({});
+      setSeleccionados([]); setAjustes({}); setImporteACobrar('');
       setCarritosPago([{ id: Date.now(), metodoPagoId: 1, moneda: 'UYU', monedaId: 1, monto: '' }]);
       setObsCobro(''); 
       fetchRetiros();
@@ -1452,7 +1639,8 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
                       <CajaPanelPago
                         layout="horizontal"
                         mode="COBRO"
-                        totalACubrir={totalesCobro.neto}
+                        totalACubrir={montoACobrar}
+                        ajusteMonto={ajusteRealUYU}
                         moneda={monedaExhibicion}
                         cotizacion={cotizacion}
                         metodosPago={metodosPago}
@@ -1469,6 +1657,51 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
                         tiposDocDisponibles={tiposDocumentos.length > 0 ? tiposDocumentos : TIPOS_DOC}
                         showSubmitButton={false}
                       />
+
+                      {/* IMPORTE A COBRAR (ajuste monetario, no toca la factura) */}
+                      {seleccionados.length > 0 && condicionCobro !== 'CREDITO' && (
+                        <div className="bg-white rounded-2xl border border-slate-200 shadow-sm px-4 py-3 flex flex-wrap items-center gap-4">
+                          <div className="flex items-center gap-2 text-xs">
+                            <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Total real (factura)</span>
+                            <span className="font-black text-slate-700">{simboloCobro} {fmt(totalesCobro.neto)}</span>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Importe a cobrar</span>
+                            <div className="flex items-center bg-slate-50 border border-slate-200 rounded-lg overflow-hidden focus-within:border-brand-cyan">
+                              <span className="pl-2 text-[10px] text-slate-400 font-bold">{simboloCobro}</span>
+                              <input
+                                type="number" step="any" min="0"
+                                value={importeACobrarRaw}
+                                placeholder={fmt(totalesCobro.neto)}
+                                onChange={e => {
+                                  const val = e.target.value;
+                                  setImporteACobrar(val);
+                                  // Mantener balanceado: si hay un solo medio de pago, seguir el importe a cobrar
+                                  const num = parseFloat(val);
+                                  if (carritosPago.length === 1) {
+                                    setCarritosPago(prev => prev.map((p, i) => i === 0 ? { ...p, monto: val === '' ? (totalesCobro.neto ? totalesCobro.neto.toFixed(2) : '') : (isNaN(num) ? '' : String(val)) } : p));
+                                  }
+                                }}
+                                className="w-28 px-2 py-1.5 text-center text-brand-cyan font-black text-sm bg-transparent outline-none"
+                              />
+                            </div>
+                            {importeACobrarRaw !== '' && (
+                              <button onClick={() => { setImporteACobrar(''); if (carritosPago.length === 1) setCarritosPago(prev => prev.map((p,i)=> i===0 ? {...p, monto: totalesCobro.neto ? totalesCobro.neto.toFixed(2) : ''} : p)); }}
+                                className="text-[9px] text-slate-500 hover:text-white hover:bg-slate-600 border border-slate-300 font-black uppercase px-1.5 py-1 rounded transition-all" title="Volver al total real">
+                                ↺
+                              </button>
+                            )}
+                          </div>
+                          {Math.abs(ajusteRealUYU) >= 0.005 && (
+                            <div className={`flex items-center gap-2 text-xs font-black px-3 py-1.5 rounded-lg border ${ajusteRealUYU < 0 ? 'bg-rose-50 border-rose-200 text-rose-600' : 'bg-emerald-50 border-emerald-200 text-emerald-600'}`}
+                              title="Diferencia entre lo cobrado y el valor real. Se contabiliza como ajuste monetario.">
+                              {ajusteRealUYU < 0
+                                ? <>▼ Descuento $ {fmt(Math.abs(ajusteRealUYU))} <span className="text-[9px] font-bold opacity-70">→ 5.2.03</span></>
+                                : <>▲ Recargo $ {fmt(ajusteRealUYU)} <span className="text-[9px] font-bold opacity-70">→ 4.2.2</span></>}
+                            </div>
+                          )}
+                        </div>
+                      )}
 
                       {/* SPLIT LAYOUT */}
                       <div className="flex w-full gap-4 items-start">
@@ -1666,65 +1899,26 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
                                             <span className="font-black text-sm text-brand-cyan tracking-tight">{s.codigoRef}</span>
                                             <span className="text-[9px] text-slate-400 font-bold uppercase tracking-wider bg-white border border-slate-200 px-2 py-0.5 rounded-full">{s.retiro?.lugarRetiro || 'Retiro Local'}</span>
                                           </div>
-                                          {hasUnpaid && (
+                                          <div className="flex items-center gap-2 ml-auto">
                                             <button
-                                              onClick={() => setRetiroSelectAut({ retiroId: s.retiroId, raw: s.retiro, deudaEstimada: calcularMontoRetiro(s.retiro) })}
-                                              className="bg-amber-500 hover:bg-amber-600 text-white text-[9px] font-black px-2.5 py-1 rounded-lg transition-all flex items-center gap-0.5 uppercase tracking-wider ml-auto shadow-sm"
+                                              onClick={() => abrirEdicionRetiro(s)}
+                                              className="bg-slate-700 hover:bg-slate-800 text-white text-[9px] font-black px-2.5 py-1 rounded-lg transition-all flex items-center gap-0.5 uppercase tracking-wider shadow-sm"
+                                              title="Editar cantidades y precios de las órdenes"
                                             >
-                                              <ShieldCheck size={11} /> Autorizar
+                                              <FileText size={11} /> Editar órdenes
                                             </button>
-                                          )}
+                                            {hasUnpaid && (
+                                              <button
+                                                onClick={() => setRetiroSelectAut({ retiroId: s.retiroId, raw: s.retiro, deudaEstimada: calcularMontoRetiro(s.retiro) })}
+                                                className="bg-amber-500 hover:bg-amber-600 text-white text-[9px] font-black px-2.5 py-1 rounded-lg transition-all flex items-center gap-0.5 uppercase tracking-wider shadow-sm"
+                                              >
+                                                <ShieldCheck size={11} /> Autorizar
+                                              </button>
+                                            )}
+                                          </div>
                                         </div>
 
-                                        {/* Adjustments row (Unhidden and Improved) */}
-                                        <div className="grid grid-cols-2 gap-2 bg-white p-2.5 rounded-xl border border-slate-200/60 mt-2">
-                                          <div>
-                                            <p className="text-[9px] text-slate-400 font-black uppercase tracking-wider mb-1">Ajuste Manual</p>
-                                            <div className="flex bg-slate-50 border border-slate-200 rounded-lg overflow-hidden shadow-inner">
-                                              <button 
-                                                className={`px-2 font-bold text-xs ${(!ajustes[s.retiroId]?.isRecargo) ? 'bg-red-500 text-white' : 'bg-slate-200 text-slate-500 hover:bg-slate-300'} transition-colors`}
-                                                onClick={() => {
-                                                  const val = Math.abs(parseFloat(ajustes[s.retiroId]?.rawMonto || 0));
-                                                  setAjustes(p => ({ ...p, [s.retiroId]: { ...p[s.retiroId], isRecargo: false, rawMonto: val, ajuste: -val, tipoAjuste: 'DESCUENTO' } }));
-                                                }}
-                                                title="Descuento (Restar)"
-                                              >
-                                                -
-                                              </button>
-                                              <input
-                                                type="number"
-                                                min="0"
-                                                value={ajustes[s.retiroId]?.rawMonto || ''}
-                                                onChange={e => {
-                                                  const val = Math.abs(parseFloat(e.target.value || 0));
-                                                  const isRecargo = ajustes[s.retiroId]?.isRecargo || false;
-                                                  setAjustes(p => ({ ...p, [s.retiroId]: { ...p[s.retiroId], rawMonto: e.target.value, ajuste: isRecargo ? val : -val, tipoAjuste: isRecargo ? 'RECARGO' : 'DESCUENTO' } }));
-                                                }}
-                                                className="w-full px-2 py-1.5 text-brand-cyan font-black text-xs outline-none bg-transparent text-center"
-                                                placeholder="Monto"
-                                              />
-                                              <button 
-                                                className={`px-2 font-bold text-xs ${(ajustes[s.retiroId]?.isRecargo) ? 'bg-emerald-500 text-white' : 'bg-slate-200 text-slate-500 hover:bg-slate-300'} transition-colors`}
-                                                onClick={() => {
-                                                  const val = Math.abs(parseFloat(ajustes[s.retiroId]?.rawMonto || 0));
-                                                  setAjustes(p => ({ ...p, [s.retiroId]: { ...p[s.retiroId], isRecargo: true, rawMonto: val, ajuste: val, tipoAjuste: 'RECARGO' } }));
-                                                }}
-                                                title="Recargo (Sumar)"
-                                              >
-                                                +
-                                              </button>
-                                            </div>
-                                          </div>
-                                          <div>
-                                            <p className="text-[9px] text-slate-400 font-black uppercase tracking-wider mb-1">Motivo Ajuste</p>
-                                            <LightSelect
-                                              value={ajustes[s.retiroId]?.tipoAjuste || (ajustes[s.retiroId]?.isRecargo ? 'RECARGO' : 'DESCUENTO')}
-                                              onChange={val => setAjustes(p => ({ ...p, [s.retiroId]: { ...p[s.retiroId], tipoAjuste: val } }))}
-                                              options={TIPOS_AJUSTE.map(t => ({ value: t.value, label: t.label }))}
-                                              placeholder="Motivo"
-                                            />
-                                          </div>
-                                        </div>
+                                        {/* Ajuste manual retirado: el importe se modifica desde "Editar órdenes". */}
 
                                         {/* Retiro totals info */}
                                         <div className="flex justify-between items-center text-xs px-1 text-slate-500">
@@ -1740,13 +1934,14 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
                                           {getOrdenes(s.retiro).map(o => {
                                             const val = parseFloat((o.orderCosto || '').replace(/[^0-9.-]/g, '')) || 0;
                                             const currency = o.monedaId === 2 ? 'US$' : '$';
-                                            const pagado = o.orderIdMetodoPago !== null || o.orderPago !== null;
+                                            const exonerada = !!o.orderExonerada;
+                                            const pagado = !exonerada && (o.orderIdMetodoPago !== null || o.orderPago !== null);
                                             const cubierto = o.orderEstado === 'Abonado' || o.orderEstado === 'Autorizado';
                                             return (
                                               <div
                                                 key={o.orderId}
                                                 className={`flex justify-between items-center px-4 py-3 rounded-xl border gap-4 text-xs shadow-sm transition-all ${
-                                                  pagado || cubierto
+                                                  pagado || cubierto || exonerada
                                                     ? 'bg-slate-50/80 border-slate-100 opacity-60'
                                                     : 'bg-white border-slate-200 hover:border-slate-300'
                                                 }`}
@@ -1756,7 +1951,7 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
                                                   <AlertTriangle
                                                     size={16}
                                                     className={`shrink-0 ${
-                                                      pagado || cubierto ? 'text-slate-300' : 'text-amber-500'
+                                                      pagado || cubierto || exonerada ? 'text-slate-300' : 'text-amber-500'
                                                     }`}
                                                   />
                                                   <div className="flex flex-col min-w-0">
@@ -1780,7 +1975,11 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
                                                 {/* Right side info */}
                                                 <div className="flex items-center gap-4 shrink-0">
                                                   {/* Status Pill */}
-                                                  {pagado ? (
+                                                  {exonerada ? (
+                                                    <span className="px-2.5 py-0.5 bg-violet-50 text-violet-700 text-[10px] font-black rounded-full border border-violet-200 flex items-center gap-1">
+                                                      ★ Exonerada
+                                                    </span>
+                                                  ) : pagado ? (
                                                     <span className="px-2.5 py-0.5 bg-emerald-50 text-emerald-700 text-[10px] font-black rounded-full border border-emerald-100/50 flex items-center gap-1">
                                                       ✓ Pago
                                                     </span>
@@ -1797,7 +1996,7 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
                                                   {/* Price */}
                                                   <span
                                                     className={`font-black text-slate-800 text-sm ${
-                                                      cubierto ? 'line-through text-zinc-400' : ''
+                                                      cubierto || exonerada ? 'line-through text-zinc-400' : ''
                                                     }`}
                                                   >
                                                     {currency} {fmt(val)}
@@ -2980,6 +3179,182 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
             >
               {procesandoAut ? <Loader2 size={16} className="animate-spin" /> : <><ShieldCheck size={16} /> CONFIRMAR Y AUTORIZAR</>}
             </button>
+          </div>
+        </div>
+      )}
+
+      {/* ── Modal Editar Órdenes del Retiro ── */}
+      {editRetiro && (
+        <div className="fixed inset-0 z-[115] flex items-center justify-center bg-black/60 p-4 animate-in fade-in duration-200" onClick={(e) => e.target === e.currentTarget && !savingEdit && setEditRetiro(null)}>
+          <div className="bg-white rounded-3xl max-w-2xl w-full shadow-2xl flex flex-col border border-zinc-200 animate-in zoom-in-95 duration-200 text-slate-800 max-h-[90vh]">
+            <div className="flex justify-between items-center px-6 py-5 border-b border-zinc-100">
+              <div>
+                <h3 className="font-black text-zinc-800 text-lg uppercase tracking-wider flex items-center gap-2">
+                  <FileText className="text-brand-cyan" size={20} />
+                  Editar Órdenes del Retiro
+                </h3>
+                <p className="text-[11px] font-black text-brand-cyan mt-0.5">{editRetiro.codigoRef}</p>
+              </div>
+              <button onClick={() => !savingEdit && setEditRetiro(null)} className="text-zinc-400 hover:text-zinc-600">
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto px-6 py-4 flex flex-col gap-3">
+              <div className="grid grid-cols-[1.5fr_0.9fr_0.8fr_0.9fr_0.9fr] gap-2 px-1 text-[9px] font-black text-slate-400 uppercase tracking-wider">
+                <span>Orden</span>
+                <span className="text-center">Moneda</span>
+                <span className="text-center">Cantidad</span>
+                <span className="text-center">Precio Unit.</span>
+                <span className="text-center">Total</span>
+              </div>
+
+              {(() => {
+                const cobrableFilas = editRows.filter(r => !r.exonerada && !r.bloqueado);
+                const esMixto = cobrableFilas.some(r => Number(r.monedaId) === 1) && cobrableFilas.some(r => Number(r.monedaId) === 2);
+                const cotiz = parseFloat(cotizacion) || 0;
+                return editRows.map((row, idx) => (
+                <div key={row.orderId} className={`grid grid-cols-[1.5fr_0.9fr_0.8fr_0.9fr_0.9fr] gap-2 items-center bg-slate-50 border rounded-xl p-2.5 ${row.bloqueado ? 'border-slate-200 opacity-60' : 'border-slate-200'}`}>
+                  <div className="min-w-0">
+                    <p className="font-black text-slate-800 text-sm leading-none truncate">{row.orderNumber}</p>
+                    <p className="text-[10px] text-slate-400 italic font-semibold uppercase tracking-wider mt-1 leading-none truncate">{row.nombreTrabajo}</p>
+                    {row.exonerada ? (
+                      <span className="inline-flex items-center gap-1 mt-1">
+                        <span className="text-[9px] text-violet-600 bg-violet-50 border border-violet-200 font-black uppercase px-1.5 py-0.5 rounded">★ Exonerada</span>
+                        <button
+                          onClick={() => revertirExoneracion(idx)}
+                          disabled={savingEdit}
+                          className="text-[9px] text-slate-500 hover:text-white hover:bg-slate-600 border border-slate-300 font-black uppercase px-1.5 py-0.5 rounded transition-all disabled:opacity-40"
+                          title="Deshacer la exoneración (vuelve a cobrarse)"
+                        >
+                          ↺ Deshacer
+                        </button>
+                      </span>
+                    ) : row.bloqueado ? (
+                      <p className="text-[9px] text-emerald-600 font-black uppercase mt-1">✓ Pagada — no editable</p>
+                    ) : (
+                      <button
+                        onClick={() => exonerarOrden(idx)}
+                        disabled={savingEdit}
+                        className="text-[9px] text-violet-600 hover:text-white hover:bg-violet-600 border border-violet-200 font-black uppercase mt-1 px-1.5 py-0.5 rounded transition-all disabled:opacity-40"
+                        title="Exonerar esta orden del pago (no se cobra, importe intacto)"
+                      >
+                        ★ Exonerar del pago
+                      </button>
+                    )}
+                  </div>
+                  <select
+                    disabled={row.bloqueado}
+                    value={row.monedaId}
+                    onChange={e => actualizarFilaEdicion(idx, 'monedaId', e.target.value)}
+                    className={`w-full px-1 py-1.5 text-center font-black text-xs bg-white border rounded-lg outline-none focus:border-brand-cyan disabled:bg-slate-100 disabled:text-slate-400 ${Number(row.monedaId) !== Number(row.origMonedaId) ? 'border-brand-cyan text-brand-cyan' : 'border-slate-200 text-slate-800'}`}
+                  >
+                    <option value={1}>$ UYU</option>
+                    <option value={2}>US$ USD</option>
+                  </select>
+                  <input
+                    type="number" min="0" step="any" disabled={row.bloqueado}
+                    value={row.cantidad}
+                    onChange={e => actualizarFilaEdicion(idx, 'cantidad', e.target.value)}
+                    className="w-full px-2 py-1.5 text-center text-slate-800 font-black text-xs bg-white border border-slate-200 rounded-lg outline-none focus:border-brand-cyan disabled:bg-slate-100 disabled:text-slate-400"
+                  />
+                  <div className="flex items-center bg-white border border-slate-200 rounded-lg overflow-hidden focus-within:border-brand-cyan">
+                    <span className="pl-2 text-[10px] text-slate-400 font-bold shrink-0">{row.simbolo}</span>
+                    <input
+                      type="number" min="0" step="any" disabled={row.bloqueado}
+                      value={row.precio}
+                      onChange={e => actualizarFilaEdicion(idx, 'precio', e.target.value)}
+                      className="w-full px-1 py-1.5 text-center text-slate-800 font-black text-xs bg-transparent outline-none disabled:text-slate-400"
+                    />
+                  </div>
+                  <div className="flex flex-col gap-0.5">
+                    <div className="flex items-center bg-white border border-slate-200 rounded-lg overflow-hidden focus-within:border-brand-cyan">
+                      <span className="pl-2 text-[10px] text-slate-400 font-bold shrink-0">{row.simbolo}</span>
+                      <input
+                        type="number" min="0" step="any" disabled={row.bloqueado}
+                        value={row.total}
+                        onChange={e => actualizarFilaEdicion(idx, 'total', e.target.value)}
+                        className="w-full px-1 py-1.5 text-center text-brand-cyan font-black text-xs bg-transparent outline-none disabled:text-slate-400"
+                      />
+                    </div>
+                    {esMixto && cotiz > 0 && Number(row.monedaId) === 1 && !row.exonerada && !row.bloqueado && (
+                      <span className="text-[12px] text-emerald-600 font-black text-center leading-tight bg-emerald-50 border border-emerald-200 rounded-md px-1 py-0.5" title={`Convertido a cotización $${fmt(cotiz)}`}>
+                        ≈ US$ {fmt((parseFloat(row.total) || 0) / cotiz)}
+                      </span>
+                    )}
+                  </div>
+                </div>
+              )); })()}
+
+              {(() => {
+                // Solo cuenta lo que realmente se cobra: excluye exoneradas y ya pagadas
+                const cobrable = editRows.filter(r => !r.exonerada && !r.bloqueado);
+                const totUyu = cobrable.reduce((a, r) => a + (Number(r.monedaId) === 1 ? (parseFloat(r.total) || 0) : 0), 0);
+                const totUsd = cobrable.reduce((a, r) => a + (Number(r.monedaId) === 2 ? (parseFloat(r.total) || 0) : 0), 0);
+                const hayUyu = cobrable.some(r => Number(r.monedaId) === 1);
+                const hayUsd = cobrable.some(r => Number(r.monedaId) === 2);
+                const esMixto = hayUyu && hayUsd;
+                const cotiz = parseFloat(cotizacion) || 0;
+                const hayExoneradas = editRows.some(r => r.exonerada || r.bloqueado);
+
+                // Regla: todas UYU → UYU | todas USD → USD | mixto → USD (convierte UYU→USD ÷ cotización)
+                let monedaTotal, montoTotal, simbolo, faltaCotiz = false;
+                if (esMixto) {
+                  monedaTotal = 'USD'; simbolo = 'US$';
+                  if (cotiz > 0) montoTotal = totUsd + (totUyu / cotiz);
+                  else { montoTotal = totUsd; faltaCotiz = true; }
+                } else if (hayUsd) {
+                  monedaTotal = 'USD'; simbolo = 'US$'; montoTotal = totUsd;
+                } else {
+                  monedaTotal = 'UYU'; simbolo = '$'; montoTotal = totUyu;
+                }
+
+                return (
+                  <div className="flex items-center justify-between bg-slate-800 text-white rounded-xl px-4 py-3 mt-1">
+                    <span className="text-[10px] font-black uppercase tracking-widest text-slate-300">
+                      Total a cobrar
+                      <span className="block text-[8px] text-slate-400 font-bold normal-case tracking-normal">
+                        {esMixto
+                          ? (faltaCotiz
+                              ? '⚠ Mixto sin cotización: no se pudo convertir los pesos'
+                              : `mixto → USD (convertido a cotización $${fmt(cotiz)})`)
+                          : `moneda del retiro: ${monedaTotal}`}
+                        {hayExoneradas && ' · excluye exoneradas/pagadas'}
+                      </span>
+                    </span>
+                    <div className="flex flex-col items-end">
+                      <span className={`font-black text-base ${monedaTotal === 'USD' ? 'text-emerald-300' : 'text-brand-cyan'}`}>
+                        {simbolo} {fmt(montoTotal)}
+                      </span>
+                      {esMixto && !faltaCotiz && (
+                        <span className="text-[10px] text-slate-300 font-bold">US$ {fmt(totUsd)} + $ {fmt(totUyu)} → US$</span>
+                      )}
+                    </div>
+                  </div>
+                );
+              })()}
+
+              <p className="text-[10px] text-slate-400 font-semibold mt-1 leading-tight">
+                Los cambios actualizan la orden en depósito, el retiro, la cobranza y el saldo del cliente. Las órdenes ya pagadas no se pueden editar.
+              </p>
+            </div>
+
+            <div className="px-6 py-4 border-t border-zinc-100 flex gap-3">
+              <button
+                onClick={() => !savingEdit && setEditRetiro(null)}
+                disabled={savingEdit}
+                className="flex-1 bg-slate-100 hover:bg-slate-200 disabled:opacity-50 text-slate-600 font-black py-3 rounded-xl transition-all uppercase tracking-widest text-xs"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={guardarEdicionRetiro}
+                disabled={savingEdit}
+                className="flex-[2] bg-brand-cyan hover:bg-brand-cyan/90 disabled:bg-zinc-100 disabled:text-zinc-400 text-white font-black py-3 rounded-xl transition-all shadow-lg shadow-brand-cyan/20 flex justify-center items-center gap-2 uppercase tracking-widest text-xs"
+              >
+                {savingEdit ? <Loader2 size={16} className="animate-spin" /> : <><CheckCircle size={16} /> Guardar cambios</>}
+              </button>
+            </div>
           </div>
         </div>
       )}
