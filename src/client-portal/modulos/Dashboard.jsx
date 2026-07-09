@@ -5,6 +5,7 @@ import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../auth/AuthContext';
 import { apiClient } from '../api/apiClient';
 import { Loader2, Package, ShieldX } from 'lucide-react';
+import { InstallAppBanner } from '../components/InstallAppBanner';
 
 export const Dashboard = () => {
     const navigate = useNavigate();
@@ -54,6 +55,9 @@ export const Dashboard = () => {
 
     return (
         <div className="animate-fade-in space-y-6">
+
+            {/* Banner "Instalá la app" (se esconde solo si ya está instalada o lo descartó) */}
+            <InstallAppBanner />
 
             {/* Banner de cuenta bloqueada */}
             {isBloqueado && (

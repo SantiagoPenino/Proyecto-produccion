@@ -2,6 +2,18 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ─────────────────────────────────────────────────────────────
+   TABLET DE PLANTA (ej. 1200x800): compactación global.
+   Tailwind usa rem para fuentes, padding, gaps, márgenes y muchos
+   anchos. Bajando la unidad base de 16px a 12.5px TODO se achica ~78%
+   de forma uniforme, sin tener que tocar componente por componente.
+   La clase `is-tablet` la estampa utils/device.js en <html>.
+   (No usamos transform:scale ni zoom para no romper el drag & drop.)
+   ───────────────────────────────────────────────────────────── */
+html.is-tablet {
+  font-size: 13.5px;
+}
+
 /* Fix for sonner toasts appearing under navbar */
 [data-sonner-toaster] {
   z-index: 99999 !important;

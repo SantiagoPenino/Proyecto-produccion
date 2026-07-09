@@ -302,6 +302,7 @@ const syncOrdersLogic = async (io) => {
 
         let generatedCodes = [];
         let createdOrderIds = [];
+        let facturasRetenidas = []; // Pedidos NO importados por faltarles el archivo de impresión
 
         try {
             for (const docId in pedidosAgrupados) {
@@ -336,6 +337,23 @@ const syncOrdersLogic = async (io) => {
                             });
                         }
                     }
+                }
+
+                // --- RETENCIÓN POR FALTA DE ARCHIVO DE IMPRESIÓN ---
+                // Una orden que mide por metros (UM ≠ 'u') es de impresión y DEBE traer archivo
+                // (itemsProductivos). Si alguna quedó sin arte, NO importamos el pedido: se reintenta
+                // en la próxima corrida (cuando el ERP ya tenga el archivo). No creamos NADA del pedido
+                // (all-or-nothing) para que el chequeo de duplicados por NoDocERP no lo bloquee después.
+                const ordenSinArchivo = ordenesAInsertar.find(o => {
+                    const um = (o.matGroup.unidad ? o.matGroup.unidad.trim() : 'u').toLowerCase();
+                    return um !== 'u' && o.matGroup.itemsProductivos.length === 0;
+                });
+                if (ordenSinArchivo) {
+                    const nf = parseInt(docData.nroFact);
+                    if (!isNaN(nf)) facturasRetenidas.push(nf);
+                    logger.warn(`⏸️ [Sync] Pedido ${docData.nroDoc} retenido: la orden del área ${ordenSinArchivo.areaID} (mide por metros) no trae archivo de impresión. Se reintentará en la próxima sincronización.`);
+                    emitLog(io, `Pedido ${docData.nroDoc} retenido: falta el archivo de impresión (${ordenSinArchivo.areaID}). Se reintentará cuando el ERP lo tenga.`, 'info');
+                    continue; // Saltar todo el pedido
                 }
 
                 // B. INSERTAR SECUENCIALMENTE
@@ -523,9 +541,17 @@ const syncOrdersLogic = async (io) => {
                 }
             }
 
-            if (maxFacturaProcesada > ultimaFacturaDB) {
+            // No avanzar el puntero por encima del pedido retenido más antiguo: así ese pedido
+            // (y los posteriores) se reintentan en la próxima corrida. El dedup por NoDocERP
+            // (más arriba) evita re-crear los que sí se importaron en esta pasada.
+            let facturaTope = maxFacturaProcesada;
+            if (facturasRetenidas.length > 0) {
+                facturaTope = Math.min(...facturasRetenidas) - 1;
+                logger.info(`⏸️ [Sync] ${facturasRetenidas.length} pedido(s) retenido(s) por falta de archivo. Puntero ULTIMAFACTURA limitado a ${facturaTope} (se reintentan en la próxima corrida).`);
+            }
+            if (facturaTope > ultimaFacturaDB) {
                 await new sql.Request(transaction)
-                    .input('val', sql.VarChar, maxFacturaProcesada.toString())
+                    .input('val', sql.VarChar, facturaTope.toString())
                     .query("UPDATE ConfiguracionGlobal SET Valor = @val WHERE Clave = 'ULTIMAFACTURA'");
             }
 

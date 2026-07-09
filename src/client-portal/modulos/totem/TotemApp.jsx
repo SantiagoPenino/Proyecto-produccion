@@ -1,6 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import Swal from 'sweetalert2';
 import { TotemDashboard } from './TotemDashboard';
 import { ShieldX } from 'lucide-react';
 import { Logo } from '../../../components/Logo'
@@ -59,53 +58,10 @@ export const TotemApp = () => {
         };
     }, [resetTimer]);
 
-    // ── Escape del kiosco (staff) ─────────────────────────────────────────────
-    // 5 toques rápidos en la esquina superior izquierda → PIN → sale de pantalla
-    // completa (exitFullscreen) e intenta cerrar la pestaña (best-effort). Oculto
-    // para que un cliente no lo dispare de casualidad. PIN configurable por env.
-    const EXIT_PIN = import.meta.env.VITE_TOTEM_EXIT_PIN || '2580';
-    const escTapsRef = useRef([]);
-    const handleEscapeTap = useCallback(async () => {
-        const now = Date.now();
-        escTapsRef.current = [...escTapsRef.current.filter(t => now - t < 2000), now];
-        if (escTapsRef.current.length < 5) return;
-        escTapsRef.current = [];
-        const { value } = await Swal.fire({
-            title: 'Salir del tótem',
-            text: 'Ingresá el PIN para salir de pantalla completa.',
-            input: 'password',
-            inputAttributes: { inputmode: 'numeric', maxlength: 8, autocomplete: 'off' },
-            inputPlaceholder: 'PIN',
-            showCancelButton: true,
-            confirmButtonText: 'Salir',
-            cancelButtonText: 'Cancelar',
-            background: '#212121',
-            color: '#f4f4f5',
-            confirmButtonColor: '#ef4444',
-        });
-        if (value === EXIT_PIN) {
-            try { await document.exitFullscreen?.(); } catch { /* noop */ }
-            try { window.close(); } catch { /* solo cierra si la abrió un script */ }
-        } else if (value) {
-            Swal.fire({ icon: 'error', title: 'PIN incorrecto', timer: 1500, showConfirmButton: false, background: '#212121', color: '#f4f4f5' });
-        }
-    }, [EXIT_PIN]);
-
-    // Zona invisible en la esquina sup-izq (siempre por encima de todo).
-    const escapeHotspot = (
-        <button
-            aria-hidden="true"
-            tabIndex={-1}
-            onClick={handleEscapeTap}
-            className="fixed top-0 left-0 w-16 h-16 z-[99999] opacity-0"
-        />
-    );
-
     // Blocked screen
     if (screen === 'blocked') {
         return (
             <div className="min-h-screen bg-custom-dark flex items-center justify-center">
-                {escapeHotspot}
                 <div className="text-center flex flex-col items-center gap-4">
                     <ShieldX size={64} strokeWidth={1.5} className="text-red-400" />
                     <h1 className="text-3xl font-bold text-white">Acceso no autorizado</h1>
@@ -119,7 +75,6 @@ export const TotemApp = () => {
     if (screen === 'loading') {
         return (
             <div className="min-h-screen bg-custom-dark flex items-center justify-center">
-                {escapeHotspot}
                 <div className="text-white/30 text-xl animate-pulse">Verificando acceso...</div>
             </div>
         );
@@ -127,7 +82,6 @@ export const TotemApp = () => {
 
     return (
         <div className="min-h-screen bg-custom-dark text-gray-100 font-sans select-none relative overflow-hidden">
-            {escapeHotspot}
 
             {/* Dashboard always behind */}
             {screen === 'dashboard' && (

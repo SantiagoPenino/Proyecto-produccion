@@ -70,15 +70,15 @@ const MachineControl = ({ machine, onAssign, onToggleStatus, onViewDetails, onUn
             ${isFalla ? 'border-brand-magenta' : isRunning ? 'border-brand-cyan' : 'border-zinc-400'}`}>
 
             {/* ENCABEZADO DE CONTROL */}
-            <div className="p-3 border-b border-zinc-100 bg-zinc-50 rounded-t-xl flex flex-col gap-2 relative z-20 shadow-sm">
+            <div className="p-3 tablet:p-2 border-b border-zinc-100 bg-zinc-50 rounded-t-xl flex flex-col gap-2 tablet:gap-1.5 relative z-20 shadow-sm">
 
                 {/* 1. Nombre y Estado */}
                 <div className="flex justify-between items-center">
-                    <div className="font-black text-zinc-800 text-sm flex items-center gap-2">
-                        <div className={`w-8 h-8 rounded-lg flex items-center justify-center transition-colors ${isFalla ? 'bg-brand-magenta/10 text-brand-magenta' : isRunning ? 'bg-brand-cyan/10 text-brand-cyan' : 'bg-zinc-100 text-zinc-400'}`}>
+                    <div className="font-black text-zinc-800 text-sm tablet:text-xs flex items-center gap-2 tablet:gap-1.5">
+                        <div className={`w-8 h-8 tablet:w-7 tablet:h-7 rounded-lg flex items-center justify-center transition-colors ${isFalla ? 'bg-brand-magenta/10 text-brand-magenta' : isRunning ? 'bg-brand-cyan/10 text-brand-cyan' : 'bg-zinc-100 text-zinc-400'}`}>
                             {isFalla ? <PrinterX size={16} /> : isRunning ? <Settings size={16} className="animate-spin" /> : <Printer size={16} />}
                         </div>
-                        <span className="truncate max-w-[120px]" title={machine.name}>{machine.name}</span>
+                        <span className="truncate max-w-[120px] tablet:max-w-[95px]" title={machine.name}>{machine.name}</span>
                     </div>
                     {(() => {
                         const isFalla = (machine.status || '').toLowerCase().includes('falla');
@@ -96,23 +96,23 @@ const MachineControl = ({ machine, onAssign, onToggleStatus, onViewDetails, onUn
                 </div>
 
                 {/* 2. Controles (Play/Pause/Stop/Detail) */}
-                <div className="flex items-center gap-1 justify-between bg-white p-1 rounded-lg border border-zinc-200 shadow-sm">
-                    <div className="flex items-center gap-1">
+                <div className="flex items-center gap-1 justify-between bg-white p-1 tablet:p-0.5 rounded-lg border border-zinc-200 shadow-sm">
+                    <div className="flex items-center gap-1 tablet:gap-0.5">
                         <Tippy content="Iniciar">
                             <button onClick={handlePlay} disabled={isRunning || !selectedRollId}
-                                className={`w-8 h-8 rounded flex items-center justify-center transition-all ${isRunning || !selectedRollId ? 'text-zinc-300 cursor-not-allowed' : 'text-brand-cyan hover:bg-brand-cyan/10 hover:scale-110 active:scale-95'}`}>
+                                className={`w-8 h-8 tablet:w-7 tablet:h-7 rounded flex items-center justify-center transition-all ${isRunning || !selectedRollId ? 'text-zinc-300 cursor-not-allowed' : 'text-brand-cyan hover:bg-brand-cyan/10 hover:scale-110 active:scale-95'}`}>
                                 <Play size={14} />
                             </button>
                         </Tippy>
                         <Tippy content="Pausar">
                             <button onClick={handlePause} disabled={!isRunning}
-                                className={`w-8 h-8 rounded flex items-center justify-center transition-all ${!isRunning ? 'text-zinc-300 cursor-not-allowed' : 'text-brand-gold hover:bg-brand-gold/10 hover:scale-110 active:scale-95'}`}>
+                                className={`w-8 h-8 tablet:w-7 tablet:h-7 rounded flex items-center justify-center transition-all ${!isRunning ? 'text-zinc-300 cursor-not-allowed' : 'text-brand-gold hover:bg-brand-gold/10 hover:scale-110 active:scale-95'}`}>
                                 <Pause size={14} />
                             </button>
                         </Tippy>
                         <Tippy content="Finalizar Lote">
                             <button onClick={handleStop} disabled={!isRunning}
-                                className={`w-8 h-8 rounded flex items-center justify-center transition-all ${!isRunning ? 'text-zinc-300 cursor-not-allowed' : 'text-brand-magenta hover:bg-brand-magenta/10 hover:scale-110 active:scale-95'}`}>
+                                className={`w-8 h-8 tablet:w-7 tablet:h-7 rounded flex items-center justify-center transition-all ${!isRunning ? 'text-zinc-300 cursor-not-allowed' : 'text-brand-magenta hover:bg-brand-magenta/10 hover:scale-110 active:scale-95'}`}>
                                 <FlagTriangleRight size={14} />
                             </button>
                         </Tippy>
@@ -254,7 +254,7 @@ const MachineControl = ({ machine, onAssign, onToggleStatus, onViewDetails, onUn
                     <div 
                         ref={provided.innerRef} 
                         {...provided.droppableProps}
-                        className={`p-2 flex-1 flex flex-col gap-2 overflow-y-auto custom-scrollbar transition-colors relative z-0 ${snapshot.isDraggingOver ? 'bg-brand-cyan/5 rounded-b-xl' : 'bg-zinc-50/50'}`}
+                        className={`p-2 tablet:p-1.5 flex-1 flex flex-col gap-2 tablet:gap-1.5 overflow-y-auto custom-scrollbar transition-colors relative z-0 ${snapshot.isDraggingOver ? 'bg-brand-cyan/5 rounded-b-xl' : 'bg-zinc-50/50'}`}
                     >
                         {machine.rolls.map((roll, index) => (
                             <Draggable key={roll.id} draggableId={String(roll.id)} index={index} isDragDisabled={lockDrag}>
@@ -284,15 +284,15 @@ const MachineControl = ({ machine, onAssign, onToggleStatus, onViewDetails, onUn
                         {machine.rolls.length === 0 && (() => {
                             const isFalla = (machine.status || '').toLowerCase().includes('falla');
                             return isFalla ? (
-                                <div className="h-32 m-3 border-2 border-dashed border-brand-magenta/20 rounded-xl flex flex-col items-center justify-center gap-2 bg-brand-magenta/5">
+                                <div className="h-32 tablet:h-24 m-3 tablet:m-1.5 border-2 border-dashed border-brand-magenta/20 rounded-xl flex flex-col items-center justify-center gap-2 bg-brand-magenta/5">
                                     <PrinterX size={24} className="text-brand-magenta opacity-40" />
                                     <span className="text-xs font-black text-brand-magenta/60 uppercase tracking-wide">{machine.name}</span>
                                     <span className="text-[10px] font-bold text-brand-magenta">No Disponible</span>
                                 </div>
                             ) : (
-                                <div className={`h-32 m-3 border-2 border-dashed rounded-xl flex flex-col items-center justify-center gap-2 transition-colors ${snapshot.isDraggingOver ? 'border-brand-cyan/50 text-brand-cyan bg-brand-cyan/10' : 'border-zinc-200 text-zinc-300'}`}>
+                                <div className={`h-32 tablet:h-24 m-3 tablet:m-1.5 border-2 border-dashed rounded-xl flex flex-col items-center justify-center gap-2 transition-colors ${snapshot.isDraggingOver ? 'border-brand-cyan/50 text-brand-cyan bg-brand-cyan/10' : 'border-zinc-200 text-zinc-300'}`}>
                                     <Printer size={28} className={snapshot.isDraggingOver ? 'opacity-50' : 'opacity-20'} />
-                                    <span className="text-xs font-medium">{snapshot.isDraggingOver ? 'Soltar para Asignar' : 'Disponible para Asignar'}</span>
+                                    <span className="text-xs tablet:text-[11px] font-medium">{snapshot.isDraggingOver ? 'Soltar para Asignar' : 'Disponible para Asignar'}</span>
                                 </div>
                             );
                         })()}

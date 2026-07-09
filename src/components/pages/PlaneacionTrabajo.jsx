@@ -13,11 +13,15 @@ import RollAssignmentModal from '../modals/RollAssignmentModal';
 import RollDetailsModal from '../modals/RollDetailsModal';
 import ConfirmationModal from '../modals/ConfirmationModal'; // Importar Modal
 import MachineControl from '../production/components/MachineControl';
-import { Layers, Printer, Plus } from 'lucide-react';
+import { Layers, Printer, Plus, PanelLeftClose, PanelLeftOpen } from 'lucide-react';
 import { DragDropContext, Droppable, Draggable } from '@hello-pangea/dnd';
 import { motion } from 'framer-motion';
 import { Listbox, Transition } from '@headlessui/react';
 import { socket } from '../../services/socketService';
+import { isTabletDevice } from '../../utils/device';
+
+// Tablet de planta: columnas de equipos más angostas para que entren 4 a lo ancho (1280px)
+const IS_TABLET_PLANEACION = isTabletDevice();
 
 const PlaneacionTrabajo = ({ AreaID }) => {
     const { user } = useAuth();
@@ -175,6 +179,7 @@ const PlaneacionTrabajo = ({ AreaID }) => {
     });
 
     const [localBoardData, setLocalBoardData] = useState({ machines: [], pendingRolls: [] });
+    const [mesaOpen, setMesaOpen] = useState(!IS_TABLET_PLANEACION); // drawer: colapsado por defecto en tablet
     useEffect(() => {
         if (prodData) {
             setLocalBoardData(prodData);
@@ -377,9 +382,15 @@ const PlaneacionTrabajo = ({ AreaID }) => {
     };
 
     const visibleMachines = useMemo(() => {
-        const base = filterMachineIds.length === 0
+        let base = filterMachineIds.length === 0
             ? machines
             : machines.filter(m => filterMachineIds.includes(String(m.id)));
+        // TABLET de planta: la tablet vive en la calandra → mostrar SOLO la(s) calandra(s),
+        // nada más (ignora el filtro). Fallback: si el área no tiene calandra, muestra todo.
+        if (IS_TABLET_PLANEACION) {
+            const calandras = machines.filter(m => String(m.name || '').trim().toLowerCase().startsWith('calandra'));
+            if (calandras.length > 0) base = calandras;
+        }
         // Orden de creación (EquipoID): respeta cómo se cargaron los equipos en el modal de gestión.
         return [...base].sort((a, b) => (Number(a.id) || 0) - (Number(b.id) || 0));
     }, [machines, filterMachineIds]);
@@ -524,24 +535,38 @@ const PlaneacionTrabajo = ({ AreaID }) => {
 
                     {/* HEADERS ROW — spans full width */}
                     <div className="flex border-b border-zinc-200 shrink-0">
-                        {/* Mesa de Armado header */}
-                        <div className="w-80 shrink-0 px-4 py-3 flex justify-between items-center border-r border-zinc-200 bg-white overflow-hidden gap-2">
-                            <h3 className="font-black text-zinc-700 text-sm flex items-center gap-2 shrink-0">
-                                <Layers size={15} className="text-brand-cyan" />
-                                Mesa de Armado
-                            </h3>
-                            <span className="h-6 flex items-center bg-brand-cyan/10 text-brand-cyan px-2 rounded-md text-xs font-bold shrink-0">{pendingRolls.length}</span>
+                        {/* Mesa de Armado header (drawer colapsable) */}
+                        <div className={`shrink-0 flex items-center border-r border-zinc-200 bg-white overflow-hidden transition-all duration-300 ${mesaOpen ? 'w-80 tablet:w-56 px-4 py-3 tablet:px-2 tablet:py-2 justify-between gap-2' : 'w-12 justify-center py-3'}`}>
+                            {mesaOpen ? (
+                                <>
+                                    <h3 className="font-black text-zinc-700 text-sm tablet:text-xs flex items-center gap-2 shrink-0">
+                                        <Layers size={15} className="text-brand-cyan" />
+                                        Mesa de Armado
+                                    </h3>
+                                    <div className="flex items-center gap-1.5 shrink-0">
+                                        <span className="h-6 flex items-center bg-brand-cyan/10 text-brand-cyan px-2 rounded-md text-xs tablet:text-[11px] font-bold">{pendingRolls.length}</span>
+                                        <button onClick={() => setMesaOpen(false)} title="Ocultar Mesa de Armado" className="w-6 h-6 flex items-center justify-center rounded text-zinc-400 hover:text-brand-cyan hover:bg-brand-cyan/10 transition-colors">
+                                            <PanelLeftClose size={16} />
+                                        </button>
+                                    </div>
+                                </>
+                            ) : (
+                                <button onClick={() => setMesaOpen(true)} title="Mostrar Mesa de Armado" className="relative w-8 h-8 flex items-center justify-center rounded text-zinc-500 hover:text-brand-cyan hover:bg-brand-cyan/10 transition-colors">
+                                    <PanelLeftOpen size={18} />
+                                    {pendingRolls.length > 0 && <span className="absolute -top-1 -right-1 min-w-[16px] h-4 flex items-center justify-center bg-brand-cyan text-white px-1 rounded-full text-[9px] font-bold">{pendingRolls.length}</span>}
+                                </button>
+                            )}
                         </div>
                         {/* Equipos header */}
-                        <div className="flex-1 px-4 py-3 flex items-center gap-2 bg-white">
+                        <div className="flex-1 px-4 py-3 tablet:px-2 tablet:py-2 flex items-center gap-2 bg-white">
                             <Printer size={15} className="text-brand-cyan" />
-                            <h3 className="font-black text-zinc-700 text-sm">Equipos</h3>
+                            <h3 className="font-black text-zinc-700 text-sm tablet:text-xs">Equipos</h3>
                             {visibleMachines.length > 0 && <span className="bg-brand-cyan/10 text-brand-cyan px-2 py-0.5 rounded-md text-xs font-bold">{visibleMachines.length}</span>}
                             
                             <div className="flex-1"></div>
                             
-                            {/* CSS Hover Dropdown for Machine Filter */}
-                                <div className="w-auto relative z-[100] group">
+                            {/* CSS Hover Dropdown for Machine Filter — oculto en tablet (siempre la calandra) */}
+                                <div className="w-auto relative z-[100] group tablet:hidden">
                                     <div className="relative w-full cursor-pointer rounded-lg bg-white py-1.5 pl-3 pr-8 text-left border border-slate-200 group-hover:border-slate-300 outline-none sm:text-xs font-bold text-slate-700 shadow-sm transition-all flex items-center justify-between">
                                         <span className="block whitespace-nowrap">
                                             Todos los Equipos
@@ -595,8 +620,8 @@ const PlaneacionTrabajo = ({ AreaID }) => {
                     {/* BODY ROW */}
                     <div className="flex-1 flex overflow-hidden">
 
-                        {/* MESA DE ARMADO body */}
-                        <div className="w-80 shrink-0 flex flex-col border-r border-zinc-200 bg-white overflow-hidden">
+                        {/* MESA DE ARMADO body (drawer colapsable) */}
+                        <div className={`shrink-0 flex flex-col border-r border-zinc-200 bg-white overflow-hidden transition-all duration-300 ${mesaOpen ? 'w-80 tablet:w-56' : 'w-12'}`}>
                             <Droppable droppableId="mesa-armado">
                                 {(provided, snapshot) => (
                                     <div 
@@ -604,7 +629,7 @@ const PlaneacionTrabajo = ({ AreaID }) => {
                                         {...provided.droppableProps}
                                         className={`flex-1 overflow-y-auto p-2 flex flex-col gap-2 custom-scrollbar transition-colors ${snapshot.isDraggingOver ? 'bg-brand-cyan/5' : 'bg-zinc-50/30'}`}
                                     >
-                                        {pendingRolls.map((roll, index) => {
+                                        {mesaOpen && pendingRolls.map((roll, index) => {
                                             const isMine = isMyRoll(roll);
                                             const prevRoll = index > 0 ? pendingRolls[index - 1] : null;
                                             const hasMyRolls = pendingRolls.some(isMyRoll);
@@ -655,8 +680,10 @@ const PlaneacionTrabajo = ({ AreaID }) => {
 
                         {/* EQUIPOS body */}
                         <div className="flex-1 flex flex-col bg-zinc-50 overflow-hidden">
-                            <div className="flex-1 overflow-x-auto p-4 custom-scrollbar">
-                                <div className="grid gap-4 h-full" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))' }}>
+                            <div className="flex-1 overflow-x-auto tablet:overflow-y-auto p-4 tablet:p-2 custom-scrollbar">
+                                {/* En tablet cada equipo se ve GRANDE, uno por fila (los operarios filtran a su máquina).
+                                    En desktop, grilla auto-fit de varias columnas. */}
+                                <div className="grid gap-4 tablet:gap-2 h-full tablet:h-auto" style={{ gridTemplateColumns: IS_TABLET_PLANEACION ? '1fr' : 'repeat(auto-fit, minmax(280px, 1fr))' }}>
                                 {visibleMachines.map(machine => (
                                     <MachineControl
                                         key={machine.id}

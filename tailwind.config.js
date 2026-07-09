@@ -56,5 +56,12 @@ export default {
             }
         },
     },
-    plugins: [],
+    plugins: [
+        // Variante `tablet:` — activa cuando el DISPOSITIVO es una tablet física
+        // (html.is-tablet, estampada en main.jsx vía utils/device.js), sin importar
+        // el ancho de ventana ni la orientación. Ej: `tablet:text-sm tablet:grid-cols-2`.
+        function ({ addVariant }) {
+            addVariant('tablet', 'html.is-tablet &');
+        },
+    ],
 }

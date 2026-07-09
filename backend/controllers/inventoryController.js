@@ -5,12 +5,19 @@ const logger = require('../utils/logger');
 // 1. OBTENER INVENTARIO (POR AREA)
 // ==========================================
 exports.getInventoryByArea = async (req, res) => {
-    const { areaId } = req.query; // Puede llegar como 'DTF' o 'DTF,ECOUV'
+    const { areaId, incluirCerradas } = req.query; // Puede llegar como 'DTF' o 'DTF,ECOUV'
 
     // VALIDACIÓN CRITICA
     if (!areaId) {
         return res.status(400).json({ error: "Falta el parámetro areaId en la consulta." });
     }
+
+    // Por defecto solo estados activos; con incluirCerradas también trae Agotadas.
+    // (constantes fijas, no input de usuario → seguro para interpolar)
+    const traerCerradas = incluirCerradas === '1' || incluirCerradas === 'true';
+    const estadosBobina = traerCerradas
+        ? "'Disponible', 'En Uso', 'Pendiente', 'Agotado'"
+        : "'Disponible', 'En Uso', 'Pendiente'";
 
     try {
         const pool = await getPool();
@@ -68,7 +75,7 @@ exports.getInventoryByArea = async (req, res) => {
                            ) AS DescripcionTela
                     FROM InventarioBobinas ib2
                     WHERE ib2.InsumoID = i.InsumoID AND ib2.AreaID IN (${areaParams})
-                      AND ib2.Estado IN ('Disponible', 'En Uso', 'Pendiente')
+                      AND ib2.Estado IN (${estadosBobina})
                     ORDER BY ib2.FechaIngreso ASC
                     FOR JSON PATH
                 ) as ActiveBatches
@@ -291,8 +298,18 @@ exports.closeBobina = async (req, res) => {
 // 4.1 AJUSTE MANUAL (REBAJA SIN CIERRE)
 // ==========================================
 exports.adjustBobina = async (req, res) => {
-    const { bobinaId, cantidad, motivo, orden } = req.body; // Cantidad negativa = resta, positiva = suma
+    const { bobinaId, cantidad, motivo, orden, anchoReal } = req.body; // Cantidad negativa = resta, positiva = suma
     const userId = req.user ? req.user.id : 1;
+
+    const delta = parseFloat(cantidad) || 0;
+    const anchoNum = (anchoReal !== undefined && anchoReal !== null && anchoReal !== '')
+        ? parseFloat(anchoReal) : null;
+    const tieneAncho  = anchoNum !== null && !isNaN(anchoNum) && anchoNum > 0;
+    const tieneMetros = Math.abs(delta) >= 0.01;
+
+    if (!tieneMetros && !tieneAncho) {
+        return res.status(400).json({ error: 'No hay cambios para aplicar (ni metros ni ancho).' });
+    }
 
     try {
         const pool = await getPool();
@@ -302,32 +319,55 @@ exports.adjustBobina = async (req, res) => {
         try {
             const current = await new sql.Request(transaction)
                 .input('BID', sql.Int, bobinaId)
-                .query("SELECT MetrosRestantes, InsumoID, CodigoEtiqueta FROM InventarioBobinas WHERE BobinaID = @BID");
+                .query("SELECT MetrosRestantes, InsumoID, CodigoEtiqueta, Ancho, AnchoReal FROM InventarioBobinas WHERE BobinaID = @BID");
 
             if (current.recordset.length === 0) throw new Error("Bobina no encontrada");
 
-            const { MetrosRestantes, InsumoID, CodigoEtiqueta } = current.recordset[0];
-            const nuevoMetraje = MetrosRestantes + parseFloat(cantidad);
+            const { MetrosRestantes, InsumoID, CodigoEtiqueta, Ancho, AnchoReal: anchoPrev } = current.recordset[0];
+            const nuevoMetraje = MetrosRestantes + delta;
 
             if (nuevoMetraje < 0) throw new Error("El stock no puede quedar negativo");
 
-            // Update Bobina
-            await new sql.Request(transaction)
+            // Update Bobina (metros siempre; ancho solo si se envió corrección)
+            const upd = new sql.Request(transaction)
                 .input('BID', sql.Int, bobinaId)
-                .input('Nuevo', sql.Decimal(10, 2), nuevoMetraje)
-                .query("UPDATE InventarioBobinas SET MetrosRestantes = @Nuevo WHERE BobinaID = @BID");
+                .input('Nuevo', sql.Decimal(10, 2), nuevoMetraje);
+            let setClause = 'MetrosRestantes = @Nuevo';
+            if (tieneAncho) {
+                upd.input('AnchoR', sql.Decimal(10, 2), anchoNum);
+                setClause += ', AnchoReal = @AnchoR';
+            }
+            await upd.query(`UPDATE InventarioBobinas SET ${setClause} WHERE BobinaID = @BID`);
 
-            // Log Movement
-            await new sql.Request(transaction)
-                .input('IID', sql.Int, InsumoID)
-                .input('BID', sql.Int, bobinaId)
-                .input('Cant', sql.Decimal(10, 2), cantidad) // Save the delta
-                .input('Ref', sql.NVarChar(200), orden ? `${orden} | ${motivo}` : motivo)
-                .input('UID', sql.Int, userId)
-                .query("INSERT INTO MovimientosInsumos (InsumoID, BobinaID, TipoMovimiento, Cantidad, Referencia, UsuarioID) VALUES (@IID, @BID, 'AJUSTE_MANUAL', @Cant, @Ref, @UID)");
+            // Log Movimiento de metros (solo si hubo cambio de stock)
+            if (tieneMetros) {
+                await new sql.Request(transaction)
+                    .input('IID', sql.Int, InsumoID)
+                    .input('BID', sql.Int, bobinaId)
+                    .input('Cant', sql.Decimal(10, 2), delta) // Save the delta
+                    .input('Ref', sql.NVarChar(200), orden ? `${orden} | ${motivo}` : motivo)
+                    .input('UID', sql.Int, userId)
+                    .query("INSERT INTO MovimientosInsumos (InsumoID, BobinaID, TipoMovimiento, Cantidad, Referencia, UsuarioID) VALUES (@IID, @BID, 'AJUSTE_MANUAL', @Cant, @Ref, @UID)");
+            }
+
+            // Log Movimiento de ancho (incluye CodigoEtiqueta para que aparezca en el historial)
+            if (tieneAncho) {
+                const anchoAntes = anchoPrev != null ? parseFloat(anchoPrev) : (Ancho != null ? parseFloat(Ancho) : 0);
+                const refAncho = `Ancho ${anchoAntes.toFixed(2)}m → ${anchoNum.toFixed(2)}m`
+                    + (orden ? ` | ${orden}` : '')
+                    + (motivo ? ` | ${motivo}` : '')
+                    + ` (${CodigoEtiqueta})`;
+                await new sql.Request(transaction)
+                    .input('IID', sql.Int, InsumoID)
+                    .input('BID', sql.Int, bobinaId)
+                    .input('Cant', sql.Decimal(10, 2), 0)
+                    .input('Ref', sql.NVarChar(200), refAncho)
+                    .input('UID', sql.Int, userId)
+                    .query("INSERT INTO MovimientosInsumos (InsumoID, BobinaID, TipoMovimiento, Cantidad, Referencia, UsuarioID) VALUES (@IID, @BID, 'AJUSTE_ANCHO', @Cant, @Ref, @UID)");
+            }
 
             await transaction.commit();
-            res.json({ success: true, message: 'Stock ajustado correctamente' });
+            res.json({ success: true, message: 'Ajuste aplicado correctamente' });
         } catch (inner) {
             await transaction.rollback();
             throw inner;
@@ -1079,6 +1119,7 @@ exports.getBovinasDisponibles = async (req, res) => {
                     ib.CodigoEtiqueta,
                     ib.MetrosRestantes,
                     ib.Ancho,
+                    ib.AnchoReal,
                     ib.FechaIngreso,
                     ib.Referencia,
                     COALESCE(NULLIF(ib.DescripcionTela, ''), ins.Nombre) AS DescripcionTela

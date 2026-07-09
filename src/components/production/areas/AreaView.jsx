@@ -558,12 +558,12 @@ export default function AreaView({ areaKey: rawAreaKey, areaConfig, onSwitchTab 
     console.log("🔍 [AreaView] Render - Props:", { areaKey, areaConfigName: areaConfig?.name, isRollModalOpen });
 
     const tableToolbar = (
-        <div className="flex flex-nowrap gap-3 items-center">
+        <div className="flex flex-nowrap gap-3 tablet:gap-1.5 items-center">
             <button
-                className="flex items-center gap-2 px-3 py-1.5 text-xs font-bold bg-white border border-zinc-200 rounded-lg text-zinc-600 hover:bg-zinc-50 hover:text-brand-cyan hover:border-brand-cyan/30 transition-colors shadow-sm capitalize"
+                className="flex items-center gap-2 px-3 py-1.5 tablet:px-2 tablet:py-1 text-xs tablet:text-[11px] font-bold bg-white border border-zinc-200 rounded-lg text-zinc-600 hover:bg-zinc-50 hover:text-brand-cyan hover:border-brand-cyan/30 transition-colors shadow-sm capitalize"
                 onClick={() => navigate('/consultas/rollos', { state: { areaFilter: areaKey } })}
             >
-                <i className="fa-solid fa-clock-rotate-left"></i> Historial
+                <i className="fa-solid fa-clock-rotate-left"></i> <span className="tablet:hidden">Historial</span>
             </button>
 
             <div className="w-px h-5 bg-zinc-200 mx-1"></div>
@@ -572,7 +572,7 @@ export default function AreaView({ areaKey: rawAreaKey, areaConfig, onSwitchTab 
             <div className="relative" ref={filterDropdownRef}>
                 <button
                     onClick={(e) => { e.stopPropagation(); setIsFilterDropdownOpen(prev => !prev); }}
-                    className={`flex items-center gap-2 px-3 py-1.5 text-xs font-bold border rounded-lg transition-colors shadow-sm ${
+                    className={`flex items-center gap-2 px-3 py-1.5 tablet:px-2 tablet:py-1 text-xs tablet:text-[11px] font-bold border rounded-lg transition-colors shadow-sm ${
                         activeFilterCount > 0
                             ? 'bg-brand-cyan text-white border-brand-cyan hover:bg-[#005a7a]'
                             : 'bg-white text-zinc-600 border-zinc-200 hover:bg-zinc-50 hover:text-brand-cyan hover:border-brand-cyan/30'
@@ -731,7 +731,7 @@ export default function AreaView({ areaKey: rawAreaKey, areaConfig, onSwitchTab 
                     placeholder="Buscar orden, cliente o ID cliente..."
                     value={globalSearch}
                     onChange={(e) => { setGlobalSearch(e.target.value); try { sessionStorage.setItem(`areaSearch_${areaKey}`, e.target.value); } catch {} }}
-                    className={`pl-8 ${globalSearch ? 'pr-8' : 'pr-3'} py-1.5 h-[30px] w-64 shrink-0 text-xs font-medium border border-zinc-200 rounded-lg bg-white focus:outline-none focus:border-brand-cyan focus:ring-1 focus:ring-brand-cyan transition-all shadow-sm placeholder:text-zinc-400`}
+                    className={`pl-8 ${globalSearch ? 'pr-8' : 'pr-3'} py-1.5 h-[30px] w-64 tablet:w-44 tablet:h-[28px] shrink-0 text-xs tablet:text-[11px] font-medium border border-zinc-200 rounded-lg bg-white focus:outline-none focus:border-brand-cyan focus:ring-1 focus:ring-brand-cyan transition-all shadow-sm placeholder:text-zinc-400`}
                 />
                 {globalSearch && (
                     <button 
@@ -835,14 +835,14 @@ export default function AreaView({ areaKey: rawAreaKey, areaConfig, onSwitchTab 
                         }
                         setIsRollModalOpen(true);
                     }}
-                    className={`h-[30px] flex items-center gap-2 px-3 text-xs font-bold border rounded-lg transition-colors shadow-sm whitespace-nowrap ${
+                    className={`h-[30px] tablet:h-[28px] flex items-center gap-2 px-3 tablet:px-2 text-xs tablet:text-[11px] font-bold border rounded-lg transition-colors shadow-sm whitespace-nowrap ${
                         selectedIds.length > 0
                             ? 'bg-brand-cyan text-white border-brand-cyan hover:bg-[#005a7a]'
                             : 'bg-zinc-100 text-zinc-400 border-zinc-200 cursor-not-allowed opacity-80'
                     }`}
                 >
                     <i className="fa-solid fa-layer-group"></i>
-                    Asignar a Lote
+                    <span className="tablet:hidden">Asignar a Lote</span><span className="hidden tablet:inline">Asignar</span>
                     {selectedIds.length > 0 && (
                         <span className="ml-1 px-1.5 h-4 flex items-center justify-center bg-white/20 rounded-md text-[10px] leading-none">
                             {selectedIds.length}
@@ -889,22 +889,22 @@ export default function AreaView({ areaKey: rawAreaKey, areaConfig, onSwitchTab 
             )}
 
             <header className="bg-white flex flex-col shrink-0 z-20 w-full relative">
-                <div className="px-4 py-2 flex items-center justify-between bg-white min-h-[56px] relative w-full overflow-hidden">
+                <div className="px-4 py-2 tablet:px-2 tablet:py-1 flex items-center justify-between bg-white min-h-[56px] tablet:min-h-[44px] relative w-full overflow-hidden">
 
                     {/* CENTRO ABSOLUTO: Tabs de Navegación (Siempre en el centro exacto de la pantalla) */}
-                    <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 flex items-center gap-1 z-30 pointer-events-auto">
+                    <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 flex items-center gap-1 tablet:gap-0.5 z-30 pointer-events-auto">
                         {!hideImportar && (
                             <button
-                                className={`${btnBaseClass} px-3 h-8 text-xs ${btnSecondaryClass}`}
+                                className={`${btnBaseClass} px-3 h-8 text-xs tablet:px-2 tablet:h-7 tablet:text-[11px] ${btnSecondaryClass}`}
                                 onClick={() => setIsImportModalOpen(true)}
                             >
-                                <i className="fa-solid fa-file-import"></i> Importar Orden
+                                <i className="fa-solid fa-file-import"></i> <span className="tablet:hidden">Importar Orden</span><span className="hidden tablet:inline">Importar</span>
                             </button>
                         )}
-                        <button className={`${btnBaseClass} px-3 h-8 text-xs ${isActive('') ? btnPrimaryClass : btnSecondaryClass}`} onClick={() => goTo('')}><LayoutGrid size={14} /> Planilla</button>
-                        <button className={`${btnBaseClass} px-3 h-8 text-xs ${isActive('planeacion') ? btnPrimaryClass : btnSecondaryClass}`} onClick={() => goTo('planeacion')}><CalendarCheck size={14} /> Planeación</button>
-                        <button className={`${btnBaseClass} px-3 h-8 text-xs ${isActive('control') ? btnPrimaryClass : btnSecondaryClass}`} onClick={() => goTo('control')}><ScanLine size={14} /> Control</button>
-                        <button className={`${btnBaseClass} px-3 h-8 text-xs ${isActive('logistica') ? btnPrimaryClass : btnSecondaryClass}`} onClick={() => goTo('logistica')}><Truck size={14} /> Logística</button>
+                        <button className={`${btnBaseClass} px-3 h-8 text-xs tablet:px-2 tablet:h-7 tablet:text-[11px] ${isActive('') ? btnPrimaryClass : btnSecondaryClass}`} onClick={() => goTo('')}><LayoutGrid size={14} /> Planilla</button>
+                        <button className={`${btnBaseClass} px-3 h-8 text-xs tablet:px-2 tablet:h-7 tablet:text-[11px] ${isActive('planeacion') ? btnPrimaryClass : btnSecondaryClass}`} onClick={() => goTo('planeacion')}><CalendarCheck size={14} /> Planeación</button>
+                        <button className={`${btnBaseClass} px-3 h-8 text-xs tablet:px-2 tablet:h-7 tablet:text-[11px] ${isActive('control') ? btnPrimaryClass : btnSecondaryClass}`} onClick={() => goTo('control')}><ScanLine size={14} /> Control</button>
+                        <button className={`${btnBaseClass} px-3 h-8 text-xs tablet:px-2 tablet:h-7 tablet:text-[11px] ${isActive('logistica') ? btnPrimaryClass : btnSecondaryClass}`} onClick={() => goTo('logistica')}><Truck size={14} /> Logística</button>
                     </div>
 
                     {/* LADO IZQUIERDO (Mitad de la pantalla menos un margen protector para las tabs) */}
@@ -912,8 +912,8 @@ export default function AreaView({ areaKey: rawAreaKey, areaConfig, onSwitchTab 
                         {/* BLOQUE 1: Título */}
                         <div className="flex items-center gap-3 shrink-0">
                             <div className="flex flex-col justify-center shrink-0">
-                                <h1 className="text-xl font-black text-zinc-800 leading-none whitespace-nowrap">{areaConfig.name}</h1>
-                                <span className="text-[10px] font-bold text-brand-cyan uppercase tracking-widest">Producción</span>
+                                <h1 className="text-xl tablet:text-base font-black text-zinc-800 leading-none whitespace-nowrap">{areaConfig.name}</h1>
+                                <span className="text-[10px] tablet:text-[9px] font-bold text-brand-cyan uppercase tracking-widest tablet:tracking-wide">Producción</span>
                             </div>
                             <div className="h-8 w-px bg-zinc-200 mx-1 shrink-0"></div>
                         </div>
@@ -925,14 +925,14 @@ export default function AreaView({ areaKey: rawAreaKey, areaConfig, onSwitchTab 
                     {/* LADO DERECHO (Mitad de la pantalla menos el margen protector) */}
                     <div className="flex w-1/2 items-center justify-end pl-64 z-20 pointer-events-auto">
                         {/* BLOQUE 4: Acciones Globales */}
-                        <div className="flex items-center gap-2 shrink-0">
+                        <div className="flex items-center gap-2 tablet:gap-1 shrink-0">
                             <Tippy content="Pedir Insumos">
-                                <button className="w-9 h-9 rounded-lg flex items-center justify-center transition-all shadow-sm bg-brand-gold/10 text-brand-gold border border-brand-gold/20 hover:bg-brand-gold/20" onClick={() => setIsStockOpen(true)}>
+                                <button className="w-9 h-9 tablet:w-8 tablet:h-8 rounded-lg flex items-center justify-center transition-all shadow-sm bg-brand-gold/10 text-brand-gold border border-brand-gold/20 hover:bg-brand-gold/20" onClick={() => setIsStockOpen(true)}>
                                     <CirclePile size={24} />
                                 </button>
                             </Tippy>
                             <Tippy content="Reportar Falla">
-                                <button className="w-9 h-9 rounded-lg flex items-center justify-center transition-all shadow-sm bg-brand-magenta/10 text-brand-magenta border border-brand-magenta/20 hover:bg-brand-magenta/20" onClick={() => setIsFailureOpen(true)}>
+                                <button className="w-9 h-9 tablet:w-8 tablet:h-8 rounded-lg flex items-center justify-center transition-all shadow-sm bg-brand-magenta/10 text-brand-magenta border border-brand-magenta/20 hover:bg-brand-magenta/20" onClick={() => setIsFailureOpen(true)}>
                                     <AlertTriangle size={24} />
                                 </button>
                             </Tippy>

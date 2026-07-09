@@ -29,10 +29,13 @@ export function useFileUploader() {
                     ? result.width
                     : (result.width / 300) * 0.0254;
 
-                const maxPrintableWidth = config.maxMaterialWidth - 0.03;
+                // Ancho medido redondeado SIEMPRE PARA ARRIBA al cm (1.5701 → 1.58; 1.57 → 1.57),
+                // para que el valor validado y el mostrado coincidan. toFixed(6) limpia ruido de float.
+                const widthRounded = Math.ceil(Number((widthInMeters * 100).toFixed(6))) / 100;
+                const maxPrintableWidth = Math.round((config.maxMaterialWidth - 0.03) * 100) / 100;
 
-                if (widthInMeters > maxPrintableWidth + 0.001) {
-                    throw new Error(`El ancho del archivo (${widthInMeters.toFixed(2)}m) excede el ancho imprimible (${maxPrintableWidth.toFixed(2)}m).`);
+                if (widthRounded > maxPrintableWidth + 1e-9) {
+                    throw new Error(`El ancho del archivo (${widthRounded.toFixed(2)}m) excede el ancho imprimible (${maxPrintableWidth.toFixed(2)}m).`);
                 }
             }
 

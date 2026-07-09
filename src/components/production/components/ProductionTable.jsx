@@ -8,11 +8,24 @@ import {
     getFilteredRowModel,
     flexRender
 } from '@tanstack/react-table';
+import { isTabletDevice } from '../../../utils/device';
+
+// Tablets de planta (1200x800): la tabla completa no entra → arrancar con las columnas
+// secundarias ocultas (el operario puede volver a mostrarlas desde "Columnas").
+const IS_TABLET = isTabletDevice();
+const TABLET_HIDDEN_DEFAULT = {
+    variantCode: false,   // Variante (está dentro del material casi siempre)
+    status: false,        // Estado General (se conserva Estado en Área, más específico)
+    filesCount: false,    // Archivos
+    ink: false,           // Tinta
+    note: false,          // Nota
+    observations: false,  // Observaciones
+};
 
 export default function ProductionTable({ rowData = [], onRowSelected, selectedRowIds, onRowClick, columnDefs: propColumnDefs, toolbarContent, flashingRowIds = [] }) {
 
     const [rowSelection, setRowSelection] = useState({});
-    const [columnVisibility, setColumnVisibility] = useState({});
+    const [columnVisibility, setColumnVisibility] = useState(() => (IS_TABLET ? { ...TABLET_HIDDEN_DEFAULT } : {}));
 
     // Sincronizar estado interno de selección hacia arriba (prop onRowSelected)
     useEffect(() => {
@@ -72,7 +85,7 @@ export default function ProductionTable({ rowData = [], onRowSelected, selectedR
         else if (s.includes('finalizado') || s.includes('entregado') || s.includes('ok')) colorClass = "text-emerald-600";
 
         return (
-            <span className={`text-xs font-bold uppercase tracking-wide ${colorClass}`}>
+            <span className={`text-xs tablet:text-[11px] font-bold uppercase tracking-wide tablet:tracking-tight ${colorClass}`}>
                 {status}
             </span>
         );
@@ -89,21 +102,21 @@ export default function ProductionTable({ rowData = [], onRowSelected, selectedR
         const code = (params.data?.code || '').toUpperCase();
         const isFalla = (params.value === 'Falla' || params.value === 'FALLA') || code.includes('-F') || code.startsWith('F-') || code.startsWith('F ');
         if (isFalla) {
-            return <span className="pulse-falla-badge inline-flex items-center px-3 py-1 rounded text-xs font-bold uppercase tracking-wide">FALLA</span>;
+            return <span className="pulse-falla-badge inline-flex items-center px-3 py-1 tablet:px-1.5 tablet:py-0.5 rounded text-xs tablet:text-[10px] font-bold uppercase tracking-wide tablet:tracking-tight">FALLA</span>;
         }
         if (params.value === 'Urgente') {
-            return <span className="text-xs font-bold text-brand-magenta uppercase tracking-wide">URGENTE</span>;
+            return <span className="text-xs tablet:text-[10px] font-bold text-brand-magenta uppercase tracking-wide tablet:tracking-tight">URGENTE</span>;
         }
         if (params.value === 'Reposición' || params.value === 'Reposicion' || params.value === 'REPOSICIÓN') {
-            return <span className="text-xs font-bold text-orange-500 uppercase tracking-wide">REPOSICIÓN</span>;
+            return <span className="text-xs tablet:text-[10px] font-bold text-orange-500 uppercase tracking-wide tablet:tracking-tight">REPOSICIÓN</span>;
         }
-        return <span className="text-xs text-zinc-500 font-medium">{params.value || 'Normal'}</span>;
+        return <span className="text-xs tablet:text-[11px] text-zinc-500 font-medium">{params.value || 'Normal'}</span>;
     };
 
     const BatchRenderer = (params) => {
-        if (!params.value) return <span className="text-zinc-300">-</span>;
+        if (!params.value) return <span className="text-xs tablet:text-[11px] text-zinc-300">-</span>;
         return (
-            <span className="text-xs font-bold text-brand-cyan">
+            <span className="text-xs tablet:text-[11px] font-bold text-brand-cyan">
                 {params.value}
             </span>
         );
@@ -112,7 +125,7 @@ export default function ProductionTable({ rowData = [], onRowSelected, selectedR
     const FilesRenderer = (params) => {
         const val = params.value;
         const displayVal = val !== undefined && val !== null && val !== '' ? val : 0;
-        return <span className="text-xs font-bold text-zinc-600">{displayVal}</span>;
+        return <span className="text-xs tablet:text-[11px] font-bold text-zinc-600">{displayVal}</span>;
     };
 
     const DateRenderer = (params) => {
@@ -120,8 +133,8 @@ export default function ProductionTable({ rowData = [], onRowSelected, selectedR
         const date = new Date(params.value);
         return (
             <div className="flex flex-col leading-tight">
-                <span className="text-xs font-bold text-zinc-700">{date.toLocaleDateString('es-ES', { day: '2-digit', month: '2-digit', year: '2-digit' })}</span>
-                <span className="text-[10px] text-zinc-400 font-medium">{date.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' })}</span>
+                <span className="text-xs tablet:text-[11px] font-bold text-zinc-700">{date.toLocaleDateString('es-ES', { day: '2-digit', month: '2-digit', year: '2-digit' })}</span>
+                <span className="text-[10px] tablet:text-[9px] text-zinc-400 font-medium">{date.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' })}</span>
             </div>
         );
     };
@@ -141,7 +154,8 @@ export default function ProductionTable({ rowData = [], onRowSelected, selectedR
             const numStr = String(mag).replace(/[^\d.]/g, '');
             const display = numStr || mag;
             const unitDisplay = unit || (String(mag).replace(/[\d. ]/g, '') || '');
-            return `${display}${unitDisplay ? ' ' + unitDisplay : ''}`;
+            // OJO: devolver un string pelado hace que la celda herede los 16px del body (se veía gigante)
+            return <span className="text-xs tablet:text-[11px] font-bold text-zinc-700">{`${display}${unitDisplay ? ' ' + unitDisplay : ''}`}</span>;
         }},
         { field: 'status', headerName: 'Estado General', width: 130, cellRenderer: StatusRenderer },
         { field: 'areaStatus', headerName: 'Estado en Área', width: 130 },
@@ -179,15 +193,19 @@ export default function ProductionTable({ rowData = [], onRowSelected, selectedR
                 // Cálculo escalonado para textos:
                 // Textos cortos (<= 15) necesitan más px por letra.
                 // Textos largos (> 15) suelen tener minúsculas/espacios, usamos menos px extra para no inflar la columna.
-                let textWidth = maxChars * 8;
+                // En TABLET la fuente baja a 11px → menos px por carácter, colchón y cap más chicos.
+                const pxChar = IS_TABLET ? 7 : 8;
+                const pxCharLargo = IS_TABLET ? 4.8 : 5.5;
+                const colchon = IS_TABLET ? 16 : 24;
+                const cap = IS_TABLET ? 160 : 200;
+
+                let textWidth = maxChars * pxChar;
                 if (maxChars > 15) {
-                    textWidth = (15 * 8) + ((maxChars - 15) * 5.5);
+                    textWidth = (15 * pxChar) + ((maxChars - 15) * pxCharLargo);
                 }
-                
-                const minHeaderWidth = col.headerName ? Math.max(col.headerName.length * 9 + 24, 45) : 45;
-                // Ajuste preciso con 24px de colchón para absorber los px-2 (16px de padding total + 8px margen).
-                // Cap reducido a 200px: el texto más largo se trunca con ellipsis de todas formas.
-                computedSize = Math.min(Math.max(textWidth + 24, minHeaderWidth), 200);
+
+                const minHeaderWidth = col.headerName ? Math.max(col.headerName.length * (IS_TABLET ? 7.5 : 9) + colchon, 45) : 45;
+                computedSize = Math.min(Math.max(textWidth + colchon, minHeaderWidth), cap);
             } else {
                 computedSize = col.width || col.minWidth || 150;
             }
@@ -217,7 +235,7 @@ export default function ProductionTable({ rowData = [], onRowSelected, selectedR
                         return <div className="flex justify-center w-full"><Renderer value={info.getValue()} data={info.row.original} row={info.row} /></div>;
                     }
                     if (col.field === 'code') {
-                        return <span className="text-xs font-bold text-brand-cyan">{info.getValue() || '-'}</span>;
+                        return <span className="text-xs tablet:text-[11px] font-bold text-brand-cyan">{info.getValue() || '-'}</span>;
                     }
                     if (col.field === 'client') {
                         let finalDisplay = info.row.original.idClienteStr;
@@ -240,12 +258,12 @@ export default function ProductionTable({ rowData = [], onRowSelected, selectedR
                         }
 
                         return (
-                            <span className="text-xs font-bold text-zinc-700 truncate block w-full text-center">
+                            <span className="text-xs tablet:text-[11px] font-bold text-zinc-700 truncate block w-full text-center">
                                 {finalDisplay}
                             </span>
                         );
                     }
-                    return <span className="text-xs font-medium text-zinc-700">{info.getValue() || '-'}</span>;
+                    return <span className="text-xs tablet:text-[11px] font-medium text-zinc-700">{info.getValue() || '-'}</span>;
                 }
             };
         });
@@ -298,16 +316,16 @@ export default function ProductionTable({ rowData = [], onRowSelected, selectedR
         <div className="flex flex-col h-full w-full bg-white overflow-hidden animate-in fade-in duration-300 relative">
             
             {/* Toolbar Superior */}
-            {(toolbarContent || rowData.length > 0) && <div className="px-4 py-2 border-b-2 border-zinc-200 bg-zinc-50 flex justify-between items-center shrink-0 z-20">
+            {(toolbarContent || rowData.length > 0) && <div className="px-4 py-2 tablet:px-2 tablet:py-1.5 border-b-2 border-zinc-200 bg-zinc-50 flex justify-between items-center shrink-0 z-20">
                 {/* Contenido Dinámico (Filtros, Historial, etc) */}
-                <div className="flex-1 flex items-center overflow-visible flex-wrap gap-2">
+                <div className="flex-1 flex items-center overflow-visible flex-wrap gap-2 tablet:gap-1.5">
                     {toolbarContent}
                 </div>
 
                 {/* Controles Nativos de la Tabla (Ocultar Columnas) */}
-                <div className="relative group shrink-0 ml-4">
-                    <button className="flex items-center gap-2 px-3 py-1.5 text-xs font-bold bg-white border border-zinc-200 rounded-lg text-zinc-600 hover:bg-brand-cyan/5 hover:text-brand-cyan hover:border-brand-cyan/30 transition-colors shadow-sm">
-                        <i className="fa-solid fa-table-columns"></i> Columnas
+                <div className="relative group shrink-0 ml-4 tablet:ml-2">
+                    <button className="flex items-center gap-2 px-3 py-1.5 tablet:px-2 tablet:py-1 text-xs tablet:text-[11px] font-bold bg-white border border-zinc-200 rounded-lg text-zinc-600 hover:bg-brand-cyan/5 hover:text-brand-cyan hover:border-brand-cyan/30 transition-colors shadow-sm">
+                        <i className="fa-solid fa-table-columns"></i> <span className="tablet:hidden">Columnas</span>
                     </button>
                     {/* Dropdown Menu */}
                     <div className="absolute right-0 top-full pt-1 w-56 opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all pointer-events-none group-hover:pointer-events-auto z-50">
@@ -342,9 +360,9 @@ export default function ProductionTable({ rowData = [], onRowSelected, selectedR
                 </div>
             ) : (
                 <div className="flex-1 overflow-auto bg-zinc-50 relative custom-scrollbar z-10">
-                    <table 
-                        className="text-left border-collapse overflow-hidden"
-                        style={{ 
+                    <table
+                        className="text-left border-collapse overflow-hidden text-xs tablet:text-[11px]"
+                        style={{
                             tableLayout: 'fixed',
                             width: '100%'
                         }}
@@ -355,7 +373,7 @@ export default function ProductionTable({ rowData = [], onRowSelected, selectedR
                                     {headerGroup.headers.map((header, index) => (
                                     <th
                                         key={header.id}
-                                        className="py-3 px-2 text-[10px] font-black text-zinc-600 uppercase tracking-widest whitespace-nowrap bg-transparent relative group select-none border-r border-zinc-200/50 last:border-r-0 text-center first:border-l-4 first:border-transparent"
+                                        className="py-3 px-2 tablet:py-1.5 tablet:px-1 text-[10px] tablet:text-[9px] font-black text-zinc-600 uppercase tracking-widest tablet:tracking-normal whitespace-nowrap bg-transparent relative group select-none border-r border-zinc-200/50 last:border-r-0 text-center first:border-l-4 first:border-transparent"
                                         style={{ 
                                             width: header.getSize(), 
                                             minWidth: header.column.columnDef.minSize || 50 
@@ -401,7 +419,7 @@ export default function ProductionTable({ rowData = [], onRowSelected, selectedR
                                         style={{ animationDelay: `${Math.min(rowIndex, 20) * 30}ms` }}
                                     >
                                         {row.getVisibleCells().map(cell => (
-                                            <td key={cell.id} className={`py-2 px-2 align-middle border-r border-zinc-200/40 last:border-r-0 text-center overflow-hidden whitespace-nowrap text-ellipsis max-w-[0px]`}>
+                                            <td key={cell.id} className={`py-2 px-2 tablet:py-1 tablet:px-1 align-middle border-r border-zinc-200/40 last:border-r-0 text-center overflow-hidden whitespace-nowrap text-ellipsis max-w-[0px]`}>
                                                 {flexRender(cell.column.columnDef.cell, cell.getContext())}
                                             </td>
                                         ))}
@@ -415,27 +433,28 @@ export default function ProductionTable({ rowData = [], onRowSelected, selectedR
             )}
 
             {/* Paginación Moderna */}
-            {rowData.length > 0 && <div className="px-6 py-3.5 bg-white border-t border-zinc-200 flex items-center justify-between shrink-0">
-            <span className="text-xs font-bold text-zinc-500 flex items-center gap-2">
-                    <span className="bg-zinc-100 text-zinc-600 px-2 py-1 rounded-md">
+            {rowData.length > 0 && <div className="px-6 py-3.5 tablet:px-3 tablet:py-2 bg-white border-t border-zinc-200 flex items-center justify-between shrink-0">
+            <span className="text-xs tablet:text-[11px] font-bold text-zinc-500 flex items-center gap-2 tablet:gap-1.5">
+                    <span className="bg-zinc-100 text-zinc-600 px-2 py-1 tablet:px-1.5 tablet:py-0.5 rounded-md">
                         Página {table.getState().pagination.pageIndex + 1} de {table.getPageCount() || 1}
                     </span>
-                    <span className="font-medium text-zinc-400">({rowData.length} órdenes en total)</span>
-                    <span className="bg-brand-cyan/10 text-brand-cyan px-2 py-1 rounded-md font-bold">
+                    <span className="font-medium text-zinc-400 tablet:hidden">({rowData.length} órdenes en total)</span>
+                    <span className="hidden tablet:inline font-medium text-zinc-400">({rowData.length})</span>
+                    <span className="bg-brand-cyan/10 text-brand-cyan px-2 py-1 tablet:px-1.5 tablet:py-0.5 rounded-md font-bold">
                         {rowData.reduce((sum, o) => sum + (parseFloat(o.magnitude) || 0), 0).toFixed(2)} m
                     </span>
                     {table.getSelectedRowModel().rows.length > 0 && (
-                        <span className="bg-indigo-100 text-indigo-700 px-2 py-1 rounded-md font-bold">
+                        <span className="bg-indigo-100 text-indigo-700 px-2 py-1 tablet:px-1.5 tablet:py-0.5 rounded-md font-bold">
                             {table.getSelectedRowModel().rows.length} sel. · {table.getSelectedRowModel().rows.reduce((sum, r) => sum + (parseFloat(r.original.magnitude) || 0), 0).toFixed(2)} m
                         </span>
                     )}
                 </span>
                 
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 tablet:gap-1">
                     <button
                         onClick={() => table.setPageIndex(0)}
                         disabled={!table.getCanPreviousPage()}
-                        className="w-8 h-8 flex items-center justify-center text-xs font-bold bg-white text-zinc-500 border border-zinc-200 rounded-lg transition-colors disabled:opacity-40 disabled:cursor-not-allowed hover:enabled:bg-zinc-50 hover:enabled:text-brand-cyan hover:enabled:border-brand-cyan/30"
+                        className="w-8 h-8 tablet:w-7 tablet:h-7 flex items-center justify-center text-xs font-bold bg-white text-zinc-500 border border-zinc-200 rounded-lg transition-colors disabled:opacity-40 disabled:cursor-not-allowed hover:enabled:bg-zinc-50 hover:enabled:text-brand-cyan hover:enabled:border-brand-cyan/30"
                         title="Primera página"
                     >
                         <i className="fa-solid fa-angles-left"></i>
@@ -443,21 +462,21 @@ export default function ProductionTable({ rowData = [], onRowSelected, selectedR
                     <button
                         onClick={() => table.previousPage()}
                         disabled={!table.getCanPreviousPage()}
-                        className="px-3 h-8 flex items-center gap-1.5 text-xs font-bold bg-white text-zinc-600 border border-zinc-200 rounded-lg transition-colors shadow-sm disabled:opacity-40 disabled:cursor-not-allowed hover:enabled:bg-zinc-50 hover:enabled:text-brand-cyan hover:enabled:border-brand-cyan/30"
+                        className="px-3 h-8 tablet:px-2 tablet:h-7 flex items-center gap-1.5 text-xs tablet:text-[11px] font-bold bg-white text-zinc-600 border border-zinc-200 rounded-lg transition-colors shadow-sm disabled:opacity-40 disabled:cursor-not-allowed hover:enabled:bg-zinc-50 hover:enabled:text-brand-cyan hover:enabled:border-brand-cyan/30"
                     >
-                        <i className="fa-solid fa-angle-left"></i> Anterior
+                        <i className="fa-solid fa-angle-left"></i> <span className="tablet:hidden">Anterior</span>
                     </button>
                     <button
                         onClick={() => table.nextPage()}
                         disabled={!table.getCanNextPage()}
-                        className="px-3 h-8 flex items-center gap-1.5 text-xs font-bold bg-white text-zinc-600 border border-zinc-200 rounded-lg transition-colors shadow-sm disabled:opacity-40 disabled:cursor-not-allowed hover:enabled:bg-zinc-50 hover:enabled:text-brand-cyan hover:enabled:border-brand-cyan/30"
+                        className="px-3 h-8 tablet:px-2 tablet:h-7 flex items-center gap-1.5 text-xs tablet:text-[11px] font-bold bg-white text-zinc-600 border border-zinc-200 rounded-lg transition-colors shadow-sm disabled:opacity-40 disabled:cursor-not-allowed hover:enabled:bg-zinc-50 hover:enabled:text-brand-cyan hover:enabled:border-brand-cyan/30"
                     >
-                        Siguiente <i className="fa-solid fa-angle-right"></i>
+                        <span className="tablet:hidden">Siguiente</span> <i className="fa-solid fa-angle-right"></i>
                     </button>
                     <button
                         onClick={() => table.setPageIndex(table.getPageCount() - 1)}
                         disabled={!table.getCanNextPage()}
-                        className="w-8 h-8 flex items-center justify-center text-xs font-bold bg-white text-zinc-500 border border-zinc-200 rounded-lg transition-colors disabled:opacity-40 disabled:cursor-not-allowed hover:enabled:bg-zinc-50 hover:enabled:text-brand-cyan hover:enabled:border-brand-cyan/30"
+                        className="w-8 h-8 tablet:w-7 tablet:h-7 flex items-center justify-center text-xs font-bold bg-white text-zinc-500 border border-zinc-200 rounded-lg transition-colors disabled:opacity-40 disabled:cursor-not-allowed hover:enabled:bg-zinc-50 hover:enabled:text-brand-cyan hover:enabled:border-brand-cyan/30"
                         title="Última página"
                     >
                         <i className="fa-solid fa-angles-right"></i>

@@ -210,6 +210,22 @@ export const TotemDashboard = ({ onLogout }) => {
         return () => window.removeEventListener('keydown', onKeyDown);
     }, []);
 
+    // Escape del kiosco (staff): combo secreto → prefijo SUB + "0" en el input, y mantener
+    // presionada la caja del número 3 segundos → sale de pantalla completa. Sin PIN, sin UI visible.
+    const escPressRef = useRef(null);
+    const startEscapePress = () => {
+        if (prefix !== 'SUB' || number !== '0') return;
+        escPressRef.current = setTimeout(() => {
+            if (document.fullscreenElement && document.exitFullscreen) {
+                document.exitFullscreen().catch(() => {});
+            }
+            try { window.close(); } catch { /* solo cierra si la abrió un script */ }
+        }, 3000);
+    };
+    const cancelEscapePress = () => {
+        if (escPressRef.current) { clearTimeout(escPressRef.current); escPressRef.current = null; }
+    };
+
     const handleBack = () => {
         setClient(null);
         setOrders([]);
@@ -499,6 +515,18 @@ export const TotemDashboard = ({ onLogout }) => {
     // Search / Announce screen (combined with AnimatePresence for transitions)
     return (
         <div className="flex items-center justify-center min-h-screen p-3">
+            {/* Escape del kiosco (staff): zona invisible en la esquina sup-izq. Long-press 3s
+                SOLO con el combo secreto (prefijo SUB + "0") → sale de pantalla completa. */}
+            <div
+                aria-hidden="true"
+                className="fixed top-0 left-0 w-16 h-16 z-[9999]"
+                onMouseDown={startEscapePress}
+                onMouseUp={cancelEscapePress}
+                onMouseLeave={cancelEscapePress}
+                onTouchStart={startEscapePress}
+                onTouchEnd={cancelEscapePress}
+                onTouchCancel={cancelEscapePress}
+            />
             <AnimatePresence mode="wait">
                 {announceMode ? (
                     <motion.div

@@ -1359,8 +1359,8 @@ exports.uploadOrderFile = async (req, res) => {
                 .input('ID', sql.Int, dbId)
                 .input('Url', sql.VarChar(500), driveUrl)
                 .query(`
-                    UPDATE ArchivosOrden 
-                    SET RutaAlmacenamiento = @Url, EstadoArchivo = 'Pendiente'
+                    UPDATE ArchivosOrden
+                    SET RutaAlmacenamiento = @Url, EstadoArchivo = 'Pendiente', FechaSubida = GETDATE()
                     OUTPUT INSERTED.OrdenID
                     WHERE ArchivoID = @ID
                 `);

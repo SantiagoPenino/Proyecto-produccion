@@ -1778,11 +1778,13 @@ exports.cancelOrder = async (req, res) => {
 
             res.json({ success: true, message: 'Orden cancelada correctamente.' });
 
-            // Push notification
+            // Push notification ({code} se reemplaza por el CodigoOrden en el servicio)
             pushService.sendToOrderClient(orderId, {
                 title: 'Pedido cancelado',
-                body: `Tu pedido #${orderId} fue cancelado.`,
-                url: '/portal/pickup'
+                body: 'Tu pedido {code} fue cancelado.',
+                url: '/portal/pickup',
+                actions: [{ action: 'pedidos', title: 'Ver mis pedidos' }],
+                actionUrls: { pedidos: '/portal/factory' },
             }).catch(err => logger.error('[WebPush Trigger] Error:', err.message));
 
         } catch (inner) {

@@ -37,7 +37,9 @@ const SmallRollMetrics = ({ roll, metrics }) => {
 
         <div className="flex items-center gap-3">
           <div className="relative w-10 h-10 shrink-0">
-            <svg className="w-full h-full transform -rotate-90">
+            {/* viewBox: el círculo se dibuja en un espacio 40x40 y se escala al contenedor
+                (sin esto, al achicar el contenedor —ej. tablet— el anillo se salía y se rompía) */}
+            <svg viewBox="0 0 40 40" className="w-full h-full transform -rotate-90">
               <circle cx="20" cy="20" r="16" stroke="currentColor" strokeWidth="3" fill="transparent" className="text-slate-100" />
               <circle cx="20" cy="20" r="16" stroke="currentColor" strokeWidth="3" fill="transparent"
                 strokeDasharray={100}
@@ -897,17 +899,18 @@ const FilePrintControl = ({ areaCode }) => {
     <div className="flex h-screen bg-slate-50 font-sans text-slate-800 overflow-hidden">
 
       {/* --- SIDEBAR (ORDER LIST) --- */}
-      <aside className="w-[360px] h-full bg-white border-r border-slate-200 flex flex-col z-10 shrink-0 shadow-xl shadow-slate-200/50">
+      {/* Ancho en rem (no px): así escala solo con la compactación de tablet (html.is-tablet font-size) */}
+      <aside className="w-[22.5rem] h-full bg-white border-r border-slate-200 flex flex-col z-10 shrink-0 shadow-xl shadow-slate-200/50">
 
         {/* Header Sidebar */}
-        <div className="p-4 border-b border-slate-100 bg-slate-50/50">
-          <div className="flex items-center gap-3 mb-4">
-            <div className="w-8 h-8 rounded-lg bg-cyan-500 flex items-center justify-center text-white shadow-lg shadow-cyan-200">
+        <div className="p-4 tablet:p-2.5 border-b border-slate-100 bg-slate-50/50">
+          <div className="flex items-center gap-3 mb-4 tablet:mb-2.5">
+            <div className="w-8 h-8 tablet:w-7 tablet:h-7 rounded-lg bg-cyan-500 flex items-center justify-center text-white shadow-lg shadow-cyan-200">
               <i className="fa-solid fa-boxes-packing"></i>
             </div>
             <div>
               <h2 className="text-sm font-black text-slate-800 uppercase leading-none">Control</h2>
-              <div className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Empaquetado {areaCode}</div>
+              <div className="text-[10px] tablet:text-[9px] font-bold text-slate-400 uppercase tracking-widest">Empaquetado {areaCode}</div>
             </div>
           </div>
 
@@ -1060,16 +1063,16 @@ const FilePrintControl = ({ areaCode }) => {
         {selectedOrder ? (
           <div className="w-full pb-20">
             {/* ORDER HEADER */}
-            <div className="bg-white border-b border-slate-200 px-4 py-2.5">
-              <div className="flex justify-between items-center min-h-[40px]">
-                
+            <div className="bg-white border-b border-slate-200 px-4 py-2.5 tablet:px-2.5 tablet:py-1.5">
+              <div className="flex justify-between items-center min-h-[40px] tablet:min-h-[32px]">
+
                 {/* Left Side: Order Info & Stepper */}
-                <div className="flex items-center gap-4">
-                  <div className="flex items-center gap-3">
-                    <span className="px-1.5 py-0.5 rounded bg-slate-100 text-slate-500 text-[10px] font-black uppercase tracking-widest border border-slate-200">
+                <div className="flex items-center gap-4 tablet:gap-2">
+                  <div className="flex items-center gap-3 tablet:gap-2">
+                    <span className="px-1.5 py-0.5 rounded bg-slate-100 text-slate-500 text-[10px] tablet:text-[9px] font-black uppercase tracking-widest border border-slate-200">
                       ORD
                     </span>
-                    <h1 className="text-[22px] font-black text-slate-800 tracking-tight leading-none">
+                    <h1 className="text-[22px] tablet:text-lg font-black text-slate-800 tracking-tight leading-none">
                       {selectedOrder.code || selectedOrder.id}
                     </h1>
                     <div className="flex items-center gap-2">

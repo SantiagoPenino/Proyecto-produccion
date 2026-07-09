@@ -20,7 +20,7 @@ const ReceptionPage = () => {
     const [nextCode, setNextCode] = useState('PRE-#');
     const [formData, setFormData] = useState({
         clienteId: '',
-        tipo: 'PAQUETE DE PRENDAS',
+        tipo: 'TELA DE CLIENTE',
         bultos: 1,
         servicios: [],
         telaCliente: '',
@@ -264,9 +264,9 @@ const ReceptionPage = () => {
         if (formData.tipo === 'TELA DE CLIENTE') {
             if (!formData.areaDestino) errs.areaDestino = 'Requerido';
             if (!formData.insumoId) errs.insumoId = 'Requerido';
-            // Validar que al menos 1 bobina tenga largo > 0
-            const tieneMetros = formData.bobinas.some(b => parseFloat(b.largo) > 0);
-            if (!tieneMetros) errs.metros = 'Ingresá el largo de al menos una bobina (>0)';
+            // Largo y Ancho OBLIGATORIOS en cada bobina (> 0). El peso queda opcional.
+            const faltanMedidas = formData.bobinas.some(b => !(parseFloat(b.largo) > 0) || !(parseFloat(b.ancho) > 0));
+            if (faltanMedidas) errs.metros = 'Cada bobina necesita Largo y Ancho mayores a 0.';
             // Descr. Tela
             if (!formData.telaCliente.trim()) errs.telaCliente = 'Requerido';
         }
@@ -279,7 +279,7 @@ const ReceptionPage = () => {
     const handleReset = () => {
         setFormData({
             clienteId: '',
-            tipo: 'PAQUETE DE PRENDAS',
+            tipo: 'TELA DE CLIENTE',
             bultos: 1,
             servicios: [],
             telaCliente: '',
@@ -946,7 +946,9 @@ const ReceptionPage = () => {
                                                                 />
                                                                 <input
                                                                     type="number" step="0.01" placeholder="0.00"
-                                                                    className="w-full p-2 border border-slate-300 rounded-lg text-sm font-bold text-slate-700 outline-none focus:ring-2 focus:ring-blue-500 text-center"
+                                                                    className={`w-full p-2 border rounded-lg text-sm font-bold text-slate-700 outline-none focus:ring-2 focus:ring-blue-500 text-center ${
+                                                                        errors.metros ? 'border-red-500 bg-red-50' : 'border-slate-300'
+                                                                    }`}
                                                                     value={bob.ancho}
                                                                     onChange={e => {
                                                                         const nb = [...formData.bobinas];

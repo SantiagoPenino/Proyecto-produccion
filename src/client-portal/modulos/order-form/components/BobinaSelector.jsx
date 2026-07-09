@@ -33,7 +33,8 @@ export default function BobinaSelector({ bobinasDisponibles = [], selectedBobina
                                 <span className="font-mono">{b.CodigoEtiqueta}</span>
                                 {b.Referencia && <span className="text-zinc-300">Ref: {b.Referencia}</span>}
                                 <span className="text-emerald-400">▸ {parseFloat(b.MetrosRestantes).toFixed(2)} m largo</span>
-                                {b.Ancho && <span>↔ {parseFloat(b.Ancho).toFixed(2)} m ancho</span>}
+                                {/* Ancho REAL (confirmado); si no está confirmado, cae al declarado */}
+                                {(b.AnchoReal ?? b.Ancho) && <span>↔ {parseFloat(b.AnchoReal ?? b.Ancho).toFixed(2)} m ancho</span>}
                             </div>
                         </button>
                     ))}

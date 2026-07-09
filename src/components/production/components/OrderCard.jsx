@@ -58,7 +58,7 @@ const OrderCard = ({ order, onViewDetails, isSelected, onToggleSelect, minimal =
 
         return (
             <div
-                className={`group bg-white border-b p-3 flex items-center gap-3 hover:bg-slate-50 transition-all cursor-pointer relative overflow-hidden ${isSelected ? 'border-brand-cyan bg-brand-cyan/10' : 'border-slate-200'}`}
+                className={`group bg-white border-b p-3 tablet:p-2 flex items-center gap-3 tablet:gap-2 hover:bg-slate-50 transition-all cursor-pointer relative overflow-hidden ${isSelected ? 'border-brand-cyan bg-brand-cyan/10' : 'border-slate-200'}`}
                 onClick={() => onToggleSelect && onToggleSelect(order.id, !isSelected)}
             >
                 {/* ID & Selection */}

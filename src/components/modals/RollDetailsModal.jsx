@@ -554,8 +554,13 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { }, lo
     // las que comparten GrupoManual (>=2) forman un grupo.
     const manualGroups = (() => {
         const byGid = {};
-        orders.forEach(o => { if (o.groupId != null) { (byGid[o.groupId] = byGid[o.groupId] || []).push(o.id); } });
-        return Object.values(byGid).filter(g => g.length >= 2);
+        orders.forEach(o => { if (o.groupId != null) { (byGid[o.groupId] = byGid[o.groupId] || []).push(o); } });
+        // Un grupo manual es válido solo si TODAS sus órdenes comparten la misma clave de agrupado
+        // (en Tela de Cliente = misma Referencia). Si tiene Referencias distintas, se ignora y sus
+        // órdenes se vuelven a separar por Referencia — así no quedan 2 PRE distintos en un grupo.
+        return Object.values(byGid)
+            .filter(g => g.length >= 2 && new Set(g.map(groupKeyOf)).size === 1)
+            .map(g => g.map(o => o.id));
     })();
 
     // Órdenes "asentadas" en su grupo. Una orden NUEVA (asignada/movida al lote después de abrirlo)
@@ -567,19 +572,29 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { }, lo
     useEffect(() => {
         try { if (placedIds !== null) sessionStorage.setItem(placedStorageKey, JSON.stringify(placedIds)); } catch {}
     }, [placedIds, placedStorageKey]);
+    // "NUEVA" solo aplica mientras el lote se está ARMANDO (sin máquina asignada y sin estado final).
+    // Una vez en máquina/finalizado, todo queda asentado — evita badges NUEVA fantasma que quedaban
+    // pegados por un sessionStorage guardado en una apertura vieja del modal.
+    const estadoLote = String(freshRoll?.status || '').trim().toLowerCase();
+    const loteEnArmado = !freshRoll?.machineId && !['finalizado', 'cerrado', 'cancelado'].includes(estadoLote);
     // Primera vez (con órdenes ya cargadas): asentar todo. Después: solo limpiar las que se fueron.
-    // Las nuevas NO se asientan solas (así van al final).
+    // Las nuevas NO se asientan solas (así van al final) — salvo lote fuera de armado: se asienta TODO.
     useEffect(() => {
         const ids = orders.map(o => o.id);
         setPlacedIds(prev => {
+            if (!loteEnArmado) {
+                if (!ids.length) return prev;
+                const same = prev !== null && prev.length === ids.length && ids.every(id => prev.includes(id));
+                return same ? prev : ids;
+            }
             if (prev === null) return ids.length ? ids : null;
             const cleaned = prev.filter(id => ids.includes(id));
             return cleaned.length === prev.length ? prev : cleaned;
         });
-    }, [orderIdsKey]);
+    }, [orderIdsKey, loteEnArmado]);
     // En el Historial (readOnly) no existe el concepto de "orden nueva" (recién asignada/movida):
     // el lote ya terminó, así que todo se agrupa por material como corresponde (sin bloques "NUEVA").
-    const isNewOrder = (id) => !readOnly && placedIds !== null && !placedIds.includes(id);
+    const isNewOrder = (id) => !readOnly && loteEnArmado && placedIds !== null && !placedIds.includes(id);
 
     const handleAgrupar = async () => {
         if (readOnly || !canGroup) return;
@@ -1313,14 +1328,14 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { }, lo
 
                     {/* Header */}
                     <div className="shrink-0 border-b border-zinc-100">
-                        <div className="px-6 py-4 flex justify-between items-center">
-                            <div className="flex items-center gap-3">
-                                <div className="w-9 h-9 rounded-xl flex items-center justify-center text-white shadow-sm bg-brand-cyan">
+                        <div className="px-6 py-4 tablet:px-3 tablet:py-2 flex justify-between items-center">
+                            <div className="flex items-center gap-3 tablet:gap-2">
+                                <div className="w-9 h-9 tablet:w-8 tablet:h-8 rounded-xl flex items-center justify-center text-white shadow-sm bg-brand-cyan">
                                     <i className="fa-solid fa-scroll text-sm" />
                                 </div>
                                 <div>
                                     <div className="flex items-center gap-2">
-                                        <h3 className="text-lg font-black text-zinc-800 leading-none">
+                                        <h3 className="text-lg tablet:text-base font-black text-zinc-800 leading-none">
                                             {loading ? 'Cargando...' : freshRoll.name}
                                         </h3>
                                         {loading && <i className="fa-solid fa-spinner fa-spin text-xs text-zinc-400" />}
@@ -1344,44 +1359,44 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { }, lo
 
                     {/* Stats Bar */}
                     {!statsCollapsed && (
-                    <div className="px-6 py-4 bg-zinc-50/70 border-b border-zinc-100 flex gap-3 items-stretch flex-wrap shrink-0">
+                    <div className="px-6 py-4 tablet:px-3 tablet:py-2 bg-zinc-50/70 border-b border-zinc-100 flex gap-3 tablet:gap-2 items-stretch flex-wrap shrink-0">
                         {/* Ordenes */}
-                        <div className="flex items-center gap-3 bg-white border border-zinc-200 rounded-xl px-4 py-3 shadow-sm min-w-[100px]">
-                            <div className="w-8 h-8 rounded-lg bg-brand-cyan/10 flex items-center justify-center text-brand-cyan">
+                        <div className="flex items-center gap-3 tablet:gap-2 bg-white border border-zinc-200 rounded-xl px-4 py-3 tablet:px-2.5 tablet:py-2 shadow-sm min-w-[100px] tablet:min-w-[80px]">
+                            <div className="w-8 h-8 tablet:w-7 tablet:h-7 rounded-lg bg-brand-cyan/10 flex items-center justify-center text-brand-cyan">
                                 <i className="fa-solid fa-file-lines text-sm" />
                             </div>
                             <div>
-                                <div className="text-[9px] font-black text-zinc-400 uppercase tracking-widest">Órdenes</div>
-                                <div className="text-2xl font-black text-zinc-800 leading-none">{totalOrders}</div>
+                                <div className="text-[9px] font-black text-zinc-400 uppercase tracking-widest tablet:tracking-wide">Órdenes</div>
+                                <div className="text-2xl tablet:text-lg font-black text-zinc-800 leading-none">{totalOrders}</div>
                             </div>
                         </div>
 
                         {/* Archivos */}
-                        <div className="flex items-center gap-3 bg-white border border-zinc-200 rounded-xl px-4 py-3 shadow-sm min-w-[100px]">
-                            <div className="w-8 h-8 rounded-lg bg-brand-cyan/10 flex items-center justify-center text-brand-cyan">
+                        <div className="flex items-center gap-3 tablet:gap-2 bg-white border border-zinc-200 rounded-xl px-4 py-3 tablet:px-2.5 tablet:py-2 shadow-sm min-w-[100px] tablet:min-w-[80px]">
+                            <div className="w-8 h-8 tablet:w-7 tablet:h-7 rounded-lg bg-brand-cyan/10 flex items-center justify-center text-brand-cyan">
                                 <i className="fa-solid fa-paperclip text-sm" />
                             </div>
                             <div>
-                                <div className="text-[9px] font-black text-zinc-400 uppercase tracking-widest">Archivos</div>
-                                <div className={`text-2xl font-black leading-none ${totalFiles > 0 ? 'text-brand-cyan' : 'text-zinc-300'}`}>{totalFiles}</div>
+                                <div className="text-[9px] font-black text-zinc-400 uppercase tracking-widest tablet:tracking-wide">Archivos</div>
+                                <div className={`text-2xl tablet:text-lg font-black leading-none ${totalFiles > 0 ? 'text-brand-cyan' : 'text-zinc-300'}`}>{totalFiles}</div>
                             </div>
                         </div>
 
                         {/* Total Metros */}
-                        <div className="flex items-center gap-3 bg-white border border-zinc-200 rounded-xl px-4 py-3 shadow-sm min-w-[110px]">
-                            <div className="w-8 h-8 rounded-lg bg-emerald-50 flex items-center justify-center text-emerald-500">
+                        <div className="flex items-center gap-3 tablet:gap-2 bg-white border border-zinc-200 rounded-xl px-4 py-3 tablet:px-2.5 tablet:py-2 shadow-sm min-w-[110px] tablet:min-w-[90px]">
+                            <div className="w-8 h-8 tablet:w-7 tablet:h-7 rounded-lg bg-emerald-50 flex items-center justify-center text-emerald-500">
                                 <i className="fa-solid fa-ruler-horizontal text-sm" />
                             </div>
                             <div>
-                                <div className="text-[9px] font-black text-zinc-400 uppercase tracking-widest">Total m</div>
-                                <div className="text-2xl font-black text-zinc-800 leading-none">
+                                <div className="text-[9px] font-black text-zinc-400 uppercase tracking-widest tablet:tracking-wide">Total m</div>
+                                <div className="text-2xl tablet:text-lg font-black text-zinc-800 leading-none">
                                     {totalMeters.toFixed(2)}<span className="text-xs text-zinc-400 font-bold ml-0.5">m</span>
                                 </div>
                             </div>
                         </div>
 
                         {/* Bobina */}
-                        <div className="flex items-center gap-3 bg-white border border-zinc-200 rounded-xl px-4 py-3 shadow-sm">
+                        <div className="flex items-center gap-3 tablet:gap-2 bg-white border border-zinc-200 rounded-xl px-4 py-3 tablet:px-2.5 tablet:py-2 shadow-sm">
                             <div className={`w-8 h-8 rounded-lg flex items-center justify-center text-sm ${freshRoll.BobinaID ? 'bg-green-50 text-green-600' : 'bg-brand-magenta/10 text-brand-magenta'}`}>
                                 <i className="fa-solid fa-tape" />
                             </div>
@@ -1423,7 +1438,7 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { }, lo
                         </div>
 
                         {/* Total Impreso (visual) - push to right, junto a Capacidad */}
-                        <div className={`ml-auto flex flex-col justify-center border rounded-xl px-4 py-3 shadow-sm min-w-[180px] transition-all duration-500 ${allPrinted ? 'border-emerald-300 bg-emerald-50/50 shadow-md shadow-emerald-200/60' : 'border-zinc-200 bg-white'}`}>
+                        <div className={`ml-auto flex flex-col justify-center border rounded-xl px-4 py-3 tablet:px-2.5 tablet:py-2 shadow-sm min-w-[180px] tablet:min-w-[145px] transition-all duration-500 ${allPrinted ? 'border-emerald-300 bg-emerald-50/50 shadow-md shadow-emerald-200/60' : 'border-zinc-200 bg-white'}`}>
                             <div className="flex justify-between items-center mb-2">
                                 <span className={`text-[9px] font-black uppercase tracking-widest flex items-center gap-1 ${allPrinted ? 'text-emerald-600' : 'text-zinc-400'}`}>
                                     {allPrinted && <i className="fa-solid fa-circle-check" />}
@@ -1451,7 +1466,7 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { }, lo
                         </div>
 
                         {/* Capacidad */}
-                        <div className="flex flex-col justify-center bg-white border border-zinc-200 rounded-xl px-4 py-3 shadow-sm min-w-[180px]">
+                        <div className="flex flex-col justify-center bg-white border border-zinc-200 rounded-xl px-4 py-3 tablet:px-2.5 tablet:py-2 shadow-sm min-w-[180px] tablet:min-w-[145px]">
                             <div className="flex justify-between items-center mb-2">
                                 <span className="text-[9px] font-black text-zinc-400 uppercase tracking-widest">Capacidad</span>
                                 <span className="text-xs font-bold text-zinc-600">
@@ -1484,11 +1499,11 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { }, lo
                     </button>
 
                     {/* Body Table */}
-                    <div className="flex-1 overflow-y-auto p-5 min-h-[300px] bg-zinc-50/40">
+                    <div className="flex-1 overflow-y-auto p-5 tablet:p-2.5 min-h-[300px] bg-zinc-50/40">
                         {isSB ? (
                           <div className="bg-white border border-zinc-200 rounded-xl shadow-sm overflow-x-auto">
                             <div className="min-w-[880px]">
-                              <div className="flex items-center px-2 py-3 bg-zinc-50 border-b border-zinc-200 text-[10px] text-zinc-500 uppercase font-black tracking-widest">
+                              <div className="flex items-center px-2 py-3 tablet:py-1.5 bg-zinc-50 border-b border-zinc-200 text-[10px] tablet:text-[9px] text-zinc-500 uppercase font-black tracking-widest tablet:tracking-wide">
                                 <div className="w-10 flex justify-center">
                                   {!readOnly && <input type="checkbox" className="w-4 h-4 rounded border-zinc-300 text-brand-cyan focus:ring-brand-cyan cursor-pointer" checked={orders.length > 0 && selectedOrderIds.length === orders.length} onChange={handleToggleAll} />}
                                 </div>
@@ -1512,9 +1527,9 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { }, lo
                                 )}
                                 <div className="w-14 text-center"><i className="fa-solid fa-paperclip" /></div>
                                 <div className="w-24 text-center">Metros</div>
-                                <div className="w-28 text-center">Prioridad</div>
+                                <div className="w-28 tablet:w-24 text-center">Prioridad</div>
                                 <div className="w-10 text-center"><i className="fa-regular fa-comment-dots" /></div>
-                                <div className="w-44 text-center">Acciones</div>
+                                <div className="w-44 tablet:w-36 text-center">Acciones</div>
                               </div>
                               <DragDropContext onDragEnd={handleDragEnd}>
                                 <Droppable droppableId={`roll-${freshRoll.id}`} type="GROUP">
@@ -1532,7 +1547,7 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { }, lo
                                             {(p, snap) => (
                                               <div ref={p.innerRef} {...p.draggableProps} className={`rounded-xl border overflow-hidden ${snap.isDragging ? 'bg-white shadow-2xl border-brand-cyan/50 ring-1 ring-brand-cyan/30' : unit.kind === 'new' ? 'border-amber-300' : 'border-zinc-200'}`}>
                                                 {isGroup && (
-                                                  <div className={`flex items-center justify-between gap-2 px-4 py-2 ${unit.kind === 'new' ? 'bg-amber-50' : unit.isFalla ? 'bg-brand-magenta/50' : 'bg-zinc-100/70'}`}>
+                                                  <div className={`flex items-center justify-between gap-2 px-4 py-2 tablet:px-2 tablet:py-1 ${unit.kind === 'new' ? 'bg-amber-50' : unit.isFalla ? 'bg-brand-magenta/50' : 'bg-zinc-100/70'}`}>
                                                     <span className="text-xs font-black text-zinc-700 uppercase tracking-wide flex items-center gap-2 truncate">
                                                       {unit.isFalla && <span className="px-1.5 py-0.5 rounded bg-brand-magenta text-white text-[9px] font-black tracking-wider shrink-0" title="Grupo de falla (-F)">Falla</span>}
                                                       {unit.kind === 'new'
@@ -1574,7 +1589,7 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { }, lo
                                                 {unit.orders.map((o, oi) => { return (
                                                   <Draggable key={`o-${o.id}`} draggableId={`o-${o.id}`} index={oi} isDragDisabled={printedOrderIds.includes(o.id) || unit.kind === 'new' || lockReorder || readOnly}>
                                                     {(op, osnap) => (
-                                                  <div ref={op.innerRef} {...op.draggableProps} className={`flex items-center py-2 border-t border-zinc-100 first:border-t-0 transition-colors ${osnap.isDragging ? 'bg-white shadow-lg ring-1 ring-brand-cyan/40' : selectedOrderIds.includes(o.id) ? 'bg-brand-cyan/10' : printedOrderIds.includes(o.id) ? 'bg-emerald-50/60' : 'hover:bg-slate-50'}`}>
+                                                  <div ref={op.innerRef} {...op.draggableProps} className={`flex items-center py-2 tablet:py-1 border-t border-zinc-100 first:border-t-0 transition-colors ${osnap.isDragging ? 'bg-white shadow-lg ring-1 ring-brand-cyan/40' : selectedOrderIds.includes(o.id) ? 'bg-brand-cyan/10' : printedOrderIds.includes(o.id) ? 'bg-emerald-50/60' : 'hover:bg-slate-50'}`}>
                                                     <div className="w-10 flex justify-center">
                                                       {!readOnly && <input type="checkbox" className="w-4 h-4 rounded border-zinc-300 text-brand-cyan focus:ring-brand-cyan cursor-pointer" checked={selectedOrderIds.includes(o.id)} onChange={() => handleToggleOne(o.id)} />}
                                                     </div>
@@ -1583,12 +1598,12 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { }, lo
                                                       {o.entryDate && <div className="text-[10px] font-normal text-zinc-400 mt-0.5">{fmtEntry(o.entryDate)}</div>}
                                                     </div>
                                                     <div className="flex-1 min-w-[150px] px-2 overflow-hidden">
-                                                      <div className="font-semibold text-zinc-800 truncate text-sm">{o.clientId || o.client || o.Cliente}</div>
-                                                      <div className="text-xs text-zinc-400 truncate mt-0.5">{o.desc || o.DescripcionTrabajo}</div>
+                                                      <div className="font-semibold text-zinc-800 truncate text-sm tablet:text-xs">{o.clientId || o.client || o.Cliente}</div>
+                                                      <div className="text-xs tablet:text-[11px] text-zinc-400 truncate mt-0.5">{o.desc || o.DescripcionTrabajo}</div>
                                                     </div>
                                                     <div className="flex-1 min-w-[150px] px-2 overflow-hidden">
-                                                      <div className="font-semibold text-zinc-800 truncate text-sm">{matDisplay(o)}</div>
-                                                      {o.variantCode && <div className="text-xs text-zinc-400 truncate mt-0.5">{o.variantCode}</div>}
+                                                      <div className="font-semibold text-zinc-800 truncate text-sm tablet:text-xs">{matDisplay(o)}</div>
+                                                      {o.variantCode && <div className="text-xs tablet:text-[11px] text-zinc-400 truncate mt-0.5">{o.variantCode}</div>}
                                                     </div>
                                                     <div className="w-14 flex justify-center">
                                                       {o.fileCount > 0 ? <span className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-brand-cyan/10 text-brand-cyan text-[10px] font-black border border-brand-cyan/30">{o.fileCount}</span> : <span className="text-zinc-200 text-xs">—</span>}
@@ -1608,11 +1623,11 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { }, lo
                                                           <span className="text-[10px] text-zinc-400">m</span>
                                                         </span>
                                                       ) : (
-                                                        <><span className="font-black text-zinc-800 text-sm">{o.magnitude || 0}</span><span className="text-[10px] text-zinc-400 ml-0.5">m</span></>
+                                                        <><span className="font-black text-zinc-800 text-sm tablet:text-xs">{o.magnitude || 0}</span><span className="text-[10px] text-zinc-400 ml-0.5">m</span></>
                                                       )}
                                                     </div>
-                                                    <div className="w-28 flex justify-center">
-                                                      <span className={`px-2.5 py-1 rounded-lg text-[10px] font-black uppercase tracking-wider border ${o.priority === 'Urgente' ? 'bg-brand-magenta/10 text-brand-magenta border-brand-magenta/20' : 'bg-zinc-50 text-zinc-400 border-zinc-200'}`}>{o.priority || 'Normal'}</span>
+                                                    <div className="w-28 tablet:w-24 flex justify-center">
+                                                      <span className={`px-2.5 py-1 tablet:px-1.5 tablet:py-0.5 rounded-lg text-[10px] tablet:text-[9px] font-black uppercase tracking-wider tablet:tracking-tight border ${o.priority === 'Urgente' ? 'bg-brand-magenta/10 text-brand-magenta border-brand-magenta/20' : 'bg-zinc-50 text-zinc-400 border-zinc-200'}`}>{o.priority || 'Normal'}</span>
                                                     </div>
                                                     <div className="w-10 flex justify-center">
                                                       {o.note && o.note.trim() !== '' && (
@@ -1622,15 +1637,15 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { }, lo
                                                         </div>
                                                       )}
                                                     </div>
-                                                    <div className="w-44 flex items-center justify-center gap-1">
-                                                      <button onClick={() => onViewOrder && onViewOrder(o)} className="w-7 h-7 flex items-center justify-center rounded-lg text-zinc-400 hover:text-brand-cyan hover:bg-brand-cyan/10 transition-all" title="Ver detalle orden"><i className="fa-regular fa-eye text-sm" /></button>
+                                                    <div className="w-44 tablet:w-36 flex items-center justify-center gap-1 tablet:gap-0.5">
+                                                      <button onClick={() => onViewOrder && onViewOrder(o)} className="w-7 h-7 tablet:w-6 tablet:h-6 flex items-center justify-center rounded-lg text-zinc-400 hover:text-brand-cyan hover:bg-brand-cyan/10 transition-all" title="Ver detalle orden"><i className="fa-regular fa-eye text-sm tablet:text-xs" /></button>
                                                       {!readOnly && (<>
-                                                      <button onClick={() => openMoveModal(o)} className="w-7 h-7 flex items-center justify-center rounded-lg text-zinc-400 hover:text-brand-cyan hover:bg-brand-cyan/10 transition-all" title="Mover a otro Lote"><i className="fa-solid fa-arrow-right-arrow-left text-sm" /></button>
-                                                      <button onClick={() => handleUnassign(o)} className="w-7 h-7 flex items-center justify-center rounded-lg text-zinc-400 hover:text-brand-magenta hover:bg-brand-magenta/10 transition-all" title="Sacar del Rollo"><i className="fa-solid fa-rotate-left text-sm" /></button>
-                                                      <label className={`w-7 h-7 flex items-center justify-center rounded-lg transition-all ${canTogglePrinted(o.id) ? 'cursor-pointer' : 'opacity-40 cursor-not-allowed'} ${printedOrderIds.includes(o.id) ? 'text-emerald-600 bg-emerald-50' : 'text-zinc-400 hover:text-emerald-600 hover:bg-emerald-50'}`} title={!canTogglePrinted(o.id) ? (printedOrderIds.includes(o.id) ? 'Desmarcá primero las posteriores' : 'Marcá primero las anteriores') : (printedOrderIds.includes(o.id) ? `Marcar como NO ${lockReorder ? 'calandrado' : 'impreso'}` : `Marcar ${lockReorder ? 'calandrado' : 'impreso'}`)}>
+                                                      <button onClick={() => openMoveModal(o)} className="w-7 h-7 tablet:w-6 tablet:h-6 flex items-center justify-center rounded-lg text-zinc-400 hover:text-brand-cyan hover:bg-brand-cyan/10 transition-all" title="Mover a otro Lote"><i className="fa-solid fa-arrow-right-arrow-left text-sm tablet:text-xs" /></button>
+                                                      <button onClick={() => handleUnassign(o)} className="w-7 h-7 tablet:w-6 tablet:h-6 flex items-center justify-center rounded-lg text-zinc-400 hover:text-brand-magenta hover:bg-brand-magenta/10 transition-all" title="Sacar del Rollo"><i className="fa-solid fa-rotate-left text-sm tablet:text-xs" /></button>
+                                                      <label className={`w-7 h-7 tablet:w-6 tablet:h-6 flex items-center justify-center rounded-lg transition-all ${canTogglePrinted(o.id) ? 'cursor-pointer' : 'opacity-40 cursor-not-allowed'} ${printedOrderIds.includes(o.id) ? 'text-emerald-600 bg-emerald-50' : 'text-zinc-400 hover:text-emerald-600 hover:bg-emerald-50'}`} title={!canTogglePrinted(o.id) ? (printedOrderIds.includes(o.id) ? 'Desmarcá primero las posteriores' : 'Marcá primero las anteriores') : (printedOrderIds.includes(o.id) ? `Marcar como NO ${lockReorder ? 'calandrado' : 'impreso'}` : `Marcar ${lockReorder ? 'calandrado' : 'impreso'}`)}>
                                                         <input type="checkbox" disabled={!canTogglePrinted(o.id)} className="w-4 h-4 rounded border-zinc-300 accent-emerald-500 cursor-pointer disabled:cursor-not-allowed" checked={printedOrderIds.includes(o.id)} onChange={() => handleTogglePrinted(o.id)} />
                                                       </label>
-                                                      {!printedOrderIds.includes(o.id) && unit.kind !== 'new' && !lockReorder && <div {...op.dragHandleProps} className="w-7 h-7 flex items-center justify-center rounded-lg text-zinc-300 hover:text-zinc-600 cursor-grab active:cursor-grabbing" title="Arrastrar orden"><i className="fa-solid fa-grip-vertical text-sm" /></div>}
+                                                      {!printedOrderIds.includes(o.id) && unit.kind !== 'new' && !lockReorder && <div {...op.dragHandleProps} className="w-7 h-7 tablet:w-6 tablet:h-6 flex items-center justify-center rounded-lg text-zinc-300 hover:text-zinc-600 cursor-grab active:cursor-grabbing" title="Arrastrar orden"><i className="fa-solid fa-grip-vertical text-sm tablet:text-xs" /></div>}
                                                       </>)}
                                                     </div>
                                                   </div>
@@ -1873,7 +1888,7 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { }, lo
                     </div>
 
                     {/* Footer */}
-                    <div className="px-6 py-3.5 border-t border-zinc-100 bg-white flex items-center gap-2 z-10 shrink-0">
+                    <div className="px-6 py-3.5 tablet:px-3 tablet:py-2 border-t border-zinc-100 bg-white flex items-center gap-2 z-10 shrink-0">
                         {/* Left group */}
                         <div className="flex items-center gap-2 mr-auto flex-wrap">
                             {/* Botones comentados en TODAS las áreas (Generar Etiquetas / Reporte Excel):

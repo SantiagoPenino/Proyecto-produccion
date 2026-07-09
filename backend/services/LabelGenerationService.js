@@ -213,20 +213,27 @@ class LabelGenerationService {
 
             // --- AUTO-CONSUME BULTO PADRE ---
             // Cuando un área genera su etiqueta (termina de procesar), se auto-consume el bulto de materia prima (ej. tela de SB)
-            // que llegó a esta área y que pertenece a la misma orden (mismo NoDocERP).
+            // que llegó a esta área y que pertenece al mismo pedido (mismo NoDocERP) pero viene de OTRA área.
+            // IMPORTANTE: se excluyen las órdenes HERMANAS de la MISMA área (multitela "(1/2)/(2/2)"): sus bultos
+            // son producto terminado propio, no materia prima — consumirlos les impedía viajar a DEPOSITO
+            // (caso SUB-5187: la 2/2 consumía el bulto de la 1/2 al generar el suyo).
             try {
                 const consumedRes = await new sql.Request(transaction)
                     .input('Area', sql.VarChar(20), o.AreaID || 'GEN')
                     .input('Doc', sql.VarChar(50), (o.NoDocERP || o.CodigoOrden || '').trim())
                     .input('OID', sql.Int, ordenId)
                     .query(`
-                        UPDATE Logistica_Bultos 
+                        UPDATE Logistica_Bultos
                         SET Estado = 'CONSUMIDO'
                         OUTPUT INSERTED.CodigoEtiqueta, INSERTED.UbicacionActual
-                        WHERE UbicacionActual = @Area 
+                        WHERE UbicacionActual = @Area
                           AND Estado = 'EN_STOCK'
                           AND OrdenID != @OID
-                          AND OrdenID IN (SELECT OrdenID FROM Ordenes WHERE NoDocERP = @Doc OR CodigoOrden = @Doc)
+                          AND OrdenID IN (
+                              SELECT OrdenID FROM Ordenes
+                              WHERE (NoDocERP = @Doc OR CodigoOrden = @Doc)
+                                AND AreaID != @Area
+                          )
                     `);
 
                 // Insertar trazabilidad del consumo

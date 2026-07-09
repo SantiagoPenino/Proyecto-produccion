@@ -77,7 +77,8 @@ export const CorteTechnicalUI = ({ serviceId, moldType, setMoldType, fabricOrigi
                                                     {b.FechaIngreso && <span>📅 {new Date(b.FechaIngreso).toLocaleDateString()}</span>}
                                                     <span className="font-mono">{b.CodigoEtiqueta}</span>
                                                     <span className="text-emerald-400">▸ {parseFloat(b.MetrosRestantes).toFixed(2)} m largo</span>
-                                                    {b.Ancho && <span>↔ {parseFloat(b.Ancho).toFixed(2)} m ancho</span>}
+                                                    {/* Ancho REAL (confirmado); fallback al declarado */}
+                                                    {(b.AnchoReal ?? b.Ancho) && <span>↔ {parseFloat(b.AnchoReal ?? b.Ancho).toFixed(2)} m ancho</span>}
                                                 </div>
                                             </button>
                                         ))}

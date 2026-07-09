@@ -110,14 +110,14 @@ const FileControlCard = ({ file, refreshOrder, onAction }) => {
                 />
             )}
 
-            <div className="flex flex-col sm:flex-row items-center p-3 gap-4 relative z-10">
+            <div className="flex flex-col sm:flex-row items-center p-3 tablet:p-2 gap-4 tablet:gap-3 relative z-10">
 
                 {/* 1. THUMBNAIL */}
                 <a
                     href={fileUrl}
                     target="_blank"
                     rel="noreferrer"
-                    className="relative w-16 h-16 shrink-0 rounded-lg bg-zinc-100 border border-zinc-100 overflow-hidden cursor-zoom-in group-hover:shadow-sm transition-all"
+                    className="relative w-16 h-16 tablet:w-12 tablet:h-12 shrink-0 rounded-lg bg-zinc-100 border border-zinc-100 overflow-hidden cursor-zoom-in group-hover:shadow-sm transition-all"
                 >
                     {isImage ? (
                         <img src={fileUrl} alt="Preview" className="w-full h-full object-cover transform group-hover:scale-110 transition-transform duration-500" />
@@ -141,7 +141,7 @@ const FileControlCard = ({ file, refreshOrder, onAction }) => {
                 {/* 2. INFO */}
                 <div className="flex-1 w-full min-w-0 flex flex-col justify-center gap-1">
                     <div className="flex items-center justify-between">
-                        <div className="font-bold text-zinc-700 text-sm truncate pr-2" title={file.NombreArchivo}>
+                        <div className="font-bold text-zinc-700 text-sm tablet:text-xs truncate pr-2" title={file.NombreArchivo}>
                             {file.NombreArchivo?.replace(/\.dat$/i, '')}
                         </div>
                         {/* Status Label (If special) */}
@@ -163,18 +163,18 @@ const FileControlCard = ({ file, refreshOrder, onAction }) => {
                 </div>
 
                 {/* 3. ACTIONS (Counter + Button) */}
-                <div className="flex items-center justify-between sm:justify-end gap-4 pl-0 sm:pl-4 border-l-0 sm:border-l border-zinc-50 w-full sm:w-auto">
+                <div className="flex items-center justify-between sm:justify-end gap-4 tablet:gap-2.5 pl-0 sm:pl-4 tablet:sm:pl-2.5 border-l-0 sm:border-l border-zinc-50 w-full sm:w-auto">
 
                     {/* Counter */}
                     <div className="text-right flex flex-col justify-center">
                         <span className="text-[9px] font-black text-zinc-300 uppercase leading-none mb-0.5 tracking-wider">COPIAS</span>
-                        <div className={`text-xl font-black leading-none ${isCompleted ? 'text-brand-cyan' : (isFailed ? 'text-red-500' : 'text-zinc-700')}`}>
+                        <div className={`text-xl tablet:text-base font-black leading-none ${isCompleted ? 'text-brand-cyan' : (isFailed ? 'text-red-500' : 'text-zinc-700')}`}>
                             {controlCount}<span className="text-sm text-zinc-300 font-bold">/{totalCopies}</span>
                         </div>
                     </div>
 
                     {/* Button */}
-                    <div className="w-12 h-12 shrink-0 relative group/btn">
+                    <div className="w-12 h-12 tablet:w-10 tablet:h-10 shrink-0 relative group/btn">
                         {isCompleted ? (
                             <button
                                 onClick={handleUndo}

@@ -382,12 +382,17 @@ const OrderForm = ({ serviceId: propServiceId }) => {
                 }
 
                 const fileWidthM = result.unit === 'meters' ? result.width : (result.width / 300) * 0.0254;
-                const maxPrintableWidth = maxWidth - 0.03;
+                // Ancho medido redondeado SIEMPRE PARA ARRIBA al cm (1.5701 → 1.58; 1.57 → 1.57).
+                // Así el valor que se valida es el mismo que se muestra (antes: 1.5701 fallaba contra
+                // 1.57 pero el mensaje decía "1.57 excede 1.57"). El toFixed(6) limpia ruido de float
+                // para que un 1.57 "sucio" (1.5700000000003) no suba injustamente a 1.58.
+                const fileWidthRounded = Math.ceil(Number((fileWidthM * 100).toFixed(6))) / 100;
+                const maxPrintableWidth = Math.round((maxWidth - 0.03) * 100) / 100;
 
-                if (fileWidthM > maxPrintableWidth + 0.001) {
+                if (fileWidthRounded > maxPrintableWidth + 1e-9) {
                     const matLabel = selectedMatName || `ancho máximo ${maxWidth.toFixed(2)}m`;
                     actions.setErrorModalMessage(
-                        `El ancho del archivo (${fileWidthM.toFixed(2)}m) excede el ancho imprimible del material "${matLabel}" (${maxPrintableWidth.toFixed(2)}m). Por favor, ajuste el archivo o seleccione otro material.`
+                        `El ancho del archivo (${fileWidthRounded.toFixed(2)}m) excede el ancho imprimible del material "${matLabel}" (${maxPrintableWidth.toFixed(2)}m). Por favor, ajuste el archivo o seleccione otro material.`
                     );
                     actions.setErrorModalOpen(true);
                     return false;

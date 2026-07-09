@@ -402,6 +402,14 @@ if (process.env.NODE_ENV !== 'test') {
                 logger.error("❌ [CRON] Error cargando WspAvisos:", e.message);
             }
 
+            // LIMPIEZA DE ÓRDENES ZOMBIE ('Cargando...' > 30 min sin actividad)
+            try {
+                const { startZombieCleanupJob } = require('./jobs/zombieOrdersCleanup.job');
+                startZombieCleanupJob(io);
+            } catch (e) {
+                logger.error("❌ [CRON] Error cargando ZombieCleanup:", e.message);
+            }
+
             // ACTIVAR CRON ESTADOS DE CUENTA (Módulo Contabilidad)
             try {
                 const { startEstadosCuentaJob } = require('./jobs/estadosCuenta.job');

@@ -18,12 +18,21 @@ const ManageBobinaModal = ({ bobina, insumoName, onClose, onSuccess }) => {
     const [orden, setOrden] = useState('');
     const [concept, setConcept] = useState('Producción');
     const [customConcept, setCustomConcept] = useState('');
+    const [anchoReal, setAnchoReal] = useState(''); // Corrección de ancho real (opcional)
 
     // CLOSE STATE
     const [metrosFinales, setMetrosFinales] = useState(0);
     const [closeMotivo, setCloseMotivo] = useState('Fin de Bobina');
     const [calculatedWaste, setCalculatedWaste] = useState(null);
     const [finish, setFinish] = useState(true);
+
+    // Ancho actual de la bobina (real confirmado, o declarado como fallback)
+    const anchoActual = bobina?.AnchoReal != null && bobina.AnchoReal !== ''
+        ? parseFloat(bobina.AnchoReal)
+        : (bobina?.Ancho != null && bobina.Ancho !== '' ? parseFloat(bobina.Ancho) : null);
+    // Solo mostramos el campo de ancho cuando la bobina maneja ancho (tela)
+    const anchoRelevante = (bobina?.Ancho != null && bobina.Ancho !== '')
+        || (bobina?.AnchoReal != null && bobina.AnchoReal !== '');
 
     useEffect(() => {
         if (activeTab === 'history') {
@@ -46,30 +55,37 @@ const ManageBobinaModal = ({ bobina, insumoName, onClose, onSuccess }) => {
     // --- LOGIC: ADJUST ---
     const handleAdjustSubmit = async (e) => {
         e.preventDefault();
-        if (!amount || parseFloat(amount) <= 0) return toast.error("Ingrese una cantidad válida");
+
+        const finalConcept = customConcept || concept;
+        const esDevolucion = finalConcept === 'Devolución al Cliente';
+
+        // --- Metros ---
+        const cant = parseFloat(amount);
+        let delta = 0;
+        if (amount !== '' && !isNaN(cant) && cant > 0) {
+            delta = adjustType === 'subtract' ? -Math.abs(cant) : (cant - bobina.MetrosRestantes);
+        }
+        const metrosCambio = Math.abs(delta) >= 0.01;
+
+        // --- Ancho ---
+        const anchoNuevo = anchoReal !== '' ? parseFloat(anchoReal) : null;
+        const anchoValido = anchoNuevo !== null && !isNaN(anchoNuevo) && anchoNuevo > 0;
+        const anchoCambio = anchoValido && (anchoActual === null || Math.abs(anchoNuevo - anchoActual) > 0.001);
+
+        if (!metrosCambio && !anchoCambio && !esDevolucion) {
+            return toast.info("No hay cambios para aplicar");
+        }
 
         setLoading(true);
         try {
-            let cant = parseFloat(amount);
-            let finalConcept = customConcept || concept;
-            const esDevolucion = finalConcept === 'Devolución al Cliente';
-
-            let delta = 0;
-            if (adjustType === 'subtract') {
-                delta = -Math.abs(cant);
-            } else {
-                delta = cant - bobina.MetrosRestantes;
-            }
-
-            if (Math.abs(delta) < 0.01 && !esDevolucion) return toast.info("No hay cambio en el stock");
-
-            // 1. Ajustar metros si hay diferencia
-            if (Math.abs(delta) >= 0.01) {
+            // 1. Ajustar metros y/o ancho
+            if (metrosCambio || anchoCambio) {
                 await inventoryService.adjustBobina({
                     bobinaId: bobina.BobinaID,
-                    cantidad: delta,
+                    cantidad: metrosCambio ? delta : 0,
                     motivo: finalConcept,
                     orden: orden.trim() || undefined,
+                    anchoReal: anchoCambio ? anchoNuevo : undefined,
                 });
             }
 
@@ -82,6 +98,8 @@ const ManageBobinaModal = ({ bobina, insumoName, onClose, onSuccess }) => {
                     finish: true
                 });
                 toast.success('Devolución registrada. Bobina cerrada.');
+            } else if (anchoCambio && !metrosCambio) {
+                toast.success('Ancho actualizado correctamente');
             } else {
                 toast.success('Stock ajustado correctamente');
             }
@@ -90,7 +108,7 @@ const ManageBobinaModal = ({ bobina, insumoName, onClose, onSuccess }) => {
             onClose();
         } catch (error) {
             console.error(error);
-            toast.error('Error al ajustar stock');
+            toast.error(error?.response?.data?.error || 'Error al ajustar');
         } finally {
             setLoading(false);
         }
@@ -228,6 +246,28 @@ const ManageBobinaModal = ({ bobina, insumoName, onClose, onSuccess }) => {
                                     </p>
                                 )}
                             </div>
+
+                            {/* ANCHO REAL — opcional, solo para bobinas con ancho (tela) */}
+                            {anchoRelevante && (
+                                <div>
+                                    <label className="block text-sm font-medium text-zinc-700 mb-1">
+                                        Ancho Real (m) <span className="text-zinc-400 font-normal text-xs">(opcional)</span>
+                                    </label>
+                                    <input
+                                        type="number" step="0.01" min="0"
+                                        className="w-full border rounded p-2 text-lg font-semibold text-zinc-700"
+                                        value={anchoReal}
+                                        onChange={e => setAnchoReal(e.target.value)}
+                                        placeholder={anchoActual != null ? anchoActual.toFixed(2) : '0.00'}
+                                    />
+                                    <p className="text-xs text-zinc-400 mt-1">
+                                        Ancho confirmado actual: <strong>{anchoActual != null ? `${anchoActual.toFixed(2)} m` : '—'}</strong>
+                                        {bobina?.Ancho != null && bobina.Ancho !== '' && (
+                                            <span className="text-zinc-300"> · Declarado: {parseFloat(bobina.Ancho).toFixed(2)} m</span>
+                                        )}
+                                    </p>
+                                </div>
+                            )}
 
                             <div>
                                 <label className="block text-sm font-medium text-zinc-700 mb-1">Concepto / Motivo</label>

@@ -252,8 +252,10 @@ const ReceptionView = ({ onClose, areaContext, areaFilter }) => {
             toast.success(`Bulto ${code} ingresado`);
         },
         onError: (err) => {
-            setLastScanMsg({ type: 'error', text: `ERROR: ${err.message}` });
-            toast.error(err.message);
+            // El mensaje útil del backend viene en response.data.error; err.message es el genérico de axios
+            const msg = err.response?.data?.error || err.message;
+            setLastScanMsg({ type: 'error', text: `ERROR: ${msg}` });
+            toast.error(msg);
         }
     });
 
@@ -274,7 +276,8 @@ const ReceptionView = ({ onClose, areaContext, areaFilter }) => {
             toast.success("Recepción manual confirmada");
         },
         onError: (err) => {
-            toast.error("Error batch: " + err.message);
+            // Muestra el motivo real (ej. "Pedido SUB-XXXX incompleto: faltan..."), no el genérico "status 400"
+            toast.error(err.response?.data?.error || err.message);
         }
     });
 

@@ -88,7 +88,10 @@ const Navbar = ({ onSwitchTab, currentView, onToggleMobileMenu, isMobileMenuOpen
           className="hidden md:flex items-center cursor-pointer group min-w-0"
           onClick={() => navigate('/')}
         >
-          <img src={logoMini} alt="Logo" className="h-8 w-auto mr-4 opacity-90 group-hover:opacity-100 transition-opacity shrink-0 drop-shadow-sm" />
+          {/* Logo centrado en el ancho de la sidebar colapsada (w-16) → alineado con la columna de íconos. */}
+          <div className="w-16 flex items-center justify-center shrink-0 -ml-4 sm:-ml-6">
+            <img src={logoMini} alt="Logo" className="h-8 w-auto opacity-90 group-hover:opacity-100 transition-opacity drop-shadow-sm" />
+          </div>
           <div className="w-px h-6 bg-zinc-600 mr-4 opacity-50 shrink-0"></div>
           <h1 className="font-black text-white tracking-tighter text-lg leading-none transition-colors uppercase mt-0.5 truncate">
             GESTIÓN DE PRODUCCIÓN

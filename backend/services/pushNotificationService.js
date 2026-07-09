@@ -69,7 +69,9 @@ async function unsubscribe(clientId, endpoint) {
 }
 
 // ── Send to Client ───────────────────────────────────────────────────────────
-async function sendToClient(clientId, { title, body, icon, url }) {
+// tag: agrupa notificaciones (mismo tag = se reemplazan; distinto = conviven).
+// actions: botones [{ action, title }] (máx 2). actionUrls: { [action]: url } destino de cada botón.
+async function sendToClient(clientId, { title, body, icon, url, tag, actions, actionUrls }) {
     if (!VAPID_PUBLIC || !VAPID_PRIVATE) return; // Push deshabilitado
 
     const pool = await getPool();
@@ -86,6 +88,9 @@ async function sendToClient(clientId, { title, body, icon, url }) {
         body: body || '',
         icon: icon || '/assets/images/pwa.png',
         url: url || '/portal/pickup',
+        tag: tag || undefined,
+        actions: Array.isArray(actions) && actions.length ? actions.slice(0, 2) : undefined,
+        actionUrls: actionUrls || undefined,
     });
 
     for (const sub of result.recordset) {
@@ -114,7 +119,7 @@ async function sendToClient(clientId, { title, body, icon, url }) {
 // ── Send to Order's Client (by orderId) ──────────────────────────────────────
 // Looks up the CodCliente + CodigoOrden via order, then sends push
 // Supports {code} placeholder in title/body for the CodigoOrden
-async function sendToOrderClient(orderId, { title, body, icon, url }) {
+async function sendToOrderClient(orderId, { title, body, icon, url, tag, actions, actionUrls }) {
     if (!VAPID_PUBLIC || !VAPID_PRIVATE) return;
 
     try {
@@ -124,9 +129,9 @@ async function sendToOrderClient(orderId, { title, body, icon, url }) {
             .query(`
                 SELECT c.CodCliente, o.CodigoOrden
                 FROM Ordenes o
-                INNER JOIN Clientes c ON 
-                    (COL_LENGTH('Ordenes', 'CliIdCliente') IS NOT NULL AND o.CliIdCliente = c.CliIdCliente) OR 
-                    (o.Cliente = c.Nombre) OR 
+                INNER JOIN Clientes c ON
+                    (COL_LENGTH('Ordenes', 'CliIdCliente') IS NOT NULL AND o.CliIdCliente = c.CliIdCliente) OR
+                    (o.Cliente = c.Nombre) OR
                     (LTRIM(RTRIM(o.Cliente)) = LTRIM(RTRIM(c.Nombre)))
                 WHERE o.OrdenID = @OID
             `);
@@ -141,7 +146,16 @@ async function sendToOrderClient(orderId, { title, body, icon, url }) {
         const finalTitle = (title || '').replace(/\{code\}/g, code);
         const finalBody = (body || '').replace(/\{code\}/g, code);
 
-        await sendToClient(row.CodCliente, { title: finalTitle, body: finalBody, icon, url });
+        await sendToClient(row.CodCliente, {
+            title: finalTitle,
+            body: finalBody,
+            icon,
+            url,
+            // Tag por pedido: avisos del MISMO pedido se reemplazan; de pedidos distintos conviven
+            tag: tag || `orden-${code}`,
+            actions,
+            actionUrls,
+        });
     } catch (err) {
         logger.error(`[WebPush] Error sendToOrderClient(${orderId}):`, err.message);
     }

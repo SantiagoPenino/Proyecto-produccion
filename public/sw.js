@@ -1,6 +1,20 @@
 // Service Worker — PWA + Web Push Notifications
-const CACHE_NAME = 'user-pwa-v5';
+const CACHE_NAME = 'user-pwa-v6';          // shell precacheado (offline.html, iconos, manifest)
+const RUNTIME_CACHE = 'user-runtime-v6';   // assets hasheados de Vite (js/css/fonts/img), con TOPE
 const OFFLINE_URL = '/offline.html';
+
+// Vite hashea el nombre de cada chunk (main-a1b2c3.js), así que cada deploy genera
+// URLs nuevas y las viejas quedarían para siempre en el cache. Cap FIFO: al pasar el
+// límite se borran las entradas más viejas (cache.keys() viene en orden de inserción).
+const MAX_RUNTIME_ENTRIES = 80;
+async function trimCache(cacheName, maxEntries) {
+    const cache = await caches.open(cacheName);
+    const keys = await cache.keys();
+    if (keys.length > maxEntries) {
+        await cache.delete(keys[0]);
+        return trimCache(cacheName, maxEntries); // repetir hasta quedar en el tope
+    }
+}
 
 // Assets to pre-cache on install
 const PRECACHE_ASSETS = [
@@ -24,12 +38,14 @@ self.addEventListener('install', (event) => {
     self.skipWaiting();
 });
 
-// ── Activate: Clean old caches ───────────────────────────────────────────────
+// ── Activate: Clean old caches (conserva el shell y el runtime actuales) ─────
 self.addEventListener('activate', (event) => {
     event.waitUntil(
         caches.keys().then((keys) => {
             return Promise.all(
-                keys.filter(key => key !== CACHE_NAME).map(key => caches.delete(key))
+                keys
+                    .filter(key => key !== CACHE_NAME && key !== RUNTIME_CACHE)
+                    .map(key => caches.delete(key))
             );
         })
     );
@@ -61,11 +77,13 @@ self.addEventListener('fetch', (event) => {
 
             return fetch(request)
                 .then((response) => {
-                    // Guardar en cache solo assets estáticos exitosos
-                    // Excluir chunks de Vite dev (node_modules/.vite) para evitar cachear versiones stale de React
+                    // Guardar en cache solo assets estáticos exitosos (en el runtime con tope).
+                    // Excluir chunks de Vite dev (node_modules/.vite) para no cachear React stale.
                     if (response.ok && request.url.match(/\.(css|js|woff2?|png|svg|jpg|ico)$/) && !request.url.includes('node_modules') && !request.url.includes('.vite')) {
                         const clone = response.clone();
-                        caches.open(CACHE_NAME).then(cache => cache.put(request, clone));
+                        caches.open(RUNTIME_CACHE).then(cache =>
+                            cache.put(request, clone).then(() => trimCache(RUNTIME_CACHE, MAX_RUNTIME_ENTRIES))
+                        );
                     }
                     return response;
                 })
@@ -94,10 +112,16 @@ self.addEventListener('push', (event) => {
             body: data.body || '',
             icon: data.icon || '/assets/images/pwa.png',
             badge: '/assets/images/pwa.png',
-            data: { url: data.url || '/portal' },
+            // actionUrls: { [action]: url } — a dónde navega cada botón (ver notificationclick)
+            data: { url: data.url || '/portal', actionUrls: data.actionUrls || {} },
             vibrate: [100, 50, 100],
-            tag: 'user-notification',
-            renotify: true,
+            // Tag POR PEDIDO (lo manda el backend, ej. 'orden-SUB-4727'): las actualizaciones
+            // del MISMO pedido se reemplazan entre sí, pero pedidos distintos conviven.
+            // Antes el tag era fijo → cada push nueva borraba la anterior.
+            tag: data.tag || `user-${Date.now()}`,
+            renotify: !!data.tag,
+            // Botones de acción (Chrome/Android muestran hasta 2)
+            actions: Array.isArray(data.actions) ? data.actions.slice(0, 2) : [],
         };
 
         event.waitUntil(
@@ -111,7 +135,9 @@ self.addEventListener('push', (event) => {
 // ── Notification Click ───────────────────────────────────────────────────────
 self.addEventListener('notificationclick', (event) => {
     event.notification.close();
-    const url = event.notification.data?.url || '/portal';
+    const nData = event.notification.data || {};
+    // Si tocó un botón de acción con URL propia, esa manda; si no, la URL default de la notificación.
+    const url = (event.action && nData.actionUrls && nData.actionUrls[event.action]) || nData.url || '/portal';
 
     event.waitUntil(
         clients.matchAll({ type: 'window', includeUncontrolled: true }).then((windowClients) => {

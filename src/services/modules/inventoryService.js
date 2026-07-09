@@ -2,8 +2,11 @@ import api from '../api';
 
 export const inventoryService = {
     // Obtener inventario detallado por área
-    getInventoryByArea: async (areaId) => {
-        const response = await api.get(`/inventory/area?areaId=${areaId}`);
+    // opts.incluirCerradas = true también trae bobinas Agotadas
+    getInventoryByArea: async (areaId, { incluirCerradas = false } = {}) => {
+        const params = new URLSearchParams({ areaId });
+        if (incluirCerradas) params.set('incluirCerradas', '1');
+        const response = await api.get(`/inventory/area?${params.toString()}`);
         return response.data;
     },
 

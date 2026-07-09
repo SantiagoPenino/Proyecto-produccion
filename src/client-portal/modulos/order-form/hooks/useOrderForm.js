@@ -262,7 +262,8 @@ export const useOrderForm = (serviceId, overrides = {}) => {
             type: actionTypes.SET_DATA,
             data: {
                 selectedBobinaId: bobina?.BobinaID ?? null,
-                selectedBobinaAncho: bobina?.Ancho != null ? parseFloat(bobina.Ancho) : null,
+                // El ancho que valida el archivo sale del ancho REAL (confirmado); si no está, del declarado.
+                selectedBobinaAncho: (bobina?.AnchoReal ?? bobina?.Ancho) != null ? parseFloat(bobina.AnchoReal ?? bobina.Ancho) : null,
                 selectedBobinaMetros: bobina?.MetrosRestantes != null ? parseFloat(bobina.MetrosRestantes) : null,
                 clientFabricName: bobina?.DescripcionTela || ''
             }

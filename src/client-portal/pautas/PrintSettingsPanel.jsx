@@ -47,13 +47,18 @@ export const PrintSettingsPanel = ({
         const w = parseFloat(wM) || 0;
         const h = parseFloat(hM) || 0;
         const maxRaw = parseFloat(maxM) || 0;
+        // Anchos medidos: redondeo SIEMPRE PARA ARRIBA al cm (1.5701 → 1.58; 1.57 → 1.57), así el valor
+        // validado coincide con el mostrado (antes 1.5701 fallaba contra 1.57 y el error decía "1.57 vs 1.57").
+        // toFixed(6) limpia ruido de float para que un 1.57 "sucio" no suba injustamente a 1.58.
+        const ceil2 = (v) => Math.ceil(Number((v * 100).toFixed(6))) / 100;
         // Sin material (maxRaw<=0) → max = Infinity, así no se valida el ancho hasta elegir material.
-        const max = maxRaw > 0.03 ? maxRaw - 0.03 : (maxRaw > 0 ? maxRaw : Infinity);
+        const max = maxRaw > 0.03 ? Math.round((maxRaw - 0.03) * 100) / 100 : (maxRaw > 0 ? maxRaw : Infinity);
 
         if (currentMode === 'normal') {
-            if (w > max + 0.001) {
+            const wR = ceil2(w);
+            if (wR > max + 1e-9) {
                 res.isValid = false;
-                res.error = `El archivo (${w.toFixed(2)}m) excede el ancho máximo (${max.toFixed(2)}m) para este tipo de material.`;
+                res.error = `El archivo (${wR.toFixed(2)}m) excede el ancho máximo (${max.toFixed(2)}m) para este tipo de material.`;
             }
         }
         else if (currentMode === 'scale') {
@@ -75,9 +80,9 @@ export const PrintSettingsPanel = ({
                 res.finalWidthM = finalW;
                 res.finalHeightM = finalH;
 
-                if (finalW > max + 0.001) {
+                if (ceil2(finalW) > max + 1e-9) {
                     res.isValid = false;
-                    res.error = `Ancho final (${finalW.toFixed(2)}m) excede máximo (${max.toFixed(2)}m).`;
+                    res.error = `Ancho final (${ceil2(finalW).toFixed(2)}m) excede máximo (${max.toFixed(2)}m).`;
                 }
 
                 // OBSERVACIÓN ACTUALIZADA CON % ZOOM
@@ -93,12 +98,12 @@ export const PrintSettingsPanel = ({
 
             if (rw <= 0 || rh <= 0) {
                 res.isValid = false;
-            } else if (rw > max + 0.001) {
+            } else if (ceil2(rw) > max + 1e-9) {
                 res.isValid = false;
-                res.error = `Ancho raport (${rw.toFixed(2)}m) excede máximo (${max.toFixed(2)}m).`;
-            } else if (w > max + 0.001) {
+                res.error = `Ancho raport (${ceil2(rw).toFixed(2)}m) excede máximo (${max.toFixed(2)}m).`;
+            } else if (ceil2(w) > max + 1e-9) {
                 res.isValid = false;
-                res.error = `Patrón original (${w.toFixed(2)}m) ancho > material.`;
+                res.error = `Patrón original (${ceil2(w).toFixed(2)}m) ancho > material.`;
             }
 
             if (w > 0 && h > 0) {
