@@ -316,7 +316,7 @@ function LineRow({ line, userArea, isAdmin, areaFilter, cotizacion, monedaFinal,
 }
 
 // ─── Modal Principal ────────────────────────────────────────────────────────
-export default function QuotationEditModal({ noDocERP, onClose, onSaved, currentUser, areaFilter, embedded = false, readOnly = false }) {
+export default function QuotationEditModal({ noDocERP, onClose, onSaved, currentUser, areaFilter, embedded = false, readOnly = false, propagarADeposito = false }) {
     const [loading, setLoading] = useState(true);
     const [saving, setSaving] = useState(false);
     const [cabecera, setCabecera] = useState(null);
@@ -494,7 +494,7 @@ export default function QuotationEditModal({ noDocERP, onClose, onSaved, current
     // so we will always consider it a change if DB was in UYU. To simplify let's just allow save if valid.
     const hayDiferencia = lineas.length > 0;
 
-    const handleSave = async () => {
+    const handleSave = async (forzarConfirmacion = false) => {
         setSaving(true);
         setError('');
         setSuccess('');
@@ -514,13 +514,29 @@ export default function QuotationEditModal({ noDocERP, onClose, onSaved, current
                 SubtotalOriginal: parseFloat(l.SubtotalOriginal) || ((parseFloat(l.Cantidad) || 0) * (parseFloat(l.PrecioUnitarioOriginal) || parseFloat(l.PrecioUnitario) || 0)),
                 DatoTecnico: parseFloat(l.DatoTecnico) || null
             }));
-            await api.put(`/quotation/${encodeURIComponent(noDocERP)}`, { 
+            await api.put(`/quotation/${encodeURIComponent(noDocERP)}`, {
                 lineas: payload,
-                cotizacion
+                cotizacion,
+                confirmado: forzarConfirmacion,
+                propagarADeposito
             });
             setSuccess('✅ Cotización guardada. El QR y los importes fueron actualizados.');
             if (onSaved) onSaved();
         } catch (err) {
+            if (err.response?.status === 409 && err.response?.data?.requiereConfirmacion) {
+                const advertencias = err.response.data.advertencias || [];
+                const detalle = advertencias.map(a => `• ${a.mensaje}`).join('\n');
+                setSaving(false);
+                const confirmar = window.confirm(
+                    `Esta orden ya avanzó de estado:\n\n${detalle}\n\n¿Confirmás modificar la cotización de todas formas? ` +
+                    `Se va a actualizar el importe en depósito/retiro/cuenta corriente.`
+                );
+                if (confirmar) {
+                    return handleSave(true);
+                }
+                setError('Guardado cancelado por el usuario.');
+                return;
+            }
             setError(err.response?.data?.error || err.message);
         } finally {
             setSaving(false);
@@ -676,7 +692,7 @@ export default function QuotationEditModal({ noDocERP, onClose, onSaved, current
                 {/* Footer */}
                 <div className="px-6 py-4 border-t bg-slate-50 flex items-center justify-end shrink-0 gap-3">
                     {!readOnly && (
-                        <button onClick={handleSave} disabled={saving || loading}
+                        <button onClick={() => handleSave()} disabled={saving || loading}
                             className={`px-8 py-2.5 rounded-lg font-bold text-white text-sm transition-all shadow-md flex items-center gap-2
                                 ${saving ? 'bg-indigo-400 cursor-wait' : 'bg-indigo-600 hover:bg-indigo-700 hover:shadow-indigo-200 hover:scale-105 active:scale-95'}`}>
                             {saving
@@ -845,7 +861,7 @@ export default function QuotationEditModal({ noDocERP, onClose, onSaved, current
                         {readOnly ? 'Cerrar' : 'Cancelar'}
                     </button>
                     {!readOnly && (
-                        <button onClick={handleSave} disabled={saving || loading}
+                        <button onClick={() => handleSave()} disabled={saving || loading}
                             className={`px-8 py-2.5 rounded-lg font-bold text-white text-sm transition-all shadow-md flex items-center gap-2
                                 ${saving ? 'bg-indigo-400 cursor-wait' : 'bg-indigo-600 hover:bg-indigo-700 hover:shadow-indigo-200 hover:scale-105 active:scale-95'}`}>
                             {saving

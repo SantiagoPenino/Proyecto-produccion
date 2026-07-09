@@ -5,18 +5,18 @@ const logger = require('../utils/logger');
 // 1. OBTENER INVENTARIO (POR AREA)
 // ==========================================
 exports.getInventoryByArea = async (req, res) => {
-    const { areaId, incluirCerradas } = req.query; // Puede llegar como 'DTF' o 'DTF,ECOUV'
+    const { areaId } = req.query; // Puede llegar como 'DTF' o 'DTF,ECOUV'
 
     // VALIDACIÓN CRITICA
     if (!areaId) {
         return res.status(400).json({ error: "Falta el parámetro areaId en la consulta." });
     }
 
-    // Por defecto solo estados activos; con incluirCerradas también trae Agotadas.
-    // (constantes fijas, no input de usuario → seguro para interpolar)
-    const traerCerradas = incluirCerradas === '1' || incluirCerradas === 'true';
-    const estadosBobina = traerCerradas
-        ? "'Disponible', 'En Uso', 'Pendiente', 'Agotado'"
+    // Opcional (solo tela de cliente): incluir bobinas Agotadas/Cerradas en el detalle.
+    // Por defecto se excluyen para no ensuciar el inventario general.
+    const includeAgotadas = req.query.includeAgotadas === '1' || req.query.includeAgotadas === 'true';
+    const estadosBobina = includeAgotadas
+        ? "'Disponible', 'En Uso', 'Pendiente', 'Agotado', 'Cerrado'"
         : "'Disponible', 'En Uso', 'Pendiente'";
 
     try {
@@ -202,7 +202,11 @@ exports.registerConsumption = async (poolInstance, bobinaId, metrosUsados, loteP
                 `);
         }
     } catch (e) {
+        // No tragar el error: si el UPDATE ya descontó la bobina pero falla el INSERT del
+        // movimiento, hay que propagar para que la transacción del llamador haga rollback.
+        // Descontar sin registrar dejaba bobinas en Agotado/0 sin rastro en el historial.
         logger.error("Error registrando consumo:", e);
+        throw e;
     }
 };
 
@@ -257,8 +261,11 @@ exports.closeBobina = async (req, res) => {
                     WHERE BobinaID = @BID
                 `);
 
-            // 4. Registrar la pérdida / ajuste
-            if (Math.abs(diferencia) > 0.01) {
+            // 4. Registrar la pérdida / ajuste.
+            //    SIEMPRE se registra cuando la bobina se marca Agotado, aunque la diferencia
+            //    sea 0: así una bobina nunca queda Agotada / fuera de inventario sin un
+            //    movimiento que lo explique (el caso "Agotado sin rastro" que tuvo BOB-92).
+            if (Math.abs(diferencia) > 0.01 || nuevoEstado === 'Agotado') {
                 await new sql.Request(transaction)
                     .input('IID', sql.Int, insumoId)
                     .input('BID', sql.Int, bobinaId)
@@ -929,8 +936,17 @@ exports.confirmarMedida = async (req, res) => {
 
         // 5. Calcular diferencia y construir observación
         const declarados = parseFloat(bobina.MetrosIniciales) || 0;
-        const diferencia = metrosRealesNum - declarados;
+        const diferencia = metrosRealesNum - declarados;   // declarado vs medido: solo para la alerta/descripción
         const pctDif     = declarados > 0 ? Math.abs(diferencia / declarados) * 100 : 0;
+
+        // El MOVIMIENTO debe reflejar el cambio real sobre el saldo físico ACTUAL, no sobre
+        // el declarado inicial. Si antes de confirmar hubo un ajuste manual, ese cambio ya
+        // quedó en el historial; registrar la diferencia contra el declarado lo cuenta DOS
+        // veces (por eso el ledger quedaba != al físico). Contra el saldo actual, si la
+        // bobina ya se ajustó, esto registra 0 y no duplica.
+        const saldoActual    = parseFloat(bobina.MetrosRestantes);
+        const baseMovimiento = Number.isFinite(saldoActual) ? saldoActual : declarados;
+        const diferenciaMov  = metrosRealesNum - baseMovimiento;
         const alertaDif  = pctDif > 10;
 
         const anchoNum = ancho != null ? (parseFloat(ancho) || null) : null;
@@ -969,7 +985,7 @@ exports.confirmarMedida = async (req, res) => {
         await pool.request()
             .input('IID',  sql.Int,          bobina.InsumoID)
             .input('BID',  sql.Int,          bobinaId)
-            .input('Dif',  sql.Decimal(10,2), diferencia)
+            .input('Dif',  sql.Decimal(10,2), diferenciaMov)
             .input('UID',  sql.Int,           operarioId)
             .input('Desc', sql.NVarChar(500), descripcion)
             .query(`

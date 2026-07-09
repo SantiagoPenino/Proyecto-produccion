@@ -80,6 +80,7 @@ const DesignersAdminPage = lazyWithRetry(() => import('../pages/DesignersAdminPa
 const SysAdminPage = lazyWithRetry(() => import('../pages/admin/SysAdminPage'));
 const LeadsCRMView = lazyWithRetry(() => import('../pages/ventas/LeadsCRMView'));
 const AuditDepositoView = lazyWithRetry(() => import('../pages/AuditDepositoView'));
+const AdminEditarOrdenView = lazyWithRetry(() => import('../pages/AdminEditarOrdenView'));
 const ContabilidadCuentasView    = lazyWithRetry(() => import('../pages/ContabilidadCuentasView'));
 const ClienteVista360            = lazyWithRetry(() => import('../pages/ClienteVista360'));
 const PreFacturaPage             = lazyWithRetry(() => import('../pages/PreFacturaPage'));
@@ -911,6 +912,7 @@ const DynamicRouter = ({ menuItems }) => {
     if (!menuItem) {
         if (currentPath === '/consultas/ordenes') return <OrdersQueryView />;
         if (currentPath === '/admin/helpdesk' || currentPath === '/atencion-cliente/helpdesk') return <HelpDeskAdminView />;
+        if (currentPath === '/administracion/ordenes') return <AdminEditarOrdenView />;
 
         // En lugar del fantasma, rebotamos al usuario silenciosamente de vuelta a su dashboard
         return <Navigate to="/" replace />;
@@ -922,6 +924,7 @@ const DynamicRouter = ({ menuItems }) => {
     if (menuItem.Ruta === '/admin/users') return <UsersPage />;
     if (menuItem.Ruta === '/admin/audit') return <AuditPage />;
     if (menuItem.Ruta === '/logistica/auditoria-deposito') return <AuditDepositoView />;
+    if (menuItem.Ruta === '/administracion/ordenes') return <AdminEditarOrdenView />;
     if (menuItem.Ruta === '/produccion/etiquetas') return <LabelGenerationPage />;
     if (menuItem.Ruta === '/admin/clientes-integration') return <ClientsIntegration />;
     if (menuItem.Ruta === '/admin/nomencladores' || menuItem.Ruta === '/nomencladores') return <NomenclatorsABM />;

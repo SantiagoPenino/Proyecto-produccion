@@ -14,6 +14,7 @@ import LabelGenerationPage from '../pages/LabelGenerationPage';
 import QuotationView from './QuotationView';
 import CanastosView from './CanastosView';
 import WmsReceiveSalesView from './WmsReceiveSalesView';
+import EsperandoBultosView from './EsperandoBultosView';
 
 // Dynamic Import with auto-reload on stale chunks
 const DepositStockPage = React.lazy(() =>
@@ -137,6 +138,8 @@ const LogisticsDashboard = ({ areaCode }) => {
                 return <TransportView {...commonProps} />;
             case 'reception':
                 return <ReceptionView {...commonProps} />;
+            case 'esperando':
+                return <div className="absolute inset-0 overflow-y-auto"><EsperandoBultosView /></div>;
             case 'stock':
                 if (commonProps.areaFilter === 'DEPOSITO') {
                     // Lazy load with Suspense fallback

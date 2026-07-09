@@ -15,10 +15,13 @@ const recalculateOrderMagnitude = async (transaction, ordenId) => {
 
                 DECLARE @Total FLOAT = 0;
 
-                -- Si la unidad es metros (m, m2, ml, etc.) sumamos Metros; si no, sumamos Copias
+                -- Si la unidad es metros (m, m2, ml, etc.) sumamos Metros × Copias; si no, sumamos Copias.
+                -- Metros es el valor POR COPIA (FileItem muestra Total = Metros × Copias), por lo que la
+                -- magnitud real debe multiplicar por Copias, igual que al crear la orden
+                -- (integrationOrdersController: totalMagnitud += valMetros * safeCopies).
                 IF LEFT(LOWER(@UM), 1) = 'm'
                 BEGIN
-                    SELECT @Total = @Total + ISNULL(SUM(CAST(ISNULL(Metros, 0) AS FLOAT)), 0)
+                    SELECT @Total = @Total + ISNULL(SUM(CAST(ISNULL(Metros, 0) AS FLOAT) * CAST(ISNULL(Copias, 1) AS FLOAT)), 0)
                     FROM dbo.ArchivosOrden
                     WHERE OrdenID = @OID AND ISNULL(EstadoArchivo, '') != 'CANCELADO';
                 END
@@ -41,6 +44,37 @@ const recalculateOrderMagnitude = async (transaction, ordenId) => {
             `);
     } catch (e) {
         logger.error("❌ Error recalculateOrderMagnitude:", e.message);
+    }
+};
+
+// HELPER: Re-cotiza el pedido tras un cambio de magnitud/cantidad de una orden.
+// Reconstruye PedidosCobranza + PedidosCobranzaDetalle (Subtotal/importe) y el MontoTotal
+// del pedido usando el motor de precios (misma vía que usa el flujo de cancelación).
+// Se usa onlyCalculate:true → PERSISTE la cotización pero NO empuja a ERP/REACT ni escribe
+// en OrdenesDeposito (evita efectos externos al editar la medida desde el detalle de orden).
+// Debe llamarse DESPUÉS de commitear la transacción (lee datos ya persistidos y escribe por su cuenta).
+const recotizarPedidoDeOrden = async (pool, ordenId, userId = 1, userName = 'Sistema') => {
+    if (!ordenId) return;
+    try {
+        const docRes = await pool.request()
+            .input('OID', sql.Int, ordenId)
+            .query('SELECT NoDocERP FROM dbo.Ordenes WHERE OrdenID = @OID');
+        const noDocERP = docRes.recordset[0]?.NoDocERP;
+        if (!noDocERP || !noDocERP.toString().trim()) {
+            logger.warn(`[Recotizar] Orden ${ordenId} sin NoDocERP; se omite recotización de cobranza.`);
+            return;
+        }
+        const ERPSyncService = require('../services/erpSyncService');
+        await ERPSyncService.syncFinalOrderIntegration(
+            noDocERP.toString().trim(),
+            parseInt(userId) || 1,
+            String(userName || 'Sistema').substring(0, 99),
+            null,
+            { onlyCalculate: true }
+        );
+        logger.info(`[Recotizar] ✅ Cotización/importe actualizados para pedido ${noDocERP} (orden ${ordenId}).`);
+    } catch (e) {
+        logger.error('[Recotizar] ❌ Error recotizando pedido tras cambio de magnitud:', e.message);
     }
 };
 
@@ -711,7 +745,11 @@ exports.updateFile = async (req, res) => {
                     `).catch(e => logger.error("Log Error:", e));
             }
 
-            // 4. Notificar actualización
+            // 4. Recotizar el pedido: propaga la nueva magnitud a la cotización
+            //    (PedidosCobranzaDetalle → Subtotal/importe y MontoTotal del pedido).
+            await recotizarPedidoDeOrden(pool, ordenId, req.body.userId || req.body.usuario, safeUser);
+
+            // 5. Notificar actualización
             const io = req.app.get('socketio');
             if (io && ordenId) {
                 io.emit('server:order_updated', { orderId: ordenId });
@@ -781,6 +819,10 @@ exports.addFile = async (req, res) => {
                  `);
 
             await transaction.commit();
+
+            // Recotizar: el nuevo archivo/servicio cambia la magnitud → actualiza la cotización.
+            await recotizarPedidoDeOrden(pool, ordenId, req.body.userId || req.body.usuario, String(req.body.userId || req.body.usuario || 'Sistema'));
+
             res.json({ success: true });
         } catch (inner) {
             await transaction.rollback();
@@ -820,6 +862,10 @@ exports.deleteFile = async (req, res) => {
             }
 
             await transaction.commit();
+
+            // Recotizar: al eliminar un archivo/servicio la magnitud baja → actualiza la cotización.
+            await recotizarPedidoDeOrden(pool, ordenId, req.body?.userId || req.body?.usuario, String(req.body?.userId || req.body?.usuario || 'Sistema'));
+
             res.json({ success: true });
         } catch (inner) {
             await transaction.rollback();
@@ -1860,7 +1906,10 @@ exports.updateService = async (req, res) => {
 
             await transaction.commit();
 
-            // 4. Notificar actualización en tiempo real
+            // 4. Recotizar: cambiar la cantidad del servicio afecta la magnitud global → actualiza la cotización.
+            await recotizarPedidoDeOrden(pool, ordenId, req.body.usuario, String(req.body.usuario || 'Sistema'));
+
+            // 5. Notificar actualización en tiempo real
             const io = req.app.get('socketio');
             if (io && ordenId) {
                 // Notificar a todos que la orden cambió (AreaView se actualizará)

@@ -716,7 +716,8 @@ exports.swapBobina = async (req, res) => {
 
                         await new sql.Request(transaction)
                             .input('IID', sql.Int, InsumoID)
-                            .input('Cant', sql.Decimal(10, 2), wasteMeters)
+                            // Consumo/merma SIEMPRE negativo (convención MovimientosInsumos): es una salida.
+                            .input('Cant', sql.Decimal(10, 2), -Math.abs(wasteMeters))
                             .input('Ref', sql.NVarChar(200), `Fallo/Merma en Rollo ${rollId} (Bobina ${CodigoEtiqueta}): ${wasteReason || 'Sin motivo'}`)
                             .input('UID', sql.Int, userId)
                             .input('BID', sql.Int, oldBobinaId)
@@ -749,7 +750,8 @@ exports.swapBobina = async (req, res) => {
                     if (consumoRegistrado > 0) {
                         await new sql.Request(transaction)
                             .input('IID', sql.Int, InsumoID)
-                            .input('Cant', sql.Decimal(10, 2), consumoRegistrado)
+                            // Consumo SIEMPRE negativo (convención MovimientosInsumos): es una salida.
+                            .input('Cant', sql.Decimal(10, 2), -Math.abs(consumoRegistrado))
                             .input('Ref', sql.NVarChar(200), `Consumo Final en Rollo ${rollId} (Bobina ${CodigoEtiqueta})`)
                             .input('UID', sql.Int, userId)
                             .input('BID', sql.Int, oldBobinaId)

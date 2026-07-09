@@ -25,6 +25,7 @@ router.get('/remitos/:code', logisticsController.getRemitoByCode);
 
 // Recepción
 router.post('/receive', logisticsController.receiveDispatch);
+router.get('/esperando-bultos', logisticsController.getEsperandoBultos);
 
 // Transport
 const uploadEncomiendas = require('../middleware/multerEncomiendasConfig');

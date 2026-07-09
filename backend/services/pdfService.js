@@ -378,21 +378,30 @@ const generarPdfCierre = async ({ sesion, movimientos = [], empresa = {} }) => {
     page.drawText(`${label}:`, { x, y, size: 8.5, font, color: gray });
     page.drawText(String(value ?? '—'), { x: x + 110, y, size: 9, font: fontBold, color });
   };
-  const dif = Number(sesion.StuDiferencia || 0);
+  // Campos que solo existen tras el cierre (SP_CerrarSesionCaja): si la sesión sigue
+  // ABIERTA vienen NULL — mostrar '—' en vez de "$ 0,00" para no sugerir diferencia cero.
+  const montoStr = (v, simb = '$') => (v === null || v === undefined) ? '—' : `${simb} ${fmtNum(v)}`;
+  const abierta = sesion.StuEstado === 'ABIERTA';
+  const dif = sesion.StuDiferencia === null || sesion.StuDiferencia === undefined ? null : Number(sesion.StuDiferencia);
+
+  if (abierta) {
+    page.drawText('VISTA PREVIA — SESIÓN AÚN ABIERTA (sin cerrar)', { x: marginX, y: y + 4, size: 8, font: fontBold, color: rgb(0.6, 0.45, 0) });
+    y -= 12;
+  }
   linea(colL, 'Apertura', fmtDate(sesion.StuFechaApertura));
   linea(colR, 'Cierre',   sesion.StuFechaCierre ? fmtDate(sesion.StuFechaCierre) : '—');
   y -= 15;
   linea(colL, 'Abrió', sesion.UsuarioAbre || '—');
   linea(colR, 'Cerró', sesion.UsuarioCierra || '—');
   y -= 15;
-  linea(colL, 'Monto inicial', `$ ${fmtNum(sesion.StuMontoInicial)}`);
-  linea(colR, 'Monto inicial USD', `US$ ${fmtNum(sesion.StuMontoInicialUSD)}`);
+  linea(colL, 'Monto inicial', montoStr(sesion.StuMontoInicial));
+  linea(colR, 'Monto inicial USD', montoStr(sesion.StuMontoInicialUSD, 'US$'));
   y -= 15;
-  linea(colL, 'Monto declarado', `$ ${fmtNum(sesion.StuMontoFinal)}`);
-  linea(colR, 'Monto declarado USD', `US$ ${fmtNum(sesion.StuMontoFinalUSD)}`);
+  linea(colL, 'Monto declarado', montoStr(sesion.StuMontoFinal));
+  linea(colR, 'Monto declarado USD', montoStr(sesion.StuMontoFinalUSD, 'US$'));
   y -= 15;
-  linea(colL, 'Monto sistema', `$ ${fmtNum(sesion.StuMontoSistema)}`);
-  linea(colR, 'Diferencia', `$ ${fmtNum(dif)}`, Math.abs(dif) < 0.01 ? green : red);
+  linea(colL, 'Monto sistema', montoStr(sesion.StuMontoSistema));
+  linea(colR, 'Diferencia', dif === null ? '—' : `$ ${fmtNum(dif)}`, dif === null ? gray : (Math.abs(dif) < 0.01 ? green : red));
   y -= 22;
 
   // Encabezado de la tabla en la primera página

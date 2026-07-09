@@ -99,6 +99,7 @@ router.post('/caja/transaccion/:id/anular',   caja.anularTransaccion);
 router.get('/caja/transaccion/:id',           caja.getTransaccion);
 router.get('/caja/historial/:clienteId',      caja.getHistorialCliente);
 router.get('/caja/movimientos-turno',         caja.getMovimientosTurno);
+router.post('/caja/movimiento/reclasificar',  caja.reclasificarCajaMovimiento); // Mover movimiento Central <-> Administrativa (cuadre)
 router.get('/caja/reporte-central-admin',     caja.getReporteCentralAdmin); // Auditoría Central vs Administrativa por fecha
 router.get('/caja/cierres',                   caja.getCierresSesiones);     // Sesiones + PDF de cierre disponible
 router.get('/caja/cierre-pdf/:sesionId',      caja.getCierrePdf);           // Sirve el PDF de cierre guardado

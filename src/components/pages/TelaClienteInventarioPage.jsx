@@ -24,28 +24,27 @@ const BobinaCard = ({
     onEjecutarConfirm,
 }) => {
     const esPendiente   = bob.Estado === "Pendiente";
-    const esAgotado     = bob.Estado === "Agotado";
+    const esAgotada     = bob.Estado === "Agotado" || bob.Estado === "Cerrado";
     const pctUsado      = bob.MetrosIniciales > 0
         ? Math.round((1 - bob.MetrosRestantes / bob.MetrosIniciales) * 100)
         : 0;
     const esConfirmando = confirmandoId === bob.BobinaID;
-    const estadoBadge   = {
-        "Pendiente":  "bg-amber-100 text-amber-700",
-        "Disponible": "bg-green-100 text-green-700",
-        "En Uso":     "bg-blue-100 text-blue-700",
-        "Agotado":    "bg-rose-100 text-rose-700",
-    }[bob.Estado] || "bg-slate-100 text-slate-600";
 
     return (
         <div className={`bg-white rounded-xl shadow border-2 p-4 transition-all ${
             esConfirmando ? "border-amber-400 ring-2 ring-amber-100" :
             esPendiente   ? "border-amber-300" :
-            esAgotado     ? "border-slate-200 opacity-75" : "border-slate-200 hover:border-indigo-300"
+            esAgotada     ? "border-slate-200 opacity-75" :
+            "border-slate-200 hover:border-indigo-300"
         }`}>
             <div className="flex justify-between items-start mb-3">
                 <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2 flex-wrap">
-                        <span className={`text-xs font-bold px-2 py-0.5 rounded-full ${estadoBadge}`}>{bob.Estado || "—"}</span>
+                        <span className={`text-xs font-bold px-2 py-0.5 rounded-full ${
+                            esPendiente ? "bg-amber-100 text-amber-700"
+                            : esAgotada ? "bg-slate-200 text-slate-500"
+                            : "bg-green-100 text-green-700"
+                        }`}>{esPendiente ? "Pendiente" : esAgotada ? "Agotado" : "Disponible"}</span>
                         <span className="text-xs text-slate-400 font-mono">{bob.AreaID}</span>
                     </div>
                     {bob.Referencia && (
@@ -242,7 +241,6 @@ const TelaClienteInventarioPage = () => {
     const [confirmLoading, setConfirmLoading]       = useState(false);
     const [estadoTelaBobina, setEstadoTelaBobina]   = useState(null);
     const [managingBobina, setManagingBobina]       = useState(null);
-    const [estadoFiltro, setEstadoFiltro]           = useState("todos"); // Filtro por estado de bobina
 
     // -- Buscador de cliente tipo Caja --
     const [clienteQuery, setClienteQuery]           = useState("");
@@ -250,6 +248,10 @@ const TelaClienteInventarioPage = () => {
     const [clienteSeleccionado, setClienteSeleccionado] = useState(null);
     const [buscandoCliente, setBuscandoCliente]     = useState(false);
     const searchRef                                 = useRef(null);
+
+    // -- Filtros: texto (PRE / tela / bobina) + estado --
+    const [filtroTexto, setFiltroTexto]             = useState("");
+    const [filtroEstado, setFiltroEstado]           = useState("Todas");
 
     useEffect(() => { loadAreas(); }, []);
 
@@ -269,14 +271,11 @@ const TelaClienteInventarioPage = () => {
         } catch { /* silencioso */ }
     };
 
-    // Al filtrar por "Agotado" se cargan también las bobinas cerradas
-    const verAgotadas = estadoFiltro === "Agotado";
-
     const loadInventory = async () => {
         if (selectedAreas.length === 0) return;
         setLoading(true);
         try {
-            const data = await inventoryService.getInventoryByArea(selectedAreas.join(","), { incluirCerradas: verAgotadas });
+            const data = await inventoryService.getInventoryByArea(selectedAreas.join(","), { includeAgotadas: true });
             setInventory(data || []);
         } catch (e) {
             toast.error("Error cargando inventario: " + (e?.message || ""));
@@ -285,7 +284,7 @@ const TelaClienteInventarioPage = () => {
         }
     };
 
-    useEffect(() => { if (selectedAreas.length > 0) loadInventory(); }, [selectedAreas, verAgotadas]);
+    useEffect(() => { if (selectedAreas.length > 0) loadInventory(); }, [selectedAreas]);
 
     // Buscar clientes desde la API (mismo endpoint que Caja)
     const buscarClientes = async (q) => {
@@ -325,63 +324,29 @@ const TelaClienteInventarioPage = () => {
         .flatMap(item => (item.ActiveBatches || item.batches || []).filter(b => b.ClienteID != null && b.ClienteID !== ""));
     const _refMatch = _q.length > 0 && !clienteSeleccionado
         && _allBatches.some(b => (b.Referencia || '').toLowerCase().includes(_q));
-    const bobinasTela = _allBatches.filter(b => {
+    const _porCliente = _allBatches.filter(b => {
         if (clienteSeleccionado) return String(b.ClienteID) === String(clienteSeleccionado.CliIdCliente);
         if (_refMatch) return (b.Referencia || '').toLowerCase().includes(_q);
         return true;
     });
 
-    // Conteo por estado + estados presentes (para los chips de filtro)
-    const conteoPorEstado = bobinasTela.reduce((acc, b) => {
-        const e = b.Estado || "Sin estado";
-        acc[e] = (acc[e] || 0) + 1;
-        return acc;
-    }, {});
-    // 'Agotado' se maneja como chip fijo aparte (dispara la carga de cerradas)
-    const ORDEN_ESTADOS = ["Pendiente", "Disponible", "En Uso"];
-    const estadosPresentes = [
-        ...ORDEN_ESTADOS.filter(e => conteoPorEstado[e]),
-        ...Object.keys(conteoPorEstado).filter(e => e !== "Agotado" && !ORDEN_ESTADOS.includes(e)).sort(),
-    ];
-    const countActivas = bobinasTela.filter(b => b.Estado !== "Agotado").length;
-
-    // Aplicar filtro de estado (client-side)
-    const bobinasVisibles = estadoFiltro === "todos"
-        ? bobinasTela.filter(b => b.Estado !== "Agotado")
-        : bobinasTela.filter(b => (b.Estado || "Sin estado") === estadoFiltro);
-
-    const pendientes  = bobinasVisibles.filter(b => b.Estado === "Pendiente");
-    const disponibles = bobinasVisibles.filter(b => b.Estado !== "Pendiente" && b.Estado !== "Agotado");
-
-    // Estilos de cada chip según estado (clases estáticas para que Tailwind no las purgue)
-    const chipStyles = (key, activo) => {
-        const map = {
-            "todos":      activo ? "bg-slate-800 text-white border-slate-800" : "bg-white text-slate-600 border-slate-200 hover:border-slate-300",
-            "Pendiente":  activo ? "bg-amber-500 text-white border-amber-500" : "bg-white text-amber-700 border-amber-200 hover:border-amber-300",
-            "Disponible": activo ? "bg-green-600 text-white border-green-600" : "bg-white text-green-700 border-green-200 hover:border-green-300",
-            "En Uso":     activo ? "bg-blue-600 text-white border-blue-600"   : "bg-white text-blue-700 border-blue-200 hover:border-blue-300",
-            "Agotado":    activo ? "bg-rose-500 text-white border-rose-500"   : "bg-white text-rose-600 border-rose-200 hover:border-rose-300",
-        };
-        return map[key] || (activo ? "bg-slate-800 text-white border-slate-800" : "bg-white text-slate-600 border-slate-200 hover:border-slate-300");
+    // Filtros por texto (PRE / tela / bobina / cliente) y por estado
+    const _txt  = filtroTexto.trim().toLowerCase();
+    const _norm = (v) => (v == null ? '' : String(v)).toLowerCase();
+    const matchTexto = (b) => !_txt ||
+        [b.Referencia, b.TipoTela, b.DescripcionTela, b.CodigoEtiqueta, b.NombreCliente, b.ClienteID, b.IdCliente]
+            .some(v => _norm(v).includes(_txt));
+    const matchEstado = (b) => {
+        if (filtroEstado === "Todas")      return true;
+        if (filtroEstado === "Disponible") return b.Estado === "Disponible" || b.Estado === "En Uso";
+        if (filtroEstado === "Agotado")    return b.Estado === "Agotado" || b.Estado === "Cerrado";
+        return b.Estado === filtroEstado;
     };
+    const bobinasTela = _porCliente.filter(b => matchTexto(b) && matchEstado(b));
 
-    // Render de una tarjeta (evita duplicar props en cada grilla)
-    const renderCard = (bob) => (
-        <BobinaCard
-            key={bob.BobinaID}
-            bob={bob}
-            confirmandoId={confirmando?.bobina?.BobinaID ?? null}
-            metrosRealesInput={metrosRealesInput} setMetrosRealesInput={setMetrosRealesInput}
-            anchoInput={anchoInput}               setAnchoInput={setAnchoInput}
-            pesoInput={pesoInput}                 setPesoInput={setPesoInput}
-            confirmLoading={confirmLoading}
-            onConfirmar={abrirConfirmacion}
-            onCancelarConfirmar={() => setConfirmando(null)}
-            onEstadoCuenta={setEstadoTelaBobina}
-            onAdministrar={(b) => setManagingBobina({ bobina: b, insumoName: b.TipoTela })}
-            onEjecutarConfirm={ejecutarConfirmacion}
-        />
-    );
+    const pendientes  = bobinasTela.filter(b => b.Estado === "Pendiente");
+    const disponibles = bobinasTela.filter(b => b.Estado === "Disponible" || b.Estado === "En Uso");
+    const agotadas    = bobinasTela.filter(b => b.Estado === "Agotado" || b.Estado === "Cerrado");
 
     const abrirConfirmacion = (bob) => {
         setConfirmando({ bobina: bob, insumoName: bob.DescripcionTela || bob.TipoTela });
@@ -489,6 +454,41 @@ const TelaClienteInventarioPage = () => {
                     </div>
                 </div>
 
+                {/* Filtros: texto (PRE / tela / bobina) + estado */}
+                <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-3 flex flex-col sm:flex-row gap-3 sm:items-center">
+                    <div className="flex items-center gap-2 border-2 border-slate-200 rounded-xl px-3 py-2 bg-slate-50 focus-within:bg-white focus-within:border-indigo-300 flex-1 transition-all">
+                        <Search className="w-4 h-4 text-slate-400 shrink-0" />
+                        <input
+                            type="text"
+                            placeholder="Filtrar por PRE, tela o bobina..."
+                            className="flex-1 bg-transparent text-sm text-slate-800 placeholder-slate-400 outline-none min-w-0"
+                            value={filtroTexto}
+                            onChange={e => setFiltroTexto(e.target.value)}
+                            autoComplete="off"
+                        />
+                        {filtroTexto && (
+                            <button onClick={() => setFiltroTexto("")} className="p-0.5 rounded-full hover:bg-slate-200 text-slate-400 hover:text-slate-600 transition-colors">
+                                <X className="w-3.5 h-3.5" />
+                            </button>
+                        )}
+                    </div>
+                    <div className="flex items-center gap-1 flex-wrap">
+                        {["Todas", "Pendiente", "Disponible", "Agotado"].map(op => (
+                            <button
+                                key={op}
+                                onClick={() => setFiltroEstado(op)}
+                                className={`px-3 py-1.5 rounded-lg text-xs font-bold border transition-colors ${
+                                    filtroEstado === op
+                                        ? "bg-indigo-600 text-white border-indigo-600"
+                                        : "bg-white text-slate-600 border-slate-200 hover:border-indigo-300"
+                                }`}
+                            >
+                                {op}
+                            </button>
+                        ))}
+                    </div>
+                </div>
+
                 {/* Tarjeta del cliente seleccionado */}
                 {clienteSeleccionado && (
                     <div className="bg-white rounded-xl border-2 border-indigo-200 p-4 flex items-center gap-4">
@@ -511,29 +511,19 @@ const TelaClienteInventarioPage = () => {
                     </div>
                 )}
 
-                {/* Filtro por estado de bobina */}
-                {selectedAreas.length > 0 && (
-                    <div className="flex flex-wrap items-center gap-2">
-                        <span className="text-xs font-bold text-slate-400 uppercase tracking-wide mr-1">Estado:</span>
+                {bobinasTela.length > 0 && (
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                         {[
-                            { key: "todos", label: "Todas", n: countActivas },
-                            ...estadosPresentes.map(e => ({ key: e, label: e, n: conteoPorEstado[e] })),
-                            { key: "Agotado", label: "Agotados", n: verAgotadas ? (conteoPorEstado["Agotado"] || 0) : null },
-                        ].map(({ key, label, n }) => {
-                            const activo = estadoFiltro === key;
-                            return (
-                                <button
-                                    key={key}
-                                    onClick={() => setEstadoFiltro(key)}
-                                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full border text-xs font-bold transition-colors ${chipStyles(key, activo)}`}
-                                >
-                                    {label}
-                                    {n != null && (
-                                        <span className={`px-1.5 py-0.5 rounded-full text-[10px] leading-none ${activo ? "bg-white/25" : "bg-slate-100 text-slate-500"}`}>{n}</span>
-                                    )}
-                                </button>
-                            );
-                        })}
+                            { n: bobinasTela.length, label: "Total bobinas", cls: "bg-white border-slate-200 text-slate-800" },
+                            { n: pendientes.length,  label: "Pendientes",    cls: "bg-amber-50 border-amber-200 text-amber-600" },
+                            { n: disponibles.length, label: "Disponibles",   cls: "bg-green-50 border-green-200 text-green-600" },
+                            { n: agotadas.length,    label: "Agotadas",      cls: "bg-slate-100 border-slate-200 text-slate-500" },
+                        ].map(({ n, label, cls }) => (
+                            <div key={label} className={`rounded-xl border p-4 text-center ${cls}`}>
+                                <div className="text-2xl font-black">{n}</div>
+                                <div className="text-xs font-medium mt-0.5 opacity-80">{label}</div>
+                            </div>
+                        ))}
                     </div>
                 )}
 
@@ -556,47 +546,80 @@ const TelaClienteInventarioPage = () => {
                     </div>
                 )}
 
-                {/* Sin resultados para el filtro de estado activo */}
-                {!loading && bobinasTela.length > 0 && bobinasVisibles.length === 0 && (
-                    <div className="text-center py-16 text-slate-400">
-                        <p>No hay bobinas en estado "{estadoFiltro}".</p>
+                {!loading && pendientes.length > 0 && (
+                    <div>
+                        <h2 className="text-sm font-bold text-amber-700 uppercase tracking-wide mb-3">
+                            Pendientes de confirmacion ({pendientes.length})
+                        </h2>
+                        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-5">
+                        {pendientes.map(bob => (
+                            <BobinaCard
+                                key={bob.BobinaID}
+                                bob={bob}
+                                confirmandoId={confirmando?.bobina?.BobinaID ?? null}
+                                metrosRealesInput={metrosRealesInput} setMetrosRealesInput={setMetrosRealesInput}
+                                anchoInput={anchoInput}               setAnchoInput={setAnchoInput}
+                                pesoInput={pesoInput}                 setPesoInput={setPesoInput}
+                                confirmLoading={confirmLoading}
+                                onConfirmar={abrirConfirmacion}
+                                onCancelarConfirmar={() => setConfirmando(null)}
+                                onEstadoCuenta={setEstadoTelaBobina}
+                                onAdministrar={(b) => setManagingBobina({ bobina: b, insumoName: b.TipoTela })}
+                                onEjecutarConfirm={ejecutarConfirmacion}
+                            />
+                        ))}
+                        </div>
                     </div>
                 )}
 
-                {/* Vista TODAS: separadas en Pendientes y Disponibles */}
-                {!loading && estadoFiltro === "todos" && (
-                    <>
-                        {pendientes.length > 0 && (
-                            <div>
-                                <h2 className="text-sm font-bold text-amber-700 uppercase tracking-wide mb-3">
-                                    Pendientes de confirmacion ({pendientes.length})
-                                </h2>
-                                <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-5">
-                                    {pendientes.map(renderCard)}
-                                </div>
-                            </div>
-                        )}
-                        {disponibles.length > 0 && (
-                            <div>
-                                <h2 className="text-sm font-bold text-green-700 uppercase tracking-wide mb-3">
-                                    Disponibles ({disponibles.length})
-                                </h2>
-                                <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-5">
-                                    {disponibles.map(renderCard)}
-                                </div>
-                            </div>
-                        )}
-                    </>
-                )}
-
-                {/* Vista FILTRADA por un estado: una sola grilla */}
-                {!loading && estadoFiltro !== "todos" && bobinasVisibles.length > 0 && (
+                {!loading && disponibles.length > 0 && (
                     <div>
-                        <h2 className="text-sm font-bold text-slate-600 uppercase tracking-wide mb-3">
-                            {estadoFiltro} ({bobinasVisibles.length})
+                        <h2 className="text-sm font-bold text-green-700 uppercase tracking-wide mb-3">
+                            Disponibles ({disponibles.length})
                         </h2>
                         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-5">
-                            {bobinasVisibles.map(renderCard)}
+                        {disponibles.map(bob => (
+                            <BobinaCard
+                                key={bob.BobinaID}
+                                bob={bob}
+                                confirmandoId={confirmando?.bobina?.BobinaID ?? null}
+                                metrosRealesInput={metrosRealesInput} setMetrosRealesInput={setMetrosRealesInput}
+                                anchoInput={anchoInput}               setAnchoInput={setAnchoInput}
+                                pesoInput={pesoInput}                 setPesoInput={setPesoInput}
+                                confirmLoading={confirmLoading}
+                                onConfirmar={abrirConfirmacion}
+                                onCancelarConfirmar={() => setConfirmando(null)}
+                                onEstadoCuenta={setEstadoTelaBobina}
+                                onAdministrar={(b) => setManagingBobina({ bobina: b, insumoName: b.TipoTela })}
+                                onEjecutarConfirm={ejecutarConfirmacion}
+                            />
+                        ))}
+                        </div>
+                    </div>
+                )}
+
+                {!loading && agotadas.length > 0 && (
+                    <div>
+                        <h2 className="text-sm font-bold text-slate-500 uppercase tracking-wide mb-3">
+                            Agotadas ({agotadas.length})
+                        </h2>
+                        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-5">
+                        {agotadas.map(bob => (
+                            <BobinaCard
+                                key={bob.BobinaID}
+                                bob={bob}
+                                confirmandoId={confirmando?.bobina?.BobinaID ?? null}
+                                metrosRealesInput={metrosRealesInput} setMetrosRealesInput={setMetrosRealesInput}
+                                anchoInput={anchoInput}               setAnchoInput={setAnchoInput}
+                                pesoInput={pesoInput}                 setPesoInput={setPesoInput}
+                                confirmLoading={confirmLoading}
+                                onConfirmar={abrirConfirmacion}
+                                onCancelarConfirmar={() => setConfirmando(null)}
+                                onEstadoCuenta={setEstadoTelaBobina}
+                                onAdministrar={(b) => setManagingBobina({ bobina: b, insumoName: b.TipoTela })}
+                                onEjecutarConfirm={ejecutarConfirmacion}
+                            />
+                        ))}
                         </div>
                     </div>
                 )}

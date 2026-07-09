@@ -69,6 +69,20 @@ const logisticsService = {
         return response.data;
     },
 
+    getEsperandoBultos: async () => {
+        const response = await api.get('/logistics/esperando-bultos');
+        return response.data;
+    },
+
+    forzarIngreso: async (ordenId, usuarioId) => {
+        const response = await api.post('/logistics/receive', {
+            forzarOrdenes: [ordenId],
+            usuarioId,
+            areaReceptora: 'DEPOSITO'
+        });
+        return response.data;
+    },
+
     // --- DASHBOARD ---
     getDashboard: async (areaId) => {
         const response = await api.get('/logistics/dashboard', { params: { areaId } });

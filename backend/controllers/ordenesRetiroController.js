@@ -616,6 +616,11 @@ const buscarParaMostrador = async (req, res) => {
         o.OrdIdOrden,
         o.OrdCodigoOrden,
         o.OrdCostoFinal,
+        o.OrdCantidad,
+        o.MonIdMoneda,
+        o.OrdNombreTrabajo,
+        o.OrdEstadoActual,
+        o.OReIdOrdenRetiro,
         eo.EOrNombreEstado  AS estadoOrden,
         mon.MonSimbolo,
         LTRIM(RTRIM(c.Nombre))           AS CliNombre,
@@ -625,7 +630,8 @@ const buscarParaMostrador = async (req, res) => {
         LTRIM(RTRIM(c.Email))            AS CliEmail,
         LTRIM(RTRIM(c.DireccionTrabajo)) AS CliDireccion,
         tc.TClDescripcion,
-        CASE WHEN o.PagIdPago IS NOT NULL THEN 1 ELSE 0 END AS Pagada
+        CASE WHEN o.PagIdPago IS NOT NULL THEN 1 ELSE 0 END AS Pagada,
+        p.PagTipoMovimiento
       FROM OrdenesRetiro r WITH(NOLOCK)
       LEFT JOIN FormasEnvio fe          WITH(NOLOCK) ON fe.ID  = r.LReIdLugarRetiro
       LEFT JOIN EstadosOrdenesRetiro er WITH(NOLOCK) ON er.EORIdEstadoOrden = r.OReEstadoActual
@@ -634,6 +640,7 @@ const buscarParaMostrador = async (req, res) => {
       LEFT JOIN Clientes c               WITH(NOLOCK) ON c.CliIdCliente      = o.CliIdCliente
       LEFT JOIN TiposClientes tc         WITH(NOLOCK) ON tc.TClIdTipoCliente = c.TClIdTipoCliente
       LEFT JOIN EstadosOrdenes eo        WITH(NOLOCK) ON eo.EOrIdEstadoOrden = o.OrdEstadoActual
+      LEFT JOIN Pagos p                  WITH(NOLOCK) ON p.PagIdPago         = o.PagIdPago
       WHERE 1=1
         ${extraWhere}
       ORDER BY r.OReIdOrdenRetiro DESC, o.OrdIdOrden
@@ -642,6 +649,7 @@ const buscarParaMostrador = async (req, res) => {
     // ── Query de sub-órdenes sueltas (sin retiro) — sin filtro de pago
     const ordenSueltaQuery = (extraWhere) => `
       SELECT o.OrdIdOrden, o.OrdCodigoOrden, o.OrdCostoFinal,
+             o.OrdCantidad, o.MonIdMoneda, o.OrdNombreTrabajo, o.OrdEstadoActual, o.OReIdOrdenRetiro,
              eo.EOrNombreEstado AS estadoOrden, mon.MonSimbolo,
              LTRIM(RTRIM(c.Nombre)) AS CliNombre, c.IDCliente AS CliCodigo,
              LTRIM(RTRIM(c.TelefonoTrabajo)) AS CliTelefono,
@@ -649,18 +657,21 @@ const buscarParaMostrador = async (req, res) => {
              LTRIM(RTRIM(c.Email)) AS CliEmail,
              LTRIM(RTRIM(c.DireccionTrabajo)) AS CliDireccion,
              tc.TClDescripcion,
-             CASE WHEN o.PagIdPago IS NOT NULL THEN 1 ELSE 0 END AS Pagada
+             CASE WHEN o.PagIdPago IS NOT NULL THEN 1 ELSE 0 END AS Pagada,
+             p.PagTipoMovimiento
       FROM OrdenesDeposito o WITH(NOLOCK)
       LEFT JOIN Monedas mon         WITH(NOLOCK) ON mon.MonIdMoneda      = o.MonIdMoneda
       LEFT JOIN Clientes c           WITH(NOLOCK) ON c.CliIdCliente       = o.CliIdCliente
       LEFT JOIN TiposClientes tc     WITH(NOLOCK) ON tc.TClIdTipoCliente  = c.TClIdTipoCliente
       LEFT JOIN EstadosOrdenes eo    WITH(NOLOCK) ON eo.EOrIdEstadoOrden  = o.OrdEstadoActual
+      LEFT JOIN Pagos p              WITH(NOLOCK) ON p.PagIdPago          = o.PagIdPago
       WHERE 1=1 ${extraWhere}
       ORDER BY o.OrdIdOrden DESC
     `;
 
     let retiroRows = [];
     let sinRetiro = [];
+    let sinDeposito = [];
 
     if (esRetiro) {
       // ── Búsqueda por código de retiro (R-XXXX / RT-XXXX / etc.) ─────────────
@@ -698,36 +709,146 @@ const buscarParaMostrador = async (req, res) => {
         }
 
       } else {
-        // No encontrado por código → buscar por cliente (IDCliente o Nombre)
-        const patron = `%${termClean.toUpperCase()}%`;
+        // No encontrado por código en OrdenesDeposito → puede que la orden ya tenga
+        // cotización generada (Ordenes/PedidosCobranza) pero todavía no haya llegado
+        // a depósito (eso pasa recién cuando se escanea la etiqueta/QR). Probamos ese
+        // caso antes de caer a la búsqueda por cliente.
+        const erpRes = await pool.request()
+          .input('cod', sql.NVarChar, termClean)
+          .query(`
+            SELECT TOP 1
+              o.OrdenID, o.CodigoOrden, o.NoDocERP, o.Cliente, o.Estado,
+              o.DescripcionTrabajo, o.Magnitud, o.CostoTotal,
+              pc.ID AS PedidoCobranzaID, pc.Moneda AS MonedaCotizacion, pc.MontoTotal AS ImporteCotizacion
+            FROM Ordenes o WITH(NOLOCK)
+            OUTER APPLY (
+              SELECT TOP 1 pcd.PedidoCobranzaID
+              FROM PedidosCobranzaDetalle pcd WITH(NOLOCK)
+              WHERE pcd.OrdenID = o.OrdenID
+              ORDER BY pcd.PedidoCobranzaID DESC
+            ) ultimoPedido
+            LEFT JOIN PedidosCobranza pc WITH(NOLOCK) ON pc.ID = ultimoPedido.PedidoCobranzaID
+            WHERE o.CodigoOrden = @cod OR o.NoDocERP = @cod
+          `);
 
-        const result = await pool.request()
-          .input('codCli', sql.NVarChar, patron)
-          .query(retiroCompletoQuery(`
-            AND r.OReEstadoActual NOT IN (5, 6)
-            AND o.PagIdPago IS NULL
-            AND (UPPER(c.IDCliente) LIKE @codCli OR UPPER(c.Nombre) LIKE @codCli)
-          `));
-        retiroRows = result.recordset;
+        if (erpRes.recordset.length > 0) {
+          sinDeposito = erpRes.recordset;
+        } else {
+          // Tampoco existe en Ordenes → buscar por cliente (IDCliente o Nombre)
+          const patron = `%${termClean.toUpperCase()}%`;
 
-        const r6 = await pool.request()
-          .input('codCli', sql.NVarChar, patron)
-          .query(ordenSueltaQuery(`
-            AND o.OReIdOrdenRetiro IS NULL
-            AND o.OrdEstadoActual NOT IN (9, 10)
-            AND (UPPER(c.IDCliente) LIKE @codCli OR UPPER(c.Nombre) LIKE @codCli)
-          `));
-        sinRetiro = r6.recordset;
+          const result = await pool.request()
+            .input('codCli', sql.NVarChar, patron)
+            .query(retiroCompletoQuery(`
+              AND r.OReEstadoActual NOT IN (5, 6)
+              AND o.PagIdPago IS NULL
+              AND (UPPER(c.IDCliente) LIKE @codCli OR UPPER(c.Nombre) LIKE @codCli)
+            `));
+          retiroRows = result.recordset;
+
+          const r6 = await pool.request()
+            .input('codCli', sql.NVarChar, patron)
+            .query(ordenSueltaQuery(`
+              AND o.OReIdOrdenRetiro IS NULL
+              AND o.OrdEstadoActual NOT IN (9, 10)
+              AND (UPPER(c.IDCliente) LIKE @codCli OR UPPER(c.Nombre) LIKE @codCli)
+            `));
+          sinRetiro = r6.recordset;
+        }
       }
     }
 
-    return res.json({ retiroRows, sinRetiro });
+    return res.json({ retiroRows, sinRetiro, sinDeposito });
   } catch (err) {
     logger.error('[MOSTRADOR] Error búsqueda:', err);
     res.status(500).json({ error: err.message });
   }
 };
 
+// ─── Estado de una orden en cada tabla/sistema del flujo ───────────────────────
+// Pensado para administración: dado un código de orden, arma un contenedor de
+// SOLO LECTURA por cada tabla donde esa orden deja rastro, para poder verificar
+// visualmente que un cambio de cotización se propagó bien a todos lados
+// (PedidosCobranza, PedidosCobranzaDetalle, OrdenesDeposito, OrdenesRetiro).
+// La edición de la cotización en sí la hace QuotationEditModal vía /quotation/:cod;
+// acá sólo se muestran los valores como quedaron guardados en cada tabla.
+const getEstadoOrden = async (req, res) => {
+  const { cod } = req.query;
+  if (!cod || cod.trim().length < 2) return res.status(400).json({ error: 'Ingresá un código de orden.' });
+
+  try {
+    const pool = await getPool();
+    const termClean = cod.trim();
+
+    const ordenRes = await pool.request()
+      .input('cod', sql.NVarChar, termClean)
+      .query(`
+        SELECT TOP 1 OrdenID, CodigoOrden, NoDocERP, Cliente, Estado, DescripcionTrabajo, Magnitud, CostoTotal
+        FROM dbo.Ordenes WITH(NOLOCK)
+        WHERE CodigoOrden = @cod OR NoDocERP = @cod
+      `);
+    const orden = ordenRes.recordset[0] || null;
+
+    // ── Contenedor: PedidosCobranza + PedidosCobranzaDetalle ────────────────────
+    let cobranza = null;
+    if (orden) {
+      const cobranzaRes = await pool.request()
+        .input('OrdenId', sql.Int, orden.OrdenID)
+        .query(`
+          SELECT TOP 1
+            pc.ID AS PedidoCobranzaID, pc.Moneda, pc.MontoTotal, pc.NoDocERP,
+            pcd.ID AS DetalleID, pcd.Subtotal, pcd.Cantidad
+          FROM dbo.PedidosCobranzaDetalle pcd WITH(NOLOCK)
+          INNER JOIN dbo.PedidosCobranza pc WITH(NOLOCK) ON pc.ID = pcd.PedidoCobranzaID
+          WHERE pcd.OrdenID = @OrdenId
+          ORDER BY pcd.PedidoCobranzaID DESC
+        `);
+      cobranza = cobranzaRes.recordset[0] || null;
+    }
+
+    // ── Contenedor: OrdenesDeposito ──────────────────────────────────────────────
+    const depositoRes = await pool.request()
+      .input('cod', sql.NVarChar, termClean)
+      .query(`
+        SELECT
+          o.OrdIdOrden, o.OrdCodigoOrden, o.OrdCostoFinal, o.OrdCantidad, o.MonIdMoneda,
+          mon.MonSimbolo, o.OrdEstadoActual, eo.EOrNombreEstado AS estadoOrden,
+          o.OReIdOrdenRetiro, o.OrdNombreTrabajo,
+          CASE WHEN o.PagIdPago IS NOT NULL THEN 1 ELSE 0 END AS Pagada,
+          p.PagTipoMovimiento
+        FROM dbo.OrdenesDeposito o WITH(NOLOCK)
+        LEFT JOIN dbo.Monedas mon      WITH(NOLOCK) ON mon.MonIdMoneda     = o.MonIdMoneda
+        LEFT JOIN dbo.EstadosOrdenes eo WITH(NOLOCK) ON eo.EOrIdEstadoOrden = o.OrdEstadoActual
+        LEFT JOIN dbo.Pagos p          WITH(NOLOCK) ON p.PagIdPago         = o.PagIdPago
+        WHERE o.OrdCodigoOrden = @cod
+      `);
+    const deposito = depositoRes.recordset[0] || null;
+
+    // ── Contenedor: OrdenesRetiro (si esta orden pertenece a un retiro) ─────────
+    let retiro = null;
+    if (deposito?.OReIdOrdenRetiro) {
+      const retiroRes = await pool.request()
+        .input('id', sql.Int, deposito.OReIdOrdenRetiro)
+        .query(`
+          SELECT r.OReIdOrdenRetiro, r.OReCostoTotalOrden, r.OReEstadoActual, er.EORNombreEstado AS estadoRetiro,
+                 (SELECT COUNT(*) FROM dbo.OrdenesDeposito WHERE OReIdOrdenRetiro = r.OReIdOrdenRetiro) AS CantidadOrdenes
+          FROM dbo.OrdenesRetiro r WITH(NOLOCK)
+          LEFT JOIN dbo.EstadosOrdenesRetiro er WITH(NOLOCK) ON er.EORIdEstadoOrden = r.OReEstadoActual
+          WHERE r.OReIdOrdenRetiro = @id
+        `);
+      retiro = retiroRes.recordset[0] || null;
+    }
+
+    if (!orden && !deposito) {
+      return res.status(404).json({ error: `No se encontró ninguna orden con código "${termClean}".` });
+    }
+
+    return res.json({ orden, cobranza, deposito, retiro });
+  } catch (err) {
+    logger.error('[ESTADO ORDEN] Error:', err);
+    res.status(500).json({ error: err.message });
+  }
+};
 
 // ── Backfill: actualizar LReIdLugarRetiro NULL desde FormaEnvioID del cliente ──
 const backfillLugarRetiro = async (req, res) => {
@@ -1098,6 +1219,75 @@ const editarCostoOrden = async (req, res) => {
   }
 };
 
+// ─── Estados de OrdenesDeposito habilitados para cambio administrativo ─────────
+// 5=Listo (Pendiente), 6=Avisado, 7=Pronto, 8=Listo (Pagado), 9=Entregado,
+// 10=Cancelado, 12=Avisar de nuevo (dispara reenvío de WSP en wspAvisos.job.js)
+const ESTADOS_ORDEN_PERMITIDOS = [5, 6, 7, 8, 9, 10, 12];
+
+const cambiarEstadoOrden = async (req, res) => {
+  const { orderId, nuevoEstado } = req.body;
+  const UsuarioModif = req.user?.id || 70;
+
+  const orderIdNum = parseInt(orderId, 10);
+  const nuevoEstadoNum = parseInt(nuevoEstado, 10);
+
+  if (!orderIdNum || !ESTADOS_ORDEN_PERMITIDOS.includes(nuevoEstadoNum)) {
+    return res.status(400).json({ error: 'Faltan datos requeridos o estado inválido (orderId, nuevoEstado).' });
+  }
+
+  let transaction;
+  try {
+    const pool = await getPool();
+    transaction = await pool.transaction();
+    await transaction.begin();
+
+    const ordenRes = await transaction.request()
+      .input('OrderId', sql.Int, orderIdNum)
+      .query('SELECT OrdCodigoOrden, OrdEstadoActual FROM dbo.OrdenesDeposito WHERE OrdIdOrden = @OrderId');
+    if (!ordenRes.recordset.length) throw new Error('Orden no encontrada.');
+    const { OrdCodigoOrden: codigoOrden, OrdEstadoActual: estadoAnterior } = ordenRes.recordset[0];
+
+    await transaction.request()
+      .input('OrderId', sql.Int, orderIdNum)
+      .input('Estado',  sql.Int, nuevoEstadoNum)
+      .query(`
+        UPDATE dbo.OrdenesDeposito
+        SET OrdEstadoActual = @Estado, OrdFechaEstadoActual = GETDATE()
+        WHERE OrdIdOrden = @OrderId
+      `);
+
+    await transaction.request()
+      .input('OrderId', sql.Int, orderIdNum)
+      .input('Estado',  sql.Int, nuevoEstadoNum)
+      .input('Usuario', sql.Int, UsuarioModif)
+      .query(`
+        INSERT INTO dbo.HistoricoEstadosOrdenes (OrdIdOrden, EOrIdEstadoOrden, HEOFechaEstado, HEOUsuarioAlta)
+        VALUES (@OrderId, @Estado, GETDATE(), @Usuario)
+      `);
+
+    await transaction.commit();
+
+    try {
+      const erpId = await buscarOrdenErpId(pool, orderIdNum);
+      if (erpId) {
+        await registrarHistorialOrden(
+          pool, erpId, 'Cambio de Estado Administrativo', UsuarioModif,
+          `Orden ${codigoOrden || orderIdNum}: estado ${estadoAnterior ?? '-'} → ${nuevoEstadoNum}`
+        );
+      }
+    } catch (hErr) {
+      logger.warn('[CAJA] No se pudo registrar HistorialOrdenes para cambiar estado:', hErr.message);
+    }
+
+    logger.info(`[CAJA] Cambio de estado orden ${codigoOrden}: ${estadoAnterior} -> ${nuevoEstadoNum}`);
+    res.status(200).json({ success: true, message: 'Estado actualizado correctamente.' });
+  } catch (err) {
+    if (transaction) try { await transaction.rollback(); } catch (e) {}
+    logger.error('[CAMBIAR ESTADO ORDEN ERROR]', err);
+    res.status(500).json({ error: err.message });
+  }
+};
+
 const desvincularOrdenRetiro = async (req, res) => {
   const { orderId, OReIdOrdenRetiro, formaRetiro } = req.body;
   const UsuarioModif = req.user?.id || 70;
@@ -1429,6 +1619,7 @@ module.exports = {
   createOrdenRetiro, getOrdenesRetiroPorEstados, actualizarOrdenRetiroEstado, marcarOrdenRetiroPronto,
   marcarOrdenRetiroEntregado, ordenesRetiroCaja, getOrdenesRetiroPasarPorCaja, ordenesRetiroMarcarPasarPorCaja, getOrdenesRetiroPorFecha,
   getOrdenesRetiroPorLugar, marcarDespachoEntregadoAutorizado, buscarParaMostrador, getClienteEnvioDatos, getTodasSinRetiro, backfillLugarRetiro, getOrdenesRetiroPorRemito,
-  editarCostoOrden, desvincularOrdenRetiro, cancelarOrdenCaja, exonerarOrdenCaja, revertirExoneracionOrden
+  editarCostoOrden, desvincularOrdenRetiro, cancelarOrdenCaja, exonerarOrdenCaja, revertirExoneracionOrden,
+  cambiarEstadoOrden, getEstadoOrden
 };
 

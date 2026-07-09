@@ -404,6 +404,9 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
   const [monedaCierre, setMonedaCierre] = useState('UYU'); // 'UYU' o 'USD'
   const [movimientosTurno, setMovimientosTurno] = useState([]);
 
+  // ── Filtros de la tabla "Detalle Analítico de Movimientos" ──
+  const [movFiltros, setMovFiltros] = useState({ q: '', tipo: '', formaPago: '', moneda: '', usuario: '', comprobante: '' });
+
   const totalDenominaciones = useMemo(() => {
     return Object.entries(denominaciones).reduce((acc, [den, qty]) => acc + (parseFloat(den.replace(/\D/g, '')) * (parseInt(qty) || 0)), 0);
   }, [denominaciones]);
@@ -463,6 +466,98 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
       cashEgressUSD
     };
   }, [movimientosTurno]);
+
+  // ── Opciones dinámicas para los filtros del Detalle Analítico ──
+  const movFormasPagoOpts = useMemo(() => {
+    const s = new Set();
+    (movimientosTurno || []).forEach(m => s.add(m.MedioDePago || 'INDEFINIDO'));
+    return Array.from(s).sort((a, b) => a.localeCompare(b));
+  }, [movimientosTurno]);
+
+  const movUsuariosOpts = useMemo(() => {
+    const s = new Set();
+    (movimientosTurno || []).forEach(m => s.add(m.Usuario || 'Sistema'));
+    return Array.from(s).sort((a, b) => a.localeCompare(b));
+  }, [movimientosTurno]);
+
+  const movComprobantesOpts = useMemo(() => {
+    const s = new Set();
+    (movimientosTurno || []).forEach(m => { if (m.TipoComprobante) s.add(m.TipoComprobante); });
+    return Array.from(s).sort((a, b) => a.localeCompare(b));
+  }, [movimientosTurno]);
+
+  const movMonedasOpts = useMemo(() => {
+    const s = new Set();
+    (movimientosTurno || []).forEach(m => s.add(m.Moneda || 'UYU'));
+    return Array.from(s).sort((a, b) => a.localeCompare(b));
+  }, [movimientosTurno]);
+
+  // ── Lista filtrada de movimientos ──
+  const movimientosFiltrados = useMemo(() => {
+    const q = (movFiltros.q || '').trim().toLowerCase();
+    return (movimientosTurno || []).filter(m => {
+      if (movFiltros.tipo && m.TipoOperacion !== movFiltros.tipo) return false;
+      if (movFiltros.moneda && (m.Moneda || 'UYU') !== movFiltros.moneda) return false;
+      if (movFiltros.formaPago && (m.MedioDePago || 'INDEFINIDO') !== movFiltros.formaPago) return false;
+      if (movFiltros.usuario && (m.Usuario || 'Sistema') !== movFiltros.usuario) return false;
+      if (movFiltros.comprobante && (m.TipoComprobante || '') !== movFiltros.comprobante) return false;
+      if (q) {
+        const hay = `${m.TipoComprobante || ''} ${m.Comprobante || ''} ${m.Concepto || ''}`.toLowerCase();
+        if (!hay.includes(q)) return false;
+      }
+      return true;
+    });
+  }, [movimientosTurno, movFiltros]);
+
+  // ── Totales de la selección filtrada ──
+  const movFiltradosTotales = useMemo(() => {
+    return (movimientosFiltrados || []).reduce((acc, m) => {
+      const isUSD = (m.Moneda || 'UYU') === 'USD';
+      if (isUSD) { acc.entradaUSD += (m.Entrada || 0); acc.salidaUSD += (m.Salida || 0); }
+      else { acc.entradaUYU += (m.Entrada || 0); acc.salidaUYU += (m.Salida || 0); }
+      return acc;
+    }, { entradaUYU: 0, salidaUYU: 0, entradaUSD: 0, salidaUSD: 0 });
+  }, [movimientosFiltrados]);
+
+  const movFiltrosActivos = !!(movFiltros.q || movFiltros.tipo || movFiltros.moneda || movFiltros.formaPago || movFiltros.usuario || movFiltros.comprobante);
+  const limpiarMovFiltros = () => setMovFiltros({ q: '', tipo: '', formaPago: '', moneda: '', usuario: '', comprobante: '' });
+
+  // ── Reclasificar un movimiento entre Caja Central y Administrativa (cuadre) ──
+  const [reclasificando, setReclasificando] = useState(null); // RefId+Origen en proceso
+  const reclasificarMovimiento = async (m) => {
+    if (!m || !m.RefId) { toast.error('No se puede reclasificar: movimiento sin identificador.'); return; }
+    const esAdminActual = !!(m.EsCajaAdmin && Number(m.EsCajaAdmin) === 1);
+    const destino = esAdminActual ? 'CENTRAL' : 'ADMIN';
+    const destinoLabel = destino === 'ADMIN' ? 'Caja Administrativa' : 'Caja Central';
+    const key = `${m.TipoOperacion}-${m.RefId}`;
+
+    const r = await Swal.fire({
+      title: `¿Enviar a ${destinoLabel}?`,
+      html: `Se reclasificará el movimiento <b>${(m.TipoComprobante || '') + ' ' + (m.Comprobante || '')}</b> hacia <b>${destinoLabel}</b>.<br/>` +
+            `<span style="font-size:12px;color:#64748b">Sale del arqueo actual para ayudar a cuadrar la caja. No afecta contabilidad ni cuenta corriente.</span>`,
+      icon: 'question',
+      showCancelButton: true,
+      confirmButtonText: 'Sí, reclasificar',
+      cancelButtonText: 'Cancelar',
+      confirmButtonColor: '#0891b2',
+    });
+    if (!r.isConfirmed) return;
+
+    setReclasificando(key);
+    try {
+      const resp = await api.post('/contabilidad/caja/movimiento/reclasificar', {
+        origen: m.TipoOperacion, // 'INGRESO' | 'EGRESO'
+        refId: m.RefId,
+        destino,
+      });
+      toast.success(resp.data?.mensaje || `Movimiento enviado a ${destinoLabel}.`);
+      await cargarResumenCierre();
+    } catch (e) {
+      toast.error(e.response?.data?.error || 'Error al reclasificar el movimiento.');
+    } finally {
+      setReclasificando(null);
+    }
+  };
 
   const handlePrint = () => {
     const win = window.open('', '_blank');
@@ -3003,10 +3098,94 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
 
                           {/* TABLA: Detalle Analítico de Movimientos */}
                           <div className="bg-white p-6 relative border-b border-slate-200">
-                            <h3 className="font-black text-slate-800 flex items-center gap-4 text-xl tracking-tight mb-6">
-                              <History size={24} className="text-brand-cyan" /> 
-                              Detalle Analítico de Movimientos
-                            </h3>
+                            <div className="flex items-center justify-between gap-4 mb-6 flex-wrap">
+                              <h3 className="font-black text-slate-800 flex items-center gap-4 text-xl tracking-tight">
+                                <History size={24} className="text-brand-cyan" />
+                                Detalle Analítico de Movimientos
+                              </h3>
+                              <span className="text-[11px] font-black text-slate-400 uppercase tracking-widest">
+                                {movimientosFiltrados.length} de {(movimientosTurno || []).length} movimientos
+                              </span>
+                            </div>
+
+                            {/* ── BARRA DE FILTROS ── */}
+                            <div className="bg-slate-50/70 border border-slate-200 rounded-2xl p-4 mb-5">
+                              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3">
+                                {/* Búsqueda libre */}
+                                <div className="xl:col-span-2 relative">
+                                  <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+                                  <input
+                                    type="text"
+                                    value={movFiltros.q}
+                                    onChange={e => setMovFiltros(f => ({ ...f, q: e.target.value }))}
+                                    placeholder="Buscar comprobante o concepto..."
+                                    className="w-full bg-white border border-zinc-200 rounded-xl pl-9 pr-3 py-2 text-xs font-black text-zinc-800 font-archivo outline-none hover:border-zinc-300 focus:border-brand-cyan focus:ring-2 focus:ring-brand-cyan/10 transition-all shadow-sm placeholder:text-zinc-400 placeholder:font-bold"
+                                  />
+                                </div>
+                                {/* Tipo de operación */}
+                                <LightSelect
+                                  value={movFiltros.tipo}
+                                  onChange={v => setMovFiltros(f => ({ ...f, tipo: v }))}
+                                  placeholder="Tipo (Todos)"
+                                  options={[
+                                    { value: '', label: 'Tipo: Todos' },
+                                    { value: 'INGRESO', label: 'Ingreso' },
+                                    { value: 'EGRESO', label: 'Egreso' },
+                                  ]}
+                                />
+                                {/* Moneda */}
+                                <LightSelect
+                                  value={movFiltros.moneda}
+                                  onChange={v => setMovFiltros(f => ({ ...f, moneda: v }))}
+                                  placeholder="Moneda (Todas)"
+                                  options={[
+                                    { value: '', label: 'Moneda: Todas' },
+                                    ...movMonedasOpts.map(o => ({ value: o, label: o })),
+                                  ]}
+                                />
+                                {/* Forma de pago */}
+                                <LightSelect
+                                  value={movFiltros.formaPago}
+                                  onChange={v => setMovFiltros(f => ({ ...f, formaPago: v }))}
+                                  placeholder="Forma de pago (Todas)"
+                                  options={[
+                                    { value: '', label: 'Forma de pago: Todas' },
+                                    ...movFormasPagoOpts.map(o => ({ value: o, label: o })),
+                                  ]}
+                                />
+                                {/* Usuario */}
+                                <LightSelect
+                                  value={movFiltros.usuario}
+                                  onChange={v => setMovFiltros(f => ({ ...f, usuario: v }))}
+                                  placeholder="Usuario (Todos)"
+                                  options={[
+                                    { value: '', label: 'Usuario: Todos' },
+                                    ...movUsuariosOpts.map(o => ({ value: o, label: o })),
+                                  ]}
+                                />
+                                {/* Comprobante */}
+                                <LightSelect
+                                  value={movFiltros.comprobante}
+                                  onChange={v => setMovFiltros(f => ({ ...f, comprobante: v }))}
+                                  placeholder="Comprobante (Todos)"
+                                  options={[
+                                    { value: '', label: 'Comprobante: Todos' },
+                                    ...movComprobantesOpts.map(o => ({ value: o, label: o })),
+                                  ]}
+                                />
+                              </div>
+                              {movFiltrosActivos && (
+                                <div className="flex justify-end mt-3">
+                                  <button
+                                    onClick={limpiarMovFiltros}
+                                    className="flex items-center gap-1.5 text-[11px] font-black uppercase tracking-widest text-brand-magenta hover:text-rose-700 transition-colors"
+                                  >
+                                    <X size={13} /> Limpiar filtros
+                                  </button>
+                                </div>
+                              )}
+                            </div>
+
                             <div className="overflow-x-auto">
                               <table className="w-full text-left border-collapse text-[11px]">
                                 <thead>
@@ -3019,10 +3198,16 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
                                     <th className="py-2.5 px-3 font-black text-slate-400 uppercase tracking-widest">Usuario</th>
                                     <th className="py-2.5 px-3 font-black text-emerald-600/70 uppercase tracking-widest text-right">Entrada</th>
                                     <th className="py-2.5 px-3 font-black text-brand-magenta/70 uppercase tracking-widest text-right">Salida</th>
+                                    <th className="py-2.5 px-3 font-black text-slate-400 uppercase tracking-widest text-center whitespace-nowrap">Caja / Acción</th>
                                   </tr>
                                 </thead>
                                 <tbody>
-                                  {(movimientosTurno || []).map((m, idx) => (
+                                  {(movimientosFiltrados || []).map((m, idx) => {
+                                    const esAdminActual = !!(m.EsCajaAdmin && Number(m.EsCajaAdmin) === 1);
+                                    const destinoLabel = esAdminActual ? 'Central' : 'Administrativa';
+                                    const key = `${m.TipoOperacion}-${m.RefId}`;
+                                    const enProceso = reclasificando === key;
+                                    return (
                                     <tr key={idx} className="border-b border-slate-100 hover:bg-slate-50/80 transition-colors">
                                       <td className="py-2 px-3 font-bold text-slate-500 whitespace-nowrap">{new Date(m.Fecha).toLocaleString('es-UY', { dateStyle: 'short', timeStyle: 'short' })}</td>
                                       <td className="py-2 px-3 font-black text-slate-700">{m.TipoOperacion}</td>
@@ -3032,16 +3217,62 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
                                       <td className="py-2 px-3 font-bold text-slate-500">{m.Usuario || 'Sistema'}</td>
                                       <td className="py-2 px-3 font-black text-emerald-600 text-right">{m.Entrada > 0 ? `${m.Moneda} ${fmt(m.Entrada)}` : '-'}</td>
                                       <td className="py-2 px-3 font-black text-brand-magenta text-right">{m.Salida > 0 ? `${m.Moneda} ${fmt(m.Salida)}` : '-'}</td>
+                                      <td className="py-2 px-3 text-center whitespace-nowrap">
+                                        <div className="flex items-center justify-center gap-2">
+                                          <span className={`px-2 py-0.5 rounded-full text-[9px] font-black uppercase tracking-widest ${esAdminActual ? 'bg-violet-100 text-violet-700' : 'bg-sky-100 text-sky-700'}`}>
+                                            {esAdminActual ? 'Admin' : 'Central'}
+                                          </span>
+                                          <button
+                                            onClick={() => reclasificarMovimiento(m)}
+                                            disabled={enProceso || !m.RefId}
+                                            title={`Enviar a Caja ${destinoLabel}`}
+                                            className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg border border-slate-200 bg-white text-[10px] font-black uppercase tracking-widest text-slate-600 hover:border-brand-cyan hover:text-brand-cyan transition-all disabled:opacity-40 disabled:cursor-not-allowed shadow-sm"
+                                          >
+                                            {enProceso
+                                              ? <Loader2 size={12} className="animate-spin" />
+                                              : <ArrowRight size={12} />}
+                                            {destinoLabel}
+                                          </button>
+                                        </div>
+                                      </td>
                                     </tr>
-                                  ))}
+                                    );
+                                  })}
                                   {(!movimientosTurno || movimientosTurno.length === 0) && (
                                     <tr>
-                                      <td colSpan="8" className="py-8 text-center text-slate-400 font-bold">
+                                      <td colSpan="9" className="py-8 text-center text-slate-400 font-bold">
                                         No hay movimientos en este turno.
                                       </td>
                                     </tr>
                                   )}
+                                  {movimientosTurno && movimientosTurno.length > 0 && movimientosFiltrados.length === 0 && (
+                                    <tr>
+                                      <td colSpan="9" className="py-8 text-center text-slate-400 font-bold">
+                                        Ningún movimiento coincide con los filtros aplicados.
+                                      </td>
+                                    </tr>
+                                  )}
                                 </tbody>
+                                {movimientosFiltrados.length > 0 && (
+                                  <tfoot>
+                                    <tr className="bg-slate-100/60 border-t border-slate-200">
+                                      <td colSpan="6" className="py-3 px-3 font-black text-slate-800 uppercase tracking-widest text-right">
+                                        Totales filtrados
+                                      </td>
+                                      <td className="py-3 px-3 font-black text-emerald-600 text-right whitespace-nowrap">
+                                        {movFiltradosTotales.entradaUYU > 0 && <div>UYU {fmt(movFiltradosTotales.entradaUYU)}</div>}
+                                        {movFiltradosTotales.entradaUSD > 0 && <div>USD {fmt(movFiltradosTotales.entradaUSD)}</div>}
+                                        {movFiltradosTotales.entradaUYU === 0 && movFiltradosTotales.entradaUSD === 0 && '-'}
+                                      </td>
+                                      <td className="py-3 px-3 font-black text-brand-magenta text-right whitespace-nowrap">
+                                        {movFiltradosTotales.salidaUYU > 0 && <div>UYU {fmt(movFiltradosTotales.salidaUYU)}</div>}
+                                        {movFiltradosTotales.salidaUSD > 0 && <div>USD {fmt(movFiltradosTotales.salidaUSD)}</div>}
+                                        {movFiltradosTotales.salidaUYU === 0 && movFiltradosTotales.salidaUSD === 0 && '-'}
+                                      </td>
+                                      <td className="py-3 px-3"></td>
+                                    </tr>
+                                  </tfoot>
+                                )}
                               </table>
                             </div>
                           </div>

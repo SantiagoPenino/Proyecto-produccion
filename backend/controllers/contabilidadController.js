@@ -674,17 +674,51 @@ exports.crearPlan = async (req, res) => {
     if (TIPOS_MONETARIOS.includes(CueTipo?.toUpperCase()))
       return res.status(400).json({ success: false, error: `La cuenta "${CueTipo}" no es una cuenta de recursos.` });
 
+    // ── Traspaso de excedente: si un plan anterior de este cliente/producto se agotó
+    // con sobregiro (metros consumidos de más, registrados como negativo en la cuenta
+    // pero nunca reflejados en PlanesMetros porque PlaCantidadUsada no puede superar
+    // PlaCantidadTotal), ese excedente se hereda como "usado inicial" del plan nuevo
+    // para que la tarjeta muestre la capacidad real disponible. No toca CueSaldoActual
+    // (la cuenta corriente de metros ya está correcta).
+    const excesoRes = await pool.request()
+      .input('CliId', sql.Int, parseInt(CliIdCliente))
+      .input('ProId', sql.Int, ProIdFinal ? parseInt(ProIdFinal) : null)
+      .query(`
+        SELECT mc.MovIdMovimiento, mc.MovImporte
+        FROM dbo.MovimientosCuenta mc WITH(NOLOCK)
+        JOIN dbo.CuentasCliente    cc WITH(NOLOCK) ON cc.CueIdCuenta = mc.CueIdCuenta
+        WHERE cc.CliIdCliente = @CliId
+          AND (@ProId IS NULL OR cc.ProIdProducto = @ProId)
+          AND mc.MovImporte < 0
+          AND (mc.MovObservaciones LIKE 'Exceso s/ Plan #%' OR mc.MovObservaciones LIKE '%Negativo retroactivo%Plan #%')
+          AND mc.MovObservaciones NOT LIKE '%_ABSORBIDO_PLAN_%'
+      `);
+
+    const movsExceso   = excesoRes.recordset;
+    const excesoTotal  = movsExceso.reduce((acc, m) => acc + Math.abs(parseFloat(m.MovImporte)), 0);
+    const usadaInicial = Math.min(excesoTotal, parseFloat(PlaCantidadTotal));
+    const activoInicial = usadaInicial >= parseFloat(PlaCantidadTotal) ? 0 : 1;
+
+    if (excesoTotal > 0) {
+      logger.info(`[CONTABILIDAD] Plan nuevo CliId=${CliIdCliente} Prod=${ProIdFinal}: heredando excedente de ${excesoTotal} uds (${movsExceso.length} mov.) como usado inicial.`);
+      if (excesoTotal > parseFloat(PlaCantidadTotal)) {
+        logger.warn(`[CONTABILIDAD] Excedente heredado (${excesoTotal}) supera la capacidad del plan nuevo (${PlaCantidadTotal}) para CliId=${CliIdCliente}. Se absorbe hasta el tope; revisar manualmente el resto.`);
+      }
+    }
+
     // Insertar plan con columnas reales de PlanesMetros
     const insert = await pool.request()
       .input('CliIdCliente',        sql.Int,           parseInt(CliIdCliente))
       .input('CueIdCuenta',         sql.Int,           parseInt(CueIdCuenta))
       .input('ProIdProducto',       sql.Int,           ProIdFinal ? parseInt(ProIdFinal) : null)
       .input('PlaCantidadTotal',    sql.Decimal(18,4), parseFloat(PlaCantidadTotal))
+      .input('PlaCantidadUsada',    sql.Decimal(18,4), usadaInicial)
       .input('PlaPrecioUnitario',   sql.Decimal(18,4), PlaImportePagado ? parseFloat(PlaImportePagado) : null)
       .input('MonIdMoneda',         sql.Int,           MonedaPagoId  ? parseInt(MonedaPagoId)  : null)
       .input('PlaFechaVencimiento', sql.Date,          PlaFechaVencimiento || null)
       .input('PlaDescripcion',      sql.NVarChar(500), PlaDescripcion || null)
       .input('PlaObservaciones',    sql.NVarChar(500), null)
+      .input('PlaActivo',           sql.Bit,           activoInicial)
       .input('UsuarioAlta',         sql.Int,           UsuarioAlta)
       .query(`
         INSERT INTO dbo.PlanesMetros
@@ -697,14 +731,27 @@ exports.crearPlan = async (req, res) => {
         OUTPUT INSERTED.PlaIdPlan
         VALUES
           (@CliIdCliente, @CueIdCuenta, @ProIdProducto,
-           @PlaCantidadTotal, 0,
+           @PlaCantidadTotal, @PlaCantidadUsada,
            @PlaPrecioUnitario, @MonIdMoneda,
            CAST(GETDATE() AS DATE), @PlaFechaVencimiento,
            @PlaDescripcion, @PlaObservaciones,
-           1, GETDATE(), @UsuarioAlta)
+           @PlaActivo, GETDATE(), @UsuarioAlta)
       `);
 
     const PlaIdPlan = insert.recordset[0].PlaIdPlan;
+
+    // Marcar los movimientos de excedente como absorbidos por este plan nuevo,
+    // para que no se hereden de nuevo en el próximo plan que se cree.
+    if (movsExceso.length > 0) {
+      const ids = movsExceso.map(m => parseInt(m.MovIdMovimiento)).filter(Number.isInteger).join(',');
+      if (ids) {
+        await pool.request().query(`
+          UPDATE dbo.MovimientosCuenta
+          SET MovObservaciones = CONCAT(MovObservaciones, '_ABSORBIDO_PLAN_${PlaIdPlan}')
+          WHERE MovIdMovimiento IN (${ids})
+        `);
+      }
+    }
 
     // Registrar los artículos permitidos en la tabla PlanesMetrosArticulosPermitidos
     const artsPermitidos = Array.isArray(req.body.articulosPermitidos) && req.body.articulosPermitidos.length > 0 

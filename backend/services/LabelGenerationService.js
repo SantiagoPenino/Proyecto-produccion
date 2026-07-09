@@ -28,9 +28,12 @@ class LabelGenerationService {
             // A solicitud del usuario, la validación estricta debe basarse en la cotización guardada en el ERP Sync.
             const pcdRes = await pool.request()
                 .input('OID', sql.Int, ordenId)
-                .query(`SELECT SUM(Cantidad) as TotalCantidad FROM PedidosCobranzaDetalle WHERE OrdenID = @OID`);
-            
+                .query(`SELECT SUM(Cantidad) as TotalCantidad, SUM(Subtotal) as TotalSubtotal, MIN(ProIdProducto) as ProIdProducto FROM PedidosCobranzaDetalle WHERE OrdenID = @OID`);
+
             const magnitudValor = parseFloat(pcdRes.recordset[0]?.TotalCantidad) || 0;
+            // Importe y producto de ESTA orden (su línea de detalle), para armar el QR por orden
+            const subtotalOrden = parseFloat(pcdRes.recordset[0]?.TotalSubtotal) || 0;
+            const prodOrdenId   = pcdRes.recordset[0]?.ProIdProducto || null;
             
             const codOrdLocal = (o.CodigoOrden || '').trim().toUpperCase();
             const prioridadLocal = (o.Prioridad || '').trim().toUpperCase();
@@ -99,25 +102,40 @@ class LabelGenerationService {
                 return { success: false, error: 'Calculo Frio: La orden no cuenta con un costo válido (Es $0). Vaya a Edit Cotización e ingrese un valor, o asegúrese de aplicar prepago o código R para habilitar $0.' };
             }
 
-            // --- GENERACIÓN / RESCATE DEL STRING QR ($*) CLASICO ---
-            let finalQrStringToSave = dbQrString;
+            // --- GENERACIÓN DEL STRING QR ($*) — POR ORDEN ---
+            // Cada orden hermana (mismo NoDocERP) debe llevar SU código (con sufijo n/m), cantidad,
+            // importe y producto, tomados de su línea en PedidosCobranzaDetalle. Antes se estampaba
+            // el QR_String del PEDIDO igual en todas las hermanas (código base + cantidad/importe
+            // totales del pedido) → el retiro sumaba el total por cada hermana (duplicado).
 
-            // Si la base de datos es antigua y no tiene QR guardado aún, realizamos un fallback/re-armado
-            if (!finalQrStringToSave) {
-                const baseOrderMatch = o.CodigoOrden ? o.CodigoOrden.match(/^(\d+)/) : null;
-                const baseOrderNum = baseOrderMatch ? baseOrderMatch[1] : (o.CodigoOrden || o.OrdenID);
-
-                const qrPedido = baseOrderNum;
-                const qrCliente = o.IdClienteReact || '0';
-                const qrTrabajo = (o.DescripcionTrabajo || '').replace(/\$\*/g, ' ').trim();
-                const isUrgent = (o.Prioridad && (o.Prioridad.toLowerCase().includes('urgente') || o.Prioridad.toLowerCase().includes('alta')));
-                const qrUrgencia = isUrgent ? '2' : '1';
-                const qrProducto = targetCurrency === 'USD' ? '150' : '82';
-                const qrCantidad = o.Magnitud || '1';
-                
-                const SEP = '$*';
-                finalQrStringToSave = `${qrPedido}${SEP}${qrCliente}${SEP}${qrTrabajo}${SEP}${qrUrgencia}${SEP}${qrProducto}${SEP}${qrCantidad}${SEP}${importeTotalStr}`;
+            // IDProdReact del producto de esta orden (campo producto del QR)
+            let idProdReactOrden = null;
+            if (prodOrdenId) {
+                try {
+                    const prRes = await pool.request()
+                        .input('P', sql.Int, prodOrdenId)
+                        .query('SELECT TOP 1 IDProdReact FROM Articulos WHERE ProIdProducto = @P');
+                    idProdReactOrden = prRes.recordset[0]?.IDProdReact ?? null;
+                } catch (ignore) { }
             }
+
+            // Partimos del QR del pedido (si existe) para reutilizar cliente/trabajo/urgencia,
+            // y reemplazamos código/producto/cantidad/importe por los de la orden. Cada campo
+            // cae al valor del pedido/QR sólo si la orden no tiene ese dato (ej. reposición).
+            const _pp = dbQrString ? dbQrString.split('$*') : [];
+            const _isUrgent = (o.Prioridad && (o.Prioridad.toLowerCase().includes('urgente') || o.Prioridad.toLowerCase().includes('alta')));
+            const _baseOrderMatch = o.CodigoOrden ? o.CodigoOrden.match(/^(\d+)/) : null;
+
+            const _qrCodigo   = (o.CodigoOrden || _pp[0] || (_baseOrderMatch ? _baseOrderMatch[1] : String(o.OrdenID))).trim();
+            const _qrCliente  = _pp[1] || String(o.IdClienteReact || '0');
+            const _qrTrabajo  = (_pp[2] || o.DescripcionTrabajo || '').replace(/\$\*/g, ' ').trim();
+            const _qrUrgencia = _pp[3] || (_isUrgent ? '2' : '1');
+            const _qrProducto = (idProdReactOrden != null) ? String(idProdReactOrden) : (_pp[4] || (targetCurrency === 'USD' ? '150' : '82'));
+            const _qrCantidad = (magnitudValor > 0) ? String(magnitudValor) : (_pp[5] || String(o.Magnitud || '1'));
+            const _qrImporte  = (subtotalOrden > 0) ? subtotalOrden.toFixed(2) : (_pp[6] || importeTotalStr);
+
+            const SEP = '$*';
+            let finalQrStringToSave = `${_qrCodigo}${SEP}${_qrCliente}${SEP}${_qrTrabajo}${SEP}${_qrUrgencia}${SEP}${_qrProducto}${SEP}${_qrCantidad}${SEP}${_qrImporte}`;
 
             // QR Simplificado para Control Interno (Fallback/Logística)
             const qrSimple = `ORD-${o.OrdenID}`;

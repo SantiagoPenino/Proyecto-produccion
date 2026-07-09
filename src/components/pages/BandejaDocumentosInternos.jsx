@@ -393,13 +393,15 @@ export default function BandejaDocumentosInternos() {
                           </button>
                           {!doc.Anulado && (
                             <>
-                              <button
-                                onClick={() => abrirEditar(doc)}
-                                title="Editar monto"
-                                className="inline-flex items-center justify-center w-8 h-8 rounded-lg border border-zinc-200 bg-white hover:bg-amber-50 hover:border-amber-400 hover:text-amber-600 text-zinc-400 transition-all shadow-sm"
-                              >
-                                <Pencil size={15} />
-                              </button>
+                              {doc.CodTipoDoc !== 'ANTICIPO' && (
+                                <button
+                                  onClick={() => abrirEditar(doc)}
+                                  title="Editar monto"
+                                  className="inline-flex items-center justify-center w-8 h-8 rounded-lg border border-zinc-200 bg-white hover:bg-amber-50 hover:border-amber-400 hover:text-amber-600 text-zinc-400 transition-all shadow-sm"
+                                >
+                                  <Pencil size={15} />
+                                </button>
+                              )}
                               <button
                                 onClick={() => abrirAnular(doc)}
                                 title="Anular documento"

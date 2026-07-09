@@ -304,7 +304,9 @@ const getMovimientosTurno = async (req, res) => {
         CASE WHEN p.PagIdMonedaPago = 2 THEN 'USD' ELSE 'UYU' END as Moneda,
         p.PagMontoPago as Entrada,
         0 as Salida,
-        COALESCE(u.Nombre, u.Usuario, 'Sistema') as Usuario
+        COALESCE(u.Nombre, u.Usuario, 'Sistema') as Usuario,
+        t.TcaIdTransaccion as RefId,
+        ISNULL(t.EsCajaAdmin, 0) as EsCajaAdmin
       FROM dbo.TransaccionesCaja t WITH(NOLOCK)
       JOIN dbo.Pagos p WITH(NOLOCK) ON p.PagTcaIdTransaccion = t.TcaIdTransaccion
       LEFT JOIN dbo.MetodosPagos mp WITH(NOLOCK) ON mp.MPaIdMetodoPago = p.MPaIdMetodoPago
@@ -326,7 +328,9 @@ const getMovimientosTurno = async (req, res) => {
         e.EgrMoneda as Moneda,
         0 as Entrada,
         e.EgrMonto as Salida,
-        COALESCE(u.Nombre, u.Usuario, 'Sistema') as Usuario
+        COALESCE(u.Nombre, u.Usuario, 'Sistema') as Usuario,
+        e.EgrIdEgreso as RefId,
+        ISNULL(e.EsCajaAdmin, 0) as EsCajaAdmin
       FROM dbo.EgresosCaja e WITH(NOLOCK)
       LEFT JOIN dbo.MetodosPagos mp WITH(NOLOCK) ON mp.MPaIdMetodoPago = e.MPaIdMetodoPago
       LEFT JOIN dbo.Config_TiposDocumento ct2 WITH(NOLOCK) ON ct2.CodDocumento = e.EgrTipoDocumento
@@ -1365,18 +1369,29 @@ const procesarPagoDeuda = async (req, res) => {
     if (!pagos?.length) return res.status(400).json({ error: 'Debe incluir al menos un método de pago.' });
 
     // ─────────────────────────────────────────────
-    const sumDeudas = aplicaciones.reduce((s, a) => s + (Number(a.montoOriginal) || 0), 0);
-    const sumPagos  = pagos.reduce((s, p) => s + (Number(p.montoOriginal) || 0), 0);
-    const exceso = sumPagos - sumDeudas;
-    if (exceso > 0.01) {
-      logger.warn(`[PAGO-DEUDA] Exceso rechazado: deudas=${sumDeudas.toFixed(2)} pagos=${sumPagos.toFixed(2)} exceso=${exceso.toFixed(2)}`);
-      return res.status(400).json({
-        error: `El pago excede las deudas seleccionadas en ${exceso.toFixed(2)}. No se permiten comprobantes con excedente.`
-      });
-    }
-    // ─────────────────────────────────────────────
-    const esParcial = sumDeudas - sumPagos > 0.01;
-    if (esParcial) logger.info(`[PAGO-DEUDA] Pago parcial: deudas=${sumDeudas.toFixed(2)} pagos=${sumPagos.toFixed(2)}`);
+    // Moneda base = la moneda de las deudas (la envía el front en header.moneda).
+    // Los pagos pueden venir en OTRA moneda (ej: deuda en USD pagada en pesos); se
+    // normalizan a la moneda base con el tipo de cambio para imputar correctamente.
+    const primerPagoBase = pagos.find(p => Number(p.montoOriginal) > 0) || pagos[0];
+    const monedaBaseStr  = header.moneda
+      || (parseInt(primerPagoBase?.monedaId, 10) === 2 ? 'USD' : 'UYU');
+    const monedaBaseId   = monedaBaseStr === 'USD' ? 2 : 1;
+    const cotizTC        = Number(header.cotizacionTC) || Number(primerPagoBase?.cotizacion) || 1;
+    const pagoABase = (p) => {
+      const pMon = parseInt(p.monedaId, 10) === 2 ? 'USD' : 'UYU';
+      const m = Number(p.montoOriginal) || 0;
+      if (pMon === monedaBaseStr) return m;
+      // Convertir a la moneda de la deuda
+      return monedaBaseStr === 'USD' ? (cotizTC ? m / cotizTC : 0) : m * cotizTC;
+    };
+
+    const sumDeudas       = aplicaciones.reduce((s, a) => s + (Number(a.montoOriginal) || 0), 0);
+    const totalPagadoBase = pagos.reduce((s, p) => s + pagoABase(p), 0);
+    // exceso > 0 → el cliente pagó de más: el excedente queda como saldo a favor.
+    const exceso          = totalPagadoBase - sumDeudas;
+    const esParcial       = sumDeudas - totalPagadoBase > 0.01;
+    if (exceso > 0.01) logger.info(`[PAGO-DEUDA] Excedente ${exceso.toFixed(2)} ${monedaBaseStr} → saldo a favor (deudas=${sumDeudas.toFixed(2)} pagado=${totalPagadoBase.toFixed(2)})`);
+    if (esParcial)     logger.info(`[PAGO-DEUDA] Pago parcial: deudas=${sumDeudas.toFixed(2)} pagado=${totalPagadoBase.toFixed(2)}`);
 
     const pool = await getPool();
     const transaction = pool.transaction();
@@ -1386,9 +1401,9 @@ const procesarPagoDeuda = async (req, res) => {
 
     try {
       // ─────────────────────────────────────────────
-      // El pago real (sumPagos) se distribuye proporcionalmente entre las deudas seleccionadas.
-      // Esto evita marcar como COBRADO cuando el pago es parcial.
-      let pagoRestante = sumPagos;
+      // El pago real (normalizado a la moneda de la deuda) se distribuye entre las
+      // deudas seleccionadas. Esto evita marcar como COBRADO cuando el pago es parcial.
+      let pagoRestante = totalPagadoBase;
 
       for (const ap of aplicaciones) {
         const { ddeId, montoOriginal } = ap;
@@ -1479,13 +1494,7 @@ const procesarPagoDeuda = async (req, res) => {
       }
 
       // ─────────────────────────────────────────────
-      // ─────────────────────────────────────────────
-      // Prioridad: header.moneda > monedaId del primer pago > UYU
-      const primerPagoBase = pagos.find(p => p.montoOriginal > 0) || pagos[0];
-      const monedaBaseStr  = header.moneda
-        || (parseInt(primerPagoBase?.monedaId, 10) === 2 ? 'USD' : 'UYU');
-      const monedaBaseId   = monedaBaseStr === 'USD' ? 2 : 1;
-      // ─────────────────────────────────────────────
+      // (monedaBaseStr / monedaBaseId / primerPagoBase / cotizTC ya resueltos arriba)
       let sesionId = header.sesionId || null;
       if (!sesionId && !header.admin && !header.esAdministrativa) {
         const sesRes = await new sql.Request(transaction)
@@ -1602,6 +1611,7 @@ const procesarPagoDeuda = async (req, res) => {
         .input('serie',    sql.VarChar(10),  serieTransaccion)
         .input('num',      sql.VarChar(20),  docNumero)
         .input('neto',     sql.Decimal(18,4), totalImputado)
+        .input('cobrado',  sql.Decimal(18,4), totalPagadoBase)
         .input('monedaBase', sql.VarChar(10), monedaBaseStr)
         .input('obs',      sql.VarChar(500), header.observaciones || 'Pago de deuda cuenta corriente')
         .input('AdminFlag', sql.Bit, (header.admin || header.esAdministrativa) ? 1 : 0)
@@ -1614,7 +1624,7 @@ const procesarPagoDeuda = async (req, res) => {
           VALUES
             (@sesId, @usuario, @cliente, GETDATE(),
              @tipo, @serie, @num, 'COBRADO',
-             @neto, 0, @neto, @neto, @monedaBase, @obs, @AdminFlag)
+             @neto, 0, @neto, @cobrado, @monedaBase, @obs, @AdminFlag)
         `);
       const tcaIdPago = tcaRes.recordset[0].TcaIdTransaccion;
 
@@ -1876,38 +1886,103 @@ const procesarPagoDeuda = async (req, res) => {
       }
 
       // ─────────────────────────────────────────────
-      // DEBE: Caja (dinero que entra)
-      // HABER: Clientes (reduce la cuenta por cobrar)
-      if (totalImputado > 0) {
+      // EXCEDENTE → saldo a favor (anticipo) del cliente
+      // El cliente pagó más que sus deudas: la diferencia queda como crédito a favor
+      // en su cuenta corriente de la moneda de la deuda (mismo mecanismo que un anticipo).
+      if (exceso > 0.01) {
+        let cueSaldoFavor = aplicaciones.map(a => a.cueIdCuenta).find(Boolean) || null;
+        if (!cueSaldoFavor) {
+          const tipoCuenta = monedaBaseStr === 'USD' ? 'DINERO_USD' : 'DINERO_UYU';
+          const cueR = await new sql.Request(transaction)
+            .input('Cli',  sql.Int,         header.clienteId)
+            .input('Tipo', sql.VarChar(20), tipoCuenta)
+            .query(`SELECT TOP 1 CueIdCuenta FROM dbo.CuentasCliente WHERE CliIdCliente=@Cli AND CueTipo=@Tipo AND CueActiva=1`);
+          if (cueR.recordset.length) {
+            cueSaldoFavor = cueR.recordset[0].CueIdCuenta;
+          } else {
+            const newCue = await new sql.Request(transaction)
+              .input('Cli',   sql.Int,         header.clienteId)
+              .input('Tipo',  sql.VarChar(20), tipoCuenta)
+              .input('MonId', sql.Int,         monedaBaseId)
+              .input('Usr',   sql.Int,         usuarioId)
+              .query(`INSERT INTO dbo.CuentasCliente
+                        (CliIdCliente, CPaIdCondicion, CueTipo, MonIdMoneda, CueSaldoActual,
+                         CueLimiteCredito, CuePuedeNegativo, CueCicloActivo, CueActiva, CueFechaAlta, CueUsuarioAlta)
+                      OUTPUT INSERTED.CueIdCuenta
+                      VALUES(@Cli, 1, @Tipo, @MonId, 0, 0, 0, 0, 1, GETDATE(), @Usr)`);
+            cueSaldoFavor = newCue.recordset[0].CueIdCuenta;
+          }
+        }
+        // El excedente es dinero real recibido: si falla su registro, se aborta toda
+        // la transacción (no se deja plata sin contabilizar).
+        await contabilidadSvc.registrarMovimiento({
+          CueIdCuenta:      cueSaldoFavor,
+          MovTipo:          'ANTICIPO',
+          MovConcepto:      ('Saldo a favor por pago excedente - ' + (header.observaciones || 'Pago de deuda')).substring(0, 300),
+          MovImporte:       exceso,   // positivo = crédito = saldo a favor
+          MovUsuarioAlta:   usuarioId,
+          DocIdDocumento:   docId || null,
+          MovObservaciones: ('Excedente ' + exceso.toFixed(2) + ' ' + monedaBaseStr + ' | Pagado ' + totalPagadoBase.toFixed(2) + ' vs Deudas ' + sumDeudas.toFixed(2)).substring(0, 500),
+        }, transaction);
+        logger.info(`[PAGO-DEUDA] Excedente ${exceso.toFixed(2)} ${monedaBaseStr} registrado como saldo a favor (cuenta ${cueSaldoFavor}).`);
+      }
+
+      // ─────────────────────────────────────────────
+      // ASIENTO CONTABLE
+      //   DEBE:  Caja        — todo el efectivo recibido, una línea por moneda de pago
+      //   HABER: Deudores    — por la parte que cancela deuda del cliente
+      //   HABER: Anticipos   — por el excedente (saldo a favor / prepago)
+      if (totalPagadoBase > 0) {
         try {
-          const monedaId     = monedaBaseId;  // ya resuelto arriba con la moneda real de la deuda
-          const monedaStr    = monedaBaseStr;
-          const cotizacion   = Number(primerPagoBase?.cotizacion) || 1;
+          const cashPorMoneda = {};
+          for (const p of pagos) {
+            if (!p.montoOriginal) continue;
+            const pMon = parseInt(p.monedaId, 10) === 2 ? 'USD' : 'UYU';
+            cashPorMoneda[pMon] = (cashPorMoneda[pMon] || 0) + (Number(p.montoOriginal) || 0);
+          }
+          const cotizBase = monedaBaseStr === 'USD' ? cotizTC : 1;
+          const lineasAsiento = [];
+          // DEBE: Caja (por moneda del efectivo recibido)
+          for (const [mon, monto] of Object.entries(cashPorMoneda)) {
+            if (monto <= 0) continue;
+            lineasAsiento.push({
+              codigoCuenta: mon === 'USD' ? contabilidadCore.CUENTAS.CAJA_USD : contabilidadCore.CUENTAS.CAJA_UYU,
+              debeBase:  monto,
+              haberBase: 0,
+              monedaId:   mon === 'USD' ? 2 : 1,
+              cotizacion: mon === 'USD' ? cotizTC : 1,
+            });
+          }
+          // HABER: Deudores por Ventas — cancela la deuda del cliente
+          if (totalImputado > 0.001) {
+            lineasAsiento.push({
+              codigoCuenta: monedaBaseStr === 'USD' ? contabilidadCore.CUENTAS.CLIENTE_USD : contabilidadCore.CUENTAS.CLIENTE_UYU,
+              debeBase:  0,
+              haberBase: totalImputado,
+              monedaId:   monedaBaseId,
+              cotizacion: cotizBase,
+              entidadId:   header.clienteId,
+              entidadTipo: 'CLIENTE',
+            });
+          }
+          // HABER: Anticipos de Clientes — excedente = saldo a favor (pasivo)
+          if (exceso > 0.01) {
+            lineasAsiento.push({
+              codigoCuenta: contabilidadCore.CUENTAS.ANTICIPOS,
+              debeBase:  0,
+              haberBase: exceso,
+              monedaId:   monedaBaseId,
+              cotizacion: cotizBase,
+              entidadId:   header.clienteId,
+              entidadTipo: 'CLIENTE',
+            });
+          }
           await contabilidadCore.generarAsientoCompleto({
-            concepto:         ("Pago deuda #" + header.clienteId + " - " + (header.observaciones || "Cobro cuenta corriente")).substring(0, 200),
+            concepto:         ("Pago deuda #" + header.clienteId + " - " + (header.observaciones || "Cobro cuenta corriente") + (exceso > 0.01 ? ` (incl. saldo a favor ${exceso.toFixed(2)})` : '')).substring(0, 200),
             usuarioId,
             tcaIdTransaccion: tcaIdPago,
             origen:           'PAGO_DEUDA',
-            lineas: [
-              {
-                // DEBE: Caja recibe el dinero
-                codigoCuenta: monedaStr === 'USD' ? contabilidadCore.CUENTAS.CAJA_USD : contabilidadCore.CUENTAS.CAJA_UYU,
-                debeBase:  totalImputado,
-                haberBase: 0,
-                monedaId,
-                cotizacion,
-              },
-              {
-                // HABER: Reduce la deuda del cliente
-                codigoCuenta: monedaStr === 'USD' ? contabilidadCore.CUENTAS.CLIENTE_USD : contabilidadCore.CUENTAS.CLIENTE_UYU,
-                debeBase:  0,
-                haberBase: totalImputado,
-                monedaId,
-                cotizacion,
-                entidadId:   header.clienteId,
-                entidadTipo: 'CLIENTE',
-              },
-            ],
+            lineas: lineasAsiento,
           }, transaction);
         } catch (eAsiento) {
           logger.warn(`[PAGO-DEUDA] Asiento contable parcial: ${eAsiento.message}`);
@@ -1955,11 +2030,16 @@ const procesarPagoDeuda = async (req, res) => {
 
       const s = io(req); if (s) s.emit('actualizado', { type: 'pago-deuda' });
 
+      const excedenteReg = exceso > 0.01 ? exceso : 0;
       return res.status(201).json({
         success: true,
         totalImputado,
+        totalPagado: totalPagadoBase,
+        excedente: excedenteReg,
+        moneda: monedaBaseStr,
         deudasCanceladas: aplicaciones.length,
-        message: `Pago registrado: $ ${totalImputado.toFixed(2)} imputado en ${aplicaciones.length} deuda(s).`,
+        message: `Pago registrado: $ ${totalImputado.toFixed(2)} imputado en ${aplicaciones.length} deuda(s).`
+          + (excedenteReg > 0 ? ` Excedente ${monedaBaseStr} ${excedenteReg.toFixed(2)} a saldo a favor.` : ''),
         docId,
         docNumero,
         docTipoStr
@@ -2559,16 +2639,24 @@ const registrarPagoAnticipo = async (req, res) => {
           if (metR.recordset.length) metodoNombre = metR.recordset[0].MPaDescripcionMetodo;
         }
 
-        // Obtener secuencia propia del Recibo de Anticipo (serie 'RC', independiente de CFE)
+        // Obtener secuencia propia del Recibo de Anticipo.
+        // Serie 'RA' (NO 'RC') para que la numeración de los anticipos NO colisione
+        // con la de los recibos de cobro (RECIBO/RC). La primera vez que corre tras el
+        // deploy, la secuencia RA se auto-siembra continuando desde el máximo número de
+        // anticipos ya emitidos (así no reinicia en 1 ni vuelve a chocar con RC históricos).
         const seqAnticipo = await new sql.Request(transaction)
           .query(`
-            IF NOT EXISTS (SELECT 1 FROM dbo.SecuenciaDocumentos WHERE SecTipoDoc = 'RECIBO_ANTICIPO' AND SecSerie = 'RC')
+            IF NOT EXISTS (SELECT 1 FROM dbo.SecuenciaDocumentos WHERE SecTipoDoc = 'RECIBO_ANTICIPO' AND SecSerie = 'RA')
               INSERT INTO dbo.SecuenciaDocumentos (SecTipoDoc, SecSerie, SecPrefijo, SecDigitos, SecUltimoNumero, SecActivo)
-              VALUES ('RECIBO_ANTICIPO', 'RC', 'RC-', 5, 0, 1);
+              SELECT 'RECIBO_ANTICIPO', 'RA', 'RA-', 5,
+                     ISNULL((SELECT MAX(TRY_CAST(DocNumero AS INT))
+                             FROM dbo.DocumentosContables
+                             WHERE DocTipo = 'RECIBO ANTICIPO'), 0),
+                     1;
             UPDATE dbo.SecuenciaDocumentos
             SET SecUltimoNumero = SecUltimoNumero + 1
             OUTPUT INSERTED.SecUltimoNumero
-            WHERE SecTipoDoc = 'RECIBO_ANTICIPO' AND SecSerie = 'RC';
+            WHERE SecTipoDoc = 'RECIBO_ANTICIPO' AND SecSerie = 'RA';
           `);
         const numAnticipo = seqAnticipo.recordset[0]?.SecUltimoNumero || parseInt(tcaNum) || 1;
 
@@ -2579,7 +2667,7 @@ const registrarPagoAnticipo = async (req, res) => {
             monedaId:         monId,
             tipo:             'RECIBO ANTICIPO',
             numero:           String(numAnticipo),
-            serie:            'RC',
+            serie:            'RA',
             subtotal:         montoNum,
             impuestos:        0,
             total:            montoNum,
@@ -2624,38 +2712,9 @@ const registrarPagoAnticipo = async (req, res) => {
       }, transaction);
 
       // ─────────────────────────────────────────────
-      // DEBE: Caja (dinero que entra)
-      // ─────────────────────────────────────────────
-      try {
-        await contabilidadCore.generarAsientoCompleto({
-          concepto:         ('Anticipo #' + cliId + ' - ' + conceptoFull).substring(0, 200),
-          usuarioId,
-          tcaIdTransaccion: tcaId,
-          origen:           'ANTICIPO',
-          lineas: [
-            {
-              codigoCuenta: monStr === 'USD' ? contabilidadCore.CUENTAS.CAJA_USD : contabilidadCore.CUENTAS.CAJA_UYU,
-              debeBase:  montoNum,
-              haberBase: 0,
-              monedaId: monId,
-              cotizacion: 1,
-            },
-            {
-              codigoCuenta: monStr === 'USD' ? contabilidadCore.CUENTAS.CLIENTE_USD : contabilidadCore.CUENTAS.CLIENTE_UYU,
-              debeBase:  0,
-              haberBase: montoNum,
-              monedaId: monId,
-              cotizacion: 1,
-              entidadId:   cliId,
-              entidadTipo: 'CLIENTE',
-            },
-          ],
-        }, transaction);
-      } catch (eAsiento) {
-        logger.warn(`[ANTICIPO] Asiento contable parcial: ${eAsiento.message}`);
-      }
-
-      // ─────────────────────────────────────────────
+      // Imputar el anticipo a las deudas pendientes del cliente (PEPS).
+      // Se hace ANTES del asiento para saber cuánto cancela deuda y cuánto
+      // queda como saldo a favor, y así separar las patas del HABER.
       let deudasImputadas = 0;
       let montoImputado = 0;
       try {
@@ -2684,6 +2743,53 @@ const registrarPagoAnticipo = async (req, res) => {
         }
       } catch (eDeu) {
         logger.warn(`[ANTICIPO] Error al imputar deudas: ${eDeu.message}`);
+      }
+
+      // ─────────────────────────────────────────────
+      // ASIENTO CONTABLE
+      //   DEBE:  Caja       — el dinero que entra
+      //   HABER: Deudores   — la parte que cancela deudas ya existentes
+      //   HABER: Anticipos  — el remanente que queda como saldo a favor (2.3.1)
+      try {
+        const remanente = Math.max(0, montoNum - montoImputado);
+        const lineasAsiento = [{
+          codigoCuenta: monStr === 'USD' ? contabilidadCore.CUENTAS.CAJA_USD : contabilidadCore.CUENTAS.CAJA_UYU,
+          debeBase:  montoNum,
+          haberBase: 0,
+          monedaId: monId,
+          cotizacion: 1,
+        }];
+        if (montoImputado > 0.001) {
+          lineasAsiento.push({
+            codigoCuenta: monStr === 'USD' ? contabilidadCore.CUENTAS.CLIENTE_USD : contabilidadCore.CUENTAS.CLIENTE_UYU,
+            debeBase:  0,
+            haberBase: montoImputado,
+            monedaId: monId,
+            cotizacion: 1,
+            entidadId:   cliId,
+            entidadTipo: 'CLIENTE',
+          });
+        }
+        if (remanente > 0.001) {
+          lineasAsiento.push({
+            codigoCuenta: contabilidadCore.CUENTAS.ANTICIPOS,
+            debeBase:  0,
+            haberBase: remanente,
+            monedaId: monId,
+            cotizacion: 1,
+            entidadId:   cliId,
+            entidadTipo: 'CLIENTE',
+          });
+        }
+        await contabilidadCore.generarAsientoCompleto({
+          concepto:         ('Anticipo #' + cliId + ' - ' + conceptoFull).substring(0, 200),
+          usuarioId,
+          tcaIdTransaccion: tcaId,
+          origen:           'ANTICIPO',
+          lineas: lineasAsiento,
+        }, transaction);
+      } catch (eAsiento) {
+        logger.warn(`[ANTICIPO] Asiento contable parcial: ${eAsiento.message}`);
       }
 
       await transaction.commit();
@@ -3265,7 +3371,8 @@ const getDocumentosInternos = async (req, res) => {
     const ingresoQ = `
       SELECT 'INGRESO' AS TipoOperacion, t.TcaIdTransaccion AS DocId, t.TcaFecha AS Fecha,
         ISNULL(ct1.Detalle, t.TcaTipoDocumento) AS TipoDoc, t.TcaTipoDocumento AS CodTipoDoc,
-        ISNULL(t.TcaSerieDoc,'') AS Serie, ISNULL(t.TcaNumeroDoc,'') AS Numero,
+        ISNULL(dcv.DocSerie, ISNULL(t.TcaSerieDoc,'')) AS Serie,
+        ISNULL(dcv.DocNumero, ISNULL(t.TcaNumeroDoc,'')) AS Numero,
         ISNULL(c.Nombre, 'Consumidor Final') AS ClienteNombre, t.TcaClienteId AS ClienteId,
         CASE WHEN p.PagIdMonedaPago = 2 THEN 'USD' ELSE 'UYU' END AS Moneda,
         SUM(p.PagMontoPago) AS Total, t.TcaEstado AS Estado,
@@ -3279,16 +3386,22 @@ const getDocumentosInternos = async (req, res) => {
       LEFT JOIN dbo.Config_TiposDocumento ct1 WITH(NOLOCK) ON ct1.CodDocumento = t.TcaTipoDocumento
       LEFT JOIN dbo.Clientes c WITH(NOLOCK) ON c.CliIdCliente = t.TcaClienteId
       LEFT JOIN dbo.Usuarios u WITH(NOLOCK) ON u.IdUsuario = t.TcaUsuarioId
+      LEFT JOIN dbo.DocumentosContables dcv WITH(NOLOCK)
+        ON dcv.TcaIdTransaccion = t.TcaIdTransaccion AND t.TcaTipoDocumento = 'ANTICIPO'
       WHERE t.TcaFecha BETWEEN @FecDesde AND @FecHasta
         AND t.TcaEstado IN ('COMPLETADO','COMPLETADA','COBRADO','ANULADO')
-        AND NOT EXISTS (
-          SELECT 1 FROM dbo.DocumentosContables dc WITH(NOLOCK)
-          WHERE dc.TcaIdTransaccion = t.TcaIdTransaccion
+        AND (
+          -- Los ANTICIPOS sí tienen DocumentosContables (RECIBO ANTICIPO) pero queremos verlos igual.
+          t.TcaTipoDocumento = 'ANTICIPO'
+          OR NOT EXISTS (
+            SELECT 1 FROM dbo.DocumentosContables dc WITH(NOLOCK)
+            WHERE dc.TcaIdTransaccion = t.TcaIdTransaccion
+          )
         )
         ${clienteFilter}
         ${cajaFilter}
       GROUP BY t.TcaIdTransaccion, t.TcaFecha, ct1.Detalle, t.TcaTipoDocumento,
-               t.TcaSerieDoc, t.TcaNumeroDoc, c.Nombre, t.TcaClienteId,
+               t.TcaSerieDoc, t.TcaNumeroDoc, dcv.DocSerie, dcv.DocNumero, c.Nombre, t.TcaClienteId,
                p.PagIdMonedaPago, t.TcaEstado, t.TcaObservaciones, mp.MPaDescripcionMetodo, u.Nombre, u.Usuario,
                t.EsCajaAdmin
     `;
@@ -3353,3 +3466,65 @@ const subirComprobanteTransferencia = async (req, res) => {
   }
 };
 module.exports.subirComprobanteTransferencia = subirComprobanteTransferencia;
+
+// ─────────────────────────────────────────────
+/**
+ * POST /contabilidad/caja/movimiento/reclasificar
+ * Mueve un movimiento entre Caja Central y Caja Administrativa (para cuadrar arqueos
+ * cuando una transacción quedó en la caja equivocada). NO afecta contabilidad ni
+ * cuenta corriente: solo cambia a qué caja se atribuye el movimiento.
+ *
+ * Body: { origen: 'INGRESO'|'EGRESO', refId: <PK>, destino: 'ADMIN'|'CENTRAL' }
+ *  - Central → Admin:   EsCajaAdmin = 1, StuIdSesion = NULL
+ *  - Admin  → Central:  EsCajaAdmin = 0, StuIdSesion = <sesión central abierta>
+ */
+const reclasificarCajaMovimiento = async (req, res) => {
+  const usuarioId = req.user?.id || 70;
+  const orig = String(req.body?.origen || '').toUpperCase();
+  const dest = String(req.body?.destino || '').toUpperCase();
+  const id   = parseInt(req.body?.refId, 10);
+
+  if (!['INGRESO', 'EGRESO'].includes(orig)) return res.status(400).json({ error: 'origen inválido (INGRESO|EGRESO)' });
+  if (!['ADMIN', 'CENTRAL'].includes(dest))  return res.status(400).json({ error: 'destino inválido (ADMIN|CENTRAL)' });
+  if (!id || Number.isNaN(id))               return res.status(400).json({ error: 'refId inválido' });
+
+  try {
+    const pool = await getPool();
+
+    // Al enviar a Central se necesita una sesión de turno abierta que reciba el movimiento.
+    let sid = null;
+    if (dest === 'CENTRAL') {
+      const sR = await pool.request().query(`SELECT TOP 1 StuIdSesion FROM dbo.SesionesTurno WITH(NOLOCK) WHERE StuEstado = 'ABIERTA' ORDER BY StuFechaApertura DESC`);
+      if (!sR.recordset.length) return res.status(400).json({ error: 'No hay una sesión de Caja Central abierta para recibir el movimiento.' });
+      sid = sR.recordset[0].StuIdSesion;
+    }
+
+    const esAdmin = dest === 'ADMIN' ? 1 : 0;
+    const tabla   = orig === 'INGRESO' ? 'TransaccionesCaja' : 'EgresosCaja';
+    const pk      = orig === 'INGRESO' ? 'TcaIdTransaccion'  : 'EgrIdEgreso';
+
+    const upd = await pool.request()
+      .input('Id',      sql.Int, id)
+      .input('EsAdmin', sql.Bit, esAdmin)
+      .input('Sid',     sql.Int, sid)
+      .query(`UPDATE dbo.${tabla} SET EsCajaAdmin = @EsAdmin, StuIdSesion = @Sid WHERE ${pk} = @Id`);
+
+    if (!upd.rowsAffected[0]) return res.status(404).json({ error: 'Movimiento no encontrado.' });
+
+    const destinoLabel = dest === 'ADMIN' ? 'Caja Administrativa' : 'Caja Central';
+
+    // Auditoría (best-effort: no bloquea si la tabla difiere)
+    await pool.request()
+      .input('UID', sql.Int, usuarioId)
+      .input('Accion', sql.NVarChar(200), 'RECLASIFICAR_CAJA')
+      .input('Detalles', sql.NVarChar(500), `${orig} #${id} (tabla ${tabla}) reclasificado a ${destinoLabel}${sid ? ' / sesión ' + sid : ''}`)
+      .query(`INSERT INTO dbo.Auditoria (IdUsuario, Accion, Detalles, DireccionIP, FechaHora) VALUES (@UID, @Accion, @Detalles, '127.0.0.1', GETDATE())`)
+      .catch(() => {});
+
+    return res.json({ success: true, mensaje: `Movimiento enviado a ${destinoLabel}.` });
+  } catch (err) {
+    if (logger?.error) logger.error('[CAJA] reclasificarCajaMovimiento:', err.message);
+    return res.status(500).json({ error: err.message });
+  }
+};
+module.exports.reclasificarCajaMovimiento = reclasificarCajaMovimiento;

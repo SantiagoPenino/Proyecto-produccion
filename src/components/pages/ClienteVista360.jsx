@@ -528,6 +528,7 @@ export default function ClienteVista360() {
                   sesion={null}
                   isAdminCaja={true}
                   clienteFijo={true}
+                  deudaLayout="tabla"
                   metodosPago={metodosPago}
                   cotizacion={cotizacion || 1}
                   initialCliente={clienteSel}

@@ -389,6 +389,13 @@ export default function CajaPanelPago({
                     {derivedCondicion === 'CONTADO' ? 'Contado' : 'Crédito'}
                   </span>
                 </div>
+              ) : tiposDoc.length === 1 ? (
+                /* Un solo comprobante estándar (ej. Pedido Caja) → etiqueta compacta con número */
+                <div className="flex items-center gap-2 bg-purple-50 border border-purple-200 rounded-xl px-3.5 py-2.5">
+                  <ShoppingBag size={15} className="text-purple-600 shrink-0" />
+                  <span className="text-xs font-black text-purple-700 uppercase tracking-wide">{tiposDoc[0].label}</span>
+                  <span className="ml-auto bg-purple-600 text-white rounded-lg px-2.5 py-1 text-[10px] font-black tracking-widest font-mono">{numDoc || numDocPredict}</span>
+                </div>
               ) : (
               <div className="flex bg-zinc-100 border border-zinc-200 rounded-2xl p-1 gap-1">
                 <button
@@ -491,7 +498,7 @@ export default function CajaPanelPago({
             )}
 
             {/* SERIE & NÚMERO (oculto cuando locked, o cuando es recibo compacto que ya muestra el número) */}
-            {!esEgreso && tipoDoc !== 'NINGUNO' && !locked && !(hasReciboVouchers && !tiposDoc.some(t => t.value === 'NINGUNO')) && (
+            {!esEgreso && tipoDoc !== 'NINGUNO' && !locked && !(hasReciboVouchers && !tiposDoc.some(t => t.value === 'NINGUNO')) && !(hasStandardVouchers && tiposDoc.length === 1) && (
               <div className="flex gap-3">
                 <div className="flex-1 flex items-center gap-2 bg-zinc-50 border border-zinc-200 rounded-xl px-3.5 py-2 shadow-inner">
                   <span className="text-[10px] font-black text-slate-400 uppercase tracking-wider shrink-0 select-none">Serie:</span>
@@ -513,7 +520,7 @@ export default function CajaPanelPago({
             )}
 
             {/* CONDICIÓN DE VENTA TABS (Solo para facturas estándar, oculto en locked porque ya se muestra en el chip del tipo) */}
-            {!esEgreso && hasStandardVouchers && !locked && (
+            {!esEgreso && hasStandardVouchers && !locked && tiposDoc.length > 1 && (
               <div className="flex bg-zinc-100 border border-zinc-200 rounded-2xl p-1 gap-1">
                 <button
                   type="button"

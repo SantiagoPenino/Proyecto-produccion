@@ -139,14 +139,162 @@ exports.getQuotation = async (req, res) => {
     }
 };
 
+// ─── Detecta si alguna de las órdenes ya avanzó de estado (entregada/facturada/
+// cobrada), para pedir confirmación antes de tocar su cotización sin avisar.
+async function detectarEstadosSensibles(pool, ordenIds) {
+    const advertencias = [];
+    if (!ordenIds.length) return advertencias;
+
+    const request = pool.request();
+    const placeholders = ordenIds.map((id, i) => { request.input(`id${i}`, sql.Int, id); return `@id${i}`; }).join(',');
+    const result = await request.query(`
+        SELECT o.OrdenID, o.CodigoOrden,
+               od.OrdEstadoActual,
+               CASE WHEN od.PagIdPago IS NOT NULL THEN 1 ELSE 0 END AS Pagada,
+               (SELECT TOP 1 CASE WHEN mc.DocIdDocumento IS NOT NULL THEN 1 ELSE 0 END
+                FROM dbo.MovimientosCuenta mc WITH(NOLOCK)
+                WHERE mc.OrdIdOrden = od.OrdIdOrden AND mc.MovTipo IN ('ORDEN','ORDEN_ANTICIPO')
+                  AND (mc.MovAnulado IS NULL OR mc.MovAnulado = 0)
+                ORDER BY mc.MovIdMovimiento DESC) AS Facturada,
+               (SELECT TOP 1 dd.DDeEstado FROM dbo.DeudaDocumento dd WITH(NOLOCK)
+                WHERE dd.OrdIdOrden = od.OrdIdOrden ORDER BY dd.DDeIdDeuda DESC) AS EstadoDeuda
+        FROM dbo.Ordenes o WITH(NOLOCK)
+        LEFT JOIN dbo.OrdenesDeposito od WITH(NOLOCK) ON od.OrdCodigoOrden = o.CodigoOrden
+        WHERE o.OrdenID IN (${placeholders})
+    `);
+
+    for (const row of result.recordset) {
+        const codigo = row.CodigoOrden || `Orden ${row.OrdenID}`;
+        if (row.OrdEstadoActual === 9) {
+            advertencias.push({ ordenID: row.OrdenID, codigo, tipo: 'ENTREGADA', mensaje: `${codigo} ya fue entregada en depósito.` });
+        }
+        if (row.Facturada === 1) {
+            advertencias.push({ ordenID: row.OrdenID, codigo, tipo: 'FACTURADA', mensaje: `${codigo} ya fue facturada/enviada a DGI.` });
+        }
+        if (row.EstadoDeuda === 'COBRADO' || row.Pagada === 1) {
+            advertencias.push({ ordenID: row.OrdenID, codigo, tipo: 'COBRADA', mensaje: `${codigo} ya fue cobrada.` });
+        }
+    }
+    return advertencias;
+}
+
+// ─── Propaga el nuevo total de cotización a OrdenesDeposito y, si corresponde,
+// a MovimientosCuenta/CuentasCliente/DeudaDocumento/CiclosCredito/OrdenesRetiro —
+// mismo patrón que editarCostoOrden en ordenesRetiroController.js. Sólo actúa
+// sobre órdenes que YA tienen fila en OrdenesDeposito (las que no, se resuelven
+// solas cuando lleguen a depósito).
+async function propagarCotizacionADeposito(pool, { pedidoId, monedaFinal, cotizacion }) {
+    const nuevaMonedaId = monedaFinal === 'USD' ? 2 : 1;
+
+    const detRes = await pool.request()
+        .input('PID', sql.Int, pedidoId)
+        .input('MFinal', sql.VarChar(10), monedaFinal)
+        .input('Cotiz', sql.Decimal(18, 4), parseFloat(cotizacion) || 40)
+        .query(`
+            SELECT OrdenID,
+                   SUM(CASE
+                        WHEN @MFinal = 'USD' AND Moneda = 'UYU' THEN Subtotal / @Cotiz
+                        WHEN @MFinal = 'UYU' AND Moneda = 'USD' THEN Subtotal * @Cotiz
+                        ELSE Subtotal
+                   END) AS TotalOrden,
+                   SUM(Cantidad) AS CantidadOrden
+            FROM dbo.PedidosCobranzaDetalle
+            WHERE PedidoCobranzaID = @PID AND OrdenID IS NOT NULL
+            GROUP BY OrdenID
+        `);
+
+    for (const fila of detRes.recordset) {
+        const ordenIdErp = fila.OrdenID;
+        const nuevoCosto = parseFloat(fila.TotalOrden) || 0;
+        const nuevaCantidad = parseFloat(fila.CantidadOrden) || 0;
+
+        const transaction = new sql.Transaction(pool);
+        try {
+            await transaction.begin();
+
+            const codRes = await new sql.Request(transaction)
+                .input('OID', sql.Int, ordenIdErp)
+                .query(`SELECT CodigoOrden FROM dbo.Ordenes WHERE OrdenID = @OID`);
+            const codigoOrden = codRes.recordset[0]?.CodigoOrden;
+            if (!codigoOrden) { await transaction.rollback(); continue; }
+
+            const depRes = await new sql.Request(transaction)
+                .input('Cod', sql.NVarChar, codigoOrden)
+                .query(`SELECT OrdIdOrden, OrdCostoFinal, OReIdOrdenRetiro FROM dbo.OrdenesDeposito WHERE OrdCodigoOrden = @Cod`);
+            if (!depRes.recordset.length) { await transaction.rollback(); continue; } // aún no llegó a depósito
+
+            const dep = depRes.recordset[0];
+            const orderId = dep.OrdIdOrden;
+            const costoAnterior = parseFloat(dep.OrdCostoFinal) || 0;
+            const delta = nuevoCosto - costoAnterior;
+
+            await new sql.Request(transaction)
+                .input('OrderId', sql.Int, orderId)
+                .input('Costo', sql.Decimal(18, 2), nuevoCosto)
+                .input('Cantidad', sql.Decimal(18, 4), nuevaCantidad || 1)
+                .input('Moneda', sql.Int, nuevaMonedaId)
+                .query(`UPDATE dbo.OrdenesDeposito SET OrdCostoFinal=@Costo, OrdCantidad=@Cantidad, MonIdMoneda=@Moneda WHERE OrdIdOrden=@OrderId`);
+
+            const movRes = await new sql.Request(transaction)
+                .input('OrdId', sql.Int, orderId)
+                .query(`
+                    SELECT TOP 1 MovIdMovimiento, CueIdCuenta, CicIdCiclo FROM dbo.MovimientosCuenta
+                    WHERE OrdIdOrden=@OrdId AND MovTipo='ORDEN' AND (MovAnulado IS NULL OR MovAnulado=0) AND DocIdDocumento IS NULL
+                `);
+            if (movRes.recordset.length) {
+                const mov = movRes.recordset[0];
+                await new sql.Request(transaction)
+                    .input('MovId', sql.Int, mov.MovIdMovimiento).input('Imp', sql.Decimal(18, 4), -nuevoCosto)
+                    .query(`UPDATE dbo.MovimientosCuenta SET MovImporte=@Imp WHERE MovIdMovimiento=@MovId`);
+                await new sql.Request(transaction)
+                    .input('CueId', sql.Int, mov.CueIdCuenta).input('Delta', sql.Decimal(18, 4), delta)
+                    .query(`UPDATE dbo.CuentasCliente SET CueSaldoActual = CueSaldoActual - @Delta WHERE CueIdCuenta=@CueId`);
+                await new sql.Request(transaction)
+                    .input('OrdId', sql.Int, orderId).input('Delta', sql.Decimal(18, 4), delta)
+                    .query(`
+                        UPDATE dbo.DeudaDocumento
+                        SET DDeImportePendiente = CASE WHEN DDeImportePendiente+@Delta<=0 THEN 0 ELSE DDeImportePendiente+@Delta END,
+                            DDeEstado = CASE WHEN DDeImportePendiente+@Delta<=0 THEN 'COBRADO' ELSE DDeEstado END
+                        WHERE OrdIdOrden=@OrdId AND DDeEstado NOT IN ('CANCELADA','COBRADO')
+                    `);
+                if (mov.CicIdCiclo) {
+                    await new sql.Request(transaction).input('CicId', sql.Int, mov.CicIdCiclo).query(`
+                        UPDATE c SET c.CicTotalOrdenes = ISNULL((
+                            SELECT SUM(ABS(MovImporte)) FROM dbo.MovimientosCuenta
+                            WHERE CicIdCiclo=c.CicIdCiclo AND MovTipo IN ('ORDEN','ENTREGA','ORDEN_ANTICIPO') AND (MovAnulado IS NULL OR MovAnulado=0)
+                        ), 0)
+                        FROM dbo.CiclosCredito c WHERE c.CicIdCiclo=@CicId
+                    `);
+                }
+            }
+
+            if (dep.OReIdOrdenRetiro) {
+                await new sql.Request(transaction).input('RetiroId', sql.Int, dep.OReIdOrdenRetiro).query(`
+                    UPDATE dbo.OrdenesRetiro
+                    SET OReCostoTotalOrden = (SELECT SUM(OrdCostoFinal) FROM dbo.OrdenesDeposito WHERE OReIdOrdenRetiro=@RetiroId)
+                    WHERE OReIdOrdenRetiro=@RetiroId
+                `);
+            }
+
+            await transaction.commit();
+            logger.info(`[Quotation] Propagado a depósito: orden ${codigoOrden} costo ${costoAnterior} -> ${nuevoCosto}`);
+        } catch (e) {
+            try { await transaction.rollback(); } catch {}
+            logger.warn(`[Quotation] No se pudo propagar a depósito para OrdenID=${ordenIdErp}: ${e.message}`);
+        }
+    }
+}
+
 /**
  * PUT /api/quotation/:noDocERP
  * Guarda las líneas editadas y recalcula QR_String, MontoTotal.
- * Body: { lineas: [{OrdenID, CodArticulo, Cantidad, PrecioUnitario, NombreArticulo?}] }
+ * Body: { lineas: [{OrdenID, CodArticulo, Cantidad, PrecioUnitario, NombreArticulo?}], confirmado?: boolean }
+ * Si alguna orden ya fue entregada/facturada/cobrada, responde 409 con
+ * { requiereConfirmacion: true, advertencias } salvo que venga confirmado=true.
  */
 exports.saveQuotation = async (req, res) => {
     const { noDocERP } = req.params;
-    const { lineas, cotizacion = 40 } = req.body;
+    const { lineas, cotizacion = 40, confirmado = false, propagarADeposito = false } = req.body;
     const userArea = req.user?.AreaID || null;
     const isAdmin = !userArea || req.user?.rol === 'ADMIN' || req.user?.esAdmin;
 
@@ -155,6 +303,24 @@ exports.saveQuotation = async (req, res) => {
     }
 
     const pool = await getPool();
+
+    // ── Chequeo de estados sensibles ANTES de tocar nada ────────────────────────
+    // Sólo aplica cuando el caller pide propagar a depósito/retiro/contabilidad
+    // (hoy: únicamente la vista de Administración de Órdenes). El resto de las
+    // pantallas que reusan este mismo editor (ej. "Cotizar Productos" en el
+    // detalle de orden de producción) siguen guardando sólo Cobranza, como antes.
+    if (propagarADeposito && !confirmado) {
+        const ordenIds = [...new Set(lineas.map(l => parseInt(l.OrdenID)).filter(Boolean))];
+        const advertencias = await detectarEstadosSensibles(pool, ordenIds);
+        if (advertencias.length > 0) {
+            return res.status(409).json({
+                requiereConfirmacion: true,
+                advertencias,
+                error: 'Esta orden ya avanzó de estado. Confirmá para modificar la cotización igual.'
+            });
+        }
+    }
+
     const transaction = new sql.Transaction(pool);
 
     try {
@@ -411,6 +577,15 @@ exports.saveQuotation = async (req, res) => {
                 `);
         } catch (syncErr) {
             logger.warn(`[Quotation] No se pudo sincronizar movimiento contable para ${noDocERP}: ${syncErr.message}`);
+        }
+
+        // Propagar a OrdenesDeposito/OrdenesRetiro (sólo si el caller lo pidió explícitamente)
+        if (propagarADeposito) {
+            try {
+                await propagarCotizacionADeposito(pool, { pedidoId, monedaFinal, cotizacion });
+            } catch (propErr) {
+                logger.warn(`[Quotation] No se pudo propagar a depósito para ${noDocERP}: ${propErr.message}`);
+            }
         }
 
         logger.info(`[Quotation] ✅ Cotización guardada para ${noDocERP} | Total: ${nuevoTotal} | QR: ${nuevoQrString}`);

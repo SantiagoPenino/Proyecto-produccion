@@ -635,9 +635,11 @@ export const generarPdfFacturaDGI = async (doc, detalles) => {
     pdf.setProperties({
         title: nombreArchivo
     });
-    const blob = pdf.output('blob');
-    const url = URL.createObjectURL(blob);
-    window.open(url, '_blank');
+    // Descarga forzada con el nombre correcto: abrir el blob en una pestaña nueva
+    // (window.open) deja el nombre a criterio del visor de PDF del sistema operativo
+    // (algunos ignoran el título y usan el UUID del blob). pdf.save() dispara la
+    // descarga del navegador con el nombre de archivo exacto.
+    pdf.save(`${nombreArchivo}.pdf`);
 };
 
 export const generarPdfEstadoCuenta = (cliente, cuentas, secciones, planes, desde, hasta) => {

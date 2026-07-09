@@ -77,7 +77,7 @@ const TablaMovs = ({ movs, marcarSospechosos }) => (
 );
 
 // ─── CIERRES DE LA CAJA CENTRAL (con PDF) ───────────────────────────────────────
-const CierresCentral = ({ cierres, onVerPdf, cargando }) => {
+const CierresCentral = ({ cierres, onVerPdf, onGenerarPdf, cargando, generando }) => {
     if (!cierres || cierres.length === 0) return null;
     return (
         <div className="rounded-lg border border-indigo-100 bg-indigo-50/40 p-3">
@@ -96,12 +96,20 @@ const CierresCentral = ({ cierres, onVerPdf, cargando }) => {
                                 </span>
                                 <span className="text-slate-400">{fmtDate(c.StuFechaApertura)}{c.StuFechaCierre ? ` → ${fmtDate(c.StuFechaCierre)}` : ''}</span>
                             </div>
-                            <div className="flex items-center gap-3">
+                            <div className="flex items-center gap-2">
                                 {!abierta && (
                                     <span className={`font-bold ${dif < 0 ? 'text-rose-600' : dif > 0 ? 'text-emerald-600' : 'text-slate-500'}`}>
                                         Dif: $ {fmt(dif)}
                                     </span>
                                 )}
+                                <button
+                                    onClick={() => onGenerarPdf(c.StuIdSesion)}
+                                    disabled={generando === c.StuIdSesion}
+                                    title={abierta ? 'Generar un PDF de vista previa con lo cargado hasta ahora (la sesión sigue abierta)' : 'Regenerar el PDF de este cierre'}
+                                    className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg font-bold text-indigo-700 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 disabled:opacity-50 transition-all">
+                                    {generando === c.StuIdSesion ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />}
+                                    {abierta ? 'Vista previa PDF' : (c.tienePdf ? 'Regenerar' : 'Generar PDF')}
+                                </button>
                                 <button
                                     onClick={() => onVerPdf(c.StuIdSesion)}
                                     disabled={!c.tienePdf || cargando === c.StuIdSesion}
@@ -129,7 +137,8 @@ const ReporteCajaCentralAdminView = () => {
     const [loading, setLoading] = useState(false);
     const [data, setData] = useState(null);
     const [cierres, setCierres] = useState([]);      // sesiones + PDF de cierre disponible
-    const [pdfCargando, setPdfCargando] = useState(null); // StuIdSesion en descarga
+    const [pdfCargando, setPdfCargando] = useState(null);  // StuIdSesion en descarga
+    const [pdfGenerando, setPdfGenerando] = useState(null); // StuIdSesion generándose
 
     const fetchDatos = async () => {
         setLoading(true);
@@ -155,6 +164,20 @@ const ReporteCajaCentralAdminView = () => {
         } catch (e) {
             toast.error(`No hay PDF de cierre guardado para la sesión ${sesionId}.`);
         } finally { setPdfCargando(null); }
+    };
+
+    // Genera (o regenera) el PDF de una sesión, esté abierta o cerrada, y lo abre.
+    const generarPdfCierre = async (sesionId) => {
+        setPdfGenerando(sesionId);
+        try {
+            await api.post(`/contabilidad/caja/cierre-pdf/${sesionId}/generar`);
+            toast.success('PDF generado correctamente.');
+            const cie = await api.get(`/contabilidad/caja/cierres?desde=${desde}&hasta=${hasta}`);
+            setCierres(cie.data?.cierres || []);
+            await verPdfCierre(sesionId);
+        } catch (e) {
+            toast.error('No se pudo generar el PDF: ' + (e.response?.data?.error || e.message));
+        } finally { setPdfGenerando(null); }
     };
 
     const central = data?.central || { movimientos: [], totales: emptyTot };
@@ -267,7 +290,7 @@ const ReporteCajaCentralAdminView = () => {
                             </div>
                             <TotalesBucket t={central.totales} />
                             {/* Cierres del período con su PDF */}
-                            <CierresCentral cierres={cierres} onVerPdf={verPdfCierre} cargando={pdfCargando} />
+                            <CierresCentral cierres={cierres} onVerPdf={verPdfCierre} onGenerarPdf={generarPdfCierre} cargando={pdfCargando} generando={pdfGenerando} />
                             <TablaMovs movs={central.movimientos} marcarSospechosos />
                         </div>
                     )}

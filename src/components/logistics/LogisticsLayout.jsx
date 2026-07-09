@@ -11,6 +11,7 @@ const LogisticsLayout = ({ children, activeTab, setActiveTab, globalArea, setGlo
         { id: 'history', label: 'Historial', icon: 'fa-clock-rotate-left' },
         { id: 'transport', label: 'En Viaje', icon: 'fa-truck-arrow-right' },
         { id: 'reception', label: 'Check-in', icon: 'fa-clipboard-check' },
+        { id: 'esperando', label: 'Esperando Bultos', icon: 'fa-box-open' },
         { id: 'stock', label: 'Stock', icon: 'fa-boxes-stacked' },
         { id: 'lost', label: 'Extraviados', icon: 'fa-triangle-exclamation' }
     ];
