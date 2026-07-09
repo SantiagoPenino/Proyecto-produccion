@@ -68,7 +68,7 @@ const BobinaCard = ({
                 </div>
                 <div className="text-right ml-3">
                     <span className={`text-2xl font-black ${bob.MetrosRestantes < 5 ? "text-red-500" : "text-slate-800"}`}>
-                        {parseFloat(bob.MetrosRestantes).toFixed(1)}
+                        {(parseFloat(bob.MetrosRestantes) || 0).toFixed(1)}
                     </span>
                     <span className="text-xs text-slate-400 block">m restantes</span>
                 </div>
@@ -102,7 +102,7 @@ const BobinaCard = ({
                                     <span className={`font-bold ${
                                         Math.abs(bob.MetrosRestantes - bob.MetrosIniciales) / bob.MetrosIniciales > 0.1
                                             ? "text-amber-600" : "text-green-600"
-                                    }`}>✓ {parseFloat(bob.MetrosRestantes).toFixed(2)} m</span>
+                                    }`}>✓ {(parseFloat(bob.MetrosRestantes) || 0).toFixed(2)} m</span>
                                 ) : <span className="text-slate-300">—</span>}
                             </td>
                         </tr>
