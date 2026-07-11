@@ -77,6 +77,7 @@ export default function CajaPanelPago({
   comprobanteError = false, // Borde rojo si no hay comprobante al intentar procesar
   comprobanteRef = null,    // Ref del input file
   ajusteMonto = 0,          // Ajuste monetario a contabilizar (en UYU): + recargo / − descuento
+  headerExtra = null,       // Nodo extra a renderizar junto a los badges del encabezado (TC / balance)
 }) {
   const esEgreso = mode === 'EGRESO';
   const tiposDoc = tiposDocDisponibles.length > 0
@@ -320,6 +321,7 @@ export default function CajaPanelPago({
           </div>
 
           <div className="flex items-center gap-2 ml-auto flex-wrap justify-end">
+            {headerExtra}
             {/* TC siempre visible */}
             {cotizacion && cotizacion > 1 && (
               <div className="flex items-center gap-1 bg-amber-50 border border-amber-200 rounded-lg px-2.5 py-1 shrink-0">

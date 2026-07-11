@@ -154,6 +154,7 @@ async function registrarMovimiento(params, transaction = null) {
     MovRefExterna    = null,
     MovObservaciones = null,
     CicIdCiclo       = null,
+    MovFecha         = null,
   } = params;
 
   let resolvedCicloId = CicIdCiclo;
@@ -163,7 +164,7 @@ async function registrarMovimiento(params, transaction = null) {
   }
 
   const req = transaction ? new sql.Request(transaction) : pool.request();
-  const result = await req
+  req
     .input('CueIdCuenta',       sql.Int,          CueIdCuenta)
     .input('MovTipo',           sql.VarChar(30),  MovTipo)
     .input('MovConcepto',       sql.NVarChar(500), MovConcepto)
@@ -175,7 +176,13 @@ async function registrarMovimiento(params, transaction = null) {
     .input('DocIdDocumento',    sql.Int,          DocIdDocumento)
     .input('MovRefExterna',     sql.VarChar(100), MovRefExterna)
     .input('MovObservaciones',  sql.NVarChar(500),MovObservaciones)
-    .input('CicIdCiclo',        sql.Int,          resolvedCicloId)
+    .input('CicIdCiclo',        sql.Int,          resolvedCicloId);
+  // Fecha del movimiento editable (retrofecha del documento). Solo se envía si viene:
+  // así las llamadas existentes y el SP previo (sin @MovFecha) siguen funcionando igual.
+  if (MovFecha) {
+    req.input('MovFecha', sql.DateTime, new Date(MovFecha));
+  }
+  const result = await req
     .output('MovIdGenerado',    sql.Int)
     .output('SaldoResultante',  sql.Decimal(18,4))
     .execute('dbo.SP_RegistrarMovimiento');
@@ -2625,6 +2632,102 @@ async function anularMovimientosPorFiltro(filtros, transaction = null) {
 }
 
 /**
+ * revertirRecursosPorTransaccion
+ * Revierte la COMPRA DE RECURSO (rollo por adelantado) asociada a una transacción
+ * de venta directa cuando esa venta se anula.
+ *
+ * Contexto: procesarVentaDirecta, al vender un ítem tipo RECURSO, crea/recarga un
+ * PlanesMetros, suma metros a CuentasCliente.CueSaldoActual y deja un movimiento
+ * ENTRADA en MovimientosCuenta etiquetado con MovRefExterna = <TcaId> y
+ * MovObservaciones = 'Plan #<PlaIdPlan>'. Ese movimiento NO tiene DocIdDocumento ni
+ * PagIdPago, por lo que anularMovimientosPorFiltro nunca lo alcanza. Sin esta función
+ * el recurso quedaba vivo aunque la factura se anulara.
+ *
+ * Por cada ENTRADA etiquetada con la transacción:
+ *   - Bloquea la anulación si el recurso ya fue consumido (evita saldo negativo).
+ *   - Resta los metros de PlanesMetros.PlaCantidadTotal (desactiva el plan si queda vacío).
+ *   - Anula el movimiento (MovAnulado = 1) y revierte CuentasCliente.CueSaldoActual.
+ *
+ * @param {number} tcaId          TransaccionesCaja.TcaIdTransaccion anulada
+ * @param {number} usuarioId
+ * @param {object} transaction    Transacción mssql activa (obligatoria)
+ * @returns {Promise<number>}     Cantidad de entradas de recurso revertidas
+ */
+async function revertirRecursosPorTransaccion(tcaId, usuarioId, transaction) {
+  if (!tcaId || !transaction) return 0;
+
+  const movsRes = await new sql.Request(transaction)
+    .input('TcaId', sql.Int, tcaId)
+    .query(`
+      SELECT MovIdMovimiento, CueIdCuenta, MovImporte, MovObservaciones
+      FROM dbo.MovimientosCuenta WITH(UPDLOCK)
+      WHERE MovRefExterna = CAST(@TcaId AS VARCHAR(100))
+        AND MovObservaciones LIKE 'Plan #%'
+        AND (MovAnulado IS NULL OR MovAnulado = 0)
+    `);
+
+  let revertidos = 0;
+  for (const mov of movsRes.recordset) {
+    const metros = Number(mov.MovImporte) || 0;
+    const match  = /Plan #(\d+)/.exec(mov.MovObservaciones || '');
+    const plaId  = match ? parseInt(match[1], 10) : null;
+
+    if (plaId) {
+      const pRes = await new sql.Request(transaction)
+        .input('Pla', sql.Int, plaId)
+        .query(`SELECT PlaCantidadTotal, PlaCantidadUsada FROM dbo.PlanesMetros WITH(UPDLOCK) WHERE PlaIdPlan = @Pla`);
+
+      if (pRes.recordset.length) {
+        const total = Number(pRes.recordset[0].PlaCantidadTotal) || 0;
+        const usada = Number(pRes.recordset[0].PlaCantidadUsada) || 0;
+
+        // Guardia: no permitir anular si el recurso ya fue consumido (parcial o total)
+        if (total - metros < usada - 0.0001) {
+          throw new Error(
+            `No se puede anular: el rollo por adelantado del plan #${plaId} ya fue consumido ` +
+            `(usados ${usada} de ${total} metros). Reversá el consumo antes de anular la compra.`
+          );
+        }
+
+        // Restar los metros comprados; desactivar el plan si queda vacío
+        await new sql.Request(transaction)
+          .input('Pla', sql.Int, plaId)
+          .input('Metros', sql.Decimal(18,4), metros)
+          .query(`
+            UPDATE dbo.PlanesMetros
+            SET PlaCantidadTotal = PlaCantidadTotal - @Metros,
+                PlaActivo = CASE WHEN (PlaCantidadTotal - @Metros) <= PlaCantidadUsada THEN 0 ELSE PlaActivo END
+            WHERE PlaIdPlan = @Pla
+          `);
+      }
+    }
+
+    // Anular la ENTRADA y revertir el saldo de metros de la cuenta
+    await new sql.Request(transaction)
+      .input('Mov', sql.Int, mov.MovIdMovimiento)
+      .input('Cue', sql.Int, mov.CueIdCuenta)
+      .input('Metros', sql.Decimal(18,4), metros)
+      .input('Obs', sql.NVarChar(200), `ANULADO por reversión venta #${tcaId}`)
+      .query(`
+        UPDATE dbo.MovimientosCuenta
+        SET MovAnulado = 1,
+            MovObservaciones = ISNULL(MovObservaciones + ' | ', '') + @Obs
+        WHERE MovIdMovimiento = @Mov;
+
+        UPDATE dbo.CuentasCliente
+        SET CueSaldoActual = ISNULL(CueSaldoActual, 0) - @Metros
+        WHERE CueIdCuenta = @Cue;
+      `);
+    revertidos++;
+  }
+
+  if (revertidos) {
+    logger.info(`[CONTAB] revertirRecursosPorTransaccion: ${revertidos} entrada(s) de recurso revertida(s) para tx #${tcaId} (usuario ${usuarioId}).`);
+  }
+  return revertidos;
+}
+
+/**
  * transformarMovimiento
  * Cambia el tipo de movimientos existentes (ej. ORDEN -> VTA_CAJA) y les asigna
  * un documento de respaldo. Usado por pagoService al emitir una factura web.
@@ -2911,6 +3014,7 @@ module.exports = {
   // Centralización: escritura segura en MovimientosCuenta
   anularMovimiento,
   anularMovimientosPorFiltro,
+  revertirRecursosPorTransaccion,
   transformarMovimiento,
 };
 

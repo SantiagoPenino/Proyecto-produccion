@@ -419,6 +419,33 @@ exports.createRemito = async (req, res) => {
                       AND b.Tipocontenido = 'PROD_TERMINADO'
                 `);
                 await validarPedidosCompletos(transaction, ordenesGate.recordset, areaDestino);
+
+                // --- CANDADO: el pedido debe salir COMPLETO del área ---
+                // No deja despachar si quedan bultos del mismo pedido (misma área, producto terminado,
+                // en stock, sin remito) por fuera de este despacho. Garantiza que el pedido no se parta.
+                const nodocs = [...new Set(ordenesGate.recordset.map(o => o.NoDocERP).filter(Boolean).map(n => String(n).trim()))];
+                if (nodocs.length > 0 && areaOrigen) {
+                    const nodocList = nodocs.map(n => `'${n.replace(/'/g, "''")}'`).join(',');
+                    const faltan = await new sql.Request(transaction)
+                        .input('AreaOrig', sql.VarChar, areaOrigen)
+                        .query(`
+                            SELECT DISTINCT o.CodigoOrden
+                            FROM Logistica_Bultos b
+                            JOIN Ordenes o ON b.OrdenID = o.OrdenID
+                            WHERE LTRIM(RTRIM(CAST(o.NoDocERP AS VARCHAR(50)))) IN (${nodocList})
+                              AND b.UbicacionActual = @AreaOrig
+                              AND b.Estado = 'EN_STOCK'
+                              AND b.Tipocontenido = 'PROD_TERMINADO'
+                              AND b.BultoID NOT IN (${idsGate})
+                              AND NOT EXISTS (SELECT 1 FROM Logistica_EnvioItems ei WHERE ei.BultoID = b.BultoID)
+                        `);
+                    if (faltan.recordset.length > 0) {
+                        const det = [...new Set(faltan.recordset.map(f => f.CodigoOrden))].join(', ');
+                        const err = new Error(`El pedido debe salir completo del área. Faltan por agregar al remito: ${det}.`);
+                        err.statusCode = 400;
+                        throw err;
+                    }
+                }
             }
 
             // --- AUTO-CONSUME: Consumir Insumos Transformados ---
@@ -648,6 +675,7 @@ exports.getRemitoByCode = async (req, res) => {
                 SELECT i.*, b.Estado as BultoEstado, b.CodigoEtiqueta, b.Descripcion, b.OrdenID, b.ComprobantePath,
                        b.Tipocontenido, o.Cliente, o.DescripcionTrabajo, o.CodigoOrden, o.NoDocERP,
                        cliord.IDCliente AS IDCliente,
+                       et.NumeroBulto, et.TotalBultos,
                        CASE
                            WHEN b.Tipocontenido = 'ENCOMIENDA' AND ret.OReIdOrdenRetiro IS NOT NULL
                            THEN ISNULL(ret.FormaRetiro, 'R') + '-' + CAST(ret.OReIdOrdenRetiro AS VARCHAR)
@@ -662,6 +690,11 @@ exports.getRemitoByCode = async (req, res) => {
                 LEFT JOIN dbo.Clientes cliord WITH(NOLOCK) ON o.CliIdCliente = cliord.CliIdCliente
                 LEFT JOIN OrdenesRetiro ret ON b.OrdenID = ret.OReIdOrdenRetiro
                 LEFT JOIN Clientes cli ON ret.CodCliente = cli.CodCliente
+                OUTER APPLY (
+                    SELECT TOP 1 E.NumeroBulto, E.TotalBultos
+                    FROM Etiquetas E WITH(NOLOCK)
+                    WHERE E.CodigoEtiqueta = b.CodigoEtiqueta
+                ) et
                 WHERE i.EnvioID = @EID
             `);
 
@@ -888,8 +921,8 @@ exports.receiveDispatch = async (req, res) => {
                             if (match) OrdenID = parseInt(match[1]);
                         }
                         
-                        if (OrdenID && areaReceptora === 'DEPOSITO' && item.estado === 'ESCANEADO') {
-                            receivedOrdersSet.add(OrdenID);
+                        if (OrdenID && areaReceptora === 'DEPOSITO' && item.estado === 'ESCANEADO' && bultoInfo.Tipocontenido !== 'ENCOMIENDA') {
+                            receivedOrdersSet.add(Number(OrdenID));
                         }
 
                         const { Cliente } = bultoInfo;
@@ -1143,29 +1176,84 @@ exports.receiveDispatch = async (req, res) => {
                     .query(`UPDATE Logistica_Envios SET Estado = @Est, UsuarioReceptor = @UID, FechaLlegada = GETDATE() WHERE EnvioID = @EID`);
             }
 
-            // --- REWORK "ESPERAR TODOS LOS BULTOS": contar bultos por orden ---
-            // Una orden solo se contabiliza/ingresa cuando TODOS sus bultos (PROD_TERMINADO)
-            // llegaron al depósito, o si viene forzada. Se cuenta por OrdenID (no por remito),
-            // así soporta bultos de la misma orden repartidos en remitos distintos.
+            // --- REWORK "ESPERAR TODOS LOS BULTOS": gate por PEDIDO (NoDocERP) ---
+            // El pedido completo (todas sus órdenes hermanas no canceladas) debe tener TODOS sus
+            // bultos PROD_TERMINADO "vivos" en el depósito para ingresar/contabilizar/avisar.
+            // "Vivos" = Estado <> 'PROCESADO': excluye los bultos que la orden dejó en áreas
+            // intermedias al transformarse (auto-consume) — no se espera nada de áreas anteriores.
+            // Hasta completarse, las órdenes quedan en estado 13. Forzar una orden fuerza el pedido.
+            // Cuando el pedido completa, se procesan TODAS las hermanas (también las recibidas antes).
             const forzarSet = new Set((forzarOrdenes || []).map(Number).filter(n => !isNaN(n)));
             // Forzar-puro: las órdenes forzadas se procesan aunque no vinieran bultos nuevos en esta llamada
             if (areaReceptora === 'DEPOSITO') for (const oid of forzarSet) receivedOrdersSet.add(oid);
-            const ordenBultos = {};
-            if (areaReceptora === 'DEPOSITO') {
-                for (const oid of receivedOrdersSet) {
+            const ordenBultos = {};          // OrdenID -> { esperados, recibidos, lista } (números del PEDIDO)
+            const expandidas = new Set();    // hermanas sumadas al completarse el pedido (no escaneadas ahora)
+            let ordenesProcesar = [...receivedOrdersSet];
+            if (areaReceptora === 'DEPOSITO' && receivedOrdersSet.size > 0) {
+                const procesarSet = new Set([...receivedOrdersSet].map(Number).filter(n => !isNaN(n)));
+                const idsIn = [...procesarSet].join(',');
+
+                // Pedido (NoDocERP) de cada orden tocada
+                const ordenPedido = {};
+                if (idsIn.length > 0) {
+                    const pedRes = await new sql.Request(transaction).query(`
+                        SELECT OrdenID, LTRIM(RTRIM(CAST(NoDocERP AS VARCHAR(50)))) AS NoDoc
+                        FROM Ordenes WHERE OrdenID IN (${idsIn})
+                    `);
+                    for (const r of pedRes.recordset) ordenPedido[r.OrdenID] = (r.NoDoc && r.NoDoc.length) ? r.NoDoc : null;
+                }
+
+                // Gate por pedido: contar bultos vivos de TODAS las hermanas
+                const pedidos = [...new Set(Object.values(ordenPedido).filter(Boolean))];
+                for (const noDoc of pedidos) {
+                    const cnt = await new sql.Request(transaction)
+                        .input('NoDoc', sql.VarChar, noDoc)
+                        .query(`
+                            SELECT o.OrdenID,
+                                   COUNT(b.BultoID) AS Esperados,
+                                   ISNULL(SUM(CASE WHEN b.Estado='EN_STOCK' AND b.UbicacionActual='DEPOSITO' THEN 1 ELSE 0 END), 0) AS Recibidos
+                            FROM Ordenes o
+                            LEFT JOIN Logistica_Bultos b ON b.OrdenID = o.OrdenID
+                                 AND b.Tipocontenido = 'PROD_TERMINADO'
+                                 AND b.Estado <> 'PROCESADO'
+                            WHERE LTRIM(RTRIM(CAST(o.NoDocERP AS VARCHAR(50)))) = @NoDoc
+                              AND (o.Estado IS NULL OR UPPER(LTRIM(RTRIM(o.Estado))) <> 'CANCELADO')
+                            GROUP BY o.OrdenID
+                        `);
+                    const espPed = cnt.recordset.reduce((a, r) => a + (r.Esperados || 0), 0);
+                    const recPed = cnt.recordset.reduce((a, r) => a + (r.Recibidos || 0), 0);
+                    const forzado = cnt.recordset.some(r => forzarSet.has(Number(r.OrdenID)));
+                    const completoFisico = espPed > 0 && recPed >= espPed;
+                    // espPed === 0: sin bultos de producto terminado que esperar (ej. recepción de insumos) → no se gatea
+                    const lista = forzado || completoFisico || espPed === 0;
+                    for (const r of cnt.recordset) {
+                        const roid = Number(r.OrdenID);
+                        ordenBultos[roid] = { esperados: espPed, recibidos: recPed, lista };
+                        if ((forzado || completoFisico) && !procesarSet.has(roid)) {
+                            procesarSet.add(roid);
+                            expandidas.add(roid);   // hermana recibida antes: ahora se ingresa junto al pedido
+                        }
+                    }
+                }
+
+                // Órdenes sin pedido (NoDocERP NULL): gate por la propia orden
+                for (const oid of [...procesarSet]) {
+                    if (ordenPedido[oid] || ordenBultos[oid]) continue;
                     const cntB = await new sql.Request(transaction)
                         .input('OID', sql.Int, oid)
                         .query(`
                             SELECT COUNT(*) AS Esperados,
-                                   SUM(CASE WHEN Estado='EN_STOCK' AND UbicacionActual='DEPOSITO' THEN 1 ELSE 0 END) AS Recibidos
+                                   ISNULL(SUM(CASE WHEN Estado='EN_STOCK' AND UbicacionActual='DEPOSITO' THEN 1 ELSE 0 END), 0) AS Recibidos
                             FROM Logistica_Bultos
-                            WHERE OrdenID=@OID AND Tipocontenido='PROD_TERMINADO'
+                            WHERE OrdenID=@OID AND Tipocontenido='PROD_TERMINADO' AND Estado <> 'PROCESADO'
                         `);
                     const esperados = cntB.recordset[0].Esperados || 0;
                     const recibidos = cntB.recordset[0].Recibidos || 0;
-                    const lista = forzarSet.has(Number(oid)) || (esperados > 0 && recibidos >= esperados);
+                    const lista = forzarSet.has(Number(oid)) || esperados === 0 || recibidos >= esperados;
                     ordenBultos[oid] = { esperados, recibidos, lista };
                 }
+
+                ordenesProcesar = [...procesarSet];
             }
 
             // ==========================================
@@ -1174,18 +1262,9 @@ exports.receiveDispatch = async (req, res) => {
             if (areaReceptora === 'DEPOSITO') {
                 try {
                     const poolLocal = await getPool(); // Fuera de la transaccion WMS
-                    // Órdenes a contabilizar: las de bultos escaneados + las forzadas (forzar-puro desde la bandeja).
-                    // Se procesa POR ORDEN (una sola vez), no por bulto → evita re-procesar y soporta el forzado sin bultos.
-                    const ordenesAContab = [];
-                    const _vistasContab = new Set();
-                    for (const item of itemsRecibidos) {
-                        if (item.estado !== 'ESCANEADO') continue;
-                        const _rqO = await poolLocal.request().input('BID', require('mssql').Int, item.bultoId)
-                            .query("SELECT OrdenID FROM Logistica_Bultos WITH(NOLOCK) WHERE BultoID = @BID");
-                        const _oidC = _rqO.recordset[0]?.OrdenID;
-                        if (_oidC && !_vistasContab.has(_oidC)) { _vistasContab.add(_oidC); ordenesAContab.push(_oidC); }
-                    }
-                    for (const _oidF of forzarSet) { if (!_vistasContab.has(_oidF)) { _vistasContab.add(_oidF); ordenesAContab.push(_oidF); } }
+                    // Órdenes a procesar: escaneadas + forzadas + hermanas del pedido cuando el pedido
+                    // quedó completo (se ingresan/contabilizan todas juntas, una sola vez por orden).
+                    const ordenesAContab = [...new Set(ordenesProcesar.map(Number))].filter(n => !isNaN(n));
 
                     for (const L_OrdenID of ordenesAContab) {
                         // --- GATE ESPERAR BULTOS: si la orden aún no tiene todos sus bultos, no contabilizar ---
@@ -1437,19 +1516,34 @@ if (triggerReversal || triggerForward) {
                                          .input('Cod', require('mssql').VarChar, oRow.CodigoOrden)
                                          .query("SELECT OrdIdOrden FROM OrdenesDeposito WITH(NOLOCK) WHERE OrdCodigoOrden = @Cod");
 
-                                     if (fallbackCheck.recordset.length === 0) {
+                                     // Las fallas (-F) son internas: tampoco deben crear registro por el fallback
+                                     const esFallaFb = (oRow.CodigoOrden || '').includes('-F');
+                                     if (fallbackCheck.recordset.length === 0 && !esFallaFb) {
                                          const cliPKFb = oRow.CliIdCliente || oRow.CodCliente;
                                          const lugarFbReq = await poolLocal.request()
                                              .input('CID', require('mssql').Int, cliPKFb)
                                              .query("SELECT FormaEnvioID FROM Clientes WITH(NOLOCK) WHERE CliIdCliente = @CID");
                                          const lugarFb = lugarFbReq.recordset[0]?.FormaEnvioID ? parseInt(lugarFbReq.recordset[0].FormaEnvioID) : null;
 
+                                         // Importe/cantidad/producto de la línea de ESTA orden (no 0 fijo):
+                                         // cubre hermanas cuyo pedido ya quedó contabilizado (marca) en esta misma pasada.
+                                         const linFb = await poolLocal.request()
+                                             .input('OID', require('mssql').Int, L_OrdenID)
+                                             .query(`SELECT SUM(Cantidad) AS Cant, SUM(Subtotal) AS Imp, MIN(ProIdProducto) AS Prod
+                                                     FROM PedidosCobranzaDetalle WITH(NOLOCK) WHERE OrdenID=@OID`);
+                                         const fbCant  = parseFloat(linFb.recordset[0]?.Cant) || oRow.Magnitud || 0;
+                                         const fbCosto = parseFloat(linFb.recordset[0]?.Imp) || 0;
+                                         const fbProd  = linFb.recordset[0]?.Prod || oRow.ProIdProducto || null;
+                                         const fbMon   = (pcReq.recordset[0]?.Moneda === 'USD') ? 2 : 1;
+
                                          const fbInsert = await poolLocal.request()
                                              .input('Cod', require('mssql').VarChar, oRow.CodigoOrden)
                                              .input('Cli', require('mssql').Int, cliPKFb)
                                              .input('Trab', require('mssql').VarChar, oRow.DescripcionTrabajo)
-                                             .input('Prod', require('mssql').Int, oRow.ProIdProducto || null)
-                                             .input('Cant', require('mssql').Float, oRow.Magnitud || 0)
+                                             .input('Prod', require('mssql').Int, fbProd)
+                                             .input('Cant', require('mssql').Float, fbCant)
+                                             .input('Mon', require('mssql').Int, fbMon)
+                                             .input('Costo', require('mssql').Float, fbCosto)
                                              .input('Usr', require('mssql').Int, usuarioId || 1)
                                              .input('Lugar', require('mssql').Int, lugarFb)
                                              .query(`
@@ -1460,7 +1554,7 @@ if (triggerReversal || triggerForward) {
                                                  )
                                                  OUTPUT INSERTED.OrdIdOrden
                                                  VALUES (
-                                                     @Cod, @Cant, @Cli, @Trab, 1, @Prod, 1, 0,
+                                                     @Cod, @Cant, @Cli, @Trab, 1, @Prod, @Mon, @Costo,
                                                      GETDATE(), @Usr, 1, GETDATE(), @Lugar
                                                  )
                                              `);
@@ -1481,14 +1575,16 @@ if (triggerReversal || triggerForward) {
                     throw eCont;
                 }
 
-                // --- REWORK: escribir contadores de bultos y dejar la orden en estado 13 (Esperando)
-                // o 1 (Ingresado). La fila de OrdenesDeposito ya existe (la creó createOrden o el bloque de arriba). ---
+                // --- REWORK: escribir contadores (números del PEDIDO) y estado 13 (Esperando) o 1 (Ingresado).
+                // Si la fila no existe y el pedido está incompleto (flujo manual, sin createOrden),
+                // se CREA en estado 13 con el importe/cantidad/producto de la línea de la orden,
+                // para que quede visible en la bandeja "Esperando Bultos". ---
                 try {
                     const poolCnt = await getPool();
-                    for (const oid of receivedOrdersSet) {
+                    for (const oid of ordenesProcesar) {
                         const bInfo = ordenBultos[oid];
                         if (!bInfo) continue;
-                        await poolCnt.request()
+                        const upd = await poolCnt.request()
                             .input('OID', require('mssql').Int, oid)
                             .input('Esp', require('mssql').Int, bInfo.esperados)
                             .input('Rec', require('mssql').Int, bInfo.recibidos)
@@ -1502,13 +1598,84 @@ if (triggerReversal || triggerForward) {
                                   -- No toca las ya avisadas/en retiro/entregadas/canceladas/perdidas.
                                   AND OrdEstadoActual NOT IN (6,7,9,10,11,12)
                             `);
+
+                        // UPSERT: sin fila y pedido incompleto → crearla en estado 13 (visibilidad en bandeja)
+                        if (!bInfo.lista && (upd.rowsAffected?.[0] || 0) === 0) {
+                            const existe = await poolCnt.request()
+                                .input('OID', require('mssql').Int, oid)
+                                .query(`SELECT TOP 1 OrdIdOrden FROM OrdenesDeposito WITH(NOLOCK)
+                                        WHERE OrdCodigoOrden = (SELECT TOP 1 CodigoOrden FROM Ordenes WITH(NOLOCK) WHERE OrdenID=@OID)`);
+                            if (existe.recordset.length === 0) {
+                                const oInf = await poolCnt.request()
+                                    .input('OID', require('mssql').Int, oid)
+                                    .query(`SELECT CodigoOrden, CliIdCliente, CodCliente, DescripcionTrabajo, ProIdProducto,
+                                                   TRY_CAST(Magnitud AS FLOAT) AS Magnitud,
+                                                   LTRIM(RTRIM(CAST(NoDocERP AS VARCHAR(50)))) AS NoDoc
+                                            FROM Ordenes WITH(NOLOCK) WHERE OrdenID=@OID`);
+                                const oi = oInf.recordset[0];
+                                // Las fallas (-F) son internas: no crean registro propio en depósito
+                                if (oi && !(oi.CodigoOrden || '').includes('-F')) {
+                                    const lin = await poolCnt.request()
+                                        .input('OID', require('mssql').Int, oid)
+                                        .query(`SELECT SUM(Cantidad) AS Cant, SUM(Subtotal) AS Imp, MIN(ProIdProducto) AS Prod
+                                                FROM PedidosCobranzaDetalle WITH(NOLOCK) WHERE OrdenID=@OID`);
+                                    const monR = await poolCnt.request()
+                                        .input('ND', require('mssql').VarChar, oi.NoDoc || '')
+                                        .query(`SELECT TOP 1 Moneda FROM PedidosCobranza WITH(NOLOCK) WHERE LTRIM(RTRIM(CAST(NoDocERP AS VARCHAR(50)))) = @ND`);
+                                    const cliPkUp = oi.CliIdCliente || oi.CodCliente;
+                                    const lugR = await poolCnt.request()
+                                        .input('CID', require('mssql').Int, cliPkUp)
+                                        .query("SELECT FormaEnvioID FROM Clientes WITH(NOLOCK) WHERE CliIdCliente=@CID");
+                                    const insUp = await poolCnt.request()
+                                        .input('Cod', require('mssql').VarChar, oi.CodigoOrden)
+                                        .input('Cant', require('mssql').Float, parseFloat(lin.recordset[0]?.Cant) || oi.Magnitud || 0)
+                                        .input('Cli', require('mssql').Int, cliPkUp)
+                                        .input('Trab', require('mssql').VarChar, oi.DescripcionTrabajo)
+                                        .input('Prod', require('mssql').Int, lin.recordset[0]?.Prod || oi.ProIdProducto || null)
+                                        .input('Mon', require('mssql').Int, (monR.recordset[0]?.Moneda === 'USD') ? 2 : 1)
+                                        .input('Costo', require('mssql').Float, parseFloat(lin.recordset[0]?.Imp) || 0)
+                                        .input('Usr', require('mssql').Int, usuarioId || 1)
+                                        .input('Lugar', require('mssql').Int, lugR.recordset[0]?.FormaEnvioID ? parseInt(lugR.recordset[0].FormaEnvioID) : null)
+                                        .input('Esp', require('mssql').Int, bInfo.esperados)
+                                        .input('Rec', require('mssql').Int, bInfo.recibidos)
+                                        .query(`
+                                            INSERT INTO OrdenesDeposito (
+                                                OrdCodigoOrden, OrdCantidad, CliIdCliente, OrdNombreTrabajo,
+                                                MOrIdModoOrden, ProIdProducto, MonIdMoneda, OrdCostoFinal,
+                                                OrdFechaIngresoOrden, OrdUsuarioAlta, OrdEstadoActual, OrdFechaEstadoActual,
+                                                LReIdLugarRetiro, BultosEsperados, BultosRecibidos
+                                            )
+                                            OUTPUT INSERTED.OrdIdOrden
+                                            VALUES (@Cod, @Cant, @Cli, @Trab, 1, @Prod, @Mon, @Costo,
+                                                    GETDATE(), @Usr, 13, GETDATE(), @Lugar, @Esp, @Rec)
+                                        `);
+                                    if (insUp.recordset[0]?.OrdIdOrden) {
+                                        await poolCnt.request()
+                                            .input('OID', require('mssql').Int, insUp.recordset[0].OrdIdOrden)
+                                            .input('Usr', require('mssql').Int, usuarioId || 1)
+                                            .query("INSERT INTO HistoricoEstadosOrdenes (OrdIdOrden, EOrIdEstadoOrden, HEOFechaEstado, HEOUsuarioAlta) VALUES (@OID, 13, GETDATE(), @Usr)");
+                                    }
+                                    console.log(`[REWORK-BULTOS] Fila creada en Esperando (13) para ${oi.CodigoOrden}`);
+                                }
+                            }
+                        }
                     }
                 } catch (eCnt) {
                     console.error("[REWORK-BULTOS] Error actualizando contadores/estado:", eCnt.message);
                 }
             }
-            for (const oid of receivedOrdersSet) {
-                if (ordenBultos[oid] && !ordenBultos[oid].lista) continue;  // orden incompleta: no pasa a Ingresado hasta tener todos sus bultos
+            for (const oid of ordenesProcesar) {
+                if (ordenBultos[oid] && !ordenBultos[oid].lista) continue;  // pedido incompleto: no pasa a Ingresado hasta tener todos los bultos
+                if (expandidas.has(Number(oid))) {
+                    // Hermana sumada al completarse el pedido: no regredir si ya avanzó (avisada/retiro/entregada)
+                    const chkE = await new sql.Request(transaction)
+                        .input('OID', sql.Int, oid)
+                        .query(`SELECT TOP 1 OrdEstadoActual FROM OrdenesDeposito WITH(NOLOCK)
+                                WHERE OrdCodigoOrden = (SELECT TOP 1 CodigoOrden FROM Ordenes WITH(NOLOCK) WHERE OrdenID=@OID)
+                                ORDER BY OrdIdOrden DESC`);
+                    const estE = chkE.recordset[0]?.OrdEstadoActual;
+                    if (estE && [6, 7, 9, 10, 11, 12].includes(Number(estE))) continue;
+                }
                 await changeOrderState(transaction, {
                     target   : { type: 'ORDER', id: oid },
                     estado   : 'Ingresado',
@@ -2035,6 +2202,7 @@ exports.getAreaStock = async (req, res) => {
                 b.*,
                 -- Hybrid Data Fetching (Prioritize Reception/Customer Service Data)
                 o.CodigoOrden,
+                o.NoDocERP,
                 COALESCE(r.Codigo, '') as CodigoRecepcion,
                 COALESCE(r.Cliente, o.Cliente, 'CLIENTE_NOT_FOUND') as Cliente,
                 cliord.IDCliente AS IDCliente,

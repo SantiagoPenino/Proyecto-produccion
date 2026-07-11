@@ -328,15 +328,21 @@ const ReceptionView = ({ onClose, areaContext, areaFilter }) => {
             if (itemMap[code].scanned) {
                 setLastScanMsg({ type: 'warning', text: `YA INGRESADO: ${code}` });
             } else {
-                // RUN IN SERIES: First create the order in DB, skipping its own accounting.
-                // Then let WMS Logistics process the check-in and do the accounting to avoid race conditions.
+                // ORDEN INVERTIDO (gate de bultos): primero el check-in WMS — la fila de
+                // OrdenesDeposito nace/queda en estado 13 (Esperando) mientras el pedido esté
+                // incompleto — y recién después createOrden, que actualiza datos SIN tocar el
+                // estado. Así nunca hay una ventana en estado 1 donde el job WSP pueda avisar antes.
+                try {
+                    await receiveItemMutation.mutateAsync({
+                        envioId: loadedRemito.EnvioID,
+                        codigoEtiqueta: code,
+                        usuarioId: user?.id || 1
+                    });
+                } catch (err) {
+                    setScanInput('');
+                    return; // el onError de la mutación ya mostró el error del check-in
+                }
                 await processUniversalScan(code, true);
-                
-                receiveItemMutation.mutate({
-                    envioId: loadedRemito.EnvioID,
-                    codigoEtiqueta: code,
-                    usuarioId: user?.id || 1
-                });
             }
         } else {
             setLastScanMsg({ type: 'error', text: `NO PERTENECE: ${code}` });
@@ -659,6 +665,12 @@ const ReceptionView = ({ onClose, areaContext, areaFilter }) => {
                                                                 {item.scanned ? <i className="fa-solid fa-check"></i> : (idx + 1)}
                                                             </div>
                                                         </div>
+                                                        {(item.CodigoOrden || item.NumeroBulto) && (
+                                                            <div className="text-[10px] font-bold text-indigo-600 truncate w-full">
+                                                                {item.CodigoOrden || item.RetiroAsociado || ''}
+                                                                {item.NumeroBulto ? <span className="text-slate-400 font-medium"> · Bulto {item.NumeroBulto}/{item.TotalBultos || 1}</span> : null}
+                                                            </div>
+                                                        )}
                                                         <div className="text-[10px] text-slate-500 truncate w-full">{item.Descripcion}</div>
                                                         {item.scanned && <span className="text-[9px] font-bold text-emerald-600 uppercase mt-0.5">Recibido</span>}
                                                     </div>

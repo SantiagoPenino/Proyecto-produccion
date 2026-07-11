@@ -11,6 +11,18 @@ import { validarDocumentoUY } from '../../utils/documentoUY';
 // ID del Consumidor Final genérico (sin cuenta corriente)
 const CONSUMIDOR_FINAL_ID = 2089;
 
+// Fecha local (no UTC) en formato YYYY-MM-DD para <input type="date">
+const todayStr = () => {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+};
+const toDateInputStr = (dateLike) => {
+  if (!dateLike) return todayStr();
+  const d = new Date(dateLike);
+  if (isNaN(d.getTime())) return todayStr();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+};
+
 // Mapea (tipoCliente, formaPago) => valor de CodDocumento en tiposDocs
 function resolverDocTipo(tiposDocs, tipoCliente, formaPago) {
   if (!tiposDocs || tiposDocs.length === 0) return '';
@@ -102,6 +114,7 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
         DocCliCiudad: initialData.DocCliCiudad || '',
         DocPagado: initialData.DocPagado || false,
         MetodoPagoId: initialData.MetodoPagoId || '',
+        DocFechaEmision: todayStr(), // documento nuevo (copia) → fecha de hoy por defecto
         Lineas: (initialData.lineas || []).map((l, idx) => {
           const qty = parseFloat(l.DcdCantidad) || 1;
           const sub = parseFloat(l.DcdSubtotal) || 0;
@@ -140,6 +153,7 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
       DocCliCiudad: '',
       DocPagado: false,
       MetodoPagoId: '',
+      DocFechaEmision: todayStr(),
       Lineas: [
         { id: Date.now(), concepto: '', DcdDscItem: '', cantidad: 1, precioUnitario: '', iva: 22 }
       ]
@@ -252,6 +266,7 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
           DocCliDireccion: d.DocCliDireccion || d.CliDireccion || '',
           DocCliCiudad: d.DocCliCiudad || '',
           DocPagado: isContado,
+          DocFechaEmision: toDateInputStr(d.DocFechaEmision),
           Lineas: lineasMapeadas.length > 0 ? lineasMapeadas : prev.Lineas
         }));
       } catch (err) {
@@ -866,7 +881,8 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
           DocImpuestos: totales.iva,
           DocTotal: totales.total,
           DocObservaciones: notas,
-          empresaId: empresaSeleccionada?.EmpIdEmpresa ?? null
+          empresaId: empresaSeleccionada?.EmpIdEmpresa ?? null,
+          DocFechaEmision: formData.DocFechaEmision || null
         });
         toast.success('Documento actualizado exitosamente');
       } else {
@@ -893,7 +909,8 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
             iva: parseFloat(l.iva)
           })),
           Totales: totales,
-          empresaId: empresaSeleccionada?.EmpIdEmpresa ?? null
+          empresaId: empresaSeleccionada?.EmpIdEmpresa ?? null,
+          DocFechaEmision: formData.DocFechaEmision || null
         });
         toast.success('Documento generado exitosamente');
       }
@@ -1020,7 +1037,25 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
           
           {/* COLUMNA IZQUIERDA: Clientes y DGI */}
           <div className="w-full lg:w-[360px] bg-white border border-zinc-200 rounded-2xl flex flex-col p-4 shrink-0 gap-4 shadow-sm">
-            
+
+            {/* Fecha del documento (editable mientras no se haya enviado a DGI) */}
+            <div className="flex flex-col gap-1.5 bg-zinc-50 border border-zinc-200/60 rounded-xl p-3">
+              <label className="text-[9px] font-black text-zinc-400 uppercase tracking-widest px-1">Fecha del documento</label>
+              <input
+                type="date"
+                value={formData.DocFechaEmision || todayStr()}
+                max={todayStr()}
+                onChange={e => setFormData({ ...formData, DocFechaEmision: e.target.value })}
+                className="w-full border border-zinc-200 rounded-lg px-2.5 py-1.5 text-xs font-bold focus:border-indigo-500 outline-none bg-white text-zinc-800 shadow-sm cursor-pointer"
+              />
+              {formData.DocFechaEmision && formData.DocFechaEmision !== todayStr() && (
+                <span className="text-[9px] font-black text-amber-600 px-1">
+                  ⚠ Fecha retroactiva: {new Date(formData.DocFechaEmision + 'T00:00:00').toLocaleDateString('es-UY')} — se aplica también al asiento contable{formData.DocPagado ? ' y a la caja' : ''}.
+                </span>
+              )}
+              <span className="text-[8px] font-bold text-zinc-400 px-1">Solo editable antes de enviar a DGI.</span>
+            </div>
+
             {/* 1. Seleccionar Cliente */}
             <div className="flex flex-col gap-3">
               <h3 className="font-black text-zinc-400 text-[10px] uppercase tracking-widest flex items-center justify-between">

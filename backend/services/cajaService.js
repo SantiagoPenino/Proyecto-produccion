@@ -296,12 +296,18 @@ async function procesarVentaDirecta(payload) {
                 ? `Recarga plan #${referenciaId} (+${item.cantidad} metros)`
                 : `Saldo inicial plan #${referenciaId}`;
 
+            // MovRefExterna = <TcaId> y MovObservaciones = 'Plan #<PlaId>' etiquetan esta
+            // ENTRADA para que la anulación de la venta pueda revertir la compra del recurso
+            // (ver contabilidadService.revertirRecursosPorTransaccion). Sin esta etiqueta el
+            // movimiento queda huérfano (sin DocIdDocumento ni PagIdPago) y el plan sigue vivo.
             await new sql.Request(transaction)
               .input('Cue', sql.Int, cueMemoId)
               .input('Cant', sql.Decimal(18,4), item.cantidad)
               .input('Usr', sql.Int, usuarioId)
               .input('Concep', sql.NVarChar(500), conceptoEntrada)
               .input('MovTipo', sql.VarChar(30), movTipoEntrada)
+              .input('TcaRef', sql.VarChar(100), String(tcaId))
+              .input('PlanRef', sql.NVarChar(500), `Plan #${referenciaId}`)
               .query(`
                 UPDATE dbo.CuentasCliente
                 SET CueSaldoActual = ISNULL(CueSaldoActual, 0) + @Cant
@@ -309,11 +315,11 @@ async function procesarVentaDirecta(payload) {
 
                 INSERT INTO dbo.MovimientosCuenta
                   (CueIdCuenta, MovTipo, MovConcepto, MovImporte, MovSaldoPosterior,
-                   MovFecha, MovUsuarioAlta, MovAnulado)
+                   MovFecha, MovUsuarioAlta, MovAnulado, MovRefExterna, MovObservaciones)
                 VALUES
                   (@Cue, @MovTipo, @Concep, @Cant,
                    (SELECT ISNULL(CueSaldoActual, 0) FROM dbo.CuentasCliente WHERE CueIdCuenta = @Cue),
-                   GETDATE(), @Usr, 0);
+                   GETDATE(), @Usr, 0, @TcaRef, @PlanRef);
               `);
 
         } else if (item.tipo === 'FACT_CREDITO') {
@@ -380,7 +386,9 @@ async function procesarVentaDirecta(payload) {
     // Desglose de IVA para CFE
     const desgloseCFE = contabilidadCore.desglosarIVA(totalBruto, 22);
 
-    const lineasDocumento = items.map(item => {
+    // ── Líneas del documento ────────────────────────────────────────────────
+    // Línea genérica clásica (comportamiento histórico): 1 línea por ítem del carrito.
+    const lineaGenericaDe = (item) => {
       const pTotal = parseFloat(item.precioTotal) || 0;
       const cant   = parseFloat(item.cantidad)   || 1;
       const pUnit  = cant > 0 ? pTotal / cant : pTotal;
@@ -392,7 +400,128 @@ async function procesarVentaDirecta(payload) {
         impuestos: pTotal - (pTotal / 1.22),
         total: pTotal
       };
-    });
+    };
+
+    // Detalle por material (multitela): si el ítem referencia órdenes del depósito con
+    // líneas en PedidosCobranzaDetalle, el documento sale con UNA línea por tela del
+    // pedido (sin duplicar por orden hermana), prorrateada a lo cobrado. Ante cualquier
+    // problema se usa la línea genérica — esto NUNCA bloquea el cobro.
+    const construirLineasDetalladas = async () => {
+      const lineas = [];
+      const pedidoMontos = new Map();      // pedKey -> monto cobrado
+      const pedidoOrdenAncla = new Map();  // pedKey -> OrdIdOrden (para fallback de nombres)
+      let huboReferencia = false;
+
+      for (const item of items) {
+        const pTotal = parseFloat(item.precioTotal) || 0;
+        const tipoRef = String(item.tipo || '').toUpperCase();
+        const refId = parseInt(item.referenciaId);
+        let ordIds = [];
+        if (!isNaN(refId) && refId > 0) {
+          if (tipoRef.includes('RETIRO')) {
+            const r = await new sql.Request(transaction).input('R', sql.Int, refId)
+              .query('SELECT OrdIdOrden FROM dbo.OrdenesDeposito WITH(NOLOCK) WHERE OReIdOrdenRetiro = @R');
+            ordIds = r.recordset.map(x => x.OrdIdOrden);
+          } else if (tipoRef.includes('ORDEN')) {
+            ordIds = [refId];
+          }
+        }
+        if (!ordIds.length) { lineas.push(lineaGenericaDe(item)); continue; }
+
+        // Pedido de cada orden: NoDocERP real (Ordenes) o código base del depósito
+        const keys = new Set();
+        for (const oid of ordIds) {
+          const k = await new sql.Request(transaction).input('OrdId', sql.Int, oid).query(`
+            SELECT TOP 1 COALESCE(
+                (SELECT TOP 1 LTRIM(RTRIM(CAST(o.NoDocERP AS VARCHAR(100))))
+                 FROM dbo.Ordenes o WITH(NOLOCK)
+                 WHERE LTRIM(RTRIM(o.CodigoOrden)) = LTRIM(RTRIM(od.OrdCodigoOrden)) AND o.NoDocERP IS NOT NULL),
+                LEFT(od.OrdCodigoOrden, CASE WHEN CHARINDEX(' ', od.OrdCodigoOrden) > 0
+                     THEN CHARINDEX(' ', od.OrdCodigoOrden) - 1 ELSE LEN(od.OrdCodigoOrden) END)
+            ) AS PedKey
+            FROM dbo.OrdenesDeposito od WITH(NOLOCK) WHERE od.OrdIdOrden = @OrdId`);
+          const pk = k.recordset[0]?.PedKey;
+          if (pk) { keys.add(pk); if (!pedidoOrdenAncla.has(pk)) pedidoOrdenAncla.set(pk, oid); }
+        }
+        if (!keys.size) { lineas.push(lineaGenericaDe(item)); continue; }
+        huboReferencia = true;
+
+        if (keys.size === 1) {
+          const pk = [...keys][0];
+          pedidoMontos.set(pk, (pedidoMontos.get(pk) || 0) + pTotal);
+        } else {
+          // Un ítem que abarca varios pedidos: repartir proporcional al total de líneas de cada uno
+          const tot = new Map(); let sumTot = 0;
+          for (const pk of keys) {
+            const t = await new sql.Request(transaction).input('ND', sql.VarChar(100), pk).query(`
+              SELECT ISNULL(SUM(pcd.Subtotal),0) AS T
+              FROM dbo.PedidosCobranza pc
+              JOIN dbo.PedidosCobranzaDetalle pcd ON pcd.PedidoCobranzaID = pc.ID
+              WHERE LTRIM(RTRIM(CAST(pc.NoDocERP AS VARCHAR(100)))) = @ND`);
+            const v = parseFloat(t.recordset[0]?.T) || 0; tot.set(pk, v); sumTot += v;
+          }
+          for (const pk of keys) {
+            const parte = sumTot > 0 ? pTotal * ((tot.get(pk) || 0) / sumTot) : pTotal / keys.size;
+            pedidoMontos.set(pk, (pedidoMontos.get(pk) || 0) + parte);
+          }
+        }
+      }
+
+      if (!huboReferencia) return null; // nada que expandir → líneas genéricas de siempre
+
+      for (const [pk, monto] of pedidoMontos) {
+        const det = await new sql.Request(transaction).input('ND', sql.VarChar(100), pk).query(`
+          SELECT pcd.Cantidad, pcd.Subtotal, o2.CodigoOrden,
+                 COALESCE(NULLIF(NULLIF(LTRIM(RTRIM(art.Descripcion)), 'Articulos User'), 'Articulos User USD'),
+                          'Servicio de Produccion') AS Material
+          FROM dbo.PedidosCobranza pc
+          JOIN dbo.PedidosCobranzaDetalle pcd ON pcd.PedidoCobranzaID = pc.ID
+          LEFT JOIN dbo.Ordenes o2 WITH(NOLOCK) ON o2.OrdenID = pcd.OrdenID
+          LEFT JOIN dbo.Articulos art WITH(NOLOCK) ON art.ProIdProducto = pcd.ProIdProducto
+          WHERE LTRIM(RTRIM(CAST(pc.NoDocERP AS VARCHAR(100)))) = @ND`);
+        const rows = det.recordset || [];
+        const totalLineas = rows.reduce((s, r) => s + (parseFloat(r.Subtotal) || 0), 0);
+
+        if (!rows.length || totalLineas <= 0) {
+          // Pedido sin detalle: una línea con material/trabajo de la orden (no el cliente)
+          const fb = await new sql.Request(transaction).input('OrdId', sql.Int, pedidoOrdenAncla.get(pk))
+            .query('SELECT TOP 1 OrdCodigoOrden, OrdMaterialPlanilla, OrdNombreTrabajo FROM dbo.OrdenesDeposito WITH(NOLOCK) WHERE OrdIdOrden = @OrdId');
+          const f = fb.recordset[0] || {};
+          lineas.push({
+            nomItem: ((f.OrdMaterialPlanilla || f.OrdNombreTrabajo || ('Pedido ' + pk))).substring(0, 200),
+            cantidad: 1, precioUnitario: monto,
+            subtotal: monto / 1.22, impuestos: monto - (monto / 1.22), total: monto
+          });
+          continue;
+        }
+
+        const factor = monto / totalLineas;
+        for (const r of rows) {
+          const tot = (parseFloat(r.Subtotal) || 0) * factor;
+          const cant = parseFloat(r.Cantidad) || 1;
+          lineas.push({
+            nomItem: (r.Material + (r.CodigoOrden ? ' - ' + String(r.CodigoOrden).trim() : '')).substring(0, 200),
+            cantidad: cant,
+            precioUnitario: cant > 0 ? tot / cant : tot,
+            subtotal: tot / 1.22,
+            impuestos: tot - (tot / 1.22),
+            total: tot
+          });
+        }
+      }
+      return lineas;
+    };
+
+    let lineasDocumento = null;
+    try {
+      lineasDocumento = await construirLineasDetalladas();
+    } catch (eDet) {
+      console.warn('[CAJA] Detalle por material no disponible, uso líneas genéricas:', eDet.message);
+      lineasDocumento = null;
+    }
+    if (!lineasDocumento || !lineasDocumento.length) {
+      lineasDocumento = items.map(lineaGenericaDe);
+    }
 
     const cfeEstadoVal = (docTipoStr.toLowerCase().includes('pedido') || docTipoStr === 'PC' || docTipoStr === 'PedidoCaja') ? 'BORRADOR' : 'PENDIENTE';
     const dId = await contabilidadCore.crearDocumentoContable({
@@ -1244,15 +1373,20 @@ async function procesarTransaccion(payload) {
                || header.tipoDocumento === '40'
                || (detalleLower.includes('pedido') && detalleLower.includes('caja')); // "Pedido Caja" o "Pedidos Caja"
 
+             // TODOS los tipos (Pedido Caja incluido) resuelven el detalle real de materiales
+             // de la transacción — mismo resolvedor que E-Ticket/E-Factura (Rel → OrdenesDeposito,
+             // con fallbacks legacy). Antes el PC quedaba SIN líneas a propósito y el modal de
+             // facturación mostraba una línea genérica con el nombre del cliente. Si no resuelve
+             // nada, queda vacío como antes (línea editable) — esto NUNCA bloquea el cobro.
              let lineasDocCFE = [];
-             if (!esPedidoCaja) {
-               // Documentos de producción: resolver órdenes asociadas a la transacción.
-               // Fallback legacy: si la OrdenRetiro no tiene RelOrdenesRetiroOrdenes,
-               // busca los materiales directamente en OrdenesDeposito via OReIdOrdenRetiro.
+             try {
                lineasDocCFE = await contabilidadCore.resolverLineasDetalle(
                  { tcaIdTransaccion, monedaFactura: monedaId === 1 ? 'UYU' : 'USD' },
                  transaction
-               );
+               ) || [];
+             } catch (eLineas) {
+               logger.warn(`[CAJA-ERP] Sin detalle de líneas para TcaId=${tcaIdTransaccion}: ${eLineas.message}`);
+               lineasDocCFE = [];
              }
 
              const docIdDocumento = await contabilidadCore.crearDocumentoContable({
@@ -1335,8 +1469,11 @@ async function procesarTransaccion(payload) {
              // ──────────────────────────────────────────────────────────────
 
 
-             // Para PedidoCaja: insertar los items desde TransaccionDetalle (son servicios libres, no órdenes)
-             if (esPedidoCaja) {
+             // Para PedidoCaja de SERVICIOS LIBRES (sin órdenes): insertar los items desde
+             // TransaccionDetalle, como siempre. Si el resolvedor ya produjo el detalle real
+             // (cobro de retiro/órdenes), NO duplicar con la línea genérica del carrito —
+             // en esos casos TdeDescripcion trae el nombre del cliente, no un concepto.
+             if (esPedidoCaja && (!lineasDocCFE || lineasDocCFE.length === 0)) {
                await new sql.Request(transaction)
                  .input('docId', sql.Int, docIdDocumento)
                  .input('tcaId', sql.Int, tcaIdTransaccion)
@@ -1653,6 +1790,10 @@ async function anularTransaccion({ tcaIdTransaccion, usuarioId, motivo }) {
             OrdFechaEstadoActual = GETDATE()
         WHERE TcaIdTransaccion = @TcaId;
       `);
+
+    // Revertir la compra de recurso (rollo por adelantado) si esta venta creó/recargó un plan.
+    // Lanza si el recurso ya fue consumido → rollback de toda la anulación.
+    await contabilidadSvc.revertirRecursosPorTransaccion(tcaIdTransaccion, usuarioId, transaction);
 
     await transaction.commit();
     logger.info(`[CAJA] 🔄 Transaccion ${tcaIdTransaccion} anulada por usuario ${usuarioId}.`);

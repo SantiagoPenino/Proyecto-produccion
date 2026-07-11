@@ -144,20 +144,28 @@ export const PickupView = () => {
         }
     }, [step]);
 
+    // Hermanas multitela: 'SUB-5936 (1/2)' y '(2/2)' comparten el código base → tocar una
+    // selecciona/deselecciona el pedido completo, para que se retire junto.
+    const baseDe = (id) => String(id || '').replace(/\s*\(\d+\/\d+\)\s*$/, '').trim();
+
     const handleToggleOrder = (orderId) => {
-        if (selectedOrders.includes(orderId)) {
-            setSelectedOrders(selectedOrders.filter(id => id !== orderId));
+        const grupo = readyOrders.filter(o => baseDe(o.id) === baseDe(orderId)).map(o => o.id);
+        const todasSel = grupo.every(g => selectedOrders.includes(g));
+
+        if (todasSel) {
+            setSelectedOrders(selectedOrders.filter(id => !grupo.includes(id)));
         } else {
-            // Verificar que no se mezclen monedas
+            // Verificar que no se mezclen monedas (contra lo ya seleccionado de otros pedidos)
             const orderToAdd = readyOrders.find(o => o.id === orderId);
-            if (orderToAdd && selectedOrders.length > 0) {
-                const firstSelected = readyOrders.find(o => o.id === selectedOrders[0]);
+            const yaSeleccionadas = selectedOrders.filter(id => !grupo.includes(id));
+            if (orderToAdd && yaSeleccionadas.length > 0) {
+                const firstSelected = readyOrders.find(o => o.id === yaSeleccionadas[0]);
                 if (firstSelected && orderToAdd.currency !== firstSelected.currency) {
                     Swal.fire({ icon: 'warning', title: 'Monedas diferentes', text: 'No es posible mezclar pagos en Dólares y Pesos Uruguayos en una misma transacción. Seleccioná únicamente órdenes que compartan la misma moneda.', background: '#212121', color: '#e4e4e7', confirmButtonColor: '#006E97', customClass: { popup: 'rounded-xl border border-zinc-700' } });
                     return; // Bloquea la selección mixta
                 }
             }
-            setSelectedOrders([...selectedOrders, orderId]);
+            setSelectedOrders([...new Set([...selectedOrders, ...grupo])]);
         }
     };
 

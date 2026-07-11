@@ -3,6 +3,22 @@ const logger = require('../utils/logger');
 
 // ID del cliente genérico "Consumidor Final" — no tiene cuenta corriente propia
 const CONSUMIDOR_FINAL_ID = 2089;
+
+// Resuelve la fecha de emisión elegida por el usuario (retrofecha de documentos
+// aún no enviados a DGI). Recibe 'YYYY-MM-DD' del frontend y devuelve un Date con
+// la HORA ACTUAL, de modo que:
+//   · el orden intradía se preserva (evita medianoche 00:00 que reordenaría la bandeja),
+//   · si no se envía fecha, retorna null → cada INSERT cae en su GETDATE() (comportamiento actual).
+// Devuelve null ante formato inválido para no romper el flujo (se usa GETDATE()).
+function resolverFechaDocumento(fechaStr) {
+    if (!fechaStr) return null;
+    const m = String(fechaStr).trim().match(/^(\d{4})-(\d{2})-(\d{2})/);
+    if (!m) return null;
+    const y = Number(m[1]), mo = Number(m[2]), d = Number(m[3]);
+    if (!y || !mo || !d || mo > 12 || d > 31) return null;
+    const ahora = new Date();
+    return new Date(y, mo - 1, d, ahora.getHours(), ahora.getMinutes(), ahora.getSeconds());
+}
 const { resolverLineasDesdeMotor, generarAsientoCompleto, crearDocumentoContable, actualizarFirmaCFE, anularDocumentoContable } = require('../services/contabilidadCore');
 const { validarDocumentoUY } = require('../utils/documentoUY');
 const sisnetService = require('../services/sisnetService');
@@ -297,10 +313,13 @@ exports.enviarADGI = async (req, res) => {
 };
 
 exports.crearFacturaManual = async (req, res) => {
-    const { DocTipo, MonIdMoneda, CliIdCliente, Lineas, Totales, DocCliNombre, DocCliDocumento, DocCliDireccion, DocCliCiudad, DocPagado, MetodoPagoId, Pagos, empresaId } = req.body;
+    const { DocTipo, MonIdMoneda, CliIdCliente, Lineas, Totales, DocCliNombre, DocCliDocumento, DocCliDireccion, DocCliCiudad, DocPagado, MetodoPagoId, Pagos, empresaId, DocFechaEmision } = req.body;
     const pool = await getPool();
     const transaction = new sql.Transaction(pool);
-    
+
+    // Fecha de emisión elegida (retrofecha). null => se usa GETDATE() en cada INSERT.
+    const fechaDoc = resolverFechaDocumento(DocFechaEmision);
+
     try {
         await transaction.begin();
         const request = transaction.request();
@@ -358,13 +377,14 @@ exports.crearFacturaManual = async (req, res) => {
                 .input('TcaNeto', sql.Decimal(18, 4), Totales.total)
                 .input('TcaCobrado', sql.Decimal(18, 4), convertido)
                 .input('TcaMonedaBase', sql.VarChar(10), MonIdMoneda === 2 ? 'USD' : 'UYU')
+                .input('TcaFecha', sql.DateTime, fechaDoc)
                 .query(`
                     INSERT INTO dbo.TransaccionesCaja
                         (TcaFecha, TcaUsuarioId, TcaClienteId, TcaTipoDocumento, TcaSerieDoc, TcaNumeroDoc,
                          TcaTotalBruto, TcaTotalAjuste, TcaTotalNeto, TcaTotalCobrado, TcaMonedaBase, TcaEstado, TcaObservaciones, EsCajaAdmin)
                     OUTPUT INSERTED.TcaIdTransaccion
                     VALUES
-                        (GETDATE(), @TcaUsuarioId, @TcaClienteId, @TcaTipoDoc, @TcaSerieDoc, @TcaNumeroDoc,
+                        (ISNULL(@TcaFecha, GETDATE()), @TcaUsuarioId, @TcaClienteId, @TcaTipoDoc, @TcaSerieDoc, @TcaNumeroDoc,
                          @TcaBruto, 0, @TcaNeto, @TcaCobrado, @TcaMonedaBase, 'COBRADO', 'Pago Factura Manual', 1)
                 `);
             tcaId = tcaRes.recordset[0].TcaIdTransaccion;
@@ -385,6 +405,7 @@ exports.crearFacturaManual = async (req, res) => {
                         .input('cot', sql.Decimal(18, 4), pCot)
                         .input('convert', sql.Decimal(18, 4), pConvertido)
                         .input('usuario', sql.Int, req.user?.id || 1)
+                        .input('pagFecha', sql.DateTime, fechaDoc)
                         .query(`
                             INSERT INTO dbo.Pagos
                                 (PagTcaIdTransaccion, MPaIdMetodoPago, PagIdMonedaPago,
@@ -392,7 +413,7 @@ exports.crearFacturaManual = async (req, res) => {
                                  PagMontoConvertido, PagTipoMovimiento)
                             VALUES
                                 (@tcaId, @metodo, @moneda,
-                                 @monto, GETDATE(), @usuario, @cot,
+                                 @monto, ISNULL(@pagFecha, GETDATE()), @usuario, @cot,
                                  @convert, 'COBRO')
                         `);
                 }
@@ -405,6 +426,7 @@ exports.crearFacturaManual = async (req, res) => {
                     .input('cot', sql.Decimal(18, 4), cotNum)
                     .input('convert', sql.Decimal(18, 4), convertido)
                     .input('usuario', sql.Int, req.user?.id || 1)
+                    .input('pagFecha', sql.DateTime, fechaDoc)
                     .query(`
                         INSERT INTO dbo.Pagos
                             (PagTcaIdTransaccion, MPaIdMetodoPago, PagIdMonedaPago,
@@ -412,7 +434,7 @@ exports.crearFacturaManual = async (req, res) => {
                              PagMontoConvertido, PagTipoMovimiento)
                         VALUES
                             (@tcaId, @metodo, @moneda,
-                             @monto, GETDATE(), @usuario, @cot,
+                             @monto, ISNULL(@pagFecha, GETDATE()), @usuario, @cot,
                              @convert, 'COBRO')
                     `);
             }
@@ -458,7 +480,8 @@ exports.crearFacturaManual = async (req, res) => {
                 docCliDocumento: DocCliDocumento || '',
                 docCliDireccion: DocCliDireccion || '',
                 docCliCiudad: DocCliCiudad || '',
-                empresaId: empresaId || null
+                empresaId: empresaId || null,
+                docFechaEmision: fechaDoc // retrofecha elegida; null => GETDATE()
             },
             lineas: mappedLineas
         }, transaction);
@@ -487,7 +510,8 @@ exports.crearFacturaManual = async (req, res) => {
                 MovImporte: -Totales.total,
                 MovUsuarioAlta: req.user?.id || 1,
                 DocIdDocumento: docId,
-                CicIdCiclo: cicId
+                CicIdCiclo: cicId,
+                MovFecha: fechaDoc
             }, transaction);
 
             // 2.7.2 Si es Contado, registrar el Abono (Pago)
@@ -500,7 +524,8 @@ exports.crearFacturaManual = async (req, res) => {
                     MovImporte: Totales.total,
                     MovUsuarioAlta: req.user?.id || 1,
                     DocIdDocumento: docId,
-                    CicIdCiclo: cicId
+                    CicIdCiclo: cicId,
+                    MovFecha: fechaDoc
                 }, transaction);
             } else {
                 // 2.7.3 Si es Crédito → crear deuda centralizada
@@ -529,6 +554,7 @@ exports.crearFacturaManual = async (req, res) => {
 
         if (lineasContables.length > 0) {
             const asiId = await generarAsientoCompleto({
+                fecha: fechaDoc || new Date(),
                 concepto: `${config.CodDocumento || DocTipo} Manual M-${docId} - ${CliIdCliente ? 'Cliente ' + CliIdCliente : 'Consumidor'}`,
                 usuarioId: req.user?.id || 1,
                 origen: 'FACTURACION_MANUAL',
@@ -700,6 +726,11 @@ exports.anularFactura = async (req, res) => {
             transaction
         );
 
+        // Revertir la compra de recurso (rollo por adelantado) si la venta creó/recargó un plan.
+        // El movimiento ENTRADA del recurso no tiene DocIdDocumento, así que no lo alcanza el
+        // filtro anterior; se revierte por su etiqueta MovRefExterna = <TcaId>.
+        await contabilidadService.revertirRecursosPorTransaccion(tcaId || null, usuarioId, transaction);
+
         // Si hay deudas individuales de las órdenes que fueron absorbidas, restaurarlas a PENDIENTE
         await transaction.request()
             .input('id', sql.Int, id)
@@ -758,7 +789,7 @@ exports.editarFactura = async (req, res) => {
         const {
             DocTipo, CliIdCliente, MonIdMoneda, DocSubtotal, DocImpuestos, DocTotal, DocObservaciones,
             lineas, DocCliNombre, DocCliDocumento, DocCliDireccion, DocCliCiudad,
-            DocPagado, MetodoPagoId, Pagos, empresaId, preservarPagos
+            DocPagado, MetodoPagoId, Pagos, empresaId, preservarPagos, DocFechaEmision
         } = req.body;
 
         const pool = await getPool();
@@ -767,7 +798,7 @@ exports.editarFactura = async (req, res) => {
 
         const docRes = await transaction.request()
             .input('id', sql.Int, id)
-            .query('SELECT DocTipo, CfeEstado, DocPagado, AsiIdAsiento, TcaIdTransaccion, DocTotal, DocSerie, DocNumero FROM DocumentosContables WHERE DocIdDocumento = @id');
+            .query('SELECT DocTipo, CfeEstado, DocPagado, AsiIdAsiento, TcaIdTransaccion, DocTotal, DocSerie, DocNumero, DocFechaEmision FROM DocumentosContables WHERE DocIdDocumento = @id');
 
         if (docRes.recordset.length === 0) {
             await transaction.rollback();
@@ -779,6 +810,14 @@ exports.editarFactura = async (req, res) => {
             await transaction.rollback();
             return res.status(400).json({ error: 'Solo se pueden editar documentos en estado PENDIENTE o BORRADOR. Si ya fue enviado a DGI, emití una Nota de Crédito.' });
         }
+
+        // Fecha de emisión editable (retrofecha). El endpoint ya bloquea documentos
+        // enviados a DGI, así que aquí siempre es seguro cambiarla.
+        //   · fechaEdit     = fecha nueva elegida (null si el usuario no la cambia → se conserva)
+        //   · fechaEfectiva = fecha que llevarán los registros NUEVOS creados en esta edición
+        //                     (Tca/Pago por transición contado↔crédito). null => GETDATE().
+        const fechaEdit = resolverFechaDocumento(DocFechaEmision);
+        const fechaEfectiva = fechaEdit || (doc.DocFechaEmision ? new Date(doc.DocFechaEmision) : null);
 
         const cleanDocTipo = String(DocTipo || '').trim();
         const cleanOldDocTipo = String(doc.DocTipo || '').trim();
@@ -874,6 +913,7 @@ exports.editarFactura = async (req, res) => {
             .input('numero', sql.Int, newNumero)
             .input('cfeEstado', sql.VarChar(20), newCfeEstado)
             .input('emp', sql.Int, empresaId || null)
+            .input('fechaEmis', sql.DateTime, fechaEdit)
             .query(`
                 UPDATE DocumentosContables SET
                     DocTipo           = CASE WHEN @docTipo <> '' THEN @docTipo ELSE DocTipo END,
@@ -892,9 +932,18 @@ exports.editarFactura = async (req, res) => {
                     DocSerie          = @serie,
                     DocNumero         = @numero,
                     CfeEstado         = @cfeEstado,
-                    EmpIdEmpresa      = ISNULL(@emp, EmpIdEmpresa)
+                    EmpIdEmpresa      = ISNULL(@emp, EmpIdEmpresa),
+                    DocFechaEmision   = ISNULL(@fechaEmis, DocFechaEmision)
                 WHERE DocIdDocumento = @id
             `);
+
+        // Propagar la nueva fecha al asiento contable del documento (si cambió y existe)
+        if (fechaEdit && doc.AsiIdAsiento) {
+            await transaction.request()
+                .input('asiId', sql.Int, doc.AsiIdAsiento)
+                .input('fechaEmis', sql.DateTime, fechaEdit)
+                .query(`UPDATE dbo.Cont_AsientosCabecera SET AsiFecha = @fechaEmis WHERE AsiId = @asiId`);
+        }
 
         // 2. Si vienen líneas, reprocesar el detalle
         if (Array.isArray(lineas) && lineas.length > 0) {
@@ -947,10 +996,12 @@ exports.editarFactura = async (req, res) => {
             .input('docId',    sql.Int,          parseInt(id))
             .input('imp',      sql.Decimal(18,4), -DocTotal)
             .input('concepto', sql.VarChar(200),  nuevoConcepto)
+            .input('fechaEmis', sql.DateTime,     fechaEdit)
             .query(`
               UPDATE dbo.MovimientosCuenta
               SET MovImporte  = @imp,
-                  MovConcepto = @concepto
+                  MovConcepto = @concepto,
+                  MovFecha    = ISNULL(@fechaEmis, MovFecha)
               WHERE DocIdDocumento = @docId
                 AND MovTipo IN ('VTA_CAJA','VENTA','CARGO')
                 AND (MovAnulado IS NULL OR MovAnulado = 0)
@@ -1007,7 +1058,8 @@ exports.editarFactura = async (req, res) => {
                 MovImporte: DocTotal,
                 MovUsuarioAlta: req.user?.id || 1,
                 DocIdDocumento: parseInt(id),
-                CicIdCiclo: cicId
+                CicIdCiclo: cicId,
+                MovFecha: fechaEfectiva
             }, transaction);
 
 
@@ -1024,9 +1076,11 @@ exports.editarFactura = async (req, res) => {
               .input('docId',    sql.Int,          parseInt(id))
               .input('imp',      sql.Decimal(18,4), DocTotal)
               .input('concepto', sql.VarChar(200),  conceptoPago)
+              .input('fechaEmis', sql.DateTime,     fechaEdit)
               .query(`
                 UPDATE dbo.MovimientosCuenta
-                SET MovImporte  = @imp, MovConcepto = @concepto
+                SET MovImporte  = @imp, MovConcepto = @concepto,
+                    MovFecha    = ISNULL(@fechaEmis, MovFecha)
                 WHERE DocIdDocumento = @docId
                   AND MovTipo = 'PAGO'
                   AND (MovAnulado IS NULL OR MovAnulado = 0)
@@ -1140,6 +1194,7 @@ exports.editarFactura = async (req, res) => {
                         .input('moneda', sql.VarChar(10), MonIdMoneda === 2 ? 'USD' : 'UYU')
                         .input('serie', sql.VarChar(5), newSerie)
                         .input('numero', sql.VarChar(20), String(newNumero))
+                        .input('tcaFecha', sql.DateTime, fechaEdit)
                         .query(`
                             UPDATE dbo.TransaccionesCaja
                             SET TcaClienteId = @clienteId,
@@ -1149,7 +1204,8 @@ exports.editarFactura = async (req, res) => {
                                 TcaTotalCobrado = @cobrado,
                                 TcaMonedaBase = @moneda,
                                 TcaSerieDoc = @serie,
-                                TcaNumeroDoc = @numero
+                                TcaNumeroDoc = @numero,
+                                TcaFecha = ISNULL(@tcaFecha, TcaFecha)
                             WHERE TcaIdTransaccion = @tcaId
                         `);
 
@@ -1174,6 +1230,7 @@ exports.editarFactura = async (req, res) => {
                                 .input('cot', sql.Decimal(18, 4), pCot)
                                 .input('convert', sql.Decimal(18, 4), pConvertido)
                                 .input('usuario', sql.Int, req.user?.id || 1)
+                                .input('pagFecha', sql.DateTime, fechaEfectiva)
                                 .query(`
                                     INSERT INTO dbo.Pagos
                                         (PagTcaIdTransaccion, MPaIdMetodoPago, PagIdMonedaPago,
@@ -1181,7 +1238,7 @@ exports.editarFactura = async (req, res) => {
                                          PagMontoConvertido, PagTipoMovimiento)
                                     VALUES
                                         (@tcaId, @metodo, @moneda,
-                                         @monto, GETDATE(), @usuario, @cot,
+                                         @monto, ISNULL(@pagFecha, GETDATE()), @usuario, @cot,
                                          @convert, 'COBRO')
                                 `);
                         }
@@ -1194,6 +1251,7 @@ exports.editarFactura = async (req, res) => {
                             .input('cot', sql.Decimal(18, 4), cotNum)
                             .input('convert', sql.Decimal(18, 4), convertido)
                             .input('usuario', sql.Int, req.user?.id || 1)
+                            .input('pagFecha', sql.DateTime, fechaEfectiva)
                             .query(`
                                 INSERT INTO dbo.Pagos
                                     (PagTcaIdTransaccion, MPaIdMetodoPago, PagIdMonedaPago,
@@ -1201,7 +1259,7 @@ exports.editarFactura = async (req, res) => {
                                      PagMontoConvertido, PagTipoMovimiento)
                                 VALUES
                                     (@tcaId, @metodo, @moneda,
-                                     @monto, GETDATE(), @usuario, @cot,
+                                     @monto, ISNULL(@pagFecha, GETDATE()), @usuario, @cot,
                                      @convert, 'COBRO')
                             `);
                     }
@@ -1232,13 +1290,14 @@ exports.editarFactura = async (req, res) => {
                     .input('TcaNeto', sql.Decimal(18, 4), DocTotal)
                     .input('TcaCobrado', sql.Decimal(18, 4), convertido)
                     .input('TcaMonedaBase', sql.VarChar(10), MonIdMoneda === 2 ? 'USD' : 'UYU')
+                    .input('TcaFecha', sql.DateTime, fechaEfectiva)
                     .query(`
                         INSERT INTO dbo.TransaccionesCaja
                             (TcaFecha, TcaUsuarioId, TcaClienteId, TcaTipoDocumento, TcaSerieDoc, TcaNumeroDoc,
                              TcaTotalBruto, TcaTotalAjuste, TcaTotalNeto, TcaTotalCobrado, TcaMonedaBase, TcaEstado, TcaObservaciones, EsCajaAdmin)
                         OUTPUT INSERTED.TcaIdTransaccion
                         VALUES
-                            (GETDATE(), @TcaUsuarioId, @TcaClienteId, @TcaTipoDoc, @TcaSerieDoc, @TcaNumeroDoc,
+                            (ISNULL(@TcaFecha, GETDATE()), @TcaUsuarioId, @TcaClienteId, @TcaTipoDoc, @TcaSerieDoc, @TcaNumeroDoc,
                              @TcaBruto, 0, @TcaNeto, @TcaCobrado, @TcaMonedaBase, 'COBRADO', 'Pago Factura Manual Edicion', 1)
                     `);
                 currentTcaId = tcaRes.recordset[0].TcaIdTransaccion;
@@ -1258,6 +1317,7 @@ exports.editarFactura = async (req, res) => {
                             .input('cot', sql.Decimal(18, 4), pCot)
                             .input('convert', sql.Decimal(18, 4), pConvertido)
                             .input('usuario', sql.Int, req.user?.id || 1)
+                            .input('pagFecha', sql.DateTime, fechaEfectiva)
                             .query(`
                                 INSERT INTO dbo.Pagos
                                     (PagTcaIdTransaccion, MPaIdMetodoPago, PagIdMonedaPago,
@@ -1265,7 +1325,7 @@ exports.editarFactura = async (req, res) => {
                                      PagMontoConvertido, PagTipoMovimiento)
                                 VALUES
                                     (@tcaId, @metodo, @moneda,
-                                     @monto, GETDATE(), @usuario, @cot,
+                                     @monto, ISNULL(@pagFecha, GETDATE()), @usuario, @cot,
                                      @convert, 'COBRO')
                             `);
                     }
@@ -1278,6 +1338,7 @@ exports.editarFactura = async (req, res) => {
                         .input('cot', sql.Decimal(18, 4), cotNum)
                         .input('convert', sql.Decimal(18, 4), convertido)
                         .input('usuario', sql.Int, req.user?.id || 1)
+                        .input('pagFecha', sql.DateTime, fechaEfectiva)
                         .query(`
                             INSERT INTO dbo.Pagos
                                 (PagTcaIdTransaccion, MPaIdMetodoPago, PagIdMonedaPago,
@@ -1285,7 +1346,7 @@ exports.editarFactura = async (req, res) => {
                                  PagMontoConvertido, PagTipoMovimiento)
                             VALUES
                                 (@tcaId, @metodo, @moneda,
-                                 @monto, GETDATE(), @usuario, @cot,
+                                 @monto, ISNULL(@pagFecha, GETDATE()), @usuario, @cot,
                                  @convert, 'COBRO')
                         `);
                 }

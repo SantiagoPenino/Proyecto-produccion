@@ -1720,68 +1720,107 @@ const procesarPagoDeuda = async (req, res) => {
           if (docId) {
             if (esPedidoCaja && sinFactura.length > 0) {
               // PEDIDO CAJA: items reales via PedidosCobranza.OrdenID (link directo)
+              // Agrupar por PEDIDO: en multitela puede haber una deuda por orden hermana del
+              // mismo pedido. Las líneas del detalle (todas las telas) se insertan UNA sola
+              // vez por pedido, con el monto de sus aplicaciones sumado — nunca duplicadas.
+              const gruposPedido = new Map();
               for (const ap of sinFactura) {
                 if (!ap.ordIdOrden) {
                   logger.warn(`[PAGO-DEUDA] ordIdOrden null para ddeId=${ap.ddeId} - saltando`);
                   continue;
                 }
-                logger.info(`[PAGO-DEUDA] Insertando items de OrdId=${ap.ordIdOrden}`);
-                const itemsR = await new sql.Request(transaction)
+                const keyR = await new sql.Request(transaction)
                   .input('OrdId', sql.Int, ap.ordIdOrden)
-                  .input('DocId', sql.Int, docId)
-                  .input('MontoApli', sql.Decimal(18,4), Number(ap.montoOriginal) || 0)
                   .query(`
-                    WITH CTE_Suma AS (
-                        SELECT SUM(pcd2.Subtotal) as TotalOriginal
-                        FROM dbo.OrdenesDeposito od2
-                        JOIN dbo.PedidosCobranza pc2
-                            ON CAST(pc2.NoDocERP AS VARCHAR(100)) = LEFT(od2.OrdCodigoOrden,
-                                   CASE WHEN CHARINDEX(' ', od2.OrdCodigoOrden) > 0
-                                        THEN CHARINDEX(' ', od2.OrdCodigoOrden) - 1
-                                        ELSE LEN(od2.OrdCodigoOrden) END)
-                        JOIN dbo.PedidosCobranzaDetalle pcd2 ON pcd2.PedidoCobranzaID = pc2.ID
-                        WHERE od2.OrdIdOrden = @OrdId
-                    )
+                    SELECT TOP 1 COALESCE(
+                        (SELECT TOP 1 LTRIM(RTRIM(CAST(o.NoDocERP AS VARCHAR(100))))
+                         FROM dbo.Ordenes o WITH(NOLOCK)
+                         WHERE LTRIM(RTRIM(o.CodigoOrden)) = LTRIM(RTRIM(od.OrdCodigoOrden))
+                           AND o.NoDocERP IS NOT NULL),
+                        LEFT(od.OrdCodigoOrden, CASE WHEN CHARINDEX(' ', od.OrdCodigoOrden) > 0
+                             THEN CHARINDEX(' ', od.OrdCodigoOrden) - 1 ELSE LEN(od.OrdCodigoOrden) END)
+                    ) AS PedKey
+                    FROM dbo.OrdenesDeposito od WITH(NOLOCK) WHERE od.OrdIdOrden = @OrdId
+                  `);
+                const pedKey = keyR.recordset[0]?.PedKey || ('ORD-' + ap.ordIdOrden);
+                const g = gruposPedido.get(pedKey) || { ordIdOrden: ap.ordIdOrden, monto: 0 };
+                g.monto += Number(ap.montoOriginal) || 0;
+                gruposPedido.set(pedKey, g);
+              }
+
+              for (const [pedKey, grp] of gruposPedido) {
+                logger.info(`[PAGO-DEUDA] Insertando items del pedido ${pedKey} (OrdId=${grp.ordIdOrden}, monto=${grp.monto})`);
+                const itemsR = await new sql.Request(transaction)
+                  .input('OrdId', sql.Int, grp.ordIdOrden)
+                  .input('DocId', sql.Int, docId)
+                  .input('MontoApli', sql.Decimal(18,4), grp.monto)
+                  .query(`
+                    WITH PedBase AS (
+                        -- Pedido real de la orden (Ordenes.NoDocERP, ej. '5936'). El código del
+                        -- depósito lleva prefijo/sufijo ('SUB-5936 (1/2)') y NUNCA es igual al
+                        -- NoDocERP numérico — por eso el match por LEFT() fallaba y la factura
+                        -- caía al fallback sin detalle.
+                        SELECT TOP 1 LTRIM(RTRIM(CAST(o.NoDocERP AS VARCHAR(100)))) AS NoDoc
+                        FROM dbo.OrdenesDeposito od0
+                        JOIN dbo.Ordenes o ON LTRIM(RTRIM(o.CodigoOrden)) = LTRIM(RTRIM(od0.OrdCodigoOrden))
+                        WHERE od0.OrdIdOrden = @OrdId AND o.NoDocERP IS NOT NULL
+                    ),
+                    Lineas AS (
+                        -- Todas las líneas del PEDIDO (multitela: una por tela/orden), por el
+                        -- NoDocERP real o, como legacy, por el código base del depósito (VEN-, etc.)
+                        SELECT pcd.Cantidad, pcd.Subtotal, pcd.ProIdProducto, pcd.OrdenID
+                        FROM dbo.PedidosCobranza pc
+                        JOIN dbo.PedidosCobranzaDetalle pcd ON pcd.PedidoCobranzaID = pc.ID
+                        WHERE LTRIM(RTRIM(CAST(pc.NoDocERP AS VARCHAR(100)))) IN (
+                            SELECT NoDoc FROM PedBase
+                            UNION
+                            SELECT LEFT(od3.OrdCodigoOrden,
+                                   CASE WHEN CHARINDEX(' ', od3.OrdCodigoOrden) > 0
+                                        THEN CHARINDEX(' ', od3.OrdCodigoOrden) - 1
+                                        ELSE LEN(od3.OrdCodigoOrden) END)
+                            FROM dbo.OrdenesDeposito od3 WHERE od3.OrdIdOrden = @OrdId
+                        )
+                    ),
+                    CTE_Suma AS ( SELECT SUM(Subtotal) AS TotalOriginal FROM Lineas )
                     INSERT INTO dbo.DocumentosContablesDetalle
                       (DocIdDocumento, OrdCodigoOrden, DcdNomItem, DcdDscItem,
                        DcdCantidad, DcdPrecioUnitario, DcdSubtotal, DcdImpuestos, DcdTotal)
                     SELECT
                         @DocId,
-                        od.OrdCodigoOrden,
+                        COALESCE(oo.CodigoOrden, od.OrdCodigoOrden),
                         LEFT(COALESCE(
                              NULLIF(NULLIF(LTRIM(RTRIM(art.Descripcion)), 'Articulos User'), 'Articulos User USD'),
                              NULLIF(LTRIM(RTRIM(od.OrdMaterialPlanilla)), ''),
                              od.OrdNombreTrabajo,
                              'Servicio de Produccion'
                         ), 80),
-                        LEFT('Orden: ' + od.OrdCodigoOrden
+                        LEFT('Orden: ' + COALESCE(oo.CodigoOrden, od.OrdCodigoOrden)
                              + ISNULL(' (' + od.OrdNombreTrabajo + ')', ''), 500),
-                        CAST(ISNULL(pcd.Cantidad, ISNULL(od.OrdCantidad, 1.0)) AS DECIMAL(18,4)),
-                        ROUND((pcd.Subtotal * (CASE WHEN (SELECT TotalOriginal FROM CTE_Suma) > 0 THEN (@MontoApli / (SELECT TotalOriginal FROM CTE_Suma)) ELSE 1 END)) / NULLIF(ISNULL(pcd.Cantidad, ISNULL(od.OrdCantidad, 1.0)), 0) / 1.22, 4),
-                        ROUND((pcd.Subtotal * (CASE WHEN (SELECT TotalOriginal FROM CTE_Suma) > 0 THEN (@MontoApli / (SELECT TotalOriginal FROM CTE_Suma)) ELSE 1 END)) / 1.22, 4),
-                        ROUND((pcd.Subtotal * (CASE WHEN (SELECT TotalOriginal FROM CTE_Suma) > 0 THEN (@MontoApli / (SELECT TotalOriginal FROM CTE_Suma)) ELSE 1 END)) - (pcd.Subtotal * (CASE WHEN (SELECT TotalOriginal FROM CTE_Suma) > 0 THEN (@MontoApli / (SELECT TotalOriginal FROM CTE_Suma)) ELSE 1 END)) / 1.22, 4),
-                        ROUND(pcd.Subtotal * (CASE WHEN (SELECT TotalOriginal FROM CTE_Suma) > 0 THEN (@MontoApli / (SELECT TotalOriginal FROM CTE_Suma)) ELSE 1 END), 4)
-                    FROM dbo.OrdenesDeposito od
-                    JOIN dbo.PedidosCobranza pc
-                        ON CAST(pc.NoDocERP AS VARCHAR(100)) = LEFT(od.OrdCodigoOrden,
-                               CASE WHEN CHARINDEX(' ', od.OrdCodigoOrden) > 0
-                                    THEN CHARINDEX(' ', od.OrdCodigoOrden) - 1
-                                    ELSE LEN(od.OrdCodigoOrden) END)
-                    JOIN dbo.PedidosCobranzaDetalle pcd ON pcd.PedidoCobranzaID = pc.ID
-                    LEFT JOIN dbo.Articulos art ON art.ProIdProducto = pcd.ProIdProducto
+                        CAST(ISNULL(l.Cantidad, ISNULL(od.OrdCantidad, 1.0)) AS DECIMAL(18,4)),
+                        ROUND((l.Subtotal * f.Factor) / NULLIF(ISNULL(l.Cantidad, ISNULL(od.OrdCantidad, 1.0)), 0) / 1.22, 4),
+                        ROUND((l.Subtotal * f.Factor) / 1.22, 4),
+                        ROUND((l.Subtotal * f.Factor) - (l.Subtotal * f.Factor) / 1.22, 4),
+                        ROUND(l.Subtotal * f.Factor, 4)
+                    FROM Lineas l
+                    CROSS JOIN (SELECT CASE WHEN (SELECT TotalOriginal FROM CTE_Suma) > 0
+                                            THEN (@MontoApli / (SELECT TotalOriginal FROM CTE_Suma))
+                                            ELSE 1 END AS Factor) f
+                    CROSS JOIN dbo.OrdenesDeposito od
+                    LEFT JOIN dbo.Ordenes oo ON oo.OrdenID = l.OrdenID
+                    LEFT JOIN dbo.Articulos art ON art.ProIdProducto = l.ProIdProducto
                     WHERE od.OrdIdOrden = @OrdId
                   `);
                 logger.info(`[PAGO-DEUDA] Items insertados: ${itemsR.rowsAffected[0]} fila(s)`);
                 if (!itemsR.rowsAffected[0] || itemsR.rowsAffected[0] === 0) {
-                  logger.warn(`[PAGO-DEUDA] Sin PedidosCobranza para OrdId=${ap.ordIdOrden} - fallback`);
-                  const bruto = Number(ap.montoOriginal) || 0;
+                  logger.warn(`[PAGO-DEUDA] Sin PedidosCobranza para OrdId=${grp.ordIdOrden} - fallback`);
+                  const bruto = Number(grp.monto) || 0;
                   const neto  = Math.round((bruto / 1.22) * 10000) / 10000;
                   const iva   = Math.round((bruto - neto) * 10000) / 10000;
                   const odFbR = await new sql.Request(transaction)
-                    .input('OrdId2', sql.Int, ap.ordIdOrden)
+                    .input('OrdId2', sql.Int, grp.ordIdOrden)
                     .query(`SELECT TOP 1 OrdCodigoOrden, OrdMaterialPlanilla, OrdNombreTrabajo FROM dbo.OrdenesDeposito WHERE OrdIdOrden = @OrdId2`);
                   const odFb = odFbR.recordset[0] || {};
-                  const descFb = (odFb.OrdMaterialPlanilla || odFb.OrdNombreTrabajo || ap.descripcion || 'Servicio').substring(0, 190);
+                  const descFb = (odFb.OrdMaterialPlanilla || odFb.OrdNombreTrabajo || 'Servicio').substring(0, 190);
                   await new sql.Request(transaction)
                     .input('DocId3', sql.Int,           docId)
                     .input('OrdCod', sql.VarChar(50),   odFb.OrdCodigoOrden || null)
@@ -2829,7 +2868,7 @@ const anularFactura = async (req, res) => {
     const docR = await pool.request()
       .input('DocId', sql.Int, parseInt(docId))
       .query(`SELECT DocTipo, DocSerie, DocNumero, DocTotal, MonIdMoneda,
-                     DocEstado, CfeEstado, CicIdCiclo
+                     DocEstado, CfeEstado, CicIdCiclo, TcaIdTransaccion
               FROM dbo.DocumentosContables WHERE DocIdDocumento=@DocId`);
     if (!docR.recordset.length) return res.status(404).json({ error: 'Documento no encontrado' });
     const doc = docR.recordset[0];
@@ -2868,6 +2907,10 @@ const anularFactura = async (req, res) => {
         { docId: docRef, excluirTipos: ['ORDEN', 'ENTREGA'] },
         transaction
       );
+
+      // 4b. Revertir la compra de recurso (rollo por adelantado) si la venta creó/recargó un plan.
+      // No-op salvo que el documento provenga de una venta directa con ítem RECURSO.
+      await contabilidadSvc.revertirRecursosPorTransaccion(doc.TcaIdTransaccion || null, usuarioId, transaction);
 
       // Registro centralizado del AJUSTE tras anular ciclo
       await contabilidadSvc.registrarMovimiento({
@@ -3343,7 +3386,7 @@ module.exports.guardarComprobante = guardarComprobante;
 const getDocumentosInternos = async (req, res) => {
   try {
     const pool = await getPool();
-    const { desde = null, hasta = null, tipo = 'TODOS', cliente = '', caja = 'TODOS', page = 1, limit = 50 } = req.query;
+    const { desde = null, hasta = null, tipo = 'TODOS', cliente = '', caja = 'TODOS', moneda = 'TODOS', page = 1, limit = 50 } = req.query;
     const offset = (parseInt(page) - 1) * parseInt(limit);
     const fechaDesde = desde
       ? (() => { const [y,m,d] = desde.split('T')[0].split('-'); const dt = new Date(y,m-1,d); dt.setHours(0,0,0,0); return dt; })()
@@ -3367,6 +3410,12 @@ const getDocumentosInternos = async (req, res) => {
                         : caja === 'CENTRAL' ? 'AND (t.EsCajaAdmin = 0 OR t.EsCajaAdmin IS NULL)' : '';
     const cajaFilterEgr = caja === 'ADMIN' ? 'AND e.EsCajaAdmin = 1'
                         : caja === 'CENTRAL' ? 'AND (e.EsCajaAdmin = 0 OR e.EsCajaAdmin IS NULL)' : '';
+
+    // Filtro por moneda: UYU / USD (derivada de PagIdMonedaPago en ingresos, de EgrMoneda en egresos)
+    const monedaFilter    = moneda === 'USD' ? 'AND p.PagIdMonedaPago = 2'
+                           : moneda === 'UYU' ? 'AND (p.PagIdMonedaPago IS NULL OR p.PagIdMonedaPago <> 2)' : '';
+    const monedaFilterEgr = moneda === 'USD' ? "AND e.EgrMoneda = 'USD'"
+                           : moneda === 'UYU' ? "AND (e.EgrMoneda IS NULL OR e.EgrMoneda <> 'USD')" : '';
 
     const ingresoQ = `
       SELECT 'INGRESO' AS TipoOperacion, t.TcaIdTransaccion AS DocId, t.TcaFecha AS Fecha,
@@ -3400,6 +3449,7 @@ const getDocumentosInternos = async (req, res) => {
         )
         ${clienteFilter}
         ${cajaFilter}
+        ${monedaFilter}
       GROUP BY t.TcaIdTransaccion, t.TcaFecha, ct1.Detalle, t.TcaTipoDocumento,
                t.TcaSerieDoc, t.TcaNumeroDoc, dcv.DocSerie, dcv.DocNumero, c.Nombre, t.TcaClienteId,
                p.PagIdMonedaPago, t.TcaEstado, t.TcaObservaciones, mp.MPaDescripcionMetodo, u.Nombre, u.Usuario,
@@ -3422,6 +3472,7 @@ const getDocumentosInternos = async (req, res) => {
       WHERE e.EgrFecha BETWEEN @FecDesde AND @FecHasta AND e.EgrEstado IN ('REGISTRADO','ANULADO')
         ${clienteFilterEgr}
         ${cajaFilterEgr}
+        ${monedaFilterEgr}
     `;
 
     let finalQ;

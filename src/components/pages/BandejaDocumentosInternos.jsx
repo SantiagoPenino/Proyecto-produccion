@@ -55,6 +55,7 @@ export default function BandejaDocumentosInternos() {
     tipo: 'TODOS',
     cliente: '',
     caja: 'TODOS',
+    moneda: 'TODOS',
   });
   const [page, setPage]         = useState(1);
   const LIMIT = 50;
@@ -88,8 +89,9 @@ export default function BandejaDocumentosInternos() {
       const params = new URLSearchParams({
         desde: f.desde,
         hasta: f.hasta,
-        tipo:  f.tipo,
-        caja:  f.caja,
+        tipo:   f.tipo,
+        caja:   f.caja,
+        moneda: f.moneda,
         page:  p,
         limit: LIMIT,
       });
@@ -267,6 +269,16 @@ export default function BandejaDocumentosInternos() {
                 <option value="TODOS">Todas</option>
                 <option value="ADMIN">Administrativa</option>
                 <option value="CENTRAL">Central</option>
+              </select>
+            </div>
+            <div className="flex flex-col gap-1">
+              <label className="text-[10px] font-black text-zinc-400 uppercase tracking-widest">Moneda</label>
+              <select value={filtros.moneda}
+                onChange={e => setFiltros(f => ({...f, moneda: e.target.value}))}
+                className="border border-zinc-200 rounded-lg px-3 py-2 text-sm font-bold text-zinc-800 outline-none focus:border-indigo-500 bg-white cursor-pointer min-w-[110px]">
+                <option value="TODOS">Todas</option>
+                <option value="UYU">$ UYU</option>
+                <option value="USD">U$S USD</option>
               </select>
             </div>
             <div className="flex flex-col gap-1 flex-1 min-w-[180px]">

@@ -1497,6 +1497,10 @@ exports.getClientOrders = async (req, res) => {
                     INNER JOIN Clientes c WITH(NOLOCK) ON c.CliIdCliente = o.CliIdCliente
                     LEFT JOIN EstadosOrdenes e WITH(NOLOCK) ON e.EOrIdEstadoOrden = o.OrdEstadoActual
                     WHERE c.CodCliente = @cod
+                      AND NOT EXISTS (
+                          SELECT 1 FROM Ordenes ox WITH(NOLOCK)
+                          WHERE ox.CodigoOrden = o.OrdCodigoOrden AND ox.CodCliente = @cod
+                      )
                 `);
             
             const docs = {};
@@ -1607,6 +1611,12 @@ exports.getClientOrders = async (req, res) => {
                     LEFT JOIN Monedas mo WITH(NOLOCK) ON mo.MonIdMoneda = o.MonIdMoneda
                     LEFT JOIN Articulos art WITH(NOLOCK) ON art.ProIdProducto = o.ProIdProducto
                     WHERE c.CodCliente = @cod
+                      -- Solo órdenes ERP puras: si ya existe en producción (Ordenes), la card
+                      -- del proyecto la cubre — evita duplicar (y triplicar en multitela).
+                      AND NOT EXISTS (
+                          SELECT 1 FROM Ordenes ox WITH(NOLOCK)
+                          WHERE ox.CodigoOrden = o.OrdCodigoOrden AND ox.CodCliente = @cod
+                      )
                 ) combined
                 ORDER BY combined.FechaIngreso DESC, combined.OrdenID DESC
                 OFFSET @Offset ROWS FETCH NEXT @Limit ROWS ONLY
@@ -2204,7 +2214,10 @@ exports.totemLookup = async (req, res) => {
         const pool = await getPool();
         const code = orderCode.trim();
 
-        // 1. Buscar la orden y al cliente
+        // 1. Buscar la orden y al cliente.
+        // Multitela: el cliente tipea el código base (SUB-5936) y las órdenes reales llevan
+        // sufijo (SUB-5936 (1/2)). Se matchea exacto O base + ' (n/m)' — el LIKE exige " ("
+        // a continuación, así SUB-5936 no agarra SUB-59360. Prioriza una orden sin retiro.
         const orderRes = await pool.request()
             .input('code', sql.VarChar(50), code)
             .query(`
@@ -2212,6 +2225,8 @@ exports.totemLookup = async (req, res) => {
                 FROM OrdenesDeposito o WITH(NOLOCK)
                 LEFT JOIN Clientes c WITH(NOLOCK) ON c.CliIdCliente = o.CliIdCliente
                 WHERE o.OrdCodigoOrden = @code
+                   OR o.OrdCodigoOrden LIKE @code + ' (%'
+                ORDER BY CASE WHEN o.OReIdOrdenRetiro IS NULL THEN 0 ELSE 1 END
             `);
 
         if (!orderRes.recordset.length) {

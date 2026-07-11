@@ -46,7 +46,7 @@ const EsperandoBultosView = () => {
         const r = await Swal.fire({
             icon: 'warning',
             title: '¿Forzar ingreso?',
-            html: `Vas a ingresar <strong>${o.OrdCodigoOrden}</strong> con <strong>${o.BultosRecibidos} de ${o.BultosEsperados}</strong> bultos.<br><br>Se va a contabilizar y avisar al cliente, aunque falte un bulto.`,
+            html: `Vas a forzar <strong>${o.OrdCodigoOrden}</strong> con <strong>${o.BultosRecibidos} de ${o.BultosEsperados}</strong> bultos del pedido.<br><br>Se ingresa el <strong>pedido completo</strong> (todas sus órdenes), se contabiliza y se avisa al cliente aunque falten bultos.`,
             showCancelButton: true,
             confirmButtonText: 'Sí, forzar',
             cancelButtonText: 'Cancelar',

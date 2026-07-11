@@ -236,10 +236,18 @@ export const TotemDashboard = ({ onLogout }) => {
         setExternalMode('');
     };
 
+    // Hermanas multitela: 'SUB-5936 (1/2)' y 'SUB-5936 (2/2)' comparten el código base →
+    // tocar una selecciona/deselecciona el pedido completo, para que se retire junto.
+    const baseDe = (id) => String(id || '').replace(/\s*\(\d+\/\d+\)\s*$/, '').trim();
+
     const toggleOrder = (id) => {
-        setSelectedOrders(prev =>
-            prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]
-        );
+        const grupo = orders.filter(o => baseDe(o.id) === baseDe(id)).map(o => o.id);
+        setSelectedOrders(prev => {
+            const todasSel = grupo.every(g => prev.includes(g));
+            return todasSel
+                ? prev.filter(x => !grupo.includes(x))
+                : [...new Set([...prev, ...grupo])];
+        });
     };
 
     const selectAll = () => {

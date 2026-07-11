@@ -5,6 +5,7 @@ import { useAuth } from '../../context/AuthContext';
 import { useQuery } from '@tanstack/react-query';
 import QRCode from "react-qr-code";
 import { toast } from 'sonner';
+import Swal from 'sweetalert2';
 
 const DispatchView = ({ selectedOrders: initialOrders = [], areaFilter, originArea, onClose, onSuccess, mode: viewMode = 'create', onActionOverride, selectedStockItems: extSelectedStockItems, setSelectedStockItems: extSetSelectedStockItems }) => {
     const { user } = useAuth();
@@ -81,6 +82,10 @@ const DispatchView = ({ selectedOrders: initialOrders = [], areaFilter, originAr
             // Regex to find Base Code (PRE-33 from PRE-33-1)
             const match = baseCode && baseCode.match(/^(PRE-\d+)(-\d+)?$/);
             if (match) baseCode = match[1];
+            // Producto terminado: agrupar por PEDIDO + ÁREA (NoDocERP + ubicación) → al marcar uno se
+            // seleccionan las órdenes hermanas de ESA área, para que el pedido salga completo del área.
+            // Importante: NO agrupar solo por NoDocERP, porque un pedido tiene órdenes en varias áreas.
+            else if (item.NoDocERP && item.Tipocontenido === 'PROD_TERMINADO') baseCode = `PED-${String(item.NoDocERP).trim()}-${String(item.UbicacionActual || item.AreaID || '').trim()}`;
             else if (item.OrdenID) baseCode = `ORD-${item.OrdenID}`;
 
             return {
@@ -96,6 +101,15 @@ const DispatchView = ({ selectedOrders: initialOrders = [], areaFilter, originAr
                 date: item.FechaIngreso || item.FechaRecepcion || item.FechaCreacion,
                 nextService: item.ProximoServicio
             };
+        });
+
+        // Ordenar por pedido → orden → bulto, para que las hermanas queden agrupadas visualmente
+        rows.sort((a, b) => {
+            const pa = String(a.NoDocERP || ''), pb = String(b.NoDocERP || '');
+            if (pa !== pb) return pa.localeCompare(pb, undefined, { numeric: true });
+            const oa = String(a.orderCode || ''), ob = String(b.orderCode || '');
+            if (oa !== ob) return oa.localeCompare(ob, undefined, { numeric: true });
+            return (a.BultoID || 0) - (b.BultoID || 0);
         });
 
         if (!stockSearch) return rows;
@@ -159,29 +173,39 @@ const DispatchView = ({ selectedOrders: initialOrders = [], areaFilter, originAr
     }, [selectedOrders]);
 
     // --- SMART SELECTION (Scan Logic) ---
-    const toggleRow = (row) => {
-        // 1. Identify siblings (Same Base Code)
+    const toggleRow = async (row) => {
+        // 1. Hermanos = mismo baseCode (para producto terminado, TODO el pedido / NoDocERP)
         const siblings = stockRows.filter(r => r.baseCode === row.baseCode);
         const siblingIds = siblings.map(r => r.BultoID);
 
-        // 2. Check if currently selected
-        // If ANY of the siblings is NOT selected, we SELECT ALL. (Additive behavior preferred for scanning)
+        // 2. Si ya están todos seleccionados → deseleccionar el grupo (sin modal)
         const allSelected = siblingIds.every(id => selectedStockItems.some(s => s.BultoID === id));
-
         if (allSelected) {
-            // Deselect all siblings
             setSelectedStockItems(prev => prev.filter(s => !siblingIds.includes(s.BultoID)));
-        } else {
-            // Select all siblings (that aren't already selected)
-            const newItems = siblings.filter(s => !selectedStockItems.some(existing => existing.BultoID === s.BultoID));
-            // We store the original item structure
-            setSelectedStockItems(prev => [...prev, ...newItems]);
-
-            // Optional: Toast feedback for scan
-            if (newItems.length > 0) {
-                // toast.success(`Grupo ${row.baseCode} seleccionado`);
-            }
+            return;
         }
+
+        // 3. Va a seleccionar. Si es un pedido con varios bultos, avisar cuántas órdenes/bultos lleva.
+        if (row.NoDocERP && siblings.length > 1) {
+            const ordenes = new Set(siblings.map(s => s.OrdenID || s.CodigoOrden)).size;
+            const bultos = siblings.length;
+            const resp = await Swal.fire({
+                icon: 'info',
+                title: `Pedido ${row.NoDocERP}`,
+                html: `En esta área, el pedido lleva <strong>${ordenes} ${ordenes === 1 ? 'orden' : 'órdenes'}</strong> con <strong>${bultos} ${bultos === 1 ? 'bulto' : 'bultos'}</strong>.<br><br>Se agregan <strong>todos</strong> al remito para que el pedido salga completo del área.`,
+                showCancelButton: true,
+                confirmButtonText: 'Agregar el pedido completo',
+                cancelButtonText: 'Cancelar',
+                confirmButtonColor: '#0891b2',
+                cancelButtonColor: '#6b7280',
+                reverseButtons: true,
+            });
+            if (!resp.isConfirmed) return;
+        }
+
+        // 4. Seleccionar todo el grupo
+        const newItems = siblings.filter(s => !selectedStockItems.some(existing => existing.BultoID === s.BultoID));
+        setSelectedStockItems(prev => [...prev, ...newItems]);
     };
 
     // SCANNER LISTENER (Simple version: detects Enter on search or global)
@@ -577,6 +601,7 @@ const DispatchView = ({ selectedOrders: initialOrders = [], areaFilter, originAr
                                                 </div>
                                             </th>
                                             <th className="p-4">Código</th>
+                                            <th className="p-4">Orden</th>
                                             <th className="p-4">Cliente</th>
                                             <th className="p-4">Detalle / Referencias</th>
                                             <th className="p-4">Destino</th>
@@ -600,7 +625,9 @@ const DispatchView = ({ selectedOrders: initialOrders = [], areaFilter, originAr
                                                     </td>
                                                     <td className="p-4">
                                                         <div className="font-bold font-mono text-slate-800">{row.displayCode}</div>
-                                                        {row.orderCode && <div className="text-xs text-brand-cyan font-bold">{row.orderCode}</div>}
+                                                    </td>
+                                                    <td className="p-4">
+                                                        <span className="font-bold text-brand-cyan">{row.orderCode || '-'}</span>
                                                     </td>
                                                     <td className="p-4">
                                                         {row.IDCliente ? (
@@ -640,7 +667,7 @@ const DispatchView = ({ selectedOrders: initialOrders = [], areaFilter, originAr
                                             );
                                         })}
                                         {stockRows.length === 0 && (
-                                            <tr><td colSpan="6" className="p-10 text-center text-slate-400">No hay items en stock disponibles para despachar.</td></tr>
+                                            <tr><td colSpan="7" className="p-10 text-center text-slate-400">No hay items en stock disponibles para despachar.</td></tr>
                                         )}
                                     </tbody>
                                 </table>

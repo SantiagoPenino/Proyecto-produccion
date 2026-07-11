@@ -1736,6 +1736,46 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
                         mode="COBRO"
                         totalACubrir={montoACobrar}
                         ajusteMonto={ajusteRealUYU}
+                        headerExtra={seleccionados.length > 0 && condicionCobro !== 'CREDITO' ? (
+                          <>
+                            <div className="flex items-center gap-1.5 bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1 shrink-0">
+                              <span className="text-[8px] font-black text-slate-400 uppercase tracking-widest">Total real (factura)</span>
+                              <span className="text-xs font-black text-slate-700">{simboloCobro} {fmt(totalesCobro.neto)}</span>
+                            </div>
+                            <div className="flex items-center gap-1 bg-white border border-slate-200 rounded-lg px-2 py-0.5 shrink-0 focus-within:border-brand-cyan">
+                              <span className="text-[8px] font-black text-slate-400 uppercase tracking-widest">A cobrar</span>
+                              <span className="text-[10px] text-slate-400 font-bold">{simboloCobro}</span>
+                              <input
+                                type="number" step="any" min="0"
+                                value={importeACobrarRaw}
+                                placeholder={fmt(totalesCobro.neto)}
+                                onChange={e => {
+                                  const val = e.target.value;
+                                  setImporteACobrar(val);
+                                  const num = parseFloat(val);
+                                  if (carritosPago.length === 1) {
+                                    setCarritosPago(prev => prev.map((p, i) => i === 0 ? { ...p, monto: val === '' ? (totalesCobro.neto ? totalesCobro.neto.toFixed(2) : '') : (isNaN(num) ? '' : String(val)) } : p));
+                                  }
+                                }}
+                                className="w-20 px-1 py-1 text-center text-brand-cyan font-black text-xs bg-transparent outline-none"
+                              />
+                              {importeACobrarRaw !== '' && (
+                                <button onClick={() => { setImporteACobrar(''); if (carritosPago.length === 1) setCarritosPago(prev => prev.map((p,i)=> i===0 ? {...p, monto: totalesCobro.neto ? totalesCobro.neto.toFixed(2) : ''} : p)); }}
+                                  className="text-[9px] text-slate-400 hover:text-slate-700 font-black px-0.5" title="Volver al total real">
+                                  ↺
+                                </button>
+                              )}
+                            </div>
+                            {Math.abs(ajusteRealUYU) >= 0.005 && (
+                              <div className={`flex items-center gap-1 text-[10px] font-black px-2 py-1 rounded-lg border shrink-0 ${ajusteRealUYU < 0 ? 'bg-rose-50 border-rose-200 text-rose-600' : 'bg-emerald-50 border-emerald-200 text-emerald-600'}`}
+                                title="Diferencia entre lo cobrado y el valor real. Se contabiliza como ajuste monetario.">
+                                {ajusteRealUYU < 0
+                                  ? <>▼ Descuento $ {fmt(Math.abs(ajusteRealUYU))} <span className="text-[8px] font-bold opacity-70">→ 5.2.03</span></>
+                                  : <>▲ Recargo $ {fmt(ajusteRealUYU)} <span className="text-[8px] font-bold opacity-70">→ 4.2.2</span></>}
+                              </div>
+                            )}
+                          </>
+                        ) : null}
                         moneda={monedaExhibicion}
                         cotizacion={cotizacion}
                         metodosPago={metodosPago}
@@ -1752,51 +1792,6 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
                         tiposDocDisponibles={tiposDocumentos.length > 0 ? tiposDocumentos : TIPOS_DOC}
                         showSubmitButton={false}
                       />
-
-                      {/* IMPORTE A COBRAR (ajuste monetario, no toca la factura) */}
-                      {seleccionados.length > 0 && condicionCobro !== 'CREDITO' && (
-                        <div className="bg-white rounded-2xl border border-slate-200 shadow-sm px-4 py-3 flex flex-wrap items-center gap-4">
-                          <div className="flex items-center gap-2 text-xs">
-                            <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Total real (factura)</span>
-                            <span className="font-black text-slate-700">{simboloCobro} {fmt(totalesCobro.neto)}</span>
-                          </div>
-                          <div className="flex items-center gap-2">
-                            <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Importe a cobrar</span>
-                            <div className="flex items-center bg-slate-50 border border-slate-200 rounded-lg overflow-hidden focus-within:border-brand-cyan">
-                              <span className="pl-2 text-[10px] text-slate-400 font-bold">{simboloCobro}</span>
-                              <input
-                                type="number" step="any" min="0"
-                                value={importeACobrarRaw}
-                                placeholder={fmt(totalesCobro.neto)}
-                                onChange={e => {
-                                  const val = e.target.value;
-                                  setImporteACobrar(val);
-                                  // Mantener balanceado: si hay un solo medio de pago, seguir el importe a cobrar
-                                  const num = parseFloat(val);
-                                  if (carritosPago.length === 1) {
-                                    setCarritosPago(prev => prev.map((p, i) => i === 0 ? { ...p, monto: val === '' ? (totalesCobro.neto ? totalesCobro.neto.toFixed(2) : '') : (isNaN(num) ? '' : String(val)) } : p));
-                                  }
-                                }}
-                                className="w-28 px-2 py-1.5 text-center text-brand-cyan font-black text-sm bg-transparent outline-none"
-                              />
-                            </div>
-                            {importeACobrarRaw !== '' && (
-                              <button onClick={() => { setImporteACobrar(''); if (carritosPago.length === 1) setCarritosPago(prev => prev.map((p,i)=> i===0 ? {...p, monto: totalesCobro.neto ? totalesCobro.neto.toFixed(2) : ''} : p)); }}
-                                className="text-[9px] text-slate-500 hover:text-white hover:bg-slate-600 border border-slate-300 font-black uppercase px-1.5 py-1 rounded transition-all" title="Volver al total real">
-                                ↺
-                              </button>
-                            )}
-                          </div>
-                          {Math.abs(ajusteRealUYU) >= 0.005 && (
-                            <div className={`flex items-center gap-2 text-xs font-black px-3 py-1.5 rounded-lg border ${ajusteRealUYU < 0 ? 'bg-rose-50 border-rose-200 text-rose-600' : 'bg-emerald-50 border-emerald-200 text-emerald-600'}`}
-                              title="Diferencia entre lo cobrado y el valor real. Se contabiliza como ajuste monetario.">
-                              {ajusteRealUYU < 0
-                                ? <>▼ Descuento $ {fmt(Math.abs(ajusteRealUYU))} <span className="text-[9px] font-bold opacity-70">→ 5.2.03</span></>
-                                : <>▲ Recargo $ {fmt(ajusteRealUYU)} <span className="text-[9px] font-bold opacity-70">→ 4.2.2</span></>}
-                            </div>
-                          )}
-                        </div>
-                      )}
 
                       {/* SPLIT LAYOUT */}
                       <div className="flex w-full gap-4 items-start">

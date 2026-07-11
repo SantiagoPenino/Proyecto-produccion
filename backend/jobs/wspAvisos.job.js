@@ -255,20 +255,45 @@ async function procesarAvisosBatch(io) {
                     ('INGRESADO', 'AVISADO', 'ENTREGADO', 'FINALIZADO')
           )
       )
+      -- GATE BULTOS (solo controla el CUÁNDO, no toca el mensaje): si la fila aún no pasó
+      -- por el gate WMS (BultosEsperados NULL = la creó el pistoleo directo), no avisar
+      -- mientras el pedido tenga bultos físicos (PROD_TERMINADO vivos, ni procesados ni
+      -- perdidos) sin llegar al depósito. Las filas gestionadas por el gate (completas o
+      -- FORZADAS, con contadores escritos) avisan normal.
+      AND NOT (
+          Ord.BultosEsperados IS NULL
+          AND EXISTS (
+              SELECT 1
+              FROM dbo.Ordenes oh3 WITH (NOLOCK)
+              JOIN dbo.Logistica_Bultos b3 WITH (NOLOCK)
+                ON b3.OrdenID = oh3.OrdenID
+               AND b3.Tipocontenido = 'PROD_TERMINADO'
+               AND b3.Estado NOT IN ('PROCESADO', 'PERDIDO')
+              WHERE (
+                    (Ped.NoDocERP IS NOT NULL AND oh3.NoDocERP = Ped.NoDocERP)
+                 OR (Ped.NoDocERP IS NULL AND oh3.CodigoOrden = Ord.OrdCodigoOrden)
+              )
+                AND UPPER(LTRIM(RTRIM(ISNULL(oh3.Estado, '')))) <> 'CANCELADO'
+                AND NOT (b3.Estado = 'EN_STOCK' AND b3.UbicacionActual = 'DEPOSITO')
+          )
+      )
   )
   OR Ord.OrdEstadoActual = 12;
   `;
     const result = await pool.request().input("Estado", sql.Int, ESTADO_POR_AVISAR).query(query);
     const rows = result.recordset || [];
+    logger.info(`[WHATSAPP JOB] Tick — estadoBuscado=${ESTADO_POR_AVISAR}, candidatas=${rows.length}`);
     if (!rows.length) return;
 
-    // ── AVISO ÚNICO POR PEDIDO ──
-    // Agrupar por NoDocERP: pedidos con órdenes hermanas (ej. SUB-154 (1/2) y (2/2))
-    // generan UN solo WhatsApp con cantidades e importes sumados.
-    // Filas sin NoDocERP o de re-aviso manual (estado 12) van individuales.
+    // ── AVISO POR ORDEN (cada material su mensaje) ──
+    // La plantilla de Callbell tiene campos fijos de UN material: cada orden envía su
+    // propio WhatsApp con su producto/cantidad/importe, sin tocar el formato del mensaje.
+    // El CUÁNDO lo controla el gate de bultos por pedido (receiveDispatch): las órdenes
+    // hermanas pasan a estado 1 juntas recién cuando el pedido está físicamente completo,
+    // así que los mensajes del pedido salen en la misma corrida (espaciados por el throttle).
     const grupos = new Map();
     for (const r of rows) {
-        const key = (r.NoDocERP && r.OrdEstadoActual !== 12) ? `PED:${r.NoDocERP}` : `ROW:${r.OrdIdOrden}`;
+        const key = `ROW:${r.OrdIdOrden}`;
         if (!grupos.has(key)) grupos.set(key, []);
         grupos.get(key).push(r);
     }
@@ -314,6 +339,8 @@ async function runWspLoop(io) {
 
     if (WSP_ENABLED_ENV && dbEnabled) {
         try { await procesarAvisosBatch(io); } catch (e) { logger.error("[WHATSAPP JOB] Error general:", e.message); }
+    } else {
+        logger.info(`[WHATSAPP JOB] Tick omitido — WSP_ENABLED(env)=${WSP_ENABLED_ENV}, ActivarAvisosWSP(DB)=${dbEnabled}`);
     }
 
     const msec = Math.max(1, mins) * 60000;

@@ -237,6 +237,8 @@ const crearDocumentoContable = async ({ header, lineas }, transaction = null) =>
   const cicIdCiclo = header.cicIdCiclo !== undefined ? header.cicIdCiclo : null;
   const docFechaDesde = header.docFechaDesde !== undefined ? header.docFechaDesde : null;
   const docFechaHasta = header.docFechaHasta !== undefined ? header.docFechaHasta : null;
+  // Fecha de emisión editable: si no viene, la BD aplica GETDATE() (comportamiento actual)
+  const docFechaEmision = header.docFechaEmision !== undefined && header.docFechaEmision !== null ? header.docFechaEmision : null;
   const docCliNombre = header.docCliNombre !== undefined && header.docCliNombre !== null ? String(header.docCliNombre) : null;
   const docCliDocumento = header.docCliDocumento !== undefined && header.docCliDocumento !== null ? String(header.docCliDocumento) : null;
   const docCliDireccion = header.docCliDireccion !== undefined && header.docCliDireccion !== null ? String(header.docCliDireccion) : null;
@@ -268,6 +270,7 @@ const crearDocumentoContable = async ({ header, lineas }, transaction = null) =>
     .input('CicId', sql.Int, cicIdCiclo)
     .input('FDesde', sql.DateTime, docFechaDesde ? new Date(docFechaDesde) : null)
     .input('FHasta', sql.DateTime, docFechaHasta ? new Date(docFechaHasta) : null)
+    .input('FEmis', sql.DateTime, docFechaEmision ? new Date(docFechaEmision) : null)
     .input('CliNombre', sql.NVarChar(200), docCliNombre)
     .input('CliDoc', sql.NVarChar(20), docCliDocumento)
     .input('CliDir', sql.NVarChar(200), docCliDireccion)
@@ -284,7 +287,7 @@ const crearDocumentoContable = async ({ header, lineas }, transaction = null) =>
       VALUES
         (@Cue, @Cli, @MonId, @Tipo, @Num, @Serie,
          @Sub, @Imp, @TotalDesc, @TotalRec, @Tot,
-         @Estado, @CfeEstado, GETDATE(), @Usr, @TcaId, @AsiId,
+         @Estado, @CfeEstado, ISNULL(@FEmis, GETDATE()), @Usr, @TcaId, @AsiId,
          @Obs, @Pagado, @DocRef, @MotRef, @CicId, @FDesde, @FHasta,
          @CliNombre, @CliDoc, @CliDir, @CliCiu, ISNULL(@Emp, (SELECT TOP 1 EmpIdEmpresa FROM dbo.Empresas WHERE EmpPorDefecto=1)))
     `);
