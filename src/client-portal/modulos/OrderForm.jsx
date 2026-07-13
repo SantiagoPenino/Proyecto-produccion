@@ -114,11 +114,13 @@ const OrderForm = ({ serviceId: propServiceId }) => {
     // Allows passing overrides via navigate('/order/...', { state: { config: { allowedOptions: ['...'] } } })
     const overrideConfig = location.state?.config || {};
 
-    const serviceId = propServiceId || paramServiceId;
-    // La URL puede venir con otra caja (/order/SUBLIMACION desde un bookmark): serviceInfo se
-    // resuelve case-insensitive, así que las reglas por-servicio TAMBIÉN deben compararse así —
-    // si no, el form funciona pero se saltea las reglas (ej: validaba ancho contra el fallback
-    // 1.50m en vez del default 1.83m de sublimación, y rechazaba JPEG).
+    // El serviceId de la URL puede venir con cualquier caja (/ORDER/TPU desde un bookmark).
+    // Todo el form compara contra slugs en minúscula (=== 'tpu', 'corte', 'bordado'…), y el
+    // backend mapea el área por ese slug, así que normalizamos el param a minúscula acá — si no,
+    // /ORDER/TPU cae al form genérico (sin selector de matriz) y crea el pedido en área GENE.
+    // propServiceId (uso interno) se deja intacto: puede ser un alias de ÁREA en mayúscula (EST/EMB).
+    const serviceId = propServiceId || (paramServiceId || '').toLowerCase();
+    // svcId se mantiene por las pocas reglas de material que ya lo usan; ahora coincide con serviceId.
     const svcId = (serviceId || '').toLowerCase();
 
     // Modal de anuncio: se muestra una sola vez por sesión para DF
