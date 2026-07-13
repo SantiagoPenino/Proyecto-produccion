@@ -6,12 +6,16 @@ const ConfigDeliveryTimesModal = ({ isOpen, onClose }) => {
     const [areas, setAreas] = useState([]);
     const [loading, setLoading] = useState(false);
 
+    // La Prioridad es TEXTO ('Normal'/'Urgente'): el portal busca la fila por ese nombre.
+    // El Texto es opcional: si se completa, el portal lo muestra tal cual en vez de "X horas".
+    const PRIORIDADES = ['Normal', 'Urgente'];
+
     // New Rule Form
-    const [newTime, setNewTime] = useState({ areaID: '', prioridad: 1, horas: 0, dias: 0 });
+    const [newTime, setNewTime] = useState({ areaID: '', prioridad: 'Normal', horas: 0, dias: 0, texto: '' });
 
     // Editing State
     const [editingId, setEditingId] = useState(null);
-    const [editForm, setEditForm] = useState({ areaID: '', prioridad: 1, horas: 0, dias: 0 });
+    const [editForm, setEditForm] = useState({ areaID: '', prioridad: 'Normal', horas: 0, dias: 0, texto: '' });
 
     useEffect(() => {
         if (isOpen) {
@@ -39,9 +43,9 @@ const ConfigDeliveryTimesModal = ({ isOpen, onClose }) => {
         if (!newTime.areaID) return alert("Área requerida");
         try {
             await deliveryTimesService.create(newTime);
-            setNewTime({ areaID: '', prioridad: 1, horas: 0, dias: 0 });
+            setNewTime({ areaID: '', prioridad: 'Normal', horas: 0, dias: 0, texto: '' });
             loadData();
-        } catch (e) { alert("Error al crear configuración"); }
+        } catch (e) { alert("Error al crear configuración: " + (e.response?.data?.error || e.message)); }
     };
 
     const handleDelete = async (id) => {
@@ -55,10 +59,11 @@ const ConfigDeliveryTimesModal = ({ isOpen, onClose }) => {
     const startEdit = (t) => {
         setEditingId(t.ConfigID);
         setEditForm({
-            areaID: t.AreaID,
-            prioridad: t.Prioridad,
+            areaID: (t.AreaID || '').trim(),
+            prioridad: (t.Prioridad || 'Normal').trim(),
             horas: t.Horas,
-            dias: t.Dias
+            dias: t.Dias,
+            texto: t.Texto || ''
         });
     };
 
@@ -67,7 +72,7 @@ const ConfigDeliveryTimesModal = ({ isOpen, onClose }) => {
             await deliveryTimesService.update(id, editForm);
             setEditingId(null);
             loadData();
-        } catch (e) { alert("Error al actualizar"); }
+        } catch (e) { alert("Error al actualizar: " + (e.response?.data?.error || e.message)); }
     };
 
     if (!isOpen) return null;
@@ -91,7 +96,7 @@ const ConfigDeliveryTimesModal = ({ isOpen, onClose }) => {
                     {/* FORM ADD */}
                     <div className="bg-white p-4 rounded-xl border border-zinc-200 shadow-sm mb-6">
                         <h4 className="text-xs font-bold text-zinc-500 uppercase tracking-wider mb-2">Nuevo Tiempo</h4>
-                        <div className="grid grid-cols-1 md:grid-cols-5 gap-3 items-end">
+                        <div className="grid grid-cols-1 md:grid-cols-6 gap-3 items-end">
                             <div>
                                 <label className="text-[10px] uppercase font-bold text-zinc-400 mb-1 block">Área</label>
                                 <select className="w-full px-3 py-2 bg-zinc-50 border border-zinc-200 rounded-lg text-sm font-semibold text-zinc-700 outline-none"
@@ -102,8 +107,10 @@ const ConfigDeliveryTimesModal = ({ isOpen, onClose }) => {
                             </div>
                             <div>
                                 <label className="text-[10px] uppercase font-bold text-zinc-400 mb-1 block">Prioridad</label>
-                                <input type="number" className="w-full px-3 py-2 bg-zinc-50 border border-zinc-200 rounded-lg text-sm font-semibold text-zinc-700 outline-none"
-                                    value={newTime.prioridad} onChange={e => setNewTime({ ...newTime, prioridad: parseInt(e.target.value) })} />
+                                <select className="w-full px-3 py-2 bg-zinc-50 border border-zinc-200 rounded-lg text-sm font-semibold text-zinc-700 outline-none"
+                                    value={newTime.prioridad} onChange={e => setNewTime({ ...newTime, prioridad: e.target.value })}>
+                                    {PRIORIDADES.map(p => <option key={p} value={p}>{p}</option>)}
+                                </select>
                             </div>
                             <div>
                                 <label className="text-[10px] uppercase font-bold text-zinc-400 mb-1 block">Horas</label>
@@ -115,10 +122,16 @@ const ConfigDeliveryTimesModal = ({ isOpen, onClose }) => {
                                 <input type="number" className="w-full px-3 py-2 bg-zinc-50 border border-zinc-200 rounded-lg text-sm font-semibold text-zinc-700 outline-none"
                                     value={newTime.dias} onChange={e => setNewTime({ ...newTime, dias: parseInt(e.target.value) })} />
                             </div>
+                            <div>
+                                <label className="text-[10px] uppercase font-bold text-zinc-400 mb-1 block" title="Si se completa, el portal muestra este texto en vez de las horas">Texto (opcional)</label>
+                                <input type="text" placeholder="Ej: En el día" className="w-full px-3 py-2 bg-zinc-50 border border-zinc-200 rounded-lg text-sm font-semibold text-zinc-700 outline-none"
+                                    value={newTime.texto} onChange={e => setNewTime({ ...newTime, texto: e.target.value })} />
+                            </div>
                             <button onClick={handleAdd} className="px-4 py-2 bg-amber-500 text-white text-sm font-bold rounded-lg shadow-md hover:bg-amber-600 h-[38px] flex items-center justify-center gap-2">
                                 <i className="fa-solid fa-plus"></i> Agregar
                             </button>
                         </div>
+                        <p className="text-[10px] text-zinc-400 mt-2 italic">El portal muestra: el <b>Texto</b> si está cargado, si no "<b>Horas</b> horas". La prioridad debe ser Normal o Urgente (el form del cliente la busca por ese nombre).</p>
                     </div>
 
                     {/* TABLE */}
@@ -130,11 +143,12 @@ const ConfigDeliveryTimesModal = ({ isOpen, onClose }) => {
                                     <th className="px-4 py-3 font-bold text-center">Prioridad</th>
                                     <th className="px-4 py-3 font-bold text-center">Horas</th>
                                     <th className="px-4 py-3 font-bold text-center">Días</th>
+                                    <th className="px-4 py-3 font-bold text-center">Texto</th>
                                     <th className="px-4 py-3 font-bold text-center">Acción</th>
                                 </tr>
                             </thead>
                             <tbody className="divide-y divide-zinc-100">
-                                {times.length === 0 ? <tr><td colSpan="5" className="py-8 text-center text-zinc-400 italic">No hay tiempos definidos.</td></tr> :
+                                {times.length === 0 ? <tr><td colSpan="6" className="py-8 text-center text-zinc-400 italic">No hay tiempos definidos.</td></tr> :
                                     times.map(t => {
                                         const isEditing = editingId === t.ConfigID;
                                         return (
@@ -149,8 +163,10 @@ const ConfigDeliveryTimesModal = ({ isOpen, onClose }) => {
                                                 </td>
                                                 <td className="px-4 py-3 text-center">
                                                     {isEditing ? (
-                                                        <input type="number" className="w-16 text-center border border-amber-300 rounded"
-                                                            value={editForm.prioridad} onChange={e => setEditForm({ ...editForm, prioridad: e.target.value })} />
+                                                        <select className="px-2 py-1 bg-white border border-amber-300 rounded"
+                                                            value={editForm.prioridad} onChange={e => setEditForm({ ...editForm, prioridad: e.target.value })}>
+                                                            {PRIORIDADES.map(p => <option key={p} value={p}>{p}</option>)}
+                                                        </select>
                                                     ) : <span className="text-zinc-600 font-mono">{t.Prioridad}</span>}
                                                 </td>
                                                 <td className="px-4 py-3 text-center">
@@ -164,6 +180,12 @@ const ConfigDeliveryTimesModal = ({ isOpen, onClose }) => {
                                                         <input type="number" className="w-16 text-center border border-amber-300 rounded"
                                                             value={editForm.dias} onChange={e => setEditForm({ ...editForm, dias: e.target.value })} />
                                                     ) : <span className="font-bold text-zinc-700">{t.Dias} d</span>}
+                                                </td>
+                                                <td className="px-4 py-3 text-center">
+                                                    {isEditing ? (
+                                                        <input type="text" className="w-40 text-center border border-amber-300 rounded"
+                                                            value={editForm.texto} onChange={e => setEditForm({ ...editForm, texto: e.target.value })} />
+                                                    ) : <span className="text-zinc-500 text-xs italic">{t.Texto || '—'}</span>}
                                                 </td>
                                                 <td className="px-4 py-3 text-center">
                                                     {isEditing ? (

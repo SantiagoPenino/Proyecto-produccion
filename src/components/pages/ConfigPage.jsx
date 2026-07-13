@@ -16,6 +16,7 @@ import ConfigDeliveryTimesModal from '../modals/config/ConfigDeliveryTimesModal'
 import ConfigWebServicesModal from '../modals/config/ConfigWebServicesModal';
 import ConfigSyncModal from '../modals/config/ConfigSyncModal';
 import ConfigSincroArticulosModal from '../modals/config/ConfigSincroArticulosModal';
+import StockArtEditModal from '../modals/config/StockArtEditModal';
 import EmpresasAdminPanel from './admin/EmpresasAdminPanel';
 
 export default function ConfigPage({ onBack }) {
@@ -301,6 +302,13 @@ export default function ConfigPage({ onBack }) {
                             colorClass="from-violet-500 to-indigo-600"
                             onClick={() => setActiveModal('sincro-articulos')}
                         />
+                        <ConfigCard
+                            title="Editor StockArt"
+                            subtitle="Variantes, tipos y artículos"
+                            icon="fa-boxes-stacked"
+                            colorClass="from-purple-500 to-fuchsia-600"
+                            onClick={() => setActiveModal('stockart')}
+                        />
                     </div>
                 </div>
             )}
@@ -358,6 +366,7 @@ export default function ConfigPage({ onBack }) {
             {activeModal === 'webservices' && <ConfigWebServicesModal isOpen={true} onClose={() => setActiveModal(null)} />}
             {activeModal === 'syncs' && <ConfigSyncModal isOpen={true} onClose={() => setActiveModal(null)} />}
             {activeModal === 'sincro-articulos' && <ConfigSincroArticulosModal isOpen={true} onClose={() => setActiveModal(null)} />}
+            {activeModal === 'stockart' && <StockArtEditModal isOpen={true} onClose={() => setActiveModal(null)} />}
 
             <ImportLogModal
                 isOpen={isLogModalOpen}

@@ -261,8 +261,9 @@ exports.moveOrder = async (req, res) => {
                 const orderData = await pool.request()
                     .query(`SELECT AreaID, Variante, Material FROM dbo.Ordenes WHERE OrdenID IN (${idsToMove.join(',')})`);
                 
-                const isDTF = orderData.recordset.some(o => o.AreaID === 'DF' || o.AreaID === 'DTF');
-                
+                // DTF e Impresión Directa comparten la regla: un lote por material (sin mezclar variantes)
+                const isDTF = orderData.recordset.some(o => o.AreaID === 'DF' || o.AreaID === 'DTF' || o.AreaID === 'DIRECTA');
+
                 if (isDTF) {
                     const variantSet = new Set();
                     const materialSet = new Set();
@@ -273,10 +274,10 @@ exports.moveOrder = async (req, res) => {
                     });
 
                     if (variantSet.size > 1) {
-                        return res.status(400).json({ error: "⛔ En DTF no se permite mover órdenes con distintas variantes juntas." });
+                        return res.status(400).json({ error: "⛔ No se permite mover órdenes con distintas variantes juntas en esta área." });
                     }
                     if (materialSet.size > 1) {
-                        return res.status(400).json({ error: "⛔ En DTF no se permite mover órdenes con distintos materiales juntas." });
+                        return res.status(400).json({ error: "⛔ No se permite mover órdenes con distintos materiales juntas en esta área." });
                     }
 
                     const existingOrdersData = await pool.request()
@@ -292,10 +293,10 @@ exports.moveOrder = async (req, res) => {
                         const newMaterial = Array.from(materialSet)[0];
 
                         if (existingVariant && existingVariant !== newVariant) {
-                            return res.status(400).json({ error: `⛔ El lote de destino ya contiene órdenes con variante '${existingOrder.Variante}'. No puedes mezclar variantes en DTF.` });
+                            return res.status(400).json({ error: `⛔ El lote de destino ya contiene órdenes con variante '${existingOrder.Variante}'. No puedes mezclar variantes en esta área.` });
                         }
                         if (existingMaterial && existingMaterial !== newMaterial) {
-                            return res.status(400).json({ error: `⛔ El lote de destino ya contiene órdenes con material '${existingOrder.Material}'. No puedes mezclar materiales en DTF.` });
+                            return res.status(400).json({ error: `⛔ El lote de destino ya contiene órdenes con material '${existingOrder.Material}'. No puedes mezclar materiales en esta área.` });
                         }
                     }
                 } // fin if (isDTF)
@@ -1387,7 +1388,7 @@ exports.getRollosActivos = async (req, res) => {
                                 SELECT 1 FROM dbo.Ordenes o WITH (NOLOCK)
                                 WHERE o.RolloID = r.RolloID
                                   AND o.Estado NOT IN ('Finalizado', 'CANCELADO', 'Entregado')
-                                  AND ISNULL(o.EstadoenArea,'') NOT IN ('Pronto', 'PRONTO', 'En Transito', 'EN TRANSITO')
+                                  AND ISNULL(o.EstadoenArea,'') NOT IN ('Pronto', 'PRONTO', 'En Transito', 'EN TRANSITO', 'En Terminaciones')
                             )
                         )
                     )

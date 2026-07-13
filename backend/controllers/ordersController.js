@@ -588,10 +588,11 @@ exports.assignRoll = async (req, res) => {
         }
 
         // ----------------------------------------------------
-        // REGLA DE NEGOCIO PARA DTF (DF)
-        // No permitir mezclar variantes o materiales en el mismo lote
+        // REGLA DE NEGOCIO PARA DTF (DF) e IMPRESIÓN DIRECTA
+        // No permitir mezclar variantes o materiales en el mismo lote (un lote por material)
         // ----------------------------------------------------
-        if (areaCode === 'DF') {
+        if (areaCode === 'DF' || areaCode === 'DIRECTA') {
+            const areaLbl = areaCode === 'DIRECTA' ? 'Impresión Directa' : 'DTF';
             const orderData = await new sql.Request(pool)
                 .query(`SELECT Variante, Material FROM dbo.Ordenes WHERE OrdenID IN (${targetOrderIds.join(',')})`);
             
@@ -604,10 +605,10 @@ exports.assignRoll = async (req, res) => {
             });
 
             if (variantSet.size > 1) {
-                return res.status(400).json({ error: "⛔ En DTF no se permite asignar órdenes con distinta Variante al mismo lote." });
+                return res.status(400).json({ error: `⛔ En ${areaLbl} no se permite asignar órdenes con distinta Variante al mismo lote.` });
             }
             if (materialSet.size > 1) {
-                return res.status(400).json({ error: "⛔ En DTF no se permite asignar órdenes con distinto Material al mismo lote." });
+                return res.status(400).json({ error: `⛔ En ${areaLbl} no se permite asignar órdenes con distinto Material al mismo lote.` });
             }
 
             if (!isNew && rollId) {
@@ -624,10 +625,10 @@ exports.assignRoll = async (req, res) => {
                     const newMaterial = Array.from(materialSet)[0];
 
                     if (existingVariant && existingVariant !== newVariant) {
-                        return res.status(400).json({ error: `⛔ El lote seleccionado ya contiene órdenes con variante '${existingOrder.Variante}'. No puedes mezclar variantes en DTF.` });
+                        return res.status(400).json({ error: `⛔ El lote seleccionado ya contiene órdenes con variante '${existingOrder.Variante}'. No puedes mezclar variantes en ${areaLbl}.` });
                     }
                     if (existingMaterial && existingMaterial !== newMaterial) {
-                        return res.status(400).json({ error: `⛔ El lote seleccionado ya contiene órdenes con material '${existingOrder.Material}'. No puedes mezclar materiales en DTF.` });
+                        return res.status(400).json({ error: `⛔ El lote seleccionado ya contiene órdenes con material '${existingOrder.Material}'. No puedes mezclar materiales en ${areaLbl}.` });
                     }
                 }
             }

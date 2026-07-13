@@ -103,7 +103,7 @@ AND(
         -- EXCEPCIÓN: si se seleccionó un lote específico, las 'Pronto' de ESE lote siguen visibles
         -- para que al corregir una falla la orden madre no desaparezca.
         (${isControlView ? 1 : 0} = 1 AND (
-            ISNULL(O.EstadoenArea,'') NOT IN ('Pronto', 'PRONTO', 'Retenido', 'RETENIDO')
+            ISNULL(O.EstadoenArea,'') NOT IN ('Pronto', 'PRONTO', 'Retenido', 'RETENIDO', 'En Terminaciones')
             OR (
                 ISNULL(O.EstadoenArea,'') IN ('Pronto', 'PRONTO')
                 AND (
@@ -815,26 +815,50 @@ const postControlArchivo = async (req, res) => {
                 io       : req.app.get('socketio')
             });
                 } else {
+                    // ECOUV: una orden con terminaciones PENDIENTES no va a logística al salir
+                    // de control — pasa a 'En Terminaciones' (la trabaja la bandeja de
+                    // Terminaciones ECOUV; su botón "Finalizar Tarea" la manda a Pronto/Canasto).
+                    const ordenesConTermPend = new Set();
+                    if (areaId === 'ECOUV' && destinoLogistica === 'Canasto Produccion') {
+                        try {
+                            const termReq = new sql.Request(transaction).input('OID', sql.Int, ordenId);
+                            let termQuery;
+                            if (noDocERP) {
+                                termReq.input('NoDoc', sql.VarChar(50), noDocERP).input('AreaID', sql.VarChar(50), areaId);
+                                termQuery = `SELECT DISTINCT OT.OrdenID FROM OrdenTerminaciones OT
+                                             INNER JOIN Ordenes O ON O.OrdenID = OT.OrdenID
+                                             WHERE O.NoDocERP = @NoDoc AND O.AreaID = @AreaID AND OT.Estado = 'Pendiente'`;
+                            } else {
+                                termQuery = `SELECT DISTINCT OrdenID FROM OrdenTerminaciones WHERE OrdenID = @OID AND Estado = 'Pendiente'`;
+                            }
+                            (await termReq.query(termQuery)).recordset.forEach(r => ordenesConTermPend.add(r.OrdenID));
+                        } catch (eTerm) {
+                            logger.warn('[postControlArchivo] No se pudo evaluar terminaciones pendientes:', eTerm.message);
+                        }
+                    }
+                    const estadoDe  = (oid) => ordenesConTermPend.has(oid) ? 'En Terminaciones' : nuevoEstadoArea;
+                    const destinoDe = (oid) => ordenesConTermPend.has(oid) ? 'En Terminaciones' : destinoLogistica;
+                    const detalleDe = (oid) => ordenesConTermPend.has(oid) ? 'Control OK — pasa a Terminaciones ECOUV' : 'Control finalizado en Área';
+
                     // Orden Normal -> Actualizar al Grupo Completo en el AREA
                     if (noDocERP) {
                         const grp = await new sql.Request(transaction)
                             .input('NoDoc', sql.VarChar(50), noDocERP)
                             .input('AreaID', sql.VarChar(50), areaId)
                             .query(`SELECT OrdenID FROM Ordenes WHERE NoDocERP = @NoDoc AND AreaID = @AreaID AND Estado != 'CANCELADO' AND ISNULL(EstadoenArea,'') != 'Retenido'`);
-                        await new sql.Request(transaction)
-                            .input('NoDoc', sql.VarChar(50), noDocERP)
-                            .input('AreaID', sql.VarChar(50), areaId)
-                            .query(`UPDATE Ordenes SET EstadoLogistica = '${destinoLogistica}' WHERE NoDocERP = @NoDoc AND AreaID = @AreaID AND Estado != 'CANCELADO' AND ISNULL(EstadoenArea,'') != 'Retenido'`);
                         for (const o of grp.recordset) {
-                            await changeOrderState(transaction, { target: { type: 'ORDER', id: o.OrdenID }, estado: nuevoEstadoArea, userObj: req.user || 'Sistema', detalle: 'Control finalizado en Área',
+                            await new sql.Request(transaction)
+                                .input('OID', sql.Int, o.OrdenID)
+                                .query(`UPDATE Ordenes SET EstadoLogistica = '${destinoDe(o.OrdenID)}' WHERE OrdenID = @OID`);
+                            await changeOrderState(transaction, { target: { type: 'ORDER', id: o.OrdenID }, estado: estadoDe(o.OrdenID), userObj: req.user || 'Sistema', detalle: detalleDe(o.OrdenID),
                 guard    : "Estado NOT IN ('Finalizado', 'Ingresado', 'Avisado', 'Entregado', 'Cancelado')",
                 io       : req.app.get('socketio')
             });
                         }
                     } else {
                         await new sql.Request(transaction).input('OID', sql.Int, ordenId)
-                            .query(`UPDATE Ordenes SET EstadoLogistica = '${destinoLogistica}' WHERE OrdenID = @OID`);
-                        await changeOrderState(transaction, { target: { type: 'ORDER', id: ordenId }, estado: nuevoEstadoArea, userObj: req.user || 'Sistema', detalle: 'Control finalizado en Área',
+                            .query(`UPDATE Ordenes SET EstadoLogistica = '${destinoDe(ordenId)}' WHERE OrdenID = @OID`);
+                        await changeOrderState(transaction, { target: { type: 'ORDER', id: ordenId }, estado: estadoDe(ordenId), userObj: req.user || 'Sistema', detalle: detalleDe(ordenId),
                 guard    : "Estado NOT IN ('Finalizado', 'Ingresado', 'Avisado', 'Entregado', 'Cancelado')",
                 io       : req.app.get('socketio')
             });

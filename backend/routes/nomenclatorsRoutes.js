@@ -119,7 +119,17 @@ router.get('/priorities', async (req, res) => {
     try {
         const pool = await getPool();
         const r = await pool.request().query("SELECT * FROM ConfigPrioridades WHERE Activo = 1 ORDER BY Nivel ASC");
-        res.json({ success: true, data: r.recordset });
+
+        // Áreas con urgencia activa (misma regla que el motor de precios): el portal
+        // la usa para ocultar el botón "Urgente" en los servicios que no la tienen.
+        // Si falla, se omite el campo y el front muestra todas las prioridades (fail-open).
+        let areasConUrgencia;
+        try {
+            const { getAreasConUrgencia } = require('../utils/urgenciaAreas');
+            areasConUrgencia = [...await getAreasConUrgencia(pool)];
+        } catch (_) { areasConUrgencia = undefined; }
+
+        res.json({ success: true, data: r.recordset, areasConUrgencia });
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -132,8 +142,10 @@ router.get('/variants/:areaId', async (req, res) => {
         const r = await pool.request()
             .input('AreaID', sql.VarChar, areaId)
             .query(`
-                SELECT DISTINCT LTRIM(RTRIM(dbo.StockArt.Articulo)) AS Variante
-                FROM dbo.ConfigMapeoERP 
+                SELECT DISTINCT LTRIM(RTRIM(dbo.StockArt.Articulo)) AS Variante,
+                       ISNULL(dbo.StockArt.TipoStock, 'MATERIAL') AS TipoStock,
+                       LTRIM(RTRIM(dbo.StockArt.UM)) AS UM
+                FROM dbo.ConfigMapeoERP
                 INNER JOIN dbo.StockArt ON dbo.ConfigMapeoERP.CodigoERP = dbo.StockArt.Grupo
                 WHERE dbo.ConfigMapeoERP.AreaID_Interno = @AreaID
                   AND ISNULL(dbo.StockArt.mostrar, 1) = 1
@@ -141,6 +153,108 @@ router.get('/variants/:areaId', async (req, res) => {
             `);
 
         res.json({ success: true, data: r.recordset });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Materiales por TIPO de variante (form ECOUV con variantes virtuales):
+// ?tipo=MATERIAL|PRODUCTO_TERMINADO  ·  ?conTerminaciones=1 → solo materiales
+// con terminaciones asignadas (variante "Productos Personalizados / Armar a Medida")
+router.get('/materiales-por-tipo/:areaId', async (req, res) => {
+    try {
+        const { areaId } = req.params;
+        const tipo = ['MATERIAL', 'PRODUCTO_TERMINADO', 'TERMINACION'].includes(req.query.tipo) ? req.query.tipo : 'MATERIAL';
+        const soloConTerminaciones = req.query.conTerminaciones === '1';
+        const pool = await getPool();
+
+        const r = await pool.request()
+            .input('AreaID', sql.VarChar, areaId)
+            .input('Tipo', sql.VarChar, tipo)
+            .query(`
+                SELECT
+                    dbo.articulos.CodArticulo,
+                    dbo.articulos.CodStock,
+                    dbo.articulos.Descripcion AS Material,
+                    dbo.articulos.anchoimprimible AS Ancho,
+                    -- Clasificación física de StockArt (Lonas/Canvas/Vinilos/Cuadros...):
+                    -- el form la usa como filtro "Categoría"
+                    (SELECT TOP 1 LTRIM(RTRIM(S2.Articulo)) FROM dbo.StockArt S2
+                     WHERE LTRIM(RTRIM(S2.CodStock)) = LTRIM(RTRIM(dbo.articulos.CodStock))) AS Categoria
+                FROM dbo.articulos
+                WHERE LTRIM(RTRIM(dbo.articulos.CodStock)) IN (
+                    SELECT LTRIM(RTRIM(S.CodStock))
+                    FROM dbo.StockArt S
+                    INNER JOIN dbo.ConfigMapeoERP C ON C.CodigoERP = S.Grupo
+                    WHERE C.AreaID_Interno = @AreaID
+                      AND ISNULL(S.TipoStock, 'MATERIAL') = @Tipo
+                      AND ISNULL(S.mostrar, 1) = 1
+                )
+                AND ISNULL(dbo.articulos.mostrar, 1) = 1
+                ${soloConTerminaciones ? `AND EXISTS (
+                    SELECT 1 FROM MaterialTerminaciones MT
+                    INNER JOIN Terminaciones T ON T.TerminacionID = MT.TerminacionID AND T.Activo = 1
+                    WHERE MT.CodArticulo = LTRIM(RTRIM(dbo.articulos.CodArticulo))
+                )` : ''}
+                ORDER BY Categoria, dbo.articulos.Descripcion
+            `);
+
+        res.json({ success: true, data: r.recordset });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Terminaciones permitidas para un material de impresión (form ECOUV del portal)
+router.get('/terminaciones-material/:codArticulo', async (req, res) => {
+    try {
+        const pool = await getPool();
+        const r = await pool.request()
+            .input('Art', sql.VarChar, req.params.codArticulo)
+            .query(`
+                SELECT T.TerminacionID, T.Nombre, T.UnidadCobro
+                FROM MaterialTerminaciones MT
+                INNER JOIN Terminaciones T ON T.TerminacionID = MT.TerminacionID
+                WHERE LTRIM(RTRIM(MT.CodArticulo)) = LTRIM(RTRIM(@Art)) AND T.Activo = 1
+                ORDER BY T.Nombre
+            `);
+        res.json({ success: true, data: r.recordset });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Ficha de producto terminado para el form del portal (dimensiones + material + incluidas)
+router.get('/producto-terminado/:codArticulo', async (req, res) => {
+    try {
+        const pool = await getPool();
+        const prod = await pool.request()
+            .input('Art', sql.VarChar, req.params.codArticulo)
+            .query(`
+                SELECT P.ID, P.AnchoM, P.AltoM, LTRIM(RTRIM(P.MaterialCodArticulo)) AS MaterialCodArticulo,
+                       LTRIM(RTRIM(P.Tinta)) AS Tinta,
+                       M.Descripcion AS MaterialDescripcion
+                FROM ProductosTerminados P
+                OUTER APPLY (
+                    SELECT TOP 1 LTRIM(RTRIM(A.Descripcion)) AS Descripcion
+                    FROM articulos A WHERE LTRIM(RTRIM(A.CodArticulo)) = LTRIM(RTRIM(P.MaterialCodArticulo))
+                ) M
+                WHERE LTRIM(RTRIM(P.CodArticulo)) = LTRIM(RTRIM(@Art)) AND P.Activo = 1
+            `);
+        if (prod.recordset.length === 0) return res.json({ success: true, data: null });
+        const p = prod.recordset[0];
+        const terms = await pool.request()
+            .input('PID', sql.Int, p.ID)
+            .query(`
+                SELECT PT.TerminacionID, PT.Cantidad, T.Nombre, T.UnidadCobro
+                FROM ProductoTerminadoTerminaciones PT
+                INNER JOIN Terminaciones T ON T.TerminacionID = PT.TerminacionID
+                WHERE PT.ProductoID = @PID
+            `);
+        res.json({
+            success: true,
+            data: {
+                anchoM: p.AnchoM, altoM: p.AltoM,
+                materialCodArticulo: p.MaterialCodArticulo || null,
+                materialDescripcion: p.MaterialDescripcion || null,
+                tinta: p.Tinta || null,
+                terminacionesIncluidas: terms.recordset
+            }
+        });
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 

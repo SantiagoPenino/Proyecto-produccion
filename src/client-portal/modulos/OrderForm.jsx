@@ -149,7 +149,7 @@ const OrderForm = ({ serviceId: propServiceId }) => {
         tpuForma,
         loading, showSuccessModal, createdOrderIds, uploading, uploadProgress, uploadError,
         errorModalOpen, errorModalMessage,
-        uniqueVariants, dynamicMaterials, visibleConfig, prioritiesList,
+        uniqueVariants, variantsInfo, dynamicMaterials, visibleConfig, prioritiesList, areasConUrgencia,
         activeSubOrders, embroideryVariants, embroideryMaterials
     } = state;
 
@@ -167,6 +167,98 @@ const OrderForm = ({ serviceId: propServiceId }) => {
     // Sublimación con Tela de Cliente: el cliente elige su bobina (mismo flujo que Corte tela cliente:
     // ancho/metros de la bobina validan el archivo y sus metros se descuentan al confirmar).
     const isSubliTelaCliente = svcId === 'sublimacion' && /tela de cliente/i.test(serviceSubType || '');
+
+    // ECOUV: comportamiento por VARIANTE VIRTUAL elegida (services.js → variantsInfo).
+    // Material Impreso        → impresión por m2, SIN terminaciones.
+    // Personalizado (a medida)→ impresión por m2 + chips de terminaciones POR ARCHIVO.
+    // Productos Terminados    → ficha con dimensiones/incluidas y precio cerrado.
+    const ecouvVariantInfo = config?.variantMode === 'virtual'
+        ? (variantsInfo || {})[(serviceSubType || '').trim()]
+        : null;
+    const isEcouvMaterial = !!ecouvVariantInfo && ecouvVariantInfo.tipoStock === 'MATERIAL' && ecouvVariantInfo.terminaciones === true;
+    const isEcouvPT = !!ecouvVariantInfo && ecouvVariantInfo.tipoStock === 'PRODUCTO_TERMINADO';
+
+    // Terminaciones permitidas POR MATERIAL (multimaterial: cada archivo puede llevar
+    // otro material, así que las permitidas se cachean por nombre de material).
+    const [termsPorMaterial, setTermsPorMaterial] = useState({});
+    useEffect(() => { setTermsPorMaterial({}); }, [serviceSubType]);
+    useEffect(() => {
+        if (!isEcouvMaterial) return;
+        const mats = [...new Set([globalMaterial, ...items.map(it => it.material)]
+            .map(m => (m || '').trim()).filter(Boolean))];
+        mats.forEach(mName => {
+            if (termsPorMaterial[mName] !== undefined) return;
+            const mat = (dynamicMaterials || []).find(m => (m.Material || '').trim() === mName);
+            const codArt = (mat?.CodArticulo || '').trim();
+            if (!codArt) return;
+            apiClient.get(`/nomenclators/terminaciones-material/${encodeURIComponent(codArt)}`)
+                .then(res => setTermsPorMaterial(prev => ({ ...prev, [mName]: res.success ? res.data : [] })))
+                .catch(() => setTermsPorMaterial(prev => ({ ...prev, [mName]: [] })));
+        });
+    }, [isEcouvMaterial, globalMaterial, items, dynamicMaterials]);
+    const termsDeMaterial = (mName) => termsPorMaterial[(mName || '').trim()] || [];
+
+    // Tinta de impresión (ECOUV: Ecosolvente/UV — el magic sort rutea el lote por Tinta).
+    // Default: la primera opción del servicio (Ecosolvente).
+    const [tintaSeleccionada, setTintaSeleccionada] = useState(config?.tintaOptions?.[0] || '');
+
+    // Categoría (clasificación física de StockArt: Lonas/Canvas/Vinilos/Cuadros...)
+    // — filtra el combo de materiales. Variante · Categoría · Material en una línea.
+    const [categoriaFiltro, setCategoriaFiltro] = useState('');
+    useEffect(() => { setCategoriaFiltro(''); }, [serviceSubType]);
+    const categoriasFisicas = config?.variantMode === 'virtual'
+        ? [...new Set((dynamicMaterials || []).map(m => (m.Categoria || '').trim()).filter(Boolean))]
+        : [];
+    const materialesParaSelect = (config?.variantMode === 'virtual')
+        ? (categoriaFiltro
+            ? (dynamicMaterials || []).filter(m => (m.Categoria || '').trim() === categoriaFiltro)
+            : (dynamicMaterials || []))
+        : (dynamicMaterials.length > 0 ? dynamicMaterials : (serviceInfo?.materials || []));
+    // Default de Categoría: 'Lonas' si existe en la variante actual, sino la primera.
+    // (Sin opción 'Todas': siempre hay una categoría concreta seleccionada.)
+    useEffect(() => {
+        if (config?.variantMode !== 'virtual' || categoriasFisicas.length === 0) return;
+        if (!categoriaFiltro || !categoriasFisicas.includes(categoriaFiltro)) {
+            setCategoriaFiltro(categoriasFisicas.find(c => /lona/i.test(c)) || categoriasFisicas[0]);
+        }
+    }, [config?.variantMode, categoriasFisicas.join('|'), categoriaFiltro]);
+
+    useEffect(() => {
+        if (config?.variantMode !== 'virtual' || !categoriaFiltro) return;
+        // Material: el primero que cumple la categoría elegida (si el actual no pertenece)
+        if (!materialesParaSelect.some(m => (m.Material || '').trim() === (globalMaterial || '').trim())) {
+            actions.setGlobalMaterial(materialesParaSelect[0]?.Material || '');
+        }
+    }, [categoriaFiltro, materialesParaSelect.length]);
+
+    // Ficha del producto terminado elegido (dimensiones + material de impresión + incluidas)
+    const [fichaPT, setFichaPT] = useState(null);
+    useEffect(() => {
+        if (!isEcouvPT || !globalMaterial) { setFichaPT(null); return; }
+        const mat = (dynamicMaterials || []).find(m => (m.Material || '').trim() === (globalMaterial || '').trim());
+        const codArt = (mat?.CodArticulo || '').trim();
+        if (!codArt) { setFichaPT(null); return; }
+        apiClient.get(`/nomenclators/producto-terminado/${encodeURIComponent(codArt)}`)
+            .then(res => setFichaPT(res.success ? res.data : null))
+            .catch(() => setFichaPT(null));
+    }, [isEcouvPT, globalMaterial, dynamicMaterials]);
+
+    // Toggle de una terminación en un archivo (item.terminaciones = [{terminacionId, cantidad, nombre}])
+    const toggleItemTerminacion = (item, term) => {
+        const current = Array.isArray(item.terminaciones) ? item.terminaciones : [];
+        const exists = current.find(t => t.terminacionId === term.TerminacionID);
+        const next = exists
+            ? current.filter(t => t.terminacionId !== term.TerminacionID)
+            : [...current, { terminacionId: term.TerminacionID, cantidad: 1, nombre: term.Nombre, unidad: term.UnidadCobro }];
+        actions.updateItem(item.id, 'terminaciones', next);
+    };
+    const setItemTerminacionCantidad = (item, terminacionId, cantidad) => {
+        const current = Array.isArray(item.terminaciones) ? item.terminaciones : [];
+        actions.updateItem(item.id, 'terminaciones', current.map(t =>
+            t.terminacionId === terminacionId ? { ...t, cantidad } : t
+        ));
+    };
+    const unidadLabel = (u) => u === 'M2' ? 'm²' : u === 'M' ? 'm' : 'u.';
 
     // Tiempos estimados de entrega del área (tabla ConfiguracionTiemposEntrega → GET /delivery-times, público).
     const [deliveryTimes, setDeliveryTimes] = useState([]);
@@ -202,6 +294,17 @@ const OrderForm = ({ serviceId: propServiceId }) => {
     };
     const tiempoEntregaNormal = tiempoEntregaTexto('normal');
     const tiempoEntregaUrgente = tiempoEntregaTexto('urgente');
+
+    // Urgencia configurable por área: si el área del servicio no está en la lista de
+    // "áreas con urgencia" (perfil de urgencia / AREAS_SIN_URGENCIA — misma regla que
+    // el motor de precios), se oculta el botón Urgente y su tiempo de entrega.
+    // Sin dato (null) no se oculta nada, para no romper si el endpoint falla.
+    const areaConUrgencia = !Array.isArray(areasConUrgencia)
+        ? true
+        : areasConUrgencia.includes(String(serviceInfo?.areaId || '').toUpperCase());
+    const prioridadesVisibles = (prioritiesList || []).filter(
+        p => areaConUrgencia || (p.Nombre || '').toLowerCase() !== 'urgente'
+    );
 
     // Initial Config for Specific Services
     useEffect(() => {
@@ -743,7 +846,16 @@ const OrderForm = ({ serviceId: propServiceId }) => {
                     width: finalWidthM,
                     height: finalHeightM,
                     widthBack: fileBackEffective ? finalWidthM : undefined,
-                    heightBack: fileBackEffective ? finalHeightM : undefined
+                    heightBack: fileBackEffective ? finalHeightM : undefined,
+                    // ECOUV: terminaciones del archivo, solo las que permite el material DE ESTE archivo
+                    terminaciones: isEcouvMaterial
+                        ? (() => {
+                            const permit = termsDeMaterial(it.material || globalMaterial);
+                            return (it.terminaciones || [])
+                                .filter(t => permit.some(p => p.TerminacionID === t.terminacionId))
+                                .map(t => ({ terminacionId: t.terminacionId, cantidad: parseFloat(t.cantidad) || 1 }));
+                        })()
+                        : []
                 });
             });
 
@@ -870,6 +982,8 @@ const OrderForm = ({ serviceId: propServiceId }) => {
                         fileName: sl.archivoPrincipal?.name, // <--- NECESARIO PARA VINCULAR
                         fileBackName: sl.archivoDorso?.name,
                         printSettings: sl.printSettings,
+                        terminaciones: sl.terminaciones || [], // ECOUV: por archivo
+
                         widthBack: sl.widthBack, // Pass back dimensions
                         heightBack: sl.heightBack,
                         observaciones: sl.archivoPrincipal?.observaciones, // Pass main observations
@@ -1015,6 +1129,9 @@ const OrderForm = ({ serviceId: propServiceId }) => {
                 prioridad: urgency,
                 notasGenerales: generalNote,
 
+                // Tinta de impresión (ECOUV) — el backend la guarda en Ordenes.Tinta
+                tinta: (Array.isArray(config.tintaOptions) && tintaSeleccionada) ? tintaSeleccionada : null,
+
                 // TELA CLIENTE (top-level: el backend los espera acá)
                 bobinaId: usaTelaCliente ? selectedBobinaId : null,
                 magnitud: usaTelaCliente ? largoTotalM : null,
@@ -1134,7 +1251,7 @@ const OrderForm = ({ serviceId: propServiceId }) => {
                         <div>
                             <p className="block text-sm font-medium text-zinc-400 mb-2">Prioridad *</p>
                             <div className="flex bg-brand-dark p-1 rounded-lg gap-1 border border-zinc-700">
-                                {(prioritiesList || []).map(p => {
+                                {prioridadesVisibles.map(p => {
                                     const isUrgent = p.Nombre.toLowerCase() === 'urgente';
                                     const isSelected = urgency === p.Nombre;
                                     const selectedClass = isUrgent
@@ -1156,7 +1273,7 @@ const OrderForm = ({ serviceId: propServiceId }) => {
                                     {tiempoEntregaNormal && (
                                         <p className="text-brand-cyan font-semibold">Tiempo estimado de entrega normal: <span className="font-black text-zinc-100">{tiempoEntregaNormal}</span></p>
                                     )}
-                                    {tiempoEntregaUrgente && (
+                                    {tiempoEntregaUrgente && areaConUrgencia && (
                                         <p className="text-brand-magenta font-semibold">Tiempo estimado de entrega urgente: <span className="font-black text-zinc-100">{tiempoEntregaUrgente}</span></p>
                                     )}
                                 </div>
@@ -1182,16 +1299,32 @@ const OrderForm = ({ serviceId: propServiceId }) => {
                         <div className="space-y-8">
                             {/* Material Selectors for Main Service */}
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-6 p-4 bg-custom-dark md:rounded-2xl rounded-none border-y border-x-0 md:border-x border-zinc-700/50 -mx-4 md:mx-0">
-                                {config.variantMode === 'select' && serviceId !== 'bordado' && serviceId !== 'EMB' && (
+                                {(config.variantMode === 'select' || config.variantMode === 'virtual') && serviceId !== 'bordado' && serviceId !== 'EMB' && (
                                     <div>
-                                        <p className="block text-xs font-bold uppercase text-zinc-400 mb-2">Variante / Sub-Categoría *</p>
+                                        <p className="block text-xs font-bold uppercase text-zinc-400 mb-2">{config.variantMode === 'virtual' ? 'Categoría *' : 'Variante / Sub-Categoría *'}</p>
                                         <CustomSelect
                                             name="serviceSubType"
-                                            aria-label="Variante / Sub-Categoría"
+                                            aria-label={config.variantMode === 'virtual' ? 'Categoría' : 'Variante / Sub-Categoría'}
                                             value={serviceSubType}
                                             onChange={(val) => actions.handleSubTypeChange(val)}
                                             options={(uniqueVariants.length > 0 ? uniqueVariants : (serviceInfo?.subtypes || [])).map(t => ({ value: t, label: t }))}
                                             placeholder="Seleccionar..."
+                                            variant="black"
+                                        />
+                                    </div>
+                                )}
+
+                                {/* Variante física (StockArt: Lonas/Canvas/Vinilos/Cuadros...) — filtra materiales */}
+                                {config.variantMode === 'virtual' && categoriasFisicas.length > 0 && (
+                                    <div>
+                                        <p className="block text-xs font-bold uppercase text-zinc-400 mb-2">Variante *</p>
+                                        <CustomSelect
+                                            name="categoriaFisica"
+                                            aria-label="Variante"
+                                            value={categoriaFiltro}
+                                            onChange={(val) => setCategoriaFiltro(val)}
+                                            options={categoriasFisicas.map(c => ({ value: c, label: c }))}
+                                            placeholder="Seleccionar Variante..."
                                             variant="black"
                                         />
                                     </div>
@@ -1206,11 +1339,28 @@ const OrderForm = ({ serviceId: propServiceId }) => {
                                             aria-label={serviceInfo?.config?.materialLabel || 'Material / Soporte'}
                                             value={globalMaterial}
                                             onChange={(val) => actions.setGlobalMaterial(val)}
-                                            options={(dynamicMaterials.length > 0 ? dynamicMaterials : (serviceInfo?.materials || [])).map(m => {
+                                            options={materialesParaSelect.map(m => {
                                                 const val = m.Material || m.Descripcion || m;
                                                 return { value: val, label: val };
                                             })}
                                             placeholder="Seleccionar Material..."
+                                            variant="black"
+                                        />
+                                    </div>
+                                )}
+
+                                {/* Tinta de impresión (ECOUV: rutea el lote a la máquina Ecosolvente/UV).
+                                    Oculta en Productos Terminados: la tinta viene predefinida en la ficha. */}
+                                {Array.isArray(config.tintaOptions) && config.tintaOptions.length > 0 && !isEcouvPT && (
+                                    <div>
+                                        <p className="block text-xs font-bold uppercase text-zinc-400 mb-2">Tinta</p>
+                                        <CustomSelect
+                                            name="tintaImpresion"
+                                            aria-label="Tinta"
+                                            value={tintaSeleccionada}
+                                            onChange={(val) => setTintaSeleccionada(val)}
+                                            options={config.tintaOptions.map(t => ({ value: t, label: t }))}
+                                            placeholder="Seleccionar Tinta..."
                                             variant="black"
                                         />
                                     </div>
@@ -1232,6 +1382,35 @@ const OrderForm = ({ serviceId: propServiceId }) => {
                                     </div>
                                 )}
                             </div>
+
+                            {/* ECOUV Producto Terminado: ficha con dimensiones, material y terminaciones incluidas */}
+                            {isEcouvPT && fichaPT && (
+                                <div className="p-4 bg-purple-500/10 border border-purple-500/30 rounded-2xl space-y-2">
+                                    <p className="text-[10px] font-black uppercase tracking-wider text-purple-300">Producto terminado — precio cerrado</p>
+                                    <div className="flex flex-wrap gap-x-6 gap-y-1 text-xs text-zinc-300">
+                                        {(fichaPT.anchoM != null || fichaPT.altoM != null) && (
+                                            <span><span className="text-zinc-500 font-bold uppercase text-[10px] mr-1">Medidas:</span>{fichaPT.anchoM ?? '—'} × {fichaPT.altoM ?? '—'} m</span>
+                                        )}
+                                        {fichaPT.materialDescripcion && (
+                                            <span><span className="text-zinc-500 font-bold uppercase text-[10px] mr-1">Se imprime en:</span>{fichaPT.materialDescripcion}</span>
+                                        )}
+                                        {fichaPT.tinta && (
+                                            <span><span className="text-zinc-500 font-bold uppercase text-[10px] mr-1">Tinta:</span>{fichaPT.tinta}</span>
+                                        )}
+                                    </div>
+                                    {(fichaPT.terminacionesIncluidas || []).length > 0 && (
+                                        <div className="flex flex-wrap items-center gap-1.5 pt-1">
+                                            <span className="text-zinc-500 font-bold uppercase text-[10px]">Incluye:</span>
+                                            {fichaPT.terminacionesIncluidas.map(t => (
+                                                <span key={t.TerminacionID} className="px-2 py-0.5 rounded-full bg-purple-500/20 border border-purple-500/30 text-purple-200 text-[10px] font-bold">
+                                                    {t.Nombre}{t.Cantidad > 1 ? ` ×${t.Cantidad}` : ''}
+                                                </span>
+                                            ))}
+                                        </div>
+                                    )}
+                                    <p className="text-[10px] text-zinc-500">Subí el arte a imprimir y elegí la cantidad en cada archivo.</p>
+                                </div>
+                            )}
 
                             {/* Sublimación Tela de Cliente: elegí tu bobina (valida ancho/largo y descuenta metros) */}
                             {isSubliTelaCliente && (
@@ -1410,8 +1589,8 @@ const OrderForm = ({ serviceId: propServiceId }) => {
                                                     <span className="text-[10px] font-black bg-cyan-400/10 text-cyan-400 py-1 px-3 rounded-full border border-cyan-500/20">ARCHIVO {index + 1}</span>
                                                     <button type="button" onClick={() => actions.removeItem(item.id)}><Trash2 size={16} className="text-zinc-500 hover:text-red-400 transition-colors" /></button>
                                                 </div>
-                                                {/* Item Material Override */}
-                                                {config.materialMode === 'multiple' && (
+                                                {/* Item Material Override (multiple = Sublimación; allowItemMaterialOverride = ECOUV multimaterial) */}
+                                                {(config.materialMode === 'multiple' || config.allowItemMaterialOverride) && (
                                                     <div className="mb-4 px-1">
                                                         <div className="flex items-center justify-between mb-1">
                                                             <span className="block text-[9px] uppercase font-black text-zinc-400">Material (Específico)</span>
@@ -1431,7 +1610,7 @@ const OrderForm = ({ serviceId: propServiceId }) => {
                                                             <CustomSelect
                                                                 value={item.material}
                                                                 onChange={(val) => handleItemMaterialChange(item.id, val)}
-                                                                options={(dynamicMaterials.length > 0 ? dynamicMaterials : (serviceInfo?.materials || [])).map(m => {
+                                                                options={materialesParaSelect.map(m => {
                                                                     const val = m.Material || m.Descripcion || m;
                                                                     return { value: val, label: val };
                                                                 })}
@@ -1487,7 +1666,7 @@ const OrderForm = ({ serviceId: propServiceId }) => {
                                                                 originalWidthM={item.file.unit === 'meters' ? item.file.width : (item.file.width / 300) * 0.0254}
                                                                 originalHeightM={item.file.unit === 'meters' ? item.file.height : (item.file.height / 300) * 0.0254}
                                                                 materialMaxWidthM={(() => {
-                                                                    const isSingleMat = config.materialMode === 'single';
+                                                                    const isSingleMat = config.materialMode === 'single' && !config.allowItemMaterialOverride;
                                                                     const itemMat = isSingleMat ? globalMaterial : (item.material || globalMaterial);
                                                                     // Sin material seleccionado → null, para no validar el ancho todavía.
                                                                     if (!itemMat || !String(itemMat).trim()) return null;
@@ -1499,10 +1678,48 @@ const OrderForm = ({ serviceId: propServiceId }) => {
                                                                 onCopiesChange={(v) => actions.updateItem(item.id, 'copies', v)}
                                                                 onChange={(s) => actions.updateItem(item.id, 'printSettings', s)}
                                                                 disableScaling={serviceId === 'tpu' || serviceId?.toUpperCase() === 'DF'}
+                                                                hideRaport={!!config.hideRaport}
                                                             />
                                                         )}
                                                     </div>
                                                 </div>
+
+                                                {/* ECOUV: terminaciones de ESTE archivo (según el material DE ESTE archivo, se cobran aparte) */}
+                                                {isEcouvMaterial && (() => {
+                                                    const termsItem = termsDeMaterial(item.material || globalMaterial);
+                                                    if (termsItem.length === 0) return null;
+                                                    return (
+                                                    <div className="mt-4 pt-3 border-t border-zinc-700/30">
+                                                        <p className="text-[9px] uppercase font-black tracking-wider text-amber-400/90 mb-2">
+                                                            Terminaciones para este archivo <span className="text-zinc-500 normal-case font-bold">(opcionales, se cobran aparte)</span>
+                                                        </p>
+                                                        <div className="flex flex-wrap gap-2">
+                                                            {termsItem.map(t => {
+                                                                const sel = (item.terminaciones || []).find(x => x.terminacionId === t.TerminacionID);
+                                                                return (
+                                                                    <div key={t.TerminacionID}
+                                                                        className={`inline-flex items-center rounded-full border text-xs transition-all overflow-hidden ${sel
+                                                                            ? 'bg-amber-500/20 border-amber-500/60 text-amber-200'
+                                                                            : 'bg-zinc-900/60 border-zinc-700/60 text-zinc-400 hover:border-amber-500/40'}`}>
+                                                                        <button type="button" onClick={() => toggleItemTerminacion(item, t)}
+                                                                            className="px-3 py-1.5 font-bold">
+                                                                            {sel ? '✓ ' : '+ '}{t.Nombre}
+                                                                        </button>
+                                                                        {sel && (
+                                                                            <span className="flex items-center gap-1 pr-2">
+                                                                                <input type="number" min="0.5" step="0.5" value={sel.cantidad}
+                                                                                    onChange={e => setItemTerminacionCantidad(item, t.TerminacionID, e.target.value)}
+                                                                                    className="w-14 px-1.5 py-0.5 text-xs font-black text-amber-200 bg-zinc-900 border border-amber-500/40 rounded-full outline-none text-center" />
+                                                                                <span className="text-[9px] font-black text-amber-400/70">{unidadLabel(t.UnidadCobro)}</span>
+                                                                            </span>
+                                                                        )}
+                                                                    </div>
+                                                                );
+                                                            })}
+                                                        </div>
+                                                    </div>
+                                                    );
+                                                })()}
                                             </div>
                                         ))}
 

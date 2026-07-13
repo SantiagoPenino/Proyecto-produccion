@@ -9,7 +9,7 @@ import { toast } from 'sonner';
 import Swal from 'sweetalert2';
 import AlertaAutorizacionModal from '../../modals/AlertaAutorizacionModal';
 
-// â”€â”€â”€ TICKET: Comprobante de Retiro (igual a WebRetirosPage) â”€â”€â”€
+// ─── TICKET: Comprobante de Retiro (igual a WebRetirosPage) ───
 const printTicketEncomienda = (enc) => {
     const now = new Date().toLocaleString('es-UY', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
     const pagado = enc.pagorealizado === 1;
@@ -93,7 +93,7 @@ const printTicketEncomienda = (enc) => {
     if (win) { win.document.write(html); win.document.close(); win.focus(); setTimeout(() => win.print(), 600); }
 };
 
-// â”€â”€â”€ LABEL: Shared label HTML generator â”€â”€â”€
+// ─── LABEL: Shared label HTML generator ───
 const generateLabelBody = (enc) => {
     const nombre = enc.receptorNombre || enc.CliNombre || enc.CliCodigoCliente || '-';
     const telefono = enc.CliTelefono ? enc.CliTelefono.trim() : '';
@@ -216,7 +216,7 @@ const EntregaPedidosView = () => {
                 const entregados = new Set(payload.ordenesRetiro.map(o => String(o).toUpperCase()));
                 setEncomiendas(prev => prev.filter(enc => !entregados.has(String(enc.ordenDeRetiro || '').toUpperCase())));
             } else if (tipo === 'nuevo_retiro') {
-                // Alguien creó un retiro â†’ refrescar sinRetiro
+                // Alguien creó un retiro → refrescar sinRetiro
                 if (loadSinRetiroRef.current) loadSinRetiroRef.current();
             } else if (tipo === 'pago_web' || tipo === 'estado' || tipo === '') {
                 // Refrescar encomiendas si estamos en ese tab
@@ -547,7 +547,7 @@ const EntregaPedidosView = () => {
             return;
         }
 
-        // Todas pagas o autorizadas â†’ entregar directamente
+        // Todas pagas o autorizadas → entregar directamente
         await ejecutarEntrega(Array.from(selectedEncomiendas), null, null);
     };
 
@@ -722,15 +722,15 @@ const EntregaPedidosView = () => {
 
         let monedaInicial, total;
         if (todasUSD) {
-            // Todas en USD â†’ mostrar en USD directamente
+            // Todas en USD → mostrar en USD directamente
             monedaInicial = 'USD';
             total = ordenes.reduce((a, o) => a + parseFloat(o.costo || o.OrdCostoFinal || 0), 0);
         } else if (todasUYU) {
-            // Todas en UYU â†’ mostrar en UYU directamente
+            // Todas en UYU → mostrar en UYU directamente
             monedaInicial = 'UYU';
             total = ordenes.reduce((a, o) => a + parseFloat(o.costo || o.OrdCostoFinal || 0), 0);
         } else {
-            // Mixto â†’ convertir todo a UYU
+            // Mixto → convertir todo a UYU
             monedaInicial = 'UYU';
             total = ordenes.reduce((a, o) => {
                 const val = parseFloat(o.costo || o.OrdCostoFinal || 0);
@@ -783,9 +783,9 @@ const EntregaPedidosView = () => {
             setPagoModal(null);
             // Refrescar la sección correcta según el origen del pago
             if (searchTerm.trim()) {
-                buscarMostrador();           // venía del buscador â†’ actualizar resultados
+                buscarMostrador();           // venía del buscador → actualizar resultados
             } else {
-                loadTodasSinRetiro(filtroLugarMostrador); // venía de "Sin Retiro" â†’ actualizar esa lista
+                loadTodasSinRetiro(filtroLugarMostrador); // venía de "Sin Retiro" → actualizar esa lista
             }
 
         } catch (err) {
@@ -939,7 +939,7 @@ const EntregaPedidosView = () => {
                     </div>
 
 
-                    {/* â”€â”€ MOBILE: Card list â”€â”€ */}
+                    {/* ── MOBILE: Card list ── */}
                     <div className="md:hidden flex flex-col gap-3">
                         {(filtroLogistica.trim()
                             ? encomiendas.filter(enc => {
@@ -1055,7 +1055,7 @@ const EntregaPedidosView = () => {
                         )}
                     </div>
 
-                    {/* â”€â”€ DESKTOP: Table â”€â”€ */}
+                    {/* ── DESKTOP: Table ── */}
                     <div className="hidden md:block overflow-x-auto rounded-xl border border-slate-200">
                         <table className="w-full text-left border-collapse text-sm">
                             <thead>
@@ -1353,7 +1353,7 @@ const EntregaPedidosView = () => {
                 activeTab === 'mostrador' && (
                     <div className="flex flex-col gap-6">
 
-                        {/* â”€â”€ Buscador Puntual (arriba) â”€â”€ */}
+                        {/* ── Buscador Puntual (arriba) ── */}
                         <div className="bg-white p-4 md:p-6 rounded-none md:rounded-2xl shadow-sm border-b md:border border-slate-200 flex flex-wrap gap-4 items-end">
                             <div className="flex-1 min-w-[300px]">
                                 <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">Buscar orden de retiro, depósito o cliente específico</label>
@@ -1382,7 +1382,7 @@ const EntregaPedidosView = () => {
                             </button>
                         </div>
 
-                        {/* â”€â”€ Todas las Órdenes Sin Retiro (debajo del buscador) â”€â”€ */}
+                        {/* ── Todas las Órdenes Sin Retiro (debajo del buscador) ── */}
                         <div className="bg-white rounded-none md:rounded-2xl shadow-sm border-y md:border border-slate-200 overflow-hidden">
                             <div className="bg-gradient-to-r from-amber-500 to-amber-600 px-6 py-4 flex flex-wrap justify-between items-center gap-3">
                                 <div>
@@ -1803,7 +1803,7 @@ const EntregaPedidosView = () => {
                                         </select>
                                     </div>
 
-                                    {/* â”€â”€ Sección Dirección: solo cuando NO es retiro local â”€â”€ */}
+                                    {/* ── Sección Dirección: solo cuando NO es retiro local ── */}
                                     {esEnvio && (
                                         <div className="flex flex-col gap-3 border border-brand-cyan/20 bg-brand-cyan/5/40 rounded-xl p-4">
                                             <p className="text-xs font-bold text-brand-cyan uppercase tracking-wide">Datos de Envío</p>

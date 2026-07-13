@@ -7,9 +7,9 @@ import {
 import { jsPDF } from 'jspdf';
 import api from '../../../services/apiClient';
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────────────
 // Helpers
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────────────
 const fmtN  = (n) => Number(n || 0).toLocaleString('es-UY', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const fmtDt = (d) => {
     if (!d) return '—';
@@ -20,11 +20,11 @@ const fmtDate = (d) => d ? new Date(d).toLocaleDateString('es-UY') : '—';
 const TIPO_CONFIG = {
     INGRESO:             { label: 'Ingreso',        icon: ArrowDownCircle, color: 'text-emerald-700 bg-emerald-50 border-emerald-200', sign: '+', textColor: 'text-emerald-600' },
     CONSUMO_PRODUCCION:  { label: 'Consumo',         icon: ArrowUpCircle,   color: 'text-rose-700 bg-rose-50 border-rose-200',         sign: '-', textColor: 'text-rose-600'     },
-    AJUSTE_DESECHO:      { label: 'Merma',           icon: MinusCircle,     color: 'text-amber-700 bg-amber-50 border-amber-200',       sign: 'Â±', textColor: 'text-amber-600'    },
-    AJUSTE_MANUAL:       { label: 'Ajuste Manual',   icon: MinusCircle,     color: 'text-amber-700 bg-amber-50 border-amber-200',       sign: 'Â±', textColor: 'text-amber-600'    },
-    CONFIRMACION_MEDIDA: { label: 'Confirm. Medida', icon: CheckCircle2,    color: 'text-sky-700 bg-sky-50 border-sky-200',             sign: 'âœ“', textColor: 'text-sky-600'      },
-    RESERVA_ORDEN:       { label: 'Reserva',         icon: ArrowUpCircle,   color: 'text-indigo-700 bg-indigo-50 border-indigo-200',    sign: 'â†’', textColor: 'text-indigo-600'   },
-    LIBERACION_RESERVA:  { label: 'Lib. Reserva',    icon: ArrowDownCircle, color: 'text-teal-700 bg-teal-50 border-teal-200',          sign: 'â†', textColor: 'text-teal-600'     },
+    AJUSTE_DESECHO:      { label: 'Merma',           icon: MinusCircle,     color: 'text-amber-700 bg-amber-50 border-amber-200',       sign: '±', textColor: 'text-amber-600'    },
+    AJUSTE_MANUAL:       { label: 'Ajuste Manual',   icon: MinusCircle,     color: 'text-amber-700 bg-amber-50 border-amber-200',       sign: '±', textColor: 'text-amber-600'    },
+    CONFIRMACION_MEDIDA: { label: 'Confirm. Medida', icon: CheckCircle2,    color: 'text-sky-700 bg-sky-50 border-sky-200',             sign: '✓', textColor: 'text-sky-600'      },
+    RESERVA_ORDEN:       { label: 'Reserva',         icon: ArrowUpCircle,   color: 'text-indigo-700 bg-indigo-50 border-indigo-200',    sign: '→', textColor: 'text-indigo-600'   },
+    LIBERACION_RESERVA:  { label: 'Lib. Reserva',    icon: ArrowDownCircle, color: 'text-teal-700 bg-teal-50 border-teal-200',          sign: '←', textColor: 'text-teal-600'     },
     MERMA_REIMPRESION:   { label: 'Merma Reimp.',    icon: MinusCircle,     color: 'text-orange-700 bg-orange-50 border-orange-200',    sign: '-', textColor: 'text-orange-600'   },
 };
 const getTipo = (t) => TIPO_CONFIG[t] || { label: t, icon: MinusCircle, color: 'text-slate-500 bg-slate-50 border-slate-200', sign: '?', textColor: 'text-slate-500' };
@@ -35,12 +35,17 @@ const ESTADO_CONFIG = {
     'Consumida':  { label: 'Consumida',  color: 'bg-slate-100 text-slate-500 border-slate-300',       dot: 'bg-slate-400',   closed: true  },
     'Confirmado': { label: 'Confirmado', color: 'bg-emerald-100 text-emerald-800 border-emerald-300',  dot: 'bg-emerald-400', closed: false },
     'Cerrada':    { label: 'Cerrada',    color: 'bg-rose-100 text-rose-700 border-rose-300',           dot: 'bg-rose-400',    closed: true  },
+    // Estados reales de InventarioBobinas que faltaban: sin ellos el badge caía
+    // al fallback gris y las bobinas Agotadas contaban como "Activas" en el filtro
+    'Disponible': { label: 'Disponible', color: 'bg-emerald-100 text-emerald-800 border-emerald-300',  dot: 'bg-emerald-400', closed: false },
+    'Agotado':    { label: 'Agotado',    color: 'bg-slate-100 text-slate-500 border-slate-300',        dot: 'bg-slate-400',   closed: true  },
+    'Cerrado':    { label: 'Cerrado',    color: 'bg-rose-100 text-rose-700 border-rose-300',           dot: 'bg-rose-400',    closed: true  },
 };
 const getEstado = (e) => ESTADO_CONFIG[e] || { label: e || '—', color: 'bg-slate-100 text-slate-500 border-slate-300', dot: 'bg-slate-300', closed: false };
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────────────
 // Generar PDF para un arreglo de bobinas
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────────────
 function generarPDFBobinas(bobinas, clienteNombre, clienteId) {
     const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
     const W = 210, ML = 14, MR = 196, CW = MR - ML;
@@ -178,9 +183,9 @@ function generarPDFBobinas(bobinas, clienteNombre, clienteId) {
     doc.save('estado-tela-'+(clienteId||clienteNombre.replace(/\s+/g,'_'))+'.pdf');
 }
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────────────
 // BobinaCard con checkbox y botón exportar individual
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────────────
 function BobinaCard({ data, checked, onCheck, clienteNombre, clienteId }) {
     const { bobinaId, bulto, tela, estado, saldoBulto, referencia, movimientos,
             fechaIngreso, metrosIniciales, ancho, peso } = data;
@@ -322,9 +327,9 @@ function BobinaCard({ data, checked, onCheck, clienteNombre, clienteId }) {
     );
 }
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────────────
 // Página principal
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────────────
 export default function TelaClienteEstadoCuenta() {
     const [query,       setQuery]       = useState('');
     const [suggestions, setSuggestions] = useState([]);
@@ -457,7 +462,7 @@ export default function TelaClienteEstadoCuenta() {
     return (
         <div className="min-h-screen bg-slate-50 p-4 md:p-6">
 
-            {/* â”€â”€ Cabecera â”€â”€ */}
+            {/* ── Cabecera ── */}
             <div className="mb-6 flex items-start justify-between gap-3 flex-wrap">
                 <div className="flex items-center gap-3">
                     <div className="p-2.5 rounded-xl bg-indigo-100">
@@ -477,7 +482,7 @@ export default function TelaClienteEstadoCuenta() {
                 )}
             </div>
 
-            {/* â”€â”€ Buscador â”€â”€ */}
+            {/* ── Buscador ── */}
             <div className="relative mb-5 max-w-lg">
                 <div className="flex items-center gap-2 bg-white border border-slate-200 rounded-2xl px-4 py-2.5 shadow-sm focus-within:ring-2 focus-within:ring-indigo-400 focus-within:border-indigo-400 transition-all">
                     <Search size={16} className="text-slate-400 shrink-0" />
@@ -507,7 +512,7 @@ export default function TelaClienteEstadoCuenta() {
 
 
 
-            {/* â”€â”€ Barra de herramientas â”€â”€ */}
+            {/* ── Barra de herramientas ── */}
             {clienteSel && (
                 <div className="flex items-center justify-between gap-2 mb-3 flex-wrap">
                     <div className="flex items-center gap-2 flex-wrap">
@@ -555,7 +560,7 @@ export default function TelaClienteEstadoCuenta() {
                 </div>
             )}
 
-            {/* â”€â”€ Panel de filtros â”€â”€ */}
+            {/* ── Panel de filtros ── */}
             {showFiltros && (
                 <div className="mb-4 p-4 bg-white border border-slate-200 rounded-2xl shadow-sm grid grid-cols-2 md:grid-cols-4 gap-3">
                     {[{ key: 'desde', label: 'Desde', type: 'date' }, { key: 'hasta', label: 'Hasta', type: 'date' }].map(({ key, label, type }) => (
@@ -583,17 +588,17 @@ export default function TelaClienteEstadoCuenta() {
                 </div>
             )}
 
-            {/* â”€â”€ Estado vacío / cargando â”€â”€ */}
+            {/* ── Estado vacío / cargando ── */}
             {!clienteSel && !loading && (
                 <div className="flex flex-col items-center justify-center py-20 text-center">
                     <div className="p-4 bg-indigo-100 rounded-3xl mb-4"><Package size={32} className="text-indigo-500" /></div>
                     <p className="text-sm font-bold text-slate-400">Selecciona un cliente para ver sus bobinas</p>
                 </div>
             )}
-            {error && <div className="p-4 rounded-2xl bg-rose-50 border border-rose-200 text-rose-700 text-sm font-bold mb-4">âš  {error}</div>}
+            {error && <div className="p-4 rounded-2xl bg-rose-50 border border-rose-200 text-rose-700 text-sm font-bold mb-4">⚠ {error}</div>}
             {loading && <div className="flex items-center justify-center py-16"><Loader2 size={28} className="animate-spin text-indigo-400" /></div>}
 
-            {/* â”€â”€ Seleccionar todas â”€â”€ */}
+            {/* ── Seleccionar todas ── */}
             {!loading && bobinasFiltradas.length > 0 && (
                 <div className="flex items-center gap-3 mb-3 px-1">
                     <label className="flex items-center gap-2 cursor-pointer text-xs font-bold text-slate-500 hover:text-indigo-600 transition-colors">
@@ -609,7 +614,7 @@ export default function TelaClienteEstadoCuenta() {
                 </div>
             )}
 
-            {/* â”€â”€ Lista de bobinas â”€â”€ */}
+            {/* ── Lista de bobinas ── */}
             {!loading && bobinasFiltradas.length > 0 && (
                 <div className="space-y-3">
                     {bobinasFiltradas.map(b => (

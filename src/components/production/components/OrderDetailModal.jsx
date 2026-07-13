@@ -724,6 +724,18 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
         }).catch(err => console.error("Error loading estados:", err));
     }, []);
 
+    // Terminaciones de la orden (ECOUV: viven en la orden madre, ligadas a cada archivo).
+    const [terminacionesOrden, setTerminacionesOrden] = useState([]);
+    useEffect(() => {
+        if (order?.id && (order?.area || '').toUpperCase() === 'ECOUV') {
+            api.get(`/finishing/orders/${order.id}/details`)
+                .then(res => setTerminacionesOrden(res.data?.terminaciones || []))
+                .catch(() => setTerminacionesOrden([]));
+        } else {
+            setTerminacionesOrden([]);
+        }
+    }, [order]);
+
     if (!order || !currentOrder) return null;
 
     // Helper para acciones de archivo (Definido aquí para acceder al scope)
@@ -1155,6 +1167,7 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
                         <div className="flex gap-1 border-b border-zinc-200 mb-6 overflow-x-auto">
                             {[
                                 { id: 'files', label: 'Archivos de Impresión', count: productionFiles.length, icon: 'fa-layer-group' },
+                                ...(terminacionesOrden.length > 0 ? [{ id: 'terminaciones', label: 'Terminaciones', count: terminacionesOrden.length, icon: 'fa-scissors' }] : []),
                                 { id: 'refs', label: 'Archivos de Referencia', count: referenceFiles.length + (isSB ? fallaImages.length : 0), icon: 'fa-paperclip' },
                                 { id: 'services', label: 'Cotizar Productos', count: serviceFiles.length, icon: 'fa-box-open' },
                                 { id: 'labels', label: 'Etiquetas', count: labels.length, icon: 'fa-tags' },
@@ -1182,6 +1195,61 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
 
                         {/* CONTENIDO TABS */}
                         <div className="min-h-[250px] animate-in fade-in slide-in-from-bottom-2 duration-300">
+
+                            {/* PESTAÑA: TERMINACIONES (ECOUV: por archivo, dentro de la misma orden) */}
+                            {activeTab === 'terminaciones' && (
+                                <div className="space-y-4 pr-1 custom-scrollbar">
+                                    {(() => {
+                                        const grupos = {};
+                                        terminacionesOrden.forEach(t => {
+                                            const key = t.ArchivoID || 'general';
+                                            if (!grupos[key]) grupos[key] = { archivo: t.NombreArchivo, items: [] };
+                                            grupos[key].items.push(t);
+                                        });
+                                        const hechas = terminacionesOrden.filter(t => t.Estado === 'Hecha').length;
+                                        return (
+                                            <>
+                                                <div className="bg-amber-50 border border-amber-200 p-3 rounded-lg flex gap-3 text-amber-800 text-sm">
+                                                    <i className="fa-solid fa-scissors mt-0.5"></i>
+                                                    <p>
+                                                        <b>{hechas}/{terminacionesOrden.length}</b> terminaciones hechas.
+                                                        Se marcan desde la bandeja de <b>Terminaciones ECOUV</b>.
+                                                    </p>
+                                                </div>
+                                                {Object.entries(grupos).map(([key, g]) => (
+                                                    <div key={key} className="bg-white border border-zinc-200 rounded-xl overflow-hidden shadow-sm">
+                                                        <div className="bg-zinc-50 border-b border-zinc-100 px-4 py-2.5 flex items-center gap-2">
+                                                            <i className="fa-regular fa-file text-zinc-400"></i>
+                                                            <span className="text-xs font-bold text-zinc-700 truncate">
+                                                                {(g.archivo || 'Terminaciones generales de la orden').trim()}
+                                                            </span>
+                                                            <span className="ml-auto text-[10px] font-black text-zinc-400 uppercase shrink-0">
+                                                                {g.items.length} {g.items.length === 1 ? 'terminación' : 'terminaciones'}
+                                                            </span>
+                                                        </div>
+                                                        <div className="divide-y divide-zinc-100">
+                                                            {g.items.map(t => (
+                                                                <div key={t.ID} className={`flex items-center gap-3 px-4 py-2.5 ${t.Estado === 'Hecha' ? 'bg-emerald-50/50' : ''}`}>
+                                                                    <span className={`w-2.5 h-2.5 rounded-full shrink-0 ${t.Estado === 'Hecha' ? 'bg-emerald-500' : 'bg-amber-400'}`}></span>
+                                                                    <p className={`text-sm font-bold ${t.Estado === 'Hecha' ? 'text-emerald-700 line-through' : 'text-zinc-700'}`}>
+                                                                        {t.Nombre}
+                                                                    </p>
+                                                                    <span className="text-xs font-black text-zinc-400">
+                                                                        × {parseFloat(t.Cantidad)} {t.UnidadCobro === 'M2' ? 'm²' : t.UnidadCobro === 'M' ? 'm' : 'u.'}
+                                                                    </span>
+                                                                    <span className={`ml-auto px-2 py-0.5 rounded text-[10px] font-bold uppercase shrink-0 ${t.Estado === 'Hecha' ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}`}>
+                                                                        {t.Estado}
+                                                                    </span>
+                                                                </div>
+                                                            ))}
+                                                        </div>
+                                                    </div>
+                                                ))}
+                                            </>
+                                        );
+                                    })()}
+                                </div>
+                            )}
 
                             {/* PESTAÑA: REQUISITOS (Nueva) */}
                             {activeTab === 'reqs' && (

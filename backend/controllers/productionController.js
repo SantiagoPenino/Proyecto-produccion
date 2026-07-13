@@ -437,8 +437,8 @@ exports.magicSort = async (req, res) => {
     let targetArea = areaCode;
     // if (areaCode === 'DF') targetArea = 'DTF'; 
 
-    if (!['ECOUV', 'DTF', 'DF'].includes(targetArea)) {
-        return res.status(400).json({ error: 'La lógica mágica solo está definida para ECOUV, DTF y DF por el momento.' });
+    if (!['ECOUV', 'DTF', 'DF', 'DIRECTA'].includes(targetArea)) {
+        return res.status(400).json({ error: 'La lógica mágica solo está definida para ECOUV, DTF, DF e Impresión Directa por el momento.' });
     }
 
     if (!selectedIds || !Array.isArray(selectedIds) || selectedIds.length === 0) {
@@ -636,17 +636,26 @@ exports.magicSort = async (req, res) => {
                 return list.length;
             };
 
-            // Terminaciones
-            for (const [mat, list] of Object.entries(groupByMaterial(groups.terminaciones))) {
-                await processFullSequence(list, { namePrefix: 'Term', machineKeyword: 'Terminaciones ECOUV' }, mat);
-            }
-            // UV
-            for (const [mat, list] of Object.entries(groupByMaterial(groups.uv))) {
-                await processFullSequence(list, { namePrefix: 'UV', machineKeyword: 'UV' }, mat);
-            }
-            // Eco
-            for (const [mat, list] of Object.entries(groupByMaterial(groups.ecosolvente))) {
-                await processFullSequence(list, { namePrefix: 'Eco', machineKeyword: 'Ecosolvente' }, mat);
+            if (targetArea === 'DIRECTA') {
+                // IMPRESIÓN DIRECTA: criterio igual a DTF — un lote por material.
+                // Sin agrupación por tinta y sin asignación automática de máquina
+                // (step2 busca equipos ECOUV): los lotes quedan en Mesa de Armado.
+                for (const [mat, list] of Object.entries(groupByMaterial(allPending))) {
+                    await step1_createBatch(transaction, list, { namePrefix: 'Directa' }, mat);
+                }
+            } else {
+                // Terminaciones
+                for (const [mat, list] of Object.entries(groupByMaterial(groups.terminaciones))) {
+                    await processFullSequence(list, { namePrefix: 'Term', machineKeyword: 'Terminaciones ECOUV' }, mat);
+                }
+                // UV
+                for (const [mat, list] of Object.entries(groupByMaterial(groups.uv))) {
+                    await processFullSequence(list, { namePrefix: 'UV', machineKeyword: 'UV' }, mat);
+                }
+                // Eco
+                for (const [mat, list] of Object.entries(groupByMaterial(groups.ecosolvente))) {
+                    await processFullSequence(list, { namePrefix: 'Eco', machineKeyword: 'Ecosolvente' }, mat);
+                }
             }
 
             await registrarAuditoria(transaction, userId, 'MAGIC_SORT_SEQ', `Magic Sort Secuencial: ${createdRollsCount} lotes creados, ${assignedRollsCount} asignados.`, ip);

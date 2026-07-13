@@ -81,7 +81,7 @@ export const SERVICES_LIST = [
         ]
     },
     {
-        // 1.3 ECOUV - ECOUV (VisibleWeb: False in table, but we keep config here just in case)
+        // 1.3 ECOUV - ECOUV
         id: 'ecouv',
         dbId: '1.3',
         areaId: 'ECOUV',
@@ -89,7 +89,9 @@ export const SERVICES_LIST = [
         label: 'EcoUV',
         desc: 'Impresión UV alta resolución.',
         icon: ImageIcon,
-        externalUrl: 'https://docs.google.com/forms/d/e/1FAIpQLSciNCn6SjH57kR-QeRmXqLK4pOnRrk9PaKZyiiKOqc_kkCvPw/viewform',
+        // externalUrl deshabilitado: EcoUV ahora usa el form interno /portal/order/ecouv.
+        // Se deja el link del Google Form comentado por si hay que revertir.
+        // externalUrl: 'https://docs.google.com/forms/d/e/1FAIpQLSciNCn6SjH57kR-QeRmXqLK4pOnRrk9PaKZyiiKOqc_kkCvPw/viewform',
         formEntries: {
             clienteId: 'entry.1901865367',
             terminos: { id: 'entry.261786299', value: 'Acepto' }
@@ -97,21 +99,33 @@ export const SERVICES_LIST = [
 
 
         config: {
-            variantMode: 'fixed',
-            fixedVariant: 'Impresion Gran Formato',
-            materialMode: 'single', // Material de impresión
+            // Variantes VIRTUALES (pedido del negocio): no salen de StockArt porque
+            // "Material Impreso" y "Personalizado" comparten los mismos materiales.
+            // La clasificación física (Lonas/Canvas/Vinilos/Cuadros...) sigue en
+            // StockArt como organización interna del catálogo.
+            //  - MATERIAL sin terminaciones  → impresión simple por m2
+            //  - MATERIAL con terminaciones  → chips por archivo (solo materiales
+            //    que tienen terminaciones asignadas en MaterialTerminaciones)
+            //  - PRODUCTO_TERMINADO          → ficha con precio cerrado
+            variantMode: 'virtual',
+            virtualVariants: [
+                { label: 'Material Impreso', tipo: 'MATERIAL', terminaciones: false },
+                { label: 'Productos Personalizados (Armar a Medida)', tipo: 'MATERIAL', terminaciones: true, soloConTerminaciones: true },
+                { label: 'Productos Terminados', tipo: 'PRODUCTO_TERMINADO', terminaciones: false },
+            ],
+            defaultVariant: 'Material Impreso',
+            materialMode: 'single', // Material global (default para archivos nuevos)
+            allowItemMaterialOverride: true, // MULTIMATERIAL: cada archivo puede cambiar su material (como Sublimación)
+            // Tinta de impresión: rutea el lote a la máquina (magic sort ECOUV agrupa por Tinta)
+            tintaOptions: ['Ecosolvente', 'UV'],
+            hideRaport: true, // EcoUV no usa el modo Raport (repeticiones de patrón textil)
             requiresProductionFiles: true,
             disableItemNote: false, // Permitir notas por archivo
         },
 
-        complementaryOptions: [
-            {
-                id: 'terminaciones_ecouv',
-                label: 'Terminaciones ECOUV (Materiales Extra)',
-                fullWidth: true,
-                // Custom UI logic will be handled in OrderForm based on this ID
-            }
-        ]
+        // Las terminaciones dejaron de ser un servicio complementario global
+        // (generaban una ORDEN aparte): ahora van por archivo dentro de la misma orden.
+        complementaryOptions: []
     },
     {
         // 1.4 EMB - Bordado
@@ -238,7 +252,9 @@ export const SERVICES_LIST = [
         label: 'Directa 3.20m',
         desc: 'Gigantografía gran formato.',
         icon: Printer,
-        externalUrl: 'https://docs.google.com/forms/d/e/1FAIpQLScVwNflx459s7Tk6EyfittLRwkzGhjTIu4FakV5NU72QOCAgQ/viewform',
+        // externalUrl deshabilitado: Directa 3.20 ahora usa el form interno /portal/order/directa_320.
+        // Se deja el link del Google Form comentado por si hay que revertir.
+        // externalUrl: 'https://docs.google.com/forms/d/e/1FAIpQLScVwNflx459s7Tk6EyfittLRwkzGhjTIu4FakV5NU72QOCAgQ/viewform',
         formEntries: {
             clienteId: 'entry.262281569',
             terminos: { id: 'entry.36260443', value: 'Acepto' }
@@ -247,7 +263,9 @@ export const SERVICES_LIST = [
 
         config: {
             variantMode: 'fixed',
-            fixedVariant: '1.1.11.1',
+            // Nombre real en StockArt (antes iba el CodStock '1.1.11.1'; el endpoint resuelve
+            // ambos, pero este queda como Variante legible en la orden de producción).
+            fixedVariant: 'Impresión Directa 3.20',
             materialMode: 'single',
             requiresProductionFiles: true,
             disableItemNote: true,

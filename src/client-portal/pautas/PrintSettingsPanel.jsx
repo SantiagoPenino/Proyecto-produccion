@@ -20,6 +20,7 @@ export const PrintSettingsPanel = ({
     onCopiesChange,
     onChange,
     disableScaling = false,
+    hideRaport = false,   // oculta el modo Raport (servicios que no lo usan, ej: EcoUV)
     hideHeader = false
 }) => {
     // ... (rest of vars)
@@ -193,14 +194,16 @@ export const PrintSettingsPanel = ({
                         <Maximize size={16} />
                         A Escala
                     </button>
-                    <button
-                        type="button"
-                        onClick={() => handleInputChange('mode', 'raport')}
-                        className={`flex-1 py-2 px-3 rounded-lg text-sm font-bold transition-all flex items-center justify-center gap-2 ${mode === 'raport' ? 'bg-cyan-400/15 text-cyan-300 border border-cyan-500/30' : 'text-zinc-500 hover:bg-zinc-700 hover:text-zinc-300'}`}
-                    >
-                        <Repeat size={16} />
-                        Raport
-                    </button>
+                    {!hideRaport && (
+                        <button
+                            type="button"
+                            onClick={() => handleInputChange('mode', 'raport')}
+                            className={`flex-1 py-2 px-3 rounded-lg text-sm font-bold transition-all flex items-center justify-center gap-2 ${mode === 'raport' ? 'bg-cyan-400/15 text-cyan-300 border border-cyan-500/30' : 'text-zinc-500 hover:bg-zinc-700 hover:text-zinc-300'}`}
+                        >
+                            <Repeat size={16} />
+                            Raport
+                        </button>
+                    )}
                 </div>
             )}
 

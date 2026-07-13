@@ -24,7 +24,11 @@ const ManageBobinaModal = ({ bobina, insumoName, onClose, onSuccess }) => {
     const [metrosFinales, setMetrosFinales] = useState(0);
     const [closeMotivo, setCloseMotivo] = useState('Fin de Bobina');
     const [calculatedWaste, setCalculatedWaste] = useState(null);
-    const [finish, setFinish] = useState(true);
+    // Desmarcado por defecto: con metros útiles sobrantes la bobina debe quedar
+    // Disponible salvo decisión explícita del operario (caso BOB-97: quedó
+    // Agotada con 30.50m porque este check venía marcado). El backend igual
+    // marca Agotado automáticamente si los metros finales son < 0.5.
+    const [finish, setFinish] = useState(false);
 
     // Ancho actual de la bobina (real confirmado, o declarado como fallback)
     const anchoActual = bobina?.AnchoReal != null && bobina.AnchoReal !== ''
@@ -359,6 +363,13 @@ const ManageBobinaModal = ({ bobina, insumoName, onClose, onSuccess }) => {
                                     Sacar de inventario (Agotado)
                                 </label>
                             </div>
+
+                            {finish && parseFloat(metrosFinales || 0) >= 0.5 && (
+                                <div className="bg-red-50 border border-red-200 rounded p-2 text-xs text-red-700">
+                                    ⚠ Quedan <strong>{parseFloat(metrosFinales || 0).toFixed(2)} m</strong> útiles: al sacar la bobina del
+                                    inventario esos metros dejarán de estar disponibles para el cliente. Desmarque la casilla si la tela sigue utilizable.
+                                </div>
+                            )}
 
                             <div className="pt-4 flex justify-end">
                                 <Button variant="destructive" type="submit" disabled={loading}>

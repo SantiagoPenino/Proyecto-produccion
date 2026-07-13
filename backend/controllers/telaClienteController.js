@@ -141,12 +141,15 @@ exports.getEstadoCuenta = async (req, res) => {
         `);
 
 
-        // Calcular saldo acumulado (running balance) por tipo de tela
+        // Calcular saldo acumulado (running balance) por bobina.
+        // OJO: antes se acumulaba por InsumoID, pero varias bobinas del cliente
+        // comparten insumo genérico y el saldo de una contaminaba a la otra
+        // (ej: BOB-97 mostraba 67.55 en vez de 67.45 por los 0.10 de BOB-93).
         const rows = result.recordset;
         const saldoAcum = {};
         // Recorremos de más antiguo a más reciente para acumular
         [...rows].reverse().forEach(r => {
-            const key = r.InsumoID;
+            const key = r.BobinaID;
             if (!saldoAcum[key]) saldoAcum[key] = 0;
             if (r.TipoMovimiento === 'INGRESO') saldoAcum[key] += parseFloat(r.Cantidad || 0);
             else saldoAcum[key] -= Math.abs(parseFloat(r.Cantidad || 0));

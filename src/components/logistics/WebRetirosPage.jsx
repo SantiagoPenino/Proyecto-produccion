@@ -517,10 +517,12 @@ const ShelfSlot = ({
   id, 
   dataList, 
   slotColors, 
-  isSlotAnnounced, 
-  allOrders, 
-  hasOrders, 
-  dragOverSlot, 
+  isSlotAnnounced,
+  allOrders,
+  hasOrders,
+  bultosCache,
+  prefetchBultos,
+  dragOverSlot,
   directEntregar, 
   handleDesasignar, 
   handleDrop, 
@@ -574,6 +576,7 @@ const ShelfSlot = ({
         calculatePosition();
         setIsHovered(true);
         setZIndex(50);
+        if (prefetchBultos) prefetchBultos(dataList);   // cargar bultos reales para el tooltip
       }}
       onMouseLeave={() => {
         setIsHovered(false);
@@ -611,6 +614,16 @@ const ShelfSlot = ({
               {allOrders.map((o, i) => (
                 <div key={i} className={`flex justify-center items-center gap-2 text-sm leading-none py-1 ${i !== allOrders.length - 1 ? 'border-b border-slate-700/50' : ''}`}>
                   <span className="text-sm font-medium text-zinc-100">{o.orderNumber}</span>
+                  {(() => {
+                    // Cantidad de bultos físicos de la orden (del cache cargado al hacer hover)
+                    const idNum = parseInt(String(o.retiro || '').replace(/\D/g, ''), 10);
+                    const n = bultosCache?.[idNum]?.[o.orderNumber]?.length;
+                    return n >= 1 ? (
+                      <span className="text-[10px] font-black bg-white text-slate-900 px-1.5 py-0.5 rounded-full leading-none shrink-0">
+                        {n} {n === 1 ? 'bulto' : 'bultos'}
+                      </span>
+                    ) : null;
+                  })()}
                   {dataList.length > 1 && <span className="text-[9px] text-slate-500 font-bold opacity-70">({o.retiro.replace('R-', '')})</span>}
                 </div>
               ))}
@@ -680,6 +693,23 @@ const WebRetirosPage = () => {
   const [error, setError] = useState(null);
   const [selectedRetiro, setSelectedRetiro] = useState(null);
   const [scannedBultos, setScannedBultos] = useState({});
+
+  // Cache de bultos físicos por retiro para el tooltip de estantes: { idNum: { orden: [etiquetas] } }
+  // Se carga perezosamente al pasar el mouse por un casillero (una sola vez por retiro).
+  const [bultosCacheEstantes, setBultosCacheEstantes] = useState({});
+  const prefetchBultosRetiros = React.useCallback((dataList) => {
+    (dataList || []).forEach(d => {
+      const idNum = parseInt(String(d.OrdenRetiro || '').replace(/\D/g, ''), 10);
+      if (isNaN(idNum)) return;
+      setBultosCacheEstantes(prev => {
+        if (prev[idNum] !== undefined) return prev;      // ya cargado o cargando
+        api.get(`/web-retiros/${idNum}/bultos`)
+          .then(res => setBultosCacheEstantes(p2 => ({ ...p2, [idNum]: res.data?.bultos || {} })))
+          .catch(() => setBultosCacheEstantes(p2 => ({ ...p2, [idNum]: {} })));
+        return { ...prev, [idNum]: null };               // marca "cargando"
+      });
+    });
+  }, []);
   const [ubicationMode, setUbicationMode] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
   const [filterEstante, setFilterEstante] = useState('ALL');
@@ -963,7 +993,7 @@ const WebRetirosPage = () => {
     } catch (e) { console.warn('[fetchPendingUpdate]', e); }
   }, []);
 
-  // â”€â”€â”€ SOCKET: actualizar en tiempo real â”€â”€â”€
+  // ─── SOCKET: actualizar en tiempo real ───
   useEffect(() => {
     let socket;
     const initSocket = async () => {
@@ -974,7 +1004,7 @@ const WebRetirosPage = () => {
       socket.on("retiros:update", (data) => {
         fetchPendingUpdate();
         // Cualquier evento de retiros recalcula otrosRetiros para evitar estado obsoleto
-        // (ej. cancelaciones que cambian estado 1â†’5 y deben desaparecer de empaques)
+        // (ej. cancelaciones que cambian estado 1→5 y deben desaparecer de empaques)
         if (data?.type === 'asignado_estante' || data?.type === 'desasignado' || data?.type === 'entregado' || data?.type === 'estado' || data?.type === 'pago_web' || !data?.type) {
           api.get('/web-retiros/estantes').then(async res => {
             // Nuevo formato: { estantes: [...], allAssignedOrders: [...] }
@@ -1517,6 +1547,19 @@ const WebRetirosPage = () => {
     const inputRef = React.useRef(null);
     const [duplicateWarn, setDuplicateWarn] = useState(null);
 
+    // Bultos FÍSICOS reales por orden (Etiquetas/Logistica_Bultos) para los punticos y el
+    // escaneo por etiqueta. Si el endpoint no trae nada, se usa el conteo del BultosJSON.
+    const [bultosPorOrden, setBultosPorOrden] = useState(null);
+    const [scannedEtiquetas, setScannedEtiquetas] = useState({}); // { orderNumber: [etiquetas escaneadas] }
+    useEffect(() => {
+      const idNum = parseInt(String(selectedRetiro?.ordenDeRetiro || '').replace(/\D/g, ''), 10);
+      if (isNaN(idNum)) return;
+      api.get(`/web-retiros/${idNum}/bultos`)
+        .then(res => setBultosPorOrden(res.data?.bultos || null))
+        .catch(() => setBultosPorOrden(null));
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
+
     useEffect(() => {
       // Focus input once on mount
       inputRef.current?.focus();
@@ -1536,15 +1579,26 @@ const WebRetirosPage = () => {
 
     // Agrupar los bultos por código: si una orden trae N bultos (p. ej. DTF-2282 ×2), aparece
     // UNA vez con su total, y hay que escanearla N veces para completarla.
+    // Si el endpoint de bultos físicos respondió, el total y las etiquetas salen de ahí
+    // (bultos REALES de Logistica_Bultos) en vez del conteo del BultosJSON.
     const bultoGroups = React.useMemo(() => {
       const map = new Map();
       (selectedRetiro.orders || []).forEach(o => {
         const key = o.orderNumber;
-        if (!map.has(key)) map.set(key, { orderNumber: key, total: 0 });
+        if (!map.has(key)) map.set(key, { orderNumber: key, total: 0, etiquetas: [] });
         map.get(key).total += 1;
       });
+      if (bultosPorOrden) {
+        for (const g of map.values()) {
+          const ets = bultosPorOrden[g.orderNumber];
+          if (Array.isArray(ets) && ets.length > 0) {
+            g.total = ets.length;
+            g.etiquetas = ets;
+          }
+        }
+      }
       return Array.from(map.values());
-    }, [selectedRetiro.orders]);
+    }, [selectedRetiro.orders, bultosPorOrden]);
 
     // scannedBultos pasa a ser un CONTADOR por código: { [orderNumber]: cantidadEscaneada }.
     const allChecked = bultoGroups.length > 0 && bultoGroups.every(g => (scannedBultos[g.orderNumber] || 0) >= g.total);
@@ -1557,13 +1611,46 @@ const WebRetirosPage = () => {
     const registrarEscaneo = (rawValue) => {
       const rawCode = (rawValue || '').trim().toUpperCase();
       if (!rawCode) return false;
-      const code = rawCode.replace(/^([A-Z]+)(\d+)$/, '$1-$2');
 
-      const matches = bultoGroups.filter(g => {
+      // ── 1) ETIQUETA física: '969/B1234' completo, o 'B1234' solo (el sufijo es único) ──
+      // Pinta SU bulto con dedup real: la misma etiqueta dos veces no cuenta doble.
+      let grupoEt = null, etiquetaHit = null;
+      for (const g of bultoGroups) {
+        const hit = (g.etiquetas || []).find(e => {
+          const E = String(e).toUpperCase();
+          return E === rawCode || (/^B\d+$/.test(rawCode) && E.endsWith('/' + rawCode));
+        });
+        if (hit) { grupoEt = g; etiquetaHit = String(hit).toUpperCase(); break; }
+      }
+      if (grupoEt) {
+        const now = Date.now();
+        if (lastScanRef.current.code === etiquetaHit && (now - lastScanRef.current.t) < 150) return true;
+        lastScanRef.current = { code: etiquetaHit, t: now };
+
+        const yaEscaneadas = scannedEtiquetas[grupoEt.orderNumber] || [];
+        if (yaEscaneadas.includes(etiquetaHit) || (scannedBultos[grupoEt.orderNumber] || 0) >= grupoEt.total) {
+          setDuplicateWarn(grupoEt.orderNumber);
+          setTimeout(() => setDuplicateWarn(null), 200);
+          return true;
+        }
+        setScannedEtiquetas(prev => ({ ...prev, [grupoEt.orderNumber]: [...(prev[grupoEt.orderNumber] || []), etiquetaHit] }));
+        setScannedBultos(prev => ({ ...prev, [grupoEt.orderNumber]: (prev[grupoEt.orderNumber] || 0) + 1 }));
+        return true;
+      }
+
+      // ── 2) Código de ORDEN (comportamiento clásico): 'DTF-969' o solo '969' ──
+      const code = rawCode.replace(/^([A-Z]+)(\d+)$/, '$1-$2');
+      let matches = bultoGroups.filter(g => {
         const n = g.orderNumber.toUpperCase();
-        return n === code || (/^\d+$/.test(code) && n.endsWith(`-${code}`));
+        return n === code
+          || (/^\d+$/.test(code) && (n.endsWith(`-${code}`) || n.includes(`-${code} (`)));
       });
-      if (matches.length !== 1) return false; // sin match o ambiguo
+      // Multitela: '5936' matchea las dos hermanas → tomar la primera incompleta (determinístico)
+      if (matches.length > 1) {
+        const incompleta = matches.find(g => (scannedBultos[g.orderNumber] || 0) < g.total);
+        matches = incompleta ? [incompleta] : [matches[0]];
+      }
+      if (matches.length !== 1) return false; // sin match
       const grupo = matches[0];
 
       const now = Date.now();
@@ -1694,18 +1781,40 @@ const WebRetirosPage = () => {
                         if (actual <= 0) return prev;
                         return { ...prev, [g.orderNumber]: actual - 1 };
                       });
+                      // Liberar también la última etiqueta escaneada de esa orden (permite re-escanearla)
+                      setScannedEtiquetas(prev => {
+                        const arr = [...(prev[g.orderNumber] || [])];
+                        if (arr.length === 0) return prev;
+                        arr.pop();
+                        return { ...prev, [g.orderNumber]: arr };
+                      });
                     }}
                     className={`flex flex-row items-center justify-center gap-2 p-3 rounded-xl border-2 transition-colors ${completo ? 'bg-green-100 border-green-500 shadow-sm cursor-pointer hover:opacity-80' : escaneados > 0 ? 'bg-amber-50 border-amber-300 cursor-pointer hover:opacity-80' : 'bg-white border-slate-200'
                       }`}>
                     <div className={`shrink-0 ${completo ? 'text-green-700' : escaneados > 0 ? 'text-amber-600' : 'text-slate-400'}`}>
                       {completo ? <PackageCheck size={24} /> : <Package size={24} />}
                     </div>
-                    <div className="text-base font-black text-slate-800 truncate">{g.orderNumber}</div>
-                    {g.total > 1 && (
-                      <span className={`shrink-0 text-xs font-black px-2 py-0.5 rounded-full ${completo ? 'bg-green-600 text-white' : 'bg-amber-100 text-amber-700'}`}>
-                        {completo ? `×${g.total}` : `${escaneados}/${g.total}`}
-                      </span>
-                    )}
+                    <div className="min-w-0 flex flex-col items-center gap-1">
+                      <div className="text-base font-black text-slate-800 truncate max-w-full">{g.orderNumber}</div>
+                      {g.total > 1 && (
+                        g.total <= 6 ? (
+                          // Bolitas DEBAJO del código (no le roban ancho): una por bulto —
+                          // verde = escaneado, blanca con borde negro = pendiente. Hasta 6; con más, contador.
+                          <div className="flex items-center gap-1">
+                            {Array.from({ length: g.total }).map((_, i) => (
+                              <span
+                                key={i}
+                                className={`w-2.5 h-2.5 rounded-full transition-colors ${i < escaneados ? 'bg-green-500 border-2 border-green-600' : 'bg-white border-2 border-slate-900'}`}
+                              />
+                            ))}
+                          </div>
+                        ) : (
+                          <span className={`text-xs font-black px-2 py-0.5 rounded-full ${completo ? 'bg-green-600 text-white' : 'bg-amber-100 text-amber-700'}`}>
+                            {completo ? `×${g.total}` : `${escaneados}/${g.total}`}
+                          </span>
+                        )
+                      )}
+                    </div>
                   </motion.div>
                 );
               })}
@@ -2393,6 +2502,8 @@ const WebRetirosPage = () => {
                                 isSlotAnnounced={isSlotAnnounced}
                                 allOrders={allOrders}
                                 hasOrders={hasOrders}
+                                bultosCache={bultosCacheEstantes}
+                                prefetchBultos={prefetchBultosRetiros}
                                 dragOverSlot={dragOverSlot}
                                 directEntregar={directEntregar}
                                 handleDesasignar={handleDesasignar}

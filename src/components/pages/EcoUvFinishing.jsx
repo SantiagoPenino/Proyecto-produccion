@@ -49,7 +49,13 @@ const EcoUvFinishing = () => {
             try {
                 await Promise.all(selectedDoc.ordenes.map(async (ord) => {
                     const res = await api.get(`/finishing/orders/${ord.OrdenID}/details`);
-                    newDetails[ord.OrdenID] = res.data.extras || [];
+                    // Las líneas de facturación de terminaciones (modelo nuevo) no se muestran
+                    // como "materiales extra": ya aparecen en su propio bloque por archivo.
+                    const rawExtras = res.data.extras || [];
+                    newDetails[ord.OrdenID] = {
+                        extras: rawExtras.filter(ex => (ex.Observacion || '') !== 'Terminación por archivo (WebOrder)'),
+                        terminaciones: res.data.terminaciones || []
+                    };
                 }));
                 setOrdersDetails(newDetails);
             } catch (e) {
@@ -67,10 +73,43 @@ const EcoUvFinishing = () => {
     const handleQuantityChange = (ordenId, itemId, newVal) => {
         setOrdersDetails(prev => ({
             ...prev,
-            [ordenId]: prev[ordenId].map(item =>
-                item.ServicioID === itemId ? { ...item, Cantidad: newVal } : item
-            )
+            [ordenId]: {
+                ...prev[ordenId],
+                extras: (prev[ordenId]?.extras || []).map(item =>
+                    item.ServicioID === itemId ? { ...item, Cantidad: newVal } : item
+                )
+            }
         }));
+    };
+
+    // Marcar terminación Pendiente/Hecha (modelo nuevo, por archivo)
+    const toggleTerminacion = async (ordenId, term) => {
+        const nuevoEstado = term.Estado === 'Hecha' ? 'Pendiente' : 'Hecha';
+        // Optimista
+        setOrdersDetails(prev => ({
+            ...prev,
+            [ordenId]: {
+                ...prev[ordenId],
+                terminaciones: (prev[ordenId]?.terminaciones || []).map(t =>
+                    t.ID === term.ID ? { ...t, Estado: nuevoEstado } : t
+                )
+            }
+        }));
+        try {
+            await api.put(`/finishing/terminaciones/${term.ID}/estado`, { estado: nuevoEstado });
+        } catch (e) {
+            toast.error("Error actualizando terminación");
+            // Revertir
+            setOrdersDetails(prev => ({
+                ...prev,
+                [ordenId]: {
+                    ...prev[ordenId],
+                    terminaciones: (prev[ordenId]?.terminaciones || []).map(t =>
+                        t.ID === term.ID ? { ...t, Estado: term.Estado } : t
+                    )
+                }
+            }));
+        }
     };
 
     // Guardar cantidad (onBlur)
@@ -209,7 +248,9 @@ const EcoUvFinishing = () => {
                         {/* LISTA DE SUB-ORDENES */}
                         <div className="space-y-6">
                             {selectedDoc.ordenes.map(ord => {
-                                const extras = ordersDetails[ord.OrdenID] || [];
+                                const det = ordersDetails[ord.OrdenID] || {};
+                                const extras = det.extras || [];
+                                const terminaciones = det.terminaciones || [];
                                 const isFinished = ord.Estado === 'Finalizado' || ord.EstadoenArea === 'Finalizado';
 
                                 // Calcular magnitud dinámica si tengo items y NO son metros (ej: Unidades)
@@ -252,7 +293,51 @@ const EcoUvFinishing = () => {
                                                 </div>
                                             )}
 
-                                            {/* TABLA DE MATERIALES EXTRAS */}
+                                            {/* TERMINACIONES POR ARCHIVO (modelo nuevo: viven en la orden madre) */}
+                                            {terminaciones.length > 0 && (
+                                                <div className="mb-4">
+                                                    <h4 className="text-xs font-black text-amber-500 uppercase tracking-wider mb-3">
+                                                        <i className="fa-solid fa-scissors mr-1.5"></i>
+                                                        Terminaciones por archivo ({terminaciones.filter(t => t.Estado === 'Hecha').length}/{terminaciones.length} hechas)
+                                                    </h4>
+                                                    <div className="bg-white border border-amber-200 rounded-lg overflow-hidden divide-y divide-slate-100">
+                                                        {terminaciones.map(t => {
+                                                            const hecha = t.Estado === 'Hecha';
+                                                            return (
+                                                                <div key={t.ID} className={`flex items-center gap-3 px-4 py-2.5 ${hecha ? 'bg-emerald-50/60' : ''}`}>
+                                                                    <button
+                                                                        onClick={() => !isFinished && toggleTerminacion(ord.OrdenID, t)}
+                                                                        disabled={isFinished}
+                                                                        className={`w-6 h-6 rounded-md border-2 flex items-center justify-center shrink-0 transition-all ${hecha
+                                                                            ? 'bg-emerald-500 border-emerald-500 text-white'
+                                                                            : 'bg-white border-slate-300 text-transparent hover:border-emerald-400'}`}
+                                                                        title={hecha ? 'Marcar pendiente' : 'Marcar hecha'}
+                                                                    >
+                                                                        <i className="fa-solid fa-check text-xs"></i>
+                                                                    </button>
+                                                                    <div className="flex-1 min-w-0">
+                                                                        <p className={`text-sm font-bold ${hecha ? 'text-emerald-700 line-through' : 'text-slate-700'}`}>
+                                                                            {t.Nombre}
+                                                                            <span className="ml-2 text-xs font-black text-slate-400">× {parseFloat(t.Cantidad)} {t.UnidadCobro === 'M2' ? 'm²' : t.UnidadCobro === 'M' ? 'm' : 'u.'}</span>
+                                                                        </p>
+                                                                        {t.NombreArchivo && (
+                                                                            <p className="text-[10px] text-slate-400 truncate" title={t.NombreArchivo}>
+                                                                                <i className="fa-regular fa-file mr-1"></i>{t.NombreArchivo}
+                                                                            </p>
+                                                                        )}
+                                                                    </div>
+                                                                    <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase shrink-0 ${hecha ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}`}>
+                                                                        {t.Estado}
+                                                                    </span>
+                                                                </div>
+                                                            );
+                                                        })}
+                                                    </div>
+                                                </div>
+                                            )}
+
+                                            {/* TABLA DE MATERIALES EXTRAS (legacy: órdenes-extra viejas) */}
+                                            {(extras.length > 0 || terminaciones.length === 0) && (
                                             <div className="mb-4">
                                                 <h4 className="text-xs font-black text-slate-400 uppercase tracking-wider mb-3">
                                                     Materiales Adicionales / Servicios
@@ -300,6 +385,7 @@ const EcoUvFinishing = () => {
                                                     </div>
                                                 )}
                                             </div>
+                                            )}
 
                                             {/* ACTIONS */}
                                             {!isFinished && (

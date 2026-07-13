@@ -2,20 +2,28 @@ const { getPool, sql } = require('../config/db');
 const logger = require('../utils/logger');
 
 // Obtener órdenes de terminación ECOUV Agrupadas
+// Modelo nuevo: la terminación vive DENTRO de la orden madre (OrdenTerminaciones por archivo).
+// Legacy: órdenes-extra separadas con Variante '%Extra%' (pedidos anteriores al cambio).
 exports.getFinishingOrders = async (req, res) => {
     try {
         const pool = await getPool();
-        // Filtro flexible para variantes de terminación/extra
         const result = await pool.request().query(`
-            SELECT 
+            SELECT
                 O.OrdenID, O.CodigoOrden, O.NoDocERP, O.Cliente, O.DescripcionTrabajo, O.Prioridad, O.Estado,
                 O.Material, O.Variante, O.FechaIngreso, O.Magnitud, O.UM, O.Nota, O.EstadoenArea,
-                (SELECT COUNT(*) FROM ServiciosExtraOrden S WHERE S.OrdenID = O.OrdenID) as ExtrasCount
+                (SELECT COUNT(*) FROM ServiciosExtraOrden S WHERE S.OrdenID = O.OrdenID) as ExtrasCount,
+                (SELECT COUNT(*) FROM OrdenTerminaciones OT WHERE OT.OrdenID = O.OrdenID) as TermCount,
+                (SELECT COUNT(*) FROM OrdenTerminaciones OT WHERE OT.OrdenID = O.OrdenID AND OT.Estado = 'Pendiente') as TermPendientes
             FROM Ordenes O
-            WHERE O.AreaID = 'ECOUV' 
+            WHERE O.AreaID = 'ECOUV'
               AND O.Estado NOT IN ('Finalizado', 'Entregado', 'Cancelado')
-              AND (O.Variante LIKE '%Extra%' OR O.Variante LIKE '%Servicio%' OR O.Variante LIKE '%Materiales%' OR O.Material LIKE '%Extra%')
-            ORDER BY 
+              AND (
+                    -- Modelo nuevo: orden con terminaciones por archivo
+                    EXISTS (SELECT 1 FROM OrdenTerminaciones OT WHERE OT.OrdenID = O.OrdenID)
+                    -- Legacy: orden-extra separada
+                    OR O.Variante LIKE '%Extra%' OR O.Variante LIKE '%Servicio%' OR O.Variante LIKE '%Materiales%' OR O.Material LIKE '%Extra%'
+              )
+            ORDER BY
                 CASE WHEN O.Prioridad = 'Urgente' THEN 0 ELSE 1 END,
                 O.FechaIngreso DESC
         `);
@@ -49,7 +57,7 @@ exports.getFinishingOrders = async (req, res) => {
     }
 };
 
-// Obtener detalles de items extras (materiales) de una orden
+// Obtener detalles de items extras (materiales) de una orden + terminaciones por archivo
 exports.getOrderDetails = async (req, res) => {
     const { id } = req.params; // OrdenID
     try {
@@ -58,13 +66,44 @@ exports.getOrderDetails = async (req, res) => {
             .input('OID', sql.Int, id)
             .query("SELECT * FROM ServiciosExtraOrden WHERE OrdenID = @OID");
 
-        if (extras.recordset.length > 0) {
-            logger.info("🔍 Extra Item Keys:", Object.keys(extras.recordset[0]));
-        }
+        // Modelo nuevo: terminaciones ligadas a cada archivo de impresión de la orden
+        const terminaciones = await pool.request()
+            .input('OID', sql.Int, id)
+            .query(`
+                SELECT OT.ID, OT.ArchivoID, OT.TerminacionID, OT.Cantidad, OT.Estado,
+                       T.Nombre, T.UnidadCobro,
+                       A.NombreArchivo
+                FROM OrdenTerminaciones OT
+                INNER JOIN Terminaciones T ON T.TerminacionID = OT.TerminacionID
+                LEFT JOIN ArchivosOrden A ON A.ArchivoID = OT.ArchivoID
+                WHERE OT.OrdenID = @OID
+                ORDER BY OT.ArchivoID, T.Nombre
+            `);
 
-        res.json({ extras: extras.recordset });
+        res.json({ extras: extras.recordset, terminaciones: terminaciones.recordset });
     } catch (e) {
         logger.error("Error getOrderDetails:", e);
+        res.status(500).json({ error: e.message });
+    }
+};
+
+// Marcar estado de una terminación de la orden (Pendiente | Hecha)
+exports.updateTerminacionEstado = async (req, res) => {
+    const { id } = req.params; // OrdenTerminaciones.ID
+    const { estado } = req.body;
+    if (!['Pendiente', 'Hecha'].includes(estado)) {
+        return res.status(400).json({ error: "Estado inválido. Valores: 'Pendiente' | 'Hecha'." });
+    }
+    try {
+        const pool = await getPool();
+        const r = await pool.request()
+            .input('ID', sql.Int, parseInt(id))
+            .input('Est', sql.VarChar(20), estado)
+            .query("UPDATE OrdenTerminaciones SET Estado = @Est WHERE ID = @ID");
+        if (r.rowsAffected[0] === 0) return res.status(404).json({ error: `No existe la terminación ${id}.` });
+        res.json({ success: true });
+    } catch (e) {
+        logger.error("Error updateTerminacionEstado:", e);
         res.status(500).json({ error: e.message });
     }
 };

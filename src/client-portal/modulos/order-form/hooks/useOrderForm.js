@@ -78,6 +78,9 @@ const initialState = {
     visibleConfig: {},          // indexado por CodOrden (BOR, COR...) tal como viene del backend
     visibleConfigByArea: {},    // mismo dato re-indexado por AreaID_Interno (EMB, TWC...) = lo que usa el portal
     prioritiesList: [],
+    // Áreas con urgencia activa (viene con /nomenclators/priorities; misma regla que precios).
+    // null = sin dato → no se oculta nada (fail-open).
+    areasConUrgencia: null,
     uniqueVariants: [],
     dynamicMaterials: [],
     activeSubOrders: [],
@@ -359,6 +362,9 @@ export const useOrderForm = (serviceId, overrides = {}) => {
                 if (prioRes?.success && prioRes.data?.length > 0) {
                     updates.prioritiesList = prioRes.data;
                     updates.urgency = prioRes.data[0].Nombre;
+                    updates.areasConUrgencia = Array.isArray(prioRes.areasConUrgencia)
+                        ? prioRes.areasConUrgencia.map(a => String(a).toUpperCase())
+                        : null;
                 } else {
                     updates.prioritiesList = [{ IdPrioridad: 0, Nombre: 'Normal', Color: '#fff' }, { IdPrioridad: 1, Nombre: 'Urgente', Color: '#fbbf24' }];
                     updates.urgency = 'Normal';
@@ -425,6 +431,7 @@ export const useOrderForm = (serviceId, overrides = {}) => {
             items: [],
             // Data clearing
             uniqueVariants: [],
+            variantsInfo: {},   // Variante -> { tipoStock, um } (ECOUV: MATERIAL | PRODUCTO_TERMINADO)
             dynamicMaterials: [],
         };
 
@@ -458,8 +465,41 @@ export const useOrderForm = (serviceId, overrides = {}) => {
             });
         };
 
+        // Materiales por TIPO para variantes virtuales (ECOUV)
+        const fetchMaterialsForVirtualVariant = (variantLabel) => {
+            const vv = (config.virtualVariants || []).find(x => x.label === variantLabel);
+            if (!vv) return;
+            const params = `tipo=${encodeURIComponent(vv.tipo)}${vv.soloConTerminaciones ? '&conTerminaciones=1' : ''}`;
+            apiClient.get(`/nomenclators/materiales-por-tipo/${dbAreaId}?${params}`).then(mRes => {
+                if (mRes.success && mRes.data.length > 0) {
+                    const firstMat = config.materialMode === 'multiple' ? '' : findDefaultMaterial(mRes.data);
+                    dispatch({ type: actionTypes.SET_DATA, data: { dynamicMaterials: mRes.data, globalMaterial: firstMat } });
+                    setItems([]);
+                } else {
+                    dispatch({ type: actionTypes.SET_DATA, data: { dynamicMaterials: [], globalMaterial: '' } });
+                }
+            }).catch(e => {
+                // Backend caído / red: no dejar los combos vacíos en silencio
+                console.error('Error cargando materiales por tipo:', e);
+                dispatch({ type: actionTypes.SET_DATA, data: { dynamicMaterials: [], globalMaterial: '' } });
+            });
+        };
+
+        // Case 0: Variantes VIRTUALES definidas en services.js (ECOUV: Material Impreso /
+        // Personalizado / Productos Terminados). No salen de StockArt: Impreso y
+        // Personalizado comparten materiales y solo difieren en las terminaciones.
+        if (variantMode === 'virtual' && Array.isArray(config.virtualVariants) && config.virtualVariants.length > 0) {
+            const variants = config.virtualVariants.map(v => v.label);
+            const variantsInfo = {};
+            config.virtualVariants.forEach(v => {
+                variantsInfo[v.label] = { tipoStock: v.tipo, terminaciones: !!v.terminaciones, soloConTerminaciones: !!v.soloConTerminaciones };
+            });
+            const initialVariant = (defaultVariant && variants.find(x => (x || '').trim().toLowerCase() === defaultVariant.trim().toLowerCase())) || variants[0];
+            dispatch({ type: actionTypes.SET_DATA, data: { uniqueVariants: variants, variantsInfo, serviceSubType: initialVariant } });
+            fetchMaterialsForVirtualVariant(initialVariant);
+        }
         // Case A: Fixed Variant (e.g. Corte -> 'Corte')
-        if (variantMode === 'fixed' && fixedVariant) {
+        else if (variantMode === 'fixed' && fixedVariant) {
             dispatch({ type: actionTypes.SET_DATA, data: { serviceSubType: fixedVariant, uniqueVariants: [] } });
             fetchMaterialsForVariant(fixedVariant);
         }
@@ -468,10 +508,15 @@ export const useOrderForm = (serviceId, overrides = {}) => {
             apiClient.get(`/nomenclators/variants/${dbAreaId}`).then(res => {
                 if (res.success && res.data.length > 0) {
                     const variants = res.data.map(item => item.Variante);
+                    // Tipo de cada variante (ECOUV): MATERIAL | PRODUCTO_TERMINADO | TERMINACION
+                    const variantsInfo = {};
+                    res.data.forEach(v => {
+                        variantsInfo[(v.Variante || '').trim()] = { tipoStock: v.TipoStock || 'MATERIAL', um: (v.UM || '').trim() };
+                    });
                     // Use defaultVariant from config (match tolerante a mayúsculas/espacios), sino la primera
                     const initialVariant = (defaultVariant && variants.find(v => (v || '').trim().toLowerCase() === defaultVariant.trim().toLowerCase())) || variants[0];
 
-                    dispatch({ type: actionTypes.SET_DATA, data: { uniqueVariants: variants, serviceSubType: initialVariant } });
+                    dispatch({ type: actionTypes.SET_DATA, data: { uniqueVariants: variants, variantsInfo, serviceSubType: initialVariant } });
                     fetchMaterialsForVariant(initialVariant);
                 } else {
                     // Fallback if no variants found but we expected them
@@ -578,6 +623,27 @@ export const useOrderForm = (serviceId, overrides = {}) => {
     const handleSubTypeChange = (newSubType) => {
         setServiceSubType(newSubType);
         const dbAreaId = serviceInfo?.areaId;
+        if (!dbAreaId || !newSubType) return;
+
+        // Variantes VIRTUALES (ECOUV): los materiales se buscan por TIPO, no por nombre
+        const vv = config.variantMode === 'virtual' ? (config.virtualVariants || []).find(x => x.label === newSubType) : null;
+        if (vv) {
+            const params = `tipo=${encodeURIComponent(vv.tipo)}${vv.soloConTerminaciones ? '&conTerminaciones=1' : ''}`;
+            apiClient.get(`/nomenclators/materiales-por-tipo/${dbAreaId}?${params}`).then(res => {
+                if (res.success && res.data.length > 0) {
+                    dispatch({ type: actionTypes.SET_DATA, data: { dynamicMaterials: res.data } });
+                    setGlobalMaterial(config.materialMode === 'multiple' ? '' : findDefaultMaterial(res.data));
+                } else {
+                    dispatch({ type: actionTypes.SET_DATA, data: { dynamicMaterials: [] } });
+                    setGlobalMaterial('');
+                }
+            }).catch(e => {
+                console.error('Error cargando materiales por tipo:', e);
+                dispatch({ type: actionTypes.SET_DATA, data: { dynamicMaterials: [] } });
+                setGlobalMaterial('');
+            });
+            return;
+        }
 
         if (dbAreaId && newSubType) {
             apiClient.get(`/nomenclators/materials/${dbAreaId}/${encodeURIComponent(newSubType)}`).then(res => {

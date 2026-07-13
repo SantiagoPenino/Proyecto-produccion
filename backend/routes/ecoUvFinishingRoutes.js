@@ -5,6 +5,7 @@ const controller = require('../controllers/ecoUvFinishingController');
 router.get('/orders', controller.getFinishingOrders);
 router.get('/orders/:id/details', controller.getOrderDetails);
 router.put('/items/:itemId', controller.updateExtraItem); // update quantity
+router.put('/terminaciones/:id/estado', controller.updateTerminacionEstado); // Pendiente | Hecha
 router.post('/orders/:id/control', controller.controlOrder);
 
 module.exports = router;

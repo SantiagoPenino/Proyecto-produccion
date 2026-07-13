@@ -33,6 +33,7 @@ router.post('/excepcional', verifyToken, webRetirosController.marcarExcepcional)
 router.get('/excepciones', verifyToken, webRetirosController.getExcepciones);
 router.put('/excepciones/:id/gestionar', verifyToken, webRetirosController.gestionarExcepcion);
 
+router.get('/:oreId/bultos', verifyToken, webRetirosController.getBultosRetiro);
 router.post('/anular/:id', verifyToken, webRetirosController.anularRetiro);
 router.post('/autorizar', verifyToken, webRetirosController.autorizarRetiro);
 

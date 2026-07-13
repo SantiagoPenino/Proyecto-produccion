@@ -210,7 +210,8 @@ exports.createWebOrder = async (req, res) => {
         idServicio, nombreTrabajo, prioridad, notasGenerales, configuracion,
         especificacionesCorte, lineas, archivosReferencia, archivosTecnicos, serviciosExtras,
         bobinaId,  // TELA CLIENTE: BobinaID seleccionada por el usuario
-        magnitud   // TELA CLIENTE: metros del pedido a descontar de la bobina (top-level en el payload)
+        magnitud,  // TELA CLIENTE: metros del pedido a descontar de la bobina (top-level en el payload)
+        tinta      // ECOUV: tinta de impresión (Ecosolvente/UV) — rutea el lote a la máquina
     } = req.body;
 
     // Mapeo inverso para compatibilidad
@@ -300,6 +301,25 @@ exports.createWebOrder = async (req, res) => {
 
         const mainAreaID = (SERVICE_TO_AREA_MAP[serviceId] || 'GENE').toUpperCase();
 
+        // URGENCIA POR ÁREA: si el área principal no tiene urgencia activa (misma regla
+        // que el motor de precios — perfil urgencia / AREAS_SIN_URGENCIA), se fuerza
+        // 'Normal' aunque el payload diga otra cosa. El portal ya oculta el botón;
+        // esto cubre payloads viejos/manuales. Fail-open si la config no se puede leer.
+        let finalUrgency = urgency;
+        if ((urgency || '').trim().toLowerCase() === 'urgente') {
+            try {
+                const { getAreasConUrgencia } = require('../utils/urgenciaAreas');
+                const areasConUrgencia = await getAreasConUrgencia(pool);
+                const areaPrincipal = (req.body.servicios?.find(s => s.esPrincipal)?.areaId || mainAreaID || '').toUpperCase();
+                if (areaPrincipal && areaPrincipal !== 'GENE' && !areasConUrgencia.has(areaPrincipal)) {
+                    finalUrgency = 'Normal';
+                    logger.info(`[WebOrder] Área ${areaPrincipal} sin urgencia activa: prioridad forzada a Normal.`);
+                }
+            } catch (e) {
+                logger.warn('[WebOrder] No se pudo evaluar urgencia por área:', e.message);
+            }
+        }
+
         // ... (Lógica de áreas extras se mantiene igual)
         const EXTRA_ID_TO_AREA = { 'EST': 'EST', 'ESTAMPADO': 'EST', 'COSTURA': 'TWT', 'CORTE': 'TWC', 'TWC': 'TWC', 'TWT': 'TWT', 'LASER': 'TWC', 'BORDADO': 'EMB', 'EMB': 'EMB' };
 
@@ -384,7 +404,9 @@ exports.createWebOrder = async (req, res) => {
                         heightBack: it.heightBack,
                         observacionesBack: it.observacionesBack,
                         sinDPI: it.sinDPI,
-                        sinDPIBack: it.sinDPIBack
+                        sinDPIBack: it.sinDPIBack,
+                        // ECOUV: terminaciones elegidas para ESTE archivo [{terminacionId, cantidad}]
+                        terminaciones: Array.isArray(it.terminaciones) ? it.terminaciones : []
                     };
                 });
 
@@ -768,16 +790,74 @@ exports.createWebOrder = async (req, res) => {
                     // ... se mantiene o se simplifica. Por ahora el secuencial cubre el 90% de casos.
                 }
 
-                // Determinar UM
-                const areaUM = mapaAreasUM[exec.areaID] || 'u';
+                // Determinar UM + variante física (desde StockArt del CodStock elegido)
+                let areaUM = mapaAreasUM[exec.areaID] || 'u';
+                let varianteFinal = exec.variante;
+                let esArmarAMedida = false;
+                let esProductoTerminado = false;
+                let notaMaterialImpresion = '';
+                let tintaFinal = (exec.areaID === 'ECOUV' && tinta) ? String(tinta).trim() : null;
+                if (exec.codStock) {
+                    try {
+                        const stUm = await new sql.Request(transaction)
+                            .input('Stk', sql.VarChar, String(exec.codStock).trim())
+                            .query("SELECT TOP 1 ISNULL(TipoStock, 'MATERIAL') AS TipoStock, LTRIM(RTRIM(Articulo)) AS VarianteStock FROM StockArt WHERE LTRIM(RTRIM(CodStock)) = LTRIM(RTRIM(@Stk))");
+                        const st = stUm.recordset[0];
+                        if (st) {
+                            // PRODUCTO TERMINADO: se cuenta y precia por UNIDAD aunque el área
+                            // trabaje en m2 (precio cerrado del artículo).
+                            if (st.TipoStock === 'PRODUCTO_TERMINADO') { areaUM = 'u'; esProductoTerminado = true; }
+
+                            // ECOUV: la Variante de la ORDEN es SIEMPRE la clasificación física
+                            // del material QUE SE IMPRIME (Lonas/Canvas/Vinilos...), para que
+                            // producción agrupe lotes por material real.
+                            if (exec.areaID === 'ECOUV' && st.VarianteStock) {
+                                esArmarAMedida = /personalizad|medida/i.test(exec.variante || '');
+                                varianteFinal = st.VarianteStock;
+
+                                // Producto terminado: el material que se imprime sale de la FICHA
+                                // (ProductosTerminados.MaterialCodArticulo), no del artículo producto.
+                                if (st.TipoStock === 'PRODUCTO_TERMINADO' && exec.codArticulo) {
+                                    const fichaRes = await new sql.Request(transaction)
+                                        .input('Art', sql.VarChar, String(exec.codArticulo).trim())
+                                        .query(`
+                                            SELECT TOP 1 LTRIM(RTRIM(A.Descripcion)) AS MaterialImpresion,
+                                                   LTRIM(RTRIM(S.Articulo)) AS VarianteMaterial,
+                                                   LTRIM(RTRIM(P.Tinta)) AS TintaFicha
+                                            FROM ProductosTerminados P
+                                            INNER JOIN articulos A ON LTRIM(RTRIM(A.CodArticulo)) = LTRIM(RTRIM(P.MaterialCodArticulo))
+                                            LEFT JOIN StockArt S ON LTRIM(RTRIM(S.CodStock)) = LTRIM(RTRIM(A.CodStock))
+                                            WHERE LTRIM(RTRIM(P.CodArticulo)) = @Art
+                                            ORDER BY CASE WHEN LTRIM(RTRIM(A.CodStock)) LIKE '1.1.3.%' THEN 0 ELSE 1 END
+                                        `);
+                                    const ficha = fichaRes.recordset[0];
+                                    if (ficha) {
+                                        if (ficha.VarianteMaterial) varianteFinal = ficha.VarianteMaterial;
+                                        if (ficha.MaterialImpresion) notaMaterialImpresion = `[SE IMPRIME EN: ${ficha.MaterialImpresion}]`;
+                                        // La tinta del producto terminado la define la FICHA (el cliente no la elige)
+                                        tintaFinal = ficha.TintaFicha || null;
+                                    }
+                                }
+                            }
+                        }
+                    } catch (_) { /* sin TipoStock/StockArt: se mantiene UM del área y variante original */ }
+                }
 
                 // ID del producto (si lo tenemos en exec)
                 const idProdReact = exec.idProductoReact || null;
 
                 // Combinar Nota General + Nota Específica del Servicio (Metadatos)
                 const combinedNote = [finalNote, exec.notaAdicional].filter(n => n && n.trim()).join(' | ');
+                // La variante comercial "Personalizado (Armar a Medida)" y el material de
+                // impresión del producto terminado viajan como marcas en la nota (la Variante
+                // de la orden quedó reservada para la clasificación física del material).
+                const notaOrden = [
+                    esArmarAMedida ? '[ARMAR A MEDIDA]' : null,
+                    notaMaterialImpresion || null,
+                    combinedNote
+                ].filter(Boolean).join(' ');
 
-                const isPrinting = (exec.areaID || "").toUpperCase().match(/IMPRESION|GIG|SUBLIMACION|SB|DF|ECO|UV/);
+                const isPrinting = (exec.areaID || "").toUpperCase().match(/IMPRESION|GIG|SUBLIMACION|SB|DF|ECO|UV|DIRECTA/);
                 const fechaEntradaSector = isPrinting ? new Date() : null;
 
                 // INSERCIÓN DE ORDEN CON ESTADO 'Cargando...'
@@ -787,12 +867,12 @@ exports.createWebOrder = async (req, res) => {
                     .input('CodCliente', sql.Int, codCliente)
                     .input('IdClienteReact', sql.VarChar(50), idClienteReact ? idClienteReact.toString() : null)
                     .input('Desc', sql.NVarChar(300), jobName)
-                    .input('Prio', sql.VarChar(20), urgency)
+                    .input('Prio', sql.VarChar(20), finalUrgency)
                     .input('Mat', sql.VarChar(255), exec.material)
-                    .input('Var', sql.VarChar(100), exec.variante)
+                    .input('Var', sql.VarChar(100), varianteFinal)
                     .input('Cod', sql.VarChar(50), exec.codigoOrden)
                     .input('ERP', sql.VarChar(50), erpDocNumber)
-                    .input('Nota', sql.NVarChar(sql.MAX), combinedNote)
+                    .input('Nota', sql.NVarChar(sql.MAX), notaOrden)
                     .input('Mag', sql.VarChar(50), String(exec.magnitudInicial || '0')) // Magnitud inicial (cero si no hay dato)
                     .input('Prox', sql.VarChar(50), proximoServicio)
                     .input('Estado', sql.VarChar(50), 'Cargando...')
@@ -804,13 +884,14 @@ exports.createWebOrder = async (req, res) => {
                     .input('F_EntSec', sql.DateTime, fechaEntradaSector)
                     .input('BobID', sql.Int, (bobinaId && !exec.isExtra) ? parseInt(bobinaId) : null) // TELA CLIENTE: solo la orden principal (los extras no consumen tela)
                     .input('DisenadorID', sql.Int, req.disenadorId || null) // pedido creado por un DISEÑADOR en nombre del cliente
+                    .input('Tinta', sql.VarChar(50), tintaFinal) // ECOUV: rutea lote (magic sort agrupa por Tinta); producto terminado la toma de su ficha
                     .query(`
                         INSERT INTO Ordenes (
                             AreaID, Cliente, CodCliente, IdClienteReact, DescripcionTrabajo, Prioridad,
                             FechaIngreso, FechaEstimadaEntrega, Material, Variante,
                             CodigoOrden, NoDocERP, Nota, Magnitud, ProximoServicio, UM, Estado, EstadoenArea,
                             CodArticulo, IdProductoReact, ProIdProducto, CliIdCliente, FechaEntradaSector,
-                            BobinaTelaID, DisenadorID
+                            BobinaTelaID, DisenadorID, Tinta
                         )
                         OUTPUT INSERTED.OrdenID
                         VALUES (
@@ -818,7 +899,7 @@ exports.createWebOrder = async (req, res) => {
                             GETDATE(), DATEADD(day, 3, GETDATE()), @Mat, @Var,
                             @Cod, @ERP, @Nota, @Mag, @Prox, @UM, @Estado, @Estado,
                             @CodArt, @IdProdReact, @ProIdProducto, @CliIdCliente, @F_EntSec,
-                            @BobID, @DisenadorID
+                            @BobID, @DisenadorID, @Tinta
                         )
                     `);
 
@@ -897,6 +978,7 @@ exports.createWebOrder = async (req, res) => {
                 // --- REGISTRAR ARCHIVOS ESPERADOS (PLACEHOLDERS) ---
                 let totalMagnitud = 0;
                 let fileCount = 0;
+                let termCatalogCache = null; // catálogo de Terminaciones (se carga una vez si algún item las trae)
 
                 for (let i = 0; i < exec.items.length; i++) {
                     const item = exec.items[i];
@@ -961,6 +1043,80 @@ exports.createWebOrder = async (req, res) => {
                             finalName: finalName,
                             area: exec.areaID
                         });
+
+                        // TERMINACIONES POR ARCHIVO (ECOUV): quedan DENTRO de la misma orden,
+                        // ligadas al archivo (OrdenTerminaciones) + línea de facturación en
+                        // ServiciosExtraOrden. NO se crea una orden aparte.
+                        if (Array.isArray(item.terminaciones) && item.terminaciones.length > 0) {
+                            if (!termCatalogCache) {
+                                const tc = await new sql.Request(transaction)
+                                    .query("SELECT TerminacionID, Nombre, CodArticulo, UnidadCobro FROM Terminaciones WHERE Activo = 1");
+                                termCatalogCache = new Map(tc.recordset.map(t => [t.TerminacionID, t]));
+                            }
+                            const archivoId = resFile.recordset[0].ArchivoID;
+                            for (const term of item.terminaciones) {
+                                const tid = parseInt(term.terminacionId);
+                                const tInfo = termCatalogCache.get(tid);
+                                if (!tInfo) {
+                                    logger.warn(`[WebOrder] Terminación ${term.terminacionId} inexistente/inactiva: ignorada (orden ${newOID})`);
+                                    continue;
+                                }
+                                const cantTerm = parseFloat(term.cantidad) || 1;
+                                await new sql.Request(transaction)
+                                    .input('OID', sql.Int, newOID)
+                                    .input('AID', sql.Int, archivoId)
+                                    .input('TID', sql.Int, tid)
+                                    .input('Cnt', sql.Decimal(18, 2), cantTerm)
+                                    .query("INSERT INTO OrdenTerminaciones (OrdenID, ArchivoID, TerminacionID, Cantidad) VALUES (@OID, @AID, @TID, @Cnt)");
+
+                                if (tInfo.CodArticulo) {
+                                    await new sql.Request(transaction)
+                                        .input('OID', sql.Int, newOID)
+                                        .input('Cod', sql.VarChar(50), String(tInfo.CodArticulo).trim())
+                                        .input('Des', sql.NVarChar(255), `Terminación: ${tInfo.Nombre}`)
+                                        .input('Cnt', sql.Decimal(18, 2), cantTerm)
+                                        .query(`
+                                            INSERT INTO ServiciosExtraOrden
+                                            (OrdenID, CodArt, CodStock, Descripcion, Cantidad, PrecioUnitario, TotalLinea, Observacion, FechaRegistro)
+                                            VALUES (@OID, @Cod, '', @Des, @Cnt, 0, 0, 'Terminación por archivo (WebOrder)', GETDATE())
+                                        `);
+                                }
+                            }
+                            logger.info(`[WebOrder] ${item.terminaciones.length} terminaciones registradas para archivo ${archivoId} (orden ${newOID})`);
+                        }
+
+                        // PRODUCTO TERMINADO: sus terminaciones INCLUIDAS (ficha del producto)
+                        // también se registran en OrdenTerminaciones para que control de calidad
+                        // derive la orden al armado y la bandeja las muestre como checklist.
+                        // SIN línea de facturación: ya están dentro del precio cerrado.
+                        if (esProductoTerminado && exec.codArticulo) {
+                            try {
+                                const incRes = await new sql.Request(transaction)
+                                    .input('Art', sql.VarChar, String(exec.codArticulo).trim())
+                                    .query(`
+                                        SELECT PT.TerminacionID, PT.Cantidad
+                                        FROM ProductoTerminadoTerminaciones PT
+                                        INNER JOIN ProductosTerminados P ON P.ID = PT.ProductoID
+                                        INNER JOIN Terminaciones T ON T.TerminacionID = PT.TerminacionID AND T.Activo = 1
+                                        WHERE LTRIM(RTRIM(P.CodArticulo)) = @Art
+                                    `);
+                                const archivoIdPT = resFile.recordset[0].ArchivoID;
+                                for (const inc of incRes.recordset) {
+                                    const cantInc = (parseFloat(inc.Cantidad) || 1) * (item.copies || 1);
+                                    await new sql.Request(transaction)
+                                        .input('OID', sql.Int, newOID)
+                                        .input('AID', sql.Int, archivoIdPT)
+                                        .input('TID', sql.Int, inc.TerminacionID)
+                                        .input('Cnt', sql.Decimal(18, 2), cantInc)
+                                        .query("INSERT INTO OrdenTerminaciones (OrdenID, ArchivoID, TerminacionID, Cantidad) VALUES (@OID, @AID, @TID, @Cnt)");
+                                }
+                                if (incRes.recordset.length > 0) {
+                                    logger.info(`[WebOrder] ${incRes.recordset.length} terminaciones INCLUIDAS del producto ${exec.codArticulo} registradas (orden ${newOID})`);
+                                }
+                            } catch (ePT) {
+                                logger.warn('[WebOrder] No se pudieron registrar terminaciones incluidas del producto terminado:', ePT.message);
+                            }
+                        }
 
                         // CÁLCULO DE MAGNITUD TOTAL
                         if (umLower === 'u') {

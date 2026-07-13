@@ -1,0 +1,7 @@
+# Evita que editores/herramientas re-guarden archivos con encoding equivocado
+# (origen del mojibake "Â±", "âœ“", "â”€" en varios JSX: UTF-8 releído como
+# Windows-1252 y vuelto a guardar). Todo el repo es UTF-8.
+root = true
+
+[*]
+charset = utf-8

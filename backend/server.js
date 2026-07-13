@@ -118,6 +118,7 @@ app.use('/api/inventory', require('./routes/inventoryRoutes'));
 app.use('/api/configuraciones', require('./routes/configuracionesRoutes'));
 app.use('/api/empresas', require('./routes/empresasRoutes'));         // MÓDULO MULTIEMPRESA (emisor de factura)
 app.use('/api/sincro', require('./routes/sincroRoutes'));
+app.use('/api/stockart', require('./routes/stockArtRoutes'));         // EDITOR StockArt (SysAdmin)
 app.use('/api/quotation', require('./routes/quotationRoutes'));
 app.use('/api/sisnet', require('./routes/sisnetRoutes'));
 

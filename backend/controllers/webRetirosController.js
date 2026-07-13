@@ -183,6 +183,42 @@ exports.getAllLocalRetiros = async (req, res) => {
 
 
 /**
+ * GET /web-retiros/:oreId/bultos
+ * Bultos FÍSICOS reales por orden del retiro (para los punticos del checklist de empaque).
+ * Mapea OrdenesDeposito → Ordenes (por código) → Logistica_Bultos (PROD_TERMINADO vivos).
+ * Devuelve { bultos: { 'SUB-5936 (1/2)': ['5936/B7737', ...], ... } }
+ */
+exports.getBultosRetiro = async (req, res) => {
+    const oreId = parseInt(req.params.oreId, 10);
+    if (isNaN(oreId)) return res.status(400).json({ error: 'ID de retiro inválido' });
+    try {
+        const pool = await getPool();
+        const r = await pool.request()
+            .input('R', sql.Int, oreId)
+            .query(`
+                SELECT od.OrdCodigoOrden, lb.CodigoEtiqueta
+                FROM dbo.OrdenesDeposito od WITH(NOLOCK)
+                JOIN dbo.Ordenes o WITH(NOLOCK) ON LTRIM(RTRIM(o.CodigoOrden)) = LTRIM(RTRIM(od.OrdCodigoOrden))
+                JOIN dbo.Logistica_Bultos lb WITH(NOLOCK) ON lb.OrdenID = o.OrdenID
+                     AND lb.Tipocontenido = 'PROD_TERMINADO'
+                     AND lb.Estado NOT IN ('PROCESADO', 'PERDIDO')
+                WHERE od.OReIdOrdenRetiro = @R
+                ORDER BY od.OrdCodigoOrden, lb.BultoID
+            `);
+        const porOrden = {};
+        for (const row of r.recordset) {
+            const k = String(row.OrdCodigoOrden || '').trim();
+            if (!porOrden[k]) porOrden[k] = [];
+            porOrden[k].push(String(row.CodigoEtiqueta || '').trim());
+        }
+        res.json({ success: true, bultos: porOrden });
+    } catch (err) {
+        logger.error('Error getBultosRetiro:', err);
+        res.status(500).json({ error: err.message });
+    }
+};
+
+/**
  * Traer lista de retiros de un cliente específico que estén pendientes de pago (Estado 1)
  */
 exports.getMyRetirosPendientes = async (req, res) => {

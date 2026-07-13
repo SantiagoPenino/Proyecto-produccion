@@ -445,6 +445,10 @@ export default function AreaView({ areaKey: rawAreaKey, areaConfig, onSwitchTab 
 
     const isDTF = ['DF', 'DTF'].includes((areaKey || '').toUpperCase());
     const isSB = (areaKey || '').toUpperCase() === 'SB';
+    // DIRECTA arma lotes por material igual que DTF: filtro por Material (la variante es única)
+    // y validación de material uniforme al asignar a lote.
+    const isDirecta = ['DIRECTA', 'IMD'].includes((areaKey || '').toUpperCase());
+    const lotePorMaterial = isDTF || isDirecta;
 
     // 5. FILTRADO
     const displayOrders = showCancelled ? cancelledOrders : (showPronto ? prontoOrders : dbOrders);
@@ -492,7 +496,7 @@ export default function AreaView({ areaKey: rawAreaKey, areaConfig, onSwitchTab 
         }
 
         if (activeFilters.variants && activeFilters.variants.length > 0) {
-            if (isDTF) {
+            if (lotePorMaterial) {
                 result = result.filter(o => activeFilters.variants.includes((o.material || '').trim()));
             } else {
                 result = result.filter(o => activeFilters.variants.includes((o.variantCode || '').trim().toUpperCase()));
@@ -645,7 +649,7 @@ export default function AreaView({ areaKey: rawAreaKey, areaConfig, onSwitchTab 
                                 </div>
                             )}
                             {/* Variante o Material según área */}
-                            {isDTF ? (
+                            {lotePorMaterial ? (
                                 availableMaterials.length > 0 && (
                                     <div>
                                         <span className="text-[10px] uppercase font-black text-zinc-400 tracking-wider mb-2 block">Material</span>
@@ -779,7 +783,7 @@ export default function AreaView({ areaKey: rawAreaKey, areaConfig, onSwitchTab 
                         }
 
                         const upperArea = (areaKey || '').toUpperCase();
-                        if (upperArea === 'DF' || upperArea === 'DTF') {
+                        if (upperArea === 'DF' || upperArea === 'DTF' || upperArea === 'DIRECTA' || upperArea === 'IMD') {
                             const variantSet = new Set();
                             const materialSet = new Set();
                             
@@ -791,7 +795,7 @@ export default function AreaView({ areaKey: rawAreaKey, areaConfig, onSwitchTab 
                             if (variantSet.size > 1) {
                                 Swal.fire({
                                     title: 'Error!',
-                                    text: 'No se permite asignar órdenes DTF con distinto material al mismo lote.',
+                                    text: 'No se permite asignar órdenes con distinto material al mismo lote.',
                                     iconHtml: '<svg xmlns="http://www.w3.org/2000/svg" width="60" height="60" viewBox="0 0 24 24" fill="none" stroke="#BD0C7E" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="m4.9 4.9 14.2 14.2"/></svg>',
                                     customClass: { 
                                         popup: '!p-0 overflow-hidden rounded-xl',
@@ -813,7 +817,7 @@ export default function AreaView({ areaKey: rawAreaKey, areaConfig, onSwitchTab 
                             if (materialSet.size > 1) {
                                 Swal.fire({
                                     title: 'Error!',
-                                    text: 'No se permite asignar órdenes DTF con distinto material al mismo lote.',
+                                    text: 'No se permite asignar órdenes con distinto material al mismo lote.',
                                     iconHtml: '<svg xmlns="http://www.w3.org/2000/svg" width="60" height="60" viewBox="0 0 24 24" fill="none" stroke="#BD0C7E" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="m4.9 4.9 14.2 14.2"/></svg>',
                                     customClass: { 
                                         popup: '!p-0 overflow-hidden rounded-xl',
