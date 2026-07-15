@@ -170,7 +170,7 @@ exports.enviarAprobacionTPU = async (req, res) => {
         const check = await pool.request()
             .input('OID', sql.Int, ordenId)
             .query(`
-                SELECT o.OrdenID, o.AreaID, o.Estado,
+                SELECT o.OrdenID, o.AreaID, o.Estado, o.Nota,
                        (SELECT COUNT(*) FROM ArchivosOrden ao
                           WHERE ao.OrdenID = o.OrdenID AND ISNULL(ao.EstadoArchivo,'') <> 'Cancelado') AS archivos
                 FROM Ordenes o WHERE o.OrdenID = @OID
@@ -178,7 +178,40 @@ exports.enviarAprobacionTPU = async (req, res) => {
         if (!check.recordset.length) return res.status(404).json({ error: 'Orden no encontrada.' });
         const o = check.recordset[0];
         if (String(o.AreaID || '').toUpperCase() !== 'TPU') return res.status(400).json({ error: 'Solo aplica a órdenes TPU.' });
-        if (o.archivos !== 5) return res.status(400).json({ error: `Se necesitan exactamente 5 archivos de arte para enviar a aprobación (hay ${o.archivos}).` });
+
+        // Reuso de matriz con cantidad distinta ([REUSO-REGEN]): el diseño ya está aprobado, así que al
+        // completar las 5 capas regeneradas la orden entra DIRECTO a producción, sin aprobación del cliente.
+        const esReuso = /\[REUSO-REGEN\]/i.test(o.Nota || '');
+
+        if (o.archivos !== 5) {
+            return res.status(400).json({ error: `Se necesitan exactamente 5 archivos de arte para ${esReuso ? 'enviar a producción' : 'enviar a aprobación'} (hay ${o.archivos}).` });
+        }
+
+        if (esReuso) {
+            if (String(o.Estado || '') !== 'Cargando...') return res.status(400).json({ error: 'La orden ya está en producción.' });
+            // Activar directo a producción (sin aprobación del cliente).
+            const { changeOrderState } = require('../services/stateManagerService');
+            const tx = new sql.Transaction(pool);
+            await tx.begin();
+            try {
+                await changeOrderState(tx, {
+                    target : { type: 'ORDER', id: ordenId },
+                    estado : 'Pendiente',
+                    userObj: req.user || 'Sistema',
+                    detalle: 'Arte regenerado (reuso de matriz) — a producción sin aprobación',
+                    guard  : "Estado = 'Cargando...'",
+                    io     : req.app.get('socketio'),
+                });
+                await tx.commit();
+            } catch (e) { await tx.rollback(); throw e; }
+            try {
+                const io = req.app.get('socketio');
+                if (io) io.emit('server:ordersUpdated', { count: 1, source: 'tpu-reuso-a-produccion' });
+            } catch (_) {}
+            logger.info(`[TPU] Orden ${ordenId} (reuso) enviada directo a producción sin aprobación.`);
+            return res.json({ success: true, aProduccion: true });
+        }
+
         if (o.Estado === 'Cargando...') return res.status(400).json({ error: 'La orden ya está esperando la aprobación del cliente.' });
 
         await pool.request()
@@ -275,15 +308,15 @@ exports.getOrdersByArea = async (req, res) => {
                         EstadoArchivo as estado,
                         DetalleLinea,
                         Observaciones as notas
-                    FROM dbo.ArchivosOrden 
-                    WHERE OrdenID = o.OrdenID 
+                    FROM dbo.ArchivosOrden WITH(NOLOCK)
+                    WHERE OrdenID = o.OrdenID
                     FOR JSON PATH
                 ) as files_data
 
-            FROM dbo.Ordenes o
-            LEFT JOIN dbo.ConfigEquipos m ON o.MaquinaID = m.EquipoID
-            LEFT JOIN dbo.Clientes c ON o.IdClienteReact = c.IDReact
-            LEFT JOIN dbo.InventarioBobinas ibt ON ibt.BobinaID = o.BobinaTelaID
+            FROM dbo.Ordenes o WITH(NOLOCK)
+            LEFT JOIN dbo.ConfigEquipos m WITH(NOLOCK) ON o.MaquinaID = m.EquipoID
+            LEFT JOIN dbo.Clientes c WITH(NOLOCK) ON o.IdClienteReact = c.IDReact
+            LEFT JOIN dbo.InventarioBobinas ibt WITH(NOLOCK) ON ibt.BobinaID = o.BobinaTelaID
             WHERE o.AreaID = @Area
         `;
 

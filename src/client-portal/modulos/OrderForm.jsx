@@ -70,6 +70,12 @@ const ServiceAccordion = ({ title, subtitle, isActive, onToggle, children, icon:
     );
 };
 
+// Tolerancia de ancho: distintos software de diseño exportan medidas con diferencias
+// mínimas (un mismo diseño de 1.80 puede medir 1.8005 o 1.801 según la herramienta).
+// Se resta al ancho medido ANTES de redondear al cm, para no rebotar por décimas de mm.
+// (Mantener en sincronía con TOLERANCIA_ANCHO_M de pautas/PrintSettingsPanel.jsx.)
+const TOLERANCIA_ANCHO_M = 0.002; // 2 mm
+
 // Helper to robustly resolve material printable width from DB 'Ancho' field or fallback to regex name parsing
 const resolveMaterialWidth = (matObj) => {
     if (!matObj) return 1.83;
@@ -272,6 +278,8 @@ const OrderForm = ({ serviceId: propServiceId }) => {
 
     // TPU — modo (trabajo nuevo vs reusar una matriz) y listado de "Mis matrices"
     const [tpuMode, setTpuMode] = useState('nuevo');
+    // Reuso con cantidad distinta a la de la matriz: se regenera el arte (aviso en el modal de éxito).
+    const [reusoRegen, setReusoRegen] = useState(false);
     const [matrices, setMatrices] = useState([]);
     const [matrizSel, setMatrizSel] = useState(null);
     const [loadingMatrices, setLoadingMatrices] = useState(false);
@@ -518,7 +526,9 @@ const OrderForm = ({ serviceId: propServiceId }) => {
                 // Así el valor que se valida es el mismo que se muestra (antes: 1.5701 fallaba contra
                 // 1.57 pero el mensaje decía "1.57 excede 1.57"). El toFixed(6) limpia ruido de float
                 // para que un 1.57 "sucio" (1.5700000000003) no suba injustamente a 1.58.
-                const fileWidthRounded = Math.ceil(Number((fileWidthM * 100).toFixed(6))) / 100;
+                // Se resta TOLERANCIA_ANCHO_M (2mm) antes de redondear: una diferencia imperceptible entre
+                // software (1.8005 vs 1.80) "cae" al cm exacto en vez de saltar al siguiente y rebotar.
+                const fileWidthRounded = Math.ceil(Number(((fileWidthM - TOLERANCIA_ANCHO_M) * 100).toFixed(6))) / 100;
                 const maxPrintableWidth = Math.round((maxWidth - 0.03) * 100) / 100;
 
                 if (fileWidthRounded > maxPrintableWidth + 1e-9) {
@@ -596,6 +606,7 @@ const OrderForm = ({ serviceId: propServiceId }) => {
     // --- Submit Logic ---
     const handleSubmit = async (e) => {
         e.preventDefault();
+        setReusoRegen(false); // se activa solo en reuso de matriz con cantidad distinta
         if (!jobName.trim()) return addToast('Nombre del proyecto requerido', 'error');
 
         // TPU — reuso de matriz: flujo aparte (endpoint /reuse-matriz), sin boceto ni archivos.
@@ -612,6 +623,9 @@ const OrderForm = ({ serviceId: propServiceId }) => {
                     nombreTrabajo: jobName.trim()
                 });
                 const cod = resp?.codigoOrden || resp?.data?.codigoOrden || '';
+                // Cantidad distinta a la de la matriz: el arte se regenera con la nueva cantidad
+                // (el cliente no aprueba nada). Se avisa en el modal de éxito.
+                setReusoRegen(!!(resp?.regenerar ?? resp?.data?.regenerar));
                 actions.setCreatedOrderIds(cod ? [cod] : []);
                 actions.setShowSuccessModal(true);
             } catch (err) {
@@ -656,6 +670,17 @@ const OrderForm = ({ serviceId: propServiceId }) => {
         // su material elegido — no se autocompleta, así que validamos antes de confirmar.
         if (config.materialMode === 'multiple' && items.some(it => !it.material || !String(it.material).trim())) {
             return addToast('Seleccioná el material de cada archivo antes de confirmar el pedido.', 'error');
+        }
+
+        // Impresión (sublimación, DTF, etc.): tiene que haber al menos un archivo de arte. Sin arte la
+        // orden nace con 0 metros y hay que cancelarla a mano. TPU va con boceto (bocetoMode) y
+        // bordado/estampado validan su arte por otro lado → todos exentos de este chequeo. El backend
+        // rechaza igual (guard por UM≠'u'); esto es solo para avisar antes de enviar.
+        if (config.requiresProductionFiles && !config.bocetoMode) {
+            const hayArte = items.some(it => it.file || it.fileBack);
+            if (!hayArte) {
+                return addToast('Subí al menos un archivo de arte para imprimir antes de confirmar el pedido.', 'error');
+            }
         }
 
         actions.setLoading(true);
@@ -2007,6 +2032,15 @@ const OrderForm = ({ serviceId: propServiceId }) => {
                                     ))}
                                 </div>
                             </div>
+
+                            {reusoRegen && (
+                                <div className="w-full bg-amber-500/10 border border-amber-500/30 rounded-2xl p-4 -mt-2 mb-2">
+                                    <p className="text-[11px] text-amber-200 font-bold leading-relaxed">
+                                        Pediste una cantidad distinta a la de la matriz, así que <b>regeneramos el arte</b> con esa cantidad.
+                                        No necesitás aprobar nada: el pedido ya entró y arranca apenas esté el arte listo.
+                                    </p>
+                                </div>
+                            )}
 
                             {/* Acciones */}
                             <div className="w-full space-y-3">

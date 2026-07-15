@@ -148,24 +148,53 @@ export const PickupView = () => {
     // selecciona/deselecciona el pedido completo, para que se retire junto.
     const baseDe = (id) => String(id || '').replace(/\s*\(\d+\/\d+\)\s*$/, '').trim();
 
+    // Retiro OBLIGATORIO de pedidos viejos: los de más de 15 días (por fecha de ingreso) hay que
+    // llevárselos sí o sí. Al seleccionar cualquier pedido se suman todas las viejas; si el cliente
+    // intenta sacar una vieja, se limpia TODA la selección (no puede retirar lo nuevo sin lo viejo).
+    const DIAS_RETIRO_OBLIGATORIO = 15;
+    const esOrdenVieja = (o) => {
+        if (!o?.fechaIngreso) return false;
+        const dias = (Date.now() - new Date(o.fechaIngreso).getTime()) / 86400000;
+        return dias > DIAS_RETIRO_OBLIGATORIO;
+    };
+
     const handleToggleOrder = (orderId) => {
+        const orderToAdd = readyOrders.find(o => o.id === orderId);
+        const monedaGrupo = orderToAdd?.currency;
         const grupo = readyOrders.filter(o => baseDe(o.id) === baseDe(orderId)).map(o => o.id);
         const todasSel = grupo.every(g => selectedOrders.includes(g));
+        // Retiro obligatorio DENTRO de la misma moneda: como no se pueden mezclar monedas en un retiro,
+        // solo se fuerzan las viejas de la MISMA moneda que la orden tocada. Las viejas de otra moneda
+        // van en su propio retiro, donde a su vez serán obligatorias.
+        const idsViejas = readyOrders.filter(o => esOrdenVieja(o) && o.currency === monedaGrupo).map(o => o.id);
+        const grupoEsViejo = grupo.some(id => idsViejas.includes(id));
 
         if (todasSel) {
-            setSelectedOrders(selectedOrders.filter(id => !grupo.includes(id)));
-        } else {
-            // Verificar que no se mezclen monedas (contra lo ya seleccionado de otros pedidos)
-            const orderToAdd = readyOrders.find(o => o.id === orderId);
-            const yaSeleccionadas = selectedOrders.filter(id => !grupo.includes(id));
-            if (orderToAdd && yaSeleccionadas.length > 0) {
-                const firstSelected = readyOrders.find(o => o.id === yaSeleccionadas[0]);
-                if (firstSelected && orderToAdd.currency !== firstSelected.currency) {
-                    Swal.fire({ icon: 'warning', title: 'Monedas diferentes', text: 'No es posible mezclar pagos en Dólares y Pesos Uruguayos en una misma transacción. Seleccioná únicamente órdenes que compartan la misma moneda.', background: '#212121', color: '#e4e4e7', confirmButtonColor: '#006E97', customClass: { popup: 'rounded-xl border border-zinc-700' } });
-                    return; // Bloquea la selección mixta
-                }
+            // DESMARCAR. Si es un pedido de +15 días (obligatorio en su moneda), se cae toda la selección.
+            if (grupoEsViejo) {
+                setSelectedOrders([]);
+                Swal.fire({ icon: 'info', title: 'Retiro obligatorio', text: 'Los pedidos con más de 15 días tenés que retirarlos sí o sí. Si no los querés llevar, tampoco podés retirar los demás — se limpió la selección.', background: '#212121', color: '#e4e4e7', confirmButtonColor: '#006E97', customClass: { popup: 'rounded-xl border border-zinc-700' } });
+                return;
             }
-            setSelectedOrders([...new Set([...selectedOrders, ...grupo])]);
+            setSelectedOrders(selectedOrders.filter(id => !grupo.includes(id)));
+            return;
+        }
+
+        // MARCAR. Verificar que no se mezclen monedas (contra lo ya seleccionado de otros pedidos)
+        const yaSeleccionadas = selectedOrders.filter(id => !grupo.includes(id));
+        if (orderToAdd && yaSeleccionadas.length > 0) {
+            const firstSelected = readyOrders.find(o => o.id === yaSeleccionadas[0]);
+            if (firstSelected && orderToAdd.currency !== firstSelected.currency) {
+                Swal.fire({ icon: 'warning', title: 'Monedas diferentes', text: 'No es posible mezclar pagos en Dólares y Pesos Uruguayos en una misma transacción. Seleccioná únicamente órdenes que compartan la misma moneda.', background: '#212121', color: '#e4e4e7', confirmButtonColor: '#006E97', customClass: { popup: 'rounded-xl border border-zinc-700' } });
+                return; // Bloquea la selección mixta
+            }
+        }
+
+        // Al seleccionar, se suman las órdenes de +15 días de la MISMA moneda (retiro obligatorio).
+        const viejasNuevas = idsViejas.filter(id => !selectedOrders.includes(id) && !grupo.includes(id));
+        setSelectedOrders([...new Set([...selectedOrders, ...grupo, ...idsViejas])]);
+        if (viejasNuevas.length > 0) {
+            Swal.fire({ toast: true, position: 'top-end', icon: 'info', title: `Se sumaron ${viejasNuevas.length} pedido(s) de +15 días en ${monedaGrupo} (retiro obligatorio)`, showConfirmButton: false, timer: 3500, timerProgressBar: true, background: '#212121', color: '#e4e4e7' });
         }
     };
 

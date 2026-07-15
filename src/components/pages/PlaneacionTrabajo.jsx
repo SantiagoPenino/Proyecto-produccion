@@ -18,6 +18,7 @@ import { DragDropContext, Droppable, Draggable } from '@hello-pangea/dnd';
 import { motion } from 'framer-motion';
 import { Listbox, Transition } from '@headlessui/react';
 import { socket } from '../../services/socketService';
+import { printEtiquetaLote } from '../../utils/printHelper';
 import { isTabletDevice } from '../../utils/device';
 
 // Tablet de planta: columnas de equipos más angostas para que entren 4 a lo ancho (1280px)
@@ -499,6 +500,11 @@ const PlaneacionTrabajo = ({ AreaID }) => {
 
         try {
             await productionService.toggleStatus(rollId, action, destination);
+            // Al finalizar un lote (enviar a Calidad) se imprime su etiqueta térmica automáticamente.
+            // No aplica a destination 'production' (volver a la cola es una corrección, no una finalización).
+            if (action === 'finish' && destination !== 'production') {
+                printEtiquetaLote(rollId);
+            }
             refreshBoard();
         } catch (error) {
             // Revertir en caso de error refrescando forzosamente

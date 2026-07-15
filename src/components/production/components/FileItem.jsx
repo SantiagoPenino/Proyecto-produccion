@@ -197,6 +197,17 @@ const FileItem = ({ file, readOnly = false, onAction, extraInfo, actions, editin
                                         Producto
                                     </span>
                                 )}
+                                {/* Reposición: distingue el archivo de la reposición del original de la orden madre
+                                    (se ven idénticos porque la repo hereda el nombre del original). */}
+                                {extraInfo?.repoLabel && (
+                                    <span className={`ml-2 text-[9px] px-1.5 py-0.5 rounded border uppercase font-black tracking-tighter align-middle shadow-sm ${
+                                        extraInfo.repoLabel.tone === 'cyan'
+                                            ? 'bg-brand-cyan/10 text-brand-cyan border-brand-cyan/30'
+                                            : 'bg-zinc-100 text-zinc-500 border-zinc-300'
+                                    }`}>
+                                        {extraInfo.repoLabel.text}
+                                    </span>
+                                )}
                                 {(() => {
                                     const isDpiForced = file.SinDPI == 1 || file.sinDpi == 1 || file.SinDPI === true;
                                     if (isDpiForced) {

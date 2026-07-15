@@ -78,14 +78,15 @@ exports.getBoardData = async (req, res) => {
         // Se asume que area viene limpia (AreaKey) desde el frontend
 
         const pool = await getPool();
+        await ensureOrderColumns(pool); // garantiza Impreso/Calandrado antes de seleccionarlas (idempotente)
 
         // A. TRAER ROLLOS ACTIVOS
         const rollsRes = await pool.request()
             .input('AreaID', sql.VarChar(20), area)
             .query(`
                 SELECT r.*, u.Nombre AS CreadorNombre, u.IdUsuario AS CreadorId
-                FROM dbo.Rollos r
-                LEFT JOIN dbo.Usuarios u ON r.UsuarioID = u.IdUsuario
+                FROM dbo.Rollos r WITH(NOLOCK)
+                LEFT JOIN dbo.Usuarios u WITH(NOLOCK) ON r.UsuarioID = u.IdUsuario
                 WHERE r.AreaID = @AreaID
                   AND r.Estado IN ('Abierto', 'En Cola', 'En maquina', 'Producción', 'Pausado')
             `);
@@ -109,15 +110,16 @@ exports.getBoardData = async (req, res) => {
                     o.FechaIngreso, 
                     o.Secuencia,
                     o.Tinta, -- ✅ AGREGADO
-                    
-                    -- ✅ SUBCONSULTA PARA CONTAR ARCHIVOS (Usando tu tabla dbo.ArchivosOrden)
-                    (SELECT COUNT(*) FROM dbo.ArchivosOrden WHERE OrdenID = o.OrdenID) AS CantidadArchivos
+                    o.Impreso, o.Calandrado, -- Estado impreso/calandrado (gate "Finalizar Lote" en planeación)
 
-                FROM dbo.Ordenes o
+                    -- ✅ SUBCONSULTA PARA CONTAR ARCHIVOS (Usando tu tabla dbo.ArchivosOrden)
+                    (SELECT COUNT(*) FROM dbo.ArchivosOrden WITH(NOLOCK) WHERE OrdenID = o.OrdenID) AS CantidadArchivos
+
+                FROM dbo.Ordenes o WITH(NOLOCK)
                 WHERE o.AreaID = @AreaID
                 AND (
                     -- Órdenes dentro de un lote ACTIVO: se cuentan TODAS (total del lote, igual que el detalle)
-                    o.RolloID IN (SELECT RolloID FROM dbo.Rollos WHERE AreaID = @AreaID AND Estado IN ('Abierto', 'En Cola', 'En maquina', 'Producción', 'Pausado'))
+                    o.RolloID IN (SELECT RolloID FROM dbo.Rollos WITH(NOLOCK) WHERE AreaID = @AreaID AND Estado IN ('Abierto', 'En Cola', 'En maquina', 'Producción', 'Pausado'))
                     -- Órdenes sin lote (pendientes en la mesa): solo las activas
                     OR (o.RolloID IS NULL AND o.Estado NOT IN ('Entregado', 'Finalizado', 'Cancelado') AND ISNULL(o.EstadoenArea,'') NOT IN ('Pronto', 'PRONTO'))
                 )
@@ -171,6 +173,8 @@ exports.getBoardData = async (req, res) => {
                 rollId: o.RolloID,
                 sequence: o.Secuencia,
                 ink: o.Tinta, // ✅ Mapeado
+                printed: !!o.Impreso,       // gate "Finalizar Lote": máquina impresora
+                calandered: !!o.Calandrado, // gate "Finalizar Lote": máquina no-impresora (calandra)
 
                 // ✅ AQUÍ ASIGNAMOS LA CANTIDAD DE ARCHIVOS
                 fileCount: o.CantidadArchivos || 0

@@ -418,11 +418,14 @@ const postControlArchivo = async (req, res) => {
                 ? `${safeMotivo} (Reponer: ${metrosReponer}m)`
                 : safeMotivo;
 
-            const nuevoCodigo = `${codigoOrden}-F${archivoId}`;
+            // Raíz sin sufijos de falla: si se reporta una falla sobre una orden que YA es -F, la nueva
+            // falla se genera sobre la orden madre (evita apilar -F-F). Mismo criterio que stripRepoSuffix.
+            const codigoRaizFalla = (codigoOrden || '').replace(/(-F\d+)+$/i, '');
+            const nuevoCodigo = `${codigoRaizFalla}-F${archivoId}`;
 
             // ── Buscar si ya existe una orden -F activa para esta madre ──
             const existingFallaRes = await new sql.Request(transaction)
-                .input('BaseCode', sql.NVarChar, codigoOrden)
+                .input('BaseCode', sql.NVarChar, codigoRaizFalla)
                 .query(`
                     SELECT TOP 1 OrdenID, CodigoOrden, ArchivosCount
                     FROM dbo.Ordenes
@@ -873,61 +876,79 @@ const postControlArchivo = async (req, res) => {
 
                 // --- LÓGICA DE CIERRE DE REPOSICIÓN (LIBERAR PADRE) ---
                 if (isReposicion && Fallas === 0) {
-                    const codigoMadre = codigoOrden.split('-F')[0];
-                    if (codigoMadre) {
-                        try {
-                            const reqMadre = new sql.Request(transaction);
-                            reqMadre.input('CodeParent', sql.NVarChar, codigoMadre);
-                            reqMadre.input('CurrentOrderID', sql.Int, ordenId);
-                            // 1 + 1b. Sanar archivos y servicios de la madre (no son estado de orden)
-                            await reqMadre.query(`
+                    // La reposición repuso su arte. Se curan los archivos/servicios en FALLA del MISMO nombre
+                    // en TODAS las órdenes de la familia (mismo NoDocERP + área), NO solo la raíz. Así, en cadenas
+                    // madre → -F → -F, también se cura el PADRE INMEDIATO — antes 'split(-F)[0]' curaba siempre
+                    // la raíz y el eslabón intermedio (madre-F1) quedaba con la falla colgada, y el pedido
+                    // nunca se resolvía. Sin NoDocERP (orden suelta) se agrupa por código raíz + sus eslabones -F.
+                    const codigoRaiz = (codigoOrden || '').split('-F')[0];
+                    // "Misma familia": por NoDocERP si existe; si no, por código raíz (madre y sus -F). Excluye la propia.
+                    const filtroFamilia = (alias) => `
+                        ${alias}.AreaID = @AreaID
+                        AND ${alias}.OrdenID <> @CurrentOrderID
+                        AND (
+                            (@NoDoc IS NOT NULL AND ${alias}.NoDocERP = @NoDoc)
+                            OR (@NoDoc IS NULL AND (${alias}.CodigoOrden = @CodigoRaiz OR ${alias}.CodigoOrden LIKE @CodigoRaiz + '-F%'))
+                        )`;
+                    try {
+                        await new sql.Request(transaction)
+                            .input('NoDoc', sql.VarChar(50), noDocERP)
+                            .input('CodigoRaiz', sql.NVarChar, codigoRaiz)
+                            .input('AreaID', sql.VarChar(50), areaId)
+                            .input('CurrentOrderID', sql.Int, ordenId)
+                            .query(`
                                 UPDATE ParentFiles
                                 SET EstadoArchivo = 'OK', Observaciones = CONCAT(ISNULL(ParentFiles.Observaciones, ''), ' [Repuesto]')
                                 FROM dbo.ArchivosOrden AS ParentFiles
                                 INNER JOIN dbo.Ordenes AS ParentOrder ON ParentFiles.OrdenID = ParentOrder.OrdenID
-                                WHERE ParentOrder.CodigoOrden = @CodeParent
+                                WHERE ${filtroFamilia('ParentOrder')}
                                   AND ParentFiles.EstadoArchivo = 'FALLA'
-                                  AND ParentFiles.NombreArchivo IN(SELECT NombreArchivo FROM dbo.ArchivosOrden WHERE OrdenID = @CurrentOrderID);
+                                  AND ParentFiles.NombreArchivo IN (SELECT NombreArchivo FROM dbo.ArchivosOrden WHERE OrdenID = @CurrentOrderID);
 
                                 UPDATE ParentServices
                                 SET Estado = 'OK', Observaciones = CONCAT(ISNULL(ParentServices.Observaciones, ''), ' [Repuesto]')
                                 FROM dbo.ServiciosExtraOrden AS ParentServices
                                 INNER JOIN dbo.Ordenes AS ParentOrder ON ParentServices.OrdenID = ParentOrder.OrdenID
-                                WHERE ParentOrder.CodigoOrden = @CodeParent
+                                WHERE ${filtroFamilia('ParentOrder')}
                                   AND ParentServices.Estado = 'FALLA'
-                                  AND ParentServices.Descripcion IN(SELECT Descripcion FROM dbo.ServiciosExtraOrden WHERE OrdenID = @CurrentOrderID);
+                                  AND ParentServices.Descripcion IN (SELECT Descripcion FROM dbo.ServiciosExtraOrden WHERE OrdenID = @CurrentOrderID);
                             `);
 
-                            // 2. Liberar Orden Madre SOLO si ya no le quedan fallas (chequeo en JS)
-                            const fallasMadre = await new sql.Request(transaction)
-                                .input('CodeParent', sql.NVarChar, codigoMadre)
+                        // Tras curar, si el pedido quedó COMPLETAMENTE resuelto, avisar al frontend para liberar
+                        // el Canasto Falla — mismo flujo/modal que una orden normal (el operario confirma y
+                        // liberarCanastaFalla mueve la madre + los eslabones -F a 'Canasto Produccion' por NoDocERP).
+                        // El bloque de líneas ~777 NO se dispara al completar una reposición (su destino es
+                        // 'Canasto Reposiciones', no 'Canasto Falla'), así que la señal de liberación se emite acá.
+                        // OJO: el guard viejo 'EstadoenArea = Retenido' nunca matcheaba — una orden en falla queda
+                        // en EstadoLogistica='Canasto Falla' (EstadoenArea sigue siendo 'Control y Calidad', etc.).
+                        // Sin NoDocERP (orden suelta) no hay pedido que liberar: basta con la cura de archivos de arriba.
+                        if (noDocERP) {
+                            const chkResuelto = await new sql.Request(transaction)
+                                .input('NoDoc',  sql.VarChar(50), noDocERP)
+                                .input('AreaID', sql.VarChar(50), areaId)
                                 .query(`
-                                    SELECT COUNT(*) AS c FROM (
-                                        SELECT 1 FROM dbo.ArchivosOrden AO INNER JOIN dbo.Ordenes O ON AO.OrdenID = O.OrdenID WHERE O.CodigoOrden = @CodeParent AND AO.EstadoArchivo = 'FALLA'
-                                        UNION ALL
-                                        SELECT 1 FROM dbo.ServiciosExtraOrden SEO INNER JOIN dbo.Ordenes O ON SEO.OrdenID = O.OrdenID WHERE O.CodigoOrden = @CodeParent AND SEO.Estado = 'FALLA'
-                                    ) x
+                                    SELECT COUNT(*) AS SinResolver
+                                    FROM ArchivosOrden AO
+                                    INNER JOIN Ordenes O ON AO.OrdenID = O.OrdenID
+                                    WHERE O.NoDocERP = @NoDoc AND O.AreaID = @AreaID
+                                      AND O.Estado NOT IN ('CANCELADO')
+                                      AND (AO.EstadoArchivo IS NULL OR AO.EstadoArchivo NOT IN ('OK','Finalizado','CANCELADO'))
                                 `);
-                            if ((fallasMadre.recordset[0]?.c || 0) === 0) {
-                                // Estado vía servicio central: 'Pronto' (área) -> deriva Produccion. Guarda: solo si estaba Retenida.
-                                const relRes = await changeOrderState(transaction, {
-                                    target  : { type: 'CODE', id: codigoMadre },
-                                    estado  : 'Pronto',
-                                    userObj : req.user || 'Sistema',
-                                    detalle : 'Reposición completada — madre liberada',
-                                    guard   : "ISNULL(EstadoenArea,'') = 'Retenido'",
-                                    extraSet: { EstadoLogistica: 'Canasto Produccion' },
-                                    io      : req.app.get('socketio'),
-                                });
-                                // Observaciones (no es estado) -> update directo solo sobre la orden liberada
-                                if (relRes.ordenesAfectadas.length > 0) {
-                                    await new sql.Request(transaction)
-                                        .input('OID', sql.Int, relRes.ordenesAfectadas[0])
-                                        .query(`UPDATE dbo.Ordenes SET Observaciones = CONCAT(ISNULL(Observaciones,''), ' [Reposición Completada]') WHERE OrdenID = @OID`);
+                            if ((chkResuelto.recordset[0]?.SinResolver || 0) === 0) {
+                                const enFalla = await new sql.Request(transaction)
+                                    .input('NoDoc',  sql.VarChar(50), noDocERP)
+                                    .input('AreaID', sql.VarChar(50), areaId)
+                                    .query(`SELECT CodigoOrden FROM Ordenes
+                                             WHERE NoDocERP = @NoDoc AND AreaID = @AreaID
+                                               AND EstadoLogistica = 'Canasto Falla' AND Estado NOT IN ('CANCELADO')`);
+                                const ordenesParaLiberar = enFalla.recordset.map(r => r.CodigoOrden);
+                                if (ordenesParaLiberar.length > 0) {
+                                    req._liberacionData = { listoParaProduccion: true, ordenesParaLiberar };
+                                    logger.info(`[postControlArchivo] Reposición ${codigoOrden} completada → pedido ${noDocERP} resuelto. Listo para liberar: ${ordenesParaLiberar.join(', ')}`);
                                 }
                             }
-                        } catch (e) { logger.error("Error liberando madre", e); }
-                    }
+                        }
+                    } catch (e) { logger.error("Error curando/evaluando liberación tras reposición", e); }
                 }
             }
         }
@@ -1679,6 +1700,12 @@ const createCustomerReplacementOrder = async (req, res) => {
 
                 if (relRes.recordset.length > 0) {
                     const relOrder = relRes.recordset[0];
+                    // Las órdenes de FALLA (-F) son internas/efímeras: NO se reponen. Si el pedido tenía
+                    // una falla, no se le genera una -R (si no, quedaban 2 reposiciones: madre + falla).
+                    if ((relOrder.CodigoOrden || '').includes('-F')) {
+                        logger.info(`[Reposición] Salteada orden de falla ${relOrder.CodigoOrden} (las -F no se reponen).`);
+                        continue;
+                    }
                     const relNewCode = `${stripRepoSuffix(relOrder.CodigoOrden)}${suffix}`; // Mismo sufijo, sobre la raíz (evita apilar -R)
 
                     await new sql.Request(transaction)

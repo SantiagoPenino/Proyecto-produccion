@@ -54,8 +54,12 @@ const { registrarAuditoria, registrarHistorialOrden } = require('../services/tra
 // las órdenes ya resueltas dentro del lote (controladas Pronto, con falla esperando
 // reposición, finalizadas, canceladas, entregadas) conservan su estado — p. ej.
 // finalizar la máquina NO debe sacarle el 'Pronto' a una orden ya controlada.
+// OJO: incluir también los estados logísticos post-Pronto ('En transito','Ingresado',...). Una orden
+// que ya se controló (Pronto) y siguió avanzando (se despachó a un remito → 'En transito', o entró a
+// depósito → 'Ingresado') NO debe volver a "Control y Calidad" porque finalicen su máquina. Sin estos,
+// una orden despachada antes de finalizar el rollo quedaba desprotegida y se pisaba hacia atrás.
 const GUARD_ORDENES_RESUELTAS =
-    "ISNULL(EstadoenArea,'') NOT IN ('Pronto','Con Falla','Retenido','Finalizado','Entregado','Avisado','Para Avisar','Cancelado') " +
+    "ISNULL(EstadoenArea,'') NOT IN ('Pronto','En transito','En Transito','En Tránsito','Ingresado','Pronto para entregar','Con Falla','Retenido','Finalizado','Entregado','Avisado','Para Avisar','Cancelado') " +
     "AND Estado NOT IN ('Finalizado','Cancelado','Entregado')";
 
 exports.toggleRollStatus = async (req, res) => {
@@ -83,7 +87,8 @@ exports.toggleRollStatus = async (req, res) => {
             // Adjust query to handle flexible ID types.
             const rollInfo = await request
                 .input('RID_GET', sql.VarChar(50), String(rollId))
-                .query(`SELECT r.RolloID, r.MaquinaID, r.BobinaID, r.AreaID, c.EstadoProceso, c.Nombre as NombreEquipo
+                .query(`SELECT r.RolloID, r.MaquinaID, r.BobinaID, r.AreaID, c.EstadoProceso, c.Nombre as NombreEquipo,
+                    ISNULL(c.SeparacionImpresion, 0) AS EsImpresora
                     FROM dbo.Rollos r
                     LEFT JOIN dbo.ConfigEquipos c ON r.MaquinaID = c.EquipoID
                     WHERE CAST(r.RolloID AS VARCHAR(50)) = @RID_GET OR r.Nombre = @RID_GET`);
@@ -209,6 +214,23 @@ exports.toggleRollStatus = async (req, res) => {
                     if (chk.falta) {
                         await transaction.rollback();
                         return res.status(400).json({ error: `No se puede finalizar el lote: falta cargar ${chk.motivo}.` });
+                    }
+                }
+
+                // === VALIDACIÓN: todas las órdenes marcadas antes de finalizar (espeja el bloqueo de la UI) ===
+                // Impresora → Impreso ; no-impresora (calandra) → Calandrado. No aplica a 'production' (volver a la
+                // cola es una corrección, no una finalización). El flag EsImpresora viene de ConfigEquipos.
+                if (destination !== 'production') {
+                    const esImpresora = !!currentRoll.EsImpresora;
+                    const colMarca = esImpresora ? 'Impreso' : 'Calandrado'; // valor interno fijo, no input del cliente
+                    const marcaRes = await new sql.Request(transaction)
+                        .input('RID', sql.VarChar(50), currentRoll.RolloID.toString())
+                        .query(`SELECT COUNT(*) AS Faltan FROM dbo.Ordenes
+                                WHERE CAST(RolloID AS VARCHAR(50)) = @RID AND ISNULL(${colMarca}, 0) = 0`);
+                    const faltanMarca = marcaRes.recordset[0]?.Faltan || 0;
+                    if (faltanMarca > 0) {
+                        await transaction.rollback();
+                        return res.status(400).json({ error: `No se puede finalizar: faltan ${faltanMarca} orden(es) sin marcar como ${esImpresora ? 'impreso' : 'calandrado'}.` });
                     }
                 }
 
@@ -423,6 +445,77 @@ exports.moveOrder = async (req, res) => { res.json({ success: true }); };
 exports.createRoll = async (req, res) => { res.json({ success: true }); };
 exports.reorderOrders = async (req, res) => { res.json({ success: true }); };
 exports.updateRollName = async (req, res) => { res.json({ success: true }); };
+
+// Etiqueta térmica (10x15) de un LOTE finalizado: nombre, fecha/hora de finalización, metros totales,
+// y cuántas órdenes urgentes / con falla (-F) contiene. Se imprime automáticamente al finalizar el lote
+// desde Planeación. Las órdenes conservan su RolloID al finalizar, así que los datos se calculan acá.
+exports.printEtiquetaLote = async (req, res) => {
+    try {
+        const rollId = String(req.params.id || '');
+        const pool = await getPool();
+
+        const loteRes = await pool.request()
+            .input('RID', sql.VarChar(50), rollId)
+            .query(`
+                SELECT TOP 1 rl.Nombre AS LoteNombre,
+                       (SELECT MAX(b.FechaFin) FROM dbo.BitacoraProduccion b WITH(NOLOCK)
+                          WHERE CAST(b.RolloID AS VARCHAR(50)) = @RID) AS FechaFin
+                FROM dbo.Rollos rl WITH(NOLOCK)
+                WHERE CAST(rl.RolloID AS VARCHAR(50)) = @RID
+            `);
+        const lote = loteRes.recordset[0] || {};
+        const nombreLote = (lote.LoteNombre || `Lote ${rollId}`).trim();
+        const fechaFin = lote.FechaFin ? new Date(lote.FechaFin) : new Date();
+
+        const aggRes = await pool.request()
+            .input('RID', sql.VarChar(50), rollId)
+            .query(`
+                SELECT
+                    ISNULL(SUM(TRY_CAST(REPLACE(REPLACE(ISNULL(Magnitud,'0'),' ',''),',','.') AS FLOAT)), 0) AS MetrosTotales,
+                    SUM(CASE WHEN UPPER(LTRIM(RTRIM(ISNULL(Prioridad,'')))) = 'URGENTE' THEN 1 ELSE 0 END) AS Urgentes,
+                    SUM(CASE WHEN CodigoOrden LIKE '%-F%' THEN 1 ELSE 0 END) AS Fallas
+                FROM dbo.Ordenes WITH(NOLOCK)
+                WHERE CAST(RolloID AS VARCHAR(50)) = @RID
+            `);
+        const agg = aggRes.recordset[0] || {};
+        const metros = Number(agg.MetrosTotales || 0);
+        const urgentes = Number(agg.Urgentes || 0);
+        const fallas = Number(agg.Fallas || 0);
+
+        const fechaStr = fechaFin.toLocaleString('es-UY', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false });
+        const esc = (s) => String(s).replace(/[<>&]/g, c => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[c]));
+
+        const html = `<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>Lote ${esc(nombreLote)}</title>
+<style>
+  @page { size: 10cm 15cm; margin: 0; }
+  body { font-family: 'Arial', sans-serif; margin: 0; padding: 0; background: #fff; color: #000; }
+  .label { width: 10cm; height: 15cm; box-sizing: border-box; padding: 0.7cm 0.6cm; display: flex; flex-direction: column; }
+  .lote { font-size: 30px; font-weight: 900; text-transform: uppercase; letter-spacing: 1px; word-break: break-word; line-height: 1.1; border-bottom: 3px solid #000; padding-bottom: 10px; }
+  .row { margin-top: 14px; }
+  .lbl { font-size: 13px; font-weight: 800; text-transform: uppercase; color: #555; }
+  .val { font-size: 22px; font-weight: 900; }
+  .metros { font-size: 40px; font-weight: 900; }
+  .banner { font-size: 24px; font-weight: 900; background: #000; color: #fff; text-align: center; padding: 8px 0; margin-top: 12px; letter-spacing: 1px; }
+  @media print { body { -webkit-print-color-adjust: exact; print-color-adjust: exact; } }
+</style></head>
+<body>
+  <div class="label">
+    <div class="lote">${esc(nombreLote)}</div>
+    <div class="row"><div class="lbl">Finalizado</div><div class="val">${fechaStr}</div></div>
+    <div class="row"><div class="lbl">Metros totales</div><div class="metros">${metros.toFixed(2)} m</div></div>
+    ${urgentes > 0 ? `<div class="banner">CONTIENE ${urgentes} URGENTE${urgentes > 1 ? 'S' : ''}</div>` : ''}
+    ${fallas > 0 ? `<div class="banner">CONTIENE ${fallas} FALLA${fallas > 1 ? 'S' : ''}</div>` : ''}
+  </div>
+</body></html>`;
+
+        res.set('Content-Type', 'text/html; charset=utf-8');
+        res.send(html);
+    } catch (err) {
+        logger.error('Error printEtiquetaLote:', err);
+        res.status(500).send('<h1>Error generando la etiqueta del lote</h1>');
+    }
+};
 exports.getMachines = async (req, res) => { res.json([]); };
 
 // ==========================================

@@ -2,7 +2,9 @@ const { sql, getPool } = require('../config/db');
 const jwt = require('jsonwebtoken');
 const asyncHandler = require('../middleware/asyncHandler');
 const logger = require('../utils/logger');
-const googleSheets = require('../services/googleSheetsService');
+// Sincronización con la planilla de clientes vía API directa de Google (googleapis + token OAuth),
+// no por Apps Script: mismo mecanismo que usa el panel admin y apunta a la planilla nueva.
+const googleSheets = require('../services/sheetsService');
 const { trackLogin } = require('../utils/sessionTracker');
 const { audit } = require('../utils/auditLogger');
 const JWT_SECRET = process.env.JWT_SECRET;
@@ -288,7 +290,7 @@ exports.register = asyncHandler(async (req, res) => {
     });
 
     // Fire-and-forget: sincronizar con Google Sheets
-    googleSheets.insertarClienteEnGoogle({
+    googleSheets.insertarCliente({
         idCliente: idcliente,
         nombre: name || '',
         telefono: phone || '',
@@ -454,7 +456,7 @@ exports.updateProfile = asyncHandler(async (req, res) => {
                 } catch (_) {}
             }
 
-            googleSheets.actualizarClienteEnGoogle(u.IDReact, {
+            googleSheets.actualizarCliente(u.IDReact, {
                 nombre: name || '',
                 telefono: phone || '',
                 empresa: company || '',

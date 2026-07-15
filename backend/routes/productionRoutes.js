@@ -19,4 +19,7 @@ router.post('/move-order', verifyToken, productionController.moveOrder);
 router.post('/create-roll', verifyToken, productionController.createRoll);
 router.post('/magic-sort', verifyToken, productionController.magicSort);
 
+// Etiqueta térmica del lote finalizado (se carga en un iframe oculto → sin verifyToken, igual que las etiquetas de orden)
+router.get('/rollo/:id/etiqueta-lote/print', productionController.printEtiquetaLote);
+
 module.exports = router;

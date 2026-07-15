@@ -11,6 +11,12 @@ const SCALE_TABLE = [
     { scale: 50, factor: 200, label: "1:2" }
 ];
 
+// Tolerancia de ancho: distintos software de diseño exportan medidas con diferencias
+// mínimas (un mismo diseño de 1.80 puede medir 1.8005 o 1.801 según la herramienta).
+// Se resta al ancho medido ANTES de redondear al cm, para no rebotar por décimas de mm.
+// (Mantener en sincronía con TOLERANCIA_ANCHO_M de modulos/OrderForm.jsx.)
+const TOLERANCIA_ANCHO_M = 0.002; // 2 mm
+
 export const PrintSettingsPanel = ({
     originalWidthM,
     originalHeightM,
@@ -51,7 +57,9 @@ export const PrintSettingsPanel = ({
         // Anchos medidos: redondeo SIEMPRE PARA ARRIBA al cm (1.5701 → 1.58; 1.57 → 1.57), así el valor
         // validado coincide con el mostrado (antes 1.5701 fallaba contra 1.57 y el error decía "1.57 vs 1.57").
         // toFixed(6) limpia ruido de float para que un 1.57 "sucio" no suba injustamente a 1.58.
-        const ceil2 = (v) => Math.ceil(Number((v * 100).toFixed(6))) / 100;
+        // Se resta TOLERANCIA_ANCHO_M (2mm) antes de redondear: una diferencia imperceptible entre
+        // software (1.8005 vs 1.80) "cae" al cm exacto en vez de saltar al siguiente y rebotar.
+        const ceil2 = (v) => Math.ceil(Number(((v - TOLERANCIA_ANCHO_M) * 100).toFixed(6))) / 100;
         // Sin material (maxRaw<=0) → max = Infinity, así no se valida el ancho hasta elegir material.
         const max = maxRaw > 0.03 ? Math.round((maxRaw - 0.03) * 100) / 100 : (maxRaw > 0 ? maxRaw : Infinity);
 

@@ -733,6 +733,24 @@ exports.createWebOrder = async (req, res) => {
             }
         });
 
+        // --- GUARD: NO crear órdenes de impresión SIN arte ---
+        // Las órdenes que miden por metros (UM ≠ 'u' → sublimación, DTF, ECOUV…) DEBEN traer al menos un
+        // archivo de arte; sin él nacen con Magnitud 0 y hay que cancelarlas a mano. Última línea de
+        // defensa (por si el form deja pasar o llega un payload directo). Misma regla que la retención del
+        // sync ERP. Los servicios por unidad (costura, corte, TPU-boceto) miden en 'u' → quedan exentos.
+        const ordenSinArte = pendingOrderExecutions.find(exec => {
+            if (exec.isExtra) return false;
+            const um = (mapaAreasUM[exec.areaID] || 'u').toLowerCase();
+            if (um === 'u') return false; // por unidad → no requiere arte del cliente
+            return !(exec.items || []).some(it => it.fileName || it.fileBackName);
+        });
+        if (ordenSinArte) {
+            logger.warn(`⛔ [WebOrder] Pedido rechazado: servicio de impresión ${ordenSinArte.areaID} sin archivo de arte.`);
+            return res.status(400).json({
+                error: `El servicio de impresión (${ordenSinArte.areaID}) necesita al menos un archivo de arte. Subí el arte a imprimir antes de confirmar el pedido.`
+            });
+        }
+
         // --- 6. TRANSACCIÓN DB ---
         const transaction = new sql.Transaction(pool);
         await transaction.begin();
@@ -1196,6 +1214,15 @@ exports.createWebOrder = async (req, res) => {
                 if (fileCount > 0) {
                     await new sql.Request(transaction).input('OID', sql.Int, newOID).input('C', sql.Int, fileCount).input('Mag', sql.Decimal(10, 2), totalMagnitud)
                         .query("UPDATE Ordenes SET ArchivosCount = @C, Magnitud = CAST(@Mag AS VARCHAR) WHERE OrdenID = @OID");
+                } else if (serviceId === 'tpu' && String(exec.areaID || '').toUpperCase() === 'TPU') {
+                    // TPU (boceto): el cliente sube un boceto, no arte, así que no hay ArchivosOrden que
+                    // lleven la cantidad. La Magnitud (unidades de TPU a producir) sale de la suma de
+                    // copies de los items — si no, la orden queda en Magnitud 0 y no se cotiza la producción.
+                    const cantTpu = (exec.items || []).reduce((s, it) => s + (parseInt(it.copies) || 0), 0);
+                    if (cantTpu > 0) {
+                        await new sql.Request(transaction).input('OID', sql.Int, newOID).input('Mag', sql.Decimal(10, 2), cantTpu)
+                            .query("UPDATE Ordenes SET Magnitud = CAST(@Mag AS VARCHAR) WHERE OrdenID = @OID");
+                    }
                 }
 
                 // --- DEPURACIÓN: LOG DE REFERENCIAS ---
@@ -1928,13 +1955,20 @@ exports.reuseMatrizTPU = async (req, res) => {
             .input('cod', sql.Int, codCliente)
             .query(`
                 SELECT o.OrdenID, o.CodigoOrden, o.Material, o.Variante, o.CodArticulo, o.ProIdProducto,
-                       o.CliIdCliente, o.IdClienteReact, o.Cliente, o.UM,
+                       o.CliIdCliente, o.IdClienteReact, o.Cliente, o.UM, o.Magnitud AS MatMag,
                        (SELECT COUNT(*) FROM ArchivosOrden ao WHERE ao.OrdenID = o.OrdenID AND ISNULL(ao.EstadoArchivo,'')<>'Cancelado') AS nArch
                 FROM Ordenes o WITH(NOLOCK)
                 WHERE o.OrdenID = @OID AND o.CodCliente = @cod AND UPPER(LTRIM(RTRIM(o.AreaID)))='TPU'`);
         if (!matRes.recordset.length) return res.status(404).json({ error: 'Matriz no encontrada.' });
         const mat = matRes.recordset[0];
         if (!mat.nArch) return res.status(400).json({ error: 'La matriz no tiene arte para reusar.' });
+
+        // ¿Misma cantidad? Las 5 capas del arte se generan CON la cantidad adentro (repeticiones en
+        // el layout), así que el arte de la matriz solo sirve para fabricar si la cantidad coincide.
+        // Si difiere (o la matriz no tiene magnitud confiable), producción debe REGENERAR las 5 capas
+        // — sin aprobación del cliente (el diseño ya está aprobado, solo cambia la cantidad).
+        const matMag = parseInt(String(mat.MatMag || '').trim()) || 0;
+        const regenerar = !(matMag > 0 && matMag === cantidad);
 
         // 2. Reservar número de pedido
         const reserveRes = await pool.request().query(`
@@ -1948,7 +1982,14 @@ exports.reuseMatrizTPU = async (req, res) => {
         transaction = new sql.Transaction(pool);
         await transaction.begin();
 
-        // 3. Crear la orden TPU nueva — directo a producción ('Pendiente')
+        // 3. Crear la orden TPU nueva.
+        //  - Misma cantidad  → directo a producción ('Pendiente') con el arte de la matriz copiado.
+        //  - Cantidad distinta → 'Cargando...': producción regenera las 5 capas y recién ahí entra a
+        //    producción. La marca [REUSO-REGEN] indica que NO requiere aprobación del cliente.
+        const estadoNueva = regenerar ? 'Cargando...' : 'Pendiente';
+        const notaNueva = regenerar
+            ? `Reuso de matriz ${matCod} [REUSO-REGEN] · regenerar 5 capas para ${cantidad} u (matriz: ${matMag || '?'} u)`
+            : `Reuso de matriz ${matCod}`;
         const insOrd = await new sql.Request(transaction)
             .input('Cliente', sql.NVarChar(200), mat.Cliente)
             .input('CodCli', sql.Int, codCliente)
@@ -1958,8 +1999,9 @@ exports.reuseMatrizTPU = async (req, res) => {
             .input('Var', sql.VarChar(100), mat.Variante || 'TPU')
             .input('Cod', sql.VarChar(50), codigoOrden)
             .input('ERP', sql.VarChar(50), erpDocNumber)
-            .input('Nota', sql.NVarChar(sql.MAX), `Reuso de matriz ${matCod}`)
+            .input('Nota', sql.NVarChar(sql.MAX), notaNueva)
             .input('Mag', sql.VarChar(50), String(cantidad))
+            .input('Estado', sql.VarChar(50), estadoNueva)
             .input('CodArt', sql.VarChar(50), mat.CodArticulo)
             .input('ProId', sql.Int, mat.ProIdProducto)
             .input('CliId', sql.Int, mat.CliIdCliente)
@@ -1971,30 +2013,45 @@ exports.reuseMatrizTPU = async (req, res) => {
                 OUTPUT INSERTED.OrdenID
                 VALUES ('TPU', @Cliente, @CodCli, @IdCliReact, @Desc, 'Normal',
                     GETDATE(), DATEADD(day,3,GETDATE()), @Mat, @Var, @Cod, @ERP, @Nota, @Mag,
-                    'DEPOSITO', @UM, 'Pendiente', 'Pendiente', @CodArt, @ProId, @CliId, GETDATE())`);
+                    'DEPOSITO', @UM, @Estado, @Estado, @CodArt, @ProId, @CliId, GETDATE())`);
         const newOID = insOrd.recordset[0].OrdenID;
 
-        // 4. Copiar el arte de la matriz (mismas rutas de Drive)
+        // 4. Traer el arte de la matriz.
         const arte = await new sql.Request(transaction)
             .input('MOID', sql.Int, matrizOrdenId)
             .query(`SELECT ArchivoID, NombreArchivo, TipoArchivo, Copias, Metros, RutaAlmacenamiento, Ancho, Alto, Observaciones
                     FROM ArchivosOrden WHERE OrdenID=@MOID AND ISNULL(EstadoArchivo,'')<>'Cancelado' ORDER BY ArchivoID ASC`);
         const thumbCopies = [];
-        for (const a of arte.recordset) {
-            const ins = await new sql.Request(transaction)
-                .input('OID', sql.Int, newOID)
-                .input('Nom', sql.NVarChar(255), a.NombreArchivo)
-                .input('Tipo', sql.VarChar(50), a.TipoArchivo || 'Impresion')
-                .input('Cop', sql.Int, a.Copias || 1)
-                .input('Met', sql.Decimal(10, 3), a.Metros || 0)
-                .input('Ruta', sql.NVarChar(sql.MAX), a.RutaAlmacenamiento)
-                .input('An', sql.Decimal(10, 2), a.Ancho || 0)
-                .input('Al', sql.Decimal(10, 2), a.Alto || 0)
-                .input('Obs', sql.NVarChar(sql.MAX), a.Observaciones || '')
-                .query(`INSERT INTO ArchivosOrden (OrdenID, NombreArchivo, TipoArchivo, Copias, Metros, EstadoArchivo, FechaSubida, RutaAlmacenamiento, Ancho, Alto, Observaciones)
-                        OUTPUT INSERTED.ArchivoID
-                        VALUES (@OID, @Nom, @Tipo, @Cop, @Met, 'Pendiente', GETDATE(), @Ruta, @An, @Al, @Obs)`);
-            thumbCopies.push({ origId: a.ArchivoID, newId: ins.recordset[0].ArchivoID });
+        if (!regenerar) {
+            // Misma cantidad: copiar como arte de producción (mismas rutas de Drive) → a fabricar.
+            for (const a of arte.recordset) {
+                const ins = await new sql.Request(transaction)
+                    .input('OID', sql.Int, newOID)
+                    .input('Nom', sql.NVarChar(255), a.NombreArchivo)
+                    .input('Tipo', sql.VarChar(50), a.TipoArchivo || 'Impresion')
+                    .input('Cop', sql.Int, a.Copias || 1)
+                    .input('Met', sql.Decimal(10, 3), a.Metros || 0)
+                    .input('Ruta', sql.NVarChar(sql.MAX), a.RutaAlmacenamiento)
+                    .input('An', sql.Decimal(10, 2), a.Ancho || 0)
+                    .input('Al', sql.Decimal(10, 2), a.Alto || 0)
+                    .input('Obs', sql.NVarChar(sql.MAX), a.Observaciones || '')
+                    .query(`INSERT INTO ArchivosOrden (OrdenID, NombreArchivo, TipoArchivo, Copias, Metros, EstadoArchivo, FechaSubida, RutaAlmacenamiento, Ancho, Alto, Observaciones)
+                            OUTPUT INSERTED.ArchivoID
+                            VALUES (@OID, @Nom, @Tipo, @Cop, @Met, 'Pendiente', GETDATE(), @Ruta, @An, @Al, @Obs)`);
+                thumbCopies.push({ origId: a.ArchivoID, newId: ins.recordset[0].ArchivoID });
+            }
+        } else {
+            // Cantidad distinta: el arte viejo NO sirve para fabricar (cantidad incrustada en las capas).
+            // Se copia solo como REFERENCIA (base visual de las capas a regenerar); producción sube las
+            // 5 capas nuevas como arte de producción.
+            for (const a of arte.recordset) {
+                await new sql.Request(transaction)
+                    .input('OID', sql.Int, newOID)
+                    .input('Nom', sql.VarChar(200), `BASE - ${a.NombreArchivo}`.substring(0, 200))
+                    .input('Ruta', sql.NVarChar(sql.MAX), a.RutaAlmacenamiento)
+                    .query(`INSERT INTO ArchivosReferencia (OrdenID, TipoArchivo, NombreOriginal, FechaSubida, UbicacionStorage)
+                            VALUES (@OID, 'ARTE BASE (REGENERAR)', @Nom, GETDATE(), @Ruta)`);
+            }
         }
 
         await transaction.commit();
@@ -2023,8 +2080,8 @@ exports.reuseMatrizTPU = async (req, res) => {
         const io = req.app.get('socketio');
         if (io) io.emit('server:ordersUpdated', { count: 1, source: 'tpu-reuse-matriz' });
 
-        logger.info(`[TPU] Reuso de matriz ${matCod} → ${codigoOrden} (OID ${newOID}), cantidad ${cantidad}.`);
-        res.json({ success: true, ordenId: newOID, codigoOrden });
+        logger.info(`[TPU] Reuso de matriz ${matCod} → ${codigoOrden} (OID ${newOID}), cantidad ${cantidad}${regenerar ? ' · REGENERAR arte (cantidad distinta)' : ' · mismo arte'}.`);
+        res.json({ success: true, ordenId: newOID, codigoOrden, regenerar });
     } catch (err) {
         if (transaction) { try { await transaction.rollback(); } catch (_) {} }
         logger.error('[reuseMatrizTPU] ' + err.message);
@@ -2420,6 +2477,7 @@ exports.getPickupOrders = async (req, res) => {
                     o.OrdCantidad AS Cantidad,
                     o.OrdCostoFinal AS CostoFinal,
                     o.OrdFechaEstadoActual AS FechaEstado,
+                    o.OrdFechaIngresoOrden AS FechaIngreso,
                     e.EOrNombreEstado AS Estado,
                     c.IDCliente AS IdCliente,
                     c.TelefonoTrabajo AS Celular,
@@ -2483,6 +2541,7 @@ exports.getPickupOrders = async (req, res) => {
                 desc: o.NombreTrabajo || 'Pedido',
                 amount: finalAmount,
                 date: o.FechaEstado ? new Date(o.FechaEstado).toLocaleDateString('es-UY') : 'N/A',
+                fechaIngreso: o.FechaIngreso || null, // OrdFechaIngresoOrden — para la regla de retiro obligatorio de órdenes +15 días
                 status: isPaid ? 'PAGADO' : 'LISTO',
                 originalStatus: o.Estado,
                 isPaid: isPaid,

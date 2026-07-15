@@ -4,7 +4,7 @@ import { apiClient, API_BASE_URL } from '../../../client-portal/api/apiClient';
 import { socket } from '../../../services/socketService';
 import { GlassCard } from '../../../client-portal/pautas/GlassCard';
 import { CustomButton } from '../../../client-portal/pautas/CustomButton';
-import { Search, Filter, MessageSquare, Clock, AlertCircle, FileText, Send, Lock, RotateCcw, CheckCircle, Package, ChevronDown, Check, X, Download, Trash2 } from 'lucide-react';
+import { Search, Filter, MessageSquare, Clock, AlertCircle, FileText, Send, Lock, RotateCcw, CheckCircle, Package, ChevronDown, Check, X, Download, Trash2, Paperclip } from 'lucide-react';
 import { useAuth } from '../../../context/AuthContext';
 import { toast } from 'sonner';
 import { Listbox, Transition } from '@headlessui/react';
@@ -346,6 +346,7 @@ const TicketAdminInterface = ({ ticketId, onUpdate, departamentos }) => {
     const [texto, setTexto] = useState('');
     const [archivos, setArchivos] = useState([]);
     const [sending, setSending] = useState(false);
+    const fileInputRef = useRef(null);
     const [modalImage, setModalImage] = useState(null);
     const [modalClosing, setModalClosing] = useState(false);
     const [zoomScale, setZoomScale] = useState(1);
@@ -462,6 +463,15 @@ const TicketAdminInterface = ({ ticketId, onUpdate, departamentos }) => {
         window.addEventListener('keydown', handleKeyDown);
         return () => window.removeEventListener('keydown', handleKeyDown);
     }, []);
+
+    const handleFileChange = (e) => {
+        const files = Array.from(e.target.files || []);
+        // Mismo criterio que el cliente: imágenes o PDF, hasta 5MB, máximo 5 archivos.
+        const validos = files.filter(f => f.size <= 5 * 1024 * 1024 && (f.type.startsWith('image/') || f.type === 'application/pdf'));
+        if (validos.length !== files.length) toast.error('Solo se permiten imágenes o PDF de hasta 5MB.');
+        setArchivos(prev => [...prev, ...validos].slice(0, 5));
+        if (fileInputRef.current) fileInputRef.current.value = ''; // permite volver a elegir el mismo archivo
+    };
 
     const handleSend = async () => {
         if (!texto.trim() && archivos.length === 0) return;
@@ -719,7 +729,31 @@ const TicketAdminInterface = ({ ticketId, onUpdate, departamentos }) => {
                             </button>
                         </div>
 
+                        {/* Archivos adjuntos seleccionados */}
+                        {archivos.length > 0 && (
+                            <div className="flex flex-wrap gap-2">
+                                {archivos.map((f, i) => (
+                                    <span key={i} className="inline-flex items-center gap-1.5 bg-white border border-zinc-200 rounded-lg px-2 py-1 text-xs text-zinc-600 shadow-sm">
+                                        <FileText size={12} className="text-brand-cyan shrink-0" />
+                                        <span className="max-w-[160px] truncate">{f.name}</span>
+                                        <button onClick={() => setArchivos(archivos.filter((_, idx) => idx !== i))} className="text-zinc-400 hover:text-red-500" title="Quitar">
+                                            <X size={12} />
+                                        </button>
+                                    </span>
+                                ))}
+                            </div>
+                        )}
+
                         <div className="flex items-end gap-2">
+                            <input ref={fileInputRef} type="file" multiple accept="image/*,.pdf" className="hidden" onChange={handleFileChange} />
+                            <button
+                                onClick={() => fileInputRef.current?.click()}
+                                disabled={sending || archivos.length >= 5}
+                                title="Adjuntar imágenes o PDF (hasta 5, máx 5MB c/u)"
+                                className="p-4 rounded-xl font-bold transition-all disabled:opacity-50 bg-zinc-100 text-zinc-600 hover:bg-zinc-200 border border-zinc-200"
+                            >
+                                <Paperclip size={20} />
+                            </button>
                             <textarea
                                 className={`flex-1 rounded-xl px-4 py-3 text-sm outline-none resize-none transition-colors border ${esNotaInterna ? 'bg-white text-zinc-900 border-brand-gold focus:border-brand-gold placeholder-zinc-400 shadow-sm' : 'bg-white text-zinc-900 border-brand-cyan focus:border-brand-cyan placeholder-zinc-400 shadow-sm'}`}
                                 rows={Math.min(5, Math.max(2, texto.split('\n').length))}
@@ -729,7 +763,7 @@ const TicketAdminInterface = ({ ticketId, onUpdate, departamentos }) => {
                             />
                             <button
                                 onClick={handleSend}
-                                disabled={sending || !texto.trim()}
+                                disabled={sending || (!texto.trim() && archivos.length === 0)}
                                 className={`p-4 rounded-xl font-bold transition-all disabled:opacity-50 ${esNotaInterna ? 'bg-brand-gold text-white' : 'bg-brand-cyan text-white'}`}
                             >
                                 <Send size={20} />

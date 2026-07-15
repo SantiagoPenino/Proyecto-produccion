@@ -6,7 +6,10 @@ const CREDENTIALS_PATH = path.join(__dirname, '..', 'oauth-credentials.json');
 const TOKEN_PATH       = path.join(__dirname, '..', 'token.json');
 
 // Spreadsheet de clientes
-const SPREADSHEET_ID = '1rgjR09Y8M9DQ0oOaGAipxwSnsrykCvkOPL2XlK-c4OY';
+// 15/07/2026: migrado a la planilla NUEVA ("BASE DE DATOS CLIENTES REGISTRADOS NUEVA").
+// La vieja (1rgjR09Y8M9DQ0oOaGAipxwSnsrykCvkOPL2XlK-c4OY) se agotó el historial de versiones.
+// La hoja 'Respuestas de formulario 5' conserva la misma estructura de columnas (ver COL abajo).
+const SPREADSHEET_ID = '1likGD_Zuu-pQMFpDlw7TNCx39VZ7_0P9x6RGFTc__IQ';
 const SHEET_NAME      = 'Respuestas de formulario 5';
 
 // Scopes requeridos
@@ -23,10 +26,12 @@ const COL = {
     Nombre:         4,   // E
     Telefono:       5,   // F
     Email:          6,   // G
+    Empresa:        7,   // H  (Empresa o marca)
     CioRuc:         8,   // I
     Departamento:   9,   // J
     Localidad:      10,  // K
-    FormaEnvio:     11,  // L
+    FormaEnvio:     11,  // L  (Tipo de retiro)
+    Direccion:      12,  // M
     IDReact:        13,  // N
 };
 
@@ -151,10 +156,12 @@ async function updateRow(rowIndex, data) {
         Telefono:     COL.Telefono,
         TelefonoTrabajo: COL.Telefono,
         Email:        COL.Email,
+        Empresa:      COL.Empresa,
         CioRuc:       COL.CioRuc,
         Departamento: COL.Departamento,
         Localidad:    COL.Localidad,
         FormaEnvio:   COL.FormaEnvio,
+        Direccion:    COL.Direccion,
     };
 
     for (const [field, colIdx] of Object.entries(fieldMap)) {
@@ -178,6 +185,70 @@ async function updateRow(rowIndex, data) {
     });
 
     return { updated: updates.length };
+}
+
+/**
+ * Inserta un cliente nuevo como fila al final de la hoja (API directa).
+ * Reemplaza el insertarClienteEnGoogle del Apps Script. Mapea a las columnas A–N;
+ * A/B/C (Marca temporal, correo de Forms, Puntuación) quedan vacías, igual que los
+ * registros que ya venía cargando el sistema.
+ */
+async function insertarCliente(cliente) {
+    const auth = await getAuthClient();
+    const sheets = google.sheets({ version: 'v4', auth });
+
+    const fila = new Array(COL.IDReact + 1).fill('');
+    fila[COL.IDCliente]    = cliente.idCliente  || '';
+    fila[COL.Nombre]       = cliente.nombre     || '';
+    fila[COL.Telefono]     = cliente.telefono   || '';
+    fila[COL.Email]        = cliente.email      || '';
+    fila[COL.Empresa]      = cliente.empresa    || '';
+    fila[COL.CioRuc]       = cliente.doc        || '';
+    fila[COL.Departamento] = cliente.depto      || '';
+    fila[COL.Localidad]    = cliente.localidad  || '';
+    fila[COL.FormaEnvio]   = cliente.tipoRetiro || '';
+    fila[COL.Direccion]    = cliente.direccion  || '';
+    fila[COL.IDReact]      = cliente.idReact != null ? String(cliente.idReact) : '';
+
+    await sheets.spreadsheets.values.append({
+        spreadsheetId: SPREADSHEET_ID,
+        range: `'${SHEET_NAME}'!A:N`,
+        valueInputOption: 'USER_ENTERED',
+        insertDataOption: 'INSERT_ROWS',
+        requestBody: { values: [fila] },
+    });
+
+    return { ok: true };
+}
+
+/**
+ * Actualiza un cliente existente buscándolo por IDReact (col N).
+ * Reemplaza el actualizarClienteEnGoogle del Apps Script. Acepta las mismas claves
+ * (lowercase) que enviaba el backend y las traduce al fieldMap de updateRow.
+ */
+async function actualizarCliente(idReact, nuevosDatos = {}) {
+    if (!idReact) return { ok: false, error: 'idReact vacío' };
+    const found = await findRowByIDReact(idReact);
+    if (!found) return { ok: false, error: 'Cliente no encontrado en la planilla' };
+
+    const traduccion = {
+        nombre:     'Nombre',
+        telefono:   'Telefono',
+        empresa:    'Empresa',
+        direccion:  'Direccion',
+        doc:        'CioRuc',
+        depto:      'Departamento',
+        localidad:  'Localidad',
+        tipoRetiro: 'FormaEnvio',
+    };
+    const data = {};
+    for (const [k, v] of Object.entries(nuevosDatos)) {
+        if (traduccion[k] && v !== undefined) data[traduccion[k]] = v;
+    }
+    if (Object.keys(data).length === 0) return { ok: true, updated: 0 };
+
+    const res = await updateRow(found.rowIndex, data);
+    return { ok: true, ...res };
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -214,6 +285,8 @@ module.exports = {
     getAllRows,
     findRowByIDReact,
     updateRow,
+    insertarCliente,
+    actualizarCliente,
     SPREADSHEET_ID,
     SHEET_NAME,
 };

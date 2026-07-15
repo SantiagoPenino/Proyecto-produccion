@@ -38,12 +38,23 @@ const insertarClienteEnGoogle = async (cliente) => {
     const url = `${BASE_URL}?${params.toString()}`;
 
     const response = await fetch(url);
-    const data     = await response.json();
+    const raw = await response.text();
+
+    let data;
+    try {
+        data = JSON.parse(raw);
+    } catch {
+        // El Apps Script no devolvió JSON (típico: HTML de login/permisos o un redirect cuando el
+        // deployment no es "cualquiera puede acceder", o la URL/versión cambió). Se ve en el crudo.
+        logger.warn(`[GoogleSheets] Respuesta NO-JSON al insertar cliente. HTTP ${response.status} — ${raw.slice(0, 300)}`);
+        return { ok: false, error: 'Respuesta no-JSON del Apps Script' };
+    }
 
     if (data.ok) {
         logger.info('[GoogleSheets] Cliente insertado:', data.mensaje);
     } else {
-        logger.warn('[GoogleSheets] Error al insertar cliente:', data.error);
+        // data.error suele venir vacío; volcamos la respuesta completa + el status para ver la causa real.
+        logger.warn(`[GoogleSheets] Error al insertar cliente. HTTP ${response.status} — respuesta: ${JSON.stringify(data)}`);
     }
 
     return data;

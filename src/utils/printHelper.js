@@ -39,3 +39,28 @@ export const printLabelsHelper = (labels, orderInfo) => {
   }, 30000);
 };
 
+// Imprime la etiqueta térmica de un LOTE finalizado (nombre, fecha/hora, metros, urgentes, fallas).
+// Mismo patrón que printLabelsHelper: iframe oculto que carga el HTML del backend e imprime.
+export const printEtiquetaLote = (rollId) => {
+  if (!rollId) return;
+  const apiUrl = import.meta.env.VITE_API_URL || '/api';
+  const printUrl = `${apiUrl}/production/rollo/${rollId}/etiqueta-lote/print`;
+
+  const iframe = document.createElement('iframe');
+  iframe.style.cssText = 'position:fixed;top:-9999px;left:-9999px;width:1px;height:1px;opacity:0;border:none;';
+  iframe.src = printUrl;
+  iframe.onload = () => {
+    try {
+      iframe.contentWindow.focus();
+      iframe.contentWindow.print();
+    } catch (e) {
+      console.warn('[printEtiquetaLote] iframe print falló, usando window.open:', e);
+      window.open(printUrl, '_blank', 'width=420,height=620');
+    }
+  };
+  document.body.appendChild(iframe);
+  setTimeout(() => {
+    if (document.body.contains(iframe)) document.body.removeChild(iframe);
+  }, 30000);
+};
+

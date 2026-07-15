@@ -74,7 +74,9 @@ const CustomerReplacementPage = () => {
                 fileControlService.getRelatedOrders(order.OrdenID)
             ]);
             setFiles(data || []);
-            setRelatedOrders(related || []);
+            // Las órdenes de FALLA (-F) son internas/efímeras: no se reponen, así que no se ofrecen
+            // como "orden relacionada" para reponer (evita generar una -R de la falla).
+            setRelatedOrders((related || []).filter(o => !(o.CodigoOrden || '').includes('-F')));
         } catch (error) {
             console.error(error);
             setToast({ visible: true, message: 'Error cargando archivos', type: 'error' });

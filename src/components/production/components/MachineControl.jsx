@@ -46,6 +46,7 @@ const MachineControl = ({ machine, onAssign, onToggleStatus, onViewDetails, onUn
 
     const handleStop = () => {
         if (!activeRoll) return;
+        if (unmarkedCount > 0) return; // bloqueo duro: quedan órdenes sin marcar (el botón ya está disabled)
         setShowFinishModal(true);
     };
 
@@ -64,6 +65,16 @@ const MachineControl = ({ machine, onAssign, onToggleStatus, onViewDetails, onUn
     const isPrinter = !!machine.separacionImpresion;
     // En SB, un lote que está en una máquina que NO es impresora (ej. calandra) no se puede draggear.
     const lockDrag = String(areaCode || '').toUpperCase() === 'SB' && !isPrinter;
+
+    // Bloqueo duro de "Finalizar Lote": no se puede finalizar mientras queden órdenes del lote activo
+    // sin marcar como impreso (impresora) o calandrado (no-impresora). Misma regla que el modal (allPrinted).
+    // Fail-open: si el board todavía no manda el flag (backend viejo), NO bloquea — evita trabar la planta
+    // si el frontend se deploya antes que el backend.
+    const printedField = isPrinter ? 'printed' : 'calandered';
+    const rollOrders = activeRoll?.orders || [];
+    const hasMarkData = rollOrders.some(o => o[printedField] !== undefined);
+    const unmarkedCount = hasMarkData ? rollOrders.filter(o => !o[printedField]).length : 0;
+    const canFinish = isRunning && unmarkedCount === 0;
 
     return (
         <div className={`min-w-0 bg-white rounded-2xl shadow-lg border-t-4 flex flex-col max-h-full transition-colors
@@ -110,11 +121,18 @@ const MachineControl = ({ machine, onAssign, onToggleStatus, onViewDetails, onUn
                                 <Pause size={14} />
                             </button>
                         </Tippy>
-                        <Tippy content="Finalizar Lote">
-                            <button onClick={handleStop} disabled={!isRunning}
-                                className={`w-8 h-8 tablet:w-7 tablet:h-7 rounded flex items-center justify-center transition-all ${!isRunning ? 'text-zinc-300 cursor-not-allowed' : 'text-brand-magenta hover:bg-brand-magenta/10 hover:scale-110 active:scale-95'}`}>
-                                <FlagTriangleRight size={14} />
-                            </button>
+                        <Tippy content={canFinish
+                            ? 'Finalizar Lote'
+                            : (unmarkedCount > 0
+                                ? `Faltan ${unmarkedCount} orden${unmarkedCount === 1 ? '' : 'es'} sin marcar como ${isPrinter ? 'impreso' : 'calandrado'}`
+                                : 'Finalizar Lote')}>
+                            {/* span para que el tooltip se muestre aun con el botón deshabilitado */}
+                            <span className="inline-flex">
+                                <button onClick={handleStop} disabled={!canFinish}
+                                    className={`w-8 h-8 tablet:w-7 tablet:h-7 rounded flex items-center justify-center transition-all ${!canFinish ? 'text-zinc-300 cursor-not-allowed' : 'text-brand-magenta hover:bg-brand-magenta/10 hover:scale-110 active:scale-95'}`}>
+                                    <FlagTriangleRight size={14} />
+                                </button>
+                            </span>
                         </Tippy>
                     </div>
                     {/* Botón "Ver Detalles" de máquina oculto a pedido */}

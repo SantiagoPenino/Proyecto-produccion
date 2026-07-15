@@ -43,6 +43,13 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
     const [loadingLabels, setLoadingLabels] = useState(false);
     const [draftStates, setDraftStates] = useState({ status: '', areaStatus: '' });
 
+    // Reuso de matriz TPU con cantidad distinta: la orden trae arte "base" a regenerar y NO va a
+    // aprobación del cliente — al subir las 5 capas nuevas, entra directo a producción.
+    const esReusoRegen = isTPU && (
+        /\[REUSO-REGEN\]/i.test(String(currentOrder?.Nota || currentOrder?.nota || order?.Nota || order?.nota || '')) ||
+        files.some(f => /REGENERAR|ARTE BASE/i.test(String(f.TipoArchivo || f.tipo || f.NombreArchivo || f.nombre || '')))
+    );
+
     useEffect(() => {
         if (currentOrder) {
             let initialGeneralStatus = currentOrder.status || 'Pendiente';
@@ -275,6 +282,11 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
 
     // Archivos de Impresión = select * from ArchivosOrden (TODAS LAS ÁREAS, pero editable solo si es el dueño)
     const productionFiles = files.filter(f => f.Categoria === 'produccion' || (!f.Categoria && !servTypes.includes(normalizeType(f.tipo))));
+
+    // ¿Esta orden es una reposición? (código termina en -R1, -R2, ...). En ese caso el
+    // integral trae el archivo de la orden madre (readonly) Y el de la reposición (editable),
+    // que se ven idénticos porque heredan el mismo nombre → los etiquetamos para distinguirlos.
+    const isRepoOrder = /-R\d+/i.test(String(currentOrder?.code || ''));
     
     // Archivos de Referencia = select * from ArchivosReferencia
     const referenceFiles = files.filter(f => f.Categoria === 'referencia');
@@ -335,22 +347,24 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
         if (!currentOrder?.id) return;
         const nArte = productionFiles.filter(f => (f.Estado || f.estado || f.EstadoArchivo || '').toUpperCase() !== 'CANCELADO').length;
         if (nArte !== 5) {
-            return toast.error(`Se necesitan exactamente 5 archivos de arte para enviar a aprobación (hay ${nArte}).`);
+            return toast.error(`Se necesitan exactamente 5 archivos de arte para ${esReusoRegen ? 'enviar a producción' : 'enviar a aprobación'} (hay ${nArte}).`);
         }
         const r = await Swal.fire({
-            title: '¿Enviar a aprobación del cliente?',
-            html: 'El cliente verá el arte (archivo <b>CMYK</b>) y deberá aprobarlo.<br/>La orden queda <b>retenida</b> hasta que apruebe.',
+            title: esReusoRegen ? '¿Enviar a producción?' : '¿Enviar a aprobación del cliente?',
+            html: esReusoRegen
+                ? 'Es un <b>reuso de matriz</b> con cantidad distinta: el diseño ya está aprobado.<br/>Con las 5 capas nuevas, la orden entra <b>directo a producción</b> (sin aprobación del cliente).'
+                : 'El cliente verá el arte (archivo <b>CMYK</b>) y deberá aprobarlo.<br/>La orden queda <b>retenida</b> hasta que apruebe.',
             icon: 'question',
             showCancelButton: true,
-            confirmButtonText: 'Enviar a aprobación',
+            confirmButtonText: esReusoRegen ? 'Enviar a producción' : 'Enviar a aprobación',
             cancelButtonText: 'Cancelar',
-            confirmButtonColor: '#0891b2',
+            confirmButtonColor: esReusoRegen ? '#059669' : '#0891b2',
             customClass: { container: '!z-[99999]' } // por encima del OrderDetailModal (z-[9999])
         });
         if (!r.isConfirmed) return;
         try {
             await ordersService.enviarAprobacionTPU(currentOrder.id);
-            toast.success('Orden enviada a aprobación del cliente.');
+            toast.success(esReusoRegen ? 'Orden enviada a producción.' : 'Orden enviada a aprobación del cliente.');
             loadData(currentOrder.id, currentOrder.area);
             onOrderUpdated?.();
         } catch (e) {
@@ -1287,6 +1301,13 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
                                     ) : (
                                         productionFiles.map((f, idx) => {
                                             const { actions, editContent } = renderFileActionsData(f, idx);
+                                            // Solo en órdenes de reposición: el readonly es el original (orden madre),
+                                            // el editable es el de esta reposición. Se ven iguales (nombre heredado).
+                                            const repoLabel = isRepoOrder
+                                                ? (f.readonly
+                                                    ? { text: 'Original (madre)', tone: 'zinc' }
+                                                    : { text: 'Reposición', tone: 'cyan' })
+                                                : null;
                                             return (
                                                 <FileItem
                                                     key={`file-${idx}`}
@@ -1295,7 +1316,8 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
                                                     extraInfo={{
                                                         roll: currentOrder?.rollId || 'General',
                                                         machine: currentOrder?.printer || 'Sin Asignar',
-                                                        um: currentOrder.UM || currentOrder.unit || 'm'
+                                                        um: currentOrder.UM || currentOrder.unit || 'm',
+                                                        repoLabel
                                                     }}
                                                     actions={actions}
                                                     editingContent={editContent}
@@ -1317,7 +1339,17 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
                                         </div>
                                     )}
                                     {isTPU && productionFiles.length > 0 && (
-                                        currentOrder?.status === 'Cargando...' ? (
+                                        esReusoRegen ? (
+                                            currentOrder?.status === 'Cargando...' ? (
+                                                <button onClick={handleEnviarAprobacion} className="mt-4 w-full flex items-center justify-center gap-2 py-3 rounded-xl bg-emerald-600 text-white text-sm font-bold uppercase tracking-wide hover:opacity-90 transition-opacity shadow-sm">
+                                                    <i className="fa-solid fa-industry"></i> Enviar a producción
+                                                </button>
+                                            ) : (
+                                                <div className="mt-4 flex items-center justify-center gap-2 py-3 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-700 text-xs font-bold uppercase tracking-wide">
+                                                    <i className="fa-solid fa-check"></i> En producción
+                                                </div>
+                                            )
+                                        ) : currentOrder?.status === 'Cargando...' ? (
                                             <div className="mt-4 flex items-center justify-center gap-2 py-3 rounded-xl bg-amber-50 border border-amber-200 text-amber-700 text-xs font-bold uppercase tracking-wide">
                                                 <i className="fa-regular fa-clock"></i> Esperando aprobación del cliente
                                             </div>
