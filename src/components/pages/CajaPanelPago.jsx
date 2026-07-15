@@ -72,6 +72,11 @@ export default function CajaPanelPago({
   condicion = null,    // condición controlada desde el padre ('CONTADO'|'CREDITO'); necesaria para reflejar un Pedido Caja a crédito al editar
   locked = false,      // Bloquea tipo doc, condición y método de pago (para vendedores)
   onNumDocPredict,     // Callback opcional para recibir el número de doc generado (para mostrarlo afuera)
+  hideDocTitle = false, // Panel 360: oculta el título "Documento a Generar" (se muestra en la cabecera)
+  hideTC = false,       // Panel 360: oculta el badge TC (se muestra en la cabecera)
+  hideDocType = false,  // Panel 360: oculta la columna del comprobante (se elige/muestra en la cabecera)
+  compactNotas = false, // Panel 360: observaciones compactas (no estiran toda la columna)
+  seccion = 'ambos',    // Venta 360 (layout horizontal): 'documento' (comprobante + notas) | 'pago' (solo medios/vuelto) | 'ambos' (default = todo)
   comprobanteFile = null,   // Archivo de comprobante (cuando locked=true, se muestra inline)
   onComprobanteFile,        // Setter del archivo
   comprobanteError = false, // Borde rojo si no hay comprobante al intentar procesar
@@ -308,8 +313,9 @@ export default function CajaPanelPago({
       <div className="bg-white rounded-3xl border border-zinc-200 shadow-lg p-6 w-full mb-4 animate-in fade-in duration-300 font-sans select-none text-zinc-700">
         
         {/* Cabecera del Documento Resultante y Balance — oculta cuando locked */}
-        {!locked && (
+        {!locked && (!hideDocTitle || !hideTC || totalACubrir > 0) && (
         <div className="flex justify-between items-center mb-5 border-b border-zinc-100 pb-3 gap-3 flex-wrap">
+          {!hideDocTitle && (
           <div className="flex flex-col gap-1">
             <span className="text-[9px] font-black text-zinc-450 uppercase tracking-widest leading-none">Documento a Generar:</span>
             <div className="flex items-center gap-2">
@@ -319,11 +325,12 @@ export default function CajaPanelPago({
               </span>
             </div>
           </div>
+          )}
 
           <div className="flex items-center gap-2 ml-auto flex-wrap justify-end">
             {headerExtra}
-            {/* TC siempre visible */}
-            {cotizacion && cotizacion > 1 && (
+            {/* TC (se oculta en el Panel 360; se muestra en la cabecera) */}
+            {!hideTC && cotizacion && cotizacion > 1 && (
               <div className="flex items-center gap-1 bg-amber-50 border border-amber-200 rounded-lg px-2.5 py-1 shrink-0">
                 <span className="text-[8px] font-black text-amber-600 uppercase tracking-widest">TC</span>
                 <span className="text-xs font-black text-amber-800 font-mono">${fmt(cotizacion)}</span>
@@ -362,10 +369,15 @@ export default function CajaPanelPago({
         )}
 
         {/* Rejilla de 3 Columnas — cuando locked, col-1 se colapsa a contenido */}
-        <div className={`grid gap-8 items-start ${locked ? 'grid-cols-1 md:grid-cols-[auto_1fr_1fr]' : 'grid-cols-1 md:grid-cols-2 lg:grid-cols-3'}`}>
+        <div className={`grid gap-8 items-start ${
+          seccion === 'pago' ? 'grid-cols-1'
+          : seccion === 'documento' ? 'grid-cols-1 md:grid-cols-2'
+          : locked ? 'grid-cols-1 md:grid-cols-[auto_1fr_1fr]'
+          : hideDocType ? 'grid-cols-1 md:grid-cols-2'
+          : 'grid-cols-1 md:grid-cols-2 lg:grid-cols-3'}`}>
 
           {/* COLUMNA 1: Toggles de Comprobantes & Condición */}
-          <div className="flex flex-col gap-4">
+          <div className={`flex flex-col gap-4 ${hideDocType || seccion === 'pago' ? 'hidden' : ''}`}>
             
             {esEgreso ? (
               // Modo EGRESO: comprobante fijo, no hay selección
@@ -553,7 +565,7 @@ export default function CajaPanelPago({
           </div>
 
           {/* COLUMNA 2: Formas de Pago & Calculadora de Vuelto */}
-          <div className="flex flex-col gap-4">
+          <div className={`flex flex-col gap-4 ${seccion === 'documento' ? 'hidden' : ''}`}>
             
             {pagos.length === 0 && (
               <div className="bg-zinc-50 border border-dashed border-zinc-200 rounded-2xl p-6 text-center shadow-inner">
@@ -680,7 +692,7 @@ export default function CajaPanelPago({
                       placeholder="0.00"
                       value={p.monto}
                       onChange={(e) => updatePago(p.id, 'monto', e.target.value)}
-                      className="w-24 bg-white border border-zinc-200 rounded-xl px-3 py-2 text-xs font-black text-zinc-800 text-right outline-none focus:border-brand-cyan shadow-inner"
+                      className="w-36 bg-white border border-zinc-200 rounded-xl px-3 py-2 text-sm font-black text-zinc-800 text-right outline-none focus:border-brand-cyan shadow-inner"
                     />
 
                     {isCheque && (
@@ -770,7 +782,7 @@ export default function CajaPanelPago({
                             value={efectivoRecibido || montoEfectivo.toFixed(2)}
                             onChange={e => setEfectivoRecibido(e.target.value)}
                             placeholder={montoEfectivo.toFixed(2)}
-                            className="w-24 bg-white border border-emerald-300 rounded-lg px-2.5 py-1 text-xs text-right font-black outline-none focus:border-emerald-500 shadow-inner text-emerald-800"
+                            className="w-32 bg-white border border-emerald-300 rounded-lg px-2.5 py-1 text-sm text-right font-black outline-none focus:border-emerald-500 shadow-inner text-emerald-800"
                           />
                         </div>
                         {recibido > 0 && (
@@ -792,11 +804,11 @@ export default function CajaPanelPago({
           </div>
 
           {/* COLUMNA 3: Observaciones (solo si no locked) & Botón de Procesar */}
-          <div className={`flex flex-col gap-4 h-full self-stretch ${locked ? 'justify-end' : 'justify-between min-h-[170px]'}`}>
+          <div className={`flex flex-col gap-4 h-full self-stretch ${seccion === 'pago' ? 'hidden' : ''} ${locked ? 'justify-end' : compactNotas ? 'justify-start' : 'justify-between min-h-[170px]'}`}>
 
             {/* Observaciones — ocultas aquí cuando locked, se muestran abajo del grid */}
             {!locked && (
-              <div className="flex flex-col gap-1.5 flex-1">
+              <div className={`flex flex-col gap-1.5 ${compactNotas ? '' : 'flex-1'}`}>
                 <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest px-1">
                   Observaciones Internas
                 </label>
@@ -804,7 +816,7 @@ export default function CajaPanelPago({
                   value={notas}
                   onChange={(e) => onNotas && onNotas(e.target.value)}
                   placeholder="Añada notas informativas..."
-                  className="w-full bg-zinc-50 border border-zinc-200 rounded-2xl px-4 py-3 text-xs font-bold text-zinc-800 outline-none resize-none focus:border-brand-cyan transition-all shadow-sm placeholder-zinc-300 flex-1 min-h-[96px] h-full"
+                  className={`w-full bg-zinc-50 border border-zinc-200 rounded-2xl px-4 py-2.5 text-xs font-bold text-zinc-800 outline-none resize-none focus:border-brand-cyan transition-all shadow-sm placeholder-zinc-300 ${compactNotas ? 'h-[84px]' : 'flex-1 min-h-[96px] h-full'}`}
                 />
               </div>
             )}

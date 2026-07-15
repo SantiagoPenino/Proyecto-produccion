@@ -47,6 +47,7 @@ const LogisticsPage = lazyWithRetry(() => import('../pages/customer-service/Logi
 const ActiveStockPage = lazyWithRetry(() => import('../pages/customer-service/ActiveStockPage'));
 const TransportControlPage = lazyWithRetry(() => import('../pages/TransportControlPage'));
 const EcoUvFinishing = lazyWithRetry(() => import('../pages/EcoUvFinishing'));
+const EcouvConfigPage = lazyWithRetry(() => import('../pages/EcouvConfigPage'));
 const WebRetirosPage = lazyWithRetry(() => import('../logistics/WebRetirosPage'));
 const ClientsIntegration = lazyWithRetry(() => import('../pages/ClientsIntegration'));
 import ChatWidget from '../common/ChatWidget';
@@ -99,8 +100,6 @@ const CronAdminView                = lazyWithRetry(() => import('../pages/CronAd
 const CoordinacionView             = lazyWithRetry(() => import('../pages/CoordinacionView'));
 const ColorMatcherPage             = lazyWithRetry(() => import('../pages/ColorMatcherPage'));
 const ReportesPage                 = lazyWithRetry(() => import('../pages/ReportesPage'));
-const ProduccionAnalyticsDashboard = lazyWithRetry(() => import('../pages/produccionAnalytics/ProduccionAnalyticsDashboard'));
-const ProduccionAnalyticsReportes  = lazyWithRetry(() => import('../pages/produccionAnalytics/ProduccionAnalyticsReportes'));
 
 // ============================================
 // 1. LUCIDE ICON MAP (override FA icons)
@@ -704,8 +703,6 @@ const MainAppContent = ({ menuItems = [] }) => {
                 <Route path="/coordinacion"                   element={<CoordinacionView />} />
                 <Route path="/color"                          element={<ColorMatcherPage />} />
                 <Route path="/reportes"                      element={<ReportesPage />} />
-                <Route path="/produccion/analytics-dashboard" element={<ProduccionAnalyticsDashboard />} />
-                <Route path="/produccion/analytics-reportes"  element={<ProduccionAnalyticsReportes />} />
                 <Route path="/*" element={<DynamicRouter menuItems={menuItems} />} />
             </Routes>
         </Suspense>
@@ -931,6 +928,7 @@ const DynamicRouter = ({ menuItems }) => {
     if (menuItem.Ruta === '/admin/products-integration') return <ProductsIntegration />;
     if (menuItem.Ruta === '/admin/price-catalog') return <CustomerPriceCatalogPage />;
     if (menuItem.Ruta === '/produccion/terminaciones' || menuItem.Ruta === '/area/ecouv/terminaciones') return <EcoUvFinishing />;
+    if (menuItem.Ruta === '/area/ecouv/config') return <EcouvConfigPage />;
     if (menuItem.Ruta === '/logistica' || menuItem.Ruta.toLowerCase() === '/logistica/') return <LogisticsDashboard />;
     if (menuItem.Ruta === '/ops/inventory') return <LogisticsDashboard />;
     if (menuItem.Ruta === '/inventario') return <InventoryPage />;

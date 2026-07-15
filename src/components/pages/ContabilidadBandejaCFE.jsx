@@ -133,8 +133,19 @@ const renderCfeOficialCol = (doc) => {
     );
 };
 
-const ContabilidadBandejaCFE = () => {
+const ContabilidadBandejaCFE = ({ initialCliente = null, embedded = false, autoNuevaFactura = false }) => {
     const { token } = useAuth();
+    // Cuando se monta scopeado a un cliente (Panel 360): fecha amplia y cliente fijo.
+    const cliFijoId = initialCliente ? (initialCliente.CliIdCliente || initialCliente.CodCliente || '') : '';
+    const seisMesesAtras = () => { const d = new Date(); d.setMonth(d.getMonth() - 6); return d.toISOString().split('T')[0]; };
+    const clientePrefill = initialCliente ? {
+        CliIdCliente:    initialCliente.CliIdCliente,
+        DocCliNombre:    initialCliente.Nombre || initialCliente.NombreFantasia || '',
+        DocCliDocumento: initialCliente.CioRuc || initialCliente.CodCliente || '',
+        DocCliDireccion: initialCliente.Direccion || '',
+        DocCliCiudad:    initialCliente.Ciudad || '',
+        lineas: [],
+    } : null;
     const [docs, setDocs] = useState([]);
     const [loading, setLoading] = useState(false);
     const [sendingId, setSendingId] = useState(null);
@@ -158,17 +169,17 @@ const ContabilidadBandejaCFE = () => {
     // Filtros
     const [clientes, setClientes] = useState([]);
     const [filtros, setFiltros] = useState({
-        fechaDesde: new Date().toISOString().split('T')[0],
+        fechaDesde: initialCliente ? seisMesesAtras() : new Date().toISOString().split('T')[0],
         fechaHasta: new Date().toISOString().split('T')[0],
         estado: '',
         tipo: '',
-        clienteId: '',
+        clienteId: cliFijoId,
         empresaId: '',
         metodoPagoId: ''
     });
 
     const [clienteSearch, setClienteSearch] = useState('');
-    const [clienteSeleccionado, setClienteSeleccionado] = useState(null);
+    const [clienteSeleccionado, setClienteSeleccionado] = useState(initialCliente || null);
     const [showClienteDropdown, setShowClienteDropdown] = useState(false);
     const { empresas } = useEmpresas(false); // todas (activas e inactivas) para el filtro
     const [metodosPago, setMetodosPago] = useState([]);
@@ -309,6 +320,18 @@ const ContabilidadBandejaCFE = () => {
         fetchMetodosPago();
         // eslint-disable-next-line
     }, []);
+
+    // Abrir Nueva Factura Manual (opcionalmente con el cliente ya prellenado)
+    const abrirNuevaFactura = () => {
+        if (clientePrefill) setCopyData(clientePrefill);
+        else setShowFacturaModal(true);
+    };
+
+    // Panel 360: si se pide entrar directo a "Nueva Factura Manual"
+    useEffect(() => {
+        if (autoNuevaFactura) abrirNuevaFactura();
+        // eslint-disable-next-line
+    }, [autoNuevaFactura]);
 
     const handleFilterChange = (e) => {
         const { name, value } = e.target;
@@ -518,12 +541,12 @@ const ContabilidadBandejaCFE = () => {
     };
 
     return (
-        <div className="p-4 sm:p-6 w-full mx-auto">
+        <div className={`${embedded ? 'p-0' : 'p-4 sm:p-6'} w-full mx-auto`}>
             <div className="flex items-center justify-between mb-6">
                 <div className="flex items-center space-x-3">
                     <FileText className="h-8 w-8 text-blue-600" />
                     <h2 className="text-2xl font-bold text-gray-800">
-                        Bandeja de Facturación Electrónica (CFE)
+                        {embedded ? 'Bandeja CFE' : 'Bandeja de Facturación Electrónica (CFE)'}
                     </h2>
                 </div>
                 <div className="flex items-center gap-3">
@@ -538,7 +561,7 @@ const ContabilidadBandejaCFE = () => {
                         </button>
                     )}
                     <button
-                        onClick={() => setShowFacturaModal(true)}
+                        onClick={abrirNuevaFactura}
                         className="flex items-center gap-2 px-5 py-2.5 rounded-xl text-white bg-blue-600 hover:bg-blue-700 font-bold transition-colors shadow-sm"
                     >
                         <Plus size={20} />
@@ -653,14 +676,16 @@ const ContabilidadBandejaCFE = () => {
                                                 )}
                                             </div>
                                         </div>
-                                        <button
-                                            type="button"
-                                            onClick={() => handleSelectCliente(null)}
-                                            className="bg-white hover:bg-rose-50 text-gray-400 hover:text-rose-600 p-1.5 rounded-lg transition-all border border-gray-200 hover:border-rose-200 shrink-0"
-                                            title="Quitar cliente"
-                                        >
-                                            <Trash2 size={15} />
-                                        </button>
+                                        {!initialCliente && (
+                                            <button
+                                                type="button"
+                                                onClick={() => handleSelectCliente(null)}
+                                                className="bg-white hover:bg-rose-50 text-gray-400 hover:text-rose-600 p-1.5 rounded-lg transition-all border border-gray-200 hover:border-rose-200 shrink-0"
+                                                title="Quitar cliente"
+                                            >
+                                                <Trash2 size={15} />
+                                            </button>
+                                        )}
                                     </div>
                                     <div className="flex flex-col gap-0.5 text-[11px] text-slate-500 font-medium border-t border-emerald-100 pt-1.5">
                                         <div>RUC / CI: <span className="font-mono font-bold text-slate-800">{clienteSeleccionado.CioRuc || 'S/N'}</span></div>

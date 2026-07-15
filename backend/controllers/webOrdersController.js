@@ -1233,7 +1233,16 @@ exports.createWebOrder = async (req, res) => {
                 // 0. REFERENCIAS VINCULADAS AL SERVICIO (Nueva Lógica)
                 if (exec.referencias && exec.referencias.length > 0) {
                     for (const ref of exec.referencias) {
-                        const fName = `REF-${erpDocNumber}-${sanitize(ref.name)}`;
+                        // Si la referencia trae "etiqueta" (ej: boceto Twinface "Boceto Archivo 1 de 3"),
+                        // el nombre guardado usa la etiqueta + la extensión real, para identificar a qué
+                        // archivo pertenece. El originalName (match de subida) sigue siendo ref.name.
+                        let baseName = sanitize(ref.name);
+                        if (ref.etiqueta) {
+                            const dot = ref.name.lastIndexOf('.');
+                            const ext = dot > 0 ? ref.name.substring(dot) : '';
+                            baseName = `${sanitize(ref.etiqueta)}${ext}`;
+                        }
+                        const fName = `REF-${erpDocNumber}-${baseName}`;
                         const tipo = ref.tipo || 'REFERENCIA';
 
                         const resRef = await new sql.Request(transaction)

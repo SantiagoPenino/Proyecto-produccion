@@ -18,7 +18,7 @@ const tipoBadge = (tipo) => TIPOS.find(t => t.value === tipo) || TIPOS[0];
 
 const EMPTY_NEW = { grupo: '', codStock: '', articulo: '', um: 'M2', tipoStock: 'MATERIAL' };
 
-export default function StockArtEditModal({ isOpen, onClose }) {
+export default function StockArtEditModal({ isOpen, onClose, initialGrupo = '', initialView = 'variantes' }) {
     const [rows, setRows] = useState([]);
     const [loading, setLoading] = useState(false);
     const [grupoFilter, setGrupoFilter] = useState('');
@@ -56,7 +56,15 @@ export default function StockArtEditModal({ isOpen, onClose }) {
         }
     }, []);
 
-    useEffect(() => { if (isOpen) { load(); setExpanded(null); setShowNew(false); setView('variantes'); } }, [isOpen, load]);
+    useEffect(() => {
+        if (isOpen) {
+            load();
+            setExpanded(null);
+            setShowNew(false);
+            setView(initialView || 'variantes');
+            if (initialGrupo) setGrupoFilter(initialGrupo);
+        }
+    }, [isOpen, load, initialView, initialGrupo]);
 
     const loadTerminaciones = useCallback(async () => {
         setTermLoading(true);

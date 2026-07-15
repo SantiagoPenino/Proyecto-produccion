@@ -20,6 +20,9 @@ router.post('/update', controller.updateLocalProduct);
 // 6. Crear Producto Local (nuevo)
 router.post('/create', controller.createLocalProduct);
 
+// 6b. Eliminar Producto Local
+router.delete('/:id', controller.deleteLocalProduct);
+
 const uploadArticulo = require('../middleware/multerArticulosConfig');
 
 // 7. Actualizar ID Maestro WMS

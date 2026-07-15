@@ -98,6 +98,69 @@ async function verificarCicloSemanal(transaction, CliIdCliente) {
 }
 
 /**
+ * calcularAdelantoLimpio
+ * Saldo de adelanto REAL del cliente en su cuenta de dinero de la moneda dada.
+ * Suma los movimientos por su importe CRUDO (que sí es confiable), EXCLUYENDO
+ * VTA_CAJA/CIERRE_CICLO (capa fiscal que DUPLICA el débito de las órdenes) y los
+ * anulados. NO usa CueSaldoActual (que arrastra descalces históricos y doble conteo).
+ *
+ * @returns {{ adelanto:number, tieneAnticipo:boolean }}
+ *   adelanto >= 0 con tieneAnticipo=true → adelanto solvente → órdenes cubiertas.
+ *   adelanto < 0 o sin anticipo          → sobre-consumió / no tiene adelanto → caja.
+ */
+async function calcularAdelantoLimpio(transaction, CliIdCliente, moneda) {
+    const cueTipo = (moneda && String(moneda).toUpperCase() === 'USD') ? 'DINERO_USD' : 'DINERO_UYU';
+    const r = await transaction.request()
+        .input('Cli',  sql.Int,         CliIdCliente)
+        .input('Tipo', sql.VarChar(20), cueTipo)
+        .query(`
+            SELECT
+                ISNULL(SUM(m.MovImporte), 0) AS Adelanto,
+                ISNULL(SUM(CASE WHEN m.MovTipo = 'ANTICIPO' THEN m.MovImporte ELSE 0 END), 0) AS TotalAnticipos
+            FROM   dbo.MovimientosCuenta m  WITH(NOLOCK)
+            JOIN   dbo.CuentasCliente    cc WITH(NOLOCK) ON cc.CueIdCuenta = m.CueIdCuenta
+            WHERE  cc.CliIdCliente = @Cli
+              AND  cc.CueTipo      = @Tipo
+              AND  (m.MovAnulado IS NULL OR m.MovAnulado = 0)
+              AND  m.MovTipo NOT IN ('VTA_CAJA', 'CIERRE_CICLO')
+        `);
+    const row = r.recordset[0] || {};
+    return {
+        adelanto:      parseFloat(row.Adelanto) || 0,
+        tieneAnticipo: (parseFloat(row.TotalAnticipos) || 0) > 0.01,
+    };
+}
+
+/**
+ * tienePlanHistorico
+ * ¿El cliente tuvo ALGUNA VEZ un plan de metros (rollo) para el producto — activo
+ * O CERRADO? Se usa para dejar pasar el ROLLO NEGATIVO: cuando el plan se consumió
+ * y quedó en negativo (o se cerró), la orden se cubrió en metros (no en plata) y el
+ * saldo negativo se compensa con el próximo rollo. Mientras exista historia de rollo
+ * para ese producto, el retiro pasa (Abonado). Sin ninguna historia → no es rollo real.
+ * Espeja la condición de hookOrdenCreada (ultimoPlanRes, sin filtro PlaActivo).
+ */
+async function tienePlanHistorico(transaction, CliIdCliente, ProIdProducto) {
+    if (!CliIdCliente || !ProIdProducto) return false;
+    const r = await transaction.request()
+        .input('Cli', sql.Int, CliIdCliente)
+        .input('Pro', sql.Int, ProIdProducto)
+        .query(`
+            SELECT TOP 1 pm.PlaIdPlan
+            FROM   dbo.PlanesMetros pm WITH(NOLOCK)
+            WHERE  pm.CliIdCliente = @Cli
+              AND  (
+                pm.ProIdProducto = @Pro
+                OR EXISTS (
+                  SELECT 1 FROM dbo.PlanesMetrosArticulosPermitidos pap WITH(NOLOCK)
+                  WHERE pap.PlaIdPlan = pm.PlaIdPlan AND pap.ProIdProducto = @Pro
+                )
+              )
+        `);
+    return r.recordset.length > 0;
+}
+
+/**
  * Crea una orden de retiro completa dentro de una transacción existente.
  *
  * @param {Transaction} transaction — transacción SQL ya iniciada
@@ -145,12 +208,14 @@ async function crearRetiro(transaction, { ordIds, totalCost, lugarRetiro, usuari
     const tipoRes = await transaction.request()
         .input('OrdId', sql.Int, ordIds[0])
         .query(`
-        SELECT c.TClIdTipoCliente, c.CodCliente, o.CliIdCliente
+        SELECT c.TClIdTipoCliente, c.CodCliente, o.CliIdCliente, tc.TClDescripcion
             FROM OrdenesDeposito o WITH(NOLOCK)
             JOIN Clientes c WITH(NOLOCK) ON c.CliIdCliente = o.CliIdCliente
+            LEFT JOIN TiposClientes tc WITH(NOLOCK) ON tc.TClIdTipoCliente = c.TClIdTipoCliente
             WHERE o.OrdIdOrden = @OrdId
         `);
     const tipoCliente     = tipoRes.recordset[0]?.TClIdTipoCliente || 1;
+    const tipoClienteDesc = tipoRes.recordset[0]?.TClDescripcion   || '';
     const CliIdCliente    = tipoRes.recordset[0]?.CliIdCliente     || null;
     const finalCodCliente = codCliente || tipoRes.recordset[0]?.CodCliente || null;
 
@@ -179,65 +244,79 @@ async function crearRetiro(transaction, { ordIds, totalCost, lugarRetiro, usuari
         logger.warn(`[crearRetiro] Moneda corregida: parámetro='${moneda}' → detectada='${monedaFinal}' (tieneOrdenUSD=${tieneOrdenUSD})`);
     }
 
-    // ── ESTADO DEL RETIRO: evaluar CADA orden individualmente ───────────────────
+    // ── CONTROL DE ENTREGA: estado inicial del retiro según COBERTURA ────────────
     //
-    //  Regla: el retiro es autorizado (estado 4) SOLO si TODAS las órdenes
-    //  están cubiertas (por plan de recursos o por ciclo semanal).
-    //  Si CUALQUIERA necesita pago en caja → todo el retiro queda en estado 1.
+    //  El retiro nace CUBIERTO (no pasa por caja) solo si TODAS sus órdenes están
+    //  cubiertas. Si queda alguna sin cobertura verificable → estado 1 (FRENA, caja).
+    //  Reemplaza el viejo bypass ciego de tipo 2/3 (que autorizaba sin verificar nada).
     //
-    //  Los metros ya fueron descontados al INGRESO (hookEntregaMetros).
-    //  Aquí solo se VERIFICA el estado de autorización.
+    //  Cobertura y estado resultante:
+    //    ABONADO (3)    — pago previo, plan de metros activo, o ROLLO con plan histórico.
+    //                     El rollo NEGATIVO SIEMPRE pasa (aunque el plan esté cerrado): se
+    //                     cubrió en metros y se compensa con el próximo rollo.
+    //    AUTORIZADO (9) — crédito: ciclo semanal abierto, o PLATA adelantada (anticipo) con
+    //                     saldo LIMPIO >= 0 (ver calcularAdelantoLimpio; NO usa el CueSaldoActual
+    //                     roto). El débito ORDEN ya corrió al INGRESO → el chequeo es
+    //                     "adelanto >= 0", no ">= costo".
+    //    FRENA (1)      — sin ninguna cobertura → pasa por caja.
+
+    const esRollo = /ROLLO/i.test(tipoClienteDesc || '');
+
+    let tieneCicloSemanal = false;
+    if (tipoCliente === 2) {
+        tieneCicloSemanal = await verificarCicloSemanal(transaction, CliIdCliente);
+    }
+
+    // Las cubiertas por pago/plan/rollo dejan el retiro ABONADO; las que quedan necesitan
+    // CRÉDITO (ciclo o plata) → AUTORIZADO. Si a alguna no la cubre nada → FRENA.
+    const ordenesQueNecesitanCredito = [];
+    for (const orden of ordenesData) {
+        if (orden.PagIdPago) continue; // ya pagada
+
+        if (orden.ProIdProducto) {
+            // plan de metros ACTIVO → rollo positivo
+            const recurso = await verificarRecursoCliente(transaction, { CliIdCliente, ProIdProducto: orden.ProIdProducto });
+            if (recurso.tieneRecurso) {
+                logger.info(`[RETIRO] Orden ${orden.OrdIdOrden} cubierta por plan activo #${recurso.planId}`);
+                continue;
+            }
+            // ROLLO con plan HISTÓRICO (aunque cerrado / en negativo) → SIEMPRE pasa
+            if (esRollo && await tienePlanHistorico(transaction, CliIdCliente, orden.ProIdProducto)) {
+                logger.info(`[RETIRO] Orden ${orden.OrdIdOrden} cubierta por rollo (plan histórico, posible negativo) → pasa.`);
+                continue;
+            }
+        }
+
+        ordenesQueNecesitanCredito.push(orden);
+    }
 
     let estadoOrdenRetiro;
 
-    if (pagoExistenteId) {
-        estadoOrdenRetiro = 3; // Al menos una orden ya tiene pago registrado
-
-    } else if (tipoCliente === 2 || tipoCliente === 3) {
-        // TODO: DEUDA TÉCNICA — Bypass temporal para clientes tipo 2 (Semanal) y tipo 3.
-        // Cuando PlanesMetros y CiclosCredito estén completamente implementados
-        // (UI de gestión + carga de datos en producción), eliminar este bloque y
-        // dejar que caigan al else de abajo para que pasen por la verificación real
-        // de verificarRecursoCliente() y verificarCicloSemanal().
-        estadoOrdenRetiro = 9;
-        logger.info(`[RETIRO] Cliente tipo ${tipoCliente} → Estado 9 (Autorizado) directo [bypass temporal].`);
+    if (ordenesQueNecesitanCredito.length === 0) {
+        estadoOrdenRetiro = 3; // todo cubierto por pago / plan / rollo → Abonado
 
     } else {
-        // Verificar ciclo semanal del cliente (aplica a todas las órdenes si tipo 2)
-        let tieneCicloSemanal = false;
-        if (tipoCliente === 2) {
-            tieneCicloSemanal = await verificarCicloSemanal(transaction, CliIdCliente);
+        // ¿Las cubre el CRÉDITO? Ciclo semanal, o plata adelantada (saldo limpio >= 0).
+        let cubiertoPorCredito = tieneCicloSemanal;
+        let detalle = 'ciclo semanal';
+        if (!cubiertoPorCredito) {
+            const { adelanto, tieneAnticipo } = await calcularAdelantoLimpio(transaction, CliIdCliente, monedaFinal);
+            cubiertoPorCredito = tieneAnticipo && adelanto >= -0.01;
+            detalle = `adelanto ${monedaFinal}=${adelanto.toFixed(2)} (tieneAnticipo=${tieneAnticipo})`;
         }
 
-        // Evaluar cada orden individualmente
-        let todasCubiertas = true;
-
-        for (const orden of ordenesData) {
-            const { ProIdProducto } = orden;
-
-            // ¿Cubierta por plan de recursos?
-            if (ProIdProducto) {
-                const recurso = await verificarRecursoCliente(transaction, { CliIdCliente, ProIdProducto });
-                if (recurso.tieneRecurso) {
-                    logger.info(`[RETIRO] Orden ${orden.OrdIdOrden} cubierta por plan #${recurso.planId}`);
-                    continue; // esta orden OK
-                }
-            }
-
-            // ¿Cubierta por ciclo semanal?
-            if (tieneCicloSemanal) {
-                logger.info(`[RETIRO] Orden ${orden.OrdIdOrden} cubierta por ciclo semanal`);
-                continue; // esta orden OK
-            }
-
-            // Ninguna cobertura → necesita pago en caja
-            logger.info(`[RETIRO] Orden ${orden.OrdIdOrden} sin cobertura → requiere pago`);
-            todasCubiertas = false;
-            break;
+        if (cubiertoPorCredito) {
+            estadoOrdenRetiro = 9; // Autorizado (crédito: ciclo semanal o plata adelantada)
+            logger.info(`[RETIRO] Cli ${CliIdCliente}: ${ordenesQueNecesitanCredito.length} orden(es) cubiertas por crédito (${detalle}) → Autorizado.`);
+        } else {
+            estadoOrdenRetiro = 1; // sin plan, sin rollo, sin crédito → FRENA a caja
+            logger.warn(`[RETIRO] Cli ${CliIdCliente}: ${ordenesQueNecesitanCredito.length} orden(es) sin cobertura (${detalle}) → estado 1 (FRENA a caja).`);
         }
-
-        estadoOrdenRetiro = todasCubiertas ? 9 : 1;
     }
+
+    // Estados "cubiertos" (NO pasan por caja): 3 Abonado, 4 Abonado de antemano, 9 Autorizado.
+    // Los cubiertos dejan PagIdPago = 0 (centinela "cubierto sin efectivo"); estado 1 → NULL (aparece en caja).
+    const retiroCubierto = [3, 4, 9].includes(estadoOrdenRetiro);
 
     // 1. Generar ID para OrdenesRetiro con UPDLOCK (previene race condition)
     const maxIdRes = await transaction.request().query(
@@ -259,7 +338,7 @@ async function crearRetiro(transaction, { ordIds, totalCost, lugarRetiro, usuari
         .input('Depto', sql.NVarChar(200), departamento || null)
         .input('Loc', sql.NVarChar(200), localidad || null)
         .input('AgenciaId', sql.Int, agenciaId ? parseInt(agenciaId, 10) : null)
-        .input('PagIdExistente', sql.Int, (estadoOrdenRetiro === 4 || estadoOrdenRetiro === 9) ? (pagoExistenteId || 0) : pagoExistenteId)
+        .input('PagIdExistente', sql.Int, retiroCubierto ? (pagoExistenteId || 0) : pagoExistenteId)
         .query(`
             INSERT INTO OrdenesRetiro 
                 (OReIdOrdenRetiro, OReCostoTotalOrden, LReIdLugarRetiro, OReFechaAlta, OReUsuarioAlta, OReEstadoActual, OReFechaEstadoActual, FormaRetiro, CodCliente, MonIdMoneda, DireccionEnvio, DepartamentoEnvio, LocalidadEnvio, AgenciaEnvio, PagIdPago)
@@ -304,7 +383,7 @@ async function crearRetiro(transaction, { ordIds, totalCost, lugarRetiro, usuari
             .input('Lugar', sql.Int, lugarRetiro)
             .input('RetiroId', sql.Int, OReIdOrdenRetiro)
             .input('Usr', sql.Int, usuarioAlta)
-            .input('PagId', sql.Int, (estadoOrdenRetiro === 4 || estadoOrdenRetiro === 9) ? 0 : null)
+            .input('PagId', sql.Int, retiroCubierto ? 0 : null)
             .query(`
                 UPDATE OrdenesDeposito SET 
                     LReIdLugarRetiro = @Lugar, 

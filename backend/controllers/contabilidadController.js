@@ -527,6 +527,39 @@ exports.getDeudasVivasCliente = async (req, res) => {
 };
 
 /**
+ * GET /api/contabilidad/clientes/:CliIdCliente/resumen-documentos
+ * Estado de cuenta LEGIBLE: una fila por documento (importe / pagado /
+ * pendiente / estado), agrupable por moneda. Alimenta el PDF "resumen".
+ */
+exports.getResumenDocumentosCliente = async (req, res) => {
+  try {
+    const { CliIdCliente } = req.params;
+    const { desde = null, hasta = null } = req.query;
+    const data = await svc.getResumenDocumentos(parseInt(CliIdCliente), desde || null, hasta || null);
+    res.json({ success: true, data });
+  } catch (err) {
+    logger.error('[CONTABILIDAD] getResumenDocumentosCliente:', err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+};
+
+/**
+ * GET /api/contabilidad/clientes/:CliIdCliente/movimientos-ordenes
+ * Todos los movimientos de órdenes del cliente (facturadas y sin facturar).
+ */
+exports.getMovimientosOrdenesCliente = async (req, res) => {
+  try {
+    const { CliIdCliente } = req.params;
+    const { desde = null, hasta = null, incluirAnulados = 'false' } = req.query;
+    const data = await svc.getMovimientosOrdenes(parseInt(CliIdCliente), desde || null, hasta || null, incluirAnulados === 'true');
+    res.json({ success: true, data });
+  } catch (err) {
+    logger.error('[CONTABILIDAD] getMovimientosOrdenesCliente:', err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+};
+
+/**
  * GET /api/contabilidad/deudas-vivas
  * Devuelve todos los documentos con saldo pendiente de TODOS los clientes.
  */
@@ -2028,6 +2061,8 @@ exports.getClientesActivos = async (req, res) => {
     // ── Modo TODOS: todos los clientes sin importar si tienen cuentas ───────
     if (tipo.toUpperCase() === 'TODOS') {
       const result = await request.query(`
+        DECLARE @TC DECIMAL(18,4) = ISNULL((SELECT TOP 1 CotDolar FROM dbo.Cotizaciones ORDER BY CotFecha DESC), 40.0);
+
         SELECT TOP 50
           c.CliIdCliente,
           RTRIM(LTRIM(c.Nombre)) AS Nombre,
@@ -2040,11 +2075,24 @@ exports.getClientesActivos = async (req, res) => {
           RTRIM(LTRIM(c.CioRuc)) AS CioRuc,
           RTRIM(LTRIM(c.DireccionTrabajo)) AS DireccionTrabajo,
           c.DepartamentoID,
-          RTRIM(LTRIM(c.TelefonoTrabajo)) AS TelefonoTrabajo
-        FROM dbo.Clientes c WITH(NOLOCK)
-        LEFT JOIN dbo.TiposClientes tc WITH(NOLOCK) ON c.TClIdTipoCliente = tc.TClIdTipoCliente
+          RTRIM(LTRIM(c.TelefonoTrabajo)) AS TelefonoTrabajo,
+          COUNT(DISTINCT cc.CueIdCuenta)                                                           AS TotalCuentas,
+          ISNULL(SUM(CASE WHEN cc.MonIdMoneda = 2 THEN cc.CueSaldoActual * @TC ELSE cc.CueSaldoActual END), 0) AS SaldoTotal,
+          ISNULL(SUM(CASE WHEN cc.MonIdMoneda = 2 THEN dd.DDeImportePendiente * @TC ELSE dd.DDeImportePendiente END), 0) AS DeudaTotal,
+          SUM(CASE WHEN dd.DDeFechaVencimiento < GETDATE()
+                    AND dd.DDeEstado IN ('PENDIENTE','VENCIDO') THEN 1 ELSE 0 END)                 AS DocsVencidos,
+          MAX(CASE WHEN cc.CueDiasCiclo > 0 THEN 1 ELSE 0 END)                                    AS EsSemanal,
+          MAX(CASE WHEN cic.CicEstado = 'ABIERTO' THEN 1 ELSE 0 END)                              AS TieneCicloAbierto
+        FROM      dbo.Clientes        c  WITH(NOLOCK)
+        LEFT JOIN dbo.CuentasCliente cc WITH(NOLOCK) ON cc.CliIdCliente = c.CliIdCliente AND cc.CueActiva = 1
+        LEFT JOIN dbo.DeudaDocumento  dd WITH(NOLOCK) ON dd.CueIdCuenta  = cc.CueIdCuenta
+                                                      AND dd.DDeEstado   IN ('PENDIENTE','VENCIDO','PARCIAL')
+        LEFT JOIN dbo.CiclosCredito  cic WITH(NOLOCK) ON cic.CueIdCuenta = cc.CueIdCuenta
+                                                      AND cic.CicEstado  = 'ABIERTO'
+        LEFT JOIN dbo.TiposClientes   tc WITH(NOLOCK) ON c.TClIdTipoCliente = tc.TClIdTipoCliente
         WHERE 1=1 ${filtroNombre} ${filtroTipoCliente}
-        ORDER BY RTRIM(LTRIM(c.Nombre))
+        GROUP BY c.CliIdCliente, c.Nombre, c.NombreFantasia, c.Email, c.CodCliente, c.IDCliente, c.TClIdTipoCliente, tc.TClDescripcion, c.CioRuc, c.DireccionTrabajo, c.DepartamentoID, c.TelefonoTrabajo
+        ORDER BY ABS(SUM(ISNULL(cc.CueSaldoActual, 0))) DESC, RTRIM(LTRIM(c.Nombre))
       `);
       return res.json({ success: true, data: result.recordset });
     }

@@ -1,0 +1,67 @@
+LISTA DE DOCUMENTOS C (factura inconsistente) — RE-FACTURAR
+Generado 2026-07-15
+
+ 1. 31493024 — PC-1678 (2026-07-02)
+    Header: $69.03  |  Suma líneas: $2193.66  |  Descuadre: $-2124.63
+    Línea sospechosa: "ProductosVarios"  22 x $99 = $2178
+
+ 2. 42394564 — PC-1274 (2026-06-26)
+    Header: $152.51  |  Suma líneas: $2747.35  |  Descuadre: $-2594.84
+    Línea sospechosa: "ProductosVarios"  20 x $104 = $2080
+
+ 3. 52772419 — PC-1559 (2026-06-30)
+    Header: $10496.13  |  Suma líneas: $20891.13  |  Descuadre: $-10395.00
+    Línea sospechosa: "DTF textil COMUN"  0.09 x $116623.67 = $10496.13  <-- PRECIO RARO
+
+ 4. 52772419 — PC-1208 (2026-06-25)
+    Header: $710.05  |  Suma líneas: $3896.84  |  Descuadre: $-3186.79
+    Línea sospechosa: "ProductosVarios"  33 x $99 = $3267
+
+ 5. ATHA — PC-1558 (2026-06-30)
+    Header: $78.48  |  Suma líneas: $2990.28  |  Descuadre: $-2911.80
+    Línea sospechosa: "Gorros de lana  con parches TP"  15 x $199 = $2985
+
+ 6. AyP — PC-1855 (2026-07-03)
+    Header: $17.35  |  Suma líneas: $210.5  |  Descuadre: $-193.15
+    Línea sospechosa: "ProductosVarios"  2 x $99 = $198
+
+ 7. AyP — PC-1560 (2026-06-30)
+    Header: $115.33  |  Suma líneas: $1274.2  |  Descuadre: $-1158.87
+    Línea sospechosa: "ProductosVarios"  12 x $99 = $1188
+
+ 8. boracsport — PC-1065 (2026-06-24)
+    Header: $182.37  |  Suma líneas: $1920.6  |  Descuadre: $-1738.23
+    Línea sospechosa: "ProductosVarios"  18 x $99 = $1782
+
+ 9. Caroline Ferreira — PC-1235 (2026-06-25)
+    Header: $85.99  |  Suma líneas: $439.59  |  Descuadre: $-353.60
+    Línea sospechosa: "Cuadro canvas 50 x 30"  1 x $362.5 = $362.5
+
+10. CS Fotografia — PC-1641 (2026-07-01)
+    Header: $2765.84  |  Suma líneas: $1892  |  Descuadre: $873.84
+    Línea sospechosa: "Cuadro canvas 80 x 80"  1 x $690 = $690
+
+11. Imprenta Flagma — PC-1397 (2026-06-29)
+    Header: $64.4  |  Suma líneas: $347.28  |  Descuadre: $-282.88
+    Línea sospechosa: "Cuadro canvas 50 x 30"  1 x $290 = $290
+
+12. jbc — PC-1417 (2026-06-29)
+    Header: $47.63  |  Suma líneas: $586.99  |  Descuadre: $-539.36
+    Línea sospechosa: "Pasacalles 0,77 x 2,00  + Palo"  1 x $552.94 = $552.94
+
+13. jbc — PC-1646 (2026-07-01)
+    Header: $42.43  |  Suma líneas: $1456.82  |  Descuadre: $-1414.39
+    Línea sospechosa: "Cuadro canvas 40 x 40"  5 x $290 = $1450
+
+14. KATERIN BARIDON — PC-1129 (2026-06-24)
+    Header: $60.3  |  Suma líneas: $1621  |  Descuadre: $-1560.70
+    Línea sospechosa: "Bordado"  10 x $160 = $1600
+
+15. Rgbcreaciones — PC-1373 (2026-06-26)
+    Header: $71.18  |  Suma líneas: $135.08  |  Descuadre: $-63.90
+    Línea sospechosa: "ProductosVarios"  3 x $23.73 = $71.18
+
+16. sebastianvikingo — PC-1160 (2026-06-25)
+    Header: $47.38  |  Suma líneas: $1393.5  |  Descuadre: $-1346.12
+    Línea sospechosa: "Cuadro canvas 80 x 80"  2 x $690 = $1380
+

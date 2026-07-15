@@ -4,6 +4,7 @@ import { Listbox, Transition } from '@headlessui/react';
 import api from '../../services/apiClient';
 import { toast } from 'sonner';
 import ClienteBilletera from '../common/ClienteBilletera';
+import CajaPanelPago from './CajaPanelPago';
 
 const TIPOS_VENTA = [
   { value: 'RECURSO', label: 'Bolsa de Recursos (Plan Metros)' },
@@ -30,6 +31,9 @@ export default function CajaVentaDirectaTab({
   empresaId = null,
   initialCliente = null,
   hideClienteSelector = false,
+  hideBilletera = false,
+  pasoExterno = undefined,
+  onPasoExterno = undefined,
 }) {
   // Cliente
   const [qCliente, setQCliente] = useState('');
@@ -107,6 +111,10 @@ export default function CajaVentaDirectaTab({
   const [tipoDocInternal, setTipoDocInternal] = useState('40');
   const [serieDocInternal, setSerieDocInternal] = useState('A');
   const [procesandoInternal, setProcesandoInternal] = useState(false);
+  // Panel 360: flujo en 2 pasos (conceptos → pago); controlable desde el modal (Cerrar → vuelve al paso 1)
+  const [pasoLocalV, setPasoLocalV] = useState('conceptos');
+  const paso = pasoExterno !== undefined ? pasoExterno : pasoLocalV;
+  const setPaso = onPasoExterno || setPasoLocalV;
 
   // Resuelve qué usar: props externas o estado interno
   const pagos = pagosExt !== undefined ? pagosExt : pagosInternal;
@@ -171,11 +179,29 @@ export default function CajaVentaDirectaTab({
   };
 
   const totalPagar = items.reduce((sum, item) => sum + (parseFloat(item.precioTotal) || 0), 0);
+  // Condición del comprobante (toggle Contado/Crédito del panel de pago).
+  // Para Pedido Caja (40) el tipoDoc NO cambia entre contado/crédito → el único aviso es onCondicionChange.
+  const [condicion, setCondicion] = useState('CONTADO'); // CONTADO | CREDITO
+  const esCreditoDoc = condicion === 'CREDITO'
+    || ['02', '08', 'FACT_CREDITO'].includes(tipoDocumento)
+    || String(tipoDocumento).toUpperCase().includes('CREDITO');
 
   // Notifica al padre el total para que CajaPanelPago lo muestre
   React.useEffect(() => { if (onTotalChange) onTotalChange(totalPagar, monedaExhibicion); }, [totalPagar, monedaExhibicion]);
 
-  const buildPayload = () => ({
+  // Panel 360: al entrar al paso de pago, cargar un medio por defecto (efectivo/contado) con el total prellenado
+  React.useEffect(() => {
+    if (hideClienteSelector && paso === 'pago' && !esCreditoDoc && pagos.length === 0 && metodosPago?.length) {
+      const contadoId = metodosPago.find(m => /(contado|efectivo)/i.test(m.MPaDescripcionMetodo))?.MPaIdMetodoPago || metodosPago[0]?.MPaIdMetodoPago || '';
+      setPagos([{ id: Date.now(), metodoPagoId: contadoId, moneda: monedaExhibicion, monedaId: monedaExhibicion === 'USD' ? 2 : 1, monto: totalPagar > 0 ? totalPagar.toFixed(2) : '' }]);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [paso, hideClienteSelector, metodosPago, pagos.length, monedaExhibicion, totalPagar, esCreditoDoc]);
+
+  const buildPayload = () => {
+    // Igual criterio que la Caja: comprobantes de crédito (e-Factura/e-Ticket crédito) van a cta cte sin pago.
+    const esCredito = esCreditoDoc;
+    return {
     _clienteNombre: getClienteDisplayName(clienteSel) || 'Cliente',
     empresaId,
     header: {
@@ -185,7 +211,8 @@ export default function CajaVentaDirectaTab({
       obs,
       cotizacion,
       monedaBase: monedaExhibicion,
-      admin: isAdminCaja
+      admin: isAdminCaja,
+      esCredito
     },
     items: items.map(i => {
       let articulosPermitidos = null;
@@ -206,14 +233,15 @@ export default function CajaVentaDirectaTab({
         articulosPermitidos
       };
     }),
-    pagos: pagos.filter(p => p.monto && p.metodoPagoId).map(p => ({
+    pagos: esCredito ? [] : pagos.filter(p => p.monto && p.metodoPagoId).map(p => ({
       metodoPagoId: parseInt(p.metodoPagoId),
       montoOriginal: parseFloat(p.monto),
       monedaId: p.moneda === 'USD' ? 2 : 1,
       cotizacion: p.moneda === 'USD' ? cotizacion : null,
       referenciaNumero: ''
     }))
-  });
+    };
+  };
 
   const handleGuardar = async () => {
     if (onConfirmarExt) { onConfirmarExt(buildPayload()); return; }
@@ -223,9 +251,8 @@ export default function CajaVentaDirectaTab({
       
     const payload = buildPayload();
     
-    // Validar pagos
-    const esCredito = tipoDocumento === '02' || tipoDocumento === '08' || tipoDocumento === 'FACT_CREDITO';
-    if (!esCredito && payload.pagos.length === 0 && totalPagar > 0) {
+    // Validar pagos — SOLO si es contado. A crédito no se cobra, pero igual se genera el documento.
+    if (!esCreditoDoc && payload.pagos.length === 0 && totalPagar > 0) {
       return toast.warning('Debe seleccionar un método de pago para completar la transacción de contado.');
     }
 
@@ -234,9 +261,12 @@ export default function CajaVentaDirectaTab({
       const res = await api.post('/contabilidad/caja/venta-directa', payload);
       toast.success(`Venta procesada exitosamente. Total cobrado: ${fmt(res.data.totalCobrado)}`);
       if (onVentaExitosa) onVentaExitosa();
-      setClienteSel(null); setQCliente(''); setPagos([]);
+      if (!hideClienteSelector) { setClienteSel(null); setQCliente(''); } // en el 360 el cliente es fijo, no se limpia
+      setPagos([]);
       setItems([{ id: Date.now(), tipo: defaultTipo, grupo: defaultTipo === 'VENTA_INSUMOS' ? 'Insumos' : defaultTipo === 'VENTA_PRODUCTOS' ? 'Productos en el local' : '', codigo: '', descripcion: '', cantidad: 1, precioUnitario: '', precioTotal: '' }]);
       setObs('');
+      setCondicion('CONTADO');
+      setPaso('conceptos');
     } catch (e) {
       toast.error(e.response?.data?.error || 'Error al procesar la venta');
     } finally {
@@ -344,18 +374,18 @@ export default function CajaVentaDirectaTab({
       </div>
 
       {/* ── CONTENIDO PRINCIPAL ── */}
-      <div className="flex-1 flex flex-col min-h-0 h-full overflow-y-auto bg-zinc-50">
+      <div className="flex-1 flex flex-col min-h-0 h-full overflow-hidden bg-zinc-50">
         {/* BILLETERA DE CLIENTE STICKY */}
-        {clienteSel && (
+        {clienteSel && !hideBilletera && (
           <div className="px-5 py-1 border-b border-zinc-200 bg-white/80 sticky top-0 z-20 shrink-0 shadow-sm">
-            <ClienteBilletera 
+            <ClienteBilletera
               clienteId={clienteSel.CliIdCliente} 
               clienteNombre={getClienteDisplayName(clienteSel)} 
             />
           </div>
         )}
 
-        <div className="flex-1 p-4 flex flex-col gap-4">
+        <div className={`flex-1 min-h-0 overflow-y-auto p-4 flex flex-col gap-4 ${hideClienteSelector && paso === 'pago' ? 'hidden' : ''}`}>
           <h2 className="text-lg font-black text-zinc-800 flex items-center gap-2 shrink-0">
             Nuevo Ingreso / Venta de Rollo por Adelantado
             <span className="inline-flex items-center justify-center text-[9px] leading-none bg-brand-cyan/10 text-brand-cyan px-1.5 py-0.5 rounded-full font-black uppercase tracking-widest border border-brand-cyan/20 h-4">POS Express</span>
@@ -365,9 +395,11 @@ export default function CajaVentaDirectaTab({
 
           {/* BLOQUE ITEMS */}
           <div className="bg-white border border-zinc-200 rounded-none p-3 shadow-sm flex flex-col flex-1 gap-2 relative overflow-hidden">
-            <div className="flex items-center justify-between border-b border-zinc-100 pb-2">
-              <h3 className="font-black text-zinc-400 text-[10px] font-archivo uppercase tracking-widest">2. Conceptos a Cobrar</h3>
-            </div>
+            {!hideClienteSelector && (
+              <div className="flex items-center justify-between border-b border-zinc-100 pb-2">
+                <h3 className="font-black text-zinc-400 text-[10px] font-archivo uppercase tracking-widest">2. Conceptos a Cobrar</h3>
+              </div>
+            )}
 
             <div className="flex flex-col gap-2">
               {items.map((it, idx) => (
@@ -613,6 +645,102 @@ export default function CajaVentaDirectaTab({
           </div>
         </div>
         </div>
+
+        {/* PASO 1 (Panel 360) — Documento a generar: tipo, serie, condición (Contado/Crédito) y observaciones */}
+        {hideClienteSelector && paso === 'conceptos' && (
+          <div className="shrink-0 border-t border-slate-200 px-4 py-3 bg-slate-100">
+            <CajaPanelPago
+              layout="horizontal"
+              mode="VENTA"
+              seccion="documento"
+              metodosPago={metodosPago}
+              pagos={pagos}
+              onPagosChange={setPagos}
+              totalACubrir={totalPagar}
+              moneda={monedaExhibicion}
+              cotizacion={cotizacion}
+              procesando={procesando}
+              tipoDoc={tipoDocumento}
+              onTipoDoc={setTipoDocumento}
+              condicion={condicion}
+              onCondicionChange={setCondicion}
+              serieDoc={serieDoc}
+              onSerieDoc={onSerieDoc || setSerieDocInternal}
+              notas={obs}
+              onNotas={setObs}
+              compactNotas={true}
+              tiposDocDisponibles={[{ value: '40', label: 'Pedido Caja' }, { value: '07', label: 'e-Ticket' }, { value: '01', label: 'e-Factura' }]}
+              showSubmitButton={false}
+            />
+          </div>
+        )}
+
+        {/* PASO 2 (Panel 360) — Panel de pago (medios) */}
+        {hideClienteSelector && paso === 'pago' && (
+          <div className="flex-1 min-h-0 overflow-y-auto px-4 py-3 bg-slate-100">
+            <CajaPanelPago
+              layout="horizontal"
+              mode="VENTA"
+              seccion="pago"
+              hideDocTitle={true}
+              metodosPago={metodosPago}
+              pagos={pagos}
+              onPagosChange={setPagos}
+              totalACubrir={totalPagar}
+              moneda={monedaExhibicion}
+              cotizacion={cotizacion}
+              procesando={procesando}
+              tipoDoc={tipoDocumento}
+              onTipoDoc={setTipoDocumento}
+              condicion={condicion}
+              onCondicionChange={setCondicion}
+              serieDoc={serieDoc}
+              onSerieDoc={onSerieDoc || setSerieDocInternal}
+              notas={obs}
+              onNotas={setObs}
+              compactNotas={true}
+              tiposDocDisponibles={[{ value: '40', label: 'Pedido Caja' }, { value: '07', label: 'e-Ticket' }, { value: '01', label: 'e-Factura' }]}
+              showSubmitButton={false}
+            />
+          </div>
+        )}
+
+        {/* Footer (Panel 360) — Cobrar → / Procesar venta */}
+        {hideClienteSelector && (
+          <div className="shrink-0 border-t border-slate-200 bg-white px-4 py-3 flex items-center gap-3 flex-wrap">
+            {paso === 'pago' && (
+              <button type="button" onClick={() => setPaso('conceptos')} className="flex items-center gap-1.5 text-[11px] font-black text-slate-500 hover:text-brand-cyan uppercase tracking-wide transition-colors">
+                <span className="text-base leading-none">←</span> Volver
+              </button>
+            )}
+            <div className="ml-auto flex items-center gap-2">
+              <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Total</span>
+              <span className={`text-xl font-black ${monedaExhibicion === 'USD' ? 'text-emerald-600' : 'text-brand-cyan'} tracking-tight`}>{monedaExhibicion === 'USD' ? 'US$' : '$'} {fmt(totalPagar)}</span>
+            </div>
+            {paso === 'conceptos' ? (
+              esCreditoDoc ? (
+                <button type="button"
+                  onClick={() => { if (totalPagar > 0 && !items.some(i => !i.codigo || !i.precioTotal)) handleGuardar(); else toast.warning('Completá los conceptos con precio antes de generar el documento.'); }}
+                  disabled={totalPagar <= 0 || procesando}
+                  className="flex items-center justify-center gap-2 px-5 py-2.5 bg-brand-magenta hover:brightness-95 text-white font-black rounded-xl transition-all disabled:opacity-40 disabled:cursor-not-allowed">
+                  {procesando ? 'Procesando…' : 'Generar documento'}
+                </button>
+              ) : (
+                <button type="button"
+                  onClick={() => { if (totalPagar > 0 && !items.some(i => !i.codigo || !i.precioTotal)) setPaso('pago'); else toast.warning('Completá los conceptos con precio antes de cobrar.'); }}
+                  disabled={totalPagar <= 0}
+                  className="flex items-center justify-center gap-2 px-5 py-2.5 bg-brand-cyan hover:bg-cyan-700 text-white font-black rounded-xl transition-all disabled:opacity-40 disabled:cursor-not-allowed">
+                  Cobrar <span className="text-lg leading-none">→</span>
+                </button>
+              )
+            ) : (
+              <button type="button" onClick={handleGuardar} disabled={procesando}
+                className="flex items-center justify-center gap-2 px-5 py-2.5 bg-brand-magenta hover:brightness-95 text-white font-black rounded-xl transition-all disabled:opacity-40 disabled:cursor-not-allowed">
+                {procesando ? 'Procesando…' : (esCreditoDoc ? 'Generar documento' : 'Procesar venta')}
+              </button>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );

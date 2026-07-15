@@ -14,7 +14,7 @@ const getLocalArticles = async (req, res) => {
                 LTRIM(RTRIM(a.CodStock)) AS CodStock,
                 LTRIM(RTRIM(a.CodArticulo)) AS CodArticulo,
                 LTRIM(RTRIM(a.Descripcion)) AS Descripcion,
-                a.IDProdReact, a.Mostrar, a.anchoimprimible, a.LLEVAPAPEL, a.MonIdMoneda,
+                a.IDProdReact, a.Mostrar, a.anchoimprimible, a.largoimprimible, a.LLEVAPAPEL, a.MonIdMoneda,
                 map.NombreReferencia AS DescripcionGrupo,
                 LTRIM(RTRIM(sa.Articulo)) AS DescripcionStock,
                 pb.Precio AS PrecioBase,
@@ -100,7 +100,7 @@ const unlinkProduct = async (req, res) => {
 
 // 5. Actualizar Producto Local
 const updateLocalProduct = async (req, res) => {
-    const { proIdProducto, codArticulo, idProdReact, descripcion, codStock, grupo, supFlia, mostrar, anchoImprimible, llevaPapel, monIdMoneda } = req.body;
+    const { proIdProducto, codArticulo, idProdReact, descripcion, codStock, grupo, supFlia, mostrar, anchoImprimible, largoImprimible, llevaPapel, monIdMoneda } = req.body;
     if (!proIdProducto && !codArticulo) return res.status(400).json({ error: "Falta ProIdProducto o CodArticulo" });
     try {
         const pool = await getPool();
@@ -113,21 +113,24 @@ const updateLocalProduct = async (req, res) => {
             .input('Sup',      sql.VarChar(100),     supFlia        || '')
             .input('Mos',      sql.Bit,              mostrar ? 1 : 0)
             .input('Ancho',    sql.Decimal(10, 2),   parseFloat(anchoImprimible) || 0)
+            // Largo imprimible: > 0 = medida FIJA (el portal exige ancho x largo exactos); vacío/0 = NULL (sin medida fija)
+            .input('Largo',    sql.Decimal(10, 2),   parseFloat(largoImprimible) || null)
             .input('Papel',    sql.Bit,              llevaPapel ? 1 : 0)
             .input('MonId',    sql.Int,              monIdMoneda != null ? parseInt(monIdMoneda) : null);
 
         if (proIdProducto) {
             req2.input('ProId', sql.Int, parseInt(proIdProducto));
             await req2.query(`
-                UPDATE Articulos 
+                UPDATE Articulos
                 SET CodArticulo     = @NewCod,
                     IDProdReact     = @ReactId,
-                    Descripcion     = @Desc, 
-                    CodStock        = @Stock, 
-                    Grupo           = @Grp, 
-                    SupFlia         = @Sup, 
-                    Mostrar         = @Mos, 
-                    anchoimprimible = @Ancho, 
+                    Descripcion     = @Desc,
+                    CodStock        = @Stock,
+                    Grupo           = @Grp,
+                    SupFlia         = @Sup,
+                    Mostrar         = @Mos,
+                    anchoimprimible = @Ancho,
+                    largoimprimible = @Largo,
                     LLEVAPAPEL      = @Papel,
                     MonIdMoneda     = @MonId
                 WHERE ProIdProducto = @ProId
@@ -135,14 +138,15 @@ const updateLocalProduct = async (req, res) => {
         } else {
             req2.input('Cod', sql.VarChar(50), codArticulo);
             await req2.query(`
-                UPDATE Articulos 
+                UPDATE Articulos
                 SET IDProdReact     = @ReactId,
-                    Descripcion     = @Desc, 
-                    CodStock        = @Stock, 
-                    Grupo           = @Grp, 
-                    SupFlia         = @Sup, 
-                    Mostrar         = @Mos, 
-                    anchoimprimible = @Ancho, 
+                    Descripcion     = @Desc,
+                    CodStock        = @Stock,
+                    Grupo           = @Grp,
+                    SupFlia         = @Sup,
+                    Mostrar         = @Mos,
+                    anchoimprimible = @Ancho,
+                    largoimprimible = @Largo,
                     LLEVAPAPEL      = @Papel,
                     MonIdMoneda     = @MonId
                 WHERE CodArticulo   = @Cod
@@ -158,7 +162,7 @@ const updateLocalProduct = async (req, res) => {
 
 // 6. Crear Producto Local (INSERT)
 const createLocalProduct = async (req, res) => {
-    const { codArticulo, idProdReact, descripcion, codStock, grupo, supFlia, mostrar, anchoImprimible, llevaPapel, monIdMoneda } = req.body;
+    const { codArticulo, idProdReact, descripcion, codStock, grupo, supFlia, mostrar, anchoImprimible, largoImprimible, llevaPapel, monIdMoneda } = req.body;
     if (!codArticulo) return res.status(400).json({ error: 'El CodArticulo es obligatorio' });
     try {
         const pool = await getPool();
@@ -171,18 +175,107 @@ const createLocalProduct = async (req, res) => {
             .input('Sup',   sql.VarChar(100),     supFlia        || '')
             .input('Mos',   sql.Bit,              mostrar ? 1 : 0)
             .input('Ancho', sql.Decimal(10, 2),   parseFloat(anchoImprimible) || 0)
+            .input('Largo', sql.Decimal(10, 2),   parseFloat(largoImprimible) || null)
             .input('Papel', sql.Bit,              llevaPapel ? 1 : 0)
             .input('MonId', sql.Int,              monIdMoneda != null && monIdMoneda !== '' ? parseInt(monIdMoneda) : null)
             .query(`
                 INSERT INTO Articulos
-                    (CodArticulo, IDProdReact, Descripcion, CodStock, Grupo, SupFlia, Mostrar, anchoimprimible, LLEVAPAPEL, MonIdMoneda, borrar)
+                    (CodArticulo, IDProdReact, Descripcion, CodStock, Grupo, SupFlia, Mostrar, anchoimprimible, largoimprimible, LLEVAPAPEL, MonIdMoneda, borrar)
                 VALUES
-                    (@Cod, @React, @Desc, @Stock, @Grp, @Sup, @Mos, @Ancho, @Papel, @MonId, 0)
+                    (@Cod, @React, @Desc, @Stock, @Grp, @Sup, @Mos, @Ancho, @Largo, @Papel, @MonId, 0)
             `);
         logAlert('INFO', 'PRODUCTO', 'Nuevo artículo creado', codArticulo, { descripcion, codStock, idProdReact });
         res.status(201).json({ success: true, message: 'Artículo creado correctamente' });
     } catch (e) {
         logger.error('Error createLocalProduct:', e);
+        res.status(500).json({ error: e.message });
+    }
+};
+
+// 6b. Eliminar Producto Local (DELETE físico, con guard de uso)
+const deleteLocalProduct = async (req, res) => {
+    const { id } = req.params;
+    if (!id) return res.status(400).json({ error: 'Falta ProIdProducto' });
+    const proId = parseInt(id);
+    if (Number.isNaN(proId)) return res.status(400).json({ error: 'ProIdProducto inválido' });
+
+    try {
+        const pool = await getPool();
+
+        // Datos del artículo (para el log y validar existencia)
+        const artRes = await pool.request()
+            .input('ProId', sql.Int, proId)
+            .query(`SELECT LTRIM(RTRIM(CodArticulo)) AS CodArticulo, LTRIM(RTRIM(Descripcion)) AS Descripcion
+                    FROM Articulos WHERE ProIdProducto = @ProId`);
+        if (artRes.recordset.length === 0) {
+            return res.status(404).json({ error: 'El artículo no existe' });
+        }
+        const { CodArticulo, Descripcion } = artRes.recordset[0];
+
+        // GUARD: no permitir borrar un producto que ya se usó en operaciones reales.
+        // (No hay FKs declaradas: un DELETE ciego orfanaría historial.)
+        const usoRes = await pool.request()
+            .input('ProId', sql.Int, proId)
+            .query(`
+                SELECT
+                    (SELECT COUNT(*) FROM Ordenes               WHERE ProIdProducto = @ProId) AS ordenes,
+                    (SELECT COUNT(*) FROM OrdenesDeposito       WHERE ProIdProducto = @ProId) AS deposito,
+                    (SELECT COUNT(*) FROM PedidosCobranzaDetalle WHERE ProIdProducto = @ProId) AS pedidos,
+                    (SELECT COUNT(*) FROM CuentasCliente        WHERE ProIdProducto = @ProId) AS cuentas,
+                    (SELECT COUNT(*) FROM PlanesMetros          WHERE ProIdProducto = @ProId) AS planes
+            `);
+        const u = usoRes.recordset[0];
+        const bloqueos = [];
+        if (u.ordenes  > 0) bloqueos.push(`${u.ordenes} orden(es) de producción`);
+        if (u.deposito > 0) bloqueos.push(`${u.deposito} registro(s) de depósito`);
+        if (u.pedidos  > 0) bloqueos.push(`${u.pedidos} línea(s) de pedido/facturación`);
+        if (u.cuentas  > 0) bloqueos.push(`${u.cuentas} movimiento(s) en cuentas de cliente`);
+        if (u.planes   > 0) bloqueos.push(`${u.planes} plan(es) de metros`);
+
+        if (bloqueos.length > 0) {
+            return res.status(409).json({
+                error: `No se puede eliminar: el producto tiene ${bloqueos.join(', ')}. ` +
+                       `Para retirarlo del catálogo, desactivá "Mostrar Activo" en Editar.`,
+                enUso: true
+            });
+        }
+
+        // Producto sin uso real → borrado físico + limpieza de config asociada, en transacción.
+        const transaction = new sql.Transaction(pool);
+        await transaction.begin();
+        try {
+            const auxTables = [
+                { t: 'Articulos_Imagenes',              c: 'Idproid' },
+                { t: 'Articulos_Wms',                   c: 'Idproid' },
+                { t: 'Articulos_WMS_Variantes',         c: 'Idproid' },
+                { t: 'Articulos_UbicacionLocal',        c: 'Idproid' },
+                { t: 'PreciosBase',                     c: 'ProIdProducto' },
+                { t: 'PreciosEspecialesItems',          c: 'ProIdProducto' },
+                { t: 'PerfilesItems',                   c: 'ProIdProducto' },
+                { t: 'PreciosListaPublica',             c: 'ProIdProducto' },
+                { t: 'HistoricoPreciosProductos',       c: 'ProIdProducto' },
+                { t: 'PlanesMetrosArticulosPermitidos', c: 'ProIdProducto' },
+                { t: 'UrgenciaExcepciones',             c: 'ProIdProducto' },
+            ];
+            for (const { t, c } of auxTables) {
+                await transaction.request()
+                    .input('ProId', sql.Int, proId)
+                    .query(`DELETE FROM [${t}] WHERE ${c} = @ProId`);
+            }
+            await transaction.request()
+                .input('ProId', sql.Int, proId)
+                .query(`DELETE FROM Articulos WHERE ProIdProducto = @ProId`);
+
+            await transaction.commit();
+        } catch (dbErr) {
+            await transaction.rollback();
+            throw dbErr;
+        }
+
+        logAlert('WARN', 'PRODUCTO', 'Artículo eliminado', CodArticulo, { proId, descripcion: Descripcion });
+        res.json({ success: true, message: 'Artículo eliminado correctamente' });
+    } catch (e) {
+        logger.error('Error deleteLocalProduct:', e);
         res.status(500).json({ error: e.message });
     }
 };
@@ -428,6 +521,7 @@ module.exports = {
     unlinkProduct,
     updateLocalProduct,
     createLocalProduct,
+    deleteLocalProduct,
     updateWmsMasterId,
     uploadArticleImage,
     getWmsMasters,

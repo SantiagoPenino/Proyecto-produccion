@@ -1439,11 +1439,12 @@ async function getDeudasPorCliente(CliIdCliente, modo = 'TODO') {
     .query(`
       SELECT
         d.DDeIdDocumento,
+        cc.CliIdCliente,
         d.OrdIdOrden,
         d.DocIdDocumento,
         COALESCE(
           (SELECT doc.DocNumero FROM dbo.DocumentosContables doc WITH(NOLOCK) WHERE doc.DocIdDocumento = d.DocIdDocumento AND doc.DocTipo = 'FACTURA'),
-          od.OrdCodigoOrden, 
+          od.OrdCodigoOrden,
           ordERP.CodigoOrden,
           -- Buscar ordenes asociadas a la transacción del documento
           (SELECT TOP 1 ISNULL(od2.OrdCodigoOrden, td.TdeCodigoReferencia)
@@ -1479,6 +1480,9 @@ async function getDeudasPorCliente(CliIdCliente, modo = 'TODO') {
         DATEDIFF(DAY, d.DDeFechaVencimiento, GETDATE()) AS DiasVencido,
         docPrincipal.DocCliNombre,
         docPrincipal.DocCliDocumento,
+        LTRIM(RTRIM(docPrincipal.DocSerie)) AS DocSerie,
+        LTRIM(RTRIM(CAST(docPrincipal.DocNumero AS VARCHAR(50)))) AS DocNumero,
+        LTRIM(RTRIM(docPrincipal.DocTipo)) AS DocTipoReal,
         cli.Nombre AS ClienteNombre,
         (SELECT c.CicSaldoFacturar FROM dbo.DocumentosContables dc WITH(NOLOCK) JOIN dbo.CiclosCredito c WITH(NOLOCK) ON c.CicIdCiclo = dc.CicIdCiclo WHERE dc.DocIdDocumento = d.DocIdDocumento AND dc.DocTipo = 'FACTURA') AS CicSaldoFacturar,
         (SELECT c.CicTotalOrdenes FROM dbo.DocumentosContables dc WITH(NOLOCK) JOIN dbo.CiclosCredito c WITH(NOLOCK) ON c.CicIdCiclo = dc.CicIdCiclo WHERE dc.DocIdDocumento = d.DocIdDocumento AND dc.DocTipo = 'FACTURA') AS CicTotalOrdenes,
@@ -1508,13 +1512,314 @@ async function getDeudasPorCliente(CliIdCliente, modo = 'TODO') {
       WHERE cc.CliIdCliente = @CliIdCliente
         AND d.DDeEstado IN ('PENDIENTE', 'PARCIAL', 'VENCIDO')
         AND d.DDeImportePendiente > 0.01
+        -- Neutraliza el bug de DeudaDocumento DUPLICADA (el cierre de ciclo con cambio de precio genera
+        -- 2 filas por el mismo documento → el cobro sumaba doble). Criterio del equipo (fix_saldo_por_cliente.sql):
+        -- LA FACTURA MANDA → por cada documento dejamos SOLO la fila cuyo importe original coincide con el
+        -- DocTotal del comprobante. Las órdenes sin factura (DocIdDocumento NULL) quedan todas.
+        AND (
+          d.DocIdDocumento IS NULL
+          OR d.DDeIdDocumento IN (
+            SELECT ranked.DDeIdDocumento FROM (
+              SELECT dd.DDeIdDocumento,
+                     ROW_NUMBER() OVER (PARTITION BY dd.DocIdDocumento
+                       ORDER BY CASE WHEN ABS(dd.DDeImporteOriginal - ISNULL(dcT.DocTotal, dd.DDeImporteOriginal)) <= 2.0 THEN 0 ELSE 1 END,
+                                dd.DDeImportePendiente ASC,
+                                ABS(dd.DDeImporteOriginal - ISNULL(dcT.DocTotal, dd.DDeImporteOriginal)) ASC,
+                                dd.DDeIdDocumento) AS rn
+              FROM dbo.DeudaDocumento dd WITH(NOLOCK)
+              JOIN dbo.CuentasCliente cc2 WITH(NOLOCK) ON cc2.CueIdCuenta = dd.CueIdCuenta
+              LEFT JOIN dbo.DocumentosContables dcT WITH(NOLOCK) ON dcT.DocIdDocumento = dd.DocIdDocumento
+              WHERE cc2.CliIdCliente = @CliIdCliente
+                AND dd.DDeEstado IN ('PENDIENTE', 'PARCIAL', 'VENCIDO')
+                AND dd.DDeImportePendiente > 0.01
+                AND dd.DocIdDocumento IS NOT NULL
+            ) ranked WHERE ranked.rn = 1
+          )
+        )
       ORDER BY d.DDeFechaVencimiento ASC
     `);
 
   return result.recordset.map(r => ({
     ...r,
+    // Documento real del comprobante (PC-1945 / ET-1693 / e-Factura…), cuando la deuda ya está facturada
+    Documento: r.DocSerie ? `${r.DocSerie}-${r.DocNumero}` : null,
     SubOrdenes: r.SubOrdenesJSON ? JSON.parse(r.SubOrdenesJSON) : []
   }));
+}
+
+/**
+ * getResumenDocumentos
+ * ──────────────────────────────────────────────────────────────────────────
+ * Vista LEGIBLE del estado de cuenta: una fila por documento (no el libro
+ * mayor). Devuelve, por cada documento de deuda del cliente, su importe, lo
+ * pagado, lo pendiente y un estado claro (PAGADO / PARCIAL / VENCIDO /
+ * PENDIENTE / ANULADO), agrupable por moneda. Solo lectura.
+ *
+ * Notas de datos:
+ *  - El pendiente se toma deduplicado de DeudaDocumento (MIN entre filas vivas)
+ *    y se acota a [0, DocTotal] para neutralizar el bug de filas duplicadas.
+ *  - Los recibos (RC) no son cargos: se usan solo para anotar el "documento de
+ *    pago" cuando su importe coincide con lo pagado (best-effort, no hay vínculo
+ *    estructural recibo→documento en los datos).
+ *
+ * @param {number} CliIdCliente
+ * @param {string|Date|null} desde  Filtro por DocFechaEmision (opcional)
+ * @param {string|Date|null} hasta
+ * @returns {Promise<{documentos: Array}>}
+ */
+async function getResumenDocumentos(CliIdCliente, desde = null, hasta = null) {
+  const pool = await getPool();
+
+  const docsRes = await pool.request()
+    .input('cli',   sql.Int,  parseInt(CliIdCliente))
+    .input('desde', sql.Date, desde || null)
+    .input('hasta', sql.Date, hasta || null)
+    .query(`
+      SELECT
+        dc.DocIdDocumento,
+        LTRIM(RTRIM(dc.DocSerie)) AS DocSerie,
+        LTRIM(RTRIM(CAST(dc.DocNumero AS VARCHAR(50)))) AS DocNumero,
+        LTRIM(RTRIM(dc.DocTipo))  AS DocTipo,
+        ISNULL(mo.MonSimbolo,'$') AS MonSimbolo,
+        dc.MonIdMoneda,
+        CAST(dc.DocTotal AS DECIMAL(18,2)) AS DocTotal,
+        dc.DocEstado, dc.DocPagado, dc.CfeEstado,
+        CONVERT(varchar(10), dc.DocFechaEmision, 23) AS Emision,
+        (SELECT TOP 1 dd.DDeImportePendiente FROM dbo.DeudaDocumento dd WITH(NOLOCK)
+           WHERE dd.DocIdDocumento = dc.DocIdDocumento
+             AND dd.DDeEstado NOT IN ('CANCELADA','ANULADA','PAGADO')
+           ORDER BY CASE WHEN ABS(dd.DDeImporteOriginal - dc.DocTotal) <= 2.0 THEN 0 ELSE 1 END,
+                    dd.DDeImportePendiente ASC, ABS(dd.DDeImporteOriginal - dc.DocTotal) ASC, dd.DDeIdDocumento) AS PendVivo,
+        (SELECT TOP 1 dd.DDeImporteOriginal FROM dbo.DeudaDocumento dd WITH(NOLOCK)
+           WHERE dd.DocIdDocumento = dc.DocIdDocumento
+             AND dd.DDeEstado NOT IN ('CANCELADA','ANULADA','PAGADO')
+           ORDER BY CASE WHEN ABS(dd.DDeImporteOriginal - dc.DocTotal) <= 2.0 THEN 0 ELSE 1 END,
+                    dd.DDeImportePendiente ASC, ABS(dd.DDeImporteOriginal - dc.DocTotal) ASC, dd.DDeIdDocumento) AS OrigVivo,
+        (SELECT MAX(CASE WHEN dd.DDeEstado='VENCIDO' THEN 1 ELSE 0 END) FROM dbo.DeudaDocumento dd WITH(NOLOCK)
+           WHERE dd.DocIdDocumento = dc.DocIdDocumento) AS EsVencido,
+        (SELECT TOP 1 LTRIM(RTRIM(m.MovConcepto)) FROM dbo.MovimientosCuenta m WITH(NOLOCK)
+           WHERE m.DocIdDocumento = dc.DocIdDocumento AND m.MovConcepto LIKE '%ET-%'
+           ORDER BY m.MovIdMovimiento DESC) AS ConceptoFactura,
+        (SELECT COUNT(*) FROM dbo.MovimientosCuenta m WITH(NOLOCK)
+           WHERE m.DocIdDocumento = dc.DocIdDocumento AND m.MovTipo IN ('ORDEN','ORDEN_ANTICIPO')
+             AND (m.MovAnulado IS NULL OR m.MovAnulado = 0)) AS OrdenesCount,
+        (SELECT TOP 1 LTRIM(RTRIM(m.MovConcepto)) FROM dbo.MovimientosCuenta m WITH(NOLOCK)
+           WHERE m.DocIdDocumento = dc.DocIdDocumento AND m.MovTipo IN ('ORDEN','ORDEN_ANTICIPO')
+             AND (m.MovAnulado IS NULL OR m.MovAnulado = 0)
+           ORDER BY m.MovIdMovimiento) AS OrdenSample
+      FROM dbo.DocumentosContables dc WITH(NOLOCK)
+      LEFT JOIN dbo.Monedas mo WITH(NOLOCK) ON mo.MonIdMoneda = dc.MonIdMoneda
+      WHERE dc.CliIdCliente = @cli
+        AND dc.DocTipo NOT LIKE '%ecibo%'
+        AND dc.DocTipo NOT LIKE '%greso%'
+        AND (@desde IS NULL OR CAST(dc.DocFechaEmision AS DATE) >= @desde)
+        AND (@hasta IS NULL OR CAST(dc.DocFechaEmision AS DATE) <= @hasta)
+      ORDER BY mo.MonSimbolo DESC, dc.DocFechaEmision DESC, dc.DocIdDocumento DESC
+    `);
+
+  const recRes = await pool.request()
+    .input('cli', sql.Int, parseInt(CliIdCliente))
+    .query(`
+      SELECT LTRIM(RTRIM(dc.DocSerie)) AS Serie,
+             LTRIM(RTRIM(CAST(dc.DocNumero AS VARCHAR(50)))) AS Numero,
+             CAST(dc.DocTotal AS DECIMAL(18,2)) AS Total
+      FROM dbo.DocumentosContables dc WITH(NOLOCK)
+      WHERE dc.CliIdCliente = @cli
+        AND (dc.DocTipo LIKE '%ecibo%' OR dc.DocSerie = 'RC')
+        AND dc.DocEstado NOT IN ('ANULADO')
+      ORDER BY dc.DocIdDocumento DESC
+    `);
+  const recibos = recRes.recordset;
+
+  const documentos = docsRes.recordset.map(d => {
+    const docTotal = Number(d.DocTotal) || 0;
+    // Base = deuda REAL cargada a la cuenta corriente (DDeImporteOriginal de la fila viva),
+    // NO el bruto del documento. Evita inventar un "pago" cuando el documento se facturó por
+    // más de lo que realmente se debía en cta cte (bug de deuda duplicada / cierre de ciclo).
+    const total   = d.OrigVivo != null ? Number(d.OrigVivo) : docTotal;
+    const anulado = /ANULAD/i.test(d.DocEstado || '');
+    let pendiente;
+    if (anulado)                 pendiente = 0;
+    else if (d.PendVivo != null) pendiente = Math.min(Math.max(0, Number(d.PendVivo)), total);
+    else                         pendiente = d.DocPagado ? 0 : total;
+    const pagado = anulado ? 0 : Math.max(0, +(total - pendiente).toFixed(2));
+
+    let estado;
+    if (anulado)                estado = 'ANULADO';
+    else if (pendiente <= 0.01) estado = 'PAGADO';
+    else if (pagado > 0.01)     estado = 'PARCIAL';
+    else                        estado = d.EsVencido ? 'VENCIDO' : 'PENDIENTE';
+
+    let factura = null;
+    const mEt = (d.ConceptoFactura || '').match(/ET-?\s?(\d+)/i);
+    if (mEt) factura = `ET-${mEt[1]}`;
+
+    let reciboPago = null;
+    if (pagado > 0.01) {
+      const match = recibos.find(r => Math.abs(Number(r.Total) - pagado) < 1.0);
+      if (match) reciboPago = `${match.Serie}-${match.Numero}`;
+    }
+
+    // Descripción legible: cantidad de órdenes o el nombre del trabajo (si es 1)
+    let descripcion = null;
+    const ordCount = Number(d.OrdenesCount || 0);
+    if (ordCount >= 2)      descripcion = `${ordCount} órdenes`;
+    else if (ordCount === 1 && d.OrdenSample) descripcion = d.OrdenSample.replace(/\s+/g, ' ').trim();
+
+    return {
+      DocIdDocumento: d.DocIdDocumento,
+      documento: `${d.DocSerie}-${d.DocNumero}`,
+      tipo: d.DocTipo,
+      factura,
+      cfeEstado: d.CfeEstado || null,
+      descripcion,
+      MonSimbolo: d.MonSimbolo,
+      MonIdMoneda: d.MonIdMoneda,
+      fecha: d.Emision,
+      total, pagado, pendiente, estado,
+      reciboPago,
+    };
+  });
+
+  // ── Pagos del cliente (cobros / anticipos / saldo a favor) ────────────────
+  const pagosRes = await pool.request()
+    .input('cli',   sql.Int,  parseInt(CliIdCliente))
+    .input('desde', sql.Date, desde || null)
+    .input('hasta', sql.Date, hasta || null)
+    .query(`
+      SELECT
+        CONVERT(varchar(10), m.MovFecha, 23) AS Fecha,
+        m.MovTipo,
+        ISNULL(mo.MonSimbolo,'$') AS MonSimbolo,
+        CAST(ABS(m.MovImporte) AS DECIMAL(18,2)) AS Importe,
+        LTRIM(RTRIM(ISNULL(m.MovConcepto,''))) AS Concepto,
+        LTRIM(RTRIM(ISNULL(dc.DocSerie,''))) +
+          CASE WHEN dc.DocNumero IS NOT NULL
+               THEN '-' + LTRIM(RTRIM(CAST(dc.DocNumero AS VARCHAR(50)))) ELSE '' END AS DocRef
+      FROM dbo.MovimientosCuenta m WITH(NOLOCK)
+      JOIN dbo.CuentasCliente cc WITH(NOLOCK) ON cc.CueIdCuenta = m.CueIdCuenta
+      LEFT JOIN dbo.Monedas mo WITH(NOLOCK) ON mo.MonIdMoneda = cc.MonIdMoneda
+      LEFT JOIN dbo.DocumentosContables dc WITH(NOLOCK) ON dc.DocIdDocumento = m.DocIdDocumento
+      WHERE cc.CliIdCliente = @cli
+        AND m.MovTipo IN ('PAGO','ANTICIPO','SALDO_A_FAVOR','COBRO','NOTA_CREDITO')
+        AND (m.MovAnulado IS NULL OR m.MovAnulado = 0)
+        AND (@desde IS NULL OR CAST(m.MovFecha AS DATE) >= @desde)
+        AND (@hasta IS NULL OR CAST(m.MovFecha AS DATE) <= @hasta)
+      ORDER BY m.MovFecha DESC, m.MovIdMovimiento DESC
+    `);
+
+  const TIPO_PAGO_LABEL = {
+    PAGO: 'Cobro', COBRO: 'Cobro', ANTICIPO: 'Anticipo',
+    SALDO_A_FAVOR: 'Saldo a favor', NOTA_CREDITO: 'Nota de crédito',
+  };
+  const pagos = pagosRes.recordset.map(p => {
+    // Documento al que se aplicó: preferir la referencia real; si no, extraer del concepto
+    let aplicadoA = p.DocRef && p.DocRef !== '-' ? p.DocRef : null;
+    if (!aplicadoA) {
+      const mPc = (p.Concepto || '').match(/(PC|ET|SB|DTF|EUV|ECOUV|DIR)-?\s?(\d+)/i);
+      if (mPc) aplicadoA = `${mPc[1].toUpperCase()}-${mPc[2]}`;
+    }
+    const esFavor = p.MovTipo === 'ANTICIPO' || p.MovTipo === 'SALDO_A_FAVOR';
+    return {
+      fecha: p.Fecha,
+      tipo: TIPO_PAGO_LABEL[p.MovTipo] || p.MovTipo,
+      esFavor,
+      MonSimbolo: p.MonSimbolo,
+      importe: Number(p.Importe) || 0,
+      aplicadoA,
+    };
+  });
+
+  return { documentos, pagos };
+}
+
+/**
+ * getMovimientosOrdenes
+ * ──────────────────────────────────────────────────────────────────────────
+ * Todos los MOVIMIENTOS DE ÓRDENES del cliente (una fila por orden), tomados de
+ * MovimientosCuenta (MovTipo ORDEN / ORDEN_ANTICIPO). Por cada orden devuelve:
+ *   - código de orden + trabajo (de Ordenes ERP / concepto)
+ *   - documento en que se facturó (o null si aún no se facturó)
+ *   - moneda
+ *   - situación de pago (del documento cuando está facturada; SIN_FACTURAR si no)
+ * Solo lectura. Filtros por MovFecha (opcionales). Cap de 800 filas.
+ */
+async function getMovimientosOrdenes(CliIdCliente, desde = null, hasta = null, incluirAnulados = false) {
+  const pool = await getPool();
+  const res = await pool.request()
+    .input('cli',   sql.Int,  parseInt(CliIdCliente))
+    .input('desde', sql.Date, desde || null)
+    .input('hasta', sql.Date, hasta || null)
+    .query(`
+      SELECT TOP 800
+        m.MovIdMovimiento,
+        m.OrdIdOrden,
+        m.DocIdDocumento,
+        m.MovAnulado,
+        ordERP.CodigoOrden AS CodigoOrden,
+        LTRIM(RTRIM(ISNULL(m.MovConcepto,''))) AS Concepto,
+        CAST(ABS(m.MovImporte) AS DECIMAL(18,2)) AS Importe,
+        ISNULL(mo.MonSimbolo,'$') AS MonSimbolo,
+        cc.MonIdMoneda,
+        LTRIM(RTRIM(ISNULL(doc.DocSerie,''))) AS DocSerie,
+        LTRIM(RTRIM(CAST(doc.DocNumero AS VARCHAR(50)))) AS DocNumero,
+        LTRIM(RTRIM(ISNULL(doc.DocTipo,''))) AS DocTipo,
+        doc.DocEstado, doc.DocPagado,
+        (SELECT MIN(dd.DDeImportePendiente) FROM dbo.DeudaDocumento dd WITH(NOLOCK)
+           WHERE dd.DocIdDocumento = m.DocIdDocumento
+             AND dd.DDeEstado NOT IN ('ANULADA','CANCELADA','PAGADO')) AS DocPendVivo,
+        CONVERT(varchar(10), m.MovFecha, 23) AS Fecha
+      FROM dbo.MovimientosCuenta m WITH(NOLOCK)
+      JOIN dbo.CuentasCliente cc WITH(NOLOCK) ON cc.CueIdCuenta = m.CueIdCuenta
+      LEFT JOIN dbo.Monedas mo WITH(NOLOCK) ON mo.MonIdMoneda = cc.MonIdMoneda
+      LEFT JOIN dbo.Ordenes ordERP WITH(NOLOCK) ON ordERP.OrdenID = m.OrdIdOrden
+      LEFT JOIN dbo.DocumentosContables doc WITH(NOLOCK) ON doc.DocIdDocumento = m.DocIdDocumento
+      WHERE cc.CliIdCliente = @cli
+        AND m.MovTipo IN ('ORDEN','ORDEN_ANTICIPO')
+        ${incluirAnulados ? '' : 'AND (m.MovAnulado IS NULL OR m.MovAnulado = 0)'}
+        AND (@desde IS NULL OR CAST(m.MovFecha AS DATE) >= @desde)
+        AND (@hasta IS NULL OR CAST(m.MovFecha AS DATE) <= @hasta)
+      ORDER BY m.MovFecha DESC, m.MovIdMovimiento DESC
+    `);
+
+  return res.recordset.map(r => {
+    const concepto = (r.Concepto || '').replace(/\s+/g, ' ').trim();
+    // código: el de Ordenes ERP; si no, el primer token del concepto (ej. "SUB-6179 ...")
+    let orden = (r.CodigoOrden || '').trim();
+    if (!orden) {
+      const mm = concepto.match(/^([A-Za-z]{2,6}-?\d+(?:\s?\(\d+\/\d+\))?)/);
+      orden = mm ? mm[1] : (r.OrdIdOrden ? `#${r.OrdIdOrden}` : '—');
+    }
+    // trabajo: el concepto sin el código al inicio
+    let trabajo = concepto;
+    if (orden && concepto.toUpperCase().startsWith(orden.toUpperCase())) {
+      trabajo = concepto.slice(orden.length).trim() || null;
+    }
+    const facturada = !!r.DocIdDocumento;
+    const anulado   = !!r.MovAnulado || /ANULAD/i.test(r.DocEstado || '');
+    const pendDoc   = r.DocPendVivo != null ? Number(r.DocPendVivo) : null;
+
+    let situacion;
+    if (anulado)                                situacion = 'ANULADO';
+    else if (!facturada)                        situacion = 'SIN_FACTURAR';
+    else if (pendDoc != null && pendDoc > 0.01) situacion = 'PENDIENTE';
+    else                                        situacion = 'PAGADO';
+
+    return {
+      MovIdMovimiento: r.MovIdMovimiento,
+      OrdIdOrden: r.OrdIdOrden,
+      orden,
+      trabajo,
+      facturada,
+      documento: facturada ? `${r.DocSerie}-${r.DocNumero}`.replace(/^-|-$/g, '') : null,
+      DocTipo:   facturada ? (r.DocTipo || null) : null,
+      MonSimbolo: r.MonSimbolo,
+      MonIdMoneda: r.MonIdMoneda,
+      importe: Number(r.Importe) || 0,
+      situacion,
+      fecha: r.Fecha,
+    };
+  });
 }
 
 /**
@@ -3009,6 +3314,8 @@ module.exports = {
 
   // Consultas extra
   getDeudasPorCliente,
+  getResumenDocumentos,
+  getMovimientosOrdenes,
   getTodasLasDeudasVivas,
 
   // Centralización: escritura segura en MovimientosCuenta

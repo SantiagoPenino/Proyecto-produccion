@@ -2,23 +2,26 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { toast } from 'sonner';
 import {
   Search, CheckCircle, FileMinus, CreditCard, X, CheckSquare, Square,
-  ArrowDownCircle, User, AlertTriangle, AlertCircle
+  ArrowDownCircle, User, AlertTriangle, AlertCircle, Calendar
 } from 'lucide-react';
 import api from '../../services/apiClient';
 import CajaPanelPago from './CajaPanelPago';
 
 const fmt  = (n) => Number(n || 0).toLocaleString('es-UY', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const fmtFecha = (f) => f ? new Date(f).toLocaleDateString('es-UY', { day:'2-digit', month:'2-digit', year:'numeric' }) : '—';
+// Fecha de hoy en formato YYYY-MM-DD (hora local) para el <input type=date>
+const hoyISO = () => { const d = new Date(); const p = (n) => String(n).padStart(2, '0'); return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`; };
 
 const TIPOS_DOC_PAGO = [
   { value: '05', label: 'Recibo' },
 ];
-export default function CajaPagoDeudaTab({ sesion, metodosPago = [], cotizacion = 1, tiposDocDisponibles = TIPOS_DOC_PAGO, onPagoCompletado, isAdminCaja, initialCliente, initialDocumento, empresaId = null, clienteFijo = false, deudaLayout = 'cards' }) {
+export default function CajaPagoDeudaTab({ sesion, metodosPago = [], cotizacion = 1, tiposDocDisponibles = TIPOS_DOC_PAGO, onPagoCompletado, isAdminCaja, initialCliente, initialDocumento, empresaId = null, clienteFijo = false, deudaLayout = 'cards', pasoExterno = undefined, onPasoExterno = undefined }) {
 
   // ─── Estado ─────────────────────────────────────────────────────────────
   const [qCliente, setQCliente]         = useState('');
   const [deudas, setDeudas]             = useState([]);
   const [subTab, setSubTab]             = useState('docs'); // solo layout tabla: 'docs' (facturas) | 'ordenes' (a facturar)
+  const [condicion, setCondicion]       = useState('CONTADO'); // CONTADO | CREDITO (toggle del panel; crédito NO cambia el tipoDoc en Pedido Caja)
   const [cargandoDeudas, setCargandoDeudas] = useState(true);
   const [seleccionadas, setSeleccionadas]   = useState([]);
 
@@ -26,8 +29,14 @@ export default function CajaPagoDeudaTab({ sesion, metodosPago = [], cotizacion 
   const [pagos, setPagos]         = useState([{ id: Date.now(), metodoPagoId: '', moneda: 'UYU', monedaId: 1, monto: '' }]);
   const [tipoDoc, setTipoDoc]     = useState('05');
   const [serieDoc, setSerieDoc]   = useState('A');
+  const [fechaCobro, setFechaCobro] = useState(hoyISO); // fecha del cobro (retrofecha)
   const [observaciones, setObservaciones] = useState('');
   const [procesando, setProcesando] = useState(false);
+  const [numDocFmt, setNumDocFmt] = useState(''); // número de doc predicho (para mostrarlo en la cabecera del 360)
+  // Panel 360: flujo en 2 pasos ('seleccion' → 'pago'); controlable desde el modal (para que "Cerrar" vuelva a la selección)
+  const [pasoLocal, setPasoLocal] = useState('seleccion');
+  const paso = pasoExterno !== undefined ? pasoExterno : pasoLocal;
+  const setPaso = onPasoExterno || setPasoLocal;
   const [pendienteParcial, setPendienteParcial] = useState(null); // { falta } cuando pago < deuda
   const [excedentePago, setExcedentePago]       = useState(null); // { excedente } cuando pago > deuda
 
@@ -65,7 +74,12 @@ export default function CajaPagoDeudaTab({ sesion, metodosPago = [], cotizacion 
   const cargarDeudas = async () => {
     setCargandoDeudas(true);
     try {
-      const res = await api.get(`/contabilidad/deudas-vivas`);
+      // Si el cliente ya viene fijo (Panel 360), pedimos SOLO sus deudas (endpoint por-cliente,
+      // mucho más rápido que traer las deudas vivas de todo el sistema y filtrar en el front).
+      const url = initialCliente?.CliIdCliente
+        ? `/contabilidad/clientes/${initialCliente.CliIdCliente}/deudas-vivas`
+        : `/contabilidad/deudas-vivas`;
+      const res = await api.get(url);
       setDeudas(res.data?.data || []);
       // Solo deseleccionar aquellas que ya no existen
       setSeleccionadas(prev => {
@@ -182,13 +196,17 @@ export default function CajaPagoDeudaTab({ sesion, metodosPago = [], cotizacion 
   // ─── Totales ─────────────────────────────────────────────────────────────
   const deudasSeleccionadas = deudas.filter(d => seleccionadas.includes(d.DDeIdDocumento));
   const totalAPagar        = deudasSeleccionadas.reduce((s, d) => s + Number(d.DDeImportePendiente), 0);
-  
+  // Comprobante a crédito (solo "Órdenes a facturar"): condición del panel (Contado/Crédito) o
+  // tipoDoc de crédito (08 e-Ticket / 02 e-Factura). Pedido Caja crédito NO cambia el tipoDoc (40) → se detecta por condicion.
+  const esCreditoCobro     = subTab === 'ordenes' && (condicion === 'CREDITO' || ['02', '08', 'FACT_CREDITO'].includes(tipoDoc));
+
   const validasFiltradas   = deudasFiltradas.map(d => d.DDeIdDocumento);
   const todasSel           = validasFiltradas.length > 0 && validasFiltradas.every(id => seleccionadas.includes(id));
 
-  // Como podemos seleccionar de varios clientes, detectamos el cliente principal para la caja
-  const clientesInvolucrados = Array.from(new Set(deudasSeleccionadas.map(d => d.CliIdCliente)));
-  const clientePrincipalId = clientesInvolucrados[0] || null;
+  // Como podemos seleccionar de varios clientes, detectamos el cliente principal para la caja.
+  // El endpoint por-cliente (360) no trae CliIdCliente en cada deuda → respaldo con initialCliente.
+  const clientesInvolucrados = Array.from(new Set(deudasSeleccionadas.map(d => d.CliIdCliente).filter(Boolean)));
+  const clientePrincipalId = clientesInvolucrados[0] || initialCliente?.CliIdCliente || null;
 
   // ── Determinar tipo de documento dinámicamente según las deudas seleccionadas ──
   // Si hay alguna orden SIN factura (DocIdDocumento = null) → PEDIDO CAJA
@@ -232,7 +250,8 @@ export default function CajaPagoDeudaTab({ sesion, metodosPago = [], cotizacion 
     }
     
     const pagosValidos = pagos.filter(p => parseFloat(p.monto) > 0 && p.metodoPagoId);
-    if (!pagosValidos.length)   return toast.warning('Ingrese al menos un método de pago.');
+    // A crédito no se cobra: se genera el comprobante y la deuda queda viva → no se exige medio de pago.
+    if (!esCreditoCobro && !pagosValidos.length)   return toast.warning('Ingrese al menos un método de pago.');
 
     const totalPagado = pagosValidos.reduce((a, p) => {
       const m = parseFloat(p.monto) || 0;
@@ -255,7 +274,7 @@ export default function CajaPagoDeudaTab({ sesion, metodosPago = [], cotizacion 
     }
 
     // Pago parcial → mostrar banner de confirmación (solo si NO viene de confirmar explícito)
-    if (diferencia < -0.01 && !forzarParcial) {
+    if (!esCreditoCobro && diferencia < -0.01 && !forzarParcial) {
       setPendienteParcial({ falta: Math.abs(diferencia), totalPagado });
       setExcedentePago(null);
       return;
@@ -272,11 +291,14 @@ export default function CajaPagoDeudaTab({ sesion, metodosPago = [], cotizacion 
           moneda: monedaDeuda,          // ← moneda real de la deuda (USD o UYU)
           monedaId: monedaDeuda === 'USD' ? 2 : 1,
           cotizacionTC: cotizacion,     // TC global, para normalizar pagos en otra moneda
+          fecha: fechaCobro,            // fecha elegida del cobro; el backend usa hoy si es la de hoy
           permitirExcedente: true,      // el excedente se guarda como saldo a favor
           observaciones: observaciones || `Pago de deudas combinadas`,
           admin: isAdminCaja,
           // Si alguna deuda no tiene DocIdDocumento → es una orden sin facturar → el backend genera PEDIDO CAJA
           tieneOrdenSinFactura: deudasSeleccionadas.some(d => !d.DocIdDocumento),
+          // Crédito: genera el comprobante y deja la deuda viva (sin cobro)
+          esCredito: esCreditoCobro,
         },
         aplicaciones: deudasSeleccionadas.map(d => ({
           tipo: 'PAGO_DEUDA',
@@ -291,7 +313,7 @@ export default function CajaPagoDeudaTab({ sesion, metodosPago = [], cotizacion 
           docIdDocumento: d.DocIdDocumento || null,  // para que el backend distinga facturas ya emitidas
           ordIdOrden:     d.OrdIdOrden    || null,   // referencia a la orden original
         })),
-        pagos: pagosValidos.map(p => {
+        pagos: esCreditoCobro ? [] : pagosValidos.map(p => {
           // La moneda elegida en el panel vive en p.moneda ('UYU'/'USD'); derivamos
           // el monedaId de ahí para no enviar un id desactualizado al cambiar el toggle.
           const monId = p.moneda === 'USD' ? 2 : (p.moneda === 'UYU' ? 1 : (parseInt(p.monedaId, 10) || 1));
@@ -307,8 +329,10 @@ export default function CajaPagoDeudaTab({ sesion, metodosPago = [], cotizacion 
       const excedenteMsg = res.data?.excedente > 0.01
         ? ` — ${simboloDeuda}${fmt(res.data.excedente)} quedó como saldo a favor`
         : '';
-      toast.success(`Pago registrado: ${seleccionadas.length} deuda(s) por ${simboloDeuda}${fmt(totalPagado)}${excedenteMsg}`);
-      setSeleccionadas([]); setObservaciones(''); setPendienteParcial(null); setExcedentePago(null);
+      toast.success(esCreditoCobro
+        ? 'Comprobante a crédito generado — la deuda queda en cuenta corriente.'
+        : `Pago registrado: ${seleccionadas.length} deuda(s) por ${simboloDeuda}${fmt(totalPagado)}${excedenteMsg}`);
+      setSeleccionadas([]); setObservaciones(''); setPendienteParcial(null); setExcedentePago(null); setFechaCobro(hoyISO()); setCondicion('CONTADO'); setPaso('seleccion');
       setPagos([{ id: Date.now(), metodoPagoId: metodosPago[0]?.MPaIdMetodoPago || '', moneda: 'UYU', monedaId: 1, monto: '' }]);
       cargarDeudas();
       if (onPagoCompletado) onPagoCompletado(res.data);
@@ -317,16 +341,41 @@ export default function CajaPagoDeudaTab({ sesion, metodosPago = [], cotizacion 
     } finally { setProcesando(false); }
   };
 
+  // ─── Campo Fecha del cobro (reutilizable en ambos layouts) ───────────────────
+  const hoy = hoyISO();
+  const esFechaRetro = fechaCobro && fechaCobro !== hoy;
+  const fechaField = (
+    <div className="flex items-center gap-3 flex-wrap">
+      <div className="flex items-center gap-2 bg-white border-2 border-slate-200 rounded-2xl px-3.5 py-2 shadow-sm focus-within:border-brand-cyan transition-colors">
+        <Calendar size={16} className="text-brand-cyan shrink-0" />
+        <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest select-none">Fecha del cobro</label>
+        <input
+          type="date"
+          value={fechaCobro}
+          max={hoy}
+          onChange={e => setFechaCobro(e.target.value || hoy)}
+          className="bg-transparent border-none outline-none text-sm font-black text-slate-800 p-0 focus:ring-0 cursor-pointer"
+        />
+      </div>
+      {esFechaRetro && (
+        <span className="flex items-center gap-1.5 text-[10px] font-black text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-2.5 py-1.5 uppercase tracking-wide">
+          <AlertTriangle size={13} /> Fecha retroactiva — {fmtFecha(fechaCobro)}
+        </span>
+      )}
+    </div>
+  );
+
   // ════════════════════════════════════════════════════════════════════════════
   // ─── Layout dedicado del Panel 360 (vertical): cliente → pago → lista → resumen ───
   if (deudaLayout === 'tabla') {
     const lista = deudasFiltradas.filter(d => subTab === 'ordenes' ? !d.DocIdDocumento : !!d.DocIdDocumento);
     const cli = initialCliente || {};
     const inicial = (cli.Nombre || '?').slice(0, 2).toUpperCase();
+    const docLabel = ({ '05': 'Recibo', '40': 'Pedido Caja', '07': 'e-Ticket', '08': 'e-Ticket', '01': 'e-Factura', '02': 'e-Factura' })[tipoDoc] || 'Documento';
     return (
       <div className="flex flex-col h-full min-h-0 bg-slate-100 w-full">
-        {/* 1. Cliente (label, sin buscador) */}
-        <div className="flex items-center gap-3 px-5 py-3 bg-white border-b border-slate-200 shrink-0 flex-wrap">
+        {/* Cliente — en el paso de PAGO se agregan fecha / TC / documento a generar */}
+        <div className="flex items-center gap-3 px-5 py-2.5 bg-white border-b border-slate-200 shrink-0 flex-wrap">
           <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-brand-cyan to-cyan-800 text-white font-black text-sm flex items-center justify-center shrink-0">{inicial}</div>
           <div className="min-w-0">
             <div className="font-black text-slate-800 text-sm leading-tight">{cli.Nombre || 'Cliente'}</div>
@@ -337,11 +386,145 @@ export default function CajaPagoDeudaTab({ sesion, metodosPago = [], cotizacion 
               {cli.TelefonoTrabajo && <span>{cli.TelefonoTrabajo}</span>}
             </div>
           </div>
+
+          <div className="ml-auto flex items-center gap-2 flex-wrap justify-end">
+            {/* Fecha del cobro (siempre visible: paso 1 y 2) */}
+            <div className={`flex items-center gap-1.5 border rounded-lg px-2.5 py-1.5 ${esFechaRetro ? 'bg-amber-50 border-amber-300' : 'bg-slate-50 border-slate-200'}`} title={esFechaRetro ? 'Fecha retroactiva' : 'Fecha del cobro'}>
+              <Calendar size={13} className={esFechaRetro ? 'text-amber-600' : 'text-brand-cyan'} />
+              <input type="date" value={fechaCobro} max={hoy} onChange={e => setFechaCobro(e.target.value || hoy)}
+                className="bg-transparent border-none outline-none text-[11px] font-black text-slate-700 p-0 focus:ring-0 cursor-pointer" />
+            </div>
+            {paso === 'pago' && (<>
+            {/* Tipo de cambio */}
+            {cotizacion && cotizacion > 1 && (
+              <div className="flex items-center gap-1 bg-amber-50 border border-amber-200 rounded-lg px-2 py-1.5">
+                <span className="text-[8px] font-black text-amber-600 uppercase tracking-widest">TC</span>
+                <span className="text-[11px] font-black text-amber-800 font-mono">${fmt(cotizacion)}</span>
+              </div>
+            )}
+            {/* Documento a generar + serie/número */}
+            <div className="flex items-center gap-1.5 bg-purple-50 border border-purple-200 rounded-lg px-2.5 py-1.5">
+              <span className="text-[8px] font-black text-purple-400 uppercase tracking-widest">Doc</span>
+              <span className="text-[11px] font-black text-purple-700 uppercase">{docLabel}</span>
+              {numDocFmt && <span className="text-[16px] font-black text-black bg-white border border-purple-300 rounded px-2 py-0.5 font-mono tracking-wide">{numDocFmt}</span>}
+            </div>
+            </>)}
+          </div>
         </div>
 
-        {/* 2. Panel de pago ARRIBA (doc a generar cambia según el tab) */}
-        <div className="px-4 py-3 bg-slate-100 border-b border-slate-200 shrink-0">
+        {paso === 'seleccion' ? (
+        <>
+        {/* PASO 1 — Sub-tabs */}
+        <div className="flex gap-1 px-4 pt-3 bg-white shrink-0 border-b border-slate-100">
+          <button type="button" onClick={() => { setSubTab('docs'); setSeleccionadas([]); setPendienteParcial(null); setExcedentePago(null); }}
+            className={`flex-1 text-[11px] font-black uppercase tracking-wide py-2.5 border-b-2 transition-colors ${subTab === 'docs' ? 'text-brand-cyan border-brand-cyan' : 'text-slate-400 border-transparent hover:text-slate-600'}`}>
+            Documentos con deuda → Recibo
+          </button>
+          <button type="button" onClick={() => { setSubTab('ordenes'); setSeleccionadas([]); setPendienteParcial(null); setExcedentePago(null); setTipoDoc('40'); setSerieDoc('PC'); }}
+            className={`flex-1 text-[11px] font-black uppercase tracking-wide py-2.5 border-b-2 transition-colors ${subTab === 'ordenes' ? 'text-brand-cyan border-brand-cyan' : 'text-slate-400 border-transparent hover:text-slate-600'}`}>
+            Órdenes a facturar
+          </button>
+        </div>
+
+        {/* PASO 1 — Lista (seleccionar) */}
+        <div className="flex-1 min-h-0 overflow-y-auto bg-white px-4 py-2">
+          {cargandoDeudas ? (
+            <div className="flex justify-center py-16"><div className="animate-spin rounded-full h-8 w-8 border-b-2 border-brand-cyan" /></div>
+          ) : lista.length === 0 ? (
+            <div className="text-center py-12 text-slate-400 text-xs font-bold">{subTab === 'ordenes' ? 'Sin órdenes pendientes de facturar.' : 'Sin documentos con deuda.'}</div>
+          ) : (
+            <table className="w-full text-xs border-collapse">
+              <thead>
+                <tr className="text-[9px] uppercase tracking-widest text-slate-500 bg-slate-50 border-b border-slate-200">
+                  <th rowSpan={2} className="w-8 py-2"></th>
+                  <th rowSpan={2} className="text-left py-2 font-black">Documento</th>
+                  <th rowSpan={2} className="text-left py-2 font-black">Emisión</th>
+                  <th rowSpan={2} className="text-left py-2 font-black">Vence</th>
+                  <th rowSpan={2} className="text-center py-2 font-black">Estado</th>
+                  <th rowSpan={2} className="text-right py-2 font-black">Deuda original</th>
+                  <th colSpan={2} className="text-center py-1 font-black text-slate-500">Pendiente</th>
+                </tr>
+                <tr className="text-[9px] uppercase tracking-widest text-slate-500 bg-slate-50 border-b border-slate-200">
+                  <th className="text-right py-1.5 font-black text-blue-700">USD</th>
+                  <th className="text-right py-1.5 font-black text-emerald-700">UYU</th>
+                </tr>
+              </thead>
+              <tbody>
+                {lista.map(d => {
+                  const sel = seleccionadas.includes(d.DDeIdDocumento);
+                  const badge = badgeEstado(d);
+                  const esUSD = (d.MonSimbolo || '').includes('US') || d.CueTipo === 'DINERO_USD' || d.MonIdMoneda === 2;
+                  return (
+                    <tr key={d.DDeIdDocumento} onClick={() => toggleDeuda(d.DDeIdDocumento)}
+                      className={`border-b border-slate-100 cursor-pointer transition-colors ${sel ? 'bg-brand-cyan/10' : 'hover:bg-brand-cyan/5'}`}>
+                      <td className="py-2.5 text-center align-middle">
+                        <input type="checkbox" readOnly checked={sel} className="w-4 h-4 align-middle pointer-events-none" style={{ accentColor: '#006E97' }} />
+                      </td>
+                      <td className="py-2.5 pr-2 align-middle">
+                        <div className="flex items-center gap-2 min-w-0">
+                          {/* Comprobante real (PC-1945 / ET-1693 / e-Factura…); si es orden sin facturar, el código de orden */}
+                          <span className="text-[11px] font-black font-mono text-brand-cyan bg-brand-cyan/10 border border-brand-cyan/25 rounded px-1.5 py-0.5 shrink-0 whitespace-nowrap uppercase">
+                            {d.Documento || d.CodigoOrden || `#${d.DDeIdDocumento}`}
+                          </span>
+                          <span className="font-bold text-slate-600 truncate max-w-[160px]" title={d.DocTipoReal || d.NombreTrabajo || ''}>
+                            {d.DocTipoReal || (d.DocIdDocumento ? 'Documento' : (d.NombreTrabajo || 'Orden sin facturar'))}
+                          </span>
+                        </div>
+                      </td>
+                      <td className="py-2.5 pr-2 text-slate-500 font-semibold whitespace-nowrap align-middle">{fmtFecha(d.DDeFechaEmision)}</td>
+                      <td className="py-2.5 pr-2 text-slate-500 font-semibold whitespace-nowrap align-middle">{fmtFecha(d.DDeFechaVencimiento)}</td>
+                      <td className="py-2.5 text-center align-middle"><span className={`text-[8px] font-black px-1.5 py-0.5 rounded border uppercase tracking-widest ${badge.cls}`}>{badge.label}</span></td>
+                      <td className={`py-2.5 pr-2 text-right font-black whitespace-nowrap align-middle ${esUSD ? 'text-blue-700' : 'text-emerald-700'}`}>{(esUSD ? 'US$ ' : '$ ') + fmt(d.DDeImporteOriginal ?? d.DDeImportePendiente)}</td>
+                      <td className="py-2.5 pl-2 text-right font-black whitespace-nowrap align-middle text-blue-700">{esUSD ? `US$ ${fmt(d.DDeImportePendiente)}` : <span className="text-slate-300">—</span>}</td>
+                      <td className="py-2.5 pl-2 text-right font-black whitespace-nowrap align-middle text-emerald-700">{!esUSD ? `$ ${fmt(d.DDeImportePendiente)}` : <span className="text-slate-300">—</span>}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          )}
+        </div>
+
+        {/* PASO 1 — Monto a cobrar + botón Pagar */}
+        <div className="shrink-0 border-t border-slate-200 bg-white px-4 py-3 flex flex-col gap-2.5">
+          {clientesInvolucrados.length > 1 && (
+            <div className="bg-rose-50 border border-rose-200 text-rose-700 px-3 py-2 rounded-lg text-[11px] font-bold flex items-center gap-2">
+              <AlertTriangle size={14} /> Seleccionaste deudas de más de un cliente. Cobrá de a un cliente.
+            </div>
+          )}
+          <div className="flex items-center justify-between">
+            <span className="text-[11px] font-black text-slate-400 uppercase tracking-widest">Monto a cobrar · {seleccionadas.length} deuda{seleccionadas.length !== 1 ? 's' : ''}</span>
+            <span className="text-2xl font-black text-brand-cyan tracking-tight">{simboloDeuda} {fmt(totalAPagar)}</span>
+          </div>
+          <button onClick={() => setPaso('pago')} disabled={seleccionadas.length === 0 || clientesInvolucrados.length > 1}
+            className="w-full flex items-center justify-center gap-2 py-3 bg-brand-cyan hover:bg-cyan-700 text-white font-black rounded-xl transition-all disabled:opacity-40 disabled:cursor-not-allowed">
+            Pagar <span className="text-lg leading-none">→</span>
+          </button>
+        </div>
+        </>
+        ) : (
+        <>
+        {/* PASO 2 — resumen de la selección + volver */}
+        <div className="shrink-0 px-4 py-2.5 bg-slate-50 border-b border-slate-200 flex items-center justify-between gap-3 flex-wrap">
+          <button type="button" onClick={() => setPaso('seleccion')}
+            className="flex items-center gap-1.5 text-[11px] font-black text-slate-500 hover:text-brand-cyan uppercase tracking-wide transition-colors">
+            <span className="text-base leading-none">←</span> Volver a selección
+          </button>
+          <div className="flex items-center gap-2.5">
+            <span className="text-[11px] font-black text-slate-500">{seleccionadas.length} deuda{seleccionadas.length !== 1 ? 's' : ''}</span>
+            <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">A pagar</span>
+            <span className="text-lg font-black text-brand-cyan tracking-tight">{simboloDeuda} {fmt(totalAPagar)}</span>
+          </div>
+        </div>
+
+        {/* PASO 2 — Panel de pago (medios) */}
+        <div className="flex-1 min-h-0 overflow-y-auto px-4 py-3 bg-slate-100">
           <CajaPanelPago
+            onNumDocPredict={setNumDocFmt}
+            hideDocTitle={true}
+            hideTC={true}
+            hideDocType={subTab === 'docs'}
+            compactNotas={true}
             layout="horizontal"
             mode="VENTA"
             metodosPago={metodosPago}
@@ -349,11 +532,12 @@ export default function CajaPagoDeudaTab({ sesion, metodosPago = [], cotizacion 
             onPagosChange={setPagos}
             totalACubrir={totalAPagar}
             moneda={monedaDeuda}
-            lockMoneda={monedaDeuda}
             cotizacion={cotizacion}
             procesando={procesando}
             tipoDoc={tipoDoc}
             onTipoDoc={setTipoDoc}
+            condicion={condicion}
+            onCondicionChange={setCondicion}
             serieDoc={serieDoc}
             onSerieDoc={setSerieDoc}
             numDoc=""
@@ -366,70 +550,8 @@ export default function CajaPagoDeudaTab({ sesion, metodosPago = [], cotizacion 
           />
         </div>
 
-        {/* 3. Sub-tabs */}
-        <div className="flex gap-1 px-4 pt-3 bg-white shrink-0 border-b border-slate-100">
-          <button type="button" onClick={() => { setSubTab('docs'); setSeleccionadas([]); setPendienteParcial(null); setExcedentePago(null); }}
-            className={`flex-1 text-[11px] font-black uppercase tracking-wide py-2.5 border-b-2 transition-colors ${subTab === 'docs' ? 'text-brand-cyan border-brand-cyan' : 'text-slate-400 border-transparent hover:text-slate-600'}`}>
-            Documentos con deuda → Recibo
-          </button>
-          <button type="button" onClick={() => { setSubTab('ordenes'); setSeleccionadas([]); setPendienteParcial(null); setExcedentePago(null); setTipoDoc('40'); setSerieDoc('PC'); }}
-            className={`flex-1 text-[11px] font-black uppercase tracking-wide py-2.5 border-b-2 transition-colors ${subTab === 'ordenes' ? 'text-brand-cyan border-brand-cyan' : 'text-slate-400 border-transparent hover:text-slate-600'}`}>
-            Órdenes a facturar
-          </button>
-        </div>
-
-        {/* 4. Lista (seleccionar) */}
-        <div className="flex-1 min-h-0 overflow-y-auto bg-white px-4 py-2">
-          {cargandoDeudas ? (
-            <div className="flex justify-center py-16"><div className="animate-spin rounded-full h-8 w-8 border-b-2 border-brand-cyan" /></div>
-          ) : lista.length === 0 ? (
-            <div className="text-center py-12 text-slate-400 text-xs font-bold">{subTab === 'ordenes' ? 'Sin órdenes pendientes de facturar.' : 'Sin documentos con deuda.'}</div>
-          ) : (
-            <table className="w-full text-xs border-collapse">
-              <thead>
-                <tr className="text-[9px] uppercase tracking-widest text-slate-400 border-b border-slate-200">
-                  <th className="w-8 py-2"></th>
-                  <th className="text-left py-2 font-black">Documento</th>
-                  <th className="text-left py-2 font-black">Vence</th>
-                  <th className="text-center py-2 font-black">Estado</th>
-                  <th className="text-right py-2 font-black text-blue-700">USD</th>
-                  <th className="text-right py-2 font-black text-emerald-700">UYU</th>
-                </tr>
-              </thead>
-              <tbody>
-                {lista.map(d => {
-                  const sel = seleccionadas.includes(d.DDeIdDocumento);
-                  const badge = badgeEstado(d);
-                  const esUSD = (d.MonSimbolo || '').includes('US') || d.CueTipo === 'DINERO_USD' || d.MonIdMoneda === 2;
-                  return (
-                    <tr key={d.DDeIdDocumento} onClick={() => toggleDeuda(d.DDeIdDocumento)}
-                      className={`border-b border-slate-100 cursor-pointer transition-colors ${sel ? 'bg-brand-cyan/5' : 'hover:bg-slate-50'}`}>
-                      <td className="py-2.5 text-center align-middle">
-                        <input type="checkbox" readOnly checked={sel} className="w-4 h-4 align-middle pointer-events-none" style={{ accentColor: '#006E97' }} />
-                      </td>
-                      <td className="py-2.5 pr-2 align-middle">
-                        <div className="font-black text-slate-800 truncate max-w-[220px]">{d.NombreTrabajo || d.CodigoOrden || `Deuda #${d.DDeIdDocumento}`}</div>
-                        <div className="text-[10px] text-slate-400 font-bold uppercase tracking-wide">{d.DocIdDocumento ? `Doc: ${d.CodigoOrden}` : `Orden: #${d.CodigoOrden || d.OrdIdOrden}`}</div>
-                      </td>
-                      <td className="py-2.5 pr-2 text-slate-500 font-semibold whitespace-nowrap align-middle">{fmtFecha(d.DDeFechaVencimiento)}</td>
-                      <td className="py-2.5 text-center align-middle"><span className={`text-[8px] font-black px-1.5 py-0.5 rounded border uppercase tracking-widest ${badge.cls}`}>{badge.label}</span></td>
-                      <td className="py-2.5 pl-2 text-right font-black whitespace-nowrap align-middle text-blue-700">{esUSD ? `US$ ${fmt(d.DDeImportePendiente)}` : <span className="text-slate-300">—</span>}</td>
-                      <td className="py-2.5 pl-2 text-right font-black whitespace-nowrap align-middle text-emerald-700">{!esUSD ? `$ ${fmt(d.DDeImportePendiente)}` : <span className="text-slate-300">—</span>}</td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          )}
-        </div>
-
-        {/* 5. Resumen + Registrar (al final) */}
+        {/* PASO 2 — Resumen + Registrar */}
         <div className="shrink-0 border-t border-slate-200 bg-white px-4 py-3 flex flex-col gap-2.5">
-          {clientesInvolucrados.length > 1 && (
-            <div className="bg-rose-50 border border-rose-200 text-rose-700 px-3 py-2 rounded-lg text-[11px] font-bold flex items-center gap-2">
-              <AlertTriangle size={14} /> Seleccionaste deudas de más de un cliente.
-            </div>
-          )}
           {pendienteParcial && (
             <div className="bg-amber-50 border border-amber-300 rounded-lg p-3 text-[11px] text-amber-800 flex flex-col gap-2">
               <span className="font-black">Pago parcial — falta {simboloDeuda} {pendienteParcial.falta.toFixed(2)}. La deuda queda parcialmente pagada.</span>
@@ -448,15 +570,13 @@ export default function CajaPagoDeudaTab({ sesion, metodosPago = [], cotizacion 
               </div>
             </div>
           )}
-          <div className="flex items-center justify-between">
-            <span className="text-[11px] font-black text-slate-400 uppercase tracking-widest">Resumen · {seleccionadas.length} deuda{seleccionadas.length !== 1 ? 's' : ''}</span>
-            <span className="text-2xl font-black text-brand-cyan tracking-tight">{simboloDeuda} {fmt(totalAPagar)}</span>
-          </div>
           <button onClick={() => handleProcesar()} disabled={seleccionadas.length === 0 || procesando}
             className="w-full flex items-center justify-center gap-2 py-3 bg-brand-magenta hover:brightness-95 text-white font-black rounded-xl transition-all disabled:opacity-40 disabled:cursor-not-allowed">
-            {procesando ? 'Procesando…' : 'Registrar pago'}
+            {procesando ? 'Procesando…' : (esCreditoCobro ? 'Generar documento' : 'Registrar pago')}
           </button>
         </div>
+        </>
+        )}
       </div>
     );
   }
@@ -531,13 +651,18 @@ export default function CajaPagoDeudaTab({ sesion, metodosPago = [], cotizacion 
             return (
             <table className="w-full text-xs border-collapse">
               <thead>
-                <tr className="text-[9px] uppercase tracking-widest text-slate-400 border-b border-slate-200">
-                  <th className="w-8 py-2"></th>
-                  <th className="text-left py-2 font-black">Documento</th>
-                  <th className="text-left py-2 font-black">Vence</th>
-                  <th className="text-center py-2 font-black">Estado</th>
-                  <th className="text-right py-2 font-black text-blue-700">USD</th>
-                  <th className="text-right py-2 font-black text-emerald-700">UYU</th>
+                <tr className="text-[9px] uppercase tracking-widest text-slate-500 bg-slate-50 border-b border-slate-200">
+                  <th rowSpan={2} className="w-8 py-2"></th>
+                  <th rowSpan={2} className="text-left py-2 font-black">Documento</th>
+                  <th rowSpan={2} className="text-left py-2 font-black">Emisión</th>
+                  <th rowSpan={2} className="text-left py-2 font-black">Vence</th>
+                  <th rowSpan={2} className="text-center py-2 font-black">Estado</th>
+                  <th rowSpan={2} className="text-right py-2 font-black">Deuda original</th>
+                  <th colSpan={2} className="text-center py-1 font-black text-slate-500">Pendiente</th>
+                </tr>
+                <tr className="text-[9px] uppercase tracking-widest text-slate-500 bg-slate-50 border-b border-slate-200">
+                  <th className="text-right py-1.5 font-black text-blue-700">USD</th>
+                  <th className="text-right py-1.5 font-black text-emerald-700">UYU</th>
                 </tr>
               </thead>
               <tbody>
@@ -547,7 +672,7 @@ export default function CajaPagoDeudaTab({ sesion, metodosPago = [], cotizacion 
                   const esUSD = (d.MonSimbolo || '').includes('US') || d.CueTipo === 'DINERO_USD' || d.MonIdMoneda === 2;
                   return (
                     <tr key={d.DDeIdDocumento} onClick={() => toggleDeuda(d.DDeIdDocumento)}
-                      className={`border-b border-slate-100 cursor-pointer transition-colors ${sel ? 'bg-brand-cyan/5' : 'hover:bg-slate-50'}`}>
+                      className={`border-b border-slate-100 cursor-pointer transition-colors ${sel ? 'bg-brand-cyan/10' : 'hover:bg-brand-cyan/5'}`}>
                       <td className="py-2.5 text-center align-middle">
                         <input type="checkbox" readOnly checked={sel} className="w-4 h-4 align-middle pointer-events-none" style={{ accentColor: '#006E97' }} />
                       </td>
@@ -555,8 +680,10 @@ export default function CajaPagoDeudaTab({ sesion, metodosPago = [], cotizacion 
                         <div className="font-black text-slate-800 truncate max-w-[190px]">{d.NombreTrabajo || d.CodigoOrden || `Deuda #${d.DDeIdDocumento}`}</div>
                         <div className="text-[10px] text-slate-400 font-bold uppercase tracking-wide">{d.DocIdDocumento ? `Doc: ${d.CodigoOrden}` : `Orden: #${d.CodigoOrden || d.OrdIdOrden}`}</div>
                       </td>
+                      <td className="py-2.5 pr-2 text-slate-500 font-semibold whitespace-nowrap align-middle">{fmtFecha(d.DDeFechaEmision)}</td>
                       <td className="py-2.5 pr-2 text-slate-500 font-semibold whitespace-nowrap align-middle">{fmtFecha(d.DDeFechaVencimiento)}</td>
                       <td className="py-2.5 text-center align-middle"><span className={`text-[8px] font-black px-1.5 py-0.5 rounded border uppercase tracking-widest ${badge.cls}`}>{badge.label}</span></td>
+                      <td className={`py-2.5 pr-2 text-right font-black whitespace-nowrap align-middle ${esUSD ? 'text-blue-700' : 'text-emerald-700'}`}>{(esUSD ? 'US$ ' : '$ ') + fmt(d.DDeImporteOriginal ?? d.DDeImportePendiente)}</td>
                       <td className="py-2.5 pl-2 text-right font-black whitespace-nowrap align-middle text-blue-700">{esUSD ? `US$ ${fmt(d.DDeImportePendiente)}` : <span className="text-slate-300">—</span>}</td>
                       <td className="py-2.5 pl-2 text-right font-black whitespace-nowrap align-middle text-emerald-700">{!esUSD ? `$ ${fmt(d.DDeImportePendiente)}` : <span className="text-slate-300">—</span>}</td>
                     </tr>
@@ -658,6 +785,7 @@ export default function CajaPagoDeudaTab({ sesion, metodosPago = [], cotizacion 
 
       {/* ─── 2. ÁREA CENTRAL: Resumen ───────────────────────────────────────────── */}
       <div className="flex-1 flex flex-col min-w-0 bg-slate-100 p-6 gap-4 overflow-y-auto">
+        {fechaField}
         <CajaPanelPago
           layout="horizontal"
           mode="VENTA"

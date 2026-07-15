@@ -911,6 +911,228 @@ export const generarPdfEstadoCuenta = (cliente, cuentas, secciones, planes, desd
     window.open(url, '_blank');
 };
 
+/**
+ * generarPdfEstadoCuentaResumen
+ * ──────────────────────────────────────────────────────────────────────────
+ * Estado de cuenta LEGIBLE: una fila por documento (no libro mayor), agrupado
+ * por moneda, con importe / pagado / pendiente y un estado claro. Complementa
+ * a generarPdfEstadoCuenta (que se conserva intacto).
+ *
+ * @param {object} cliente
+ * @param {Array}  documentos  Salida de /clientes/:id/resumen-documentos
+ * @param {Array}  ordenesPendientes  [{ fecha, orden, trabajo, importe, sym }]
+ * @param {object} opts  { desde, hasta, incluirAnulados }
+ */
+export const generarPdfEstadoCuentaResumen = (cliente, documentos = [], ordenesPendientes = [], opts = {}) => {
+    const { desde = null, hasta = null, incluirAnulados = false } = opts;
+    const pdf = new jsPDF({ format: 'a4' });
+    const fmt = (n) => new Intl.NumberFormat('es-UY', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(Number(n) || 0);
+    const fmtFiltroFecha = (str) => {
+        if (!str) return '—';
+        const parts = String(str).split('-');
+        if (parts.length === 3) return `${parts[2]}/${parts[1]}/${parts[0]}`;
+        return str;
+    };
+    const fmtFecha = (str) => {
+        if (!str) return '—';
+        const parts = String(str).slice(0, 10).split('-');
+        if (parts.length === 3) return `${parts[2]}/${parts[1]}/${parts[0]}`;
+        return str;
+    };
+
+    // Colores por estado (fill + texto)
+    const ESTADO_STYLE = {
+        PAGADO:    { text: [31, 139, 76],  fill: [232, 245, 236] },
+        PARCIAL:   { text: [181, 115, 12], fill: [253, 243, 227] },
+        VENCIDO:   { text: [194, 59, 50],  fill: [251, 236, 235] },
+        PENDIENTE: { text: [194, 59, 50],  fill: [251, 236, 235] },
+        ANULADO:   { text: [138, 146, 164], fill: [240, 241, 244] },
+    };
+    const ESTADO_LABEL = { PAGADO: 'Pagado', PARCIAL: 'Parcial', VENCIDO: 'Vencido', PENDIENTE: 'Pendiente', ANULADO: 'Anulado' };
+
+    // ── Cabecera ────────────────────────────────────────────────────────────
+    pdf.setFont('helvetica', 'bold');
+    pdf.setFontSize(18);
+    pdf.setTextColor(...COLOR_PRIMARY);
+    pdf.text("ESTADO DE CUENTA", 14, 20);
+    pdf.setFontSize(9);
+    pdf.setTextColor(...COLOR_SECONDARY);
+    pdf.text("Resumen por documento", 14, 25);
+
+    if (desde && hasta) {
+        pdf.text(`Período: ${fmtFiltroFecha(desde)} al ${fmtFiltroFecha(hasta)}`, 14, 30);
+    }
+
+    pdf.setFontSize(14);
+    pdf.setTextColor(...COLOR_PRIMARY);
+    pdf.text(cliente.Nombre || 'Cliente Consumidor', 14, 39);
+    pdf.setFont('helvetica', 'normal');
+    pdf.setFontSize(10);
+    pdf.setTextColor(...COLOR_SECONDARY);
+    pdf.text(`ID: ${cliente.CliIdCliente} | RUT/CI: ${cliente.CodCliente || '-'}`, 14, 44);
+    pdf.text(`Generado: ${new Date().toLocaleDateString('es-UY')} ${new Date().toLocaleTimeString('es-UY')}`, 14, 49);
+
+    let currentY = 58;
+
+    // ── Documentos visibles según filtro de anulados ─────────────────────────
+    const visibles = incluirAnulados ? documentos : documentos.filter(d => d.estado !== 'ANULADO');
+
+    // ── Resumen: saldo pendiente por moneda ──────────────────────────────────
+    const monedas = [...new Set(visibles.map(d => d.MonSimbolo))]
+        .sort((a, b) => (a === 'US$' ? -1 : b === 'US$' ? 1 : 0));
+
+    const resumenLineas = monedas.map(sym => {
+        const grupo = visibles.filter(d => d.MonSimbolo === sym);
+        const debe = grupo.reduce((s, d) => s + Number(d.pendiente || 0), 0);
+        const pagados = grupo.filter(d => d.estado === 'PAGADO').length;
+        return `Debe en ${sym}: ${sym} ${fmt(debe)}   ·   ${pagados}/${grupo.length} pagados`;
+    });
+    const totalPendFacturar = ordenesPendientes.reduce((s, o) => s + Math.abs(Number(o.importe || 0)), 0);
+
+    pdf.setFillColor(248, 250, 252);
+    pdf.setDrawColor(...COLOR_BORDER);
+    const boxH = 6 + resumenLineas.length * 5 + (ordenesPendientes.length ? 5 : 0);
+    pdf.roundedRect(14, currentY, 182, boxH, 2, 2, 'FD');
+    pdf.setFontSize(9.5);
+    let ry = currentY + 6;
+    resumenLineas.forEach(l => {
+        pdf.setFont('helvetica', 'bold');
+        pdf.setTextColor(194, 59, 50);
+        pdf.text(l, 18, ry);
+        ry += 5;
+    });
+    if (ordenesPendientes.length) {
+        pdf.setFont('helvetica', 'normal');
+        pdf.setTextColor(...COLOR_SECONDARY);
+        pdf.text(`Pendiente de facturar: US$ ${fmt(totalPendFacturar)}  (${ordenesPendientes.length} órdenes)`, 18, ry);
+    }
+    currentY += boxH + 8;
+
+    // ── Tabla por moneda ─────────────────────────────────────────────────────
+    monedas.forEach(sym => {
+        const grupo = visibles.filter(d => d.MonSimbolo === sym);
+        if (!grupo.length) return;
+
+        if (currentY > 250) { pdf.addPage(); currentY = 20; }
+
+        pdf.setFont('helvetica', 'bold');
+        pdf.setFontSize(12);
+        pdf.setTextColor(0, 0, 0);
+        pdf.text(`Documentos en ${sym}`, 14, currentY);
+        pdf.setFont('helvetica', 'normal');
+        pdf.setFontSize(9);
+        pdf.setTextColor(...COLOR_SECONDARY);
+        pdf.text(`${grupo.length} documento${grupo.length === 1 ? '' : 's'}`, 196, currentY, { align: 'right' });
+        currentY += 3;
+
+        const body = grupo.map(d => {
+            const docCell = d.factura ? `${d.documento}\n${d.factura}` : d.documento;
+            const anulado = d.estado === 'ANULADO';
+            const impStr = `${sym} ${fmt(d.total)}`;
+            const pagoStr = anulado
+                ? '—'
+                : (Number(d.pagado) > 0.01
+                    ? `${sym} ${fmt(d.pagado)}\n${d.reciboPago ? 'Recibo ' + d.reciboPago : 'Cobro en caja'}`
+                    : '—');
+            const pendStr = anulado ? '—' : `${sym} ${fmt(d.pendiente)}`;
+            return {
+                _estado: d.estado,
+                _pendPos: !anulado && Number(d.pendiente) > 0.01,
+                row: [fmtFecha(d.fecha), docCell, impStr, pagoStr, pendStr, ESTADO_LABEL[d.estado] || d.estado],
+            };
+        });
+
+        autoTable(pdf, {
+            startY: currentY,
+            head: [['Fecha', 'Documento', 'Importe doc.', 'Pago', 'Pendiente', 'Estado']],
+            body: body.map(b => b.row),
+            theme: 'grid',
+            headStyles: { fillColor: COLOR_PRIMARY, textColor: [255, 255, 255], fontStyle: 'bold', fontSize: 8.5 },
+            styles: { font: 'helvetica', fontSize: 8.5, cellPadding: 3, valign: 'middle' },
+            columnStyles: {
+                0: { cellWidth: 22 },
+                1: { cellWidth: 40, fontStyle: 'bold' },
+                2: { cellWidth: 30, halign: 'right' },
+                3: { cellWidth: 38, halign: 'right' },
+                4: { cellWidth: 30, halign: 'right' },
+                5: { cellWidth: 22, halign: 'center', fontStyle: 'bold' },
+            },
+            didParseCell: (data) => {
+                if (data.section !== 'body') return;
+                const meta = body[data.row.index];
+                if (!meta) return;
+                // Estado: color de chip
+                if (data.column.index === 5) {
+                    const st = ESTADO_STYLE[meta._estado];
+                    if (st) { data.cell.styles.textColor = st.text; data.cell.styles.fillColor = st.fill; }
+                }
+                // Pendiente en rojo si hay saldo
+                if (data.column.index === 4 && meta._pendPos) {
+                    data.cell.styles.textColor = [194, 59, 50];
+                    data.cell.styles.fontStyle = 'bold';
+                }
+                // Documento anulado: gris
+                if (meta._estado === 'ANULADO' && (data.column.index === 1 || data.column.index === 2)) {
+                    data.cell.styles.textColor = [138, 146, 164];
+                }
+            },
+        });
+        currentY = pdf.lastAutoTable.finalY + 10;
+    });
+
+    // ── Órdenes pendientes de facturar ───────────────────────────────────────
+    if (ordenesPendientes.length) {
+        if (currentY > 250) { pdf.addPage(); currentY = 20; }
+        pdf.setFont('helvetica', 'bold');
+        pdf.setFontSize(11);
+        pdf.setTextColor(181, 115, 12);
+        pdf.text('Órdenes pendientes de facturar', 14, currentY);
+        pdf.setFont('helvetica', 'normal');
+        pdf.setFontSize(8.5);
+        pdf.setTextColor(...COLOR_SECONDARY);
+        pdf.text('aún no entran en ninguna factura', 196, currentY, { align: 'right' });
+        currentY += 3;
+
+        const opBody = ordenesPendientes.map(o => [
+            fmtFecha(o.fecha),
+            o.orden || '—',
+            o.trabajo || '—',
+            `${o.sym || 'US$'} ${fmt(Math.abs(Number(o.importe || 0)))}`,
+        ]);
+        opBody.push([
+            { content: 'TOTAL PENDIENTE A FACTURAR', colSpan: 3, styles: { halign: 'right', fontStyle: 'bold', fillColor: [253, 243, 227], textColor: [181, 115, 12] } },
+            { content: `US$ ${fmt(totalPendFacturar)}`, styles: { halign: 'right', fontStyle: 'bold', fillColor: [253, 243, 227], textColor: [181, 115, 12] } },
+        ]);
+
+        autoTable(pdf, {
+            startY: currentY,
+            head: [['Fecha', 'Orden', 'Trabajo / Descripción', 'Importe']],
+            body: opBody,
+            theme: 'grid',
+            headStyles: { fillColor: [245, 158, 11], textColor: [255, 255, 255], fontStyle: 'bold', fontSize: 8.5 },
+            styles: { font: 'helvetica', fontSize: 8.5, cellPadding: 3 },
+            columnStyles: { 0: { cellWidth: 25 }, 1: { cellWidth: 40 }, 2: { cellWidth: 'auto' }, 3: { cellWidth: 30, halign: 'right' } },
+        });
+        currentY = pdf.lastAutoTable.finalY + 10;
+    }
+
+    // ── Footer ───────────────────────────────────────────────────────────────
+    const pageCount = pdf.internal.getNumberOfPages();
+    for (let i = 1; i <= pageCount; i++) {
+        pdf.setPage(i);
+        pdf.setFont('helvetica', 'normal');
+        pdf.setFontSize(8);
+        pdf.setTextColor(...COLOR_SECONDARY);
+        pdf.text('Documento generado por USER Sistema', 105, 290, { align: 'center' });
+    }
+
+    const filename = `Estado_Cuenta_Resumen_${(cliente.Nombre || 'Cliente').replace(/\s+/g, '_')}`;
+    pdf.setProperties({ title: filename });
+    const blob = pdf.output('blob');
+    const url = URL.createObjectURL(blob);
+    window.open(url, '_blank');
+};
+
 export const generarPdfPrefactura = (ciclo, movs, excluidos, cuenta, cliente, esFinal = false, empresa = null) => {
     const pdf = new jsPDF({ format: 'a4' });
     const fmtNum = (n) => new Intl.NumberFormat('es-UY', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(n);

@@ -361,6 +361,31 @@ const TabTablaList = React.memo(function TabTablaList({ catalogs, onEdit, client
         );
     }, []);
 
+    // Borrado desde la tarjeta — misma verificación que el modal (escribir "eliminar")
+    const handleCardDelete = useCallback(async (e, c) => {
+        e.stopPropagation();
+        const { value } = await Swal.fire({
+            title: '¿Eliminar cliente?',
+            html: `<p style="margin-bottom:8px">Estás por eliminar <b>"${c.Nombre}"</b>.</p><p style="font-size:13px;color:#888">Esta acción no se puede deshacer. Escribí <b>eliminar</b> para confirmar.</p>`,
+            input: 'text',
+            inputPlaceholder: 'Escribí "eliminar"',
+            icon: 'warning',
+            showCancelButton: true,
+            confirmButtonText: 'Eliminar',
+            cancelButtonText: 'Cancelar',
+            confirmButtonColor: '#dc2626',
+            inputValidator: (val) => {
+                if (val?.trim().toLowerCase() !== 'eliminar') return 'Debés escribir "eliminar" para confirmar';
+            }
+        });
+        if (!value) return;
+        try {
+            await api.delete(`/clients/${c.CodCliente}`);
+            toast.success('Cliente eliminado');
+            setClients(prev => prev.filter(x => x.CodCliente !== c.CodCliente));
+        } catch (err) { toast.error(err.response?.data?.error || 'No se pudo eliminar'); }
+    }, [setClients]);
+
 
     const filtered = useMemo(() => {
         const t = search.toLowerCase();
@@ -525,7 +550,13 @@ const TabTablaList = React.memo(function TabTablaList({ catalogs, onEdit, client
                                                 border: c.CodReferencia ? '1px solid #ddd6fe' : '1px dashed #cbd5e1'
                                             }}>🖥 Macrosoft</span>
                                         </div>
-                                        <span style={{ fontSize: 10, color: '#bbb', fontWeight: 600 }}>#{c.CodCliente}</span>
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                                            <span style={{ fontSize: 10, color: '#bbb', fontWeight: 600 }}>#{c.CodCliente}</span>
+                                            <button onClick={e => handleCardDelete(e, c)} title="Eliminar cliente"
+                                                style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#fca5a5', fontSize: 14, padding: 2, lineHeight: 1 }}>
+                                                🗑
+                                            </button>
+                                        </div>
                                     </div>
                                 </div>
                             );

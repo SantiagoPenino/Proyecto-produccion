@@ -10,7 +10,7 @@ const EditModal = ({ article, allArticles, onClose, onSaved }) => {
         proIdProducto: null, codArticulo: '', idProdReact: '',
         descripcion: '', codStock: '',
         grupo: '', supFlia: '', mostrar: true,
-        anchoImprimible: '', llevaPapel: false, monIdMoneda: '',
+        anchoImprimible: '', largoImprimible: '', llevaPapel: false, monIdMoneda: '',
         producto_maestro_id: ''
     });
     const [saving, setSaving] = useState(false);
@@ -73,6 +73,7 @@ const EditModal = ({ article, allArticles, onClose, onSaved }) => {
                 supFlia:         article.SupFlia?.trim()          || '',
                 mostrar:         article.Mostrar == null ? true : !!article.Mostrar,
                 anchoImprimible: article.anchoimprimible != null ? String(parseFloat(Number(article.anchoimprimible).toFixed(4))) : '',
+                largoImprimible: article.largoimprimible != null ? String(parseFloat(Number(article.largoimprimible).toFixed(4))) : '',
                 llevaPapel:      !!article.LLEVAPAPEL,
                 monIdMoneda:     article.MonIdMoneda != null ? String(article.MonIdMoneda) : '',
                 producto_maestro_id: article.producto_maestro_id != null ? String(article.producto_maestro_id) : '',
@@ -234,6 +235,7 @@ const EditModal = ({ article, allArticles, onClose, onSaved }) => {
                 mostrar:         form.mostrar,
                 llevaPapel:      form.llevaPapel,
                 anchoImprimible: form.anchoImprimible !== '' ? parseFloat(form.anchoImprimible) : 0,
+                largoImprimible: form.largoImprimible !== '' ? parseFloat(form.largoImprimible) : null,
                 monIdMoneda:     form.monIdMoneda !== '' ? parseInt(form.monIdMoneda) : null,
             };
 
@@ -387,6 +389,10 @@ const EditModal = ({ article, allArticles, onClose, onSaved }) => {
                                 <div>
                                     <label className={labelCls}>Ancho Imprimible</label>
                                     <input type="number" step="0.01" min="0" name="anchoImprimible" value={form.anchoImprimible} onChange={handleChange} className={inputCls} placeholder="Ej: 1.60" />
+                                </div>
+                                <div>
+                                    <label className={labelCls} title="Si se carga, el material es de MEDIDA FIJA: el portal exige que el archivo mida exactamente Ancho x Largo (ej: banderas)">Largo Imprimible (medida fija)</label>
+                                    <input type="number" step="0.01" min="0" name="largoImprimible" value={form.largoImprimible} onChange={handleChange} className={inputCls} placeholder="Vacío = sin medida fija" />
                                 </div>
                             </div>
 
@@ -692,7 +698,52 @@ const VariantPriceModal = ({ art, onClose }) => {
 
 
 
-const ArticleCard = ({ art, onEdit, onVariants, showImages }) => {
+// ─── Modal de Confirmación de Borrado ─────────────────────────────────────────
+const DeleteConfirmModal = ({ art, onClose, onConfirm }) => {
+    const [deleting, setDeleting] = React.useState(false);
+
+    const handleConfirm = async () => {
+        setDeleting(true);
+        try {
+            await onConfirm(art);
+        } finally {
+            setDeleting(false);
+        }
+    };
+
+    return (
+        <div className="fixed inset-0 bg-slate-900/60 z-[60] flex items-center justify-center p-4" onClick={onClose}>
+            <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden" onClick={e => e.stopPropagation()}>
+                <div className="p-6 flex flex-col items-center text-center">
+                    <div className="w-14 h-14 rounded-full bg-red-100 text-red-600 flex items-center justify-center mb-4">
+                        <i className="fa-solid fa-triangle-exclamation text-2xl"></i>
+                    </div>
+                    <h2 className="text-lg font-black text-slate-800">¿Eliminar este artículo?</h2>
+                    <p className="text-sm text-slate-500 mt-2">
+                        Estás por eliminar <strong className="text-slate-700">{art?.Descripcion?.trim() || art?.CodArticulo?.trim()}</strong>.
+                        Esta acción no se puede deshacer.
+                    </p>
+                    <p className="text-[11px] text-slate-400 mt-2">
+                        Si el producto ya se usó en pedidos u órdenes, el sistema lo va a impedir.
+                    </p>
+                </div>
+                <div className="flex gap-3 p-4 bg-slate-50 border-t border-slate-100">
+                    <button type="button" onClick={onClose} disabled={deleting}
+                        className="flex-1 px-4 py-2.5 font-bold text-slate-600 bg-white border border-slate-200 hover:bg-slate-100 rounded-xl transition disabled:opacity-60">
+                        Cancelar
+                    </button>
+                    <button type="button" onClick={handleConfirm} disabled={deleting}
+                        className="flex-1 px-4 py-2.5 bg-red-600 hover:bg-red-700 text-white rounded-xl font-bold shadow-lg shadow-red-500/30 transition-all disabled:opacity-60 flex items-center justify-center gap-2">
+                        {deleting && <i className="fa-solid fa-spinner fa-spin"></i>}
+                        {deleting ? 'Eliminando...' : 'Sí, eliminar'}
+                    </button>
+                </div>
+            </div>
+        </div>
+    );
+};
+
+const ArticleCard = ({ art, onEdit, onVariants, onDelete, showImages }) => {
     const ancho = art.anchoimprimible != null ? parseFloat(Number(art.anchoimprimible).toFixed(4)) : 0;
     const isWmsSynced = art.producto_maestro_id != null;
     
@@ -823,6 +874,13 @@ const ArticleCard = ({ art, onEdit, onVariants, showImages }) => {
                             <i className="fa-solid fa-tag"></i> Precios
                         </button>
                     )}
+                    <button
+                        onClick={() => onDelete(art)}
+                        title="Eliminar artículo"
+                        className="shrink-0 flex items-center justify-center w-9 py-1.5 rounded-lg text-xs font-bold text-red-600 bg-red-50 hover:bg-red-100 border border-red-200 transition-colors"
+                    >
+                        <i className="fa-solid fa-trash"></i>
+                    </button>
                 </div>
             </div>
         </div>
@@ -849,6 +907,7 @@ const ProductsIntegration = () => {
     const [wmsSearchInput, setWmsSearchInput] = useState('');
     const [importingId, setImportingId] = useState(null);
     const [variantArt, setVariantArt] = useState(null); // artículo para el modal de precios por variante
+    const [deletingArt, setDeletingArt] = useState(null); // artículo pendiente de confirmar borrado
 
     useEffect(() => {
         api.get('/products-integration/wms/masters')
@@ -879,6 +938,18 @@ const ProductsIntegration = () => {
             toast.error(error.response?.data?.message || 'Error en el servidor');
         } finally {
             setImportingId(null);
+        }
+    };
+
+    const handleDelete = async (art) => {
+        try {
+            await api.delete(`/products-integration/${art.ProIdProducto}`);
+            toast.success('Artículo eliminado');
+            setArticles(prev => prev.filter(a => a.ProIdProducto !== art.ProIdProducto));
+            setDeletingArt(null);
+        } catch (err) {
+            // 409 = producto en uso; mostramos el motivo devuelto por el backend
+            toast.error(err.response?.data?.error || 'Error al eliminar el artículo');
         }
     };
 
@@ -934,6 +1005,7 @@ const ProductsIntegration = () => {
                     SupFlia:         formData.supFlia,
                     Mostrar:         formData.mostrar ? 1 : 0,
                     anchoimprimible: parseFloat(formData.anchoImprimible) || 0,
+                    largoimprimible: parseFloat(formData.largoImprimible) || null,
                     LLEVAPAPEL:      formData.llevaPapel ? 1 : 0,
                     MonIdMoneda:     formData.monIdMoneda !== '' ? parseInt(formData.monIdMoneda) : null,
                     producto_maestro_id: formData.producto_maestro_id !== '' ? parseInt(formData.producto_maestro_id) : null,
@@ -1253,6 +1325,7 @@ const ProductsIntegration = () => {
                                             art={art}
                                             onEdit={setEditing}
                                             onVariants={setVariantArt}
+                                            onDelete={setDeletingArt}
                                             showImages={showImages}
                                         />
                                     ))}
@@ -1277,6 +1350,13 @@ const ProductsIntegration = () => {
                 <VariantPriceModal
                     art={variantArt}
                     onClose={() => setVariantArt(null)}
+                />
+            )}
+            {deletingArt !== null && (
+                <DeleteConfirmModal
+                    art={deletingArt}
+                    onClose={() => setDeletingArt(null)}
+                    onConfirm={handleDelete}
                 />
             )}
         </div>

@@ -17,6 +17,8 @@ router.get('/cotizacion-hoy', ctrl.getCotizacionHoy);
 router.get('/clientes-activos', ctrl.getClientesActivos);
 router.get('/deudas-vivas', ctrl.getTodasLasDeudasVivas);
 router.get('/clientes/:CliIdCliente/deudas-vivas', ctrl.getDeudasVivasCliente);
+router.get('/clientes/:CliIdCliente/resumen-documentos', ctrl.getResumenDocumentosCliente);
+router.get('/clientes/:CliIdCliente/movimientos-ordenes', ctrl.getMovimientosOrdenesCliente);
 router.get('/cuentas/:CliIdCliente', ctrl.getCuentasCliente);
 router.post('/cuentas', ctrl.crearCuenta);
 router.patch('/cuentas/:CueIdCuenta/configuracion', ctrl.actualizarConfigCuenta);

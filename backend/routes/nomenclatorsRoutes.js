@@ -284,11 +284,14 @@ router.get('/materials/:areaId/:variante', async (req, res) => {
             .input('AreaID', sql.VarChar, areaId)
             .input('Variante', sql.NVarChar, variante)
             .query(`
-                SELECT 
-                    dbo.articulos.CodArticulo, 
+                SELECT
+                    dbo.articulos.CodArticulo,
                     dbo.articulos.CodStock,
                     dbo.articulos.Descripcion AS Material,
-                    dbo.articulos.anchoimprimible AS Ancho
+                    dbo.articulos.anchoimprimible AS Ancho,
+                    -- Largo imprimible: si está definido (>0), el material se imprime a MEDIDA FIJA
+                    -- (banderas): el form valida que el archivo mida exactamente Ancho x Largo.
+                    dbo.articulos.largoimprimible AS Largo
                 FROM dbo.StockArt
                 INNER JOIN dbo.articulos ON dbo.StockArt.CodStock = dbo.articulos.CodStock
                 LEFT JOIN dbo.ConfigMapeoERP ON dbo.ConfigMapeoERP.CodigoERP = dbo.StockArt.Grupo

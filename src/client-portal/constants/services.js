@@ -278,7 +278,8 @@ export const SERVICES_LIST = [
         complementaryOptions: [
             { id: 'TWC', label: 'Corte Láser / Tizada', hasFile: false, fullWidth: true },
             { id: 'TWT', label: 'Confección / Costura', hasInput: false, fullWidth: true },
-            { id: 'EMB', label: 'Servicio de Bordado', hasFile: true, fullWidth: true, inputLabel: 'Adjuntar Ponchado/Logo' },
+            // Bordado deshabilitado como complementario en Impresión Directa (a pedido)
+            // { id: 'EMB', label: 'Servicio de Bordado', hasFile: true, fullWidth: true, inputLabel: 'Adjuntar Ponchado/Logo' },
             { id: 'EST', label: 'Estampado', fullWidth: true }
         ]
     },

@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { Search, Loader2, User, Trash2, Wallet, AlertCircle, CheckCircle2, Printer } from 'lucide-react';
+import { Search, Loader2, User, Trash2, Wallet, AlertCircle, CheckCircle2, Printer, Calendar } from 'lucide-react';
 import api from '../../services/apiClient';
 import { toast } from 'sonner';
 import ClienteBilletera from '../common/ClienteBilletera';
@@ -43,7 +43,7 @@ function MonedaSwitch({ value, onChange }) {
  * La moneda se elige UNA sola vez con el pill-switch; el panel de pago
  * hereda esa moneda y no muestra el selector por-línea (lockMoneda).
  */
-export default function CajaSaldoAnticipoTab({ sesion, metodosPago, cotizacion, onCobroCompletado, initialCliente, empresaId = null, isAdminCaja = false, hideClienteSelector = false, hideBilletera = false }) {
+export default function CajaSaldoAnticipoTab({ sesion, metodosPago, cotizacion, onCobroCompletado, initialCliente, empresaId = null, isAdminCaja = false, hideClienteSelector = false, hideBilletera = false, pasoExterno = undefined, onPasoExterno = undefined }) {
   /* ── cliente ─────────────────────────────────────────────────────────────── */
   const [qCliente, setQCliente]             = useState('');
   const [buscandoCli, setBuscandoCli]       = useState(false);
@@ -74,6 +74,12 @@ export default function CajaSaldoAnticipoTab({ sesion, metodosPago, cotizacion, 
   const [importe, setImporte]       = useState('');
   const [moneda, setMoneda]         = useState('UYU');
   const [concepto, setConcepto]     = useState('');
+  const [numDocFmt, setNumDocFmt]   = useState(''); // número del recibo (cabecera del 360)
+  const [fechaRegistro, setFechaRegistro] = useState(() => new Date().toISOString().split('T')[0]);
+  // Panel 360: flujo en 2 pasos ('operacion' → 'pago'); controlable desde el modal
+  const [pasoLocalAnt, setPasoLocalAnt] = useState('operacion');
+  const paso = pasoExterno !== undefined ? pasoExterno : pasoLocalAnt;
+  const setPaso = onPasoExterno || setPasoLocalAnt;
   const [procesando, setProcesando] = useState(false);
 
   /* ── panel de pago ───────────────────────────────────────────────────────── */
@@ -175,6 +181,7 @@ export default function CajaSaldoAnticipoTab({ sesion, metodosPago, cotizacion, 
         metodoPagoId: parseInt(pagosValidos[0].metodoPagoId),
         monedaId:     moneda === 'USD' ? 2 : 1,
         concepto:     observaciones || concepto || 'Ingreso de saldo anticipado',
+        fecha:        fechaRegistro, // fecha de registro (el backend debe honrarla; si no, usa hoy)
       });
 
       toast.success(res.data?.message || '✅ Anticipo registrado como saldo a favor.');
@@ -204,6 +211,7 @@ export default function CajaSaldoAnticipoTab({ sesion, metodosPago, cotizacion, 
       setImporte('');
       setConcepto('');
       setObservaciones('');
+      setPaso('operacion');
       const mp = metodosPago.find(m => /contado/i.test(m.MPaDescripcionMetodo)) || metodosPago?.[0];
       setPagos([{ id: Date.now(), metodoPagoId: mp?.MPaIdMetodoPago || '', moneda, monedaId: moneda === 'USD' ? 2 : 1, monto: '' }]);
       if (onCobroCompletado) onCobroCompletado(res.data);
@@ -215,6 +223,136 @@ export default function CajaSaldoAnticipoTab({ sesion, metodosPago, cotizacion, 
   };
 
   const importeNum = parseFloat(importe) || 0;
+
+  // ─── Panel 360 (cliente fijo): flujo en 2 pasos, homogéneo con el cobro ───
+  if (hideClienteSelector) {
+    const cli = clienteSel || initialCliente || {};
+    const inicial = (cli.Nombre || '?').slice(0, 2).toUpperCase();
+    const simb = moneda === 'USD' ? 'US$' : '$';
+    const hoy = new Date().toISOString().split('T')[0];
+    const fmtImp = importeNum.toLocaleString('es-UY', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    return (
+      <div className="flex flex-col h-full min-h-0 bg-slate-100 w-full">
+        {/* Cliente — en el paso de pago se agregan TC / documento */}
+        <div className="flex items-center gap-3 px-5 py-2.5 bg-white border-b border-slate-200 shrink-0 flex-wrap">
+          <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-brand-cyan to-cyan-800 text-white font-black text-sm flex items-center justify-center shrink-0">{inicial}</div>
+          <div className="min-w-0">
+            <div className="font-black text-slate-800 text-sm leading-tight">{getClienteDisplayName(cli) || 'Cliente'}</div>
+            <div className="flex flex-wrap gap-x-4 gap-y-0 text-[11px] text-slate-500 font-medium mt-0.5">
+              <span className="font-mono">{cli.IDCliente || cli.CodCliente || cli.CliIdCliente}</span>
+              {cli.CioRuc && <span>RUC <span className="font-mono text-slate-700">{cli.CioRuc}</span></span>}
+              {cli.Email && <span className="truncate max-w-[180px]">{cli.Email}</span>}
+            </div>
+          </div>
+          <div className="ml-auto flex items-center gap-2 flex-wrap justify-end">
+              {/* Fecha de registro (siempre visible: paso 1 y 2) */}
+              <div className="flex items-center gap-1.5 bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1.5" title="Fecha de registro">
+                <Calendar size={13} className="text-brand-cyan" />
+                <input type="date" value={fechaRegistro} max={hoy} onChange={e => setFechaRegistro(e.target.value || hoy)}
+                  className="bg-transparent border-none outline-none text-[11px] font-black text-slate-700 p-0 focus:ring-0 cursor-pointer" />
+              </div>
+              {paso === 'pago' && (<>
+              {cotizacion && cotizacion > 1 && (
+                <div className="flex items-center gap-1 bg-amber-50 border border-amber-200 rounded-lg px-2 py-1.5">
+                  <span className="text-[8px] font-black text-amber-600 uppercase tracking-widest">TC</span>
+                  <span className="text-[11px] font-black text-amber-800 font-mono">${Number(cotizacion).toLocaleString('es-UY', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                </div>
+              )}
+              <div className="flex items-center gap-1.5 bg-purple-50 border border-purple-200 rounded-lg px-2.5 py-1.5">
+                <span className="text-[8px] font-black text-purple-400 uppercase tracking-widest">Doc</span>
+                <span className="text-[11px] font-black text-purple-700 uppercase">Recibo anticipo</span>
+                {numDocFmt && <span className="text-[16px] font-black text-black bg-white border border-purple-300 rounded px-2 py-0.5 font-mono tracking-wide">{numDocFmt}</span>}
+              </div>
+              </>)}
+          </div>
+        </div>
+
+        {paso === 'operacion' ? (
+        <>
+          <div className="flex-1 min-h-0 overflow-y-auto p-4 flex flex-col gap-4">
+            <div className="bg-blue-50 border border-blue-200 rounded-2xl px-5 py-3 flex items-start gap-3">
+              <AlertCircle className="text-blue-500 shrink-0 mt-0.5" size={18} />
+              <p className="text-blue-700 text-xs font-medium leading-relaxed">
+                Registra dinero a <strong>favor del cliente</strong> (anticipo / seña). El saldo queda disponible para descontarse de futuras facturas o deudas. <strong>No genera deuda — genera crédito.</strong>
+              </p>
+            </div>
+            <div className="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm flex flex-col gap-5">
+              <div className="flex items-center justify-between border-b border-zinc-100 pb-3 flex-wrap gap-3">
+                <h2 className="text-lg font-black text-zinc-800 flex items-center gap-3">
+                  <div className="bg-blue-500/10 p-2 rounded-xl border border-blue-500/20"><Wallet size={18} className="text-blue-500" /></div>
+                  Ingreso de saldo anticipado
+                </h2>
+                <MonedaSwitch value={moneda} onChange={setMoneda} />
+              </div>
+              <div>
+                <label className="text-[10px] font-black tracking-widest uppercase text-zinc-400 ml-2 mb-2 block font-archivo">Concepto / Servicio</label>
+                <input type="text" value={concepto} onChange={e => setConcepto(e.target.value)} placeholder="Ej: Seña para pedido de junio, Anticipo cuota..."
+                  className="w-full border-2 border-zinc-200 bg-white rounded-2xl px-5 py-3.5 focus:border-blue-400 focus:ring-4 focus:ring-blue-400/5 outline-none text-base font-bold text-zinc-800 transition-all placeholder-zinc-400" />
+              </div>
+              <div>
+                <label className="text-[10px] font-black tracking-widest uppercase text-zinc-400 ml-2 mb-2 block font-archivo">Importe ({moneda})</label>
+                <input type="number" value={importe} onChange={e => setImporte(e.target.value)} placeholder="0.00" min="0.01" step="0.01"
+                  className="w-full border-2 border-zinc-200 bg-white rounded-2xl px-5 py-4 focus:border-blue-400 focus:ring-4 focus:ring-blue-400/5 outline-none font-black text-2xl text-zinc-800 transition-all placeholder-zinc-300" />
+              </div>
+            </div>
+          </div>
+          <div className="shrink-0 border-t border-slate-200 bg-white px-4 py-3 flex flex-col gap-2.5">
+            <div className="flex items-center justify-between">
+              <span className="text-[11px] font-black text-slate-400 uppercase tracking-widest">Anticipo a acreditar</span>
+              <span className="text-2xl font-black text-brand-cyan tracking-tight">{simb} {fmtImp}</span>
+            </div>
+            <button onClick={() => setPaso('pago')} disabled={importeNum <= 0}
+              className="w-full flex items-center justify-center gap-2 py-3 bg-brand-cyan hover:bg-cyan-700 text-white font-black rounded-xl transition-all disabled:opacity-40 disabled:cursor-not-allowed">
+              Cobrar <span className="text-lg leading-none">→</span>
+            </button>
+          </div>
+        </>
+        ) : (
+        <>
+          <div className="shrink-0 px-4 py-2.5 bg-slate-50 border-b border-slate-200 flex items-center justify-between gap-3 flex-wrap">
+            <button type="button" onClick={() => setPaso('operacion')} className="flex items-center gap-1.5 text-[11px] font-black text-slate-500 hover:text-brand-cyan uppercase tracking-wide transition-colors">
+              <span className="text-base leading-none">←</span> Volver
+            </button>
+            <span className="text-[12px] font-black text-slate-600">Anticipo · <span className="text-brand-cyan">{simb} {fmtImp}</span></span>
+          </div>
+          <div className="flex-1 min-h-0 overflow-y-auto px-4 py-3">
+            <CajaPanelPago
+              onNumDocPredict={setNumDocFmt}
+              hideDocTitle={true}
+              hideTC={true}
+              hideDocType={true}
+              compactNotas={true}
+              layout="horizontal"
+              mode="VENTA"
+              metodosPago={metodosPago}
+              pagos={pagos}
+              onPagosChange={handlePagosChange}
+              totalACubrir={importeNum}
+              moneda={moneda}
+              lockMoneda={moneda}
+              cotizacion={cotizacion}
+              procesando={procesando}
+              notas={observaciones}
+              onNotas={setObservaciones}
+              tipoDoc={tipoComprobante}
+              onTipoDoc={setTipoComprobante}
+              serieDoc={serieDoc}
+              onSerieDoc={setSerieDoc}
+              tiposDocDisponibles={[{ value: 'RECIBO_ANTICIPO', label: 'Recibo' }]}
+              showSubmitButton={false}
+            />
+          </div>
+          <div className="shrink-0 border-t border-slate-200 bg-white px-4 py-3">
+            <button onClick={handleProcesar} disabled={procesando || importeNum <= 0}
+              className="w-full flex items-center justify-center gap-2 py-3 bg-brand-magenta hover:brightness-95 text-white font-black rounded-xl transition-all disabled:opacity-40 disabled:cursor-not-allowed">
+              {procesando ? 'Procesando…' : 'Registrar anticipo'}
+            </button>
+          </div>
+        </>
+        )}
+      </div>
+    );
+  }
 
   return (
     <div className="flex flex-col lg:flex-row flex-1 overflow-hidden h-full min-h-0 bg-zinc-100">

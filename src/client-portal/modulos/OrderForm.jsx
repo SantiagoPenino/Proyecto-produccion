@@ -488,6 +488,10 @@ const OrderForm = ({ serviceId: propServiceId }) => {
 
                 let selectedMatName;
                 let maxWidth;
+                // Largo imprimible del material (articulos.largoimprimible): si es > 0, el material
+                // se imprime a MEDIDA FIJA (banderas de Impresión Directa) y el archivo debe medir
+                // EXACTAMENTE Ancho x Largo del artículo (no aplica el tope "ancho - 3cm").
+                let largoFijo = 0;
 
                 if (svcId === 'sublimacion') {
                     // For sublimación: validate against item material if selected, else default 1.83m
@@ -513,11 +517,15 @@ const OrderForm = ({ serviceId: propServiceId }) => {
                     const matList = dynamicMaterials.length > 0 ? dynamicMaterials : (serviceInfo?.materials || []);
                     const matObj = matList.find(m => (m.Material || m.Descripcion || m) === selectedMatName) || selectedMatName;
                     maxWidth = resolveMaterialWidth(matObj);
+                    if (matObj && typeof matObj === 'object') {
+                        largoFijo = parseFloat(matObj.Largo) || 0;
+                    }
 
                     // TELA CLIENTE: el ancho lo define la bobina seleccionada, no el material
                     if (fabricOrigin === 'TELA CLIENTE' && selectedBobinaAncho) {
                         selectedMatName = clientFabricName ? `bobina ${clientFabricName}` : 'la bobina seleccionada';
                         maxWidth = parseFloat(selectedBobinaAncho);
+                        largoFijo = 0;
                     }
                 }
 
@@ -531,7 +539,22 @@ const OrderForm = ({ serviceId: propServiceId }) => {
                 const fileWidthRounded = Math.ceil(Number(((fileWidthM - TOLERANCIA_ANCHO_M) * 100).toFixed(6))) / 100;
                 const maxPrintableWidth = Math.round((maxWidth - 0.03) * 100) / 100;
 
-                if (fileWidthRounded > maxPrintableWidth + 1e-9) {
+                if (largoFijo > 0) {
+                    // MEDIDA FIJA (banderas): ancho y largo del archivo deben coincidir EXACTO
+                    // (al cm) con anchoimprimible x largoimprimible del artículo.
+                    const fileHeightM = result.unit === 'meters' ? result.height : (result.height / 300) * 0.0254;
+                    const wCm = Math.round(Number((fileWidthM * 100).toFixed(6)));
+                    const hCm = Math.round(Number((fileHeightM * 100).toFixed(6)));
+                    const expWCm = Math.round(Number((maxWidth * 100).toFixed(6)));
+                    const expHCm = Math.round(Number((largoFijo * 100).toFixed(6)));
+                    if (wCm !== expWCm || hCm !== expHCm) {
+                        actions.setErrorModalMessage(
+                            `"${selectedMatName}" se imprime a MEDIDA FIJA: el archivo debe medir exactamente ${maxWidth.toFixed(2)}m de ancho x ${largoFijo.toFixed(2)}m de largo. Tu archivo mide ${fileWidthM.toFixed(2)}m x ${fileHeightM.toFixed(2)}m. Ajustá el archivo a la medida exacta.`
+                        );
+                        actions.setErrorModalOpen(true);
+                        return false;
+                    }
+                } else if (fileWidthRounded > maxPrintableWidth + 1e-9) {
                     const matLabel = selectedMatName || `ancho máximo ${maxWidth.toFixed(2)}m`;
                     actions.setErrorModalMessage(
                         `El ancho del archivo (${fileWidthRounded.toFixed(2)}m) excede el ancho imprimible del material "${matLabel}" (${maxPrintableWidth.toFixed(2)}m). Por favor, ajuste el archivo o seleccione otro material.`
@@ -645,6 +668,11 @@ const OrderForm = ({ serviceId: propServiceId }) => {
             return addToast('Debe subir al menos un archivo de tizada para moldes de clientes', 'error');
         }
 
+        // TWINFACE (Tela Doble Cara): boceto obligatorio POR CADA archivo (juego frente/dorso)
+        if (isDirectaTwinface && items.some(it => it.file && !it.boceto)) {
+            return addToast('Cada archivo de Tela Doble Cara (Twinface) necesita su boceto Frente/Dorso.', 'error');
+        }
+
         // TELA CLIENTE: la bobina es obligatoria (de ahí se descuentan los metros del pedido)
         if (((config.hasCuttingWorkflow && fabricOrigin === 'TELA CLIENTE' && moldType !== 'SUBLIMACION') || isSubliTelaCliente) && !selectedBobinaId) {
             return addToast('Seleccioná la bobina de tela del cliente antes de confirmar el pedido.', 'error');
@@ -711,6 +739,7 @@ const OrderForm = ({ serviceId: propServiceId }) => {
             items.forEach(it => {
                 if (it.file) addToMap(it.file);
                 if (it.fileBack) addToMap(it.fileBack);
+                if (it.boceto) addToMap(it.boceto); // Twinface: boceto de referencia por archivo
             });
             if (selectedComplementary) {
                 Object.keys(selectedComplementary).forEach(id => {
@@ -815,7 +844,7 @@ const OrderForm = ({ serviceId: propServiceId }) => {
 
             // Structure Lines and Sublines
             const grupos = {};
-            items.forEach(it => {
+            items.forEach((it, idx) => {
                 const matInfo = mapMaterial(it.material || globalMaterial);
                 const key = `${matInfo.name}| ${serviceSubType} `.toUpperCase();
 
@@ -867,6 +896,9 @@ const OrderForm = ({ serviceId: propServiceId }) => {
                         observaciones: (it.printSettings?.observation || '') + ' [DORSO]', // Agregar DORSO a observaciones
                         sinDPI: fileBackEffective.dpiConfirmedByUser ? 1 : null
                     } : null,
+                    // Twinface: boceto de referencia de ESTE archivo (va a ArchivosReferencia).
+                    // La etiqueta identifica a qué archivo pertenece (coincide con "Archivo N de M" del arte).
+                    boceto: it.boceto ? { name: it.boceto.name, etiqueta: `Boceto Archivo ${idx + 1} de ${items.length}` } : null,
                     cantidad: finalQty,
                     nota: (it.note || '') + printNote + (shouldUseSame ? ' [TWINFACE: MISMA IMAGEN DORSO]' : ''),
                     printSettings: it.printSettings,
@@ -940,6 +972,8 @@ const OrderForm = ({ serviceId: propServiceId }) => {
                     const tipoPrincipal = sl.archivoPrincipal?.typeOverride || 'PRODUCCION';
                     if (sl.archivoPrincipal) archivosServicio.push({ ...sl.archivoPrincipal, tipo: tipoPrincipal });
                     if (sl.archivoDorso) archivosServicio.push({ ...sl.archivoDorso, tipo: 'PRODUCCION' }); // FIX: Usar tipo estándar, distinción via obs
+                    // Twinface: boceto de ESTE archivo → REFERENCIA (no producción)
+                    if (sl.boceto) archivosServicio.push({ name: sl.boceto.name, tipo: 'BOCETO', etiqueta: sl.boceto.etiqueta });
                 });
 
                 // Archivos de Referencia (Solo al primer grupo del principal para no duplicar metadatos globales)
@@ -1705,11 +1739,28 @@ const OrderForm = ({ serviceId: propServiceId }) => {
                                                                 onCopiesChange={(v) => actions.updateItem(item.id, 'copies', v)}
                                                                 onChange={(s) => actions.updateItem(item.id, 'printSettings', s)}
                                                                 disableScaling={serviceId === 'tpu' || serviceId?.toUpperCase() === 'DF'}
-                                                                hideRaport={!!config.hideRaport}
+                                                                hideRaport={!!config.hideRaport || isDirectaTwinface}
+                                                                hideScale={isDirectaTwinface}
                                                             />
                                                         )}
                                                     </div>
                                                 </div>
+
+                                                {/* TWINFACE (Tela Doble Cara): boceto OBLIGATORIO por CADA juego de archivo.
+                                                    Muestra cómo se arma frente/dorso de ESTE archivo. Viaja como REFERENCIA (BOCETO), no producción. */}
+                                                {isDirectaTwinface && (
+                                                    <div className="mt-4 pt-3 border-t border-zinc-700/30">
+                                                        <p className="block text-xs font-bold uppercase text-purple-300 mb-1">Boceto Frente/Dorso de este archivo (obligatorio) *</p>
+                                                        <p className="text-[11px] text-zinc-500 mb-2">Subí un boceto que muestre cómo se arma el frente y el dorso de este archivo.</p>
+                                                        <FileUploadZone
+                                                            id={`boceto-${item.id}`}
+                                                            label="Boceto"
+                                                            selectedFile={item.boceto}
+                                                            onFileSelected={(f) => { if (f) { actions.updateItem(item.id, 'boceto', f); addToast('Boceto adjunto (Pendiente de envío con el pedido)'); } }}
+                                                            color="purple"
+                                                        />
+                                                    </div>
+                                                )}
 
                                                 {/* ECOUV: terminaciones de ESTE archivo (según el material DE ESTE archivo, se cobran aparte) */}
                                                 {isEcouvMaterial && (() => {

@@ -11,6 +11,27 @@ const pdfService  = require('../services/pdfService');
 const io = (req) => req.app.get('socketio');
 
 // ─────────────────────────────────────────────
+// Resuelve la fecha elegida por el cajero al cobrar una deuda (retrofecha).
+// Recibe 'YYYY-MM-DD' del frontend y devuelve:
+//   · null  → si no viene, es inválida, o es HOY  ⇒ cada INSERT usa su GETDATE()
+//             (comportamiento actual, SIN dependencia del SP con @MovFecha).
+//   · Date con la HORA ACTUAL → si es una fecha pasada (retroactiva) ⇒ la fecha se
+//             estampa en el documento + contabilidad (asiento, caja/pago y submayor).
+// Igual criterio que la fecha editable de Facturación Manual: no toca DGI, solo la
+// fecha contable/caja del comprobante generado.
+function resolverFechaCobro(fechaStr) {
+  if (!fechaStr) return null;
+  const m = String(fechaStr).trim().match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (!m) return null;
+  const y = Number(m[1]), mo = Number(m[2]), d = Number(m[3]);
+  if (!y || !mo || !d || mo > 12 || d > 31) return null;
+  const ahora = new Date();
+  const esHoy = y === ahora.getFullYear() && mo === (ahora.getMonth() + 1) && d === ahora.getDate();
+  if (esHoy) return null; // hoy → GETDATE() en cada INSERT (no requiere el SP con @MovFecha)
+  return new Date(y, mo - 1, d, ahora.getHours(), ahora.getMinutes(), ahora.getSeconds());
+}
+
+// ─────────────────────────────────────────────
 
 const procesarTransaccion = async (req, res) => {
   const usuarioId = req.user?.id || 70;
@@ -1363,10 +1384,17 @@ const procesarPagoDeuda = async (req, res) => {
   // Multiempresa: empresa a la que se atribuye el pago (null => la BD aplica el DEFAULT)
   const empresaId = req.body?.empresaId || req.user?.empresaId || null;
   try {
-    const { header, aplicaciones, pagos } = req.body;
+    const { header, aplicaciones } = req.body;
+    const pagos = Array.isArray(req.body.pagos) ? req.body.pagos : [];
     if (!header?.clienteId) return res.status(400).json({ error: 'clienteId es requerido.' });
     if (!aplicaciones?.length) return res.status(400).json({ error: 'Debe seleccionar al menos una deuda.' });
-    if (!pagos?.length) return res.status(400).json({ error: 'Debe incluir al menos un método de pago.' });
+    // A crédito no se cobra: se genera el comprobante y la deuda queda viva → no se exige medio de pago.
+    // Sin pago, la imputación se saltea (guard pagoRestante<=0) y el bloque tieneOrdenSinFactura genera el Pedido Caja igual.
+    if (!pagos.length && !header.esCredito) return res.status(400).json({ error: 'Debe incluir al menos un método de pago.' });
+
+    // Fecha elegida por el cajero (retrofecha). null => hoy (GETDATE() en cada INSERT).
+    const fechaCobro = resolverFechaCobro(header.fecha);
+    if (fechaCobro) logger.info(`[PAGO-DEUDA] Cobro retrofechado a ${fechaCobro.toISOString().slice(0,10)} (header.fecha=${header.fecha}).`);
 
     // ─────────────────────────────────────────────
     // Moneda base = la moneda de las deudas (la envía el front en header.moneda).
@@ -1444,6 +1472,7 @@ const procesarPagoDeuda = async (req, res) => {
           MovConcepto:      ('Pago deuda - ' + (ap.descripcion || ('Deuda #' + ddeId))).substring(0, 300),
           MovImporte:       montoAplicar,
           MovUsuarioAlta:   usuarioId,
+          MovFecha:         fechaCobro, // null => GETDATE() en el SP
           MovObservaciones: ('DeudaDoc #' + ddeId + ' | Pagado: ' + montoAplicar.toFixed(4) + ' | Pendiente: ' + nuevoPendiente.toFixed(4) + ' | Estado: ' + nuevoEstado).substring(0, 500),
         });
 
@@ -1615,6 +1644,7 @@ const procesarPagoDeuda = async (req, res) => {
         .input('monedaBase', sql.VarChar(10), monedaBaseStr)
         .input('obs',      sql.VarChar(500), header.observaciones || 'Pago de deuda cuenta corriente')
         .input('AdminFlag', sql.Bit, (header.admin || header.esAdministrativa) ? 1 : 0)
+        .input('FEmis',    sql.DateTime, fechaCobro) // retrofecha; null => GETDATE()
         .query(`
           INSERT INTO dbo.TransaccionesCaja
             (StuIdSesion, TcaUsuarioId, TcaClienteId, TcaFecha,
@@ -1622,7 +1652,7 @@ const procesarPagoDeuda = async (req, res) => {
              TcaTotalBruto, TcaTotalAjuste, TcaTotalNeto, TcaTotalCobrado, TcaMonedaBase, TcaObservaciones, EsCajaAdmin)
           OUTPUT INSERTED.TcaIdTransaccion
           VALUES
-            (@sesId, @usuario, @cliente, GETDATE(),
+            (@sesId, @usuario, @cliente, ISNULL(@FEmis, GETDATE()),
              @tipo, @serie, @num, 'COBRADO',
              @neto, 0, @neto, @cobrado, @monedaBase, @obs, @AdminFlag)
         `);
@@ -1661,6 +1691,7 @@ const procesarPagoDeuda = async (req, res) => {
               cfeEstado:        cfeEstadoVal,
               usuarioId:        usuarioId,
               tcaIdTransaccion: tcaIdPago,
+              docFechaEmision:  fechaCobro, // retrofecha; null => GETDATE()
               observaciones:    (header.observaciones || 'Pago de deuda cuenta corriente').substring(0, 200),
               docPagado:        true,
               empresaId:        empresaId
@@ -1693,6 +1724,7 @@ const procesarPagoDeuda = async (req, res) => {
                     cfeEstado:         null,
                     usuarioId:         usuarioId,
                     tcaIdTransaccion:  tcaIdPago,
+                    docFechaEmision:   fechaCobro, // retrofecha; null => GETDATE()
                     observaciones:     ('Recibo de cobro - ' + tipoDocVal + ' ' + serieTransaccion + '-' + docNumero).substring(0, 200),
                     docPagado:         true,
                     docIdDocumentoRef: docId,
@@ -1889,6 +1921,7 @@ const procesarPagoDeuda = async (req, res) => {
                     MovConcepto: 'Facturado (' + tipoDocVal + ' ' + serieTransaccion + '-' + docNumero + ')',
                     MovImporte: -docTotal, // débito por el total del Pedido Caja
                     MovUsuarioAlta: usuarioId,
+                    MovFecha: fechaCobro, // retrofecha; null => GETDATE()
                     DocIdDocumento: docId
                   }, transaction);
                   logger.info(`[PAGO-DEUDA] Movimiento VTA_CAJA insertado por ${docTotal} en cuenta ${cueIdCuenta}`);
@@ -1912,6 +1945,7 @@ const procesarPagoDeuda = async (req, res) => {
           .input('monto',   sql.Decimal(18,4), Number(p.montoOriginal))
           .input('cot',     sql.Decimal(18,4), Number(p.cotizacion) || 1)
           .input('usuario', sql.Int,          usuarioId)
+          .input('FEmis',   sql.DateTime,     fechaCobro) // retrofecha; null => GETDATE()
           .query(`
             INSERT INTO dbo.Pagos
               (PagTcaIdTransaccion, MPaIdMetodoPago, PagIdMonedaPago,
@@ -1919,7 +1953,7 @@ const procesarPagoDeuda = async (req, res) => {
                PagMontoConvertido, PagTipoMovimiento)
             VALUES
               (@tcaId, @metodo, @moneda,
-               @monto, GETDATE(), @usuario, @cot,
+               @monto, ISNULL(@FEmis, GETDATE()), @usuario, @cot,
                @monto, 'COBRO')
           `);
       }
@@ -1960,6 +1994,7 @@ const procesarPagoDeuda = async (req, res) => {
           MovConcepto:      ('Saldo a favor por pago excedente - ' + (header.observaciones || 'Pago de deuda')).substring(0, 300),
           MovImporte:       exceso,   // positivo = crédito = saldo a favor
           MovUsuarioAlta:   usuarioId,
+          MovFecha:         fechaCobro, // retrofecha; null => GETDATE()
           DocIdDocumento:   docId || null,
           MovObservaciones: ('Excedente ' + exceso.toFixed(2) + ' ' + monedaBaseStr + ' | Pagado ' + totalPagadoBase.toFixed(2) + ' vs Deudas ' + sumDeudas.toFixed(2)).substring(0, 500),
         }, transaction);
@@ -2018,6 +2053,7 @@ const procesarPagoDeuda = async (req, res) => {
           }
           await contabilidadCore.generarAsientoCompleto({
             concepto:         ("Pago deuda #" + header.clienteId + " - " + (header.observaciones || "Cobro cuenta corriente") + (exceso > 0.01 ? ` (incl. saldo a favor ${exceso.toFixed(2)})` : '')).substring(0, 200),
+            fecha:            fechaCobro || new Date(), // retrofecha; null => hoy
             usuarioId,
             tcaIdTransaccion: tcaIdPago,
             origen:           'PAGO_DEUDA',
@@ -2574,11 +2610,14 @@ const registrarPagoAnticipo = async (req, res) => {
   // Multiempresa: empresa a la que se atribuye el anticipo (null => la BD aplica el DEFAULT)
   const empresaId = req.body?.empresaId || req.user?.empresaId || null;
   try {
-    const { clienteId, cuentaId, importe, metodoPagoId, monedaId, concepto, admin } = req.body;
+    const { clienteId, cuentaId, importe, metodoPagoId, monedaId, concepto, admin, fecha } = req.body;
     if (!clienteId || !importe)
       return res.status(400).json({ error: 'Faltan parámetros: clienteId, importe' });
     const montoNum = Number(importe);
     if (montoNum <= 0) return res.status(400).json({ error: 'El importe debe ser mayor a 0' });
+    // Fecha elegida (retrofecha). null => hoy (GETDATE() en cada INSERT). Mismo criterio que el cobro (procesarPagoDeuda).
+    const fechaAnticipo = resolverFechaCobro(fecha);
+    if (fechaAnticipo) logger.info(`[ANTICIPO] Retrofechado a ${fechaAnticipo.toISOString().slice(0,10)} (fecha=${fecha}).`);
 
     const pool = await getPool();
     const transaction = pool.transaction();
@@ -2642,11 +2681,12 @@ const registrarPagoAnticipo = async (req, res) => {
         .input('Monto',sql.Decimal(18,4), montoNum)
         .input('Obs',  sql.VarChar(500),  conceptoFull)
         .input('AdminFlag', sql.Bit, admin ? 1 : 0)
+        .input('FEmis', sql.DateTime, fechaAnticipo) // retrofecha; null => GETDATE()
         .query(`INSERT INTO dbo.TransaccionesCaja
                   (StuIdSesion,TcaUsuarioId,TcaClienteId,TcaFecha,TcaTipoDocumento,TcaSerieDoc,TcaNumeroDoc,
                    TcaEstado,TcaTotalBruto,TcaTotalAjuste,TcaTotalNeto,TcaTotalCobrado,TcaMonedaBase,TcaObservaciones,EsCajaAdmin)
                 OUTPUT INSERTED.TcaIdTransaccion
-                VALUES(@Ses,@Usr,@Cli,GETDATE(),'ANTICIPO','A',@Num,'COBRADO',@Monto,0,@Monto,@Monto,@Mon,@Obs,@AdminFlag)`);
+                VALUES(@Ses,@Usr,@Cli,ISNULL(@FEmis,GETDATE()),'ANTICIPO','A',@Num,'COBRADO',@Monto,0,@Monto,@Monto,@Mon,@Obs,@AdminFlag)`);
       const tcaId = tcaR.recordset[0].TcaIdTransaccion;
 
       // ─────────────────────────────────────────────
@@ -2657,8 +2697,9 @@ const registrarPagoAnticipo = async (req, res) => {
           .input('MonId',sql.Int,          monId)
           .input('Monto',sql.Decimal(18,4),montoNum)
           .input('Usr',  sql.Int,          usuarioId)
+          .input('FEmis',sql.DateTime,     fechaAnticipo) // retrofecha; null => GETDATE()
           .query(`INSERT INTO dbo.Pagos(PagTcaIdTransaccion,MPaIdMetodoPago,PagIdMonedaPago,PagMontoPago,PagFechaPago,PagUsuarioAlta,PagCotizacion,PagMontoConvertido,PagTipoMovimiento)
-                  VALUES(@Tca,@Met,@MonId,@Monto,GETDATE(),@Usr,1,@Monto,'INGRESO')`);
+                  VALUES(@Tca,@Met,@MonId,@Monto,ISNULL(@FEmis,GETDATE()),@Usr,1,@Monto,'INGRESO')`);
       }
 
       // ─────────────────────────────────────────────
@@ -2715,6 +2756,7 @@ const registrarPagoAnticipo = async (req, res) => {
             usuarioId:        usuarioId,
             tcaIdTransaccion: tcaId,
             observaciones:    (conceptoFull + (metodoNombre ? ' - ' + metodoNombre : '')).substring(0, 200),
+            docFechaEmision:  fechaAnticipo, // retrofecha; null => GETDATE()
             docPagado:        true,
             empresaId:        empresaId
           },
@@ -2747,6 +2789,7 @@ const registrarPagoAnticipo = async (req, res) => {
         MovConcepto:    `Pago: ${conceptoFull}${metodoDesc}`,
         MovImporte:     montoNum,
         MovUsuarioAlta: usuarioId,
+        MovFecha:       fechaAnticipo, // retrofecha; null => GETDATE() (requiere el SP add_MovFecha en prod)
         DocIdDocumento: docId,
       }, transaction);
 
@@ -2822,6 +2865,7 @@ const registrarPagoAnticipo = async (req, res) => {
         }
         await contabilidadCore.generarAsientoCompleto({
           concepto:         ('Anticipo #' + cliId + ' - ' + conceptoFull).substring(0, 200),
+          fecha:            fechaAnticipo || new Date(), // retrofecha; null => hoy
           usuarioId,
           tcaIdTransaccion: tcaId,
           origen:           'ANTICIPO',

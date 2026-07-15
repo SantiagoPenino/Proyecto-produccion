@@ -445,6 +445,16 @@ const resolverLineasDetalle = async ({ tcaIdTransaccion, orderIds, monedaFactura
         LEFT JOIN dbo.Articulos artod  ON artod.ProIdProducto = od.ProIdProducto
         WHERE td.TcaIdTransaccion = @tcaId
           AND td.TdeTipoReferencia IN ('ORDEN_RETIRO', 'ORDEN_DEPOSITO')
+          -- Excluir REPOSICIONES sin cargo (código -R# y sin precio propio): son
+          -- re-trabajos gratis (OrdCostoFinal = 0). Si se dejaran, el COALESCE de
+          -- arriba cae a td.TdeImporteFinal (el total del pedido ENTERO) e infla la
+          -- factura; y una línea en 0 la rechaza DGI. Un 0 en una orden que NO es
+          -- reposición SÍ se deja pasar (señal de error, no se oculta).
+          AND NOT (
+                ISNULL(od.OrdCodigoOrden, CAST(td.TdeCodigoReferencia AS VARCHAR(100))) LIKE '%-R[0-9]%'
+            AND ISNULL(pcd.Subtotal, 0)     = 0
+            AND ISNULL(od.OrdCostoFinal, 0) = 0
+          )
       `);
 
     const withCot = await aplicarCotizacion(res.recordset);
@@ -494,6 +504,12 @@ const resolverLineasDetalle = async ({ tcaIdTransaccion, orderIds, monedaFactura
       LEFT JOIN dbo.Articulos art               ON art.ProIdProducto    = od.ProIdProducto
       LEFT JOIN dbo.Articulos art_pcd           ON art_pcd.ProIdProducto = pcd.ProIdProducto
       WHERE od.OrdIdOrden IN (${idList})
+        -- Excluir reposiciones sin cargo (ver nota en MODO 1): -R# sin precio propio.
+        AND NOT (
+              od.OrdCodigoOrden LIKE '%-R[0-9]%'
+          AND ISNULL(pcd.Subtotal, 0)     = 0
+          AND ISNULL(od.OrdCostoFinal, 0) = 0
+        )
     `);
 
     const withCot = await aplicarCotizacion(res.recordset);

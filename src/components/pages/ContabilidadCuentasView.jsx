@@ -1043,7 +1043,7 @@ const ModalPago = ({ cuenta, onClose, onSuccess }) => {
 };
 
 // ── Modal Saldo Inicial (apertura por moneda: a favor o en contra) ───────────
-const ModalSaldoInicial = ({ cliente, onClose, onSuccess }) => {
+export const ModalSaldoInicial = ({ cliente, onClose, onSuccess }) => {
   const [form, setForm] = useState({
     MonIdMoneda: '1',       // 1 = UYU, 2 = USD
     Sentido:     'DEUDA',   // DEUDA = en contra (debe) · FAVOR = a favor

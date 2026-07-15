@@ -27,6 +27,7 @@ export const PrintSettingsPanel = ({
     onChange,
     disableScaling = false,
     hideRaport = false,   // oculta el modo Raport (servicios que no lo usan, ej: EcoUV)
+    hideScale = false,    // oculta el modo A Escala (ej: tela doble cara Twinface en Directa)
     hideHeader = false
 }) => {
     // ... (rest of vars)
@@ -194,14 +195,16 @@ export const PrintSettingsPanel = ({
                         <ImageIcon size={16} />
                         Normal
                     </button>
-                    <button
-                        type="button"
-                        onClick={() => handleInputChange('mode', 'scale')}
-                        className={`flex-1 py-2 px-3 rounded-lg text-sm font-bold transition-all flex items-center justify-center gap-2 ${mode === 'scale' ? 'bg-cyan-400/15 text-cyan-300 border border-cyan-500/30' : 'text-zinc-500 hover:bg-zinc-700 hover:text-zinc-300'}`}
-                    >
-                        <Maximize size={16} />
-                        A Escala
-                    </button>
+                    {!hideScale && (
+                        <button
+                            type="button"
+                            onClick={() => handleInputChange('mode', 'scale')}
+                            className={`flex-1 py-2 px-3 rounded-lg text-sm font-bold transition-all flex items-center justify-center gap-2 ${mode === 'scale' ? 'bg-cyan-400/15 text-cyan-300 border border-cyan-500/30' : 'text-zinc-500 hover:bg-zinc-700 hover:text-zinc-300'}`}
+                        >
+                            <Maximize size={16} />
+                            A Escala
+                        </button>
+                    )}
                     {!hideRaport && (
                         <button
                             type="button"

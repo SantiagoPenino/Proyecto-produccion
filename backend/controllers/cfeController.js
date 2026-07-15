@@ -1003,7 +1003,10 @@ exports.editarFactura = async (req, res) => {
                   MovConcepto = @concepto,
                   MovFecha    = ISNULL(@fechaEmis, MovFecha)
               WHERE DocIdDocumento = @docId
-                AND MovTipo IN ('VTA_CAJA','VENTA','CARGO')
+                -- CIERRE_CICLO incluido: al editar un documento de cierre de ciclo, su movimiento
+                -- de facturación en el libro mayor DEBE seguir al DocTotal (= -@imp), o el saldo
+                -- queda desfasado de la factura (la factura manda).
+                AND MovTipo IN ('VTA_CAJA','VENTA','CARGO','CIERRE_CICLO')
                 AND (MovAnulado IS NULL OR MovAnulado = 0)
             `);
 
