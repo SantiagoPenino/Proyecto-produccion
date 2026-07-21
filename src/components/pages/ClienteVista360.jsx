@@ -31,6 +31,7 @@ import api from '../../services/api';
 import { generarPdfEstadoCuenta, generarPdfEstadoCuentaResumen } from '../../utils/pdfGenerator';
 import { exportarExcelEstadoCuenta } from '../../utils/excelGenerator';
 import ClienteBilletera from '../common/ClienteBilletera';
+import { fechaOrden } from '../../utils/fechas';
 // Reuso directo de las piezas ya construidas y probadas de la vista de cuentas.
 import {
   fetchAPI, fmt, FilaCliente, MovimientosPanel, PlanesPanel, ModalSaldoInicial,
@@ -102,12 +103,15 @@ const EstadoChip = ({ estado }) => (
   </span>
 );
 
-function ResumenDocumentosPanel({ CliIdCliente, monSimbolo, saldoCuenta = 0, desde, hasta, trigger, incluirAnulados, onResumen }) {
+function ResumenDocumentosPanel({ CliIdCliente, desde, hasta, trigger, incluirAnulados, onIncluirAnulados, saldosPorMoneda, recursoCuentas = [], cliente, recargarCuentas, onResumen }) {
   const [docs, setDocs]       = useState([]);
   const [pagos, setPagos]     = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError]     = useState(null);
-  const [vista, setVista]     = useState('DOCS'); // 'DOCS' | 'PAGOS' | 'ORDENES'
+  const [vista, setVista]     = useState('ESTADO'); // 'ESTADO' | 'DOCS' | 'PAGOS' | 'ORDENES'
+  const [fTipoEC, setFTipoEC] = useState('TODOS');  // filtro de tipo en Estado de Cuenta
+  const [fMonEC, setFMonEC]   = useState('TODAS');  // filtro de moneda en Estado de Cuenta (símbolo $ / US$)
+  const [fConceptoEC, setFConceptoEC] = useState(''); // búsqueda por concepto en Estado de Cuenta
   const [ordenesMov, setOrdenesMov]   = useState([]);
   const [loadingOrd, setLoadingOrd]   = useState(false);
   const [ordCargadas, setOrdCargadas] = useState(false);
@@ -148,15 +152,112 @@ function ResumenDocumentosPanel({ CliIdCliente, monSimbolo, saldoCuenta = 0, des
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [vista, CliIdCliente, desde, hasta, trigger, incluirAnulados]);
 
-  const visibles     = docs.filter(d => d.MonSimbolo === monSimbolo && (incluirAnulados || d.estado !== 'ANULADO'));
-  const pagosVisibles = pagos.filter(p => p.MonSimbolo === monSimbolo);
-  const totalPend    = visibles.reduce((s, d) => s + Number(d.pendiente || 0), 0);
-  const pagados      = visibles.filter(d => d.estado === 'PAGADO').length;
-  // Imputado = pago aplicado a un documento; Anticipado = a favor / sin imputar
-  const esImputado   = (p) => !p.esFavor && !!p.aplicadoA;
-  const totalImputado   = pagosVisibles.filter(esImputado).reduce((s, p) => s + Number(p.importe || 0), 0);
-  const totalAnticipado = pagosVisibles.filter(p => !esImputado(p)).reduce((s, p) => s + Number(p.importe || 0), 0);
-  const totalCobrado    = pagosVisibles.reduce((s, p) => s + Number(p.importe || 0), 0);
+  // KPIs de la barra de saldos, POR MONEDA (antes dependían del toggle UYU/USD, que ya
+  // no existe). Pendiente = suma de lo que resta de los documentos de esa moneda;
+  // "a favor" = saldo de la cuenta de dinero de esa moneda (lo sabe el padre → saldosPorMoneda).
+  const resumenKPI = useMemo(() => {
+    const map = {};
+    docs.forEach(d => {
+      if (!incluirAnulados && d.estado === 'ANULADO') return;
+      const m = d.MonSimbolo || '$';
+      if (!map[m]) map[m] = { moneda: m, totalPend: 0, pagados: 0, total: 0, aFavor: 0 };
+      map[m].totalPend += Number(d.pendiente || 0);
+      map[m].total += 1;
+      if (d.estado === 'PAGADO') map[m].pagados += 1;
+    });
+    // Sumar el saldo a favor de cada moneda; incluir monedas que solo tienen saldo a favor.
+    Object.entries(saldosPorMoneda || {}).forEach(([m, v]) => {
+      if (!map[m]) map[m] = { moneda: m, totalPend: 0, pagados: 0, total: 0, aFavor: 0 };
+      map[m].aFavor = Number(v) || 0;
+    });
+    return Object.values(map);
+  }, [docs, incluirAnulados, saldosPorMoneda]);
+
+  // ── ESTADO DE CUENTA: documentos + pagos en una sola línea de tiempo ──────────
+  // A diferencia de las otras pestañas, NO se filtra por el toggle UYU/USD de arriba:
+  // muestra AMBAS monedas juntas (con filtro propio). Un documento es un CARGO (debe:
+  // crea deuda), un pago es un ABONO (haber: la cancela). El "pagado" del documento y las
+  // filas de Pagos son el MISMO dinero (verificado), así que el doc va SOLO como cargo y
+  // el pago SOLO como abono, nunca los dos, o se contaría el cobro dos veces.
+  const prefijoDoc = (d) => (d.documento || '').split('-')[0].toUpperCase() || 'OTRO';
+  const movimientos = useMemo(() => {
+    const docsEC = docs.filter(d => incluirAnulados || d.estado !== 'ANULADO');
+    const filas = [
+      ...docsEC.map(d => ({
+        clase: 'DOC', key: 'D' + d.DocIdDocumento, fecha: d.fecha, moneda: d.MonSimbolo,
+        tipoKey: prefijoDoc(d), tipoLabel: d.tipo, etiqueta: d.documento,
+        descripcion: d.descripcion, factura: d.factura, cfeEstado: d.cfeEstado,
+        cargo: Number(d.total || 0), abono: 0, estado: d.estado,
+      })),
+      ...pagos.map((p, i) => ({
+        clase: 'PAGO', key: 'P' + i, fecha: p.fecha, moneda: p.MonSimbolo,
+        tipoKey: 'PAGO', tipoLabel: p.tipo, etiqueta: p.aplicadoA || null,
+        esFavor: !!p.esFavor, medioPago: p.medioPago, cheques: p.cheques, recibo: p.recibo,
+        cargo: 0, abono: Number(p.importe || 0), estado: p.esFavor ? 'A FAVOR' : 'COBRO',
+      })),
+    ];
+    let filtradas = filas;
+    if (fTipoEC !== 'TODOS') filtradas = filtradas.filter(f => f.tipoKey === fTipoEC);
+    if (fMonEC !== 'TODAS')  filtradas = filtradas.filter(f => f.moneda === fMonEC);
+    // Búsqueda por concepto: matchea documento, tipo, e-Ticket, descripción o medio de pago.
+    const q = fConceptoEC.trim().toLowerCase();
+    if (q) {
+      filtradas = filtradas.filter(f => (
+        `${f.etiqueta || ''} ${f.tipoLabel || ''} ${f.descripcion || ''} ${f.factura || ''} ${f.medioPago || ''}`
+          .toLowerCase().includes(q)
+      ));
+    }
+
+    // Saldo acumulado (cartola) POR MONEDA: pesos y dólares llevan su propio saldo, no se
+    // mezclan. Se acumula CRONOLÓGICO (viejo→nuevo) y, a igual fecha, el cargo (te
+    // facturan) ANTES que el abono (después pagás), para que una venta contado no
+    // "parpadee a favor". Un documento anulado no crea deuda: no suma.
+    filtradas.sort((a, b) => {
+      const d = fechaOrden(a.fecha) - fechaOrden(b.fecha);   // ascendente
+      if (d !== 0) return d;
+      return (a.clase === 'DOC' ? 0 : 1) - (b.clase === 'DOC' ? 0 : 1); // cargo primero
+    });
+    const acums = {};
+    for (const m of filtradas) {
+      if (m.estado !== 'ANULADO') acums[m.moneda] = (acums[m.moneda] || 0) + m.cargo - m.abono;
+      m.saldo = acums[m.moneda] || 0;
+    }
+    // Display: más reciente arriba.
+    filtradas.reverse();
+    return filtradas;
+  }, [docs, pagos, incluirAnulados, fTipoEC, fMonEC, fConceptoEC]);
+  // El saldo corriente solo es legible con TODOS los movimientos: un subconjunto (por tipo
+  // o por búsqueda de concepto) daría un acumulado parcial sin sentido. La moneda no lo
+  // afecta: el saldo es por moneda.
+  const mostrarSaldo = fTipoEC === 'TODOS' && !fConceptoEC.trim();
+
+  // Opciones del filtro de tipo (las que existen en los datos, ambas monedas, + Pagos)
+  const tiposDisponibles = useMemo(() => {
+    const set = new Map();
+    docs.filter(d => incluirAnulados || d.estado !== 'ANULADO').forEach(d => set.set(prefijoDoc(d), d.tipo));
+    const opts = [...set.entries()].map(([key, label]) => ({ key, label }));
+    if (pagos.length) opts.push({ key: 'PAGO', label: 'Pagos / Cobros' });
+    return opts;
+  }, [docs, pagos, incluirAnulados]);
+
+  // Monedas presentes (para el filtro y los subtotales del pie)
+  const monedasPresentes = useMemo(() => {
+    const s = new Set();
+    docs.forEach(d => s.add(d.MonSimbolo));
+    pagos.forEach(p => s.add(p.MonSimbolo));
+    return [...s].filter(Boolean);
+  }, [docs, pagos]);
+
+  // Subtotales por moneda (una fila de totales por cada moneda visible)
+  const resumenPorMoneda = useMemo(() => {
+    const m = {};
+    for (const f of movimientos) {
+      if (!m[f.moneda]) m[f.moneda] = { cargos: 0, abonos: 0 };
+      m[f.moneda].cargos += f.cargo;
+      m[f.moneda].abonos += f.abono;
+    }
+    return Object.entries(m).map(([moneda, v]) => ({ moneda, ...v, saldo: v.cargos - v.abonos }));
+  }, [movimientos]);
 
   // Órdenes filtradas (pestaña Órdenes) — filtros por orden, documento, facturación, moneda y situación de pago
   const ordenesFiltradas = ordenesMov.filter(o => {
@@ -169,11 +270,11 @@ function ResumenDocumentosPanel({ CliIdCliente, monSimbolo, saldoCuenta = 0, des
     return true;
   });
 
-  // Reporta los saldos al padre (se muestran arriba, en la barra de filtros, no acá)
+  // Reporta los saldos POR MONEDA al padre (se muestran arriba, en la barra de saldos).
   useEffect(() => {
-    if (onResumen) onResumen({ totalPend, pagados, total: visibles.length, saldoCuenta: Number(saldoCuenta) || 0, monSimbolo });
+    if (onResumen) onResumen(resumenKPI);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [totalPend, pagados, visibles.length, saldoCuenta, monSimbolo]);
+  }, [resumenKPI]);
 
   if (loading) {
     return <div className="flex justify-center py-12"><div className="animate-spin h-8 w-8 border-2 border-cyan-600 border-t-transparent rounded-full" /></div>;
@@ -186,9 +287,9 @@ function ResumenDocumentosPanel({ CliIdCliente, monSimbolo, saldoCuenta = 0, des
     <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
       {/* Los saldos (pendiente / a favor) se muestran arriba en la barra de filtros (elevados vía onResumen) */}
 
-      {/* Sub-pestañas: Documentos / Pagos */}
+      {/* Sub-pestañas: Estado de cuenta / Órdenes / Recursos */}
       <div className="px-4 pt-3 flex items-center gap-4 border-b border-slate-100">
-        {[['DOCS', 'Documentos', visibles.length], ['PAGOS', 'Pagos', pagosVisibles.length], ['ORDENES', 'Órdenes', ordCargadas ? ordenesFiltradas.length : null]].map(([key, label, count]) => (
+        {[['ESTADO', 'Estado de cuenta', movimientos.length], ['ORDENES', 'Órdenes', ordCargadas ? ordenesFiltradas.length : null], ['RECURSOS', 'Recursos', recursoCuentas.length || null]].map(([key, label, count]) => (
           <button key={key} type="button" onClick={() => setVista(key)}
             className={`relative pb-2.5 text-xs font-bold transition-colors ${vista === key ? 'text-cyan-700' : 'text-slate-400 hover:text-slate-600'}`}>
             {label} {count != null && <span className="text-[10px] font-semibold text-slate-400">({count})</span>}
@@ -197,148 +298,172 @@ function ResumenDocumentosPanel({ CliIdCliente, monSimbolo, saldoCuenta = 0, des
         ))}
       </div>
 
-      {/* ── Vista DOCUMENTOS ── */}
-      {vista === 'DOCS' && (
-        visibles.length === 0 ? (
-          <p className="text-center text-slate-400 text-sm py-10">Sin documentos en {monSimbolo} para el período.</p>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="text-[10px] uppercase tracking-wider text-slate-400 border-b border-slate-200">
-                  <th className="text-left font-bold px-4 py-2.5">Fecha</th>
-                  <th className="text-left font-bold px-4 py-2.5">Documento</th>
-                  <th className="text-right font-bold px-4 py-2.5">Importe doc.</th>
-                  <th className="text-right font-bold px-4 py-2.5">Pago</th>
-                  <th className="text-right font-bold px-4 py-2.5">Pendiente</th>
-                  <th className="text-center font-bold px-4 py-2.5">Estado</th>
-                </tr>
-              </thead>
-              <tbody>
-                {visibles.map(d => {
-                  const anulado = d.estado === 'ANULADO';
-                  const pend = Number(d.pendiente || 0);
-                  return (
-                    <tr key={d.DocIdDocumento} className="border-b border-slate-100 last:border-0 hover:bg-slate-50/60">
-                      <td className="px-4 py-3 tabular-nums text-slate-500 whitespace-nowrap align-top">{fmtFechaCorta(d.fecha)}</td>
-                      <td className="px-4 py-3 align-top">
-                        <span className={`font-bold ${anulado ? 'text-slate-400' : 'text-slate-800'}`}>{d.documento}</span>
-                        {d.factura && (
-                          <span className="flex items-center gap-1.5 text-[11px] text-slate-400 mt-0.5">
-                            e-Ticket {d.factura}
-                            {d.cfeEstado === 'ACEPTADO_DGI' ? (
-                              <span className="text-[9px] font-black px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-600 border border-emerald-200 uppercase tracking-wide">DGI ✓</span>
-                            ) : d.cfeEstado ? (
-                              <span className="text-[9px] font-black px-1.5 py-0.5 rounded bg-amber-50 text-amber-700 border border-amber-200 uppercase tracking-wide" title="No enviado a DGI">Borrador</span>
-                            ) : null}
-                          </span>
-                        )}
-                        {d.descripcion && <span className="block text-[11px] text-slate-400 truncate max-w-[240px]" title={d.descripcion}>{d.descripcion}</span>}
-                      </td>
-                      <td className={`px-4 py-3 text-right tabular-nums font-bold align-top ${anulado ? 'text-slate-400 line-through' : 'text-slate-800'}`}>
-                        {monSimbolo} {fmtMoney(d.total)}
-                      </td>
-                      <td className="px-4 py-3 text-right tabular-nums align-top">
-                        {anulado || Number(d.pagado) <= 0.01 ? (
-                          <span className="text-slate-300">—</span>
-                        ) : (
-                          <>
-                            <span className="font-semibold text-emerald-600">{monSimbolo} {fmtMoney(d.pagado)}</span>
-                            <span className="block text-[11px] text-slate-400">{d.reciboPago ? `Recibo ${d.reciboPago}` : 'Cobro en caja'}</span>
-                          </>
-                        )}
-                      </td>
-                      <td className={`px-4 py-3 text-right tabular-nums font-bold align-top ${pend > 0.01 ? 'text-rose-600' : 'text-slate-300'}`}>
-                        {anulado ? '—' : `${monSimbolo} ${fmtMoney(pend)}`}
-                      </td>
-                      <td className="px-4 py-3 text-center align-top"><EstadoChip estado={d.estado} /></td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        )
-      )}
-
-      {/* ── Vista PAGOS (centrada en el pago: a qué documento se imputó y cuánto) ── */}
-      {vista === 'PAGOS' && (
-        pagosVisibles.length === 0 ? (
-          <p className="text-center text-slate-400 text-sm py-10">Sin pagos en {monSimbolo} para el período.</p>
-        ) : (
-          <>
-            {/* Resumen: imputado vs anticipado */}
-            <div className="px-4 py-3 flex flex-wrap gap-2.5 border-b border-slate-100">
-              <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg border border-cyan-200 bg-cyan-50">
-                <span className="text-[10px] font-bold uppercase tracking-wider text-cyan-700/70">Imputado a documentos</span>
-                <span className="text-sm font-black text-cyan-700 tabular-nums">{monSimbolo} {fmtMoney(totalImputado)}</span>
-              </div>
-              <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg border border-emerald-200 bg-emerald-50">
-                <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-700/70">Pago anticipado / a favor</span>
-                <span className="text-sm font-black text-emerald-700 tabular-nums">{monSimbolo} {fmtMoney(totalAnticipado)}</span>
-              </div>
+      {/* ── Vista ESTADO DE CUENTA (documentos + pagos, cronológico) ── */}
+      {vista === 'ESTADO' && (
+        <>
+          {/* Filtros propios del estado de cuenta: moneda + tipo. Muestra AMBAS monedas
+              juntas (no depende del toggle UYU/USD de arriba). */}
+          <div className="px-4 py-3 flex flex-wrap items-center gap-2 border-b border-slate-100">
+            {monedasPresentes.length > 1 && (
+              <>
+                <span className="text-[10px] font-black uppercase tracking-wider text-slate-400 mr-1">Moneda</span>
+                {[{ key: 'TODAS', label: 'Todas' }, ...monedasPresentes.map(s => ({ key: s, label: s }))].map(t => (
+                  <button key={t.key} type="button" onClick={() => setFMonEC(t.key)}
+                    className={`text-[11px] font-bold px-2.5 py-1 rounded-full border transition-colors ${fMonEC === t.key ? 'bg-cyan-600 text-white border-cyan-600' : 'bg-white text-slate-500 border-slate-200 hover:border-cyan-300'}`}>
+                    {t.label}
+                  </button>
+                ))}
+                <span className="w-px h-4 bg-slate-200 mx-1" />
+              </>
+            )}
+            <span className="text-[10px] font-black uppercase tracking-wider text-slate-400 mr-1">Tipo</span>
+            {[{ key: 'TODOS', label: 'Todos' }, ...tiposDisponibles].map(t => (
+              <button key={t.key} type="button" onClick={() => setFTipoEC(t.key)}
+                className={`text-[11px] font-bold px-2.5 py-1 rounded-full border transition-colors ${fTipoEC === t.key ? 'bg-cyan-600 text-white border-cyan-600' : 'bg-white text-slate-500 border-slate-200 hover:border-cyan-300'}`}>
+                {t.label}
+              </button>
+            ))}
+            {/* Mostrar anulados — movido acá desde la barra de arriba */}
+            <label title="Incluir documentos anulados"
+              className="ml-auto flex items-center gap-2 text-[11px] font-bold text-slate-600 cursor-pointer select-none">
+              <span className="relative inline-flex items-center">
+                <input type="checkbox" checked={!!incluirAnulados}
+                  onChange={e => onIncluirAnulados?.(e.target.checked)} className="peer sr-only" />
+                <span className="w-9 h-5 rounded-full bg-slate-300 peer-checked:bg-cyan-600 transition-colors" />
+                <span className="absolute left-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform peer-checked:translate-x-4" />
+              </span>
+              Anulados
+            </label>
+            {/* Buscar por concepto: documento, e-Ticket, descripción, medio de pago */}
+            <div className="relative">
+              <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+              <input
+                type="text"
+                value={fConceptoEC}
+                onChange={e => setFConceptoEC(e.target.value)}
+                placeholder="Buscar concepto…"
+                className="w-48 pl-7 pr-7 py-1.5 text-[11px] font-medium border border-slate-200 rounded-full outline-none focus:border-cyan-400 focus:ring-2 focus:ring-cyan-500/10 placeholder:text-slate-400"
+              />
+              {fConceptoEC && (
+                <button type="button" onClick={() => setFConceptoEC('')}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700" title="Limpiar">
+                  <X size={13} />
+                </button>
+              )}
             </div>
+            <span className="text-[11px] font-semibold text-slate-400">{movimientos.length} movimiento{movimientos.length !== 1 ? 's' : ''}</span>
+          </div>
+          {mostrarSaldo && (desde || hasta) && (
+            <div className="px-4 pb-2 -mt-1">
+              <span className="text-[10px] text-amber-600 font-semibold">
+                El saldo arranca en cero al inicio del período — no incluye la deuda anterior a {desde ? fmtFechaCorta(desde) : 'la fecha'}.
+              </span>
+            </div>
+          )}
 
+          {movimientos.length === 0 ? (
+            <p className="text-center text-slate-400 text-sm py-10">Sin movimientos para el período.</p>
+          ) : (
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
                 <thead>
                   <tr className="text-[10px] uppercase tracking-wider text-slate-400 border-b border-slate-200">
                     <th className="text-left font-bold px-4 py-2.5">Fecha</th>
                     <th className="text-left font-bold px-4 py-2.5">Tipo</th>
-                    <th className="text-left font-bold px-4 py-2.5">Imputado a</th>
-                    <th className="text-right font-bold px-4 py-2.5">Queda del pago</th>
-                    <th className="text-right font-bold px-4 py-2.5">Importe</th>
+                    <th className="text-left font-bold px-4 py-2.5">Documento</th>
+                    <th className="text-right font-bold px-4 py-2.5">Cargo</th>
+                    <th className="text-right font-bold px-4 py-2.5">Abono</th>
+                    {mostrarSaldo && <th className="text-right font-bold px-4 py-2.5">Saldo</th>}
+                    <th className="text-center font-bold px-4 py-2.5">Estado</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {pagosVisibles.map((p, i) => {
-                    const imputado = esImputado(p);
-                    const docPago = docs.find(d => d.documento === p.aplicadoA);
+                  {movimientos.map(m => {
+                    const anulado = m.estado === 'ANULADO';
+                    const esDoc = m.clase === 'DOC';
                     return (
-                      <tr key={i} className="border-b border-slate-100 last:border-0 hover:bg-slate-50/60">
-                        <td className="px-4 py-3 tabular-nums text-slate-500 whitespace-nowrap">{fmtFechaCorta(p.fecha)}</td>
-                        <td className="px-4 py-3">
-                          <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-bold border ${imputado ? 'bg-cyan-50 text-cyan-700 border-cyan-200' : 'bg-emerald-50 text-emerald-700 border-emerald-200'}`}>
-                            <span className={`w-1.5 h-1.5 rounded-full ${imputado ? 'bg-cyan-500' : 'bg-emerald-500'}`} />
-                            {p.tipo}
+                      <tr key={m.key} className={`border-b border-slate-100 last:border-0 hover:bg-slate-50/60 ${esDoc ? '' : 'bg-emerald-50/20'}`}>
+                        <td className="px-4 py-3 tabular-nums text-slate-500 whitespace-nowrap align-middle">{fmtFechaCorta(m.fecha)}</td>
+                        {/* TIPO y DOCUMENTO en columnas separadas: así los códigos de
+                            documento quedan alineados uno debajo del otro (como la vista de
+                            cuentas), sin importar el largo del badge de tipo. */}
+                        <td className="px-4 py-3 align-middle whitespace-nowrap">
+                          <span className={`text-[9px] font-black px-1.5 py-0.5 rounded uppercase tracking-wide border ${esDoc ? 'bg-slate-50 text-slate-500 border-slate-200' : 'bg-emerald-50 text-emerald-600 border-emerald-200'}`}>
+                            {esDoc ? m.tipoLabel : (m.esFavor ? 'A favor' : 'Cobro')}
                           </span>
                         </td>
-                        <td className="px-4 py-3">
-                          <span className="font-bold text-slate-700">{p.aplicadoA || '—'}</span>
-                          {!imputado && <span className="block text-[10px] font-bold text-emerald-600 uppercase tracking-wider">anticipo</span>}
-                          {docPago?.reciboPago && <span className="block text-[11px] text-slate-400">Recibo {docPago.reciboPago}</span>}
-                        </td>
-                        <td className="px-4 py-3 text-right align-middle">
-                          {(() => {
-                            // "Queda del pago" = sobrante del pago tras imputarlo (NO lo que resta de la deuda)
-                            const sobrante = !imputado
-                              ? Number(p.importe || 0)                                   // anticipo: todo queda a favor (hasta imputar)
-                              : Math.max(0, Number(p.importe || 0) - Number(docPago?.total || 0)); // cobro: excedente sobre el doc
-                            return sobrante > 0.01 ? (
-                              <span className="inline-flex items-center gap-1.5 text-[11px] font-bold text-emerald-700 tabular-nums">
-                                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" /> {p.MonSimbolo} {fmtMoney(sobrante)} a favor
+                        <td className="px-4 py-3 align-middle">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className={`font-bold ${anulado ? 'text-slate-400 line-through' : 'text-slate-800'}`}>
+                              {m.etiqueta || (esDoc ? '' : 'Sin referencia')}
+                            </span>
+                            {/* Estado DGI del propio documento (dato fiable). NO se muestra la
+                                referencia al e-Ticket: se derivaba por texto y podía traer el
+                                número de otro documento (bug del campo 'factura'). */}
+                            {esDoc && m.cfeEstado === 'ACEPTADO_DGI' && (
+                              <span className="text-[9px] font-black px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-600 border border-emerald-200 uppercase tracking-wide">DGI ✓</span>
+                            )}
+                            {esDoc && m.cfeEstado && m.cfeEstado !== 'ACEPTADO_DGI' && (
+                              <span className="text-[9px] font-black px-1.5 py-0.5 rounded bg-amber-50 text-amber-700 border border-amber-200 uppercase tracking-wide">Borrador</span>
+                            )}
+                            {/* Cobro: recibo · forma de pago · N° cheque, en la misma línea */}
+                            {!esDoc && m.recibo && (
+                              <span className="text-[11px] font-bold text-slate-500">{m.recibo}</span>
+                            )}
+                            {!esDoc && m.medioPago && (
+                              <span className="text-[11px] font-semibold text-slate-500">
+                                · {m.medioPago}{m.cheques ? ` · Cheque N° ${m.cheques}` : ''}
                               </span>
-                            ) : (
-                              <span className="text-[11px] font-semibold text-slate-400">{p.MonSimbolo} 0,00 · imputado</span>
-                            );
-                          })()}
+                            )}
+                          </div>
                         </td>
-                        <td className="px-4 py-3 text-right tabular-nums font-bold text-emerald-600">{p.MonSimbolo} {fmtMoney(p.importe)}</td>
+                        <td className={`px-4 py-3 text-right tabular-nums font-bold align-middle whitespace-nowrap ${anulado ? 'text-slate-400 line-through' : 'text-slate-800'}`}>
+                          {m.cargo > 0 ? `${m.moneda} ${fmtMoney(m.cargo)}` : <span className="text-slate-300">—</span>}
+                        </td>
+                        <td className="px-4 py-3 text-right tabular-nums font-bold text-emerald-600 align-middle whitespace-nowrap">
+                          {m.abono > 0 ? `${m.moneda} ${fmtMoney(m.abono)}` : <span className="text-slate-300">—</span>}
+                        </td>
+                        {mostrarSaldo && (
+                          <td className={`px-4 py-3 text-right tabular-nums font-black align-middle whitespace-nowrap ${Math.abs(m.saldo) < 0.01 ? 'text-slate-400' : m.saldo > 0 ? 'text-slate-800' : 'text-emerald-700'}`}>
+                            {m.moneda} {fmtMoney(Math.abs(m.saldo))}
+                            {m.saldo < -0.01 && <span className="block text-[9px] font-bold text-emerald-600 uppercase tracking-wide">a favor</span>}
+                          </td>
+                        )}
+                        <td className="px-4 py-3 text-center align-middle">
+                          {esDoc ? <EstadoChip estado={m.estado} /> : (
+                            <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-bold border ${m.esFavor ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-cyan-50 text-cyan-700 border-cyan-200'}`}>
+                              {m.esFavor ? 'A favor' : 'Cobro'}
+                            </span>
+                          )}
+                        </td>
                       </tr>
                     );
                   })}
                 </tbody>
                 <tfoot>
-                  <tr className="bg-slate-50 border-t border-slate-200">
-                    <td colSpan={4} className="px-4 py-2.5 text-right text-[11px] font-bold uppercase tracking-wider text-slate-500">Total pagos en {monSimbolo}</td>
-                    <td className="px-4 py-2.5 text-right tabular-nums font-black text-emerald-700">{monSimbolo} {fmtMoney(totalCobrado)}</td>
-                  </tr>
+                  {/* Un subtotal por moneda: pesos y dólares no se suman entre sí. */}
+                  {resumenPorMoneda.map((r, i) => (
+                    <tr key={r.moneda} className={`bg-slate-50 ${i === 0 ? 'border-t border-slate-200' : ''}`}>
+                      <td colSpan={3} className="px-4 py-2.5 text-right text-[11px] font-bold uppercase tracking-wider text-slate-500">
+                        Totales del período · {r.moneda}
+                      </td>
+                      <td className="px-4 py-2.5 text-right tabular-nums font-black text-slate-700 whitespace-nowrap">{r.moneda} {fmtMoney(r.cargos)}</td>
+                      <td className="px-4 py-2.5 text-right tabular-nums font-black text-emerald-700 whitespace-nowrap">{r.moneda} {fmtMoney(r.abonos)}</td>
+                      {mostrarSaldo && (
+                        <td className={`px-4 py-2.5 text-right tabular-nums font-black whitespace-nowrap ${r.saldo >= -0.01 ? 'text-slate-800' : 'text-emerald-700'}`}>
+                          {r.moneda} {fmtMoney(Math.abs(r.saldo))}{r.saldo < -0.01 ? ' a favor' : ''}
+                        </td>
+                      )}
+                      <td></td>
+                    </tr>
+                  ))}
                 </tfoot>
               </table>
             </div>
-          </>
-        )
+          )}
+        </>
       )}
+
 
       {/* ── Vista ÓRDENES (todos los movimientos de órdenes con filtros) ── */}
       {vista === 'ORDENES' && (
@@ -416,6 +541,20 @@ function ResumenDocumentosPanel({ CliIdCliente, monSimbolo, saldoCuenta = 0, des
             </div>
           )}
         </>
+      )}
+
+      {/* ── Vista RECURSOS (planes de metros / recursos del cliente) ── */}
+      {vista === 'RECURSOS' && (
+        recursoCuentas.length === 0 ? (
+          <p className="text-center text-slate-400 text-sm py-10">Sin planes ni recursos para este cliente.</p>
+        ) : (
+          <div className="p-4 flex flex-col gap-4">
+            {recursoCuentas.map(cuenta => (
+              <PlanesPanel key={cuenta.CueIdCuenta} cuenta={cuenta} CliIdCliente={CliIdCliente}
+                cliente={cliente} desde={desde} hasta={hasta} onClose={() => {}} onChanged={recargarCuentas} />
+            ))}
+          </div>
+        )
       )}
     </div>
   );
@@ -589,6 +728,17 @@ export default function ClienteVista360() {
   }, [ordenesAnticipo, cuentaActiva]);
 
   const recursoCuentas = useMemo(() => cuentas.filter(esRecurso), [cuentas]);
+
+  // Saldo a favor por moneda (para los KPIs del estado de cuenta, que ya no dependen del
+  // toggle): símbolo → CueSaldoActual de la cuenta de dinero de esa moneda.
+  const saldosPorMoneda = useMemo(() => {
+    const m = {};
+    cuentas.filter(c => !esRecurso(c)).forEach(c => {
+      const sim = c.MonSimbolo || (c.CueTipo === 'DINERO_USD' ? 'US$' : '$');
+      m[sim] = (m[sim] || 0) + Number(c.CueSaldoActual ?? 0);
+    });
+    return m;
+  }, [cuentas]);
 
   /* ── PDF / Excel: reutilizan los utils existentes ───────────────────── */
   const construirSecciones = async () => {
@@ -856,47 +1006,28 @@ export default function ClienteVista360() {
                     </button>
                   </div>
 
-                  {/* Barra de filtros unificada: [moneda] · [switch anulados] · [fechas] */}
+                  {/* Barra superior: saldos por moneda · período. La moneda y los anulados
+                      ahora se manejan dentro del Estado de cuenta. */}
                   <div className="px-5 py-3 bg-slate-50 border-t border-slate-100 flex flex-wrap items-center gap-x-6 gap-y-3">
-                    {/* Selector de cuenta / moneda */}
-                    <div className="flex bg-white rounded-lg border border-slate-200 p-0.5 gap-0.5">
-                      {['UYU', 'USD', 'RECURSOS'].map(t => (
-                        <button key={t} type="button" onClick={() => setTabCuentas(t)}
-                          className={`px-3 py-1.5 text-[11px] font-black rounded-md transition-colors uppercase tracking-wider ${
-                            tabCuentas === t
-                              ? (t === 'USD' ? 'bg-emerald-50 text-emerald-600' : t === 'RECURSOS' ? 'bg-violet-50 text-violet-600' : 'bg-cyan-50 text-cyan-700')
-                              : 'text-slate-400 hover:text-slate-600'
-                          }`}>
-                          {t === 'RECURSOS' ? 'Recursos' : t}
-                        </button>
-                      ))}
-                    </div>
-
-                    {/* Mostrar anulados — switch (entre el selector de moneda y las fechas) */}
-                    <label title="Incluir documentos anulados"
-                      className="flex items-center gap-2 text-[11px] font-bold text-slate-600 cursor-pointer select-none">
-                      <span className="relative inline-flex items-center">
-                        <input type="checkbox" checked={incluirAnulados}
-                          onChange={e => setIncluirAnulados(e.target.checked)} className="peer sr-only" />
-                        <span className="w-9 h-5 rounded-full bg-slate-300 peer-checked:bg-cyan-600 transition-colors" />
-                        <span className="absolute left-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform peer-checked:translate-x-4" />
-                      </span>
-                      Mostrar anulados
-                    </label>
-
-                    {/* Saldos del cliente (subidos desde el panel de estado de cuenta) */}
-                    {tabCuentas !== 'RECURSOS' && cuentaActiva && resumenSaldos && (
-                      <div className="flex items-baseline gap-2.5 flex-wrap">
-                        <span className="text-[10px] font-black uppercase tracking-widest text-slate-400">Saldo pendiente</span>
-                        <span className={`text-base font-black tracking-tight ${resumenSaldos.totalPend > 0.01 ? 'text-rose-600' : 'text-emerald-600'}`}>
-                          {resumenSaldos.monSimbolo} {fmtMoney(resumenSaldos.totalPend)}
-                        </span>
-                        <span className="text-[11px] text-slate-400">{resumenSaldos.pagados}/{resumenSaldos.total} pagados</span>
-                        {resumenSaldos.saldoCuenta > 0.01 && (
-                          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-bold border bg-emerald-50 text-emerald-700 border-emerald-200">
-                            Saldo a favor: {resumenSaldos.monSimbolo} {fmtMoney(resumenSaldos.saldoCuenta)}
-                          </span>
-                        )}
+                    {/* Saldos del cliente POR MONEDA (reportados por el estado de cuenta) */}
+                    {Array.isArray(resumenSaldos) && resumenSaldos.length > 0 && (
+                      <div className="flex items-center gap-x-5 gap-y-2 flex-wrap">
+                        {resumenSaldos.map(r => (
+                          <div key={r.moneda} className="flex items-baseline gap-2">
+                            <span className="text-[10px] font-black uppercase tracking-widest text-slate-400">
+                              Pendiente{resumenSaldos.length > 1 ? ` ${r.moneda}` : ''}
+                            </span>
+                            <span className={`text-base font-black tracking-tight ${r.totalPend > 0.01 ? 'text-rose-600' : 'text-emerald-600'}`}>
+                              {r.moneda} {fmtMoney(r.totalPend)}
+                            </span>
+                            <span className="text-[11px] text-slate-400">{r.pagados}/{r.total} pagados</span>
+                            {r.aFavor > 0.01 && (
+                              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-bold border bg-emerald-50 text-emerald-700 border-emerald-200">
+                                A favor: {r.moneda} {fmtMoney(r.aFavor)}
+                              </span>
+                            )}
+                          </div>
+                        ))}
                       </div>
                     )}
 
@@ -914,37 +1045,21 @@ export default function ClienteVista360() {
                   </div>
                 </div>
 
-                {/* Estado de cuenta / movimientos — MovimientosPanel reutilizado */}
-                {loadingCuentas ? (
-                  <div className="flex justify-center py-12"><div className="animate-spin h-8 w-8 border-2 border-cyan-600 border-t-transparent rounded-full" /></div>
-                ) : cuentas.length === 0 ? (
-                  <div className="text-center py-12 bg-white rounded-xl border border-slate-200">
-                    <CreditCard size={32} className="mx-auto mb-3 text-slate-400" />
-                    <p className="text-sm text-slate-400">Sin cuentas contables registradas</p>
-                  </div>
-                ) : tabCuentas === 'RECURSOS' ? (
-                  recursoCuentas.length === 0 ? (
-                    <p className="text-center text-slate-400 text-sm py-8 bg-white rounded-xl border border-slate-200 border-dashed">Sin planes ni recursos para este cliente.</p>
-                  ) : (
-                    recursoCuentas.map(cuenta => (
-                      <PlanesPanel key={cuenta.CueIdCuenta} cuenta={cuenta} CliIdCliente={clienteSel.CliIdCliente}
-                        cliente={clienteSel} desde={globalDesde} hasta={globalHasta} onClose={() => {}} onChanged={recargarCuentas} />
-                    ))
-                  )
-                ) : cuentaActiva ? (
-                  <ResumenDocumentosPanel
-                    CliIdCliente={clienteSel.CliIdCliente}
-                    monSimbolo={cuentaActiva.MonSimbolo || '$'}
-                    saldoCuenta={cuentaActiva.CueSaldoActual}
-                    desde={globalDesde}
-                    hasta={globalHasta}
-                    trigger={globalFiltroTrigger}
-                    incluirAnulados={incluirAnulados}
-                    onResumen={setResumenSaldos}
-                  />
-                ) : (
-                  <p className="text-center text-slate-400 text-sm py-8 bg-white rounded-xl border border-slate-200 border-dashed">No hay cuenta activa en {tabCuentas}.</p>
-                )}
+                {/* Estado de cuenta (documentos + pagos) · Órdenes · Recursos, en pestañas.
+                    La moneda, los anulados y los tipos se filtran adentro del panel. */}
+                <ResumenDocumentosPanel
+                  CliIdCliente={clienteSel.CliIdCliente}
+                  desde={globalDesde}
+                  hasta={globalHasta}
+                  trigger={globalFiltroTrigger}
+                  incluirAnulados={incluirAnulados}
+                  onIncluirAnulados={setIncluirAnulados}
+                  saldosPorMoneda={saldosPorMoneda}
+                  recursoCuentas={recursoCuentas}
+                  cliente={clienteSel}
+                  recargarCuentas={recargarCuentas}
+                  onResumen={setResumenSaldos}
+                />
               </>
             )}
           </div>

@@ -80,6 +80,7 @@ const NomenclatorsABM = lazyWithRetry(() => import('../pages/admin/NomenclatorsA
 const DesignersAdminPage = lazyWithRetry(() => import('../pages/DesignersAdminPage'));
 const SysAdminPage = lazyWithRetry(() => import('../pages/admin/SysAdminPage'));
 const LeadsCRMView = lazyWithRetry(() => import('../pages/ventas/LeadsCRMView'));
+const PedidoPrendaPage = lazyWithRetry(() => import('../pages/ventas/PedidoPrendaPage')); // Alta interna de pedidos de prendas
 const AuditDepositoView = lazyWithRetry(() => import('../pages/AuditDepositoView'));
 const AdminEditarOrdenView = lazyWithRetry(() => import('../pages/AdminEditarOrdenView'));
 const ContabilidadCuentasView    = lazyWithRetry(() => import('../pages/ContabilidadCuentasView'));
@@ -100,6 +101,7 @@ const CronAdminView                = lazyWithRetry(() => import('../pages/CronAd
 const CoordinacionView             = lazyWithRetry(() => import('../pages/CoordinacionView'));
 const ColorMatcherPage             = lazyWithRetry(() => import('../pages/ColorMatcherPage'));
 const ReportesPage                 = lazyWithRetry(() => import('../pages/ReportesPage'));
+const ContabilidadReportesPage     = lazyWithRetry(() => import('../pages/ContabilidadReportesPage'));
 
 // ============================================
 // 1. LUCIDE ICON MAP (override FA icons)
@@ -698,6 +700,7 @@ const MainAppContent = ({ menuItems = [] }) => {
                 <Route path="/contabilidad/bandeja-cfe"       element={<ContabilidadBandejaCFE />} />
                 <Route path="/contabilidad/bandeja-interna"   element={<BandejaDocumentosInternos />} />
                 <Route path="/contabilidad/tesoreria"         element={<ContabilidadTesoreriaView />} />
+                <Route path="/contabilidad/reportes"          element={<ContabilidadReportesPage />} />
                 <Route path="/contabilidad/caja-admin"        element={<CajaTransaccionView isAdminCaja={true} />} />
                 <Route path="/admin/cron"                     element={<CronAdminView />} />
                 <Route path="/coordinacion"                   element={<CoordinacionView />} />
@@ -898,6 +901,15 @@ const DynamicRouter = ({ menuItems }) => {
     );
 
     const normalizedPath = currentPath.endsWith('/') && currentPath !== '/' ? currentPath.slice(0, -1) : currentPath;
+
+    // Pedido de prendas: todavía no tiene ítem de menú, así que el matcher de abajo deja
+    // menuItem undefined y el fallback `if (!menuItem)` la mandaría al dashboard. Match
+    // directo por path (mismo criterio que /area/ecouv/config) pero ANTES del fallback.
+    // Cuando exista la fila de menú con esta Ruta, esta línea se puede borrar.
+    if (normalizedPath === '/ventas/pedido-prenda') return <PedidoPrendaPage />;
+    // Configuración ECOUV: vive DEBAJO de /area/ecouv — sin ítem de menú propio, el
+    // matcher longest-match la mandaría a AreaView. Match directo por path.
+    if (normalizedPath === '/area/ecouv/config') return <EcouvConfigPage />;
     const matches = menuItems.filter(item => {
         if (!item.Ruta) return false;
         const normalizedRuta = item.Ruta.endsWith('/') && item.Ruta !== '/' ? item.Ruta.slice(0, -1) : item.Ruta;
@@ -970,6 +982,7 @@ const DynamicRouter = ({ menuItems }) => {
     if (menuItem.Ruta === '/contabilidad/reconciliacion')        return <ContabilidadReconciliacionView />;
     if (menuItem.Ruta === '/contabilidad/bandeja-cfe')           return <ContabilidadBandejaCFE />;
     if (menuItem.Ruta === '/contabilidad/tesoreria')             return <ContabilidadTesoreriaView />;
+    if (menuItem.Ruta === '/contabilidad/reportes')              return <ContabilidadReportesPage />;
     if (menuItem.Ruta === '/contabilidad/caja-admin')            return <CajaTransaccionView isAdminCaja={true} />;
     if (menuItem.Ruta === '/admin/cron')                         return <CronAdminView />;
     if (menuItem.Ruta === '/color')                              return <ColorMatcherPage />;

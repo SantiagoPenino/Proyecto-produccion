@@ -22,21 +22,21 @@ const EditModal = ({ article, allArticles, onClose, onSaved }) => {
     const [wmsVariants, setWmsVariants] = useState([]);
     const fileInputRef = useRef(null);
 
-    // Terminaciones y producto terminado (según StockArt.TipoStock del CodStock)
+    // Producto terminado (según StockArt.TipoStock del CodStock del artículo).
+    // Las terminaciones POR MATERIAL ya no se editan acá: única puerta en
+    // Configuración ECOUV → Terminaciones (pedido del usuario, vista simple).
     const [termCatalogo, setTermCatalogo] = useState([]);
-    const [termIds, setTermIds] = useState(new Set());
-    const [termsDirty, setTermsDirty] = useState(false);
     const [stockTipos, setStockTipos] = useState({});      // codStock -> TipoStock
     const [ptAncho, setPtAncho] = useState('');
     const [ptAlto, setPtAlto] = useState('');
+    const [ptBorde, setPtBorde] = useState('');              // demasía por lado (cm)
     const [ptMaterial, setPtMaterial] = useState('');        // CodArticulo del material de impresión
     const [ptTinta, setPtTinta] = useState('');              // Tinta predefinida (Ecosolvente/UV) — el cliente no la elige
     const [ptMateriales, setPtMateriales] = useState([]);    // materiales disponibles (grupo 1.3)
-    const [ptTerms, setPtTerms] = useState({});             // TerminacionID -> cantidad
+    const [ptTerms, setPtTerms] = useState({});             // TerminacionID -> { cantidad, ubicacion }
     const [ptDirty, setPtDirty] = useState(false);
 
     const tipoStock = stockTipos[form.codStock] || 'MATERIAL';
-    const showTerminaciones = !isNew && form.grupo === '1.3' && tipoStock === 'MATERIAL';
     const showProductoTerminado = !isNew && tipoStock === 'PRODUCTO_TERMINADO';
 
     useEffect(() => {
@@ -94,25 +94,16 @@ const EditModal = ({ article, allArticles, onClose, onSaved }) => {
         }).catch(err => console.error('Error cargando tipos de StockArt:', err));
     }, [isNew]);
 
-    // Catálogo de terminaciones (lo usan ambas secciones)
+    // Catálogo de terminaciones (para mostrar/editar las incluidas del producto)
     useEffect(() => {
-        if (!showTerminaciones && !showProductoTerminado) return;
+        if (!showProductoTerminado) return;
         if (termCatalogo.length > 0) return;
         api.get('/stockart/terminaciones').then(res => {
             if (res.data?.success) setTermCatalogo(res.data.data);
         }).catch(err => console.error('Error cargando catálogo de terminaciones:', err));
-    }, [showTerminaciones, showProductoTerminado]);
+    }, [showProductoTerminado]);
 
-    // Terminaciones POSIBLES asignadas al material
-    useEffect(() => {
-        if (!showTerminaciones || !form.codArticulo) return;
-        api.get(`/stockart/articulos/${encodeURIComponent(form.codArticulo)}/terminaciones`).then(res => {
-            if (res.data?.success) setTermIds(new Set(res.data.data));
-            setTermsDirty(false);
-        }).catch(err => console.error('Error cargando terminaciones del artículo:', err));
-    }, [showTerminaciones, form.codArticulo]);
-
-    // Datos de PRODUCTO TERMINADO (dimensiones + material + terminaciones incluidas)
+    // Datos de PRODUCTO TERMINADO (dimensiones + borde + material + tinta + incluidas)
     useEffect(() => {
         if (!showProductoTerminado || !form.codArticulo) return;
         api.get(`/stockart/articulos/${encodeURIComponent(form.codArticulo)}/producto-terminado`).then(res => {
@@ -120,10 +111,11 @@ const EditModal = ({ article, allArticles, onClose, onSaved }) => {
                 const d = res.data.data;
                 setPtAncho(d?.anchoM != null ? String(d.anchoM) : '');
                 setPtAlto(d?.altoM != null ? String(d.altoM) : '');
+                setPtBorde(d?.bordeCm != null ? String(d.bordeCm) : '');
                 setPtMaterial(d?.materialCodArticulo || '');
                 setPtTinta(d?.tinta || '');
                 const map = {};
-                (d?.terminaciones || []).forEach(t => { map[t.TerminacionID] = t.Cantidad; });
+                (d?.terminaciones || []).forEach(t => { map[t.TerminacionID] = { cantidad: t.Cantidad, ubicacion: t.Ubicacion || '' }; });
                 setPtTerms(map);
                 setPtDirty(false);
             }
@@ -138,29 +130,31 @@ const EditModal = ({ article, allArticles, onClose, onSaved }) => {
         }).catch(err => console.error('Error cargando materiales de impresión:', err));
     }, [showProductoTerminado]);
 
-    const toggleTerminacion = (id) => {
-        setTermIds(prev => {
-            const next = new Set(prev);
-            next.has(id) ? next.delete(id) : next.add(id);
-            return next;
-        });
-        setTermsDirty(true);
-    };
-
     const togglePtTerminacion = (id) => {
         setPtTerms(prev => {
             const next = { ...prev };
             if (next[id] != null) delete next[id];
-            else next[id] = 1;
+            else next[id] = { cantidad: 1, ubicacion: '' };
             return next;
         });
         setPtDirty(true);
     };
 
     const setPtCantidad = (id, cant) => {
-        setPtTerms(prev => ({ ...prev, [id]: cant }));
+        setPtTerms(prev => ({ ...prev, [id]: { ...prev[id], cantidad: cant } }));
         setPtDirty(true);
     };
+
+    const setPtUbicacion = (id, ubi) => {
+        setPtTerms(prev => ({ ...prev, [id]: { ...prev[id], ubicacion: ubi } }));
+        setPtDirty(true);
+    };
+
+    const UBICACIONES_PT = [
+        { v: 'ARRIBA', l: 'Arriba' }, { v: 'ABAJO', l: 'Abajo' },
+        { v: 'ARRIBA_ABAJO', l: 'Arriba y abajo' }, { v: 'COSTADOS', l: 'Costados' },
+        { v: 'PERIMETRO', l: 'Perímetro' },
+    ];
 
     // Opciones para combos dependientes
     const supFlias = useMemo(() => {
@@ -266,23 +260,18 @@ const EditModal = ({ article, allArticles, onClose, onSaved }) => {
                     });
                 }
 
-                // 4. Guardar terminaciones posibles (materiales ECOUV)
-                if (showTerminaciones && termsDirty) {
-                    await api.put(`/stockart/articulos/${encodeURIComponent(form.codArticulo)}/terminaciones`, {
-                        terminacionIds: [...termIds]
-                    });
-                }
-
-                // 5. Guardar producto terminado (dimensiones + material + terminaciones incluidas)
+                // 4. Guardar producto terminado (dimensiones + borde + material + tinta + incluidas)
                 if (showProductoTerminado && ptDirty) {
                     await api.put(`/stockart/articulos/${encodeURIComponent(form.codArticulo)}/producto-terminado`, {
                         anchoM: ptAncho !== '' ? parseFloat(ptAncho) : null,
                         altoM: ptAlto !== '' ? parseFloat(ptAlto) : null,
+                        bordeCm: ptBorde !== '' ? parseFloat(ptBorde) : null,
                         materialCodArticulo: ptMaterial || null,
                         tinta: ptTinta || null,
-                        terminaciones: Object.entries(ptTerms).map(([id, cant]) => ({
+                        terminaciones: Object.entries(ptTerms).map(([id, v]) => ({
                             terminacionId: parseInt(id),
-                            cantidad: parseFloat(cant) || 1
+                            cantidad: parseFloat(v?.cantidad) || 1,
+                            ubicacion: v?.ubicacion || null
                         }))
                     });
                 }
@@ -396,35 +385,6 @@ const EditModal = ({ article, allArticles, onClose, onSaved }) => {
                                 </div>
                             </div>
 
-                            {showTerminaciones && (
-                                <div className="bg-amber-50 p-5 rounded-2xl border border-amber-100 space-y-3">
-                                    <h3 className="font-bold text-slate-800 text-sm flex items-center gap-2">
-                                        <i className="fa-solid fa-scissors text-amber-500"></i> Terminaciones posibles
-                                        {termsDirty && <span className="text-[10px] font-black text-amber-600 bg-amber-100 px-2 py-0.5 rounded-full uppercase">Sin guardar</span>}
-                                    </h3>
-                                    <p className="text-[11px] text-slate-500 -mt-1">Qué terminaciones puede llevar este material en el pedido web. Se guardan con "Guardar Cambios".</p>
-                                    {termCatalogo.length === 0 ? (
-                                        <p className="text-xs text-slate-400 italic">Cargando catálogo...</p>
-                                    ) : (
-                                        <div className="flex flex-wrap gap-2">
-                                            {termCatalogo.map(t => {
-                                                const active = termIds.has(t.TerminacionID);
-                                                return (
-                                                    <button type="button" key={t.TerminacionID} onClick={() => toggleTerminacion(t.TerminacionID)}
-                                                        className={`px-3 py-1.5 rounded-full text-xs font-bold border transition-all ${active
-                                                            ? 'bg-amber-500 border-amber-500 text-white shadow-sm'
-                                                            : 'bg-white border-slate-200 text-slate-500 hover:border-amber-300'}`}>
-                                                        {active && <i className="fa-solid fa-check mr-1.5"></i>}
-                                                        {t.Nombre}
-                                                        <span className={`ml-1.5 text-[9px] font-black uppercase ${active ? 'text-amber-100' : 'text-slate-300'}`}>{t.UnidadCobro}</span>
-                                                    </button>
-                                                );
-                                            })}
-                                        </div>
-                                    )}
-                                </div>
-                            )}
-
                             {showProductoTerminado && (
                                 <div className="bg-purple-50 p-5 rounded-2xl border border-purple-100 space-y-4">
                                     <h3 className="font-bold text-slate-800 text-sm flex items-center gap-2">
@@ -444,7 +404,7 @@ const EditModal = ({ article, allArticles, onClose, onSaved }) => {
                                         </select>
                                         <p className="text-[10px] text-slate-400 mt-1">Sobre qué material se imprime este producto (ej: cuadro canvas brillo → Canvas Brillo).</p>
                                     </div>
-                                    <div className="grid grid-cols-3 gap-4">
+                                    <div className="grid grid-cols-4 gap-4">
                                         <div>
                                             <label className={labelCls}>Ancho (m)</label>
                                             <input type="number" step="0.01" min="0" value={ptAncho}
@@ -456,6 +416,12 @@ const EditModal = ({ article, allArticles, onClose, onSaved }) => {
                                             <input type="number" step="0.01" min="0" value={ptAlto}
                                                 onChange={e => { setPtAlto(e.target.value); setPtDirty(true); }}
                                                 className={inputCls} placeholder="Ej: 1.00" />
+                                        </div>
+                                        <div>
+                                            <label className={labelCls}>Borde (cm)</label>
+                                            <input type="number" step="0.5" min="0" value={ptBorde}
+                                                onChange={e => { setPtBorde(e.target.value); setPtDirty(true); }}
+                                                className={inputCls} placeholder="Ej: 3" title="Demasía por lado (envuelve bastidor / dobladillo)" />
                                         </div>
                                         <div>
                                             <label className={labelCls}>Tinta</label>
@@ -475,8 +441,9 @@ const EditModal = ({ article, allArticles, onClose, onSaved }) => {
                                         ) : (
                                             <div className="flex flex-wrap gap-2">
                                                 {termCatalogo.map(t => {
-                                                    const cant = ptTerms[t.TerminacionID];
-                                                    const active = cant != null;
+                                                    const v = ptTerms[t.TerminacionID];
+                                                    const active = v != null;
+                                                    const ubicacionesT = (t.Ubicaciones || '').split(',').map(x => x.trim()).filter(Boolean);
                                                     return (
                                                         <div key={t.TerminacionID} className={`inline-flex items-center rounded-full border transition-all overflow-hidden ${active
                                                             ? 'bg-purple-500 border-purple-500 text-white shadow-sm'
@@ -486,8 +453,20 @@ const EditModal = ({ article, allArticles, onClose, onSaved }) => {
                                                                 {active && <i className="fa-solid fa-check mr-1.5"></i>}
                                                                 {t.Nombre}
                                                             </button>
+                                                            {active && ubicacionesT.length > 0 && (
+                                                                <select value={v.ubicacion || ''}
+                                                                    onChange={e => setPtUbicacion(t.TerminacionID, e.target.value)}
+                                                                    onClick={e => e.stopPropagation()}
+                                                                    className="text-[10px] font-bold text-purple-700 bg-white rounded-full px-1.5 py-1 mr-1 outline-none max-w-[110px]"
+                                                                    title="Ubicación">
+                                                                    <option value="">Ubicación...</option>
+                                                                    {UBICACIONES_PT.filter(u => ubicacionesT.includes(u.v)).map(u => (
+                                                                        <option key={u.v} value={u.v}>{u.l}</option>
+                                                                    ))}
+                                                                </select>
+                                                            )}
                                                             {active && (
-                                                                <input type="number" min="0.5" step="0.5" value={cant}
+                                                                <input type="number" min="0.5" step="0.5" value={v.cantidad}
                                                                     onChange={e => setPtCantidad(t.TerminacionID, e.target.value)}
                                                                     onClick={e => e.stopPropagation()}
                                                                     className="w-14 px-1.5 py-1 mr-1 text-xs font-black text-purple-700 bg-white rounded-full outline-none text-center"

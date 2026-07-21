@@ -1,18 +1,26 @@
 import React, { useState, useEffect } from 'react';
-import { Landmark, ArrowDownRight, ArrowUpRight, Search, Plus, Send, XCircle, CheckCircle2, ChevronRight, Clock } from 'lucide-react';
+import { Landmark, ArrowDownRight, ArrowUpRight, Search, Plus, Send, XCircle, CheckCircle2, ChevronRight, Clock, AlertTriangle, Loader2 } from 'lucide-react';
 import api from '../../services/apiClient';
 import { toast } from 'sonner';
 import ChequeRecibirModal from './tesoreria/ChequeRecibirModal';
 import ChequeEmitirModal from './tesoreria/ChequeEmitirModal';
+import ChequeDetalleModal from './tesoreria/ChequeDetalleModal';
+// Las fechas del cheque son columnas DATE: formatearlas con toLocaleDateString las
+// retrocedía un día (ver src/utils/fechas.js).
+import { fmtFecha, porFechaDesc } from '../../utils/fechas';
 
 export default function ContabilidadTesoreriaView() {
   const [bancos, setBancos] = useState([]);
   const [cheques, setCheques] = useState([]);
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState('CARTERA'); // CARTERA, PROPIOS, HISTORIAL
-  
+
   const [showRecibirModal, setShowRecibirModal] = useState(false);
   const [showEmitirModal, setShowEmitirModal] = useState(false);
+  const [accionando, setAccionando] = useState(null);  // IdCheque en curso
+  const [aAnular, setAAnular] = useState(null);        // cheque en el diálogo de anulación
+  const [motivoAnular, setMotivoAnular] = useState('');
+  const [detalle, setDetalle] = useState(null);        // cheque abierto en el modal de detalle/edición
 
   useEffect(() => {
     fetchData();
@@ -34,10 +42,44 @@ export default function ContabilidadTesoreriaView() {
     }
   };
 
+  // Los anulados no son cartera ni cheques vivos: solo se ven en el historial.
   const getFilteredCheques = () => {
-    if (tab === 'CARTERA') return cheques.filter(c => c.Tipo === 'TERCERO' && c.Estado === 'EN_CARTERA');
-    if (tab === 'PROPIOS') return cheques.filter(c => c.Tipo === 'PROPIO' && c.Estado === 'EMITIDO');
-    return cheques;
+    const base =
+      tab === 'CARTERA' ? cheques.filter(c => c.Tipo === 'TERCERO' && c.Estado === 'EN_CARTERA')
+      : tab === 'PROPIOS' ? cheques.filter(c => c.Tipo === 'PROPIO' && c.Estado === 'EMITIDO')
+      : cheques;
+    return [...base].sort(porFechaDesc(c => c.FechaVencimiento));
+  };
+
+  // ─── Acciones ────────────────────────────────────────────────────────────
+  // El endpoint PATCH existía desde siempre; los botones nunca lo llamaban.
+  const cambiarEstado = async (cheque, Estado, etiqueta) => {
+    setAccionando(cheque.IdCheque);
+    try {
+      await api.patch(`/tesoreria/cheques/${cheque.IdCheque}/estado`, { Estado });
+      toast.success(`Cheque N° ${cheque.NumeroCheque} → ${etiqueta}`);
+      fetchData();
+    } catch (error) {
+      toast.error(error.response?.data?.error || `No se pudo marcar como ${etiqueta}`);
+    } finally {
+      setAccionando(null);
+    }
+  };
+
+  const anularCheque = async () => {
+    if (!aAnular) return;
+    setAccionando(aAnular.IdCheque);
+    try {
+      await api.delete(`/tesoreria/cheques/${aAnular.IdCheque}`, { data: { Motivo: motivoAnular } });
+      toast.success(`Cheque N° ${aAnular.NumeroCheque} anulado — asiento revertido`);
+      setAAnular(null); setMotivoAnular('');
+      fetchData();
+    } catch (error) {
+      // Si está vinculado a un cobro, el backend lo frena: hay que anular el cobro primero.
+      toast.error(error.response?.data?.mensaje || error.response?.data?.error || 'No se pudo anular el cheque');
+    } finally {
+      setAccionando(null);
+    }
   };
 
   const formatCurrency = (val) => new Intl.NumberFormat('es-UY', { style: 'currency', currency: 'UYU' }).format(val);
@@ -50,6 +92,7 @@ export default function ContabilidadTesoreriaView() {
       'EMITIDO': 'bg-amber-100 text-amber-800 border-amber-200',
       'RECHAZADO': 'bg-red-100 text-red-800 border-red-200',
       'COBRADO': 'bg-slate-100 text-slate-800 border-slate-200',
+      'ANULADO': 'bg-slate-100 text-slate-400 border-slate-200 line-through',
     };
     return colors[estado] || 'bg-slate-100 text-slate-600';
   };
@@ -120,10 +163,10 @@ export default function ContabilidadTesoreriaView() {
                     </td>
                     <td className="p-4">
                       <div className="text-sm font-medium text-slate-700 flex items-center gap-1">
-                        <span className="text-slate-400 w-8">Emi:</span> {new Date(cheque.FechaEmision).toLocaleDateString()}
+                        <span className="text-slate-400 w-8">Emi:</span> {fmtFecha(cheque.FechaEmision)}
                       </div>
                       <div className="text-sm font-bold text-indigo-700 flex items-center gap-1">
-                        <span className="text-slate-400 w-8 font-medium">Vto:</span> {new Date(cheque.FechaVencimiento).toLocaleDateString()}
+                        <span className="text-slate-400 w-8 font-medium">Vto:</span> {fmtFecha(cheque.FechaVencimiento)}
                       </div>
                     </td>
                     <td className="p-4">
@@ -131,25 +174,51 @@ export default function ContabilidadTesoreriaView() {
                         {cheque.Estado.replace('_', ' ')}
                       </span>
                     </td>
+                    {/* Los botones ya no dependen del hover: se ven siempre, si no la
+                        columna parece vacía y nadie sabe que hay acciones. */}
                     <td className="p-4 text-right pr-6">
-                      {cheque.Estado === 'EN_CARTERA' && (
-                        <div className="flex justify-end gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                          <button className="bg-blue-50 text-blue-700 p-2 rounded-lg hover:bg-blue-100 font-bold text-sm" title="Depositar">
-                            Depositar
+                      {accionando === cheque.IdCheque ? (
+                        <span className="inline-flex items-center gap-2 text-slate-400 font-bold text-sm">
+                          <Loader2 size={16} className="animate-spin" /> Procesando…
+                        </span>
+                      ) : (
+                        <div className="flex justify-end gap-2">
+                          {/* Ver / editar: disponible siempre. Sirve para completar el cliente
+                              que lo depositó, el librador, etc. sin anular y recargar. */}
+                          <button onClick={() => setDetalle(cheque)}
+                            className="bg-slate-100 text-slate-600 px-3 py-2 rounded-lg hover:bg-slate-200 font-bold text-sm" title="Ver y editar los datos del cheque">
+                            {cheque.Estado === 'EN_CARTERA' || cheque.Estado === 'EMITIDO' ? 'Ver / Editar' : 'Ver'}
                           </button>
-                          <button className="bg-indigo-50 text-indigo-700 p-2 rounded-lg hover:bg-indigo-100 font-bold text-sm" title="Endosar">
-                            Endosar
-                          </button>
-                          <button className="bg-red-50 text-red-700 p-2 rounded-lg hover:bg-red-100 font-bold text-sm" title="Rebotar">
-                            Rechazar
-                          </button>
-                        </div>
-                      )}
-                      {cheque.Estado === 'EMITIDO' && (
-                        <div className="flex justify-end gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                          <button className="bg-emerald-50 text-emerald-700 p-2 rounded-lg hover:bg-emerald-100 font-bold text-sm" title="Marcar Cobrado">
-                            Cobrado (Débito)
-                          </button>
+                          {cheque.Estado === 'EN_CARTERA' && (
+                            <>
+                              <button onClick={() => cambiarEstado(cheque, 'DEPOSITADO', 'Depositado')}
+                                className="bg-blue-50 text-blue-700 px-3 py-2 rounded-lg hover:bg-blue-100 font-bold text-sm" title="Lo llevaste al banco">
+                                Depositar
+                              </button>
+                              <button onClick={() => cambiarEstado(cheque, 'ENDOSADO', 'Endosado')}
+                                className="bg-indigo-50 text-indigo-700 px-3 py-2 rounded-lg hover:bg-indigo-100 font-bold text-sm" title="Se lo pasaste a un proveedor">
+                                Endosar
+                              </button>
+                              <button onClick={() => cambiarEstado(cheque, 'RECHAZADO', 'Rechazado')}
+                                className="bg-red-50 text-red-700 px-3 py-2 rounded-lg hover:bg-red-100 font-bold text-sm" title="El banco lo rebotó">
+                                Rechazar
+                              </button>
+                            </>
+                          )}
+                          {cheque.Estado === 'EMITIDO' && (
+                            <button onClick={() => cambiarEstado(cheque, 'COBRADO', 'Cobrado')}
+                              className="bg-emerald-50 text-emerald-700 px-3 py-2 rounded-lg hover:bg-emerald-100 font-bold text-sm" title="El banco te lo debitó">
+                              Cobrado (Débito)
+                            </button>
+                          )}
+                          {/* Anular: para el cheque cargado por error. Revierte el asiento. */}
+                          {cheque.Estado !== 'ANULADO' && (
+                            <button onClick={() => { setAAnular(cheque); setMotivoAnular(''); }}
+                              className="bg-slate-50 text-slate-500 border border-slate-200 px-3 py-2 rounded-lg hover:bg-red-50 hover:text-red-700 hover:border-red-200 font-bold text-sm"
+                              title="Cargado por error: lo da de baja y revierte el asiento">
+                              Anular
+                            </button>
+                          )}
                         </div>
                       )}
                     </td>
@@ -171,13 +240,74 @@ export default function ContabilidadTesoreriaView() {
         />
       )}
       {showEmitirModal && (
-        <ChequeEmitirModal 
-          onClose={() => setShowEmitirModal(false)} 
+        <ChequeEmitirModal
+          onClose={() => setShowEmitirModal(false)}
           onSuccess={() => {
             setShowEmitirModal(false);
             fetchData();
-          }} 
+          }}
         />
+      )}
+
+      {/* Ver / editar detalle del cheque */}
+      {detalle && (
+        <ChequeDetalleModal
+          cheque={detalle}
+          onClose={() => setDetalle(null)}
+          onSaved={() => { setDetalle(null); fetchData(); }}
+        />
+      )}
+
+      {/* Anular cheque — pide motivo y explica qué se revierte */}
+      {aAnular && (
+        <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl shadow-2xl max-w-lg w-full p-6 flex flex-col gap-4">
+            <div className="flex items-start gap-3">
+              <div className="w-11 h-11 rounded-2xl bg-red-100 border border-red-200 flex items-center justify-center shrink-0">
+                <AlertTriangle size={22} className="text-red-600" />
+              </div>
+              <div>
+                <h3 className="font-black text-slate-900 text-lg leading-tight">Anular cheque N° {aAnular.NumeroCheque}</h3>
+                <p className="text-sm text-slate-500 font-medium mt-0.5">
+                  {aAnular.NombreBanco} · {formatCurrency(aAnular.Monto)} · vto {fmtFecha(aAnular.FechaVencimiento)}
+                </p>
+              </div>
+            </div>
+
+            <div className="bg-slate-50 border border-slate-200 rounded-2xl px-4 py-3 text-xs text-slate-600 font-medium leading-relaxed">
+              El cheque sale de la cartera y <strong>se revierte su asiento contable</strong> (se genera la
+              contrapartida; el asiento original no se borra). La fila queda como <strong>ANULADO</strong> en
+              el historial, no se elimina. Si el cheque está vinculado a un cobro, primero hay que anular ese cobro.
+            </div>
+
+            <div>
+              <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Motivo</label>
+              <input
+                autoFocus
+                value={motivoAnular}
+                onChange={e => setMotivoAnular(e.target.value)}
+                placeholder="Ej: cargado dos veces por error"
+                className="w-full mt-1 bg-white border-2 border-slate-200 rounded-xl px-3 py-2 text-sm font-semibold text-slate-800 outline-none focus:border-indigo-500"
+              />
+            </div>
+
+            <div className="flex gap-2">
+              <button
+                onClick={() => { setAAnular(null); setMotivoAnular(''); }}
+                className="flex-1 py-2.5 rounded-xl font-black text-xs uppercase tracking-wider bg-white border-2 border-slate-200 text-slate-600 hover:bg-slate-50"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={anularCheque}
+                disabled={!motivoAnular.trim() || accionando === aAnular.IdCheque}
+                className="flex-1 py-2.5 rounded-xl font-black text-xs uppercase tracking-wider bg-red-600 text-white hover:bg-red-700 disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                {accionando === aAnular.IdCheque ? 'Anulando…' : 'Anular y revertir asiento'}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

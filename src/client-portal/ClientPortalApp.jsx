@@ -11,6 +11,7 @@ import { Dashboard } from './modulos/Dashboard';
 import { ProfileView } from './modulos/ProfileView';
 import { ProfileEdit } from './modulos/ProfileEdit';
 import OrderForm from './modulos/OrderForm';
+import PrendaOrderForm from './modulos/PrendaOrderForm'; // [PRENDAS] fork aislado — no afecta a /order/:serviceId
 
 import { FactoryView } from './modulos/FactoryView';
 import { PickupView } from './modulos/PickupView';
@@ -61,6 +62,17 @@ export const ClientPortalApp = () => {
                         <ProtectedRoute>
                             <MainLayout>
                                 <OrderForm />
+                            </MainLayout>
+                        </ProtectedRoute>
+                    } />
+
+                    {/* [PRENDAS] Copia del form de Sublimación con TODOS los complementarios
+                        (Corte, Costura, Estampado y Bordado). Ruta propia: acá modificamos
+                        sin tocar /order/:serviceId, que es el que usan los clientes hoy. */}
+                    <Route path="/order-prenda" element={
+                        <ProtectedRoute>
+                            <MainLayout>
+                                <PrendaOrderForm />
                             </MainLayout>
                         </ProtectedRoute>
                     } />

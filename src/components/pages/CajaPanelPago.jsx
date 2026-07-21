@@ -860,6 +860,8 @@ export default function CajaPanelPago({
 
         {chequeIndexActivo !== null && (
           <ChequeRecibirModal
+            // El asiento lo genera este cobro, no la alta del cheque (si no, va doble).
+            origenCaja
             initialMonto={pagos.find(p => p.id === chequeIndexActivo)?.monto || ''}
             onClose={() => setChequeIndexActivo(null)}
             onSuccess={(idCheque) => {

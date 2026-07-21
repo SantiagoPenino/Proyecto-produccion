@@ -195,6 +195,46 @@ exports.getOrdenes = async (req, res) => {
     }
 };
 
+// GET /api/external/telas
+// Devuelve los artículos de tela activos (Grupo 1.1, CodStock 1.1.1.1, Mostrar=1).
+// Auth: header x-api-key = EXTERNAL_API_KEY
+exports.getTelas = async (req, res) => {
+    const apiKey = req.headers['x-api-key'];
+    const EXTERNAL_API_KEY = process.env.EXTERNAL_API_KEY;
+
+    if (!apiKey || apiKey !== EXTERNAL_API_KEY) {
+        return res.status(401).json({ error: 'No autorizado. API Key inválida o faltante.' });
+    }
+
+    try {
+        const pool = await getPool();
+        const query = `
+            SELECT
+                a.ProIdProducto as id,
+                LTRIM(RTRIM(a.CodArticulo)) as codigoArticulo,
+                LTRIM(RTRIM(a.Descripcion)) as descripcion,
+                CASE WHEN a.MonIdMoneda = 2 THEN 'USD' ELSE 'UYU' END as moneda,
+                pb.Precio as precioBase
+            FROM Articulos a WITH(NOLOCK)
+            LEFT JOIN PreciosBase pb WITH(NOLOCK) ON pb.ProIdProducto = a.ProIdProducto
+            WHERE a.Mostrar = 1
+              AND LTRIM(RTRIM(a.Grupo)) = '1.1'
+              AND LTRIM(RTRIM(a.CodStock)) = '1.1.1.1'
+            ORDER BY a.Descripcion
+        `;
+        const result = await pool.request().query(query);
+
+        res.json({
+            success: true,
+            count: result.recordset.length,
+            data: result.recordset
+        });
+    } catch (error) {
+        console.error('Error obteniendo telas para sistema externo:', error);
+        res.status(500).json({ error: 'Error interno del servidor al obtener telas.' });
+    }
+};
+
 // GET /api/external/vendedores
 exports.getVendedores = async (req, res) => {
     const apiKey = req.headers['x-api-key'];

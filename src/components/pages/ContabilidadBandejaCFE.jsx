@@ -8,6 +8,7 @@ import { useEmpresas } from '../../hooks/useEmpresas';
 import FacturacionManualModal from './FacturacionManualModal';
 import ConfirmationModal from '../modals/ConfirmationModal';
 import CfeNotaCreditoModal from './CfeNotaCreditoModal';
+import NcExternaModal from './NcExternaModal';
 
 const getStatusBadge = (status) => {
     switch(status) {
@@ -151,6 +152,7 @@ const ContabilidadBandejaCFE = ({ initialCliente = null, embedded = false, autoN
     const [sendingId, setSendingId] = useState(null);
     const [error, setError] = useState('');
     const [showFacturaModal, setShowFacturaModal] = useState(false);
+    const [showNcExternaModal, setShowNcExternaModal] = useState(false);
     const [selectedDocs, setSelectedDocs] = useState(new Set());
     const [tiposExistentes, setTiposExistentes] = useState([]);
     
@@ -560,6 +562,14 @@ const ContabilidadBandejaCFE = ({ initialCliente = null, embedded = false, autoN
                             Enviar Seleccionados ({selectedDocs.size})
                         </button>
                     )}
+                    <button
+                        onClick={() => setShowNcExternaModal(true)}
+                        className="flex items-center gap-2 px-5 py-2.5 rounded-xl text-white bg-red-600 hover:bg-red-700 font-bold transition-colors shadow-sm"
+                        title="Nota de crédito sobre una factura emitida en el sistema de facturación anterior"
+                    >
+                        <FileX size={20} />
+                        NC Factura Externa
+                    </button>
                     <button
                         onClick={abrirNuevaFactura}
                         className="flex items-center gap-2 px-5 py-2.5 rounded-xl text-white bg-blue-600 hover:bg-blue-700 font-bold transition-colors shadow-sm"
@@ -1022,6 +1032,16 @@ const ContabilidadBandejaCFE = ({ initialCliente = null, embedded = false, autoN
                     onSuccess={() => {
                         setShowFacturaModal(false);
                         setCopyData(null);
+                        fetchDocumentos();
+                    }}
+                />
+            )}
+
+            {showNcExternaModal && (
+                <NcExternaModal
+                    onClose={() => setShowNcExternaModal(false)}
+                    onSuccess={() => {
+                        setShowNcExternaModal(false);
                         fetchDocumentos();
                     }}
                 />

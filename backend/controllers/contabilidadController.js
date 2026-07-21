@@ -2755,6 +2755,7 @@ exports.getOrdenesAnticipo = async (req, res) => {
                m.OrdIdOrden, m.OReIdOrdenRetiro, m.PagIdPago, m.MovObservaciones, m.DocIdDocumento,
                oa.CodigoOrdenStr AS OrdCodigoOrden,
                oa.NombreTrabajo AS OrdNombreTrabajo,
+               erp.Prioridad AS OrdPrioridad,
                ISNULL(od.OrdCantidad, 1) AS OrdCantidad,
                ISNULL(od.OrdDescuentoAplicado, 0) AS OrdDescuentoAplicado,
                od.OrdMaterialPlanilla,

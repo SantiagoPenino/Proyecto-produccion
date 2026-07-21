@@ -875,14 +875,19 @@ async function procesarTransaccion(payload) {
         .input('Convertido',     sql.Decimal(18,4), pago.montoConvertido)
         .input('TipoMovimiento', sql.VarChar(20),   _tipoMovimientoPago(pago.metodoPagoId, pagosNorm))
         .input('SaldoConsId',    sql.Int,           pago.saldoConsumidoId || null)
+        // Cheque dado de alta en el panel de pago: es el único vínculo entre el cobro y
+        // el cheque físico en TesoreriaCheques (antes se perdía).
+        .input('IdCheque',       sql.Int,           pago.idCheque ? parseInt(pago.idCheque, 10) : null)
         .query(`
           INSERT INTO dbo.Pagos
             (MPaIdMetodoPago, PagIdMonedaPago, PagMontoPago, PagFechaPago, PagUsuarioAlta,
-             PagTcaIdTransaccion, PagCotizacion, PagMontoConvertido, PagTipoMovimiento, PagSaldoConsumidoId)
+             PagTcaIdTransaccion, PagCotizacion, PagMontoConvertido, PagTipoMovimiento, PagSaldoConsumidoId,
+             PagIdCheque)
           OUTPUT INSERTED.PagIdPago
           VALUES
             (@MetodoId, @MonedaId, @Monto, GETDATE(), @UsuarioId,
-             @TcaId, @Cotizacion, @Convertido, @TipoMovimiento, @SaldoConsId)
+             @TcaId, @Cotizacion, @Convertido, @TipoMovimiento, @SaldoConsId,
+             @IdCheque)
         `);
 
       const pagIdPago = pagoRes.recordset[0].PagIdPago;
@@ -1232,6 +1237,7 @@ async function procesarTransaccion(payload) {
       // (WMS Checkout ya registró los ingresos en Check-In, por lo que aquí solo va el asiento de caja)
       const evtCodigoConfigurado = 'PAGO';
       const lineasMotor = await contabilidadCore.resolverLineasDesdeMotor(evtCodigoConfigurado, ctxMotor);
+      const idsMetodosCheque = await _metodosCheque(transaction);
 
       if (lineasMotor.length >= 2) {
         // Motor tiene reglas → combinar con los pagos reales por moneda
@@ -1249,10 +1255,15 @@ async function procesarTransaccion(payload) {
           // Buscar si el Motor definió una cuenta explícita para CAJA
           const lineaCaja = lineasMotor.find(l => l.debeBase > 0);
           let codigoCajaReal = lineaCaja?.codigoCuenta || cuentaCaja;
-          
+
           // Si el motor resolvió a una caja por defecto, sobreescribimos con la caja específica de la moneda del pago
           if (codigoCajaReal === contabilidadCore.CUENTAS.CAJA_UYU || codigoCajaReal === contabilidadCore.CUENTAS.CAJA_USD) {
              codigoCajaReal = cuentaCaja;
+          }
+          // Cobro con cheque → Valores a Depositar, no Caja. La plata todavía no está:
+          // el cheque puede ser a 45 días. Pisa también lo que resuelva el Motor.
+          if (idsMetodosCheque.has(parseInt(pago.metodoPagoId, 10))) {
+            codigoCajaReal = contabilidadCore.CUENTAS.VALORES_DEPOSITAR;
           }
 
           lineasContables.push({
@@ -1271,8 +1282,12 @@ async function procesarTransaccion(payload) {
         logger.warn(`[CAJA-MOTOR] Evento ${evtCodigoConfigurado} sin reglas configuradas → fallback cuentas hardcodeadas`);
         for (const pago of pagosNorm) {
           const isUSD = pago.moneda === 'USD';
+          // Igual que arriba: el cheque va a Valores a Depositar, no a Caja.
+          const cuentaDebe = idsMetodosCheque.has(parseInt(pago.metodoPagoId, 10))
+            ? contabilidadCore.CUENTAS.VALORES_DEPOSITAR
+            : (isUSD ? contabilidadCore.CUENTAS.CAJA_USD : contabilidadCore.CUENTAS.CAJA_UYU);
           lineasContables.push({
-            codigoCuenta: isUSD ? contabilidadCore.CUENTAS.CAJA_USD : contabilidadCore.CUENTAS.CAJA_UYU,
+            codigoCuenta: cuentaDebe,
             debeBase:  pago.montoOriginal,
             haberBase: 0,
             monedaId:  pago.monedaId,
@@ -1955,6 +1970,25 @@ async function getTransaccionesByCliente({ clienteId, desde, hasta, limit = 50 }
  * Determina el PagTipoMovimiento según el código del método.
  * Si el método viene del catálogo viejo (sin MPaCodigo), usa 'PAGO' por defecto.
  */
+/**
+ * Ids de MetodosPagos que son cheque. Se resuelve por nombre contra el catálogo en vez
+ * de hardcodear el id: si mañana se agrega "Cheque diferido" sigue funcionando.
+ * Un cobro con cheque NO entra a Caja (1.1.1): va a Valores a Depositar (1.1.5).
+ */
+async function _metodosCheque(transaction = null) {
+  try {
+    const req = transaction ? new sql.Request(transaction) : (await getPool()).request();
+    const r = await req.query(`
+      SELECT MPaIdMetodoPago FROM dbo.MetodosPagos WITH(NOLOCK)
+      WHERE MPaDescripcionMetodo LIKE '%heque%'
+    `);
+    return new Set(r.recordset.map(x => x.MPaIdMetodoPago));
+  } catch (e) {
+    logger.warn(`[CAJA] No se pudo resolver los métodos de tipo cheque: ${e.message}`);
+    return new Set();
+  }
+}
+
 function _tipoMovimientoPago(metodoPagoId, todosLosPagos) {
   // El cajaController puede enriquecer el payload con MPaCodigo si lo necesita;
   // aquí usamos una heurística simple basada en IDs conocidos.

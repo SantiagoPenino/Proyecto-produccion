@@ -23,6 +23,9 @@ const logger = require('../utils/logger');
 const CUENTAS = {
   CAJA_UYU:    '1.1.1',
   CAJA_USD:    '1.1.2',
+  // Un cheque NO es plata en la caja: es un valor a cobrar a futuro. Cobrar con cheque
+  // debita esta cuenta, no Caja. Recién al depositarlo pasa a Banco.
+  VALORES_DEPOSITAR: '1.1.5',
   CLIENTE_UYU: '1.2.1',
   CLIENTE_USD: '1.2.2',
   IVA_22:      '2.2.1',

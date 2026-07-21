@@ -806,7 +806,10 @@ exports.editarFactura = async (req, res) => {
         const {
             DocTipo, CliIdCliente, MonIdMoneda, DocSubtotal, DocImpuestos, DocTotal, DocObservaciones,
             lineas, DocCliNombre, DocCliDocumento, DocCliDireccion, DocCliCiudad,
-            DocPagado, MetodoPagoId, Pagos, empresaId, preservarPagos, DocFechaEmision
+            DocPagado, MetodoPagoId, Pagos, empresaId, preservarPagos, DocFechaEmision,
+            // El front lo manda solo cuando el usuario confirmó el aviso de "esta factura ya
+            // fue cobrada". Sin esto, una edición que la devuelva a pendientes se rechaza.
+            confirmarRevertirCobro
         } = req.body;
 
         const pool = await getPool();
@@ -815,7 +818,7 @@ exports.editarFactura = async (req, res) => {
 
         const docRes = await transaction.request()
             .input('id', sql.Int, id)
-            .query('SELECT DocTipo, CfeEstado, DocPagado, AsiIdAsiento, TcaIdTransaccion, DocTotal, DocSerie, DocNumero, DocFechaEmision FROM DocumentosContables WHERE DocIdDocumento = @id');
+            .query('SELECT DocTipo, CfeEstado, DocPagado, AsiIdAsiento, TcaIdTransaccion, DocTotal, DocSerie, DocNumero, DocFechaEmision, MonIdMoneda FROM DocumentosContables WHERE DocIdDocumento = @id');
 
         if (docRes.recordset.length === 0) {
             await transaction.rollback();
@@ -910,6 +913,47 @@ exports.editarFactura = async (req, res) => {
         const newPaid = DocPagado === true || DocPagado === 1 || DocPagado === 'true';
         const oldPaid = doc.DocPagado === true || doc.DocPagado === 1;
 
+        // ─────────────────────────────────────────────
+        // CANDADO: no devolver a pendientes una factura que ya se cobró.
+        // Guardar con "no pagado" una factura cobrada le regenera la deuda y el cliente
+        // vuelve a aparecer debiendo algo que ya pagó. El front puede pisar DocPagado sin
+        // que el usuario se dé cuenta, así que la confirmación se exige acá.
+        // Se mide el cobro REAL (plata imputada), no la bandera DocPagado.
+        if (!newPaid) {
+            const cobroRes = await transaction.request()
+                .input('docId', sql.Int, parseInt(id))
+                .query(`
+                    SELECT
+                      Imputado = ISNULL((
+                        SELECT SUM(dd.DDeImporteOriginal - dd.DDeImportePendiente)
+                        FROM dbo.DeudaDocumento dd WHERE dd.DocIdDocumento = @docId
+                      ), 0),
+                      MovsPago = ISNULL((
+                        SELECT COUNT(*) FROM dbo.MovimientosCuenta m
+                        WHERE m.DocIdDocumento = @docId AND m.MovTipo IN ('PAGO','COBRO')
+                          AND (m.MovAnulado IS NULL OR m.MovAnulado = 0)
+                      ), 0)
+                `);
+            const { Imputado, MovsPago } = cobroRes.recordset[0];
+            const yaCobrada = Number(Imputado) > 0.01 || Number(MovsPago) > 0 || oldPaid;
+            if (yaCobrada && confirmarRevertirCobro !== true) {
+                await transaction.rollback();
+                return res.status(409).json({
+                    error: 'FACTURA_YA_COBRADA',
+                    requiereConfirmacion: true,
+                    importeImputado: Number(Imputado) || 0,
+                    cantidadPagos: Number(MovsPago) || 0,
+                    documento: `${doc.DocSerie}-${doc.DocNumero}`,
+                    mensaje: `La factura ${doc.DocSerie}-${doc.DocNumero} ya fue cobrada`
+                           + (Number(Imputado) > 0.01 ? ` (${Number(Imputado).toFixed(2)} imputado${Number(MovsPago) > 0 ? ` en ${MovsPago} pago(s)` : ''})` : '')
+                           + '. Guardarla como NO pagada le va a regenerar la deuda y va a volver a aparecer en pendientes.'
+                });
+            }
+            if (yaCobrada) {
+                logger.warn(`[CFE-EDIT] Doc #${id} (${doc.DocSerie}-${doc.DocNumero}) cobrado por ${Number(Imputado).toFixed(2)} se revierte a pendiente — confirmado por usuario ${req.user?.id || '?'}.`);
+            }
+        }
+
         // 1. Actualizar cabecera del documento
         await transaction.request()
             .input('id', sql.Int, id)
@@ -992,20 +1036,97 @@ exports.editarFactura = async (req, res) => {
         // El endpoint ya bloquea documentos enviados a DGI (ACEPTADO, COBRADO, etc.)
         // Cualquier documento que llega aquí (BORRADOR o PENDIENTE) es editable.
         // Política: siempre actualizamos en el lugar — sin rastro de anulación.
-        const tipoChanged  = cleanDocTipo !== cleanOldDocTipo;
-        const montoChanged = Math.abs(DocTotal - (doc.DocTotal || 0)) > 0.001;
-        const paidChanged  = newPaid !== oldPaid;
+        const tipoChanged   = cleanDocTipo !== cleanOldDocTipo;
+        const montoChanged  = Math.abs(DocTotal - (doc.DocTotal || 0)) > 0.001;
+        const paidChanged   = newPaid !== oldPaid;
+        const monedaChanged = parseInt(MonIdMoneda) !== parseInt(doc.MonIdMoneda);
 
         const cliIdNum     = parseInt(CliIdCliente) || 0;
         const isRealClient = cliIdNum > 0 && cliIdNum !== CONSUMIDOR_FINAL_ID && cliIdNum !== 100101;
 
-        if (isRealClient && (tipoChanged || montoChanged || paidChanged)) {
+        if (isRealClient && (tipoChanged || montoChanged || paidChanged || monedaChanged)) {
           const cueTipoEdit = MonIdMoneda === 2 ? 'DINERO_USD' : 'DINERO_UYU';
           const ctaEditId   = await contabilidadService.obtenerOCrearCuenta(cliIdNum, cueTipoEdit, {
             MonIdMoneda, UsuarioAlta: req.user?.id || 1
           }, transaction);
           const cicloObj = await contabilidadService.obtenerCicloActivo(ctaEditId, transaction);
           const cicId    = cicloObj ? cicloObj.CicIdCiclo : null;
+
+          // ── Migrar deuda/movimientos a la cuenta de la NUEVA moneda ──────────
+          // DeudaDocumento no tiene columna propia de moneda: la hereda de
+          // CuentasCliente.MonIdMoneda vía CueIdCuenta. Si solo cambia la moneda del
+          // documento (mismo monto, mismo tipo, mismo estado de pago), ninguna de las
+          // ramas de abajo se ejecuta y la deuda queda huérfana apuntando a la cuenta
+          // vieja (la moneda mostrada en el modal de cobro nunca sigue al documento).
+          // Acá se migra TODO lo que ya existe para este documento a ctaEditId antes de
+          // que las ramas de abajo apliquen sus deltas de monto (que sí asumen ctaEditId
+          // como cuenta "hogar" del documento).
+          // MovimientosCuenta y DeudaDocumento se migran de forma INDEPENDIENTE (no asumir
+          // que comparten la misma cuenta vieja): en datos reales se encontró un documento
+          // donde MovimientosCuenta ya estaba en la cuenta correcta pero DeudaDocumento
+          // seguía huérfana en la cuenta vieja.
+          if (monedaChanged) {
+            const wrongMovRes = await transaction.request()
+              .input('docId',  sql.Int, parseInt(id))
+              .input('target', sql.Int, ctaEditId)
+              .query(`
+                SELECT DISTINCT CueIdCuenta
+                FROM dbo.MovimientosCuenta
+                WHERE DocIdDocumento = @docId AND CueIdCuenta <> @target
+                  AND (MovAnulado IS NULL OR MovAnulado = 0)
+              `);
+
+            for (const { CueIdCuenta: oldCtaId } of wrongMovRes.recordset) {
+              const sumRes = await transaction.request()
+                .input('docId',  sql.Int, parseInt(id))
+                .input('oldCta', sql.Int, oldCtaId)
+                .query(`
+                  SELECT ISNULL(SUM(MovImporte), 0) AS Total
+                  FROM dbo.MovimientosCuenta
+                  WHERE DocIdDocumento = @docId AND CueIdCuenta = @oldCta
+                    AND (MovAnulado IS NULL OR MovAnulado = 0)
+                `);
+              const totalMovido = Number(sumRes.recordset[0].Total) || 0;
+
+              await transaction.request()
+                .input('docId',  sql.Int, parseInt(id))
+                .input('oldCta', sql.Int, oldCtaId)
+                .input('newCta', sql.Int, ctaEditId)
+                .query(`
+                  UPDATE dbo.MovimientosCuenta
+                  SET CueIdCuenta = @newCta
+                  WHERE DocIdDocumento = @docId AND CueIdCuenta = @oldCta
+                    AND (MovAnulado IS NULL OR MovAnulado = 0)
+                `);
+
+              if (Math.abs(totalMovido) > 0.001) {
+                await transaction.request()
+                  .input('oldCta', sql.Int, oldCtaId)
+                  .input('total',  sql.Decimal(18,4), totalMovido)
+                  .query(`UPDATE dbo.CuentasCliente SET CueSaldoActual = CueSaldoActual - @total WHERE CueIdCuenta = @oldCta`);
+                await transaction.request()
+                  .input('newCta', sql.Int, ctaEditId)
+                  .input('total',  sql.Decimal(18,4), totalMovido)
+                  .query(`UPDATE dbo.CuentasCliente SET CueSaldoActual = CueSaldoActual + @total WHERE CueIdCuenta = @newCta`);
+              }
+
+              logger.info(`[CFE-EDIT] Doc #${id}: MovimientosCuenta migrado de cuenta ${oldCtaId} a ${ctaEditId} por cambio de moneda (MonIdMoneda=${MonIdMoneda}).`);
+            }
+
+            const deudaMigRes = await transaction.request()
+              .input('docId',  sql.Int, parseInt(id))
+              .input('target', sql.Int, ctaEditId)
+              .query(`
+                UPDATE dbo.DeudaDocumento
+                SET CueIdCuenta = @target
+                OUTPUT DELETED.CueIdCuenta AS Anterior
+                WHERE DocIdDocumento = @docId AND DDeEstado IN ('PENDIENTE','PARCIAL','VENCIDO')
+                  AND CueIdCuenta <> @target
+              `);
+            if (deudaMigRes.recordset.length) {
+              logger.info(`[CFE-EDIT] Doc #${id}: DeudaDocumento migrada a cuenta ${ctaEditId} (antes: ${deudaMigRes.recordset.map(r => r.Anterior).join(',')}).`);
+            }
+          }
 
           // 1. Actualizar concepto e importe del movimiento de CARGO (siempre)
           const nuevoConcepto = `Venta ${newConfig?.Detalle || DocTipo}: ${newSerie}-${newNumero}${DocCliNombre ? ' (' + DocCliNombre + ')' : ''}`;
@@ -1504,7 +1625,41 @@ exports.getDetalleFactura = async (req, res) => {
             pagos = pagosRes.recordset;
         }
 
-        res.json({ success: true, doc, detalles: result.recordset, pagos });
+        // Cobro REAL del documento (plata efectivamente imputada), no la bandera DocPagado.
+        // Una factura nacida a crédito y cobrada por cuenta corriente puede tener DocPagado=0
+        // y estar saldada igual: sin este dato la pantalla de edición no puede avisar.
+        let cobro = { importeImputado: 0, cantidadPagos: 0, pendiente: 0, estaCobrada: false };
+        if (doc) {
+            const cobroRes = await pool.request()
+                .input('docId', sql.Int, id)
+                .query(`
+                    SELECT
+                      Imputado = ISNULL((
+                        SELECT SUM(dd.DDeImporteOriginal - dd.DDeImportePendiente)
+                        FROM dbo.DeudaDocumento dd WITH(NOLOCK) WHERE dd.DocIdDocumento = @docId
+                      ), 0),
+                      Pendiente = ISNULL((
+                        SELECT SUM(dd.DDeImportePendiente)
+                        FROM dbo.DeudaDocumento dd WITH(NOLOCK)
+                        WHERE dd.DocIdDocumento = @docId AND dd.DDeEstado IN ('PENDIENTE','PARCIAL','VENCIDO')
+                      ), 0),
+                      MovsPago = ISNULL((
+                        SELECT COUNT(*) FROM dbo.MovimientosCuenta m WITH(NOLOCK)
+                        WHERE m.DocIdDocumento = @docId AND m.MovTipo IN ('PAGO','COBRO')
+                          AND (m.MovAnulado IS NULL OR m.MovAnulado = 0)
+                      ), 0)
+                `);
+            const c = cobroRes.recordset[0] || {};
+            cobro = {
+                importeImputado: Number(c.Imputado) || 0,
+                pendiente:       Number(c.Pendiente) || 0,
+                cantidadPagos:   Number(c.MovsPago) || 0,
+                estaCobrada:     Number(c.Imputado) > 0.01 || Number(c.MovsPago) > 0
+                                 || doc.DocPagado === true || doc.DocPagado === 1,
+            };
+        }
+
+        res.json({ success: true, doc, detalles: result.recordset, pagos, cobro });
     } catch (err) {
         logger.error('Error obteniendo detalle de factura:', err);
         res.status(500).json({ error: err.message });
