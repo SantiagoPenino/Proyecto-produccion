@@ -1398,7 +1398,9 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
           tipoAjuste: ajustes[s.retiroId]?.tipoAjuste || null, orderNumbers: s.ordenesIds
         };
       });
-      const pags = carritosPago.map(p => ({ metodoPagoId: parseInt(p.metodoPagoId), moneda: p.moneda, monedaId: p.moneda === 'USD' ? 2 : 1, montoOriginal: parseFloat(p.monto), cotizacion: p.moneda === 'USD' ? cotizacion : null }));
+      // idCheque: lo devuelve ChequeRecibirModal al dar de alta el cheque. Sin enviarlo,
+      // el cheque queda sin vínculo con el cobro y no se puede mostrar su número después.
+      const pags = carritosPago.map(p => ({ metodoPagoId: parseInt(p.metodoPagoId), moneda: p.moneda, monedaId: p.moneda === 'USD' ? 2 : 1, montoOriginal: parseFloat(p.monto), cotizacion: p.moneda === 'USD' ? cotizacion : null, idCheque: p.idCheque || null }));
       const res = await api.post('/contabilidad/caja/transaccion', {
         header: { clienteId: seleccionados[0]?.retiro?.CliIdCliente, tipoDocumento: tipoDocCobro, serieDoc: serieDocCobro, numeroDoc: numDocCobro || null, observaciones: obsCobro, deudaPuraUSD, deudaPuraUYU, admin: isAdminCaja, moneda: monedaExhibicion, cotizacion: cotizacion, esCredito: esCobroCredito, importeACobrar: (esCobroCredito || Math.abs(ajusteCobroUI) < 0.005) ? null : montoACobrar },
         aplicaciones: apps, pagos: esCobroCredito ? [] : pags

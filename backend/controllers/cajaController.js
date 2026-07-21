@@ -10,6 +10,13 @@ const pdfService  = require('../services/pdfService');
 // ─────────────────────────────────────────────
 const io = (req) => req.app.get('socketio');
 
+// Tope para imputar una diferencia a "cambio monetario" en el pago de deudas.
+// Por encima de 1 USD ya no es fluctuación del tipo de cambio: se imputa al cliente.
+const LIMITE_DIF_CAMBIO_USD = 1;
+// Cuentas de resultado del plan de cuentas (Cont_PlanCuentas) para esa diferencia.
+const CTA_GANANCIA_DIF_CAMBIO = '4.2.1';  // Ganancia por Diferencia de Cambio
+const CTA_PERDIDA_DIF_CAMBIO  = '5.2.01'; // Pérdida por Diferencia de Cambio
+
 // ─────────────────────────────────────────────
 // Resuelve la fecha elegida por el cajero al cobrar una deuda (retrofecha).
 // Recibe 'YYYY-MM-DD' del frontend y devuelve:
@@ -1415,9 +1422,34 @@ const procesarPagoDeuda = async (req, res) => {
 
     const sumDeudas       = aplicaciones.reduce((s, a) => s + (Number(a.montoOriginal) || 0), 0);
     const totalPagadoBase = pagos.reduce((s, p) => s + pagoABase(p), 0);
+
+    // ─────────────────────────────────────────────
+    // DIFERENCIA DE CAMBIO
+    // Cuando la deuda está en una moneda y el cliente paga en otra, lo que entrega casi
+    // nunca coincide con la conversión al TC del día. El cajero elige el destino de esa
+    // diferencia (header.destinoDiferencia):
+    //   'CLIENTE' (default) → como siempre: de menos deja deuda parcial, de más deja saldo a favor.
+    //   'CAMBIO'            → la deuda se cancela entera y la diferencia va a resultado
+    //                         (4.2.1 ganancia / 5.2.01 pérdida por diferencia de cambio).
+    // Tope de 'CAMBIO': 1 USD (o su equivalente en pesos al TC). Arriba de eso no es
+    // fluctuación cambiaria y debe imputarse al cliente sí o sí.
+    const difBruta   = totalPagadoBase - sumDeudas;                       // >0 pagó de más, <0 de menos
+    const limiteDif  = LIMITE_DIF_CAMBIO_USD * (monedaBaseStr === 'USD' ? 1 : (cotizTC || 1));
+    const destinoDif = String(header.destinoDiferencia || 'CLIENTE').toUpperCase();
+    if (destinoDif === 'CAMBIO' && Math.abs(difBruta) > limiteDif + 0.005) {
+      return res.status(400).json({
+        error: `La diferencia (${Math.abs(difBruta).toFixed(2)} ${monedaBaseStr}) supera el tope de ${LIMITE_DIF_CAMBIO_USD} USD `
+             + `(${limiteDif.toFixed(2)} ${monedaBaseStr}) para imputarse a diferencia de cambio. Debe imputarse al cliente.`
+      });
+    }
+    const difCambio = (destinoDif === 'CAMBIO' && Math.abs(difBruta) > 0.005) ? difBruta : 0;
+    // Lo que realmente se aplica a las deudas: sacando la diferencia absorbida por cambio,
+    // el pago cubre exactamente la deuda (ni parcial ni excedente).
+    const totalACubrir = totalPagadoBase - difCambio;
     // exceso > 0 → el cliente pagó de más: el excedente queda como saldo a favor.
-    const exceso          = totalPagadoBase - sumDeudas;
-    const esParcial       = sumDeudas - totalPagadoBase > 0.01;
+    const exceso          = totalACubrir - sumDeudas;
+    const esParcial       = sumDeudas - totalACubrir > 0.01;
+    if (difCambio) logger.info(`[PAGO-DEUDA] Diferencia de cambio ${difCambio.toFixed(2)} ${monedaBaseStr} → ${difCambio > 0 ? 'GANANCIA 4.2.1' : 'PERDIDA 5.2.01'} (tope ${limiteDif.toFixed(2)})`);
     if (exceso > 0.01) logger.info(`[PAGO-DEUDA] Excedente ${exceso.toFixed(2)} ${monedaBaseStr} → saldo a favor (deudas=${sumDeudas.toFixed(2)} pagado=${totalPagadoBase.toFixed(2)})`);
     if (esParcial)     logger.info(`[PAGO-DEUDA] Pago parcial: deudas=${sumDeudas.toFixed(2)} pagado=${totalPagadoBase.toFixed(2)}`);
 
@@ -1426,12 +1458,13 @@ const procesarPagoDeuda = async (req, res) => {
     await transaction.begin();
 
     let totalImputado = 0;
+    const movIdsPago = []; // movimientos 'PAGO' de este cobro → se les estampa el PagIdPago al final
 
     try {
       // ─────────────────────────────────────────────
       // El pago real (normalizado a la moneda de la deuda) se distribuye entre las
       // deudas seleccionadas. Esto evita marcar como COBRADO cuando el pago es parcial.
-      let pagoRestante = totalPagadoBase;
+      let pagoRestante = totalACubrir;
 
       for (const ap of aplicaciones) {
         const { ddeId, montoOriginal } = ap;
@@ -1441,7 +1474,7 @@ const procesarPagoDeuda = async (req, res) => {
         const ddeRes = await new sql.Request(transaction)
           .input('ddeId', sql.Int, ddeId)
           .query(`
-            SELECT DDeImportePendiente, DDeEstado, CueIdCuenta, OrdIdOrden
+            SELECT DDeImportePendiente, DDeEstado, CueIdCuenta, OrdIdOrden, DocIdDocumento
             FROM dbo.DeudaDocumento WITH (UPDLOCK, ROWLOCK)
             WHERE DDeIdDocumento = @ddeId
           `);
@@ -1466,15 +1499,49 @@ const procesarPagoDeuda = async (req, res) => {
         await contabilidadSvc.reducirDeuda({ ddeId, monto: montoAplicar }, transaction);
 
         // ─────────────────────────────────────────────
-        await contabilidadSvc.registrarMovimiento({
+        // DocIdDocumento = el comprobante que este cobro está cancelando (PC-1034, ET-1489…).
+        // Sin él, el movimiento queda sin referencia y el Panel 360 no puede decir a qué se
+        // imputó el pago: lo muestra como si fuera un anticipo. Lo tomamos de la deuda misma.
+        const docImputado = dde.DocIdDocumento || ap.docIdDocumento || null;
+        const { MovIdGenerado } = await contabilidadSvc.registrarMovimiento({
           CueIdCuenta:      dde.CueIdCuenta,
           MovTipo:          'PAGO',
           MovConcepto:      ('Pago deuda - ' + (ap.descripcion || ('Deuda #' + ddeId))).substring(0, 300),
           MovImporte:       montoAplicar,
           MovUsuarioAlta:   usuarioId,
           MovFecha:         fechaCobro, // null => GETDATE() en el SP
+          DocIdDocumento:   docImputado,
+          // Deuda de una orden todavía sin facturar: no hay documento, pero la orden
+          // alcanza para identificar el cobro en el 360 (en vez de dejarlo sin referencia).
+          OrdIdOrden:       docImputado ? null : (dde.OrdIdOrden || ap.ordIdOrden || null),
           MovObservaciones: ('DeudaDoc #' + ddeId + ' | Pagado: ' + montoAplicar.toFixed(4) + ' | Pendiente: ' + nuevoPendiente.toFixed(4) + ' | Estado: ' + nuevoEstado).substring(0, 500),
         });
+        // Se completa con el PagIdPago recién insertado (los Pagos se crean más abajo, ya con
+        // la transacción de caja creada) para que el 360 pueda mostrar la forma de pago.
+        movIdsPago.push(MovIdGenerado);
+
+        // ─────────────────────────────────────────────
+        // Factura nacida a CRÉDITO que se termina de cobrar → marcarla como pagada.
+        // Sin esto queda con DocPagado=0 para siempre: figura impaga en la Bandeja CFE
+        // aunque su deuda esté saldada, y al editarla se le regenera la deuda.
+        // Solo cuando la deuda quedó en cero: un pago parcial NO la marca.
+        if (nuevoEstado === 'COBRADO' && docImputado) {
+          const pendResto = await new sql.Request(transaction)
+            .input('DocId', sql.Int, docImputado)
+            .query(`
+              SELECT ISNULL(SUM(DDeImportePendiente), 0) AS Pendiente
+              FROM dbo.DeudaDocumento
+              WHERE DocIdDocumento = @DocId AND DDeEstado IN ('PENDIENTE','PARCIAL','VENCIDO')
+            `);
+          // Un documento puede tener varias deudas (ej: una por orden): solo se marca
+          // pagado cuando NO le queda nada pendiente.
+          if (Number(pendResto.recordset[0]?.Pendiente || 0) <= 0.01) {
+            await new sql.Request(transaction)
+              .input('DocId', sql.Int, docImputado)
+              .query(`UPDATE dbo.DocumentosContables SET DocPagado = 1 WHERE DocIdDocumento = @DocId AND (DocPagado IS NULL OR DocPagado = 0)`);
+            logger.info(`[PAGO-DEUDA] Doc #${docImputado} saldado → DocPagado=1.`);
+          }
+        }
 
         // ─────────────────────────────────────────────
         // Cubre el caso donde el cliente paga directamente por "Pago de Deuda" sin pasar por Retiro.
@@ -1936,9 +2003,10 @@ const procesarPagoDeuda = async (req, res) => {
         }
       }
 
+      let primerPagIdPago = null;
       for (const p of pagos) {
         if (!p.metodoPagoId || !p.montoOriginal) continue;
-        await new sql.Request(transaction)
+        const pagoRes = await new sql.Request(transaction)
           .input('tcaId',   sql.Int,          tcaIdPago)
           .input('metodo',  sql.Int,          parseInt(p.metodoPagoId, 10))
           .input('moneda',  sql.Int,          parseInt(p.monedaId, 10) || 1)
@@ -1946,15 +2014,34 @@ const procesarPagoDeuda = async (req, res) => {
           .input('cot',     sql.Decimal(18,4), Number(p.cotizacion) || 1)
           .input('usuario', sql.Int,          usuarioId)
           .input('FEmis',   sql.DateTime,     fechaCobro) // retrofecha; null => GETDATE()
+          .input('cheque',  sql.Int,          p.idCheque ? parseInt(p.idCheque, 10) : null)
           .query(`
             INSERT INTO dbo.Pagos
               (PagTcaIdTransaccion, MPaIdMetodoPago, PagIdMonedaPago,
                PagMontoPago, PagFechaPago, PagUsuarioAlta, PagCotizacion,
-               PagMontoConvertido, PagTipoMovimiento)
+               PagMontoConvertido, PagTipoMovimiento, PagIdCheque)
+            OUTPUT INSERTED.PagIdPago
             VALUES
               (@tcaId, @metodo, @moneda,
                @monto, ISNULL(@FEmis, GETDATE()), @usuario, @cot,
-               @monto, 'COBRO')
+               @monto, 'COBRO', @cheque)
+          `);
+        if (!primerPagIdPago) primerPagIdPago = pagoRes.recordset[0]?.PagIdPago || null;
+      }
+
+      // ─────────────────────────────────────────────
+      // Linkear los movimientos de este cobro con el pago (misma convención que la caja
+      // central: el primer pago es la FK principal). Desde ahí el Panel 360 llega a la
+      // transacción y lista TODAS las formas de pago del cobro, no solo la primera.
+      const idsMov = movIdsPago.map(Number).filter(Boolean);
+      if (primerPagIdPago && idsMov.length) {
+        await new sql.Request(transaction)
+          .input('pagId', sql.Int, primerPagIdPago)
+          .query(`
+            UPDATE dbo.MovimientosCuenta
+            SET PagIdPago = @pagId
+            WHERE MovIdMovimiento IN (${idsMov.join(',')})
+              AND PagIdPago IS NULL
           `);
       }
 
@@ -2051,8 +2138,21 @@ const procesarPagoDeuda = async (req, res) => {
               entidadTipo: 'CLIENTE',
             });
           }
+          // Diferencia de cambio: la caja recibió más/menos que la deuda cancelada por la
+          // fluctuación del TC. Cuadra el asiento contra resultado, sin tocar al cliente.
+          if (Math.abs(difCambio) > 0.005) {
+            lineasAsiento.push({
+              codigoCuenta: difCambio > 0 ? CTA_GANANCIA_DIF_CAMBIO : CTA_PERDIDA_DIF_CAMBIO,
+              debeBase:  difCambio > 0 ? 0 : Math.abs(difCambio),
+              haberBase: difCambio > 0 ? difCambio : 0,
+              monedaId:   monedaBaseId,
+              cotizacion: cotizBase,
+            });
+          }
           await contabilidadCore.generarAsientoCompleto({
-            concepto:         ("Pago deuda #" + header.clienteId + " - " + (header.observaciones || "Cobro cuenta corriente") + (exceso > 0.01 ? ` (incl. saldo a favor ${exceso.toFixed(2)})` : '')).substring(0, 200),
+            concepto:         ("Pago deuda #" + header.clienteId + " - " + (header.observaciones || "Cobro cuenta corriente")
+                               + (exceso > 0.01 ? ` (incl. saldo a favor ${exceso.toFixed(2)})` : '')
+                               + (Math.abs(difCambio) > 0.005 ? ` (dif. cambio ${difCambio.toFixed(2)} ${monedaBaseStr})` : '')).substring(0, 200),
             fecha:            fechaCobro || new Date(), // retrofecha; null => hoy
             usuarioId,
             tcaIdTransaccion: tcaIdPago,
@@ -2111,10 +2211,12 @@ const procesarPagoDeuda = async (req, res) => {
         totalImputado,
         totalPagado: totalPagadoBase,
         excedente: excedenteReg,
+        diferenciaCambio: difCambio,
         moneda: monedaBaseStr,
         deudasCanceladas: aplicaciones.length,
         message: `Pago registrado: $ ${totalImputado.toFixed(2)} imputado en ${aplicaciones.length} deuda(s).`
-          + (excedenteReg > 0 ? ` Excedente ${monedaBaseStr} ${excedenteReg.toFixed(2)} a saldo a favor.` : ''),
+          + (excedenteReg > 0 ? ` Excedente ${monedaBaseStr} ${excedenteReg.toFixed(2)} a saldo a favor.` : '')
+          + (Math.abs(difCambio) > 0.005 ? ` Diferencia de cambio ${monedaBaseStr} ${difCambio.toFixed(2)}.` : ''),
         docId,
         docNumero,
         docTipoStr
@@ -2329,6 +2431,159 @@ const generarNotaCredito = async (req, res) => {
       return res.status(201).json({ success: true, ncId, ncNumero: fullNcNumero, ncTipo, message: `Nota de Crédito ${fullNcNumero} generada` });
     } catch (errTx) { await transaction.rollback(); throw errTx; }
   } catch (err) { logger.error('[NOTA-CREDITO]', err.message); return res.status(500).json({ error: err.message }); }
+};
+
+// POST /contabilidad/caja/nota-credito-externa
+// Nota de Crédito sobre una factura que NO fue generada en este sistema (ej. facturas emitidas
+// con el proveedor de facturación electrónica anterior a la migración).
+// A diferencia de generarNotaCredito, esto SOLO genera el CFE a enviar a DGI: no toca la cuenta
+// corriente del cliente, no genera movimiento ni asiento contable, porque la factura original y su
+// deuda viven exclusivamente en el sistema anterior.
+// Body: { clienteId, tipoOrigen ('FACTURA'|'TICKET'), serieOrigen, numeroOrigen, fechaOrigen, totalOrigen, monedaId, motivo, Lineas, Totales, empresaId }
+const generarNotaCreditoExterna = async (req, res) => {
+  const usuarioId = req.user?.id || 70;
+  try {
+    const {
+      clienteId, tipoOrigen, serieOrigen, numeroOrigen, fechaOrigen, totalOrigen,
+      monedaId, motivo, Lineas, Totales, empresaId
+    } = req.body;
+
+    if (!clienteId || !serieOrigen || !numeroOrigen || !fechaOrigen || !totalOrigen)
+      return res.status(400).json({ error: 'Faltan parámetros: clienteId, serieOrigen, numeroOrigen, fechaOrigen, totalOrigen' });
+    if (!motivo || !motivo.trim())
+      return res.status(400).json({ error: 'Debe indicar el motivo de la Nota de Crédito' });
+    if (!Array.isArray(Lineas) || Lineas.length === 0)
+      return res.status(400).json({ error: 'Debe incluir al menos una línea a acreditar' });
+
+    const montoNum = Totales ? Number(Totales.total) : NaN;
+    if (isNaN(montoNum) || montoNum <= 0)
+      return res.status(400).json({ error: 'Monto inválido' });
+    if (montoNum > Number(totalOrigen) + 0.01)
+      return res.status(400).json({ error: `El total de la Nota de Crédito (${montoNum}) no puede superar al total de la factura externa (${totalOrigen})` });
+
+    const monId = parseInt(monedaId) || 1;
+    const esFacturaOrigen = String(tipoOrigen).toUpperCase() === 'FACTURA';
+    const serieOrigenTrim = String(serieOrigen).trim();
+    const numeroOrigenTrim = String(numeroOrigen).trim();
+    const motivoTrim = String(motivo).trim();
+
+    const pool = await getPool();
+    const transaction = pool.transaction();
+    await transaction.begin();
+    try {
+      const cliR = await new sql.Request(transaction)
+        .input('Cli', sql.Int, parseInt(clienteId))
+        .query(`SELECT CliIdCliente, Nombre, CioRuc, DireccionTrabajo FROM dbo.Clientes WHERE CliIdCliente = @Cli`);
+      if (!cliR.recordset.length) throw new Error('Cliente no encontrado');
+      const cliente = cliR.recordset[0];
+
+      // 1) Documento "referencia externa": existe solo para que el envío a DGI arme la Referencia
+      //    de la NC (Tipo/Serie/Número/Fecha/Total). CfeEstado=null lo excluye de la Bandeja CFE
+      //    (que filtra WHERE CfeEstado IS NOT NULL) y de cualquier acción de envío/edición/anulación.
+      const stubId = await contabilidadCore.crearDocumentoContable({
+        header: {
+          cueIdCuenta: monId === 2 ? 119 : 118,
+          clienteId: cliente.CliIdCliente,
+          monedaId: monId,
+          tipo: esFacturaOrigen ? 'E-Factura Externa' : 'E-Ticket Externo',
+          numero: numeroOrigenTrim,
+          serie: serieOrigenTrim,
+          subtotal: Number(totalOrigen),
+          impuestos: 0,
+          total: Number(totalOrigen),
+          estado: 'COBRADO',
+          cfeEstado: null,
+          usuarioId,
+          docPagado: true,
+          docFechaEmision: resolverFechaCobro(fechaOrigen),
+          docCliNombre: (cliente.Nombre || '').trim(),
+          docCliDocumento: (cliente.CioRuc || '').trim(),
+          docCliDireccion: (cliente.DireccionTrabajo || '').trim(),
+          observaciones: 'Factura externa (sistema de facturación anterior a la migración) — solo referencia para Nota de Crédito. No representa un movimiento en este sistema.',
+          empresaId: empresaId || null,
+        },
+        lineas: [],
+      }, transaction);
+
+      // 2) Nota de Crédito real: referencia al stub, se envía a DGI como cualquier otra NC.
+      const codNC = esFacturaOrigen ? '04' : '10';
+      const seqR = await new sql.Request(transaction)
+        .input('CodDoc', sql.VarChar(10), codNC)
+        .query(`SELECT s.SecIdSecuencia, s.SecPrefijo, s.SecSerie, s.SecDigitos, c.Detalle
+                FROM Config_TiposDocumento c
+                JOIN SecuenciaDocumentos s ON c.SecIdSecuencia = s.SecIdSecuencia
+                WHERE c.CodDocumento = @CodDoc AND s.SecActivo = 1`);
+      if (!seqR.recordset.length) throw new Error(`Sin secuencia para NC (${codNC})`);
+      const seq = seqR.recordset[0];
+
+      const numR = await new sql.Request(transaction)
+        .input('SecId', sql.Int, seq.SecIdSecuencia)
+        .query(`UPDATE SecuenciaDocumentos SET SecUltimoNumero = SecUltimoNumero + 1
+                OUTPUT INSERTED.SecSerie AS Serie,
+                       RIGHT(REPLICATE('0', INSERTED.SecDigitos) + CAST(INSERTED.SecUltimoNumero AS VARCHAR(10)), INSERTED.SecDigitos) AS NumeroSolo
+                WHERE SecIdSecuencia = @SecId`);
+      const ncSerie  = numR.recordset[0].Serie || seq.SecSerie || 'NC';
+      const ncNumero = numR.recordset[0].NumeroSolo;
+      const ncTipo   = (seq.Detalle?.trim() || 'Nota de Credito').substring(0, 20);
+
+      const subtotalVal = Number(Totales.subtotal) || 0;
+      const impuestosVal = Number(Totales.iva) || 0;
+
+      const lineasNc = Lineas.map(l => {
+        const cant = parseFloat(l.cantidad) || 0;
+        const precio = parseFloat(l.precioUnitario) || 0;
+        const ivaRate = parseFloat(l.iva) || 22;
+        const lineTotal = cant * precio;
+        const lineNeto = lineTotal / (1 + ivaRate / 100);
+        const lineIva = lineTotal - lineNeto;
+        return {
+          nomItem: (l.concepto || '').trim().substring(0, 255),
+          dscItem: (l.DcdDscItem || '').trim().substring(0, 255),
+          cantidad: cant,
+          precioUnitario: precio,
+          subtotal: lineNeto,
+          impuestos: lineIva,
+          total: lineTotal,
+        };
+      });
+
+      const ncId = await contabilidadCore.crearDocumentoContable({
+        header: {
+          cueIdCuenta: monId === 2 ? 119 : 118,
+          clienteId: cliente.CliIdCliente,
+          monedaId: monId,
+          tipo: ncTipo,
+          numero: ncNumero,
+          serie: ncSerie,
+          subtotal: subtotalVal,
+          impuestos: impuestosVal,
+          total: montoNum,
+          estado: 'COBRADO',
+          cfeEstado: 'PENDIENTE',
+          usuarioId,
+          docPagado: true,
+          docCliNombre: (cliente.Nombre || '').trim(),
+          docCliDocumento: (cliente.CioRuc || '').trim(),
+          docCliDireccion: (cliente.DireccionTrabajo || '').trim(),
+          docIdDocumentoRef: stubId,
+          docMotivoRef: motivoTrim,
+          observaciones: motivoTrim,
+          empresaId: empresaId || null,
+        },
+        lineas: lineasNc,
+      }, transaction);
+
+      // A propósito NO se llama a registrarMovimiento / reducirDeuda / generarAsientoCompleto:
+      // la factura y la deuda originales viven solo en el sistema anterior — esta NC es
+      // exclusivamente el CFE que se envía a DGI, sin ningún impacto contable en este sistema.
+
+      await transaction.commit();
+      const fullNcNumero = `${ncSerie}-${ncNumero}`;
+      logger.info(`[NOTA-CREDITO-EXTERNA] Ref externa ${serieOrigenTrim}-${numeroOrigenTrim} -> NC #${ncId} (${fullNcNumero}) Monto:${montoNum}`);
+      const s = io(req); if (s) s.emit('actualizado', { type: 'nota-credito' });
+      return res.status(201).json({ success: true, ncId, ncNumero: fullNcNumero, ncTipo, refStubId: stubId, message: `Nota de Crédito ${fullNcNumero} generada (sin movimiento contable)` });
+    } catch (errTx) { await transaction.rollback(); throw errTx; }
+  } catch (err) { logger.error('[NOTA-CREDITO-EXTERNA]', err.message); return res.status(500).json({ error: err.message }); }
 };
 
 // ─────────────────────────────────────────────
@@ -3351,7 +3606,7 @@ module.exports = {
   // ─────────────────────────────────────────────
   registrarOperacionManual,
   // Operaciones desde Estado de Cuenta (Caja Administrativa)
-  generarNotaCredito, generarNotaDebito, reversarDocumento, registrarPagoAnticipo, anularFactura,
+  generarNotaCredito, generarNotaCreditoExterna, generarNotaDebito, reversarDocumento, registrarPagoAnticipo, anularFactura,
   // Guardar Comprobantes en Servidor
   guardarComprobante,
 };

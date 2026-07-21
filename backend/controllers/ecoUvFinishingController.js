@@ -90,6 +90,7 @@ exports.getOrderDetails = async (req, res) => {
             .input('OID', sql.Int, id)
             .query(`
                 SELECT OT.ID, OT.ArchivoID, OT.TerminacionID, OT.Cantidad, OT.Estado,
+                       LTRIM(RTRIM(ISNULL(OT.Ubicacion, ''))) AS Ubicacion,
                        T.Nombre, T.UnidadCobro,
                        A.NombreArchivo
                 FROM OrdenTerminaciones OT

@@ -6,9 +6,11 @@ import {
 } from 'lucide-react';
 import api from '../../services/apiClient';
 import CajaPanelPago from './CajaPanelPago';
+import { fmtFecha, porFechaDesc } from '../../utils/fechas';
 
 const fmt  = (n) => Number(n || 0).toLocaleString('es-UY', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-const fmtFecha = (f) => f ? new Date(f).toLocaleDateString('es-UY', { day:'2-digit', month:'2-digit', year:'numeric' }) : '—';
+// fmtFecha/porFechaDesc leen la fecha en UTC (ver src/utils/fechas.js): las columnas DATE
+// de SQL son medianoche UTC y en hora uruguaya se mostraban un día antes que la Bandeja CFE.
 // Fecha de hoy en formato YYYY-MM-DD (hora local) para el <input type=date>
 const hoyISO = () => { const d = new Date(); const p = (n) => String(n).padStart(2, '0'); return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`; };
 
@@ -40,6 +42,10 @@ export default function CajaPagoDeudaTab({ sesion, metodosPago = [], cotizacion 
   const [pendienteParcial, setPendienteParcial] = useState(null); // { falta } cuando pago < deuda
   const [excedentePago, setExcedentePago]       = useState(null); // { excedente } cuando pago > deuda
 
+  // Tope para resolver una diferencia como "cambio monetario". Debe coincidir con el
+  // backend (LIMITE_DIF_CAMBIO_USD en cajaController), que la valida de nuevo.
+  const LIMITE_DIF_CAMBIO_USD = 1;
+
   // ─── Derivados que los useEffects necesitan (deben declararse antes) ─────────────
   // NOTA: deudasSeleccionadas se recalcula debajo con más contexto,
   // pero necesitamos monedaDeuda aqui para los efectos de pago.
@@ -48,6 +54,10 @@ export default function CajaPagoDeudaTab({ sesion, metodosPago = [], cotizacion 
     return sel.some(d => (d.MonSimbolo || '').includes('US') || d.CueTipo === 'DINERO_USD') ? 'USD' : 'UYU';
   }, [deudas, seleccionadas]);
   const simboloDeuda = monedaDeuda === 'USD' ? 'US$' : '$U';
+  // Tope en la moneda de la deuda: 1 USD, o su equivalente en pesos al TC del día.
+  const limiteDifCambio = LIMITE_DIF_CAMBIO_USD * (monedaDeuda === 'USD' ? 1 : (cotizacion || 1));
+  // Una diferencia dentro del tope se puede resolver como fluctuación del tipo de cambio.
+  const esDifDeCambio = (dif) => Math.abs(dif) <= limiteDifCambio + 0.005;
 
   // ─── Auto-seleccionar primer método de pago ──────────────────────────────
   useEffect(() => {
@@ -121,14 +131,15 @@ export default function CajaPagoDeudaTab({ sesion, metodosPago = [], cotizacion 
   }, [deudas, initialCliente, initialDocumento]);
 
   // ─── Filtrado local ───────────────────────────────────────────────────────
+  // Siempre de la más reciente a la más vieja (lo último emitido, arriba).
   const deudasFiltradas = useMemo(() => {
-    if (!qCliente.trim()) return deudas;
-    const q = qCliente.toLowerCase();
-    return deudas.filter(d => 
+    const q = qCliente.trim().toLowerCase();
+    const base = !q ? deudas : deudas.filter(d =>
       (d.ClienteNombre || '').toLowerCase().includes(q) ||
       (d.ClienteCodigo || '').toString().toLowerCase().includes(q) ||
       (d.CodigoOrden || '').toLowerCase().includes(q)
     );
+    return [...base].sort(porFechaDesc(d => d.DDeFechaEmision));
   }, [deudas, qCliente]);
 
   // ─── Toggle selección ─────────────────────────────────────────────────────
@@ -244,6 +255,9 @@ export default function CajaPagoDeudaTab({ sesion, metodosPago = [], cotizacion 
     // opts puede ser: {forzarParcial}/{forzarExcedente}, `true` (compat) o un evento de click.
     const forzarParcial   = opts === true || opts?.forzarParcial === true;
     const forzarExcedente = opts?.forzarExcedente === true;
+    // El cajero resolvió la diferencia como fluctuación del TC: la deuda se cancela
+    // entera y la diferencia va a resultado en vez de al cliente.
+    const aCambioMonetario = opts?.aCambioMonetario === true;
     if (seleccionadas.length === 0) return toast.warning('Seleccione al menos una deuda.');
     if (clientesInvolucrados.length > 1) {
       return toast.warning('Solo se pueden pagar deudas de un mismo cliente a la vez.');
@@ -267,14 +281,14 @@ export default function CajaPagoDeudaTab({ sesion, metodosPago = [], cotizacion 
     const diferencia = totalPagado - totalAPagar;
 
     // Pago de más → confirmar que el excedente queda como saldo a favor del cliente
-    if (diferencia > 0.01 && !forzarExcedente) {
+    if (diferencia > 0.01 && !forzarExcedente && !aCambioMonetario) {
       setExcedentePago({ excedente: diferencia, totalPagado });
       setPendienteParcial(null);
       return;
     }
 
     // Pago parcial → mostrar banner de confirmación (solo si NO viene de confirmar explícito)
-    if (!esCreditoCobro && diferencia < -0.01 && !forzarParcial) {
+    if (!esCreditoCobro && diferencia < -0.01 && !forzarParcial && !aCambioMonetario) {
       setPendienteParcial({ falta: Math.abs(diferencia), totalPagado });
       setExcedentePago(null);
       return;
@@ -299,6 +313,10 @@ export default function CajaPagoDeudaTab({ sesion, metodosPago = [], cotizacion 
           tieneOrdenSinFactura: deudasSeleccionadas.some(d => !d.DocIdDocumento),
           // Crédito: genera el comprobante y deja la deuda viva (sin cobro)
           esCredito: esCreditoCobro,
+          // Destino de la diferencia entre lo pagado y la deuda:
+          // 'CAMBIO' → resultado por diferencia de cambio (el backend valida el tope de 1 USD)
+          // 'CLIENTE' → como siempre: deuda parcial (de menos) o saldo a favor (de más)
+          destinoDiferencia: aCambioMonetario ? 'CAMBIO' : 'CLIENTE',
         },
         aplicaciones: deudasSeleccionadas.map(d => ({
           tipo: 'PAGO_DEUDA',
@@ -322,6 +340,9 @@ export default function CajaPagoDeudaTab({ sesion, metodosPago = [], cotizacion 
             monedaId:      monId,
             montoOriginal: parseFloat(p.monto),
             cotizacion:    monId === 2 ? cotizacion : 1,
+            // Cheque dado de alta desde el panel: sin esto el cheque queda huérfano y
+            // el 360 no puede mostrar su número junto al cobro.
+            idCheque:      p.idCheque || null,
           };
         }),
       });
@@ -329,9 +350,13 @@ export default function CajaPagoDeudaTab({ sesion, metodosPago = [], cotizacion 
       const excedenteMsg = res.data?.excedente > 0.01
         ? ` — ${simboloDeuda}${fmt(res.data.excedente)} quedó como saldo a favor`
         : '';
+      const difCambio = Number(res.data?.diferenciaCambio || 0);
+      const difMsg = Math.abs(difCambio) > 0.005
+        ? ` — ${simboloDeuda}${fmt(Math.abs(difCambio))} a ${difCambio > 0 ? 'ganancia' : 'pérdida'} por diferencia de cambio`
+        : '';
       toast.success(esCreditoCobro
         ? 'Comprobante a crédito generado — la deuda queda en cuenta corriente.'
-        : `Pago registrado: ${seleccionadas.length} deuda(s) por ${simboloDeuda}${fmt(totalPagado)}${excedenteMsg}`);
+        : `Pago registrado: ${seleccionadas.length} deuda(s) por ${simboloDeuda}${fmt(totalPagado)}${excedenteMsg}${difMsg}`);
       setSeleccionadas([]); setObservaciones(''); setPendienteParcial(null); setExcedentePago(null); setFechaCobro(hoyISO()); setCondicion('CONTADO'); setPaso('seleccion');
       setPagos([{ id: Date.now(), metodoPagoId: metodosPago[0]?.MPaIdMetodoPago || '', moneda: 'UYU', monedaId: 1, monto: '' }]);
       cargarDeudas();
@@ -559,6 +584,12 @@ export default function CajaPagoDeudaTab({ sesion, metodosPago = [], cotizacion 
                 <button onClick={() => handleProcesar({ forzarParcial: true })} className="flex-1 bg-amber-500 hover:bg-amber-600 text-white font-black py-1.5 rounded-lg">Confirmar parcial</button>
                 <button onClick={() => setPendienteParcial(null)} className="flex-1 bg-white border border-amber-300 text-amber-700 font-black py-1.5 rounded-lg">Cancelar</button>
               </div>
+              {esDifDeCambio(pendienteParcial.falta) && (
+                <button onClick={() => handleProcesar({ aCambioMonetario: true })}
+                  className="w-full bg-white border border-violet-300 text-violet-700 hover:bg-violet-50 font-black py-1.5 rounded-lg">
+                  Es diferencia de cambio → cancelar la deuda entera
+                </button>
+              )}
             </div>
           )}
           {excedentePago && (
@@ -568,6 +599,12 @@ export default function CajaPagoDeudaTab({ sesion, metodosPago = [], cotizacion 
                 <button onClick={() => handleProcesar({ forzarExcedente: true })} className="flex-1 bg-sky-500 hover:bg-sky-600 text-white font-black py-1.5 rounded-lg">Cobrar y dejar a favor</button>
                 <button onClick={() => setExcedentePago(null)} className="flex-1 bg-white border border-sky-300 text-sky-700 font-black py-1.5 rounded-lg">Cancelar</button>
               </div>
+              {esDifDeCambio(excedentePago.excedente) && (
+                <button onClick={() => handleProcesar({ aCambioMonetario: true })}
+                  className="w-full bg-white border border-violet-300 text-violet-700 hover:bg-violet-50 font-black py-1.5 rounded-lg">
+                  Es diferencia de cambio → no dejar saldo a favor
+                </button>
+              )}
             </div>
           )}
           <button onClick={() => handleProcesar()} disabled={seleccionadas.length === 0 || procesando}
@@ -857,6 +894,21 @@ export default function CajaPagoDeudaTab({ sesion, metodosPago = [], cotizacion 
                     ✗ Cancelar
                   </button>
                 </div>
+                {esDifDeCambio(pendienteParcial.falta) && (
+                  <div className="border-t border-amber-200 pt-3 flex flex-col gap-2">
+                    <p className="text-xs font-medium text-amber-700">
+                      La diferencia está dentro de {LIMITE_DIF_CAMBIO_USD} USD ({simboloDeuda} {fmt(limiteDifCambio)}):
+                      puede ser la fluctuación del tipo de cambio. Si es así, la deuda se cancela
+                      <strong> entera</strong> y los {simboloDeuda} {pendienteParcial.falta.toFixed(2)} van a
+                      <strong> pérdida por diferencia de cambio</strong>, sin quedar pendientes al cliente.
+                    </p>
+                    <button
+                      onClick={() => { handleProcesar({ aCambioMonetario: true }); }}
+                      className="w-full bg-white border-2 border-violet-400 text-violet-700 font-black py-2 px-4 rounded-xl text-sm hover:bg-violet-50 transition-colors">
+                      ⇄ Es diferencia de cambio — cancelar la deuda entera
+                    </button>
+                  </div>
+                )}
               </div>
             )}
 
@@ -883,6 +935,20 @@ export default function CajaPagoDeudaTab({ sesion, metodosPago = [], cotizacion 
                     ✗ Cancelar
                   </button>
                 </div>
+                {esDifDeCambio(excedentePago.excedente) && (
+                  <div className="border-t border-sky-200 pt-3 flex flex-col gap-2">
+                    <p className="text-xs font-medium text-sky-700">
+                      La diferencia está dentro de {LIMITE_DIF_CAMBIO_USD} USD ({simboloDeuda} {fmt(limiteDifCambio)}):
+                      puede ser la fluctuación del tipo de cambio. Si es así, los {simboloDeuda} {excedentePago.excedente.toFixed(2)}
+                      van a <strong>ganancia por diferencia de cambio</strong> en vez de quedar como saldo a favor del cliente.
+                    </p>
+                    <button
+                      onClick={() => { handleProcesar({ aCambioMonetario: true }); }}
+                      className="w-full bg-white border-2 border-violet-400 text-violet-700 font-black py-2 px-4 rounded-xl text-sm hover:bg-violet-50 transition-colors">
+                      ⇄ Es diferencia de cambio — no dejar saldo a favor
+                    </button>
+                  </div>
+                )}
               </div>
             )}
 

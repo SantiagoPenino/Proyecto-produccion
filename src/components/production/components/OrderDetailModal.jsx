@@ -1248,6 +1248,11 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
                                                                     <p className={`text-sm font-bold ${t.Estado === 'Hecha' ? 'text-emerald-700 line-through' : 'text-zinc-700'}`}>
                                                                         {t.Nombre}
                                                                     </p>
+                                                                    {t.Ubicacion && (
+                                                                        <span className="text-[10px] font-black uppercase text-amber-700 bg-amber-100 px-1.5 py-0.5 rounded">
+                                                                            {String(t.Ubicacion).replace('_', ' y ').toLowerCase()}
+                                                                        </span>
+                                                                    )}
                                                                     <span className="text-xs font-black text-zinc-400">
                                                                         × {parseFloat(t.Cantidad)} {t.UnidadCobro === 'M2' ? 'm²' : t.UnidadCobro === 'M' ? 'm' : 'u.'}
                                                                     </span>

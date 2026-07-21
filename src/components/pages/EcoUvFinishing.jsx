@@ -318,6 +318,7 @@ const EcoUvFinishing = () => {
                                                                     <div className="flex-1 min-w-0">
                                                                         <p className={`text-sm font-bold ${hecha ? 'text-emerald-700 line-through' : 'text-slate-700'}`}>
                                                                             {t.Nombre}
+                                                                            {t.Ubicacion && <span className="ml-1.5 text-[10px] font-black uppercase text-amber-600 bg-amber-100 px-1.5 py-0.5 rounded">{String(t.Ubicacion).replace('_', ' y ').toLowerCase()}</span>}
                                                                             <span className="ml-2 text-xs font-black text-slate-400">× {parseFloat(t.Cantidad)} {t.UnidadCobro === 'M2' ? 'm²' : t.UnidadCobro === 'M' ? 'm' : 'u.'}</span>
                                                                         </p>
                                                                         {t.NombreArchivo && (

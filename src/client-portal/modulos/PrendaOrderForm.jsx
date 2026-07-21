@@ -1,14 +1,36 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate, useParams, useLocation } from 'react-router-dom';
 import { createPortal } from 'react-dom';
 import {
     Save, UploadCloud, Plus, Trash2, ArrowLeft,
     AlertTriangle, Check, Scissors, Zap, Download,
-    ImageIcon, User, FileCode, CheckCircle, ClipboardList, Layers
+    ImageIcon, User, FileCode, CheckCircle, ClipboardList, Layers,
+    Search, RefreshCw // [PRENDAS] para el selector de cliente
 } from 'lucide-react';
 
+/*
+ * ══════════════════════════════════════════════════════════════════════════
+ *  [PRENDAS] FORK de modulos/OrderForm.jsx — copia FIEL al 16-07-2026.
+ * ══════════════════════════════════════════════════════════════════════════
+ *
+ *  Es EL MISMO form que hoy usa el cliente en /portal/order/sublimacion,
+ *  con todos sus complementarios: Corte (TWC) y Costura (TWT) por
+ *  config.hasCuttingWorkflow, más Estampado (EST) y Bordado (EMB).
+ *
+ *  Divergencias con el original (son 3, y todas en la cabecera):
+ *    1. Usa usePrendaOrderForm  → que lee constants/prendaServices.js,
+ *       donde EMB está DESCOMENTADO. El services.js del portal NO se toca.
+ *    2. Se llama PrendaOrderForm.
+ *    3. Vive en su propia ruta.
+ *
+ *  El cuerpo del componente (las 2100 líneas de abajo) está SIN TOCAR — por
+ *  eso el hook se importa con alias `useOrderForm`. A partir de acá lo
+ *  modificamos con libertad: nada de esto afecta a Sublimación, DTF,
+ *  Impresión Directa, TPU ni ECOUV.
+ */
+
 // Custom Hooks
-import { useOrderForm } from './order-form/hooks/useOrderForm';
+import { usePrendaOrderForm as useOrderForm } from './order-form/hooks/usePrendaOrderForm';
 import { useToast } from '../pautas/Toast';
 
 // Services
@@ -111,11 +133,217 @@ const resolveMaterialWidth = (matObj) => {
     return 1.83;
 };
 
-const OrderForm = ({ serviceId: propServiceId }) => {
+const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
     const { serviceId: paramServiceId } = useParams();
     const navigate = useNavigate();
     const { addToast } = useToast();
     const location = useLocation();
+
+    // [PRENDAS] Cliente al que se le carga el pedido. En el form del portal no existe:
+    // el cliente sale del login. Acá lo elige el vendedor.
+    // Copiado de WmsOrderPage.jsx (mismo debounce de 500ms, mismo mínimo de 3 caracteres).
+    const [clientSearchTerm, setClientSearchTerm] = useState('');
+    const [searchResults, setSearchResults] = useState([]);
+    const [isSearchingClient, setIsSearchingClient] = useState(false);
+    const [selectedClient, setSelectedClient] = useState(null);
+    const searchTimeoutRef = useRef(null);
+
+    const handleClientSearch = (e) => {
+        const val = e.target.value;
+        setClientSearchTerm(val);
+
+        if (searchTimeoutRef.current) clearTimeout(searchTimeoutRef.current);
+
+        if (val.trim().length < 3) {
+            setSearchResults([]);
+            return;
+        }
+
+        setIsSearchingClient(true);
+        searchTimeoutRef.current = setTimeout(async () => {
+            try {
+                const res = await apiClient.get(`/clients/search?q=${encodeURIComponent(val)}`);
+                setSearchResults(res.data?.data || res.data || []);
+            } catch (error) {
+                console.error("Error searching clients:", error);
+                setSearchResults([]);
+            } finally {
+                setIsSearchingClient(false);
+            }
+        }, 500);
+    };
+
+    // El id con el que se va a cargar el pedido (misma cascada que WmsOrderPage)
+    const clienteIdPedido = selectedClient
+        ? (selectedClient.CliIdCliente || selectedClient.CodCliente || selectedClient.ClienteID || selectedClient.id)
+        : null;
+
+    // [PRENDAS] Qué desea:
+    //   COMPRAR                → prenda de stock, sin personalizar
+    //   COMPRAR_Y_PERSONALIZAR → prenda de stock + estampado / bordado
+    //   FABRICAR_A_MEDIDA      → desde cero: sublimación → corte → costura
+    const [queDesea, setQueDesea] = useState('COMPRAR');
+
+    // [PRENDAS] PARTES de la prenda (cuello, frente, espalda, costadillo...).
+    // El producto terminado todavía NO tiene sus partes definidas en la base, así que
+    // por ahora el nombre de la parte se escribe a mano. Cuando existan, este texto
+    // libre se reemplaza por un combo.
+    // Cada parte: nombre + tela + arte que se le aplica. Los servicios NO van acá:
+    // son del pedido completo.
+    const nuevaParte = () => ({
+        id: Date.now() + Math.random(),
+        nombre: '',
+        material: '',
+        arte: null,
+    });
+    const [partes, setPartes] = useState([nuevaParte()]);
+
+    const updateParte = (id, campo, valor) =>
+        setPartes(prev => prev.map(p => (p.id === id ? { ...p, [campo]: valor } : p)));
+
+    // [PRENDAS] El bordado puede ir sobre la prenda o como parche.
+    const [bordadoTipo, setBordadoTipo] = useState('');  // 'PRENDA' | 'PARCHE'
+
+    // [PRENDAS] Bocetos y artes. Ya no dependen de tildar un servicio: si se sube la
+    // imagen a estampar o el parche a bordar, el servicio queda implícito.
+    // Cada bloque admite VARIOS bocetos (ej: frente y espalda).
+    const nuevoBoceto = () => ({ id: Date.now() + Math.random(), texto: '', archivo: null });
+    const [bocetos, setBocetos] = useState({
+        prenda:    { items: [nuevoBoceto()], imagen: null },
+        estampado: { items: [nuevoBoceto()], imagen: null },
+        bordado:   { items: [nuevoBoceto()], imagen: null },
+        tpu:       { items: [nuevoBoceto()], imagen: null },
+    });
+
+    const addBoceto = (k) =>
+        setBocetos(prev => ({ ...prev, [k]: { ...prev[k], items: [...prev[k].items, nuevoBoceto()] } }));
+
+    const removeBoceto = (k, id) =>
+        setBocetos(prev => ({ ...prev, [k]: { ...prev[k], items: prev[k].items.filter(b => b.id !== id) } }));
+
+    const updateBocetoItem = (k, id, campo, valor) =>
+        setBocetos(prev => ({
+            ...prev,
+            [k]: { ...prev[k], items: prev[k].items.map(b => (b.id === id ? { ...b, [campo]: valor } : b)) },
+        }));
+
+    const setImagenBloque = (k, file) =>
+        setBocetos(prev => ({ ...prev, [k]: { ...prev[k], imagen: file } }));
+
+    // [PRENDAS] Tabla de talles. Reemplaza la tabla de corte. De acá sale la cantidad
+    // de prendas. Se puede bajar la plantilla, subirla llena, o llenarla acá mismo.
+    // OJO: estos talles son un default — decime los tuyos y los cambio.
+    const TALLES_ADULTO = ['S', 'M', 'L', 'XL', 'XXL', 'XXXL'];
+    const TALLES_NINO   = ['2', '4', '6', '8', '10', '12', '14', '16'];
+    const CATEGORIAS    = ['Jugador', 'Golero', 'Técnico'];
+
+    // Una fila nueva hereda lo de la anterior (tipo, talles, categoría, nota, cantidad).
+    // Número y nombre NO se copian: son de cada persona.
+    const nuevaFilaTalle = (prev) => ({
+        id: Date.now() + Math.random(),
+        tipo:      prev?.tipo      || 'ADULTO',   // 'ADULTO' | 'NINO'
+        talleSup:  prev?.talleSup  || '',
+        talleInf:  prev?.talleInf  || '',
+        categoria: prev?.categoria || 'Jugador',
+        numero: '',
+        jugador: '',
+        nota:      prev?.nota      || '',
+        cantidad:  prev?.cantidad  || 1,
+    });
+    const [talles, setTalles] = useState([nuevaFilaTalle()]);
+    const [planillaTalles, setPlanillaTalles] = useState(null); // planilla llena subida
+    const [errorPlanilla, setErrorPlanilla] = useState('');
+
+    // [PRENDAS] Importar la planilla llena → cargar las filas en la tabla.
+    // Hoja "DATOS DE PEDIDO": A=talle sup, B=talle inf, C=nro, D=jugador, F=nota, G=cantidad.
+    // La planilla no trae Adulto/Niño ni Categoría: el tipo se infiere del talle (los de
+    // niño son numéricos) y la categoría sale de la nota si dice Golero/Técnico.
+    const importarPlanilla = async (file) => {
+        setErrorPlanilla('');
+        setPlanillaTalles(file);
+        if (!file) return;
+        try {
+            const XLSX = await import('xlsx');
+            const buf = await file.arrayBuffer();
+            const wb = XLSX.read(buf, { type: 'array' });
+
+            const hoja = wb.Sheets['DATOS DE PEDIDO'] || wb.Sheets[wb.SheetNames[0]];
+            if (!hoja) throw new Error('No se encontró la hoja "DATOS DE PEDIDO".');
+
+            // header:1 → filas como arrays, respetando las columnas vacías (E)
+            const rows = XLSX.utils.sheet_to_json(hoja, { header: 1, defval: '', blankrows: false });
+
+            const importadas = [];
+            for (let i = 1; i < rows.length; i++) { // fila 1 = headers
+                const r = rows[i] || [];
+                const talleSup = String(r[0] ?? '').trim();
+                const talleInf = String(r[1] ?? '').trim();
+                const numero   = String(r[2] ?? '').trim();
+                const jugador  = String(r[3] ?? '').trim();
+                const nota     = String(r[5] ?? '').trim();
+                const cantidad = parseInt(r[6], 10) || 0;
+
+                // Fila vacía → se ignora
+                if (!talleSup && !talleInf && !numero && !jugador && !nota && !cantidad) continue;
+
+                const esNino = TALLES_NINO.includes(talleSup) || TALLES_NINO.includes(talleInf);
+                const notaLower = nota.toLowerCase();
+                const categoria =
+                    notaLower.includes('golero') ? 'Golero' :
+                    (notaLower.includes('técnico') || notaLower.includes('tecnico')) ? 'Técnico' : 'Jugador';
+
+                importadas.push({
+                    id: `imp-${i}-${Math.random()}`,
+                    tipo: esNino ? 'NINO' : 'ADULTO',
+                    talleSup, talleInf, categoria, numero, jugador, nota,
+                    cantidad: cantidad || 1,
+                });
+            }
+
+            if (importadas.length === 0) throw new Error('La planilla no tiene filas con datos.');
+            setTalles(importadas);
+        } catch (e) {
+            console.error('[Prendas] Error importando la planilla:', e);
+            setErrorPlanilla(e.message || 'No se pudo leer la planilla.');
+            setPlanillaTalles(null);
+        }
+    };
+
+    const updateTalle = (id, campo, valor) =>
+        setTalles(prev => prev.map(t => {
+            if (t.id !== id) return t;
+            // Si cambia de adulto a niño (o al revés), los talles elegidos ya no aplican
+            if (campo === 'tipo' && valor !== t.tipo) return { ...t, tipo: valor, talleSup: '', talleInf: '' };
+            return { ...t, [campo]: valor };
+        }));
+
+    const agregarFilaTalle = () =>
+        setTalles(prev => [...prev, nuevaFilaTalle(prev[prev.length - 1])]);
+
+    const totalPrendas = talles.reduce((a, t) => a + (parseInt(t.cantidad, 10) || 0), 0);
+
+    // [PRENDAS] Productos terminados de la tabla Articulos (los que tienen su CodStock
+    // en una variante de StockArt marcada TipoStock = 'PRODUCTO_TERMINADO').
+    const [productosTerminados, setProductosTerminados] = useState([]);
+    const [loadingPT, setLoadingPT] = useState(false);
+    const [ptSeleccionado, setPtSeleccionado] = useState(null);
+
+    useEffect(() => {
+        let cancel = false;
+        setLoadingPT(true);
+        apiClient.get('/prendas-orders/productos-terminados')
+            .then(res => {
+                if (cancel) return;
+                setProductosTerminados(res.data?.data || res.data || []);
+            })
+            .catch(err => {
+                if (cancel) return;
+                console.error('[Prendas] No se pudieron cargar los productos terminados:', err);
+                setProductosTerminados([]);
+            })
+            .finally(() => { if (!cancel) setLoadingPT(false); });
+        return () => { cancel = true; };
+    }, []);
 
     // Allows passing overrides via navigate('/order/...', { state: { config: { allowedOptions: ['...'] } } })
     const overrideConfig = location.state?.config || {};
@@ -251,65 +479,19 @@ const OrderForm = ({ serviceId: propServiceId }) => {
             .catch(() => setFichaPT(null));
     }, [isEcouvPT, globalMaterial, dynamicMaterials]);
 
-    // ── Terminaciones por archivo: manera de aplicación (ubicación) + cantidad
-    //    SUGERIDA por la regla de la terminación, siempre visible y editable. ──
-    const UBI_LABEL = { ARRIBA: 'Arriba', ABAJO: 'Abajo', ARRIBA_ABAJO: 'Arriba y abajo', COSTADOS: 'Costados', PERIMETRO: 'Perímetro' };
-
-    const dimsDeItem = (it) => {
-        const w = parseFloat(it.printSettings?.finalWidthM) || (it.file?.width ? (it.file.unit === 'meters' ? it.file.width : (it.file.width / 300) * 0.0254) : 0);
-        const h = parseFloat(it.printSettings?.finalHeightM) || (it.file?.height ? (it.file.unit === 'meters' ? it.file.height : (it.file.height / 300) * 0.0254) : 0);
-        return { w, h };
-    };
-    const tramoM = (ubi, w, h) => {
-        switch (ubi) {
-            case 'ARRIBA': case 'ABAJO': return w;
-            case 'ARRIBA_ABAJO': return w * 2;
-            case 'COSTADOS': return h * 2;
-            case 'PERIMETRO': default: return (w + h) * 2;
-        }
-    };
-    const cantidadSugerida = (term, ubi, item) => {
-        const { w, h } = dimsDeItem(item);
-        const regla = term.ReglaCantidad || 'FIJA';
-        if (regla === 'METROS_TRAMO') return Math.round(tramoM(ubi, w, h) * 100) / 100;
-        if (regla === 'CADA_X_CM') {
-            const pasoM = (parseFloat(term.ParamCantidad) || 50) / 100;
-            const tramo = tramoM(ubi, w, h);
-            return tramo > 0 ? Math.max(1, Math.ceil(tramo / pasoM)) : (parseFloat(term.ParamCantidad) ? 1 : 1);
-        }
-        return parseFloat(term.ParamCantidad) || 1;
-    };
-
+    // Toggle de una terminación en un archivo (item.terminaciones = [{terminacionId, cantidad, nombre}])
     const toggleItemTerminacion = (item, term) => {
         const current = Array.isArray(item.terminaciones) ? item.terminaciones : [];
         const exists = current.find(t => t.terminacionId === term.TerminacionID);
-        let next;
-        if (exists) {
-            next = current.filter(t => t.terminacionId !== term.TerminacionID);
-        } else {
-            const ubis = (term.Ubicaciones || '').split(',').map(x => x.trim()).filter(Boolean);
-            const ubi = ubis[0] || '';
-            next = [...current, {
-                terminacionId: term.TerminacionID,
-                ubicacion: ubi,
-                cantidad: cantidadSugerida(term, ubi, item),
-                nombre: term.Nombre,
-                unidad: term.UnidadCobro
-            }];
-        }
+        const next = exists
+            ? current.filter(t => t.terminacionId !== term.TerminacionID)
+            : [...current, { terminacionId: term.TerminacionID, cantidad: 1, nombre: term.Nombre, unidad: term.UnidadCobro }];
         actions.updateItem(item.id, 'terminaciones', next);
     };
     const setItemTerminacionCantidad = (item, terminacionId, cantidad) => {
         const current = Array.isArray(item.terminaciones) ? item.terminaciones : [];
         actions.updateItem(item.id, 'terminaciones', current.map(t =>
             t.terminacionId === terminacionId ? { ...t, cantidad } : t
-        ));
-    };
-    const setItemTerminacionUbicacion = (item, term, ubi) => {
-        const current = Array.isArray(item.terminaciones) ? item.terminaciones : [];
-        // Al cambiar la ubicación se recalcula la sugerencia (el cliente puede volver a ajustarla)
-        actions.updateItem(item.id, 'terminaciones', current.map(t =>
-            t.terminacionId === term.TerminacionID ? { ...t, ubicacion: ubi, cantidad: cantidadSugerida(term, ubi, item) } : t
         ));
     };
     const unidadLabel = (u) => u === 'M2' ? 'm²' : u === 'M' ? 'm' : 'u.';
@@ -958,7 +1140,7 @@ const OrderForm = ({ serviceId: propServiceId }) => {
                             const permit = termsDeMaterial(it.material || globalMaterial);
                             return (it.terminaciones || [])
                                 .filter(t => permit.some(p => p.TerminacionID === t.terminacionId))
-                                .map(t => ({ terminacionId: t.terminacionId, cantidad: parseFloat(t.cantidad) || 1, ubicacion: t.ubicacion || null }));
+                                .map(t => ({ terminacionId: t.terminacionId, cantidad: parseFloat(t.cantidad) || 1 }));
                         })()
                         : []
                 });
@@ -1352,6 +1534,75 @@ const OrderForm = ({ serviceId: propServiceId }) => {
                 {/* 1. Datos Generales (Resumed) */}
                 <GlassCard title="Datos Generales del Pedido" icon={ClipboardList} className="-mx-4 md:mx-0 md:!rounded-xl !rounded-none !border-x-0 md:!border-x border-y md:border-y-0 px-4 md:px-6">
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+
+                        {/* [PRENDAS] Cliente al que se le carga el pedido. No existe en el form del
+                            portal (ahí sale del login). Markup copiado de WmsOrderPage.jsx. */}
+                        <div className="md:col-span-2">
+                            {!selectedClient ? (
+                                <div className="relative">
+                                    <label className="block text-sm font-medium text-zinc-400 mb-2">Cliente al que se le carga el pedido *</label>
+                                    <div className="relative">
+                                        <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-zinc-500" size={16} />
+                                        <input
+                                            type="text"
+                                            className="w-full bg-brand-dark border border-zinc-700 rounded-lg pl-11 pr-4 py-3 text-sm text-zinc-100 placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-brand-magenta focus:border-transparent transition-all"
+                                            placeholder="Buscar cliente (RUC, CI, Nombre)..."
+                                            value={clientSearchTerm}
+                                            onChange={handleClientSearch}
+                                        />
+                                        {isSearchingClient && (
+                                            <RefreshCw className="absolute right-4 top-1/2 -translate-y-1/2 text-zinc-500 animate-spin" size={16} />
+                                        )}
+                                    </div>
+
+                                    {searchResults.length > 0 && clientSearchTerm.length >= 3 && (
+                                        <div className="absolute z-50 mt-2 w-full bg-white rounded-xl shadow-xl border border-zinc-200 overflow-hidden max-h-60 overflow-y-auto">
+                                            {searchResults.map(client => (
+                                                <div
+                                                    key={client.CodCliente || client.ClienteID || client.id}
+                                                    className="p-3 hover:bg-zinc-100 cursor-pointer border-b border-zinc-100 last:border-0 transition-colors"
+                                                    onClick={() => {
+                                                        setSelectedClient(client);
+                                                        setSearchResults([]);
+                                                        setClientSearchTerm('');
+                                                    }}
+                                                >
+                                                    <p className="font-bold text-zinc-800 text-sm">{client.Nombre || client.RazonSocial || client.nombre}</p>
+                                                    <p className="text-xs text-zinc-500 mt-0.5">ID: {client.CodCliente || client.ClienteID || client.id} | DOC: {client.CioRuc || client.RUT || client.RUC || client.CI || 'N/A'}</p>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    )}
+                                </div>
+                            ) : (
+                                <div>
+                                    <label className="block text-sm font-medium text-zinc-400 mb-2">Cliente al que se le carga el pedido *</label>
+                                    <div className="flex items-center justify-between gap-4 bg-brand-dark border border-brand-magenta/50 rounded-lg px-4 py-3">
+                                        <div className="flex items-center gap-3 min-w-0">
+                                            <div className="w-10 h-10 rounded-lg bg-brand-magenta/20 text-brand-magenta flex items-center justify-center shrink-0">
+                                                <User size={20} />
+                                            </div>
+                                            <div className="min-w-0">
+                                                <p className="font-bold text-zinc-100 text-sm leading-tight truncate">{selectedClient.Nombre || selectedClient.RazonSocial || selectedClient.nombre}</p>
+                                                <p className="text-xs text-zinc-500 font-mono mt-0.5 uppercase tracking-wide">
+                                                    IDCLIENTE: {selectedClient.CodCliente || selectedClient.ClienteID || selectedClient.id}
+                                                    {' · '}clienteId = {clienteIdPedido}
+                                                </p>
+                                            </div>
+                                        </div>
+                                        <button
+                                            type="button"
+                                            onClick={() => setSelectedClient(null)}
+                                            className="p-2 text-zinc-500 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition-colors shrink-0"
+                                            title="Cambiar cliente"
+                                        >
+                                            <Trash2 size={18} />
+                                        </button>
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+
                         <div className="md:col-span-2">
                             <FormInput label="Nombre del Proyecto / Trabajo *" placeholder="Ej: Camisetas Verano 2024" value={jobName} onChange={(e) => actions.setJobName(e.target.value)} required />
                         </div>
@@ -1388,6 +1639,333 @@ const OrderForm = ({ serviceId: propServiceId }) => {
 
                         </div>
 
+                        {/* [PRENDAS] Qué desea. Mismo patrón que los botones de Prioridad. */}
+                        <div className="md:col-span-2">
+                            <p className="block text-sm font-medium text-zinc-400 mb-2">Qué desea *</p>
+                            <div className="flex flex-col sm:flex-row bg-brand-dark p-1 rounded-lg gap-1 border border-zinc-700">
+                                {[
+                                    { id: 'COMPRAR',                label: 'Comprar prendas' },
+                                    { id: 'COMPRAR_Y_PERSONALIZAR', label: 'Comprar prendas y personalizar' },
+                                    { id: 'FABRICAR_A_MEDIDA',      label: 'Fabricar prendas a la medida' },
+                                ].map(t => {
+                                    const isSelected = queDesea === t.id;
+                                    return (
+                                        <button key={t.id} type="button" onClick={() => setQueDesea(t.id)}
+                                            className={`flex-1 py-1.5 px-3 rounded-md text-sm font-medium transition-all ${isSelected ? 'shadow-sm bg-cyan-400/20 text-cyan-300 border border-cyan-500/30' : 'text-zinc-400 hover:bg-zinc-700 hover:text-zinc-200'}`}
+                                        >
+                                            {t.label}
+                                        </button>
+                                    );
+                                })}
+                            </div>
+                        </div>
+
+                        {/* [PRENDAS] Producto terminado, desde la tabla Articulos. */}
+                        <div className="md:col-span-2">
+                            <p className="block text-sm font-medium text-zinc-400 mb-2">
+                                Producto terminado *
+                                {loadingPT && <span className="text-zinc-500 font-normal"> — cargando…</span>}
+                                {!loadingPT && <span className="text-zinc-500 font-normal"> — {productosTerminados.length} disponibles</span>}
+                            </p>
+                            <select
+                                value={ptSeleccionado?.CodArticulo || ''}
+                                onChange={(e) => {
+                                    const p = productosTerminados.find(x => x.CodArticulo === e.target.value);
+                                    setPtSeleccionado(p || null);
+                                }}
+                                className="w-full bg-brand-dark border border-zinc-700 rounded-lg px-4 py-3 text-sm text-zinc-100 focus:outline-none focus:ring-2 focus:ring-brand-magenta focus:border-transparent transition-all"
+                            >
+                                <option value="">Seleccioná un producto…</option>
+                                {productosTerminados.map(p => (
+                                    <option key={p.CodArticulo} value={p.CodArticulo}>
+                                        {p.Categoria ? `${p.Categoria} · ` : ''}{p.Descripcion}
+                                        {p.Precio != null ? ` — $${p.Precio}` : ' — sin precio'}
+                                    </option>
+                                ))}
+                            </select>
+
+                            {ptSeleccionado && (
+                                <p className="mt-2 text-xs text-zinc-500 font-mono">
+                                    CodArt {ptSeleccionado.CodArticulo} · CodStock {ptSeleccionado.CodStock} ·
+                                    {' '}{ptSeleccionado.CantidadVariantes > 0
+                                        ? `${ptSeleccionado.CantidadVariantes} variantes (talles)`
+                                        : 'sin variantes cargadas'}
+                                </p>
+                            )}
+
+                            {!loadingPT && productosTerminados.length === 0 && (
+                                <p className="mt-2 text-xs text-amber-400">
+                                    No hay artículos marcados como PRODUCTO_TERMINADO en StockArt todavía.
+                                </p>
+                            )}
+                        </div>
+
+                    </div>
+                </GlassCard>
+
+                {/* [PRENDAS] 1.5 Partes de la prenda */}
+                <GlassCard title="Partes de la Prenda" icon={Scissors} className="-mx-4 md:mx-0 md:!rounded-xl !rounded-none !border-x-0 md:!border-x border-y md:border-y-0 px-4 md:px-6">
+                    <p className="text-xs text-zinc-500 mb-4">
+                        Una fila por parte (cuello, frente, espalda, costadillo…). Para cada una: la tela, el arte que se le aplica y los servicios que lleva.
+                    </p>
+
+                    <div className="space-y-3">
+                        {partes.map((parte, idx) => (
+                            <div key={parte.id} className="bg-brand-dark border border-zinc-700 rounded-lg p-4">
+                                <div className="flex items-center justify-between mb-3">
+                                    <span className="text-xs font-bold text-zinc-500 uppercase tracking-wider">Parte {idx + 1}</span>
+                                    {partes.length > 1 && (
+                                        <button type="button" onClick={() => setPartes(prev => prev.filter(p => p.id !== parte.id))}
+                                            className="p-1.5 text-zinc-500 hover:text-red-400 hover:bg-red-500/10 rounded-md transition-colors" title="Quitar parte">
+                                            <Trash2 size={16} />
+                                        </button>
+                                    )}
+                                </div>
+
+                                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                                    {/* Nombre de la parte — texto libre hasta que existan en la base */}
+                                    <div>
+                                        <label className="block text-xs font-bold text-zinc-400 mb-1 uppercase">Parte *</label>
+                                        <input type="text" value={parte.nombre}
+                                            onChange={(e) => updateParte(parte.id, 'nombre', e.target.value)}
+                                            placeholder="Ej: Frente, Cuello, Espalda…"
+                                            className="w-full bg-custom-dark border border-zinc-700 rounded-md px-3 py-2 text-sm text-zinc-100 placeholder-zinc-600 focus:outline-none focus:ring-2 focus:ring-brand-magenta focus:border-transparent" />
+                                    </div>
+
+                                    {/* Tela */}
+                                    <div>
+                                        <label className="block text-xs font-bold text-zinc-400 mb-1 uppercase">Tela *</label>
+                                        <select value={parte.material}
+                                            onChange={(e) => updateParte(parte.id, 'material', e.target.value)}
+                                            className="w-full bg-custom-dark border border-zinc-700 rounded-md px-3 py-2 text-sm text-zinc-100 focus:outline-none focus:ring-2 focus:ring-brand-magenta focus:border-transparent">
+                                            <option value="">Seleccioná la tela…</option>
+                                            {currentMaterials.map(m => {
+                                                const nombre = m.Material || m.Descripcion || m;
+                                                return <option key={nombre} value={nombre}>{nombre}</option>;
+                                            })}
+                                        </select>
+                                    </div>
+
+                                    {/* Arte de la pieza */}
+                                    <div>
+                                        <label className="block text-xs font-bold text-zinc-400 mb-1 uppercase">Arte de la pieza</label>
+                                        <input type="file"
+                                            onChange={(e) => updateParte(parte.id, 'arte', e.target.files?.[0] || null)}
+                                            className="w-full text-xs text-zinc-400 file:mr-3 file:py-1.5 file:px-3 file:rounded-md file:border-0 file:text-xs file:font-semibold file:bg-zinc-700 file:text-zinc-200 hover:file:bg-zinc-600 file:cursor-pointer" />
+                                        {parte.arte && <p className="mt-1 text-[11px] text-brand-cyan truncate">{parte.arte.name}</p>}
+                                    </div>
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+
+                    <button type="button" onClick={() => setPartes(prev => [...prev, nuevaParte()])}
+                        className="mt-3 flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold text-brand-cyan border border-brand-cyan/40 hover:bg-brand-cyan/10 transition-colors">
+                        <Plus size={16} /> Agregar parte
+                    </button>
+
+                </GlassCard>
+
+                {/* [PRENDAS] 1.6 Tabla de talles — reemplaza la tabla de corte. De acá sale la cantidad. */}
+                <GlassCard title="Tabla de Talles" icon={ClipboardList} className="-mx-4 md:mx-0 md:!rounded-xl !rounded-none !border-x-0 md:!border-x border-y md:border-y-0 px-4 md:px-6">
+                    <div className="flex flex-wrap items-center gap-3 mb-4">
+                        <a href={config.templateButtons?.[0]?.url || '#'} target="_blank" rel="noopener noreferrer"
+                            className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold text-brand-cyan border border-brand-cyan/40 hover:bg-brand-cyan/10 transition-colors">
+                            <Download size={16} /> Descargar plantilla
+                        </a>
+                        <label className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold text-zinc-300 border border-zinc-700 hover:bg-zinc-800 transition-colors cursor-pointer">
+                            <UploadCloud size={16} /> Cargar planilla llena
+                            <input type="file" accept=".xlsx,.xls,.csv" className="hidden"
+                                onChange={(e) => importarPlanilla(e.target.files?.[0] || null)} />
+                        </label>
+                        {planillaTalles && (
+                            <span className="flex items-center gap-2 text-xs text-brand-cyan">
+                                <Check size={14} /> {planillaTalles.name}
+                                <button type="button" onClick={() => { setPlanillaTalles(null); setErrorPlanilla(''); }}
+                                    className="text-zinc-500 hover:text-red-400" title="Quitar planilla">
+                                    <Trash2 size={14} />
+                                </button>
+                            </span>
+                        )}
+                        <span className="text-xs text-zinc-500">o llenala acá abajo</span>
+                    </div>
+
+                    {errorPlanilla && (
+                        <p className="mb-3 flex items-center gap-2 text-xs text-red-400">
+                            <AlertTriangle size={14} /> {errorPlanilla}
+                        </p>
+                    )}
+
+                    <div className="overflow-x-auto">
+                        <table className="w-full text-sm min-w-[900px]">
+                            <thead>
+                                <tr className="text-left">
+                                    {['Adulto / Niño', 'Talle superior', 'Talle inferior', 'Categoría', 'N° camiseta (opc.)', 'Nombre de jugador (opc.)', 'Nota', 'Cant.', ''].map(h => (
+                                        <th key={h} className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider pb-2 pr-2">{h}</th>
+                                    ))}
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {talles.map(t => {
+                                    const opcionesTalle = t.tipo === 'NINO' ? TALLES_NINO : TALLES_ADULTO;
+                                    const selCls = "w-full bg-brand-dark border border-zinc-700 rounded-md px-2 py-1.5 text-sm text-zinc-100 focus:outline-none focus:ring-1 focus:ring-brand-magenta";
+                                    return (
+                                        <tr key={t.id}>
+                                            {/* Adulto / Niño */}
+                                            <td className="pr-2 pb-2">
+                                                <select value={t.tipo} onChange={(e) => updateTalle(t.id, 'tipo', e.target.value)} className={selCls}>
+                                                    <option value="ADULTO">Adulto</option>
+                                                    <option value="NINO">Niño</option>
+                                                </select>
+                                            </td>
+
+                                            {/* Talles: combo, según adulto/niño */}
+                                            {['talleSup', 'talleInf'].map(k => (
+                                                <td key={k} className="pr-2 pb-2">
+                                                    <select value={t[k]} onChange={(e) => updateTalle(t.id, k, e.target.value)} className={selCls}>
+                                                        <option value="">—</option>
+                                                        {opcionesTalle.map(op => <option key={op} value={op}>{op}</option>)}
+                                                    </select>
+                                                </td>
+                                            ))}
+
+                                            {/* Categoría */}
+                                            <td className="pr-2 pb-2">
+                                                <select value={t.categoria} onChange={(e) => updateTalle(t.id, 'categoria', e.target.value)} className={selCls}>
+                                                    {CATEGORIAS.map(c => <option key={c} value={c}>{c}</option>)}
+                                                </select>
+                                            </td>
+
+                                            {/* Texto libre */}
+                                            {[
+                                                { k: 'numero',  ph: '10' },
+                                                { k: 'jugador', ph: 'Pérez' },
+                                                { k: 'nota',    ph: 'Color Azul' },
+                                            ].map(c => (
+                                                <td key={c.k} className="pr-2 pb-2">
+                                                    <input type="text" value={t[c.k]} placeholder={c.ph}
+                                                        onChange={(e) => updateTalle(t.id, c.k, e.target.value)}
+                                                        className="w-full bg-brand-dark border border-zinc-700 rounded-md px-2 py-1.5 text-sm text-zinc-100 placeholder-zinc-600 focus:outline-none focus:ring-1 focus:ring-brand-magenta" />
+                                                </td>
+                                            ))}
+
+                                            <td className="pr-2 pb-2">
+                                                <input type="number" min="1" value={t.cantidad}
+                                                    onChange={(e) => updateTalle(t.id, 'cantidad', e.target.value)}
+                                                    className="w-16 bg-brand-dark border border-zinc-700 rounded-md px-2 py-1.5 text-sm text-zinc-100 focus:outline-none focus:ring-1 focus:ring-brand-magenta" />
+                                            </td>
+                                            <td className="pb-2">
+                                                {talles.length > 1 && (
+                                                    <button type="button" onClick={() => setTalles(prev => prev.filter(x => x.id !== t.id))}
+                                                        className="p-1.5 text-zinc-500 hover:text-red-400 hover:bg-red-500/10 rounded-md transition-colors" title="Quitar fila">
+                                                        <Trash2 size={14} />
+                                                    </button>
+                                                )}
+                                            </td>
+                                        </tr>
+                                    );
+                                })}
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <div className="flex items-center justify-between gap-4 mt-3 flex-wrap">
+                        <button type="button" onClick={agregarFilaTalle}
+                            className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold text-brand-cyan border border-brand-cyan/40 hover:bg-brand-cyan/10 transition-colors">
+                            <Plus size={16} /> Agregar fila
+                        </button>
+                        <p className="text-sm text-zinc-400">
+                            Total: <span className="font-black text-zinc-100 text-lg">{totalPrendas}</span> prendas
+                        </p>
+                    </div>
+                </GlassCard>
+
+                {/* [PRENDAS] 1.7 Bocetos y artes. Ya no se tildan servicios: subir el parche
+                    o la imagen a estampar es lo que define que el pedido los lleva. */}
+                <GlassCard title="Bocetos y Artes" icon={ImageIcon} className="-mx-4 md:mx-0 md:!rounded-xl !rounded-none !border-x-0 md:!border-x border-y md:border-y-0 px-4 md:px-6">
+                    <p className="text-xs text-zinc-500 mb-4">
+                        Si no lleva bordado o estampado, dejá esos bloques vacíos.
+                    </p>
+
+                    <div className="space-y-5">
+                        {[
+                            { k: 'prenda',    label: 'Prenda',    imagenLabel: null },
+                            { k: 'estampado', label: 'Estampado', imagenLabel: 'Imagen a estampar' },
+                            { k: 'bordado',   label: 'Bordado',   imagenLabel: 'Imagen del parche a bordar' },
+                            { k: 'tpu',       label: 'TPU',       imagenLabel: 'Imagen del TPU' },
+                        ].map(b => (
+                            <div key={b.k} className="bg-brand-dark border border-zinc-700 rounded-lg p-4">
+                                <div className="flex items-center justify-between gap-3 mb-3">
+                                    <p className="text-xs font-bold text-zinc-300 uppercase tracking-wider">{b.label}</p>
+                                    <span className="text-[10px] text-zinc-600 font-mono">
+                                        {bocetos[b.k].items.length} {bocetos[b.k].items.length === 1 ? 'boceto' : 'bocetos'}
+                                    </span>
+                                </div>
+
+                                {/* Varios bocetos por bloque (ej: frente y espalda) */}
+                                <div className="space-y-2">
+                                    {bocetos[b.k].items.map((bo, i) => (
+                                        <div key={bo.id} className="flex gap-2 items-start">
+                                            <span className="text-[10px] font-mono text-zinc-600 pt-2.5 w-4 shrink-0">{i + 1}</span>
+                                            <div className="flex-1 grid grid-cols-1 md:grid-cols-2 gap-2">
+                                                <input type="text" value={bo.texto}
+                                                    onChange={(e) => updateBocetoItem(b.k, bo.id, 'texto', e.target.value)}
+                                                    placeholder="Describí el boceto…"
+                                                    className="w-full bg-custom-dark border border-zinc-700 rounded-md px-3 py-2 text-sm text-zinc-100 placeholder-zinc-600 focus:outline-none focus:ring-2 focus:ring-brand-magenta focus:border-transparent" />
+                                                <div>
+                                                    <input type="file"
+                                                        onChange={(e) => updateBocetoItem(b.k, bo.id, 'archivo', e.target.files?.[0] || null)}
+                                                        className="w-full text-xs text-zinc-400 file:mr-3 file:py-1.5 file:px-3 file:rounded-md file:border-0 file:text-xs file:font-semibold file:bg-zinc-700 file:text-zinc-200 hover:file:bg-zinc-600 file:cursor-pointer" />
+                                                    {bo.archivo && <p className="mt-1 text-[11px] text-brand-cyan truncate">{bo.archivo.name}</p>}
+                                                </div>
+                                            </div>
+                                            {bocetos[b.k].items.length > 1 && (
+                                                <button type="button" onClick={() => removeBoceto(b.k, bo.id)}
+                                                    className="p-1.5 mt-0.5 text-zinc-500 hover:text-red-400 hover:bg-red-500/10 rounded-md transition-colors shrink-0" title="Quitar boceto">
+                                                    <Trash2 size={14} />
+                                                </button>
+                                            )}
+                                        </div>
+                                    ))}
+                                </div>
+
+                                <button type="button" onClick={() => addBoceto(b.k)}
+                                    className="mt-2 flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold text-brand-cyan border border-brand-cyan/40 hover:bg-brand-cyan/10 transition-colors">
+                                    <Plus size={14} /> Agregar boceto
+                                </button>
+
+                                {b.imagenLabel && (
+                                    <div className="mt-3 pt-3 border-t border-zinc-700/50">
+                                        <label className="block text-xs font-bold text-zinc-400 mb-1 uppercase">{b.imagenLabel}</label>
+                                        <input type="file"
+                                            onChange={(e) => setImagenBloque(b.k, e.target.files?.[0] || null)}
+                                            className="w-full max-w-md text-xs text-zinc-400 file:mr-3 file:py-1.5 file:px-3 file:rounded-md file:border-0 file:text-xs file:font-semibold file:bg-zinc-700 file:text-zinc-200 hover:file:bg-zinc-600 file:cursor-pointer" />
+                                        {bocetos[b.k].imagen && <p className="mt-1 text-[11px] text-brand-cyan truncate">{bocetos[b.k].imagen.name}</p>}
+                                    </div>
+                                )}
+
+                                {/* El bordado va sobre la prenda o como parche */}
+                                {b.k === 'bordado' && (
+                                    <div className="mt-3 pt-3 border-t border-zinc-700/50">
+                                        <label className="block text-xs font-bold text-zinc-400 mb-1 uppercase">El bordado es</label>
+                                        <div className="flex bg-custom-dark p-1 rounded-md gap-1 border border-zinc-700 max-w-xs">
+                                            {[
+                                                { id: 'PRENDA', label: 'Sobre prenda' },
+                                                { id: 'PARCHE', label: 'Parche' },
+                                            ].map(o => {
+                                                const on = bordadoTipo === o.id;
+                                                return (
+                                                    <button key={o.id} type="button" onClick={() => setBordadoTipo(on ? '' : o.id)}
+                                                        className={`flex-1 py-1.5 px-2 rounded text-xs font-medium transition-all ${on ? 'bg-cyan-400/20 text-cyan-300 border border-cyan-500/30' : 'text-zinc-400 hover:bg-zinc-700 hover:text-zinc-200'}`}>
+                                                        {o.label}
+                                                    </button>
+                                                );
+                                            })}
+                                        </div>
+                                    </div>
+                                )}
+                            </div>
+                        ))}
                     </div>
                 </GlassCard>
 
@@ -1510,7 +2088,7 @@ const OrderForm = ({ serviceId: propServiceId }) => {
                                             <span className="text-zinc-500 font-bold uppercase text-[10px]">Incluye:</span>
                                             {fichaPT.terminacionesIncluidas.map(t => (
                                                 <span key={t.TerminacionID} className="px-2 py-0.5 rounded-full bg-purple-500/20 border border-purple-500/30 text-purple-200 text-[10px] font-bold">
-                                                    {t.Nombre}{t.Cantidad > 1 ? ` ×${t.Cantidad}` : ''}{t.Ubicacion ? ` · ${UBI_LABEL[t.Ubicacion] || t.Ubicacion}` : ''}
+                                                    {t.Nombre}{t.Cantidad > 1 ? ` ×${t.Cantidad}` : ''}
                                                 </span>
                                             ))}
                                         </div>
@@ -1786,7 +2364,9 @@ const OrderForm = ({ serviceId: propServiceId }) => {
                                                                 onChange={(s) => actions.updateItem(item.id, 'printSettings', s)}
                                                                 disableScaling={serviceId === 'tpu' || serviceId?.toUpperCase() === 'DF'}
                                                                 hideRaport={!!config.hideRaport || isDirectaTwinface}
-                                                                hideScale={isDirectaTwinface}
+                                                                // [PRENDAS] hideScale ahora sale del config, igual que hideRaport.
+                                                                // Original: hideScale={isDirectaTwinface}
+                                                                hideScale={!!config.hideScale || isDirectaTwinface}
                                                             />
                                                         )}
                                                     </div>
@@ -1820,45 +2400,21 @@ const OrderForm = ({ serviceId: propServiceId }) => {
                                                         <div className="flex flex-wrap gap-2">
                                                             {termsItem.map(t => {
                                                                 const sel = (item.terminaciones || []).find(x => x.terminacionId === t.TerminacionID);
-                                                                const ubis = (t.Ubicaciones || '').split(',').map(x => x.trim()).filter(Boolean);
-                                                                const precio = parseFloat(t.Precio) || 0;
-                                                                const mon = t.Moneda === 'USD' ? 'US$' : '$';
-                                                                if (!sel) {
-                                                                    return (
-                                                                        <button type="button" key={t.TerminacionID} onClick={() => toggleItemTerminacion(item, t)}
-                                                                            className="px-3 py-1.5 rounded-full text-xs font-bold border bg-zinc-900/60 border-zinc-700/60 text-zinc-400 hover:border-amber-500/40 transition-all">
-                                                                            + {t.Nombre}
-                                                                            {precio > 0 && <span className="ml-1.5 text-[10px] text-zinc-500">{mon} {precio} {unidadLabel(t.UnidadCobro) === 'u.' ? 'c/u' : `x ${unidadLabel(t.UnidadCobro)}`}</span>}
-                                                                        </button>
-                                                                    );
-                                                                }
-                                                                const subtotal = precio * (parseFloat(sel.cantidad) || 0);
                                                                 return (
                                                                     <div key={t.TerminacionID}
-                                                                        className="w-full flex flex-wrap items-center gap-2 bg-amber-500/10 border border-amber-500/40 rounded-xl px-3 py-2">
+                                                                        className={`inline-flex items-center rounded-full border text-xs transition-all overflow-hidden ${sel
+                                                                            ? 'bg-amber-500/20 border-amber-500/60 text-amber-200'
+                                                                            : 'bg-zinc-900/60 border-zinc-700/60 text-zinc-400 hover:border-amber-500/40'}`}>
                                                                         <button type="button" onClick={() => toggleItemTerminacion(item, t)}
-                                                                            className="text-xs font-bold text-amber-300 hover:text-red-400 transition-colors" title="Quitar">
-                                                                            ✓ {t.Nombre}
+                                                                            className="px-3 py-1.5 font-bold">
+                                                                            {sel ? '✓ ' : '+ '}{t.Nombre}
                                                                         </button>
-                                                                        {ubis.length > 0 && (t.ClienteElige !== false ? (
-                                                                            <select value={sel.ubicacion || ''}
-                                                                                onChange={e => setItemTerminacionUbicacion(item, t, e.target.value)}
-                                                                                className="bg-zinc-900 border border-amber-500/40 text-amber-200 text-[11px] font-bold rounded-lg px-1.5 py-1 outline-none">
-                                                                                {ubis.map(u => <option key={u} value={u}>{UBI_LABEL[u] || u}</option>)}
-                                                                            </select>
-                                                                        ) : (
-                                                                            <span className="text-[10px] font-bold text-amber-400/70 uppercase">{UBI_LABEL[sel.ubicacion] || ''}</span>
-                                                                        ))}
-                                                                        <span className="flex items-center gap-1 ml-auto">
-                                                                            <input type="number" min="0" step="0.5" value={sel.cantidad}
-                                                                                onChange={e => setItemTerminacionCantidad(item, t.TerminacionID, e.target.value)}
-                                                                                className="w-16 px-1.5 py-0.5 text-xs font-black text-amber-200 bg-zinc-900 border border-amber-500/40 rounded-full outline-none text-center"
-                                                                                title="Cantidad (sugerida por las medidas, ajustable)" />
-                                                                            <span className="text-[9px] font-black text-amber-400/70">{unidadLabel(t.UnidadCobro)}</span>
-                                                                        </span>
-                                                                        {precio > 0 && (
-                                                                            <span className="text-[11px] font-black text-amber-300 min-w-[60px] text-right">
-                                                                                {mon} {Math.round(subtotal * 100) / 100}
+                                                                        {sel && (
+                                                                            <span className="flex items-center gap-1 pr-2">
+                                                                                <input type="number" min="0.5" step="0.5" value={sel.cantidad}
+                                                                                    onChange={e => setItemTerminacionCantidad(item, t.TerminacionID, e.target.value)}
+                                                                                    className="w-14 px-1.5 py-0.5 text-xs font-black text-amber-200 bg-zinc-900 border border-amber-500/40 rounded-full outline-none text-center" />
+                                                                                <span className="text-[9px] font-black text-amber-400/70">{unidadLabel(t.UnidadCobro)}</span>
                                                                             </span>
                                                                         )}
                                                                     </div>
@@ -2226,4 +2782,4 @@ const OrderForm = ({ serviceId: propServiceId }) => {
     );
 };
 
-export default OrderForm;
+export default PrendaOrderForm;

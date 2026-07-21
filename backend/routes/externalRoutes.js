@@ -10,6 +10,10 @@ router.get('/ordenes', externalController.getOrdenes);
 // GET /api/external/vendedores
 router.get('/vendedores', externalController.getVendedores);
 
+// Endpoint para extraer los artículos de tela activos
+// GET /api/external/telas
+router.get('/telas', externalController.getTelas);
+
 // Endpoint para extraer la lista de clientes desde otro sistema
 // GET /api/external/clientes
 router.get('/clientes', externalController.getClientes);

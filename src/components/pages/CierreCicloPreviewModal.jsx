@@ -427,8 +427,12 @@ export default function CierreCicloPreviewModal({
     }
   };
 
+  // Urgencia real de la orden (independiente de si el recargo se aplicó o fue exonerado)
+  const esOrdenUrgente = (m) => {
+    return typeof m?.OrdPrioridad === 'string' && /urgen/i.test(m.OrdPrioridad);
+  };
   const tieneRecargoUrgencia = (logPrecioAplicado) => {
-    return typeof logPrecioAplicado === 'string' && /urgencia/i.test(logPrecioAplicado);
+    return typeof logPrecioAplicado === 'string' && /urgen/i.test(logPrecioAplicado);
   };
 
   const getDetallesParaPDF = () => {
@@ -461,7 +465,7 @@ export default function CierreCicloPreviewModal({
             const rate = (monedaFactura === 'UYU' && orderCurrency === 'USD') ? cotDolar : (monedaFactura === 'USD' && orderCurrency === 'UYU' ? (1/cotDolar) : 1);
             orderSubtotal += sub * rate;
           });
-          const urgenciaOrden = detallesFiltrados.some(d => tieneRecargoUrgencia(d.LogPrecioAplicado));
+          const urgenciaOrden = esOrdenUrgente(m) || detallesFiltrados.some(d => tieneRecargoUrgencia(d.LogPrecioAplicado));
           detallesParaPDF.push({
             DcdNomItem: `${m.OrdCodigoOrden || m.MovConcepto}`,
             DcdDscItem: `${m.OrdNombreTrabajo ? m.OrdNombreTrabajo : ''}${urgenciaOrden ? ' (Urgencia)' : ''}`,
@@ -491,7 +495,7 @@ export default function CierreCicloPreviewModal({
             orderSubtotal += finalSub;
 
             const descArticulo = `${d.ArticuloNombre ? d.ArticuloNombre.trim() + ' - ' : ''}${(d.Descripcion || d.LogPrecioAplicado || 'Servicio').trim()}`;
-            const descOrden = `${m.OrdCodigoOrden || m.MovConcepto}${m.OrdNombreTrabajo ? ` - ${m.OrdNombreTrabajo}` : ''}${tieneRecargoUrgencia(d.LogPrecioAplicado) ? ' (Urgencia)' : ''}`;
+            const descOrden = `${m.OrdCodigoOrden || m.MovConcepto}${m.OrdNombreTrabajo ? ` - ${m.OrdNombreTrabajo}` : ''}${(esOrdenUrgente(m) || tieneRecargoUrgencia(d.LogPrecioAplicado)) ? ' (Urgencia)' : ''}`;
 
             detallesParaPDF.push({
               DcdNomItem: descArticulo,
@@ -512,9 +516,10 @@ export default function CierreCicloPreviewModal({
         const rate = (monedaFactura === 'UYU' && monBase === 'USD') ? cotDolar : (monedaFactura === 'USD' && monBase === 'UYU' ? (1/cotDolar) : 1);
         const finalSub = importe * rate;
         
+        const sufijoUrgencia = esOrdenUrgente(m) ? ' (Urgencia)' : '';
         detallesParaPDF.push({
           DcdNomItem: agruparFactura ? `${m.OrdCodigoOrden || m.MovConcepto}` : (m.OrdNombreTrabajo || m.MovConcepto || 'Servicio'),
-          DcdDscItem: agruparFactura ? (m.OrdNombreTrabajo || '') : `${m.OrdCodigoOrden || m.MovConcepto}`,
+          DcdDscItem: agruparFactura ? `${m.OrdNombreTrabajo || ''}${sufijoUrgencia}` : `${m.OrdCodigoOrden || m.MovConcepto}${sufijoUrgencia}`,
           DcdCantidad: 1,
           DcdSubtotal: finalSub
         });

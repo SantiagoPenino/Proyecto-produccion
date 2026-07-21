@@ -263,6 +263,61 @@ async function crearDeudaDocumento(params, transaction = null) {
   const saldoActual = ctaRes.recordset[0]?.SaldoActual ?? 0;
   const monId = ctaRes.recordset[0]?.MonIdMoneda ?? 1;
 
+  // ─────────────────────────────────────────────
+  // FECHA DE LA DEUDA = la del DOCUMENTO que la origina, no la de hoy.
+  // Antes se estampaba siempre new Date(): una deuda creada hoy por una factura del mes
+  // pasado nacía "al día" y el vencimiento se corría con ella, así que la deuda vieja no
+  // figuraba vencida y no se reclamaba. La fecha la manda el comprobante.
+  let fechaEmisionDeuda = new Date();
+  if (DocIdDocumento) {
+    const docFechaRes = await mkReq()
+      .input('DocIdDoc', sql.Int, DocIdDocumento)
+      .query(`SELECT DocFechaEmision FROM dbo.DocumentosContables WHERE DocIdDocumento = @DocIdDoc`);
+    const docFecha = docFechaRes.recordset[0]?.DocFechaEmision;
+    if (docFecha) fechaEmisionDeuda = new Date(docFecha);
+  }
+
+  // ─────────────────────────────────────────────
+  // GUARD DE IDEMPOTENCIA — un documento, una sola deuda viva.
+  // Nada en la base lo impide (DeudaDocumento no tiene UNIQUE sobre DocIdDocumento), y
+  // cualquier camino que llame dos veces con el mismo documento duplicaba la deuda: el
+  // cliente aparecía debiendo el doble y el cobro no la mataba nunca (los pagos entran a
+  // una fila y la otra sobrevive). Si ya hay una deuda viva para este documento se
+  // ACTUALIZA su importe en vez de insertar otra.
+  if (DocIdDocumento) {
+    const dupRes = await mkReq()
+      .input('DocIdDocumento', sql.Int, DocIdDocumento)
+      .query(`
+        SELECT TOP 1 DDeIdDocumento, DDeImporteOriginal, DDeImportePendiente
+        FROM   dbo.DeudaDocumento WITH (UPDLOCK, ROWLOCK)
+        WHERE  DocIdDocumento = @DocIdDocumento
+          AND  DDeEstado IN ('PENDIENTE','PARCIAL','VENCIDO')
+          AND  DDeImportePendiente > 0.01
+        ORDER BY DDeIdDocumento
+      `);
+    if (dupRes.recordset.length) {
+      const yaExiste = dupRes.recordset[0];
+      // Ya hubo cobros contra esta deuda: reescribir su importe pisaría la imputación.
+      // Se deja como está y se avisa; el importe lo ajusta el flujo de edición, no este.
+      const tuvoPagos = Number(yaExiste.DDeImportePendiente) < Number(yaExiste.DDeImporteOriginal) - 0.01;
+      if (!tuvoPagos && Math.abs(Number(yaExiste.DDeImporteOriginal) - Importe) > 0.01) {
+        await mkReq()
+          .input('DDeId',    sql.Int,           yaExiste.DDeIdDocumento)
+          .input('Original', sql.Decimal(18,4), Importe)
+          .input('Pend',     sql.Decimal(18,4), Math.max(0, ImportePendiente))
+          .query(`
+            UPDATE dbo.DeudaDocumento
+            SET DDeImporteOriginal = @Original, DDeImportePendiente = @Pend
+            WHERE DDeIdDocumento = @DDeId
+          `);
+        logger.warn(`[DEUDA] Doc #${DocIdDocumento} ya tenía la deuda #${yaExiste.DDeIdDocumento}: importe actualizado a ${Number(Importe).toFixed(2)} en vez de crear una duplicada.`);
+      } else {
+        logger.warn(`[DEUDA] Doc #${DocIdDocumento} ya tenía la deuda viva #${yaExiste.DDeIdDocumento}${tuvoPagos ? ' (con pagos imputados)' : ''} — no se crea una duplicada.`);
+      }
+      return yaExiste.DDeIdDocumento;
+    }
+  }
+
   // 1. La deuda SIEMPRE nace en su importe real, como lo solicitó el usuario.
   const estado = ImportePendiente <= 0.01 ? 'PAGADO' : 'PENDIENTE';
 
@@ -274,7 +329,7 @@ async function crearDeudaDocumento(params, transaction = null) {
         .input('DocIdDocumento',      sql.Int,          DocIdDocumento)
         .input('DDeImporteOriginal',  sql.Decimal(18,4), Importe)
         .input('DDeImportePendiente', sql.Decimal(18,4), Math.max(0, ImportePendiente))
-        .input('DDeFechaEmision',     sql.Date,         new Date())
+        .input('DDeFechaEmision',     sql.Date,         fechaEmisionDeuda)
         .input('DiasVencimiento',     sql.Int,          diasVenc)
         .input('Estado',              sql.VarChar(20),  estado)
         .query(`
@@ -1536,7 +1591,8 @@ async function getDeudasPorCliente(CliIdCliente, modo = 'TODO') {
             ) ranked WHERE ranked.rn = 1
           )
         )
-      ORDER BY d.DDeFechaVencimiento ASC
+      -- Más reciente primero. DDeIdDocumento desempata para que el orden sea estable.
+      ORDER BY d.DDeFechaEmision DESC, d.DDeIdDocumento DESC
     `);
 
   return result.recordset.map(r => ({
@@ -1695,11 +1751,55 @@ async function getResumenDocumentos(CliIdCliente, desde = null, hasta = null) {
         LTRIM(RTRIM(ISNULL(m.MovConcepto,''))) AS Concepto,
         LTRIM(RTRIM(ISNULL(dc.DocSerie,''))) +
           CASE WHEN dc.DocNumero IS NOT NULL
-               THEN '-' + LTRIM(RTRIM(CAST(dc.DocNumero AS VARCHAR(50)))) ELSE '' END AS DocRef
+               THEN '-' + LTRIM(RTRIM(CAST(dc.DocNumero AS VARCHAR(50)))) ELSE '' END AS DocRef,
+        -- Orden: referencia de respaldo cuando el cobro cancela una deuda de una orden
+        -- que todavía no se facturó (no hay documento al que imputar, y es correcto).
+        LTRIM(RTRIM(ISNULL(od.OrdCodigoOrden,''))) AS OrdenRef,
+        -- Forma(s) de pago del cobro. Preferir el vínculo directo (m.PagIdPago → su
+        -- transacción); si el movimiento no lo tiene (cobros viejos), caer al RECIBO que
+        -- ese cobro generó (mismo cliente, fecha e importe), cuya transacción sí trae el medio.
+        COALESCE(med.Medios,  medRC.Medios)  AS Medios,
+        COALESCE(med.Cheques, medRC.Cheques) AS Cheques,
+        medRC.Recibo
       FROM dbo.MovimientosCuenta m WITH(NOLOCK)
       JOIN dbo.CuentasCliente cc WITH(NOLOCK) ON cc.CueIdCuenta = m.CueIdCuenta
       LEFT JOIN dbo.Monedas mo WITH(NOLOCK) ON mo.MonIdMoneda = cc.MonIdMoneda
       LEFT JOIN dbo.DocumentosContables dc WITH(NOLOCK) ON dc.DocIdDocumento = m.DocIdDocumento
+      LEFT JOIN dbo.OrdenesDeposito od WITH(NOLOCK) ON od.OrdIdOrden = m.OrdIdOrden
+      LEFT JOIN dbo.Pagos pg WITH(NOLOCK) ON pg.PagIdPago = m.PagIdPago
+      OUTER APPLY (
+        SELECT
+          Medios  = STRING_AGG(CAST(LTRIM(RTRIM(mp.MPaDescripcionMetodo)) AS NVARCHAR(MAX)), ' + '),
+          Cheques = STRING_AGG(CAST(LTRIM(RTRIM(ch.NumeroCheque)) AS NVARCHAR(MAX)), ', ')
+        FROM dbo.Pagos p2 WITH(NOLOCK)
+        LEFT JOIN dbo.MetodosPagos mp WITH(NOLOCK) ON mp.MPaIdMetodoPago = p2.MPaIdMetodoPago
+        LEFT JOIN dbo.TesoreriaCheques ch WITH(NOLOCK) ON ch.IdCheque = p2.PagIdCheque
+        WHERE pg.PagTcaIdTransaccion IS NOT NULL
+          AND p2.PagTcaIdTransaccion = pg.PagTcaIdTransaccion
+      ) med
+      OUTER APPLY (
+        -- Fallback por el recibo: el cobro generó un RC con la misma fecha e importe;
+        -- su transacción tiene el medio (y el cheque, si aplica). Best-effort por si el
+        -- movimiento viejo no guardó el PagIdPago.
+        SELECT TOP 1
+          Recibo  = LTRIM(RTRIM(rc.DocSerie)) + '-' + LTRIM(RTRIM(CAST(rc.DocNumero AS VARCHAR(50)))),
+          Medios  = (SELECT STRING_AGG(CAST(LTRIM(RTRIM(mp2.MPaDescripcionMetodo)) AS NVARCHAR(MAX)), ' + ')
+                     FROM dbo.Pagos p3 WITH(NOLOCK)
+                     JOIN dbo.MetodosPagos mp2 WITH(NOLOCK) ON mp2.MPaIdMetodoPago = p3.MPaIdMetodoPago
+                     WHERE p3.PagTcaIdTransaccion = rc.TcaIdTransaccion),
+          Cheques = (SELECT STRING_AGG(CAST(LTRIM(RTRIM(ch2.NumeroCheque)) AS NVARCHAR(MAX)), ', ')
+                     FROM dbo.Pagos p3 WITH(NOLOCK)
+                     LEFT JOIN dbo.TesoreriaCheques ch2 WITH(NOLOCK) ON ch2.IdCheque = p3.PagIdCheque
+                     WHERE p3.PagTcaIdTransaccion = rc.TcaIdTransaccion AND p3.PagIdCheque IS NOT NULL)
+        FROM dbo.DocumentosContables rc WITH(NOLOCK)
+        WHERE rc.CliIdCliente = cc.CliIdCliente
+          AND rc.DocSerie = 'RC'
+          AND rc.TcaIdTransaccion IS NOT NULL
+          AND ABS(rc.DocTotal - ABS(m.MovImporte)) <= 0.5
+          AND CAST(rc.DocFechaEmision AS DATE) = CAST(m.MovFecha AS DATE)
+        -- DESC para tomar el recibo con número "limpio" (RC-90) en vez del padded (RC-000089)
+        ORDER BY rc.DocIdDocumento DESC
+      ) medRC
       WHERE cc.CliIdCliente = @cli
         AND m.MovTipo IN ('PAGO','ANTICIPO','SALDO_A_FAVOR','COBRO','NOTA_CREDITO')
         AND (m.MovAnulado IS NULL OR m.MovAnulado = 0)
@@ -1713,8 +1813,10 @@ async function getResumenDocumentos(CliIdCliente, desde = null, hasta = null) {
     SALDO_A_FAVOR: 'Saldo a favor', NOTA_CREDITO: 'Nota de crédito',
   };
   const pagos = pagosRes.recordset.map(p => {
-    // Documento al que se aplicó: preferir la referencia real; si no, extraer del concepto
+    // Documento al que se aplicó: preferir la referencia real; si no, la orden; y como
+    // último recurso extraerlo del concepto (cobros viejos sin el vínculo estampado).
     let aplicadoA = p.DocRef && p.DocRef !== '-' ? p.DocRef : null;
+    if (!aplicadoA && p.OrdenRef) aplicadoA = p.OrdenRef;
     if (!aplicadoA) {
       const mPc = (p.Concepto || '').match(/(PC|ET|SB|DTF|EUV|ECOUV|DIR)-?\s?(\d+)/i);
       if (mPc) aplicadoA = `${mPc[1].toUpperCase()}-${mPc[2]}`;
@@ -1727,6 +1829,9 @@ async function getResumenDocumentos(CliIdCliente, desde = null, hasta = null) {
       MonSimbolo: p.MonSimbolo,
       importe: Number(p.Importe) || 0,
       aplicadoA,
+      medioPago: p.Medios || null,   // 'Contado', 'Transferencia + Cheque', …
+      cheques:   p.Cheques || null,  // números de cheque, cuando el medio es cheque
+      recibo:    p.Recibo || null,   // RC-xx que generó el cobro
     };
   });
 
@@ -1896,7 +2001,9 @@ async function getTodasLasDeudasVivas() {
       LEFT JOIN dbo.Ordenes ordERP WITH(NOLOCK) ON ordERP.OrdenID = d.OrdIdOrden
       WHERE d.DDeEstado IN ('PENDIENTE', 'PARCIAL', 'VENCIDO')
         AND d.DDeImportePendiente > 0.01
-      ORDER BY cli.Nombre ASC, d.DDeFechaVencimiento ASC
+      -- Más reciente primero (dentro de cada cliente). DDeIdDocumento desempata para que
+      -- el orden sea estable: varias deudas del mismo día no se barajan entre recargas.
+      ORDER BY cli.Nombre ASC, d.DDeFechaEmision DESC, d.DDeIdDocumento DESC
     `);
 
   return result.recordset.map(r => ({

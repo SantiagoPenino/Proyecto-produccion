@@ -53,6 +53,13 @@ router.get('/reportes/antiguedad-deuda', ctrl.getAntiguedadDeuda);
 router.get('/reportes/estado-cuenta/:CliIdCliente', ctrl.getEstadoCuentaCliente);
 router.get('/reportes/deuda-consolidada', ctrl.getDeudaConsolidada);
 
+// ── Reportes de Ventas (página /contabilidad/reportes) ────────────────────────
+const reportesVentasCtrl = require('../controllers/contabilidadReportesController');
+router.get('/reportes/ventas-filtros',       reportesVentasCtrl.getFiltrosVentas);
+router.get('/reportes/ventas-por-area',      reportesVentasCtrl.getVentasPorArea);
+router.get('/reportes/ventas-por-documento', reportesVentasCtrl.getVentasPorDocumento);
+router.get('/reportes/ingresos',             reportesVentasCtrl.getIngresos);
+
 // ────────────────────────────────────────────────────────────────────────────
 // RUTAS: COLA DE ESTADOS DE CUENTA
 // ────────────────────────────────────────────────────────────────────────────
@@ -146,6 +153,7 @@ router.post('/caja/operacion-manual', caja.registrarOperacionManual);
 
 // ── OPERACIONES DESDE ESTADO DE CUENTA (Caja Administrativa) ──────────────────
 router.post('/caja/nota-credito',      caja.generarNotaCredito);      // Nota de crédito sobre doc existente
+router.post('/caja/nota-credito-externa', caja.generarNotaCreditoExterna); // Nota de crédito sobre factura del sistema anterior (solo CFE, sin impacto contable)
 router.post('/caja/nota-debito',       caja.generarNotaDebito);       // Nota de débito sobre doc existente (NUEVO)
 router.post('/caja/reversar-doc',      caja.reversarDocumento);       // Reverso: contado→egreso/crédito→NC
 router.post('/caja/pago-anticipo',     caja.registrarPagoAnticipo);   // Anticipo directo a cuenta (nuevo dinero)

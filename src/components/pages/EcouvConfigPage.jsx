@@ -2,6 +2,8 @@ import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import api from '../../services/api';
 import StockArtEditModal from '../modals/config/StockArtEditModal';
+import TerminacionesEcouvModal from '../modals/config/TerminacionesEcouvModal';
+import NuevoProductoTerminadoModal from '../modals/config/NuevoProductoTerminadoModal';
 
 // Configuración ECOUV — vista para el SECTOR (se publica por Menú del Sistema +
 // Roles, ruta /area/ecouv/config). Reúne las herramientas del área sin exponer
@@ -91,26 +93,18 @@ const EcouvConfigPage = () => {
                 <ToolCard
                     icon="fa-scissors"
                     iconBg="from-amber-500 to-orange-600"
-                    title="Catálogo de Terminaciones"
-                    subtitle="Alta y edición de terminaciones (ojales, soldadura, bastidor...): unidad de cobro, artículo para facturar y activar/desactivar."
-                    footer="Se ofrecen según el material"
+                    title="Terminaciones"
+                    subtitle="Catálogo con manera de aplicación (lados y cantidad sugerida), precio directo y en qué materiales se ofrece cada una."
+                    footer="Única puerta de la matriz material ↔ terminación"
                     onClick={() => setModal('terminaciones')}
                 />
                 <ToolCard
-                    icon="fa-box-open"
-                    iconBg="from-blue-500 to-indigo-600"
-                    title="Fichas de Productos y Materiales"
-                    subtitle="Por artículo: terminaciones que acepta cada material, ficha del producto terminado (medidas, material de impresión, tinta, incluidas), ancho imprimible y precios."
-                    footer="Catálogo y WMS → Editar Artículo"
-                    onClick={() => navigate('/admin/products-integration')}
-                />
-                <ToolCard
-                    icon="fa-list-check"
-                    iconBg="from-emerald-500 to-teal-600"
-                    title="Bandeja de Terminaciones"
-                    subtitle="Trabajo diario del sector: checklist de terminaciones por archivo de cada orden, marcar Hechas y finalizar para liberar a logística."
-                    footer="Órdenes En Terminaciones"
-                    onClick={() => navigate('/produccion/terminaciones')}
+                    icon="fa-cube"
+                    iconBg="from-violet-500 to-purple-700"
+                    title="Nuevo Producto Terminado"
+                    subtitle="Alta completa en un paso: datos, ficha de producción (material, tinta, medidas y borde), terminaciones incluidas y precio cerrado."
+                    footer="Artículo + ficha + precio juntos"
+                    onClick={() => setModal('nuevo-pt')}
                 />
             </div>
 
@@ -124,7 +118,10 @@ const EcouvConfigPage = () => {
                 <StockArtEditModal isOpen={true} initialGrupo={GRUPO_ECOUV} onClose={() => { setModal(null); loadStats(); }} />
             )}
             {modal === 'terminaciones' && (
-                <StockArtEditModal isOpen={true} initialGrupo={GRUPO_ECOUV} initialView="terminaciones" onClose={() => { setModal(null); loadStats(); }} />
+                <TerminacionesEcouvModal isOpen={true} onClose={() => { setModal(null); loadStats(); }} />
+            )}
+            {modal === 'nuevo-pt' && (
+                <NuevoProductoTerminadoModal isOpen={true} onClose={() => setModal(null)} onCreated={loadStats} />
             )}
         </div>
     );

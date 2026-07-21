@@ -3,7 +3,7 @@ import api from '../../../services/apiClient';
 import toast from 'react-hot-toast';
 import {
     X, Plus, Loader2, RefreshCw, ChevronDown, ChevronRight,
-    Package, Eye, EyeOff, Save, ArrowRightLeft, Boxes
+    Package, Eye, EyeOff, Save, ArrowRightLeft, Boxes, Trash2
 } from 'lucide-react';
 
 const API = '/stockart';
@@ -188,6 +188,40 @@ export default function StockArtEditModal({ isOpen, onClose, initialGrupo = '', 
             setArticulos([]);
         } finally {
             setArtLoading(false);
+        }
+    };
+
+    const eliminarVariante = async (row) => {
+        if (row.CantArticulos > 0) {
+            toast.error(`"${row.Articulo}" tiene ${row.CantArticulos} artículo(s): movelos a otra variante primero.`);
+            return;
+        }
+        if (!window.confirm(`¿Eliminar la variante "${row.Articulo}" (${row.CodStock})? Esta acción no se puede deshacer.`)) return;
+        setSavingCod(row.CodStock);
+        try {
+            await api.delete(`${API}/${encodeURIComponent(row.CodStock)}`);
+            toast.success(`✅ Variante "${row.Articulo}" eliminada`);
+            if (expanded === row.CodStock) setExpanded(null);
+            load();
+        } catch (err) {
+            toast.error('Error eliminando: ' + (err.response?.data?.error || err.message));
+        } finally {
+            setSavingCod(null);
+        }
+    };
+
+    const eliminarArticulo = async (a, codStockVariante) => {
+        if (!window.confirm(`¿Eliminar el artículo "${(a.Descripcion || '').trim()}" (${a.CodArticulo}) del catálogo? Esta acción no se puede deshacer.`)) return;
+        setMovingArt(a.CodArticulo);
+        try {
+            await api.delete(`${API}/articulos/${encodeURIComponent(a.CodArticulo)}?codStock=${encodeURIComponent(codStockVariante)}`);
+            toast.success(`✅ Artículo ${a.CodArticulo} eliminado`);
+            setArticulos(prev => prev.filter(x => x.CodArticulo !== a.CodArticulo));
+            load();
+        } catch (err) {
+            toast.error('Error eliminando: ' + (err.response?.data?.error || err.message));
+        } finally {
+            setMovingArt(null);
         }
     };
 
@@ -484,10 +518,12 @@ export default function StockArtEditModal({ isOpen, onClose, initialGrupo = '', 
                                                 </td>
                                                 <td className="py-2 font-mono text-slate-500">{row.Grupo}</td>
                                                 <td className="py-2 font-mono font-bold text-slate-700">{row.CodStock}</td>
-                                                <td className="py-2">
+                                                <td className="py-2 pr-3">
                                                     <input value={getVal(row, 'articulo', row.Articulo)}
                                                         onChange={e => setEdit(row.CodStock, 'articulo', e.target.value)}
-                                                        className="w-full bg-transparent border border-transparent hover:border-slate-200 focus:border-cyan-400 focus:bg-white rounded-lg px-2 py-1 outline-none font-bold text-slate-800" />
+                                                        onKeyDown={e => e.key === 'Enter' && saveRow(row)}
+                                                        title="Editá el nombre y guardá con Enter o el botón verde"
+                                                        className="w-full bg-slate-50 border border-slate-200 hover:border-slate-300 focus:border-cyan-400 focus:bg-white rounded-lg px-2 py-1 outline-none font-bold text-slate-800 transition-colors" />
                                                 </td>
                                                 <td className="py-2">
                                                     <select value={getVal(row, 'um', row.UM)}
@@ -520,12 +556,21 @@ export default function StockArtEditModal({ isOpen, onClose, initialGrupo = '', 
                                                     </button>
                                                 </td>
                                                 <td className="py-2 text-center">
-                                                    {dirty && (
-                                                        <button onClick={() => saveRow(row)} disabled={savingCod === row.CodStock}
-                                                            className="inline-flex items-center gap-1 px-2.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-[10px] font-bold transition-all">
-                                                            {savingCod === row.CodStock ? <Loader2 size={12} className="animate-spin" /> : <Save size={12} />}
+                                                    <span className="inline-flex items-center gap-1.5">
+                                                        {dirty && (
+                                                            <button onClick={() => saveRow(row)} disabled={savingCod === row.CodStock}
+                                                                className="inline-flex items-center gap-1 px-2.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-[10px] font-bold transition-all">
+                                                                {savingCod === row.CodStock ? <Loader2 size={12} className="animate-spin" /> : <Save size={12} />}
+                                                            </button>
+                                                        )}
+                                                        <button onClick={() => eliminarVariante(row)} disabled={savingCod === row.CodStock}
+                                                            className={`p-1.5 rounded-lg transition-colors ${row.CantArticulos > 0
+                                                                ? 'text-slate-200 cursor-not-allowed'
+                                                                : 'text-slate-300 hover:text-red-500 hover:bg-red-50'}`}
+                                                            title={row.CantArticulos > 0 ? `Tiene ${row.CantArticulos} artículo(s): movelos primero` : 'Eliminar variante'}>
+                                                            <Trash2 size={14} />
                                                         </button>
-                                                    )}
+                                                    </span>
                                                 </td>
                                             </tr>
                                             {expanded === row.CodStock && (
@@ -554,6 +599,11 @@ export default function StockArtEditModal({ isOpen, onClose, initialGrupo = '', 
                                                                                 ))}
                                                                             </select>
                                                                             {movingArt === a.CodArticulo && <Loader2 size={11} className="animate-spin text-cyan-500" />}
+                                                                            <button onClick={() => eliminarArticulo(a, row.CodStock)} disabled={movingArt === a.CodArticulo}
+                                                                                className="p-1 rounded-md text-slate-300 hover:text-red-500 hover:bg-red-50 transition-colors"
+                                                                                title="Eliminar artículo (bloqueado si tiene órdenes históricas)">
+                                                                                <Trash2 size={12} />
+                                                                            </button>
                                                                         </div>
                                                                     </div>
                                                                 ))}

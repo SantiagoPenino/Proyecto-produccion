@@ -1,3 +1,32 @@
+/*
+ * ══════════════════════════════════════════════════════════════════════════
+ *  FORK de webOrdersController.js — PRODUCTOS TERMINADOS / PRENDAS
+ * ══════════════════════════════════════════════════════════════════════════
+ *
+ *  Copia FIEL tomada el 16-07-2026, todavía sin modificar.
+ *
+ *  POR QUÉ EXISTE: el alta de prendas necesita cambiar el orden de los pasos
+ *  (bordar antes o después de estampar) y meter el nivel "prenda". Hacerlo
+ *  sobre webOrdersController.js pondría en riesgo DTF, Sublimación, Impresión
+ *  Directa, TPU y ECOUV, que entran todos por ahí. Este fork nos deja tocar
+ *  con libertad: lo que se rompa acá, se rompe SOLO acá.
+ *
+ *  REGLAS:
+ *    - Solo se usa `createWebOrder`, montado en POST /api/prendas-orders/create.
+ *      El resto de los exports viajaron en la copia y están MUERTOS: no hay
+ *      ninguna ruta que los llame. Se van a podar a medida que avancemos.
+ *    - webOrdersController.js NO se toca. Es la fuente de verdad del portal.
+ *    - Divergencias futuras van marcadas con  // [PRENDAS]  para que se vea
+ *      de un vistazo qué se apartó del original.
+ *
+ *  PENDIENTE (lo vamos armando juntos):
+ *    1. Podar los exports que no se usan.
+ *    2. Sort de pendingOrderExecutions por la secuencia elegida (hoy: Numero).
+ *    3. Nivel prenda: PedidoItems + Ordenes.ItemID.
+ *    4. Logistica_BultoDetalle (un bulto trae varias prendas).
+ *    5. Estado "En Diseño" por paso que espera su archivo.
+ */
+
 const { sql, getPool } = require('../config/db');
 const driveService = require('../services/driveService');
 const axios = require('axios');
@@ -1085,8 +1114,7 @@ exports.createWebOrder = async (req, res) => {
                                     .input('AID', sql.Int, archivoId)
                                     .input('TID', sql.Int, tid)
                                     .input('Cnt', sql.Decimal(18, 2), cantTerm)
-                                    .input('Ubi', sql.VarChar(30), term.ubicacion ? String(term.ubicacion).trim() : null)
-                                    .query("INSERT INTO OrdenTerminaciones (OrdenID, ArchivoID, TerminacionID, Cantidad, Ubicacion) VALUES (@OID, @AID, @TID, @Cnt, @Ubi)");
+                                    .query("INSERT INTO OrdenTerminaciones (OrdenID, ArchivoID, TerminacionID, Cantidad) VALUES (@OID, @AID, @TID, @Cnt)");
 
                                 if (tInfo.CodArticulo) {
                                     await new sql.Request(transaction)
@@ -1113,7 +1141,7 @@ exports.createWebOrder = async (req, res) => {
                                 const incRes = await new sql.Request(transaction)
                                     .input('Art', sql.VarChar, String(exec.codArticulo).trim())
                                     .query(`
-                                        SELECT PT.TerminacionID, PT.Cantidad, LTRIM(RTRIM(ISNULL(PT.Ubicacion, ''))) AS Ubicacion
+                                        SELECT PT.TerminacionID, PT.Cantidad
                                         FROM ProductoTerminadoTerminaciones PT
                                         INNER JOIN ProductosTerminados P ON P.ID = PT.ProductoID
                                         INNER JOIN Terminaciones T ON T.TerminacionID = PT.TerminacionID AND T.Activo = 1
@@ -1127,8 +1155,7 @@ exports.createWebOrder = async (req, res) => {
                                         .input('AID', sql.Int, archivoIdPT)
                                         .input('TID', sql.Int, inc.TerminacionID)
                                         .input('Cnt', sql.Decimal(18, 2), cantInc)
-                                        .input('Ubi', sql.VarChar(30), inc.Ubicacion || null)
-                                        .query("INSERT INTO OrdenTerminaciones (OrdenID, ArchivoID, TerminacionID, Cantidad, Ubicacion) VALUES (@OID, @AID, @TID, @Cnt, @Ubi)");
+                                        .query("INSERT INTO OrdenTerminaciones (OrdenID, ArchivoID, TerminacionID, Cantidad) VALUES (@OID, @AID, @TID, @Cnt)");
                                 }
                                 if (incRes.recordset.length > 0) {
                                     logger.info(`[WebOrder] ${incRes.recordset.length} terminaciones INCLUIDAS del producto ${exec.codArticulo} registradas (orden ${newOID})`);

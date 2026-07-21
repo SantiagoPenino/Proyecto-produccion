@@ -1,14 +1,21 @@
 import React, { useState, useEffect } from 'react';
-import { X, CheckCircle, Landmark, Calendar, User, Hash, DollarSign, Building2, PenTool, Book } from 'lucide-react';
+import { X, CheckCircle, Landmark, Calendar, User, Hash, DollarSign, Building2, PenTool, Book, AlertTriangle } from 'lucide-react';
 import api from '../../../services/apiClient';
 import { toast } from 'sonner';
 
-export default function ChequeRecibirModal({ onClose, onSuccess, initialMonto = '' }) {
+/**
+ * origenCaja: true cuando el cheque se da de alta desde un cobro de caja. En ese caso el
+ * cobro genera su propio asiento (Valores a Depositar / Deudores), así que acá NO se
+ * contabiliza: si no, el mismo cheque se asienta dos veces.
+ */
+export default function ChequeRecibirModal({ onClose, onSuccess, initialMonto = '', origenCaja = false }) {
   const [bancos, setBancos] = useState([]);
   const [clientes, setClientes] = useState([]);
   const [cuentas, setCuentas] = useState([]);
   const [loadingBancos, setLoadingBancos] = useState(true);
   const [procesando, setProcesando] = useState(false);
+  // Aviso de cheque repetido (409 del backend): trae el cheque que ya estaba cargado.
+  const [avisoDuplicado, setAvisoDuplicado] = useState(null);
 
   const [formData, setFormData] = useState({
     NumeroCheque: '',
@@ -66,7 +73,7 @@ export default function ChequeRecibirModal({ onClose, onSuccess, initialMonto = 
     setFormData({ ...formData, [name]: type === 'checkbox' ? checked : value });
   };
 
-  const handleSubmit = async (e) => {
+  const handleSubmit = async (e, confirmarDuplicado = false) => {
     e.preventDefault();
     if (!formData.NumeroCheque || !formData.IdBanco || !formData.Monto) {
       return toast.error('Completar campos obligatorios');
@@ -77,13 +84,21 @@ export default function ChequeRecibirModal({ onClose, onSuccess, initialMonto = 
         ...formData,
         Monto: parseFloat(formData.Monto),
         IdClienteOrigen: formData.IdClienteOrigen ? parseInt(formData.IdClienteOrigen) : null,
-        RubroContableId: formData.RubroContableId ? parseInt(formData.RubroContableId) : null
+        RubroContableId: formData.RubroContableId ? parseInt(formData.RubroContableId) : null,
+        contabilizar: !origenCaja,
+        confirmarDuplicado,
       };
-      
+
       const res = await api.post('/tesoreria/cheques/recibir', payload);
       toast.success(res.data.message || 'Cheque ingresado correctamente');
       onSuccess(res.data.data.IdCheque);
     } catch (error) {
+      // El backend frena el cheque repetido: se le muestra el que ya está cargado y decide.
+      if (error.response?.status === 409 && error.response?.data?.requiereConfirmacion) {
+        setProcesando(false);
+        setAvisoDuplicado(error.response.data);
+        return;
+      }
       toast.error(error.response?.data?.error || 'Error al guardar el cheque');
     } finally {
       setProcesando(false);
@@ -253,6 +268,48 @@ export default function ChequeRecibirModal({ onClose, onSuccess, initialMonto = 
           </button>
         </div>
       </div>
+
+      {/* Cheque repetido — se avisa antes de duplicarlo en cartera */}
+      {avisoDuplicado && (
+        <div className="fixed inset-0 z-[60] bg-black/50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl shadow-2xl max-w-lg w-full p-6 flex flex-col gap-4 border-2 border-amber-300">
+            <div className="flex items-start gap-3">
+              <div className="w-11 h-11 rounded-2xl bg-amber-100 border border-amber-300 flex items-center justify-center shrink-0">
+                <AlertTriangle size={22} className="text-amber-600" />
+              </div>
+              <div>
+                <h3 className="font-black text-slate-900 text-lg leading-tight">Este cheque ya está cargado</h3>
+                <p className="text-xs font-bold text-slate-400 uppercase tracking-widest mt-0.5">N° {formData.NumeroCheque}</p>
+              </div>
+            </div>
+
+            <div className="bg-amber-50 border border-amber-200 rounded-2xl px-4 py-3 text-xs font-medium text-amber-800 leading-relaxed">
+              {avisoDuplicado.mensaje}
+              <div className="mt-2 font-bold">
+                Si es el mismo cheque, cargarlo de nuevo lo va a contar dos veces en cartera
+                {!origenCaja && ' y le va a cancelar al cliente una deuda que no pagó'}.
+              </div>
+            </div>
+
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => setAvisoDuplicado(null)}
+                className="flex-1 py-2.5 rounded-xl font-black text-xs uppercase tracking-wider bg-emerald-600 text-white hover:bg-emerald-700"
+              >
+                Volver y revisar
+              </button>
+              <button
+                type="button"
+                onClick={() => { setAvisoDuplicado(null); handleSubmit({ preventDefault: () => {} }, true); }}
+                className="flex-1 py-2.5 rounded-xl font-black text-xs uppercase tracking-wider bg-white border-2 border-amber-400 text-amber-700 hover:bg-amber-50"
+              >
+                Es otro cheque, cargarlo igual
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

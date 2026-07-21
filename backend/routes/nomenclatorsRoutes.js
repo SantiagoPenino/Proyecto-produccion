@@ -224,9 +224,17 @@ router.get('/terminaciones-material/:codArticulo', async (req, res) => {
         const r = await pool.request()
             .input('Art', sql.VarChar, req.params.codArticulo)
             .query(`
-                SELECT T.TerminacionID, T.Nombre, T.UnidadCobro
+                SELECT T.TerminacionID, T.Nombre, T.UnidadCobro,
+                       T.Ubicaciones, T.ReglaCantidad, T.ParamCantidad, T.ClienteElige,
+                       P.Precio, P.Moneda
                 FROM MaterialTerminaciones MT
                 INNER JOIN Terminaciones T ON T.TerminacionID = MT.TerminacionID
+                OUTER APPLY (
+                    SELECT TOP 1 PB.Precio, LTRIM(RTRIM(PB.Moneda)) AS Moneda
+                    FROM PreciosBase PB
+                    WHERE LTRIM(RTRIM(PB.CodArticulo)) = LTRIM(RTRIM(T.CodArticulo))
+                    ORDER BY PB.UltimaActualizacion DESC
+                ) P
                 WHERE LTRIM(RTRIM(MT.CodArticulo)) = LTRIM(RTRIM(@Art)) AND T.Activo = 1
                 ORDER BY T.Nombre
             `);
@@ -241,7 +249,7 @@ router.get('/producto-terminado/:codArticulo', async (req, res) => {
         const prod = await pool.request()
             .input('Art', sql.VarChar, req.params.codArticulo)
             .query(`
-                SELECT P.ID, P.AnchoM, P.AltoM, LTRIM(RTRIM(P.MaterialCodArticulo)) AS MaterialCodArticulo,
+                SELECT P.ID, P.AnchoM, P.AltoM, P.BordeCm, LTRIM(RTRIM(P.MaterialCodArticulo)) AS MaterialCodArticulo,
                        LTRIM(RTRIM(P.Tinta)) AS Tinta,
                        M.Descripcion AS MaterialDescripcion
                 FROM ProductosTerminados P
@@ -256,7 +264,8 @@ router.get('/producto-terminado/:codArticulo', async (req, res) => {
         const terms = await pool.request()
             .input('PID', sql.Int, p.ID)
             .query(`
-                SELECT PT.TerminacionID, PT.Cantidad, T.Nombre, T.UnidadCobro
+                SELECT PT.TerminacionID, PT.Cantidad, LTRIM(RTRIM(ISNULL(PT.Ubicacion, ''))) AS Ubicacion,
+                       T.Nombre, T.UnidadCobro
                 FROM ProductoTerminadoTerminaciones PT
                 INNER JOIN Terminaciones T ON T.TerminacionID = PT.TerminacionID
                 WHERE PT.ProductoID = @PID
@@ -264,7 +273,7 @@ router.get('/producto-terminado/:codArticulo', async (req, res) => {
         res.json({
             success: true,
             data: {
-                anchoM: p.AnchoM, altoM: p.AltoM,
+                anchoM: p.AnchoM, altoM: p.AltoM, bordeCm: p.BordeCm,
                 materialCodArticulo: p.MaterialCodArticulo || null,
                 materialDescripcion: p.MaterialDescripcion || null,
                 tinta: p.Tinta || null,

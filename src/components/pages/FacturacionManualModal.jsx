@@ -55,6 +55,11 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
   const [metodosPago, setMetodosPago] = useState([]);
   const [loading, setLoading] = useState(false);
   const [loadingEdit, setLoadingEdit] = useState(mode === 'editar');
+  // Aviso "esta factura ya fue cobrada": lo dispara el 409 del backend al intentar
+  // guardarla como NO pagada. Guarda el detalle del cobro para mostrárselo al usuario.
+  const [avisoCobrada, setAvisoCobrada] = useState(null);
+  // Cobro real del documento que se está editando (viene del endpoint de detalle).
+  const [cobroDoc, setCobroDoc] = useState(null);
   const [updatingClient, setUpdatingClient] = useState(false);
   const [editDocInfo, setEditDocInfo] = useState(null);
   const esEditar = mode === 'editar' && !!editDocId;
@@ -174,6 +179,9 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
         const d = res.data?.doc;
         const lineas = res.data?.detalles || [];
         if (!d) throw new Error('Sin datos del documento');
+        // Cobro real del documento: puede estar cobrada por cuenta corriente aunque
+        // DocPagado siga en 0, así que no alcanza con mirar la bandera.
+        setCobroDoc(res.data?.cobro || null);
         setEditDocInfo({ DocSerie: d.DocSerie, DocNumero: d.DocNumero, DocTipo: d.DocTipo, EmpIdEmpresa: d.EmpIdEmpresa });
         const lbl = (d.DocTipo || '').toUpperCase();
         if (lbl.includes('PEDIDO')) setTipoCliente('PEDIDO_CAJA');
@@ -789,7 +797,7 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
     );
   }, [clientes, qCliente]);
 
-  const handleSubmit = async (e) => {
+  const handleSubmit = async (e, confirmarRevertir = false) => {
     e.preventDefault();
 
     // ── Validaciones DGI: documento del receptor (dígito verificador) y umbral e-Ticket ──
@@ -844,6 +852,9 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
     try {
       if (esEditar) {
         await api.put(`/contabilidad/cfe/documentos/${editDocId}`, {
+          // Solo va en true cuando el usuario ya confirmó el aviso de factura cobrada
+          // (el backend responde 409 y recién ahí se reintenta con esta bandera).
+          confirmarRevertirCobro: confirmarRevertir,
           DocTipo: formData.DocTipo,
           MonIdMoneda: formData.MonIdMoneda,
           CliIdCliente: formData.CliIdCliente ? parseInt(formData.CliIdCliente) : CONSUMIDOR_FINAL_ID,
@@ -916,6 +927,13 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
       }
       onSuccess();
     } catch (error) {
+      // El backend frena una edición que devolvería a pendientes una factura ya cobrada.
+      // No se pisa: se le muestra al usuario qué va a pasar y decide él.
+      if (error.response?.status === 409 && error.response?.data?.requiereConfirmacion) {
+        setLoading(false);
+        setAvisoCobrada({ ...error.response.data, evento: { preventDefault: () => {} } });
+        return;
+      }
       toast.error(error.response?.data?.error || 'Error al emitir el documento');
     } finally {
       setQCliente('');
@@ -961,6 +979,30 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
 
       {/* CONTENIDO PRINCIPAL */}
       <div className="flex-1 flex flex-col p-4 gap-4 min-h-0 overflow-y-auto">
+
+        {/* Esta factura YA SE COBRÓ — se avisa apenas se abre, antes de tocar nada.
+            Se basa en la plata imputada, no en DocPagado: una factura a crédito cobrada
+            por cuenta corriente puede tener la bandera en 0 y estar saldada igual. */}
+        {esEditar && cobroDoc?.estaCobrada && (
+          <div className="flex items-start gap-3 bg-emerald-50 border-2 border-emerald-300 rounded-2xl px-4 py-3">
+            <div className="shrink-0 bg-emerald-500 text-white rounded-xl p-1.5 mt-0.5">
+              <CheckCircle size={20} strokeWidth={2.5} />
+            </div>
+            <div className="min-w-0">
+              <p className="text-emerald-900 font-black text-sm leading-snug">
+                Esta factura ya fue cobrada
+                {cobroDoc.importeImputado > 0.01 && (
+                  <> — {formData.MonIdMoneda === 2 ? 'US$' : '$'} {Number(cobroDoc.importeImputado).toLocaleString('es-UY', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} imputado
+                    {cobroDoc.cantidadPagos > 0 && ` en ${cobroDoc.cantidadPagos} pago(s)`}</>
+                )}
+              </p>
+              <p className="text-emerald-800 font-semibold text-xs mt-1 leading-relaxed">
+                Si la guardás como <strong>no pagada</strong>, se le regenera la deuda y vuelve a aparecer
+                en pendientes. El sistema te va a pedir confirmación antes de hacerlo.
+              </p>
+            </div>
+          </div>
+        )}
 
         {/* ⚠️ ALERTA GRANDE: cambio de contado a crédito en edición */}
         {esEditar && originalPagadoRef.current === true && formaPago === 'CREDITO' && (
@@ -1471,6 +1513,58 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
           </option>
         ))}
       </datalist>
+
+      {/* Aviso: la factura ya fue cobrada y este cambio la devolvería a pendientes */}
+      {avisoCobrada && (
+        <div className="fixed inset-0 z-[70] bg-black/50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl shadow-2xl max-w-lg w-full p-6 flex flex-col gap-4 border-2 border-amber-300">
+            <div className="flex items-start gap-3">
+              <div className="w-11 h-11 rounded-2xl bg-amber-100 border border-amber-300 flex items-center justify-center shrink-0">
+                <AlertTriangle size={22} className="text-amber-600" />
+              </div>
+              <div className="min-w-0">
+                <h3 className="font-black text-zinc-900 text-lg leading-tight">Esta factura ya fue cobrada</h3>
+                <p className="text-xs font-bold text-zinc-400 uppercase tracking-widest mt-0.5">{avisoCobrada.documento}</p>
+              </div>
+            </div>
+
+            <div className="bg-amber-50 border border-amber-200 rounded-2xl px-4 py-3 flex flex-col gap-2">
+              {avisoCobrada.importeImputado > 0.01 && (
+                <div className="flex items-center justify-between text-sm">
+                  <span className="font-bold text-amber-800">Ya imputado</span>
+                  <span className="font-black text-amber-900 tabular-nums">
+                    {Number(avisoCobrada.importeImputado).toLocaleString('es-UY', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    {avisoCobrada.cantidadPagos > 0 && (
+                      <span className="text-[11px] font-bold text-amber-700 ml-2">en {avisoCobrada.cantidadPagos} pago(s)</span>
+                    )}
+                  </span>
+                </div>
+              )}
+              <p className="text-xs font-medium text-amber-800 leading-relaxed">
+                La estás guardando como <strong>NO pagada</strong>: se le va a regenerar la deuda y va a
+                volver a aparecer en la ventana de pendientes, aunque el cliente ya la haya pagado.
+              </p>
+            </div>
+
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => setAvisoCobrada(null)}
+                className="flex-1 py-2.5 rounded-xl font-black text-xs uppercase tracking-wider bg-brand-cyan text-white hover:bg-cyan-700 transition-colors"
+              >
+                Volver sin guardar
+              </button>
+              <button
+                type="button"
+                onClick={() => { const ev = avisoCobrada.evento; setAvisoCobrada(null); handleSubmit(ev, true); }}
+                className="flex-1 py-2.5 rounded-xl font-black text-xs uppercase tracking-wider bg-white border-2 border-amber-400 text-amber-700 hover:bg-amber-50 transition-colors"
+              >
+                Guardar igual y reabrir la deuda
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

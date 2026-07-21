@@ -102,6 +102,7 @@ const nomenclatorsRoutes = require('./routes/nomenclatorsRoutes');
 app.use('/api/web-auth', webAuthRoutes); // RUTAS AUTH CLIENTE WEB
 app.use('/api/web-designer', require('./routes/webDesignerRoutes')); // DISEÑADORES (suben pedidos en nombre de clientes)
 app.use('/api/web-orders', webOrdersRoutes); // RUTAS PEDIDOS CLIENTE WEB (DTF, Etc)
+app.use('/api/prendas-orders', require('./routes/prendasOrdersRoutes')); // ALTA INTERNA PRENDAS / PRODUCTOS TERMINADOS (fork aislado, no afecta a web-orders)
 app.use('/api/web-retiros', webRetirosRoutes);
 app.use('/api/web-content', require('./routes/webContentRoutes')); // RUTAS CONTENIDO WEB (Sidebar/Popup)
 app.use('/api/tickets', require('./routes/ticketsRoutes'));        // MÓDULO HELPDESK TICKETING
