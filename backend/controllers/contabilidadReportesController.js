@@ -3,51 +3,85 @@
 /**
  * contabilidadReportesController.js
  * ────────────────────────────────────────────────────────────────────────────
- * Reportes de Contabilidad: ventas por área, ventas por documento (DGI).
+ * Reportes de Contabilidad: ventas por área, ventas por documento (DGI), ingresos.
  *
  * DocTipo real en DocumentosContables (verificado contra la base, no es 'FACTURA'
  * literal): 'E-Factura Contado', 'E-Factura Credito', 'E-Ticket Contado',
  * 'E-TICKET CREDITO', notas de crédito/débito, 'Pedidos Caja', 'Recibo',
- * 'RECIBO ANTICIPO', 'EGRESO_CAJA'. "Venta" acá = Factura/Ticket (sin Notas)
- * únicamente — Pedidos Caja, recibos y egresos quedan afuera de ambos reportes.
+ * 'RECIBO ANTICIPO', 'EGRESO_CAJA'. "Venta" acá = Factura/Ticket (sin Notas) +
+ * 'Pedidos Caja' (venta de caja aún sin resolver a un CFE formal — la mayoría ya
+ * cobrada, decisión explícita del usuario: si no se cuenta, el reporte subestima
+ * fuerte la venta real, sobre todo en USD donde Pedidos Caja BORRADOR es ~3x más
+ * grande que todo lo facturado). Recibo/RECIBO ANTICIPO/EGRESO_CAJA y anuladas
+ * (DocEstado='ANULADO') siguen afuera de los tres reportes. Al no tener nunca
+ * CfeEstado='ACEPTADO_DGI', Pedidos Caja cae siempre en "No enviado a DGI" en el
+ * reporte de documentos — correcto, todavía no se envió.
  *
- * El área NO sale de Ordenes.AreaID (el join OrdenesDeposito→Ordenes casi nunca
- * resuelve para estos documentos — verificado contra la base). Sale del PREFIJO
- * del código de orden (OrdenesDeposito.OrdCodigoOrden, ej. 'DF-102047',
- * 'XSB-45248'), matcheado contra la nomenclatura real de prefijos usada en toda
- * la base (confirmada con el usuario). Familias por área:
- *   DTF                  → DF, DTF, UVDF (UV DTF), + variantes R.../reposición
- *   Sublimacion           → SB, SUB, + variantes X.../R... (externa/reposición)
- *   ECOUV                 → ECOUV, EUV, + variantes X.../R...
- *   IMPRESION DIRECTA     → DIR, DIRECTA, IMD, + variantes X.../R...
- *   Bordado                → EMB, BOR
- *   Corte                  → TWC, COR
- *   Costura                → COS, TWT
- *   Diseño                 → DIS, TWD
- *   TPU                    → TPU, TP
- *   Estampado               → EST
+ * ── Cómo se resuelve la ORDEN/ÁREA detrás de un documento ───────────────────────
+ * Fuente única: dbo.DocumentosContablesDetalle.OrdCodigoOrden — la "verdad" de
+ * facturación (decisión del usuario, 2026-07-21): es la tabla real de líneas de
+ * cada documento (Contado, Crédito y Pedidos Caja por igual), y el monto de cada
+ * línea (DcdSubtotal) es el que corresponde sumar por área.
+ *
+ * Antes se reconstruía la orden por dos caminos separados (TransaccionDetalle para
+ * Contado, MovimientosCuenta para Crédito por ciclo) porque OrdCodigoOrden estaba
+ * vacío en buena parte de las líneas — pero investigando por qué, se confirmó que
+ * en el 95.9% de esos casos el código de orden SÍ está, como texto libre dentro de
+ * DcdDscItem (ej. 'Orden: DTF-4761 (javier)...' o 'DF-102059 - LOBAS'), porque
+ * varios puntos de inserción (cierre de ciclo en contabilidadService.js:2553-2578,
+ * edición de factura en cfeController.js:1017-1032) nunca completan la columna
+ * estructurada. Ver backend/scripts/backfill_ordcodigoorden_detalle.js — parsea
+ * ese texto y completa la columna (dry-run por defecto, --apply para ejecutar).
+ * Con eso corrido, la cobertura de OrdCodigoOrden sube a ~96%+; sin correrlo, las
+ * líneas que quedan sin código cavan directo a "Sin área" (no rompen nada).
+ *
+ * El área en sí sale del PREFIJO del código de orden (ej. 'DF-102047', 'XSB-45248'),
+ * matcheado contra la nomenclatura real de prefijos usada en toda la base (confirmada
+ * con el usuario). Familias por área:
+ *   DTF                      → DF, DTF, UVDF (UV DTF), + variantes R.../reposición
+ *   Sublimacion              → SB, SUB, + variantes X.../R... (externa/reposición)
+ *   ECOUV                    → ECOUV, EUV, + variantes X.../R...
+ *   IMPRESION DIRECTA        → DIR, DIRECTA, IMD, + variantes X.../R...
+ *   Bordado                  → EMB, BOR
+ *   Corte                    → TWC, COR
+ *   Costura                  → COS, TWT
+ *   Diseño                   → DIS, TWD
+ *   TPU                      → TPU, TP
+ *   Estampado                → EST
  *   Productos Confeccionados → PRO
  *   Venta Directa            → VEN (venta de mostrador, no es área de producción)
  * Prefijo 'X...' = orden externa que viaja entre sectores (ver ordenesExternasService.js).
  * Prefijo 'R...' = reposición/rework de esa área.
  * Cualquier prefijo no reconocido (TEST, ORDEN, PRINT, códigos malformados) → 'Sin área'.
+ *
+ * Nota sobre ARTÍCULO: DocumentosContablesDetalle no tiene ProIdProducto — el filtro
+ * de artículo matchea igual que antes vía PedidosCobranza/PedidosCobranzaDetalle
+ * (join por texto de código de orden), así que su cobertura es la de esa tabla, no
+ * la de DocumentosContablesDetalle.
  * ────────────────────────────────────────────────────────────────────────────
  */
 
 const { getPool, sql } = require('../config/db');
 const logger = require('../utils/logger');
 
-// Documentos que representan una venta (mismo criterio de matching que cfeController.js:60-64).
+// Documentos que representan una venta: Factura/Ticket (mismo criterio de matching que
+// cfeController.js:60-64, sin Notas) + Pedidos Caja (venta de caja sin resolver a CFE
+// todavía — ver nota de cabecera). Recibo/RECIBO ANTICIPO/EGRESO_CAJA quedan afuera al
+// no matchear ninguna de las dos condiciones.
 const condEsVenta = (alias = 'doc') => `(
-    (${alias}.DocTipo LIKE '%Factura%' OR ${alias}.DocTipo LIKE '%FACTURA%' OR ${alias}.DocTipo LIKE '%Ticket%' OR ${alias}.DocTipo LIKE '%TICKET%')
-    AND ${alias}.DocTipo NOT LIKE '%Nota%' AND ${alias}.DocTipo NOT LIKE '%NOTA%'
+    (
+        (${alias}.DocTipo LIKE '%Factura%' OR ${alias}.DocTipo LIKE '%FACTURA%' OR ${alias}.DocTipo LIKE '%Ticket%' OR ${alias}.DocTipo LIKE '%TICKET%')
+        AND ${alias}.DocTipo NOT LIKE '%Nota%' AND ${alias}.DocTipo NOT LIKE '%NOTA%'
+    )
+    OR RTRIM(${alias}.DocTipo) = 'Pedidos Caja'
 )`;
 const COND_ES_VENTA = condEsVenta('doc');
 
-// Área a partir del prefijo de OrdenesDeposito.OrdCodigoOrden (todo antes del primer '-').
-// Nomenclatura confirmada con el usuario — ver comentario de cabecera.
-const AREA_DESDE_ORDEN = `ISNULL(CASE UPPER(LTRIM(RTRIM(
-        LEFT(od.OrdCodigoOrden, CASE WHEN CHARINDEX('-', od.OrdCodigoOrden) > 0 THEN CHARINDEX('-', od.OrdCodigoOrden) - 1 ELSE LEN(od.OrdCodigoOrden) END)
+// Área a partir del prefijo de un código de orden (ej. 'dcd.OrdCodigoOrden'). Si el
+// código es NULL (línea sin código todavía), el CASE/ISNULL de abajo cae solo a
+// 'Sin área' — no hace falta filtrarlo aparte. Nomenclatura confirmada con el usuario.
+const areaDesdeCodigo = (expr) => `ISNULL(CASE UPPER(LTRIM(RTRIM(
+        LEFT(${expr}, CASE WHEN CHARINDEX('-', ${expr}) > 0 THEN CHARINDEX('-', ${expr}) - 1 ELSE LEN(${expr}) END)
     )))
     WHEN 'DF'     THEN 'DTF' WHEN 'DTF'    THEN 'DTF' WHEN 'UVDF'   THEN 'DTF' WHEN 'RDF'    THEN 'DTF' WHEN 'RUVDF'  THEN 'DTF' WHEN 'RRDF' THEN 'DTF' WHEN 'RRUVDF' THEN 'DTF'
     WHEN 'SB'     THEN 'Sublimacion' WHEN 'SUB' THEN 'Sublimacion' WHEN 'XSB' THEN 'Sublimacion' WHEN 'RSB' THEN 'Sublimacion' WHEN 'RXSB' THEN 'Sublimacion'
@@ -64,42 +98,45 @@ const AREA_DESDE_ORDEN = `ISNULL(CASE UPPER(LTRIM(RTRIM(
     ELSE NULL
 END, 'Sin área')`;
 
-// Lista fija de áreas posibles (salida de AREA_DESDE_ORDEN), para poblar el filtro sin
-// depender de una tabla — ya no sale de ConfigMapeoERP/Ordenes.AreaID.
+// Lista fija de áreas posibles (salida de areaDesdeCodigo), para poblar el filtro sin
+// depender de una tabla.
 const AREAS_CONOCIDAS = [
     'DTF', 'Sublimacion', 'ECOUV', 'IMPRESION DIRECTA', 'Bordado', 'Corte',
     'Costura', 'Diseño', 'TPU', 'Estampado', 'Productos Confeccionados', 'Venta Directa',
 ];
 
-// Cadena de joins Factura/Ticket → línea de detalle (para el monto) — ya no necesita
-// Ordenes/ConfigMapeoERP porque el área sale directo de OrdenesDeposito.OrdCodigoOrden.
-const JOIN_VENTA_DETALLE = `
-    FROM dbo.DocumentosContables doc WITH(NOLOCK)
-    JOIN dbo.DeudaDocumento dd          WITH(NOLOCK) ON dd.DocIdDocumento = doc.DocIdDocumento
-    JOIN dbo.OrdenesDeposito od         WITH(NOLOCK) ON od.OrdIdOrden = dd.OrdIdOrden
-    JOIN dbo.PedidosCobranza pc         WITH(NOLOCK) ON LTRIM(RTRIM(pc.NoDocERP)) = od.OrdCodigoOrden
-    JOIN dbo.PedidosCobranzaDetalle pcd WITH(NOLOCK) ON pcd.PedidoCobranzaID = pc.ID
-`;
+// Filtro de artículo: DocumentosContablesDetalle no tiene ProIdProducto, así que se
+// matchea vía PedidosCobranza/PedidosCobranzaDetalle (mismo join por texto de código
+// de orden que ya se usaba). codigoExpr = expresión SQL con el código de orden (ej. 'dcd.OrdCodigoOrden').
+const condArticulo = (codigoExpr) => `EXISTS (
+    SELECT 1
+    FROM dbo.PedidosCobranza pcA WITH(NOLOCK)
+    JOIN dbo.PedidosCobranzaDetalle pcdA WITH(NOLOCK) ON pcdA.PedidoCobranzaID = pcA.ID
+    WHERE CAST(pcA.NoDocERP AS VARCHAR(100)) =
+        LEFT(${codigoExpr}, CASE WHEN CHARINDEX(' ', ${codigoExpr}) > 0 THEN CHARINDEX(' ', ${codigoExpr}) - 1 ELSE LEN(${codigoExpr}) END)
+      AND pcdA.ProIdProducto = @articulo
+)`;
 
-// Excluye reposiciones sin cargo (mismo guard que contabilidadCore.js:456-460 / 511-515)
-const COND_SIN_REPOSICION_GRATIS = `
-    NOT (
-        od.OrdCodigoOrden LIKE '%-R[0-9]%'
-        AND ISNULL(pcd.Subtotal, 0) = 0
-        AND ISNULL(od.OrdCostoFinal, 0) = 0
-    )
-`;
+// Filtro de área/artículo precalculado UNA sola vez como CTE (set de DocIdDocumento que
+// matchean), para usar con IN en vez de repetir el filtro por cada consulta.
+const filtroAreaArticulo = (area, articulo, alias) => {
+    if (!area && !articulo) return { cte: '', cond: '' };
+    const conds = [condEsVenta('fdoc'), `fdoc.DocEstado <> 'ANULADO'`];
+    if (area)     conds.push(`${areaDesdeCodigo('dcd.OrdCodigoOrden')} = @area`);
+    if (articulo) conds.push(condArticulo('dcd.OrdCodigoOrden'));
+    const cte = `FiltroAreaArticulo AS (
+        SELECT DISTINCT dcd.DocIdDocumento
+        FROM dbo.DocumentosContablesDetalle dcd WITH(NOLOCK)
+        JOIN dbo.DocumentosContables fdoc WITH(NOLOCK) ON fdoc.DocIdDocumento = dcd.DocIdDocumento
+        WHERE ${conds.join(' AND ')}
+    )`;
+    return { cte, cond: `${alias}.DocIdDocumento IN (SELECT DocIdDocumento FROM FiltroAreaArticulo)` };
+};
 
-const MONEDA_LINEA = `CASE WHEN od.MonIdMoneda = 2 THEN 'USD'
-                            WHEN od.MonIdMoneda = 1 THEN 'UYU'
-                            ELSE ISNULL(pc.Moneda, ISNULL(pcd.Moneda, 'UYU')) END`;
-
-// Bindea fecha/área/artículo (comunes a los reportes). La moneda se bindea aparte
-// en cada endpoint porque cambia de tipo: texto ('UYU'/'USD') a nivel línea de detalle,
-// vs MonIdMoneda numérico a nivel documento.
-// fechaDesde/fechaHasta se bindean SIEMPRE (con NULL si no vienen): getIngresos las
-// referencia incondicionalmente en el SQL (patrón "@x IS NULL OR ..."), a diferencia
-// de ventas-por-area/documento que arman el WHERE condicionalmente en JS.
+// Bindea fecha/área/artículo (comunes a los reportes) — SIEMPRE (con NULL si no vienen),
+// porque las queries las referencian incondicionalmente (patrón "@x IS NULL OR ...").
+// La moneda se bindea aparte en cada endpoint porque cambia de tipo: texto ('UYU'/'USD')
+// a nivel línea de detalle, vs MonIdMoneda numérico a nivel documento.
 const bindFiltrosComunes = (r, { fechaDesde, fechaHasta, area, articulo }) => {
     r.input('fechaDesde', sql.DateTime, fechaDesde ? new Date(fechaDesde) : null);
     if (fechaHasta) {
@@ -109,8 +146,8 @@ const bindFiltrosComunes = (r, { fechaDesde, fechaHasta, area, articulo }) => {
     } else {
         r.input('fechaHasta', sql.DateTime, null);
     }
-    if (area)     r.input('area', sql.NVarChar(150), area);
-    if (articulo) r.input('articulo', sql.Int, parseInt(articulo));
+    r.input('area', sql.NVarChar(150), area || null);
+    r.input('articulo', sql.Int, articulo ? parseInt(articulo) : null);
 };
 
 const extractParams = (q) => ({
@@ -142,38 +179,39 @@ exports.getFiltrosVentas = async (req, res) => {
 };
 
 // ─── GET /api/contabilidad/reportes/ventas-por-area ───────────────────────────
-// Monto = suma de PedidosCobranzaDetalle.Subtotal (nunca DocTotal), para no duplicar
-// venta cuando una misma factura tiene líneas de más de un área.
+// Monto = suma de DocumentosContablesDetalle.DcdSubtotal (nunca DocTotal), para no
+// duplicar venta cuando una misma factura tiene líneas de más de un área.
 exports.getVentasPorArea = async (req, res) => {
     try {
         const pool = await getPool();
         const params = extractParams(req.query);
-        const { fechaDesde, fechaHasta, area, articulo, moneda } = params;
+        const { area, articulo, moneda } = params;
+
+        const areaExpr   = areaDesdeCodigo('dcd.OrdCodigoOrden');
+        const monedaExpr = `CASE WHEN doc.MonIdMoneda = 2 THEN 'USD' ELSE 'UYU' END`;
 
         const conds = [
             COND_ES_VENTA,
             `doc.DocEstado <> 'ANULADO'`,
-            COND_SIN_REPOSICION_GRATIS,
         ];
-        if (fechaDesde) conds.push('doc.DocFechaEmision >= @fechaDesde');
-        if (fechaHasta) conds.push('doc.DocFechaEmision <= @fechaHasta');
-        if (area)       conds.push(`${AREA_DESDE_ORDEN} = @area`);
-        if (articulo)   conds.push('pcd.ProIdProducto = @articulo');
-        if (moneda)     conds.push(`${MONEDA_LINEA} = @moneda`);
+        if (area)     conds.push(`${areaExpr} = @area`);
+        if (articulo) conds.push(condArticulo('dcd.OrdCodigoOrden'));
+        if (moneda)   conds.push(`${monedaExpr} = @moneda`);
 
         const r = pool.request();
         bindFiltrosComunes(r, params);
-        if (moneda) r.input('moneda', sql.NVarChar(10), moneda);
+        r.input('moneda', sql.NVarChar(10), moneda || null);
 
         const result = await r.query(`
             SELECT
-                ${AREA_DESDE_ORDEN} AS Area,
-                ${MONEDA_LINEA} AS Moneda,
-                SUM(pcd.Subtotal) AS Ventas,
-                COUNT(DISTINCT doc.DocIdDocumento) AS CantidadDocumentos
-            ${JOIN_VENTA_DETALLE}
+                ${areaExpr} AS Area,
+                ${monedaExpr} AS Moneda,
+                SUM(dcd.DcdSubtotal) AS Ventas,
+                COUNT(DISTINCT dcd.DocIdDocumento) AS CantidadDocumentos
+            FROM dbo.DocumentosContablesDetalle dcd WITH(NOLOCK)
+            JOIN dbo.DocumentosContables doc WITH(NOLOCK) ON doc.DocIdDocumento = dcd.DocIdDocumento
             WHERE ${conds.join(' AND ')}
-            GROUP BY ${AREA_DESDE_ORDEN}, ${MONEDA_LINEA}
+            GROUP BY ${areaExpr}, ${monedaExpr}
             ORDER BY Moneda, Ventas DESC
         `);
 
@@ -202,51 +240,56 @@ exports.getVentasPorArea = async (req, res) => {
 };
 
 // ─── GET /api/contabilidad/reportes/ventas-por-documento ──────────────────────
-// Unidad de conteo = documento completo (DocTotal). area/articulo filtran vía EXISTS
-// (no bajan a nivel línea, para no alterar el importe sumado).
+// Unidad de conteo = documento completo (DocTotal). area/articulo filtran vía un CTE
+// precalculado (no bajan a nivel línea, para no alterar el importe sumado).
 exports.getVentasPorDocumento = async (req, res) => {
     try {
         const pool = await getPool();
         const params = extractParams(req.query);
         const { fechaDesde, fechaHasta, area, articulo, moneda } = params;
 
+        const filtro = filtroAreaArticulo(area, articulo, 'doc');
+
         const conds = [
             COND_ES_VENTA,
             `doc.DocEstado <> 'ANULADO'`,
         ];
-        if (fechaDesde) conds.push('doc.DocFechaEmision >= @fechaDesde');
-        if (fechaHasta) conds.push('doc.DocFechaEmision <= @fechaHasta');
-        if (moneda)     conds.push('doc.MonIdMoneda = @moneda');
-        if (area || articulo) {
-            const existsConds = ['dd.DocIdDocumento = doc.DocIdDocumento'];
-            if (area)     existsConds.push(`${AREA_DESDE_ORDEN} = @area`);
-            if (articulo) existsConds.push('pcd.ProIdProducto = @articulo');
-            conds.push(`EXISTS (
-                SELECT 1
-                FROM dbo.DeudaDocumento dd WITH(NOLOCK)
-                JOIN dbo.OrdenesDeposito od         WITH(NOLOCK) ON od.OrdIdOrden = dd.OrdIdOrden
-                JOIN dbo.PedidosCobranza pc         WITH(NOLOCK) ON LTRIM(RTRIM(pc.NoDocERP)) = od.OrdCodigoOrden
-                JOIN dbo.PedidosCobranzaDetalle pcd WITH(NOLOCK) ON pcd.PedidoCobranzaID = pc.ID
-                WHERE ${existsConds.join(' AND ')}
-            )`);
-        }
+        if (fechaDesde)  conds.push('doc.DocFechaEmision >= @fechaDesde');
+        if (fechaHasta)  conds.push('doc.DocFechaEmision <= @fechaHasta');
+        if (moneda)      conds.push('doc.MonIdMoneda = @moneda');
+        if (filtro.cond) conds.push(filtro.cond);
 
         const r = pool.request();
         bindFiltrosComunes(r, params);
         if (moneda) r.input('moneda', sql.Int, parseInt(moneda)); // acá moneda es MonIdMoneda (numérico), no texto
 
         const result = await r.query(`
+            ${filtro.cte ? `;WITH ${filtro.cte}` : ''}
             SELECT
                 CASE WHEN doc.CfeEstado = 'ACEPTADO_DGI' THEN 'ENVIADO_DGI' ELSE 'NO_ENVIADO' END AS EstadoDgi,
+                CASE WHEN doc.DocTipo LIKE '%Credito%' OR doc.DocTipo LIKE '%CREDITO%' THEN 'CREDITO' ELSE 'CONTADO' END AS TipoPago,
                 doc.MonIdMoneda,
                 ISNULL(mon.MonSimbolo, '')          AS MonSimbolo,
                 ISNULL(mon.MonDescripcionMoneda, '') AS MonNombre,
                 COUNT(*)          AS CantidadDocumentos,
-                SUM(doc.DocTotal) AS ImporteTotal
+                SUM(doc.DocTotal) AS ImporteTotal,
+                -- Pendiente solo para Crédito: en Contado, DeudaDocumento aparece asociado a
+                -- documentos con DocPagado=true y montos que no coinciden con DocTotal (dato
+                -- sucio verificado, no representa deuda real de esa venta) — mismo criterio
+                -- que "de eso, a crédito" en el frontend, para que ambos números coincidan.
+                SUM(CASE WHEN doc.DocTipo LIKE '%Credito%' OR doc.DocTipo LIKE '%CREDITO%' THEN ISNULL(dd.Pendiente, 0) ELSE 0 END) AS ImportePendiente
             FROM dbo.DocumentosContables doc WITH(NOLOCK)
             LEFT JOIN dbo.Monedas mon WITH(NOLOCK) ON mon.MonIdMoneda = doc.MonIdMoneda
+            -- Pre-agregado 1 fila por documento (puede haber >1 fila en DeudaDocumento
+            -- para el mismo doc) para no duplicar CantidadDocumentos/ImporteTotal al hacer LEFT JOIN.
+            LEFT JOIN (
+                SELECT DocIdDocumento, SUM(DDeImportePendiente) AS Pendiente
+                FROM dbo.DeudaDocumento WITH(NOLOCK)
+                GROUP BY DocIdDocumento
+            ) dd ON dd.DocIdDocumento = doc.DocIdDocumento
             WHERE ${conds.join(' AND ')}
             GROUP BY CASE WHEN doc.CfeEstado = 'ACEPTADO_DGI' THEN 'ENVIADO_DGI' ELSE 'NO_ENVIADO' END,
+                     CASE WHEN doc.DocTipo LIKE '%Credito%' OR doc.DocTipo LIKE '%CREDITO%' THEN 'CREDITO' ELSE 'CONTADO' END,
                      doc.MonIdMoneda, mon.MonSimbolo, mon.MonDescripcionMoneda
             ORDER BY doc.MonIdMoneda, EstadoDgi
         `);
@@ -259,8 +302,8 @@ exports.getVentasPorDocumento = async (req, res) => {
 };
 
 // ─── GET /api/contabilidad/reportes/ingresos ───────────────────────────────────
-// Plata efectivamente COBRADA de Factura/Ticket (no lo facturado — dbo.Pagos, no
-// DocTotal/DocPagado, que no son fuente confiable de cobro real: ver cfeController.js:904-938).
+// Plata efectivamente COBRADA (no lo facturado — dbo.Pagos, no DocTotal/DocPagado,
+// que no son fuente confiable de cobro real: ver cfeController.js:904-938).
 // Dos caminos de vínculo Pago→Documento (verificados contra la base, no se puede usar
 // uno solo: 'contado' cubre ~99% del volumen, 'crédito' cubre lo cobrado después por
 // cta-cte):
@@ -273,22 +316,9 @@ exports.getIngresos = async (req, res) => {
     try {
         const pool = await getPool();
         const params = extractParams(req.query);
-        const { fechaDesde, fechaHasta, area, articulo, moneda } = params;
+        const { area, articulo, moneda } = params;
 
-        const existsAreaArticulo = (alias) => {
-            if (!area && !articulo) return '';
-            const existsConds = [`dd.DocIdDocumento = ${alias}.DocIdDocumento`];
-            if (area)     existsConds.push(`${AREA_DESDE_ORDEN} = @area`);
-            if (articulo) existsConds.push('pcd.ProIdProducto = @articulo');
-            return `AND EXISTS (
-                SELECT 1
-                FROM dbo.DeudaDocumento dd WITH(NOLOCK)
-                JOIN dbo.OrdenesDeposito od         WITH(NOLOCK) ON od.OrdIdOrden = dd.OrdIdOrden
-                JOIN dbo.PedidosCobranza pc         WITH(NOLOCK) ON LTRIM(RTRIM(pc.NoDocERP)) = od.OrdCodigoOrden
-                JOIN dbo.PedidosCobranzaDetalle pcd WITH(NOLOCK) ON pcd.PedidoCobranzaID = pc.ID
-                WHERE ${existsConds.join(' AND ')}
-            )`;
-        };
+        const filtro = filtroAreaArticulo(area, articulo, 'dc');
 
         const r = pool.request();
         bindFiltrosComunes(r, params);
@@ -297,7 +327,8 @@ exports.getIngresos = async (req, res) => {
         r.input('moneda', sql.Int, moneda ? parseInt(moneda) : null);
 
         const result = await r.query(`
-            ;WITH IngresosContado AS (
+            ;WITH ${filtro.cte ? `${filtro.cte},` : ''}
+            IngresosContado AS (
                 SELECT dc.DocIdDocumento, dc.DocFechaEmision, p.PagFechaPago, p.PagIdMonedaPago AS MonIdMoneda, p.PagMontoPago AS Importe
                 FROM dbo.Pagos p WITH(NOLOCK)
                 JOIN dbo.TransaccionesCaja t WITH(NOLOCK) ON t.TcaIdTransaccion = p.PagTcaIdTransaccion
@@ -306,7 +337,7 @@ exports.getIngresos = async (req, res) => {
                   AND ${condEsVenta('dc')}
                   AND dc.DocEstado <> 'ANULADO'
                   AND (@moneda IS NULL OR p.PagIdMonedaPago = @moneda)
-                  ${existsAreaArticulo('dc')}
+                  ${filtro.cond ? `AND ${filtro.cond}` : ''}
             ),
             IngresosCredito AS (
                 SELECT dc.DocIdDocumento, dc.DocFechaEmision, p.PagFechaPago, p.PagIdMonedaPago AS MonIdMoneda, p.PagMontoPago AS Importe
@@ -319,7 +350,7 @@ exports.getIngresos = async (req, res) => {
                   AND ${condEsVenta('dc')}
                   AND dc.DocEstado <> 'ANULADO'
                   AND (@moneda IS NULL OR p.PagIdMonedaPago = @moneda)
-                  ${existsAreaArticulo('dc')}
+                  ${filtro.cond ? `AND ${filtro.cond}` : ''}
             ),
             IngresosTodos AS (
                 SELECT * FROM IngresosContado
@@ -339,8 +370,8 @@ exports.getIngresos = async (req, res) => {
             GROUP BY MonIdMoneda
         `);
 
-        const porFechaPago = result.recordset.filter(r => r.Base === 'PAGO');
-        const porFechaFactura = result.recordset.filter(r => r.Base === 'FACTURA');
+        const porFechaPago = result.recordset.filter(row => row.Base === 'PAGO');
+        const porFechaFactura = result.recordset.filter(row => row.Base === 'FACTURA');
         res.json({ success: true, porFechaPago, porFechaFactura });
     } catch (err) {
         logger.error('[CONTABILIDAD-REPORTES] getIngresos:', err.message);

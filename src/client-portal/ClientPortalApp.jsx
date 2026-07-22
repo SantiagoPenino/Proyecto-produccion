@@ -11,7 +11,7 @@ import { Dashboard } from './modulos/Dashboard';
 import { ProfileView } from './modulos/ProfileView';
 import { ProfileEdit } from './modulos/ProfileEdit';
 import OrderForm from './modulos/OrderForm';
-import PrendaOrderForm from './modulos/PrendaOrderForm'; // [PRENDAS] fork aislado — no afecta a /order/:serviceId
+// [PRENDAS] PrendaOrderForm se movió a la app interna (/ventas/pedido-prenda).
 
 import { FactoryView } from './modulos/FactoryView';
 import { PickupView } from './modulos/PickupView';
@@ -66,16 +66,9 @@ export const ClientPortalApp = () => {
                         </ProtectedRoute>
                     } />
 
-                    {/* [PRENDAS] Copia del form de Sublimación con TODOS los complementarios
-                        (Corte, Costura, Estampado y Bordado). Ruta propia: acá modificamos
-                        sin tocar /order/:serviceId, que es el que usan los clientes hoy. */}
-                    <Route path="/order-prenda" element={
-                        <ProtectedRoute>
-                            <MainLayout>
-                                <PrendaOrderForm />
-                            </MainLayout>
-                        </ProtectedRoute>
-                    } />
+                    {/* [PRENDAS] El form de prendas se MOVIÓ a la app interna:
+                        ruta /ventas/pedido-prenda (de cara a producción, no al cliente).
+                        Ver src/components/pages/ventas/PedidoPrendaPage.jsx */}
 
                     <Route path="/factory" element={
                         <ProtectedRoute>

@@ -130,29 +130,50 @@ exports.getUnidades = async (req, res) => {
 /**
  * PATCH /api/contabilidad/clientes/:CliIdCliente/dgi
  */
+// ID del "Consumidor Final" genérico: lo comparten miles de ventas sin cliente
+// identificado. NUNCA se le puede pisar Nombre/RUT/Dirección desde una factura
+// puntual — si un cajero factura a un tercero real usando este ID por error y
+// después "actualiza", corrompe la ficha genérica para TODAS las demás ventas.
+const CONSUMIDOR_FINAL_ID = 2089;
+
 exports.actualizarClienteDGI = async (req, res) => {
   try {
     const { CliIdCliente } = req.params;
-    const { Nombre, Documento, Direccion, Ciudad } = req.body;
-    
+    const { Nombre, Documento, Direccion, Ciudad, NombreFantasia } = req.body;
+    const cliIdNum = parseInt(CliIdCliente);
+
+    if (!cliIdNum || cliIdNum <= 1 || cliIdNum === CONSUMIDOR_FINAL_ID) {
+      return res.status(400).json({ success: false, error: "Este cliente es una cuenta genérica compartida (ej. Consumidor Final) y no se puede actualizar desde una factura. Si el receptor real es otro, creá o seleccioná su propio cliente." });
+    }
     if (!Nombre || !Documento || !Direccion || !Ciudad) {
       return res.status(400).json({ success: false, error: "Todos los campos (Nombre, Documento, Dirección, Ciudad) son obligatorios." });
     }
 
     const pool = await getPool();
-    await pool.request()
-      .input('CliIdCliente', sql.Int, CliIdCliente)
+    const request = pool.request()
+      .input('CliIdCliente', sql.Int, cliIdNum)
       .input('CioRuc', sql.VarChar, Documento)
       .input('Direccion', sql.VarChar, Direccion)
       .input('Ciudad', sql.Int, Number(Ciudad))
-      .input('Nombre', sql.VarChar, Nombre)
-      .query(`
+      .input('Nombre', sql.VarChar, Nombre);
+
+    // NombreFantasia es opcional y NO tiene nada que ver con el CFE (DGI no lo
+    // recibe): si viene vacío no se toca la columna, para no perder un nombre
+    // de fantasía real solo porque no se volvió a escribir en esta factura.
+    const nombreFantasiaTrim = (NombreFantasia || '').trim();
+    let setFantasia = '';
+    if (nombreFantasiaTrim) {
+      request.input('NombreFantasia', sql.VarChar, nombreFantasiaTrim);
+      setFantasia = ', NombreFantasia = @NombreFantasia';
+    }
+
+    await request.query(`
         UPDATE dbo.Clientes
         SET CioRuc = @CioRuc,
             DireccionTrabajo = @Direccion,
             DepartamentoID = @Ciudad,
-            Nombre = @Nombre,
-            NombreFantasia = @Nombre
+            Nombre = @Nombre
+            ${setFantasia}
         WHERE CliIdCliente = @CliIdCliente
       `);
 

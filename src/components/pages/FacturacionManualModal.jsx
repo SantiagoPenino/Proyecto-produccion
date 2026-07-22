@@ -4,6 +4,7 @@ import api from '../../services/apiClient';
 import { toast } from 'sonner';
 import ClienteBilletera from '../common/ClienteBilletera';
 import CajaPanelPago from './CajaPanelPago';
+import ConfirmationModal from '../modals/ConfirmationModal';
 import { useEmpresas } from '../../hooks/useEmpresas';
 import { validarDocumentoUY } from '../../utils/documentoUY';
 
@@ -61,6 +62,8 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
   // Cobro real del documento que se está editando (viene del endpoint de detalle).
   const [cobroDoc, setCobroDoc] = useState(null);
   const [updatingClient, setUpdatingClient] = useState(false);
+  // Confirmación grande antes de pisar la ficha real del cliente desde "Actualizar"
+  const [confirmActualizarCliente, setConfirmActualizarCliente] = useState(null); // { mensaje, payload }
   const [editDocInfo, setEditDocInfo] = useState(null);
   const esEditar = mode === 'editar' && !!editDocId;
   const { empresas, empresaSeleccionada, setEmpresaSeleccionada } = useEmpresas();
@@ -114,6 +117,7 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
         MonIdMoneda: initialData.MonIdMoneda || 1,
         CliIdCliente: initialData.CliIdCliente || '',
         DocCliNombre: initialData.DocCliNombre || initialData.CliRazonSocial || initialData.CliNombreFantasia || '',
+        DocCliNombreFantasia: '',
         DocCliDocumento: initialData.DocCliDocumento || initialData.CliRUT || '',
         DocCliDireccion: initialData.DocCliDireccion || initialData.CliDireccion || '',
         DocCliCiudad: initialData.DocCliCiudad || '',
@@ -153,6 +157,7 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
       MonIdMoneda: 1, // 1 = UYU, 2 = USD
       CliIdCliente: '',
       DocCliNombre: '',
+      DocCliNombreFantasia: '',
       DocCliDocumento: '',
       DocCliDireccion: '',
       DocCliCiudad: '',
@@ -516,6 +521,7 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
           ...prev,
           CliIdCliente: '',
           DocCliNombre: '',
+          DocCliNombreFantasia: '',
           DocCliDocumento: '',
           DocCliDireccion: '',
           DocCliCiudad: ''
@@ -547,6 +553,7 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
           ...prev,
           CliIdCliente: idNumerico || val,
           DocCliNombre: c.Nombre || c.NombreFantasia || '',
+          DocCliNombreFantasia: '',
           DocCliDocumento: c.CioRuc || c.IDCliente || '',
           DocCliDireccion: c.DireccionTrabajo || '',
           DocCliCiudad: deptoNombre || ''
@@ -595,8 +602,8 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
   };
 
   const handleUpdateClientDGI = async () => {
-    if (!formData.CliIdCliente || Number(formData.CliIdCliente) <= 1) {
-      toast.error('Debe seleccionar un cliente válido para actualizar su ficha.');
+    if (!formData.CliIdCliente || Number(formData.CliIdCliente) <= 1 || Number(formData.CliIdCliente) === CONSUMIDOR_FINAL_ID) {
+      toast.error('Este cliente es una cuenta genérica compartida (ej. Consumidor Final) y no se puede actualizar desde una factura. Si el receptor real es otro, creá o seleccioná su propio cliente.');
       return;
     }
     if (!formData.DocCliNombre || !formData.DocCliDocumento || !formData.DocCliDireccion || !formData.DocCliCiudad) {
@@ -611,14 +618,43 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
       return;
     }
 
+    // Ficha ACTUAL del cliente (tal como se cargó la lista al abrir el modal),
+    // para mostrar el cambio real antes de pisarla.
+    const clienteActual = clientes.find(item => String(item.CodCliente || item.CliIdCliente) === String(formData.CliIdCliente));
+    const nombreFantasiaTrim = (formData.DocCliNombreFantasia || '').trim();
+
+    const cambios = [];
+    const norm = v => String(v || '').trim();
+    if (norm(clienteActual?.Nombre) !== norm(formData.DocCliNombre)) {
+      cambios.push(`Nombre / Razón Social:\n   "${norm(clienteActual?.Nombre) || '(vacío)'}"  →  "${formData.DocCliNombre}"`);
+    }
+    if (norm(clienteActual?.CioRuc) !== norm(formData.DocCliDocumento)) {
+      cambios.push(`Documento (RUT/CI):\n   "${norm(clienteActual?.CioRuc) || '(vacío)'}"  →  "${formData.DocCliDocumento}"`);
+    }
+    if (norm(clienteActual?.DireccionTrabajo) !== norm(formData.DocCliDireccion)) {
+      cambios.push(`Dirección:\n   "${norm(clienteActual?.DireccionTrabajo) || '(vacío)'}"  →  "${formData.DocCliDireccion}"`);
+    }
+    if (nombreFantasiaTrim && norm(clienteActual?.NombreFantasia) !== nombreFantasiaTrim) {
+      cambios.push(`Nombre de Fantasía:\n   "${norm(clienteActual?.NombreFantasia) || '(vacío)'}"  →  "${nombreFantasiaTrim}"`);
+    }
+
+    if (cambios.length === 0) {
+      toast.info('No hay cambios respecto a la ficha actual del cliente.');
+      return;
+    }
+
+    const nombreActual = clienteActual?.Nombre || clienteActual?.NombreFantasia || formData.DocCliNombre;
+    setConfirmActualizarCliente({
+      mensaje: `⚠️ SE VA A ACTUALIZAR PERMANENTEMENTE el cliente:\n"${nombreActual}" (ID ${formData.CliIdCliente})\n\ncon estos datos:\n\n${cambios.join('\n\n')}\n\nEsto reemplaza la ficha real del cliente para SIEMPRE, en todas sus facturas pasadas y futuras. ¿CONFIRMÁS?`,
+      payload: { Nombre: formData.DocCliNombre, Documento: formData.DocCliDocumento, Direccion: formData.DocCliDireccion, Ciudad: depId, NombreFantasia: nombreFantasiaTrim || undefined }
+    });
+  };
+
+  const confirmarActualizarClienteDGI = async () => {
+    if (!confirmActualizarCliente) return;
     setUpdatingClient(true);
     try {
-      await api.patch(`/contabilidad/clientes/${formData.CliIdCliente}/dgi`, {
-        Nombre: formData.DocCliNombre,
-        Documento: formData.DocCliDocumento,
-        Direccion: formData.DocCliDireccion,
-        Ciudad: depId
-      });
+      await api.patch(`/contabilidad/clientes/${formData.CliIdCliente}/dgi`, confirmActualizarCliente.payload);
       toast.success('Ficha del cliente actualizada con éxito');
     } catch (err) {
       toast.error('Error al actualizar ficha: ' + (err.response?.data?.error || err.message));
@@ -1219,6 +1255,16 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
                   />
                 </div>
                 <div>
+                  <label className="text-[8px] font-black text-zinc-400 uppercase tracking-widest px-1">Nombre de Fantasía (opcional — no va al CFE)</label>
+                  <input
+                    type="text"
+                    value={formData.DocCliNombreFantasia || ''}
+                    onChange={e => setFormData({ ...formData, DocCliNombreFantasia: e.target.value })}
+                    placeholder="Dejar vacío para no tocar el nombre de fantasía del cliente"
+                    className="w-full border border-zinc-200 rounded-lg px-2.5 py-1.5 text-xs font-bold focus:border-indigo-500 outline-none bg-white text-zinc-800 shadow-sm mt-0.5"
+                  />
+                </div>
+                <div>
                   <label className="text-[8px] font-black text-zinc-400 uppercase tracking-widest px-1">Documento (RUT / CI)</label>
                   <input
                     type="text"
@@ -1565,6 +1611,17 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
           </div>
         </div>
       )}
+
+      <ConfirmationModal
+        isOpen={!!confirmActualizarCliente}
+        onClose={() => setConfirmActualizarCliente(null)}
+        onConfirm={confirmarActualizarClienteDGI}
+        title="Actualizar ficha del cliente"
+        message={confirmActualizarCliente?.mensaje || ''}
+        confirmText="Sí, actualizar"
+        cancelText="Cancelar"
+        isDestructive
+      />
     </div>
   );
 }

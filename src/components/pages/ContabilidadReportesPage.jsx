@@ -153,6 +153,86 @@ function SimpleTable({ rows, cols }) {
     );
 }
 
+// ─── Tabla agrupada por moneda, con subtotal por grupo ───────────────────────
+function TablaAgrupadaPorMoneda({ rows, cols, groupBy, sumKeys = [] }) {
+    if (!rows.length) {
+        return (
+            <div className="flex flex-col items-center justify-center h-40 gap-2">
+                <Landmark size={36} className="text-slate-200" />
+                <p className="text-slate-400 text-sm">Sin resultados para los filtros seleccionados</p>
+            </div>
+        );
+    }
+    const groups = {};
+    const order = [];
+    for (const row of rows) {
+        const key = groupBy(row);
+        if (!groups[key]) { groups[key] = []; order.push(key); }
+        groups[key].push(row);
+    }
+    return (
+        <div className="space-y-4">
+            {order.map(moneda => {
+                const groupRows = groups[moneda];
+                const subtotal = {};
+                for (const k of sumKeys) subtotal[k] = groupRows.reduce((s, r) => s + Number(r[k] || 0), 0);
+                return (
+                    <div key={moneda} className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+                        <div className="px-4 py-2.5 bg-slate-50 border-b border-slate-200 flex items-center justify-between">
+                            <span className="font-bold text-xs text-slate-700">{moneda}</span>
+                            <span className="text-[11px] text-slate-400">{groupRows.length} registros</span>
+                        </div>
+                        <div className="overflow-x-auto">
+                            <table className="w-full text-xs">
+                                <thead className="bg-slate-50/50 border-b border-slate-100">
+                                    <tr>
+                                        <th className="px-3 py-2 text-left text-slate-400 font-semibold w-8">#</th>
+                                        {cols.map(c => (
+                                            <th key={c.key} className="px-3 py-2 text-left text-slate-500 font-semibold whitespace-nowrap">{c.label}</th>
+                                        ))}
+                                    </tr>
+                                </thead>
+                                <tbody className="divide-y divide-slate-50">
+                                    {groupRows.map((row, i) => (
+                                        <tr key={i} className="hover:bg-slate-50/70 transition-colors">
+                                            <td className="px-3 py-2 text-slate-300 whitespace-nowrap">{i + 1}</td>
+                                            {cols.map(c => (
+                                                <td key={c.key} className="px-3 py-2 whitespace-nowrap">
+                                                    {c.render ? c.render(row[c.key], row) : (row[c.key] ?? '—')}
+                                                </td>
+                                            ))}
+                                        </tr>
+                                    ))}
+                                </tbody>
+                                <tfoot>
+                                    <tr className="bg-slate-100 border-t-2 border-slate-300">
+                                        <td className="px-3 py-2.5"></td>
+                                        {cols.map((c, idx) => {
+                                            const isSum = sumKeys.includes(c.key);
+                                            const isFirstNonSum = !isSum && cols.slice(0, idx).every(cc => sumKeys.includes(cc.key));
+                                            if (isSum) {
+                                                return (
+                                                    <td key={c.key} className="px-3 py-2.5 text-slate-900 font-bold whitespace-nowrap">
+                                                        {c.render ? c.render(subtotal[c.key], null) : subtotal[c.key]}
+                                                    </td>
+                                                );
+                                            }
+                                            if (isFirstNonSum) {
+                                                return <td key={c.key} className="px-3 py-2.5 text-slate-800 text-xs font-bold whitespace-nowrap">SUBTOTAL</td>;
+                                            }
+                                            return <td key={c.key} className="px-3 py-2.5" />;
+                                        })}
+                                    </tr>
+                                </tfoot>
+                            </table>
+                        </div>
+                    </div>
+                );
+            })}
+        </div>
+    );
+}
+
 // ─── Componente principal ─────────────────────────────────────────────────────
 export default function ContabilidadReportesPage() {
     const [activeReport, setActiveReport] = useState('ventas-area');
@@ -263,10 +343,11 @@ export default function ContabilidadReportesPage() {
             rows = flat.map(r => r.join(','));
             filename = `ventas_por_area_${new Date().toISOString().split('T')[0]}.csv`;
         } else {
-            cols = ['Estado DGI', 'Moneda', 'Cantidad', 'Importe'];
+            cols = ['Estado DGI', 'Tipo', 'Moneda', 'Cantidad', 'Importe', 'Pendiente de Cobro'];
             rows = docData.map(d => [
                 d.EstadoDgi === 'ENVIADO_DGI' ? 'Enviado a DGI' : 'No enviado',
-                d.MonNombre || d.MonIdMoneda, d.CantidadDocumentos, d.ImporteTotal,
+                d.TipoPago === 'CREDITO' ? 'Crédito' : 'Contado',
+                d.MonNombre || d.MonIdMoneda, d.CantidadDocumentos, d.ImporteTotal, d.ImportePendiente,
             ].join(','));
             rows.push('');
             rows.push(`Ingresos (Cobrado) — base: ${ingresosBase === 'pago' ? 'Fecha de pago' : 'Fecha de factura'}`);
@@ -289,13 +370,20 @@ export default function ContabilidadReportesPage() {
     const docPorMoneda = {};
     for (const row of docData) {
         const key = row.MonIdMoneda;
-        if (!docPorMoneda[key]) docPorMoneda[key] = { sym: row.MonSimbolo || '', nombre: row.MonNombre || '', enviado: 0, noEnviado: 0, cantEnviado: 0, cantNoEnviado: 0 };
+        if (!docPorMoneda[key]) docPorMoneda[key] = { sym: row.MonSimbolo || '', nombre: row.MonNombre || '', enviado: 0, noEnviado: 0, cantEnviado: 0, cantNoEnviado: 0, credito: 0, cantCredito: 0, pendiente: 0 };
         if (row.EstadoDgi === 'ENVIADO_DGI') {
             docPorMoneda[key].enviado += Number(row.ImporteTotal || 0);
             docPorMoneda[key].cantEnviado += Number(row.CantidadDocumentos || 0);
         } else {
             docPorMoneda[key].noEnviado += Number(row.ImporteTotal || 0);
             docPorMoneda[key].cantNoEnviado += Number(row.CantidadDocumentos || 0);
+        }
+        if (row.TipoPago === 'CREDITO') {
+            docPorMoneda[key].credito += Number(row.ImporteTotal || 0);
+            docPorMoneda[key].cantCredito += Number(row.CantidadDocumentos || 0);
+            // Pendiente de cobro (dbo.DeudaDocumento) SOLO de las de Crédito — es lo que se
+            // muestra debajo de "a crédito", tiene que ser un subconjunto de ese monto.
+            docPorMoneda[key].pendiente += Number(row.ImportePendiente || 0);
         }
     }
 
@@ -585,6 +673,14 @@ export default function ContabilidadReportesPage() {
                                                         <span className="text-slate-500">Facturado</span>
                                                         <span className="font-mono tabular-nums text-slate-700">{doc.sym} {fmtMoney(facturado)}</span>
                                                     </div>
+                                                    <div className="flex items-center justify-between text-[11px] pl-2">
+                                                        <span className="text-slate-400 italic">de eso, a crédito</span>
+                                                        <span className="font-mono tabular-nums text-slate-400">{doc.sym} {fmtMoney(doc.credito)} ({fmtInt(doc.cantCredito)})</span>
+                                                    </div>
+                                                    <div className="flex items-center justify-between text-[11px] pl-2">
+                                                        <span className="text-rose-500 italic">de eso, pendiente de cobro</span>
+                                                        <span className="font-mono tabular-nums text-rose-600 font-semibold">{doc.sym} {fmtMoney(doc.pendiente)}</span>
+                                                    </div>
                                                     <div className="flex items-center justify-between text-xs">
                                                         <span className="text-violet-600 font-semibold">Cobrado</span>
                                                         <span className="font-mono tabular-nums text-violet-700 font-semibold">{doc.sym} {fmtMoney(ing.cobrado)}</span>
@@ -602,15 +698,20 @@ export default function ContabilidadReportesPage() {
                                 )}
                             </div>
 
-                            <SimpleTable
+                            <TablaAgrupadaPorMoneda
                                 rows={docData}
+                                groupBy={row => row.MonNombre || row.MonIdMoneda}
+                                sumKeys={['CantidadDocumentos', 'ImporteTotal', 'ImportePendiente']}
                                 cols={[
                                     { key: 'EstadoDgi', label: 'Estado DGI', render: v => v === 'ENVIADO_DGI'
                                         ? <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-100 text-emerald-700">Enviado a DGI</span>
                                         : <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-amber-100 text-amber-700">No enviado</span> },
-                                    { key: 'MonNombre', label: 'Moneda' },
+                                    { key: 'TipoPago', label: 'Tipo', render: v => v === 'CREDITO'
+                                        ? <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-violet-100 text-violet-700">Crédito</span>
+                                        : <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-slate-100 text-slate-600">Contado</span> },
                                     { key: 'CantidadDocumentos', label: 'Cantidad', render: v => <span className="font-mono tabular-nums">{fmtInt(v)}</span> },
                                     { key: 'ImporteTotal', label: 'Importe', render: v => <span className="font-mono tabular-nums">{fmtMoney(v)}</span> },
+                                    { key: 'ImportePendiente', label: 'Pendiente de Cobro', render: v => <span className="font-mono tabular-nums text-rose-600">{fmtMoney(v)}</span> },
                                 ]}
                             />
                         </>
