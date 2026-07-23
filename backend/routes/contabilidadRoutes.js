@@ -2,6 +2,7 @@
 const express = require('express');
 const router = express.Router();
 const ctrl = require('../controllers/contabilidadController');
+const logger = require('../utils/logger');
 const { verifyToken } = require('../middleware/authMiddleware');
 const upload = require('../middleware/multerConfig');
 
@@ -168,6 +169,7 @@ router.get('/cfe/config-dgi', cfeCtrl.getConfigDGI);
 router.put('/cfe/config-dgi', cfeCtrl.updateConfigDGI);
 router.get('/cfe/documentos', cfeCtrl.getDocumentosCFE);
 router.post('/cfe/documentos/:id/enviar', cfeCtrl.enviarADGI);
+router.get('/cfe/documentos/:id/preview-dgi', cfeCtrl.previewDGI);   // Qué CFE se le pediría a DGI (no emite nada)
 router.post('/cfe/manual', cfeCtrl.crearFacturaManual);
 router.get('/cfe/documentos/:id/detalle', cfeCtrl.getDetalleFactura);
 router.put('/cfe/documentos/:id/anular', cfeCtrl.anularFactura);
@@ -324,7 +326,7 @@ router.post('/ordenes/editar-metros', async (req, res) => {
 // POST /contabilidad/ordenes/eliminar-metros
 // Elimina un movimiento de consumo y restaura el saldo de la cuenta
 router.post('/ordenes/eliminar-metros', async (req, res) => {
-  const { MovIdMovimiento } = req.body;
+  const { MovIdMovimiento, reactivarOrden } = req.body;
   if (!MovIdMovimiento) return res.status(400).json({ error: 'Falta MovIdMovimiento' });
 
   let transaction;
@@ -332,13 +334,36 @@ router.post('/ordenes/eliminar-metros', async (req, res) => {
     const pool = await getPoolOrd();
     const movRes = await pool.request()
       .input('Mid', sqlOrd.Int, MovIdMovimiento)
-      .query('SELECT MovImporte, CueIdCuenta, MovConcepto, MovObservaciones FROM dbo.MovimientosCuenta WHERE MovIdMovimiento = @Mid');
+      .query('SELECT MovImporte, CueIdCuenta, MovConcepto, MovObservaciones, OrdIdOrden FROM dbo.MovimientosCuenta WHERE MovIdMovimiento = @Mid');
     if (!movRes.recordset.length) return res.status(404).json({ error: 'Movimiento no encontrado' });
 
     const importeAbs  = Math.abs(Number(movRes.recordset[0].MovImporte));
     const CueIdCuenta = movRes.recordset[0].CueIdCuenta;
     const MovConcepto = movRes.recordset[0].MovConcepto;
     const MovObservaciones = movRes.recordset[0].MovObservaciones;
+    const OrdIdOrden  = movRes.recordset[0].OrdIdOrden;
+
+    logger.info(`[REVERTIR] INICIO Mov=${MovIdMovimiento} reactivarOrden=${!!reactivarOrden} metros=${importeAbs} Cue=${CueIdCuenta} OrdIdOrden=${OrdIdOrden || 'NULL'} concepto="${MovConcepto || ''}" obs="${MovObservaciones || ''}"`);
+
+    // BLOQUEO: no se puede revertir el consumo de una orden YA FACTURADA. Devolver los
+    // metros dejaría el plan con saldo de vuelta pero la orden ya emitida en un documento
+    // (inconsistente). Primero hay que anular la factura.
+    if (reactivarOrden && OrdIdOrden) {
+      const chk = await pool.request().input('Ord', sqlOrd.Int, OrdIdOrden).query(`
+        SELECT TOP 1 m.DocIdDocumento,
+               LTRIM(RTRIM(ISNULL(dc.DocSerie,''))) + '-' + LTRIM(RTRIM(CAST(ISNULL(dc.DocNumero,'') AS VARCHAR(50)))) AS Doc
+        FROM dbo.MovimientosCuenta m
+        LEFT JOIN dbo.DocumentosContables dc ON dc.DocIdDocumento = m.DocIdDocumento
+        WHERE m.OrdIdOrden = @Ord AND m.MovTipo IN ('ORDEN','ORDEN_ANTICIPO')
+          AND (m.MovAnulado IS NULL OR m.MovAnulado = 0) AND m.DocIdDocumento IS NOT NULL`);
+      if (chk.recordset.length) {
+        const docRef = (chk.recordset[0].Doc || '').replace(/^-|-$/g, '') || ('Doc #' + chk.recordset[0].DocIdDocumento);
+        logger.warn(`[REVERTIR] BLOQUEADO: la orden ya está facturada en ${docRef} (OrdIdOrden=${OrdIdOrden}) — no se devuelven los metros`);
+        return res.status(400).json({
+          error: `No se puede revertir el consumo: la orden ya fue facturada en ${docRef}. Anulá esa factura primero.`
+        });
+      }
+    }
 
     transaction = pool.transaction();
     await transaction.begin();
@@ -387,8 +412,131 @@ router.post('/ordenes/eliminar-metros', async (req, res) => {
         `);
     }
 
+    // Solo "Revertir consumo" (reactivarOrden=true) toca la orden. "Eliminar movimiento"
+    // deja la orden como está. Si era una COBERTURA, la deja de nuevo PENDIENTE DE FACTURAR:
+    // revierte servicios (CREDITO_PLAN), restaura el importe original de la orden, su deuda y el ciclo.
+    let ordenReactivada = false;
+    if (reactivarOrden && OrdIdOrden) {
+      const ordRes = await transaction.request().input('Ord', sqlOrd.Int, OrdIdOrden).query(`
+        SELECT TOP 1 MovIdMovimiento, MovImporte, MovObservaciones, CicIdCiclo, DocIdDocumento
+        FROM dbo.MovimientosCuenta
+        WHERE OrdIdOrden = @Ord AND MovTipo IN ('ORDEN','ORDEN_ANTICIPO')
+          AND (MovAnulado IS NULL OR MovAnulado = 0)`);
+      if (!ordRes.recordset.length) {
+        // La orden se pagó con METROS desde el inicio → nunca existió movimiento ORDEN (deuda en dinero).
+        // Al devolver los metros, el cliente pasa a deber la plata: creamos la deuda para que
+        // la orden aparezca en "Órdenes Pendientes de Facturar".
+        // OJO: m.OrdIdOrden puede apuntar a Ordenes(ERP).OrdenID O a OrdenesDeposito.OrdIdOrden
+        // (son espacios de IDs distintos). Resolvemos por ambos caminos.
+        const odRes = await transaction.request().input('Ord', sqlOrd.Int, OrdIdOrden).query(`
+          SELECT TOP 1 od.OrdCodigoOrden, od.OrdNombreTrabajo, od.OrdCostoFinal, od.MonIdMoneda
+          FROM dbo.OrdenesDeposito od
+          WHERE od.OrdIdOrden = @Ord
+             OR od.OrdCodigoOrden = (SELECT TOP 1 CodigoOrden FROM dbo.Ordenes WHERE OrdenID = @Ord)`);
+        const cliRes = await transaction.request().input('Cue', sqlOrd.Int, CueIdCuenta).query(`
+          SELECT TOP 1 CliIdCliente FROM dbo.CuentasCliente WHERE CueIdCuenta = @Cue`);
+        const od  = odRes.recordset[0];
+        const cli = cliRes.recordset[0]?.CliIdCliente;
+        let costo = Math.round(Number(od?.OrdCostoFinal || 0) * 100) / 100;
+        let origenCosto = 'OrdCostoFinal';
+
+        // Si la orden no tiene costo cargado, valorizamos los metros devueltos con el
+        // precio por unidad del plan (PlaPrecioUnitario = precio total del plan).
+        if (costo <= 0 && targetPlanId) {
+          const plRes = await transaction.request().input('Pla', sqlOrd.Int, targetPlanId)
+            .query('SELECT PlaPrecioUnitario, PlaCantidadTotal FROM dbo.PlanesMetros WHERE PlaIdPlan = @Pla');
+          const totalPlan  = Number(plRes.recordset[0]?.PlaCantidadTotal || 0);
+          const precioPlan = Number(plRes.recordset[0]?.PlaPrecioUnitario || 0);
+          if (totalPlan > 0 && precioPlan > 0) {
+            costo = Math.round((precioPlan / totalPlan) * importeAbs * 100) / 100;
+            origenCosto = `plan #${targetPlanId} (${(precioPlan / totalPlan).toFixed(4)}/u x ${importeAbs} u)`;
+          }
+        }
+
+        // Si la orden no tiene precio en ningún lado (fue cubierta 100% por el plan, que es
+        // lo normal), igual se crea el movimiento ORDEN con importe 0: así aparece en
+        // "Pendientes de Facturar" y se le pone el precio al facturar (editar costo de la orden).
+        if (!od || !cli) {
+          logger.warn(`[REVERTIR] No se pudo crear la deuda: falta la orden o el cliente (OrdIdOrden=${OrdIdOrden} ordEncontrada=${!!od} cli=${cli || 'NULL'})`);
+        } else {
+          const cueTipo = (od.MonIdMoneda === 2) ? 'DINERO_USD' : 'DINERO_UYU';
+          const ctaRes = await transaction.request()
+            .input('Cli', sqlOrd.Int, cli).input('T', sqlOrd.VarChar(20), cueTipo)
+            .query(`SELECT TOP 1 CueIdCuenta, CueSaldoActual FROM dbo.CuentasCliente WITH(UPDLOCK)
+                    WHERE CliIdCliente=@Cli AND CueTipo=@T AND CueActiva=1 ORDER BY CueIdCuenta`);
+          if (!ctaRes.recordset.length) {
+            logger.warn(`[REVERTIR] El cliente ${cli} no tiene cuenta ${cueTipo} → no se pudo crear la deuda`);
+          } else {
+            const cta        = ctaRes.recordset[0];
+            const nuevoSaldo = Math.round((Number(cta.CueSaldoActual) - costo) * 100) / 100;
+            const concepto   = ((od.OrdCodigoOrden || '').trim() + ' ' + (od.OrdNombreTrabajo || '').trim()).trim();
+
+            await transaction.request().input('C', sqlOrd.Int, cta.CueIdCuenta).input('S', sqlOrd.Decimal(18,4), nuevoSaldo)
+              .query('UPDATE dbo.CuentasCliente SET CueSaldoActual = @S WHERE CueIdCuenta = @C');
+
+            await transaction.request()
+              .input('C',   sqlOrd.Int,           cta.CueIdCuenta)
+              .input('Imp', sqlOrd.Decimal(18,4), -costo)
+              .input('SP',  sqlOrd.Decimal(18,4), nuevoSaldo)
+              .input('Con', sqlOrd.NVarChar(300), concepto)
+              .input('Ord', sqlOrd.Int,           OrdIdOrden)
+              .input('Usr', sqlOrd.Int,           req.user?.id || 1)
+              .query(`INSERT INTO dbo.MovimientosCuenta
+                        (CueIdCuenta, MovTipo, MovImporte, MovConcepto, MovSaldoPosterior,
+                         MovFecha, MovUsuarioAlta, OrdIdOrden, MovAnulado)
+                      VALUES (@C, 'ORDEN', @Imp, @Con, @SP, GETDATE(), @Usr, @Ord, 0)`);
+
+            ordenReactivada = true;
+            logger.info(costo > 0
+              ? `[REVERTIR] Orden ${concepto} SIN movimiento ORDEN previo → creada en ${cueTipo} (Cue=${cta.CueIdCuenta}) por ${costo} [costo desde ${origenCosto}]. Ya aparece en Pendientes de Facturar.`
+              : `[REVERTIR] Orden ${concepto} SIN movimiento ORDEN previo y SIN precio (cubierta 100% por plan) → creada en ${cueTipo} (Cue=${cta.CueIdCuenta}) con importe 0. Aparece en Pendientes de Facturar; ponerle el precio al facturar.`);
+          }
+        }
+      }
+      if (ordRes.recordset.length) {
+        const orden = ordRes.recordset[0];
+        const obsO  = orden.MovObservaciones || '';
+        const cubierta = /^CUBIERTO/i.test(obsO) || /^MATERIAL_CUBIERTO/i.test(obsO);
+        logger.info(`[REVERTIR] ORDEN hallada Mov=${orden.MovIdMovimiento} importe=${orden.MovImporte} obs="${obsO}" cubierta=${cubierta} facturada=${!!orden.DocIdDocumento}`);
+        if (!cubierta) logger.warn(`[REVERTIR] La ORDEN no está marcada CUBIERTO → no hay nada que reactivar (obs="${obsO}")`);
+        if (orden.DocIdDocumento) logger.warn(`[REVERTIR] La ORDEN ya está FACTURADA (DocId=${orden.DocIdDocumento}) → no se reactiva`);
+        if (cubierta && !orden.DocIdDocumento) {
+          // Revertir CREDITO_PLAN (servicios) — restaura el importe original de la orden
+          const credRes = await transaction.request().input('Ord', sqlOrd.Int, OrdIdOrden).query(`
+            SELECT MovIdMovimiento, CueIdCuenta, MovImporte FROM dbo.MovimientosCuenta
+            WHERE OrdIdOrden = @Ord AND MovTipo = 'CREDITO_PLAN' AND (MovAnulado IS NULL OR MovAnulado = 0)`);
+          let creditoRestaurar = 0;
+          for (const c of credRes.recordset) {
+            creditoRestaurar += Number(c.MovImporte);
+            await transaction.request().input('C', sqlOrd.Int, c.CueIdCuenta).input('Imp', sqlOrd.Decimal(18,4), Number(c.MovImporte))
+              .query('UPDATE dbo.CuentasCliente SET CueSaldoActual = CueSaldoActual - @Imp WHERE CueIdCuenta = @C');
+            await transaction.request().input('M', sqlOrd.Int, c.MovIdMovimiento)
+              .query("UPDATE dbo.MovimientosCuenta SET MovAnulado = 1, MovObservaciones = CONCAT(ISNULL(MovObservaciones,''),' [REVERTIDO]') WHERE MovIdMovimiento = @M");
+          }
+          const importeOriginal = Math.round((Math.abs(Number(orden.MovImporte)) + creditoRestaurar) * 100) / 100;
+          // Restaurar la ORDEN: importe original + quitar la marca CUBIERTO
+          await transaction.request().input('M', sqlOrd.Int, orden.MovIdMovimiento).input('Imp', sqlOrd.Decimal(18,4), -importeOriginal)
+            .query('UPDATE dbo.MovimientosCuenta SET MovImporte = @Imp, MovObservaciones = NULL WHERE MovIdMovimiento = @M');
+          // Restaurar la deuda de la orden → PENDIENTE
+          await transaction.request().input('Ord', sqlOrd.Int, OrdIdOrden).input('Imp', sqlOrd.Decimal(18,4), importeOriginal)
+            .query("UPDATE dbo.DeudaDocumento SET DDeImportePendiente = @Imp, DDeEstado = 'PENDIENTE' WHERE OrdIdOrden = @Ord AND DDeEstado IN ('CANCELADO','CANCELADA','PARCIAL')");
+          // Revertir el ciclo (si estaba en un ciclo abierto)
+          if (orden.CicIdCiclo) {
+            await transaction.request().input('Cic', sqlOrd.Int, orden.CicIdCiclo).input('Imp', sqlOrd.Decimal(18,4), importeOriginal)
+              .query('UPDATE dbo.CiclosCredito SET CicTotalPagos = CicTotalPagos - @Imp, CicSaldoFacturar = CicSaldoFacturar + @Imp WHERE CicIdCiclo = @Cic');
+          }
+          ordenReactivada = true;
+          logger.info(`[REVERTIR] ORDEN Mov=${orden.MovIdMovimiento} REACTIVADA → obs=NULL, importe=${importeOriginal}, deuda→PENDIENTE. Ya debería aparecer en Pendientes de Facturar.`);
+        }
+      }
+    }
+
+    logger.info(`[REVERTIR] FIN Mov=${MovIdMovimiento} metrosDevueltos=${importeAbs} plan=${targetPlanId || 'NULL'} ordenReactivada=${ordenReactivada}`);
     await transaction.commit();
-    res.json({ success: true, message: 'Movimiento eliminado y saldo restaurado' });
+    const msg = reactivarOrden
+      ? 'Consumo revertido. Metros devueltos al plan' + (ordenReactivada ? ' y la orden vuelve a pendiente de facturar.' : '.')
+      : 'Movimiento eliminado y saldo restaurado.';
+    res.json({ success: true, message: msg });
   } catch (err) {
     if (transaction) try { await transaction.rollback(); } catch(_){}
     res.status(500).json({ error: err.message });

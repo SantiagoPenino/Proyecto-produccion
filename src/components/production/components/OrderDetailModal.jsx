@@ -738,10 +738,10 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
         }).catch(err => console.error("Error loading estados:", err));
     }, []);
 
-    // Terminaciones de la orden (ECOUV: viven en la orden madre, ligadas a cada archivo).
+    // Terminaciones de la orden (ECOUV legacy / hermana contenedora TERMINAC).
     const [terminacionesOrden, setTerminacionesOrden] = useState([]);
     useEffect(() => {
-        if (order?.id && (order?.area || '').toUpperCase() === 'ECOUV') {
+        if (order?.id && ['ECOUV', 'TERMINAC'].includes((order?.area || '').toUpperCase())) {
             api.get(`/finishing/orders/${order.id}/details`)
                 .then(res => setTerminacionesOrden(res.data?.terminaciones || []))
                 .catch(() => setTerminacionesOrden([]));

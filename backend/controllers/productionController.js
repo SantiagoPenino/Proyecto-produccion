@@ -62,10 +62,11 @@ const GUARD_ORDENES_RESUELTAS =
     "ISNULL(EstadoenArea,'') NOT IN ('Pronto','En transito','En Transito','En Tránsito','Ingresado','Pronto para entregar','Con Falla','Retenido','Finalizado','Entregado','Avisado','Para Avisar','Cancelado') " +
     "AND Estado NOT IN ('Finalizado','Cancelado','Entregado')";
 
-// Áreas con IMPRESIÓN PARCIAL (por unidades): al finalizar un lote, las órdenes incompletas NO
-// bloquean — vuelven a la Mesa de Armado conservando su avance (Ordenes.CantidadImpresa) para
+// Áreas con IMPRESIÓN PARCIAL (por unidades o metros): al finalizar un lote, las órdenes incompletas
+// NO bloquean — vuelven a la Mesa de Armado conservando su avance (Ordenes.CantidadImpresa) para
 // continuar otro día en un lote nuevo. Ver docs/impresion-parcial-plan.md
-const AREAS_IMPRESION_PARCIAL = ['TPU'];
+// DIRECTA cuenta piezas o metros según el artículo (misma mecánica).
+const AREAS_IMPRESION_PARCIAL = ['TPU', 'DIRECTA'];
 
 // Áreas con BLOQUEO DURO al finalizar: el lote no se puede finalizar con órdenes sin marcar
 // (espeja el gate del front en MachineControl). 'DF'/'DTF' son la misma área según el entorno.

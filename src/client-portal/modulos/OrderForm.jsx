@@ -1792,8 +1792,8 @@ const OrderForm = ({ serviceId: propServiceId }) => {
                                                                 onChange={(s) => actions.updateItem(item.id, 'printSettings', s)}
                                                                 // Medida fija: escalar o raportar cambiaría el tamaño final y rompería la medida exigida.
                                                                 disableScaling={serviceId === 'tpu' || serviceId?.toUpperCase() === 'DF' || itemMatInfo(item).largoFijo > 0}
-                                                                hideRaport={!!config.hideRaport || isDirectaTwinface || itemMatInfo(item).largoFijo > 0}
-                                                                hideScale={isDirectaTwinface || itemMatInfo(item).largoFijo > 0}
+                                                                hideRaport={!!config.hideRaport || serviceId === 'directa_320'}
+                                                                hideScale={serviceId === 'directa_320'}
                                                             />
                                                         )}
                                                     </div>

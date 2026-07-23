@@ -677,12 +677,14 @@ exports.createWebOrder = async (req, res) => {
                 });
 
                 const whereClause = clauses.join(' OR ');
-                const queryStr = `SELECT IDProdReact, CodArticulo, ProIdProducto, CodStock FROM Articulos WHERE ${whereClause}`;
+                // UniIdUnidad: unidad de venta del artículo (1=Cantidades/piezas, 2=Metros). DIRECTA la usa
+                // para saber si la orden se cuenta por piezas o por metros (impresión parcial "según el trabajo").
+                const queryStr = `SELECT IDProdReact, CodArticulo, ProIdProducto, CodStock, UniIdUnidad FROM Articulos WHERE ${whereClause}`;
 
                 const artRes = await request.query(queryStr);
 
                 artRes.recordset.forEach(r => {
-                    const info = { idReact: r.IDProdReact, proId: r.ProIdProducto, codArt: r.CodArticulo ? r.CodArticulo.trim() : null, codStock: r.CodStock ? r.CodStock.trim() : null };
+                    const info = { idReact: r.IDProdReact, proId: r.ProIdProducto, codArt: r.CodArticulo ? r.CodArticulo.trim() : null, codStock: r.CodStock ? r.CodStock.trim() : null, uniIdUnidad: r.UniIdUnidad };
                     if (r.ProIdProducto !== null && r.ProIdProducto !== undefined) {
                         mapArtByProId[String(r.ProIdProducto).trim()] = info;
                     }
@@ -714,6 +716,7 @@ exports.createWebOrder = async (req, res) => {
                         if (info.codStock && !exec.codStock) {
                             exec.codStock = info.codStock;
                         }
+                        exec.uniIdUnidad = info.uniIdUnidad; // 1=piezas, 2=metros (para UM por artículo en DIRECTA)
                     }
                 });
 
@@ -857,6 +860,13 @@ exports.createWebOrder = async (req, res) => {
                             }
                         }
                     } catch (_) { /* sin TipoStock/StockArt: se mantiene UM del área y variante original */ }
+                }
+
+                // IMPRESIÓN DIRECTA: la UM de la orden la define el ARTÍCULO (UniIdUnidad 1=Cantidades → 'u',
+                // 2=Metros → 'm'), no el área. Así, "según el trabajo", el contador de impresión parcial cuenta
+                // piezas (banderas por unidad) o metros (lona). El cálculo de Magnitud más abajo ya se ramifica por UM.
+                if (exec.areaID === 'DIRECTA' && exec.uniIdUnidad != null) {
+                    areaUM = (Number(exec.uniIdUnidad) === 1) ? 'u' : 'm';
                 }
 
                 // ID del producto (si lo tenemos en exec)

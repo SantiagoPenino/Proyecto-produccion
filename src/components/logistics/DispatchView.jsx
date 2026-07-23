@@ -41,6 +41,7 @@ const DispatchView = ({ selectedOrders: initialOrders = [], areaFilter, originAr
     const selectedStockItems = extSelectedStockItems ?? internalSelectedStockItems;
     const setSelectedStockItems = extSetSelectedStockItems ?? setInternalSelectedStockItems;
     const [stockSearch, setStockSearch] = useState('');
+    const [destinoFilter, setDestinoFilter] = useState('TODOS'); // Filtro por área destino (ProximoServicio)
     const [loading, setLoading] = useState(false);
     const [results, setResults] = useState([]);
     const [logs, setLogs] = useState([]);
@@ -112,15 +113,29 @@ const DispatchView = ({ selectedOrders: initialOrders = [], areaFilter, originAr
             return (a.BultoID || 0) - (b.BultoID || 0);
         });
 
-        if (!stockSearch) return rows;
+        let filtered = rows;
+
+        // Filtro por área destino (ProximoServicio; sin destino = LOGISTICA)
+        if (destinoFilter && destinoFilter !== 'TODOS') {
+            filtered = filtered.filter(r => (r.nextService || 'LOGISTICA') === destinoFilter);
+        }
+
+        if (!stockSearch) return filtered;
 
         const lowerSearch = stockSearch.toLowerCase();
-        return rows.filter(r =>
+        return filtered.filter(r =>
             r.displayCode.toLowerCase().includes(lowerSearch) ||
             (r.client && r.client.toLowerCase().includes(lowerSearch)) ||
             (r.desc && r.desc.toLowerCase().includes(lowerSearch))
         );
-    }, [areaStock, stockSearch]);
+    }, [areaStock, stockSearch, destinoFilter]);
+
+    // Opciones del filtro: destinos distintos presentes en el stock actual
+    const destinoOptions = useMemo(() => {
+        if (!areaStock) return [];
+        const set = new Set(areaStock.map(item => item.ProximoServicio || 'LOGISTICA'));
+        return [...set].sort();
+    }, [areaStock]);
 
     // --- TRANSFORM SELECTION ---
     const selectedOrders = useMemo(() => {
@@ -554,6 +569,18 @@ const DispatchView = ({ selectedOrders: initialOrders = [], areaFilter, originAr
                                     onKeyDown={handleKeyDown}
                                     autoFocus
                                 />
+                            </div>
+                            <div className="relative">
+                                <i className="fa-solid fa-arrow-right absolute left-4 top-3.5 text-slate-400 text-xs pointer-events-none"></i>
+                                <select
+                                    className="bg-slate-100 border-none rounded-xl pl-10 pr-8 py-3 text-sm font-bold text-slate-700 focus:ring-2 focus:ring-cyan-200 outline-none transition-all cursor-pointer"
+                                    value={destinoFilter}
+                                    onChange={e => setDestinoFilter(e.target.value)}
+                                    title="Filtrar por área destino"
+                                >
+                                    <option value="TODOS">Destino: Todos</option>
+                                    {destinoOptions.map(d => <option key={d} value={d}>{d}</option>)}
+                                </select>
                             </div>
                             <button
                                 disabled={selectedStockItems.length === 0}

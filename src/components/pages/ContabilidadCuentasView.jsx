@@ -436,7 +436,7 @@ const ModalAnticipo = ({ cuenta, cliente, onClose, onSuccess }) => {
 };
 
 // ── Modal Consumir Recurso Adelantado ─────────────────────────────────────────────
-const ModalConsumirRecurso = ({ mov, cuenta, cliente, onClose, onSuccess }) => {
+export const ModalConsumirRecurso = ({ mov, cuenta, cliente, onClose, onSuccess }) => {
   const importeOrden     = Math.abs(Number(mov.MovImporte || 0));
   const cantidadMts      = Number(mov.OrdCantidad || 0);
   const codigoOrden      = mov.OrdCodigoOrden || mov.MovConcepto || `Mov#${mov.MovIdMovimiento}`;
@@ -1918,6 +1918,8 @@ export const PlanesPanel = ({ cuenta, CliIdCliente, cliente, desde, hasta, onClo
   const [modalNuevaOrden,   setModalNuevaOrden]   = useState(false);
   const [modalConfirmar,    setModalConfirmar]    = useState(null); // { movId, concepto, saldoIn, consumo }
   const [confirmWorking,    setConfirmWorking]    = useState(false);
+  const [modalRevertir,     setModalRevertir]     = useState(null); // { movId, concepto, consumo, unidad } → revierte consumo + orden a pendiente
+  const [revertWorking,     setRevertWorking]     = useState(false);
 
   // Form editar metros
   const [editMovId,       setEditMovId]       = useState(null);
@@ -2083,6 +2085,7 @@ export const PlanesPanel = ({ cuenta, CliIdCliente, cliente, desde, hasta, onClo
                 const cod      = match ? match[0].toUpperCase() : '';
                 let   desc     = m.MovConcepto || '—';
                 if (cod) desc  = desc.replace(match[0], '').replace(/^[\s:\-.]+|[\s:\-.]+$/g, '').trim();
+                if (m.MovTipo === 'RECARGO_URGENCIA' && m.MovObservaciones) desc = m.MovObservaciones;
                 return {
                   ...m,
                   _saldoIn: saldoAnt,
@@ -2091,7 +2094,7 @@ export const PlanesPanel = ({ cuenta, CliIdCliente, cliente, desde, hasta, onClo
                   _haber:   importe > 0 ? importe : 0,
                   _cod:     cod,
                   _desc:    desc,
-                  _tipo:    importe >= 0 ? 'ENTRADA' : 'ENTREGA',
+                  _tipo:    m.MovTipo === 'RECARGO_URGENCIA' ? 'RECARGO_URGENCIA' : (importe >= 0 ? 'ENTRADA' : 'ENTREGA'),
                 };
               });
 
@@ -2168,8 +2171,12 @@ export const PlanesPanel = ({ cuenta, CliIdCliente, cliente, desde, hasta, onClo
                               <tr key={m.MovIdMovimiento} className="hover:bg-slate-50/50 transition-colors">
                                 <td className="px-3 py-2 text-slate-500 whitespace-nowrap">{fmtFecha(m.MovFecha)}</td>
                                 <td className="px-3 py-2">
-                                  <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded ${m._tipo === 'ENTRADA' ? 'bg-emerald-50 text-emerald-700' : 'bg-violet-50 text-violet-700'}`}>
-                                    {m._tipo}
+                                  <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded ${
+                                    m._tipo === 'RECARGO_URGENCIA' ? 'bg-rose-50 text-rose-700'
+                                      : m._tipo === 'ENTRADA' ? 'bg-emerald-50 text-emerald-700'
+                                      : 'bg-violet-50 text-violet-700'
+                                  }`}>
+                                    {m._tipo === 'RECARGO_URGENCIA' ? 'RECARGO URGENCIA' : m._tipo}
                                   </span>
                                 </td>
                                 <td className="px-3 py-2 font-bold text-slate-700 whitespace-nowrap">{m._cod || '—'}</td>
@@ -2186,6 +2193,10 @@ export const PlanesPanel = ({ cuenta, CliIdCliente, cliente, desde, hasta, onClo
                                 </td>
                                 <td className="px-3 py-2">
                                   <div className="flex items-center justify-end gap-1">
+                                    {m._tipo === 'RECARGO_URGENCIA' ? (
+                                      <span className="text-slate-300 text-[10px]" title="Recargo automático — no editable manualmente">—</span>
+                                    ) : (
+                                    <>
                                     <button
                                       onClick={(e) => {
                                         e.stopPropagation();
@@ -2199,6 +2210,26 @@ export const PlanesPanel = ({ cuenta, CliIdCliente, cliente, desde, hasta, onClo
                                     >
                                       <Edit2 size={12} />
                                     </button>
+                                    {m._tipo === 'ENTREGA' && (
+                                      <button
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          const planDeEste = planesDelMat.find(p =>
+                                            (movsPlan[p.PlaIdPlan] || []).some(x => x.MovIdMovimiento === m.MovIdMovimiento)
+                                          );
+                                          setModalRevertir({
+                                            movId:    m.MovIdMovimiento,
+                                            concepto: m.MovConcepto,
+                                            consumo:  Math.abs(Number(m.MovImporte)),
+                                            unidad:   planDeEste?.PlaUnidad || unidadMat,
+                                          });
+                                        }}
+                                        className="p-1 hover:bg-violet-100 rounded text-slate-400 hover:text-violet-600 transition-colors"
+                                        title="Revertir consumo: devuelve los metros al plan Y deja la orden PENDIENTE DE FACTURAR"
+                                      >
+                                        <RotateCcw size={12} />
+                                      </button>
+                                    )}
                                     <button
                                       onClick={(e) => {
                                         e.stopPropagation();
@@ -2213,10 +2244,12 @@ export const PlanesPanel = ({ cuenta, CliIdCliente, cliente, desde, hasta, onClo
                                         });
                                       }}
                                       className="p-1 hover:bg-slate-200 rounded text-slate-400 hover:text-rose-600 transition-colors"
-                                      title="Eliminar movimiento"
+                                      title="Eliminar movimiento: solo restaura los metros al plan (la orden NO cambia)"
                                     >
                                       <Trash2 size={12} />
                                     </button>
+                                    </>
+                                    )}
                                   </div>
                                 </td>
                               </tr>
@@ -2419,7 +2452,7 @@ export const PlanesPanel = ({ cuenta, CliIdCliente, cliente, desde, hasta, onClo
             </div>
             <div>
               <p className="font-bold text-rose-700 text-sm">Eliminar movimiento</p>
-              <p className="text-[11px] text-rose-500">Esta acción restaura los metros al plan</p>
+              <p className="text-[11px] text-rose-500">Restaura los metros al plan (la orden NO cambia)</p>
             </div>
           </div>
           <div className="px-5 py-4 space-y-3">
@@ -2433,7 +2466,10 @@ export const PlanesPanel = ({ cuenta, CliIdCliente, cliente, desde, hasta, onClo
                 <p className="text-lg font-black text-rose-600">+{fmtNum(modalConfirmar.consumo)} <span className="text-xs font-normal">{modalConfirmar.unidad}</span></p>
               </div>
             </div>
-            <p className="text-[11px] text-slate-400 text-center">El saldo del plan volverá a aumentar por esta cantidad.</p>
+            <p className="text-[11px] text-slate-400 text-center leading-relaxed">
+              El saldo del plan vuelve a aumentar por esta cantidad.<br/>
+              <span className="text-slate-400">La orden NO cambia de estado. Para eso usá <strong>Revertir consumo</strong>.</span>
+            </p>
           </div>
           <div className="px-5 pb-5 flex gap-2">
             <button
@@ -2468,6 +2504,64 @@ export const PlanesPanel = ({ cuenta, CliIdCliente, cliente, desde, hasta, onClo
         </div>
       </div>
     )}
+    {/* ── Modal: Revertir consumo (metros al plan + orden a pendiente de facturar) ── */}
+    {modalRevertir && (
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
+        <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm mx-4 overflow-hidden">
+          <div className="flex items-center gap-3 px-5 py-4 bg-violet-50 border-b border-violet-100">
+            <div className="w-9 h-9 rounded-full bg-violet-100 flex items-center justify-center flex-shrink-0">
+              <RotateCcw size={18} className="text-violet-600" />
+            </div>
+            <div>
+              <p className="font-bold text-violet-700 text-sm">Revertir consumo</p>
+              <p className="text-[11px] text-violet-500">Deshace el consumo por completo</p>
+            </div>
+          </div>
+          <div className="px-5 py-4 space-y-3">
+            <div className="bg-slate-50 rounded-xl p-3 border border-slate-100">
+              <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-1">Consumo</p>
+              <p className="text-sm font-semibold text-slate-700 truncate">{modalRevertir.concepto}</p>
+            </div>
+            <div className="bg-violet-50 rounded-xl p-3 border border-violet-100 text-center">
+              <p className="text-[10px] text-violet-400 font-semibold uppercase">Metros que vuelven al plan</p>
+              <p className="text-lg font-black text-violet-600">+{fmtNum(modalRevertir.consumo)} <span className="text-xs font-normal">{modalRevertir.unidad}</span></p>
+            </div>
+            <p className="text-[11px] text-slate-500 text-center leading-relaxed">
+              Devuelve los metros al plan <strong>y</strong> deja la orden de nuevo <strong>pendiente de facturar</strong>.<br/>
+              <span className="text-slate-400">
+                Si la orden estaba cubierta 100% por el plan (sin precio), vuelve con <strong>importe 0</strong>:
+                le ponés el precio al facturar.
+              </span>
+            </p>
+          </div>
+          <div className="px-5 pb-5 flex gap-2">
+            <button onClick={() => setModalRevertir(null)} disabled={revertWorking}
+              className="flex-1 px-4 py-2 text-xs font-semibold text-slate-600 bg-slate-100 hover:bg-slate-200 rounded-xl transition-colors disabled:opacity-50">Cancelar</button>
+            <button disabled={revertWorking}
+              onClick={async () => {
+                setRevertWorking(true);
+                try {
+                  const r = await fetchAPI(`/api/contabilidad/ordenes/eliminar-metros`, {
+                    method: 'POST',
+                    body: JSON.stringify({ MovIdMovimiento: modalRevertir.movId, reactivarOrden: true })
+                  });
+                  toast.success(r?.message || 'Consumo revertido. La orden vuelve a pendiente de facturar.');
+                  setModalRevertir(null);
+                  cargar();
+                  if (onChanged) onChanged();
+                } catch (err) {
+                  toast.error(err.message);
+                } finally {
+                  setRevertWorking(false);
+                }
+              }}
+              className="flex-1 px-4 py-2 text-xs font-bold text-white bg-violet-600 hover:bg-violet-700 rounded-xl transition-colors disabled:opacity-50">
+              {revertWorking ? <span className="flex items-center justify-center gap-1"><RefreshCw size={11} className="animate-spin" /> Revirtiendo...</span> : 'Sí, revertir consumo'}
+            </button>
+          </div>
+        </div>
+      </div>
+    )}
   </>
   );
 };
@@ -2485,6 +2579,7 @@ const ETIQUETA_TIPO = {
   AJUSTE_POS:   'Ajuste +',
   AJUSTE_NEG:   'Ajuste -',
   REPOSICION:   'Reposición',
+  RECARGO_URGENCIA: 'Recargo Urgencia',
 };
 
 const ModalEstadoCuenta = ({ cliente, cuentas, onClose, globalDesde, globalHasta, onRegistrarPago }) => {

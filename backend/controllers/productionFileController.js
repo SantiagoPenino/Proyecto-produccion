@@ -847,11 +847,95 @@ const postControlArchivo = async (req, res) => {
                             logger.warn('[postControlArchivo] No se pudo evaluar terminaciones pendientes:', eTerm.message);
                         }
                     }
-                    const estadoDe  = (oid) => ordenesConTermPend.has(oid) ? 'En Terminaciones' : nuevoEstadoArea;
-                    const destinoDe = (oid) => ordenesConTermPend.has(oid) ? 'En Terminaciones' : destinoLogistica;
-                    const detalleDe = (oid) => ordenesConTermPend.has(oid) ? 'Control OK — pasa a Terminaciones ECOUV' : 'Control finalizado en Área';
+                    // TERMINACIONES COMO ÁREA (decisión negocio 21/07, reemplaza al sub-estado):
+                    // la orden ECOUV sale por el camino NORMAL (Pronto/Canasto) pero con
+                    // ProximoServicio=TERMINAC (el remito entre locales sale del despacho de
+                    // siempre), y se crea UNA orden hermana contenedora en el área TERMINAC
+                    // con las OrdenTerminaciones repuntadas (patrón Corte/Costura).
+                    const crearHermanaTerminac = async (ecouvId) => {
+                        const src = await new sql.Request(transaction)
+                            .input('OID', sql.Int, ecouvId)
+                            .query('SELECT TOP 1 * FROM Ordenes WHERE OrdenID = @OID');
+                        const o = src.recordset[0];
+                        if (!o) return;
+
+                        // Guard anti-duplicado (reproceso de control): si ya existe hermana viva de esta orden, no crear otra
+                        const ya = await new sql.Request(transaction)
+                            .input('Nota', sql.NVarChar(200), `%[TERMINACIONES DE ${String(o.CodigoOrden || '').trim()}]%`)
+                            .query("SELECT TOP 1 OrdenID FROM Ordenes WHERE AreaID = 'TERMINAC' AND Estado NOT IN ('Cancelado') AND Nota LIKE @Nota");
+                        if (ya.recordset.length > 0) return;
+
+                        const pendCnt = await new sql.Request(transaction)
+                            .input('OID', sql.Int, ecouvId)
+                            .query("SELECT COUNT(*) AS C FROM OrdenTerminaciones WHERE OrdenID = @OID");
+                        const cantTerm = pendCnt.recordset[0]?.C || 1;
+
+                        const docTrim = String(o.NoDocERP || ecouvId).trim();
+                        const baseCod = `TER-${docTrim}`;
+                        const dupCod = await new sql.Request(transaction)
+                            .input('Cod', sql.VarChar(60), baseCod + '%')
+                            .query("SELECT COUNT(*) AS C FROM Ordenes WHERE CodigoOrden LIKE @Cod");
+                        const codigoHermana = dupCod.recordset[0].C > 0 ? `${baseCod}(${dupCod.recordset[0].C + 1})` : baseCod;
+
+                        const insH = await new sql.Request(transaction)
+                            .input('Cliente', sql.NVarChar(200), o.Cliente)
+                            .input('CodCliente', sql.Int, o.CodCliente)
+                            .input('IdCliR', sql.VarChar(50), o.IdClienteReact != null ? String(o.IdClienteReact) : null)
+                            .input('Desc', sql.NVarChar(300), o.DescripcionTrabajo)
+                            .input('Prio', sql.VarChar(20), o.Prioridad || 'Normal')
+                            .input('FEE', sql.DateTime, o.FechaEstimadaEntrega)
+                            .input('Mat', sql.VarChar(255), o.Material)
+                            .input('Var', sql.VarChar(100), o.Variante)
+                            .input('Cod', sql.VarChar(50), codigoHermana)
+                            .input('Doc', sql.VarChar(50), o.NoDocERP)
+                            .input('Nota', sql.NVarChar(sql.MAX), `[TERMINACIONES DE ${String(o.CodigoOrden || '').trim()}]${o.Nota ? ' ' + o.Nota : ''}`)
+                            .input('Mag', sql.VarChar(50), String(cantTerm))
+                            .input('CliId', sql.Int, o.CliIdCliente)
+                            .query(`
+                                INSERT INTO Ordenes (
+                                    AreaID, Cliente, CodCliente, IdClienteReact, DescripcionTrabajo, Prioridad,
+                                    FechaIngreso, FechaEstimadaEntrega, Material, Variante,
+                                    CodigoOrden, NoDocERP, Nota, Magnitud, ProximoServicio, UM,
+                                    Estado, EstadoenArea, CliIdCliente
+                                )
+                                OUTPUT INSERTED.OrdenID
+                                VALUES (
+                                    'TERMINAC', @Cliente, @CodCliente, @IdCliR, @Desc, @Prio,
+                                    GETDATE(), @FEE, @Mat, @Var,
+                                    @Cod, @Doc, @Nota, @Mag, 'DEPOSITO', 'u',
+                                    'Pendiente', 'Pendiente', @CliId
+                                )
+                            `);
+                        const hermanaId = insH.recordset[0].OrdenID;
+
+                        // Repuntar el detalle de terminaciones a la hermana (ArchivoID sigue
+                        // apuntando a los archivos de la ECOUV: sirve de referencia visual)
+                        await new sql.Request(transaction)
+                            .input('HID', sql.Int, hermanaId)
+                            .input('OID', sql.Int, ecouvId)
+                            .query("UPDATE OrdenTerminaciones SET OrdenID = @HID WHERE OrdenID = @OID");
+
+                        // La ECOUV viaja al local de terminaciones vía despacho normal
+                        await new sql.Request(transaction)
+                            .input('OID', sql.Int, ecouvId)
+                            .query("UPDATE Ordenes SET ProximoServicio = 'TERMINAC' WHERE OrdenID = @OID");
+
+                        await changeOrderState(transaction, {
+                            target: { type: 'ORDER', id: hermanaId },
+                            estado: 'Pendiente',
+                            userObj: req.user || 'Sistema',
+                            detalle: `Orden de terminaciones creada desde ${String(o.CodigoOrden || '').trim()} (${cantTerm} terminaciones)`,
+                            io: req.app.get('socketio')
+                        });
+                        logger.info(`[postControlArchivo] Hermana TERMINAC ${codigoHermana} (${hermanaId}) creada desde orden ${ecouvId}`);
+                    };
+
+                    const detalleDe = (oid) => ordenesConTermPend.has(oid) ? 'Control OK — sale hacia Terminaciones (TERMINAC)' : 'Control finalizado en Área';
 
                     // Orden Normal -> Actualizar al Grupo Completo en el AREA
+                    // (todas siguen el camino normal Pronto/Canasto; las que tienen
+                    // terminaciones además generan su hermana TERMINAC y salen ruteadas
+                    // al local de terminaciones vía ProximoServicio)
                     if (noDocERP) {
                         const grp = await new sql.Request(transaction)
                             .input('NoDoc', sql.VarChar(50), noDocERP)
@@ -860,19 +944,25 @@ const postControlArchivo = async (req, res) => {
                         for (const o of grp.recordset) {
                             await new sql.Request(transaction)
                                 .input('OID', sql.Int, o.OrdenID)
-                                .query(`UPDATE Ordenes SET EstadoLogistica = '${destinoDe(o.OrdenID)}' WHERE OrdenID = @OID`);
-                            await changeOrderState(transaction, { target: { type: 'ORDER', id: o.OrdenID }, estado: estadoDe(o.OrdenID), userObj: req.user || 'Sistema', detalle: detalleDe(o.OrdenID),
+                                .query(`UPDATE Ordenes SET EstadoLogistica = '${destinoLogistica}' WHERE OrdenID = @OID`);
+                            await changeOrderState(transaction, { target: { type: 'ORDER', id: o.OrdenID }, estado: nuevoEstadoArea, userObj: req.user || 'Sistema', detalle: detalleDe(o.OrdenID),
                 guard    : "Estado NOT IN ('Finalizado', 'Ingresado', 'Avisado', 'Entregado', 'Cancelado')",
                 io       : req.app.get('socketio')
             });
+                            if (ordenesConTermPend.has(o.OrdenID)) {
+                                await crearHermanaTerminac(o.OrdenID);
+                            }
                         }
                     } else {
                         await new sql.Request(transaction).input('OID', sql.Int, ordenId)
-                            .query(`UPDATE Ordenes SET EstadoLogistica = '${destinoDe(ordenId)}' WHERE OrdenID = @OID`);
-                        await changeOrderState(transaction, { target: { type: 'ORDER', id: ordenId }, estado: estadoDe(ordenId), userObj: req.user || 'Sistema', detalle: detalleDe(ordenId),
+                            .query(`UPDATE Ordenes SET EstadoLogistica = '${destinoLogistica}' WHERE OrdenID = @OID`);
+                        await changeOrderState(transaction, { target: { type: 'ORDER', id: ordenId }, estado: nuevoEstadoArea, userObj: req.user || 'Sistema', detalle: detalleDe(ordenId),
                 guard    : "Estado NOT IN ('Finalizado', 'Ingresado', 'Avisado', 'Entregado', 'Cancelado')",
                 io       : req.app.get('socketio')
             });
+                        if (ordenesConTermPend.has(ordenId)) {
+                            await crearHermanaTerminac(ordenId);
+                        }
                     }
                 }
 

@@ -334,6 +334,12 @@ exports.getOrdersByArea = async (req, res) => {
             // No filtrar por estado
         } else {
             query += ` AND o.Estado NOT IN (${estadosFinales})`;
+            // ECOUV — separación física de locales: la vista del local de IMPRESIÓN
+            // no muestra las órdenes que ya pasaron a Terminaciones (sub-estado).
+            // Esas las trabaja la bandeja del local de terminaciones.
+            if (String(area || '').toUpperCase() === 'ECOUV') {
+                query += ` AND LTRIM(RTRIM(ISNULL(o.EstadoenArea, ''))) <> 'En Terminaciones'`;
+            }
         }
 
         if (q) {

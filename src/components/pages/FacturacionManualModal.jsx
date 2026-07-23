@@ -24,6 +24,23 @@ const toDateInputStr = (dateLike) => {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 };
 
+// % de descuento de una línea guardada.
+// Se prefiere DcdDescuentoPct (el número que el usuario tipeó); solo si el documento es viejo
+// y no lo tiene se deduce desde el importe descontado, que al venir redondeado a 2 decimales
+// puede dar 10,03 en vez de 10.
+function resolverDescPct(linea, totalLinea) {
+  const guardado = linea?.DcdDescuentoPct != null ? Number(linea.DcdDescuentoPct) : null;
+  if (guardado != null && guardado > 0 && guardado < 100) return guardado;
+  const desc = Number(linea?.DcdTotalDescuentos) || 0;
+  const bruto = (Number(totalLinea) || 0) + desc;
+  if (desc <= 0.01 || bruto <= 0) return 0;
+  const crudo = (desc / bruto) * 100;
+  // Se acomoda al medio punto más cercano si la diferencia es solo el redondeo de los
+  // importes (10,03 → 10). Si la distancia es mayor, se respeta el calculado.
+  const redondo = Math.round(crudo * 2) / 2;
+  return Math.abs(crudo - redondo) <= 0.06 ? redondo : parseFloat(crudo.toFixed(4));
+}
+
 // Mapea (tipoCliente, formaPago) => valor de CodDocumento en tiposDocs
 function resolverDocTipo(tiposDocs, tipoCliente, formaPago) {
   if (!tiposDocs || tiposDocs.length === 0) return '';
@@ -129,8 +146,12 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
           const sub = parseFloat(l.DcdSubtotal) || 0;
           const imp = parseFloat(l.DcdImpuestos) || 0;
           const total = parseFloat(l.DcdTotal) || (sub + imp);
-          const unitPrice = qty > 0 ? (total / qty) : (parseFloat(l.DcdPrecioUnitario) || 0);
-          
+          // El precio unitario que se edita es el BRUTO (antes del descuento): el total de la
+          // línea ya viene neteado, así que si se toma total/cantidad el descuento se pierde
+          // y el precio "baja" solo por abrir la factura.
+          const descPct = resolverDescPct(l, total);
+          const unitPrice = qty > 0 ? (total / qty) / (1 - descPct / 100) : (parseFloat(l.DcdPrecioUnitario) || 0);
+
           let ivaRate = 22;
           if (sub > 0) {
             const ratio = (imp / sub) * 100;
@@ -145,6 +166,7 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
             DcdDscItem: (l.DcdDscItem || '').trim(),
             cantidad: qty,
             precioUnitario: parseFloat(unitPrice.toFixed(4)),
+            descPct: descPct || '',
             iva: ivaRate,
             isPreexisting: true,
             precioNote: 'Precio original'
@@ -165,7 +187,7 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
       MetodoPagoId: '',
       DocFechaEmision: todayStr(),
       Lineas: [
-        { id: Date.now(), concepto: '', DcdDscItem: '', cantidad: 1, precioUnitario: '', iva: 22 }
+        { id: Date.now(), concepto: '', DcdDscItem: '', cantidad: 1, precioUnitario: '', descPct: '', iva: 22 }
       ]
     };
   });
@@ -245,7 +267,10 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
           }
 
           const qty = parseFloat(l.DcdCantidad) || 1;
-          const unitPrice = qty > 0 ? (total / qty) : rawUnitPrice;
+          // Precio BRUTO (antes del descuento). Con total/cantidad a secas el precio de la
+          // factura bajaba solo por abrirla a editar y el descuento desaparecía.
+          const descPct = resolverDescPct(l, total);
+          const unitPrice = qty > 0 ? (total / qty) / (1 - descPct / 100) : rawUnitPrice;
           let ivaRate = 22; // default
           if (imp > 0 && sub > 0) {
             // Caso normal: IVA y neto correctamente guardados
@@ -265,7 +290,7 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
             // Asumimos IVA 22% (valor por defecto para cierres de ciclo)
             ivaRate = 22;
           }
-          return { id: Date.now() + idx, concepto: (l.DcdNomItem || '').trim(), DcdDscItem: (l.DcdDscItem || '').trim(), cantidad: qty, precioUnitario: parseFloat(unitPrice.toFixed(4)), iva: ivaRate, isPreexisting: true, precioNote: 'Precio original' };
+          return { id: Date.now() + idx, concepto: (l.DcdNomItem || '').trim(), DcdDscItem: (l.DcdDscItem || '').trim(), cantidad: qty, precioUnitario: parseFloat(unitPrice.toFixed(4)), descPct: descPct || '', iva: ivaRate, isPreexisting: true, precioNote: 'Precio original' };
         });
         // Sincronizar monedaOp ANTES de setFormData para que el useEffect no lo sobreescriba
         setMonedaOp(d.MonIdMoneda === 2 ? 'USD' : 'UYU');
@@ -353,9 +378,10 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
       const qty = parseFloat(l.cantidad) || 0;
       const price = parseFloat(l.precioUnitario) || 0;
       const ivaRate = (l.iva !== undefined && l.iva !== null) ? parseFloat(l.iva) : 22;
-      const lineTotal = qty * price;
+      const descPct = Math.min(100, Math.max(0, parseFloat(l.descPct) || 0));
+      const lineTotal = qty * price * (1 - descPct / 100);
       const lineNeto = lineTotal / (1 + ivaRate / 100);
-      
+
       total += lineTotal;
       subtotal += lineNeto;
     });
@@ -468,7 +494,7 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
   const addLinea = () => {
     setFormData(prev => ({
       ...prev,
-      Lineas: [...prev.Lineas, { id: Date.now(), concepto: '', DcdDscItem: '', cantidad: 1, precioUnitario: '', iva: 22 }]
+      Lineas: [...prev.Lineas, { id: Date.now(), concepto: '', DcdDscItem: '', cantidad: 1, precioUnitario: '', descPct: '', iva: 22 }]
     }));
   };
 
@@ -911,7 +937,10 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
             const qty = parseFloat(l.cantidad) || 1;
             const price = parseFloat(l.precioUnitario) || 0;
             const ivaRate = (l.iva !== undefined && l.iva !== null) ? parseFloat(l.iva) : 22;
-            const lineTotal = qty * price;
+            const descPct = Math.min(100, Math.max(0, parseFloat(l.descPct) || 0));
+            const bruto = qty * price;
+            const descMonto = bruto * (descPct / 100);
+            const lineTotal = bruto - descMonto;
             const lineNeto = lineTotal / (1 + ivaRate / 100);
             const lineIva = lineTotal - lineNeto;
             return {
@@ -921,7 +950,11 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
               DcdPrecioUnitario: price,
               DcdSubtotal: parseFloat(lineNeto.toFixed(2)),
               DcdImpuestos: parseFloat(lineIva.toFixed(2)),
-              DcdTotal: parseFloat(lineTotal.toFixed(2))
+              DcdTotal: parseFloat(lineTotal.toFixed(2)),
+              // El descuento se reenvía siempre: si no viaja, el backend reinserta la línea
+              // sin descuento y la factura queda con el precio ya neteado y sin el %.
+              DcdTotalDescuentos: descPct > 0 ? parseFloat(descMonto.toFixed(2)) : null,
+              DcdDescuentoPct: descPct > 0 ? descPct : null
             };
           }),
           DocSubtotal: totales.subtotal,
@@ -953,6 +986,7 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
             DcdDscItem: l.DcdDscItem || '',
             cantidad: parseFloat(l.cantidad),
             precioUnitario: parseFloat(l.precioUnitario),
+            descPct: Math.min(100, Math.max(0, parseFloat(l.descPct) || 0)),
             iva: parseFloat(l.iva)
           })),
           Totales: totales,
@@ -1366,10 +1400,10 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
                 </div>
 
                 <div className="overflow-x-auto -mx-1 px-1">
-                  <table className="w-full text-left min-w-[680px] border-collapse table-fixed">
+                  <table className="w-full text-left min-w-[760px] border-collapse table-fixed">
                     <thead className="bg-zinc-50 border-b border-zinc-200 text-[9px] font-black text-zinc-500 uppercase tracking-widest sticky top-0 z-10">
                       <tr>
-                        <th className="p-2.5 pl-4 w-[36%]">Concepto o Descripción</th>
+                        <th className="p-2.5 pl-4 w-[28%]">Concepto o Descripción</th>
                         <th className="p-2.5 w-[9%] min-w-[52px] text-right">Cant.</th>
                         <th className="p-2.5 w-[16%] min-w-[100px] text-right">
                           Precio Unit.
@@ -1377,7 +1411,8 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
                             {monedaOp === 'USD' ? 'U$S' : '$UY'}
                           </span>
                         </th>
-                        <th className="p-2.5 w-[13%] min-w-[86px] text-center">IVA %</th>
+                        <th className="p-2.5 w-[10%] min-w-[72px] text-right" title="Descuento por línea, en porcentaje. Se resta del precio unitario y se imprime en la factura.">Desc. %</th>
+                        <th className="p-2.5 w-[11%] min-w-[80px] text-center">IVA %</th>
                         <th className="p-2.5 w-[12%] min-w-[92px] text-right">Subtotal Neto</th>
                         <th className="p-2.5 w-[14%] min-w-[100px] text-right pr-4">Total con IVA</th>
                         <th className="p-2.5 w-[44px] text-center"></th>
@@ -1388,7 +1423,8 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
                         const qty = parseFloat(line.cantidad) || 0;
                         const price = parseFloat(line.precioUnitario) || 0;
                         const ivaRate = (line.iva !== undefined && line.iva !== null) ? parseFloat(line.iva) : 22;
-                        const subtotalConIva = qty * price;
+                        const descPctLinea = Math.min(100, Math.max(0, parseFloat(line.descPct) || 0));
+                        const subtotalConIva = qty * price * (1 - descPctLinea / 100);
                         const subtotalNeto = subtotalConIva / (1 + ivaRate / 100);
                         const searchTerm = articuloSearch[line.id] !== undefined ? articuloSearch[line.id] : line.concepto;
                         const artFiltered = searchTerm.length > 0
@@ -1473,6 +1509,25 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
                               {line.precioNote && (
                                 <span className="text-[8px] text-indigo-500 font-semibold block text-right mt-0.5 italic" title={line.precioNote}>
                                   {line.precioNote}
+                                </span>
+                              )}
+                            </td>
+                            <td className="p-1.5">
+                              <div className="relative">
+                                <input
+                                  type="number"
+                                  min="0" max="100" step="any"
+                                  placeholder="0"
+                                  title="Descuento de esta línea en %. Se descuenta del precio unitario y se imprime en la factura."
+                                  className="w-full bg-zinc-50 border border-zinc-200 rounded-lg pl-2 pr-5 py-1 text-xs text-right font-bold outline-none focus:border-indigo-500 focus:bg-white"
+                                  value={line.descPct ?? ''}
+                                  onChange={e => updateLinea(line.id, 'descPct', e.target.value)}
+                                />
+                                <span className="absolute right-2 top-1/2 -translate-y-1/2 text-[9px] font-black text-zinc-400 select-none pointer-events-none">%</span>
+                              </div>
+                              {descPctLinea > 0 && (
+                                <span className="text-[8px] text-emerald-600 font-semibold block text-right mt-0.5 whitespace-nowrap">
+                                  −{formatMoney(qty * price * (descPctLinea / 100))}
                                 </span>
                               )}
                             </td>

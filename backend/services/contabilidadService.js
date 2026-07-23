@@ -19,6 +19,7 @@
 
 const { getPool, sql } = require('../config/db');
 const logger           = require('../utils/logger');
+const { aplicarRecargoUrgenciaRollo } = require('./urgenciaDescuentoRolloService');
 
 // ============================================================
 // SECCIÓN 1: GESTIÓN DE CUENTAS
@@ -749,7 +750,7 @@ async function hookReposicion(params) {
  *   @param {number} UsuarioAlta
  */
 async function hookPagoRegistrado(params) {
-  const { PagIdPago, CliIdCliente, MontoPago, MonIdMoneda, UsuarioAlta } = params;
+  const { PagIdPago, CliIdCliente, MontoPago, MonIdMoneda, UsuarioAlta, DocIdDocumento } = params;
 
   try {
     const CueTipo = MonIdMoneda === 2 ? 'DINERO_USD' : 'DINERO_UYU';
@@ -803,6 +804,9 @@ async function hookPagoRegistrado(params) {
       MovImporte:   Math.abs(MontoPago),
       MovUsuarioAlta: UsuarioAlta,
       PagIdPago,
+      // Estampar el documento cobrado (si el llamador lo provee, ej. venta contado)
+      // para que el PAGO no quede "Sin referencia" en la vista 360.
+      DocIdDocumento: DocIdDocumento || null,
       CicIdCiclo: (cicloActivo && hayExcedente) ? cicloActivo.CicIdCiclo : null,
     });
 
@@ -978,6 +982,14 @@ async function hookEntregaMetros(params) {
         MovObservaciones: `Plan #${plan.PlaIdPlan}`,
       }, transaction);
 
+      // Recargo urgencia s/rollo: solo aplica si la orden es Urgente y el
+      // cliente tiene excepción de cobro de urgencia — ver urgenciaDescuentoRolloService.js
+      await aplicarRecargoUrgenciaRollo({
+        transaction, OrdIdOrden, CliIdCliente, ProIdProducto,
+        PlaIdPlan: plan.PlaIdPlan, CueIdCuenta: plan.CueIdCuenta,
+        metrosConsumidos: consumir, UsuarioAlta, CodigoOrden,
+      });
+
       cantidadPendiente = Math.round((cantidadPendiente - consumir) * 10000) / 10000;
       const restante = Math.round((total - nuevaUsada) * 10000) / 10000;
 
@@ -1016,6 +1028,13 @@ async function hookEntregaMetros(params) {
         OrdIdOrden,
         MovObservaciones: `Exceso s/ Plan #${lastPlan.PlaIdPlan}`,
       }, transaction);
+
+      await aplicarRecargoUrgenciaRollo({
+        transaction, OrdIdOrden, CliIdCliente, ProIdProducto,
+        PlaIdPlan: lastPlan.PlaIdPlan, CueIdCuenta: lastPlan.CueIdCuenta,
+        metrosConsumidos: excessoFinal, UsuarioAlta, CodigoOrden,
+      });
+
       cantidadPendiente = 0;
     }
 
@@ -1818,7 +1837,7 @@ async function getResumenDocumentos(CliIdCliente, desde = null, hasta = null) {
     let aplicadoA = p.DocRef && p.DocRef !== '-' ? p.DocRef : null;
     if (!aplicadoA && p.OrdenRef) aplicadoA = p.OrdenRef;
     if (!aplicadoA) {
-      const mPc = (p.Concepto || '').match(/(PC|ET|SB|DTF|EUV|ECOUV|DIR)-?\s?(\d+)/i);
+      const mPc = (p.Concepto || '').match(/\b(XECOUV|XDTF|XSB|UVDF|ECOUV|SUB|DTF|VEN|EUV|DIR|PC|ET|SB|DF)-?\s?(\d+)/i);
       if (mPc) aplicadoA = `${mPc[1].toUpperCase()}-${mPc[2]}`;
     }
     const esFavor = p.MovTipo === 'ANTICIPO' || p.MovTipo === 'SALDO_A_FAVOR';
@@ -1859,9 +1878,13 @@ async function getMovimientosOrdenes(CliIdCliente, desde = null, hasta = null, i
       SELECT TOP 800
         m.MovIdMovimiento,
         m.OrdIdOrden,
+        m.CueIdCuenta,
         m.DocIdDocumento,
         m.MovAnulado,
+        LTRIM(RTRIM(ISNULL(m.MovObservaciones,''))) AS MovObservaciones,
         ordERP.CodigoOrden AS CodigoOrden,
+        COALESCE(od.ProIdProducto, ordERP.ProIdProducto) AS ProIdProducto,
+        art.Descripcion AS Material,
         LTRIM(RTRIM(ISNULL(m.MovConcepto,''))) AS Concepto,
         CAST(ABS(m.MovImporte) AS DECIMAL(18,2)) AS Importe,
         ISNULL(mo.MonSimbolo,'$') AS MonSimbolo,
@@ -1878,6 +1901,8 @@ async function getMovimientosOrdenes(CliIdCliente, desde = null, hasta = null, i
       JOIN dbo.CuentasCliente cc WITH(NOLOCK) ON cc.CueIdCuenta = m.CueIdCuenta
       LEFT JOIN dbo.Monedas mo WITH(NOLOCK) ON mo.MonIdMoneda = cc.MonIdMoneda
       LEFT JOIN dbo.Ordenes ordERP WITH(NOLOCK) ON ordERP.OrdenID = m.OrdIdOrden
+      LEFT JOIN dbo.OrdenesDeposito od WITH(NOLOCK) ON od.OrdIdOrden = m.OrdIdOrden
+      LEFT JOIN dbo.Articulos art WITH(NOLOCK) ON art.ProIdProducto = COALESCE(od.ProIdProducto, ordERP.ProIdProducto)
       LEFT JOIN dbo.DocumentosContables doc WITH(NOLOCK) ON doc.DocIdDocumento = m.DocIdDocumento
       WHERE cc.CliIdCliente = @cli
         AND m.MovTipo IN ('ORDEN','ORDEN_ANTICIPO')
@@ -1913,6 +1938,10 @@ async function getMovimientosOrdenes(CliIdCliente, desde = null, hasta = null, i
     return {
       MovIdMovimiento: r.MovIdMovimiento,
       OrdIdOrden: r.OrdIdOrden,
+      CueIdCuenta: r.CueIdCuenta,
+      ProIdProducto: r.ProIdProducto,
+      material: (r.Material || '').trim() || null,
+      MovObservaciones: r.MovObservaciones || null,
       orden,
       trabajo,
       facturada,
@@ -2573,7 +2602,9 @@ async function cerrarCicloCompleto({
             impuestos: dcdImpuestos,
             total: dcdTotal,
             totalDescuentos: d.DcdTotalDescuentos || 0,
-            descuentoStr: d.DcdDescuentoStr || null
+            descuentoStr: d.DcdDescuentoStr || null,
+            // % exacto tipeado en la pre-factura (no recalculado desde importes redondeados)
+            descuentoPct: d.DcdDescuentoPct != null ? Number(d.DcdDescuentoPct) : null
           });
         }
       }
@@ -3301,6 +3332,37 @@ async function reemplazarDeuda(params, transaction = null) {
   return null;
 }
 
+/**
+ * buscarDeudaVivaDeDocumento
+ * ¿Este documento ya tiene una deuda viva? Devuelve la fila o null.
+ *
+ * Existe porque el guard de idempotencia vive dentro de crearDeudaDocumento, pero hay
+ * caminos que insertan en DeudaDocumento con SQL crudo y se lo saltean: el documento
+ * termina con DOS deudas idénticas, el cobro imputa a una y la otra sobrevive PENDIENTE
+ * (la deuda ya cobrada reaparece en "Documentos con deuda"). Estos caminos llaman a este
+ * helper antes de insertar para hacer el mismo chequeo sin duplicar la lógica.
+ *
+ * @param {number} DocIdDocumento
+ * @param {object} [transaction]
+ * @returns {Promise<{DDeIdDocumento:number, DDeImporteOriginal:number, DDeImportePendiente:number}|null>}
+ */
+async function buscarDeudaVivaDeDocumento(DocIdDocumento, transaction = null) {
+  if (!DocIdDocumento) return null;
+  const pool = await getPool();
+  const req = transaction ? new sql.Request(transaction) : pool.request();
+  const res = await req
+    .input('DocIdDocumento', sql.Int, DocIdDocumento)
+    .query(`
+      SELECT TOP 1 DDeIdDocumento, DDeImporteOriginal, DDeImportePendiente
+      FROM   dbo.DeudaDocumento WITH (UPDLOCK, ROWLOCK)
+      WHERE  DocIdDocumento = @DocIdDocumento
+        AND  DDeEstado IN ('PENDIENTE','PARCIAL','VENCIDO')
+        AND  DDeImportePendiente > 0.01
+      ORDER BY DDeIdDocumento
+    `);
+  return res.recordset.length ? res.recordset[0] : null;
+}
+
 // ============================================================
 // SECCIÓN CENTRALIZACIÓN: ENSAMBLADO DE ESTADO DE CUENTA
 // ============================================================
@@ -3391,6 +3453,7 @@ module.exports = {
 
   // Deuda
   crearDeudaDocumento,
+  buscarDeudaVivaDeDocumento,
   cancelarDeuda,
   reducirDeuda,
   reemplazarDeuda,

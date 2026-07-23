@@ -409,6 +409,23 @@ exports.createRemito = async (req, res) => {
             // --- GATE PEDIDO COMPLETO ---
             // Solo aplica a producto terminado: los insumos (TELA, PRENDA, etc.) que viajan
             // entre áreas para producir no se bloquean. Encomiendas tampoco (OrdenID apunta a OrdenesRetiro).
+            // ENTREGAS PARCIALES: las áreas listadas en ConfiguracionGlobal.AREAS_DESPACHO_PARCIAL
+            // pueden despachar un SUBCONJUNTO de bultos a OTRA área (no a DEPOSITO) sin exigir que el
+            // pedido salga completo — para pedidos grandes que se mandan por tandas (ej. DIRECTA → Corte).
+            // El resto de las áreas mantiene el candado de "pedido completo" intacto.
+            let permiteParcial = false;
+            if (areaOrigen && areaDestino !== 'DEPOSITO') {
+                try {
+                    const cfg = await new sql.Request(transaction)
+                        .query("SELECT Valor FROM ConfiguracionGlobal WHERE Clave = 'AREAS_DESPACHO_PARCIAL'");
+                    const areasParcial = (cfg.recordset[0]?.Valor || '')
+                        .split(',').map(s => s.trim().toUpperCase()).filter(Boolean);
+                    permiteParcial = areasParcial.includes(String(areaOrigen).trim().toUpperCase());
+                } catch (e) {
+                    logger.warn('[createRemito] No se pudo leer AREAS_DESPACHO_PARCIAL:', e.message);
+                }
+            }
+
             const idsGate = finalBultosIds.filter(id => !isNaN(id)).join(',');
             if (idsGate.length > 0) {
                 const ordenesGate = await new sql.Request(transaction).query(`
@@ -418,32 +435,35 @@ exports.createRemito = async (req, res) => {
                     WHERE b.BultoID IN (${idsGate})
                       AND b.Tipocontenido = 'PROD_TERMINADO'
                 `);
-                await validarPedidosCompletos(transaction, ordenesGate.recordset, areaDestino);
 
-                // --- CANDADO: el pedido debe salir COMPLETO del área ---
-                // No deja despachar si quedan bultos del mismo pedido (misma área, producto terminado,
-                // en stock, sin remito) por fuera de este despacho. Garantiza que el pedido no se parta.
-                const nodocs = [...new Set(ordenesGate.recordset.map(o => o.NoDocERP).filter(Boolean).map(n => String(n).trim()))];
-                if (nodocs.length > 0 && areaOrigen) {
-                    const nodocList = nodocs.map(n => `'${n.replace(/'/g, "''")}'`).join(',');
-                    const faltan = await new sql.Request(transaction)
-                        .input('AreaOrig', sql.VarChar, areaOrigen)
-                        .query(`
-                            SELECT DISTINCT o.CodigoOrden
-                            FROM Logistica_Bultos b
-                            JOIN Ordenes o ON b.OrdenID = o.OrdenID
-                            WHERE LTRIM(RTRIM(CAST(o.NoDocERP AS VARCHAR(50)))) IN (${nodocList})
-                              AND b.UbicacionActual = @AreaOrig
-                              AND b.Estado = 'EN_STOCK'
-                              AND b.Tipocontenido = 'PROD_TERMINADO'
-                              AND b.BultoID NOT IN (${idsGate})
-                              AND NOT EXISTS (SELECT 1 FROM Logistica_EnvioItems ei WHERE ei.BultoID = b.BultoID)
-                        `);
-                    if (faltan.recordset.length > 0) {
-                        const det = [...new Set(faltan.recordset.map(f => f.CodigoOrden))].join(', ');
-                        const err = new Error(`El pedido debe salir completo del área. Faltan por agregar al remito: ${det}.`);
-                        err.statusCode = 400;
-                        throw err;
+                if (!permiteParcial) {
+                    await validarPedidosCompletos(transaction, ordenesGate.recordset, areaDestino);
+
+                    // --- CANDADO: el pedido debe salir COMPLETO del área ---
+                    // No deja despachar si quedan bultos del mismo pedido (misma área, producto terminado,
+                    // en stock, sin remito) por fuera de este despacho. Garantiza que el pedido no se parta.
+                    const nodocs = [...new Set(ordenesGate.recordset.map(o => o.NoDocERP).filter(Boolean).map(n => String(n).trim()))];
+                    if (nodocs.length > 0 && areaOrigen) {
+                        const nodocList = nodocs.map(n => `'${n.replace(/'/g, "''")}'`).join(',');
+                        const faltan = await new sql.Request(transaction)
+                            .input('AreaOrig', sql.VarChar, areaOrigen)
+                            .query(`
+                                SELECT DISTINCT o.CodigoOrden
+                                FROM Logistica_Bultos b
+                                JOIN Ordenes o ON b.OrdenID = o.OrdenID
+                                WHERE LTRIM(RTRIM(CAST(o.NoDocERP AS VARCHAR(50)))) IN (${nodocList})
+                                  AND b.UbicacionActual = @AreaOrig
+                                  AND b.Estado = 'EN_STOCK'
+                                  AND b.Tipocontenido = 'PROD_TERMINADO'
+                                  AND b.BultoID NOT IN (${idsGate})
+                                  AND NOT EXISTS (SELECT 1 FROM Logistica_EnvioItems ei WHERE ei.BultoID = b.BultoID)
+                            `);
+                        if (faltan.recordset.length > 0) {
+                            const det = [...new Set(faltan.recordset.map(f => f.CodigoOrden))].join(', ');
+                            const err = new Error(`El pedido debe salir completo del área. Faltan por agregar al remito: ${det}.`);
+                            err.statusCode = 400;
+                            throw err;
+                        }
                     }
                 }
             }
@@ -560,6 +580,23 @@ exports.createRemito = async (req, res) => {
             }
 
             for (const oid of dispatchedOrders) {
+                // Despacho PARCIAL: la orden avanza a "En transito" recién cuando salió su ÚLTIMO bulto
+                // terminado del área de origen. Si quedan bultos en stock (otra tanda), no avanza todavía.
+                // En despacho normal el candado ya garantizó que salió completo → no quedan bultos → avanza igual.
+                if (permiteParcial) {
+                    const rem = await new sql.Request(transaction)
+                        .input('OID', sql.Int, oid)
+                        .input('AreaOrig', sql.VarChar, areaOrigen || '')
+                        .query(`
+                            SELECT COUNT(*) AS n FROM Logistica_Bultos
+                            WHERE OrdenID = @OID
+                              AND Tipocontenido = 'PROD_TERMINADO'
+                              AND Estado = 'EN_STOCK'
+                              AND UbicacionActual = @AreaOrig
+                        `);
+                    if ((rem.recordset[0]?.n || 0) > 0) continue; // quedan bultos → no avanzar aún
+                }
+
                 await changeOrderState(transaction, {
                     target   : { type: 'ORDER', id: oid },
                     estado   : 'En transito',
@@ -1391,8 +1428,21 @@ if (triggerReversal || triggerForward) {
                                            }
                                            // ------------------------------------------------------------------------------------------------
                                          
+                                           // Líneas de cobranza de ESTA orden, no del pedido completo: en un pedido
+                                           // multitela hay 1 línea por tela y N órdenes hermanas; recorrer todas las
+                                           // líneas para cada hermana descontaba los metros de cada plan N veces
+                                           // (y sumaba el importe del pedido entero en cada orden).
+                                           // Fallback al comportamiento previo SOLO si ninguna línea trae OrdenID
+                                           // (pedidos legacy sin desglose): ahí el pedido es de una sola orden.
+                                           const lineasPedido = details.recordset;
+                                           const lineasOrden  = lineasPedido.filter(d => Number(d.OrdenID) === Number(L_OrdenID));
+                                           const lineasContab = lineasOrden.length > 0
+                                               ? lineasOrden
+                                               : (lineasPedido.some(d => d.OrdenID != null) ? [] : lineasPedido);
+                                           console.log(`${logPrefix} -> Líneas a contabilizar: ${lineasContab.length} de ${lineasPedido.length} del pedido`);
+
                                            let importeTotalOrden = 0;
-                                           for (const d of details.recordset) {
+                                           for (const d of lineasContab) {
                                                const lineQty = parseFloat(d.Cantidad) || 0;
                                                const lineMon = (d.Moneda || pc.Moneda || 'UYU').trim().toUpperCase();
                                                const docMon = (pc.Moneda || 'UYU').trim().toUpperCase();

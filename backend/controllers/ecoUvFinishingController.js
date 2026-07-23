@@ -17,13 +17,16 @@ exports.getFinishingOrders = async (req, res) => {
                     (SELECT COUNT(*) FROM OrdenTerminaciones OT WHERE OT.OrdenID = O.OrdenID) as TermCount,
                     (SELECT COUNT(*) FROM OrdenTerminaciones OT WHERE OT.OrdenID = O.OrdenID AND OT.Estado = 'Pendiente') as TermPendientes
                 FROM Ordenes O
-                WHERE O.AreaID = 'ECOUV'
-                  AND O.Estado NOT IN ('Finalizado', 'Entregado', 'Cancelado')
+                WHERE O.Estado NOT IN ('Finalizado', 'Entregado', 'Cancelado')
                   AND (
-                        -- Modelo nuevo: orden con terminaciones por archivo
-                        EXISTS (SELECT 1 FROM OrdenTerminaciones OT WHERE OT.OrdenID = O.OrdenID)
-                        -- Legacy: orden-extra separada
-                        OR O.Variante LIKE '%Extra%' OR O.Variante LIKE '%Servicio%' OR O.Variante LIKE '%Materiales%' OR O.Material LIKE '%Extra%'
+                        -- Modelo nuevo: órdenes hermanas contenedoras del ÁREA TERMINAC
+                        -- (creadas al aprobar control de impresión, con las
+                        -- OrdenTerminaciones repuntadas — decisión negocio 21/07)
+                        (O.AreaID = 'TERMINAC'
+                         AND EXISTS (SELECT 1 FROM OrdenTerminaciones OT WHERE OT.OrdenID = O.OrdenID))
+                        -- Legacy: orden-extra separada del modelo viejo (siguen en ECOUV)
+                        OR (O.AreaID = 'ECOUV'
+                            AND (O.Variante LIKE '%Extra%' OR O.Variante LIKE '%Servicio%' OR O.Variante LIKE '%Materiales%' OR O.Material LIKE '%Extra%'))
                   )
                 ORDER BY
                     CASE WHEN O.Prioridad = 'Urgente' THEN 0 ELSE 1 END,
@@ -179,6 +182,15 @@ exports.controlOrder = async (req, res) => {
     const { id } = req.params; // OrdenID
     try {
         const pool = await getPool();
+
+        // GATE: no se puede finalizar con terminaciones PENDIENTES (se marcan primero)
+        const pend = await pool.request()
+            .input('OID', sql.Int, id)
+            .query("SELECT COUNT(*) AS C FROM OrdenTerminaciones WHERE OrdenID = @OID AND Estado = 'Pendiente'");
+        const pendientes = pend.recordset[0]?.C || 0;
+        if (pendientes > 0) {
+            return res.status(400).json({ error: `Quedan ${pendientes} terminación(es) pendientes: marcalas como Hechas antes de finalizar.` });
+        }
         const { changeOrderState } = require('../services/stateManagerService');
         // Acabado UV finalizado: pasa a 'Pronto' (detalle de Producción) + Canasto Producción, vía servicio central.
         const txUv = new sql.Transaction(pool);

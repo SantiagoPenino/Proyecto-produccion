@@ -24,6 +24,25 @@ const { validarDocumentoUY } = require('../utils/documentoUY');
 const sisnetService = require('../services/sisnetService');
 const contabilidadService = require('../services/contabilidadService');
 
+/**
+ * CfeTipoCFE es una columna nueva (backend/scripts/add_CfeTipoCFE.sql). Se consulta una
+ * sola vez y se cachea, para que el código funcione igual antes y después de la migración
+ * en vez de romper el listado con "Invalid column name".
+ */
+let _cacheColCfeTipoCFE = null;
+async function columnaCfeTipoCFEExiste(pool) {
+    if (_cacheColCfeTipoCFE !== null) return _cacheColCfeTipoCFE;
+    try {
+        const r = await pool.request().query(`
+            SELECT 1 AS x FROM INFORMATION_SCHEMA.COLUMNS
+            WHERE TABLE_SCHEMA='dbo' AND TABLE_NAME='DocumentosContables' AND COLUMN_NAME='CfeTipoCFE'`);
+        _cacheColCfeTipoCFE = r.recordset.length > 0;
+    } catch (e) {
+        _cacheColCfeTipoCFE = false;
+    }
+    return _cacheColCfeTipoCFE;
+}
+
 exports.getDocumentosCFE = async (req, res) => {
     try {
         const { fechaDesde, fechaHasta, tipo, estado, clienteId, empresaId, metodoPagoId } = req.query;
@@ -38,12 +57,16 @@ exports.getDocumentosCFE = async (req, res) => {
                 c.CioRuc AS CliRUT,
                 c.CioRuc AS CliDocumento,
                 c.IDCliente AS StringIDCliente,
-                (SELECT TOP 1 mp.MPaDescripcionMetodo 
+                (SELECT TOP 1 mp.MPaDescripcionMetodo
                  FROM dbo.Pagos p WITH(NOLOCK)
                  JOIN dbo.MetodosPagos mp WITH(NOLOCK) ON p.MPaIdMetodoPago = mp.MPaIdMetodoPago
-                 WHERE p.PagTcaIdTransaccion = d.TcaIdTransaccion) AS MetodoPagoNombre
+                 WHERE p.PagTcaIdTransaccion = d.TcaIdTransaccion) AS MetodoPagoNombre,
+                ref.DocTipo AS RefDocTipo,
+                ref.CfeEstado AS RefCfeEstado,
+                ${await columnaCfeTipoCFEExiste(pool) ? 'ref.CfeTipoCFE' : 'CAST(NULL AS INT)'} AS RefCfeTipoCFE
             FROM DocumentosContables d
             LEFT JOIN Clientes c ON d.CliIdCliente = c.CliIdCliente
+            LEFT JOIN DocumentosContables ref ON ref.DocIdDocumento = d.DocIdDocumentoRef
             WHERE d.CfeEstado IS NOT NULL
         `;
 
@@ -93,7 +116,60 @@ exports.getDocumentosCFE = async (req, res) => {
         baseQuery += ` ORDER BY d.DocFechaEmision DESC`;
 
         const result = await request.query(baseQuery);
-        res.json(result.recordset);
+
+        // Tipo de CFE según el nomenclador de DGI (101/111 venta, 102/112 NC, 103/113 ND).
+        // Se devuelven DOS datos distintos, porque no son lo mismo:
+        //   DgiTipoCorrecto -> el que corresponde hoy (lo que se va a emitir)
+        //   DgiTipoEmitido  -> el que se le pidió a DGI cuando se emitió
+        // En documentos ya aceptados antes del fix del DocTipo truncado, el emitido se
+        // reconstruye con la lógica vieja (DgiEmitidoInferido=true) porque no quedó grabado.
+        // Si difieren, DgiAlerta marca la fila: eso es exactamente lo que pasó con las NC.
+        const docs = result.recordset.map(d => {
+            // Solo aplica a documentos fiscales: los borradores (Pedido Caja), recibos y
+            // egresos no se emiten como CFE, así que no se les inventa un tipo.
+            const tipoUp = String(d.DocTipo || '').toUpperCase();
+            const esFiscal = tipoUp.includes('TICKET') || tipoUp.includes('FACTURA');
+            if (d.CfeEstado === 'BORRADOR' || !esFiscal) {
+                return { ...d, DgiTipoCorrecto: null, DgiTipoCorrectoNombre: null, DgiTipoEmitido: null, DgiAlerta: false };
+            }
+
+            const cliDoc = String(d.CliRUT || d.DocCliDocumento || '').replace(/\D/g, '');
+            // La familia del referenciado sale de lo que DGI realmente tiene, no del DocTipo interno
+            const refEsFactura = d.RefDocTipo
+                ? sisnetService.resolverReferencia(
+                    { DocTipo: d.RefDocTipo, CfeEstado: d.RefCfeEstado, CfeTipoCFE: d.RefCfeTipoCFE }, cliDoc).esFactura
+                : null;
+            const correcto = sisnetService.resolverTipoCFE(d.DocTipo, cliDoc, refEsFactura);
+
+            const yaEmitido = d.CfeEstado === 'ACEPTADO_DGI';
+            let emitido = null;
+            let inferido = false;
+            if (yaEmitido) {
+                if (d.CfeTipoCFE) {
+                    emitido = d.CfeTipoCFE;                                        // dato grabado al emitir
+                } else {
+                    emitido = sisnetService.resolverTipoCFE_LEGACY(d.DocTipo, cliDoc); // reconstruido
+                    inferido = true;
+                }
+            }
+
+            const NOMBRES = {
+                101: 'e-Ticket', 102: 'NC de e-Ticket', 103: 'ND de e-Ticket',
+                111: 'e-Factura', 112: 'NC de e-Factura', 113: 'ND de e-Factura'
+            };
+
+            return {
+                ...d,
+                DgiTipoCorrecto: correcto.tipoCFE,
+                DgiTipoCorrectoNombre: correcto.nombre,
+                DgiTipoEmitido: emitido,
+                DgiTipoEmitidoNombre: emitido ? NOMBRES[emitido] : null,
+                DgiEmitidoInferido: inferido,
+                DgiAlerta: !!(emitido && emitido !== correcto.tipoCFE)
+            };
+        });
+
+        res.json(docs);
     } catch (error) {
         logger.error('Error obteniendo documentos CFE:', error);
         res.status(500).json({ error: error.message });
@@ -304,10 +380,135 @@ exports.enviarADGI = async (req, res) => {
             urlQR: resultSISNET.urlQR
         });
             
-        logger.info(`Documento ${id} emitido exitosamente a DGI. CAE: ${resultSISNET.cae}`);
-        res.json({ message: 'Documento enviado exitosamente', cae: resultSISNET.cae, numeroOficial: resultSISNET.serie });
+        // Dejamos GRABADO el tipo de CFE que se le pidió a DGI. Sin esto, la bandeja solo
+        // puede recalcular lo que "debería" haberse emitido, que no es lo mismo que lo emitido.
+        // Tolerante a que la columna todavía no exista en esta instalación.
+        try {
+            await pool.request()
+                .input('Id', sql.Int, id)
+                .input('Tipo', sql.Int, resultSISNET.tipoCFE || null)
+                .query(`UPDATE DocumentosContables SET CfeTipoCFE = @Tipo WHERE DocIdDocumento = @Id`);
+        } catch (eTipo) {
+            logger.warn(`[CFE] No se pudo guardar CfeTipoCFE del doc ${id} (¿falta la columna?): ${eTipo.message}`);
+        }
+
+        logger.info(`Documento ${id} emitido a DGI como CFE ${resultSISNET.tipoCFE} (${resultSISNET.nombreCFE}). CAE: ${resultSISNET.cae}`);
+        res.json({
+            message: 'Documento enviado exitosamente',
+            cae: resultSISNET.cae,
+            numeroOficial: resultSISNET.serie,
+            tipoCFE: resultSISNET.tipoCFE,
+            nombreCFE: resultSISNET.nombreCFE
+        });
     } catch (error) {
         logger.error('Error enviando a DGI:', error);
+        res.status(500).json({ error: error.message });
+    }
+};
+
+/**
+ * GET /contabilidad/cfe/documentos/:id/preview-dgi
+ * Muestra EXACTAMENTE qué CFE se le va a pedir a la DGI para este documento, sin
+ * emitir nada: no pide CAE, no llama a SISNET, no toca la base.
+ * Arma el payload con sisnetService.prepararCFE, la misma función que usa el envío real.
+ */
+exports.previewDGI = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const pool = await getPool();
+
+        const docResult = await pool.request()
+            .input('Id', sql.Int, id)
+            .query(`
+                SELECT d.*, c.Nombre AS CliRazonSocial, c.CioRuc AS CliRUT, c.DireccionTrabajo AS CliDireccion
+                FROM DocumentosContables d
+                LEFT JOIN Clientes c ON d.CliIdCliente = c.CliIdCliente
+                WHERE DocIdDocumento = @Id
+            `);
+        if (docResult.recordset.length === 0) {
+            return res.status(404).json({ error: 'Documento no encontrado' });
+        }
+        const doc = docResult.recordset[0];
+
+        // Misma resolución de empresa emisora que enviarADGI
+        let empresa = null;
+        if (doc.EmpIdEmpresa) {
+            const empResult = await pool.request()
+                .input('Emp', sql.Int, doc.EmpIdEmpresa)
+                .query(`SELECT * FROM dbo.Empresas WHERE EmpIdEmpresa = @Emp`);
+            empresa = empResult.recordset[0] || null;
+        }
+        if (!empresa) {
+            const empDef = await pool.request()
+                .query(`SELECT TOP 1 * FROM dbo.Empresas WHERE EmpPorDefecto=1 ORDER BY EmpIdEmpresa`);
+            empresa = empDef.recordset[0] || null;
+        }
+
+        const lineasResult = await pool.request()
+            .input('Id', sql.Int, id)
+            .query(`SELECT * FROM DocumentosContablesDetalle WHERE DocIdDocumento = @Id`);
+
+        const cotResult = await pool.request()
+            .query(`SELECT TOP 1 CotDolar FROM Cotizaciones ORDER BY CotFecha DESC`);
+        const cotDolar = cotResult.recordset.length > 0 ? cotResult.recordset[0].CotDolar : 40.0;
+
+        const prep = await sisnetService.prepararCFE(doc, lineasResult.recordset, cotDolar, empresa);
+
+        const bloqueos = [...prep.bloqueos];
+        if (!empresa || !empresa.EmpActiva || !empresa.EmpSisnetCaja) {
+            bloqueos.push('La empresa emisora no está configurada para facturación electrónica (requiere estar activa y tener caja SISNET).');
+        }
+        if (doc.CfeEstado === 'ACEPTADO_DGI') {
+            bloqueos.push('Este documento ya fue firmado y aceptado por DGI.');
+        }
+
+        // Datos del documento referenciado, para mostrarlos legibles
+        let referencia = null;
+        if (prep.listaWsReferencias.length > 0) {
+            const r = prep.listaWsReferencias[0];
+            referencia = {
+                tipo: r.tpoDocRef,
+                serie: r.serie,
+                numero: r.nroCFERef,
+                fecha: r.fechaCFEref,
+                monto: r.mntCFEref,
+                razon: r.razonReferencia
+            };
+        }
+
+        res.json({
+            documento: {
+                id: doc.DocIdDocumento,
+                docTipo: doc.DocTipo,
+                serie: doc.DocSerie,
+                numero: doc.DocNumero,
+                estadoCfe: doc.CfeEstado,
+                total: doc.DocTotal,
+                moneda: doc.MonIdMoneda === 2 ? 'USD' : 'UYU'
+            },
+            emisor: empresa ? { nombre: empresa.EmpNombre, rut: empresa.EmpRut, caja: empresa.EmpSisnetCaja } : null,
+            cfe: {
+                tipoCFE: prep.tipoCFE,
+                nombre: prep.nombreCFE,
+                familia: prep.familia,
+                esNC: prep.esNC,
+                esND: prep.esND,
+                incluyeReceptor: prep.incluyeReceptor
+            },
+            receptor: prep.incluyeReceptor ? prep.cfeData.wsReceptor : null,
+            receptorValidacion: {
+                valido: prep.valReceptor.valido,
+                tipo: prep.valReceptor.tipo,
+                motivo: prep.valReceptor.motivo || null
+            },
+            referencia,
+            totales: prep.cfeData.wsTotales,
+            varios: prep.cfeData.wsVarios,
+            lineas: prep.cfeData.listaWsItems,
+            bloqueos
+        });
+    } catch (error) {
+        logger.error('Error generando vista previa DGI:', error);
         res.status(500).json({ error: error.message });
     }
 };
@@ -445,7 +646,12 @@ exports.crearFacturaManual = async (req, res) => {
             const cant = parseFloat(linea.cantidad) || 0;
             const precio = parseFloat(linea.precioUnitario) || 0;
             const ivaRate = parseFloat(linea.iva) || 22;
-            const lineTotal = cant * precio;
+            // Descuento por línea: el precio unitario es el bruto y el % se guarda aparte
+            // para poder imprimirlo tal cual se tipeó.
+            const descPct = Math.min(100, Math.max(0, parseFloat(linea.descPct) || 0));
+            const bruto = cant * precio;
+            const descMonto = bruto * (descPct / 100);
+            const lineTotal = bruto - descMonto;
             const lineNeto = lineTotal / (1 + ivaRate / 100);
             const lineIva = lineTotal - lineNeto;
             return {
@@ -455,7 +661,9 @@ exports.crearFacturaManual = async (req, res) => {
                 precioUnitario: precio,
                 subtotal: lineNeto,
                 impuestos: lineIva,
-                total: lineTotal
+                total: lineTotal,
+                totalDescuentos: descPct > 0 ? descMonto : 0,
+                descuentoPct: descPct > 0 ? descPct : null
             };
         });
 
@@ -1013,8 +1221,15 @@ exports.editarFactura = async (req, res) => {
                 .input('docId', sql.Int, id)
                 .query('DELETE FROM DocumentosContablesDetalle WHERE DocIdDocumento = @docId');
 
-            // Reinsertar las líneas editadas
+            // Reinsertar las líneas editadas.
+            // Los descuentos viajan en el payload: si no se reinsertaran, cada edición borraría
+            // el % y el importe descontado, y la factura se reimprimía sin descuento y con el
+            // precio unitario ya neteado.
             for (const linea of lineas) {
+                const descMonto = parseFloat(linea.DcdTotalDescuentos) || 0;
+                const descPct = (linea.DcdDescuentoPct != null && Number(linea.DcdDescuentoPct) > 0)
+                    ? Number(linea.DcdDescuentoPct)
+                    : null;
                 await transaction.request()
                     .input('docId', sql.Int, id)
                     .input('nom', sql.NVarChar(255), linea.DcdNomItem || '')
@@ -1024,10 +1239,13 @@ exports.editarFactura = async (req, res) => {
                     .input('sub', sql.Decimal(18, 2), parseFloat(linea.DcdSubtotal) || 0)
                     .input('imp', sql.Decimal(18, 2), parseFloat(linea.DcdImpuestos) || 0)
                     .input('tot', sql.Decimal(18, 2), parseFloat(linea.DcdTotal) || 0)
+                    .input('desc', sql.Decimal(18, 2), descMonto > 0.001 ? descMonto : null)
+                    .input('descStr', sql.VarChar(100), linea.DcdDescuentoStr || null)
+                    .input('descPct', sql.Decimal(9, 4), descPct)
                     .query(`
                         INSERT INTO DocumentosContablesDetalle
-                            (DocIdDocumento, DcdNomItem, DcdDscItem, DcdCantidad, DcdPrecioUnitario, DcdSubtotal, DcdImpuestos, DcdTotal)
-                        VALUES (@docId, @nom, @dsc, @cant, @precio, @sub, @imp, @tot)
+                            (DocIdDocumento, DcdNomItem, DcdDscItem, DcdCantidad, DcdPrecioUnitario, DcdSubtotal, DcdImpuestos, DcdTotal, DcdTotalDescuentos, DcdDescuentoStr, DcdDescuentoPct)
+                        VALUES (@docId, @nom, @dsc, @cant, @precio, @sub, @imp, @tot, @desc, @descStr, @descPct)
                     `);
             }
         }
@@ -1563,7 +1781,8 @@ exports.getDetalleFactura = async (req, res) => {
                     DcdImpuestos,
                     DcdTotal,
                     DcdTotalDescuentos,
-                    DcdDescuentoStr
+                    DcdDescuentoStr,
+                    DcdDescuentoPct
                 FROM DocumentosContablesDetalle
                 WHERE DocIdDocumento = @docId
             `);

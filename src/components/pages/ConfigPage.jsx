@@ -17,6 +17,7 @@ import ConfigWebServicesModal from '../modals/config/ConfigWebServicesModal';
 import ConfigSyncModal from '../modals/config/ConfigSyncModal';
 import ConfigSincroArticulosModal from '../modals/config/ConfigSincroArticulosModal';
 import StockArtEditModal from '../modals/config/StockArtEditModal';
+import ConfigUrgenciaDescuentoRolloModal from '../modals/config/ConfigUrgenciaDescuentoRolloModal';
 import EmpresasAdminPanel from './admin/EmpresasAdminPanel';
 
 export default function ConfigPage({ onBack }) {
@@ -309,6 +310,13 @@ export default function ConfigPage({ onBack }) {
                             colorClass="from-purple-500 to-fuchsia-600"
                             onClick={() => setActiveModal('stockart')}
                         />
+                        <ConfigCard
+                            title="Recargo Urgencia s/Rollo"
+                            subtitle="Metros extra por urgencia no cobrada en $"
+                            icon="fa-bolt"
+                            colorClass="from-amber-500 to-orange-600"
+                            onClick={() => setActiveModal('urgencia-descuento-rollo')}
+                        />
                     </div>
                 </div>
             )}
@@ -367,6 +375,7 @@ export default function ConfigPage({ onBack }) {
             {activeModal === 'syncs' && <ConfigSyncModal isOpen={true} onClose={() => setActiveModal(null)} />}
             {activeModal === 'sincro-articulos' && <ConfigSincroArticulosModal isOpen={true} onClose={() => setActiveModal(null)} />}
             {activeModal === 'stockart' && <StockArtEditModal isOpen={true} onClose={() => setActiveModal(null)} />}
+            {activeModal === 'urgencia-descuento-rollo' && <ConfigUrgenciaDescuentoRolloModal isOpen={true} onClose={() => setActiveModal(null)} />}
 
             <ImportLogModal
                 isOpen={isLogModalOpen}

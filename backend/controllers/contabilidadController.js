@@ -12,6 +12,7 @@ const svc    = require('../services/contabilidadService');
 const logger = require('../utils/logger');
 const { getPool, sql } = require('../config/db');
 const { crearDocumentoContable } = require('../services/contabilidadCore');
+const { aplicarRecargoUrgenciaRollo } = require('../services/urgenciaDescuentoRolloService');
 const { PDFDocument, StandardFonts, rgb } = require('pdf-lib');
 
 // ============================================================
@@ -3371,9 +3372,11 @@ exports.consumirRecursoAdelantado = async (req, res) => {
           .input('C', sql.Int, CueMTS).input('S', sql.Decimal(18,4), nuevoSaldoMTS)
           .query('UPDATE dbo.CuentasCliente SET CueSaldoActual = @S WHERE CueIdCuenta = @C');
 
+        // Concepto visible: nombre del trabajo con prefijo 'CR-' (Cobertura Retroactiva)
+        const nombreTrabCR = ((mov.OrdNombreTrabajo || '').trim()) || CodigoOrden;
         const conceptoEntrega = esTotalFinal
-          ? 'Cobertura retroactiva: ' + CodigoOrden
-          : 'Cobertura parcial (' + metrosFinal.toFixed(2) + '/' + cantidadMetros.toFixed(2) + ' mts): ' + CodigoOrden;
+          ? 'CR- ' + nombreTrabCR
+          : 'CR- ' + nombreTrabCR + ' (parcial ' + metrosFinal.toFixed(2) + '/' + cantidadMetros.toFixed(2) + ' mts)';
 
         await new sql.Request(transaction)
           .input('C',  sql.Int,           CueMTS)
@@ -3391,6 +3394,16 @@ exports.consumirRecursoAdelantado = async (req, res) => {
             VALUES (@C,'ENTREGA',@Imp,@Con,@SP,GETDATE(),@Usr,@Ord,
                     CONCAT('Cobertura retroactiva Ref#',@Ref, ' \u2014 Plan #',@PlaIdPlan))
           `);
+
+        // Recargo urgencia s/rollo: solo aplica si la orden es Urgente y el
+        // cliente tiene excepci\u00f3n de cobro de urgencia \u2014 ver urgenciaDescuentoRolloService.js
+        if (mov.OrdIdOrden) {
+          await aplicarRecargoUrgenciaRollo({
+            transaction, OrdIdOrden: mov.OrdIdOrden, CliIdCliente, ProIdProducto,
+            PlaIdPlan: planTx.PlaIdPlan, CueIdCuenta: CueMTS,
+            metrosConsumidos: metrosFinal, UsuarioAlta, CodigoOrden,
+          });
+        }
       }
 
       // 4d. Detectar servicios complementarios (costura, corte, etc.) en PedidosCobranzaDetalle.
@@ -3646,6 +3659,139 @@ exports.consumirRecursoAdelantado = async (req, res) => {
 
   } catch (err) {
     logger.error('[COBERTURA_RETROACTIVA] Error:', err.message, err);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+};
+
+// ============================================================================
+// DEVOLVER CONSUMO DE RECURSO — inversa de consumirRecursoAdelantado
+// Devuelve los metros al plan, revierte los movimientos generados y deja la
+// orden de nuevo PENDIENTE DE FACTURAR (le quita la marca CUBIERTO).
+// ============================================================================
+exports.devolverConsumoRecurso = async (req, res) => {
+  const pool = await getPool();
+  let transaction = null;
+  try {
+    const movId       = parseInt(req.params.MovIdMovimiento);
+    const UsuarioAlta  = req.user?.id || 1;
+    if (!movId) return res.status(400).json({ success: false, error: 'MovIdMovimiento requerido.' });
+
+    // 1. Cargar la ORDEN y validar que tenga un consumo para devolver
+    const movRes = await pool.request().input('MovId', sql.Int, movId).query(`
+      SELECT m.MovIdMovimiento, m.CueIdCuenta, m.MovTipo, m.MovImporte, m.OrdIdOrden,
+             m.DocIdDocumento, m.MovAnulado, m.MovObservaciones, m.CicIdCiclo
+      FROM dbo.MovimientosCuenta m WITH(NOLOCK)
+      WHERE m.MovIdMovimiento = @MovId`);
+    if (!movRes.recordset.length) return res.status(404).json({ success: false, error: 'Movimiento no encontrado.' });
+    const mov = movRes.recordset[0];
+    const obs = mov.MovObservaciones || '';
+
+    if (!['ORDEN', 'ORDEN_ANTICIPO'].includes(mov.MovTipo))
+      return res.status(400).json({ success: false, error: 'Solo aplicable sobre movimientos tipo ORDEN.' });
+    if (mov.MovAnulado)
+      return res.status(400).json({ success: false, error: 'La orden está anulada.' });
+    if (mov.DocIdDocumento)
+      return res.status(400).json({ success: false, error: 'La orden ya fue facturada; no se puede devolver el consumo.' });
+    if (!(/^CUBIERTO/.test(obs) || /^MATERIAL_CUBIERTO/.test(obs)))
+      return res.status(400).json({ success: false, error: 'Esta orden no tiene un consumo de recurso para devolver.' });
+    if (!mov.OrdIdOrden)
+      return res.status(400).json({ success: false, error: 'La orden no tiene OrdIdOrden; devolución no soportada.' });
+
+    // 2. Buscar los movimientos generados por el consumo (ENTREGA de metros + CREDITO_PLAN de servicios)
+    const linkRes = await pool.request()
+      .input('OrdId', sql.Int, mov.OrdIdOrden).input('Ref', sql.VarChar(20), String(movId))
+      .query(`
+        SELECT MovIdMovimiento, CueIdCuenta, MovTipo, MovImporte, MovObservaciones
+        FROM dbo.MovimientosCuenta WITH(NOLOCK)
+        WHERE OrdIdOrden = @OrdId
+          AND MovTipo IN ('ENTREGA','CREDITO_PLAN')
+          AND (MovAnulado IS NULL OR MovAnulado = 0)
+          AND (MovObservaciones LIKE '%Ref#' + @Ref + ' %'
+               OR MovObservaciones LIKE '%Ref#' + @Ref
+               OR MovObservaciones LIKE '%servicios pendientes%')`);
+    const entregas = linkRes.recordset.filter(l => l.MovTipo === 'ENTREGA');
+    const creditos = linkRes.recordset.filter(l => l.MovTipo === 'CREDITO_PLAN');
+    if (!entregas.length && !creditos.length)
+      return res.status(400).json({ success: false, error: 'No se encontraron los movimientos del consumo (Ref#' + movId + ') para revertir.' });
+
+    // 3. Reversa atómica
+    transaction = await pool.transaction();
+    await transaction.begin();
+    try {
+      let metrosDevueltos = 0;
+
+      // 3a. Devolver metros: por cada ENTREGA → plan + cuenta MTS + anular
+      for (const e of entregas) {
+        const metros = Math.abs(Number(e.MovImporte));
+        metrosDevueltos += metros;
+
+        const planRes = await new sql.Request(transaction).input('Cue', sql.Int, e.CueIdCuenta)
+          .query(`SELECT TOP 1 PlaIdPlan, PlaCantidadUsada FROM dbo.PlanesMetros WITH(UPDLOCK,ROWLOCK)
+                  WHERE CueIdCuenta = @Cue ORDER BY PlaActivo DESC, PlaIdPlan DESC`);
+        if (planRes.recordset.length) {
+          const nuevaUsada = Math.max(0, Number(planRes.recordset[0].PlaCantidadUsada) - metros);
+          await new sql.Request(transaction)
+            .input('Pla', sql.Int, planRes.recordset[0].PlaIdPlan).input('Usada', sql.Decimal(18,4), nuevaUsada)
+            .query('UPDATE dbo.PlanesMetros SET PlaCantidadUsada = @Usada, PlaActivo = 1 WHERE PlaIdPlan = @Pla');
+        }
+        const sRes = await new sql.Request(transaction).input('C', sql.Int, e.CueIdCuenta)
+          .query('SELECT CueSaldoActual FROM dbo.CuentasCliente WITH(UPDLOCK) WHERE CueIdCuenta = @C');
+        const nuevoMTS = Math.round((Number(sRes.recordset[0].CueSaldoActual) + metros) * 10000) / 10000;
+        await new sql.Request(transaction).input('C', sql.Int, e.CueIdCuenta).input('S', sql.Decimal(18,4), nuevoMTS)
+          .query('UPDATE dbo.CuentasCliente SET CueSaldoActual = @S WHERE CueIdCuenta = @C');
+        await new sql.Request(transaction).input('M', sql.Int, e.MovIdMovimiento)
+          .query(`UPDATE dbo.MovimientosCuenta SET MovAnulado = 1,
+                    MovObservaciones = CONCAT(ISNULL(MovObservaciones,''), ' [DEVUELTO]') WHERE MovIdMovimiento = @M`);
+      }
+
+      // 3b. Revertir CREDITO_PLAN (servicios): restar del saldo monetario + anular; guardar el importe para restaurar la ORDEN
+      let creditoRestaurar = 0;
+      for (const c of creditos) {
+        const imp = Number(c.MovImporte);
+        creditoRestaurar += imp;
+        const sRes = await new sql.Request(transaction).input('C', sql.Int, c.CueIdCuenta)
+          .query('SELECT CueSaldoActual FROM dbo.CuentasCliente WITH(UPDLOCK) WHERE CueIdCuenta = @C');
+        const nuevoMon = Math.round((Number(sRes.recordset[0].CueSaldoActual) - imp) * 100) / 100;
+        await new sql.Request(transaction).input('C', sql.Int, c.CueIdCuenta).input('S', sql.Decimal(18,4), nuevoMon)
+          .query('UPDATE dbo.CuentasCliente SET CueSaldoActual = @S WHERE CueIdCuenta = @C');
+        await new sql.Request(transaction).input('M', sql.Int, c.MovIdMovimiento)
+          .query(`UPDATE dbo.MovimientosCuenta SET MovAnulado = 1,
+                    MovObservaciones = CONCAT(ISNULL(MovObservaciones,''), ' [DEVUELTO]') WHERE MovIdMovimiento = @M`);
+      }
+
+      // 3c. Restaurar la ORDEN: importe original (si fue reducido por servicios) + limpiar la marca CUBIERTO
+      const importeOriginal = Math.round((Math.abs(Number(mov.MovImporte)) + creditoRestaurar) * 100) / 100;
+      await new sql.Request(transaction)
+        .input('M', sql.Int, movId).input('Imp', sql.Decimal(18,4), -importeOriginal)
+        .query('UPDATE dbo.MovimientosCuenta SET MovImporte = @Imp, MovObservaciones = NULL WHERE MovIdMovimiento = @M');
+
+      // 3d. Restaurar la DeudaDocumento de la orden (si estaba cancelada/parcial) → PENDIENTE
+      await new sql.Request(transaction)
+        .input('OrdId', sql.Int, mov.OrdIdOrden).input('Imp', sql.Decimal(18,4), importeOriginal)
+        .query(`UPDATE dbo.DeudaDocumento SET DDeImportePendiente = @Imp, DDeEstado = 'PENDIENTE'
+                WHERE OrdIdOrden = @OrdId AND DDeEstado IN ('CANCELADO','PARCIAL')`);
+
+      // 3e. Revertir el ciclo (si la orden estaba en un ciclo): volver a sumar a facturar
+      if (mov.CicIdCiclo) {
+        await new sql.Request(transaction)
+          .input('Cic', sql.Int, mov.CicIdCiclo).input('Imp', sql.Decimal(18,4), importeOriginal)
+          .query(`UPDATE dbo.CiclosCredito SET CicTotalPagos = CicTotalPagos - @Imp,
+                    CicSaldoFacturar = CicSaldoFacturar + @Imp WHERE CicIdCiclo = @Cic`);
+      }
+
+      await transaction.commit();
+      logger.info('[DEVOLVER_RECURSO] MovId=' + movId + ' metrosDevueltos=' + metrosDevueltos + ' creditoRestaurado=' + creditoRestaurar);
+      return res.json({
+        success: true,
+        metrosDevueltos,
+        message: 'Consumo devuelto: ' + metrosDevueltos.toFixed(2) + ' mts retornados al plan. La orden vuelve a pendiente de facturar.',
+      });
+    } catch (txErr) {
+      await transaction.rollback().catch(() => {});
+      throw txErr;
+    }
+  } catch (err) {
+    logger.error('[DEVOLVER_RECURSO] Error:', err.message);
     return res.status(500).json({ success: false, error: err.message });
   }
 };

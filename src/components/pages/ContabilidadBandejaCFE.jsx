@@ -9,6 +9,9 @@ import FacturacionManualModal from './FacturacionManualModal';
 import ConfirmationModal from '../modals/ConfirmationModal';
 import CfeNotaCreditoModal from './CfeNotaCreditoModal';
 import NcExternaModal from './NcExternaModal';
+import CfePreviewDgiModal from './CfePreviewDgiModal';
+// Nombre del tipo de documento: única fuente, compartida con el generador de PDF
+import { getTipoDocName } from '../../utils/tiposDocumento';
 
 const getStatusBadge = (status) => {
     switch(status) {
@@ -18,53 +21,6 @@ const getStatusBadge = (status) => {
         case 'BORRADOR': return <span className="bg-purple-100 text-purple-800 px-2 py-1 rounded-full text-xs font-semibold">📋 Borrador</span>;
         default: return <span className="bg-gray-100 text-gray-800 px-2 py-1 rounded-full text-xs font-semibold">{status}</span>;
     }
-};
-
-const getTipoDocName = (tipo) => {
-    const MAP = {
-        // Códigos numéricos DGI
-        '07': 'E-Ticket NC',  '08': 'E-Ticket Crédito',
-        '10': 'E-Ticket NC',  '01': 'E-Ticket Contado',
-        '02': 'E-Factura Crédito', '04': 'E-Factura NC',
-        '107': 'E-Ticket Contado', '108': 'E-Ticket Crédito',
-        '101': 'E-Factura Contado', '102': 'E-Factura Crédito',
-        // Otros tipos
-        'PedidoCaja': 'Pedido Caja', 'PC': 'Pedido Caja', 'Pedidos Caja': 'Pedido Caja',
-        'FACTURA': 'E-Factura Crédito', 'E-TICKET': 'E-Ticket Contado',
-        'FACTURA_CICLO': 'Edo. Cuenta',
-        'NOTA_CREDITO': 'E-Ticket NC', 'NOTA_DEBITO': 'E-Ticket ND',
-        // Valores tal cual vienen de Config_TiposDocumento.Detalle
-        'E-Ticket Contado': 'E-Ticket Contado',
-        'E-Ticket Credito': 'E-Ticket Crédito',
-        'E-Ticket Crédito': 'E-Ticket Crédito',
-        'E-Ticket Nota De Credito': 'E-Ticket NC',
-        'E-Ticket Nota De Crédito': 'E-Ticket NC',
-        'E-Factura Nota De Credito': 'E-Factura NC',
-        'E-Factura Nota De Crédito': 'E-Factura NC',
-        'E-Factura Contado': 'E-Factura Contado',
-        'E-Factura Credito': 'E-Factura Crédito',
-        'E-Factura Crédito': 'E-Factura Crédito',
-        'E-Ticket Nota De Deb': 'E-Ticket ND',
-        'E-Factura Nota De Deb': 'E-Factura ND',
-        'Nota de Credito': 'E-Ticket NC',
-        'Nota de Crédito': 'E-Ticket NC',
-        'Nota de Debito': 'E-Ticket ND',
-        'Nota de Débito': 'E-Ticket ND',
-    };
-    if (!tipo) return '—';
-    const k = String(tipo).trim();
-    if (MAP[k]) return MAP[k];
-    // Fallback: reducir strings largos con patrones comunes
-    const tl = k.toLowerCase();
-    if (tl.includes('nota de cre') || tl.includes('nota de cr')) {
-        return tl.includes('factura') ? 'E-Factura NC' : 'E-Ticket NC';
-    }
-    if (tl.includes('nota de deb')) {
-        return tl.includes('factura') ? 'E-Factura ND' : 'E-Ticket ND';
-    }
-    if (tl.includes('e-ticket') || tl.includes('eticket')) return 'E-Ticket Contado';
-    if (tl.includes('e-factura') || tl.includes('efactura')) return 'E-Factura Contado';
-    return k;
 };
 
 const isFiscalCfe = (tipo) => {
@@ -167,6 +123,7 @@ const ContabilidadBandejaCFE = ({ initialCliente = null, embedded = false, autoN
     const [ncMode, setNcMode] = useState('NC');
     // Confirmación de envío a DGI: { tipo: 'uno', doc } | { tipo: 'lote', ids: [...] }
     const [confirmEnvio, setConfirmEnvio] = useState(null);
+    const [previewDoc, setPreviewDoc] = useState(null);   // documento cuyo CFE a emitir se está viendo
 
     // Filtros
     const [clientes, setClientes] = useState([]);
@@ -428,8 +385,10 @@ const ContabilidadBandejaCFE = ({ initialCliente = null, embedded = false, autoN
         }
     };
 
+    // Antes de emitir mostramos el CFE exacto que se le va a pedir a la DGI
+    // (tipo 101/111 venta, 102/112 nota de crédito, 103/113 nota de débito, referencia y totales).
     const handleEnviarDGI = (doc) => {
-        setConfirmEnvio({ tipo: 'uno', doc });
+        setPreviewDoc(doc);
     };
 
     const doEnviarDGI = async (doc) => {
@@ -437,6 +396,7 @@ const ContabilidadBandejaCFE = ({ initialCliente = null, embedded = false, autoN
             setSendingId(doc.DocIdDocumento);
             const { data } = await api.post(`/contabilidad/cfe/documentos/${doc.DocIdDocumento}/enviar`);
             toast.success(`${data.message}. CAE: ${data.cae}`);
+            setPreviewDoc(null);
             fetchDocumentos();
         } catch (err) {
             toast.error('Error enviando a SISNET: ' + (err.response?.data?.error || err.message));
@@ -831,7 +791,40 @@ const ContabilidadBandejaCFE = ({ initialCliente = null, embedded = false, autoN
                                             {renderDocFecha(doc.DocFechaEmision)}
                                         </td>
                                         <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                                            {getTipoDocName(doc.DocTipo)}
+                                            <div>{getTipoDocName(doc.DocTipo)}</div>
+                                            {/* Nomenclador DGI. Se distingue lo EMITIDO (hecho) de lo que
+                                                CORRESPONDE (cálculo): si no coinciden, la fila se marca. */}
+                                            {doc.DgiTipoCorrecto && (
+                                                <div className="mt-0.5 space-y-0.5">
+                                                    {doc.DgiTipoEmitido ? (
+                                                        <div
+                                                            className={`text-xs font-semibold ${doc.DgiAlerta ? 'text-red-600' : 'text-gray-500'}`}
+                                                            title={doc.DgiEmitidoInferido
+                                                                ? `Emitido como CFE ${doc.DgiTipoEmitido} (${doc.DgiTipoEmitidoNombre}).\n\nDato RECONSTRUIDO con la lógica vigente al emitir, porque este documento salió antes de que se empezara a guardar el tipo. Usa el documento que el cliente tiene HOY: si se lo editaron después de emitir, el número puede no ser exacto (el CAE del comprobante es la prueba definitiva).\n\nLos documentos que se emitan de ahora en más guardan el tipo real y no necesitan reconstrucción.`
+                                                                : `Emitido como CFE ${doc.DgiTipoEmitido} (${doc.DgiTipoEmitidoNombre}). Dato guardado en el momento de la emisión.`}
+                                                        >
+                                                            Emitido: DGI {doc.DgiTipoEmitido} · {doc.DgiTipoEmitidoNombre}
+                                                            {doc.DgiEmitidoInferido && <span className="font-normal text-gray-400"> (inferido)</span>}
+                                                        </div>
+                                                    ) : (
+                                                        <div
+                                                            className={`text-xs font-semibold ${[102, 112, 103, 113].includes(doc.DgiTipoCorrecto) ? 'text-amber-700' : 'text-gray-500'}`}
+                                                            title={`Todavía no se envió. Al enviarlo se le pedirá a DGI un CFE tipo ${doc.DgiTipoCorrecto} (${doc.DgiTipoCorrectoNombre}).`}
+                                                        >
+                                                            Se emitirá: DGI {doc.DgiTipoCorrecto} · {doc.DgiTipoCorrectoNombre}
+                                                        </div>
+                                                    )}
+
+                                                    {doc.DgiAlerta && (
+                                                        <div
+                                                            className="text-xs font-bold text-red-700 bg-red-50 border border-red-200 rounded px-1.5 py-0.5 inline-block"
+                                                            title={`Este documento se emitió ante DGI como CFE ${doc.DgiTipoEmitido} (${doc.DgiTipoEmitidoNombre}), pero le corresponde ${doc.DgiTipoCorrecto} (${doc.DgiTipoCorrectoNombre}). Hay que regularizarlo ante DGI: el sistema no lo puede corregir solo.`}
+                                                        >
+                                                            ⚠ Debía ser {doc.DgiTipoCorrecto} · {doc.DgiTipoCorrectoNombre}
+                                                        </div>
+                                                    )}
+                                                </div>
+                                            )}
                                         </td>
                                         <td className="px-6 py-4 whitespace-nowrap text-sm font-semibold text-gray-900">
                                             {doc.DocSerie}-{parseInt(doc.DocNumero, 10) || doc.DocNumero}
@@ -905,7 +898,9 @@ const ContabilidadBandejaCFE = ({ initialCliente = null, embedded = false, autoN
                                                     >
                                                         <XCircle className="h-5 w-5" />
                                                     </button>
-                                                    {isFiscalCfe(doc.DocTipo) ? (
+                                                    {/* Si no es fiscal no se muestra nada: el badge "Borrador" de la
+                                                        columna Estado DGI ya dice que este documento no se envía. */}
+                                                    {isFiscalCfe(doc.DocTipo) && (
                                                         <button
                                                             onClick={() => handleEnviarDGI(doc)}
                                                             className="text-blue-500 hover:text-blue-700 transition-colors font-bold text-xs border border-blue-200 hover:border-blue-400 bg-blue-50/50 hover:bg-blue-50 px-2 py-1 rounded"
@@ -913,8 +908,6 @@ const ContabilidadBandejaCFE = ({ initialCliente = null, embedded = false, autoN
                                                         >
                                                             Enviar a DGI
                                                         </button>
-                                                    ) : (
-                                                        <span className="text-xs text-purple-500 font-semibold italic">No va a DGI</span>
                                                     )}
                                                 </div>
                                             ) : doc.CfeEstado === 'PENDIENTE' ? (
@@ -1083,6 +1076,15 @@ const ContabilidadBandejaCFE = ({ initialCliente = null, embedded = false, autoN
                 confirmText="Sí, enviar a DGI"
                 cancelText="Cancelar"
             />
+
+            {previewDoc && (
+                <CfePreviewDgiModal
+                    doc={previewDoc}
+                    enviando={sendingId === previewDoc.DocIdDocumento}
+                    onClose={() => setPreviewDoc(null)}
+                    onConfirmarEnvio={() => doEnviarDGI(previewDoc)}
+                />
+            )}
 
             {editDocId && (
                 <FacturacionManualModal

@@ -309,7 +309,13 @@ const crearDocumentoContable = async ({ header, lineas }, transaction = null) =>
       const ordCodigoOrden = linea.ordCodigoOrden !== undefined ? linea.ordCodigoOrden : null;
       const lineTotalDescuentos = linea.totalDescuentos !== undefined ? linea.totalDescuentos : 0;
       const lineDescuentoStr = linea.descuentoStr !== undefined ? linea.descuentoStr : null;
-      
+      // % de descuento tal cual lo tipeó el usuario. Se guarda aparte porque
+      // recalcularlo desde los importes (que van redondeados a 2 decimales) devuelve
+      // valores como 10,03% donde el usuario había puesto 10%.
+      const lineDescuentoPct = (linea.descuentoPct !== undefined && linea.descuentoPct !== null && Number(linea.descuentoPct) > 0)
+        ? Number(linea.descuentoPct)
+        : null;
+
       await reqLine
         .input('DocId', sql.Int, docId)
         .input('OrdCod', sql.VarChar(100), ordCodigoOrden)
@@ -322,11 +328,12 @@ const crearDocumentoContable = async ({ header, lineas }, transaction = null) =>
         .input('Tot', sql.Decimal(18, 2), linea.total)
         .input('TotalDesc', sql.Decimal(18, 4), lineTotalDescuentos)
         .input('DescStr', sql.VarChar(100), lineDescuentoStr)
+        .input('DescPct', sql.Decimal(9, 4), lineDescuentoPct)
         .query(`
           INSERT INTO dbo.DocumentosContablesDetalle
-            (DocIdDocumento, OrdCodigoOrden, DcdNomItem, DcdDscItem, DcdCantidad, DcdPrecioUnitario, DcdSubtotal, DcdImpuestos, DcdTotal, DcdTotalDescuentos, DcdDescuentoStr)
+            (DocIdDocumento, OrdCodigoOrden, DcdNomItem, DcdDscItem, DcdCantidad, DcdPrecioUnitario, DcdSubtotal, DcdImpuestos, DcdTotal, DcdTotalDescuentos, DcdDescuentoStr, DcdDescuentoPct)
           VALUES
-            (@DocId, @OrdCod, @Nom, @Dsc, @Cant, @Precio, @Sub, @Imp, @Tot, @TotalDesc, @DescStr)
+            (@DocId, @OrdCod, @Nom, @Dsc, @Cant, @Precio, @Sub, @Imp, @Tot, @TotalDesc, @DescStr, @DescPct)
         `);
     }
   }

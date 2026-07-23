@@ -2397,6 +2397,7 @@ const generarNotaCredito = async (req, res) => {
 
       // ─────────────────────────────────────────────
       // ─────────────────────────────────────────────
+      let avisoContable = null;
       try {
         const lineasNc = await contabilidadCore.resolverLineasDesdeMotor('NOTA_CREDITO', {
           moneda: monedaId === 2 ? 'USD' : 'UYU',
@@ -2422,13 +2423,20 @@ const generarNotaCredito = async (req, res) => {
           lineas,
         }, transaction);
       } catch (eAsiento) {
-        logger.warn(`[NOTA-CREDITO] Asiento contable no generado: ${eAsiento.message}`);
+        // No frena la NC, pero NO puede quedar invisible: durante meses las NC se
+        // guardaron sin asiento porque esto solo hacía un warn silencioso.
+        avisoContable = `La Nota de Crédito se generó, pero NO quedó asentada en la contabilidad: ${eAsiento.message}`;
+        logger.error(`[NOTA-CREDITO] Asiento contable NO generado para ${fullNcNumero}: ${eAsiento.message}`);
       }
 
       await transaction.commit();
       logger.info(`[NOTA-CREDITO] Doc #${docIdOrigen} -> NC #${ncId} (${fullNcNumero}) Monto:${montoNum}`);
       const s = io(req); if (s) s.emit('actualizado', { type: 'nota-credito' });
-      return res.status(201).json({ success: true, ncId, ncNumero: fullNcNumero, ncTipo, message: `Nota de Crédito ${fullNcNumero} generada` });
+      return res.status(201).json({
+        success: true, ncId, ncNumero: fullNcNumero, ncTipo,
+        message: `Nota de Crédito ${fullNcNumero} generada`,
+        avisoContable
+      });
     } catch (errTx) { await transaction.rollback(); throw errTx; }
   } catch (err) { logger.error('[NOTA-CREDITO]', err.message); return res.status(500).json({ error: err.message }); }
 };
@@ -2787,7 +2795,7 @@ const generarNotaDebito = async (req, res) => {
           lineas,
         }, transaction);
       } catch (eAsiento) {
-        logger.warn(`[NOTA-DEBITO] Asiento contable no generado: ${eAsiento.message}`);
+        logger.error(`[NOTA-DEBITO] Asiento contable NO generado para ${fullNdNumero}: ${eAsiento.message}`);
       }
 
       await transaction.commit();

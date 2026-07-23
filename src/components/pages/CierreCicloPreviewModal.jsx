@@ -500,9 +500,14 @@ export default function CierreCicloPreviewModal({
             detallesParaPDF.push({
               DcdNomItem: descArticulo,
               DcdDscItem: descOrden,
-              DcdCantidad: d.Cantidad,
+              // Cantidad editada (no la original): el importe y el descuento ya se calculan
+              // con editedCant, si acá va la original el P. Unitario del PDF sale mal.
+              DcdCantidad: editedCant,
               DcdPrecioUnitario: unitario,
               DcdTotalDescuentos: descItem > 0.01 ? descItem : null,
+              // El % va explícito: si se deja que el PDF lo recalcule desde los importes
+              // (redondeados a 2 decimales al guardar) un 10% sale impreso como 10,03%.
+              DcdDescuentoPct: editedDescPct > 0 ? editedDescPct : null,
               DcdSubtotal: finalSub
             });
           });

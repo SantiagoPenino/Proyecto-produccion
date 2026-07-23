@@ -8,6 +8,8 @@ const FileControlCard = ({ file, refreshOrder, onAction }) => {
     const [status, setStatus] = useState(file.EstadoArchivo || 'Pendiente');
     const [loading, setLoading] = useState(false);
     const [isHovered, setIsHovered] = useState(false);
+    // Borrador del input editable de cantidad (permite tipear el total controlado sin apretar +1 N veces)
+    const [draft, setDraft] = useState(String(file.Controlcopias || 0));
 
     const totalCopies = parseInt(file.Copias || 1);
     const isCompleted = status === 'OK' || status === 'FINALIZADO';
@@ -23,6 +25,7 @@ const FileControlCard = ({ file, refreshOrder, onAction }) => {
     useEffect(() => {
         setControlCount(file.Controlcopias || 0);
         setStatus(file.EstadoArchivo || 'Pendiente');
+        setDraft(String(file.Controlcopias || 0));
     }, [file.Controlcopias, file.EstadoArchivo]);
 
     const handleIncrement = async (e) => {
@@ -67,6 +70,34 @@ const FileControlCard = ({ file, refreshOrder, onAction }) => {
         } catch (error) {
             console.error(error);
             setControlCount(controlCount); // Revert
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    // Commit del input editable: setea el TOTAL controlado de golpe (valor absoluto). El backend
+    // (updateFileCopyCount) ya clampa a [0, Copias] y deriva el estado OK al llegar al total.
+    const commitCount = async () => {
+        if (loading || isFailed || isCancelled) { setDraft(String(controlCount)); return; }
+        let val = parseInt(draft, 10);
+        if (isNaN(val)) { setDraft(String(controlCount)); return; }
+        if (val < 0) val = 0;
+        if (val > totalCopies) val = totalCopies;
+        if (val === controlCount) { setDraft(String(val)); return; }
+        setLoading(true);
+        try {
+            setControlCount(val); // Optimistic
+            const res = await fileControlService.updateFileCopyCount(file.ArchivoID, val, file.isService);
+            if (res.success) {
+                setControlCount(res.newCount);
+                setStatus(res.newStatus);
+                setDraft(String(res.newCount));
+                refreshOrder(); // Puede completar/descompletar la orden → refrescar métricas
+            }
+        } catch (error) {
+            console.error(error);
+            setControlCount(controlCount); // Revert
+            setDraft(String(controlCount));
         } finally {
             setLoading(false);
         }
@@ -165,12 +196,31 @@ const FileControlCard = ({ file, refreshOrder, onAction }) => {
                 {/* 3. ACTIONS (Counter + Button) */}
                 <div className="flex items-center justify-between sm:justify-end gap-4 tablet:gap-2.5 pl-0 sm:pl-4 tablet:sm:pl-2.5 border-l-0 sm:border-l border-zinc-50 w-full sm:w-auto">
 
-                    {/* Counter */}
+                    {/* Counter — editable (tipear la cantidad) cuando hay varias copias y no está en estado terminal */}
                     <div className="text-right flex flex-col justify-center">
                         <span className="text-[9px] font-black text-zinc-300 uppercase leading-none mb-0.5 tracking-wider">COPIAS</span>
-                        <div className={`text-xl tablet:text-base font-black leading-none ${isCompleted ? 'text-brand-cyan' : (isFailed ? 'text-red-500' : 'text-zinc-700')}`}>
-                            {controlCount}<span className="text-sm text-zinc-300 font-bold">/{totalCopies}</span>
-                        </div>
+                        {(totalCopies > 1 && !isCompleted && !isFailed && !isCancelled) ? (
+                            <div className="flex items-baseline justify-end gap-0.5 leading-none">
+                                <input
+                                    type="number"
+                                    min={0}
+                                    max={totalCopies}
+                                    value={draft}
+                                    disabled={loading}
+                                    onClick={(e) => e.stopPropagation()}
+                                    onChange={(e) => setDraft(e.target.value)}
+                                    onBlur={commitCount}
+                                    onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); e.currentTarget.blur(); } }}
+                                    title="Escribí la cantidad controlada"
+                                    className="w-12 tablet:w-10 text-right text-xl tablet:text-base font-black text-zinc-700 bg-zinc-50 border border-zinc-200 rounded-md px-1 py-0.5 outline-none focus:border-brand-cyan focus:ring-2 focus:ring-brand-cyan/20 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                                />
+                                <span className="text-sm text-zinc-300 font-bold">/{totalCopies}</span>
+                            </div>
+                        ) : (
+                            <div className={`text-xl tablet:text-base font-black leading-none ${isCompleted ? 'text-brand-cyan' : (isFailed ? 'text-red-500' : 'text-zinc-700')}`}>
+                                {controlCount}<span className="text-sm text-zinc-300 font-bold">/{totalCopies}</span>
+                            </div>
+                        )}
                     </div>
 
                     {/* Button */}

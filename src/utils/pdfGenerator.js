@@ -1,6 +1,21 @@
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import QRCode from 'qrcode';
+// Nombre del tipo de documento: misma fuente que usa la bandeja CFE, para que el papel
+// diga exactamente lo mismo que la pantalla.
+import { getTipoDocName } from './tiposDocumento';
+
+/** Escribe un texto centrado achicando la fuente si no entra en el ancho dado. */
+function textoAjustado(pdf, texto, x, y, anchoMax, tamBase = 10) {
+    let tam = tamBase;
+    pdf.setFontSize(tam);
+    while (tam > 6 && pdf.getTextWidth(texto) > anchoMax) {
+        tam -= 0.5;
+        pdf.setFontSize(tam);
+    }
+    pdf.text(texto, x, y, { align: 'center' });
+    pdf.setFontSize(tamBase);
+}
 
 // Configuración visual compartida
 const COLOR_PRIMARY = [30, 58, 138]; // blue-900
@@ -180,14 +195,9 @@ export const generarPdfFacturaDGI = async (doc, detalles) => {
     pdf.text("TIPO DE DOCUMENTO", rightX + boxW * 0.75, 19, { align: 'center' });
     pdf.setFontSize(10);
     pdf.text(emisor.ruc, rightX + boxW / 4, 24, { align: 'center' });
-    const DOC_TIPO_LABEL_PDF = {
-      '07': 'E-Ticket Contado', '08': 'E-Ticket Crédito', '10': 'N.Crédito E-Ticket',
-      '01': 'E-Factura Contado', '02': 'E-Factura Crédito', '04': 'N.Crédito E-Factura',
-      '107': 'E-Ticket Contado', '108': 'E-Ticket Crédito', '101': 'E-Factura Contado', '102': 'E-Factura Crédito',
-      'PedidoCaja': 'Pedido Caja', 'PC': 'Pedido Caja',
-    };
-    const docTipoDisplay = doc.DocTipo ? (DOC_TIPO_LABEL_PDF[doc.DocTipo.trim()] || doc.DocTipo.trim()) : 'e-Factura';
-    pdf.text(docTipoDisplay, rightX + boxW * 0.75, 24, { align: 'center' });
+    const docTipoDisplay = getTipoDocName(doc.DocTipo, "e-Factura");
+    // La caja es angosta: si el nombre no entra, se achica la fuente en vez de desbordar
+    textoAjustado(pdf, docTipoDisplay, rightX + boxW * 0.75, 24, (boxW / 2) - 4, 10);
 
     // Caja 2: SERIE | NUMERO | FORMA
     pdf.rect(rightX, 28, boxW, 10);
@@ -335,7 +345,20 @@ export const generarPdfFacturaDGI = async (doc, detalles) => {
             let descPct = '';
             let descImp = '';
             if (descBruto > 0.01) {
-                const pct = originalSub > 0 ? (descBruto / originalSub) * 100 : 0;
+                // Si el % quedó guardado, se imprime tal cual se tipeó. Recalcularlo desde los
+                // importes (redondeados a 2 decimales) convierte un 10% en 10,03%.
+                const pctGuardado = d.DcdDescuentoPct != null ? Number(d.DcdDescuentoPct) : null;
+                let pct;
+                if (pctGuardado != null && pctGuardado > 0) {
+                    pct = pctGuardado;
+                } else {
+                    // Documento viejo, sin el % guardado: se deduce de los importes y se lo
+                    // acomoda al medio punto más cercano si la diferencia es solo el redondeo
+                    // (10,03 → 10; 12,49 → 12,5). Si la distancia es mayor se deja el calculado.
+                    const crudo = originalSub > 0 ? (descBruto / originalSub) * 100 : 0;
+                    const redondo = Math.round(crudo * 2) / 2;
+                    pct = Math.abs(crudo - redondo) <= 0.06 ? redondo : crudo;
+                }
                 descPct = `${fmtNum(pct)}%`;
                 descImp = fmtNum(descBruto);
             } else if (d.DcdDescuentoStr) {
@@ -766,12 +789,8 @@ export const generarPdfEstadoCuenta = (cliente, cuentas, secciones, planes, desd
             runningSaldo += importe;
             const saldoDespuesNum = runningSaldo;
 
-            const DOC_TIPO_LABEL_PDF2 = {
-              '07': 'E-TICKET', '08': 'E-TICKET CRED.', '10': 'N.CRÉDITO ET',
-              '01': 'E-FACTURA', '02': 'E-FACTURA CRED.', '04': 'N.CRÉDITO EF',
-              '107': 'E-TICKET', '101': 'E-FACTURA', 'PedidoCaja': 'PEDIDO CAJA',
-            };
-            const dTipoLabel2 = m.DocTipo ? (DOC_TIPO_LABEL_PDF2[m.DocTipo.trim()] || m.DocTipo.trim()) : null;
+            // Mismo resolver que el resto: el DocTipo crudo viene truncado y no sirve de rótulo
+            const dTipoLabel2 = m.DocTipo ? getTipoDocName(m.DocTipo).toUpperCase() : null;
             const docFull = dTipoLabel2
                 ? `${dTipoLabel2} ${m.DocSerie || ''}-${m.DocNumero || ''}`
                 : (m.CodigoOrdenStr 

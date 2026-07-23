@@ -12,7 +12,12 @@ async function ensureOrderColumns(pool) {
         IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE Name = 'Calandrado' AND Object_ID = Object_ID('dbo.Ordenes'))
             ALTER TABLE dbo.Ordenes ADD Calandrado BIT NOT NULL CONSTRAINT DF_Ordenes_Calandrado DEFAULT 0;
         IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE Name = 'CantidadImpresa' AND Object_ID = Object_ID('dbo.Ordenes'))
-            ALTER TABLE dbo.Ordenes ADD CantidadImpresa INT NOT NULL CONSTRAINT DF_Ordenes_CantidadImpresa DEFAULT 0;
+            ALTER TABLE dbo.Ordenes ADD CantidadImpresa DECIMAL(10,2) NOT NULL CONSTRAINT DF_Ordenes_CantidadImpresa DEFAULT 0;
+        -- Auto-heal: bases donde la columna se creó como INT (TPU unidades) → ampliar a DECIMAL para
+        -- soportar también metros (Impresión Directa cuenta piezas O metros según el artículo).
+        IF EXISTS (SELECT 1 FROM sys.columns c JOIN sys.types t ON c.system_type_id = t.system_type_id
+                   WHERE c.Name = 'CantidadImpresa' AND c.Object_ID = Object_ID('dbo.Ordenes') AND t.name = 'int')
+            ALTER TABLE dbo.Ordenes ALTER COLUMN CantidadImpresa DECIMAL(10,2) NOT NULL;
         IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE Name = 'MetrosGrupoFalla' AND Object_ID = Object_ID('dbo.Ordenes'))
             ALTER TABLE dbo.Ordenes ADD MetrosGrupoFalla DECIMAL(10,2) NULL;
         IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE Name = 'GrupoManual' AND Object_ID = Object_ID('dbo.Ordenes'))
@@ -1264,12 +1269,17 @@ exports.setOrderPrinted = async (req, res) => {
             .input('OID', sql.Int, Number(orderId))
             .input('P', sql.Bit, printed ? 1 : 0)
             .query(`
-                -- Total del contador parcial: unidades (UM='U', TPU) o copias del arte si el lote
-                -- está en MIMAKI. NULL si la orden no usa contador (ahí no se toca CantidadImpresa).
-                DECLARE @TotalParcial INT = (
+                -- Total del contador parcial, según el caso:
+                --   · UM='U' (TPU)      → unidades pedidas (Magnitud)
+                --   · AreaID='DIRECTA'  → piezas o metros según el artículo (Magnitud, con decimales)
+                --   · lote en MIMAKI    → copias del arte (SUM de ArchivosOrden.Copias)
+                -- NULL si la orden no usa contador: ahí NO se toca CantidadImpresa.
+                -- DECIMAL(10,2) para conservar los metros de DIRECTA (unidades y copias son enteros).
+                DECLARE @TotalParcial DECIMAL(10,2) = (
                     SELECT CASE
                         WHEN UPPER(LTRIM(RTRIM(ISNULL(o.UM,'')))) = 'U'
-                            THEN ISNULL(TRY_CONVERT(INT, TRY_CONVERT(FLOAT, o.Magnitud)), 0)
+                          OR UPPER(LTRIM(RTRIM(ISNULL(o.AreaID,'')))) = 'DIRECTA'
+                            THEN ISNULL(TRY_CONVERT(DECIMAL(10,2), TRY_CONVERT(FLOAT, o.Magnitud)), 0)
                         WHEN LOWER(LTRIM(ISNULL(ce.Nombre,''))) LIKE 'mimaki%'
                             THEN (SELECT ISNULL(SUM(ISNULL(Copias,1)),0) FROM dbo.ArchivosOrden WITH(NOLOCK)
                                    WHERE OrdenID = o.OrdenID AND ISNULL(EstadoArchivo,'') <> 'CANCELADO')
@@ -1280,8 +1290,8 @@ exports.setOrderPrinted = async (req, res) => {
                     WHERE o.OrdenID = @OID
                 );
                 UPDATE dbo.Ordenes SET Impreso = @P,
-                    -- Impresión parcial: el tick manual sincroniza el contador para que Impreso y
-                    -- CantidadImpresa nunca queden inconsistentes.
+                    -- El tick manual sincroniza el contador para que Impreso y CantidadImpresa
+                    -- nunca queden inconsistentes.
                     CantidadImpresa = CASE WHEN @TotalParcial IS NOT NULL
                         THEN CASE WHEN @P = 1 THEN @TotalParcial ELSE 0 END
                         ELSE CantidadImpresa END
@@ -1331,17 +1341,21 @@ exports.setOrderCantidadImpresa = async (req, res) => {
 
         const ordRes = await pool.request()
             .input('OID', sql.Int, Number(orderId))
-            .query(`SELECT UM, Magnitud FROM dbo.Ordenes WITH(NOLOCK) WHERE OrdenID = @OID`);
+            .query(`SELECT UM, Magnitud, AreaID FROM dbo.Ordenes WITH(NOLOCK) WHERE OrdenID = @OID`);
         if (!ordRes.recordset.length) return res.status(404).json({ error: 'Orden no encontrada' });
 
-        // Dos modos de impresión parcial:
-        //  · UM='U' (TPU): el total son las UNIDADES pedidas (Ordenes.Magnitud).
-        //  · Lote en MIMAKI: el total son las COPIAS del arte (SUM de ArchivosOrden.Copias). Ahí la
-        //    orden va por metros (UM='m') y los metros salen de copias × alto, así que el avance
-        //    real se cuenta en copias impresas.
-        const um = String(ordRes.recordset[0].UM || '').trim().toUpperCase();
+        // Tres modos de impresión parcial:
+        //  · UM='U' (TPU)     → el total son las UNIDADES pedidas (Ordenes.Magnitud).
+        //  · AreaID='DIRECTA' → piezas o metros según el artículo (Magnitud, con decimales).
+        //  · Lote en MIMAKI   → el total son las COPIAS del arte (SUM de ArchivosOrden.Copias): ahí la
+        //    orden va por metros (UM='m') y los metros salen de copias × alto, así que el avance real
+        //    se cuenta en copias impresas.
+        const um   = String(ordRes.recordset[0].UM || '').trim().toUpperCase();
+        const area = String(ordRes.recordset[0].AreaID || '').trim().toUpperCase();
+        const AREAS_PARCIAL = ['TPU', 'DIRECTA'];
         let porCopias = false;
-        if (um !== 'U') {
+        if (!AREAS_PARCIAL.includes(area) && um !== 'U') {
+            // Última vía: que el lote esté en MIMAKI (contador por copias).
             const maqRes = await pool.request()
                 .input('OID', sql.Int, Number(orderId))
                 .query(`SELECT ISNULL(ce.Nombre,'') AS Maquina
@@ -1351,19 +1365,25 @@ exports.setOrderCantidadImpresa = async (req, res) => {
                         WHERE o.OrdenID = @OID`);
             porCopias = /^\s*mimaki/i.test(String(maqRes.recordset[0]?.Maquina || ''));
             if (!porCopias) {
-                return res.status(400).json({ error: 'La impresión parcial solo aplica a órdenes por unidades (UM = U) o a lotes en MIMAKI.' });
+                return res.status(400).json({ error: 'La impresión parcial no está habilitada para esta área.' });
             }
         }
 
+        // Unidades → entero; metros (u otra UM) → 2 decimales. La columna es DECIMAL(10,2), sirve a ambos.
+        const esUnidades = um === 'U';
+        const cantNum = esUnidades ? Math.round(Number(cantidad)) : Math.round(Number(cantidad) * 100) / 100;
+
         const result = await pool.request()
             .input('OID', sql.Int, Number(orderId))
-            .input('C', sql.Int, Math.round(Number(cantidad)))
+            .input('C', sql.Decimal(10, 2), cantNum)
             .query(`
-                DECLARE @Total INT = ${porCopias
+                -- DECIMAL(10,2) para conservar los metros de DIRECTA. En MIMAKI el total son las
+                -- copias del arte; en TPU/DIRECTA, la Magnitud de la orden.
+                DECLARE @Total DECIMAL(10,2) = ${porCopias
                     ? `(SELECT ISNULL(SUM(ISNULL(Copias, 1)), 0) FROM dbo.ArchivosOrden WITH(NOLOCK)
                         WHERE OrdenID = @OID AND ISNULL(EstadoArchivo,'') <> 'CANCELADO')`
-                    : `(SELECT ISNULL(TRY_CONVERT(INT, TRY_CONVERT(FLOAT, Magnitud)), 0) FROM dbo.Ordenes WHERE OrdenID = @OID)`};
-                DECLARE @Val INT = CASE WHEN @C < 0 THEN 0 WHEN @Total > 0 AND @C > @Total THEN @Total ELSE @C END;
+                    : `(SELECT ISNULL(TRY_CONVERT(DECIMAL(10,2), TRY_CONVERT(FLOAT, Magnitud)), 0) FROM dbo.Ordenes WHERE OrdenID = @OID)`};
+                DECLARE @Val DECIMAL(10,2) = CASE WHEN @C < 0 THEN 0 WHEN @Total > 0 AND @C > @Total THEN @Total ELSE @C END;
                 UPDATE dbo.Ordenes
                 SET CantidadImpresa = @Val,
                     Impreso = CASE WHEN @Total > 0 AND @Val >= @Total THEN 1 ELSE 0 END

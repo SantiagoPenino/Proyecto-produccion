@@ -1592,7 +1592,21 @@ async function procesarTransaccion(payload) {
              let importePendienteMoneda = parseFloat((totalNeto - totalCobradoMoneda).toFixed(2));
              
              header._creoDeuda = false;
-             if (importePendienteMoneda > 0.01 && generaDeuda) {
+
+             // ─────────────────────────────────────────────
+             // GUARD DE IDEMPOTENCIA — un documento, una sola deuda viva.
+             // Este INSERT es crudo (no pasa por crearDeudaDocumento), así que se salteaba
+             // el guard del servicio: si el documento ya tenía deuda nacía una segunda fila
+             // idéntica, el cobro imputaba a una y la otra quedaba PENDIENTE para siempre
+             // (la deuda ya cobrada volvía a aparecer en "Documentos con deuda").
+             const deudaYaExiste = generaDeuda
+               ? await contabilidadSvc.buscarDeudaVivaDeDocumento(docIdDocumento, transaction)
+               : null;
+             if (deudaYaExiste) {
+               logger.warn(`[CAJA-CFE] Doc #${docIdDocumento} ya tenía la deuda viva #${deudaYaExiste.DDeIdDocumento} — no se crea una duplicada.`);
+             }
+
+             if (importePendienteMoneda > 0.01 && generaDeuda && !deudaYaExiste) {
                header._creoDeuda = true;
                const cuentaDeudaRes = await new sql.Request(transaction)
                  .input('cli', sql.Int, header.clienteId)
@@ -2078,6 +2092,7 @@ async function _lanzarHooksContables({ aplicaciones, pagosNorm, pagosCreados, he
           MontoPago:   header.deudaPuraUSD,
           MonIdMoneda: 2, // USD
           UsuarioAlta: usuarioId,
+          DocIdDocumento: header.docIdDocumento || null,
         });
       }
       if (header.deudaPuraUYU > 0) {
@@ -2087,6 +2102,7 @@ async function _lanzarHooksContables({ aplicaciones, pagosNorm, pagosCreados, he
           MontoPago:   header.deudaPuraUYU,
           MonIdMoneda: 1, // UYU
           UsuarioAlta: usuarioId,
+          DocIdDocumento: header.docIdDocumento || null,
         });
       }
     } else if (totalNeto > 0) {
@@ -2099,6 +2115,7 @@ async function _lanzarHooksContables({ aplicaciones, pagosNorm, pagosCreados, he
         MontoPago:   totalNeto,
         MonIdMoneda: isOrdenUSD ? 2 : 1,
         UsuarioAlta: usuarioId,
+        DocIdDocumento: header.docIdDocumento || null,
       });
     }
   }

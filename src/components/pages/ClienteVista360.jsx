@@ -22,7 +22,7 @@ import React, { useState, useCallback, useEffect, useMemo } from 'react';
 import {
   Search, RefreshCw, Users, CreditCard, DollarSign, FileText, Wallet,
   ShoppingCart, Tag, FilePlus, MoreHorizontal, Download, Printer,
-  ArrowLeft, Zap, CheckCircle2, Calendar, TrendingDown, PlusCircle, X,
+  ArrowLeft, Zap, CheckCircle2, Calendar, TrendingDown, PlusCircle, X, Layers, Ban,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { useLocation, useNavigate } from 'react-router-dom';
@@ -35,6 +35,7 @@ import { fechaOrden } from '../../utils/fechas';
 // Reuso directo de las piezas ya construidas y probadas de la vista de cuentas.
 import {
   fetchAPI, fmt, FilaCliente, MovimientosPanel, PlanesPanel, ModalSaldoInicial,
+  ModalConsumirRecurso,
 } from './ContabilidadCuentasView';
 // Fase 2: cobro y saldos — se montan tal cual (mismos componentes que Caja).
 import CajaPagoDeudaTab from './CajaPagoDeudaTab';
@@ -103,7 +104,7 @@ const EstadoChip = ({ estado }) => (
   </span>
 );
 
-function ResumenDocumentosPanel({ CliIdCliente, desde, hasta, trigger, incluirAnulados, onIncluirAnulados, saldosPorMoneda, recursoCuentas = [], cliente, recargarCuentas, onResumen }) {
+function ResumenDocumentosPanel({ CliIdCliente, desde, hasta, trigger, incluirAnulados, onIncluirAnulados, saldosPorMoneda, recursoCuentas = [], cuentas = [], cliente, recargarCuentas, onResumen }) {
   const [docs, setDocs]       = useState([]);
   const [pagos, setPagos]     = useState([]);
   const [loading, setLoading] = useState(true);
@@ -121,6 +122,36 @@ function ResumenDocumentosPanel({ CliIdCliente, desde, hasta, trigger, incluirAn
   const [fFact, setFFact]   = useState('TODAS');   // TODAS | FACT | SINFACT
   const [fMon, setFMon]     = useState('TODAS');   // TODAS | $ | US$
   const [fSit, setFSit]     = useState('TODAS');   // TODAS | PAGADO | PENDIENTE | SIN_FACTURAR | ANULADO
+  // Acciones sobre órdenes pendientes de facturar (reuso de ContabilidadCuentasView)
+  const [modalConsumir, setModalConsumir] = useState(null); // orden a consumir desde recurso
+  const [modalCancelar, setModalCancelar] = useState(null); // orden a cancelar/anular
+  const [cancelWorking, setCancelWorking] = useState(false);
+  const [ordRefresh, setOrdRefresh]       = useState(0);    // bump para recargar órdenes tras una acción
+
+  // Orden ya cubierta por un plan → no se ofrece "Recurso" (la reversa se hace desde el libro del plan).
+  const estaCubierta = (o) => (o.MovObservaciones || '').startsWith('CUBIERTO') || (o.MovObservaciones || '').startsWith('MATERIAL_CUBIERTO');
+
+  const cancelarOrden = async () => {
+    if (!modalCancelar) return;
+    setCancelWorking(true);
+    try {
+      const res = await api.post(`/contabilidad/movimientos/${modalCancelar.MovIdMovimiento}/anular-orden`);
+      toast.success(res.data?.message || 'Orden cancelada correctamente');
+      setModalCancelar(null);
+      setOrdRefresh(v => v + 1);
+      recargarCuentas?.();
+    } catch (e) {
+      toast.error(e.response?.data?.error || e.message);
+    } finally {
+      setCancelWorking(false);
+    }
+  };
+
+  // ¿La orden tiene un recurso (plan de metros) con saldo para consumir de su material?
+  // Solo con esto se ofrece el botón "Recurso".
+  const tieneRecurso = (o) => !!o.ProIdProducto && recursoCuentas.some(
+    rc => rc.ProIdProducto != null && rc.ProIdProducto === o.ProIdProducto && Number(rc.CueSaldoActual || 0) > 0.01
+  );
 
   useEffect(() => {
     let alive = true;
@@ -150,7 +181,7 @@ function ResumenDocumentosPanel({ CliIdCliente, desde, hasta, trigger, incluirAn
       .finally(() => { if (alive) setLoadingOrd(false); });
     return () => { alive = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [vista, CliIdCliente, desde, hasta, trigger, incluirAnulados]);
+  }, [vista, CliIdCliente, desde, hasta, trigger, incluirAnulados, ordRefresh]);
 
   // KPIs de la barra de saldos, POR MONEDA (antes dependían del toggle UYU/USD, que ya
   // no existe). Pendiente = suma de lo que resta de los documentos de esa moneda;
@@ -395,7 +426,7 @@ function ResumenDocumentosPanel({ CliIdCliente, desde, hasta, trigger, incluirAn
                         <td className="px-4 py-3 align-middle">
                           <div className="flex items-center gap-2 flex-wrap">
                             <span className={`font-bold ${anulado ? 'text-slate-400 line-through' : 'text-slate-800'}`}>
-                              {m.etiqueta || (esDoc ? '' : 'Sin referencia')}
+                              {m.etiqueta || (esDoc ? '' : (m.recibo || 'Cobro'))}
                             </span>
                             {/* Estado DGI del propio documento (dato fiable). NO se muestra la
                                 referencia al e-Ticket: se derivaba por texto y podía traer el
@@ -407,7 +438,7 @@ function ResumenDocumentosPanel({ CliIdCliente, desde, hasta, trigger, incluirAn
                               <span className="text-[9px] font-black px-1.5 py-0.5 rounded bg-amber-50 text-amber-700 border border-amber-200 uppercase tracking-wide">Borrador</span>
                             )}
                             {/* Cobro: recibo · forma de pago · N° cheque, en la misma línea */}
-                            {!esDoc && m.recibo && (
+                            {!esDoc && m.recibo && m.etiqueta && (
                               <span className="text-[11px] font-bold text-slate-500">{m.recibo}</span>
                             )}
                             {!esDoc && m.medioPago && (
@@ -504,11 +535,13 @@ function ResumenDocumentosPanel({ CliIdCliente, desde, hasta, trigger, incluirAn
                   <tr className="text-[10px] uppercase tracking-wider text-slate-400 border-b border-slate-200">
                     <th className="text-left font-bold px-4 py-2.5">Fecha</th>
                     <th className="text-left font-bold px-4 py-2.5">Orden</th>
+                    <th className="text-left font-bold px-4 py-2.5">Material</th>
                     <th className="text-left font-bold px-4 py-2.5">Documento</th>
                     <th className="text-center font-bold px-4 py-2.5">Facturación</th>
                     <th className="text-center font-bold px-4 py-2.5">Moneda</th>
                     <th className="text-right font-bold px-4 py-2.5">Importe</th>
                     <th className="text-center font-bold px-4 py-2.5">Pago</th>
+                    <th className="text-center font-bold px-4 py-2.5">Acciones</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -518,6 +551,9 @@ function ResumenDocumentosPanel({ CliIdCliente, desde, hasta, trigger, incluirAn
                       <td className="px-4 py-3 align-top">
                         <span className="font-bold text-slate-800">{o.orden}</span>
                         {o.trabajo && <span className="block text-[11px] text-slate-400 truncate max-w-[220px]" title={o.trabajo}>{o.trabajo}</span>}
+                      </td>
+                      <td className="px-4 py-3 align-top text-slate-600 text-xs">
+                        {o.material ? <span className="truncate max-w-[160px] inline-block align-top" title={o.material}>{o.material}</span> : <span className="text-slate-300">—</span>}
                       </td>
                       <td className="px-4 py-3 align-top">
                         {o.documento
@@ -534,12 +570,75 @@ function ResumenDocumentosPanel({ CliIdCliente, desde, hasta, trigger, incluirAn
                       <td className="px-4 py-3 text-center align-top">
                         {o.situacion === 'SIN_FACTURAR' ? <span className="text-slate-300 text-xs">—</span> : <EstadoChip estado={o.situacion} />}
                       </td>
+                      <td className="px-4 py-3 text-center align-top whitespace-nowrap">
+                        {o.situacion === 'SIN_FACTURAR' ? (
+                          <div className="flex items-center justify-center gap-1.5">
+                            {!estaCubierta(o) && tieneRecurso(o) && (
+                              <button onClick={() => setModalConsumir(o)} title="Consumir desde recurso (plan de metros)"
+                                className="inline-flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-bold text-violet-700 bg-violet-50 hover:bg-violet-100 border border-violet-200 transition-colors">
+                                <Layers size={12} /> Recurso
+                              </button>
+                            )}
+                            <button onClick={() => setModalCancelar(o)} title="Cancelar esta orden"
+                              className="inline-flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-bold text-rose-600 bg-rose-50 hover:bg-rose-100 border border-rose-200 transition-colors">
+                              <Ban size={12} /> Cancelar
+                            </button>
+                          </div>
+                        ) : <span className="text-slate-300 text-xs">—</span>}
+                      </td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             </div>
           )}
+
+          {/* ── Modales de acciones sobre órdenes pendientes de facturar (reuso de ContabilidadCuentasView) ── */}
+          {modalConsumir && (
+            <ModalConsumirRecurso
+              mov={{
+                MovIdMovimiento:  modalConsumir.MovIdMovimiento,
+                MovImporte:       modalConsumir.importe,
+                OrdCodigoOrden:   modalConsumir.orden,
+                MovConcepto:      modalConsumir.orden,
+                OrdNombreTrabajo: modalConsumir.trabajo,
+                MovObservaciones: modalConsumir.MovObservaciones,
+                OrdCantidad:      0,
+              }}
+              cuenta={cuentas.find(c => c.CueIdCuenta === modalConsumir.CueIdCuenta)
+                      || { CueIdCuenta: modalConsumir.CueIdCuenta, MonSimbolo: modalConsumir.MonSimbolo, CueDiasCiclo: 0 }}
+              cliente={cliente}
+              onClose={() => setModalConsumir(null)}
+              onSuccess={() => { setModalConsumir(null); setOrdRefresh(v => v + 1); recargarCuentas?.(); }}
+            />
+          )}
+
+          {modalCancelar && (
+            <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 px-4">
+              <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm border border-rose-100 overflow-hidden">
+                <div className="px-6 py-4 bg-gradient-to-r from-rose-600 to-rose-500 text-white flex items-center gap-2">
+                  <Ban size={18} /> <h2 className="font-bold text-base">Cancelar orden</h2>
+                </div>
+                <div className="px-6 py-5 space-y-3">
+                  <p className="text-sm font-bold text-slate-800">{modalCancelar.orden}</p>
+                  {modalCancelar.trabajo && <p className="text-xs text-slate-500">{modalCancelar.trabajo}</p>}
+                  <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-xs text-rose-700">
+                    Se revertirá el saldo de <strong>{modalCancelar.MonSimbolo} {fmtMoney(modalCancelar.importe)}</strong> y la orden no podrá facturarse. Esta acción no se puede deshacer.
+                  </div>
+                </div>
+                <div className="px-6 pb-5 flex gap-3">
+                  <button onClick={() => setModalCancelar(null)} disabled={cancelWorking}
+                    className="flex-1 px-4 py-2.5 text-sm font-semibold text-slate-600 bg-slate-100 hover:bg-slate-200 rounded-xl transition-colors">Volver</button>
+                  <button onClick={cancelarOrden} disabled={cancelWorking}
+                    className="flex-1 px-4 py-2.5 text-sm font-black text-white bg-rose-600 hover:bg-rose-700 disabled:opacity-40 disabled:cursor-not-allowed rounded-xl transition-colors flex items-center justify-center gap-2">
+                    {cancelWorking ? <RefreshCw size={14} className="animate-spin" /> : <Ban size={14} />}
+                    {cancelWorking ? 'Cancelando...' : 'Cancelar orden'}
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
         </>
       )}
 
@@ -1056,6 +1155,7 @@ export default function ClienteVista360() {
                   onIncluirAnulados={setIncluirAnulados}
                   saldosPorMoneda={saldosPorMoneda}
                   recursoCuentas={recursoCuentas}
+                  cuentas={cuentas}
                   cliente={clienteSel}
                   recargarCuentas={recargarCuentas}
                   onResumen={setResumenSaldos}
