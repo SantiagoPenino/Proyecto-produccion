@@ -87,11 +87,14 @@ export default function CfePreviewModal({ doc, onClose }) {
 
                         <div className="border-y border-dashed border-gray-300 py-3 mb-6">
                             <p className="font-bold mb-1">CLIENTE:</p>
+                            {/* Se muestra el receptor REAL del comprobante (datos DGI del documento).
+                                Si se facturó a un tercero, el alias de la cuenta no corresponde. */}
                             <p>
-                                {doc.StringIDCliente && <span className="font-bold mr-1">[{doc.StringIDCliente.trim()}]</span>}
-                                {doc.CliNombreFantasia || doc.CliRazonSocial || 'CONSUMIDOR FINAL'}
+                                {!doc.DocCliNombre && doc.StringIDCliente && <span className="font-bold mr-1">[{doc.StringIDCliente.trim()}]</span>}
+                                {doc.DocCliNombre || doc.CliNombreFantasia || doc.CliRazonSocial || 'CONSUMIDOR FINAL'}
                             </p>
-                            {doc.CliRUT && <p>RUT/CI: {doc.CliRUT}</p>}
+                            {doc.DocCliNombreFantasia && <p>NOMBRE FANTASÍA: {doc.DocCliNombreFantasia}</p>}
+                            {(doc.DocCliDocumento || doc.CliRUT) && <p>RUT/CI: {doc.DocCliDocumento || doc.CliRUT}</p>}
                         </div>
 
                         <div className="mb-6">

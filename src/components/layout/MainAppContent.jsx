@@ -85,6 +85,7 @@ const AuditDepositoView = lazyWithRetry(() => import('../pages/AuditDepositoView
 const AdminEditarOrdenView = lazyWithRetry(() => import('../pages/AdminEditarOrdenView'));
 const ContabilidadCuentasView    = lazyWithRetry(() => import('../pages/ContabilidadCuentasView'));
 const ClienteVista360            = lazyWithRetry(() => import('../pages/ClienteVista360'));
+const VendedorCliente360         = lazyWithRetry(() => import('../pages/VendedorCliente360'));
 const PreFacturaPage             = lazyWithRetry(() => import('../pages/PreFacturaPage'));
 const ContabilidadAntiguedadView  = lazyWithRetry(() => import('../pages/ContabilidadAntiguedadView'));
 const ContabilidadColaEstadosView = lazyWithRetry(() => import('../pages/ContabilidadColaEstadosView'));
@@ -687,6 +688,7 @@ const MainAppContent = ({ menuItems = [] }) => {
                 <Route path="/admin/consola" element={<SysAdminPage />} />
                 <Route path="/contabilidad/cuentas"          element={<ContabilidadCuentasView />} />
                 <Route path="/contabilidad/cliente-360"      element={<ClienteVista360 />} />
+                <Route path="/vendedores/cliente-360"        element={<VendedorCliente360 />} />
                 <Route path="/contabilidad/prefactura"        element={<PreFacturaPage />} />
                 <Route path="/contabilidad/antiguedad"        element={<ContabilidadAntiguedadView />} />
                 <Route path="/contabilidad/cola-estados"      element={<ContabilidadColaEstadosView />} />
@@ -972,6 +974,7 @@ const DynamicRouter = ({ menuItems }) => {
     if (menuItem.Ruta === '/admin/consola') return <SysAdminPage />;
     if (menuItem.Ruta === '/contabilidad/cuentas')              return <ContabilidadCuentasView />;
     if (menuItem.Ruta === '/contabilidad/cliente-360')          return <ClienteVista360 />;
+    if (menuItem.Ruta === '/vendedores/cliente-360')            return <VendedorCliente360 />;
     if (menuItem.Ruta === '/contabilidad/antiguedad')            return <ContabilidadAntiguedadView />;
     if (menuItem.Ruta === '/contabilidad/cola-estados')          return <ContabilidadColaEstadosView />;
     if (menuItem.Ruta === '/contabilidad/recursos')              return <ContabilidadCuentasView />;

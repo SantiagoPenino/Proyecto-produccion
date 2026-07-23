@@ -267,13 +267,18 @@ export const generarPdfFacturaDGI = async (doc, detalles) => {
     pdf.setFontSize(9);
 
     const nombreCli = doc.DocCliNombre || doc.CliNombreFantasia || doc.CliRazonSocial || 'CONSUMIDOR FINAL';
-    const nfantasia = doc.StringIDCliente ? String(doc.StringIDCliente).trim() : '';
+    // Fantasía DEL COMPROBANTE: lo que se escribió en el panel DGI al facturar.
+    // Antes acá salía doc.StringIDCliente (el alias de la ficha del cliente), así que
+    // una factura a un tercero le imprimía el nombre del titular de la cuenta.
+    // Vacío => no se dibuja la línea (las siguientes suben).
+    const nfantasia = String(doc.DocCliNombreFantasia || '').trim();
     const direccion = doc.DocCliDireccion || doc.CliDireccion || '';
     const ciudad = doc.DocCliCiudad || '';
-    pdf.text(`CLIENTE: ${nombreCli}`, rightX + 2, 65);
-    pdf.text(`NOMBRE FANTASÍA: ${nfantasia}`, rightX + 2, 70);
-    pdf.text(`DIRECCIÓN: ${direccion}`, rightX + 2, 75);
-    pdf.text(`CIUDAD: ${ciudad}`, rightX + 2, 80);
+    let cliY = 65;
+    pdf.text(`CLIENTE: ${nombreCli}`, rightX + 2, cliY); cliY += 5;
+    if (nfantasia) { pdf.text(`NOMBRE FANTASÍA: ${nfantasia}`, rightX + 2, cliY); cliY += 5; }
+    pdf.text(`DIRECCIÓN: ${direccion}`, rightX + 2, cliY); cliY += 5;
+    pdf.text(`CIUDAD: ${ciudad}`, rightX + 2, cliY);
 
     // ==========================================
     // TABLA DE DETALLES
@@ -598,14 +603,33 @@ export const generarPdfFacturaDGI = async (doc, detalles) => {
         adY += 5;
     }
 
-    // Cliente + teléfono + familia
-    const cliId  = (doc.StringIDCliente || doc.CliIdCliente || '').toString().trim();
-    const cliNom = (doc.DocCliNombre || doc.CliNombreFantasia || '').toString().trim();
-    const cliTel = doc.CliTelefono ? ` Tel:${doc.CliTelefono.toString().trim()}` : '';
-    const cliFam = doc.CliFamilia   ? `  Familia: ${doc.CliFamilia}` : '';
-    if (cliId || cliNom) {
-        pdf.text(`Cliente:        ${cliId} (${cliNom})${cliTel}${cliFam}`, 15, adY);
-        adY += 5;
+    // Cliente + teléfono + familia.
+    // Si el comprobante se emitió A NOMBRE DE UN TERCERO (RUT/nombre del doc distintos
+    // de la ficha del cliente que lo pagó), la adenda NO puede mostrar el alias, el
+    // teléfono ni la familia del titular de la cuenta: el receptor es otra empresa.
+    const normTxt = v => String(v || '').trim().toUpperCase();
+    const rutDoc   = normTxt(doc.DocCliDocumento);
+    const rutFicha = normTxt(doc.CliRUT);
+    const esTercero = (rutDoc && rutFicha && rutDoc !== rutFicha) ||
+                      (!!normTxt(doc.DocCliNombre) && !!normTxt(doc.CliRazonSocial) &&
+                       normTxt(doc.DocCliNombre) !== normTxt(doc.CliRazonSocial) &&
+                       normTxt(doc.DocCliNombre) !== normTxt(doc.CliNombreFantasia));
+
+    if (esTercero) {
+        const nomTercero = (doc.DocCliNombre || '').toString().trim();
+        if (nomTercero) {
+            pdf.text(`Cliente:        ${nomTercero}${rutDoc ? `  RUT:${rutDoc}` : ''}`, 15, adY);
+            adY += 5;
+        }
+    } else {
+        const cliId  = (doc.StringIDCliente || doc.CliIdCliente || '').toString().trim();
+        const cliNom = (doc.DocCliNombre || doc.CliNombreFantasia || '').toString().trim();
+        const cliTel = doc.CliTelefono ? ` Tel:${doc.CliTelefono.toString().trim()}` : '';
+        const cliFam = doc.CliFamilia   ? `  Familia: ${doc.CliFamilia}` : '';
+        if (cliId || cliNom) {
+            pdf.text(`Cliente:        ${cliId} (${cliNom})${cliTel}${cliFam}`, 15, adY);
+            adY += 5;
+        }
     }
 
     // Plan de financiación (crédito)

@@ -187,6 +187,11 @@ try {
 } catch (e) { logger.error("❌ Error loading profiles routes:", e); }
 
 try {
+    // Vista 360 del Vendedor (solo lectura)
+    app.use('/api/vendedor-360', require('./routes/vendedorVistaRoutes'));
+} catch (e) { logger.error("❌ Error loading vendedor 360 routes:", e); }
+
+try {
     app.use('/api/reports', require('./routes/reportsRoutes'));
 } catch (e) { logger.error("❌ Error loading reports routes:", e); }
 

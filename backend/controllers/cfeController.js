@@ -472,7 +472,10 @@ exports.previewDGI = async (req, res) => {
                 numero: r.nroCFERef,
                 fecha: r.fechaCFEref,
                 monto: r.mntCFEref,
-                razon: r.razonReferencia
+                razon: r.razonReferencia,
+                // Referencia global = el documento corregido no es un CFE (factura del sistema
+                // anterior). Va sin tipo/serie/número a propósito: DGI no lo busca en su base.
+                esGlobal: r.indicadorReferenciaGlobal === 1
             };
         }
 
@@ -486,7 +489,13 @@ exports.previewDGI = async (req, res) => {
                 total: doc.DocTotal,
                 moneda: doc.MonIdMoneda === 2 ? 'USD' : 'UYU'
             },
-            emisor: empresa ? { nombre: empresa.EmpNombre, rut: empresa.EmpRut, caja: empresa.EmpSisnetCaja } : null,
+            // Los nombres reales de las columnas son EmpRazonSocial/EmpNombreFantasia y EmpRuc:
+            // EmpNombre y EmpRut no existen en la tabla, por eso salían vacíos en la previa.
+            emisor: empresa ? {
+                nombre: empresa.EmpNombreFantasia || empresa.EmpRazonSocial,
+                rut: empresa.EmpRuc,
+                caja: empresa.EmpSisnetCaja
+            } : null,
             cfe: {
                 tipoCFE: prep.tipoCFE,
                 nombre: prep.nombreCFE,
@@ -514,7 +523,7 @@ exports.previewDGI = async (req, res) => {
 };
 
 exports.crearFacturaManual = async (req, res) => {
-    const { DocTipo, MonIdMoneda, CliIdCliente, Lineas, Totales, DocCliNombre, DocCliDocumento, DocCliDireccion, DocCliCiudad, DocPagado, MetodoPagoId, Pagos, empresaId, DocFechaEmision } = req.body;
+    const { DocTipo, MonIdMoneda, CliIdCliente, Lineas, Totales, DocCliNombre, DocCliDocumento, DocCliDireccion, DocCliCiudad, DocCliNombreFantasia, DocPagado, MetodoPagoId, Pagos, empresaId, DocFechaEmision } = req.body;
     const pool = await getPool();
     const transaction = new sql.Transaction(pool);
 
@@ -688,6 +697,8 @@ exports.crearFacturaManual = async (req, res) => {
                 docCliDocumento: DocCliDocumento || '',
                 docCliDireccion: DocCliDireccion || '',
                 docCliCiudad: DocCliCiudad || '',
+                // Fantasía del comprobante: se congela acá y NO toca la ficha del cliente.
+                docCliNombreFantasia: (DocCliNombreFantasia || '').trim(),
                 empresaId: empresaId || null,
                 docFechaEmision: fechaDoc // retrofecha elegida; null => GETDATE()
             },
@@ -1013,8 +1024,13 @@ exports.editarFactura = async (req, res) => {
         const { id } = req.params;
         const {
             DocTipo, CliIdCliente, MonIdMoneda, DocSubtotal, DocImpuestos, DocTotal, DocObservaciones,
-            lineas, DocCliNombre, DocCliDocumento, DocCliDireccion, DocCliCiudad,
+            lineas, DocCliNombre, DocCliDocumento, DocCliDireccion, DocCliCiudad, DocCliNombreFantasia,
             DocPagado, MetodoPagoId, Pagos, empresaId, preservarPagos, DocFechaEmision,
+            // Solo los manda la edición de una NC/ND (documento que corrige + motivo)
+            DocIdDocumentoRef, DocMotivoRef,
+            // { tipo:'TICKET'|'FACTURA', serie, numero, fecha, total, monedaId } — datos del CFE
+            // original cuando la nota corrige una factura del sistema anterior.
+            referenciaExterna,
             // El front lo manda solo cuando el usuario confirmó el aviso de "esta factura ya
             // fue cobrada". Sin esto, una edición que la devuelva a pendientes se rechaza.
             confirmarRevertirCobro
@@ -1047,8 +1063,18 @@ exports.editarFactura = async (req, res) => {
         const fechaEdit = resolverFechaDocumento(DocFechaEmision);
         const fechaEfectiva = fechaEdit || (doc.DocFechaEmision ? new Date(doc.DocFechaEmision) : null);
 
-        const cleanDocTipo = String(DocTipo || '').trim();
         const cleanOldDocTipo = String(doc.DocTipo || '').trim();
+
+        // CANDADO: una nota de crédito/débito NO puede cambiar de tipo al editarse.
+        // El modal de facturación solo conoce las tres solapas de venta (Pedido Caja /
+        // e-Ticket / e-Factura), así que al abrir una NC mandaba "E-Ticket Contado" y la
+        // edición la CONVERTÍA en venta: consumía un número de la secuencia ET y
+        // reescribía serie y número. Acá se ignora el tipo entrante y se conserva el propio.
+        const esNotaCreditoDebito = /nota\s*de\s*cr|nota_credito|nota\s*de\s*de|nota_debito/i.test(cleanOldDocTipo);
+        if (esNotaCreditoDebito && String(DocTipo || '').trim() !== cleanOldDocTipo) {
+            logger.warn(`[CFE-EDIT] Doc #${id} es "${cleanOldDocTipo}": se ignora el cambio de tipo a "${String(DocTipo || '').trim()}" (una nota no se convierte en venta).`);
+        }
+        const cleanDocTipo = esNotaCreditoDebito ? cleanOldDocTipo : String(DocTipo || '').trim();
 
         // 1. Obtener configuraciones de ambos tipos de documentos
         const resConfig = await transaction.request()
@@ -1162,6 +1188,23 @@ exports.editarFactura = async (req, res) => {
             }
         }
 
+        // CANDADO: la cabecera y el detalle tienen que cerrar por el mismo importe.
+        // Si no cierran, el documento queda mintiendo: nuestro PDF imprime el total de la
+        // cabecera, pero el CFE que se le manda a DGI se calcula sumando las LÍNEAS. Pasó de
+        // verdad — una nota impresa por 3,08 con una sola línea de 1,08 — y salió emitida así.
+        if (Array.isArray(lineas) && lineas.length) {
+            const sumaLineas = lineas.reduce((acc, l) => acc + (parseFloat(l.DcdTotal) || 0), 0);
+            if (Math.abs(sumaLineas - (parseFloat(DocTotal) || 0)) > 0.02) {
+                await transaction.rollback();
+                logger.warn(`[CFE-EDIT] Doc #${id} rechazado: la suma de las líneas (${sumaLineas.toFixed(2)}) ` +
+                    `no coincide con el total del documento (${Number(DocTotal).toFixed(2)}).`);
+                return res.status(400).json({
+                    error: `El detalle no cierra con el total: las líneas suman ${sumaLineas.toFixed(2)} ` +
+                           `y el documento dice ${Number(DocTotal).toFixed(2)}. No se guardó nada.`
+                });
+            }
+        }
+
         // 1. Actualizar cabecera del documento
         await transaction.request()
             .input('id', sql.Int, id)
@@ -1177,12 +1220,18 @@ exports.editarFactura = async (req, res) => {
             .input('cliDoc', sql.NVarChar(20), DocCliDocumento || '')
             .input('cliDir', sql.NVarChar(200), DocCliDireccion || '')
             .input('cliCiu', sql.NVarChar(100), DocCliCiudad || '')
+            // Si el front no manda el campo (edición vieja), no se pisa lo que ya tenía el doc.
+            .input('cliFant', sql.NVarChar(200), DocCliNombreFantasia !== undefined ? String(DocCliNombreFantasia || '').trim() : null)
             .input('docPagado', sql.Bit, newPaid ? 1 : 0)
             .input('serie', sql.VarChar(10), newSerie)
             .input('numero', sql.Int, newNumero)
             .input('cfeEstado', sql.VarChar(20), newCfeEstado)
             .input('emp', sql.Int, empresaId || null)
             .input('fechaEmis', sql.DateTime, fechaEdit)
+            // Referencia de la NC/ND: el documento que corrige y el motivo. Solo se tocan si el
+            // front los manda (una edición de factura común no los envía y no debe borrarlos).
+            .input('docRef', sql.Int, DocIdDocumentoRef != null ? Number(DocIdDocumentoRef) : null)
+            .input('motivoRef', sql.NVarChar(200), DocMotivoRef != null ? String(DocMotivoRef) : null)
             .query(`
                 UPDATE DocumentosContables SET
                     DocTipo           = CASE WHEN @docTipo <> '' THEN @docTipo ELSE DocTipo END,
@@ -1197,14 +1246,61 @@ exports.editarFactura = async (req, res) => {
                     DocCliDocumento   = @cliDoc,
                     DocCliDireccion   = @cliDir,
                     DocCliCiudad      = @cliCiu,
+                    DocCliNombreFantasia = ISNULL(@cliFant, DocCliNombreFantasia),
                     DocPagado         = @docPagado,
                     DocSerie          = @serie,
                     DocNumero         = @numero,
                     CfeEstado         = @cfeEstado,
                     EmpIdEmpresa      = ISNULL(@emp, EmpIdEmpresa),
-                    DocFechaEmision   = ISNULL(@fechaEmis, DocFechaEmision)
+                    DocFechaEmision   = ISNULL(@fechaEmis, DocFechaEmision),
+                    DocIdDocumentoRef = ISNULL(@docRef, DocIdDocumentoRef),
+                    DocMotivoRef      = ISNULL(@motivoRef, DocMotivoRef)
                 WHERE DocIdDocumento = @id
             `);
+
+        // 1.b Datos del CFE ORIGINAL cuando la nota corrige una factura externa.
+        // Esos datos no viven en la nota: viven en el documento "stub" que la nota referencia
+        // (lo crea generarNotaCreditoExterna). Si no coinciden EXACTAMENTE con lo que DGI tiene
+        // registrado, la nota se rechaza con "No se encontró el CFE referenciado" — por eso
+        // tienen que poder corregirse. Solo se toca un stub externo: nunca un documento propio.
+        if (referenciaExterna && typeof referenciaExterna === 'object') {
+            const refActual = await transaction.request()
+                .input('id', sql.Int, id)
+                .query(`SELECT r.DocIdDocumento, r.DocTipo
+                        FROM DocumentosContables d
+                        JOIN DocumentosContables r ON r.DocIdDocumento = d.DocIdDocumentoRef
+                        WHERE d.DocIdDocumento = @id`);
+            const stub = refActual.recordset[0];
+            if (!stub) {
+                logger.warn(`[CFE-EDIT] Doc #${id}: se mandaron datos de factura externa pero no tiene documento referenciado. Se ignoran.`);
+            } else if (!/extern[oa]/i.test(stub.DocTipo || '')) {
+                logger.warn(`[CFE-EDIT] Doc #${id}: el referenciado #${stub.DocIdDocumento} es "${String(stub.DocTipo).trim()}", no un stub externo. No se toca.`);
+            } else {
+                const esFacturaOrigen = String(referenciaExterna.tipo || '').toUpperCase() === 'FACTURA';
+                const monRef = Number(referenciaExterna.monedaId) === 2 ? 2 : 1;
+                await transaction.request()
+                    .input('refId',   sql.Int, stub.DocIdDocumento)
+                    .input('tipo',    sql.NVarChar(50), esFacturaOrigen ? 'E-Factura Externa' : 'E-Ticket Externo')
+                    .input('serie',   sql.VarChar(10), String(referenciaExterna.serie || '').trim())
+                    .input('numero',  sql.VarChar(20), String(referenciaExterna.numero || '').trim())
+                    .input('fecha',   sql.DateTime, referenciaExterna.fecha ? new Date(referenciaExterna.fecha) : null)
+                    .input('total',   sql.Decimal(18, 2), Number(referenciaExterna.total) || 0)
+                    .input('moneda',  sql.Int, monRef)
+                    .query(`
+                        UPDATE DocumentosContables SET
+                            DocTipo         = @tipo,
+                            DocSerie        = @serie,
+                            DocNumero       = @numero,
+                            DocFechaEmision = ISNULL(@fecha, DocFechaEmision),
+                            DocSubtotal     = @total,
+                            DocTotal        = @total,
+                            MonIdMoneda     = @moneda
+                        WHERE DocIdDocumento = @refId
+                    `);
+                logger.info(`[CFE-EDIT] Doc #${id}: datos del CFE externo referenciado (#${stub.DocIdDocumento}) actualizados → ` +
+                    `${esFacturaOrigen ? 'E-Factura' : 'E-Ticket'} ${referenciaExterna.serie}-${referenciaExterna.numero}`);
+            }
+        }
 
         // Propagar la nueva fecha al asiento contable del documento (si cambió y existe)
         if (fechaEdit && doc.AsiIdAsiento) {
@@ -1878,7 +1974,37 @@ exports.getDetalleFactura = async (req, res) => {
             };
         }
 
-        res.json({ success: true, doc, detalles: result.recordset, pagos, cobro });
+        // Documento REFERENCIADO (el que la NC/ND corrige). La pantalla de edición lo
+        // necesita legible: DocIdDocumentoRef solo es un número, y lo que define si DGI
+        // acepta la nota es si ese documento llegó a ser un CFE (tiene CAE) o no.
+        let referencia = null;
+        if (doc && doc.DocIdDocumentoRef) {
+            const refRes = await pool.request()
+                .input('refId', sql.Int, doc.DocIdDocumentoRef)
+                .query(`
+                    SELECT DocIdDocumento, LTRIM(RTRIM(DocTipo)) AS DocTipo, DocSerie, DocNumero,
+                           DocFechaEmision, DocTotal, MonIdMoneda, CfeEstado, CfeNumeroOficial
+                    FROM dbo.DocumentosContables WITH(NOLOCK) WHERE DocIdDocumento = @refId
+                `);
+            const r = refRes.recordset[0];
+            if (r) {
+                // Tres orígenes distintos, y la pantalla tiene que poder distinguirlos:
+                //  PROPIO  → lo emitió este sistema y DGI lo aceptó (tiene CAE).
+                //  EXTERNO → factura del sistema de facturación anterior, declarada a mano.
+                //            CfeEstado es null a propósito (así no entra en la Bandeja CFE),
+                //            pero SÍ es un CFE que DGI tiene: la nota lo referencia normal.
+                //  SIN_EMITIR → documento propio que nunca se envió. DGI no lo conoce.
+                const esExterno = /extern[oa]/i.test(r.DocTipo || '');
+                referencia = {
+                    ...r,
+                    origen: (r.CfeEstado === 'ACEPTADO_DGI' && r.CfeNumeroOficial) ? 'PROPIO'
+                          : esExterno ? 'EXTERNO'
+                          : 'SIN_EMITIR',
+                };
+            }
+        }
+
+        res.json({ success: true, doc, detalles: result.recordset, pagos, cobro, referencia });
     } catch (err) {
         logger.error('Error obteniendo detalle de factura:', err);
         res.status(500).json({ error: err.message });

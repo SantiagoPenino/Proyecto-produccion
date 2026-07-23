@@ -244,6 +244,9 @@ const crearDocumentoContable = async ({ header, lineas }, transaction = null) =>
   const docFechaEmision = header.docFechaEmision !== undefined && header.docFechaEmision !== null ? header.docFechaEmision : null;
   const docCliNombre = header.docCliNombre !== undefined && header.docCliNombre !== null ? String(header.docCliNombre) : null;
   const docCliDocumento = header.docCliDocumento !== undefined && header.docCliDocumento !== null ? String(header.docCliDocumento) : null;
+  // Nombre de fantasía DEL COMPROBANTE (no de la ficha del cliente): al facturar a un
+  // tercero se imprime lo que se escribió acá; vacío => el PDF no dibuja esa línea.
+  const docCliNombreFantasia = header.docCliNombreFantasia !== undefined && header.docCliNombreFantasia !== null ? String(header.docCliNombreFantasia) : null;
   const docCliDireccion = header.docCliDireccion !== undefined && header.docCliDireccion !== null ? String(header.docCliDireccion) : null;
   const docCliCiudad = header.docCliCiudad !== undefined && header.docCliCiudad !== null ? String(header.docCliCiudad) : null;
   // Multiempresa: se acepta empresaId; cuando es null la BD aplica el DEFAULT (empresa primaria)
@@ -276,6 +279,7 @@ const crearDocumentoContable = async ({ header, lineas }, transaction = null) =>
     .input('FEmis', sql.DateTime, docFechaEmision ? new Date(docFechaEmision) : null)
     .input('CliNombre', sql.NVarChar(200), docCliNombre)
     .input('CliDoc', sql.NVarChar(20), docCliDocumento)
+    .input('CliFant', sql.NVarChar(200), docCliNombreFantasia)
     .input('CliDir', sql.NVarChar(200), docCliDireccion)
     .input('CliCiu', sql.NVarChar(100), docCliCiudad)
     .input('Emp', sql.Int, empresaId || null)
@@ -285,14 +289,14 @@ const crearDocumentoContable = async ({ header, lineas }, transaction = null) =>
          DocSubtotal, DocImpuestos, DocTotalDescuentos, DocTotalRecargos, DocTotal,
          DocEstado, CfeEstado, DocFechaEmision, DocUsuarioAlta, TcaIdTransaccion, AsiIdAsiento,
          DocObservaciones, DocPagado, DocIdDocumentoRef, DocMotivoRef, CicIdCiclo, DocFechaDesde, DocFechaHasta,
-         DocCliNombre, DocCliDocumento, DocCliDireccion, DocCliCiudad, EmpIdEmpresa)
+         DocCliNombre, DocCliDocumento, DocCliDireccion, DocCliCiudad, DocCliNombreFantasia, EmpIdEmpresa)
       OUTPUT INSERTED.DocIdDocumento
       VALUES
         (@Cue, @Cli, @MonId, @Tipo, @Num, @Serie,
          @Sub, @Imp, @TotalDesc, @TotalRec, @Tot,
          @Estado, @CfeEstado, ISNULL(@FEmis, GETDATE()), @Usr, @TcaId, @AsiId,
          @Obs, @Pagado, @DocRef, @MotRef, @CicId, @FDesde, @FHasta,
-         @CliNombre, @CliDoc, @CliDir, @CliCiu, ISNULL(@Emp, (SELECT TOP 1 EmpIdEmpresa FROM dbo.Empresas WHERE EmpPorDefecto=1)))
+         @CliNombre, @CliDoc, @CliDir, @CliCiu, @CliFant, ISNULL(@Emp, (SELECT TOP 1 EmpIdEmpresa FROM dbo.Empresas WHERE EmpPorDefecto=1)))
     `);
 
   const docId = resCab.recordset[0].DocIdDocumento;

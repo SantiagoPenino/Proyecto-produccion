@@ -541,7 +541,14 @@ async function procesarVentaDirecta(payload) {
         usuarioId: usuarioId,
         tcaIdTransaccion: tcaId,
         docPagado: totalAbonadoDeuda >= totalBruto,
-        empresaId: empresaId
+        empresaId: empresaId,
+        // Datos del receptor editados en el comprobante (bloque "Datos DGI"). Si no vienen,
+        // quedan null y la emisión del CFE los toma de la ficha del cliente, como hasta ahora.
+        docCliNombre: header.docCliNombre ?? null,
+        docCliNombreFantasia: header.docCliNombreFantasia ?? null,
+        docCliDocumento: header.docCliDocumento ?? null,
+        docCliDireccion: header.docCliDireccion ?? null,
+        docCliCiudad: header.docCliCiudad ?? null
       },
       lineas: lineasDocumento
     }, transaction);

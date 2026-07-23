@@ -6,6 +6,7 @@ import api from '../../services/apiClient';
 import { generarPdfFacturaDGI } from '../../utils/pdfGenerator';
 import { useEmpresas } from '../../hooks/useEmpresas';
 import FacturacionManualModal from './FacturacionManualModal';
+import NcEditarModal from './NcEditarModal';
 import ConfirmationModal from '../modals/ConfirmationModal';
 import CfeNotaCreditoModal from './CfeNotaCreditoModal';
 import NcExternaModal from './NcExternaModal';
@@ -114,6 +115,14 @@ const ContabilidadBandejaCFE = ({ initialCliente = null, embedded = false, autoN
     
     // ID del documento a editar (abre FacturacionManualModal en mode='editar')
     const [editDocId, setEditDocId] = useState(null);
+    // Qué ventana abrir: la de notas de crédito/débito o la de facturación
+    const [editDocEsNota, setEditDocEsNota] = useState(false);
+
+    const abrirEdicion = (doc) => {
+        const esNota = isCreditNote(doc.DocTipo) || String(doc.DocTipo).toUpperCase().includes('DEBITO');
+        setEditDocEsNota(esNota);
+        setEditDocId(doc.DocIdDocumento);
+    };
 
     // Acciones Copiar/Reversar/Nota de Crédito
     const [copyData, setCopyData] = useState(null);
@@ -876,7 +885,7 @@ const ContabilidadBandejaCFE = ({ initialCliente = null, embedded = false, autoN
                                                         <Printer className="h-5 w-5" />
                                                     </button>
                                                     <button
-                                                        onClick={() => setEditDocId(doc.DocIdDocumento)}
+                                                        onClick={() => abrirEdicion(doc)}
                                                         className="text-gray-500 hover:text-yellow-600 transition-colors"
                                                         title="Editar Borrador"
                                                     >
@@ -919,16 +928,18 @@ const ContabilidadBandejaCFE = ({ initialCliente = null, embedded = false, autoN
                                                     >
                                                         <Printer className="h-5 w-5" />
                                                     </button>
-                                                    {/* Editar: solo para facturas, no para NC/ND */}
-                                                    {!(isCreditNote(doc.DocTipo) || String(doc.DocTipo).toUpperCase().includes('DEBITO')) && (
+                                                    {/* Editar: también NC/ND mientras sigan PENDIENTE (todavía no se
+                                                        emitieron ante DGI, así que el comprobante no es fiscal aún).
+                                                        El backend igual valida: editarFactura solo acepta PENDIENTE/BORRADOR. */}
                                                     <button
-                                                        onClick={() => setEditDocId(doc.DocIdDocumento)}
+                                                        onClick={() => abrirEdicion(doc)}
                                                         className="text-gray-500 hover:text-yellow-600 transition-colors"
-                                                        title="Editar Factura"
+                                                        title={isCreditNote(doc.DocTipo) || String(doc.DocTipo).toUpperCase().includes('DEBITO')
+                                                            ? 'Editar esta nota — se puede porque todavía no se envió a DGI'
+                                                            : 'Editar Factura'}
                                                     >
                                                         <Edit className="h-5 w-5" />
                                                     </button>
-                                                    )}
                                                     {/* Reversar */}
                                                     <button
                                                         onClick={() => handleAnular(doc)}
@@ -1086,7 +1097,20 @@ const ContabilidadBandejaCFE = ({ initialCliente = null, embedded = false, autoN
                 />
             )}
 
-            {editDocId && (
+            {/* Las notas de crédito/débito tienen su propia ventana: el modal de facturación
+                es para EMITIR ventas (solapas de tipo, serie, contado/crédito, medios de pago,
+                calculadora de vuelto) y nada de eso aplica a una nota. */}
+            {editDocId && (editDocEsNota ? (
+                <NcEditarModal
+                    docId={editDocId}
+                    onClose={() => { setEditDocId(null); setEditDocEsNota(false); }}
+                    onSuccess={() => {
+                        setEditDocId(null);
+                        setEditDocEsNota(false);
+                        fetchDocumentos();
+                    }}
+                />
+            ) : (
                 <FacturacionManualModal
                     mode="editar"
                     editDocId={editDocId}
@@ -1096,7 +1120,7 @@ const ContabilidadBandejaCFE = ({ initialCliente = null, embedded = false, autoN
                         fetchDocumentos();
                     }}
                 />
-            )}
+            ))}
         </div>
     );
 };

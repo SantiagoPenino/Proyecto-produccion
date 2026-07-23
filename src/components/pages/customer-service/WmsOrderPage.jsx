@@ -9,6 +9,8 @@ const WmsOrderPage = () => {
     const [loading, setLoading] = useState(false);
     const [syncing, setSyncing] = useState(false);
     const [searchTerm, setSearchTerm] = useState('');
+    const [hideOutOfStock, setHideOutOfStock] = useState(true);
+    const [showImages, setShowImages] = useState(true);
     const [cart, setCart] = useState([]);
     const [selectedProduct, setSelectedProduct] = useState(null);
 
@@ -351,7 +353,8 @@ const WmsOrderPage = () => {
     const filteredCatalog = catalog.filter(p => {
         const matchesSearch = p.Descripcion.toLowerCase().includes(searchTerm.toLowerCase()) ||
                               (p.nombre_wms && p.nombre_wms.toLowerCase().includes(searchTerm.toLowerCase()));
-        return matchesSearch;
+        const hasStock = !hideOutOfStock || Number(p.total_stock) !== 0;
+        return matchesSearch && hasStock;
     });
 
     // const totalCart = ... calculated at the top
@@ -637,6 +640,28 @@ const WmsOrderPage = () => {
                         </div>
                         
                         <div className="flex items-center gap-4">
+                            <button
+                                type="button"
+                                onClick={() => setHideOutOfStock(v => !v)}
+                                title={hideOutOfStock ? 'Mostrando solo productos con stock' : 'Mostrando todos los productos'}
+                                className="flex items-center gap-2.5 px-4 py-3 bg-slate-100 hover:bg-slate-200 rounded-2xl font-bold text-sm text-slate-700 transition-all"
+                            >
+                                <span className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors ${hideOutOfStock ? 'bg-blue-600' : 'bg-slate-300'}`}>
+                                    <span className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${hideOutOfStock ? 'translate-x-6' : 'translate-x-1'}`} />
+                                </span>
+                                Ocultar sin stock
+                            </button>
+                            <button
+                                type="button"
+                                onClick={() => setShowImages(v => !v)}
+                                title={showImages ? 'Mostrando fotos en las cards' : 'Fotos ocultas en las cards'}
+                                className="flex items-center gap-2.5 px-4 py-3 bg-slate-100 hover:bg-slate-200 rounded-2xl font-bold text-sm text-slate-700 transition-all"
+                            >
+                                <span className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors ${showImages ? 'bg-blue-600' : 'bg-slate-300'}`}>
+                                    <span className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${showImages ? 'translate-x-6' : 'translate-x-1'}`} />
+                                </span>
+                                Mostrar fotos
+                            </button>
                             <div className="relative">
                                 <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
                                 <input 
@@ -671,13 +696,15 @@ const WmsOrderPage = () => {
                                      className="bg-white rounded-[1.5rem] border border-slate-200 overflow-hidden hover:shadow-xl hover:-translate-y-1 hover:border-blue-200 transition-all duration-300 cursor-pointer flex flex-col h-full group relative"
                                 >
                                     {/* Image Placeholder */}
-                                    <div className="h-32 bg-slate-50 flex flex-col justify-center items-center relative overflow-hidden p-4">
-                                        {product.imagen ? (
-                                            <img src={product.imagen} alt={product.Descripcion} className="w-full h-full object-contain mix-blend-multiply group-hover:scale-105 transition-transform duration-500" />
-                                        ) : (
-                                            <Package size={48} strokeWidth={1} className="text-slate-300 group-hover:scale-110 transition-transform duration-500" />
-                                        )}
-                                    </div>
+                                    {showImages && (
+                                        <div className="h-32 bg-slate-50 flex flex-col justify-center items-center relative overflow-hidden p-4">
+                                            {product.imagen ? (
+                                                <img src={product.imagen} alt={product.Descripcion} className="w-full h-full object-contain mix-blend-multiply group-hover:scale-105 transition-transform duration-500" />
+                                            ) : (
+                                                <Package size={48} strokeWidth={1} className="text-slate-300 group-hover:scale-110 transition-transform duration-500" />
+                                            )}
+                                        </div>
+                                    )}
                                     
                                     <div className="p-4 flex-1 flex flex-col bg-white">
                                         <h3 className="font-bold text-slate-800 text-base mb-2 leading-tight group-hover:text-blue-600 transition-colors line-clamp-2">{product.Descripcion}</h3>

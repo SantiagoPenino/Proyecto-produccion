@@ -34,6 +34,9 @@ export default function CajaVentaDirectaTab({
   hideBilletera = false,
   pasoExterno = undefined,
   onPasoExterno = undefined,
+  // Slot opcional: contenido extra al pie de la columna del cliente (ej. datos DGI del
+  // comprobante en la Venta de Rollo). Por defecto null → no afecta a los demás usos.
+  debajoCliente = null,
 }) {
   // Cliente
   const [qCliente, setQCliente] = useState('');
@@ -371,6 +374,9 @@ export default function CajaVentaDirectaTab({
             </div>
           </div>
         )}
+
+        {/* Slot opcional al pie de la columna del cliente (datos DGI del comprobante, etc.) */}
+        {debajoCliente && <div className="mt-4">{debajoCliente}</div>}
       </div>
 
       {/* ── CONTENIDO PRINCIPAL ── */}

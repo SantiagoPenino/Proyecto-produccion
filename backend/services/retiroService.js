@@ -224,7 +224,7 @@ async function crearRetiro(transaction, { ordIds, totalCost, lugarRetiro, usuari
     const ordDataReq = transaction.request();
     ordIds.forEach((id, i) => ordDataReq.input(`ord${i}`, sql.Int, id));
     const ordDataRes = await ordDataReq.query(`
-        SELECT OrdIdOrden, ProIdProducto, OrdCantidad, PagIdPago, MonIdMoneda
+        SELECT OrdIdOrden, ProIdProducto, OrdCantidad, PagIdPago, MonIdMoneda, OrdCostoFinal
         FROM   dbo.OrdenesDeposito WITH(NOLOCK)
         WHERE  OrdIdOrden IN (${ordParamsClause})
     `);
@@ -251,9 +251,9 @@ async function crearRetiro(transaction, { ordIds, totalCost, lugarRetiro, usuari
     //  Reemplaza el viejo bypass ciego de tipo 2/3 (que autorizaba sin verificar nada).
     //
     //  Cobertura y estado resultante:
-    //    ABONADO (3)    — pago previo, plan de metros activo, o ROLLO con plan histórico.
-    //                     El rollo NEGATIVO SIEMPRE pasa (aunque el plan esté cerrado): se
-    //                     cubrió en metros y se compensa con el próximo rollo.
+    //    ABONADO (3)    — pago previo, plan de metros activo, o ROLLO con la orden a costo 0.
+    //                     ROLLO: la cobertura la define el COSTO de cada orden — costo 0 = la
+    //                     cubrió el rollo → pasa; costo > 0 = fuera del rollo → debe pagar.
     //    AUTORIZADO (9) — crédito: ciclo semanal abierto, o PLATA adelantada (anticipo) con
     //                     saldo LIMPIO >= 0 (ver calcularAdelantoLimpio; NO usa el CueSaldoActual
     //                     roto). El débito ORDEN ya corrió al INGRESO → el chequeo es
@@ -262,8 +262,11 @@ async function crearRetiro(transaction, { ordIds, totalCost, lugarRetiro, usuari
 
     const esRollo = /ROLLO/i.test(tipoClienteDesc || '');
 
+    // Semanal (tipo 2) O rollo que ADEMÁS opera a crédito (ciclo abierto): se le fía y se
+    // cobra al cierre del ciclo → NO frena aunque la orden tenga costo. Hay clientes tipo 3
+    // (rollo) con ciclo de crédito abierto: sus órdenes con costo son CRÉDITO, no fuga.
     let tieneCicloSemanal = false;
-    if (tipoCliente === 2) {
+    if (tipoCliente === 2 || esRollo) {
         tieneCicloSemanal = await verificarCicloSemanal(transaction, CliIdCliente);
     }
 
@@ -273,16 +276,29 @@ async function crearRetiro(transaction, { ordIds, totalCost, lugarRetiro, usuari
     for (const orden of ordenesData) {
         if (orden.PagIdPago) continue; // ya pagada
 
+        // ── ROLLO POR ADELANTADO: la cobertura la define el COSTO de la orden ──
+        // El motor de contabilización (check-in a DEPOSITO) deja OrdCostoFinal = 0
+        // cuando el rollo/plan de metros cubrió la orden, y OrdCostoFinal > 0 cuando
+        // NO la cubrió (rollo agotado, sin recurso comprado, o producto fuera del plan).
+        // Por eso el costo es la señal fiable: costo 0 = cubierta por el rollo → pasa;
+        // costo > 0 = fuera del rollo → debe pagar (NO se autoriza por ser tipo rollo).
+        // Antes 'tienePlanHistorico' dejaba pasar TODA orden del rollo, tuviera costo o no.
+        if (esRollo) {
+            const costoOrden = parseFloat(orden.OrdCostoFinal) || 0;
+            if (costoOrden <= 0) {
+                logger.info(`[RETIRO] Orden ${orden.OrdIdOrden} cubierta por rollo (costo 0) → pasa.`);
+                continue;
+            }
+            logger.warn(`[RETIRO] Orden ${orden.OrdIdOrden} de rollo con costo ${costoOrden} (fuera del rollo) → requiere pago o crédito (ciclo abierto).`);
+            ordenesQueNecesitanCredito.push(orden);
+            continue;
+        }
+
         if (orden.ProIdProducto) {
             // plan de metros ACTIVO → rollo positivo
             const recurso = await verificarRecursoCliente(transaction, { CliIdCliente, ProIdProducto: orden.ProIdProducto });
             if (recurso.tieneRecurso) {
                 logger.info(`[RETIRO] Orden ${orden.OrdIdOrden} cubierta por plan activo #${recurso.planId}`);
-                continue;
-            }
-            // ROLLO con plan HISTÓRICO (aunque cerrado / en negativo) → SIEMPRE pasa
-            if (esRollo && await tienePlanHistorico(transaction, CliIdCliente, orden.ProIdProducto)) {
-                logger.info(`[RETIRO] Orden ${orden.OrdIdOrden} cubierta por rollo (plan histórico, posible negativo) → pasa.`);
                 continue;
             }
         }

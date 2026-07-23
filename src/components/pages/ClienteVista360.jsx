@@ -224,6 +224,7 @@ function ResumenDocumentosPanel({ CliIdCliente, desde, hasta, trigger, incluirAn
         clase: 'PAGO', key: 'P' + i, fecha: p.fecha, moneda: p.MonSimbolo,
         tipoKey: 'PAGO', tipoLabel: p.tipo, etiqueta: p.aplicadoA || null,
         esFavor: !!p.esFavor, medioPago: p.medioPago, cheques: p.cheques, recibo: p.recibo,
+        pagoMoneda: p.pagoMoneda, pagoMonto: p.pagoMonto, pagoCotiz: p.pagoCotiz,
         cargo: 0, abono: Number(p.importe || 0), estado: p.esFavor ? 'A FAVOR' : 'COBRO',
       })),
     ];
@@ -444,6 +445,14 @@ function ResumenDocumentosPanel({ CliIdCliente, desde, hasta, trigger, incluirAn
                             {!esDoc && m.medioPago && (
                               <span className="text-[11px] font-semibold text-slate-500">
                                 · {m.medioPago}{m.cheques ? ` · Cheque N° ${m.cheques}` : ''}
+                              </span>
+                            )}
+                            {/* Moneda REAL del pago cuando difiere de la moneda de la cuenta:
+                                el importe de la fila queda en la moneda de la cuenta (US$), y acá
+                                se aclara con qué se pagó de verdad (ej. UYU 896,28 @ 40,74). */}
+                            {!esDoc && m.pagoMoneda && (
+                              <span className="text-[11px] font-bold text-amber-600" title="Moneda con la que se cobró realmente">
+                                · pagado {m.pagoMoneda} {fmtMoney(m.pagoMonto)}{m.pagoCotiz > 1 ? ` @ ${fmtMoney(m.pagoCotiz)}` : ''}
                               </span>
                             )}
                           </div>

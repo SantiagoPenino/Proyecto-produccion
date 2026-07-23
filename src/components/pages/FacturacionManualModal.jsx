@@ -7,6 +7,7 @@ import CajaPanelPago from './CajaPanelPago';
 import ConfirmationModal from '../modals/ConfirmationModal';
 import { useEmpresas } from '../../hooks/useEmpresas';
 import { validarDocumentoUY } from '../../utils/documentoUY';
+import { getTipoDocName } from '../../utils/tiposDocumento';
 
 
 // ID del Consumidor Final genérico (sin cuenta corriente)
@@ -134,7 +135,7 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
         MonIdMoneda: initialData.MonIdMoneda || 1,
         CliIdCliente: initialData.CliIdCliente || '',
         DocCliNombre: initialData.DocCliNombre || initialData.CliRazonSocial || initialData.CliNombreFantasia || '',
-        DocCliNombreFantasia: '',
+        DocCliNombreFantasia: initialData.DocCliNombreFantasia || '',
         DocCliDocumento: initialData.DocCliDocumento || initialData.CliRUT || '',
         DocCliDireccion: initialData.DocCliDireccion || initialData.CliDireccion || '',
         DocCliCiudad: initialData.DocCliCiudad || '',
@@ -300,6 +301,7 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
           MonIdMoneda: d.MonIdMoneda || 1,
           CliIdCliente: d.CliIdCliente ? String(d.CliIdCliente) : '',
           DocCliNombre: d.DocCliNombre || d.CliRazonSocial || d.CliNombreFantasia || 'Consumidor Final',
+          DocCliNombreFantasia: d.DocCliNombreFantasia || '',
           DocCliDocumento: d.DocCliDocumento || d.CliRUT || '',
           DocCliDireccion: d.DocCliDireccion || d.CliDireccion || '',
           DocCliCiudad: d.DocCliCiudad || '',
@@ -595,6 +597,7 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
     setFormData(prev => ({
       ...prev,
       DocCliNombre: 'Consumidor Final',
+      DocCliNombreFantasia: '',
       DocCliDocumento: '',
       DocCliDireccion: '',
       DocCliCiudad: 'Montevideo'
@@ -617,6 +620,7 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
       setFormData(prev => ({
         ...prev,
         DocCliNombre: c.Nombre || c.NombreFantasia || '',
+        DocCliNombreFantasia: '',
         DocCliDocumento: c.CioRuc || c.IDCliente || '',
         DocCliDireccion: c.DireccionTrabajo || '',
         DocCliCiudad: deptoNombre || ''
@@ -924,6 +928,7 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
           DocCliDocumento: formData.DocCliDocumento,
           DocCliDireccion: formData.DocCliDireccion,
           DocCliCiudad: formData.DocCliCiudad,
+          DocCliNombreFantasia: (formData.DocCliNombreFantasia || '').trim(),
           DocPagado: formData.DocPagado,
           MetodoPagoId: formData.DocPagado ? parseInt(pagos[0]?.metodoPagoId) : null,
           // Pagos intactos de BD → el backend los preserva tal cual (no borra/recrea)
@@ -974,6 +979,7 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
           DocCliDocumento: formData.DocCliDocumento,
           DocCliDireccion: formData.DocCliDireccion,
           DocCliCiudad: formData.DocCliCiudad,
+          DocCliNombreFantasia: (formData.DocCliNombreFantasia || '').trim(),
           DocPagado: formData.DocPagado,
           MetodoPagoId: formData.DocPagado ? parseInt(pagos[0]?.metodoPagoId) : null,
           Pagos: formData.DocPagado ? pagos.map(p => ({
@@ -1023,8 +1029,18 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
             <FileText size={20} />
           </div>
           <div>
-            <h2 className="text-lg font-black text-zinc-800 tracking-tight leading-none">Nueva Facturación Manual Libre (DGI)</h2>
-            <p className="text-xs font-semibold text-zinc-400 mt-1">Emisión directa y arqueo sin pasar por caja de mostrador</p>
+            {/* Editando, el encabezado dice QUÉ documento se está tocando: decir siempre
+                "Nueva Facturación Manual" hacía pensar que se estaba creando otro. */}
+            <h2 className="text-lg font-black text-zinc-800 tracking-tight leading-none">
+              {esEditar
+                ? `Editando ${getTipoDocName(editDocInfo?.DocTipo, 'documento')}${editDocInfo?.DocSerie ? ` ${editDocInfo.DocSerie}-${editDocInfo.DocNumero}` : ''}`
+                : 'Nueva Facturación Manual Libre (DGI)'}
+            </h2>
+            <p className="text-xs font-semibold text-zinc-400 mt-1">
+              {esEditar
+                ? 'Se modifica el documento existente (todavía no fue enviado a DGI). No se crea uno nuevo.'
+                : 'Emisión directa y arqueo sin pasar por caja de mostrador'}
+            </p>
           </div>
         </div>
         {empresas.length > 0 && (
@@ -1289,12 +1305,12 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
                   />
                 </div>
                 <div>
-                  <label className="text-[8px] font-black text-zinc-400 uppercase tracking-widest px-1">Nombre de Fantasía (opcional — no va al CFE)</label>
+                  <label className="text-[8px] font-black text-zinc-400 uppercase tracking-widest px-1">Nombre de Fantasía (opcional — se imprime en ESTE comprobante, no va a DGI)</label>
                   <input
                     type="text"
                     value={formData.DocCliNombreFantasia || ''}
                     onChange={e => setFormData({ ...formData, DocCliNombreFantasia: e.target.value })}
-                    placeholder="Dejar vacío para no tocar el nombre de fantasía del cliente"
+                    placeholder="Vacío = no se imprime ninguna línea de fantasía"
                     className="w-full border border-zinc-200 rounded-lg px-2.5 py-1.5 text-xs font-bold focus:border-indigo-500 outline-none bg-white text-zinc-800 shadow-sm mt-0.5"
                   />
                 </div>

@@ -207,17 +207,63 @@ exports.prepararCFE = async (doc, lineas, cotDolar = 40.0, empresa = null) => {
                 
                 const fechaRef = new Date(refDoc.DocFechaEmision).toLocaleDateString('en-GB'); // DD/MM/YYYY
                 
-                listaWsReferencias.push({
-                    nroLinRef: 1,
-                    indicadorReferenciaGlobal: 0,
-                    tpoDocRef: tpoDocRef,
-                    serie: refSerie,
-                    nroCFERef: refNumero,
-                    fechaCFEref: fechaRef,
-                    razonReferencia: (doc.DocMotivoRef || 'Reverso').substring(0, 90),
-                    mntCFEref: Number(Number(refDoc.DocTotal || 0).toFixed(2))
-                });
-                logger.info(`[SISNET-Service] Referencia cargada correctamente: tipo=${tpoDocRef}, serie=${refSerie}, nro=${refNumero}`);
+                // ¿El comprobante corregido lo emitió ESTE sistema? Los documentos "Externo/Externa"
+                // son facturas del proveedor de facturación anterior: existen en DGI, pero NO en la
+                // base de SISNET, y SISNET valida la referencia contra la suya. Probado con serie y
+                // número reales (A-50050): igual responde "No se encontró el CFE referenciado en la
+                // base de datos". Por serie y número no hay forma.
+                const refEsExterno = /extern[oa]/i.test(refDoc.DocTipo || '');
+
+                // Moneda del comprobante referenciado. SISNET la exige en la referencia de toda
+                // NC/ND ("Campo es requerido por parámetro V25"), y hasta ahora nunca se mandaba:
+                // cuando el CFE referenciado estaba en su base la deducía sola, pero si no lo
+                // encuentra —o va referencia global— no tiene de dónde sacarla y rechaza.
+                // Es la del ORIGINAL, no la de la nota: puede diferir.
+                const refMoneda = (refDoc.MonIdMoneda ?? doc.MonIdMoneda) === 2 ? 'USD' : 'UYU';
+
+                if (!refEsExterno) {
+                    listaWsReferencias.push({
+                        nroLinRef: 1,
+                        indicadorReferenciaGlobal: 0,
+                        tpoDocRef: tpoDocRef,
+                        serie: refSerie,
+                        nroCFERef: refNumero,
+                        fechaCFEref: fechaRef,
+                        razonReferencia: (doc.DocMotivoRef || 'Reverso').substring(0, 90),
+                        mntCFEref: Number(Number(refDoc.DocTotal || 0).toFixed(2)),
+                        monedaReferencia: refMoneda
+                    });
+                    logger.info(`[SISNET-Service] Referencia cargada correctamente: tipo=${tpoDocRef}, serie=${refSerie}, nro=${refNumero}`);
+                } else {
+                    // REFERENCIA GLOBAL: sin tipo, serie ni número, así SISNET no busca nada.
+                    // Los datos del comprobante original viajan como texto en razonReferencia,
+                    // que es donde el estándar espera que se describa un documento referenciado
+                    // que no se puede identificar por su CFE.
+                    const desc = [
+                        /factura/i.test(refDoc.DocTipo || '') ? 'e-Factura' : 'e-Ticket',
+                        [refDoc.DocSerie, refDoc.DocNumero].filter(Boolean).join('-'),
+                        `del ${fechaRef}`,
+                        doc.DocMotivoRef ? `- ${doc.DocMotivoRef}` : ''
+                    ].filter(Boolean).join(' ');
+
+                    // El monto sí se informa: con monedaReferencia presente ya es válido, y deja
+                    // asentado ante DGI el importe del comprobante que se está corrigiendo.
+                    listaWsReferencias.push({
+                        nroLinRef: 1,
+                        indicadorReferenciaGlobal: 1,
+                        razonReferencia: desc.substring(0, 90),
+                        fechaCFEref: fechaRef,
+                        mntCFEref: Number(Number(refDoc.DocTotal || 0).toFixed(2)),
+                        monedaReferencia: refMoneda
+                    });
+                    // La familia (e-Ticket vs e-Factura) se mantiene con el tipo que el usuario
+                    // declaró del original: DGI exige que la NC sea de la misma familia que el
+                    // comprobante que corrige, y acá ese dato solo lo sabe quien lo cargó.
+                    refEsFactura = /factura/i.test(refDoc.DocTipo || '');
+                    logger.warn(`[SISNET-Service] Referenciado #${refDoc.DocIdDocumento} es externo ` +
+                        `("${String(refDoc.DocTipo).trim()}" ${refDoc.DocSerie}-${refDoc.DocNumero}): SISNET no lo tiene ` +
+                        `en su base. Se referencia en forma GLOBAL: "${desc.substring(0, 90)}"`);
+                }
             } else {
                 logger.warn(`[SISNET-Service] Documento referenciado con ID ${doc.DocIdDocumentoRef} no fue encontrado en la base de datos.`);
             }

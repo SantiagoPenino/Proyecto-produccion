@@ -1779,7 +1779,11 @@ async function getResumenDocumentos(CliIdCliente, desde = null, hasta = null) {
         -- ese cobro generó (mismo cliente, fecha e importe), cuya transacción sí trae el medio.
         COALESCE(med.Medios,  medRC.Medios)  AS Medios,
         COALESCE(med.Cheques, medRC.Cheques) AS Cheques,
-        medRC.Recibo
+        medRC.Recibo,
+        -- Moneda/monto REAL del pago cuando se cobró en una moneda distinta a la de la cuenta
+        -- (ej. deuda en US$ pagada en UYU). El dato solo vive en Pagos; acá se expone para
+        -- mostrarlo junto al importe de la cuenta, SIN alterar el importe contable (MovImporte).
+        pagoReal.PagoSimbolo, pagoReal.PagoMonto, pagoReal.PagoCotiz
       FROM dbo.MovimientosCuenta m WITH(NOLOCK)
       JOIN dbo.CuentasCliente cc WITH(NOLOCK) ON cc.CueIdCuenta = m.CueIdCuenta
       LEFT JOIN dbo.Monedas mo WITH(NOLOCK) ON mo.MonIdMoneda = cc.MonIdMoneda
@@ -1819,6 +1823,22 @@ async function getResumenDocumentos(CliIdCliente, desde = null, hasta = null) {
         -- DESC para tomar el recibo con número "limpio" (RC-90) en vez del padded (RC-000089)
         ORDER BY rc.DocIdDocumento DESC
       ) medRC
+      OUTER APPLY (
+        -- Pago(s) de este cobro en su moneda ORIGINAL, SOLO si difiere de la moneda de la cuenta.
+        -- Se llega a la transacción del pago por el vínculo directo (m.PagIdPago) o, cuando el
+        -- movimiento no lo estampó (ventas de caja), por el documento que canceló (dc.TcaIdTransaccion).
+        -- El sistema maneja 2 monedas (UYU/USD), así que el pago "en otra moneda" es siempre una sola:
+        -- SUM del monto original y MIN del símbolo son correctos.
+        SELECT
+          PagoSimbolo = MIN(mo4.MonSimbolo),
+          PagoMonto   = SUM(p4.PagMontoPago),
+          PagoCotiz   = MAX(p4.PagCotizacion)
+        FROM dbo.Pagos p4 WITH(NOLOCK)
+        LEFT JOIN dbo.Monedas mo4 WITH(NOLOCK) ON mo4.MonIdMoneda = p4.PagIdMonedaPago
+        WHERE p4.PagTcaIdTransaccion = COALESCE(pg.PagTcaIdTransaccion, dc.TcaIdTransaccion)
+          AND p4.PagIdMonedaPago <> cc.MonIdMoneda
+          AND ISNULL(p4.PagMontoConvertido, 0) > 0
+      ) pagoReal
       WHERE cc.CliIdCliente = @cli
         AND m.MovTipo IN ('PAGO','ANTICIPO','SALDO_A_FAVOR','COBRO','NOTA_CREDITO')
         AND (m.MovAnulado IS NULL OR m.MovAnulado = 0)
@@ -1851,6 +1871,11 @@ async function getResumenDocumentos(CliIdCliente, desde = null, hasta = null) {
       medioPago: p.Medios || null,   // 'Contado', 'Transferencia + Cheque', …
       cheques:   p.Cheques || null,  // números de cheque, cuando el medio es cheque
       recibo:    p.Recibo || null,   // RC-xx que generó el cobro
+      // Moneda/monto reales del pago cuando difieren de la moneda de la cuenta (ej. deuda US$
+      // cobrada en UYU). Null cuando el cobro fue en la misma moneda de la cuenta corriente.
+      pagoMoneda: p.PagoMonto != null ? p.PagoSimbolo : null,
+      pagoMonto:  p.PagoMonto != null ? Number(p.PagoMonto) : null,
+      pagoCotiz:  p.PagoCotiz != null ? Number(p.PagoCotiz) : null,
     };
   });
 

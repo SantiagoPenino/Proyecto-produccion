@@ -611,8 +611,13 @@ export default function CajaPanelPago({
                       </select>
                     </div>
                     
-                    {/* Comprobante inline (solo cuando locked y se pasaron props) */}
-                    {locked && onComprobanteFile && (
+                    {/* Comprobante inline: se muestra cuando el padre lo maneje (pasa
+                        onComprobanteFile) Y esta línea de pago es una transferencia — que es
+                        la que deja respaldo del banco. Antes exigía locked=true, y al habilitar
+                        la elección de tipo de documento (locked=false) desaparecía el adjunto. */}
+                    {onComprobanteFile
+                      && /transfer/i.test(metodosPago.find(m => m.MPaIdMetodoPago === parseInt(p.metodoPagoId))?.MPaDescripcionMetodo || '')
+                      && (
                       comprobanteFile ? (
                         <div className="flex items-center gap-1.5 bg-emerald-50 border border-emerald-300 rounded-xl px-2.5 py-1.5 min-w-0 flex-1">
                           <CheckCircle size={13} className="text-emerald-500 shrink-0" />

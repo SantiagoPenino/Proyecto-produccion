@@ -58,6 +58,22 @@
  * de artículo matchea igual que antes vía PedidosCobranza/PedidosCobranzaDetalle
  * (join por texto de código de orden), así que su cobertura es la de esa tabla, no
  * la de DocumentosContablesDetalle.
+ *
+ * ── Por qué "Ventas por Área" y "Ventas por Documento" tienen que dar el mismo total ──
+ * (decisión del usuario, 2026-07-23: son la misma plata vista de dos formas, tienen
+ * que cerrar exacto). La primera versión sumaba DcdSubtotal (línea) directo, que NO
+ * necesariamente suma lo mismo que DocTotal (cabecera) — IVA, descuentos generales,
+ * líneas duplicadas por ediciones, etc. hacen que la suma de líneas se desvíe del
+ * total real del documento (verificado: en USD llegaba a estar 77% por ENCIMA del
+ * total facturado real).
+ *
+ * Ahora cada documento reparte su propio DocTotal (no DcdSubtotal) entre las áreas
+ * que tocó, PROPORCIONALMENTE al peso de DcdSubtotal de cada área dentro de ese
+ * documento. Si un documento no tiene ningún Subtotal para pesar (todo en 0), se
+ * reparte por partes iguales entre las áreas que aparecen. Como los pesos de cada
+ * documento siempre suman 1, la suma total de todas las áreas es matemáticamente
+ * idéntica a la suma de DocTotal de "Ventas por Documento" — no es una casualidad
+ * de los datos, está garantizado por construcción.
  * ────────────────────────────────────────────────────────────────────────────
  */
 
@@ -179,39 +195,65 @@ exports.getFiltrosVentas = async (req, res) => {
 };
 
 // ─── GET /api/contabilidad/reportes/ventas-por-area ───────────────────────────
-// Monto = suma de DocumentosContablesDetalle.DcdSubtotal (nunca DocTotal), para no
-// duplicar venta cuando una misma factura tiene líneas de más de un área.
+// Cada documento reparte su propio DocTotal (no DcdSubtotal) entre las áreas que
+// tocó, proporcional al peso de DcdSubtotal de cada área dentro de ese documento
+// (ver nota de cabecera "Por qué tienen que dar el mismo total"). Esto además
+// corrige un bug real: esta query no aplicaba fechaDesde/fechaHasta (a diferencia
+// de ventas-por-documento, que sí) — "30 días" mostraba histórico completo acá,
+// lo que por sí solo ya explicaba buena parte del desfasaje entre los dos reportes.
 exports.getVentasPorArea = async (req, res) => {
     try {
         const pool = await getPool();
         const params = extractParams(req.query);
-        const { area, articulo, moneda } = params;
+        const { moneda } = params;
 
         const areaExpr   = areaDesdeCodigo('dcd.OrdCodigoOrden');
-        const monedaExpr = `CASE WHEN doc.MonIdMoneda = 2 THEN 'USD' ELSE 'UYU' END`;
-
-        const conds = [
-            COND_ES_VENTA,
-            `doc.DocEstado <> 'ANULADO'`,
-        ];
-        if (area)     conds.push(`${areaExpr} = @area`);
-        if (articulo) conds.push(condArticulo('dcd.OrdCodigoOrden'));
-        if (moneda)   conds.push(`${monedaExpr} = @moneda`);
+        const monedaExpr = `CASE WHEN l.MonIdMoneda = 2 THEN 'USD' ELSE 'UYU' END`;
 
         const r = pool.request();
         bindFiltrosComunes(r, params);
         r.input('moneda', sql.NVarChar(10), moneda || null);
 
         const result = await r.query(`
+            ;WITH DocsVenta AS (
+                SELECT fdoc.DocIdDocumento, fdoc.DocTotal, fdoc.MonIdMoneda
+                FROM dbo.DocumentosContables fdoc WITH(NOLOCK)
+                WHERE ${condEsVenta('fdoc')}
+                  AND fdoc.DocEstado <> 'ANULADO'
+                  AND (@fechaDesde IS NULL OR fdoc.DocFechaEmision >= @fechaDesde)
+                  AND (@fechaHasta IS NULL OR fdoc.DocFechaEmision <= @fechaHasta)
+                  AND (@articulo IS NULL OR EXISTS (
+                        SELECT 1 FROM dbo.DocumentosContablesDetalle dcdA WITH(NOLOCK)
+                        WHERE dcdA.DocIdDocumento = fdoc.DocIdDocumento
+                          AND ${condArticulo('dcdA.OrdCodigoOrden')}
+                  ))
+            ),
+            LineasPorDocArea AS (
+                SELECT dv.DocIdDocumento, dv.DocTotal, dv.MonIdMoneda,
+                       ${areaExpr} AS Area,
+                       SUM(dcd.DcdSubtotal) AS SubtotalArea
+                FROM DocsVenta dv
+                LEFT JOIN dbo.DocumentosContablesDetalle dcd WITH(NOLOCK) ON dcd.DocIdDocumento = dv.DocIdDocumento
+                GROUP BY dv.DocIdDocumento, dv.DocTotal, dv.MonIdMoneda, ${areaExpr}
+            ),
+            TotalPorDoc AS (
+                SELECT DocIdDocumento, SUM(SubtotalArea) AS SubtotalDocTotal, COUNT(*) AS NAreas
+                FROM LineasPorDocArea
+                GROUP BY DocIdDocumento
+            )
             SELECT
-                ${areaExpr} AS Area,
+                l.Area,
                 ${monedaExpr} AS Moneda,
-                SUM(dcd.DcdSubtotal) AS Ventas,
-                COUNT(DISTINCT dcd.DocIdDocumento) AS CantidadDocumentos
-            FROM dbo.DocumentosContablesDetalle dcd WITH(NOLOCK)
-            JOIN dbo.DocumentosContables doc WITH(NOLOCK) ON doc.DocIdDocumento = dcd.DocIdDocumento
-            WHERE ${conds.join(' AND ')}
-            GROUP BY ${areaExpr}, ${monedaExpr}
+                SUM(l.DocTotal * CASE
+                    WHEN ISNULL(t.SubtotalDocTotal, 0) = 0 THEN 1.0 / t.NAreas
+                    ELSE CAST(l.SubtotalArea AS FLOAT) / t.SubtotalDocTotal
+                END) AS Ventas,
+                COUNT(DISTINCT l.DocIdDocumento) AS CantidadDocumentos
+            FROM LineasPorDocArea l
+            JOIN TotalPorDoc t ON t.DocIdDocumento = l.DocIdDocumento
+            WHERE (@area IS NULL OR l.Area = @area)
+              AND (@moneda IS NULL OR ${monedaExpr} = @moneda)
+            GROUP BY l.Area, ${monedaExpr}
             ORDER BY Moneda, Ventas DESC
         `);
 
