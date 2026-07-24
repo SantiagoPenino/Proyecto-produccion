@@ -277,11 +277,13 @@ const crearDocumentoContable = async ({ header, lineas }, transaction = null) =>
     .input('FDesde', sql.DateTime, docFechaDesde ? new Date(docFechaDesde) : null)
     .input('FHasta', sql.DateTime, docFechaHasta ? new Date(docFechaHasta) : null)
     .input('FEmis', sql.DateTime, docFechaEmision ? new Date(docFechaEmision) : null)
-    .input('CliNombre', sql.NVarChar(200), docCliNombre)
-    .input('CliDoc', sql.NVarChar(20), docCliDocumento)
-    .input('CliFant', sql.NVarChar(200), docCliNombreFantasia)
-    .input('CliDir', sql.NVarChar(200), docCliDireccion)
-    .input('CliCiu', sql.NVarChar(100), docCliCiudad)
+    // Largos al tamaño real de columna (Nombre/Direccion 255, Documento 50): declararlos
+    // más cortos hacía fallar el request con "invalid data length" ante un valor largo.
+    .input('CliNombre', sql.NVarChar(255), docCliNombre != null ? String(docCliNombre).substring(0, 255) : null)
+    .input('CliDoc', sql.NVarChar(50), docCliDocumento != null ? String(docCliDocumento).substring(0, 50) : null)
+    .input('CliFant', sql.NVarChar(200), docCliNombreFantasia != null ? String(docCliNombreFantasia).substring(0, 200) : null)
+    .input('CliDir', sql.NVarChar(255), docCliDireccion != null ? String(docCliDireccion).substring(0, 255) : null)
+    .input('CliCiu', sql.NVarChar(100), docCliCiudad != null ? String(docCliCiudad).substring(0, 100) : null)
     .input('Emp', sql.Int, empresaId || null)
     .query(`
       INSERT INTO dbo.DocumentosContables
@@ -469,6 +471,18 @@ const resolverLineasDetalle = async ({ tcaIdTransaccion, orderIds, monedaFactura
             AND ISNULL(pcd.Subtotal, 0)     = 0
             AND ISNULL(od.OrdCostoFinal, 0) = 0
           )
+          -- Excluir órdenes CUBIERTAS POR ROLLO/PLAN (sin cargo): OrdCostoFinal = 0
+          -- (el motor de check-in deja 0 cuando el plan de metros cubrió la orden,
+          -- misma señal que usa crearRetiro) y sin precio propio en PedidosCobranza.
+          -- Si se dejaran, el COALESCE cae a td.TdeImporteFinal (total de la
+          -- transacción) y cada orden cubierta sale facturada por el TOTAL del
+          -- retiro (factura inflada N×). Solo aplica cuando la orden existe: las
+          -- líneas legacy sin orden (od NULL) siguen usando td.TdeImporteFinal.
+          AND NOT (
+                od.OrdIdOrden IS NOT NULL
+            AND ISNULL(od.OrdCostoFinal, 0) = 0
+            AND ISNULL(pcd.Subtotal, 0)     = 0
+          )
       `);
 
     const withCot = await aplicarCotizacion(res.recordset);
@@ -523,6 +537,12 @@ const resolverLineasDetalle = async ({ tcaIdTransaccion, orderIds, monedaFactura
               od.OrdCodigoOrden LIKE '%-R[0-9]%'
           AND ISNULL(pcd.Subtotal, 0)     = 0
           AND ISNULL(od.OrdCostoFinal, 0) = 0
+        )
+        -- Excluir órdenes cubiertas por rollo/plan (ver nota en MODO 1): costo 0 y
+        -- sin precio propio → acá saldrían como línea en 0 y DGI rechaza líneas en 0.
+        AND NOT (
+              ISNULL(od.OrdCostoFinal, 0) = 0
+          AND ISNULL(pcd.Subtotal, 0)     = 0
         )
     `);
 

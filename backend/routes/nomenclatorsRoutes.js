@@ -114,6 +114,15 @@ router.get('/shipping-methods', async (req, res) => {
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// Get Unidades de Medida (1=Cantidades/piezas, 2=Metros) — para el combo del editor de artículos
+router.get('/unidades', async (req, res) => {
+    try {
+        const pool = await getPool();
+        const r = await pool.request().query("SELECT UniIdUnidad, LTRIM(RTRIM(UniDescripcionUnidad)) AS Descripcion, LTRIM(RTRIM([UniNotación])) AS Notacion FROM Unidades ORDER BY UniIdUnidad");
+        res.json({ success: true, data: r.recordset });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // Get Priorities
 router.get('/priorities', async (req, res) => {
     try {

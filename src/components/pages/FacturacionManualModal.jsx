@@ -80,6 +80,9 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
   // Cobro real del documento que se está editando (viene del endpoint de detalle).
   const [cobroDoc, setCobroDoc] = useState(null);
   const [updatingClient, setUpdatingClient] = useState(false);
+  // Modo "cliente": los campos DGI van bloqueados (espejo de la ficha). Este flag los destraba
+  // puntualmente SOLO para corregir la ficha del propio cliente vía el botón "Actualizar".
+  const [dgiEditFicha, setDgiEditFicha] = useState(false);
   // Confirmación grande antes de pisar la ficha real del cliente desde "Actualizar"
   const [confirmActualizarCliente, setConfirmActualizarCliente] = useState(null); // { mensaje, payload }
   const [editDocInfo, setEditDocInfo] = useState(null);
@@ -99,6 +102,20 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
   const [serieDoc, setSerieDoc] = useState('');
   // ID numérico real del cliente (para ClienteBilletera)
   const [clienteIdNumerico, setClienteIdNumerico] = useState(null);
+  // "Facturar a": separa DE QUIÉN es la factura a lo interno (CliIdCliente / cuenta corriente)
+  // de A QUIÉN se le emite el CFE en DGI (datos DocCli*). 'cliente' = al mismo cliente (campos
+  // DGI bloqueados, espejo de la ficha). 'tercero' = a otra empresa (campos editables a mano).
+  const [facturarModo, setFacturarModo] = useState(() => {
+    const src = initialData;
+    if (!src) return 'cliente';
+    const fichaNombre = String(src.CliRazonSocial || src.CliNombreFantasia || '').trim().toUpperCase();
+    const fichaRut    = String(src.CliRUT || '').replace(/\D/g, '');
+    const docNombre   = String(src.DocCliNombre || '').trim().toUpperCase();
+    const docRut      = String(src.DocCliDocumento || '').replace(/\D/g, '');
+    const esTercero = (!!docNombre && fichaNombre && docNombre !== fichaNombre) ||
+                      (!!docRut && !!fichaRut && docRut !== fichaRut);
+    return esTercero ? 'tercero' : 'cliente';
+  });
   const [notas, setNotas] = useState('');
   const [monedaOp, setMonedaOp] = useState('UYU'); // moneda de la operación
   const [articuloSearch, setArticuloSearch] = useState({}); // { [lineId]: string } búsqueda por línea
@@ -309,6 +326,15 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
           DocFechaEmision: toDateInputStr(d.DocFechaEmision),
           Lineas: lineasMapeadas.length > 0 ? lineasMapeadas : prev.Lineas
         }));
+        // Detectar "Facturar a un tercero": si el receptor DGI guardado en el documento
+        // difiere de la ficha del cliente interno (nombre o RUT), se emitió a un tercero.
+        const fichaNombre = String(d.CliRazonSocial || d.CliNombreFantasia || '').trim().toUpperCase();
+        const fichaRut    = String(d.CliRUT || '').replace(/\D/g, '');
+        const docNombre   = String(d.DocCliNombre || '').trim().toUpperCase();
+        const docRut      = String(d.DocCliDocumento || '').replace(/\D/g, '');
+        const esTercero = (!!docNombre && fichaNombre && docNombre !== fichaNombre) ||
+                          (!!docRut && !!fichaRut && docRut !== fichaRut);
+        setFacturarModo(esTercero ? 'tercero' : 'cliente');
       } catch (err) {
         toast.error('Error cargando documento: ' + (err.response?.data?.error || err.message));
       } finally {
@@ -354,7 +380,11 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
     if (c) {
       const idNumerico = c.CliIdCliente ? parseInt(c.CliIdCliente) : null;
       setClienteIdNumerico(idNumerico);
-      
+
+      // En modo "tercero" el receptor DGI es independiente del cliente interno: NO se tocan
+      // los datos DocCli* (los escribe el usuario a mano). Solo se resuelve la billetera de arriba.
+      if (facturarModo === 'tercero') return;
+
       setFormData(prev => {
         let deptoNombre = '';
         if (c.DepartamentoID && departamentos.length > 0) {
@@ -370,7 +400,41 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
         };
       });
     }
-  }, [clientes, formData.CliIdCliente, departamentos]);
+  }, [clientes, formData.CliIdCliente, departamentos, facturarModo]);
+
+  // Cambiar "Facturar a": al volver a "el cliente" se re-sincroniza la ficha (espejo);
+  // al pasar a "un tercero" se limpian los campos DGI para que se escriban a mano.
+  const handleFacturarModo = (modo) => {
+    if (modo === facturarModo) return;
+    setFacturarModo(modo);
+    setDgiEditFicha(false);
+    if (modo === 'tercero') {
+      setFormData(prev => ({
+        ...prev,
+        DocCliNombre: '',
+        DocCliNombreFantasia: '',
+        DocCliDocumento: '',
+        DocCliDireccion: '',
+        DocCliCiudad: ''
+      }));
+    } else {
+      // modo 'cliente': repoblar desde la ficha del cliente interno seleccionado
+      const c = clientes.find(item => String(item.CodCliente || item.CliIdCliente) === String(formData.CliIdCliente));
+      let deptoNombre = '';
+      if (c && c.DepartamentoID && departamentos.length > 0) {
+        const found = departamentos.find(d => d.ID === c.DepartamentoID || d.id === c.DepartamentoID);
+        if (found) deptoNombre = found.Nombre;
+      }
+      setFormData(prev => ({
+        ...prev,
+        DocCliNombre: c ? (c.Nombre || c.NombreFantasia || '') : prev.DocCliNombre,
+        DocCliNombreFantasia: '',
+        DocCliDocumento: c ? (c.CioRuc || c.IDCliente || '') : prev.DocCliDocumento,
+        DocCliDireccion: c ? (c.DireccionTrabajo || '') : prev.DocCliDireccion,
+        DocCliCiudad: c ? deptoNombre : prev.DocCliCiudad
+      }));
+    }
+  };
 
   // Calcular totales
   const totales = useMemo(() => {
@@ -577,6 +641,11 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
             }
           });
         }, 100);
+        // En modo "tercero" el receptor DGI lo escribe el usuario: cambiar el cliente interno
+        // (quién paga) NO debe pisar esos datos. Solo se actualiza CliIdCliente.
+        if (facturarModo === 'tercero') {
+          return { ...prev, CliIdCliente: idNumerico || val };
+        }
         return {
           ...prev,
           CliIdCliente: idNumerico || val,
@@ -686,6 +755,15 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
     try {
       await api.patch(`/contabilidad/clientes/${formData.CliIdCliente}/dgi`, confirmActualizarCliente.payload);
       toast.success('Ficha del cliente actualizada con éxito');
+      // Reflejar los datos nuevos en la lista local (para que el espejo bloqueado los muestre)
+      // y volver a trabar el candado de edición de ficha.
+      const p = confirmActualizarCliente.payload;
+      setClientes(prev => prev.map(cl =>
+        String(cl.CodCliente || cl.CliIdCliente) === String(formData.CliIdCliente)
+          ? { ...cl, Nombre: p.Nombre, CioRuc: p.Documento, DireccionTrabajo: p.Direccion, ...(p.NombreFantasia ? { NombreFantasia: p.NombreFantasia } : {}) }
+          : cl
+      ));
+      setDgiEditFicha(false);
     } catch (err) {
       toast.error('Error al actualizar ficha: ' + (err.response?.data?.error || err.message));
     } finally {
@@ -1020,6 +1098,11 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
 
   const formatMoney = (val) => new Intl.NumberFormat('es-UY', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(val);
 
+  // Campos DGI bloqueados: en modo "cliente" son espejo de la ficha (salvo que se destrabe
+  // "Corregir ficha"). En modo "tercero" siempre editables.
+  const dgiLocked = facturarModo === 'cliente' && !dgiEditFicha;
+  const dgiInputCls = (base) => `${base} ${dgiLocked ? 'bg-zinc-100 text-zinc-500 cursor-not-allowed border-zinc-200' : 'bg-white text-zinc-800 border-zinc-200 focus:border-indigo-500'}`;
+
   return (
     <div className="fixed inset-0 z-[9999] bg-zinc-100 flex flex-col w-screen h-screen overflow-hidden animate-in fade-in select-none">
       {/* HEADER */}
@@ -1261,37 +1344,99 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
               )}
             </div>
 
-            {/* Datos DGI */}
+            {/* Datos DGI — ¿A quién se le emite el CFE? */}
             <div className="flex flex-col gap-2.5 bg-zinc-50 border border-zinc-200/60 rounded-xl p-3 mt-1">
-              <div className="flex items-center justify-between">
-                <h3 className="text-[9px] font-black text-zinc-400 uppercase tracking-widest px-1">Datos DGI Comprobante</h3>
+              <h3 className="text-[9px] font-black text-zinc-400 uppercase tracking-widest px-1">¿A quién se le emite el CFE? (DGI)</h3>
+
+              {/* Selector Facturar a: separa el cliente interno del receptor del CFE */}
+              <div className="flex bg-zinc-100 border border-zinc-200 rounded-lg p-0.5 gap-0.5">
+                <button
+                  type="button"
+                  onClick={() => handleFacturarModo('cliente')}
+                  className={`flex-1 px-2 py-1.5 text-[9px] font-black rounded-md transition-all ${facturarModo === 'cliente' ? 'bg-white text-indigo-700 shadow-sm ring-1 ring-indigo-200' : 'text-zinc-500 hover:text-zinc-700'}`}
+                >
+                  🧑 El cliente seleccionado
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleFacturarModo('tercero')}
+                  className={`flex-1 px-2 py-1.5 text-[9px] font-black rounded-md transition-all ${facturarModo === 'tercero' ? 'bg-white text-amber-700 shadow-sm ring-1 ring-amber-200' : 'text-zinc-500 hover:text-zinc-700'}`}
+                >
+                  🏢 Un tercero
+                </button>
+              </div>
+
+              {/* Botones contextuales según el modo */}
+              <div className="flex items-center justify-between gap-1.5 flex-wrap">
+                <span className="text-[8px] font-bold text-zinc-400 px-1">
+                  {facturarModo === 'cliente'
+                    ? (dgiEditFicha ? 'Editando la ficha del cliente' : 'Datos tomados de la ficha del cliente')
+                    : 'Escribí los datos DGI del tercero'}
+                </span>
                 <div className="flex items-center gap-1.5">
-                  <button
-                    type="button"
-                    onClick={handleSetConsumidorFinal}
-                    className="px-2 py-0.5 rounded text-[8px] font-black uppercase tracking-wider text-purple-700 bg-purple-50 border border-purple-200 hover:bg-purple-100 cursor-pointer"
-                  >
-                    Cons. Final
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleRestoreFichaCliente}
-                    disabled={!formData.CliIdCliente}
-                    className="px-2 py-0.5 rounded text-[8px] font-black uppercase tracking-wider text-emerald-700 bg-emerald-50 border border-emerald-200 hover:bg-emerald-100 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
-                  >
-                    Restaurar
-                  </button>
-                  {formData.CliIdCliente && Number(formData.CliIdCliente) > 1 && (
-                    <button
-                      type="button"
-                      onClick={handleUpdateClientDGI}
-                      disabled={updatingClient}
-                      className="px-2 py-0.5 rounded text-[8px] font-black uppercase tracking-wider text-blue-700 bg-blue-50 border border-blue-200 hover:bg-blue-100 cursor-pointer disabled:opacity-50"
-                    >
-                      {updatingClient ? '...' : 'Actualizar'}
-                    </button>
+                  {facturarModo === 'tercero' && (
+                    <>
+                      <button
+                        type="button"
+                        onClick={handleSetConsumidorFinal}
+                        className="px-2 py-0.5 rounded text-[8px] font-black uppercase tracking-wider text-purple-700 bg-purple-50 border border-purple-200 hover:bg-purple-100 cursor-pointer"
+                      >
+                        Cons. Final
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleRestoreFichaCliente}
+                        disabled={!formData.CliIdCliente}
+                        title="Copiar los datos de la ficha del cliente como punto de partida"
+                        className="px-2 py-0.5 rounded text-[8px] font-black uppercase tracking-wider text-emerald-700 bg-emerald-50 border border-emerald-200 hover:bg-emerald-100 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                      >
+                        Copiar del cliente
+                      </button>
+                    </>
+                  )}
+                  {facturarModo === 'cliente' && formData.CliIdCliente && Number(formData.CliIdCliente) > 1 && (
+                    dgiEditFicha ? (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => { setDgiEditFicha(false); handleRestoreFichaCliente(); }}
+                          className="px-2 py-0.5 rounded text-[8px] font-black uppercase tracking-wider text-zinc-600 bg-zinc-100 border border-zinc-200 hover:bg-zinc-200 cursor-pointer"
+                        >
+                          Cancelar
+                        </button>
+                        <button
+                          type="button"
+                          onClick={handleUpdateClientDGI}
+                          disabled={updatingClient}
+                          className="px-2 py-0.5 rounded text-[8px] font-black uppercase tracking-wider text-blue-700 bg-blue-50 border border-blue-200 hover:bg-blue-100 cursor-pointer disabled:opacity-50"
+                        >
+                          {updatingClient ? '...' : 'Guardar en ficha'}
+                        </button>
+                      </>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => setDgiEditFicha(true)}
+                        title="Corregir los datos fiscales del propio cliente (cambia su ficha)"
+                        className="px-2 py-0.5 rounded text-[8px] font-black uppercase tracking-wider text-blue-700 bg-blue-50 border border-blue-200 hover:bg-blue-100 cursor-pointer"
+                      >
+                        ✎ Corregir ficha
+                      </button>
+                    )
                   )}
                 </div>
+              </div>
+
+              {/* Cartel: a quién le llega el CFE de verdad */}
+              <div className={`rounded-lg px-2.5 py-1.5 border text-[10px] font-bold leading-tight ${facturarModo === 'tercero' ? 'bg-amber-50 border-amber-200 text-amber-800' : 'bg-indigo-50 border-indigo-200 text-indigo-800'}`}>
+                🧾 Se emitirá a DGI a nombre de:{' '}
+                <span className="font-black">{(formData.DocCliNombre || '').trim() || '(sin nombre)'}</span>
+                {(formData.DocCliDocumento || '').trim() && <> · RUT/CI {formData.DocCliDocumento.trim()}</>}
+                {facturarModo === 'tercero' && formData.CliIdCliente && (
+                  <div className="text-[9px] font-semibold text-zinc-500 mt-0.5">
+                    (La cuenta / cobro quedan a nombre del cliente interno seleccionado)
+                  </div>
+                )}
               </div>
 
               <div className="flex flex-col gap-2 mt-1">
@@ -1301,7 +1446,8 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
                     type="text"
                     value={formData.DocCliNombre}
                     onChange={e => setFormData({ ...formData, DocCliNombre: e.target.value })}
-                    className="w-full border border-zinc-200 rounded-lg px-2.5 py-1.5 text-xs font-bold focus:border-indigo-500 outline-none bg-white text-zinc-800 shadow-sm mt-0.5"
+                    disabled={dgiLocked}
+                    className={dgiInputCls("w-full border rounded-lg px-2.5 py-1.5 text-xs font-bold outline-none shadow-sm mt-0.5")}
                   />
                 </div>
                 <div>
@@ -1311,7 +1457,8 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
                     value={formData.DocCliNombreFantasia || ''}
                     onChange={e => setFormData({ ...formData, DocCliNombreFantasia: e.target.value })}
                     placeholder="Vacío = no se imprime ninguna línea de fantasía"
-                    className="w-full border border-zinc-200 rounded-lg px-2.5 py-1.5 text-xs font-bold focus:border-indigo-500 outline-none bg-white text-zinc-800 shadow-sm mt-0.5"
+                    disabled={dgiLocked}
+                    className={dgiInputCls("w-full border rounded-lg px-2.5 py-1.5 text-xs font-bold outline-none shadow-sm mt-0.5")}
                   />
                 </div>
                 <div>
@@ -1320,7 +1467,8 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
                     type="text"
                     value={formData.DocCliDocumento}
                     onChange={e => setFormData({ ...formData, DocCliDocumento: e.target.value })}
-                    className="w-full border border-zinc-200 rounded-lg px-2.5 py-1.5 text-xs font-bold focus:border-indigo-500 outline-none bg-white text-zinc-800 shadow-sm mt-0.5"
+                    disabled={dgiLocked}
+                    className={dgiInputCls("w-full border rounded-lg px-2.5 py-1.5 text-xs font-bold outline-none shadow-sm mt-0.5")}
                   />
                   {/* Feedback en vivo del documento (no aplica a Pedido Caja, que es borrador interno) */}
                   {tipoCliente !== 'PEDIDO_CAJA' && (() => {
@@ -1358,7 +1506,8 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
                     type="text"
                     value={formData.DocCliDireccion}
                     onChange={e => setFormData({ ...formData, DocCliDireccion: e.target.value })}
-                    className="w-full border border-zinc-200 rounded-lg px-2.5 py-1.5 text-xs font-bold focus:border-indigo-500 outline-none bg-white text-zinc-800 shadow-sm mt-0.5"
+                    disabled={dgiLocked}
+                    className={dgiInputCls("w-full border rounded-lg px-2.5 py-1.5 text-xs font-bold outline-none shadow-sm mt-0.5")}
                   />
                 </div>
                 <div>
@@ -1366,7 +1515,8 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
                   <select
                     value={formData.DocCliCiudad}
                     onChange={e => setFormData({ ...formData, DocCliCiudad: e.target.value })}
-                    className="w-full border border-zinc-200 rounded-lg px-2.5 py-1.5 text-xs font-bold focus:border-indigo-500 outline-none bg-white text-zinc-800 shadow-sm mt-0.5 cursor-pointer"
+                    disabled={dgiLocked}
+                    className={dgiInputCls("w-full border rounded-lg px-2.5 py-1.5 text-xs font-bold outline-none shadow-sm mt-0.5 cursor-pointer")}
                   >
                     <option value="">— Seleccionar —</option>
                     {departamentos.map(dep => (

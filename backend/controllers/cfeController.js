@@ -133,7 +133,7 @@ exports.getDocumentosCFE = async (req, res) => {
                 return { ...d, DgiTipoCorrecto: null, DgiTipoCorrectoNombre: null, DgiTipoEmitido: null, DgiAlerta: false };
             }
 
-            const cliDoc = String(d.CliRUT || d.DocCliDocumento || '').replace(/\D/g, '');
+            const cliDoc = String(d.DocCliDocumento || d.CliRUT || '').replace(/\D/g, '');
             // La familia del referenciado sale de lo que DGI realmente tiene, no del DocTipo interno
             const refEsFactura = d.RefDocTipo
                 ? sisnetService.resolverReferencia(
@@ -339,7 +339,7 @@ exports.enviarADGI = async (req, res) => {
         const docTipoUpperV = String(doc.DocTipo || '').toUpperCase();
         const esFacturaCFE = docTipoUpperV.includes('FACTURA');
         const esTicketCFE = docTipoUpperV.includes('TICKET');
-        const valReceptor = validarDocumentoUY(doc.CliRUT || doc.DocCliDocumento);
+        const valReceptor = validarDocumentoUY(doc.DocCliDocumento || doc.CliRUT);
 
         if (esFacturaCFE && (!valReceptor.valido || valReceptor.tipo !== 'RUT')) {
             return res.status(400).json({
@@ -1208,7 +1208,10 @@ exports.editarFactura = async (req, res) => {
         // 1. Actualizar cabecera del documento
         await transaction.request()
             .input('id', sql.Int, id)
-            .input('docTipo', sql.NVarChar(50), savedDocTipo)
+            // DocTipo es varchar(20) en la base. El Detalle puede ser más largo (ej.
+            // "E-Factura Nota De Credito" = 25): con ANSI_WARNINGS ON, escribir eso reventaba
+            // el UPDATE por truncamiento. Se acota a 20 (mismo largo que ya guarda la columna).
+            .input('docTipo', sql.NVarChar(20), String(savedDocTipo || '').substring(0, 20))
             .input('clienteId', sql.Int, CliIdCliente || 2089) // 2089 = CONSUMIDOR FINAL genérico (1 es un cliente real)
             .input('moneda', sql.Int, MonIdMoneda)
             .input('subtotal', sql.Decimal(18, 2), DocSubtotal)
@@ -1216,12 +1219,15 @@ exports.editarFactura = async (req, res) => {
             .input('total', sql.Decimal(18, 2), DocTotal)
             .input('cuenta', sql.Int, MonIdMoneda === 2 ? 119 : 118)
             .input('obs', sql.NVarChar(500), DocObservaciones || '')
-            .input('cliNombre', sql.NVarChar(200), DocCliNombre || '')
-            .input('cliDoc', sql.NVarChar(20), DocCliDocumento || '')
-            .input('cliDir', sql.NVarChar(200), DocCliDireccion || '')
-            .input('cliCiu', sql.NVarChar(100), DocCliCiudad || '')
+            // Los largos van al tamaño REAL de cada columna (DocCliNombre/Direccion 255,
+            // Documento 50). Estaban en 200/20: un nombre o dirección más largo que eso hacía
+            // fallar el request con "invalid data length" — el mismo bug de @concepto.
+            .input('cliNombre', sql.NVarChar(255), String(DocCliNombre || '').substring(0, 255))
+            .input('cliDoc', sql.NVarChar(50), String(DocCliDocumento || '').substring(0, 50))
+            .input('cliDir', sql.NVarChar(255), String(DocCliDireccion || '').substring(0, 255))
+            .input('cliCiu', sql.NVarChar(100), String(DocCliCiudad || '').substring(0, 100))
             // Si el front no manda el campo (edición vieja), no se pisa lo que ya tenía el doc.
-            .input('cliFant', sql.NVarChar(200), DocCliNombreFantasia !== undefined ? String(DocCliNombreFantasia || '').trim() : null)
+            .input('cliFant', sql.NVarChar(200), DocCliNombreFantasia !== undefined ? String(DocCliNombreFantasia || '').trim().substring(0, 200) : null)
             .input('docPagado', sql.Bit, newPaid ? 1 : 0)
             .input('serie', sql.VarChar(10), newSerie)
             .input('numero', sql.Int, newNumero)
@@ -1231,7 +1237,7 @@ exports.editarFactura = async (req, res) => {
             // Referencia de la NC/ND: el documento que corrige y el motivo. Solo se tocan si el
             // front los manda (una edición de factura común no los envía y no debe borrarlos).
             .input('docRef', sql.Int, DocIdDocumentoRef != null ? Number(DocIdDocumentoRef) : null)
-            .input('motivoRef', sql.NVarChar(200), DocMotivoRef != null ? String(DocMotivoRef) : null)
+            .input('motivoRef', sql.NVarChar(300), DocMotivoRef != null ? String(DocMotivoRef).substring(0, 300) : null)
             .query(`
                 UPDATE DocumentosContables SET
                     DocTipo           = CASE WHEN @docTipo <> '' THEN @docTipo ELSE DocTipo END,
@@ -1281,8 +1287,8 @@ exports.editarFactura = async (req, res) => {
                 await transaction.request()
                     .input('refId',   sql.Int, stub.DocIdDocumento)
                     .input('tipo',    sql.NVarChar(50), esFacturaOrigen ? 'E-Factura Externa' : 'E-Ticket Externo')
-                    .input('serie',   sql.VarChar(10), String(referenciaExterna.serie || '').trim())
-                    .input('numero',  sql.VarChar(20), String(referenciaExterna.numero || '').trim())
+                    .input('serie',   sql.VarChar(10), String(referenciaExterna.serie || '').trim().substring(0, 10))
+                    .input('numero',  sql.VarChar(50), String(referenciaExterna.numero || '').trim().substring(0, 50))
                     .input('fecha',   sql.DateTime, referenciaExterna.fecha ? new Date(referenciaExterna.fecha) : null)
                     .input('total',   sql.Decimal(18, 2), Number(referenciaExterna.total) || 0)
                     .input('moneda',  sql.Int, monRef)
@@ -1328,8 +1334,11 @@ exports.editarFactura = async (req, res) => {
                     : null;
                 await transaction.request()
                     .input('docId', sql.Int, id)
-                    .input('nom', sql.NVarChar(255), linea.DcdNomItem || '')
-                    .input('dsc', sql.NVarChar(255), linea.DcdDscItem || '')
+                    // DcdNomItem en la base es nvarchar(80): un concepto más largo hacía
+                    // fallar el INSERT por truncamiento. Se acota a 80 (el detalle largo va en
+                    // DcdDscItem, que es nvarchar(1000)).
+                    .input('nom', sql.NVarChar(80), String(linea.DcdNomItem || '').substring(0, 80))
+                    .input('dsc', sql.NVarChar(1000), String(linea.DcdDscItem || '').substring(0, 1000))
                     .input('cant', sql.Decimal(18, 4), parseFloat(linea.DcdCantidad) || 1)
                     .input('precio', sql.Decimal(18, 4), parseFloat(linea.DcdPrecioUnitario) || 0)
                     .input('sub', sql.Decimal(18, 2), parseFloat(linea.DcdSubtotal) || 0)
@@ -1443,11 +1452,14 @@ exports.editarFactura = async (req, res) => {
           }
 
           // 1. Actualizar concepto e importe del movimiento de CARGO (siempre)
-          const nuevoConcepto = `Venta ${newConfig?.Detalle || DocTipo}: ${newSerie}-${newNumero}${DocCliNombre ? ' (' + DocCliNombre + ')' : ''}`;
+          // MovConcepto es nvarchar(500). El parámetro estaba declarado VarChar(200): con un
+          // nombre de cliente largo el texto pasaba de 200 y tedious rechazaba el request
+          // ("@concepto ... invalid data length"). Se declara al largo real y se acota por las dudas.
+          const nuevoConcepto = `Venta ${newConfig?.Detalle || DocTipo}: ${newSerie}-${newNumero}${DocCliNombre ? ' (' + DocCliNombre + ')' : ''}`.substring(0, 500);
           await transaction.request()
             .input('docId',    sql.Int,          parseInt(id))
             .input('imp',      sql.Decimal(18,4), -DocTotal)
-            .input('concepto', sql.VarChar(200),  nuevoConcepto)
+            .input('concepto', sql.NVarChar(500), nuevoConcepto)
             .input('fechaEmis', sql.DateTime,     fechaEdit)
             .query(`
               UPDATE dbo.MovimientosCuenta
@@ -1526,11 +1538,11 @@ exports.editarFactura = async (req, res) => {
 
           } else if (newPaid && montoChanged) {
             // ── Sigue Contado pero cambió el monto ────────────────────────────
-            const conceptoPago = `Pago (${newConfig?.Detalle || DocTipo}): ${newSerie}-${newNumero}`;
+            const conceptoPago = `Pago (${newConfig?.Detalle || DocTipo}): ${newSerie}-${newNumero}`.substring(0, 500);
             await transaction.request()
               .input('docId',    sql.Int,          parseInt(id))
               .input('imp',      sql.Decimal(18,4), DocTotal)
-              .input('concepto', sql.VarChar(200),  conceptoPago)
+              .input('concepto', sql.NVarChar(500), conceptoPago)
               .input('fechaEmis', sql.DateTime,     fechaEdit)
               .query(`
                 UPDATE dbo.MovimientosCuenta

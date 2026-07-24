@@ -11,8 +11,10 @@ const EditModal = ({ article, allArticles, onClose, onSaved }) => {
         descripcion: '', codStock: '',
         grupo: '', supFlia: '', mostrar: true,
         anchoImprimible: '', largoImprimible: '', llevaPapel: false, monIdMoneda: '',
+        uniIdUnidad: '',
         producto_maestro_id: ''
     });
+    const [unidades, setUnidades] = useState([]); // Unidad de medida (1=Cantidades, 2=Metros)
     const [saving, setSaving] = useState(false);
     const [imageFile, setImageFile] = useState(null);
     const [imagePreview, setImagePreview] = useState(article?.url_imagen || null);
@@ -76,11 +78,19 @@ const EditModal = ({ article, allArticles, onClose, onSaved }) => {
                 largoImprimible: article.largoimprimible != null ? String(parseFloat(Number(article.largoimprimible).toFixed(4))) : '',
                 llevaPapel:      !!article.LLEVAPAPEL,
                 monIdMoneda:     article.MonIdMoneda != null ? String(article.MonIdMoneda) : '',
+                uniIdUnidad:     article.UniIdUnidad != null ? String(article.UniIdUnidad) : '',
                 producto_maestro_id: article.producto_maestro_id != null ? String(article.producto_maestro_id) : '',
                 precioBase:      article.PrecioBase != null ? parseFloat(article.PrecioBase) : null
             });
         }
     }, [article]);
+
+    // Unidades de medida para el combo (1=Cantidades/piezas, 2=Metros)
+    useEffect(() => {
+        api.get('/nomenclators/unidades')
+            .then(res => { if (res.data?.success) setUnidades(res.data.data || []); })
+            .catch(err => console.error('Error cargando unidades:', err));
+    }, []);
 
     // Tipos de cada CodStock (para saber si el artículo es material o producto terminado)
     useEffect(() => {
@@ -230,6 +240,7 @@ const EditModal = ({ article, allArticles, onClose, onSaved }) => {
                 llevaPapel:      form.llevaPapel,
                 anchoImprimible: form.anchoImprimible !== '' ? parseFloat(form.anchoImprimible) : 0,
                 largoImprimible: form.largoImprimible !== '' ? parseFloat(form.largoImprimible) : null,
+                uniIdUnidad:     form.uniIdUnidad !== '' ? parseInt(form.uniIdUnidad) : null,
                 monIdMoneda:     form.monIdMoneda !== '' ? parseInt(form.monIdMoneda) : null,
             };
 
@@ -382,6 +393,15 @@ const EditModal = ({ article, allArticles, onClose, onSaved }) => {
                                 <div>
                                     <label className={labelCls} title="Si se carga, el material es de MEDIDA FIJA: el portal exige que el archivo mida exactamente Ancho x Largo (ej: banderas)">Largo Imprimible (medida fija)</label>
                                     <input type="number" step="0.01" min="0" name="largoImprimible" value={form.largoImprimible} onChange={handleChange} className={inputCls} placeholder="Vacío = sin medida fija" />
+                                </div>
+                                <div>
+                                    <label className={labelCls} title="Cómo se cuenta el trabajo en producción: por piezas (Cantidades) o por metros. En Impresión Directa define si el avance de impresión se controla por piezas o metros.">Unidad de Medida</label>
+                                    <select name="uniIdUnidad" value={form.uniIdUnidad} onChange={handleChange} className={selectCls}>
+                                        <option value="">— Sin definir —</option>
+                                        {unidades.map(u => (
+                                            <option key={u.UniIdUnidad} value={u.UniIdUnidad}>{u.Descripcion}{u.Notacion ? ` (${u.Notacion})` : ''}</option>
+                                        ))}
+                                    </select>
                                 </div>
                             </div>
 
@@ -985,6 +1005,7 @@ const ProductsIntegration = () => {
                     Mostrar:         formData.mostrar ? 1 : 0,
                     anchoimprimible: parseFloat(formData.anchoImprimible) || 0,
                     largoimprimible: parseFloat(formData.largoImprimible) || null,
+                    UniIdUnidad:     formData.uniIdUnidad !== '' ? parseInt(formData.uniIdUnidad) : null,
                     LLEVAPAPEL:      formData.llevaPapel ? 1 : 0,
                     MonIdMoneda:     formData.monIdMoneda !== '' ? parseInt(formData.monIdMoneda) : null,
                     producto_maestro_id: formData.producto_maestro_id !== '' ? parseInt(formData.producto_maestro_id) : null,
