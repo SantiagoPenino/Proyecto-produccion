@@ -1837,7 +1837,8 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
 
                           {/* Filter buttons */}
                           <div className="flex gap-2 flex-wrap items-center mb-4 border-t border-slate-100 pt-3">
-                            {[{ val: 'todos', l: 'Todos' }, { val: '1', l: 'Comunes' }, { val: '2', l: 'Semanales' }, { val: '3', l: 'Rollos' }].map(f => (
+                            {/* Semanales fuera de caja: se cubren por ciclo semanal, no se cobran acá (la búsqueda de mostrador sí los encuentra) */}
+                            {[{ val: 'todos', l: 'Todos' }, { val: '1', l: 'Comunes' }, { val: '3', l: 'Rollos' }].map(f => (
                               <button
                                 key={f.val}
                                 onClick={() => setFiltroTipo(f.val)}

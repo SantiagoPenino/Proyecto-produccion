@@ -346,12 +346,17 @@ const ordenesRetiroCaja = async (req, res) => {
     const request = pool.request();
 
     // Filtro opcional por tipo de cliente (enviado desde el frontend)
-    // Por defecto: SIN filtro de tipo → muestra todos (semanales, rollos, comunes)
+    // Por defecto ('todos' o sin filtro): los SEMANALES (tipo 2) NO se listan en caja
+    // (se cubren por ciclo semanal, no pagan acá). Solo aparecen pidiendo
+    // explícitamente tipoCliente=2. La búsqueda de mostrador no pasa por acá.
     const { tipoCliente } = req.query;
     let filtroTipo = '';
     if (tipoCliente && tipoCliente !== 'todos') {
       request.input('TipoCliente', sql.Int, parseInt(tipoCliente, 10));
       filtroTipo = 'AND COALESCE(tc.TClIdTipoCliente, tcr.TClIdTipoCliente) = @TipoCliente';
+    } else {
+      filtroTipo = `AND (COALESCE(tc.TClIdTipoCliente, tcr.TClIdTipoCliente) IS NULL
+                     OR COALESCE(tc.TClIdTipoCliente, tcr.TClIdTipoCliente) <> 2)`;
     }
 
     // Solo mostrar retiros que tienen al menos una sub-orden sin pagar
