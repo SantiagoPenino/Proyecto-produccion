@@ -33,6 +33,10 @@ router.get('/order/:ordenId/files', verifyToken, impersonarCliente, webOrdersCon
 // GET /api/web-orders/orders-files?ids=1,2,3 — archivos de todas las hermanas de un pedido (multitela)
 router.get('/orders-files', verifyToken, impersonarCliente, webOrdersController.getOrdersFiles);
 
+// TPU: visor 3D del parche — capas del arte y su contenido (solo dueño del pedido)
+router.get('/tpu-model/:ordenId', verifyToken, impersonarCliente, webOrdersController.getTpuModelCapas);
+router.get('/tpu-model/:ordenId/archivo/:archivoId', verifyToken, impersonarCliente, webOrdersController.getTpuModelArchivo);
+
 // GET /api/web-orders/active-sublimation
 router.get('/active-sublimation', verifyToken, impersonarCliente, webOrdersController.getActiveSublimationOrders);
 

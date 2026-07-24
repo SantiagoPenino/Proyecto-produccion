@@ -371,8 +371,11 @@ const OrderForm = ({ serviceId: propServiceId }) => {
     }, [serviceId]);
 
     // TPU: garantizar SIEMPRE 1 item que lleve la cantidad (el submit agrupa por item; un item
-    // sin archivo produce un pedido válido). Reactivo a items.length: si la carga de config vacía
-    // items (setItems([])), se vuelve a crear. Arranca con la cantidad mínima.
+    // sin archivo produce un pedido válido). SIN array de deps a propósito: la carga de config
+    // despacha RESET_FORM en el MISMO flush que este efecto, así que el "1 item" nunca llegaba a
+    // commitearse y con deps [serviceId, items.length] el efecto no volvía a disparar (0 === 0)
+    // → cantidad muerta y submit rechazado. Corriendo tras cada commit se auto-corrige y no puede
+    // loopear: solo actúa cuando items está vacío.
     useEffect(() => {
         if (serviceId === 'tpu' && items.length === 0) {
             actions.setItems([{
@@ -381,7 +384,7 @@ const OrderForm = ({ serviceId: propServiceId }) => {
                 note: '', doubleSided: false, printSettings: {}
             }]);
         }
-    }, [serviceId, items.length]);
+    });
 
 
     // Directa 3.20 Twinface Logic (Code 1560)

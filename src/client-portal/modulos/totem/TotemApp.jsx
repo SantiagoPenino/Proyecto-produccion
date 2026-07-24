@@ -41,6 +41,22 @@ export const TotemApp = () => {
         if (timeoutRef.current) clearTimeout(timeoutRef.current);
     }, []);
 
+    // Salida de emergencia del tótem: sale de pantalla completa y navega fuera de /totem
+    // (al sistema normal). La pantalla de "bloqueado" es fullscreen y sin esto no había forma
+    // de salir del kiosco cuando el token faltaba o fallaba la verificación.
+    const salirDelTotem = useCallback(() => {
+        if (document.fullscreenElement) document.exitFullscreen?.().catch(() => { });
+        window.location.href = '/';
+    }, []);
+
+    // En la pantalla de bloqueo, la tecla Escape también sale (para operar con teclado).
+    useEffect(() => {
+        if (screen !== 'blocked') return;
+        const onKey = (e) => { if (e.key === 'Escape') salirDelTotem(); };
+        window.addEventListener('keydown', onKey);
+        return () => window.removeEventListener('keydown', onKey);
+    }, [screen, salirDelTotem]);
+
     const resetTimer = useCallback(() => {
         if (timeoutRef.current) clearTimeout(timeoutRef.current);
         if (screen === 'dashboard') {
@@ -69,6 +85,13 @@ export const TotemApp = () => {
                     <ShieldX size={64} strokeWidth={1.5} className="text-red-400" />
                     <h1 className="text-3xl font-bold text-white">Acceso no autorizado</h1>
                     <p className="text-white/40 text-lg">Este tótem no está habilitado desde esta ubicación.</p>
+                    <button
+                        onClick={salirDelTotem}
+                        className="mt-6 px-6 py-3 rounded-xl border border-white/20 text-white/70 hover:bg-white/10 hover:text-white transition-colors text-base"
+                    >
+                        Salir del tótem
+                    </button>
+                    <p className="text-white/25 text-sm">o presioná <kbd className="px-1.5 py-0.5 rounded bg-white/10 border border-white/20 text-white/50">Esc</kbd></p>
                 </div>
             </div>
         );

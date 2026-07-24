@@ -76,10 +76,12 @@ const MachineControl = ({ machine, onAssign, onToggleStatus, onViewDetails, onUn
     // el modal (allPrinted). En el resto de las áreas el marcado no aplica: se finaliza sin exigirlo.
     // Fail-open: si el board todavía no manda el flag (backend viejo), NO bloquea — evita trabar la planta
     // si el frontend se deploya antes que el backend.
-    // La marca a exigir: 'calandered' SOLO en calandras de SB (única área con calandras);
-    // en el resto (DTF, TPU, impresoras de SB) la marca es 'printed'.
+    // La marca a exigir: 'calandered' SOLO en CALANDRAS de SB (única área con calandras);
+    // en el resto (DTF, TPU, impresoras de SB) la marca es 'printed'. Se detecta la calandra por
+    // NOMBRE (esCalandra), NO por !isPrinter: SeparacionImpresion está en 0 en impresoras reales como
+    // MIMAKI, y con !isPrinter el gate les exigía 'calandrado' → lote imposible de finalizar.
     const isDTF = ['DF', 'DTF'].includes(String(areaCode || '').toUpperCase());
-    const printedField = (isSB && !isPrinter) ? 'calandered' : 'printed';
+    const printedField = (isSB && esCalandra) ? 'calandered' : 'printed';
     const rollOrders = activeRoll?.orders || [];
     const hasMarkData = rollOrders.some(o => o[printedField] !== undefined);
     // Bloqueo duro: SB y DTF — para finalizar, todo el lote debe estar marcado.

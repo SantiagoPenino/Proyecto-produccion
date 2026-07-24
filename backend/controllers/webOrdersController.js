@@ -460,7 +460,14 @@ exports.createWebOrder = async (req, res) => {
                     referencias: ordenReferencias,
                     isExtra: !srv.esPrincipal,
                     extraOriginId: srv.areaId,
-                    magnitudInicial: 0,
+                    // TPU: la Magnitud ES la cantidad pedida (UM='U') y el ítem NO trae archivo (el
+                    // arte lo sube producción después) — el recálculo por archivos nunca la fijaba y
+                    // la orden quedaba en "0 U" en todos lados, rompiendo además el contador de
+                    // impresión parcial (el total es la Magnitud). El resto de los servicios sigue
+                    // en 0: su Magnitud real la suman los archivos al procesarse.
+                    magnitudInicial: (serviceId === 'tpu' && srv.esPrincipal)
+                        ? (srv.items || []).reduce((s, it) => s + (parseInt(it.cantidad) || 0), 0)
+                        : 0,
                     notaAdicional: serviceNote, // Nota completa para la Orden
                     techInfo: techInfo // Info técnica limpia para ServiciosExtraOrden
                 });
@@ -1464,6 +1471,38 @@ exports.createWebOrder = async (req, res) => {
 };
 
 // --- SUBIDA DE ARCHIVOS POR STREAMING (UNO A UNO) ---
+// Mide un archivo de arte y devuelve { w, h } en METROS (o null si no se puede medir).
+// PDF: MediaBox de la 1ª página, aplicando /UserUnit y /Rotate — así el ancho/alto reflejan cómo
+// se VE el trabajo (igual que el medidor del front), y un PDF girado 90° no pasa como si fuera correcto.
+// Imagen: px / densidad (DPI). El arte del portal es PNG o PDF; JPEG ya está bloqueado aguas arriba.
+const medirArteMetros = async (buf, nombre, mime) => {
+    const ptToM = (pt) => (pt * 0.0254) / 72;
+    const nom = String(nombre || '').toLowerCase();
+    const mm = String(mime || '').toLowerCase();
+    const esPdf = mm.includes('pdf') || nom.endsWith('.pdf') || buf.slice(0, 4).toString() === '%PDF';
+    if (esPdf) {
+        const { PDFDocument, PDFName } = require('pdf-lib');
+        const doc = await PDFDocument.load(buf, { ignoreEncryption: true, updateMetadata: false });
+        const page = doc.getPages()[0];
+        if (!page) return null;
+        let { width, height } = page.getSize();
+        // UserUnit: los PDF de más de ~5.08m traen multiplicador; sin esto se miden N veces más chicos.
+        let uu = 1;
+        try { const u = page.node.get(PDFName.of('UserUnit')); const n = u && u.asNumber ? u.asNumber() : NaN; if (Number.isFinite(n) && n > 0) uu = n; } catch (_) { }
+        width *= uu; height *= uu;
+        // /Rotate 90|270 → el trabajo se ve girado: intercambiamos ancho/alto (mismo criterio que el front).
+        const rot = (((page.getRotation()?.angle || 0) % 360) + 360) % 360;
+        if (rot === 90 || rot === 270) { const t = width; width = height; height = t; }
+        return { w: ptToM(width), h: ptToM(height) };
+    }
+    const sharp = require('sharp');
+    const meta = await sharp(buf).metadata();
+    if (!meta.width || !meta.height) return null;
+    const dpi = meta.density || 72;
+    const pxToM = (px) => (px / dpi) * 0.0254;
+    return { w: pxToM(meta.width), h: pxToM(meta.height) };
+};
+
 exports.uploadOrderFile = async (req, res) => {
     const { dbId, type, finalName, area, codigoOrden } = req.body;
     const file = req.file;
@@ -1507,6 +1546,45 @@ exports.uploadOrderFile = async (req, res) => {
                 // pdf-lib no pudo abrirlo (corrupto/encriptado atípico). No se bloquea por NO poder contar:
                 // la regla es rechazar multipágina detectada, no trabar archivos ilegibles.
                 logger.warn(`[UploadStream] No se pudo contar páginas de ${finalName}: ${ePdf.message}`);
+            }
+        }
+
+        // ── Validación DURA de MEDIDA FIJA (banderas confeccionadas) ────────────────────────────
+        //    El arte debe medir exactamente anchoimprimible x largoimprimible del artículo (±2mm).
+        //    Blindaje server-side: el chequeo del portal es solo client-side y no cubre a un cliente
+        //    desactualizado ni un payload manual. Solo aplica al arte (type='ORDEN') de materiales con
+        //    largoimprimible > 0. Fail-open si no se puede medir (misma filosofía que el conteo de páginas).
+        if (type === 'ORDEN') {
+            try {
+                const poolMed = await getPool();
+                const medRes = await poolMed.request()
+                    .input('ID', sql.Int, parseInt(dbId, 10))
+                    .query(`
+                        SELECT TOP 1 a.anchoimprimible AS Ancho, a.largoimprimible AS Largo, O.Material
+                        FROM ArchivosOrden AO
+                        JOIN Ordenes O ON O.OrdenID = AO.OrdenID
+                        LEFT JOIN dbo.articulos a ON LTRIM(RTRIM(a.Descripcion)) = LTRIM(RTRIM(O.Material))
+                        WHERE AO.ArchivoID = @ID
+                    `);
+                const row = medRes.recordset[0];
+                const anchoFijo = parseFloat(row?.Ancho) || 0;
+                const largoFijo = parseFloat(row?.Largo) || 0;
+                if (anchoFijo > 0 && largoFijo > 0) {
+                    const bufMed = file.buffer || await require('fs').promises.readFile(file.path);
+                    const dims = await medirArteMetros(bufMed, finalName, file.mimetype);
+                    if (dims && dims.w > 0 && dims.h > 0) {
+                        const TOL = 0.002; // 2mm, igual que el front
+                        const fuera = (real, esp) => Math.abs(real - esp) > TOL + 1e-9;
+                        if (fuera(dims.w, anchoFijo) || fuera(dims.h, largoFijo)) {
+                            logger.warn(`[UploadStream] RECHAZADO ${finalName}: MEDIDA FIJA ${anchoFijo.toFixed(2)}x${largoFijo.toFixed(2)}m, archivo ${dims.w.toFixed(2)}x${dims.h.toFixed(2)}m`);
+                            return res.status(400).json({
+                                error: `"${row.Material}" se imprime a MEDIDA FIJA: el archivo debe medir exactamente ${anchoFijo.toFixed(2)}m de ancho x ${largoFijo.toFixed(2)}m de largo. Tu archivo mide ${dims.w.toFixed(2)}m x ${dims.h.toFixed(2)}m. Ajustá el archivo a la medida exacta (sin rotar).`
+                            });
+                        }
+                    }
+                }
+            } catch (eFija) {
+                logger.warn(`[UploadStream] No se pudo validar medida fija de ${finalName}: ${eFija.message}`);
             }
         }
 
@@ -1805,14 +1883,16 @@ exports.getClientOrders = async (req, res) => {
                         m.Nombre        AS NombreMaquina,
                         o.Magnitud      AS Magnitud,
                         o.UM            AS UM,
+                        -- TPU: el cliente ve el BOCETO DE PRODUCCIÓN (arte con 'boceto' en el nombre);
+                        -- fallback al 'cmyk' para órdenes anteriores al cambio (5 capas sin boceto).
                         (SELECT TOP 1 ArchivoID FROM ArchivosOrden WITH(NOLOCK)
                          WHERE OrdenID = o.OrdenID AND RutaAlmacenamiento IS NOT NULL
-                           AND (UPPER(LTRIM(RTRIM(o.AreaID))) <> 'TPU' OR LOWER(NombreArchivo) LIKE '%cmyk%')
-                         ORDER BY ArchivoID ASC) AS PrimerArchivoID,
+                           AND (UPPER(LTRIM(RTRIM(o.AreaID))) <> 'TPU' OR LOWER(NombreArchivo) LIKE '%boceto%' OR LOWER(NombreArchivo) LIKE '%cmyk%')
+                         ORDER BY CASE WHEN UPPER(LTRIM(RTRIM(o.AreaID))) = 'TPU' AND LOWER(NombreArchivo) LIKE '%boceto%' THEN 0 ELSE 1 END, ArchivoID ASC) AS PrimerArchivoID,
                         (SELECT TOP 1 RutaAlmacenamiento FROM ArchivosOrden WITH(NOLOCK)
                          WHERE OrdenID = o.OrdenID AND RutaAlmacenamiento IS NOT NULL
-                           AND (UPPER(LTRIM(RTRIM(o.AreaID))) <> 'TPU' OR LOWER(NombreArchivo) LIKE '%cmyk%')
-                         ORDER BY ArchivoID ASC) AS DriveFileId,
+                           AND (UPPER(LTRIM(RTRIM(o.AreaID))) <> 'TPU' OR LOWER(NombreArchivo) LIKE '%boceto%' OR LOWER(NombreArchivo) LIKE '%cmyk%')
+                         ORDER BY CASE WHEN UPPER(LTRIM(RTRIM(o.AreaID))) = 'TPU' AND LOWER(NombreArchivo) LIKE '%boceto%' THEN 0 ELSE 1 END, ArchivoID ASC) AS DriveFileId,
                         ISNULL(o.AprobacionPendiente, 0) AS AprobacionPendiente,
                         o.DisenadorID   AS DisenadorID,
                         dis.Nombre      AS DisenadorNombre
@@ -2151,15 +2231,105 @@ exports.getOrderFiles = async (req, res) => {
                 FROM dbo.ArchivosOrden ao WITH(NOLOCK)
                 INNER JOIN dbo.Ordenes o WITH(NOLOCK) ON ao.OrdenID = o.OrdenID
                 WHERE ao.OrdenID = @OID AND o.CodCliente = @cod
-                  -- TPU: el cliente solo ve el archivo de aprobación (el que tiene 'cmyk' en el nombre);
-                  -- los otros PDFs del arte son internos. El resto de los servicios ve todos sus archivos.
-                  AND (UPPER(LTRIM(RTRIM(o.AreaID))) <> 'TPU' OR LOWER(ao.NombreArchivo) LIKE '%cmyk%')
+                  -- TPU: el cliente solo ve el archivo de aprobación — el BOCETO DE PRODUCCIÓN (arte con
+                  -- 'boceto' en el nombre); fallback al 'cmyk' para órdenes viejas sin boceto. Los otros
+                  -- PDFs del arte son internos. El resto de los servicios ve todos sus archivos.
+                  AND (UPPER(LTRIM(RTRIM(o.AreaID))) <> 'TPU'
+                       OR LOWER(ao.NombreArchivo) LIKE '%boceto%'
+                       OR (LOWER(ao.NombreArchivo) LIKE '%cmyk%' AND NOT EXISTS (
+                             SELECT 1 FROM dbo.ArchivosOrden x WITH(NOLOCK)
+                             WHERE x.OrdenID = ao.OrdenID AND LOWER(x.NombreArchivo) LIKE '%boceto%'
+                               AND ISNULL(x.EstadoArchivo,'') <> 'Cancelado')))
                 ORDER BY ao.ArchivoID ASC
             `);
         res.json({ success: true, data: result.recordset });
     } catch (err) {
         logger.error("Error getOrderFiles:", err);
         res.status(500).json({ error: "Error al obtener archivos de la orden." });
+    }
+};
+
+// ─── TPU: VISOR 3D DEL PARCHE (portal) ───────────────────────────────────────
+// El arte TPU son 6 capas (boceto, cmyk, corte, relieve, relieve 2, barniz). El portal solo
+// LISTA el boceto (getOrderFiles), pero el visor 3D necesita el CONTENIDO de las capas internas
+// para armar el modelo (silueta del corte + arte cmyk + relieve como altura). Estos endpoints
+// exponen ese contenido SOLO al dueño del pedido (CodCliente del token) y solo en órdenes TPU.
+
+// Rol de una capa según el nombre del archivo (misma convención de nombres que usa producción).
+const rolCapaTpu = (nombre) => {
+    const n = String(nombre || '').toLowerCase();
+    if (n.includes('boceto')) return 'boceto';
+    if (n.includes('cmyk')) return 'cmyk';
+    if (n.includes('corte')) return 'corte';
+    if (n.includes('barniz')) return 'barniz';
+    if (/relieve\s*2/.test(n)) return 'relieve2';
+    if (n.includes('relieve')) return 'relieve';
+    return null;
+};
+
+// GET /api/web-orders/tpu-model/:ordenId — qué capas (ArchivoID) tiene el arte de la orden.
+exports.getTpuModelCapas = async (req, res) => {
+    const codCliente = req.user?.codCliente;
+    const ordenId = parseInt(req.params.ordenId, 10);
+    if (!codCliente || !ordenId) return res.status(400).json({ error: 'Datos inválidos' });
+    try {
+        const pool = await getPool();
+        const r = await pool.request()
+            .input('OID', sql.Int, ordenId)
+            .input('cod', sql.Int, codCliente)
+            .query(`
+                SELECT ao.ArchivoID, ao.NombreArchivo
+                FROM dbo.ArchivosOrden ao WITH(NOLOCK)
+                JOIN dbo.Ordenes o WITH(NOLOCK) ON o.OrdenID = ao.OrdenID
+                WHERE ao.OrdenID = @OID AND o.CodCliente = @cod
+                  AND UPPER(LTRIM(RTRIM(o.AreaID))) = 'TPU'
+                  AND ISNULL(ao.EstadoArchivo,'') <> 'Cancelado'
+                  AND ao.RutaAlmacenamiento IS NOT NULL
+            `);
+        const capas = {};
+        for (const row of r.recordset) {
+            const rol = rolCapaTpu(row.NombreArchivo);
+            const esPdf = /\.pdf$/i.test(String(row.NombreArchivo || '')); // PLT (corte de plotter) no se puede rasterizar
+            if (rol && esPdf && !capas[rol]) capas[rol] = row.ArchivoID;
+        }
+        res.json({ success: true, capas });
+    } catch (err) {
+        logger.error(`[TPU-3D] getTpuModelCapas: ${err.message}`);
+        res.status(500).json({ error: 'Error al obtener las capas del modelo.' });
+    }
+};
+
+// GET /api/web-orders/tpu-model/:ordenId/archivo/:archivoId — contenido de UNA capa (proxy Drive).
+exports.getTpuModelArchivo = async (req, res) => {
+    const codCliente = req.user?.codCliente;
+    const ordenId = parseInt(req.params.ordenId, 10);
+    const archivoId = parseInt(req.params.archivoId, 10);
+    if (!codCliente || !ordenId || !archivoId) return res.status(400).json({ error: 'Datos inválidos' });
+    try {
+        const pool = await getPool();
+        const r = await pool.request()
+            .input('OID', sql.Int, ordenId)
+            .input('AID', sql.Int, archivoId)
+            .input('cod', sql.Int, codCliente)
+            .query(`
+                SELECT TOP 1 ao.RutaAlmacenamiento
+                FROM dbo.ArchivosOrden ao WITH(NOLOCK)
+                JOIN dbo.Ordenes o WITH(NOLOCK) ON o.OrdenID = ao.OrdenID
+                WHERE ao.ArchivoID = @AID AND ao.OrdenID = @OID AND o.CodCliente = @cod
+                  AND UPPER(LTRIM(RTRIM(o.AreaID))) = 'TPU'
+                  AND ISNULL(ao.EstadoArchivo,'') <> 'Cancelado'
+            `);
+        const ruta = r.recordset[0]?.RutaAlmacenamiento;
+        const driveId = ruta ? (String(ruta).match(/(?:id=|\/d\/)([\w-]+)/) || [])[1] : null;
+        if (!driveId) return res.status(404).json({ error: 'Capa no encontrada.' });
+
+        const file = await driveService.getFileStream(driveId);
+        res.setHeader('Content-Type', file.mimeType || 'application/pdf');
+        res.setHeader('Cache-Control', 'private, max-age=3600');
+        file.stream.pipe(res);
+    } catch (err) {
+        logger.error(`[TPU-3D] getTpuModelArchivo: ${err.message}`);
+        res.status(500).json({ error: 'Error al leer la capa.' });
     }
 };
 

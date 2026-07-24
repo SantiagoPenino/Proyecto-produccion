@@ -231,16 +231,15 @@ exports.toggleRollStatus = async (req, res) => {
                 // Impresora → Impreso ; no-impresora (calandra) → Calandrado. No aplica a 'production' (volver a la
                 // cola es una corrección, no una finalización). El flag EsImpresora viene de ConfigEquipos.
                 if (destination !== 'production') {
-                    // OJO: SeparacionImpresion puede venir como CHAR ('0'/'1') según el tipo de la
-                    // columna — y un '0' string es TRUTHY en JS: `!!EsImpresora` daba true hasta en
-                    // las calandras y el gate exigía 'Impreso' donde la UI marca 'Calandrado'
-                    // (lotes 100% calandrados imposibles de finalizar). Parse explícito.
-                    const esImpresora = currentRoll.EsImpresora === true || Number(String(currentRoll.EsImpresora ?? '0').trim()) === 1;
                     const areaRollUp = String(currentRoll.AreaID || '').trim().toUpperCase();
-                    // La marca a exigir: 'Calandrado' SOLO en calandras de SB (única área con calandras);
-                    // en el resto (DTF, TPU, y las impresoras de SB) la marca es 'Impreso'. Si esto usara
-                    // Calandrado en DTF, el gate bloquearía siempre (ahí nadie calandra).
-                    const colMarca = (areaRollUp === 'SB' && !esImpresora) ? 'Calandrado' : 'Impreso'; // valor interno fijo, no input del cliente
+                    // La marca a exigir: 'Calandrado' SOLO en CALANDRAS de SB (única área con calandras);
+                    // en el resto (DTF, TPU, y las impresoras de SB) la marca es 'Impreso'.
+                    // Se detecta la calandra por NOMBRE ('calandra%'), NO por SeparacionImpresion: ese flag
+                    // está en 0 en impresoras reales como MIMAKI, y con `!esImpresora` el gate les exigía
+                    // 'Calandrado' (que nadie marca en una impresora) → lote imposible de finalizar.
+                    // Mismo criterio que el front (MachineControl: esCalandra) y que el lockDrag.
+                    const esCalandra = /^\s*calandra/i.test(String(currentRoll.NombreEquipo || ''));
+                    const colMarca = (areaRollUp === 'SB' && esCalandra) ? 'Calandrado' : 'Impreso'; // valor interno fijo, no input del cliente
                     const marcaRes = await new sql.Request(transaction)
                         .input('RID', sql.VarChar(50), currentRoll.RolloID.toString())
                         .query(`SELECT COUNT(*) AS Faltan FROM dbo.Ordenes

@@ -109,12 +109,12 @@ exports.uploadProductionFile = async (req, res) => {
         if (!ordRes.recordset.length) return res.status(404).json({ error: "Orden no encontrada." });
         const orden = ordRes.recordset[0];
 
-        // Máximo 5 archivos de arte por orden (sin contar cancelados)
+        // Máximo 6 archivos de arte por orden (sin contar cancelados)
         const cntRes = await pool.request()
             .input('OID', sql.Int, orden.OrdenID)
             .query(`SELECT COUNT(*) AS n FROM ArchivosOrden WHERE OrdenID = @OID AND ISNULL(EstadoArchivo,'') <> 'Cancelado'`);
-        if ((cntRes.recordset[0]?.n || 0) >= 5) {
-            return res.status(400).json({ error: 'La orden ya tiene 5 archivos de arte (máximo).' });
+        if ((cntRes.recordset[0]?.n || 0) >= 6) {
+            return res.status(400).json({ error: 'La orden ya tiene 6 archivos de arte (máximo).' });
         }
 
         const finalName = file.originalname;
@@ -180,11 +180,11 @@ exports.enviarAprobacionTPU = async (req, res) => {
         if (String(o.AreaID || '').toUpperCase() !== 'TPU') return res.status(400).json({ error: 'Solo aplica a órdenes TPU.' });
 
         // Reuso de matriz con cantidad distinta ([REUSO-REGEN]): el diseño ya está aprobado, así que al
-        // completar las 5 capas regeneradas la orden entra DIRECTO a producción, sin aprobación del cliente.
+        // completar las 6 capas regeneradas la orden entra DIRECTO a producción, sin aprobación del cliente.
         const esReuso = /\[REUSO-REGEN\]/i.test(o.Nota || '');
 
-        if (o.archivos !== 5) {
-            return res.status(400).json({ error: `Se necesitan exactamente 5 archivos de arte para ${esReuso ? 'enviar a producción' : 'enviar a aprobación'} (hay ${o.archivos}).` });
+        if (o.archivos !== 6) {
+            return res.status(400).json({ error: `Se necesitan exactamente 6 archivos de arte para ${esReuso ? 'enviar a producción' : 'enviar a aprobación'} (hay ${o.archivos}).` });
         }
 
         if (esReuso) {

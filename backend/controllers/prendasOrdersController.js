@@ -491,7 +491,11 @@ exports.createWebOrder = async (req, res) => {
                     referencias: ordenReferencias,
                     isExtra: !srv.esPrincipal,
                     extraOriginId: srv.areaId,
-                    magnitudInicial: 0,
+                    // TPU: Magnitud = cantidad pedida (el ítem no trae archivo y el recálculo por
+                    // archivos nunca la fijaba → quedaba "0 U"). Espejo del fix en webOrdersController.
+                    magnitudInicial: (serviceId === 'tpu' && srv.esPrincipal)
+                        ? (srv.items || []).reduce((s, it) => s + (parseInt(it.cantidad) || 0), 0)
+                        : 0,
                     notaAdicional: serviceNote, // Nota completa para la Orden
                     techInfo: techInfo // Info técnica limpia para ServiciosExtraOrden
                 });
@@ -1799,14 +1803,15 @@ exports.getClientOrders = async (req, res) => {
                         m.Nombre        AS NombreMaquina,
                         o.Magnitud      AS Magnitud,
                         o.UM            AS UM,
+                        -- TPU: boceto de producción primero; fallback cmyk (órdenes viejas). Espejo de webOrders.
                         (SELECT TOP 1 ArchivoID FROM ArchivosOrden WITH(NOLOCK)
                          WHERE OrdenID = o.OrdenID AND RutaAlmacenamiento IS NOT NULL
-                           AND (UPPER(LTRIM(RTRIM(o.AreaID))) <> 'TPU' OR LOWER(NombreArchivo) LIKE '%cmyk%')
-                         ORDER BY ArchivoID ASC) AS PrimerArchivoID,
+                           AND (UPPER(LTRIM(RTRIM(o.AreaID))) <> 'TPU' OR LOWER(NombreArchivo) LIKE '%boceto%' OR LOWER(NombreArchivo) LIKE '%cmyk%')
+                         ORDER BY CASE WHEN UPPER(LTRIM(RTRIM(o.AreaID))) = 'TPU' AND LOWER(NombreArchivo) LIKE '%boceto%' THEN 0 ELSE 1 END, ArchivoID ASC) AS PrimerArchivoID,
                         (SELECT TOP 1 RutaAlmacenamiento FROM ArchivosOrden WITH(NOLOCK)
                          WHERE OrdenID = o.OrdenID AND RutaAlmacenamiento IS NOT NULL
-                           AND (UPPER(LTRIM(RTRIM(o.AreaID))) <> 'TPU' OR LOWER(NombreArchivo) LIKE '%cmyk%')
-                         ORDER BY ArchivoID ASC) AS DriveFileId,
+                           AND (UPPER(LTRIM(RTRIM(o.AreaID))) <> 'TPU' OR LOWER(NombreArchivo) LIKE '%boceto%' OR LOWER(NombreArchivo) LIKE '%cmyk%')
+                         ORDER BY CASE WHEN UPPER(LTRIM(RTRIM(o.AreaID))) = 'TPU' AND LOWER(NombreArchivo) LIKE '%boceto%' THEN 0 ELSE 1 END, ArchivoID ASC) AS DriveFileId,
                         ISNULL(o.AprobacionPendiente, 0) AS AprobacionPendiente,
                         o.DisenadorID   AS DisenadorID,
                         dis.Nombre      AS DisenadorNombre
@@ -2145,9 +2150,14 @@ exports.getOrderFiles = async (req, res) => {
                 FROM dbo.ArchivosOrden ao WITH(NOLOCK)
                 INNER JOIN dbo.Ordenes o WITH(NOLOCK) ON ao.OrdenID = o.OrdenID
                 WHERE ao.OrdenID = @OID AND o.CodCliente = @cod
-                  -- TPU: el cliente solo ve el archivo de aprobación (el que tiene 'cmyk' en el nombre);
-                  -- los otros PDFs del arte son internos. El resto de los servicios ve todos sus archivos.
-                  AND (UPPER(LTRIM(RTRIM(o.AreaID))) <> 'TPU' OR LOWER(ao.NombreArchivo) LIKE '%cmyk%')
+                  -- TPU: el cliente ve el BOCETO DE PRODUCCIÓN ('boceto' en el nombre); fallback al 'cmyk'
+                  -- para órdenes viejas sin boceto. Espejo de webOrders.getOrderFiles.
+                  AND (UPPER(LTRIM(RTRIM(o.AreaID))) <> 'TPU'
+                       OR LOWER(ao.NombreArchivo) LIKE '%boceto%'
+                       OR (LOWER(ao.NombreArchivo) LIKE '%cmyk%' AND NOT EXISTS (
+                             SELECT 1 FROM dbo.ArchivosOrden x WITH(NOLOCK)
+                             WHERE x.OrdenID = ao.OrdenID AND LOWER(x.NombreArchivo) LIKE '%boceto%'
+                               AND ISNULL(x.EstadoArchivo,'') <> 'Cancelado')))
                 ORDER BY ao.ArchivoID ASC
             `);
         res.json({ success: true, data: result.recordset });

@@ -23,6 +23,7 @@
     "axios": "^1.13.2",
     "clsx": "^2.1.1",
     "cors": "^2.8.5",
+    "d3-contour": "^4.0.2",
     "express": "^5.2.1",
     "framer-motion": "^12.34.0",
     "google-auth-library": "^10.6.1",
@@ -50,6 +51,7 @@
     "sonner": "^2.0.7",
     "sweetalert2": "^11.26.21",
     "tailwind-merge": "^3.4.1",
+    "three": "^0.185.1",
     "tippy.js": "^6.3.7",
     "xlsx": "^0.18.5"
   },
@@ -66,6 +68,7 @@
     ]
   },
   "devDependencies": {
+    "@napi-rs/canvas": "^1.0.2",
     "@vitejs/plugin-basic-ssl": "^2.1.4",
     "@vitejs/plugin-react": "^5.1.1",
     "autoprefixer": "^10.4.23",

@@ -456,6 +456,9 @@ exports.createRemito = async (req, res) => {
                                   AND b.Estado = 'EN_STOCK'
                                   AND b.Tipocontenido = 'PROD_TERMINADO'
                                   AND b.BultoID NOT IN (${idsGate})
+                                  -- Fallas internas (-F): NUNCA obligan a "salir completo" — son órdenes
+                                  -- efímeras que reponen material de la madre, no un ítem del pedido del cliente.
+                                  AND (o.CodigoOrden IS NULL OR o.CodigoOrden NOT LIKE '%-F%')
                                   AND NOT EXISTS (SELECT 1 FROM Logistica_EnvioItems ei WHERE ei.BultoID = b.BultoID)
                             `);
                         if (faltan.recordset.length > 0) {

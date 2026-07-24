@@ -103,6 +103,7 @@ const CoordinacionView             = lazyWithRetry(() => import('../pages/Coordi
 const ColorMatcherPage             = lazyWithRetry(() => import('../pages/ColorMatcherPage'));
 const ReportesPage                 = lazyWithRetry(() => import('../pages/ReportesPage'));
 const ContabilidadReportesPage     = lazyWithRetry(() => import('../pages/ContabilidadReportesPage'));
+const TareasPage                   = lazyWithRetry(() => import('../pages/TareasPage'));
 
 // ============================================
 // 1. LUCIDE ICON MAP (override FA icons)
@@ -708,6 +709,7 @@ const MainAppContent = ({ menuItems = [] }) => {
                 <Route path="/coordinacion"                   element={<CoordinacionView />} />
                 <Route path="/color"                          element={<ColorMatcherPage />} />
                 <Route path="/reportes"                      element={<ReportesPage />} />
+                <Route path="/tareas"                        element={<TareasPage />} />
                 <Route path="/*" element={<DynamicRouter menuItems={menuItems} />} />
             </Routes>
         </Suspense>

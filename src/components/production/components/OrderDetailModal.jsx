@@ -37,6 +37,8 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
     const isTPU = String(order?.area || order?.AreaID || currentOrder?.area || currentOrder?.AreaID || '').toUpperCase() === 'TPU';
     const [files, setFiles] = useState([]);
     const [uploadingTPU, setUploadingTPU] = useState(false);
+    // Progreso de la subida TPU: % global ponderado por bytes + archivo en curso (para la barra).
+    const [progresoTPU, setProgresoTPU] = useState(null); // { pct, actual, total } | null
     const [configEstados, setConfigEstados] = useState([]);
     const [loadingFiles, setLoadingFiles] = useState(false);
     const [labels, setLabels] = useState([]);
@@ -44,7 +46,7 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
     const [draftStates, setDraftStates] = useState({ status: '', areaStatus: '' });
 
     // Reuso de matriz TPU con cantidad distinta: la orden trae arte "base" a regenerar y NO va a
-    // aprobación del cliente — al subir las 5 capas nuevas, entra directo a producción.
+    // aprobación del cliente — al subir las 6 capas nuevas, entra directo a producción.
     const esReusoRegen = isTPU && (
         /\[REUSO-REGEN\]/i.test(String(currentOrder?.Nota || currentOrder?.nota || order?.Nota || order?.nota || '')) ||
         files.some(f => /REGENERAR|ARTE BASE/i.test(String(f.TipoArchivo || f.tipo || f.NombreArchivo || f.nombre || '')))
@@ -291,6 +293,14 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
     // Archivos de Referencia = select * from ArchivosReferencia
     const referenceFiles = files.filter(f => f.Categoria === 'referencia');
 
+    // TPU: el arte cuyo nombre contiene "boceto" es el BOCETO DE PRODUCCIÓN. Sigue siendo uno de
+    // los 6 archivos de arte (cuenta para el máximo y para enviar a aprobación), pero se MUESTRA
+    // en la pestaña de Referencias (debajo del boceto del cliente) con su propio tag — y es el que
+    // el cliente ve en el portal para aprobar (el backend filtra por 'boceto' con fallback a cmyk).
+    const esBocetoProduccion = (f) => isTPU && /boceto/i.test(String(f.nombre || f.NombreArchivo || ''));
+    const printFilesVista = productionFiles.filter(f => !esBocetoProduccion(f));
+    const bocetosProduccion = productionFiles.filter(esBocetoProduccion);
+
     // Cotizar Productos = select * from ServiciosExtraOrden
     const serviceFiles = files.filter(f => f.Categoria === 'servicio' || (f.tipo && servTypes.includes(normalizeType(f.tipo))));
 
@@ -321,16 +331,26 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
         });
         if (validos.length === 0) return toast.error('Solo se permiten archivos PDF o PLT.');
         if (validos.length !== todos.length) toast.error('Se ignoraron archivos que no son PDF/PLT.');
-        // Máximo 5 archivos de arte (sin contar los cancelados)
+        // Máximo 6 archivos de arte (sin contar los cancelados)
         const yaHay = productionFiles.filter(f => (f.Estado || f.estado || f.EstadoArchivo || '').toUpperCase() !== 'CANCELADO').length;
-        if (yaHay + validos.length > 5) {
-            return toast.error(`Máximo 5 archivos de arte (ya hay ${yaHay}).`);
+        if (yaHay + validos.length > 6) {
+            return toast.error(`Máximo 6 archivos de arte (ya hay ${yaHay}).`);
         }
         if (!currentOrder?.id) return;
         setUploadingTPU(true);
+        // Progreso GLOBAL ponderado por bytes: (bytes de archivos ya subidos + bytes en vuelo) / total.
+        const totalBytes = validos.reduce((s, f) => s + (f.size || 0), 0) || 1;
+        let bytesListos = 0;
+        setProgresoTPU({ pct: 0, actual: 1, total: validos.length });
         try {
-            for (const f of validos) {
-                await ordersService.uploadProductionFile(currentOrder.id, f);
+            for (let i = 0; i < validos.length; i++) {
+                const f = validos[i];
+                await ordersService.uploadProductionFile(currentOrder.id, f, (loaded) => {
+                    const pct = Math.min(100, Math.round(((bytesListos + loaded) / totalBytes) * 100));
+                    setProgresoTPU({ pct, actual: i + 1, total: validos.length });
+                });
+                bytesListos += (f.size || 0);
+                setProgresoTPU({ pct: Math.min(100, Math.round((bytesListos / totalBytes) * 100)), actual: Math.min(i + 2, validos.length), total: validos.length });
             }
             toast.success(`${validos.length} archivo(s) de arte subido(s).`);
             loadData(currentOrder.id, currentOrder.area);
@@ -339,6 +359,7 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
             toast.error('Error al subir: ' + (e?.response?.data?.error || e?.message || ''));
         } finally {
             setUploadingTPU(false);
+            setProgresoTPU(null);
         }
     };
 
@@ -346,13 +367,13 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
     const handleEnviarAprobacion = async () => {
         if (!currentOrder?.id) return;
         const nArte = productionFiles.filter(f => (f.Estado || f.estado || f.EstadoArchivo || '').toUpperCase() !== 'CANCELADO').length;
-        if (nArte !== 5) {
-            return toast.error(`Se necesitan exactamente 5 archivos de arte para ${esReusoRegen ? 'enviar a producción' : 'enviar a aprobación'} (hay ${nArte}).`);
+        if (nArte !== 6) {
+            return toast.error(`Se necesitan exactamente 6 archivos de arte para ${esReusoRegen ? 'enviar a producción' : 'enviar a aprobación'} (hay ${nArte}).`);
         }
         const r = await Swal.fire({
             title: esReusoRegen ? '¿Enviar a producción?' : '¿Enviar a aprobación del cliente?',
             html: esReusoRegen
-                ? 'Es un <b>reuso de matriz</b> con cantidad distinta: el diseño ya está aprobado.<br/>Con las 5 capas nuevas, la orden entra <b>directo a producción</b> (sin aprobación del cliente).'
+                ? 'Es un <b>reuso de matriz</b> con cantidad distinta: el diseño ya está aprobado.<br/>Con las 6 capas nuevas, la orden entra <b>directo a producción</b> (sin aprobación del cliente).'
                 : 'El cliente verá el arte (archivo <b>CMYK</b>) y deberá aprobarlo.<br/>La orden queda <b>retenida</b> hasta que apruebe.',
             icon: 'question',
             showCancelButton: true,
@@ -1180,9 +1201,9 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
                     <div>
                         <div className="flex gap-1 border-b border-zinc-200 mb-6 overflow-x-auto">
                             {[
-                                { id: 'files', label: 'Archivos de Impresión', count: productionFiles.length, icon: 'fa-layer-group' },
+                                { id: 'files', label: 'Archivos de Impresión', count: printFilesVista.length, icon: 'fa-layer-group' },
                                 ...(terminacionesOrden.length > 0 ? [{ id: 'terminaciones', label: 'Terminaciones', count: terminacionesOrden.length, icon: 'fa-scissors' }] : []),
-                                { id: 'refs', label: 'Archivos de Referencia', count: referenceFiles.length + (isSB ? fallaImages.length : 0), icon: 'fa-paperclip' },
+                                { id: 'refs', label: 'Archivos de Referencia', count: referenceFiles.length + bocetosProduccion.length + (isSB ? fallaImages.length : 0), icon: 'fa-paperclip' },
                                 { id: 'services', label: 'Cotizar Productos', count: serviceFiles.length, icon: 'fa-box-open' },
                                 { id: 'labels', label: 'Etiquetas', count: labels.length, icon: 'fa-tags' },
                                 { id: 'reqs', label: 'Requisitos', count: 0, icon: 'fa-list-check' }
@@ -1292,19 +1313,32 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
                             {activeTab === 'files' && (
                                 <div className="space-y-2 pr-1 custom-scrollbar">
                                     {isTPU && (
-                                        <label className={`flex items-center justify-center gap-2 py-3 mb-2 rounded-xl border-2 border-dashed transition-colors ${uploadingTPU ? 'border-zinc-200 text-zinc-300 pointer-events-none' : 'border-brand-cyan/40 text-brand-cyan hover:bg-brand-cyan/5 cursor-pointer'}`}>
-                                            <i className={`fa-solid ${uploadingTPU ? 'fa-circle-notch fa-spin' : 'fa-plus'}`}></i>
-                                            <span className="text-xs font-bold uppercase tracking-wide">{uploadingTPU ? 'Subiendo...' : 'Subir arte (PDF / PLT · 5 archivos)'}</span>
+                                        <label className={`relative overflow-hidden flex items-center justify-center gap-2 py-3 mb-2 rounded-xl border-2 border-dashed transition-colors ${uploadingTPU ? 'border-brand-cyan/30 text-brand-cyan pointer-events-none' : 'border-brand-cyan/40 text-brand-cyan hover:bg-brand-cyan/5 cursor-pointer'}`}>
+                                            {/* Barra de progreso de la subida (relleno de fondo, % por bytes) */}
+                                            {uploadingTPU && progresoTPU && (
+                                                <div
+                                                    className="absolute inset-y-0 left-0 bg-brand-cyan/15 transition-all duration-200"
+                                                    style={{ width: `${progresoTPU.pct}%` }}
+                                                />
+                                            )}
+                                            <i className={`relative fa-solid ${uploadingTPU ? 'fa-circle-notch fa-spin' : 'fa-plus'}`}></i>
+                                            <span className="relative text-xs font-bold uppercase tracking-wide">
+                                                {uploadingTPU
+                                                    ? (progresoTPU
+                                                        ? `Subiendo ${progresoTPU.actual}/${progresoTPU.total} · ${progresoTPU.pct}%`
+                                                        : 'Subiendo...')
+                                                    : 'Subir arte (PDF / PLT · 6 archivos)'}
+                                            </span>
                                             <input type="file" accept="application/pdf,.pdf,.plt" multiple className="hidden" disabled={uploadingTPU}
                                                 onChange={(e) => { handleUploadTPUFiles(e.target.files); e.target.value = ''; }} />
                                         </label>
                                     )}
-                                    {productionFiles.length === 0 ? (
+                                    {printFilesVista.length === 0 ? (
                                         <div className="py-12 text-center text-zinc-400 italic bg-zinc-50 rounded-xl border border-dashed border-zinc-200">
                                             No hay archivos de impresión cargados.
                                         </div>
                                     ) : (
-                                        productionFiles.map((f, idx) => {
+                                        printFilesVista.map((f, idx) => {
                                             const { actions, editContent } = renderFileActionsData(f, idx);
                                             // Solo en órdenes de reposición: el readonly es el original (orden madre),
                                             // el editable es el de esta reposición. Se ven iguales (nombre heredado).
@@ -1396,15 +1430,22 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
                                         </div>
                                     )}
 
-                                    {referenceFiles.length === 0 && !(isSB && fallaImages.length > 0) ? (
+                                    {referenceFiles.length === 0 && bocetosProduccion.length === 0 && !(isSB && fallaImages.length > 0) ? (
                                         <div className="py-8 text-center text-zinc-400 bg-zinc-50 rounded-lg border border-dashed border-zinc-200">
                                             <i className="fa-regular fa-image text-2xl mb-2 block opacity-50"></i>
                                             Sin imágenes de referencia o guías.
                                         </div>
                                     ) : (
-                                        referenceFiles.map((f, idx) => (
-                                            <ReferenceItem key={idx} file={f} />
-                                        ))
+                                        <>
+                                            {referenceFiles.map((f, idx) => (
+                                                <ReferenceItem key={idx} file={f} />
+                                            ))}
+                                            {/* TPU: el arte "boceto" (uno de los 6) se muestra acá, debajo del boceto
+                                                del cliente, como BOCETO DE PRODUCCIÓN — es lo que el cliente aprueba. */}
+                                            {bocetosProduccion.map((f, idx) => (
+                                                <ReferenceItem key={`bocprod-${idx}`} file={{ ...f, tipo: 'BOCETO DE PRODUCCION', TipoArchivo: 'BOCETO DE PRODUCCION' }} />
+                                            ))}
+                                        </>
                                     )}
                                 </div>
                             )}

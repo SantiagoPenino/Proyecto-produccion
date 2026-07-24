@@ -71,11 +71,13 @@ export const ordersService = {
         return response.data;
     },
     // Sube un PDF de producción (arte) a una orden existente. Uso interno (TPU).
-    uploadProductionFile: async (ordenId, file) => {
+    uploadProductionFile: async (ordenId, file, onProgress) => {
         const formData = new FormData();
         formData.append('file', file);
         const response = await api.post(`/orders/${ordenId}/production-file`, formData, {
-            headers: { 'Content-Type': 'multipart/form-data' }
+            headers: { 'Content-Type': 'multipart/form-data' },
+            // Progreso de subida (bytes enviados de ESTE archivo) para la barra del modal TPU.
+            onUploadProgress: onProgress ? (e) => onProgress(e.loaded, e.total || file.size || 0) : undefined,
         });
         return response.data;
     },

@@ -759,7 +759,7 @@ const registrarEgreso = async (req, res) => {
                  dc.DocNumero AS VoucherNumero, dc.DocSerie AS VoucherSerie,
                  dc.AsiIdAsiento,
                  mp.MPaDescripcionMetodo AS MetodoPago,
-                 u.NombreCompleto AS UsuarioNombre,
+                 u.Nombre AS UsuarioNombre,
                  cfg.CegNombreTipo AS TipoEgresoLabel,
                  cfg.CegCueCodigo AS CuentaCodigo,
                  cfg.CegCueNombre AS CuentaNombre,
@@ -828,7 +828,7 @@ const getVoucherEgreso = async (req, res) => {
           dc.DocFechaEmision,
           dc.AsiIdAsiento,
           mp.MPaDescripcionMetodo AS MetodoPago,
-          u.NombreCompleto  AS UsuarioNombre,
+          u.Nombre          AS UsuarioNombre,
           st.StuFechaApertura,
           cfg.CegNombreTipo   AS TipoEgresoLabel,
           cfg.CegCueCodigo    AS CuentaCodigo,
@@ -859,7 +859,8 @@ const getVoucherEgreso = async (req, res) => {
 
     return res.json({ success: true, voucher: r.recordset[0] });
   } catch (err) {
-    logger.error('[CAJA] getVoucherEgreso:', err.message);
+    // Interpolar en el message (winston descarta un 2º arg string) + detalle SQL real.
+    logger.error(`[CAJA] getVoucherEgreso: ${err.message || '(sin message)'} | num=${err.number ?? '-'} | sql=${err.originalError?.info?.message || ''}`);
     return res.status(500).json({ success: false, error: err.message });
   }
 };
@@ -3554,7 +3555,8 @@ const getAutorizacionesSinPago = async (req, res) => {
     }));
     res.json({ success: true, data });
   } catch (err) {
-    logger.error('[CAJA] getAutorizacionesSinPago:', err.message);
+    // Interpolar en el message (winston descarta un 2º arg string) + detalle SQL real.
+    logger.error(`[CAJA] getAutorizacionesSinPago: ${err.message || '(sin message)'} | num=${err.number ?? '-'} | sql=${err.originalError?.info?.message || ''}`);
     res.status(500).json({ success: false, error: err.message });
   }
 };

@@ -553,8 +553,11 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
     }, [serviceId]);
 
     // TPU: garantizar SIEMPRE 1 item que lleve la cantidad (el submit agrupa por item; un item
-    // sin archivo produce un pedido válido). Reactivo a items.length: si la carga de config vacía
-    // items (setItems([])), se vuelve a crear. Arranca con la cantidad mínima.
+    // sin archivo produce un pedido válido). SIN array de deps a propósito: la carga de config
+    // despacha RESET_FORM en el MISMO flush que este efecto, así que el "1 item" nunca llegaba a
+    // commitearse y con deps [serviceId, items.length] el efecto no volvía a disparar (0 === 0).
+    // Corriendo tras cada commit se auto-corrige y no loopea (solo actúa con items vacío).
+    // Espejo del mismo fix en OrderForm.jsx.
     useEffect(() => {
         if (serviceId === 'tpu' && items.length === 0) {
             actions.setItems([{
@@ -563,7 +566,7 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
                 note: '', doubleSided: false, printSettings: {}
             }]);
         }
-    }, [serviceId, items.length]);
+    });
 
 
     // Directa 3.20 Twinface Logic (Code 1560)

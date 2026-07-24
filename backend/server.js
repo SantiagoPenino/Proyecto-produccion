@@ -30,6 +30,8 @@ app.use((req, res, next) => {
 // --- MIDDLEWARES DE SEGURIDAD ---
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
+const jwt = require('jsonwebtoken');
+const JWT_SECRET = process.env.JWT_SECRET;
 
 app.use(helmet({
     contentSecurityPolicy: false, // Disable CSP for simplicity in this dev environment to allow iframe and inline scripts for QR
@@ -47,7 +49,21 @@ const limiter = rateLimit({
     message: "Demasiadas peticiones desde esta IP, por favor intente nuevamente en 15 minutos.",
     skip: (req) => {
         const clientIp = (req.ip || '').replace(/^::ffff:/, '');
-        return WHITELISTED_IPS.includes(clientIp);
+        if (WHITELISTED_IPS.includes(clientIp)) return true;
+        // Usuarios INTERNOS (sistema de fábrica) NO pasan por el limiter: el local NATea muchas
+        // pantallas/usuarios tras una sola IP pública y su polling + sockets agotaban el cupo de
+        // 10k/15min, bloqueando hasta el login. El portal de clientes (web) SÍ sigue limitado.
+        // El login en sí va sin token (no se puede saber si es interno), pero al no contar el resto
+        // del tráfico interno el contador de esa IP queda bajo y el login ya no rebota.
+        try {
+            const auth = req.headers['authorization'] || '';
+            const token = auth.startsWith('Bearer ') ? auth.slice(7) : '';
+            if (token && JWT_SECRET) {
+                const decoded = jwt.verify(token, JWT_SECRET);
+                if (decoded && decoded.userType === 'INTERNAL') return true;
+            }
+        } catch (_) { /* token ausente/inválido/expirado → aplica el limiter normal */ }
+        return false;
     }
 });
 app.use('/api', limiter);
@@ -106,6 +122,7 @@ app.use('/api/prendas-orders', require('./routes/prendasOrdersRoutes')); // ALTA
 app.use('/api/web-retiros', webRetirosRoutes);
 app.use('/api/web-content', require('./routes/webContentRoutes')); // RUTAS CONTENIDO WEB (Sidebar/Popup)
 app.use('/api/tickets', require('./routes/ticketsRoutes'));        // MÓDULO HELPDESK TICKETING
+app.use('/api/tareas', require('./routes/tareasRoutes'));          // TO-DO COMPARTIDO (interno)
 app.use('/api/push', require('./routes/pushRoutes'));              // PUSH NOTIFICATIONS
 app.use('/api/nomenclators', nomenclatorsRoutes);
 app.use('/api/routes-config', require('./routes/routesConfigRoutes'));

@@ -1,10 +1,12 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, lazy, Suspense } from 'react';
 import { GlassCard } from '../pautas/GlassCard';
 import { apiClient } from '../api/apiClient';
 import { Loader2, RefreshCw, Layers, Trash2, Check, Settings, Circle, Ban, AlertTriangle, Search, Factory, Truck, MessageSquareWarning, Palette, ShieldCheck } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useNavigate } from 'react-router-dom';
 import { ConfirmationModal } from '../pautas/ConfirmationModal';
+// Visor 3D del parche TPU (aprobación): three.js adentro, se carga solo si se abre.
+const Tpu3DViewer = lazy(() => import('./Tpu3DViewer'));
 import { socket } from '../../services/socketService';
 
 const STATUS_CONFIG = {
@@ -114,6 +116,7 @@ export const FactoryView = () => {
     // Modal de cancelación con razón obligatoria
     const [cancelModal, setCancelModal] = useState({ isOpen: false, onConfirm: null, titulo: '', mensaje: '' });
     const [cancelRazon, setCancelRazon] = useState('');
+    const [tpu3D, setTpu3D] = useState(null); // { ordenId, codigo } → visor 3D del parche TPU abierto
 
     const fetchOrders = async (pageNum = 1, shouldAppend = false) => {
         if (pageNum === 1) setLoading(true);
@@ -528,8 +531,11 @@ export const FactoryView = () => {
                                 className={`glass-panel rounded-xl overflow-hidden transition-all duration-300 hover:border-zinc-600/50 ${statusConf.glow}`}
                             >
                                 <div className="px-4 py-4 sm:px-6 sm:py-5 space-y-2">
-                                    {/* Fila 1: dot + ID | material | estado + acción */}
-                                    <div className="flex items-center gap-2">
+                                    {/* Fila 1: dot + ID | material | estado + acción.
+                                        flex-wrap: en mobile las pills (ESPERA TU APROBACIÓN + VER 3D + APROBAR)
+                                        no entran al lado del código y quedaban cortadas fuera de pantalla —
+                                        ahora bajan a su propia línea. */}
+                                    <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
                                         <div className={`w-2 h-2 rounded-full ${statusConf.dot} shrink-0 ${projectStatus === 'activo' ? 'animate-pulse' : ''}`} />
                                         <span className="text-lg font-black text-zinc-100 tracking-tight font-barlow shrink-0">
                                             {(project.id || '').replace(/\s*\(\d+\/\d+\)\s*$/, '')}
@@ -553,8 +559,9 @@ export const FactoryView = () => {
                                             </div>
                                         ) : <div className="flex-1" />}
 
-                                        {/* Estado + acción a la derecha */}
-                                        <div className="flex items-center gap-1.5 shrink-0">
+                                        {/* Estado + acción a la derecha (ml-auto: alineado a la derecha también
+                                            cuando baja de línea en mobile; wrap interno por si ni así entra) */}
+                                        <div className="flex flex-wrap items-center justify-end gap-1.5 shrink-0 ml-auto">
                                             {esperandoAprobacion ? (
                                                 <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-black uppercase tracking-wider bg-amber-500/10 text-amber-400 border-amber-500/30 border">
                                                     <ShieldCheck size={15} />
@@ -566,6 +573,19 @@ export const FactoryView = () => {
                                                 {statusConf.label}
                                             </span>
                                             )}
+                                            {esperandoAprobacion && (() => {
+                                                // TPU: además del boceto, el cliente puede ver el parche armado en 3D
+                                                const soTpu = (project.subOrders || []).find(so => /^TPU-/i.test(so.CodigoOrden || ''));
+                                                return soTpu?.OrdenID ? (
+                                                    <button
+                                                        onClick={(e) => { e.stopPropagation(); setTpu3D({ ordenId: soTpu.OrdenID, codigo: soTpu.CodigoOrden }); }}
+                                                        className="px-2.5 py-1 rounded-lg text-[10px] font-black uppercase tracking-wide text-cyan-300 border border-cyan-500/30 bg-cyan-500/10 hover:bg-cyan-500/20 transition-all"
+                                                        title="Ver el parche en 3D"
+                                                    >
+                                                        Ver 3D
+                                                    </button>
+                                                ) : null;
+                                            })()}
                                             {esperandoAprobacion && (
                                                 <button onClick={(e) => handleAprobarPedido(project, e)} className="px-2.5 py-1 rounded-lg text-[10px] font-black uppercase tracking-wide text-emerald-300 border border-emerald-500/30 bg-emerald-500/10 hover:bg-emerald-500/20 transition-all" title="Aprobar y enviar a producción">
                                                     Aprobar
@@ -885,6 +905,13 @@ export const FactoryView = () => {
                     <div className="w-8 h-8 rounded-full border-2 border-zinc-700 border-t-custom-cyan animate-spin" />
                     <span className="text-zinc-500 text-[10px] font-bold tracking-widest uppercase">Cargando más pedidos...</span>
                 </div>
+            )}
+
+            {/* Visor 3D del parche TPU (aprobación) */}
+            {tpu3D && (
+                <Suspense fallback={null}>
+                    <Tpu3DViewer ordenId={tpu3D.ordenId} codigo={tpu3D.codigo} onClose={() => setTpu3D(null)} />
+                </Suspense>
             )}
 
             {/* Modal de Confirmación genérico */}

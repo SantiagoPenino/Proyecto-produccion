@@ -759,9 +759,29 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { }, lo
         if (!readOnly && !lockReorder && !calandraView && !marcadoLibre) {
             const printedSet = new Set(printedOrderIds);
             const flat = list.flatMap(u => u.orders.map(o => o.id));
+            const flatIndex = new Map(flat.map((id, i) => [id, i]));
             const lastPrintedIdx = flat.reduce((acc, id, i) => (printedSet.has(id) ? i : acc), -1);
-            if (lastPrintedIdx > 0) {
-                const outOfSeq = new Set(flat.filter((id, i) => i < lastPrintedIdx && !printedSet.has(id)));
+            // Por grupo (en orden de impresión): ¿algún grupo POSTERIOR a este ya tiene una orden impresa?
+            // Es lo que define si una falla quedó "pasada": NO importa si el grupo propio de la falla ya
+            // empezó; importa que el grupo SIGUIENTE no tenga nada impreso (ahí la máquina no avanzó aún).
+            const laterGroupHasPrinted = new Array(list.length);
+            let accPrinted = false;
+            for (let gi = list.length - 1; gi >= 0; gi--) {
+                laterGroupHasPrinted[gi] = accPrinted;
+                if (list[gi].orders.some(o => printedSet.has(o.id))) accPrinted = true;
+            }
+            if (lastPrintedIdx >= 0) {
+                const outOfSeq = new Set();
+                list.forEach((u, gi) => u.orders.forEach(o => {
+                    if (printedSet.has(o.id)) return;
+                    if (isFalla(o)) {
+                        // Falla (reposición tardía): al final SOLO si un grupo posterior ya empezó a imprimirse.
+                        if (laterGroupHasPrinted[gi]) outOfSeq.add(o.id);
+                    } else if (flatIndex.get(o.id) < lastPrintedIdx) {
+                        // Resto: orden sin imprimir que quedó antes de la última impresa (la máquina ya pasó).
+                        outOfSeq.add(o.id);
+                    }
+                }));
                 if (outOfSeq.size > 0) {
                     const tail = [];
                     list.forEach(u => {
@@ -1670,6 +1690,8 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { }, lo
                                         // mismo material (auto-agrupado visual), no solo para 'auto'/'manual'.
                                         const isGroup = unit.kind !== 'loose' || unit.orders.length > 1;
                                         const groupMeters = unit.orders.reduce((s, x) => s + (x.magnitude || 0), 0);
+                                        // Bandera confeccionada: total de banderas del grupo (suma de copias). 0 si no aplica.
+                                        const groupBanderas = unit.orders.reduce((s, x) => s + copiasBandera(x), 0);
                                         // Basta UNA orden impresa para bloquear el grupo (no se puede mover ni reordenar).
                                         const groupLocked = unit.orders.some(o => printedOrderIds.includes(o.id));
                                         return (
@@ -1696,6 +1718,9 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { }, lo
                                                       <span className="font-black text-brand-cyan">
                                                         {groupMeters.toFixed(2)} m
                                                       </span>
+                                                      {groupBanderas > 0 && (
+                                                        <span className="font-black text-brand-cyan">· {groupBanderas} {groupBanderas === 1 ? 'bandera' : 'banderas'}</span>
+                                                      )}
                                                       {!readOnly && unit.kind === 'manual' && (
                                                         <button onClick={() => handleDesagrupar(unit.orders.map(o => o.id))} title="Desagrupar" className="ml-1 w-5 h-5 flex items-center justify-center rounded text-zinc-400 hover:text-brand-magenta hover:bg-brand-magenta/10"><i className="fa-solid fa-link-slash text-[10px]" /></button>
                                                       )}
@@ -1883,6 +1908,7 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { }, lo
                                         // mismo material (auto-agrupado visual), no solo para 'auto'/'manual'.
                                         const isGroup = unit.kind !== 'loose' || unit.orders.length > 1;
                                                 const groupMeters = unit.orders.reduce((s, x) => s + (x.magnitude || 0), 0);
+                                                const groupBanderas = unit.orders.reduce((s, x) => s + copiasBandera(x), 0);
                                                 return (
                                                 <React.Fragment key={unit.key}>
                                                 {isGroup && (
@@ -1895,6 +1921,7 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { }, lo
                                                                 <span className="text-[11px] font-bold text-zinc-500 whitespace-nowrap flex items-center gap-1.5">
                                                                     {!readOnly && <input type="checkbox" checked={unit.orders.length > 0 && unit.orders.every(o => printedOrderIds.includes(o.id))} onChange={() => handleToggleGroupPrinted(unit)} onClick={(e) => e.stopPropagation()} title={`Marcar/desmarcar todo el grupo como ${lockReorder ? 'calandrado' : 'impreso'}`} className="w-4 h-4 rounded border-zinc-300 accent-emerald-500 cursor-pointer mr-1" />}
                                                                     {unit.orders.length} {unit.orders.length === 1 ? 'orden' : 'órdenes'} · <span className="font-black text-brand-cyan">{groupMeters.toFixed(2)} m</span>
+                                                                    {groupBanderas > 0 && <span className="font-black text-brand-cyan">· {groupBanderas} {groupBanderas === 1 ? 'bandera' : 'banderas'}</span>}
                                                                     {!readOnly && unit.kind === 'manual' && (
                                                                         <button onClick={() => handleDesagrupar(unit.orders.map(o => o.id))} title="Desagrupar" className="ml-1 w-5 h-5 flex items-center justify-center rounded text-zinc-400 hover:text-brand-magenta hover:bg-brand-magenta/10">
                                                                             <i className="fa-solid fa-link-slash text-[10px]" />
