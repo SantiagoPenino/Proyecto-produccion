@@ -175,7 +175,7 @@ exports.prepararCFE = async (doc, lineas, cotDolar = 40.0, empresa = null) => {
                 const refDoc = refRes.recordset[0];
                 // Para e-Tickets (B2C) NO se envía wsReceptor → no necesitamos el RUT aquí
                 // Solo para e-Facturas (B2B) leemos el RUT del comprador
-                const rutReceptorRef = (doc.CliRUT || doc.DocCliDocumento || '').replace(/\D/g, '').trim();
+                const rutReceptorRef = (doc.DocCliDocumento || doc.CliRUT || '').replace(/\D/g, '').trim();
                 const esRUT = (rutReceptorRef.length === 12);
 
                 // La referencia tiene que describir el CFE tal como LA DGI LO TIENE, no como lo
@@ -275,7 +275,11 @@ exports.prepararCFE = async (doc, lineas, cotDolar = 40.0, empresa = null) => {
     // 2. Determinar tipo de CFE y Tipo de Documento del Receptor
     // Para e-Facturas (B2B): se incluye wsReceptor con RUT real
     // Para e-Tickets (B2C): NO se incluye wsReceptor (DGI no lo requiere y rechaza RUTs inválidos)
-    const docCliDoc = (doc.CliRUT || doc.DocCliDocumento || '').replace(/\D/g, '').trim();
+    // PRIORIDAD: los datos DGI del COMPROBANTE (DocCli*) mandan sobre la ficha del cliente (Cli*).
+    // El panel "DATOS DGI" es el receptor real del CFE: al facturar a un tercero se escribe ahí su
+    // RUT/razón social y ESO es lo que debe viajar a DGI, no el titular interno de la cuenta.
+    // Para docs de caja (sin DocCli*), el campo es NULL y cae a la ficha → comportamiento intacto.
+    const docCliDoc = (doc.DocCliDocumento || doc.CliRUT || '').replace(/\D/g, '').trim();
 
     // El tipo de CFE lo resuelve una sola función (exports.resolverTipoCFE), para que
     // la vista previa y el script de verificación auditen exactamente lo que se envía.
@@ -345,8 +349,8 @@ exports.prepararCFE = async (doc, lineas, cotDolar = 40.0, empresa = null) => {
             tipoDocRecep: valReceptor.tipo === 'RUT' ? 2 : 3, // 2=RUT, 3=CI
             codPaisRecep: 'UY',
             docRecep: valReceptor.normalizado || docCliDoc,
-            rznSocRecep: (doc.CliRazonSocial || doc.DocCliNombre || '').trim() || 'Sin Nombre',
-            dirRecep: (doc.CliDireccion || doc.DocCliDireccion || '').trim() || 'Sin Direccion',
+            rznSocRecep: (doc.DocCliNombre || doc.CliRazonSocial || '').trim() || 'Sin Nombre',
+            dirRecep: (doc.DocCliDireccion || doc.CliDireccion || '').trim() || 'Sin Direccion',
             ciudadRecep: (doc.DocCliCiudad || '').trim() || 'Montevideo',
             deptoRecep: 'Montevideo'
         }

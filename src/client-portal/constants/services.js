@@ -109,7 +109,9 @@ export const SERVICES_LIST = [
             variantMode: 'virtual',
             virtualVariants: [
                 { label: 'Material Impreso', tipo: 'MATERIAL', terminaciones: false },
-                { label: 'Productos Personalizados (Armar a Medida)', tipo: 'MATERIAL', terminaciones: true, soloConTerminaciones: true },
+                // Personalizados oculto a pedido (22/07) — descomentar para reactivar
+                // los chips de terminaciones por archivo en el portal:
+                // { label: 'Productos Personalizados (Armar a Medida)', tipo: 'MATERIAL', terminaciones: true, soloConTerminaciones: true },
                 { label: 'Productos Terminados', tipo: 'PRODUCTO_TERMINADO', terminaciones: false },
             ],
             defaultVariant: 'Material Impreso',

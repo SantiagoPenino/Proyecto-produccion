@@ -133,6 +133,7 @@ const ContabilidadBandejaCFE = ({ initialCliente = null, embedded = false, autoN
     // Confirmación de envío a DGI: { tipo: 'uno', doc } | { tipo: 'lote', ids: [...] }
     const [confirmEnvio, setConfirmEnvio] = useState(null);
     const [previewDoc, setPreviewDoc] = useState(null);   // documento cuyo CFE a emitir se está viendo
+    const [regularizarDoc, setRegularizarDoc] = useState(null);   // NC aceptada como venta: explica la regularización
 
     // Filtros
     const [clientes, setClientes] = useState([]);
@@ -997,8 +998,22 @@ const ContabilidadBandejaCFE = ({ initialCliente = null, embedded = false, autoN
                                                             <Copy className="h-5 w-5" />
                                                         </button>
                                                     )}
-                                                    {/* Nota de Crédito o Débito según el tipo */}
-                                                    {isCreditNote(doc.DocTipo) ? (
+                                                    {/* Nota de Crédito o Débito según el tipo.
+                                                        BLINDAJE: si este documento es una NC pero DGI lo aceptó
+                                                        como VENTA (bug del DocTipo truncado → DgiAlerta), NO se
+                                                        ofrece la Nota de Débito automática. Emitir una ND acá
+                                                        volvería a SUMAR a la base imponible, cuando lo que hay
+                                                        que hacer es una NC contra la e-Factura espuria. Requiere
+                                                        regularización con el contador. */}
+                                                    {isCreditNote(doc.DocTipo) && doc.DgiAlerta ? (
+                                                        <button
+                                                            onClick={() => setRegularizarDoc(doc)}
+                                                            className="inline-flex items-center gap-1 text-xs font-bold text-red-700 bg-red-50 border border-red-200 rounded px-2 py-1 hover:bg-red-100 transition-colors"
+                                                            title={`Esta Nota de Crédito llegó a DGI como CFE ${doc.DgiTipoEmitido} (${doc.DgiTipoEmitidoNombre}), no como nota de crédito. Requiere regularización fiscal — clic para ver cómo. NO se puede revertir con una Nota de Débito automática.`}
+                                                        >
+                                                            <AlertCircle className="h-4 w-4" /> Regularizar
+                                                        </button>
+                                                    ) : isCreditNote(doc.DocTipo) ? (
                                                         <button
                                                             onClick={() => handleOpenNcModal(doc, 'ND')}
                                                             className="text-gray-500 hover:text-red-500 transition-colors p-1"
@@ -1087,6 +1102,49 @@ const ContabilidadBandejaCFE = ({ initialCliente = null, embedded = false, autoN
                 confirmText="Sí, enviar a DGI"
                 cancelText="Cancelar"
             />
+
+            {regularizarDoc && (
+                <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+                    <div className="bg-white rounded-xl shadow-2xl w-full max-w-lg">
+                        <div className="flex items-center gap-2 px-5 py-3 border-b bg-red-50 rounded-t-xl">
+                            <AlertCircle className="h-5 w-5 text-red-600" />
+                            <h3 className="font-bold text-gray-900">
+                                Nota de Crédito que llegó mal a DGI — {regularizarDoc.DocSerie}-{regularizarDoc.DocNumero}
+                            </h3>
+                        </div>
+                        <div className="p-5 space-y-3 text-sm text-gray-700">
+                            <p>
+                                Esta Nota de Crédito se emitió ante DGI como{' '}
+                                <b>CFE {regularizarDoc.DgiTipoEmitido} · {regularizarDoc.DgiTipoEmitidoNombre}</b> (una venta),
+                                no como nota de crédito. Es decir, en DGI <b>sumó</b> ventas e IVA en vez de restarlos.
+                            </p>
+                            <div className="bg-amber-50 border border-amber-200 rounded-lg p-3">
+                                <b className="text-amber-800">Por eso NO se puede revertir con una Nota de Débito.</b>
+                                <p className="mt-1">
+                                    Una Nota de Débito volvería a <b>sumar</b> a la base imponible: empeoraría el problema.
+                                </p>
+                            </div>
+                            <p className="font-semibold text-gray-900">La regularización es fiscal y la define el contador:</p>
+                            <ol className="list-decimal list-inside space-y-1">
+                                <li>Emitir una <b>Nota de Crédito (112 / 102)</b> contra la <b>e-Factura/e-Ticket espuria</b> ({renderCfeOficialCol(regularizarDoc) ? '' : ''}el comprobante que DGI aceptó, {regularizarDoc.CfeNumeroOficial || 's/nº'}), para neutralizar esa venta.</li>
+                                <li>Emitir la nota de crédito real, ya bien tipada, contra la factura original.</li>
+                            </ol>
+                            <p className="text-xs text-gray-500">
+                                El sistema no puede hacerlo automáticamente: el comprobante ya existe en DGI con su CAE y no se puede pisar.
+                                Coordiná los pasos con tu contador antes de emitir nada.
+                            </p>
+                        </div>
+                        <div className="px-5 py-3 border-t bg-gray-50 flex justify-end rounded-b-xl">
+                            <button
+                                onClick={() => setRegularizarDoc(null)}
+                                className="px-4 py-2 text-sm rounded-lg bg-gray-800 text-white font-semibold hover:bg-gray-900"
+                            >
+                                Entendido
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
 
             {previewDoc && (
                 <CfePreviewDgiModal

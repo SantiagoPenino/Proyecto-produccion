@@ -21,18 +21,22 @@ class ERPSyncService {
         const orderRes = await pool.request()
             .input('Doc', sql.NVarChar, noDocERP.toString())
             .query(`
-                SELECT O.*, 
-                       CASE WHEN PB.MonIdMoneda = 2 THEN 'USD' ELSE 'UYU' END as MonedaBase, 
-                       A.Descripcion as NombreArticulo, 
-                       A.IDProdReact as ArtIdReact, 
+                SELECT O.*,
+                       CASE WHEN PB.MonIdMoneda = 2 THEN 'USD' ELSE 'UYU' END as MonedaBase,
+                       A.Descripcion as NombreArticulo,
+                       A.IDProdReact as ArtIdReact,
+                       A.UniIdUnidad as ArtUniIdUnidad,
+                       -- Suma de copias de los archivos (piezas): se usa para cotizar por cantidad los
+                       -- artículos por unidad (UniIdUnidad=1) de Sublimación, ej. banderas confeccionadas.
+                       (SELECT ISNULL(SUM(Copias), 0) FROM ArchivosOrden WHERE OrdenID = O.OrdenID) as SumaCopias,
                        C.CliIdCliente as Cli_CliIdCliente,
                        C.IDReact as Cli_IDReact
                 FROM Ordenes O
                 LEFT JOIN PreciosBase PB ON O.ProIdProducto = PB.ProIdProducto
                 OUTER APPLY (
-                    SELECT TOP 1 Descripcion, IDProdReact 
-                    FROM Articulos WITH(NOLOCK) 
-                    WHERE ProIdProducto = O.ProIdProducto 
+                    SELECT TOP 1 Descripcion, IDProdReact, UniIdUnidad
+                    FROM Articulos WITH(NOLOCK)
+                    WHERE ProIdProducto = O.ProIdProducto
                        OR (O.CodArticulo IS NOT NULL AND LTRIM(RTRIM(CodArticulo)) = LTRIM(RTRIM(O.CodArticulo)))
                 ) A
                 LEFT JOIN Clientes C ON (O.CliIdCliente = C.CliIdCliente OR (O.CodCliente IS NOT NULL AND LTRIM(RTRIM(O.CodCliente)) = LTRIM(RTRIM(C.CodCliente))))
@@ -121,6 +125,15 @@ class ERPSyncService {
                 if (isBajadasArea || ['110', '113'].includes(sib.CodArticulo?.trim())) {
                     effectiveQty = (magVal * (sib.Bajadas || 1)) + (sib.BajadasAdicionales || 0);
                     if (effectiveQty === 0 && magVal > 0) effectiveQty = magVal; // Fallback
+                }
+
+                // SUBLIMACIÓN por CANTIDAD (artículo UniIdUnidad=1, ej. banderas confeccionadas): se cotiza
+                // por PIEZAS = suma de copias de los archivos, no por metros. La Magnitud de la orden sigue
+                // siendo metros para producción/insumos; solo cambia la cantidad cotizada/facturada.
+                // El precio del artículo debe estar configurado POR PIEZA en SB para que el total sea correcto.
+                if (String(sib.AreaID || '').trim().toUpperCase() === 'SB' && Number(sib.ArtUniIdUnidad) === 1) {
+                    const piezas = parseFloat(sib.SumaCopias) || 0;
+                    if (piezas > 0) effectiveQty = piezas;
                 }
 
                 // Calcular Precio Orden

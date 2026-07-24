@@ -14,7 +14,7 @@ const getLocalArticles = async (req, res) => {
                 LTRIM(RTRIM(a.CodStock)) AS CodStock,
                 LTRIM(RTRIM(a.CodArticulo)) AS CodArticulo,
                 LTRIM(RTRIM(a.Descripcion)) AS Descripcion,
-                a.IDProdReact, a.Mostrar, a.anchoimprimible, a.largoimprimible, a.LLEVAPAPEL, a.MonIdMoneda,
+                a.IDProdReact, a.Mostrar, a.anchoimprimible, a.largoimprimible, a.LLEVAPAPEL, a.MonIdMoneda, a.UniIdUnidad,
                 map.NombreReferencia AS DescripcionGrupo,
                 LTRIM(RTRIM(sa.Articulo)) AS DescripcionStock,
                 pb.Precio AS PrecioBase,
@@ -100,7 +100,7 @@ const unlinkProduct = async (req, res) => {
 
 // 5. Actualizar Producto Local
 const updateLocalProduct = async (req, res) => {
-    const { proIdProducto, codArticulo, idProdReact, descripcion, codStock, grupo, supFlia, mostrar, anchoImprimible, largoImprimible, llevaPapel, monIdMoneda } = req.body;
+    const { proIdProducto, codArticulo, idProdReact, descripcion, codStock, grupo, supFlia, mostrar, anchoImprimible, largoImprimible, llevaPapel, monIdMoneda, uniIdUnidad } = req.body;
     if (!proIdProducto && !codArticulo) return res.status(400).json({ error: "Falta ProIdProducto o CodArticulo" });
     try {
         const pool = await getPool();
@@ -115,6 +115,8 @@ const updateLocalProduct = async (req, res) => {
             .input('Ancho',    sql.Decimal(10, 2),   parseFloat(anchoImprimible) || 0)
             // Largo imprimible: > 0 = medida FIJA (el portal exige ancho x largo exactos); vacío/0 = NULL (sin medida fija)
             .input('Largo',    sql.Decimal(10, 2),   parseFloat(largoImprimible) || null)
+            // Unidad de medida (Unidades: 1=Cantidades/piezas, 2=Metros). Define si la orden se cuenta por piezas o metros.
+            .input('Uni',      sql.Int,              uniIdUnidad != null && uniIdUnidad !== '' ? parseInt(uniIdUnidad) : null)
             .input('Papel',    sql.Bit,              llevaPapel ? 1 : 0)
             .input('MonId',    sql.Int,              monIdMoneda != null ? parseInt(monIdMoneda) : null);
 
@@ -131,6 +133,7 @@ const updateLocalProduct = async (req, res) => {
                     Mostrar         = @Mos,
                     anchoimprimible = @Ancho,
                     largoimprimible = @Largo,
+                    UniIdUnidad     = @Uni,
                     LLEVAPAPEL      = @Papel,
                     MonIdMoneda     = @MonId
                 WHERE ProIdProducto = @ProId
@@ -147,6 +150,7 @@ const updateLocalProduct = async (req, res) => {
                     Mostrar         = @Mos,
                     anchoimprimible = @Ancho,
                     largoimprimible = @Largo,
+                    UniIdUnidad     = @Uni,
                     LLEVAPAPEL      = @Papel,
                     MonIdMoneda     = @MonId
                 WHERE CodArticulo   = @Cod
@@ -162,7 +166,7 @@ const updateLocalProduct = async (req, res) => {
 
 // 6. Crear Producto Local (INSERT)
 const createLocalProduct = async (req, res) => {
-    const { codArticulo, idProdReact, descripcion, codStock, grupo, supFlia, mostrar, anchoImprimible, largoImprimible, llevaPapel, monIdMoneda } = req.body;
+    const { codArticulo, idProdReact, descripcion, codStock, grupo, supFlia, mostrar, anchoImprimible, largoImprimible, llevaPapel, monIdMoneda, uniIdUnidad } = req.body;
     if (!codArticulo) return res.status(400).json({ error: 'El CodArticulo es obligatorio' });
     try {
         const pool = await getPool();
@@ -176,13 +180,14 @@ const createLocalProduct = async (req, res) => {
             .input('Mos',   sql.Bit,              mostrar ? 1 : 0)
             .input('Ancho', sql.Decimal(10, 2),   parseFloat(anchoImprimible) || 0)
             .input('Largo', sql.Decimal(10, 2),   parseFloat(largoImprimible) || null)
+            .input('Uni',   sql.Int,              uniIdUnidad != null && uniIdUnidad !== '' ? parseInt(uniIdUnidad) : null)
             .input('Papel', sql.Bit,              llevaPapel ? 1 : 0)
             .input('MonId', sql.Int,              monIdMoneda != null && monIdMoneda !== '' ? parseInt(monIdMoneda) : null)
             .query(`
                 INSERT INTO Articulos
-                    (CodArticulo, IDProdReact, Descripcion, CodStock, Grupo, SupFlia, Mostrar, anchoimprimible, largoimprimible, LLEVAPAPEL, MonIdMoneda, borrar)
+                    (CodArticulo, IDProdReact, Descripcion, CodStock, Grupo, SupFlia, Mostrar, anchoimprimible, largoimprimible, UniIdUnidad, LLEVAPAPEL, MonIdMoneda, borrar)
                 VALUES
-                    (@Cod, @React, @Desc, @Stock, @Grp, @Sup, @Mos, @Ancho, @Largo, @Papel, @MonId, 0)
+                    (@Cod, @React, @Desc, @Stock, @Grp, @Sup, @Mos, @Ancho, @Largo, @Uni, @Papel, @MonId, 0)
             `);
         logAlert('INFO', 'PRODUCTO', 'Nuevo artículo creado', codArticulo, { descripcion, codStock, idProdReact });
         res.status(201).json({ success: true, message: 'Artículo creado correctamente' });
