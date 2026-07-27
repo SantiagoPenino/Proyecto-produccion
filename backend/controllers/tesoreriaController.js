@@ -47,6 +47,9 @@ exports.recibirCheque = async (req, res) => {
   const {
     NumeroCheque, IdBanco, Monto, FechaEmision, FechaVencimiento, IdClienteOrigen,
     Agencia, EmitidoPor, EndosadoPor, EsPagoParcial, CategoriaPropiedad, ClasificacionPlazo, RubroContableId,
+    // Moneda del cheque (1 = $, 2 = US$). Antes iba fija en 1: un cheque en dólares
+    // entraba a cartera con su importe contado como pesos.
+    IdMoneda = 1,
     // false cuando el cheque se está dando de alta DESDE UN COBRO DE CAJA: ese cobro
     // genera su propio asiento (Valores a Depositar / Deudores). Si acá generáramos otro,
     // el mismo cheque se contabilizaría dos veces y la deuda del cliente se cancelaría doble.
@@ -89,6 +92,7 @@ exports.recibirCheque = async (req, res) => {
       .input('Num', sql.VarChar, NumeroCheque)
       .input('Bco', sql.Int, IdBanco)
       .input('Monto', sql.Decimal(18,2), Monto)
+      .input('Mon', sql.Int, Number(IdMoneda) === 2 ? 2 : 1)
       .input('Fem', sql.Date, FechaEmision)
       .input('Fve', sql.Date, FechaVencimiento)
       .input('Cli', sql.Int, IdClienteOrigen || null)
@@ -107,7 +111,7 @@ exports.recibirCheque = async (req, res) => {
         )
         OUTPUT INSERTED.IdCheque
         VALUES (
-          'TERCERO', @Num, @Bco, @Monto, 1, @Fem, @Fve, 
+          'TERCERO', @Num, @Bco, @Monto, @Mon, @Fem, @Fve,
           'EN_CARTERA', @Cli, @Agencia, @EmitidoPor, @EndosadoPor, @EsPagoParcial, 
           @CatProp, @ClasPlazo, @Rubro
         )

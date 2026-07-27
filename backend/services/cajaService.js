@@ -2090,8 +2090,37 @@ async function _lanzarHooksContables({ aplicaciones, pagosNorm, pagosCreados, he
        }
     }
 
+    // ─────────────────────────────────────────────
+    // Si el cobro cancela UN documento concreto, la moneda del PAGO la manda ese
+    // DOCUMENTO (su cargo VTA_CAJA ya fue a la cuenta de esa moneda). Si acá se
+    // enrutara por la moneda con que el cliente pagó (deudaPuraUYU en un doc USD),
+    // cargo y pago quedan en billeteras distintas con el importe sin convertir
+    // (caso PC-2523 Raul Rivero: USD -58,20 / UYU +58,20) y el pago suelto se lo
+    // apropiaba el próximo cierre de ciclo.
+    let monedaDocCobrado = null;
+    if (header.docIdDocumento) {
+      try {
+        const pool = await getPool();
+        const rDoc = await pool.request()
+          .input('d', sql.Int, header.docIdDocumento)
+          .query('SELECT MonIdMoneda FROM dbo.DocumentosContables WITH(NOLOCK) WHERE DocIdDocumento = @d');
+        monedaDocCobrado = rDoc.recordset[0]?.MonIdMoneda ?? null;
+      } catch (e) {
+        logger.warn(`[CAJA-HOOK] No se pudo resolver la moneda del doc #${header.docIdDocumento}: ${e.message} — se usa el enrutado previo`);
+      }
+    }
+
+    if (monedaDocCobrado != null && totalNeto > 0) {
+      await contabilidadSvc.hookPagoRegistrado({
+        PagIdPago:   pagId,
+        CliIdCliente: header.clienteId,
+        MontoPago:   totalNeto,
+        MonIdMoneda: monedaDocCobrado,
+        UsuarioAlta: usuarioId,
+        DocIdDocumento: header.docIdDocumento,
+      });
     // Si pasaron la deuda pura desde el Frontend (para cobros de órdenes exactas)
-    if ((header.deudaPuraUSD > 0 || header.deudaPuraUYU > 0)) {
+    } else if ((header.deudaPuraUSD > 0 || header.deudaPuraUYU > 0)) {
       if (header.deudaPuraUSD > 0) {
         await contabilidadSvc.hookPagoRegistrado({
           PagIdPago:   pagId,

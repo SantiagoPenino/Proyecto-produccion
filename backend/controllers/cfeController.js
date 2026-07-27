@@ -1389,6 +1389,10 @@ exports.editarFactura = async (req, res) => {
           // donde MovimientosCuenta ya estaba en la cuenta correcta pero DeudaDocumento
           // seguía huérfana en la cuenta vieja.
           if (monedaChanged) {
+            // El marcador de trazabilidad del cierre cross-moneda (importe 0, obs
+            // 'Cross-moneda:...') vive EN LA CUENTA DE ORIGEN a propósito: no se migra.
+            // Si se migrara, quedaría en la misma cuenta que el cargo real y el UPDATE
+            // de abajo lo convertiría en un segundo cargo (caso FA-254 Posse).
             const wrongMovRes = await transaction.request()
               .input('docId',  sql.Int, parseInt(id))
               .input('target', sql.Int, ctaEditId)
@@ -1397,6 +1401,7 @@ exports.editarFactura = async (req, res) => {
                 FROM dbo.MovimientosCuenta
                 WHERE DocIdDocumento = @docId AND CueIdCuenta <> @target
                   AND (MovAnulado IS NULL OR MovAnulado = 0)
+                  AND NOT (MovObservaciones LIKE 'Cross-moneda:%')
               `);
 
             for (const { CueIdCuenta: oldCtaId } of wrongMovRes.recordset) {
@@ -1408,6 +1413,7 @@ exports.editarFactura = async (req, res) => {
                   FROM dbo.MovimientosCuenta
                   WHERE DocIdDocumento = @docId AND CueIdCuenta = @oldCta
                     AND (MovAnulado IS NULL OR MovAnulado = 0)
+                    AND NOT (MovObservaciones LIKE 'Cross-moneda:%')
                 `);
               const totalMovido = Number(sumRes.recordset[0].Total) || 0;
 
@@ -1420,6 +1426,7 @@ exports.editarFactura = async (req, res) => {
                   SET CueIdCuenta = @newCta
                   WHERE DocIdDocumento = @docId AND CueIdCuenta = @oldCta
                     AND (MovAnulado IS NULL OR MovAnulado = 0)
+                    AND NOT (MovObservaciones LIKE 'Cross-moneda:%')
                 `);
 
               if (Math.abs(totalMovido) > 0.001) {
@@ -1472,6 +1479,10 @@ exports.editarFactura = async (req, res) => {
                 -- queda desfasado de la factura (la factura manda).
                 AND MovTipo IN ('VTA_CAJA','VENTA','CARGO','CIERRE_CICLO')
                 AND (MovAnulado IS NULL OR MovAnulado = 0)
+                -- El marcador cross-moneda de la cuenta ORIGEN nace con importe 0 y debe
+                -- seguir en 0: estamparle el total acá creaba un cargo duplicado en la otra
+                -- moneda (caso Palmero PC-2515: billetera USD y UYU con la misma deuda).
+                AND NOT (MovObservaciones LIKE 'Cross-moneda:%')
             `);
 
           // 2. Transición de pago

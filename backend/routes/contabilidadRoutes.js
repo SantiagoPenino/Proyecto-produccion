@@ -334,8 +334,28 @@ router.post('/ordenes/eliminar-metros', async (req, res) => {
     const pool = await getPoolOrd();
     const movRes = await pool.request()
       .input('Mid', sqlOrd.Int, MovIdMovimiento)
-      .query('SELECT MovImporte, CueIdCuenta, MovConcepto, MovObservaciones, OrdIdOrden FROM dbo.MovimientosCuenta WHERE MovIdMovimiento = @Mid');
+      .query(`SELECT m.MovImporte, m.CueIdCuenta, m.MovTipo, m.MovConcepto, m.MovObservaciones, m.OrdIdOrden,
+                     cc.CueTipo, cc.ProIdProducto
+              FROM dbo.MovimientosCuenta m
+              JOIN dbo.CuentasCliente cc ON cc.CueIdCuenta = m.CueIdCuenta
+              WHERE m.MovIdMovimiento = @Mid`);
     if (!movRes.recordset.length) return res.status(404).json({ error: 'Movimiento no encontrado' });
+
+    // CANDADO: este endpoint devuelve METROS a un plan. Borrar un movimiento de la cuenta
+    // de DINERO (un PAGO, una venta, un cierre) desde acá hace desaparecer plata del estado
+    // de cuenta sin dejar rastro (caso PC-2221 MoreggiT: se borró el PAGO del cobro y el
+    // cliente quedó "debiendo" 16,20 ya pagados). Solo se permite sobre cuentas de recursos.
+    const tipoMov   = (movRes.recordset[0].MovTipo || '').trim().toUpperCase();
+    const cueTipo   = (movRes.recordset[0].CueTipo || '').trim().toUpperCase();
+    const esCuentaDinero = !movRes.recordset[0].ProIdProducto && (cueTipo.startsWith('DINERO') || ['USD','UYU','CORRIENTE','CREDITO','DEBITO','CAJA'].includes(cueTipo));
+    const tiposDinero = ['PAGO', 'VTA_CAJA', 'CIERRE_CICLO', 'PAGO_CRUZADO', 'ANTICIPO', 'SALDO_INICIAL'];
+    if (esCuentaDinero || tiposDinero.includes(tipoMov)) {
+      logger.warn(`[REVERTIR] BLOQUEADO Mov=${MovIdMovimiento}: tipo=${tipoMov} cuenta=${cueTipo} — no es un consumo de recurso, no se elimina desde acá`);
+      return res.status(400).json({
+        error: `Este movimiento es de la cuenta de dinero (${tipoMov}), no un consumo de metros. ` +
+               `Eliminarlo haría desaparecer plata del estado de cuenta. Si hay que deshacerlo, anulá la transacción de caja que lo generó.`
+      });
+    }
 
     const importeAbs  = Math.abs(Number(movRes.recordset[0].MovImporte));
     const CueIdCuenta = movRes.recordset[0].CueIdCuenta;

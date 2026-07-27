@@ -107,6 +107,8 @@ const EstadoChip = ({ estado }) => (
 function ResumenDocumentosPanel({ CliIdCliente, desde, hasta, trigger, incluirAnulados, onIncluirAnulados, saldosPorMoneda, recursoCuentas = [], cuentas = [], cliente, recargarCuentas, onResumen }) {
   const [docs, setDocs]       = useState([]);
   const [pagos, setPagos]     = useState([]);
+  // Pendiente REAL por moneda (foto de hoy, ignora el período): { 'US$': {total, fueraPeriodo}, ... }
+  const [pendReal, setPendReal] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError]     = useState(null);
   const [vista, setVista]     = useState('ESTADO'); // 'ESTADO' | 'DOCS' | 'PAGOS' | 'ORDENES'
@@ -160,8 +162,8 @@ function ResumenDocumentosPanel({ CliIdCliente, desde, hasta, trigger, incluirAn
     if (desde) p.append('desde', desde);
     if (hasta) p.append('hasta', hasta);
     fetchAPI(`/api/contabilidad/clientes/${CliIdCliente}/resumen-documentos?${p}`)
-      .then(r => { if (alive) { setDocs(r.data?.documentos || []); setPagos(r.data?.pagos || []); } })
-      .catch(e => { if (alive) { setError(e.message); setDocs([]); setPagos([]); } })
+      .then(r => { if (alive) { setDocs(r.data?.documentos || []); setPagos(r.data?.pagos || []); setPendReal(r.data?.pendientePorMoneda || null); } })
+      .catch(e => { if (alive) { setError(e.message); setDocs([]); setPagos([]); setPendReal(null); } })
       .finally(() => { if (alive) setLoading(false); });
     return () => { alive = false; };
   }, [CliIdCliente, desde, hasta, trigger]);
@@ -191,18 +193,26 @@ function ResumenDocumentosPanel({ CliIdCliente, desde, hasta, trigger, incluirAn
     docs.forEach(d => {
       if (!incluirAnulados && d.estado === 'ANULADO') return;
       const m = d.MonSimbolo || '$';
-      if (!map[m]) map[m] = { moneda: m, totalPend: 0, pagados: 0, total: 0, aFavor: 0 };
+      if (!map[m]) map[m] = { moneda: m, totalPend: 0, fueraPeriodo: 0, pagados: 0, total: 0, aFavor: 0 };
       map[m].totalPend += Number(d.pendiente || 0);
       map[m].total += 1;
       if (d.estado === 'PAGADO') map[m].pagados += 1;
     });
+    // PENDIENTE = foto REAL de hoy (todas las fechas), no solo el período: un doc viejo
+    // impago no puede desaparecer del KPI por el rango elegido (caso PC-423 Lepra).
+    // fueraPeriodo = cuánto de ese pendiente pertenece a docs que NO están en la lista.
+    Object.entries(pendReal || {}).forEach(([m, v]) => {
+      if (!map[m]) map[m] = { moneda: m, totalPend: 0, fueraPeriodo: 0, pagados: 0, total: 0, aFavor: 0 };
+      map[m].totalPend    = Number(v?.total) || 0;
+      map[m].fueraPeriodo = Number(v?.fueraPeriodo) || 0;
+    });
     // Sumar el saldo a favor de cada moneda; incluir monedas que solo tienen saldo a favor.
     Object.entries(saldosPorMoneda || {}).forEach(([m, v]) => {
-      if (!map[m]) map[m] = { moneda: m, totalPend: 0, pagados: 0, total: 0, aFavor: 0 };
+      if (!map[m]) map[m] = { moneda: m, totalPend: 0, fueraPeriodo: 0, pagados: 0, total: 0, aFavor: 0 };
       map[m].aFavor = Number(v) || 0;
     });
     return Object.values(map);
-  }, [docs, incluirAnulados, saldosPorMoneda]);
+  }, [docs, incluirAnulados, saldosPorMoneda, pendReal]);
 
   // ── ESTADO DE CUENTA: documentos + pagos en una sola línea de tiempo ──────────
   // A diferencia de las otras pestañas, NO se filtra por el toggle UYU/USD de arriba:
@@ -1129,6 +1139,13 @@ export default function ClienteVista360() {
                               {r.moneda} {fmtMoney(r.totalPend)}
                             </span>
                             <span className="text-[11px] text-slate-400">{r.pagados}/{r.total} pagados</span>
+                            {r.fueraPeriodo > 0.01 && (
+                              <span
+                                className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-50 text-amber-700 border border-amber-200"
+                                title={`${r.moneda} ${fmtMoney(r.fueraPeriodo)} de este pendiente son documentos emitidos FUERA del período elegido: no aparecen en la lista de abajo. Ampliá las fechas para verlos.`}>
+                                {r.moneda} {fmtMoney(r.fueraPeriodo)} fuera del período
+                              </span>
+                            )}
                             {r.aFavor > 0.01 && (
                               <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-bold border bg-emerald-50 text-emerald-700 border-emerald-200">
                                 A favor: {r.moneda} {fmtMoney(r.aFavor)}
