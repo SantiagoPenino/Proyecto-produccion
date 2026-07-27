@@ -61,7 +61,10 @@ export default function ChequeDetalleModal({ cheque, onClose, onSaved }) {
     }
   };
 
-  const fmtMonto = (n) => new Intl.NumberFormat('es-UY', { style: 'currency', currency: 'UYU' }).format(Number(n) || 0);
+  // En la moneda del cheque (1 = $, 2 = US$), no siempre en pesos.
+  const fmtMonto = (n) => new Intl.NumberFormat('es-UY', {
+    style: 'currency', currency: Number(cheque.IdMoneda) === 2 ? 'USD' : 'UYU'
+  }).format(Number(n) || 0);
   const inputCls = 'w-full border border-slate-200 rounded-xl px-4 py-2.5 font-medium text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 bg-white disabled:bg-slate-50 disabled:text-slate-400';
 
   return (
@@ -138,7 +141,13 @@ export default function ChequeDetalleModal({ cheque, onClose, onSaved }) {
             <select value={form.IdClienteOrigen} disabled={!editable} onChange={e => set('IdClienteOrigen', e.target.value)}
               className="w-full border border-indigo-200 rounded-xl px-4 py-2.5 font-medium text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 bg-white disabled:bg-slate-50">
               <option value="">Sin asignar…</option>
-              {clientes.map(c => <option key={c.IdCliente} value={c.IdCliente}>{c.RazonSocial || c.NombreFidelidad}</option>)}
+              {/* /clients devuelve CliIdCliente / Nombre / NombreFantasia. Con los nombres
+                  viejos (IdCliente / RazonSocial) todas las opciones salían vacías. */}
+              {clientes.map(c => (
+                <option key={c.CliIdCliente} value={c.CliIdCliente}>
+                  {(c.Nombre || '').trim()}{c.NombreFantasia && c.NombreFantasia.trim() !== (c.Nombre || '').trim() ? ` — ${c.NombreFantasia.trim()}` : ''}
+                </option>
+              ))}
             </select>
             <p className="text-[11px] text-indigo-500/80 font-medium mt-2">
               Quién te entregó el cheque. Es distinto del librador (quién lo firmó).

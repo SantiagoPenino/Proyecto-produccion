@@ -1516,7 +1516,7 @@ const procesarPagoDeuda = async (req, res) => {
           // alcanza para identificar el cobro en el 360 (en vez de dejarlo sin referencia).
           OrdIdOrden:       docImputado ? null : (dde.OrdIdOrden || ap.ordIdOrden || null),
           MovObservaciones: ('DeudaDoc #' + ddeId + ' | Pagado: ' + montoAplicar.toFixed(4) + ' | Pendiente: ' + nuevoPendiente.toFixed(4) + ' | Estado: ' + nuevoEstado).substring(0, 500),
-        });
+        }, transaction); // misma transacción que reducirDeuda/recibos: el cobro y su movimiento viven o mueren juntos
         // Se completa con el PagIdPago recién insertado (los Pagos se crean más abajo, ya con
         // la transacción de caja creada) para que el 360 pueda mostrar la forma de pago.
         movIdsPago.push(MovIdGenerado);

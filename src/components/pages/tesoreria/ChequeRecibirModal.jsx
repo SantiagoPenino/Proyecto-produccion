@@ -8,7 +8,7 @@ import { toast } from 'sonner';
  * cobro genera su propio asiento (Valores a Depositar / Deudores), así que acá NO se
  * contabiliza: si no, el mismo cheque se asienta dos veces.
  */
-export default function ChequeRecibirModal({ onClose, onSuccess, initialMonto = '', origenCaja = false }) {
+export default function ChequeRecibirModal({ onClose, onSuccess, initialMonto = '', initialMonedaId = 1, origenCaja = false }) {
   const [bancos, setBancos] = useState([]);
   const [clientes, setClientes] = useState([]);
   const [cuentas, setCuentas] = useState([]);
@@ -21,6 +21,9 @@ export default function ChequeRecibirModal({ onClose, onSuccess, initialMonto = 
     NumeroCheque: '',
     IdBanco: '',
     Monto: initialMonto,
+    // 1 = $ (peso uruguayo), 2 = US$. Antes no se preguntaba y el alta lo escribía fijo
+    // en pesos: un cheque en dólares entraba a cartera con el importe leído como pesos.
+    IdMoneda: String(initialMonedaId || 1),
     FechaEmision: new Date().toISOString().split('T')[0],
     FechaVencimiento: new Date().toISOString().split('T')[0],
     IdClienteOrigen: '',
@@ -83,6 +86,7 @@ export default function ChequeRecibirModal({ onClose, onSuccess, initialMonto = 
       const payload = {
         ...formData,
         Monto: parseFloat(formData.Monto),
+        IdMoneda: parseInt(formData.IdMoneda) || 1,
         IdClienteOrigen: formData.IdClienteOrigen ? parseInt(formData.IdClienteOrigen) : null,
         RubroContableId: formData.RubroContableId ? parseInt(formData.RubroContableId) : null,
         contabilizar: !origenCaja,
@@ -162,9 +166,19 @@ export default function ChequeRecibirModal({ onClose, onSuccess, initialMonto = 
                 <label className="flex items-center gap-2 text-sm font-bold text-slate-700 mb-2">
                   <DollarSign size={16} className="text-slate-400" /> Importe *
                 </label>
-                <input type="number" step="0.01" name="Monto" value={formData.Monto} onChange={handleChange} required placeholder="0.00" className="w-full border border-slate-200 rounded-xl px-4 py-2.5 font-black text-slate-800 focus:outline-none focus:ring-2 focus:ring-emerald-500/20" />
+                <div className="flex gap-2">
+                  {/* Moneda del cheque: sin esto un cheque en dólares entraba a cartera
+                      con el importe contado como pesos. */}
+                  <select name="IdMoneda" value={formData.IdMoneda} onChange={handleChange}
+                    className="w-[86px] shrink-0 border border-slate-200 rounded-xl px-2 py-2.5 font-black text-slate-800 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 bg-white"
+                    title="Moneda en la que está escrito el cheque">
+                    <option value="1">$</option>
+                    <option value="2">US$</option>
+                  </select>
+                  <input type="number" step="0.01" name="Monto" value={formData.Monto} onChange={handleChange} required placeholder="0.00" className="w-full border border-slate-200 rounded-xl px-4 py-2.5 font-black text-slate-800 focus:outline-none focus:ring-2 focus:ring-emerald-500/20" />
+                </div>
               </div>
-              
+
               <div className="col-span-2 mt-1">
                 <label className="flex items-center gap-2 text-sm font-bold text-rose-600 cursor-pointer bg-rose-50 p-3 rounded-xl border border-rose-100">
                   <input type="checkbox" name="EsPagoParcial" checked={formData.EsPagoParcial} onChange={handleChange} className="w-4 h-4 text-rose-600 rounded focus:ring-rose-500" />
@@ -241,7 +255,13 @@ export default function ChequeRecibirModal({ onClose, onSuccess, initialMonto = 
                   </label>
                   <select name="IdClienteOrigen" value={formData.IdClienteOrigen} onChange={handleChange} className="w-full border border-slate-200 rounded-xl px-4 py-2.5 font-medium text-slate-800 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 bg-white">
                     <option value="">(Opcional) Seleccione cliente...</option>
-                    {clientes.map(c => <option key={c.IdCliente} value={c.IdCliente}>{c.RazonSocial || c.NombreFidelidad}</option>)}
+                    {/* /clients devuelve CliIdCliente / Nombre / NombreFantasia. Con los
+                        nombres viejos (IdCliente / RazonSocial) la lista salía en blanco. */}
+                    {clientes.map(c => (
+                      <option key={c.CliIdCliente} value={c.CliIdCliente}>
+                        {(c.Nombre || '').trim()}{c.NombreFantasia && c.NombreFantasia.trim() !== (c.Nombre || '').trim() ? ` — ${c.NombreFantasia.trim()}` : ''}
+                      </option>
+                    ))}
                   </select>
                 </div>
                 <div>

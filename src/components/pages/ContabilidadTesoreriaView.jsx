@@ -82,7 +82,10 @@ export default function ContabilidadTesoreriaView() {
     }
   };
 
-  const formatCurrency = (val) => new Intl.NumberFormat('es-UY', { style: 'currency', currency: 'UYU' }).format(val);
+  // El importe se muestra en la moneda del cheque (IdMoneda: 1 = $, 2 = US$). Antes se
+  // formateaba siempre como pesos y un cheque en dólares se leía como si fuera en $.
+  const formatCurrency = (val, idMoneda = 1) =>
+    new Intl.NumberFormat('es-UY', { style: 'currency', currency: Number(idMoneda) === 2 ? 'USD' : 'UYU' }).format(val);
 
   const getStateColor = (estado) => {
     const colors = {
@@ -159,7 +162,7 @@ export default function ContabilidadTesoreriaView() {
                       <div className="text-sm text-slate-500">{cheque.NombreBanco}</div>
                     </td>
                     <td className="p-4">
-                      <div className="font-black text-slate-800 text-lg">{formatCurrency(cheque.Monto)}</div>
+                      <div className="font-black text-slate-800 text-lg">{formatCurrency(cheque.Monto, cheque.IdMoneda)}</div>
                     </td>
                     <td className="p-4">
                       <div className="text-sm font-medium text-slate-700 flex items-center gap-1">
@@ -269,7 +272,7 @@ export default function ContabilidadTesoreriaView() {
               <div>
                 <h3 className="font-black text-slate-900 text-lg leading-tight">Anular cheque N° {aAnular.NumeroCheque}</h3>
                 <p className="text-sm text-slate-500 font-medium mt-0.5">
-                  {aAnular.NombreBanco} · {formatCurrency(aAnular.Monto)} · vto {fmtFecha(aAnular.FechaVencimiento)}
+                  {aAnular.NombreBanco} · {formatCurrency(aAnular.Monto, aAnular.IdMoneda)} · vto {fmtFecha(aAnular.FechaVencimiento)}
                 </p>
               </div>
             </div>

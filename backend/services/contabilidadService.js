@@ -1645,10 +1645,14 @@ async function getDeudasPorCliente(CliIdCliente, modo = 'TODO') {
 async function getResumenDocumentos(CliIdCliente, desde = null, hasta = null) {
   const pool = await getPool();
 
-  const docsRes = await pool.request()
+  // La misma consulta se corre dos veces cuando hay filtro de fechas: una para la
+  // LISTA (docs del período) y otra SIN fechas para el PENDIENTE REAL — el pendiente
+  // es una foto de hoy y no puede depender del rango elegido (un doc viejo impago
+  // desaparecía del KPI y el "Pendiente 0,00" escondía deuda viva — caso PC-423 Lepra).
+  const runDocsQuery = (d, h) => pool.request()
     .input('cli',   sql.Int,  parseInt(CliIdCliente))
-    .input('desde', sql.Date, desde || null)
-    .input('hasta', sql.Date, hasta || null)
+    .input('desde', sql.Date, d || null)
+    .input('hasta', sql.Date, h || null)
     .query(`
       SELECT
         dc.DocIdDocumento,
@@ -1660,14 +1664,18 @@ async function getResumenDocumentos(CliIdCliente, desde = null, hasta = null) {
         CAST(dc.DocTotal AS DECIMAL(18,2)) AS DocTotal,
         dc.DocEstado, dc.DocPagado, dc.CfeEstado,
         CONVERT(varchar(10), dc.DocFechaEmision, 23) AS Emision,
+        -- 'CANCELADO'/'ANULADO' (masculino) también son deuda muerta: los escriben el
+        -- fix de duplicadas (bucketA 22-jul) y la cobertura por plan. Sin excluirlos,
+        -- la fila cancelada (pendiente 0) gana el ORDER BY y el doc figura PAGADO
+        -- aunque su deuda real siga VENCIDA (caso PC-2445 MoreggiT).
         (SELECT TOP 1 dd.DDeImportePendiente FROM dbo.DeudaDocumento dd WITH(NOLOCK)
            WHERE dd.DocIdDocumento = dc.DocIdDocumento
-             AND dd.DDeEstado NOT IN ('CANCELADA','ANULADA','PAGADO')
+             AND dd.DDeEstado NOT IN ('CANCELADA','ANULADA','PAGADO','CANCELADO','ANULADO')
            ORDER BY CASE WHEN ABS(dd.DDeImporteOriginal - dc.DocTotal) <= 2.0 THEN 0 ELSE 1 END,
                     dd.DDeImportePendiente ASC, ABS(dd.DDeImporteOriginal - dc.DocTotal) ASC, dd.DDeIdDocumento) AS PendVivo,
         (SELECT TOP 1 dd.DDeImporteOriginal FROM dbo.DeudaDocumento dd WITH(NOLOCK)
            WHERE dd.DocIdDocumento = dc.DocIdDocumento
-             AND dd.DDeEstado NOT IN ('CANCELADA','ANULADA','PAGADO')
+             AND dd.DDeEstado NOT IN ('CANCELADA','ANULADA','PAGADO','CANCELADO','ANULADO')
            ORDER BY CASE WHEN ABS(dd.DDeImporteOriginal - dc.DocTotal) <= 2.0 THEN 0 ELSE 1 END,
                     dd.DDeImportePendiente ASC, ABS(dd.DDeImporteOriginal - dc.DocTotal) ASC, dd.DDeIdDocumento) AS OrigVivo,
         (SELECT MAX(CASE WHEN dd.DDeEstado='VENCIDO' THEN 1 ELSE 0 END) FROM dbo.DeudaDocumento dd WITH(NOLOCK)
@@ -1692,6 +1700,21 @@ async function getResumenDocumentos(CliIdCliente, desde = null, hasta = null) {
       ORDER BY mo.MonSimbolo DESC, dc.DocFechaEmision DESC, dc.DocIdDocumento DESC
     `);
 
+  const docsRes = await runDocsQuery(desde, hasta);
+
+  // Pendiente/estado de un doc según la fila viva deduplicada (mismo criterio
+  // para la lista del período y para el pendiente real sin fechas).
+  const calcPendiente = (d) => {
+    const docTotal = Number(d.DocTotal) || 0;
+    const total    = d.OrigVivo != null ? Number(d.OrigVivo) : docTotal;
+    const anulado  = /ANULAD/i.test(d.DocEstado || '');
+    let pendiente;
+    if (anulado)                 pendiente = 0;
+    else if (d.PendVivo != null) pendiente = Math.min(Math.max(0, Number(d.PendVivo)), total);
+    else                         pendiente = d.DocPagado ? 0 : total;
+    return { total, anulado, pendiente };
+  };
+
   const recRes = await pool.request()
     .input('cli', sql.Int, parseInt(CliIdCliente))
     .query(`
@@ -1707,16 +1730,10 @@ async function getResumenDocumentos(CliIdCliente, desde = null, hasta = null) {
   const recibos = recRes.recordset;
 
   const documentos = docsRes.recordset.map(d => {
-    const docTotal = Number(d.DocTotal) || 0;
     // Base = deuda REAL cargada a la cuenta corriente (DDeImporteOriginal de la fila viva),
     // NO el bruto del documento. Evita inventar un "pago" cuando el documento se facturó por
     // más de lo que realmente se debía en cta cte (bug de deuda duplicada / cierre de ciclo).
-    const total   = d.OrigVivo != null ? Number(d.OrigVivo) : docTotal;
-    const anulado = /ANULAD/i.test(d.DocEstado || '');
-    let pendiente;
-    if (anulado)                 pendiente = 0;
-    else if (d.PendVivo != null) pendiente = Math.min(Math.max(0, Number(d.PendVivo)), total);
-    else                         pendiente = d.DocPagado ? 0 : total;
+    const { total, anulado, pendiente } = calcPendiente(d);
     const pagado = anulado ? 0 : Math.max(0, +(total - pendiente).toFixed(2));
 
     let estado;
@@ -1879,7 +1896,31 @@ async function getResumenDocumentos(CliIdCliente, desde = null, hasta = null) {
     };
   });
 
-  return { documentos, pagos };
+  // ── PENDIENTE REAL (foto de hoy, ignora el filtro de fechas) ──────────────
+  // Por moneda: total pendiente de TODOS los documentos vivos del cliente, y
+  // cuánto de eso pertenece a docs FUERA del período elegido (no aparecen en la
+  // lista de arriba — el front lo aclara para que un "0,00" no esconda deuda).
+  const pendientePorMoneda = {};
+  const acumular = (d, fueraDelPeriodo) => {
+    const { pendiente } = calcPendiente(d);
+    if (pendiente <= 0.01) return;
+    const sim = d.MonSimbolo || '$';
+    const e = pendientePorMoneda[sim] || (pendientePorMoneda[sim] = { total: 0, fueraPeriodo: 0 });
+    e.total += pendiente;
+    if (fueraDelPeriodo) e.fueraPeriodo += pendiente;
+  };
+  if (desde || hasta) {
+    const allRes = await runDocsQuery(null, null);
+    for (const d of allRes.recordset) {
+      // Emision es varchar(10) ISO (yyyy-mm-dd): comparación de strings es cronológica
+      const fuera = (desde && d.Emision < String(desde)) || (hasta && d.Emision > String(hasta));
+      acumular(d, !!fuera);
+    }
+  } else {
+    for (const d of docsRes.recordset) acumular(d, false);
+  }
+
+  return { documentos, pagos, pendientePorMoneda };
 }
 
 /**
@@ -2682,6 +2723,12 @@ async function cerrarCicloCompleto({
         WHERE CicIdCiclo = @CicIdCiclo
           AND (MovAnulado IS NULL OR MovAnulado = 0)
           AND DocIdDocumento IS NULL
+          -- SOLO órdenes: el propósito de este paso es que las ORDEN facturadas dejen
+          -- de estar "pendientes de facturar". Sin este filtro, el cierre se apropiaba
+          -- de PAGOs sueltos de otros cobros que tenían el ciclo estampado (caso
+          -- PC-2523 Raul Rivero: el pago de una venta contado USD quedó vinculado al
+          -- cierre PC-2583 en pesos) y el documento real quedaba sin su pago.
+          AND MovTipo IN ('ORDEN','ORDEN_ANTICIPO')
           ${linkQueryAdd}
       `);
 
