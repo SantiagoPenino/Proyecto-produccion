@@ -1555,6 +1555,9 @@ exports.uploadOrderFile = async (req, res) => {
         //    desactualizado ni un payload manual. Solo aplica al arte (type='ORDEN') de materiales con
         //    largoimprimible > 0. Fail-open si no se puede medir (misma filosofía que el conteo de páginas).
         if (type === 'ORDEN') {
+            // Paso 1 — averiguar si el material es de medida fija. Si esta consulta falla, fail-open:
+            // no sabemos si aplica, y no se puede bloquear una subida por un problema de la consulta.
+            let anchoFijo = 0, largoFijo = 0, matNombre = '';
             try {
                 const poolMed = await getPool();
                 const medRes = await poolMed.request()
@@ -1567,24 +1570,40 @@ exports.uploadOrderFile = async (req, res) => {
                         WHERE AO.ArchivoID = @ID
                     `);
                 const row = medRes.recordset[0];
-                const anchoFijo = parseFloat(row?.Ancho) || 0;
-                const largoFijo = parseFloat(row?.Largo) || 0;
-                if (anchoFijo > 0 && largoFijo > 0) {
+                anchoFijo = parseFloat(row?.Ancho) || 0;
+                largoFijo = parseFloat(row?.Largo) || 0;
+                matNombre = row?.Material || 'Este material';
+            } catch (eCfg) {
+                logger.warn(`[UploadStream] No se pudo leer la config de medida fija de ${finalName}: ${eCfg.message}`);
+            }
+
+            // Paso 2 — si ES de medida fija, la medida es lo único que importa: acá NO hay fail-open.
+            // Si el arte no se puede medir, se rechaza (antes se dejaba pasar con un warning y entraban
+            // banderas sin el margen de confección, imposibles de detectar después).
+            if (anchoFijo > 0 && largoFijo > 0) {
+                let dims = null;
+                try {
                     const bufMed = file.buffer || await require('fs').promises.readFile(file.path);
-                    const dims = await medirArteMetros(bufMed, finalName, file.mimetype);
-                    if (dims && dims.w > 0 && dims.h > 0) {
-                        const TOL = 0.002; // 2mm, igual que el front
-                        const fuera = (real, esp) => Math.abs(real - esp) > TOL + 1e-9;
-                        if (fuera(dims.w, anchoFijo) || fuera(dims.h, largoFijo)) {
-                            logger.warn(`[UploadStream] RECHAZADO ${finalName}: MEDIDA FIJA ${anchoFijo.toFixed(2)}x${largoFijo.toFixed(2)}m, archivo ${dims.w.toFixed(2)}x${dims.h.toFixed(2)}m`);
-                            return res.status(400).json({
-                                error: `"${row.Material}" se imprime a MEDIDA FIJA: el archivo debe medir exactamente ${anchoFijo.toFixed(2)}m de ancho x ${largoFijo.toFixed(2)}m de largo. Tu archivo mide ${dims.w.toFixed(2)}m x ${dims.h.toFixed(2)}m. Ajustá el archivo a la medida exacta (sin rotar).`
-                            });
-                        }
-                    }
+                    dims = await medirArteMetros(bufMed, finalName, file.mimetype);
+                } catch (eMed) {
+                    logger.warn(`[UploadStream] No se pudo medir ${finalName} (medida fija): ${eMed.message}`);
                 }
-            } catch (eFija) {
-                logger.warn(`[UploadStream] No se pudo validar medida fija de ${finalName}: ${eFija.message}`);
+
+                if (!dims || !(dims.w > 0) || !(dims.h > 0)) {
+                    logger.warn(`[UploadStream] RECHAZADO ${finalName}: MEDIDA FIJA ${anchoFijo.toFixed(2)}x${largoFijo.toFixed(2)}m — no se pudo medir el archivo`);
+                    return res.status(400).json({
+                        error: `"${matNombre}" se imprime a MEDIDA FIJA (${anchoFijo.toFixed(2)}m x ${largoFijo.toFixed(2)}m) y no pudimos leer las medidas de tu archivo, así que no podemos aceptarlo. Volvé a exportarlo como PDF con la medida exacta, o escribinos a Atención al Cliente.`
+                    });
+                }
+
+                const TOL = 0.002; // 2mm, igual que el front
+                const fuera = (real, esp) => Math.abs(real - esp) > TOL + 1e-9;
+                if (fuera(dims.w, anchoFijo) || fuera(dims.h, largoFijo)) {
+                    logger.warn(`[UploadStream] RECHAZADO ${finalName}: MEDIDA FIJA ${anchoFijo.toFixed(2)}x${largoFijo.toFixed(2)}m, archivo ${dims.w.toFixed(2)}x${dims.h.toFixed(2)}m`);
+                    return res.status(400).json({
+                        error: `"${matNombre}" se imprime a MEDIDA FIJA: el archivo debe medir exactamente ${anchoFijo.toFixed(2)}m de ancho x ${largoFijo.toFixed(2)}m de largo. Tu archivo mide ${dims.w.toFixed(2)}m x ${dims.h.toFixed(2)}m. Ajustá el archivo a la medida exacta (sin rotar).`
+                    });
+                }
             }
         }
 

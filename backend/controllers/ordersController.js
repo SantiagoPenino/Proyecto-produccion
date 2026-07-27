@@ -857,6 +857,14 @@ exports.updateFile = async (req, res) => {
         await transaction.begin();
 
         try {
+            // 0. Valores ANTERIORES. Sin esto, editar las medidas de un arte no dejaba ningún rastro
+            //    de qué se cambió (el historial solo decía "Archivo modificado") y después era
+            //    imposible saber si un archivo se había tocado a mano ni cuál era el valor original.
+            const prevRes = await new sql.Request(transaction)
+                .input('ID', sql.Int, fileId)
+                .query("SELECT OrdenID, Copias, Metros, Ancho, Alto, NombreArchivo FROM dbo.ArchivosOrden WHERE ArchivoID = @ID");
+            const prev = prevRes.recordset[0] || {};
+
             // 1. Actualizar el Archivo
             const reqUpdate = new sql.Request(transaction)
                 .input('ID', sql.Int, fileId)
@@ -891,14 +899,35 @@ exports.updateFile = async (req, res) => {
 
             await transaction.commit();
 
-            // LOG HISTORIAL
+            // LOG HISTORIAL — con el detalle de QUÉ cambió (antes → después), no solo "modificado".
             const safeUser = String((req.body.userId || req.body.usuario || 'Sistema'));
+            const cambios = [];
+            const aNum = (v) => (v === null || v === undefined || v === '') ? null : Number(v);
+            const cmp = (etiqueta, antes, ahora, dec = 2) => {
+                const a = aNum(antes), b = aNum(ahora);
+                if (a === null && b === null) return;
+                if (a === null || b === null || Math.abs(a - b) > 1e-9) {
+                    cambios.push(`${etiqueta}: ${a === null ? '—' : a.toFixed(dec)} → ${b === null ? '—' : b.toFixed(dec)}`);
+                }
+            };
+            cmp('Ancho', prev.Ancho, ancho);
+            cmp('Alto', prev.Alto, alto);
+            cmp('Copias', prev.Copias, copias, 0);
+            cmp('Metros', prev.Metros, metros);
+            if (nombre && String(nombre) !== String(prev.NombreArchivo || '')) {
+                cambios.push(`Nombre: "${prev.NombreArchivo || '—'}" → "${nombre}"`);
+            }
+            const detalleLog = (cambios.length
+                ? `Archivo modificado (ID: ${fileId}) — ${cambios.join(' | ')}`
+                : `Archivo modificado (ID: ${fileId}) — sin cambios de valores`).substring(0, 499);
+            if (cambios.length) logger.info(`📝 [UpdateFile] Archivo ${fileId} por ${safeUser}: ${cambios.join(' | ')}`);
+
             if (ordenId) {
                 pool.request()
                     .input('OID', sql.Int, ordenId)
                     .input('Est', sql.VarChar, 'Modificado')
                     .input('User', sql.VarChar, safeUser)
-                    .input('Det', sql.NVarChar, `Archivo modificado (ID: ${fileId})`)
+                    .input('Det', sql.NVarChar, detalleLog)
                     .query(`
                         INSERT INTO [SecureAppDB].[dbo].[HistorialOrdenes] (OrdenID, Estado, FechaInicio, FechaFin, Usuario, Detalle)
                         SELECT @OID, ISNULL(EstadoenArea, 'Pendiente'), GETDATE(), GETDATE(), @User, @Det FROM Ordenes WHERE OrdenID = @OID

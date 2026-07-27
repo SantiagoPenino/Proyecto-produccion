@@ -7,6 +7,39 @@ Historial de cambios del sistema de producción. Formato basado en [Keep a Chang
 
 ---
 
+## [2026-07-27] — Sin deployar
+
+### Agregado
+- **Tótem — autorización por token de dispositivo**: reemplaza el chequeo por IP fija (el local se muda y deja de tenerla). El equipo se activa una sola vez con `/totem?activar=<TOTEM_TOKEN>`, queda guardado en ese navegador y viaja en cada request. Además **cierra los endpoints del tótem** (`lookup`, `lookup-by-client`, `create-pickup`, `announce`), que estaban abiertos a cualquiera: el chequeo de IP anterior solo escondía la pantalla. Con `TOTEM_TOKEN` vacío queda abierto (dev / transición).
+- **Descarga del lote archivo por archivo** (sin ZIP): se pide un manifiesto y cada archivo se baja y escribe apenas llega. Evita cargar el lote entero en memoria del navegador, muestra progreso real (`3/14 · archivo.pdf`, MB y velocidad) y un archivo caído ya no arruina la descarga completa. El ZIP queda como fallback donde no hay File System API (HTTP inseguro, Firefox, Safari).
+- **MIMAKI — avance de impresión por copias**: las órdenes de un lote en MIMAKI cargan cuántas copias van impresas (contador `x/y`, como TPU) en vez del tick binario. El total sale de las copias del arte; `Impreso` se sigue derivando al completar.
+- **Portal — vista previa en todas las áreas**: la miniatura del arte (imagen o 1ª página del PDF) estaba limitada a materiales de medida fija; ahora se ve en cualquier servicio y material. El modal ampliado se acota al viewport y la vista previa se rasteriza a mayor resolución (antes se generaba a 320 px y se mostraba diminuta). En **DTF** el arte se muestra sobre damero, respetando la transparencia real del PDF.
+- **Detalle de lote — indicador de rapport / escala**: el ícono del ojo de cada orden se colorea según cómo se imprime el arte (morado = rapport, magenta = escala, gris = normal), con el detalle en el tooltip. Se reconoce de un vistazo sin agregar columnas.
+- **Trazabilidad de la edición de archivos**: al cambiar medidas, copias o metros de un arte, el historial de la orden ahora registra **qué cambió** (`Ancho: 1.55 → 1.50 | Alto: 0.90 → 0.85`), no solo "Archivo modificado". Antes se podía editar la medida de un arte sin dejar ningún rastro, y después era imposible saber si el archivo había sido tocado a mano.
+- Detalle de lote: las órdenes de **bandera confeccionada** muestran la cantidad de banderas además de los metros (3,6 m no dice si son 4 banderas de 0,9).
+- Push al cliente cuando una orden **se reactiva** (contraparte del aviso de cancelación).
+
+### Arreglado
+- **Rapport / escala se borraban al pasar por Control**: el control de archivos hacía `Observaciones = @Motivo`, pisando el campo — y un control sin motivo lo dejaba vacío. Toda orden que pasaba por Control perdía el detalle técnico de impresión (`[RAPORT] ORIG: 0.64x0.64m -> … -> FINAL: 1.47x2.40m`) y ya no se podía saber cómo se había impreso. Ahora la parte técnica se conserva y el motivo se anexa.
+- **Sanación de fallas en cadena**: al completar una reposición se curaba siempre la orden RAÍZ (`split('-F')[0]`), nunca el padre inmediato. En cadenas madre → `-F1` → `-F2`, la `-F1` quedaba con su falla colgada para siempre y **el pedido nunca se resolvía**. Ahora se curan los archivos/servicios en falla de toda la familia (mismo `NoDocERP` + área) y se emite la señal de liberación del Canasto Falla (el guard anterior exigía `EstadoenArea = 'Retenido'`, un estado que las órdenes en falla nunca tienen).
+- **Panel de control — "Canceladas" siempre en 0**: faltaba `getCancelledSummary` en el service del front; la tarjeta recibía `undefined` como `queryFn` y caía al fallback. El backend ya estaba bien.
+- **Reposiciones (-R) con costo**: al recibirlas en depósito, si el pedido tenía diferencias contables, la `-R` tomaba la línea de cobranza de la madre y quedaba con importe. Son re-trabajo sin cargo: ahora siempre costo 0.
+- **Búsqueda de clientes daba 500**: los nombres vienen de columnas `CHAR` con decenas de espacios de padding; el término superaba el `NVarChar(100)` del parámetro y SQL rechazaba la consulta entera. Se recorta y acota el término.
+- **Etiqueta de lote**: la hora salía 3 horas atrasada (el driver entrega el `DATETIME` como UTC y se volvía a convertir), el nombre del lote se partía en tres líneas y los banners decían "CONTIENE" de más. Además ahora **solo se imprime en máquinas marcadas como impresora**.
+- **Historial de lotes**: las fechas de creación y finalización también salían 3 horas atrasadas, por la misma causa.
+- **Detalle de orden — Tela de Cliente**: mostraba el material genérico ("Tela Cliente (Mínimo 5mts)") en vez de la bobina elegida. Ahora compone Referencia + tela + ancho, igual que la planilla.
+- **Crear Remito** ofrecía bultos de órdenes de falla (`-F`), que nunca se despachan solas — su material se incorpora al pedido madre.
+- **Asignar a lote** ofrecía lotes que ya están en una calandra: ese lote ya se imprimió, sumarle órdenes las dejaría sin imprimir.
+- **PDF de arte multipágina**: la validación era solo del navegador y tenía un hueco (si no podía contar páginas, dejaba pasar), además de no cubrir las otras vías de subida. Ahora el backend cuenta con `pdf-lib` y rechaza el arte de más de 1 página.
+- **PNG/JPG sin metadata de DPI**: antes se ofrecía confirmar una medida calculada asumiendo 300 DPI — una suposición que terminaba imprimiéndose. Ahora se rechaza el archivo y se explica cómo resolverlo (guardar como PDF o contactar a Atención al Cliente).
+- **Sincronización de clientes con Google Sheets**: migrada a la planilla nueva (la anterior agotó su historial de versiones) y la escritura salió del Apps Script — que se rompió al cambiar el propietario de la planilla — hacia la API directa, con el mismo token que ya usa el panel.
+- Errores del ERP Macrosoft y del tótem se registraban sin detalle (solo "status 500"); ahora el log incluye la respuesta del servidor, el pedido y el payload.
+
+### Cambiado
+- **Medida fija (banderas) — se elimina el fail-open**: si el material se imprime a medida fija y el arte **no se puede medir**, ahora se rechaza en vez de dejarlo pasar con un warning. En esos materiales la medida es lo único que importa, y por ese hueco entraban banderas sin el margen de confección (arte de 1,50 × 0,85 donde debía ser 1,55 × 0,90), imposibles de detectar después. La consulta de configuración sigue siendo fail-open: si falla, no se puede saber si el material aplica.
+- **Finalizar lote**: el bloqueo por órdenes sin marcar como impreso/calandrado ahora es **exclusivo de Sublimación**. En el resto de las áreas se finaliza sin exigir el marcado.
+- **Detalle de lote — agrupación**: las órdenes de falla se agrupan por material junto con las normales (antes iban a un grupo propio con header magenta). El indicador de falla pasa a la fila de la orden.
+
 ## [2026-07-23] — Sin deployar
 
 ### Agregado

@@ -336,6 +336,7 @@ const postControlArchivo = async (req, res) => {
                 .input('ArchivoID', sql.Int, archivoId)
                 .query(`
                     SELECT AO.OrdenID, AO.NombreArchivo, AO.Metros as MetrosArchivo,
+                           AO.Observaciones as ObsActual,
                            O.AreaID, O.CodigoOrden, O.NoDocERP, O.ProximoServicio,
                            O.CliIdCliente, O.ProIdProducto, O.IdClienteReact, O.IdProductoReact,
                            O.CodCliente, O.CodArticulo, O.Nota as NotaOriginal,
@@ -362,17 +363,27 @@ const postControlArchivo = async (req, res) => {
             proximoServicio = row.ProximoServicio;
             rolloId      = row.RolloID;  // para auto-cleanup post-commit
 
+            // La info TÉCNICA de impresión ([RAPORT]/[ESCALA] + Modo/AnchoFinal) describe al ARCHIVO
+            // y no debe perderse al controlarlo. Antes este UPDATE hacía `Observaciones = @Motivo`:
+            // pisaba el campo, y un control SIN motivo lo dejaba vacío → toda orden que pasaba por
+            // Control perdía el dato de rapport/escala (no se podía saber cómo se había impreso).
+            // Ahora se conserva la parte técnica y el motivo del control se anexa después.
+            const obsPrevia = String(row.ObsActual || '');
+            const mTecnica  = obsPrevia.match(/\[(?:RAPORT|ESCALA)\][^|]*(?:\|\s*Modo:[^|]*)?/i);
+            const tecnica   = mTecnica ? mTecnica[0].trim() : '';
+            const obsFinal  = [tecnica, String(motivo || '').trim()].filter(Boolean).join(' | ');
+
             await new sql.Request(transaction)
                 .input('Estado', sql.NVarChar, estado)
                 .input('Usuario', sql.NVarChar, usuario || 'System')
-                .input('Motivo', sql.NVarChar, motivo || '')
+                .input('Obs', sql.NVarChar(sql.MAX), obsFinal)
                 .input('ID', sql.Int, archivoId)
                 .query(`
                     UPDATE ArchivosOrden
                     SET EstadoArchivo = @Estado,
                         FechaControl = GETDATE(),
                         UsuarioControl = @Usuario,
-                        Observaciones = @Motivo
+                        Observaciones = @Obs
                     WHERE ArchivoID = @ID
                 `);
         }

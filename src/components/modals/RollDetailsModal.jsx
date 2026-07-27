@@ -576,6 +576,16 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { }, lo
     const printedPercent = totalMeters > 0 ? Math.min(((isLoteTPU ? printedUnits : printedMeters) / totalMeters) * 100, 100) : 0;
     const allPrinted = totalOrders > 0 && printedCount === totalOrders;
 
+    // El ojo (ver detalle) se colorea según el modo de impresión del arte, para reconocerlo de un
+    // vistazo sin agregar columnas: MORADO = rapport, MAGENTA = escala, gris = impresión normal.
+    // El title lo aclara, porque los dos colores son parecidos entre sí.
+    const ojoModo = (o) => {
+        const m = String(o?.modoImpresion || '').toLowerCase();
+        if (m === 'raport') return { cls: 'text-purple-600 hover:text-purple-700 hover:bg-purple-50', title: 'Ver detalle — Impresión con RAPORT' };
+        if (m === 'escala') return { cls: 'text-brand-magenta hover:text-brand-magenta hover:bg-brand-magenta/10', title: 'Ver detalle — Impresión a ESCALA' };
+        return { cls: 'text-zinc-400 hover:text-brand-cyan hover:bg-brand-cyan/10', title: 'Ver detalle orden' };
+    };
+
     const materialOf = (o) => (o?.material || o?.Material || '').trim();
     // Bandera confeccionada (medida fija): además de los metros se muestra CUÁNTAS banderas son
     // (los metros solos no lo dicen: 3.6m pueden ser 4 banderas de 0.9). Copias = ArchivosOrden.Copias.
@@ -1793,7 +1803,7 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { }, lo
                                                       )}
                                                     </div>
                                                     <div className="w-44 tablet:w-36 flex items-center justify-center gap-1 tablet:gap-0.5">
-                                                      <button onClick={() => onViewOrder && onViewOrder(o)} className="w-7 h-7 tablet:w-6 tablet:h-6 flex items-center justify-center rounded-lg text-zinc-400 hover:text-brand-cyan hover:bg-brand-cyan/10 transition-all" title="Ver detalle orden"><i className="fa-regular fa-eye text-sm tablet:text-xs" /></button>
+                                                      <button onClick={() => onViewOrder && onViewOrder(o)} className={`w-7 h-7 tablet:w-6 tablet:h-6 flex items-center justify-center rounded-lg transition-all ${ojoModo(o).cls}`} title={ojoModo(o).title}><i className="fa-regular fa-eye text-sm tablet:text-xs" /></button>
                                                       {!readOnly && (<>
                                                       <button onClick={() => openMoveModal(o)} className="w-7 h-7 tablet:w-6 tablet:h-6 flex items-center justify-center rounded-lg text-zinc-400 hover:text-brand-cyan hover:bg-brand-cyan/10 transition-all" title="Mover a otro Lote"><i className="fa-solid fa-arrow-right-arrow-left text-sm tablet:text-xs" /></button>
                                                       <button onClick={() => handleUnassign(o)} className="w-7 h-7 tablet:w-6 tablet:h-6 flex items-center justify-center rounded-lg text-zinc-400 hover:text-brand-magenta hover:bg-brand-magenta/10 transition-all" title="Sacar del Rollo"><i className="fa-solid fa-rotate-left text-sm tablet:text-xs" /></button>
@@ -2019,8 +2029,8 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { }, lo
                                                 <div className="flex items-center justify-center gap-1">
                                                     <button
                                                         onClick={() => onViewOrder && onViewOrder(o)}
-                                                        className="w-7 h-7 flex items-center justify-center rounded-lg text-zinc-400 hover:text-brand-cyan hover:bg-brand-cyan/10 transition-all"
-                                                        title="Ver detalle orden"
+                                                        className={`w-7 h-7 flex items-center justify-center rounded-lg transition-all ${ojoModo(o).cls}`}
+                                                        title={ojoModo(o).title}
                                                     >
                                                         <i className="fa-regular fa-eye text-sm" />
                                                     </button>

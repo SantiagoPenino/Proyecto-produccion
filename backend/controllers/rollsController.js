@@ -139,7 +139,15 @@ exports.getBoardData = async (req, res) => {
 
                     -- Copias del arte: total contra el que se cuenta el avance en MIMAKI (metros = copias × alto)
                     (SELECT ISNULL(SUM(ISNULL(Copias, 1)), 0) FROM dbo.ArchivosOrden WITH(NOLOCK)
-                      WHERE OrdenID = o.OrdenID AND ISNULL(EstadoArchivo,'') <> 'CANCELADO') AS TotalCopias
+                      WHERE OrdenID = o.OrdenID AND ISNULL(EstadoArchivo,'') <> 'CANCELADO') AS TotalCopias,
+
+                    -- Modo de impresión del arte (rapport / escala), leído de la observación técnica
+                    -- que deja el portal. Se marca si CUALQUIER archivo de la orden lo tiene.
+                    (SELECT TOP 1 CASE WHEN ao.Observaciones LIKE '%[[]RAPORT]%' THEN 'raport' ELSE 'escala' END
+                       FROM dbo.ArchivosOrden ao WITH(NOLOCK)
+                      WHERE ao.OrdenID = o.OrdenID
+                        AND (ao.Observaciones LIKE '%[[]RAPORT]%' OR ao.Observaciones LIKE '%[[]ESCALA]%')
+                      ORDER BY CASE WHEN ao.Observaciones LIKE '%[[]RAPORT]%' THEN 0 ELSE 1 END) AS ModoImpresion
 
                 FROM dbo.Ordenes o WITH(NOLOCK)
                 WHERE o.AreaID = @AreaID
@@ -206,6 +214,7 @@ exports.getBoardData = async (req, res) => {
                 um: (o.UM || '').trim(),                    // Impresión parcial (TPU)
                 cantidadImpresa: o.CantidadImpresa || 0,    // unidades/copias ya impresas
                 totalCopias: o.TotalCopias || 0,            // total de copias del arte (avance en MIMAKI)
+                modoImpresion: o.ModoImpresion || null,     // 'raport' | 'escala' | null (colorea el ojo)
 
                 // ✅ AQUÍ ASIGNAMOS LA CANTIDAD DE ARCHIVOS
                 fileCount: o.CantidadArchivos || 0
@@ -1195,6 +1204,12 @@ exports.getRollDetails = async (req, res) => {
                     -- Copias del arte: total contra el que se cuenta el avance en MIMAKI (metros = copias × alto)
                     (SELECT ISNULL(SUM(ISNULL(Copias, 1)), 0) FROM dbo.ArchivosOrden
                       WHERE OrdenID = o.OrdenID AND ISNULL(EstadoArchivo,'') <> 'CANCELADO') AS TotalCopias,
+                    -- Modo de impresión del arte (rapport / escala), desde la observación técnica del portal
+                    (SELECT TOP 1 CASE WHEN ao.Observaciones LIKE '%[[]RAPORT]%' THEN 'raport' ELSE 'escala' END
+                       FROM dbo.ArchivosOrden ao
+                      WHERE ao.OrdenID = o.OrdenID
+                        AND (ao.Observaciones LIKE '%[[]RAPORT]%' OR ao.Observaciones LIKE '%[[]ESCALA]%')
+                      ORDER BY CASE WHEN ao.Observaciones LIKE '%[[]RAPORT]%' THEN 0 ELSE 1 END) AS ModoImpresion,
                     -- ✅ SUBQUERY FOR GLOBAL STATUS (Sibling Orders via Root Match)
                     (
                         SELECT O2.AreaID, O2.Estado 
@@ -1254,6 +1269,7 @@ exports.getRollDetails = async (req, res) => {
                 um: (o.UM || '').trim(),                    // Impresión parcial (TPU)
                 cantidadImpresa: o.CantidadImpresa || 0,    // unidades/copias ya impresas
                 totalCopias: o.TotalCopias || 0,            // total de copias del arte (avance en MIMAKI)
+                modoImpresion: o.ModoImpresion || null,     // 'raport' | 'escala' | null (colorea el ojo)
                 groupId: o.GrupoManual,
                 ink: o.Tinta,
                 fileCount: o.CantidadArchivos || o.fileCount || 0,
