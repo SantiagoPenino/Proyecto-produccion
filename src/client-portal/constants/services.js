@@ -120,6 +120,7 @@ export const SERVICES_LIST = [
             // Tinta de impresión: rutea el lote a la máquina (magic sort ECOUV agrupa por Tinta)
             tintaOptions: ['Ecosolvente', 'UV'],
             hideRaport: true, // EcoUV no usa el modo Raport (repeticiones de patrón textil)
+            unidadTotal: 'm2', // Gran formato: el total se muestra en m² (así se cotiza), no en metros de rollo
             requiresProductionFiles: true,
             disableItemNote: false, // Permitir notas por archivo
         },

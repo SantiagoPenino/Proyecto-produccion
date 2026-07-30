@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import api from '../../../services/apiClient';
-import toast from 'react-hot-toast';
+import { toast } from 'sonner';
 import { X, Loader2, Box, Plus, Eye, EyeOff, Trash2, RefreshCw } from 'lucide-react';
 
 // Gestor de PRODUCTOS TERMINADOS EcoUV: barra lateral con la lista (seleccionar,
@@ -10,7 +10,9 @@ const API = '/stockart';
 const GRUPO_ECOUV = '1.3';
 const UBICACIONES = [
     { v: 'ARRIBA', l: 'Arriba' }, { v: 'ABAJO', l: 'Abajo' },
-    { v: 'ARRIBA_ABAJO', l: 'Arriba y abajo' }, { v: 'COSTADOS', l: 'Costados' },
+    { v: 'ARRIBA_ABAJO', l: 'Arriba y abajo' },
+    { v: 'IZQUIERDA', l: 'Izquierda' }, { v: 'DERECHA', l: 'Derecha' },
+    { v: 'COSTADOS', l: 'Ambos costados' },
     { v: 'PERIMETRO', l: 'Perímetro' },
 ];
 

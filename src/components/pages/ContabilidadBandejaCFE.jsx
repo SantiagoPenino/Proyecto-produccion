@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { FileText, CheckCircle, AlertCircle, Search, Send, FileOutput, Plus, Edit, XCircle, Printer, Copy, RefreshCw, FileX, FilePlus, User, Trash2 } from 'lucide-react';
+import { FileText, CheckCircle, AlertCircle, Search, Send, FileOutput, Plus, Edit, XCircle, Printer, Copy, RefreshCw, FileX, FilePlus, User, Trash2, Mail, MailCheck } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { toast } from 'sonner';
 import api from '../../services/apiClient';
@@ -11,6 +11,7 @@ import ConfirmationModal from '../modals/ConfirmationModal';
 import CfeNotaCreditoModal from './CfeNotaCreditoModal';
 import NcExternaModal from './NcExternaModal';
 import CfePreviewDgiModal from './CfePreviewDgiModal';
+import CfeEnviarEmailModal from './CfeEnviarEmailModal';
 // Nombre del tipo de documento: única fuente, compartida con el generador de PDF
 import { getTipoDocName } from '../../utils/tiposDocumento';
 
@@ -91,6 +92,40 @@ const renderCfeOficialCol = (doc) => {
     );
 };
 
+/**
+ * Botón "enviar por email" de la columna Acciones.
+ * NO se deshabilita cuando el cliente no tiene dirección cargada: hay fichas viejas
+ * sin email y el modal permite escribirla en el momento. El color ámbar avisa que no
+ * hay ninguna guardada, y el tooltip dice exactamente a qué casilla iría.
+ * Si el documento ya se mandó alguna vez, el ícono pasa a verde con la fecha y el
+ * destinatario del último envío, para no mandarlo dos veces sin darse cuenta.
+ */
+const BotonEnviarEmail = ({ doc, onClick }) => {
+    const email = (doc.CliEmail || doc.CliEmailPortal || '').trim();
+    const yaEnviado = !!doc.UltimoEnvioFecha;
+
+    let title = email
+        ? `Enviar el PDF por email a ${email}`
+        : 'Enviar el PDF por email — este cliente no tiene dirección cargada, se escribe al enviar';
+    if (yaEnviado) {
+        title += `\nÚltimo envío: ${new Date(doc.UltimoEnvioFecha).toLocaleString('es-UY')} a ${doc.UltimoEnvioDestinatario || ''}`;
+    }
+
+    return (
+        <button
+            onClick={() => onClick(doc)}
+            title={title}
+            className={`transition-colors ${
+                yaEnviado ? 'text-green-600 hover:text-green-700'
+                          : email ? 'text-gray-500 hover:text-blue-600'
+                                  : 'text-amber-500 hover:text-amber-600'
+            }`}
+        >
+            {yaEnviado ? <MailCheck className="h-5 w-5" /> : <Mail className="h-5 w-5" />}
+        </button>
+    );
+};
+
 const ContabilidadBandejaCFE = ({ initialCliente = null, embedded = false, autoNuevaFactura = false }) => {
     const { token } = useAuth();
     // Cuando se monta scopeado a un cliente (Panel 360): fecha amplia y cliente fijo.
@@ -133,6 +168,7 @@ const ContabilidadBandejaCFE = ({ initialCliente = null, embedded = false, autoN
     // Confirmación de envío a DGI: { tipo: 'uno', doc } | { tipo: 'lote', ids: [...] }
     const [confirmEnvio, setConfirmEnvio] = useState(null);
     const [previewDoc, setPreviewDoc] = useState(null);   // documento cuyo CFE a emitir se está viendo
+    const [emailDoc, setEmailDoc] = useState(null);       // documento que se está por mandar por email
     const [regularizarDoc, setRegularizarDoc] = useState(null);   // NC aceptada como venta: explica la regularización
 
     // Filtros
@@ -465,7 +501,7 @@ const ContabilidadBandejaCFE = ({ initialCliente = null, embedded = false, autoN
             const toastId = toast.loading('Reversando documento...');
             
             if (doc.CfeEstado === 'ACEPTADO_DGI') {
-                await api.post('/contabilidad/caja/nota-credito', {
+                const respNc = await api.post('/contabilidad/caja/nota-credito', {
                     docIdOrigen: doc.DocIdDocumento,
                     monto: doc.DocTotal,
                     motivo: 'Reverso para regeneración',
@@ -473,6 +509,10 @@ const ContabilidadBandejaCFE = ({ initialCliente = null, embedded = false, autoN
                     monedaId: doc.MonIdMoneda || 1,
                     cuentaId: doc.CueIdCuenta || (doc.MonIdMoneda === 2 ? 119 : 118)
                 });
+                // Si la factura era una compra de recurso, decir qué pasó con los metros
+                if (respNc?.data?.avisoRecurso) {
+                    toast.info(respNc.data.avisoRecurso, { duration: 12000 });
+                }
             } else {
                 await api.put(`/contabilidad/cfe/documentos/${doc.DocIdDocumento}/anular`);
             }
@@ -885,6 +925,7 @@ const ContabilidadBandejaCFE = ({ initialCliente = null, embedded = false, autoN
                                                     >
                                                         <Printer className="h-5 w-5" />
                                                     </button>
+                                                    <BotonEnviarEmail doc={doc} onClick={setEmailDoc} />
                                                     <button
                                                         onClick={() => abrirEdicion(doc)}
                                                         className="text-gray-500 hover:text-yellow-600 transition-colors"
@@ -929,6 +970,7 @@ const ContabilidadBandejaCFE = ({ initialCliente = null, embedded = false, autoN
                                                     >
                                                         <Printer className="h-5 w-5" />
                                                     </button>
+                                                    <BotonEnviarEmail doc={doc} onClick={setEmailDoc} />
                                                     {/* Editar: también NC/ND mientras sigan PENDIENTE (todavía no se
                                                         emitieron ante DGI, así que el comprobante no es fiscal aún).
                                                         El backend igual valida: editarFactura solo acepta PENDIENTE/BORRADOR. */}
@@ -988,6 +1030,7 @@ const ContabilidadBandejaCFE = ({ initialCliente = null, embedded = false, autoN
                                                     >
                                                         <FileOutput className="mr-1.5 h-3.5 w-3.5 text-red-500" /> PDF
                                                     </button>
+                                                    <BotonEnviarEmail doc={doc} onClick={setEmailDoc} />
                                                     {/* Copiar (solo si no es nota de crédito o débito) */}
                                                     {!(isCreditNote(doc.DocTipo) || String(doc.DocTipo).toUpperCase().includes('DEBITO')) && (
                                                         <button
@@ -1144,6 +1187,14 @@ const ContabilidadBandejaCFE = ({ initialCliente = null, embedded = false, autoN
                         </div>
                     </div>
                 </div>
+            )}
+
+            {emailDoc && (
+                <CfeEnviarEmailModal
+                    doc={emailDoc}
+                    onClose={() => setEmailDoc(null)}
+                    onEnviado={() => fetchDocumentos()}
+                />
             )}
 
             {previewDoc && (

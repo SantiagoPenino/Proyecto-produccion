@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import api from '../../../services/apiClient';
-import toast from 'react-hot-toast';
+import { toast } from 'sonner';
 import {
     X, Plus, Loader2, RefreshCw, ChevronDown, ChevronRight,
     Package, Eye, EyeOff, Save, ArrowRightLeft, Boxes, Trash2

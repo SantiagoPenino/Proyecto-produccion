@@ -58,7 +58,8 @@ const OrderRouteTracker = ({ steps = [], title = "Hoja de Ruta (Flujo de Áreas)
                         let type = 'PENDING';
                         if (status.includes('PRONTO') || status.includes('FINALIZADO') || status.includes('COMPLETADO')) type = 'FINISHED';
                         else if (status.includes('CANCEL')) type = 'CANCELLED';
-                        else if (status !== 'PENDIENTE' && status !== '') type = 'ACTIVE'; // Si no es pendiente ni vacio -> Activo
+                        else if (status.startsWith('PENDIENTE') || status === '') type = 'PENDING'; // "PENDIENTE", "PENDIENTE A RECIBIR", etc.
+                        else type = 'ACTIVE'; // Si no es pendiente ni vacio -> Activo
 
                         // Asignar Clases
                         let circleClass = "bg-white border-2 border-slate-200 text-slate-300";

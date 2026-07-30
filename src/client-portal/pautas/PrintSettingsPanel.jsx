@@ -32,8 +32,17 @@ export const PrintSettingsPanel = ({
     // MEDIDA FIJA (banderas): el material se imprime a una medida exacta, así que materialMaxWidthM
     // ES el ancho requerido — NO se le descuenta el margen no imprimible de 3cm (si no, un archivo
     // de 1.55 contra un material de 1.55 rebotaba contra un tope de 1.52).
-    medidaFija = false
+    medidaFija = false,
+    // Unidad del total mostrado: 'm' = metros lineales de rollo (default, sublimación/DTF)
+    // | 'm2' = metros cuadrados (gran formato: EcoUV cotiza por superficie).
+    unidadTotal = 'm'
 }) => {
+    const esM2 = unidadTotal === 'm2';
+    // Total mostrado al cliente: superficie (ancho × alto × copias) o largo lineal.
+    const totalLabel = esM2 ? 'Área total' : 'Largo total';
+    const fmtTotal = (wM, hM, n) => esM2
+        ? `${(wM * hM * n).toFixed(2)} m²`
+        : `${(hM * n).toFixed(2)}m`;
     // ... (rest of vars)
     const mode = values.mode || 'normal';
     const selectedScale = values.scale || '';
@@ -254,7 +263,7 @@ export const PrintSettingsPanel = ({
                                     Dim: {originalWidthM.toFixed(2)}m x {originalHeightM.toFixed(2)}m
                                 </div>
                                 <div className="font-mono bg-brand-dark px-3 py-1.5 rounded text-[10px] border border-cyan-500/30 text-cyan-400">
-                                    Largo total: {(originalHeightM * copies).toFixed(2)}m
+                                    {totalLabel}: {fmtTotal(originalWidthM, originalHeightM, copies)}
                                 </div>
                             </div>
                         </div>
@@ -309,7 +318,7 @@ export const PrintSettingsPanel = ({
                                                 Ancho final: <strong className="text-cyan-300">{(originalWidthM * factor).toFixed(2)}m</strong>
                                             </div>
                                             <div className="font-mono bg-brand-dark px-3 py-1.5 rounded text-[10px] border border-cyan-500/30 text-cyan-400">
-                                                Largo total: {(finalH * copies).toFixed(2)}m
+                                                {totalLabel}: {fmtTotal(originalWidthM * factor, finalH, copies)}
                                             </div>
                                         </>
                                     );

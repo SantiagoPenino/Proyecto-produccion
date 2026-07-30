@@ -914,6 +914,11 @@ const DynamicRouter = ({ menuItems }) => {
     // Configuración ECOUV: vive DEBAJO de /area/ecouv — sin ítem de menú propio, el
     // matcher longest-match la mandaría a AreaView. Match directo por path.
     if (normalizedPath === '/area/ecouv/config') return <EcouvConfigPage />;
+    // Área TERMINAC (hermanas XEUV de terminaciones): todavía sin ítem de menú propio.
+    // Match directo para que planilla/control/logística funcionen sin depender del menú.
+    if (normalizedPath === '/area/terminac' || normalizedPath.startsWith('/area/terminac/')) {
+        return <AreaView key="TERMINAC" areaKey="terminac" areaConfig={{ name: 'Terminaciones' }} />;
+    }
     const matches = menuItems.filter(item => {
         if (!item.Ruta) return false;
         const normalizedRuta = item.Ruta.endsWith('/') && item.Ruta !== '/' ? item.Ruta.slice(0, -1) : item.Ruta;
@@ -943,7 +948,9 @@ const DynamicRouter = ({ menuItems }) => {
     if (menuItem.Ruta === '/admin/nomencladores' || menuItem.Ruta === '/nomencladores') return <NomenclatorsABM />;
     if (menuItem.Ruta === '/admin/products-integration') return <ProductsIntegration />;
     if (menuItem.Ruta === '/admin/price-catalog') return <CustomerPriceCatalogPage />;
-    if (menuItem.Ruta === '/produccion/terminaciones' || menuItem.Ruta === '/area/ecouv/terminaciones') return <EcoUvFinishing />;
+    // Terminaciones (pedido 29/07): la entrada del menú abre el ÁREA TERMINAC en su
+    // planilla; la bandeja (checklist) es la pestaña Control del área.
+    if (menuItem.Ruta === '/produccion/terminaciones' || menuItem.Ruta === '/area/ecouv/terminaciones') return <Navigate to="/area/terminac" replace />;
     if (menuItem.Ruta === '/area/ecouv/config') return <EcouvConfigPage />;
     if (menuItem.Ruta === '/logistica' || menuItem.Ruta.toLowerCase() === '/logistica/') return <LogisticsDashboard />;
     if (menuItem.Ruta === '/ops/inventory') return <LogisticsDashboard />;

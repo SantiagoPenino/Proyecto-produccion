@@ -38,8 +38,12 @@ class LabelGenerationService {
             const codOrdLocal = (o.CodigoOrden || '').trim().toUpperCase();
             const prioridadLocal = (o.Prioridad || '').trim().toUpperCase();
             const esRepoLocal = codOrdLocal.includes('-R') || prioridadLocal === 'REPOSICIÓN' || prioridadLocal === 'REPOSICION';
+            // Hermana de terminaciones (XEUV, área TERMINAC): NO tiene línea de cotización
+            // a propósito (el precio viaja en la orden ECOUV). Sus etiquetas van con
+            // importe 0 intencional — nunca el importe del pedido (duplicaría el retiro).
+            const esTerminac = (o.AreaID || '').trim().toUpperCase() === 'TERMINAC';
 
-            if (magnitudValor <= 0 && !esRepoLocal) {
+            if (magnitudValor <= 0 && !esRepoLocal && !esTerminac) {
                 return { success: false, error: `No se pueden generar etiquetas: La magnitud cotizada es 0 o inválida. Revise la cotización de los items para esta área en 'Cotizar Productos'.` };
             }
 
@@ -98,7 +102,7 @@ class LabelGenerationService {
             const esReposicion = codOrd.includes('-R') || prioridad === 'REPOSICIÓN' || prioridad === 'REPOSICION';
             const esPrepago = (dbPerfilesPrecio && dbPerfilesPrecio.toLowerCase().includes('prepago')) || (dbDetalleCostos && dbDetalleCostos.toLowerCase().includes('prepago'));
             
-            if (!esReposicion && !esPrepago && (importeTotalStr === '0.00' || importeTotalStr === '0' || Number(importeTotalStr) <= 0)) {
+            if (!esReposicion && !esPrepago && !esTerminac && (importeTotalStr === '0.00' || importeTotalStr === '0' || Number(importeTotalStr) <= 0)) {
                 return { success: false, error: 'Calculo Frio: La orden no cuenta con un costo válido (Es $0). Vaya a Edit Cotización e ingrese un valor, o asegúrese de aplicar prepago o código R para habilitar $0.' };
             }
 
@@ -131,8 +135,13 @@ class LabelGenerationService {
             const _qrTrabajo  = (_pp[2] || o.DescripcionTrabajo || '').replace(/\$\*/g, ' ').trim();
             const _qrUrgencia = _pp[3] || (_isUrgent ? '2' : '1');
             const _qrProducto = (idProdReactOrden != null) ? String(idProdReactOrden) : (_pp[4] || (targetCurrency === 'USD' ? '150' : '82'));
-            const _qrCantidad = (magnitudValor > 0) ? String(magnitudValor) : (_pp[5] || String(o.Magnitud || '1'));
-            const _qrImporte  = (subtotalOrden > 0) ? subtotalOrden.toFixed(2) : (_pp[6] || importeTotalStr);
+            // TERMINAC: cantidad = la de la propia orden e importe 0 FIJO — sin caer al
+            // fallback del QR del pedido (llevaría cantidad/importe TOTALES y el ingreso
+            // a depósito duplicaría el retiro).
+            const _qrCantidad = esTerminac ? String(o.Magnitud || '1')
+                : ((magnitudValor > 0) ? String(magnitudValor) : (_pp[5] || String(o.Magnitud || '1')));
+            const _qrImporte  = esTerminac ? '0.00'
+                : ((subtotalOrden > 0) ? subtotalOrden.toFixed(2) : (_pp[6] || importeTotalStr));
 
             const SEP = '$*';
             let finalQrStringToSave = `${_qrCodigo}${SEP}${_qrCliente}${SEP}${_qrTrabajo}${SEP}${_qrUrgencia}${SEP}${_qrProducto}${SEP}${_qrCantidad}${SEP}${_qrImporte}`;
@@ -187,10 +196,14 @@ class LabelGenerationService {
                     DELETE LE FROM Logistica_EnvioItems LE
                     INNER JOIN Logistica_Bultos LB ON LE.BultoID = LB.BultoID
                     WHERE LB.OrdenID = @OID
+                      AND ISNULL(LB.Tipocontenido, '') <> 'ENCOMIENDA'
                 `);
             } catch (ign) { }
 
-            await new sql.Request(transaction).input('OID', sql.Int, ordenId).query("DELETE FROM Logistica_Bultos WHERE OrdenID = @OID");
+            // OJO: en bultos de ENCOMIENDA el OrdenID es el N° de OrdenesRetiro, NO de
+            // Ordenes — sin el filtro, regenerar etiquetas de una orden cuyo ID coincide
+            // con una encomienda BORRABA el bulto entregado de esa encomienda (histórico).
+            await new sql.Request(transaction).input('OID', sql.Int, ordenId).query("DELETE FROM Logistica_Bultos WHERE OrdenID = @OID AND ISNULL(Tipocontenido, '') <> 'ENCOMIENDA'");
             await new sql.Request(transaction).input('OID', sql.Int, ordenId).query("DELETE FROM Etiquetas WHERE OrdenID = @OID");
             logger.warn(`[LabelService:FORENSIC] 🗑️  DELETE ejecutado — OrdenID=${ordenId}`);
 
@@ -263,7 +276,7 @@ class LabelGenerationService {
                         .input('Ubicacion', sql.NVarChar, c.UbicacionActual)
                         .input('Observaciones', sql.NVarChar(sql.MAX), `Consumo auto por generación de bulto en ${o.AreaID}`)
                         .query(`
-                            INSERT INTO MovimientosLogistica (CodigoBulto, TipoMovimiento, UsuarioID, UbicacionDestino, Observaciones) 
+                            INSERT INTO MovimientosLogistica (CodigoBulto, TipoMovimiento, UsuarioID, AreaID, Observaciones)
                             VALUES (@CodigoBulto, @TipoMovimiento, @UsuarioID, @Ubicacion, @Observaciones)
                         `);
                 }
@@ -304,7 +317,14 @@ class LabelGenerationService {
      * Agrega UN bulto adicional a una orden sin regenerar los existentes.
      * Preserva los CodigoEtiqueta ya impresos. Usa UPDLOCK para evitar race conditions.
      */
-    static async addOneBulto(ordenId, userId, userName) {
+    /**
+     * Agrega UN bulto a la orden sin borrar los existentes.
+     * opts.ubicacion  — área donde queda el bulto (default: el área de la orden).
+     *                   Terminaciones lo usa: el bulto es de la orden madre (ECOUV)
+     *                   pero está físicamente en TERMINAC.
+     * opts.tipoBulto  — 'PROD_TERMINADO' | 'EN_PROCESO' (default: por ProximoServicio).
+     */
+    static async addOneBulto(ordenId, userId, userName, opts = {}) {
         let transaction;
         try {
             const pool = await getPool();
@@ -341,7 +361,8 @@ class LabelGenerationService {
             const existingData = existingRes.recordset[0] || {};
             const proximoServicio = (o.ProximoServicio || 'DEPOSITO').trim().toUpperCase();
             const esUltimoServicio = proximoServicio.includes('DEPOSITO') || proximoServicio === '';
-            const tipoBulto = esUltimoServicio ? 'PROD_TERMINADO' : 'EN_PROCESO';
+            const tipoBulto = opts.tipoBulto || (esUltimoServicio ? 'PROD_TERMINADO' : 'EN_PROCESO');
+            const ubicacion = opts.ubicacion || o.AreaID || 'GEN';
             const doc = (o.NoDocERP || o.CodigoOrden || String(ordenId)).trim();
 
             // Insertar el nuevo bulto
@@ -351,7 +372,7 @@ class LabelGenerationService {
                 .input('Tot', sql.Int, nuevoNumero)
                 .input('QR', sql.NVarChar(sql.MAX), existingData.CodigoQR || '')
                 .input('User', sql.VarChar(100), userName)
-                .input('Area', sql.VarChar(20), o.AreaID || 'GEN')
+                .input('Area', sql.VarChar(20), ubicacion)
                 .input('UID', sql.Int, userId)
                 .input('Job', sql.NVarChar(255), (o.DescripcionTrabajo || '').substring(0, 255))
                 .input('Tipo', sql.VarChar(50), tipoBulto)
@@ -387,6 +408,84 @@ class LabelGenerationService {
             throw err;
         }
     }
+    /**
+     * Genera N bultos de PRODUCTO TERMINADO para una orden que vuelve de un servicio
+     * externo (terminaciones), numerados 1..N con su propio TotalBultos.
+     *
+     * No borra ni renumera las etiquetas previas: las de la etapa anterior (ej. el bulto
+     * EN_PROCESO que viajó a terminaciones) son historia — sus remitos las referencian —
+     * y quedan fuera del conteo nuevo, que arranca de 1 para el producto terminado.
+     *
+     * @param {number} cantidad cuántos bultos físicos salen (ej. 3 cuadros por separado)
+     * @param {object} opts {ubicacion, tipoBulto}
+     */
+    static async addBultosTerminados(ordenId, cantidad, userId, userName, opts = {}) {
+        const total = Math.max(1, parseInt(cantidad, 10) || 1);
+        let transaction;
+        try {
+            const pool = await getPool();
+            const orderRes = await pool.request()
+                .input('OID', sql.Int, ordenId)
+                .query('SELECT * FROM Ordenes WHERE OrdenID = @OID');
+            if (orderRes.recordset.length === 0) return { success: false, error: 'Orden no encontrada' };
+            const o = orderRes.recordset[0];
+            if (!o.NoDocERP) return { success: false, error: 'La orden no tiene NoDocERP asignado.' };
+
+            // QR y datos de costo: se heredan de la etiqueta de la etapa anterior
+            const prevRes = await pool.request()
+                .input('OID', sql.Int, ordenId)
+                .query('SELECT TOP 1 CodigoQR, DetalleCostos, PerfilesPrecio FROM Etiquetas WHERE OrdenID = @OID ORDER BY EtiquetaID DESC');
+            const prev = prevRes.recordset[0] || {};
+
+            const ubicacion = opts.ubicacion || o.AreaID || 'GEN';
+            const tipoBulto = opts.tipoBulto || 'PROD_TERMINADO';
+            const doc = (o.NoDocERP || o.CodigoOrden || String(ordenId)).trim();
+
+            transaction = new sql.Transaction(pool);
+            await transaction.begin();
+
+            const codigos = [];
+            for (let i = 1; i <= total; i++) {
+                const ins = await new sql.Request(transaction)
+                    .input('OID', sql.Int, ordenId)
+                    .input('Num', sql.Int, i)
+                    .input('Tot', sql.Int, total)
+                    .input('QR', sql.NVarChar(sql.MAX), prev.CodigoQR || '')
+                    .input('User', sql.VarChar(100), userName)
+                    .input('Area', sql.VarChar(20), ubicacion)
+                    .input('UID', sql.Int, userId)
+                    .input('Job', sql.NVarChar(255), (o.DescripcionTrabajo || '').substring(0, 255))
+                    .input('Tipo', sql.VarChar(50), tipoBulto)
+                    .input('DC', sql.NVarChar(sql.MAX), prev.DetalleCostos || null)
+                    .input('PP', sql.NVarChar(sql.MAX), prev.PerfilesPrecio || null)
+                    .input('Doc', sql.VarChar(50), doc)
+                    .query(`
+                        INSERT INTO Etiquetas(OrdenID, NumeroBulto, TotalBultos, CodigoQR, FechaGeneracion, Usuario, CreadoPor, DetalleCostos, PerfilesPrecio)
+                        VALUES(@OID, @Num, @Tot, @QR, GETDATE(), @User, @User, @DC, @PP);
+
+                        DECLARE @NewID INT = SCOPE_IDENTITY();
+                        DECLARE @Code NVARCHAR(50) = LTRIM(RTRIM(@Doc)) + '/B' + CAST(@NewID AS NVARCHAR);
+                        UPDATE Etiquetas SET CodigoEtiqueta = @Code WHERE EtiquetaID = @NewID;
+
+                        INSERT INTO Logistica_Bultos (CodigoEtiqueta, Tipocontenido, OrdenID, Descripcion, UbicacionActual, Estado, UsuarioCreador)
+                        VALUES (@Code, @Tipo, @OID, @Job, @Area, 'EN_STOCK', @UID);
+
+                        SELECT @Code AS Codigo;
+                    `);
+                codigos.push(ins.recordset[0]?.Codigo);
+            }
+
+            await transaction.commit();
+            logger.info(`[LabelService] addBultosTerminados OK. Orden ${ordenId}: ${total} bulto(s) — ${codigos.join(', ')}`);
+            return { success: true, totalBultos: total, codigos };
+
+        } catch (err) {
+            if (transaction) try { await transaction.rollback(); } catch (e) { }
+            logger.error('[LabelService] Error en addBultosTerminados:', err);
+            return { success: false, error: err.message };
+        }
+    }
+
     /**
      * Recalcula los contadores (TotalBultos) de todas las etiquetas existentes de una orden.
      * NO borra ni crea etiquetas. NO cambia NumeroBulto ni CodigoEtiqueta.

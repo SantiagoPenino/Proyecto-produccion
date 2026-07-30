@@ -210,6 +210,25 @@ const OrderForm = ({ serviceId: propServiceId }) => {
     // Default: la primera opción del servicio (Ecosolvente).
     const [tintaSeleccionada, setTintaSeleccionada] = useState(config?.tintaOptions?.[0] || '');
 
+    // FORMA DE ENVÍO del pedido (mismo nomenclador FormasEnvio que usa el retiro:
+    // Retiro en el Local / Encomienda / Envío a Domicilio / Entrega Coordinada).
+    // Se guarda en Ordenes.ModoRetiro de cada orden del pedido.
+    const [formasEnvio, setFormasEnvio] = useState([]);
+    const [formaEnvioId, setFormaEnvioId] = useState(null);
+    useEffect(() => {
+        apiClient.get('/nomenclators/shipping-methods')
+            .then(res => {
+                const lista = res.success ? (res.data || []) : [];
+                setFormasEnvio(lista);
+                // Default: Retiro en el Local (lo más habitual). El cliente puede cambiarlo,
+                // pero el pedido nunca queda sin forma de envío definida.
+                setFormaEnvioId(prev => prev ?? (
+                    lista.find(f => /retiro/i.test(f.Nombre || ''))?.ID ?? lista[0]?.ID ?? null
+                ));
+            })
+            .catch(() => setFormasEnvio([]));
+    }, []);
+
     // Categoría (clasificación física de StockArt: Lonas/Canvas/Vinilos/Cuadros...)
     // — filtra el combo de materiales. Variante · Categoría · Material en una línea.
     const [categoriaFiltro, setCategoriaFiltro] = useState('');
@@ -253,18 +272,73 @@ const OrderForm = ({ serviceId: propServiceId }) => {
 
     // ── Terminaciones por archivo: manera de aplicación (ubicación) + cantidad
     //    SUGERIDA por la regla de la terminación, siempre visible y editable. ──
-    const UBI_LABEL = { ARRIBA: 'Arriba', ABAJO: 'Abajo', ARRIBA_ABAJO: 'Arriba y abajo', COSTADOS: 'Costados', PERIMETRO: 'Perímetro' };
+    const UBI_LABEL = {
+        ARRIBA: 'Arriba', ABAJO: 'Abajo', ARRIBA_ABAJO: 'Arriba y abajo',
+        IZQUIERDA: 'Izquierda', DERECHA: 'Derecha',
+        COSTADOS: 'Ambos costados', PERIMETRO: 'Perímetro'
+    };
 
     const dimsDeItem = (it) => {
         const w = parseFloat(it.printSettings?.finalWidthM) || (it.file?.width ? (it.file.unit === 'meters' ? it.file.width : (it.file.width / 300) * 0.0254) : 0);
         const h = parseFloat(it.printSettings?.finalHeightM) || (it.file?.height ? (it.file.unit === 'meters' ? it.file.height : (it.file.height / 300) * 0.0254) : 0);
         return { w, h };
     };
+
+    // ── PRODUCTO TERMINADO: el arte debe medir lo que dice la ficha del producto ──
+    // Se acepta girado y con el borde (demasía) ya incluido. Tolerancia 2 cm.
+    // Se usa al subir el archivo Y al cambiar de producto (revalida lo ya cargado).
+    const TOL_PT = 0.02;
+    const medidaPTOk = (w, h, ficha) => {
+        if (!ficha || ficha.anchoM == null || ficha.altoM == null || !w || !h) return true;
+        const W = parseFloat(ficha.anchoM), H = parseFloat(ficha.altoM);
+        const b = (parseFloat(ficha.bordeCm) || 0) / 100;
+        const matchea = (ew, eh) => Math.abs(w - ew) <= TOL_PT && Math.abs(h - eh) <= TOL_PT;
+        return matchea(W, H) || matchea(H, W)
+            || (b > 0 && (matchea(W + 2 * b, H + 2 * b) || matchea(H + 2 * b, W + 2 * b)));
+    };
+    const medidaPTTexto = (ficha) => {
+        if (!ficha || ficha.anchoM == null || ficha.altoM == null) return '';
+        const W = parseFloat(ficha.anchoM), H = parseFloat(ficha.altoM);
+        const b = (parseFloat(ficha.bordeCm) || 0) / 100;
+        return `${W.toFixed(2)} x ${H.toFixed(2)} m` +
+            (b > 0 ? ` (o ${(W + 2 * b).toFixed(2)} x ${(H + 2 * b).toFixed(2)} m si el arte ya incluye el borde)` : '');
+    };
+    // Archivos ya cargados que NO cumplen la medida del producto elegido
+    const itemsFueraDeMedida = (!isEcouvPT || !fichaPT) ? [] : items.filter(it => {
+        if (!it.file) return false;
+        const { w, h } = dimsDeItem(it);
+        return w > 0 && h > 0 && !medidaPTOk(w, h, fichaPT);
+    });
+
+    // Al CAMBIAR de producto, revalidar lo que ya estaba cargado (el arte de un cuadro
+    // 1,20x0,80 no sirve para uno de 0,43x0,24).
+    const productoValidadoRef = React.useRef(null);
+    useEffect(() => {
+        if (!isEcouvPT || !fichaPT?.anchoM) { productoValidadoRef.current = null; return; }
+        const clave = `${globalMaterial}|${fichaPT.anchoM}x${fichaPT.altoM}`;
+        if (productoValidadoRef.current === clave) return;   // ya avisado para este producto
+        productoValidadoRef.current = clave;
+        const malos = items.filter(it => {
+            if (!it.file) return false;
+            const { w, h } = dimsDeItem(it);
+            return w > 0 && h > 0 && !medidaPTOk(w, h, fichaPT);
+        });
+        if (malos.length > 0) {
+            actions.setErrorModalMessage(
+                `Cambiaste el producto a "${globalMaterial}", que se imprime a ${medidaPTTexto(fichaPT)}. ` +
+                `${malos.length === 1 ? 'El archivo' : `${malos.length} archivos`} que ya cargaste no mide${malos.length === 1 ? '' : 'n'} esa medida: ` +
+                malos.map(m => { const d = dimsDeItem(m); return `"${m.file?.name}" (${d.w.toFixed(2)} x ${d.h.toFixed(2)} m)`; }).join(', ') +
+                `. Quitalo${malos.length === 1 ? '' : 's'} y subí el arte en la medida del producto, o volvé al producto anterior.`
+            );
+            actions.setErrorModalOpen(true);
+        }
+    }, [isEcouvPT, fichaPT, globalMaterial, items]);
     const tramoM = (ubi, w, h) => {
         switch (ubi) {
             case 'ARRIBA': case 'ABAJO': return w;
             case 'ARRIBA_ABAJO': return w * 2;
-            case 'COSTADOS': return h * 2;
+            case 'IZQUIERDA': case 'DERECHA': return h;   // un solo costado
+            case 'COSTADOS': return h * 2;                // los dos costados
             case 'PERIMETRO': default: return (w + h) * 2;
         }
     };
@@ -682,6 +756,21 @@ const OrderForm = ({ serviceId: propServiceId }) => {
                 }
             }
 
+            // PRODUCTO TERMINADO (ECOUV): el archivo debe medir lo que define la FICHA.
+            // Se acepta girado (ancho x alto ó alto x ancho) y también con el borde
+            // (demasía por lado) ya incluido en el arte. Tolerancia: 2 cm.
+            if (isEcouvPT && fichaPT?.anchoM != null && fichaPT?.altoM != null && result.width && result.height) {
+                const fw = result.unit === 'meters' ? result.width : (result.width / 300) * 0.0254;
+                const fh = result.unit === 'meters' ? result.height : (result.height / 300) * 0.0254;
+                if (!medidaPTOk(fw, fh, fichaPT)) {
+                    actions.setErrorModalMessage(
+                        `El producto "${globalMaterial}" se imprime a ${medidaPTTexto(fichaPT)}, pero tu archivo mide ${fw.toFixed(2)} x ${fh.toFixed(2)} m. Ajustá el arte a la medida del producto y volvé a subirlo.`
+                    );
+                    actions.setErrorModalOpen(true);
+                    return false;
+                }
+            }
+
             // Validación de páginas: NO se permiten archivos con más de 1 página (ningún servicio).
             if (result.pageCount && result.pageCount > 1) {
                 actions.setErrorModalMessage(
@@ -756,6 +845,21 @@ const OrderForm = ({ serviceId: propServiceId }) => {
         const invalidPrintSettings = items.some(it => it.printSettings?.isValid === false);
         if (invalidPrintSettings) {
             return addToast('Hay errores en la configuración de impresión. Revise los items.', 'error');
+        }
+
+        // Forma de envío obligatoria: define cómo recibe el cliente (retiro/encomienda/
+        // domicilio) y viaja a la orden para logística.
+        if (formasEnvio.length > 0 && !formaEnvioId) {
+            return addToast('Elegí la forma de envío: cómo recibís el pedido.', 'error');
+        }
+
+        // PRODUCTO TERMINADO: no se confirma con arte que no mide lo que el producto.
+        // (Puede pasar si el cliente cambió de producto DESPUÉS de subir el archivo.)
+        if (itemsFueraDeMedida.length > 0) {
+            return addToast(
+                `"${globalMaterial}" se imprime a ${medidaPTTexto(fichaPT)}. Corregí los archivos marcados en rojo antes de confirmar.`,
+                'error'
+            );
         }
 
         if (config.hasCuttingWorkflow && moldType === 'MOLDES CLIENTES' && (!tizadaFiles || tizadaFiles.length === 0)) {
@@ -1297,6 +1401,9 @@ const OrderForm = ({ serviceId: propServiceId }) => {
                 prioridad: urgency,
                 notasGenerales: generalNote,
 
+                // Forma de envío elegida (FormasEnvio.ID) — el backend la guarda en Ordenes.ModoRetiro
+                formaEnvioId: formaEnvioId || null,
+
                 // Tinta de impresión (ECOUV) — el backend la guarda en Ordenes.Tinta
                 tinta: (Array.isArray(config.tintaOptions) && tintaSeleccionada) ? tintaSeleccionada : null,
 
@@ -1449,6 +1556,21 @@ const OrderForm = ({ serviceId: propServiceId }) => {
 
                         </div>
 
+                        {/* Forma de envío del pedido (nomenclador FormasEnvio del retiro) */}
+                        {formasEnvio.length > 0 && (
+                            <div>
+                                <p className="block text-sm font-medium text-zinc-400 mb-2">Forma de envío *</p>
+                                <CustomSelect
+                                    name="formaEnvio"
+                                    aria-label="Forma de envío"
+                                    value={formaEnvioId != null ? String(formaEnvioId) : ''}
+                                    onChange={(val) => setFormaEnvioId(val ? parseInt(val, 10) : null)}
+                                    options={formasEnvio.map(f => ({ value: String(f.ID), label: (f.Nombre || '').trim() }))}
+                                    placeholder="¿Cómo recibís el pedido?"
+                                />
+                            </div>
+                        )}
+
                     </div>
                 </GlassCard>
 
@@ -1501,20 +1623,39 @@ const OrderForm = ({ serviceId: propServiceId }) => {
                                 {/* Global Material Selector - Hidden for Bordado and Sublimacion */}
                                 {config.materialMode === 'single' && svcId !== 'bordado' && svcId !== 'emb' && svcId !== 'sublimacion' && (
                                     <div>
-                                        <p className="block text-xs font-bold uppercase text-zinc-400 mb-2">{serviceInfo?.config?.materialLabel || 'Material / Soporte'} *</p>
+                                        <p className="block text-xs font-bold uppercase text-zinc-400 mb-2">{isEcouvPT ? 'Producto' : (serviceInfo?.config?.materialLabel || 'Material / Soporte')} *</p>
                                         <CustomSelect
                                             name="globalMaterial"
-                                            aria-label={serviceInfo?.config?.materialLabel || 'Material / Soporte'}
+                                            aria-label={isEcouvPT ? 'Producto' : (serviceInfo?.config?.materialLabel || 'Material / Soporte')}
                                             value={globalMaterial}
                                             onChange={(val) => actions.setGlobalMaterial(val)}
                                             options={materialesParaSelect.map(m => {
                                                 const val = m.Material || m.Descripcion || m;
                                                 return { value: val, label: val };
                                             })}
-                                            placeholder="Seleccionar Material..."
+                                            placeholder={isEcouvPT ? 'Seleccionar Producto...' : 'Seleccionar Material...'}
                                             variant="black"
                                         />
                                     </div>
+                                )}
+
+                                {/* Producto Terminado: material y tinta de la FICHA, visibles pero NO editables
+                                    (los define el negocio en la ficha del producto, no el cliente). */}
+                                {isEcouvPT && fichaPT && (
+                                    <>
+                                        <div>
+                                            <p className="block text-xs font-bold uppercase text-zinc-400 mb-2">Material de impresión <span className="text-zinc-600 normal-case font-normal">(definido por el producto)</span></p>
+                                            <div className="w-full px-4 py-3 bg-zinc-900/40 border border-zinc-700/40 rounded-[10px] text-sm font-medium text-zinc-400 cursor-not-allowed select-none">
+                                                {fichaPT.materialDescripcion || '— A definir en producción —'}
+                                            </div>
+                                        </div>
+                                        <div>
+                                            <p className="block text-xs font-bold uppercase text-zinc-400 mb-2">Tinta <span className="text-zinc-600 normal-case font-normal">(definida por el producto)</span></p>
+                                            <div className="w-full px-4 py-3 bg-zinc-900/40 border border-zinc-700/40 rounded-[10px] text-sm font-medium text-zinc-400 cursor-not-allowed select-none">
+                                                {fichaPT.tinta || '— A definir en producción —'}
+                                            </div>
+                                        </div>
+                                    </>
                                 )}
 
                                 {/* Tinta de impresión (ECOUV: rutea el lote a la máquina Ecosolvente/UV).
@@ -1558,12 +1699,6 @@ const OrderForm = ({ serviceId: propServiceId }) => {
                                     <div className="flex flex-wrap gap-x-6 gap-y-1 text-xs text-zinc-300">
                                         {(fichaPT.anchoM != null || fichaPT.altoM != null) && (
                                             <span><span className="text-zinc-500 font-bold uppercase text-[10px] mr-1">Medidas:</span>{fichaPT.anchoM ?? '—'} × {fichaPT.altoM ?? '—'} m</span>
-                                        )}
-                                        {fichaPT.materialDescripcion && (
-                                            <span><span className="text-zinc-500 font-bold uppercase text-[10px] mr-1">Se imprime en:</span>{fichaPT.materialDescripcion}</span>
-                                        )}
-                                        {fichaPT.tinta && (
-                                            <span><span className="text-zinc-500 font-bold uppercase text-[10px] mr-1">Tinta:</span>{fichaPT.tinta}</span>
                                         )}
                                     </div>
                                     {(fichaPT.terminacionesIncluidas || []).length > 0 && (
@@ -1841,6 +1976,17 @@ const OrderForm = ({ serviceId: propServiceId }) => {
                                                         </div>
                                                     )}
                                                     <div className={isBlackoutSelected ? "md:col-span-4" : "md:col-span-6"}>
+                                                        {/* Aviso por archivo: el arte no mide lo que el producto elegido */}
+                                                        {itemsFueraDeMedida.some(m => m.id === item.id) && (
+                                                            <div className="mb-3 flex items-start gap-2 bg-red-500/10 border border-red-500/40 rounded-xl px-3 py-2">
+                                                                <AlertTriangle className="text-red-400 shrink-0 mt-0.5" size={16} />
+                                                                <p className="text-[11px] text-red-300 leading-snug">
+                                                                    Este arte mide <strong>{dimsDeItem(item).w.toFixed(2)} x {dimsDeItem(item).h.toFixed(2)} m</strong> y
+                                                                    “{globalMaterial}” se imprime a <strong>{medidaPTTexto(fichaPT)}</strong>.
+                                                                    Subí el arte en la medida del producto para poder confirmar el pedido.
+                                                                </p>
+                                                            </div>
+                                                        )}
                                                         {item.file && item.file.width && (
                                                             <PrintSettingsPanel
                                                                 originalWidthM={item.file.unit === 'meters' ? item.file.width : (item.file.width / 300) * 0.0254}
@@ -1851,7 +1997,8 @@ const OrderForm = ({ serviceId: propServiceId }) => {
                                                                 onCopiesChange={(v) => actions.updateItem(item.id, 'copies', v)}
                                                                 onChange={(s) => actions.updateItem(item.id, 'printSettings', s)}
                                                                 // Medida fija: escalar o raportar cambiaría el tamaño final y rompería la medida exigida.
-                                                                disableScaling={serviceId === 'tpu' || serviceId?.toUpperCase() === 'DF' || itemMatInfo(item).largoFijo > 0}
+                                                                disableScaling={serviceId === 'tpu' || serviceId?.toUpperCase() === 'DF' || itemMatInfo(item).largoFijo > 0 || isEcouvPT}
+                                                                unidadTotal={config.unidadTotal || 'm'}
                                                                 hideRaport={!!config.hideRaport || serviceId === 'directa_320'}
                                                                 hideScale={serviceId === 'directa_320'}
                                                             />
@@ -2165,12 +2312,15 @@ const OrderForm = ({ serviceId: propServiceId }) => {
                             <div><p className="text-[11px] uppercase font-bold text-zinc-500">Servicio</p><p className="text-xl font-bold text-zinc-100">{serviceInfo?.label}</p></div>
                             <div><p className="text-[11px] uppercase font-bold text-zinc-500">Prioridad</p><p className={`text-xl font-bold ${urgency?.toLowerCase() === 'urgente' ? 'text-custom-magenta' : 'text-cyan-400'}`}>{urgency}</p></div>
                             <div><p className="text-[11px] uppercase font-bold text-zinc-500">Items (Total)</p><p className="text-2xl font-black text-zinc-100">{items.length}</p></div>
-                            <div><p className="text-[11px] uppercase font-bold text-zinc-500">Largo Total</p><p className="text-2xl font-black text-cyan-400">{items.reduce((acc, it) => {
+                            {/* Total del pedido: superficie en gran formato (EcoUV cotiza por m²),
+                                metros lineales de rollo en el resto. */}
+                            <div><p className="text-[11px] uppercase font-bold text-zinc-500">{config.unidadTotal === 'm2' ? 'Área Total' : 'Largo Total'}</p><p className="text-2xl font-black text-cyan-400">{items.reduce((acc, it) => {
                                 const h = it.printSettings?.finalHeightM || (it.file?.unit === 'meters' ? it.file?.height : (it.file?.height ? (it.file.height / 300) * 0.0254 : 0)) || 0;
+                                const w = it.printSettings?.finalWidthM || (it.file?.unit === 'meters' ? it.file?.width : (it.file?.width ? (it.file.width / 300) * 0.0254 : 0)) || 0;
                                 // Raport no multiplica por copias (su largo total ya es el resultado); escala/normal sí.
                                 const factorCopias = (it.printSettings?.mode === 'raport') ? 1 : (it.copies || 1);
-                                return acc + (h * factorCopias);
-                            }, 0).toFixed(2)}m</p></div>
+                                return acc + ((config.unidadTotal === 'm2' ? (w * h) : h) * factorCopias);
+                            }, 0).toFixed(2)}{config.unidadTotal === 'm2' ? ' m²' : 'm'}</p></div>
                         </div>
                         <CustomButton type="submit" variant="primary" className="w-full md:w-auto px-14 py-5 !bg-cyan-400 !text-zinc-900 hover:!bg-cyan-300 font-black text-lg rounded-2xl shadow-lg shadow-cyan-500/20" isLoading={loading} icon={Save}>Confirmar Pedido</CustomButton>
                     </div>

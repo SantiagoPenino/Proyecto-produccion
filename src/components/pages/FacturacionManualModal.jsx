@@ -13,6 +13,28 @@ import { getTipoDocName } from '../../utils/tiposDocumento';
 // ID del Consumidor Final genérico (sin cuenta corriente)
 const CONSUMIDOR_FINAL_ID = 2089;
 
+// Determina el modo "Facturar a" de un documento comparando el receptor DGI guardado
+// (DocCli*) contra la ficha del cliente interno (Cli*). 'final' = consumidor final sin
+// identificar, 'tercero' = receptor distinto de la ficha, 'cliente' = el propio cliente.
+const detectarFacturarModo = (src) => {
+  if (!src) return 'cliente';
+  const t = String(src.DocTipo || '').toUpperCase();
+  const esTicket = t.includes('TICKET') && !t.includes('NOTA');
+  const fichaNombre = String(src.CliRazonSocial || src.CliNombreFantasia || '').trim().toUpperCase();
+  const fichaRut    = String(src.CliRUT || '').replace(/\D/g, '');
+  const docNombre   = String(src.DocCliNombre || '').trim().toUpperCase();
+  const docRut      = String(src.DocCliDocumento || '').replace(/\D/g, '');
+  const snapshotVacio = !docNombre && !docRut;
+  if (docNombre === 'CONSUMIDOR FINAL' && !docRut) return 'final';
+  // Un e-Ticket GUARDADO sin receptor (snapshot vacío) es Consumidor Final: NO se hereda la
+  // ficha (si no, al abrirlo a editar aparecería "identificado" con el RUT del cliente y al
+  // guardar se lo convertiría). Es exactamente lo que muestra la previa DGI.
+  if (esTicket && snapshotVacio) return 'final';
+  const esTercero = (!!docNombre && fichaNombre && docNombre !== fichaNombre) ||
+                    (!!docRut && !!fichaRut && docRut !== fichaRut);
+  return esTercero ? 'tercero' : 'cliente';
+};
+
 // Fecha local (no UTC) en formato YYYY-MM-DD para <input type="date">
 const todayStr = () => {
   const d = new Date();
@@ -83,6 +105,12 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
   // Modo "cliente": los campos DGI van bloqueados (espejo de la ficha). Este flag los destraba
   // puntualmente SOLO para corregir la ficha del propio cliente vía el botón "Actualizar".
   const [dgiEditFicha, setDgiEditFicha] = useState(false);
+  // Se pone true cuando el usuario elige el modo "Facturar a" a mano: a partir de ahí el
+  // default automático (e-Ticket → Consumidor Final) deja de pisar su elección.
+  const facturarModoManualRef = useRef(false);
+  // Familia del comprobante en el render anterior ('ticket'|'factura'|'pedido'), para detectar
+  // cuando el operador cambia el TIPO de documento y re-aplicar el default (limpiar RUT viejo).
+  const familiaAnteriorRef = useRef(null);
   // Confirmación grande antes de pisar la ficha real del cliente desde "Actualizar"
   const [confirmActualizarCliente, setConfirmActualizarCliente] = useState(null); // { mensaje, payload }
   const [editDocInfo, setEditDocInfo] = useState(null);
@@ -105,17 +133,12 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
   // "Facturar a": separa DE QUIÉN es la factura a lo interno (CliIdCliente / cuenta corriente)
   // de A QUIÉN se le emite el CFE en DGI (datos DocCli*). 'cliente' = al mismo cliente (campos
   // DGI bloqueados, espejo de la ficha). 'tercero' = a otra empresa (campos editables a mano).
-  const [facturarModo, setFacturarModo] = useState(() => {
-    const src = initialData;
-    if (!src) return 'cliente';
-    const fichaNombre = String(src.CliRazonSocial || src.CliNombreFantasia || '').trim().toUpperCase();
-    const fichaRut    = String(src.CliRUT || '').replace(/\D/g, '');
-    const docNombre   = String(src.DocCliNombre || '').trim().toUpperCase();
-    const docRut      = String(src.DocCliDocumento || '').replace(/\D/g, '');
-    const esTercero = (!!docNombre && fichaNombre && docNombre !== fichaNombre) ||
-                      (!!docRut && !!fichaRut && docRut !== fichaRut);
-    return esTercero ? 'tercero' : 'cliente';
-  });
+  // Al EDITAR arranca en 'cargando' (sentinela): así, mientras se trae el documento, el efecto
+  // de sync NO rellena los datos DGI desde la ficha (evita la carrera que dejaba el CI cargado
+  // y el modo en 'cliente' antes de que la detección lo pusiera en 'final'). Al terminar la carga,
+  // cargarDocParaEditar setea el modo real. Para documentos nuevos/copia, se detecta normalmente.
+  const [facturarModo, setFacturarModo] = useState(() =>
+    (mode === 'editar' || editDocId) ? 'cargando' : detectarFacturarModo(initialData));
   const [notas, setNotas] = useState('');
   const [monedaOp, setMonedaOp] = useState('UYU'); // moneda de la operación
   const [articuloSearch, setArticuloSearch] = useState({}); // { [lineId]: string } búsqueda por línea
@@ -312,29 +335,36 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
         });
         // Sincronizar monedaOp ANTES de setFormData para que el useEffect no lo sobreescriba
         setMonedaOp(d.MonIdMoneda === 2 ? 'USD' : 'UYU');
+        // La CARGA es la ÚNICA autoridad de los datos DGI al editar (el efecto de sync NO los
+        // toca en edición, ver abajo), para que nada los pise después. Se hidratan según el modo:
+        //   'final'   → Consumidor Final, sin documento (lo que muestra la previa DGI).
+        //   'cliente' → identificado con los datos de la FICHA (nombre/RUT/dirección del cliente).
+        //   'tercero' → el snapshot guardado en el documento (receptor ajeno).
+        const modoDetectado = detectarFacturarModo(d);
+        setFacturarModo(modoDetectado);
         setFormData(prev => ({
           ...prev,
           DocTipo: d.DocTipo || '',
           MonIdMoneda: d.MonIdMoneda || 1,
           CliIdCliente: d.CliIdCliente ? String(d.CliIdCliente) : '',
-          DocCliNombre: d.DocCliNombre || d.CliRazonSocial || d.CliNombreFantasia || 'Consumidor Final',
+          DocCliNombre:
+            modoDetectado === 'final'   ? 'Consumidor Final'
+          : modoDetectado === 'cliente' ? (d.DocCliNombre || d.CliRazonSocial || d.CliNombreFantasia || '')
+          :                               (d.DocCliNombre || ''),
           DocCliNombreFantasia: d.DocCliNombreFantasia || '',
-          DocCliDocumento: d.DocCliDocumento || d.CliRUT || '',
-          DocCliDireccion: d.DocCliDireccion || d.CliDireccion || '',
-          DocCliCiudad: d.DocCliCiudad || '',
+          DocCliDocumento:
+            modoDetectado === 'final'   ? ''
+          : modoDetectado === 'cliente' ? (d.DocCliDocumento || d.CliRUT || '')
+          :                               (d.DocCliDocumento || ''),
+          DocCliDireccion:
+            modoDetectado === 'final'   ? ''
+          : modoDetectado === 'cliente' ? (d.DocCliDireccion || d.CliDireccion || '')
+          :                               (d.DocCliDireccion || ''),
+          DocCliCiudad: modoDetectado === 'final' ? '' : (d.DocCliCiudad || ''),
           DocPagado: isContado,
           DocFechaEmision: toDateInputStr(d.DocFechaEmision),
           Lineas: lineasMapeadas.length > 0 ? lineasMapeadas : prev.Lineas
         }));
-        // Detectar "Facturar a un tercero": si el receptor DGI guardado en el documento
-        // difiere de la ficha del cliente interno (nombre o RUT), se emitió a un tercero.
-        const fichaNombre = String(d.CliRazonSocial || d.CliNombreFantasia || '').trim().toUpperCase();
-        const fichaRut    = String(d.CliRUT || '').replace(/\D/g, '');
-        const docNombre   = String(d.DocCliNombre || '').trim().toUpperCase();
-        const docRut      = String(d.DocCliDocumento || '').replace(/\D/g, '');
-        const esTercero = (!!docNombre && fichaNombre && docNombre !== fichaNombre) ||
-                          (!!docRut && !!fichaRut && docRut !== fichaRut);
-        setFacturarModo(esTercero ? 'tercero' : 'cliente');
       } catch (err) {
         toast.error('Error cargando documento: ' + (err.response?.data?.error || err.message));
       } finally {
@@ -359,6 +389,15 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
     const docTipo = resolverDocTipo(tiposDocs, tipoCliente, formaPago);
     const esContado = formaPago === 'CONTADO';
     setFormData(prev => ({ ...prev, DocTipo: docTipo, DocPagado: esContado }));
+    // Si cambió la FAMILIA (ticket <-> factura), reabrir el default automático para que un
+    // e-Factura que pasa a e-Ticket NO se quede con el RUT/receptor viejo (y viceversa).
+    // No aplica al editar/copiar (ese flujo respeta lo guardado).
+    const familia = tipoCliente === 'RUT' ? 'factura' : tipoCliente === 'PEDIDO_CAJA' ? 'pedido' : 'ticket';
+    if (mode !== 'editar' && !editDocId && !initialData &&
+        familiaAnteriorRef.current !== null && familiaAnteriorRef.current !== familia) {
+      facturarModoManualRef.current = false; // deja que el efecto de default limpie/re-aplique
+    }
+    familiaAnteriorRef.current = familia;
   }, [tiposDocs, tipoCliente, formaPago]);
 
   // NOTA: un Pedido Caja puede ir a CRÉDITO (no se fuerza CONTADO).
@@ -376,14 +415,16 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
   // Sincronizar info del cliente seleccionado al iniciar (por ej. al copiar o editar)
   useEffect(() => {
     if (clientes.length === 0 || !formData.CliIdCliente) return;
-    const c = clientes.find(item => String(item.CodCliente || item.CliIdCliente) === String(formData.CliIdCliente));
+    const c = clientes.find(item => (String(item.CliIdCliente) === String(formData.CliIdCliente) || String(item.CodCliente) === String(formData.CliIdCliente)));
     if (c) {
       const idNumerico = c.CliIdCliente ? parseInt(c.CliIdCliente) : null;
       setClienteIdNumerico(idNumerico);
 
-      // En modo "tercero" el receptor DGI es independiente del cliente interno: NO se tocan
-      // los datos DocCli* (los escribe el usuario a mano). Solo se resuelve la billetera de arriba.
-      if (facturarModo === 'tercero') return;
+      // Solo en modo "cliente" los datos DGI son espejo de la ficha. En "tercero"/"final" el
+      // receptor es independiente del cliente interno y NO se toca (solo se resuelve la billetera).
+      // Nota: los rellenos usan `prev.X || ficha`, así que si la carga ya puso los datos, no los
+      // pisa; y en 'final'/'tercero' corta acá. Sirve para el caso de cambiar a e-Factura al editar.
+      if (facturarModo !== 'cliente') return;
 
       setFormData(prev => {
         let deptoNombre = '';
@@ -402,10 +443,20 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
     }
   }, [clientes, formData.CliIdCliente, departamentos, facturarModo]);
 
+  // Regla DURA de DGI: una e-Factura NO puede ser Consumidor Final (necesita RUT). Si el
+  // documento es (o pasa a ser) e-Factura estando en modo 'final', se pasa a 'El cliente' para
+  // identificar al receptor. Aplica SIEMPRE (también al editar), no es un default opcional.
+  useEffect(() => {
+    const lbl = ((tiposDocs.find(t => String(t.value) === String(formData.DocTipo))?.label) || String(formData.DocTipo || '')).toUpperCase();
+    const esFactura = lbl.includes('FACTURA') && !lbl.includes('NOTA');
+    if (esFactura && facturarModo === 'final') setFacturarModo('cliente');
+  }, [formData.DocTipo, tiposDocs, facturarModo]);
+
   // Cambiar "Facturar a": al volver a "el cliente" se re-sincroniza la ficha (espejo);
   // al pasar a "un tercero" se limpian los campos DGI para que se escriban a mano.
   const handleFacturarModo = (modo) => {
     if (modo === facturarModo) return;
+    facturarModoManualRef.current = true; // el usuario decidió: no auto-cambiar más
     setFacturarModo(modo);
     setDgiEditFicha(false);
     if (modo === 'tercero') {
@@ -417,9 +468,19 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
         DocCliDireccion: '',
         DocCliCiudad: ''
       }));
+    } else if (modo === 'final') {
+      // Consumidor final: sin receptor identificado. Nombre genérico, sin RUT.
+      setFormData(prev => ({
+        ...prev,
+        DocCliNombre: 'Consumidor Final',
+        DocCliNombreFantasia: '',
+        DocCliDocumento: '',
+        DocCliDireccion: '',
+        DocCliCiudad: prev.DocCliCiudad || 'Montevideo'
+      }));
     } else {
       // modo 'cliente': repoblar desde la ficha del cliente interno seleccionado
-      const c = clientes.find(item => String(item.CodCliente || item.CliIdCliente) === String(formData.CliIdCliente));
+      const c = clientes.find(item => (String(item.CliIdCliente) === String(formData.CliIdCliente) || String(item.CodCliente) === String(formData.CliIdCliente)));
       let deptoNombre = '';
       if (c && c.DepartamentoID && departamentos.length > 0) {
         const found = departamentos.find(d => d.ID === c.DepartamentoID || d.id === c.DepartamentoID);
@@ -435,6 +496,33 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
       }));
     }
   };
+
+  // Default por tipo en documentos NUEVOS: un e-Ticket nace como Consumidor Final (B2C, sin
+  // receptor identificado); una e-Factura nace identificando al cliente. Se respeta la elección
+  // manual del usuario (facturarModoManualRef) y no aplica al editar/copiar.
+  useEffect(() => {
+    if (mode === 'editar' || editDocId || initialData) return;
+    if (facturarModoManualRef.current) return;
+    if (tiposDocs.length === 0) return;
+    const lbl = (tiposDocs.find(t => String(t.value) === String(formData.DocTipo))?.label || String(formData.DocTipo || '')).toUpperCase();
+    const esNota = lbl.includes('NOTA');
+    const esTicket = lbl.includes('TICKET') && !esNota;
+    const esFactura = lbl.includes('FACTURA') && !esNota;
+    if (esTicket && facturarModo !== 'final') {
+      setFacturarModo('final');
+      setFormData(prev => ({
+        ...prev,
+        DocCliNombre: 'Consumidor Final',
+        DocCliNombreFantasia: '',
+        DocCliDocumento: '',
+        DocCliDireccion: '',
+        DocCliCiudad: prev.DocCliCiudad || 'Montevideo'
+      }));
+    } else if (esFactura && facturarModo === 'final') {
+      // Una e-Factura no puede ir como consumidor final → identificar al cliente
+      setFacturarModo('cliente');
+    }
+  }, [formData.DocTipo, tiposDocs, mode, editDocId]);
 
   // Calcular totales
   const totales = useMemo(() => {
@@ -508,7 +596,7 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
   const fetchData = async () => {
     try {
       const [resClientes, resNomencladores, resDepartamentos, resArticulos, resMetodosPago, resCotizacion, resConfigDGI] = await Promise.all([
-        api.get('/clients'),
+        api.get('/clients?light=1'), // modo liviano (sin JOINs de catálogo): carga mucho más rápido
         api.get('/contabilidad/cfe/nomencladores'),
         api.get('/nomenclators/departments').catch(() => ({ data: { success: false, data: [] } })),
         api.get('/contabilidad/articulos').catch(() => ({ data: { success: false, data: [] } })),
@@ -535,7 +623,10 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
         const tDocs = resNomencladores.data.tiposDocumentos || [];
         setTiposDocs(tDocs);
         setMonedas(resNomencladores.data.monedas || []);
-        if (tDocs.length > 0 && !initialData) {
+        // Default del tipo SOLO para documentos nuevos (no edición ni copia). Al editar, el tipo
+        // lo pone la carga del documento; si acá se pisara con tDocs[0] (que es "E-Factura"), por
+        // un instante el doc "sería" e-Factura y el guard lo sacaría de Consumidor Final a El Cliente.
+        if (tDocs.length > 0 && !initialData && mode !== 'editar' && !editDocId) {
           setFormData(prev => ({ ...prev, DocTipo: tDocs[0].value }));
         }
       }
@@ -622,7 +713,7 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
       return;
     }
     
-    const c = clientes.find(item => String(item.CodCliente || item.CliIdCliente) === String(val));
+    const c = clientes.find(item => String(item.CliIdCliente) === String(val) || String(item.CodCliente) === String(val));
     if (c) {
       // Guardar el ID numérico real (CliIdCliente entero) para endpoints de cuentas
       const idNumerico = c.CliIdCliente ? parseInt(c.CliIdCliente) : null;
@@ -641,9 +732,9 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
             }
           });
         }, 100);
-        // En modo "tercero" el receptor DGI lo escribe el usuario: cambiar el cliente interno
-        // (quién paga) NO debe pisar esos datos. Solo se actualiza CliIdCliente.
-        if (facturarModo === 'tercero') {
+        // En "tercero"/"final" el receptor DGI es independiente del cliente interno: cambiar
+        // quién paga NO debe pisar esos datos. Solo se actualiza CliIdCliente.
+        if (facturarModo !== 'cliente') {
           return { ...prev, CliIdCliente: idNumerico || val };
         }
         return {
@@ -679,7 +770,7 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
       toast.error('Debe seleccionar un cliente en la lista primero para restablecer sus datos');
       return;
     }
-    const c = clientes.find(item => String(item.CodCliente || item.CliIdCliente) === String(formData.CliIdCliente));
+    const c = clientes.find(item => (String(item.CliIdCliente) === String(formData.CliIdCliente) || String(item.CodCliente) === String(formData.CliIdCliente)));
     if (c) {
       let deptoNombre = '';
       if (c.DepartamentoID && departamentos.length > 0) {
@@ -719,7 +810,7 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
 
     // Ficha ACTUAL del cliente (tal como se cargó la lista al abrir el modal),
     // para mostrar el cambio real antes de pisarla.
-    const clienteActual = clientes.find(item => String(item.CodCliente || item.CliIdCliente) === String(formData.CliIdCliente));
+    const clienteActual = clientes.find(item => (String(item.CliIdCliente) === String(formData.CliIdCliente) || String(item.CodCliente) === String(formData.CliIdCliente)));
     const nombreFantasiaTrim = (formData.DocCliNombreFantasia || '').trim();
 
     const cambios = [];
@@ -1100,8 +1191,37 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
 
   // Campos DGI bloqueados: en modo "cliente" son espejo de la ficha (salvo que se destrabe
   // "Corregir ficha"). En modo "tercero" siempre editables.
-  const dgiLocked = facturarModo === 'cliente' && !dgiEditFicha;
+  const dgiLocked = (facturarModo === 'cliente' && !dgiEditFicha) || facturarModo === 'final';
   const dgiInputCls = (base) => `${base} ${dgiLocked ? 'bg-zinc-100 text-zinc-500 cursor-not-allowed border-zinc-200' : 'bg-white text-zinc-800 border-zinc-200 focus:border-indigo-500'}`;
+
+  // Cliente INTERNO (dueño de la cuenta / cobro), separado del receptor DGI (DocCliNombre).
+  // La tarjeta "Seleccionar Cliente" debe mostrar SU nombre real, no lo escrito para el tercero.
+  // Match robusto: formData.CliIdCliente guarda el CliIdCliente (no el CodCliente), pero algunos
+  // flujos usan CodCliente. Se busca por cualquiera de los dos para no fallar (antes mostraba "Cliente").
+  const clienteInterno = clientes.find(item =>
+    String(item.CliIdCliente) === String(formData.CliIdCliente) ||
+    String(item.CodCliente)  === String(formData.CliIdCliente));
+  // Nombre a mostrar: si el Nombre registrado es trivial (1-2 letras, ej. "M"), se usa la
+  // fantasía, que suele ser el nombre real (ej. "silvana arrigorria").
+  const _cliNom = String(clienteInterno?.Nombre || '').trim();
+  const _cliFan = String(clienteInterno?.NombreFantasia || '').trim();
+  const clienteInternoNombre = clienteInterno ? ((_cliNom.length > 2 ? _cliNom : (_cliFan || _cliNom)) || 'Cliente') : 'Cliente';
+  // Documento del cliente interno con la etiqueta correcta: 12 dígitos = RUT, si no = CI.
+  const _cliDocDig = String(clienteInterno?.CioRuc || '').replace(/\D/g, '');
+  const clienteInternoDocTxt = clienteInterno?.CioRuc
+    ? `${_cliDocDig.length === 12 ? 'RUT' : 'CI'} ${String(clienteInterno.CioRuc).trim()}`
+    : '';
+
+  // CFE que realmente saldrá, según el TIPO de documento elegido + el receptor cargado.
+  // (La familia la manda el DocTipo, no el RUT: un e-Ticket con RUT NO se eleva solo.)
+  const _docTipoLabelC = ((tiposDocs.find(t => String(t.value) === String(formData.DocTipo))?.label) || String(formData.DocTipo || '')).toUpperCase();
+  const esFacturaDoc = _docTipoLabelC.includes('FACTURA') && !_docTipoLabelC.includes('NOTA');
+  const esTicketDoc  = _docTipoLabelC.includes('TICKET')  && !_docTipoLabelC.includes('NOTA');
+  const _recDigC = String(formData.DocCliDocumento || '').replace(/\D/g, '');
+  const receptorEsRUT = _recDigC.length === 12;
+  const cfeQueSale = esFacturaDoc ? 'e-Factura (111)' : esTicketDoc ? 'e-Ticket (101)' : '';
+  // Incoherencia típica: e-Ticket con un RUT de empresa → debería ser e-Factura.
+  const ticketConRUT = esTicketDoc && receptorEsRUT && facturarModo !== 'final';
 
   return (
     <div className="fixed inset-0 z-[9999] bg-zinc-100 flex flex-col w-screen h-screen overflow-hidden animate-in fade-in select-none">
@@ -1318,10 +1438,10 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
                       </div>
                       <div>
                         <p className="text-zinc-800 text-sm font-black leading-tight truncate max-w-[180px]">
-                          {formData.DocCliNombre || 'Cliente'}
+                          {clienteInternoNombre}
                         </p>
                         <p className="text-[9px] text-zinc-400 font-bold uppercase tracking-wider font-mono mt-0.5">
-                          ID: {formData.CliIdCliente}
+                          ID: {formData.CliIdCliente}{clienteInternoDocTxt ? ` · ${clienteInternoDocTxt}` : ''}
                         </p>
                       </div>
                     </div>
@@ -1339,7 +1459,7 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
               {clienteIdNumerico && clienteIdNumerico !== CONSUMIDOR_FINAL_ID && (
                 <ClienteBilletera
                   clienteId={clienteIdNumerico}
-                  clienteNombre={formData.DocCliNombre}
+                  clienteNombre={clienteInternoNombre}
                 />
               )}
             </div>
@@ -1352,15 +1472,24 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
               <div className="flex bg-zinc-100 border border-zinc-200 rounded-lg p-0.5 gap-0.5">
                 <button
                   type="button"
-                  onClick={() => handleFacturarModo('cliente')}
-                  className={`flex-1 px-2 py-1.5 text-[9px] font-black rounded-md transition-all ${facturarModo === 'cliente' ? 'bg-white text-indigo-700 shadow-sm ring-1 ring-indigo-200' : 'text-zinc-500 hover:text-zinc-700'}`}
+                  onClick={() => handleFacturarModo('final')}
+                  disabled={esFacturaDoc}
+                  title={esFacturaDoc ? 'Una e-Factura no puede ser Consumidor Final: necesita RUT. Cambiá el tipo a e-Ticket para consumidor final.' : ''}
+                  className={`flex-1 px-1.5 py-1.5 text-[9px] font-black rounded-md transition-all leading-tight ${facturarModo === 'final' ? 'bg-white text-purple-700 shadow-sm ring-1 ring-purple-200' : 'text-zinc-500 hover:text-zinc-700'} ${esFacturaDoc ? 'opacity-40 cursor-not-allowed' : ''}`}
                 >
-                  🧑 El cliente seleccionado
+                  🧾 Consumidor final
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleFacturarModo('cliente')}
+                  className={`flex-1 px-1.5 py-1.5 text-[9px] font-black rounded-md transition-all leading-tight ${facturarModo === 'cliente' ? 'bg-white text-indigo-700 shadow-sm ring-1 ring-indigo-200' : 'text-zinc-500 hover:text-zinc-700'}`}
+                >
+                  🧑 El cliente
                 </button>
                 <button
                   type="button"
                   onClick={() => handleFacturarModo('tercero')}
-                  className={`flex-1 px-2 py-1.5 text-[9px] font-black rounded-md transition-all ${facturarModo === 'tercero' ? 'bg-white text-amber-700 shadow-sm ring-1 ring-amber-200' : 'text-zinc-500 hover:text-zinc-700'}`}
+                  className={`flex-1 px-1.5 py-1.5 text-[9px] font-black rounded-md transition-all leading-tight ${facturarModo === 'tercero' ? 'bg-white text-amber-700 shadow-sm ring-1 ring-amber-200' : 'text-zinc-500 hover:text-zinc-700'}`}
                 >
                   🏢 Un tercero
                 </button>
@@ -1371,28 +1500,21 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
                 <span className="text-[8px] font-bold text-zinc-400 px-1">
                   {facturarModo === 'cliente'
                     ? (dgiEditFicha ? 'Editando la ficha del cliente' : 'Datos tomados de la ficha del cliente')
-                    : 'Escribí los datos DGI del tercero'}
+                    : facturarModo === 'tercero'
+                      ? 'Escribí los datos DGI del tercero'
+                      : 'Sin receptor identificado (e-Ticket)'}
                 </span>
                 <div className="flex items-center gap-1.5">
                   {facturarModo === 'tercero' && (
-                    <>
-                      <button
-                        type="button"
-                        onClick={handleSetConsumidorFinal}
-                        className="px-2 py-0.5 rounded text-[8px] font-black uppercase tracking-wider text-purple-700 bg-purple-50 border border-purple-200 hover:bg-purple-100 cursor-pointer"
-                      >
-                        Cons. Final
-                      </button>
-                      <button
-                        type="button"
-                        onClick={handleRestoreFichaCliente}
-                        disabled={!formData.CliIdCliente}
-                        title="Copiar los datos de la ficha del cliente como punto de partida"
-                        className="px-2 py-0.5 rounded text-[8px] font-black uppercase tracking-wider text-emerald-700 bg-emerald-50 border border-emerald-200 hover:bg-emerald-100 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
-                      >
-                        Copiar del cliente
-                      </button>
-                    </>
+                    <button
+                      type="button"
+                      onClick={handleRestoreFichaCliente}
+                      disabled={!formData.CliIdCliente}
+                      title="Copiar los datos de la ficha del cliente como punto de partida"
+                      className="px-2 py-0.5 rounded text-[8px] font-black uppercase tracking-wider text-emerald-700 bg-emerald-50 border border-emerald-200 hover:bg-emerald-100 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                    >
+                      Copiar del cliente
+                    </button>
                   )}
                   {facturarModo === 'cliente' && formData.CliIdCliente && Number(formData.CliIdCliente) > 1 && (
                     dgiEditFicha ? (
@@ -1428,16 +1550,36 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
               </div>
 
               {/* Cartel: a quién le llega el CFE de verdad */}
-              <div className={`rounded-lg px-2.5 py-1.5 border text-[10px] font-bold leading-tight ${facturarModo === 'tercero' ? 'bg-amber-50 border-amber-200 text-amber-800' : 'bg-indigo-50 border-indigo-200 text-indigo-800'}`}>
-                🧾 Se emitirá a DGI a nombre de:{' '}
-                <span className="font-black">{(formData.DocCliNombre || '').trim() || '(sin nombre)'}</span>
-                {(formData.DocCliDocumento || '').trim() && <> · RUT/CI {formData.DocCliDocumento.trim()}</>}
-                {facturarModo === 'tercero' && formData.CliIdCliente && (
+              <div className={`rounded-lg px-2.5 py-1.5 border text-[10px] font-bold leading-tight ${facturarModo === 'tercero' ? 'bg-amber-50 border-amber-200 text-amber-800' : facturarModo === 'final' ? 'bg-purple-50 border-purple-200 text-purple-800' : 'bg-indigo-50 border-indigo-200 text-indigo-800'}`}>
+                {facturarModo === 'final' ? (
+                  <>🧾 Se emitirá como <span className="font-black">{cfeQueSale || 'e-Ticket'}</span> a <span className="font-black">Consumidor Final</span> (sin RUT/CI)</>
+                ) : (
+                  <>
+                    🧾 Se emitirá como <span className="font-black">{cfeQueSale || '—'}</span> a nombre de:{' '}
+                    <span className="font-black">{(formData.DocCliNombre || '').trim() || '(sin nombre)'}</span>
+                    {(formData.DocCliDocumento || '').trim() && <> · {receptorEsRUT ? 'RUT' : 'CI'} {formData.DocCliDocumento.trim()}</>}
+                  </>
+                )}
+                {(facturarModo === 'tercero' || facturarModo === 'final') && formData.CliIdCliente && Number(formData.CliIdCliente) !== CONSUMIDOR_FINAL_ID && (
                   <div className="text-[9px] font-semibold text-zinc-500 mt-0.5">
                     (La cuenta / cobro quedan a nombre del cliente interno seleccionado)
                   </div>
                 )}
               </div>
+
+              {/* Alerta de incoherencia: RUT (empresa) cargado en un e-Ticket → debería ser e-Factura */}
+              {ticketConRUT && (
+                <div className="rounded-lg px-2.5 py-2 border border-rose-300 bg-rose-50 text-rose-800 text-[10px] font-bold leading-snug flex flex-col gap-1.5">
+                  <span>⚠️ Cargaste un <b>RUT</b> (empresa) en un <b>e-Ticket</b>. Un receptor con RUT corresponde a una <b>e-Factura</b>. El e-Ticket saldría 101 identificado con ese RUT, que no es lo habitual.</span>
+                  <button
+                    type="button"
+                    onClick={() => { setTipoCliente('RUT'); }}
+                    className="self-start px-2.5 py-1 rounded-md text-[9px] font-black uppercase tracking-wider text-white bg-rose-600 hover:bg-rose-700 cursor-pointer"
+                  >
+                    Cambiar a E-Factura
+                  </button>
+                </div>
+              )}
 
               <div className="flex flex-col gap-2 mt-1">
                 <div>
@@ -1593,9 +1735,14 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
                         const subtotalConIva = qty * price * (1 - descPctLinea / 100);
                         const subtotalNeto = subtotalConIva / (1 + ivaRate / 100);
                         const searchTerm = articuloSearch[line.id] !== undefined ? articuloSearch[line.id] : line.concepto;
-                        const artFiltered = searchTerm.length > 0
-                          ? articulos.filter(a => a.NombreArticulo?.toLowerCase().includes(searchTerm.toLowerCase())).slice(0, 12)
-                          : articulos.slice(0, 12);
+                        // Solo se filtra la lista de artículos cuando el dropdown de ESTA línea está
+                        // abierto. Antes se recalculaba articulos.filter() por cada línea en cada
+                        // render (incluso al tipear en otros campos), lo que generaba lag.
+                        const artFiltered = !articuloOpen[line.id]
+                          ? []
+                          : searchTerm.length > 0
+                            ? articulos.filter(a => a.NombreArticulo?.toLowerCase().includes(searchTerm.toLowerCase())).slice(0, 12)
+                            : articulos.slice(0, 12);
 
                         return (
                           <tr key={line.id} className="hover:bg-zinc-50/50 align-top">

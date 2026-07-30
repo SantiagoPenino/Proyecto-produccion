@@ -6,12 +6,24 @@ const fmt = (n) => Number(n || 0).toLocaleString('es-UY', { minimumFractionDigit
 
 // Qué significa cada código de CFE ante la DGI, en criollo.
 const EXPLICA_CFE = {
-    101: 'Venta a consumidor final. SUMA ventas e IVA.',
+    101: 'e-Ticket. SUMA ventas e IVA.',
     111: 'Venta a empresa con RUT. SUMA ventas e IVA.',
     102: 'Devuelve/anula un e-Ticket. RESTA ventas e IVA.',
     112: 'Devuelve/anula una e-Factura. RESTA ventas e IVA.',
     103: 'Cobra de más sobre un e-Ticket. SUMA ventas e IVA.',
     113: 'Cobra de más sobre una e-Factura. SUMA ventas e IVA.',
+};
+
+// El 101 puede ir a consumidor final (sin receptor) o con comprador identificado (con receptor).
+// El texto se decide por lo que REALMENTE lleva el CFE, no por el tipo a secas — así no se
+// contradice con el bloque Receptor de abajo.
+const explicaCfe = (tipoCFE, tieneReceptor) => {
+    if (tipoCFE === 101) {
+        return tieneReceptor
+            ? 'e-Ticket con comprador IDENTIFICADO: su documento viaja a DGI. SUMA ventas e IVA.'
+            : 'e-Ticket a CONSUMIDOR FINAL: no se identifica al comprador. SUMA ventas e IVA.';
+    }
+    return EXPLICA_CFE[tipoCFE] || '';
 };
 
 const Fila = ({ label, children }) => (
@@ -94,7 +106,7 @@ export default function CfePreviewDgiModal({ doc, onClose, onConfirmarEnvio, env
                                     {data.cfe.tipoCFE} — {data.cfe.nombre}
                                 </div>
                                 <div className="text-sm text-gray-700 mt-1">
-                                    {EXPLICA_CFE[data.cfe.tipoCFE] || ''}
+                                    {explicaCfe(data.cfe.tipoCFE, !!data.receptor)}
                                 </div>
                                 <div className="text-xs text-gray-500 mt-2">
                                     Tipo guardado en el sistema: <code className="bg-white px-1 rounded border">{data.documento.docTipo}</code>

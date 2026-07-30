@@ -29,6 +29,11 @@ class ERPSyncService {
                        -- Suma de copias de los archivos (piezas): se usa para cotizar por cantidad los
                        -- artículos por unidad (UniIdUnidad=1) de Sublimación, ej. banderas confeccionadas.
                        (SELECT ISNULL(SUM(Copias), 0) FROM ArchivosOrden WHERE OrdenID = O.OrdenID) as SumaCopias,
+                       -- Metros REALES de impresión (m² o ml según el área): tope de lo que se
+                       -- cotiza como material, para que una Magnitud contaminada con unidades
+                       -- de servicios no infle el cobro.
+                       (SELECT ISNULL(SUM(ISNULL(Metros, 0) * ISNULL(Copias, 1)), 0) FROM ArchivosOrden
+                         WHERE OrdenID = O.OrdenID AND ISNULL(EstadoArchivo, '') <> 'CANCELADO') as MetrosArchivos,
                        C.CliIdCliente as Cli_CliIdCliente,
                        C.IDReact as Cli_IDReact
                 FROM Ordenes O
@@ -78,6 +83,14 @@ class ERPSyncService {
                     continue;
                 }
 
+                // Hermanas TERMINAC (XEUV-): contenedoras operativas de las terminaciones,
+                // NO generan línea de cotización. El precio ya viaja en la orden ECOUV:
+                // producto terminado = precio único cerrado (terminaciones incluidas);
+                // terminaciones elegidas por el cliente = líneas de ServiciosExtraOrden.
+                if ((sib.AreaID || '').toString().trim().toUpperCase() === 'TERMINAC') {
+                    continue;
+                }
+
                 // Resolver Magnitud
                 const magStr = sib.Magnitud || '';
                 let magVal = 0;
@@ -85,6 +98,18 @@ class ERPSyncService {
                 else {
                     const m = magStr.toString().match(/[\d\.]+/);
                     if (m) magVal = parseFloat(m[0]);
+                }
+
+                // BLINDAJE: lo que se cotiza como material impreso son los METROS de los
+                // archivos, nunca una magnitud contaminada con unidades de servicios
+                // (ojales, soldaduras). Hubo órdenes guardadas con Magnitud = m² + cantidad
+                // de terminaciones (3,32 + 11 = 14,32) y el material se cobraba 4× de más.
+                // Los servicios ya se cotizan aparte, más abajo, con su propia cantidad.
+                const umEsMetros = String(sib.UM || '').trim().toLowerCase().startsWith('m');
+                const metrosReales = parseFloat(sib.MetrosArchivos) || 0;
+                if (!quantityOverride && umEsMetros && metrosReales > 0 && magVal > metrosReales + 0.01) {
+                    logger.warn(`[ERPSync] ${sib.CodigoOrden}: Magnitud ${magVal} > metros de archivos ${metrosReales} — se cotiza por los metros (la magnitud venía contaminada con cantidades de servicios).`);
+                    magVal = metrosReales;
                 }
 
                 // APLICAR OVERRIDE DE CANTIDAD SI EXISTE

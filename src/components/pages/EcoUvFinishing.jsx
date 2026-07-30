@@ -1,11 +1,20 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import api from '../../services/api';
 import { toast } from 'sonner';
+import { printLabelsHelper } from '../../utils/printHelper';
 
-const EcoUvFinishing = () => {
+// fase 'trabajo' (Bandeja): órdenes con Material Recibido / En Terminaciones — marcar la
+//   primera terminación pasa la orden a 'En Terminaciones'; "Finalizar Tarea" la manda a
+//   'Control y Calidad' (como el fin de lote de las demás áreas).
+// fase 'control' (Control): órdenes en 'Control y Calidad' — "Aprobar Control" etiqueta el
+//   producto terminado en la orden de impresión y cierra la orden de terminaciones.
+const EcoUvFinishing = ({ fase = 'trabajo' }) => {
+    const esControl = fase === 'control';
     const [documents, setDocuments] = useState([]);
     const [selectedDocId, setSelectedDocId] = useState(null); // Usar ID, no objeto
     const [loading, setLoading] = useState(false);
+    // Bultos físicos que salen de terminaciones por orden (ej. 3 cuadros por separado)
+    const [bultosPorOrden, setBultosPorOrden] = useState({});
 
     // Cache de detalles: { ordenId: [items] }
     const [ordersDetails, setOrdersDetails] = useState({});
@@ -18,7 +27,7 @@ const EcoUvFinishing = () => {
         // No setear loading global si ya hay datos (para evitar parpadeo en polling)
         // setLoading(true);
         try {
-            const { data } = await api.get('/finishing/orders');
+            const { data } = await api.get(`/finishing/orders?fase=${fase}`);
             setDocuments(data);
             // Ya no tocamos selectedDoc aquí
         } catch (error) {
@@ -27,7 +36,7 @@ const EcoUvFinishing = () => {
         } finally {
             // setLoading(false);
         }
-    }, []);
+    }, [fase]);
 
     useEffect(() => {
         setLoading(true);
@@ -54,7 +63,8 @@ const EcoUvFinishing = () => {
                     const rawExtras = res.data.extras || [];
                     newDetails[ord.OrdenID] = {
                         extras: rawExtras.filter(ex => (ex.Observacion || '') !== 'Terminación por archivo (WebOrder)'),
-                        terminaciones: res.data.terminaciones || []
+                        terminaciones: res.data.terminaciones || [],
+                        archivos: res.data.archivos || []   // conteo de copias por archivo (Control)
                     };
                 }));
                 setOrdersDetails(newDetails);
@@ -122,16 +132,54 @@ const EcoUvFinishing = () => {
         }
     };
 
-    // Finalizar Orden Específica
+    // Copias controladas en el Control de terminaciones, POR ARCHIVO (como el conteo
+    // del control de lotes): 3 del arte A, 5 del arte B. El backend clampa a [0, Copias].
+    const saveControlCopiasArchivo = async (ordenId, archivoId, val) => {
+        try {
+            await api.put(`/finishing/archivos/${archivoId}/control-copias`, { cantidad: parseInt(val, 10) || 0 });
+            // Refrescar solo los detalles de esa orden (ahí vive el conteo por archivo)
+            const res = await api.get(`/finishing/orders/${ordenId}/details`);
+            const rawExtras = res.data.extras || [];
+            setOrdersDetails(prev => ({
+                ...prev,
+                [ordenId]: {
+                    extras: rawExtras.filter(ex => (ex.Observacion || '') !== 'Terminación por archivo (WebOrder)'),
+                    terminaciones: res.data.terminaciones || [],
+                    archivos: res.data.archivos || []
+                }
+            }));
+        } catch (e) {
+            toast.error('Error guardando el conteo: ' + (e.response?.data?.error || e.message));
+        }
+    };
+
+    // Finalizar Orden Específica.
+    // Bandeja (trabajo): la orden pasa a 'Terminado' y espera en la pestaña Control.
+    // Control: aprobación final -> 'Pronto' + Canasto Producción.
     const handleFinishOrder = async (ordenId) => {
         try {
-            await api.post(`/finishing/orders/${ordenId}/control`);
-            toast.success("Orden finalizada correctamente");
+            const res = await api.post(`/finishing/orders/${ordenId}/control`, {
+                fase,
+                bultos: esControl ? (parseInt(bultosPorOrden[ordenId], 10) || 1) : undefined,
+            });
+            const bultos = res.data?.totalBultos || 0;
+            toast.success(esControl
+                ? `Control aprobado${bultos ? ` — ${bultos} etiqueta(s) del producto listas para despachar` : ''}`
+                : "Trabajo terminado: la orden pasó a Control y Calidad");
+            // Al aprobar, abrir la impresión de etiquetas (igual que el control de las
+            // demás áreas). La etiqueta es de la orden MADRE: es la que se despacha.
+            if (esControl && bultos > 0) printLabelsHelper(null, { id: res.data?.labelOrdenId || ordenId });
             // Refrescar datos
             fetchDocuments();
         } catch (e) {
-            toast.error("Error finalizando orden");
+            toast.error("Error finalizando: " + (e.response?.data?.error || e.message));
         }
+    };
+
+    // Reimprimir etiquetas ya generadas de la orden
+    const handlePrintLabels = (ordenId) => {
+        printLabelsHelper(null, { id: ordenId });
+        toast.success('Etiquetas listas para imprimir');
     };
 
     return (
@@ -140,11 +188,13 @@ const EcoUvFinishing = () => {
             <div className="w-80 bg-white border-r border-slate-200 flex flex-col z-10 shadow-lg">
                 <div className="p-4 border-b border-slate-100 bg-slate-50">
                     <h2 className="font-black text-slate-700 uppercase tracking-wide text-sm flex items-center gap-2">
-                        <i className="fa-solid fa-layer-group text-blue-500"></i>
-                        Terminaciones ECOUV
+                        <i className={`fa-solid ${esControl ? 'fa-clipboard-check text-emerald-500' : 'fa-layer-group text-blue-500'}`}></i>
+                        {esControl ? 'Control de Terminaciones' : 'Terminaciones ECOUV'}
                     </h2>
                     <p className="text-xs text-slate-400 mt-1">
-                        {documents.length} trabajos pendientes
+                        {esControl
+                            ? `${documents.length} órdenes terminadas para controlar`
+                            : `${documents.length} trabajos con material recibido`}
                     </p>
                 </div>
 
@@ -278,6 +328,16 @@ const EcoUvFinishing = () => {
                                                 </div>
                                             </div>
                                             <div className="flex items-center gap-3">
+                                                {(ord.CantidadEtiquetas || 0) > 0 && (
+                                                    <button
+                                                        onClick={() => handlePrintLabels(ord.MadreOrdenID || ord.OrdenID)}
+                                                        className="px-2.5 py-1.5 rounded-lg text-[11px] font-bold bg-slate-100 hover:bg-slate-200 text-slate-600 flex items-center gap-1.5 transition-colors"
+                                                        title={`Reimprimir las ${ord.CantidadEtiquetas} etiqueta(s) del producto (orden de impresión)`}
+                                                    >
+                                                        <i className="fa-solid fa-tags"></i>
+                                                        Etiquetas ({ord.CantidadEtiquetas})
+                                                    </button>
+                                                )}
                                                 <span className={`px-2 py-1 rounded text-[10px] font-bold uppercase ${isFinished ? 'bg-green-100 text-green-700' : 'bg-amber-100 text-amber-700'}`}>
                                                     {isFinished ? 'Finalizado' : 'Pendiente'}
                                                 </span>
@@ -388,22 +448,103 @@ const EcoUvFinishing = () => {
                                             </div>
                                             )}
 
-                                            {/* ACTIONS */}
-                                            {!isFinished && (
-                                                <div className="flex justify-end pt-2">
-                                                    <button
-                                                        onClick={() => {
-                                                            if (window.confirm("¿Confirmar que la tarea está lista?")) {
-                                                                handleFinishOrder(ord.OrdenID);
-                                                            }
-                                                        }}
-                                                        className="bg-emerald-500 hover:bg-emerald-600 text-white px-4 py-2 rounded-lg text-sm font-bold shadow-sm shadow-emerald-200 transition-all flex items-center gap-2"
-                                                    >
-                                                        <i className="fa-solid fa-check"></i>
-                                                        Finalizar Tarea
-                                                    </button>
+                                            {/* CONTEO DE COPIAS POR ARCHIVO (solo Control): cuántas
+                                                unidades de cada arte se controlaron (3 del arte A, 5 del B).
+                                                La aprobación exige el conteo completo de TODOS los archivos. */}
+                                            {esControl && (det.archivos || []).length > 0 && (
+                                                <div className="mb-4">
+                                                    <h4 className="text-xs font-black text-emerald-600 uppercase tracking-wider mb-2">
+                                                        <i className="fa-solid fa-list-ol mr-1.5"></i>
+                                                        Copias controladas por archivo
+                                                    </h4>
+                                                    <div className="bg-white border border-emerald-200 rounded-lg overflow-hidden divide-y divide-slate-100">
+                                                        {det.archivos.map(a => {
+                                                            const completo = (a.Controladas || 0) >= (a.Copias || 0);
+                                                            return (
+                                                                <div key={a.ArchivoID} className={`flex items-center gap-3 px-4 py-2.5 ${completo ? 'bg-emerald-50/60' : ''}`}>
+                                                                    <p className="flex-1 min-w-0 text-xs font-bold text-slate-600 truncate" title={a.NombreArchivo}>
+                                                                        <i className="fa-regular fa-file mr-1.5 text-slate-400"></i>
+                                                                        {a.NombreArchivo}
+                                                                    </p>
+                                                                    <input
+                                                                        key={`cca-${a.ArchivoID}-${a.Controladas ?? 0}`}
+                                                                        type="number" min={0} max={a.Copias}
+                                                                        defaultValue={a.Controladas ?? 0}
+                                                                        onBlur={(e) => saveControlCopiasArchivo(ord.OrdenID, a.ArchivoID, e.target.value)}
+                                                                        onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); e.currentTarget.blur(); } }}
+                                                                        title="Escribí la cantidad controlada de este arte"
+                                                                        className="w-14 text-right text-base font-black text-slate-700 bg-slate-50 border border-slate-200 rounded-md px-2 py-1 outline-none focus:border-emerald-400 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                                                                    />
+                                                                    <span className="text-sm font-bold text-slate-400 w-10">/ {a.Copias}</span>
+                                                                    <button
+                                                                        onClick={() => saveControlCopiasArchivo(ord.OrdenID, a.ArchivoID, (a.Controladas || 0) + 1)}
+                                                                        disabled={completo}
+                                                                        className="w-8 h-8 rounded-full bg-emerald-500 hover:bg-emerald-600 disabled:opacity-40 disabled:cursor-not-allowed text-white flex items-center justify-center shadow-sm transition-all active:scale-95"
+                                                                        title="Sumar una copia controlada"
+                                                                    >
+                                                                        <i className="fa-solid fa-plus text-xs"></i>
+                                                                    </button>
+                                                                </div>
+                                                            );
+                                                        })}
+                                                    </div>
                                                 </div>
                                             )}
+
+                                            {/* BULTOS A DESPACHAR (solo Control): cuántos paquetes
+                                                físicos salen. El bulto con el que llegó el material
+                                                impreso se consume, así que no se despacha dos veces. */}
+                                            {esControl && (
+                                                <div className="flex items-center justify-end gap-2 pb-2">
+                                                    <span className="text-[10px] font-black text-slate-400 uppercase tracking-wider">Bultos a despachar</span>
+                                                    <input
+                                                        type="number" min={1}
+                                                        value={bultosPorOrden[ord.OrdenID] ?? 1}
+                                                        onChange={(e) => setBultosPorOrden(prev => ({ ...prev, [ord.OrdenID]: e.target.value }))}
+                                                        title="Cantidad de paquetes en los que se envía el trabajo terminado"
+                                                        className="w-16 text-right text-base font-black text-slate-700 bg-slate-50 border border-slate-200 rounded-md px-2 py-1 outline-none focus:border-emerald-400 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                                                    />
+                                                    <span className="text-[10px] text-slate-400">se generan sus etiquetas</span>
+                                                </div>
+                                            )}
+
+                                            {/* ACTIONS — en Control, Aprobar aparece recién con el
+                                                conteo de copias COMPLETO en todos los archivos. */}
+                                            {!isFinished && (() => {
+                                                const archivosCtl = det.archivos || [];
+                                                const conteoCompleto = archivosCtl.length === 0
+                                                    || archivosCtl.every(a => (a.Controladas || 0) >= (a.Copias || 0));
+                                                if (esControl && !conteoCompleto) {
+                                                    const contadas = archivosCtl.reduce((s, a) => s + (a.Controladas || 0), 0);
+                                                    const total = archivosCtl.reduce((s, a) => s + (a.Copias || 0), 0);
+                                                    return (
+                                                        <div className="flex justify-end pt-2">
+                                                            <p className="text-xs font-bold text-amber-600 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                                                                <i className="fa-solid fa-circle-info mr-1.5"></i>
+                                                                Contá todas las copias para aprobar ({contadas}/{total})
+                                                            </p>
+                                                        </div>
+                                                    );
+                                                }
+                                                return (
+                                                    <div className="flex justify-end pt-2">
+                                                        <button
+                                                            onClick={() => {
+                                                                const msg = esControl
+                                                                    ? `¿Aprobar el control? Se generan ${parseInt(bultosPorOrden[ord.OrdenID], 10) || 1} bulto(s) del producto terminado en la orden de impresión (quedan listos para despachar a Depósito) y esta orden de terminaciones se cierra.`
+                                                                    : "¿Confirmar que el trabajo está terminado? La orden pasa a Control y Calidad.";
+                                                                if (window.confirm(msg)) {
+                                                                    handleFinishOrder(ord.OrdenID);
+                                                                }
+                                                            }}
+                                                            className="bg-emerald-500 hover:bg-emerald-600 text-white px-4 py-2 rounded-lg text-sm font-bold shadow-sm shadow-emerald-200 transition-all flex items-center gap-2"
+                                                        >
+                                                            <i className={`fa-solid ${esControl ? 'fa-clipboard-check' : 'fa-check'}`}></i>
+                                                            {esControl ? 'Aprobar Control' : 'Finalizar Tarea'}
+                                                        </button>
+                                                    </div>
+                                                );
+                                            })()}
                                         </div>
                                     </div>
                                 );

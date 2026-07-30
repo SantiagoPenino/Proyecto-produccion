@@ -160,6 +160,9 @@ router.post('/caja/reversar-doc',      caja.reversarDocumento);       // Reverso
 router.post('/caja/pago-anticipo',     caja.registrarPagoAnticipo);   // Anticipo directo a cuenta (nuevo dinero)
 router.post('/caja/anular-factura',    caja.anularFactura);           // Anular factura no enviada a DGI → reabre ciclo
 router.post('/caja/imputar-anticipo-deuda', caja.imputarAnticipoADeuda); // Imputar saldo existente a una deuda específica
+// ¿La factura fue una compra de recurso (rollo por adelantado)? Se consulta antes de
+// emitir una NC o anular, para avisar que además de la plata hay metros en juego.
+router.get('/caja/documento/:docId/compra-recurso', caja.consultarCompraRecursoDocumento);
 
 // ── CFE (Facturación Electrónica) ──────────────────────────────────────────
 const cfeCtrl = require('../controllers/cfeController');
@@ -172,6 +175,7 @@ router.post('/cfe/documentos/:id/enviar', cfeCtrl.enviarADGI);
 router.get('/cfe/documentos/:id/preview-dgi', cfeCtrl.previewDGI);   // Qué CFE se le pediría a DGI (no emite nada)
 router.post('/cfe/manual', cfeCtrl.crearFacturaManual);
 router.get('/cfe/documentos/:id/detalle', cfeCtrl.getDetalleFactura);
+router.post('/cfe/documentos/:id/enviar-email', cfeCtrl.enviarDocumentoPorEmail); // Manda el PDF al cliente por correo
 router.put('/cfe/documentos/:id/anular', cfeCtrl.anularFactura);
 router.put('/cfe/documentos/:id', cfeCtrl.editarFactura);
 

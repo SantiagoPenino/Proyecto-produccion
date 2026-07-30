@@ -36,14 +36,21 @@ exports.resolverTipoCFE = (docTipo, docCliDoc, refEsFactura = null) => {
     const isDocNC = /\bNC\b/.test(t) || t.includes('NOTA DE CR') || t.includes('NOTA_CREDITO');
     const isDocND = /\bND\b/.test(t) || t.includes('NOTA DE D')  || t.includes('NOTA_DEBITO');
 
-    // Para NC/ND la familia (e-Ticket vs e-Factura) la manda el documento REFERENCIADO,
-    // no el RUT del cliente: DGI rechaza una NC de e-Factura (112) que referencie un e-Ticket.
-    const familiaEsFactura = (isDocNC || isDocND) && refEsFactura !== null ? refEsFactura : esRUT;
+    // Familia del CFE (e-Factura vs e-Ticket):
+    //  - VENTA: la decide el DocTipo que ELIGIÓ EL OPERADOR, no el RUT. Un e-Ticket con RUT
+    //    NO se eleva solo a e-Factura (regla: el operador decide el documento, DGI valida).
+    //    El RUT solo define si se incluye el receptor identificado (wsReceptor), no el tipo.
+    //  - NC/ND: la manda el documento REFERENCIADO — DGI rechaza una NC de e-Factura (112)
+    //    que referencie un e-Ticket. Sin referencia, se cae al RUT (comportamiento previo).
+    const esFacturaTipo = t.includes('FACTURA');
+    const familiaEsFactura = (isDocNC || isDocND)
+        ? (refEsFactura !== null ? refEsFactura : esRUT)
+        : esFacturaTipo;
 
     let tipoCFE;
     if (isDocNC)      tipoCFE = familiaEsFactura ? 112 : 102;
     else if (isDocND) tipoCFE = familiaEsFactura ? 113 : 103;
-    else              tipoCFE = esRUT ? 111 : 101;
+    else              tipoCFE = familiaEsFactura ? 111 : 101;
 
     const NOMBRES = {
         101: 'e-Ticket', 102: 'NC de e-Ticket', 103: 'ND de e-Ticket',
@@ -279,7 +286,19 @@ exports.prepararCFE = async (doc, lineas, cotDolar = 40.0, empresa = null) => {
     // El panel "DATOS DGI" es el receptor real del CFE: al facturar a un tercero se escribe ahí su
     // RUT/razón social y ESO es lo que debe viajar a DGI, no el titular interno de la cuenta.
     // Para docs de caja (sin DocCli*), el campo es NULL y cae a la ficha → comportamiento intacto.
-    const docCliDoc = (doc.DocCliDocumento || doc.CliRUT || '').replace(/\D/g, '').trim();
+    //
+    // EXCEPCIÓN "Consumidor Final": un e-Ticket SIN RUT propio en el snapshot es una venta a
+    // consumidor final. En ese caso NO se hereda el RUT de la ficha — si no, el ticket viajaría
+    // a DGI identificado con el RUT del cliente interno (justo lo que se quiere evitar). Las
+    // e-Facturas y los e-Tickets ya identificados (con RUT en el snapshot) sí mantienen el fallback.
+    const _tDoc = String(doc.DocTipo || '').toUpperCase();
+    const _esVentaTicket = _tDoc.includes('TICKET') && !_tDoc.includes('NOTA');
+    const _snapVacio = String(doc.DocCliDocumento || '').trim() === '';
+    const docCliDoc = (
+        (_esVentaTicket && _snapVacio)
+            ? ''                                        // consumidor final: sin receptor
+            : (doc.DocCliDocumento || doc.CliRUT || '')  // factura / ticket identificado
+    ).replace(/\D/g, '').trim();
 
     // El tipo de CFE lo resuelve una sola función (exports.resolverTipoCFE), para que
     // la vista previa y el script de verificación auditen exactamente lo que se envía.

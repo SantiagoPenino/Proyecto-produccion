@@ -8,6 +8,7 @@ const path = require('path');
 const contabilidadService = require('../services/contabilidadService');
 const ERPSyncService = require('../services/erpSyncService');
 const { generateThumbnail } = require('../utils/thumbnailGenerator');
+const { construirNombreArchivo, materialParaNombre, usaNombreNuevo } = require('../utils/nombreArchivoOrden');
 
 
 // ──────────────────────────────────────────────────
@@ -770,6 +771,20 @@ exports.createWebOrder = async (req, res) => {
             const timestamp = Date.now();
             let telaDescontada = false; // TELA CLIENTE: garantiza UN solo descuento por pedido
 
+            // FORMA DE ENVÍO elegida por el cliente en el ingreso (mismo nomenclador
+            // FormasEnvio que usa el retiro). Se guarda como texto en Ordenes.ModoRetiro
+            // de cada orden del pedido (columna que ya muestran los detalles de orden).
+            let modoRetiroNombre = null;
+            if (req.body.formaEnvioId) {
+                try {
+                    const feRes = await new sql.Request(transaction)
+                        .input('FE', sql.Int, parseInt(req.body.formaEnvioId, 10))
+                        .query('SELECT Nombre FROM FormasEnvio WHERE ID = @FE');
+                    modoRetiroNombre = (feRes.recordset[0]?.Nombre || '').trim() || null;
+                } catch (eFE) {
+                    logger.warn('[WebOrder] No se pudo resolver la forma de envío:', eFE.message);
+                }
+            }
 
             for (let idx = 0; idx < pendingOrderExecutions.length; idx++) {
                 const exec = pendingOrderExecutions[idx];
@@ -816,9 +831,28 @@ exports.createWebOrder = async (req, res) => {
                     // ... se mantiene o se simplifica. Por ahora el secuencial cubre el 90% de casos.
                 }
 
+                // Completar ProIdProducto si el front no lo mandó (los endpoints de
+                // materiales de ECOUV no lo incluyen): el motor de precios y el detalle
+                // de cobranza trabajan por ProIdProducto. Resuelto por código + variante
+                // (hay códigos de artículo duplicados entre grupos).
+                if (!exec.proIdProducto && exec.codArticulo) {
+                    try {
+                        const proRes = await new sql.Request(transaction)
+                            .input('Art', sql.VarChar, String(exec.codArticulo).trim())
+                            .input('Stk', sql.VarChar, String(exec.codStock || '').trim())
+                            .query(`
+                                SELECT TOP 1 ProIdProducto FROM articulos
+                                WHERE LTRIM(RTRIM(CodArticulo)) = @Art
+                                ORDER BY CASE WHEN LTRIM(RTRIM(CodStock)) = @Stk THEN 0 ELSE 1 END
+                            `);
+                        if (proRes.recordset[0]?.ProIdProducto) exec.proIdProducto = proRes.recordset[0].ProIdProducto;
+                    } catch (_) { /* sin resolución: la cotización igual traduce por CodArticulo */ }
+                }
+
                 // Determinar UM + variante física (desde StockArt del CodStock elegido)
                 let areaUM = mapaAreasUM[exec.areaID] || 'u';
                 let varianteFinal = exec.variante;
+                let materialFinal = exec.material;
                 let esArmarAMedida = false;
                 let esProductoTerminado = false;
                 let notaMaterialImpresion = '';
@@ -849,7 +883,8 @@ exports.createWebOrder = async (req, res) => {
                                         .query(`
                                             SELECT TOP 1 LTRIM(RTRIM(A.Descripcion)) AS MaterialImpresion,
                                                    LTRIM(RTRIM(S.Articulo)) AS VarianteMaterial,
-                                                   LTRIM(RTRIM(P.Tinta)) AS TintaFicha
+                                                   LTRIM(RTRIM(P.Tinta)) AS TintaFicha,
+                                                   P.AnchoM, P.AltoM, P.BordeCm
                                             FROM ProductosTerminados P
                                             INNER JOIN articulos A ON LTRIM(RTRIM(A.CodArticulo)) = LTRIM(RTRIM(P.MaterialCodArticulo))
                                             LEFT JOIN StockArt S ON LTRIM(RTRIM(S.CodStock)) = LTRIM(RTRIM(A.CodStock))
@@ -859,9 +894,32 @@ exports.createWebOrder = async (req, res) => {
                                     const ficha = fichaRes.recordset[0];
                                     if (ficha) {
                                         if (ficha.VarianteMaterial) varianteFinal = ficha.VarianteMaterial;
-                                        if (ficha.MaterialImpresion) notaMaterialImpresion = `[SE IMPRIME EN: ${ficha.MaterialImpresion}]`;
+                                        // El área de IMPRESIÓN debe ver el SUSTRATO real (como cualquier
+                                        // otra orden): Material = material de la ficha, no el producto.
+                                        // El producto (con medidas y terminaciones) viaja en la NOTA.
+                                        if (ficha.MaterialImpresion) materialFinal = ficha.MaterialImpresion;
                                         // La tinta del producto terminado la define la FICHA (el cliente no la elige)
                                         tintaFinal = ficha.TintaFicha || null;
+
+                                        // Nota: producto + medidas + terminaciones incluidas
+                                        const incNota = await new sql.Request(transaction)
+                                            .input('Art', sql.VarChar, String(exec.codArticulo).trim())
+                                            .query(`
+                                                SELECT T.Nombre, PT.Cantidad, LTRIM(RTRIM(ISNULL(PT.Ubicacion, ''))) AS Ubicacion
+                                                FROM ProductoTerminadoTerminaciones PT
+                                                INNER JOIN ProductosTerminados P ON P.ID = PT.ProductoID
+                                                INNER JOIN Terminaciones T ON T.TerminacionID = PT.TerminacionID
+                                                WHERE LTRIM(RTRIM(P.CodArticulo)) = @Art
+                                            `);
+                                        const medidas = (ficha.AnchoM != null && ficha.AltoM != null)
+                                            ? ` | Medidas ${ficha.AnchoM} x ${ficha.AltoM} m${ficha.BordeCm ? ` (+${ficha.BordeCm} cm borde)` : ''}`
+                                            : '';
+                                        const incTxt = incNota.recordset.length > 0
+                                            ? ` | Incluye: ${incNota.recordset.map(i =>
+                                                `${(i.Nombre || '').trim()} x${parseFloat(i.Cantidad) || 1}${i.Ubicacion ? ` (${i.Ubicacion.replace('_', ' y ').toLowerCase()})` : ''}`
+                                              ).join(', ')}`
+                                            : '';
+                                        notaMaterialImpresion = `[PRODUCTO: ${String(exec.material || '').trim()}${medidas}${incTxt}]`;
                                     }
                                 }
                             }
@@ -901,7 +959,7 @@ exports.createWebOrder = async (req, res) => {
                     .input('IdClienteReact', sql.VarChar(50), idClienteReact ? idClienteReact.toString() : null)
                     .input('Desc', sql.NVarChar(300), jobName)
                     .input('Prio', sql.VarChar(20), finalUrgency)
-                    .input('Mat', sql.VarChar(255), exec.material)
+                    .input('Mat', sql.VarChar(255), materialFinal)
                     .input('Var', sql.VarChar(100), varianteFinal)
                     .input('Cod', sql.VarChar(50), exec.codigoOrden)
                     .input('ERP', sql.VarChar(50), erpDocNumber)
@@ -918,13 +976,14 @@ exports.createWebOrder = async (req, res) => {
                     .input('BobID', sql.Int, (bobinaId && !exec.isExtra) ? parseInt(bobinaId) : null) // TELA CLIENTE: solo la orden principal (los extras no consumen tela)
                     .input('DisenadorID', sql.Int, req.disenadorId || null) // pedido creado por un DISEÑADOR en nombre del cliente
                     .input('Tinta', sql.VarChar(50), tintaFinal) // ECOUV: rutea lote (magic sort agrupa por Tinta); producto terminado la toma de su ficha
+                    .input('ModoRet', sql.VarChar(100), modoRetiroNombre) // forma de envío elegida en el ingreso
                     .query(`
                         INSERT INTO Ordenes (
                             AreaID, Cliente, CodCliente, IdClienteReact, DescripcionTrabajo, Prioridad,
                             FechaIngreso, FechaEstimadaEntrega, Material, Variante,
                             CodigoOrden, NoDocERP, Nota, Magnitud, ProximoServicio, UM, Estado, EstadoenArea,
                             CodArticulo, IdProductoReact, ProIdProducto, CliIdCliente, FechaEntradaSector,
-                            BobinaTelaID, DisenadorID, Tinta
+                            BobinaTelaID, DisenadorID, Tinta, ModoRetiro
                         )
                         OUTPUT INSERTED.OrdenID
                         VALUES (
@@ -932,7 +991,7 @@ exports.createWebOrder = async (req, res) => {
                             GETDATE(), DATEADD(day, 3, GETDATE()), @Mat, @Var,
                             @Cod, @ERP, @Nota, @Mag, @Prox, @UM, @Estado, @Estado,
                             @CodArt, @IdProdReact, @ProIdProducto, @CliIdCliente, @F_EntSec,
-                            @BobID, @DisenadorID, @Tinta
+                            @BobID, @DisenadorID, @Tinta, @ModoRet
                         )
                     `);
 
@@ -1008,6 +1067,24 @@ exports.createWebOrder = async (req, res) => {
                 }
 
 
+                // --- NOMBRE DE LOS ARCHIVOS: MATERIAL AL PRINCIPIO (SOLO SUBLIMACIÓN) ---
+                // El resto de las áreas mantiene el nombre de siempre (ORDEN_CLIENTE_TRABAJO_Archivo...).
+                const nombreNuevo = await usaNombreNuevo(exec.areaID);
+                let materialNombreArchivo = '';
+                if (nombreNuevo) {
+                    // Tela de cliente: al material se le agrega el PRE de la recepción de esa tela.
+                    let preTelaCliente = null;
+                    if (bobinaId && !exec.isExtra) {
+                        try {
+                            const telaRes = await new sql.Request(transaction)
+                                .input('BID', sql.Int, parseInt(bobinaId))
+                                .query('SELECT Referencia FROM InventarioBobinas WHERE BobinaID = @BID');
+                            preTelaCliente = telaRes.recordset[0]?.Referencia || null;
+                        } catch (_) { /* sin PRE: el nombre queda solo con el material */ }
+                    }
+                    materialNombreArchivo = materialParaNombre(materialFinal, preTelaCliente);
+                }
+
                 // --- REGISTRAR ARCHIVOS ESPERADOS (PLACEHOLDERS) ---
                 let totalMagnitud = 0;
                 let fileCount = 0;
@@ -1043,8 +1120,19 @@ exports.createWebOrder = async (req, res) => {
                         const parts = safeItemName.split('.');
                         const ext = parts.length > 1 ? `.${parts.pop()}` : '';
 
-                        // NUEVO FORMATO: ORD-XX... (xCOPIAS).ext
-                        const finalName = `${exec.codigoOrden.replace(/\//g, '-')}_${sanitize(nombreCliente)}_${sanitize(jobName)}_Archivo ${i + 1} de ${exec.items.length} (x${item.copies || 1})${ext}`;
+                        // SUBLIMACIÓN: {MATERIAL}-{ORDEN}_{CLIENTE}_Arch {i} de {n} (x{copias}).ext
+                        // Resto de áreas: formato de siempre.
+                        const finalName = nombreNuevo
+                            ? construirNombreArchivo({
+                                material: materialNombreArchivo,
+                                codigoOrden: exec.codigoOrden,
+                                cliente: nombreCliente,
+                                idx: i + 1,
+                                total: exec.items.length,
+                                copias: item.copies || 1,
+                                ext
+                            })
+                            : `${exec.codigoOrden.replace(/\//g, '-')}_${sanitize(nombreCliente)}_${sanitize(jobName)}_Archivo ${i + 1} de ${exec.items.length} (x${item.copies || 1})${ext}`;
 
                         const resFile = await new sql.Request(transaction)
                             .input('OID', sql.Int, newOID)
@@ -1181,7 +1269,18 @@ exports.createWebOrder = async (req, res) => {
                         const safeBackName = sanitizeFileName(item.fileBackName);
                         const partsBack = safeBackName.split('.');
                         const extBack = partsBack.length > 1 ? `.${partsBack.pop()}` : '';
-                        const finalNameBack = `${exec.codigoOrden.replace(/\//g, '-')}_${sanitize(nombreCliente)}_${sanitize(jobName)}_DORSO Archivo ${i + 1} de ${exec.items.length} (x${item.copies || 1})${extBack}`;
+                        const finalNameBack = nombreNuevo
+                            ? construirNombreArchivo({
+                                material: materialNombreArchivo,
+                                codigoOrden: exec.codigoOrden,
+                                cliente: nombreCliente,
+                                idx: i + 1,
+                                total: exec.items.length,
+                                copias: item.copies || 1,
+                                ext: extBack,
+                                dorso: true
+                            })
+                            : `${exec.codigoOrden.replace(/\//g, '-')}_${sanitize(nombreCliente)}_${sanitize(jobName)}_DORSO Archivo ${i + 1} de ${exec.items.length} (x${item.copies || 1})${extBack}`;
 
                         const obsBack = (item.observacionesBack || '') + (item.observacionesBack?.includes('DORSO') ? '' : ' [DORSO]');
 
@@ -1239,6 +1338,19 @@ exports.createWebOrder = async (req, res) => {
                     if (cantTpu > 0) {
                         await new sql.Request(transaction).input('OID', sql.Int, newOID).input('Mag', sql.Decimal(10, 2), cantTpu)
                             .query("UPDATE Ordenes SET Magnitud = CAST(@Mag AS VARCHAR) WHERE OrdenID = @OID");
+                    }
+                }
+
+                // HERMANA TERMINAC DESDE EL INGRESO (pedido negocio 28/07): si la orden ECOUV
+                // quedó con terminaciones, la orden hermana XEUV-{doc} se crea YA (visible en la
+                // bandeja y planilla de TERMINAC desde el minuto uno) y la ECOUV queda ruteada
+                // con ProximoServicio=TERMINAC. Antes esto pasaba recién al aprobar control.
+                if (String(exec.areaID || '').toUpperCase() === 'ECOUV') {
+                    try {
+                        const { crearHermanaTerminaciones } = require('../utils/hermanaTerminaciones');
+                        await crearHermanaTerminaciones(transaction, newOID);
+                    } catch (eHer) {
+                        logger.warn(`[WebOrder] No se pudo crear la hermana de terminaciones de la orden ${newOID}:`, eHer.message);
                     }
                 }
 
