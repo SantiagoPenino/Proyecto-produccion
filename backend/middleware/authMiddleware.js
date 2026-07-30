@@ -51,6 +51,53 @@ exports.verifyToken = (req, res, next) => {
 };
 
 // =====================================================================
+// MIDDLEWARE: SOLO USUARIOS INTERNOS CON UN ROL HABILITADO
+// =====================================================================
+// Nace para los endpoints que cambian el ESTADO de una orden: estaban protegidos solo por
+// verifyToken, que acepta CUALQUIER JWT válido — incluido el de un cliente del portal o un
+// diseñador. Es decir que un cliente logueado podía cambiar el estado de cualquier orden
+// (no solo las suyas) llamando la API directo. `authorizeAdminOrArea` no servía: solo
+// verifica que el usuario TENGA un rol, cualquiera sea.
+//
+// Comparación normalizada (minúsculas + sin acentos) para que 'Coordinador', 'COORDINADOR'
+// y 'coordinador' sean lo mismo. Los nombres salen de Roles.NombreRol.
+const normalizaRol = (r) => String(r || '')
+    .normalize('NFD').replace(/[̀-ͯ]/g, '')
+    .trim().toLowerCase();
+
+/**
+ * Roles habilitados para MODIFICAR estados de órdenes (Roles.NombreRol, normalizado).
+ * Admin(1), User(2) y Coordinador(11). OJO: 'Administracion'(8) NO entra — normaliza a
+ * 'administracion', que es distinto de 'admin'.
+ */
+const ROLES_EDITAN_ESTADO = ['admin', 'user', 'coordinador'];
+
+/**
+ * Exige usuario INTERNO y, si se pasan roles, que el suyo esté en la lista.
+ * @param {string[]} [rolesPermitidos] - nombres de rol; si se omite, basta con ser interno.
+ */
+const soloInternoConRol = (rolesPermitidos = null) => (req, res, next) => {
+    const u = req.user;
+    if (!u) return res.status(401).json({ error: 'Usuario no autenticado.' });
+
+    // Positivo a propósito: solo el login interno emite userType 'INTERNAL'. Cualquier otro
+    // token (cliente web, diseñador, o uno viejo sin el campo) queda afuera.
+    if (u.userType !== 'INTERNAL') {
+        return res.status(403).json({ error: 'Esta acción es exclusiva del sistema interno.' });
+    }
+
+    if (rolesPermitidos && rolesPermitidos.length > 0) {
+        const rol = normalizaRol(u.role);
+        if (!rolesPermitidos.map(normalizaRol).includes(rol)) {
+            return res.status(403).json({
+                error: `Tu rol (${u.role || 'sin rol'}) no tiene permiso para modificar el estado de las órdenes.`
+            });
+        }
+    }
+    next();
+};
+
+// =====================================================================
 // MIDDLEWARE: AUTORIZAR ADMIN O ÁREA
 // =====================================================================
 exports.authorizeAdminOrArea = (req, res, next) => {
@@ -68,4 +115,6 @@ exports.authorizeAdminOrArea = (req, res, next) => {
     next();
 };
 
+exports.soloInternoConRol = soloInternoConRol;
+exports.ROLES_EDITAN_ESTADO = ROLES_EDITAN_ESTADO;
 exports.JWT_SECRET = JWT_SECRET;

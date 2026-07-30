@@ -159,11 +159,18 @@ exports.getTickets = async (req, res) => {
         let query = `
             SELECT 
                 T.TicIdTicket, T.TicAsunto, T.TicPrioridad, T.TicEstado, T.TicFechaActualizacion, T.TicFechaAlta, T.DepIdDepartamento, T.OrdIdOrden,
-                OD.OrdCodigoOrden,
+                -- Código de la orden del ticket. Tickets.OrdIdOrden guarda el OrdenID de la tabla
+                -- ORDENES (es lo que manda el portal desde /web-orders/my-orders), pero acá se
+                -- joineaba contra OrdenesDeposito.OrdIdOrden — PKs de tablas distintas, con
+                -- secuencias distintas: el join no matcheaba nunca, el código venía NULL y la UI
+                -- terminaba mostrando el ID interno crudo. Se prioriza Ordenes y se deja
+                -- OrdenesDeposito como respaldo por si algún ticket viejo guardó ese ID.
+                COALESCE(O.CodigoOrden, OD.OrdCodigoOrden) AS OrdCodigoOrden,
                 D.DepNombre as Departamento,
                 (SELECT COUNT(*) FROM Tickets_Mensajes M WHERE M.TicIdTicket = T.TicIdTicket) as TotalMensajes
             FROM Tickets T
             LEFT JOIN Tickets_Departamentos D ON T.DepIdDepartamento = D.DepIdDepartamento
+            LEFT JOIN Ordenes O WITH(NOLOCK) ON O.OrdenID = T.OrdIdOrden
             LEFT JOIN OrdenesDeposito OD ON OD.OrdIdOrden = T.OrdIdOrden
             WHERE 1=1
         `;
@@ -202,10 +209,12 @@ exports.getTicketDetails = async (req, res) => {
         
         let tQuery = `
             SELECT T.*, D.DepNombre, C.Nombre as ClienteNombre, C.TelefonoTrabajo as ClienteCelular, C.Email as ClienteEmail,
-                OD.OrdCodigoOrden
+                -- Ver nota en getTickets: el ID guardado es de ORDENES, no de OrdenesDeposito.
+                COALESCE(O.CodigoOrden, OD.OrdCodigoOrden) AS OrdCodigoOrden
             FROM Tickets T
             LEFT JOIN Tickets_Departamentos D ON T.DepIdDepartamento = D.DepIdDepartamento
             LEFT JOIN Clientes C ON T.CliIdCliente = C.CodCliente
+            LEFT JOIN Ordenes O WITH(NOLOCK) ON O.OrdenID = T.OrdIdOrden
             LEFT JOIN OrdenesDeposito OD ON OD.OrdIdOrden = T.OrdIdOrden
             WHERE TicIdTicket = @Id
         `;

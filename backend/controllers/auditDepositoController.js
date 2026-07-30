@@ -3,6 +3,28 @@ const logger = require('../utils/logger');
 const { calcularSaldoEfectivo, aplicarAnticipoAOrden } = require('../services/anticipoService');
 
 /**
+ * Claves de comparación de un código de orden/etiqueta.
+ *
+ * La etiqueta FÍSICA que se escanea es `{NoDocERP}/B{idEtiqueta}` (ej. `9471/B11575`), mientras que
+ * `OrdenesDeposito.OrdCodigoOrden` guarda el CodigoOrden CON prefijo de área (`SUB-9471`). Comparar
+ * literal no matcheaba NUNCA: todo lo escaneado caía en "desconocido" (Falta Por Ingresar) y las
+ * órdenes reales quedaban como extraviadas (de ahí que Activas y Extraviadas dieran el mismo número).
+ *
+ *   9471/B11575 → {'9471'}          SUB-9471 → {'SUB-9471', '9471'}     → matchean por '9471'
+ *
+ * Solo se quita el prefijo de área del INICIO: `SUB-7684-R1` → `7684-R1` (no `1`, que colisionaría
+ * con cualquier código terminado en 1).
+ */
+const clavesDeCodigo = (raw) => {
+    const base = String(raw || '').trim().toUpperCase().split('/')[0]; // saca el /B11575 de la etiqueta
+    const claves = new Set();
+    if (!base) return claves;
+    claves.add(base);
+    claves.add(base.replace(/^[A-Z]+-/, ''));
+    return claves;
+};
+
+/**
  * POST /api/audit-deposito/check
  * Recibe un array de strings `scannedCodes` escaneados físicamente en el depósito.
  * Compara con la base de datos y categoriza.
@@ -38,21 +60,36 @@ exports.checkAudit = async (req, res) => {
          OR (o.OrdEstadoActual >= 9 AND o.PagIdPago IS NULL)
     `;
 
-    // Si hay ms de 0 cdigos, ampliamos la condicin para traer las que podran ya estar entregadas
+    // Si hay ms de 0 cdigos, ampliamos la condicin para traer las que podran ya estar entregadas.
+    // Parametrizado: antes los códigos escaneados se concatenaban crudos dentro del IN (...).
+    const request = pool.request();
     if (scannedCodes.length > 0) {
-      query += ` OR o.OrdCodigoOrden IN (${scannedCodes.map(c => `'${c.trim()}'`).join(',')})`;
+      const params = [];
+      scannedCodes.forEach((c, i) => {
+        [...clavesDeCodigo(c)].forEach((k, j) => {
+          const p = `sc${i}_${j}`;
+          request.input(p, sql.NVarChar(100), k);
+          params.push(`@${p}`);
+        });
+      });
+      if (params.length) query += ` OR UPPER(LTRIM(RTRIM(o.OrdCodigoOrden))) IN (${params.join(',')})`;
     }
 
-    const { recordset } = await pool.request().query(query);
+    const { recordset } = await request.query(query);
 
-    // Clasificacin
-    const dbMap = new Map();
+    // Clasificacin. Un mismo registro se indexa por TODAS sus claves (con y sin prefijo).
+    const dbMap = new Map();          // clave -> row
+    const rowsPorCodigo = new Map();  // OrdCodigoOrden -> row (para recorrer sin duplicar)
     recordset.forEach(row => {
-      // Estado < 9 indica que debera estar fsicamente en el depsito (activo)
-      dbMap.set(row.OrdCodigoOrden.trim().toUpperCase(), row);
+      const cod = String(row.OrdCodigoOrden || '').trim().toUpperCase();
+      if (!cod) return;
+      rowsPorCodigo.set(cod, row);
+      clavesDeCodigo(cod).forEach(k => { if (!dbMap.has(k)) dbMap.set(k, row); });
     });
 
-    const setScanned = new Set(scannedCodes.map(c => c.trim().toUpperCase()));
+    // Escaneados, ya normalizados a sus claves
+    const setScanned = new Set();
+    scannedCodes.forEach(c => clavesDeCodigo(c).forEach(k => setScanned.add(k)));
 
     const resultado = {
       totales: [],           // Todas las rdenes activas en el depsito
@@ -66,10 +103,14 @@ exports.checkAudit = async (req, res) => {
 
     const hoy = new Date();
 
-    // Analizar lo que hay en DB vs lo Escaneado
-    for (const [code, row] of dbMap.entries()) {
+    // Analizar lo que hay en DB vs lo Escaneado.
+    // Se recorre rowsPorCodigo (una entrada por orden) y NO dbMap, que indexa la misma fila bajo
+    // varias claves — iterarlo duplicaría cada orden en los resultados.
+    for (const [code, row] of rowsPorCodigo.entries()) {
       const estaEnDbComoActiva = row.OrdEstadoActual !== null && row.OrdEstadoActual < 9;
-      const fueEscaneado = setScanned.has(code);
+      // Matchea por cualquiera de sus claves: la etiqueta trae el número pelado (9471) y el
+      // depósito el código con prefijo (SUB-9471).
+      const fueEscaneado = [...clavesDeCodigo(code)].some(k => setScanned.has(k));
       
       let diasEnDeposito = 0;
       if (row.OrdFechaIngresoOrden) {
@@ -114,11 +155,19 @@ exports.checkAudit = async (req, res) => {
       }
     }
 
-    // Analizar cdigos escaneados que ni siquiera estn en el registro trado
-    for (const code of setScanned) {
-      if (!dbMap.has(code)) {
+    // Analizar cdigos escaneados que ni siquiera estn en el registro trado.
+    // Se recorren los códigos ORIGINALES (no las claves normalizadas): reportar las claves
+    // mostraría el mismo escaneo dos veces (SUB-9471 y 9471) y con el texto que el operario
+    // no vio nunca. Se marca desconocido solo si NINGUNA de sus claves matcheó.
+    const vistos = new Set();
+    for (const raw of scannedCodes) {
+      const original = String(raw || '').trim().toUpperCase();
+      if (!original || vistos.has(original)) continue;
+      vistos.add(original);
+      const claves = [...clavesDeCodigo(original)];
+      if (!claves.some(k => dbMap.has(k))) {
         resultado.desconocido.push({
-          codigo: code,
+          codigo: original,
           trabajo: 'N/A', cliente: 'N/A', clienteTipo: 'N/A', pagoEstado: 'N/A', ordenRetiro: 'N/A', estadoActualId: null
         });
       }
@@ -473,17 +522,25 @@ exports.initAudit = async (req, res) => {
     const liveCodes = liveRes.recordset.map(x => x.Codigo);
     const { recordset, maxDias } = checkRes;
 
-    // Clasificar igual que checkAudit
-    const dbMap = new Map();
-    recordset.forEach(row => dbMap.set(row.OrdCodigoOrden.trim().toUpperCase(), row));
-    const setScanned = new Set(liveCodes.map(c => c.trim().toUpperCase()));
+    // Clasificar igual que checkAudit — con la MISMA normalización: la etiqueta física trae el
+    // número pelado (9471/B11575) y el depósito el código con prefijo (SUB-9471).
+    const dbMap = new Map();          // clave -> row (una fila se indexa bajo varias claves)
+    const rowsPorCodigo = new Map();  // OrdCodigoOrden -> row (para recorrer sin duplicar)
+    recordset.forEach(row => {
+      const cod = String(row.OrdCodigoOrden || '').trim().toUpperCase();
+      if (!cod) return;
+      rowsPorCodigo.set(cod, row);
+      clavesDeCodigo(cod).forEach(k => { if (!dbMap.has(k)) dbMap.set(k, row); });
+    });
+    const setScanned = new Set();
+    liveCodes.forEach(c => clavesDeCodigo(c).forEach(k => setScanned.add(k)));
     const hoy = new Date();
 
     const auditData = { totales: [], faltaEnDeposito: [], sobraEnDeposito: [], ok: [], olvidadas: [], desconocido: [], entregadasSinPago: [] };
 
-    for (const [code, row] of dbMap.entries()) {
+    for (const [code, row] of rowsPorCodigo.entries()) {
       const activa = row.OrdEstadoActual !== null && row.OrdEstadoActual < 9;
-      const escaneado = setScanned.has(code);
+      const escaneado = [...clavesDeCodigo(code)].some(k => setScanned.has(k));
       const dias = row.OrdFechaIngresoOrden ? Math.floor(Math.abs(hoy - new Date(row.OrdFechaIngresoOrden)) / 86400000) : 0;
       const item = {
         codigo: row.OrdCodigoOrden, trabajo: row.OrdNombreTrabajo, cliente: row.ClienteNombre,
@@ -500,8 +557,16 @@ exports.initAudit = async (req, res) => {
       else if (!activa && escaneado) auditData.sobraEnDeposito.push(item);
       if (row.OrdEstadoActual >= 9 && !row.PagIdPago) auditData.entregadasSinPago.push(item);
     }
-    for (const code of setScanned) {
-      if (!dbMap.has(code)) auditData.desconocido.push({ codigo: code, trabajo: 'N/A', cliente: 'N/A', clienteTipo: 'N/A', pagoEstado: 'N/A', ordenRetiro: 'N/A', estadoActualId: null });
+    // Sobre los códigos ORIGINALES (no las claves normalizadas): si no, el mismo escaneo se
+    // reportaría dos veces y con un texto que el operario nunca vio en la etiqueta.
+    const vistosInit = new Set();
+    for (const raw of liveCodes) {
+      const original = String(raw || '').trim().toUpperCase();
+      if (!original || vistosInit.has(original)) continue;
+      vistosInit.add(original);
+      if (![...clavesDeCodigo(original)].some(k => dbMap.has(k))) {
+        auditData.desconocido.push({ codigo: original, trabajo: 'N/A', cliente: 'N/A', clienteTipo: 'N/A', pagoEstado: 'N/A', ordenRetiro: 'N/A', estadoActualId: null });
+      }
     }
 
     res.json({ success: true, liveCodes, auditData });

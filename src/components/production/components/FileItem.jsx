@@ -208,6 +208,21 @@ const FileItem = ({ file, readOnly = false, onAction, extraInfo, actions, editin
                                         {extraInfo.repoLabel.text}
                                     </span>
                                 )}
+                                {/* Relación con una FALLA: se marca aunque ya esté sanada, para que quede
+                                    visible que ese archivo pasó por una falla en algún momento. */}
+                                {extraInfo?.fallaLabel && (
+                                    <span
+                                        title={extraInfo.fallaLabel.title}
+                                        className={`ml-2 inline-flex items-center gap-1 text-[9px] px-1.5 py-0.5 rounded border uppercase font-black tracking-tighter align-middle shadow-sm cursor-help ${
+                                            extraInfo.fallaLabel.tone === 'ok'
+                                                ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                                                : 'bg-brand-magenta/10 text-brand-magenta border-brand-magenta/30'
+                                        }`}
+                                    >
+                                        <i className={`fa-solid text-[8px] ${extraInfo.fallaLabel.tone === 'ok' ? 'fa-circle-check' : 'fa-triangle-exclamation'}`} />
+                                        {extraInfo.fallaLabel.text}
+                                    </span>
+                                )}
                                 {(() => {
                                     const isDpiForced = file.SinDPI == 1 || file.sinDpi == 1 || file.SinDPI === true;
                                     if (isDpiForced) {

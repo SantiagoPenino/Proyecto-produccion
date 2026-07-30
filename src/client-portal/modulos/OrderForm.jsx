@@ -155,7 +155,7 @@ const OrderForm = ({ serviceId: propServiceId }) => {
         estampadoFile, estampadoQuantity, estampadoPrints, estampadoOrigin,
         // TPU
         tpuForma,
-        loading, showSuccessModal, createdOrderIds, uploading, uploadProgress, uploadError,
+        loading, showSuccessModal, createdOrderIds, uploading, uploadProgress, uploadError, uploadErrorMsg,
         errorModalOpen, errorModalMessage,
         uniqueVariants, variantsInfo, dynamicMaterials, visibleConfig, prioritiesList, areasConUrgencia,
         activeSubOrders, embroideryVariants, embroideryMaterials
@@ -409,6 +409,47 @@ const OrderForm = ({ serviceId: propServiceId }) => {
         };
     };
 
+    // Ancho y largo-fijo de un material POR NOMBRE (no por ítem): se usa para revalidar los archivos
+    // ya cargados cuando el cliente cambia el material.
+    const matInfoPorNombre = (matName) => {
+        if (!matName || !String(matName).trim()) return { ancho: null, largoFijo: 0 };
+        const matList = dynamicMaterials.length > 0 ? dynamicMaterials : (serviceInfo?.materials || []);
+        const foundMat = matList.find(m => (m.Material || m.Descripcion || m) === matName);
+        return {
+            ancho: resolveMaterialWidth(foundMat || matName),
+            largoFijo: (foundMat && typeof foundMat === 'object') ? (parseFloat(foundMat.Largo) || 0) : 0,
+        };
+    };
+
+    // ¿El archivo ya cargado sirve para ESTE material? Devuelve el motivo o null.
+    // El flujo real es: primero se sube el archivo, DESPUÉS se elige la tela. Con medida fija
+    // (banderas) eso dejaba pasar un archivo inválido sin decir nada hasta el "Confirmar",
+    // donde el error genérico de subida no explicaba nada.
+    const errorArchivoParaMaterial = (fileObj, matName) => {
+        if (!fileObj || !fileObj.width || !fileObj.height) return null; // sin medir → no se valida acá
+        const { ancho, largoFijo } = matInfoPorNombre(matName);
+        if (!(ancho > 0) || !(largoFijo > 0)) return null;              // solo materiales de medida fija
+        const aM = (v) => (fileObj.unit === 'meters' ? v : (v / 300) * 0.0254);
+        const wM = aM(fileObj.width), hM = aM(fileObj.height);
+        const fuera = (real, esp) => Math.abs(real - esp) > TOLERANCIA_ANCHO_M + 1e-9;
+        if (!fuera(wM, ancho) && !fuera(hM, largoFijo)) return null;
+        const invertido = !fuera(wM, largoFijo) && !fuera(hM, ancho);
+        return `"${matName}" se imprime a MEDIDA FIJA: el archivo debe medir exactamente `
+            + `${ancho.toFixed(2)}m de ancho x ${largoFijo.toFixed(2)}m de largo. `
+            + `"${fileObj.name}" mide ${wM.toFixed(2)}m x ${hM.toFixed(2)}m`
+            + (invertido ? ' — está rotado: girá el arte para que el ancho sea el lado de '
+                + `${ancho.toFixed(2)}m.` : '. Ajustá el archivo a la medida exacta.');
+    };
+
+    // Al cambiar el material, revisa los archivos ya cargados y avisa en el acto.
+    const avisarSiMaterialNoAplica = (itemsAValidar, matName) => {
+        const motivo = itemsAValidar.map(it => errorArchivoParaMaterial(it.file, matName)).find(Boolean);
+        if (motivo) {
+            actions.setErrorModalMessage(motivo);
+            actions.setErrorModalOpen(true);
+        }
+    };
+
     const [twinfaceSame, setTwinfaceSame] = useState(false);
     const [applyMaterialToAll, setApplyMaterialToAll] = useState(true); // check por defecto: el material elegido aplica a todo el pedido
 
@@ -418,6 +459,7 @@ const OrderForm = ({ serviceId: propServiceId }) => {
             const firstMaterial = items[0].material;
             const updated = items.map(it => ({ ...it, material: firstMaterial }));
             actions.setItems(updated);
+            avisarSiMaterialNoAplica(updated, firstMaterial);
         }
     };
 
@@ -425,8 +467,10 @@ const OrderForm = ({ serviceId: propServiceId }) => {
         if (applyMaterialToAll) {
             const updated = items.map(it => ({ ...it, material: val }));
             actions.setItems(updated);
+            avisarSiMaterialNoAplica(updated, val);
         } else {
             actions.updateItem(itemId, 'material', val);
+            avisarSiMaterialNoAplica(items.filter(it => it.id === itemId), val);
         }
     };
 
@@ -748,6 +792,19 @@ const OrderForm = ({ serviceId: propServiceId }) => {
         // su material elegido — no se autocompleta, así que validamos antes de confirmar.
         if (config.materialMode === 'multiple' && items.some(it => !it.material || !String(it.material).trim())) {
             return addToast('Seleccioná el material de cada archivo antes de confirmar el pedido.', 'error');
+        }
+
+        // MEDIDA FIJA (banderas): último chequeo antes de enviar. El backend rechaza igual, pero acá
+        // se explica el motivo — si se llegaba hasta la subida, el modal solo decía "hubo un problema
+        // al subir uno de los archivos" y el cliente reintentaba a ciegas algo que nunca iba a entrar.
+        // Cubre el caso de elegir la tela después de cargar el arte, y el de cambiarla al final.
+        const errMedidaFija = items
+            .map(it => errorArchivoParaMaterial(it.file, (config.materialMode === 'single' && !config.allowItemMaterialOverride) ? globalMaterial : (it.material || globalMaterial)))
+            .find(Boolean);
+        if (errMedidaFija) {
+            actions.setErrorModalMessage(errMedidaFija);
+            actions.setErrorModalOpen(true);
+            return;
         }
 
         // Impresión (sublimación, DTF, etc.): tiene que haber al menos un archivo de arte. Sin arte la
@@ -2121,7 +2178,7 @@ const OrderForm = ({ serviceId: propServiceId }) => {
 
             </form>
 
-            <UploadProgressModal isOpen={uploading || uploadError} progress={uploadProgress} isError={uploadError} onRetry={() => actions.handleUploadProcess(state.pendingManifest, state.localFileMap)} />
+            <UploadProgressModal isOpen={uploading || uploadError} progress={uploadProgress} isError={uploadError} errorMsg={uploadErrorMsg} onRetry={() => actions.handleUploadProcess(state.pendingManifest, state.localFileMap)} />
             <ErrorModal isOpen={errorModalOpen} onClose={() => actions.setErrorModalOpen(false)} message={errorModalMessage} />
 
             {showSuccessModal && createPortal(

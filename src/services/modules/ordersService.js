@@ -86,6 +86,20 @@ export const ordersService = {
         const response = await api.post(`/orders/${ordenId}/enviar-aprobacion`);
         return response.data;
     },
+    // TPU: texturas por zona que eligió el cliente al aprobar el boceto.
+    getTexturasOrden: async (ordenId) => {
+        const response = await api.get(`/orders/${ordenId}/texturas`);
+        return response.data;
+    },
+    setTexturasOrden: async (ordenId, elecciones) => {
+        const response = await api.put(`/orders/${ordenId}/texturas`, { elecciones });
+        return response.data;
+    },
+    // Catálogo (la carpeta assets/textures). Mismo endpoint que usa el portal.
+    getCatalogoTexturas: async () => {
+        const response = await api.get('/web-orders/texturas-tpu');
+        return response.data;
+    },
     deleteFile: async (fileId) => {
         const response = await api.delete(`/orders/file/${fileId}`);
         return response.data;

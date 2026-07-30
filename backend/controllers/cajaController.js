@@ -10,6 +10,30 @@ const pdfService  = require('../services/pdfService');
 // ─────────────────────────────────────────────
 const io = (req) => req.app.get('socketio');
 
+/**
+ * Reintenta una operación de Caja ante un DEADLOCK de SQL Server (error 1205).
+ *
+ * Es seguro reintentar: ante un deadlock SQL elige una transacción como víctima y la revierte
+ * ENTERA (no queda nada aplicado a medias), por eso el propio motor responde "Rerun the
+ * transaction" — no puede duplicar un cobro. RCSI no cubre este caso: resuelve los deadlocks
+ * lectura/escritura, no los escritura/escritura como los de Caja (varias operaciones tocando
+ * las mismas filas de cuenta corriente en distinto orden).
+ */
+const conReintentoDeadlock = async (nombre, fn, maxIntentos = 3) => {
+  for (let intento = 1; intento <= maxIntentos; intento++) {
+    try {
+      return await fn();
+    } catch (err) {
+      if (err?.number === 1205 && intento < maxIntentos) {
+        logger.warn(`[CAJA] Deadlock en ${nombre} — intento ${intento}/${maxIntentos}, reintentando en ${intento * 300}ms...`);
+        await new Promise(r => setTimeout(r, intento * 300));
+        continue;
+      }
+      throw err;
+    }
+  }
+};
+
 // Tope para imputar una diferencia a "cambio monetario" en el pago de deudas.
 // Por encima de 1 USD ya no es fluctuación del tipo de cambio: se imputa al cliente.
 const LIMITE_DIF_CAMBIO_USD = 1;
@@ -67,7 +91,8 @@ const procesarTransaccion = async (req, res) => {
 
     // Multiempresa: empresa elegida por el cajero (null => la BD aplica el DEFAULT)
     const empresaId = req.body?.empresaId || req.user?.empresaId || null;
-    const resultado = await cajaService.procesarTransaccion({ header, aplicaciones, pagos: pagos || [], usuarioId, empresaId });
+    const resultado = await conReintentoDeadlock('procesarTransaccion',
+      () => cajaService.procesarTransaccion({ header, aplicaciones, pagos: pagos || [], usuarioId, empresaId }));
     const s = io(req); if (s) { s.emit('actualizado',{type:'actualizacion'}); s.emit('retiros:update',{type:'pago'}); }
     return res.status(201).json(resultado);
   } catch (err) {
@@ -90,7 +115,8 @@ const procesarVentaDirecta = async (req, res) => {
 
     // Multiempresa: empresa elegida por el cajero (null => la BD aplica el DEFAULT)
     const empresaId = req.body?.empresaId || req.user?.empresaId || null;
-    const resultado = await cajaService.procesarVentaDirecta({ ...data, usuarioId, empresaId });
+    const resultado = await conReintentoDeadlock('procesarVentaDirecta',
+      () => cajaService.procesarVentaDirecta({ ...data, usuarioId, empresaId }));
     const s = io(req); if (s) { s.emit('actualizado',{type:'actualizacion'}); s.emit('retiros:update',{type:'venta'}); }
     return res.status(201).json(resultado);
   } catch (err) {
@@ -115,7 +141,8 @@ const anularTransaccion = async (req, res) => {
   const id = parseInt(req.params.id, 10);
   if (isNaN(id)) return res.status(400).json({ success:false, error:'ID inválido.' });
   try {
-    const r = await cajaService.anularTransaccion({ tcaIdTransaccion:id, usuarioId, motivo:req.body.motivo });
+    const r = await conReintentoDeadlock('anularTransaccion',
+      () => cajaService.anularTransaccion({ tcaIdTransaccion:id, usuarioId, motivo:req.body.motivo }));
     const s = io(req); if (s) s.emit('retiros:update',{type:'anulacion'});
     return res.json(r);
   } catch (err) {
@@ -1387,7 +1414,7 @@ const registrarOperacionManual = async (req, res) => {
 // 1. Registra los pagos en la caja (MovimientosCaja)
 // 2. Imputa contra cada DeudaDocumento seleccionada (actualiza DDeImportePendiente / DDeEstado)
 // 3. Registra movimientos en libro mayor (MovimientosCuenta)
-const procesarPagoDeuda = async (req, res) => {
+const procesarPagoDeudaInterno = async (req, res) => {
   const usuarioId = req.user?.id || 70;
   // Multiempresa: empresa a la que se atribuye el pago (null => la BD aplica el DEFAULT)
   const empresaId = req.body?.empresaId || req.user?.empresaId || null;
@@ -2227,6 +2254,19 @@ const procesarPagoDeuda = async (req, res) => {
       await transaction.rollback();
       throw errTx;
     }
+  } catch (err) {
+    // Deadlock: se re-lanza para que el wrapper reintente (SQL ya revirtió la transacción entera).
+    if (err?.number === 1205) throw err;
+    logger.error('[PAGO-DEUDA]', err.message);
+    return res.status(500).json({ error: err.message });
+  }
+};
+
+// Este endpoint maneja su transacción en el propio controller, así que el reintento envuelve
+// toda la operación. Al reintentar no se puede duplicar el pago: el deadlock revierte todo.
+const procesarPagoDeuda = async (req, res) => {
+  try {
+    return await conReintentoDeadlock('procesarPagoDeuda', () => procesarPagoDeudaInterno(req, res));
   } catch (err) {
     logger.error('[PAGO-DEUDA]', err.message);
     return res.status(500).json({ error: err.message });

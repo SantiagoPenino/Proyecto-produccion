@@ -9,6 +9,27 @@ Estado: **IMPLEMENTADO (4 fases)**. A probar de punta a punta. Requiere restart 
 3. El cliente ve un **thumbnail del archivo cuyo nombre contenga `cmyk`**.
 4. El cliente **aprueba** si está conforme → recién ahí se libera a producción.
 
+### Cambio de flujo (29/07/2026) — se aprueba el BOCETO, no el arte
+
+El punto 2 dejó de ser condición para el punto 4. El operario que agarra el pedido sube **un solo PDF
+con la palabra `boceto` en el nombre** (aparece en *Archivos de Referencia*, igual que antes) y **eso**
+es lo que el cliente ve para aprobar. Las otras capas del arte se suben **después** de la aprobación,
+ya en producción. Antes había que terminar el arte completo (6 capas) para recién ahí preguntarle al
+cliente si le gustaba.
+
+Qué cambió en el código:
+- `enviarAprobacionTPU` ([ordersController.js](../backend/controllers/ordersController.js)): el chequeo de
+  "exactamente 6 archivos" quedó **solo** para el reuso de matriz (`[REUSO-REGEN]`, que va directo a
+  producción sin pasar por el cliente). El camino normal exige **≥1 archivo con `boceto` en el nombre**.
+- `OrderDetailModal`: misma validación del lado del front, y el texto de confirmación dice *boceto*
+  (antes decía "archivo CMYK"). Si solo está el boceto, la pestaña de impresión avisa que el archivo
+  está en Referencias en vez de quedar aparentemente vacía.
+- **Visor 3D a partir del boceto**: `Tpu3DViewer` usa `capas.boceto || capas.cmyk` como capa de arte
+  (el cmyk queda de fallback para pedidos viejos). Sin `corte`, la silueta sale de la tinta del propio
+  boceto — camino que ya existía para cuando faltaba el corte. `getClientOrders` expone `TieneArte3D`
+  (¿hay un PDF `boceto`/`cmyk`?) y `FactoryView` muestra **"Ver 3D"** solo cuando vale 1.
+- Sin cambios en `getOrderFiles` ni en el thumbnail del portal: ya priorizaban `boceto` con fallback a `cmyk`.
+
 ---
 
 ## Lo que YA existe y se reutiliza (buena noticia: ~70% está)

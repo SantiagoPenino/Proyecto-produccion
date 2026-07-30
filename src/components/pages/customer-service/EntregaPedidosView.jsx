@@ -120,7 +120,7 @@ const generateLabelBody = (enc) => {
         <div class="rem-section">
             <div class="badge-center"><span class="badge rem-badge">REMITENTE</span></div>
             <div class="rem-nombre">USER</div>
-            <div class="rem-dir">Arenal Grande 2667</div>
+            <div class="rem-dir">Inca 2228</div>
             <div class="rem-city">Montevideo, Uruguay</div>
             <div class="rem-tel">&#9742; 092284262</div>
         </div>

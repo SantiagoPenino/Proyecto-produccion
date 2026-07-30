@@ -22,6 +22,18 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
     const [fallaImages, setFallaImages] = useState([]); // imágenes de fallas anotadas (solo SB)
     const { user } = useAuth();
 
+    // ¿Este usuario puede MODIFICAR el estado de la orden? Solo internos con rol habilitado.
+    // El backend es el que manda (soloInternoConRol en /orders/:id/status y /area-status);
+    // esto es UX: sin el gate se veía un combo que después rebotaba con 403.
+    // Comparación normalizada (sin acentos, minúsculas) igual que en el backend.
+    // Admin(1), User(2), Coordinador(11). Espeja ROLES_EDITAN_ESTADO del backend.
+    const ROLES_EDITAN_ESTADO = ['admin', 'user', 'coordinador'];
+    const normalizaRol = (r) => String(r || '')
+        .normalize('NFD').replace(/[̀-ͯ]/g, '')
+        .trim().toLowerCase();
+    const puedeEditarEstado = user?.userType === 'INTERNAL'
+        && ROLES_EDITAN_ESTADO.includes(normalizaRol(user?.rol));
+
     // Estado local Base
     const [currentOrder, setCurrentOrder] = useState(null);
 
@@ -45,12 +57,37 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
     const [loadingLabels, setLoadingLabels] = useState(false);
     const [draftStates, setDraftStates] = useState({ status: '', areaStatus: '' });
 
+    // TPU — texturas por zona: lo que el cliente eligió en el visor 3D al aprobar el boceto.
+    // Producción las tiene que ver (es lo que se fabrica) y puede corregirlas.
+    const [texturasOrden, setTexturasOrden] = useState([]);   // filas de OrdenTexturasTPU
+    const [catalogoTexturas, setCatalogoTexturas] = useState([]);
+    const [zonaEditando, setZonaEditando] = useState(null);   // índice de zona en edición | null
+    const [guardandoTextura, setGuardandoTextura] = useState(false);
+
     // Reuso de matriz TPU con cantidad distinta: la orden trae arte "base" a regenerar y NO va a
     // aprobación del cliente — al subir las 6 capas nuevas, entra directo a producción.
     const esReusoRegen = isTPU && (
         /\[REUSO-REGEN\]/i.test(String(currentOrder?.Nota || currentOrder?.nota || order?.Nota || order?.nota || '')) ||
         files.some(f => /REGENERAR|ARTE BASE/i.test(String(f.TipoArchivo || f.tipo || f.NombreArchivo || f.nombre || '')))
     );
+
+    // TPU: traer la elección de texturas + el catálogo (para mostrar nombre y muestra).
+    useEffect(() => {
+        if (!isTPU || !currentOrder?.id) return;
+        let vivo = true;
+        (async () => {
+            try {
+                const [t, c] = await Promise.all([
+                    ordersService.getTexturasOrden(currentOrder.id),
+                    ordersService.getCatalogoTexturas(),
+                ]);
+                if (!vivo) return;
+                setTexturasOrden(t?.data || []);
+                setCatalogoTexturas(c?.data || []);
+            } catch (_) { /* sin texturas: la sección simplemente no aparece */ }
+        })();
+        return () => { vivo = false; };
+    }, [isTPU, currentOrder?.id]);
 
     useEffect(() => {
         if (currentOrder) {
@@ -293,10 +330,10 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
     // Archivos de Referencia = select * from ArchivosReferencia
     const referenceFiles = files.filter(f => f.Categoria === 'referencia');
 
-    // TPU: el arte cuyo nombre contiene "boceto" es el BOCETO DE PRODUCCIÓN. Sigue siendo uno de
-    // los 6 archivos de arte (cuenta para el máximo y para enviar a aprobación), pero se MUESTRA
-    // en la pestaña de Referencias (debajo del boceto del cliente) con su propio tag — y es el que
-    // el cliente ve en el portal para aprobar (el backend filtra por 'boceto' con fallback a cmyk).
+    // TPU: el arte cuyo nombre contiene "boceto" es el BOCETO DE PRODUCCIÓN. Es LO ÚNICO que hace
+    // falta para mandar la orden a aprobación (las otras capas se suben después, ya aprobada), y se
+    // MUESTRA en la pestaña de Referencias (debajo del boceto del cliente) con su propio tag — es el
+    // que el cliente ve en el portal para aprobar (el backend filtra por 'boceto' con fallback a cmyk).
     const esBocetoProduccion = (f) => isTPU && /boceto/i.test(String(f.nombre || f.NombreArchivo || ''));
     const printFilesVista = productionFiles.filter(f => !esBocetoProduccion(f));
     const bocetosProduccion = productionFiles.filter(esBocetoProduccion);
@@ -363,18 +400,42 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
         }
     };
 
+    // TPU: el operario corrige la textura de una zona. Se manda SOLO esa zona: el backend no toca
+    // las demás, así que las que eligió el cliente conservan su marca.
+    const handleCambiarTextura = async (zonaIndice, archivo) => {
+        if (!currentOrder?.id) return;
+        setGuardandoTextura(true);
+        try {
+            await ordersService.setTexturasOrden(currentOrder.id, { [zonaIndice]: archivo });
+            const t = await ordersService.getTexturasOrden(currentOrder.id);
+            setTexturasOrden(t?.data || []);
+            setZonaEditando(null);
+            toast.success(`Zona ${zonaIndice + 1} actualizada.`);
+        } catch (e) {
+            toast.error('Error: ' + (e?.response?.data?.error || e?.message || ''));
+        } finally {
+            setGuardandoTextura(false);
+        }
+    };
+
     // TPU: enviar la orden a aprobación del cliente (con confirmación)
     const handleEnviarAprobacion = async () => {
         if (!currentOrder?.id) return;
-        const nArte = productionFiles.filter(f => (f.Estado || f.estado || f.EstadoArchivo || '').toUpperCase() !== 'CANCELADO').length;
-        if (nArte !== 6) {
-            return toast.error(`Se necesitan exactamente 6 archivos de arte para ${esReusoRegen ? 'enviar a producción' : 'enviar a aprobación'} (hay ${nArte}).`);
+        const activos = productionFiles.filter(f => (f.Estado || f.estado || f.EstadoArchivo || '').toUpperCase() !== 'CANCELADO');
+        if (esReusoRegen) {
+            // El reuso no pasa por el cliente: va directo a fabricar, así que necesita el arte completo.
+            if (activos.length !== 6) {
+                return toast.error(`Se necesitan exactamente 6 archivos de arte para enviar a producción (hay ${activos.length}).`);
+            }
+        } else if (!activos.some(esBocetoProduccion)) {
+            // Lo único que se manda a aprobar es el BOCETO; el resto del arte se sube después.
+            return toast.error('Falta el boceto: subí un PDF con "boceto" en el nombre.');
         }
         const r = await Swal.fire({
             title: esReusoRegen ? '¿Enviar a producción?' : '¿Enviar a aprobación del cliente?',
             html: esReusoRegen
                 ? 'Es un <b>reuso de matriz</b> con cantidad distinta: el diseño ya está aprobado.<br/>Con las 6 capas nuevas, la orden entra <b>directo a producción</b> (sin aprobación del cliente).'
-                : 'El cliente verá el arte (archivo <b>CMYK</b>) y deberá aprobarlo.<br/>La orden queda <b>retenida</b> hasta que apruebe.',
+                : 'El cliente verá el <b>boceto</b> y deberá aprobarlo.<br/>La orden queda <b>retenida</b> hasta que apruebe.',
             icon: 'question',
             showCancelButton: true,
             confirmButtonText: esReusoRegen ? 'Enviar a producción' : 'Enviar a aprobación',
@@ -443,11 +504,20 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
                     if (refCode) {
                         ordersService.getIntegralDetails(refCode).then(integralData => {
                             if (integralData && integralData.archivos) {
+                                // Código de la orden de cada archivo: el modal muestra los archivos de TODAS
+                                // las órdenes del pedido, así que sin esto no se puede distinguir cuáles vienen
+                                // de una orden de falla (-F).
+                                const codigoPorOrden = {};
+                                (integralData.ordenes || []).forEach(o => {
+                                    const oid = o.OrdenID ?? o.id;
+                                    if (oid != null) codigoPorOrden[String(oid)] = o.CodigoOrden || o.code || '';
+                                });
                                 // Add logic to mark files not from current order as readonly
                                 const allFiles = integralData.archivos.map(f => ({
                                     ...f,
                                     id: f.ArchivoID || f.RefID || f.ServicioID || f.id,
-                                    readonly: String(f.OrdenID) !== String(orderId)
+                                    readonly: String(f.OrdenID) !== String(orderId),
+                                    _codigoOrden: codigoPorOrden[String(f.OrdenID)] || ''
                                 }));
                                 setFiles(allFiles);
 
@@ -953,8 +1023,8 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
 
                 <div className="p-6 bg-white flex-1 overflow-y-auto custom-scrollbar">
 
-                    {/* Campos de Estado Editables */}
-                    {!readOnly && (
+                    {/* Campos de Estado Editables — solo internos con rol habilitado (ver puedeEditarEstado) */}
+                    {!readOnly && puedeEditarEstado && (
                     <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-3 bg-brand-cyan/5 p-4 rounded-xl border border-brand-cyan/20 shadow-sm">
                         {(() => {
                             const areaId = currentOrder?.area || '';
@@ -1327,7 +1397,7 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
                                                     ? (progresoTPU
                                                         ? `Subiendo ${progresoTPU.actual}/${progresoTPU.total} · ${progresoTPU.pct}%`
                                                         : 'Subiendo...')
-                                                    : 'Subir arte (PDF / PLT · 6 archivos)'}
+                                                    : 'Subir arte (PDF / PLT · máx. 6)'}
                                             </span>
                                             <input type="file" accept="application/pdf,.pdf,.plt" multiple className="hidden" disabled={uploadingTPU}
                                                 onChange={(e) => { handleUploadTPUFiles(e.target.files); e.target.value = ''; }} />
@@ -1336,6 +1406,14 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
                                     {printFilesVista.length === 0 ? (
                                         <div className="py-12 text-center text-zinc-400 italic bg-zinc-50 rounded-xl border border-dashed border-zinc-200">
                                             No hay archivos de impresión cargados.
+                                            {/* El boceto no se lista acá: se muestra en Referencias. Sin este aviso el
+                                                operario sube el boceto y ve la pestaña vacía, como si no hubiera subido nada. */}
+                                            {bocetosProduccion.length > 0 && (
+                                                <div className="mt-2 text-[11px] not-italic font-bold uppercase tracking-wide text-brand-cyan">
+                                                    <i className="fa-solid fa-arrow-turn-down mr-1"></i>
+                                                    El boceto está en “Archivos de Referencia”
+                                                </div>
+                                            )}
                                         </div>
                                     ) : (
                                         printFilesVista.map((f, idx) => {
@@ -1347,6 +1425,29 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
                                                     ? { text: 'Original (madre)', tone: 'zinc' }
                                                     : { text: 'Reposición', tone: 'cyan' })
                                                 : null;
+                                            // Relación con una FALLA — se marca SIEMPRE, esté sanada o no:
+                                            //  · el archivo está fallado ahora
+                                            //  · ya fue repuesto (la cura le deja la marca [Repuesto])
+                                            //  · o es el archivo de una orden de falla (-F), o sea la reposición
+                                            const fallaLabel = (() => {
+                                                const est = String(f.EstadoArchivo || f.Estado || f.estado || '').toUpperCase();
+                                                const obs = String(f.Observaciones || f.observaciones || '');
+                                                // Marcas que deja la cura al completar la reposición. Son DOS textos
+                                                // distintos según el camino: '[Reposición OK]' y '[Repuesto]'.
+                                                const yaRepuesto   = /\[Repuesto\]|\[Reposici[oó]n OK\]/i.test(obs);
+                                                const esDeOrdenF   = /-F\d+/i.test(String(f._codigoOrden || '')) || /Reposici[oó]n por Falla/i.test(obs);
+                                                const estaResuelto = est === 'OK' || est === 'FINALIZADO';
+
+                                                if (est === 'FALLA') return { text: 'Falla', tone: 'magenta', title: 'Este archivo está reportado como falla' };
+                                                if (yaRepuesto)      return { text: 'Falla resuelta', tone: 'ok', title: 'Tuvo una falla y su reposición ya se completó' };
+                                                if (esDeOrdenF) {
+                                                    // Archivo de la orden -F: si ya se controló OK, esa reposición está cerrada.
+                                                    return estaResuelto
+                                                        ? { text: 'Falla resuelta', tone: 'ok',      title: `Reposición completada${f._codigoOrden ? ` (${f._codigoOrden})` : ''}` }
+                                                        : { text: 'Repone falla',   tone: 'magenta', title: `Reposición en curso${f._codigoOrden ? ` (${f._codigoOrden})` : ''}` };
+                                                }
+                                                return null;
+                                            })();
                                             return (
                                                 <FileItem
                                                     key={`file-${idx}`}
@@ -1356,7 +1457,8 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
                                                         roll: currentOrder?.rollId || 'General',
                                                         machine: currentOrder?.printer || 'Sin Asignar',
                                                         um: currentOrder.UM || currentOrder.unit || 'm',
-                                                        repoLabel
+                                                        repoLabel,
+                                                        fallaLabel
                                                     }}
                                                     actions={actions}
                                                     editingContent={editContent}
@@ -1426,6 +1528,84 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
                                                         )}
                                                     </a>
                                                 ))}
+                                            </div>
+                                        </div>
+                                    )}
+
+                                    {/* TPU: lo que el cliente eligió en el visor 3D. Es lo que se fabrica,
+                                        así que producción lo ve acá y lo puede corregir. */}
+                                    {isTPU && texturasOrden.length > 0 && (
+                                        <div className="mb-3">
+                                            <div className="text-[11px] font-black text-brand-cyan uppercase tracking-wider mb-2 flex items-center gap-1.5">
+                                                <i className="fa-solid fa-swatchbook"></i> Texturas elegidas ({texturasOrden.length})
+                                            </div>
+                                            <div className="space-y-1.5">
+                                                {texturasOrden.map(t => {
+                                                    const tex = catalogoTexturas.find(c => c.archivo === t.ArchivoTextura);
+                                                    const editando = zonaEditando === t.ZonaIndice;
+                                                    return (
+                                                        <div key={t.ZonaIndice} className="rounded-lg border border-zinc-200 bg-white p-2">
+                                                            <div className="flex items-center gap-2.5">
+                                                                <div
+                                                                    className="w-9 h-9 rounded-md border border-zinc-200 bg-zinc-100 shrink-0"
+                                                                    style={tex ? { backgroundImage: `url("${tex.url}")`, backgroundSize: '200%' } : undefined}
+                                                                />
+                                                                <div className="min-w-0 flex-1">
+                                                                    <div className="text-[10px] font-black uppercase tracking-wider text-zinc-400">Zona {t.ZonaIndice + 1}</div>
+                                                                    <div className="text-sm font-bold text-zinc-700 truncate">
+                                                                        {!t.ArchivoTextura
+                                                                            ? <span className="text-zinc-400 italic font-normal">Sin textura</span>
+                                                                            : (tex?.nombre || <span className="text-amber-600">{t.ArchivoTextura} — textura no encontrada</span>)}
+                                                                    </div>
+                                                                </div>
+                                                                {t.ElegidaPor === 'OPERARIO' && (
+                                                                    <span
+                                                                        className="shrink-0 px-1.5 py-0.5 rounded text-[9px] font-black uppercase tracking-wide bg-amber-50 text-amber-700 border border-amber-200"
+                                                                        title="La cambió producción, no es lo que aprobó el cliente"
+                                                                    >Modificada</span>
+                                                                )}
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={() => setZonaEditando(editando ? null : t.ZonaIndice)}
+                                                                    className="shrink-0 w-7 h-7 rounded-md text-zinc-400 hover:text-brand-cyan hover:bg-brand-cyan/5 flex items-center justify-center"
+                                                                    title="Cambiar la textura de esta zona"
+                                                                ><i className={`fa-solid ${editando ? 'fa-xmark' : 'fa-pen'} text-xs`}></i></button>
+                                                            </div>
+
+                                                            {editando && (
+                                                                <div className="mt-2 pt-2 border-t border-zinc-100 flex items-start gap-2 overflow-x-auto">
+                                                                    <button
+                                                                        type="button"
+                                                                        disabled={guardandoTextura}
+                                                                        onClick={() => handleCambiarTextura(t.ZonaIndice, null)}
+                                                                        className="shrink-0 w-12 text-center group disabled:opacity-50"
+                                                                    >
+                                                                        <div className={`w-12 h-12 rounded-md border-2 flex items-center justify-center ${!t.ArchivoTextura ? 'border-brand-cyan' : 'border-zinc-200 group-hover:border-zinc-400'}`}>
+                                                                            <i className="fa-solid fa-ban text-zinc-400 text-xs"></i>
+                                                                        </div>
+                                                                        <span className="block mt-0.5 text-[9px] text-zinc-500 leading-tight">Sin textura</span>
+                                                                    </button>
+                                                                    {catalogoTexturas.map(c => (
+                                                                        <button
+                                                                            key={c.archivo}
+                                                                            type="button"
+                                                                            disabled={guardandoTextura}
+                                                                            onClick={() => handleCambiarTextura(t.ZonaIndice, c.archivo)}
+                                                                            className="shrink-0 w-12 text-center group disabled:opacity-50"
+                                                                            title={c.nombre}
+                                                                        >
+                                                                            <div
+                                                                                className={`w-12 h-12 rounded-md border-2 bg-zinc-100 ${t.ArchivoTextura === c.archivo ? 'border-brand-cyan' : 'border-zinc-200 group-hover:border-zinc-400'}`}
+                                                                                style={{ backgroundImage: `url("${c.url}")`, backgroundSize: '200%' }}
+                                                                            />
+                                                                            <span className="block mt-0.5 text-[9px] text-zinc-500 leading-tight truncate">{c.nombre}</span>
+                                                                        </button>
+                                                                    ))}
+                                                                </div>
+                                                            )}
+                                                        </div>
+                                                    );
+                                                })}
                                             </div>
                                         </div>
                                     )}

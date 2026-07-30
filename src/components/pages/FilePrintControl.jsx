@@ -316,7 +316,8 @@ const FilePrintControl = ({ areaCode }) => {
               // Solo mostrar el modal si NO es una orden de reposición (-F)
               // Las -F se completan silenciosamente durante "CORREGIR FALLA" para navegar a la madre.
 
-              const isReposition = /\-F\d+$/.test(fresh.code || '');
+              // (-\d+)? contempla el sufijo de linaje (SUB-9960-F14604-3): también es una -F.
+              const isReposition = /\-F\d+(-\d+)?$/.test(fresh.code || '');
 
               if (isCompleted && !wasCompleted && !isReposition) {
                 // Determinar si es la última orden válida del lote
@@ -468,8 +469,9 @@ const FilePrintControl = ({ areaCode }) => {
 
   // --- ACTIONS HANDLERS ---
   // --- FALLA ORDER DETECTION ---
-  const isFallaOrder = /\-F\d+$/.test(selectedOrder?.code || '');
-  const originalOrderCode = isFallaOrder ? selectedOrder.code.replace(/\-F\d+$/, '') : null;
+  // (-\d+)? contempla el sufijo de linaje: SUB-9960-F14604-3 también es una reposición.
+  const isFallaOrder = /\-F\d+(-\d+)?$/.test(selectedOrder?.code || '');
+  const originalOrderCode = isFallaOrder ? selectedOrder.code.replace(/\-F\d+(-\d+)?$/, '') : null;
 
   const handleCorregirFalla = async () => {
     if (!originalOrderCode) return;

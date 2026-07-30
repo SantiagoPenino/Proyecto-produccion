@@ -574,8 +574,10 @@ export const FactoryView = () => {
                                             </span>
                                             )}
                                             {esperandoAprobacion && (() => {
-                                                // TPU: además del boceto, el cliente puede ver el parche armado en 3D
-                                                const soTpu = (project.subOrders || []).find(so => /^TPU-/i.test(so.CodigoOrden || ''));
+                                                // TPU: el cliente puede ver el parche armado en 3D a partir del mismo
+                                                // boceto que está aprobando. Solo si esa capa existe (PDF): sin ella
+                                                // el visor no tiene con qué armar el modelo y abría para fallar.
+                                                const soTpu = (project.subOrders || []).find(so => /^TPU-/i.test(so.CodigoOrden || '') && Number(so.TieneArte3D) === 1);
                                                 return soTpu?.OrdenID ? (
                                                     <button
                                                         onClick={(e) => { e.stopPropagation(); setTpu3D({ ordenId: soTpu.OrdenID, codigo: soTpu.CodigoOrden }); }}

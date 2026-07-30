@@ -69,6 +69,7 @@ const initialState = {
     uploading: false,
     uploadProgress: { current: 0, total: 0, filename: '' },
     uploadError: false,
+    uploadErrorMsg: '',   // motivo real del rechazo de la subida (lo muestra UploadProgressModal)
     pendingManifest: [],
     localFileMap: {},
     errorModalOpen: false,
@@ -144,6 +145,7 @@ function orderFormReducer(state, action) {
                 ...state,
                 uploading: true,
                 uploadError: false,
+                uploadErrorMsg: '',   // sin esto, el reintento arrastra el motivo del error anterior
                 // Reset del progreso: si no, una segunda subida arranca mostrando el 100% de la anterior
                 uploadProgress: {
                     current: 0,
@@ -173,7 +175,9 @@ function orderFormReducer(state, action) {
             };
 
         case actionTypes.UPLOAD_ERROR:
-            return { ...state, uploadError: true, pendingManifest: action.remainingManifest };
+            // uploadErrorMsg: motivo REAL del rechazo (ej. la medida fija de una bandera). Sin esto
+            // el modal solo decía "hubo un problema al subir", que no le dice nada al cliente.
+            return { ...state, uploadError: true, uploadErrorMsg: action.mensaje || '', pendingManifest: action.remainingManifest };
 
         default:
             return state;
@@ -803,8 +807,12 @@ export const useOrderForm = (serviceId, overrides = {}) => {
         } catch (err) {
             console.error("❌ Error en secuencia de subida:", err);
             const remaining = manifest.slice(completed);
-            dispatch({ type: actionTypes.UPLOAD_ERROR, remainingManifest: remaining });
-            addToast("Hubo un error al subir archivos. Reintenta.", "error");
+            // El backend rechaza con un motivo concreto (medida fija, PDF multipágina, etc.). Se
+            // propaga tal cual: "hubo un error, reintenta" mandaba al cliente a reintentar para
+            // siempre un archivo que nunca iba a ser aceptado.
+            const mensaje = err?.response?.data?.error || err?.message || '';
+            dispatch({ type: actionTypes.UPLOAD_ERROR, remainingManifest: remaining, mensaje });
+            addToast(mensaje || "Hubo un error al subir archivos. Reintenta.", "error");
         }
     };
 

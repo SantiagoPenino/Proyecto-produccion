@@ -170,7 +170,7 @@ export const generateTicketHTML = (retiro) => {
                 <div style="display:flex;align-items:center;gap:12px;">
                     <div>${LOGO_SVG}</div>
                     <div style="display:flex;flex-direction:column;gap:2px;">
-                        <div style="font-size:13px;font-weight:700;color:#333;">Arenal Grande 2667</div>
+                        <div style="font-size:13px;font-weight:700;color:#333;">Inca 2228</div>
                         <div style="font-size:11px;font-weight:600;color:#555;">Montevideo, Uruguay</div>
                         <div style="font-size:12px;font-weight:800;color:#333;">&#9742; 092284262</div>
                     </div>

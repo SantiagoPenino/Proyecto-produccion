@@ -570,9 +570,11 @@ const TicketAdminInterface = ({ ticketId, onUpdate, departamentos }) => {
                         {ticket.DepNombre}
                     </div>
                     <span className="text-sm font-semibold text-zinc-600 truncate">{ticket.TicAsunto}</span>
-                    {(ticket.OrdCodigoOrden || ticket.OrdIdOrden) && (
+                    {/* Solo el CÓDIGO de la orden. Antes caía a OrdIdOrden (el ID interno) cuando el
+                        código no resolvía, y se mostraba un número que no le dice nada a nadie. */}
+                    {ticket.OrdCodigoOrden && (
                         <div className="flex items-center gap-1 text-xs text-brand-gold font-medium border-l border-zinc-300 pl-2 shrink-0">
-                            <Package size={13} /> {ticket.OrdCodigoOrden || ticket.OrdIdOrden}
+                            <Package size={13} /> {ticket.OrdCodigoOrden}
                         </div>
                     )}
                     {ticket.ClienteNombre && (

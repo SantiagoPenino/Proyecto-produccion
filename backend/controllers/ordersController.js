@@ -159,7 +159,7 @@ exports.uploadProductionFile = async (req, res) => {
 // =====================================================================
 // TPU: ENVIAR A APROBACIÓN DEL CLIENTE
 // Retiene la orden (AprobacionPendiente=1, Estado='Cargando...') hasta que el cliente
-// apruebe el arte. Es el inverso de aprobarPedido (webOrdersController), que valida
+// apruebe el BOCETO. Es el inverso de aprobarPedido (webOrdersController), que valida
 // AprobacionPendiente=1 AND Estado='Cargando...' y la reactiva a 'Pendiente'.
 // =====================================================================
 exports.enviarAprobacionTPU = async (req, res) => {
@@ -172,7 +172,10 @@ exports.enviarAprobacionTPU = async (req, res) => {
             .query(`
                 SELECT o.OrdenID, o.AreaID, o.Estado, o.Nota,
                        (SELECT COUNT(*) FROM ArchivosOrden ao
-                          WHERE ao.OrdenID = o.OrdenID AND ISNULL(ao.EstadoArchivo,'') <> 'Cancelado') AS archivos
+                          WHERE ao.OrdenID = o.OrdenID AND ISNULL(ao.EstadoArchivo,'') <> 'Cancelado') AS archivos,
+                       (SELECT COUNT(*) FROM ArchivosOrden ao
+                          WHERE ao.OrdenID = o.OrdenID AND ISNULL(ao.EstadoArchivo,'') <> 'Cancelado'
+                            AND LOWER(ao.NombreArchivo) LIKE '%boceto%') AS bocetos
                 FROM Ordenes o WHERE o.OrdenID = @OID
             `);
         if (!check.recordset.length) return res.status(404).json({ error: 'Orden no encontrada.' });
@@ -183,11 +186,12 @@ exports.enviarAprobacionTPU = async (req, res) => {
         // completar las 6 capas regeneradas la orden entra DIRECTO a producción, sin aprobación del cliente.
         const esReuso = /\[REUSO-REGEN\]/i.test(o.Nota || '');
 
-        if (o.archivos !== 6) {
-            return res.status(400).json({ error: `Se necesitan exactamente 6 archivos de arte para ${esReuso ? 'enviar a producción' : 'enviar a aprobación'} (hay ${o.archivos}).` });
-        }
-
         if (esReuso) {
+            // El reuso NO pasa por el cliente: entra directo a fabricar, así que el arte tiene que
+            // estar completo (las 6 capas regeneradas para la cantidad nueva).
+            if (o.archivos !== 6) {
+                return res.status(400).json({ error: `Se necesitan exactamente 6 archivos de arte para enviar a producción (hay ${o.archivos}).` });
+            }
             if (String(o.Estado || '') !== 'Cargando...') return res.status(400).json({ error: 'La orden ya está en producción.' });
             // Activar directo a producción (sin aprobación del cliente).
             const { changeOrderState } = require('../services/stateManagerService');
@@ -212,6 +216,13 @@ exports.enviarAprobacionTPU = async (req, res) => {
             return res.json({ success: true, aProduccion: true });
         }
 
+        // Lo único que el cliente aprueba es el BOCETO (un PDF con 'boceto' en el nombre, que se
+        // muestra en Archivos de Referencia). Las otras capas del arte se suben DESPUÉS de que
+        // apruebe, ya en producción — por eso acá no se exigen los 6 archivos.
+        if (!o.bocetos) {
+            return res.status(400).json({ error: 'Falta el boceto: subí un PDF con "boceto" en el nombre para enviar a aprobación.' });
+        }
+
         if (o.Estado === 'Cargando...') return res.status(400).json({ error: 'La orden ya está esperando la aprobación del cliente.' });
 
         await pool.request()
@@ -228,6 +239,80 @@ exports.enviarAprobacionTPU = async (req, res) => {
     } catch (err) {
         logger.error('[enviarAprobacionTPU] ' + err.message);
         res.status(500).json({ error: err.message });
+    }
+};
+
+// =====================================================================
+// TPU: TEXTURAS POR ZONA — lado interno
+// El cliente las elige en el visor 3D al aprobar el boceto; producción las ve acá y puede
+// corregirlas. Los helpers viven en webOrdersController (se requiere adentro de la función
+// para no acoplar la carga de los dos módulos).
+// =====================================================================
+
+// GET /api/orders/:ordenId/texturas — lectura para el detalle de la orden (sin scope de cliente).
+exports.getTexturasOrdenInterno = async (req, res) => {
+    const ordenId = parseInt(req.params.ordenId, 10);
+    if (!ordenId) return res.status(400).json({ error: 'Falta ordenId.' });
+    try {
+        const wo = require('./webOrdersController');
+        const pool = await getPool();
+        res.json({ success: true, data: await wo.leerTexturasOrden(pool, ordenId) });
+    } catch (err) {
+        logger.error('[getTexturasOrdenInterno] ' + err.message);
+        res.status(500).json({ error: 'No se pudieron leer las texturas de la orden.' });
+    }
+};
+
+// PUT /api/orders/:ordenId/texturas — el operario corrige la elección.
+// Queda marcada como OPERARIO y se registra en el historial: se está cambiando lo que se va a
+// fabricar respecto de lo que el cliente aprobó, así que tiene que haber rastro de quién y cuándo.
+exports.setTexturasOrdenInterno = async (req, res) => {
+    const ordenId = parseInt(req.params.ordenId, 10);
+    const elecciones = req.body?.elecciones;
+    if (!ordenId || !elecciones || typeof elecciones !== 'object') {
+        return res.status(400).json({ error: 'Datos inválidos' });
+    }
+    try {
+        const wo = require('./webOrdersController');
+        for (const archivo of Object.values(elecciones)) {
+            if (!wo.texturaValida(archivo)) return res.status(400).json({ error: `Textura desconocida: ${archivo}` });
+        }
+        const pool = await getPool();
+        const ord = await pool.request()
+            .input('OID', sql.Int, ordenId)
+            .query('SELECT OrdenID FROM dbo.Ordenes WHERE OrdenID = @OID');
+        if (!ord.recordset.length) return res.status(404).json({ error: 'Orden no encontrada.' });
+
+        const usuarioId = parseInt(req.user?.id || req.user?.UsuarioID) || null;
+        const antes = await wo.leerTexturasOrden(pool, ordenId);
+        await wo.guardarTexturasOrden(pool, ordenId, elecciones, 'OPERARIO', usuarioId);
+
+        // Historial: fila CERRADA (FechaInicio = FechaFin) con el estado actual de la orden, para
+        // no pisar la fila abierta del estado real — mismo patrón que la edición de archivos.
+        const previo = new Map(antes.map(r => [r.ZonaIndice, r.ArchivoTextura]));
+        const cambios = Object.entries(elecciones)
+            .map(([z, a]) => {
+                const de = previo.get(parseInt(z, 10)) || 'sin textura';
+                const hacia = a || 'sin textura';
+                return de === hacia ? null : `Zona ${parseInt(z, 10) + 1}: ${de} → ${hacia}`;
+            })
+            .filter(Boolean);
+        if (cambios.length) {
+            const safeUser = String(req.user?.nombre || req.user?.Nombre || req.user?.usuario || usuarioId || 'Sistema').substring(0, 99);
+            pool.request()
+                .input('OID', sql.Int, ordenId)
+                .input('User', sql.VarChar(100), safeUser)
+                .input('Det', sql.NVarChar, `Texturas modificadas — ${cambios.join(' | ')}`.substring(0, 499))
+                .query(`
+                    INSERT INTO [SecureAppDB].[dbo].[HistorialOrdenes] (OrdenID, Estado, FechaInicio, FechaFin, Usuario, Detalle)
+                    SELECT @OID, ISNULL(EstadoenArea, 'Pendiente'), GETDATE(), GETDATE(), @User, @Det FROM Ordenes WHERE OrdenID = @OID
+                `).catch(e => logger.error('[setTexturasOrdenInterno] historial: ' + e.message));
+        }
+
+        res.json({ success: true, cambios: cambios.length });
+    } catch (err) {
+        logger.error('[setTexturasOrdenInterno] ' + err.message);
+        res.status(500).json({ error: 'No se pudo guardar la elección de texturas.' });
     }
 };
 

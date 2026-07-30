@@ -1913,6 +1913,17 @@ exports.getClientOrders = async (req, res) => {
                            AND (UPPER(LTRIM(RTRIM(o.AreaID))) <> 'TPU' OR LOWER(NombreArchivo) LIKE '%boceto%' OR LOWER(NombreArchivo) LIKE '%cmyk%')
                          ORDER BY CASE WHEN UPPER(LTRIM(RTRIM(o.AreaID))) = 'TPU' AND LOWER(NombreArchivo) LIKE '%boceto%' THEN 0 ELSE 1 END, ArchivoID ASC) AS DriveFileId,
                         ISNULL(o.AprobacionPendiente, 0) AS AprobacionPendiente,
+                        -- El visor 3D arma el parche con el BOCETO DE PRODUCCIÓN (cmyk como fallback
+                        -- para pedidos anteriores al cambio de flujo). Sin el flag, el botón "Ver 3D"
+                        -- aparecía siempre — también en órdenes sin ninguna capa — y siempre fallaba.
+                        -- Tiene que ser PDF: el corte suele venir en .plt y no se puede rasterizar.
+                        CASE WHEN EXISTS (
+                            SELECT 1 FROM ArchivosOrden x WITH(NOLOCK)
+                            WHERE x.OrdenID = o.OrdenID AND x.RutaAlmacenamiento IS NOT NULL
+                              AND ISNULL(x.EstadoArchivo,'') <> 'Cancelado'
+                              AND LOWER(x.NombreArchivo) LIKE '%.pdf'
+                              AND (LOWER(x.NombreArchivo) LIKE '%boceto%' OR LOWER(x.NombreArchivo) LIKE '%cmyk%')
+                        ) THEN 1 ELSE 0 END AS TieneArte3D,
                         o.DisenadorID   AS DisenadorID,
                         dis.Nombre      AS DisenadorNombre
                     FROM Ordenes o WITH(NOLOCK)
@@ -1943,6 +1954,7 @@ exports.getClientOrders = async (req, res) => {
                         NULL                AS PrimerArchivoID,
                         NULL                AS DriveFileId,
                         0                   AS AprobacionPendiente,
+                        0                   AS TieneArte3D,
                         NULL                AS DisenadorID,
                         NULL                AS DisenadorNombre
                     FROM OrdenesDeposito o WITH(NOLOCK)
@@ -2349,6 +2361,183 @@ exports.getTpuModelArchivo = async (req, res) => {
     } catch (err) {
         logger.error(`[TPU-3D] getTpuModelArchivo: ${err.message}`);
         res.status(500).json({ error: 'Error al leer la capa.' });
+    }
+};
+
+// ─── TPU: CATÁLOGO DE TEXTURAS ───────────────────────────────────────────────
+// La CARPETA es el catálogo: no hay tabla. El nombre visible sale del nombre del archivo y
+// el roughness es uno solo para todas (constante en el visor), así que no hay ningún dato por
+// textura que persistir. Agregar una textura = soltar el archivo en assets/textures.
+//
+// ⚠️ No renombrar ni borrar archivos: la elección del cliente se guarda por nombre de archivo
+// (OrdenTexturasTPU.ArchivoTextura). Si igual pasa, el front degrada a "textura no encontrada".
+const EXT_TEXTURAS = new Set(['.svg', '.png', '.jpg', '.jpeg', '.webp']);
+
+// Ajuste por textura, opcional, en un `texturas.json` al lado de los archivos:
+//   { "textura1.svg": { "repeticiones": 14, "altura": 0.5 } }
+// · repeticiones = cuántas veces entra a lo ancho del parche. No se deduce del archivo: los SVG
+//   vienen con viewBox pero SIN medida física (width="50mm"), así que no hay tamaño real del que
+//   sacarlo — con el viewBox pelado el tile daba ~98 mm y la textura se dibujaba UNA sola vez.
+// · altura = cuánto se marca el relieve (0 = plano). Va por textura porque un tejido fino y un
+//   cuero grueso no se marcan igual.
+const REPETICIONES_DEFAULT = 12;
+const ALTURA_DEFAULT = 0.6;
+
+// En producción las texturas viven en backend/public (salida del build de Vite); en desarrollo
+// el front las sirve Vite desde el public/ del repo y el backend corre aparte. Se prueban las dos.
+const carpetaTexturas = () => {
+    const path = require('path');
+    const fs = require('fs');
+    const candidatas = [
+        path.join(__dirname, '../public/assets/textures'),      // prod (build)
+        path.join(__dirname, '../../public/assets/textures'),   // dev (repo)
+    ];
+    return candidatas.find(c => fs.existsSync(c)) || null;
+};
+
+// 'lino-crudo.svg' → 'Lino crudo'
+const nombreDeArchivo = (archivo) => {
+    const base = archivo.replace(/\.[^.]+$/, '').replace(/[-_]+/g, ' ').trim();
+    return base.charAt(0).toUpperCase() + base.slice(1);
+};
+
+// GET /api/web-orders/texturas-tpu
+exports.getTexturasTpu = async (req, res) => {
+    try {
+        const fs = require('fs');
+        const path = require('path');
+        const dir = carpetaTexturas();
+        if (!dir) return res.json({ success: true, data: [] });
+
+        let ajustes = {};
+        const cfgPath = path.join(dir, 'texturas.json');
+        if (fs.existsSync(cfgPath)) {
+            // Un json roto no puede dejar sin texturas al visor: se avisa y se sigue con defaults.
+            try { ajustes = JSON.parse(fs.readFileSync(cfgPath, 'utf8')) || {}; }
+            catch (e) { logger.warn('[texturas-tpu] texturas.json inválido, se ignora: ' + e.message); }
+        }
+        const num = (v, def, min) => (Number.isFinite(Number(v)) && Number(v) >= min ? Number(v) : def);
+
+        const data = fs.readdirSync(dir)
+            .filter(f => EXT_TEXTURAS.has(path.extname(f).toLowerCase()))
+            .sort((a, b) => a.localeCompare(b, 'es'))
+            .map(archivo => ({
+                archivo,
+                nombre: nombreDeArchivo(archivo),
+                url: `/assets/textures/${encodeURIComponent(archivo)}`,
+                repeticiones: num(ajustes[archivo]?.repeticiones, REPETICIONES_DEFAULT, 1),
+                altura: num(ajustes[archivo]?.altura, ALTURA_DEFAULT, 0),
+            }));
+
+        res.json({ success: true, data });
+    } catch (err) {
+        logger.error('[texturas-tpu] ' + err.message);
+        res.status(500).json({ error: 'No se pudo leer el catálogo de texturas.' });
+    }
+};
+
+// ¿El archivo elegido existe en el catálogo? Evita guardar cualquier string que llegue por body.
+exports.texturaValida = (archivo) => {
+    if (!archivo) return true; // null = "sin textura", siempre válido
+    const fs = require('fs');
+    const dir = carpetaTexturas();
+    if (!dir) return false;
+    try { return fs.readdirSync(dir).includes(String(archivo)); } catch { return false; }
+};
+
+// Lee la elección de texturas de una orden. `scopeCliente` la limita al dueño (portal);
+// el detalle de orden interno la lee sin scope.
+exports.leerTexturasOrden = async (pool, ordenId, codCliente = null) => {
+    const r = await pool.request()
+        .input('OID', sql.Int, ordenId)
+        .input('cod', sql.Int, codCliente || 0)
+        .query(`
+            SELECT t.ZonaIndice, t.ArchivoTextura, t.ElegidaPor, t.FechaEleccion, t.FechaModificacion
+            FROM dbo.OrdenTexturasTPU t WITH(NOLOCK)
+            JOIN dbo.Ordenes o WITH(NOLOCK) ON o.OrdenID = t.OrdenID
+            WHERE t.OrdenID = @OID ${codCliente ? 'AND o.CodCliente = @cod' : ''}
+            ORDER BY t.ZonaIndice ASC
+        `);
+    return r.recordset;
+};
+
+// Guarda SOLO las zonas que vienen en el payload (no reescribe las otras): si el operario cambia
+// una zona, las que eligió el cliente tienen que conservar su ElegidaPor.
+exports.guardarTexturasOrden = async (pool, ordenId, elecciones, elegidaPor, usuarioId = null) => {
+    for (const [zonaStr, archivo] of Object.entries(elecciones || {})) {
+        const zona = parseInt(zonaStr, 10);
+        if (!Number.isInteger(zona) || zona < 0) continue;
+        const valor = archivo ? String(archivo).substring(0, 255) : null;
+        const upd = await pool.request()
+            .input('OID', sql.Int, ordenId)
+            .input('Z', sql.Int, zona)
+            .input('A', sql.NVarChar(255), valor)
+            .input('P', sql.VarChar(10), elegidaPor)
+            .input('U', sql.Int, usuarioId || null)
+            .query(`
+                UPDATE dbo.OrdenTexturasTPU
+                SET ArchivoTextura = @A, ElegidaPor = @P,
+                    ModificadaPorUsuarioID = @U, FechaModificacion = GETDATE()
+                WHERE OrdenID = @OID AND ZonaIndice = @Z
+            `);
+        if (upd.rowsAffected[0] === 0) {
+            await pool.request()
+                .input('OID', sql.Int, ordenId)
+                .input('Z', sql.Int, zona)
+                .input('A', sql.NVarChar(255), valor)
+                .input('P', sql.VarChar(10), elegidaPor)
+                .query(`
+                    INSERT INTO dbo.OrdenTexturasTPU (OrdenID, ZonaIndice, ArchivoTextura, ElegidaPor, FechaEleccion)
+                    VALUES (@OID, @Z, @A, @P, GETDATE())
+                `);
+        }
+    }
+};
+
+// GET /api/web-orders/orden/:ordenId/texturas — lo que el cliente ya eligió (para reabrir el visor).
+exports.getTexturasOrden = async (req, res) => {
+    const ordenId = parseInt(req.params.ordenId, 10);
+    const codCliente = req.user?.codCliente;
+    if (!ordenId || !codCliente) return res.status(400).json({ error: 'Datos inválidos' });
+    try {
+        const pool = await getPool();
+        res.json({ success: true, data: await exports.leerTexturasOrden(pool, ordenId, codCliente) });
+    } catch (err) {
+        logger.error('[getTexturasOrden] ' + err.message);
+        res.status(500).json({ error: 'No se pudieron leer las texturas de la orden.' });
+    }
+};
+
+// POST /api/web-orders/orden/:ordenId/texturas — el cliente elige. Solo mientras el pedido está
+// esperando su aprobación: al aprobar, la elección queda congelada (después la toca producción).
+exports.setTexturasOrden = async (req, res) => {
+    const ordenId = parseInt(req.params.ordenId, 10);
+    const codCliente = req.user?.codCliente;
+    const elecciones = req.body?.elecciones;
+    if (!ordenId || !codCliente || !elecciones || typeof elecciones !== 'object') {
+        return res.status(400).json({ error: 'Datos inválidos' });
+    }
+    for (const archivo of Object.values(elecciones)) {
+        if (!exports.texturaValida(archivo)) return res.status(400).json({ error: `Textura desconocida: ${archivo}` });
+    }
+    try {
+        const pool = await getPool();
+        const chk = await pool.request()
+            .input('OID', sql.Int, ordenId)
+            .input('cod', sql.Int, codCliente)
+            .query(`
+                SELECT OrdenID FROM dbo.Ordenes
+                WHERE OrdenID = @OID AND CodCliente = @cod
+                  AND ISNULL(AprobacionPendiente, 0) = 1 AND Estado = 'Cargando...'
+            `);
+        if (!chk.recordset.length) {
+            return res.status(409).json({ error: 'El pedido ya no está esperando tu aprobación: la elección quedó congelada.' });
+        }
+        await exports.guardarTexturasOrden(pool, ordenId, elecciones, 'CLIENTE');
+        res.json({ success: true });
+    } catch (err) {
+        logger.error('[setTexturasOrden] ' + err.message);
+        res.status(500).json({ error: 'No se pudo guardar la elección de texturas.' });
     }
 };
 

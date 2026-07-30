@@ -21,6 +21,72 @@ const { isPedidoCompletoEnArea } = require('../services/pedidoCompletoService');
 const { cancelarLoteSiVacio } = require('../services/loteCleanupService');
 
 /**
+ * Cura la familia tras cerrar una reposición (-F) sin fallas.
+ *
+ * Pone en OK los archivos/servicios en FALLA del MISMO nombre en TODAS las órdenes de la familia
+ * (mismo NoDocERP + área; sin NoDocERP, por código raíz + sus eslabones -F) y limpia la marca
+ * "[Esperando Reposición]" de las que ya no tengan ninguna falla pendiente.
+ *
+ * Vive acá —y no dentro de un handler— porque hay DOS caminos para cerrar una reposición y los dos
+ * tienen que curar igual:
+ *   · postControlArchivo → marcar los archivos uno por uno en Control.
+ *   · completarOrden     → el botón "CORREGIR FALLA" / "Completar orden", que es el flujo NATURAL.
+ * Estaba escrito solo dentro del primero, así que en la práctica casi nunca se ejecutaba: al corregir
+ * una falla con el botón, los eslabones previos de la cadena quedaban con su archivo en FALLA para
+ * siempre y el pedido no se resolvía.
+ *
+ * @param db  pool o transacción activa
+ */
+async function sanarFamiliaTrasReposicion(db, { ordenId, codigoOrden, noDocERP, areaId }) {
+    const codigoRaiz = (codigoOrden || '').split('-F')[0];
+    // "Misma familia": por NoDocERP si existe; si no, por código raíz (madre y sus -F). Excluye la propia.
+    const filtroFamilia = (alias) => `
+        ${alias}.AreaID = @AreaID
+        AND ${alias}.OrdenID <> @CurrentOrderID
+        AND (
+            (@NoDoc IS NOT NULL AND ${alias}.NoDocERP = @NoDoc)
+            OR (@NoDoc IS NULL AND (${alias}.CodigoOrden = @CodigoRaiz OR ${alias}.CodigoOrden LIKE @CodigoRaiz + '-F%'))
+        )`;
+
+    await new sql.Request(db)
+        .input('NoDoc', sql.VarChar(50), noDocERP)
+        .input('CodigoRaiz', sql.NVarChar, codigoRaiz)
+        .input('AreaID', sql.VarChar(50), areaId)
+        .input('CurrentOrderID', sql.Int, ordenId)
+        .query(`
+            UPDATE ParentFiles
+            SET EstadoArchivo = 'OK', Observaciones = CONCAT(ISNULL(ParentFiles.Observaciones, ''), ' [Repuesto]')
+            FROM dbo.ArchivosOrden AS ParentFiles
+            INNER JOIN dbo.Ordenes AS ParentOrder ON ParentFiles.OrdenID = ParentOrder.OrdenID
+            WHERE ${filtroFamilia('ParentOrder')}
+              AND ParentFiles.EstadoArchivo = 'FALLA'
+              AND ParentFiles.NombreArchivo IN (SELECT NombreArchivo FROM dbo.ArchivosOrden WHERE OrdenID = @CurrentOrderID);
+
+            UPDATE ParentServices
+            SET Estado = 'OK', Observaciones = CONCAT(ISNULL(ParentServices.Observaciones, ''), ' [Repuesto]')
+            FROM dbo.ServiciosExtraOrden AS ParentServices
+            INNER JOIN dbo.Ordenes AS ParentOrder ON ParentServices.OrdenID = ParentOrder.OrdenID
+            WHERE ${filtroFamilia('ParentOrder')}
+              AND ParentServices.Estado = 'FALLA'
+              AND ParentServices.Descripcion IN (SELECT Descripcion FROM dbo.ServiciosExtraOrden WHERE OrdenID = @CurrentOrderID);
+
+            -- Limpiar "[Esperando Reposición]" de las órdenes de la familia que ya no tengan NINGUNA
+            -- falla pendiente. Se sacan TODAS las ocurrencias (una orden puede acumular varias).
+            UPDATE ParentOrder
+            SET Observaciones = NULLIF(LTRIM(RTRIM(
+                    REPLACE(ISNULL(ParentOrder.Observaciones, ''), ' [Esperando Reposición]', '')
+                )), '')
+            FROM dbo.Ordenes AS ParentOrder
+            WHERE ${filtroFamilia('ParentOrder')}
+              AND ParentOrder.Observaciones LIKE '%[[]Esperando Reposición]%'
+              AND NOT EXISTS (SELECT 1 FROM dbo.ArchivosOrden AF
+                              WHERE AF.OrdenID = ParentOrder.OrdenID AND AF.EstadoArchivo = 'FALLA')
+              AND NOT EXISTS (SELECT 1 FROM dbo.ServiciosExtraOrden SF
+                              WHERE SF.OrdenID = ParentOrder.OrdenID AND SF.Estado = 'FALLA');
+        `);
+}
+
+/**
  * 1. Obtiene las Órdenes de un Rollo (o todas, o filtradas)
  */
 const getOrdenes = async (req, res) => {
@@ -413,37 +479,78 @@ const postControlArchivo = async (req, res) => {
             const tipoFallaDesc = fallaIDClean;  // se muestra el ID; podría JOIN TiposFalla si existe
             const safeMotivo    = (motivo || '').toString().trim();
 
+            // Archivo al que corresponde ESTA falla. Una orden -F acumula una línea por cada falla
+            // del pedido (se reutiliza la misma -F), así que sin esto no se sabe qué archivo falló
+            // en cada línea. Del nombre estándar ("SUB-8814_ELEA_18 DE JULIO_Archivo 4 de 4 (x1).pdf")
+            // se extrae "Archivo 4 de 4"; si no matchea, se usa el nombre sin extensión.
+            const nombreArchivo   = (row?.NombreArchivo || '').trim();
+            const archivoEtiqueta = (nombreArchivo.match(/Archivo\s+\d+\s+de\s+\d+/i) || [])[0]
+                || nombreArchivo.replace(/\.[^.]+$/, '');
+
             // Partes de la nota
             const partesFalla = [];
-            if (safeMotivo)     partesFalla.push(`Motivo: ${safeMotivo}`);
+            // Motivo SIEMPRE presente: si el operario no escribe nada, la línea quedaba muda
+            // ("Máquina: X | Lote: Y") sin decir por qué falló.
+            partesFalla.push(`Motivo: ${safeMotivo || '(sin especificar)'}`);
+            if (archivoEtiqueta) partesFalla.push(`Archivo: ${archivoEtiqueta}`);
             if (metrosReponer)  partesFalla.push(`Reponer: ${metrosReponer}m`);
             if (nombreMaquina)  partesFalla.push(`Máquina: ${nombreMaquina}`);
             if (nombreLote)     partesFalla.push(`Lote: ${nombreLote}`);
             const notaFallaDetalle = partesFalla.join(' | ');
-            // Nota final = nota original + detalle de la falla
+            // Nota final = nota original + detalle de la falla.
+            // El prefijo 'FALLA:' va SIEMPRE: el detalle de la orden lo usa para separar las notas
+            // del cliente (caja azul "Notas de Producción") de las fallas (caja ámbar). Sin él —
+            // cuando la orden madre no tenía nota — la primera falla aparecía como nota de
+            // producción y las siguientes como falla: la misma info en dos cajas distintas.
+            const notaConPrefijo = `FALLA: ${notaFallaDetalle || 'Reposición por Falla'}`;
             const notaFinal = notaOriginal
-                ? `${notaOriginal} || FALLA: ${notaFallaDetalle}`
-                : (notaFallaDetalle || 'Reposición por Falla');
+                ? `${notaOriginal} || ${notaConPrefijo}`
+                : notaConPrefijo;
 
             const obsFalla = metrosReponer
                 ? `${safeMotivo} (Reponer: ${metrosReponer}m)`
                 : safeMotivo;
 
-            // Raíz sin sufijos de falla: si se reporta una falla sobre una orden que YA es -F, la nueva
-            // falla se genera sobre la orden madre (evita apilar -F-F). Mismo criterio que stripRepoSuffix.
-            const codigoRaizFalla = (codigoOrden || '').replace(/(-F\d+)+$/i, '');
-            const nuevoCodigo = `${codigoRaizFalla}-F${archivoId}`;
+            // ¿Lo que está fallando es una reposición (-F) o la orden madre? Define tanto el código
+            // de la nueva falla como si se puede reutilizar una -F existente (ver más abajo).
+            const controlandoUnaFalla = /-F\d+(-\d+)?$/i.test(codigoOrden || '');
+
+            // Raíz sin sufijos de falla (SUB-9471-F13858-2 → SUB-9471): evita apilar -F-F.
+            const codigoRaizFalla = (codigoOrden || '').replace(/(-F\d+(-\d+)?)+$/i, '');
+
+            // Base del código de la reposición:
+            //  · Falla sobre la MADRE  → `{raíz}-F{archivoId}` (el archivo que falló identifica la falla).
+            //  · Falla sobre una -F    → se CONSERVA el linaje de esa -F y el sufijo numera el eslabón:
+            //    SUB-9471-F13858 → SUB-9471-F13858-2 → SUB-9471-F13858-3. Antes cada eslabón tomaba el
+            //    ID de su propio archivo (F13858 → F13916 → F13917) y por el código parecían todas
+            //    hermanas de la madre: no se veía que una salía de la otra.
+            // El sufijo -N es el mismo mecanismo que rompe empates cuando un archivo vuelve a fallar:
+            // en ambos casos significa "el siguiente número libre de este linaje".
+            const baseCodigoFalla = controlandoUnaFalla
+                ? String(codigoOrden || '').replace(/-\d+$/, '')
+                : `${codigoRaizFalla}-F${archivoId}`;
+            let nuevoCodigo = baseCodigoFalla;
 
             // ── Buscar si ya existe una orden -F activa para esta madre ──
-            const existingFallaRes = await new sql.Request(transaction)
-                .input('BaseCode', sql.NVarChar, codigoRaizFalla)
-                .query(`
-                    SELECT TOP 1 OrdenID, CodigoOrden, ArchivosCount
-                    FROM dbo.Ordenes
-                    WHERE CodigoOrden LIKE @BaseCode + '-F%'
-                      AND Estado NOT IN ('CANCELADO', 'Finalizado') AND ISNULL(EstadoenArea,'') NOT IN ('Pronto', 'PRONTO')
-                    ORDER BY OrdenID DESC
-                `);
+            // La reutilización existe para que varias fallas de LA MISMA madre se junten en una sola
+            // reposición. NO aplica cuando lo que falla es una -F: una reposición que falla necesita
+            // SU PROPIA reposición. Como la búsqueda es por RAÍZ (SUB-9471), encontraba a las -F
+            // HERMANAS y absorbía la falla en una de ellas sin crear nada: la cadena
+            // SUB-9471 → -F13858 → -F13916 → (nada) moría en el tercer eslabón y la falla se perdía.
+            // Excluir solo `OrdenID <> ordenId` no alcanzaba: evitaba encontrarse a sí misma, no a las hermanas.
+            const existingFallaRes = controlandoUnaFalla
+                ? { recordset: [] }
+                : await new sql.Request(transaction)
+                    .input('BaseCode', sql.NVarChar, codigoRaizFalla)
+                    .input('OrdenActual', sql.Int, ordenId)
+                    .query(`
+                        SELECT TOP 1 OrdenID, CodigoOrden, ArchivosCount
+                        FROM dbo.Ordenes
+                        WHERE CodigoOrden LIKE @BaseCode + '-F%'
+                          AND OrdenID <> @OrdenActual
+                          AND Estado NOT IN ('CANCELADO', 'Finalizado') AND ISNULL(EstadoenArea,'') NOT IN ('Pronto', 'PRONTO')
+                        ORDER BY OrdenID DESC
+                    `);
 
             const existingFallaOrder = existingFallaRes.recordset[0] || null;
             let newOrderId;
@@ -481,6 +588,23 @@ const postControlArchivo = async (req, res) => {
                     `);
             } else {
                 // ── CREAR nueva orden -F ──
+                // Sufijo incremental -2, -3…: "siguiente número libre de este linaje". Cubre los dos
+                // casos, que son el mismo problema: la falla de una falla (el linaje avanza un eslabón)
+                // y el mismo archivo fallando de nuevo tras cerrarse su reposición (el código ya existe).
+                const dupRes = await new sql.Request(transaction)
+                    .input('Code', sql.NVarChar, nuevoCodigo)
+                    .query(`SELECT CodigoOrden FROM dbo.Ordenes
+                             WHERE CodigoOrden = @Code OR CodigoOrden LIKE @Code + '-%'`);
+                if (dupRes.recordset.length > 0) {
+                    const usados = dupRes.recordset.map(r => {
+                        const resto = String(r.CodigoOrden || '').slice(nuevoCodigo.length); // '' | '-2'
+                        const m = resto.match(/^-(\d+)$/);
+                        return m ? parseInt(m[1], 10) : 1;   // el código exacto cuenta como el nº 1
+                    });
+                    nuevoCodigo = `${nuevoCodigo}-${Math.max(...usados) + 1}`;
+                    logger.info(`[postControlArchivo] Archivo ${archivoId} ya tenía reposición previa → nueva falla ${nuevoCodigo}`);
+                }
+
                 await new sql.Request(transaction)
                     .input('OldID',         sql.Int,            ordenId)
                     .input('NewCode',       sql.NVarChar,       nuevoCodigo)
@@ -726,11 +850,15 @@ const postControlArchivo = async (req, res) => {
         } else if (!groupCompleted) {
             // B. ORDEN COMPLETA LOCALMENTE, PERO PEDIDO INCOMPLETO EN ÁREA -> Estado 'Produccion' (Espera)
             // 'Control y Calidad' deriva a Estado general 'Produccion' (ConfigEstados) -> mismo valor que el crudo anterior.
+            // OJO: si la orden tiene archivos en FALLA, el estado es 'Con Falla' — como en las otras dos
+            // ramas. Esta rama no lo miraba y PISABA el 'Con Falla' recién puesto: al controlar el resto
+            // de los archivos de una orden que ya tenía una falla, la orden volvía a 'Control y Calidad'
+            // y la falla dejaba de verse (la madre quedaba como si nada, esperando una reposición invisible).
             await changeOrderState(transaction, {
                 target : { type: 'ORDER', id: ordenId },
-                estado : 'Control y Calidad',
+                estado : Fallas > 0 ? 'Con Falla' : 'Control y Calidad',
                 userObj: req.user || 'Sistema',
-                detalle: 'Pedido incompleto en área (espera)',
+                detalle: Fallas > 0 ? 'Con fallas (pedido incompleto en área)' : 'Pedido incompleto en área (espera)',
                 io     : req.app.get('socketio'),
             });
 
@@ -981,60 +1109,10 @@ const postControlArchivo = async (req, res) => {
 
                 // --- LÓGICA DE CIERRE DE REPOSICIÓN (LIBERAR PADRE) ---
                 if (isReposicion && Fallas === 0) {
-                    // La reposición repuso su arte. Se curan los archivos/servicios en FALLA del MISMO nombre
-                    // en TODAS las órdenes de la familia (mismo NoDocERP + área), NO solo la raíz. Así, en cadenas
-                    // madre → -F → -F, también se cura el PADRE INMEDIATO — antes 'split(-F)[0]' curaba siempre
-                    // la raíz y el eslabón intermedio (madre-F1) quedaba con la falla colgada, y el pedido
-                    // nunca se resolvía. Sin NoDocERP (orden suelta) se agrupa por código raíz + sus eslabones -F.
-                    const codigoRaiz = (codigoOrden || '').split('-F')[0];
-                    // "Misma familia": por NoDocERP si existe; si no, por código raíz (madre y sus -F). Excluye la propia.
-                    const filtroFamilia = (alias) => `
-                        ${alias}.AreaID = @AreaID
-                        AND ${alias}.OrdenID <> @CurrentOrderID
-                        AND (
-                            (@NoDoc IS NOT NULL AND ${alias}.NoDocERP = @NoDoc)
-                            OR (@NoDoc IS NULL AND (${alias}.CodigoOrden = @CodigoRaiz OR ${alias}.CodigoOrden LIKE @CodigoRaiz + '-F%'))
-                        )`;
+                    // Cura la familia (ver sanarFamiliaTrasReposicion). Antes este bloque vivía acá
+                    // inline y por eso no corría al cerrar la -F con el botón "CORREGIR FALLA".
                     try {
-                        await new sql.Request(transaction)
-                            .input('NoDoc', sql.VarChar(50), noDocERP)
-                            .input('CodigoRaiz', sql.NVarChar, codigoRaiz)
-                            .input('AreaID', sql.VarChar(50), areaId)
-                            .input('CurrentOrderID', sql.Int, ordenId)
-                            .query(`
-                                UPDATE ParentFiles
-                                SET EstadoArchivo = 'OK', Observaciones = CONCAT(ISNULL(ParentFiles.Observaciones, ''), ' [Repuesto]')
-                                FROM dbo.ArchivosOrden AS ParentFiles
-                                INNER JOIN dbo.Ordenes AS ParentOrder ON ParentFiles.OrdenID = ParentOrder.OrdenID
-                                WHERE ${filtroFamilia('ParentOrder')}
-                                  AND ParentFiles.EstadoArchivo = 'FALLA'
-                                  AND ParentFiles.NombreArchivo IN (SELECT NombreArchivo FROM dbo.ArchivosOrden WHERE OrdenID = @CurrentOrderID);
-
-                                UPDATE ParentServices
-                                SET Estado = 'OK', Observaciones = CONCAT(ISNULL(ParentServices.Observaciones, ''), ' [Repuesto]')
-                                FROM dbo.ServiciosExtraOrden AS ParentServices
-                                INNER JOIN dbo.Ordenes AS ParentOrder ON ParentServices.OrdenID = ParentOrder.OrdenID
-                                WHERE ${filtroFamilia('ParentOrder')}
-                                  AND ParentServices.Estado = 'FALLA'
-                                  AND ParentServices.Descripcion IN (SELECT Descripcion FROM dbo.ServiciosExtraOrden WHERE OrdenID = @CurrentOrderID);
-
-                                -- Limpiar la marca "[Esperando Reposición]" de las órdenes de la familia que ya
-                                -- no tengan NINGUNA falla pendiente (ni archivos ni servicios). Se agrega al
-                                -- reportar la falla y antes quedaba pegada para siempre: órdenes ya resueltas
-                                -- seguían diciendo que esperaban reposición. Se sacan TODAS las ocurrencias
-                                -- (una orden puede haber acumulado varias) y se recorta el espacio sobrante.
-                                UPDATE ParentOrder
-                                SET Observaciones = NULLIF(LTRIM(RTRIM(
-                                        REPLACE(ISNULL(ParentOrder.Observaciones, ''), ' [Esperando Reposición]', '')
-                                    )), '')
-                                FROM dbo.Ordenes AS ParentOrder
-                                WHERE ${filtroFamilia('ParentOrder')}
-                                  AND ParentOrder.Observaciones LIKE '%[[]Esperando Reposición]%'
-                                  AND NOT EXISTS (SELECT 1 FROM dbo.ArchivosOrden AF
-                                                  WHERE AF.OrdenID = ParentOrder.OrdenID AND AF.EstadoArchivo = 'FALLA')
-                                  AND NOT EXISTS (SELECT 1 FROM dbo.ServiciosExtraOrden SF
-                                                  WHERE SF.OrdenID = ParentOrder.OrdenID AND SF.Estado = 'FALLA');
-                            `);
+                        await sanarFamiliaTrasReposicion(transaction, { ordenId, codigoOrden, noDocERP, areaId });
 
                         // Tras curar, si el pedido quedó COMPLETAMENTE resuelto, avisar al frontend para liberar
                         // el Canasto Falla — mismo flujo/modal que una orden normal (el operario confirma y
@@ -1900,8 +1978,9 @@ const getRelatedOrders = async (req, res) => {
         } else {
             // Fallback: orden sin NoDocERP (ej. órdenes de prueba)
             // Si es una orden -F, buscar la madre; si es madre, buscar sus -F
-            const isFalla = codigoActual.match(/-F\d+$/);
-            const baseCode = isFalla ? codigoActual.replace(/-F\d+$/, '') : codigoActual;
+            // (-\d+)? contempla el sufijo de linaje: SUB-9960-F14604-3 también es una -F.
+            const isFalla = codigoActual.match(/-F\d+(-\d+)?$/);
+            const baseCode = isFalla ? codigoActual.replace(/-F\d+(-\d+)?$/, '') : codigoActual;
 
             relatedRes = await pool.request()
                 .input('BaseCode', sql.NVarChar, baseCode)
@@ -2011,7 +2090,10 @@ async function completarOrden(req, res) {
         const noDocERP    = codigoRes.recordset[0]?.NoDocERP || null;
         const areaOrden   = codigoRes.recordset[0]?.AreaID || null;
         const rolloIdOrden = codigoRes.recordset[0]?.RolloID || null;
-        const isFallaOrder = /-F\d+$/.test(codigoOrden);
+        // (-\d+)? contempla el sufijo de linaje (SUB-9960-F14604-3). Sin él, una reposición de
+        // segundo nivel no se reconocía como -F y se salteaba TODO el cierre de reposición:
+        // no finalizaba, no curaba a la madre ni a los eslabones previos.
+        const isFallaOrder = /-F\d+(-\d+)?$/.test(codigoOrden);
 
         // -F (falla interna) completada sin fallas → Finalizado (su material se incorpora a la
         // madre, no se despacha sola). Orden/reposición común → Pronto.
@@ -2058,6 +2140,19 @@ async function completarOrden(req, res) {
             }
         }
 
+        // CIERRE DE REPOSICIÓN: curar la familia. Este es el camino que usa el botón "CORREGIR FALLA"
+        // (FilePrintControl → completarOrden), o sea el flujo NATURAL para cerrar una -F. La cura vivía
+        // solo en postControlArchivo (marcar archivo por archivo en Control), así que acá no se hacía
+        // nada: los eslabones previos de la cadena quedaban con su archivo en FALLA para siempre.
+        if (isFallaOrder && !tieneFallas) {
+            try {
+                await sanarFamiliaTrasReposicion(transaction, { ordenId, codigoOrden, noDocERP, areaId: areaOrden });
+                logger.info(`[completarOrden] Reposición ${codigoOrden} cerrada → familia curada (pedido ${noDocERP || 's/doc'}).`);
+            } catch (eSanar) {
+                logger.error(`[completarOrden] Error curando la familia tras reposición: ${eSanar.message}`);
+            }
+        }
+
         // Actualizar la orden
         await new sql.Request(transaction)
             .input('OID', sql.Int, ordenId)
@@ -2082,29 +2177,38 @@ async function completarOrden(req, res) {
         // desbloqueamos la madre (Retenido → Pendiente) para que vuelva al lote de Control.
         if (isFallaOrder && !tieneFallas) {
             try {
-                const codigoMadre = codigoOrden.replace(/-F\d+$/, '');
+                // Se desbloquea TODA la familia, no solo la raíz: el replace se come el sufijo entero
+                // (SUB-X-F123-2 → SUB-X) y el match exacto dejaba afuera al eslabón intermedio, que
+                // quedaba en 'Con Falla' para siempre aunque su falla ya estuviera repuesta.
+                const codigoMadre = codigoOrden.replace(/-F\d+(-\d+)?$/, '');
                 const madreRes = await pool.request()
                     .input('CodigoMadre', sql.NVarChar, codigoMadre)
+                    .input('NoDoc', sql.VarChar(50), noDocERP)
+                    .input('AreaID', sql.VarChar(50), areaOrden)
+                    .input('OID', sql.Int, ordenId)
                     .query(`
-                        SELECT O.OrdenID,
+                        SELECT O.OrdenID, O.CodigoOrden,
                                (SELECT COUNT(*) FROM ArchivosOrden WHERE OrdenID = O.OrdenID AND EstadoArchivo = 'FALLA') as FallasRestantes
                         FROM Ordenes O
-                        WHERE O.CodigoOrden = @CodigoMadre
+                        WHERE O.OrdenID <> @OID
+                          AND (
+                              (@NoDoc IS NOT NULL AND O.NoDocERP = @NoDoc AND O.AreaID = @AreaID)
+                              OR (@NoDoc IS NULL AND (O.CodigoOrden = @CodigoMadre OR O.CodigoOrden LIKE @CodigoMadre + '-F%'))
+                          )
                     `);
-                if (madreRes.recordset.length > 0) {
-                    const { OrdenID: madreId, FallasRestantes } = madreRes.recordset[0];
-                    if (FallasRestantes === 0) {
-                        // Solo desbloquear: Retenido → Pendiente (vuelve al lote de Control)
-                        // El operador la finalizará manualmente junto con el resto del lote.
-                        const mdCheck = await pool.request()
-                            .input('MID', sql.Int, madreId)
-                            .query(`SELECT Estado FROM Ordenes WHERE OrdenID = @MID AND Estado IN ('Retenido', 'RETENIDO')`);
-                        if (mdCheck.recordset.length > 0) {
-                            await changeOrderState(pool, { target: { type: 'ORDER', id: madreId }, estado: 'Pendiente', userObj: req.user || 'Sistema', detalle: 'Desbloqueo automático post-reposición' });
-                        }
-                        if (io) io.emit('server:order_updated', { orderId: madreId, status: 'Pendiente' });
-                        logger.info(`[completarOrden] Madre ${codigoMadre} desbloqueada → Pendiente (esperando finalización manual en lote)`);
+                for (const fam of madreRes.recordset) {
+                    const { OrdenID: famId, CodigoOrden: famCod, FallasRestantes } = fam;
+                    if (FallasRestantes !== 0) continue;
+                    // Solo desbloquear: Retenido → Pendiente (vuelve al lote de Control).
+                    // El operador la finalizará manualmente junto con el resto del lote.
+                    const mdCheck = await pool.request()
+                        .input('MID', sql.Int, famId)
+                        .query(`SELECT Estado FROM Ordenes WHERE OrdenID = @MID AND Estado IN ('Retenido', 'RETENIDO')`);
+                    if (mdCheck.recordset.length > 0) {
+                        await changeOrderState(pool, { target: { type: 'ORDER', id: famId }, estado: 'Pendiente', userObj: req.user || 'Sistema', detalle: 'Desbloqueo automático post-reposición' });
+                        logger.info(`[completarOrden] ${famCod} desbloqueada → Pendiente (esperando finalización manual en lote)`);
                     }
+                    if (io) io.emit('server:order_updated', { orderId: famId, status: 'Pendiente' });
                 }
             } catch (eMadre) {
                 logger.error(`[completarOrden] Error desbloqueando madre: ${eMadre.message}`);

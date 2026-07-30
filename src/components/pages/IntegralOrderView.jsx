@@ -4,6 +4,9 @@ import { ordersService } from '../../services/modules/ordersService';
 import OrderRouteTracker from '../orders/OrderRouteTracker';
 import OrderDetailModal from '../production/components/OrderDetailModal'; // Importar Modal
 
+// Historial: cuántas entradas se muestran antes de tocar "ver más" (el botón expande a TODAS).
+const HISTORIAL_INICIAL = 20;
+
 const IntegralOrderView = () => {
     const [searchParams] = useSearchParams();
     const [searchRef, setSearchRef] = useState('');
@@ -11,6 +14,7 @@ const IntegralOrderView = () => {
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState(null);
     const [selectedOrder, setSelectedOrder] = useState(null); // Estado para Modal
+    const [historialCompleto, setHistorialCompleto] = useState(false);
 
     // Auto-search if ?ref= is in the URL
     useEffect(() => {
@@ -26,6 +30,7 @@ const IntegralOrderView = () => {
         setLoading(true);
         setError(null);
         setData(null);
+        setHistorialCompleto(false);   // otro pedido → el historial vuelve a arrancar colapsado
         try {
             const res = await ordersService.getIntegralDetails(ref);
             setData(res);
@@ -227,7 +232,10 @@ const IntegralOrderView = () => {
                                     </tr>
                                 </thead>
                                 <tbody className="divide-y divide-slate-50">
-                                    {data.historial.filter(h => !h.Estado.startsWith('SNAPSHOT_')).slice(0, 20).map((h, i) => (
+                                    {(() => {
+                                        const todas = data.historial.filter(h => !h.Estado.startsWith('SNAPSHOT_'));
+                                        return historialCompleto ? todas : todas.slice(0, HISTORIAL_INICIAL);
+                                    })().map((h, i) => (
                                         <tr key={i} className="hover:bg-blue-50/30 transition-colors">
                                             <td className="px-3 py-1.5 text-slate-500 whitespace-nowrap">
                                                 {new Date(h.Fecha).toLocaleString('es-AR', {
@@ -253,6 +261,24 @@ const IntegralOrderView = () => {
                                     ))}
                                 </tbody>
                             </table>
+                            {/* Ver más / ver menos: al expandir se muestra el historial ENTERO. En un pedido
+                                con varias órdenes hermanas cada evento se registra por orden, así que un
+                                solo "Ingresado" ya ocupa varias filas y el corte inicial se llena enseguida. */}
+                            {(() => {
+                                const total = data.historial.filter(h => !h.Estado.startsWith('SNAPSHOT_')).length;
+                                if (total <= HISTORIAL_INICIAL) return null;
+                                const restantes = total - HISTORIAL_INICIAL;
+                                return (
+                                    <button
+                                        onClick={() => setHistorialCompleto(v => !v)}
+                                        className="w-full py-2 text-[11px] font-bold text-blue-600 hover:text-blue-800 bg-slate-50/50 hover:bg-blue-50/50 border-t border-slate-100 transition-colors"
+                                    >
+                                        {historialCompleto
+                                            ? `▲ Ver menos (mostrando las ${total} entradas)`
+                                            : `▼ Ver las ${restantes} entradas restantes (${total} en total)`}
+                                    </button>
+                                );
+                            })()}
                         </div>
                     </div>
 

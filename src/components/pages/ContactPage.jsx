@@ -146,13 +146,13 @@ export default function ContactPage() {
                 <div className="flex flex-col items-center max-w-lg mb-4 w-full">
                     <p className="text-zinc-400 mb-4 tracking-wide uppercase text-xs font-bold">Ubicación del Showroom</p>
                     <a
-                        href="https://www.google.com/maps/search/Arenal+Grande+2667+Montevideo"
+                        href="https://www.google.com/maps/search/Inca+2228+Montevideo"
                         target="_blank"
                         rel="noopener noreferrer"
                         className="px-8 py-4 bg-transparent hover:bg-white/5 border border-white/20 text-zinc-100 rounded-xl font-bold transition-all shadow-none active:scale-[0.98] w-full max-w-[300px] flex items-center justify-center gap-3"
                     >
                         <MapPin size={18} className="text-custom-magenta" />
-                        Arenal Grande 2667
+                        Inca 2228
                     </a>
                     <p className="mt-4 text-zinc-400 font-semibold text-sm flex items-center gap-2">
                         <Clock size={16} className="text-zinc-500" />

@@ -146,7 +146,7 @@ export default function Footer() {
           </h4>
           <p style={{ color: 'rgba(255,255,255,0.7)', fontSize: 13, margin: '0 0 12px', display: 'flex', alignItems: 'center', gap: 6 }}>
             <svg width="14" height="14" viewBox="0 0 24 24" fill="#0ea5e9"><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z"/></svg>
-            Arenal Grande 2667, Montevideo
+            Inca 2228, Montevideo
           </p>
           {/* Mapa interactivo Leaflet */}
           <div style={{ width: '100%', maxWidth: 340 }}>

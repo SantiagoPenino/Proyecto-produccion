@@ -356,13 +356,29 @@ app.get('/api/drive-callback', async (req, res) => {
 const publicPath = path.join(__dirname, 'public');
 if (require('fs').existsSync(publicPath)) {
     logger.info('📂 Sirviendo archivos estáticos desde:', publicPath);
+    // Los bundles de Vite llevan hash de contenido en el nombre (AreaView-BHH8rdGj.js):
+    // si cambia el contenido cambia la URL, así que se pueden cachear para siempre.
+    // El resto conserva el nombre entre deploys, así que se revalida o no se cachea.
+    const CON_HASH = /-[A-Za-z0-9_-]{8}\.[a-z0-9]+$/i;
+    const SIEMPRE_FRESCO = new Set(['index.html', 'sw.js', 'offline.html']);
+
     app.use(express.static(publicPath, {
-        etag: false,
-        lastModified: false,
-        setHeaders: (res) => {
-            res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
-            res.setHeader('Pragma', 'no-cache');
-            res.setHeader('Expires', '0');
+        setHeaders: (res, filePath) => {
+            const nombre = path.basename(filePath);
+
+            if (SIEMPRE_FRESCO.has(nombre)) {
+                // El index apunta a los chunks nuevos y el sw.js se auto-actualiza:
+                // si se cachean, el dispositivo queda clavado en la versión vieja.
+                res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+                res.setHeader('Pragma', 'no-cache');
+                res.setHeader('Expires', '0');
+            } else if (CON_HASH.test(nombre)) {
+                res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+            } else {
+                // Nombre fijo (imágenes, guías, iconos): revalida con ETag,
+                // así un reemplazo se ve enseguida sin bajar el archivo de nuevo.
+                res.setHeader('Cache-Control', 'public, max-age=3600, must-revalidate');
+            }
         }
     }));
 

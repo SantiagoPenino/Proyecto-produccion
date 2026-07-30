@@ -37,6 +37,14 @@ router.get('/orders-files', verifyToken, impersonarCliente, webOrdersController.
 router.get('/tpu-model/:ordenId', verifyToken, impersonarCliente, webOrdersController.getTpuModelCapas);
 router.get('/tpu-model/:ordenId/archivo/:archivoId', verifyToken, impersonarCliente, webOrdersController.getTpuModelArchivo);
 
+// TPU: catálogo de texturas (listado de assets/textures). Sin impersonarCliente: no hay nada
+// scopeado al cliente y lo consume también el detalle de orden interno (F5).
+router.get('/texturas-tpu', verifyToken, webOrdersController.getTexturasTpu);
+
+// TPU: elección de textura por zona. El POST solo entra mientras el pedido espera aprobación.
+router.get('/orden/:ordenId/texturas', verifyToken, impersonarCliente, webOrdersController.getTexturasOrden);
+router.post('/orden/:ordenId/texturas', verifyToken, impersonarCliente, webOrdersController.setTexturasOrden);
+
 // GET /api/web-orders/active-sublimation
 router.get('/active-sublimation', verifyToken, impersonarCliente, webOrdersController.getActiveSublimationOrders);
 

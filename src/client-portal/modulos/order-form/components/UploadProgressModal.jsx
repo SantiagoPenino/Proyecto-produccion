@@ -2,7 +2,7 @@ import React from 'react';
 import { createPortal } from 'react-dom';
 import { UploadCloud, AlertTriangle, Zap } from 'lucide-react';
 
-export const UploadProgressModal = ({ isOpen, progress, isError, onRetry }) => {
+export const UploadProgressModal = ({ isOpen, progress, isError, onRetry, errorMsg }) => {
     if (!isOpen) return null;
     
     // El porcentaje SIEMPRE se basa en bytes subidos / total de bytes.
@@ -51,7 +51,9 @@ export const UploadProgressModal = ({ isOpen, progress, isError, onRetry }) => {
                         </h3>
                         <p className="text-sm text-zinc-400 font-bold leading-relaxed px-4">
                             {isError
-                                ? 'Hubo un problema al subir uno de los archivos. No te preocupes, puedes reintentar.'
+                                // El motivo real del rechazo (si el backend lo mandó): sin esto el
+                                // cliente reintentaba a ciegas un archivo que nunca iba a entrar.
+                                ? (errorMsg || 'Hubo un problema al subir uno de los archivos. No te preocupes, puedes reintentar.')
                                 : `Por favor no cierres esta ventana. Estamos enviando ${progress.current} de ${progress.total} archivos a producción.`}
                         </p>
                     </div>

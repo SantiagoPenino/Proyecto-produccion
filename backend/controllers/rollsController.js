@@ -1453,6 +1453,40 @@ exports.setOrderMagnitud = async (req, res) => {
             .input('OID', sql.Int, Number(orderId))
             .input('M', sql.Decimal(10, 2), val)
             .query('UPDATE dbo.Ordenes SET Magnitud = @M WHERE OrdenID = @OID');
+
+        // Reflejar los metros también en los ARCHIVOS de la orden.
+        // En SB la -F nace en 0 y los metros se cargan acá, DESPUÉS (en DTF se piden al reportar la
+        // falla y por eso allá ya se ven). El detalle de la orden muestra el metraje por archivo
+        // (TOTAL = ArchivosOrden.Metros × Copias) y sumaba 0.00 aunque la orden tuviera su magnitud.
+        // Es SOLO para el metraje estimado: la cotización no lee ArchivosOrden en ningún lado.
+        const ordRes = await pool.request()
+            .input('OID', sql.Int, Number(orderId))
+            .query('SELECT CodigoOrden FROM dbo.Ordenes WHERE OrdenID = @OID');
+        const esFalla = /-F\d+(-\d+)?$/i.test(ordRes.recordset[0]?.CodigoOrden || '');
+        if (esFalla) {
+            // Si la -F tiene varios archivos propios (dos archivos de la misma madre que fallaron y
+            // se juntaron en la misma -F), el total se reparte proporcional a lo que consume cada uno
+            // (alto × copias). Con un solo archivo —el caso normal— le queda el valor exacto.
+            await pool.request()
+                .input('OID', sql.Int, Number(orderId))
+                .input('M', sql.Decimal(10, 2), val === null ? 0 : val)
+                .query(`
+                    ;WITH A AS (
+                        SELECT ArchivoID,
+                               ISNULL(NULLIF(Copias, 0), 1) AS Cop,
+                               CAST(ISNULL(NULLIF(Alto, 0), 1) * ISNULL(NULLIF(Copias, 0), 1) AS DECIMAL(18,6)) AS Peso
+                        FROM dbo.ArchivosOrden
+                        WHERE OrdenID = @OID AND ISNULL(EstadoArchivo, '') <> 'CANCELADO'
+                    ), T AS (SELECT SUM(Peso) AS TotalPeso FROM A)
+                    UPDATE ao
+                    SET Metros = CAST((@M * (A.Peso / NULLIF(T.TotalPeso, 0))) / A.Cop AS DECIMAL(10,2))
+                    FROM dbo.ArchivosOrden ao
+                    INNER JOIN A ON A.ArchivoID = ao.ArchivoID
+                    CROSS JOIN T
+                    WHERE T.TotalPeso > 0;
+                `);
+        }
+
         res.json({ ok: true });
     } catch (err) {
         logger.error('Error seteando Magnitud:', err);

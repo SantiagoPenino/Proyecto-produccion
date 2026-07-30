@@ -1039,7 +1039,11 @@ export const PickupView = () => {
                                 sessionStorage.removeItem('pickup_code');
                             }}
                             isLoading={loading}
-                            disabled={loading || !selectedFormaEnvio || needsAddress || needsReceiverName || (isEncomienda && user?.tipoClienteId !== 2)}
+                            // La restricción de encomienda (solo tipo 2 puede diferir el pago) aplica
+                            // únicamente si hay saldo a cobrar. Con total 0 —ej. cliente de rollo por
+                            // adelantado— no hay nada que diferir y bloquearlo dejaba al cliente sin
+                            // forma de confirmar el envío.
+                            disabled={loading || !selectedFormaEnvio || needsAddress || needsReceiverName || (isEncomienda && totalAmount > 0 && user?.tipoClienteId !== 2)}
                             variant="secondary"
                             icon={PackageCheck}
                             className="w-1/2 md:w-auto !bg-custom-dark !text-zinc-400 hover:!text-zinc-100 !shadow-none border border-zinc-800 hover:!border-brand-cyan/40 hover:!bg-brand-cyan/5"

@@ -342,7 +342,7 @@ const printRetiroLabel = (items) => {
         <div class="rem-section">
           <div class="badge rem-badge">REMITENTE</div>
           <div class="rem-nombre">USER</div>
-          <div class="rem-row">Arenal Grande 2667</div>
+          <div class="rem-row">Inca 2228</div>
           <div class="rem-row">Montevideo, Uruguay</div>
           <div class="rem-row">&#9742; 092284262</div>
         </div>

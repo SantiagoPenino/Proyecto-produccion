@@ -20,7 +20,14 @@ const RollCard = ({ roll, index, onViewDetails, isSelected, onToggleSelect, isMa
                         <Layers size={16} className="tablet:hidden" /><Layers size={13} className="hidden tablet:block" />
                     </div>
                     <div>
-                        <span className="text-[10px] tablet:text-[9px] uppercase font-bold text-zinc-400 block leading-none mb-0.5">Lote</span>
+                        <span className="text-[10px] tablet:text-[9px] uppercase font-bold text-zinc-400 block leading-none mb-0.5">
+                            Lote
+                            {/* Nº de lote (RolloID): el nombre lo pone el operario y se repite entre días,
+                                el número es el que identifica el lote sin ambigüedad. */}
+                            {roll.id != null && roll.id !== '' && (
+                                <span className="ml-1 font-mono normal-case text-zinc-400">#{roll.id}</span>
+                            )}
+                        </span>
                         <span className="font-bold text-zinc-700 text-sm tablet:text-xs break-all">{roll.name || roll.rollCode || roll.id}</span>
                     </div>
                 </div>

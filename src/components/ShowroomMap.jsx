@@ -11,8 +11,8 @@ L.Icon.Default.mergeOptions({
   shadowUrl:     'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png',
 });
 
-// Lat/Lng del Showroom — Arenal Grande 2667, Montevideo
-const POSITION = [-34.8799698, -56.1766206];
+// Lat/Lng del Showroom — Inca 2228, Montevideo
+const POSITION = [-34.887420595051346, -56.17808573558224];
 const ZOOM = 16;
 
 // Reset view helper (útil si el mapa ya estaba montado)
@@ -42,14 +42,14 @@ export default function ShowroomMap() {
         <Marker position={POSITION}>
           <Popup>
             <strong style={{ fontSize: 13 }}>Showroom User</strong><br />
-            Arenal Grande 2667, Montevideo
+            Inca 2228, Montevideo
           </Popup>
         </Marker>
       </MapContainer>
 
       {/* Botón para abrir Google Maps */}
       <a
-        href="https://www.google.com/maps/search/Arenal+Grande+2667+Montevideo"
+        href="https://www.google.com/maps/search/Inca+2228+Montevideo"
         target="_blank"
         rel="noopener noreferrer"
         className="flex justify-center items-center gap-2 py-3 bg-[#0ea5e9]/10 text-[#0ea5e9] hover:bg-[#0ea5e9]/20 border-t border-[#0ea5e9]/20 font-bold text-[12px] uppercase tracking-widest transition-all cursor-pointer"
