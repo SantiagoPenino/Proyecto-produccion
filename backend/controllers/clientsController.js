@@ -490,9 +490,31 @@ exports.createExternalClient = async (req, res) => {
 
 // Obtener todos los clientes con JOINs a catálogos para vista tabla
 exports.getAllClients = async (req, res) => {
-    const { q, mode } = req.query;
+    const { q, mode, light } = req.query;
     try {
         const pool = await getPool();
+
+        // Modo LIVIANO para selectores (ej. Facturación Manual): sin los 6 LEFT JOIN de catálogo
+        // (el de Trabajadores con TRY_CAST era lo más caro) y solo las columnas que el selector usa.
+        // Baja fuerte el tiempo de carga de 5000+ clientes. Aditivo: no cambia el modo normal.
+        if (light) {
+            const reqL = pool.request();
+            let ql = `
+                SELECT c.CliIdCliente, c.CodCliente, c.Nombre, c.NombreFantasia,
+                       c.IDCliente, c.CioRuc, c.DireccionTrabajo, c.DepartamentoID,
+                       c.TClIdTipoCliente, c.ESTADO
+                FROM dbo.Clientes c WITH(NOLOCK)
+                WHERE 1=1`;
+            if (q) {
+                ql += ` AND (c.Nombre LIKE @q OR c.NombreFantasia LIKE @q OR c.CioRuc LIKE @q
+                             OR CAST(c.CodCliente AS VARCHAR) LIKE @q OR c.IDCliente LIKE @q)`;
+                reqL.input('q', sql.NVarChar, `%${q}%`);
+            }
+            ql += ` ORDER BY c.Nombre ASC`;
+            const rL = await reqL.query(ql);
+            return res.json(rL.recordset);
+        }
+
         let query = `
             SELECT 
                 c.CliIdCliente, c.CodCliente, c.Nombre, c.NombreFantasia,

@@ -1327,7 +1327,20 @@ async function getMovimientos(CueIdCuenta, FechaDesde = null, FechaHasta = null,
     LEFT JOIN dbo.Pagos p WITH(NOLOCK) ON p.PagIdPago = m.PagIdPago
     LEFT JOIN dbo.TransaccionesCaja tca WITH(NOLOCK) ON tca.TcaIdTransaccion = p.PagTcaIdTransaccion
     LEFT JOIN dbo.DocumentosContables dc WITH(NOLOCK) ON dc.DocIdDocumento = m.DocIdDocumento
-    LEFT JOIN dbo.DocumentosContables dcPago WITH(NOLOCK) ON dcPago.TcaIdTransaccion = p.PagTcaIdTransaccion
+    -- dcPago es SOLO un fallback para cuando el movimiento no tiene DocIdDocumento
+    -- propio (dc es NULL): un mismo PagTcaIdTransaccion puede tener VARIOS
+    -- DocumentosContables (ej. un pago que cancela 2 facturas a la vez genera 2
+    -- recibos con la MISMA transacción) — un LEFT JOIN ahí duplicaba la fila del
+    -- movimiento una vez por cada documento encontrado (caso Favio Curbelo,
+    -- 28-jul: su pago combinado de FA-189+FA-128 aparecía 2 veces cada uno en el
+    -- PDF). TOP 1 + condicionado a "dc ya resuelto" lo vuelve determinístico.
+    OUTER APPLY (
+      SELECT TOP 1 dcp.*
+      FROM dbo.DocumentosContables dcp WITH(NOLOCK)
+      WHERE dcp.TcaIdTransaccion = p.PagTcaIdTransaccion
+        AND m.DocIdDocumento IS NULL
+      ORDER BY dcp.DocIdDocumento
+    ) dcPago
     OUTER APPLY (
       SELECT COALESCE(
         (SELECT TOP 1 CodigoOrden FROM dbo.Ordenes WITH(NOLOCK) WHERE OrdenID = m.OrdIdOrden),
@@ -1662,7 +1675,7 @@ async function getResumenDocumentos(CliIdCliente, desde = null, hasta = null) {
         ISNULL(mo.MonSimbolo,'$') AS MonSimbolo,
         dc.MonIdMoneda,
         CAST(dc.DocTotal AS DECIMAL(18,2)) AS DocTotal,
-        dc.DocEstado, dc.DocPagado, dc.CfeEstado,
+        dc.DocEstado, dc.DocPagado, dc.CfeEstado, dc.CfeNumeroOficial, dc.CfeCAE,
         CONVERT(varchar(10), dc.DocFechaEmision, 23) AS Emision,
         -- 'CANCELADO'/'ANULADO' (masculino) también son deuda muerta: los escriben el
         -- fix de duplicadas (bucketA 22-jul) y la cobertura por plan. Sin excluirlos,
@@ -1764,6 +1777,11 @@ async function getResumenDocumentos(CliIdCliente, desde = null, hasta = null) {
       tipo: d.DocTipo,
       factura,
       cfeEstado: d.CfeEstado || null,
+      // Texto crudo que devuelve DGI al aceptar el CFE (ej. "Nro. de CAE 902... Serie A
+      // 27614 / 29250") — el frontend lo parsea para mostrar el N° oficial en vez del
+      // documento interno (FA-189), una vez que el CFE ya fue aceptado.
+      cfeNumeroOficial: d.CfeNumeroOficial || null,
+      cfeCAE: d.CfeCAE || null,
       descripcion,
       MonSimbolo: d.MonSimbolo,
       MonIdMoneda: d.MonIdMoneda,
@@ -1782,12 +1800,20 @@ async function getResumenDocumentos(CliIdCliente, desde = null, hasta = null) {
       SELECT
         CONVERT(varchar(10), m.MovFecha, 23) AS Fecha,
         m.MovTipo,
+        m.PagIdPago,
         ISNULL(mo.MonSimbolo,'$') AS MonSimbolo,
         CAST(ABS(m.MovImporte) AS DECIMAL(18,2)) AS Importe,
+        -- Signo real: un PAGO_CRUZADO negativo es la plata SALIENDO de esta cuenta
+        -- (financia la otra moneda) — hay que mostrarlo como consumo, no como cobro,
+        -- o un anticipo ya gastado sigue apareciendo "a favor" en la pantalla.
+        CASE WHEN m.MovImporte < 0 THEN 1 ELSE 0 END AS EsConsumo,
         LTRIM(RTRIM(ISNULL(m.MovConcepto,''))) AS Concepto,
         LTRIM(RTRIM(ISNULL(dc.DocSerie,''))) +
           CASE WHEN dc.DocNumero IS NOT NULL
                THEN '-' + LTRIM(RTRIM(CAST(dc.DocNumero AS VARCHAR(50)))) ELSE '' END AS DocRef,
+        -- N° oficial de DGI del documento que este cobro canceló (mismo criterio que la
+        -- lista de documentos): permite mostrar "N° 27390" en vez de "FA-128" también acá.
+        dc.CfeEstado AS DocCfeEstado, dc.CfeNumeroOficial AS DocCfeNumeroOficial,
         -- Orden: referencia de respaldo cuando el cobro cancela una deuda de una orden
         -- que todavía no se facturó (no hay documento al que imputar, y es correcto).
         LTRIM(RTRIM(ISNULL(od.OrdCodigoOrden,''))) AS OrdenRef,
@@ -1857,7 +1883,20 @@ async function getResumenDocumentos(CliIdCliente, desde = null, hasta = null) {
           AND ISNULL(p4.PagMontoConvertido, 0) > 0
       ) pagoReal
       WHERE cc.CliIdCliente = @cli
-        AND m.MovTipo IN ('PAGO','ANTICIPO','SALDO_A_FAVOR','COBRO','NOTA_CREDITO')
+        -- PAGO_CRUZADO incluido: es plata real (cobertura entre monedas del mismo
+        -- cliente) que faltaba acá — sin esto, esos movimientos cuentan en la
+        -- billetera pero jamás aparecen en el Estado de Cuenta (caso Favio
+        -- Curbelo, 28-jul). Un PAGO_CRUZADO tiene DOS lados: el crédito
+        -- ("Cobertura desde...", positivo, cobro real) y el débito ("Cruce
+        -- automático -> Orden...", negativo, plata SALIENDO de esta cuenta para
+        -- financiar la otra moneda). Se incluyen los DOS (ver EsConsumo arriba)
+        -- para que un anticipo ya gastado en cruces dé saldo en cero, no "a
+        -- favor" fantasma (mismo caso: infló $26.258 falsos en pesos de Favio).
+        -- AJUSTE_POS/AJUSTE_NEG incluidos: ajustes de saldo (ej. absorber un sobrante
+        -- que no se expone como "a favor", vía POST /movimientos/ajuste) deben verse
+        -- como cualquier otro movimiento de plata en el Estado de Cuenta, nunca
+        -- quedar invisibles (caso Favio Curbelo).
+        AND m.MovTipo IN ('PAGO','ANTICIPO','SALDO_A_FAVOR','COBRO','NOTA_CREDITO','PAGO_CRUZADO','AJUSTE_POS','AJUSTE_NEG')
         AND (m.MovAnulado IS NULL OR m.MovAnulado = 0)
         AND (@desde IS NULL OR CAST(m.MovFecha AS DATE) >= @desde)
         AND (@hasta IS NULL OR CAST(m.MovFecha AS DATE) <= @hasta)
@@ -1867,6 +1906,14 @@ async function getResumenDocumentos(CliIdCliente, desde = null, hasta = null) {
   const TIPO_PAGO_LABEL = {
     PAGO: 'Cobro', COBRO: 'Cobro', ANTICIPO: 'Anticipo',
     SALDO_A_FAVOR: 'Saldo a favor', NOTA_CREDITO: 'Nota de crédito',
+    PAGO_CRUZADO: 'Cruce de moneda', AJUSTE_POS: 'Ajuste manual', AJUSTE_NEG: 'Ajuste manual',
+  };
+  // Etiqueta cuando el movimiento es un "consumo" (EsConsumo=1: importe negativo
+  // dentro de esta lista, plata SALIENDO en vez de entrando) — depende del tipo,
+  // no es siempre un cruce de moneda.
+  const TIPO_CONSUMO_LABEL = {
+    PAGO_CRUZADO: 'Aplicado a cruce de moneda',
+    AJUSTE_NEG: 'Ajuste manual',
   };
   const pagos = pagosRes.recordset.map(p => {
     // Documento al que se aplicó: preferir la referencia real; si no, la orden; y como
@@ -1878,13 +1925,27 @@ async function getResumenDocumentos(CliIdCliente, desde = null, hasta = null) {
       if (mPc) aplicadoA = `${mPc[1].toUpperCase()}-${mPc[2]}`;
     }
     const esFavor = p.MovTipo === 'ANTICIPO' || p.MovTipo === 'SALDO_A_FAVOR';
+    const esConsumo = !!p.EsConsumo;
     return {
       fecha: p.Fecha,
-      tipo: TIPO_PAGO_LABEL[p.MovTipo] || p.MovTipo,
+      // El lado débito del cruce de moneda no es un "cobro": es la plata de esta
+      // cuenta siendo aplicada/consumida para cubrir la otra moneda.
+      tipo: esConsumo ? (TIPO_CONSUMO_LABEL[p.MovTipo] || TIPO_PAGO_LABEL[p.MovTipo] || p.MovTipo)
+                      : (TIPO_PAGO_LABEL[p.MovTipo] || p.MovTipo),
       esFavor,
+      esConsumo,
+      // Agrupador real del cobro: cuando un mismo pago cancela 2+ documentos, cada
+      // aplicación es SU PROPIO movimiento (una fila acá) pero comparten PagIdPago —
+      // permite armar el resumen "este cobro se aplicó a X e Y" sin adivinar por fecha/monto.
+      pagIdPago: p.PagIdPago || null,
       MonSimbolo: p.MonSimbolo,
       importe: Number(p.Importe) || 0,
       aplicadoA,
+      // Motivo real del ajuste (lo que escribió quien lo hizo) — se prioriza sobre la
+      // etiqueta genérica "Ajuste manual" para que se vea POR QUÉ, no solo que hubo uno.
+      concepto: p.Concepto || null,
+      cfeEstado: p.DocCfeEstado || null,
+      cfeNumeroOficial: p.DocCfeNumeroOficial || null,
       medioPago: p.Medios || null,   // 'Contado', 'Transferencia + Cheque', …
       cheques:   p.Cheques || null,  // números de cheque, cuando el medio es cheque
       recibo:    p.Recibo || null,   // RC-xx que generó el cobro
@@ -1920,7 +1981,40 @@ async function getResumenDocumentos(CliIdCliente, desde = null, hasta = null) {
     for (const d of docsRes.recordset) acumular(d, false);
   }
 
-  return { documentos, pagos, pendientePorMoneda };
+  // ── SALDO DE ARRASTRE (foto al inicio del período) ────────────────────────
+  // El Estado de Cuenta asumía "arranca en cero" al inicio del período elegido
+  // — pero si un pago DENTRO del período cancela una factura de ANTES del
+  // período (su cargo no aparece en la lista), el saldo corrido queda mintiendo
+  // "a favor" cuando en realidad solo faltó ver la deuda vieja (caso Favio
+  // Curbelo, 28-jul: pago de FA-11 del 09-jul sin ver su factura del 23-jun,
+  // corrido daba +6,09 en vez de -143,42 reales). Se calcula la posición real
+  // de la cuenta (billetera) a la fecha de corte, por moneda, para usarla como
+  // punto de partida del acumulado en vez de 0.
+  const saldoArrastrePorMoneda = {};
+  if (desde) {
+    const arrastreRes = await pool.request()
+      .input('cli', sql.Int, parseInt(CliIdCliente))
+      .input('desde', sql.Date, desde)
+      .query(`
+        SELECT ISNULL(mo.MonSimbolo,'$') AS MonSimbolo,
+               CAST(SUM(m.MovImporte) AS DECIMAL(18,2)) AS Billetera
+        FROM   dbo.MovimientosCuenta m
+        JOIN   dbo.CuentasCliente cc ON cc.CueIdCuenta = m.CueIdCuenta
+        LEFT JOIN dbo.Monedas mo ON mo.MonIdMoneda = cc.MonIdMoneda
+        WHERE  cc.CliIdCliente = @cli
+          AND  m.MovTipo NOT IN ('ORDEN','ORDEN_ANTICIPO')
+          AND  (m.MovAnulado IS NULL OR m.MovAnulado = 0)
+          AND  CAST(m.MovFecha AS DATE) < @desde
+        GROUP BY mo.MonSimbolo
+      `);
+    // acums (frontend) usa cargo-abono positivo=deuda; billetera usa el signo
+    // contrario (negativo=deuda), de ahí el cambio de signo.
+    for (const r of arrastreRes.recordset) {
+      saldoArrastrePorMoneda[r.MonSimbolo] = -Number(r.Billetera || 0);
+    }
+  }
+
+  return { documentos, pagos, pendientePorMoneda, saldoArrastrePorMoneda };
 }
 
 /**
@@ -3149,7 +3243,7 @@ async function anularMovimientosPorFiltro(filtros, transaction = null) {
 /**
  * revertirRecursosPorTransaccion
  * Revierte la COMPRA DE RECURSO (rollo por adelantado) asociada a una transacción
- * de venta directa cuando esa venta se anula.
+ * de venta directa cuando esa venta se anula o se le emite una Nota de Crédito total.
  *
  * Contexto: procesarVentaDirecta, al vender un ítem tipo RECURSO, crea/recarga un
  * PlanesMetros, suma metros a CuentasCliente.CueSaldoActual y deja un movimiento
@@ -3158,15 +3252,19 @@ async function anularMovimientosPorFiltro(filtros, transaction = null) {
  * PagIdPago, por lo que anularMovimientosPorFiltro nunca lo alcanza. Sin esta función
  * el recurso quedaba vivo aunque la factura se anulara.
  *
- * Por cada ENTRADA etiquetada con la transacción:
- *   - Bloquea la anulación si el recurso ya fue consumido (evita saldo negativo).
+ * Por cada ENTRADA de la transacción (la etiquetada, y la de compras viejas sin
+ * etiqueta ubicada por TransaccionDetalle — ver el detalle más abajo):
+ *   - Bloquea la operación si el recurso ya fue consumido (evita saldo negativo).
  *   - Resta los metros de PlanesMetros.PlaCantidadTotal (desactiva el plan si queda vacío).
  *   - Anula el movimiento (MovAnulado = 1) y revierte CuentasCliente.CueSaldoActual.
  *
- * @param {number} tcaId          TransaccionesCaja.TcaIdTransaccion anulada
+ * @param {number} tcaId          TransaccionesCaja.TcaIdTransaccion anulada / acreditada
  * @param {number} usuarioId
  * @param {object} transaction    Transacción mssql activa (obligatoria)
- * @returns {Promise<number>}     Cantidad de entradas de recurso revertidas
+ * @returns {Promise<{revertidos: number, pendientes: Array<{plaIdPlan:number, articulo:string, metrosVivos:number}>}>}
+ *          revertidos = entradas de recurso dadas de baja.
+ *          pendientes = planes de esta venta que siguen con metros disponibles y
+ *          cuya ENTRADA no se pudo ubicar (hay que revertirlos a mano).
  */
 async function revertirRecursosPorTransaccion(tcaId, usuarioId, transaction) {
   if (!tcaId || !transaction) return 0;
@@ -3181,8 +3279,74 @@ async function revertirRecursosPorTransaccion(tcaId, usuarioId, transaction) {
         AND (MovAnulado IS NULL OR MovAnulado = 0)
     `);
 
+  // ── COMPRAS VIEJAS (sin la etiqueta MovRefExterna) ───────────────────────
+  // Las ENTRADA anteriores a este fix no tienen MovRefExterna, así que la consulta
+  // de arriba no las encuentra y el recurso quedaría vivo igual. Se las ubica por
+  // el otro lado: TransaccionDetalle marca la compra con TdeTipoReferencia='RECURSO'
+  // y TdeReferenciaId = PlaIdPlan.
+  //
+  // El problema es que un plan puede haber sido recargado por VARIAS ventas y la
+  // ENTRADA vieja no dice de cuál viene, así que se acota por tiempo: la ENTRADA se
+  // graba en la misma operación que la venta. Medido sobre las ENTRADA que SÍ tienen
+  // etiqueta, la diferencia con TcaFecha va de -28 min a +1 s (la fecha de la
+  // transacción no siempre es anterior), por eso la ventana es de ±45 minutos.
+  // Si dentro de la ventana hay MÁS DE UNA candidata para el mismo plan, no se
+  // adivina: se corta la operación y se resuelve a mano (fix_eliminar_compra_recurso.sql).
+  const VENTANA_SEG = 2700;
+  const movsLegacy = await new sql.Request(transaction)
+    .input('TcaId', sql.Int, tcaId)
+    .input('Ventana', sql.Int, VENTANA_SEG)
+    .query(`
+      SELECT pm.PlaIdPlan, m.MovIdMovimiento, m.CueIdCuenta, m.MovImporte,
+             'Plan #' + CAST(pm.PlaIdPlan AS VARCHAR(20)) AS MovObservaciones,
+             ABS(DATEDIFF(SECOND, tc.TcaFecha, m.MovFecha)) AS DifSeg
+      FROM dbo.TransaccionDetalle td
+      JOIN dbo.TransaccionesCaja  tc ON tc.TcaIdTransaccion = td.TcaIdTransaccion
+      JOIN dbo.PlanesMetros       pm ON pm.PlaIdPlan        = td.TdeReferenciaId
+      JOIN dbo.MovimientosCuenta   m WITH(UPDLOCK)
+                                     ON m.CueIdCuenta = pm.CueIdCuenta
+                                    AND m.MovTipo = 'ENTRADA'
+                                    AND (m.MovAnulado IS NULL OR m.MovAnulado = 0)
+                                    AND m.MovRefExterna IS NULL
+                                    AND ABS(DATEDIFF(SECOND, tc.TcaFecha, m.MovFecha)) <= @Ventana
+                                    AND (
+                                          m.MovObservaciones = 'Plan #' + CAST(pm.PlaIdPlan AS VARCHAR(20))
+                                       OR PATINDEX('%plan #' + CAST(pm.PlaIdPlan AS VARCHAR(20)) + '[^0-9]%',
+                                                   ISNULL(m.MovConcepto, '') + ' ') > 0
+                                        )
+      WHERE td.TcaIdTransaccion  = @TcaId
+        AND td.TdeTipoReferencia = 'RECURSO'
+      ORDER BY pm.PlaIdPlan, DifSeg
+    `);
+
+  const movimientos = [...movsRes.recordset];
+  const vistos = new Set(movimientos.map(m => m.MovIdMovimiento));
+
+  // Agrupar las candidatas viejas por plan para detectar ambigüedad
+  const porPlan = new Map();
+  for (const cand of movsLegacy.recordset) {
+    if (vistos.has(cand.MovIdMovimiento)) continue;
+    if (!porPlan.has(cand.PlaIdPlan)) porPlan.set(cand.PlaIdPlan, []);
+    porPlan.get(cand.PlaIdPlan).push(cand);
+  }
+
+  for (const [plaId, candidatas] of porPlan) {
+    if (candidatas.length > 1) {
+      throw new Error(
+        `No se puede revertir automáticamente la compra del recurso: el plan #${plaId} tiene ` +
+        `${candidatas.length} movimientos de entrada posibles para esta venta (compra vieja, sin ` +
+        `etiqueta de transacción) y no se puede saber cuál corresponde. Revertila a mano con ` +
+        `backend/scripts/fix_eliminar_compra_recurso.sql (movimientos: ${candidatas.map(c => '#' + c.MovIdMovimiento).join(', ')}).`
+      );
+    }
+    const mov = candidatas[0];
+    vistos.add(mov.MovIdMovimiento);
+    movimientos.push(mov);
+    logger.warn(`[CONTAB] revertirRecursosPorTransaccion: ENTRADA #${mov.MovIdMovimiento} (${mov.MovImporte} mts, plan #${plaId}) de la tx #${tcaId} ubicada por TransaccionDetalle — compra vieja sin etiqueta MovRefExterna, match por tiempo (${mov.DifSeg}s de TcaFecha).`);
+  }
+
   let revertidos = 0;
-  for (const mov of movsRes.recordset) {
+  for (const mov of movimientos) {
     const metros = Number(mov.MovImporte) || 0;
     const match  = /Plan #(\d+)/.exec(mov.MovObservaciones || '');
     const plaId  = match ? parseInt(match[1], 10) : null;
@@ -3199,8 +3363,9 @@ async function revertirRecursosPorTransaccion(tcaId, usuarioId, transaction) {
         // Guardia: no permitir anular si el recurso ya fue consumido (parcial o total)
         if (total - metros < usada - 0.0001) {
           throw new Error(
-            `No se puede anular: el rollo por adelantado del plan #${plaId} ya fue consumido ` +
-            `(usados ${usada} de ${total} metros). Reversá el consumo antes de anular la compra.`
+            `No se puede revertir la compra del recurso: el rollo por adelantado del plan #${plaId} ` +
+            `ya fue consumido (usados ${usada} de ${total} metros). Revertí esos consumos desde el ` +
+            `libro del plan antes de anular la venta o emitir la Nota de Crédito.`
           );
         }
 
@@ -3239,7 +3404,40 @@ async function revertirRecursosPorTransaccion(tcaId, usuarioId, transaction) {
   if (revertidos) {
     logger.info(`[CONTAB] revertirRecursosPorTransaccion: ${revertidos} entrada(s) de recurso revertida(s) para tx #${tcaId} (usuario ${usuarioId}).`);
   }
-  return revertidos;
+
+  // ── LO QUE NO SE PUDO REVERTIR ────────────────────────────────────────────
+  // Si la venta compró un recurso pero no se encontró su ENTRADA (compra vieja
+  // fuera de la ventana de tiempo) y el plan TODAVÍA tiene metros disponibles,
+  // el recurso queda vivo: exactamente el agujero que causó este bug. No se
+  // adivina nada, pero no puede quedar en silencio.
+  const pendR = await new sql.Request(transaction)
+    .input('TcaId', sql.Int, tcaId)
+    .query(`
+      SELECT pm.PlaIdPlan,
+             RTRIM(ISNULL(art.Descripcion, ''))        AS Articulo,
+             pm.PlaCantidadTotal - pm.PlaCantidadUsada AS MetrosVivos
+      FROM dbo.TransaccionDetalle td
+      JOIN dbo.PlanesMetros      pm ON pm.PlaIdPlan      = td.TdeReferenciaId
+      LEFT JOIN dbo.Articulos   art ON art.ProIdProducto = pm.ProIdProducto
+      WHERE td.TcaIdTransaccion  = @TcaId
+        AND td.TdeTipoReferencia = 'RECURSO'
+        AND pm.PlaCantidadTotal > pm.PlaCantidadUsada
+    `);
+
+  const planesRevertidos = new Set(
+    movimientos
+      .map(m => { const x = /Plan #(\d+)/.exec(m.MovObservaciones || ''); return x ? parseInt(x[1], 10) : null; })
+      .filter(Boolean)
+  );
+  const pendientes = pendR.recordset
+    .filter(p => !planesRevertidos.has(p.PlaIdPlan))
+    .map(p => ({ plaIdPlan: p.PlaIdPlan, articulo: p.Articulo, metrosVivos: Number(p.MetrosVivos) || 0 }));
+
+  for (const p of pendientes) {
+    logger.warn(`[CONTAB] revertirRecursosPorTransaccion: tx #${tcaId} — el plan #${p.plaIdPlan} (${p.articulo}) sigue con ${p.metrosVivos} metros disponibles y no se encontró su movimiento de ENTRADA. Revisar con backend/scripts/diag_recurso_vivo_tras_nc.sql.`);
+  }
+
+  return { revertidos, pendientes };
 }
 
 /**

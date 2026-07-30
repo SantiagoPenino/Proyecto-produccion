@@ -155,12 +155,23 @@ const getOrdersForLabels = async (req, res) => {
                 O.CostoTotal,
                 R.Nombre as NombreRollo,
                 (SELECT COUNT(*) FROM Etiquetas E WITH (NOLOCK) WHERE E.OrdenID = O.OrdenID) as CantidadEtiquetas,
-                (SELECT TOP 1 PC.Moneda FROM PedidosCobranzaDetalle PCD WITH (NOLOCK)
-                    JOIN PedidosCobranza PC WITH (NOLOCK) ON PCD.PedidoCobranzaID = PC.ID
-                    WHERE PCD.OrdenID = O.OrdenID ORDER BY PC.ID DESC) AS MonedaCotizacion,
-                (SELECT TOP 1 PC2.MontoTotal FROM PedidosCobranzaDetalle PCD2 WITH (NOLOCK)
-                    JOIN PedidosCobranza PC2 WITH (NOLOCK) ON PCD2.PedidoCobranzaID = PC2.ID
-                    WHERE PCD2.OrdenID = O.OrdenID ORDER BY PC2.ID DESC) AS ImporteCotizacion
+                -- Cotización: por la línea de la orden; si la orden no tiene línea propia
+                -- (ej. hermana XEUV de terminaciones: el precio viaja en la orden ECOUV),
+                -- cae a la cotización del PEDIDO por NoDocERP.
+                ISNULL(
+                    (SELECT TOP 1 PC.Moneda FROM PedidosCobranzaDetalle PCD WITH (NOLOCK)
+                        JOIN PedidosCobranza PC WITH (NOLOCK) ON PCD.PedidoCobranzaID = PC.ID
+                        WHERE PCD.OrdenID = O.OrdenID ORDER BY PC.ID DESC),
+                    (SELECT TOP 1 PC3.Moneda FROM PedidosCobranza PC3 WITH (NOLOCK)
+                        WHERE LTRIM(RTRIM(PC3.NoDocERP)) = LTRIM(RTRIM(ISNULL(O.NoDocERP, ''))) ORDER BY PC3.ID DESC)
+                ) AS MonedaCotizacion,
+                ISNULL(
+                    (SELECT TOP 1 PC2.MontoTotal FROM PedidosCobranzaDetalle PCD2 WITH (NOLOCK)
+                        JOIN PedidosCobranza PC2 WITH (NOLOCK) ON PCD2.PedidoCobranzaID = PC2.ID
+                        WHERE PCD2.OrdenID = O.OrdenID ORDER BY PC2.ID DESC),
+                    (SELECT TOP 1 PC4.MontoTotal FROM PedidosCobranza PC4 WITH (NOLOCK)
+                        WHERE LTRIM(RTRIM(PC4.NoDocERP)) = LTRIM(RTRIM(ISNULL(O.NoDocERP, ''))) ORDER BY PC4.ID DESC)
+                ) AS ImporteCotizacion
             FROM Ordenes O WITH (NOLOCK)
             LEFT JOIN Rollos R ON O.RolloID = R.RolloID
             WHERE 
@@ -237,7 +248,11 @@ const printEtiquetas = async (req, res) => {
             JOIN Ordenes O ON E.OrdenID = O.OrdenID
             LEFT JOIN Clientes C ON O.CodCliente = C.CodCliente
             LEFT JOIN Logistica_Bultos LB ON E.CodigoEtiqueta = LB.CodigoEtiqueta
-            WHERE E.OrdenID IN (${idsStr}) 
+            WHERE E.OrdenID IN (${idsStr})
+              -- Un bulto CONSUMIDO ya no existe físicamente: su contenido se incorporó a
+              -- otro bulto (ej. el material que entró a terminaciones y salió empaquetado).
+              -- Reimprimir su etiqueta sacaría un rótulo de un paquete que no está.
+              AND ISNULL(LB.Estado, '') NOT IN ('CONSUMIDO', 'PERDIDO')
             ORDER BY E.OrdenID, E.NumeroBulto ASC
         `);
 

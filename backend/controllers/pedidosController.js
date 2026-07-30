@@ -10,7 +10,7 @@ const getPedidoMetrics = async (req, res) => {
         const { noDocErp } = req.params;
         const { areaId } = req.query;
 
-        if (!noDocErp || noDocErp === 'undefined') return res.json({ subOrdenes: 0, progresoGlobal: 0, allFiles: [], ruta: [] });
+        if (!noDocErp || noDocErp === 'undefined') return res.json({ subOrdenes: 0, progresoGlobal: 0, allFiles: [], ruta: [], ordenes: [] });
 
         const pool = await getPool();
 
@@ -32,7 +32,7 @@ const getPedidoMetrics = async (req, res) => {
 
         const globalOrders = globalRes.recordset;
 
-        if (globalOrders.length === 0) return res.json({ subOrdenes: 0, progresoGlobal: 0, allFiles: [], ruta: [] });
+        if (globalOrders.length === 0) return res.json({ subOrdenes: 0, progresoGlobal: 0, allFiles: [], ruta: [], ordenes: [] });
 
         // 3. Generar RUTA de la orden (Áreas y sus estados)
         const rutaMap = {};
@@ -50,6 +50,23 @@ const getPedidoMetrics = async (req, res) => {
 
         const ruta = Object.keys(rutaMap).map(area => ({ area, estado: rutaMap[area].status }));
 
+        // 3.6 Resumen por orden (para tarjetas de "órdenes hermanas": material, lote, máquina y estado propio)
+        let ordenes = [];
+        const summaryOrderIds = globalOrders.map(o => o.OrdenID);
+        if (summaryOrderIds.length > 0) {
+            const resumenQuery = `
+                SELECT O.OrdenID, O.CodigoOrden, O.Estado, O.EstadoenArea, O.AreaID, O.Material,
+                       ISNULL(O.EstadoLogistica, 'Canasto Produccion') as Canasto,
+                       R.RolloID, R.Nombre as NombreRollo, CE.Nombre as NombreMaquina
+                FROM Ordenes O WITH (NOLOCK)
+                LEFT JOIN Rollos R WITH (NOLOCK) ON O.RolloID = R.RolloID
+                LEFT JOIN ConfigEquipos CE WITH (NOLOCK) ON ISNULL(O.MaquinaID, R.MaquinaID) = CE.EquipoID
+                WHERE O.OrdenID IN (${summaryOrderIds.join(',')})
+            `;
+            const resumenRes = await pool.request().query(resumenQuery);
+            ordenes = resumenRes.recordset;
+        }
+
         // 4. Obtener Archivos para el STATUS VISUAL
         let targetOrderIds = globalOrders.map(o => o.OrdenID);
         if (areaId && areaId !== 'undefined') {
@@ -60,9 +77,9 @@ const getPedidoMetrics = async (req, res) => {
         if (targetOrderIds.length > 0) {
             const itemsList = targetOrderIds.join(',');
             const filesQuery = `
-                SELECT 
+                SELECT
                     OA.OrdenID, O.Material, O.AreaID, OA.NombreArchivo, OA.EstadoArchivo as Estado,
-                    OA.Copias, OA.Metros, OA.RutaAlmacenamiento as link,
+                    OA.Copias, ISNULL(OA.Controlcopias, 0) as Controlcopias, OA.Metros, OA.RutaAlmacenamiento as link,
                     ISNULL(O.MaquinaID, R.MaquinaID) as MaquinaID, R.Nombre as NombreRollo, 0 as isService
                 FROM ArchivosOrden OA WITH (NOLOCK)
                 INNER JOIN Ordenes O WITH (NOLOCK) ON OA.OrdenID = O.OrdenID
@@ -71,9 +88,9 @@ const getPedidoMetrics = async (req, res) => {
 
                 UNION ALL
 
-                SELECT 
+                SELECT
                     SEO.OrdenID, O.Material, O.AreaID, SEO.Descripcion as NombreArchivo, SEO.Estado as Estado,
-                    SEO.Cantidad as Copias, NULL as Metros, NULL as link,
+                    SEO.Cantidad as Copias, ISNULL(SEO.Controlcopias, 0) as Controlcopias, NULL as Metros, NULL as link,
                     ISNULL(O.MaquinaID, R.MaquinaID) as MaquinaID, R.Nombre as NombreRollo, 1 as isService
                 FROM ServiciosExtraOrden SEO WITH (NOLOCK)
                 INNER JOIN Ordenes O WITH (NOLOCK) ON SEO.OrdenID = O.OrdenID
@@ -99,7 +116,8 @@ const getPedidoMetrics = async (req, res) => {
             subOrdenes: globalOrders.length,
             progresoGlobal,
             allFiles,
-            ruta
+            ruta,
+            ordenes
         });
 
     } catch (err) {

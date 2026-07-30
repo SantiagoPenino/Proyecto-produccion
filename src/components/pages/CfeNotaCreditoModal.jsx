@@ -9,7 +9,24 @@ export default function CfeNotaCreditoModal({ doc, lineas, onClose, onSuccess, m
   const [loading, setLoading] = useState(false);
   const [motivo, setMotivo] = useState('');
   const isND = mode === 'ND';
-  
+
+  // ¿Esta factura fue una COMPRA DE RECURSO (rollo/metros por adelantado)?
+  // La NC devuelve la plata, pero los metros comprados son otra cosa: si no se
+  // avisa acá, el cliente queda con un rollo para consumir que ya no pagó.
+  const [compraRecurso, setCompraRecurso] = useState(null);
+
+  useEffect(() => {
+    if (isND || !doc?.DocIdDocumento) return;
+    let vivo = true;
+    api.get(`/contabilidad/caja/documento/${doc.DocIdDocumento}/compra-recurso`)
+      .then(r => { if (vivo) setCompraRecurso(r.data); })
+      .catch(() => { /* si falla, el modal sigue funcionando: el backend igual valida */ });
+    return () => { vivo = false; };
+  }, [doc?.DocIdDocumento, isND]);
+
+  const esCompraRecurso = !!compraRecurso?.esCompraRecurso;
+  const recursoConsumido = !!compraRecurso?.tieneConsumo;
+
   // Mapear líneas originales para edición
   const [formData, setFormData] = useState(() => {
     const formattedLineas = (lineas || []).map((l, idx) => {
@@ -149,14 +166,34 @@ export default function CfeNotaCreditoModal({ doc, lineas, onClose, onSuccess, m
     const originalTotal = Number(doc.DocTotal) || 0;
     const isPartial = totales.total < originalTotal - 0.01;
 
+    // Detalle de los metros que se van a dar de baja, para que la confirmación diga
+    // exactamente qué pasa además de la plata. Si hay consumo se avisa, pero no se
+    // bloquea acá: quien decide si la reversión es posible es el backend, que compara
+    // los metros de ESTA compra contra lo consumido del plan.
+    const detalleRecurso = esCompraRecurso
+      ? (compraRecurso.planes || [])
+          .map(p => `   • ${p.articulo}: ${fmt(p.metrosVivos)} mts disponibles`
+            + (p.metrosConsumidos > 0 ? ` (${fmt(p.metrosConsumidos)} ya consumidos)` : ''))
+          .join('\n')
+      : '';
+    const avisoConsumo = (esCompraRecurso && recursoConsumido)
+      ? '\n\nOJO: ya se consumieron metros de este plan. Si esos metros son de esta compra, la Nota de Crédito se va a rechazar y primero hay que revertir los consumos desde el libro del plan.'
+      : '';
+
     if (isPartial) {
+      const avisoParcialRecurso = esCompraRecurso
+        ? `\n\nOJO: esta factura fue una COMPRA DE RECURSO (rollo por adelantado). Al ser PARCIAL, los metros NO se dan de baja:\n${detalleRecurso}\nEl cliente sigue con ese rollo disponible para consumir.`
+        : '';
       const confirm = window.confirm(
-        `${docName} PARCIAL\n\nEl total a ${isND ? 'debitar' : 'acreditar'} (${fmt(totales.total)}) es menor al total del documento original (${fmt(originalTotal)}).\n\n¿Desea guardar esta ${docName} Parcial?`
+        `${docName} PARCIAL\n\nEl total a ${isND ? 'debitar' : 'acreditar'} (${fmt(totales.total)}) es menor al total del documento original (${fmt(originalTotal)}).${avisoParcialRecurso}\n\n¿Desea guardar esta ${docName} Parcial?`
       );
       if (!confirm) return;
     } else {
+      const avisoTotalRecurso = esCompraRecurso
+        ? `\n\nAdemás se DARÁ DE BAJA el rollo por adelantado que se compró con esta factura:\n${detalleRecurso}\nEl cliente dejará de tener esos metros para consumir.${avisoConsumo}`
+        : '';
       const confirm = window.confirm(
-        `${docName} Total\n\nSe emitirá una ${docName} por el 100% del total (${fmt(totales.total)}).\n\n¿Desea continuar?`
+        `${docName} Total\n\nSe emitirá una ${docName} por el 100% del total (${fmt(totales.total)}).${avisoTotalRecurso}\n\n¿Desea continuar?`
       );
       if (!confirm) return;
     }
@@ -181,8 +218,12 @@ export default function CfeNotaCreditoModal({ doc, lineas, onClose, onSuccess, m
       };
 
       const endpoint = isND ? '/contabilidad/caja/nota-debito' : '/contabilidad/caja/nota-credito';
-      await api.post(endpoint, payload);
+      const resp = await api.post(endpoint, payload);
       toast.success(`${docName} generada correctamente`);
+      // Qué pasó con el rollo por adelantado (se dio de baja / quedó vivo por ser parcial)
+      if (resp?.data?.avisoRecurso) {
+        toast.info(resp.data.avisoRecurso, { duration: 12000 });
+      }
       onSuccess();
     } catch (error) {
       toast.error(`Error al generar la ${docName}: ` + (error.response?.data?.error || error.message));
@@ -218,7 +259,36 @@ export default function CfeNotaCreditoModal({ doc, lineas, onClose, onSuccess, m
 
       {/* CONTENIDO PRINCIPAL */}
       <div className="flex-1 flex flex-col p-4 gap-4 min-h-0 overflow-y-auto bg-zinc-50">
-        
+
+        {/* AVISO: LA FACTURA FUE UNA COMPRA DE RECURSO (ROLLO POR ADELANTADO) */}
+        {esCompraRecurso && (
+          <div className={`shrink-0 border rounded-2xl p-4 shadow-sm ${recursoConsumido ? 'bg-red-50 border-red-300' : 'bg-amber-50 border-amber-300'}`}>
+            <div className="flex items-start gap-3">
+              <AlertTriangle size={18} className={recursoConsumido ? 'text-red-600 mt-0.5 shrink-0' : 'text-amber-600 mt-0.5 shrink-0'} />
+              <div className="flex-1">
+                <h3 className={`text-xs font-black uppercase tracking-wider ${recursoConsumido ? 'text-red-800' : 'text-amber-800'}`}>
+                  Esta factura fue una compra de recurso (rollo por adelantado)
+                </h3>
+                <p className={`text-xs font-semibold mt-1 ${recursoConsumido ? 'text-red-700' : 'text-amber-700'}`}>
+                  Si emitís la Nota de Crédito por el TOTAL, además de devolver la plata se dan de baja los metros y el cliente deja de tenerlos para consumir. Si la hacés PARCIAL, los metros quedan vivos.
+                  {recursoConsumido && ' OJO: ya se consumieron metros de este plan; si son de esta compra, la Nota de Crédito se va a rechazar hasta que revertís esos consumos desde el libro del plan.'}
+                </p>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {(compraRecurso.planes || []).map(p => (
+                    <span
+                      key={p.plaIdPlan}
+                      className={`text-[11px] font-bold rounded-full px-2.5 py-1 border ${recursoConsumido ? 'bg-white border-red-200 text-red-700' : 'bg-white border-amber-200 text-amber-700'}`}
+                    >
+                      {p.articulo || `Plan #${p.plaIdPlan}`}: {fmt(p.metrosVivos)} mts disponibles
+                      {p.metrosConsumidos > 0 && ` · ${fmt(p.metrosConsumidos)} ya consumidos`}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* PANEL SUPERIOR: CLIENTE (LOCKED) Y MOTIVO */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4 shrink-0">
           

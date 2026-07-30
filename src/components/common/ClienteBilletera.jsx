@@ -191,4 +191,8 @@ const ClienteBilletera = ({ clienteId, clienteNombre, agrupado = false }) => {
   );
 };
 
-export default ClienteBilletera;
+// Memoizado: sus datos dependen solo de clienteId (hace su propio fetch). Sin esto, cada
+// tecla que se escribe en el modal padre lo re-renderiza entero (recalcula chips y mapas),
+// lo que se siente como lag al tipear los datos del receptor. clienteNombre no se usa acá.
+export default React.memo(ClienteBilletera, (prev, next) =>
+  prev.clienteId === next.clienteId && prev.agrupado === next.agrupado);

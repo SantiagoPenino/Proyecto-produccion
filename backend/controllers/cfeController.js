@@ -23,6 +23,7 @@ const { resolverLineasDesdeMotor, generarAsientoCompleto, crearDocumentoContable
 const { validarDocumentoUY } = require('../utils/documentoUY');
 const sisnetService = require('../services/sisnetService');
 const contabilidadService = require('../services/contabilidadService');
+const envioEmailLog = require('../services/envioEmailLog');
 
 /**
  * CfeTipoCFE es una columna nueva (backend/scripts/add_CfeTipoCFE.sql). Se consulta una
@@ -43,11 +44,45 @@ async function columnaCfeTipoCFEExiste(pool) {
     return _cacheColCfeTipoCFE;
 }
 
+/**
+ * Email del cliente para la bandeja CFE (envío del PDF por correo).
+ * Devuelve DOS campos separados a propósito, NO un COALESCE:
+ *   · CliEmail       → el de la ficha (dbo.Clientes.Email). Es char(40), así que
+ *                      un mail más largo llegó truncado; además hay basura vieja
+ *                      cargada ('-', 'a', 'VIVASPORTS'), por eso se exige formato.
+ *   · CliEmailPortal → el del alta web (Clientesreact.CliMail, varchar(200)).
+ * Se mantienen separados porque el del portal a veces es el del operador que dio
+ * de alta al cliente, no el del cliente: quien envía tiene que ver de dónde sale
+ * cada dirección y elegir, en lugar de que el sistema caiga en uno en silencio.
+ *
+ * El vínculo Clientes↔Clientesreact NO es 1:1 (hay fichas que matchean 3 filas del
+ * portal), por eso va como subconsulta TOP 1 y no como JOIN: un JOIN duplicaría
+ * documentos en el listado.
+ *
+ * Requiere que el SELECT tenga la tabla Clientes con el alias `c`.
+ */
+const SQL_EMAIL_CLIENTE = `
+                NULLIF(LTRIM(RTRIM(CASE WHEN c.Email LIKE '%_@_%._%' THEN c.Email END)), '') AS CliEmail,
+                (SELECT TOP 1 LTRIM(RTRIM(cr.CliMail))
+                   FROM dbo.Clientesreact cr WITH(NOLOCK)
+                  WHERE (cr.CliCodigoCliente = c.IDCliente
+                     OR (c.IDReact IS NOT NULL AND c.IDReact <> ''
+                         AND CAST(c.IDReact AS VARCHAR(50)) = CAST(cr.CliIdCliente AS VARCHAR(50))))
+                    AND cr.CliMail LIKE '%_@_%._%'
+                  ORDER BY cr.CliIdCliente DESC) AS CliEmailPortal`;
+
 exports.getDocumentosCFE = async (req, res) => {
     try {
         const { fechaDesde, fechaHasta, tipo, estado, clienteId, empresaId, metodoPagoId } = req.query;
         const pool = await getPool();
         const request = pool.request();
+
+        // Último envío por email de cada documento, para que la bandeja pueda mostrar
+        // "ya se le mandó" y a qué casilla. El historial es compartido con los demás
+        // módulos (estados de cuenta, etc.), por eso el fragmento SQL lo arma el
+        // servicio. Si todavía no se corrió add_EnvioEmail.sql devuelve NULLs y el
+        // listado funciona igual.
+        const _envio = await envioEmailLog.sqlUltimoEnvio(envioEmailLog.MODULOS.CFE, 'd.DocIdDocumento');
 
         let baseQuery = `
             SELECT 
@@ -57,16 +92,19 @@ exports.getDocumentosCFE = async (req, res) => {
                 c.CioRuc AS CliRUT,
                 c.CioRuc AS CliDocumento,
                 c.IDCliente AS StringIDCliente,
+                ${SQL_EMAIL_CLIENTE},
                 (SELECT TOP 1 mp.MPaDescripcionMetodo
                  FROM dbo.Pagos p WITH(NOLOCK)
                  JOIN dbo.MetodosPagos mp WITH(NOLOCK) ON p.MPaIdMetodoPago = mp.MPaIdMetodoPago
                  WHERE p.PagTcaIdTransaccion = d.TcaIdTransaccion) AS MetodoPagoNombre,
                 ref.DocTipo AS RefDocTipo,
                 ref.CfeEstado AS RefCfeEstado,
-                ${await columnaCfeTipoCFEExiste(pool) ? 'ref.CfeTipoCFE' : 'CAST(NULL AS INT)'} AS RefCfeTipoCFE
+                ${await columnaCfeTipoCFEExiste(pool) ? 'ref.CfeTipoCFE' : 'CAST(NULL AS INT)'} AS RefCfeTipoCFE,
+                ${_envio.select}
             FROM DocumentosContables d
             LEFT JOIN Clientes c ON d.CliIdCliente = c.CliIdCliente
             LEFT JOIN DocumentosContables ref ON ref.DocIdDocumento = d.DocIdDocumentoRef
+            ${_envio.apply}
             WHERE d.CfeEstado IS NOT NULL
         `;
 
@@ -335,11 +373,18 @@ exports.enviarADGI = async (req, res) => {
             .query(`SELECT TOP 1 CotDolar FROM Cotizaciones ORDER BY CotFecha DESC`);
         const cotDolar = cotResult.recordset.length > 0 ? cotResult.recordset[0].CotDolar : 40.0;
 
-        // 3.5 Validaciones DGI del receptor — mensajes claros ANTES de llamar a SISNET
+        // 3.5 Validaciones DGI del receptor — mensajes claros ANTES de llamar a SISNET.
+        // El documento del receptor se resuelve IGUAL que en prepararCFE (la emisión real):
+        // un e-Ticket sin RUT en el snapshot es consumidor final y NO hereda el RUT de la ficha.
+        // Así el chequeo del umbral coincide con lo que realmente viaja (no valida un RUT que no va).
         const docTipoUpperV = String(doc.DocTipo || '').toUpperCase();
         const esFacturaCFE = docTipoUpperV.includes('FACTURA');
         const esTicketCFE = docTipoUpperV.includes('TICKET');
-        const valReceptor = validarDocumentoUY(doc.DocCliDocumento || doc.CliRUT);
+        const _snapVacioV = String(doc.DocCliDocumento || '').trim() === '';
+        const docReceptorReal = (esTicketCFE && !docTipoUpperV.includes('NOTA') && _snapVacioV)
+            ? ''                                        // consumidor final: sin receptor
+            : (doc.DocCliDocumento || doc.CliRUT || '');
+        const valReceptor = validarDocumentoUY(docReceptorReal);
 
         if (esFacturaCFE && (!valReceptor.valido || valReceptor.tipo !== 'RUT')) {
             return res.status(400).json({
@@ -1918,6 +1963,7 @@ exports.getDetalleFactura = async (req, res) => {
                     c.IDCliente          AS StringIDCliente,
                     c.TelefonoTrabajo    AS CliTelefono,
                     c.TClIdTipoCliente   AS CliFamilia,
+                    ${SQL_EMAIL_CLIENTE},
                     u.Nombre             AS VendedorNombre,
                     u.IdUsuario          AS VendedorId,
                     -- Datos secuencia/autorización DGI
@@ -2052,5 +2098,253 @@ exports.getTiposDocumentosExistentes = async (req, res) => {
     } catch (err) {
         logger.error('Error en getTiposDocumentosExistentes:', err);
         res.status(500).json({ error: err.message });
+    }
+};
+
+/* ────────────────────────────────────────────────────────────────────────────
+   ENVÍO DEL PDF POR EMAIL (Bandeja CFE)
+   ──────────────────────────────────────────────────────────────────────────── */
+
+// Validación de email deliberadamente estricta: exige algo@algo.tld sin espacios.
+// La ficha del cliente tiene basura vieja cargada ('-', 'a', 'VIVASPORTS') y un
+// destinatario inválido haría fallar el envío después de generar todo el PDF.
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[A-Za-z]{2,}$/;
+
+const MAX_PDF_BYTES = 8 * 1024 * 1024;   // 8 MB: una factura pesa unos pocos KB
+
+/**
+ * Elige con qué servicio se manda el correo. Se usa el que REALMENTE tenga
+ * credenciales cargadas, sin necesidad de configurar nada extra:
+ *
+ *   1. Brevo (contabilidadEmailService) si tiene usuario Y contraseña SMTP.
+ *      Es el que usa contabilidad para los estados de cuenta.
+ *   2. Si no —hoy es el caso: Brevo tiene host y puerto pero el usuario y la
+ *      contraseña están vacíos— se usa Resend (emailService), que ya tiene su
+ *      API key y el dominio user.com.uy verificado.
+ *   3. Si no hay ninguno, queda Brevo, que entra en MODO SIMULADO: loguea el
+ *      envío, no manda nada, y la respuesta lo dice explícitamente.
+ *
+ * Para forzar uno: CFE_EMAIL_PROVIDER=resend|brevo en el .env.
+ */
+function proveedorEmailConfigurado() {
+    const forzado = String(process.env.CFE_EMAIL_PROVIDER || '').trim().toLowerCase();
+    if (forzado === 'resend' || forzado === 'brevo') return forzado;
+
+    if (process.env.BREVO_SMTP_USER && process.env.BREVO_SMTP_PASS) return 'brevo';
+    if (process.env.RESEND_API_KEY) return 'resend';
+    return 'brevo';
+}
+
+/**
+ * Número OFICIAL del comprobante ante DGI, que es el que el cliente ve impreso en
+ * el PDF y por el que va a preguntar. NO es el interno (DocSerie-DocNumero): la
+ * factura interna FA-332 es, para DGI, la Serie A N° 27614.
+ *
+ * Solo devuelve algo si el documento fue ACEPTADO por DGI; mientras esté pendiente
+ * todavía no tiene número oficial y hay que seguir usando el interno.
+ *
+ * Formato que graba SISNET (los 1365 aceptados de la base lo respetan):
+ *     "Nro. de CAE 90262053670 Serie A 27503 / 29250"
+ */
+function numeroOficialDGI(doc) {
+    if (!doc || doc.CfeEstado !== 'ACEPTADO_DGI') return null;
+    const texto = String(doc.CfeNumeroOficial || '').trim();
+    if (!texto) return null;
+
+    const m = texto.match(/Nro\.\s*de\s*CAE\s*(\d+)\s*Serie\s*([A-Za-z]+)\s*(\d+)/i);
+    if (m) return { cae: m[1], serie: m[2].toUpperCase(), numero: m[3] };
+
+    // Formato simple "A-27503", por si alguna emisión vieja quedó grabada así.
+    const s = texto.match(/(?:Serie\s+)?([A-Za-z]+)\s*-\s*(\d+)/i);
+    if (s) return { cae: null, serie: s[1].toUpperCase(), numero: s[2] };
+
+    return null;
+}
+
+function armarHtmlEmailDocumento({ doc, mensaje }) {
+    const empresa  = (doc.EmpNombreFantasia || doc.EmpRazonSocial || 'User').trim();
+    const color    = doc.EmpColorPrimario || '#0d47a1';
+    const cliente  = (doc.DocCliNombre || doc.CliNombreFantasia || doc.CliRazonSocial || '').trim();
+    const tipoDoc  = (doc.DocTipo || 'Documento').trim();
+    // Si ya está en DGI, el número que va en el mail es el OFICIAL: es el que el
+    // cliente tiene impreso en el PDF. El interno (FA-332) no le dice nada.
+    const oficial  = numeroOficialDGI(doc);
+    const numero   = oficial
+        ? `Serie ${oficial.serie} N° ${oficial.numero}`
+        : ([doc.DocSerie, doc.DocNumero].filter(Boolean).join('-') || `#${doc.DocIdDocumento}`);
+    const simbolo  = doc.MonSimbolo || '$';
+    const total    = new Intl.NumberFormat('es-UY', { minimumFractionDigits: 2 })
+                        .format(Number(doc.DocTotal || 0));
+    const fecha    = doc.DocFechaEmision
+        ? new Date(doc.DocFechaEmision).toLocaleDateString('es-UY', { timeZone: 'America/Montevideo' })
+        : '';
+    const esc = (s) => String(s || '').replace(/[<>&]/g, c => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[c]));
+
+    return `<!DOCTYPE html>
+<html lang="es"><head><meta charset="UTF-8"></head>
+<body style="margin:0;padding:0;background:#f0f2f5;font-family:'Helvetica Neue',Arial,sans-serif;">
+<div style="max-width:600px;margin:24px auto;background:#fff;border-radius:10px;overflow:hidden;box-shadow:0 4px 20px rgba(0,0,0,.10);">
+  <div style="background:${color};padding:18px 28px;">
+    <div style="font-size:19px;font-weight:800;color:#fff;">${esc(empresa)}</div>
+  </div>
+  <div style="padding:26px 28px;">
+    ${cliente ? `<p style="margin:0 0 14px;font-size:15px;color:#333;">Hola ${esc(cliente)},</p>` : ''}
+    <p style="margin:0 0 18px;font-size:15px;color:#555;line-height:1.6;">
+      ${mensaje ? esc(mensaje) : 'Te adjuntamos tu comprobante en PDF.'}
+    </p>
+    <table style="width:100%;border-collapse:collapse;background:#fafbfc;border-radius:8px;">
+      <tr><td style="padding:10px 14px;font-size:13px;color:#888;">Comprobante</td>
+          <td style="padding:10px 14px;font-size:13px;color:#222;font-weight:600;text-align:right;">${esc(tipoDoc)} ${esc(numero)}</td></tr>
+      ${fecha ? `<tr><td style="padding:10px 14px;font-size:13px;color:#888;border-top:1px solid #eee;">Fecha</td>
+          <td style="padding:10px 14px;font-size:13px;color:#222;text-align:right;border-top:1px solid #eee;">${esc(fecha)}</td></tr>` : ''}
+      <tr><td style="padding:10px 14px;font-size:13px;color:#888;border-top:1px solid #eee;">Total</td>
+          <td style="padding:10px 14px;font-size:15px;color:${color};font-weight:800;text-align:right;border-top:1px solid #eee;">${esc(simbolo)} ${total}</td></tr>
+      ${oficial && oficial.cae ? `<tr><td style="padding:10px 14px;font-size:13px;color:#888;border-top:1px solid #eee;">Autorización DGI</td>
+          <td style="padding:10px 14px;font-size:12px;color:#666;text-align:right;border-top:1px solid #eee;">CAE ${esc(oficial.cae)}</td></tr>` : ''}
+    </table>
+  </div>
+  <div style="background:#f5f5f5;padding:14px 28px;border-top:1px solid #e0e0e0;">
+    <div style="font-size:11px;color:#aaa;">Mensaje automático — no responder este correo.</div>
+  </div>
+</div>
+</body></html>`;
+}
+
+/**
+ * POST /contabilidad/cfe/documentos/:id/enviar-email
+ * Body: { destinatario, pdfBase64, asunto?, mensaje? }
+ *
+ * El PDF lo genera el NAVEGADOR (src/utils/pdfGenerator.js → generarPdfFacturaDGI) y
+ * lo manda en base64. Es a propósito: el backend no sabe dibujar la factura, y así el
+ * cliente recibe exactamente el mismo PDF que el operador ve en pantalla, sin mantener
+ * dos maquetaciones distintas.
+ */
+exports.enviarDocumentoPorEmail = async (req, res) => {
+    const { id } = req.params;
+    const { destinatario, pdfBase64, asunto, mensaje } = req.body || {};
+
+    try {
+        // ── Validaciones ──────────────────────────────────────────────────────
+        const docId = parseInt(id, 10);
+        if (!docId) return res.status(400).json({ error: 'Id de documento inválido.' });
+
+        const mail = String(destinatario || '').trim();
+        if (!mail)                return res.status(400).json({ error: 'Falta el destinatario.' });
+        if (!EMAIL_RE.test(mail)) return res.status(400).json({ error: `"${mail}" no es una dirección de email válida.` });
+
+        if (!pdfBase64) return res.status(400).json({ error: 'Falta el PDF a adjuntar.' });
+        const base64 = String(pdfBase64).replace(/^data:application\/pdf;base64,/, '');
+        let pdfBuffer;
+        try {
+            pdfBuffer = Buffer.from(base64, 'base64');
+        } catch (e) {
+            return res.status(400).json({ error: 'El PDF adjunto no es base64 válido.' });
+        }
+        if (!pdfBuffer.length)                return res.status(400).json({ error: 'El PDF adjunto llegó vacío.' });
+        if (pdfBuffer.length > MAX_PDF_BYTES) return res.status(400).json({ error: `El PDF pesa ${(pdfBuffer.length / 1048576).toFixed(1)} MB y el máximo es 8 MB.` });
+        if (pdfBuffer.slice(0, 4).toString('latin1') !== '%PDF')
+            return res.status(400).json({ error: 'El archivo adjunto no es un PDF.' });
+
+        // ── Datos del documento ───────────────────────────────────────────────
+        const pool = await getPool();
+        const r = await pool.request()
+            .input('docId', sql.Int, docId)
+            .query(`
+                SELECT d.DocIdDocumento, d.DocTipo, d.DocSerie, d.DocNumero, d.DocTotal,
+                       d.DocFechaEmision, d.CfeEstado, d.CfeNumeroOficial, d.DocCliNombre,
+                       d.CliIdCliente,
+                       c.Nombre AS CliRazonSocial, c.NombreFantasia AS CliNombreFantasia,
+                       m.MonSimbolo,
+                       e.EmpRazonSocial, e.EmpNombreFantasia, e.EmpColorPrimario
+                FROM dbo.DocumentosContables d
+                LEFT JOIN dbo.Clientes c ON c.CliIdCliente = d.CliIdCliente
+                LEFT JOIN dbo.Monedas  m ON m.MonIdMoneda  = d.MonIdMoneda
+                LEFT JOIN dbo.Empresas e ON e.EmpIdEmpresa = ISNULL(d.EmpIdEmpresa,
+                            (SELECT TOP 1 EmpIdEmpresa FROM dbo.Empresas WHERE EmpPorDefecto = 1))
+                WHERE d.DocIdDocumento = @docId`);
+
+        const doc = r.recordset[0];
+        if (!doc) return res.status(404).json({ error: `No existe el documento ${docId}.` });
+
+        const tipoDoc = String(doc.DocTipo || 'Documento').trim();
+
+        // El asunto y el nombre del adjunto llevan el número OFICIAL de DGI cuando el
+        // documento ya fue aceptado: es el dato con el que el cliente identifica su
+        // factura. Mientras esté pendiente se usa el interno, que es lo único que hay.
+        const oficial   = numeroOficialDGI(doc);
+        const numeroDoc = oficial
+            ? `Serie ${oficial.serie} N° ${oficial.numero}`
+            : ([doc.DocSerie, doc.DocNumero].filter(Boolean).join('-') || `#${docId}`);
+
+        const asuntoFinal = String(asunto || '').trim() || `${tipoDoc} ${numeroDoc}`;
+        const nombreArchivo = `${tipoDoc} ${oficial ? `${oficial.serie}-${oficial.numero}` : numeroDoc}.pdf`
+            .replace(/[^\w\s.-]/g, '')
+            .replace(/\s+/g, '_');
+
+        // ── Envío ─────────────────────────────────────────────────────────────
+        const proveedor = proveedorEmailConfigurado();
+        const html = armarHtmlEmailDocumento({ doc, mensaje });
+        const adjunto = { filename: nombreArchivo, content: pdfBuffer, contentType: 'application/pdf' };
+
+        let estado = 'ENVIADO';
+        let errorMsg = null;
+        let simulado = false;
+
+        try {
+            if (proveedor === 'resend') {
+                const ok = await require('../services/emailService').sendMail(mail, asuntoFinal, html, [adjunto]);
+                if (!ok) throw new Error('Resend rechazó el envío (ver logs del servidor).');
+            } else {
+                const out = await require('../services/contabilidadEmailService')
+                    .enviarEmail({ to: mail, subject: asuntoFinal, html, attachments: [adjunto] });
+                simulado = !!(out && out.simulado);
+                if (simulado) estado = 'SIMULADO';
+            }
+        } catch (err) {
+            estado = 'ERROR';
+            errorMsg = err.message;
+        }
+
+        // ── Registro en el historial compartido de envíos ─────────────────────
+        // No tira excepción ni aunque falte la tabla: el mail ya salió.
+        await envioEmailLog.registrarEnvio({
+            modulo:       envioEmailLog.MODULOS.CFE,
+            refId:        docId,
+            refTexto:     `${tipoDoc} ${numeroDoc}`,
+            cliIdCliente: doc.CliIdCliente || null,
+            destinatario: mail,
+            asunto:       asuntoFinal,
+            adjunto:      nombreArchivo,
+            estado,
+            proveedor,
+            error:        errorMsg,
+            usuarioId:    req.user?.id || null,
+        });
+
+        if (estado === 'ERROR') {
+            logger.error(`[CFE-EMAIL] Doc ${docId} -> ${mail}: ${errorMsg}`);
+            return res.status(502).json({ error: `No se pudo enviar el email: ${errorMsg}` });
+        }
+
+        logger.info(`[CFE-EMAIL] Doc ${docId} (${tipoDoc} ${numeroDoc}) -> ${mail} [${estado}]`);
+        return res.json({
+            success: true,
+            estado,                       // ENVIADO | SIMULADO
+            simulado,
+            destinatario: mail,
+            asunto: asuntoFinal,
+            proveedor,
+            numeroDgi: oficial ? `Serie ${oficial.serie} N° ${oficial.numero}` : null,
+            // El front avisa antes de mandar algo que todavía no es un comprobante firme.
+            advertencia: doc.CfeEstado === 'ACEPTADO_DGI' ? null
+                : `Este documento está en estado ${doc.CfeEstado || 'sin estado'}: todavía no fue aceptado por DGI.`,
+            mensaje: simulado
+                ? 'Envío SIMULADO: no hay credenciales SMTP cargadas, así que el mail no salió.'
+                : `Enviado a ${mail}.`
+        });
+
+    } catch (err) {
+        logger.error('Error en enviarDocumentoPorEmail:', err);
+        return res.status(500).json({ error: err.message });
     }
 };

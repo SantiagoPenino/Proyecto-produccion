@@ -16,6 +16,7 @@ const getPdfUserUnit = (page) => {
 };
 const logger = require('../utils/logger');
 const driveService = require('./driveService');
+const { construirNombreArchivo, materialParaNombre, usaNombreNuevo } = require('../utils/nombreArchivoOrden');
 
 
 // --- HELPERS ---
@@ -66,10 +67,13 @@ const processOrderListInternal = async (orderIds, io, targetFileIds = null) => {
             // IMPORTANTE: Obtenemos TODOS los archivos de la orden para calcular los índices correctamente (Archivo 1 de N)
             const filesRes = await pool.request().query(`
                 SELECT AO.ArchivoID, AO.RutaAlmacenamiento, AO.RutaLocal, AO.NombreArchivo, AO.Copias,
-                       O.OrdenID, O.CodigoOrden, O.Cliente, O.DescripcionTrabajo, O.Material, O.UM, O.AreaID
+                       O.OrdenID, O.CodigoOrden, O.Cliente, O.DescripcionTrabajo, O.Material, O.UM, O.AreaID,
+                       -- TELA DE CLIENTE (SB): el PRE de la recepción se suma al material en el nombre
+                       ibt.Referencia AS PreTelaCliente
                 FROM dbo.ArchivosOrden AO
                 INNER JOIN dbo.Ordenes O ON AO.OrdenID = O.OrdenID
-                WHERE AO.OrdenID IN (${idsStr}) 
+                LEFT JOIN dbo.InventarioBobinas ibt WITH(NOLOCK) ON ibt.BobinaID = O.BobinaTelaID
+                WHERE AO.OrdenID IN (${idsStr})
                 AND AO.EstadoArchivo != 'CANCELADO'
             `);
 
@@ -117,19 +121,30 @@ const processOrderListInternal = async (orderIds, io, targetFileIds = null) => {
                     // Sanitizar: Reemplazar slash / por guion - (para "1/1" -> "1-1") y borrar chars prohibidos
                     const sanitize = (str) => (str || '').replace(/\//g, '-').replace(/[<>:"\\|?*]/g, ' ').trim();
 
-                    // Naming Format: CODIGO (ORDEN)_CLIENTE_TRABAJO_Archivo X de Y (X n COPIAS)
-                    const pCodigo = sanitize(file.CodigoOrden || file.OrdenID.toString());
-                    const pCliente = sanitize(file.Cliente || 'Cliente');
+                    // SUBLIMACIÓN: {MATERIAL}-{ORDEN}_{CLIENTE}_Arch {Idx} de {Total} (x{Copias})
+                    //              (ej: Bandera (1,60)-SUB-9408_PROP851uy_Arch 1 de 1 (x1))
+                    // RESTO DE ÁREAS: {ORDEN}_{CLIENTE}_{TRABAJO} Archivo {Idx} de {Total} (x{Copias} COPIAS) — como siempre
+                    let baseName;
+                    if (await usaNombreNuevo(file.AreaID)) {
+                        baseName = construirNombreArchivo({
+                            material: materialParaNombre(file.Material, file.PreTelaCliente),
+                            codigoOrden: file.CodigoOrden || file.OrdenID.toString(),
+                            cliente: file.Cliente,
+                            idx: file.idxInOrder,
+                            total: file.totalInOrder,
+                            copias: file.Copias || 1,
+                            dorso: /DORSO/i.test(file.NombreArchivo || '') // el dorso sigue marcado como tal
+                        });
+                    } else {
+                        const pCodigo = sanitize(file.CodigoOrden || file.OrdenID.toString());
+                        const pCliente = sanitize(file.Cliente || 'Cliente');
 
-                    let pTrabajo = sanitize(file.DescripcionTrabajo || 'Trabajo');
-                    if (pTrabajo.length > 50) pTrabajo = pTrabajo.substring(0, 50); // Prevent path overflow
+                        let pTrabajo = sanitize(file.DescripcionTrabajo || 'Trabajo');
+                        if (pTrabajo.length > 50) pTrabajo = pTrabajo.substring(0, 50); // Prevent path overflow
 
-                    const pArchivo = `Archivo ${file.idxInOrder} de ${file.totalInOrder}`;
-                    const pCopias = sanitize((file.Copias || 1).toString());
-
-                    // EJEMPLO: 61 (1-1)_GOAT_trabajo 2 Archivo 1 de 1 (x1 COPIAS)
-                    // UNIFIED FORMAT: {ORDEN}_{CLIENTE}_{TRABAJO} Archivo {Idx} de {Total} (x{Copias} COPIAS)
-                    let baseName = `${pCodigo}_${pCliente}_${pTrabajo} Archivo ${file.idxInOrder} de ${file.totalInOrder} (x${file.Copias || 1} COPIAS)`;
+                        // EJEMPLO: 61 (1-1)_GOAT_trabajo 2 Archivo 1 de 1 (x1 COPIAS)
+                        baseName = `${pCodigo}_${pCliente}_${pTrabajo} Archivo ${file.idxInOrder} de ${file.totalInOrder} (x${file.Copias || 1} COPIAS)`;
+                    }
 
                     // Determinar si ya tenemos ruta local válida y el archivo existe
                     let destPath = '';
@@ -318,7 +333,11 @@ const processOrderListInternal = async (orderIds, io, targetFileIds = null) => {
                                 DECLARE @TotalServ DECIMAL(18,2) = 0;
                                 SELECT @TotalProd = SUM(ISNULL(Metros, 0) * ISNULL(Copias, 1))
                                 FROM ArchivosOrden WHERE OrdenID = @OID AND EstadoArchivo != 'CANCELADO';
-                                SELECT @TotalServ = SUM(ISNULL(Cantidad, 0)) FROM ServiciosExtraOrden WHERE OrdenID = @OID;
+                                -- Los servicios extra son UNIDADES (ojales, soldaduras): no se
+                                -- suman a los metros de impresión — cada uno se cobra en su
+                                -- propia línea. Solo hacen de magnitud si no hay archivos.
+                                IF ISNULL(@TotalProd, 0) = 0
+                                    SELECT @TotalServ = SUM(ISNULL(Cantidad, 0)) FROM ServiciosExtraOrden WHERE OrdenID = @OID;
                                 UPDATE dbo.Ordenes SET Magnitud = CAST((ISNULL(@TotalProd, 0) + ISNULL(@TotalServ, 0)) AS NVARCHAR(50)) WHERE OrdenID = @OID
                             `);
 

@@ -2234,6 +2234,56 @@ const procesarPagoDeuda = async (req, res) => {
 };
 
 // ─────────────────────────────────────────────
+// GET /contabilidad/caja/documento/:docId/compra-recurso
+// ¿Esta factura fue una COMPRA DE RECURSO (rollo/metros por adelantado)?
+// Se consulta antes de anular o de emitir una Nota de Crédito, para avisar en
+// pantalla que además de la plata hay metros en juego, y cuántos ya se consumieron.
+// La marca es TransaccionDetalle.TdeTipoReferencia = 'RECURSO' (TdeReferenciaId = PlaIdPlan).
+const consultarCompraRecursoDocumento = async (req, res) => {
+  try {
+    const docId = parseInt(req.params.docId);
+    if (!docId) return res.status(400).json({ error: 'Falta docId' });
+
+    const pool = await getPool();
+    const r = await pool.request()
+      .input('DocId', sql.Int, docId)
+      .query(`
+        SELECT pm.PlaIdPlan,
+               RTRIM(ISNULL(art.Descripcion, ''))         AS Articulo,
+               pm.PlaCantidadTotal                        AS MetrosComprados,
+               pm.PlaCantidadUsada                        AS MetrosConsumidos,
+               pm.PlaCantidadTotal - pm.PlaCantidadUsada  AS MetrosVivos,
+               pm.PlaActivo
+        FROM dbo.DocumentosContables doc
+        JOIN dbo.TransaccionDetalle  td ON td.TcaIdTransaccion  = doc.TcaIdTransaccion
+                                      AND td.TdeTipoReferencia = 'RECURSO'
+        JOIN dbo.PlanesMetros        pm ON pm.PlaIdPlan         = td.TdeReferenciaId
+        LEFT JOIN dbo.Articulos     art ON art.ProIdProducto    = pm.ProIdProducto
+        WHERE doc.DocIdDocumento = @DocId
+      `);
+
+    const planes = r.recordset.map(p => ({
+      plaIdPlan:        p.PlaIdPlan,
+      articulo:         p.Articulo,
+      metrosComprados:  Number(p.MetrosComprados) || 0,
+      metrosConsumidos: Number(p.MetrosConsumidos) || 0,
+      metrosVivos:      Number(p.MetrosVivos) || 0,
+      activo:           !!p.PlaActivo,
+    }));
+
+    return res.json({
+      esCompraRecurso: planes.length > 0,
+      // Si hay consumo, la reversión está bloqueada: hay que revertir los consumos primero.
+      tieneConsumo: planes.some(p => p.metrosConsumidos > 0.0001),
+      planes,
+    });
+  } catch (err) {
+    logger.error('[COMPRA-RECURSO]', err.message);
+    return res.status(500).json({ error: err.message });
+  }
+};
+
+// ─────────────────────────────────────────────
 // POST /contabilidad/caja/nota-credito
 // Body: { docIdOrigen, monto, motivo, clienteId, cuentaId, monedaId }
 const generarNotaCredito = async (req, res) => {
@@ -2249,7 +2299,7 @@ const generarNotaCredito = async (req, res) => {
     try {
       const docR = await new sql.Request(transaction)
         .input('DocId', sql.Int, parseInt(docIdOrigen))
-        .query(`SELECT DocTipo, DocSerie, DocNumero, DocTotal, MonIdMoneda, CueIdCuenta, DocSubtotal, DocImpuestos, DocTotalDescuentos, DocTotalRecargos, CliIdCliente, EmpIdEmpresa
+        .query(`SELECT DocTipo, DocSerie, DocNumero, DocTotal, MonIdMoneda, CueIdCuenta, DocSubtotal, DocImpuestos, DocTotalDescuentos, DocTotalRecargos, CliIdCliente, EmpIdEmpresa, TcaIdTransaccion
                 FROM dbo.DocumentosContables WHERE DocIdDocumento = @DocId`);
       if (!docR.recordset.length) throw new Error('Documento origen no encontrado');
       const docOrigen = docR.recordset[0];
@@ -2264,6 +2314,11 @@ const generarNotaCredito = async (req, res) => {
       if (montoNum > Number(docOrigen.DocTotal)) {
         throw new Error(`El total de la Nota de Crédito (${montoNum}) no puede superar al total del documento original (${docOrigen.DocTotal})`);
       }
+
+      // La NC es TOTAL si acredita el 100% del documento. Solo en ese caso se
+      // revierte la compra de recurso (ver más abajo): una NC parcial no permite
+      // saber cuántos metros hay que devolver.
+      const esNcTotal = montoNum >= Number(docOrigen.DocTotal) - 0.01;
 
       // '10' = E-Ticket Nota De Credito, '04' = E-Factura Nota De Credito
       const esETicket = !docOrigen.DocTipo?.toUpperCase().includes('FACTURA');
@@ -2397,6 +2452,40 @@ const generarNotaCredito = async (req, res) => {
       }
 
       // ─────────────────────────────────────────────
+      // COMPRA DE RECURSO (rollo/metros por adelantado)
+      // La NC devuelve la PLATA, pero los metros comprados quedaban vivos en
+      // PlanesMetros y en la cuenta MTS: el cliente seguía con un rollo para
+      // consumir que ya no pagó (caso Javier Burguez / ET-3375, jul-2026).
+      // Si la NC es TOTAL, se revierte la compra acá mismo, en la misma
+      // transacción. Si el rollo ya fue consumido, el helper lanza y la NC
+      // NO se emite: primero hay que revertir los consumos.
+      let avisoRecurso = null;
+      if (esNcTotal) {
+        const { revertidos, pendientes } = await contabilidadSvc.revertirRecursosPorTransaccion(
+          docOrigen.TcaIdTransaccion || null, usuarioId, transaction
+        );
+        if (revertidos > 0) {
+          avisoRecurso = `Se dio de baja también la compra de recurso: ${revertidos} rollo(s) por adelantado. El cliente ya no tiene esos metros para consumir.`;
+        }
+        if (pendientes.length) {
+          // El recurso quedó vivo y hay que resolverlo a mano: decirlo, no esconderlo.
+          const detalle = pendientes.map(p => `${p.articulo || 'plan #' + p.plaIdPlan}: ${p.metrosVivos} mts`).join(' · ');
+          avisoRecurso = `ATENCIÓN: la Nota de Crédito se emitió, pero NO se pudo dar de baja el rollo por adelantado de esta factura (${detalle}). El cliente sigue teniendo esos metros disponibles: hay que revertirlos a mano (backend/scripts/fix_eliminar_compra_recurso.sql).`;
+        }
+      } else if (docOrigen.TcaIdTransaccion) {
+        // NC parcial sobre una compra de recurso: no se toca el plan (no se sabe
+        // cuántos metros corresponden al monto acreditado), pero se avisa.
+        const recR = await new sql.Request(transaction)
+          .input('Tca', sql.Int, docOrigen.TcaIdTransaccion)
+          .query(`SELECT COUNT(*) AS Cant FROM dbo.TransaccionDetalle
+                  WHERE TcaIdTransaccion = @Tca AND TdeTipoReferencia = 'RECURSO'`);
+        if ((recR.recordset[0]?.Cant || 0) > 0) {
+          avisoRecurso = 'ATENCIÓN: esta factura era una compra de recurso (rollo por adelantado) y la Nota de Crédito es PARCIAL, así que los metros NO se dieron de baja. El cliente sigue teniendo el rollo disponible para consumir.';
+          logger.warn(`[NOTA-CREDITO] NC parcial sobre compra de recurso (tx #${docOrigen.TcaIdTransaccion}): el plan de metros NO se revirtió.`);
+        }
+      }
+
+      // ─────────────────────────────────────────────
       // ─────────────────────────────────────────────
       let avisoContable = null;
       try {
@@ -2436,7 +2525,7 @@ const generarNotaCredito = async (req, res) => {
       return res.status(201).json({
         success: true, ncId, ncNumero: fullNcNumero, ncTipo,
         message: `Nota de Crédito ${fullNcNumero} generada`,
-        avisoContable
+        avisoContable, avisoRecurso
       });
     } catch (errTx) { await transaction.rollback(); throw errTx; }
   } catch (err) { logger.error('[NOTA-CREDITO]', err.message); return res.status(500).json({ error: err.message }); }
@@ -3617,6 +3706,8 @@ module.exports = {
   registrarOperacionManual,
   // Operaciones desde Estado de Cuenta (Caja Administrativa)
   generarNotaCredito, generarNotaCreditoExterna, generarNotaDebito, reversarDocumento, registrarPagoAnticipo, anularFactura,
+  // ¿la factura fue una compra de recurso? (aviso antes de NC / anulación)
+  consultarCompraRecursoDocumento,
   // Guardar Comprobantes en Servidor
   guardarComprobante,
 };

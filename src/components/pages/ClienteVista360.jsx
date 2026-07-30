@@ -22,7 +22,7 @@ import React, { useState, useCallback, useEffect, useMemo } from 'react';
 import {
   Search, RefreshCw, Users, CreditCard, DollarSign, FileText, Wallet,
   ShoppingCart, Tag, FilePlus, MoreHorizontal, Download, Printer,
-  ArrowLeft, Zap, CheckCircle2, Calendar, TrendingDown, PlusCircle, X, Layers, Ban,
+  ArrowLeft, Zap, CheckCircle2, Calendar, TrendingDown, PlusCircle, X, Layers, Ban, Scale,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { useLocation, useNavigate } from 'react-router-dom';
@@ -48,6 +48,162 @@ import FacturacionManualModal from './FacturacionManualModal';
 
 const TIPOS_MONETARIOS = ['USD', 'UYU', 'ARS', 'EUR', 'PYG', 'BRL', 'CORRIENTE', 'CREDITO', 'DEBITO', 'CAJA', 'DINERO_USD', 'DINERO_UYU'];
 const esRecurso = (c) => c.ProIdProducto != null || !TIPOS_MONETARIOS.includes(c.CueTipo?.toUpperCase());
+
+// Extrae el N° oficial que asignó DGI del texto crudo que guarda CfeNumeroOficial
+// (ej. "Nro. de CAE 90260001010 Serie B 27614 / 1000" o el formato simple "B-27614").
+// Misma lógica que ContabilidadBandejaCFE.jsx#renderCfeOficialCol — solo el número,
+// no la serie/rango (que es igual para todos los documentos de esa serie).
+const parseNroOficialDgi = (texto) => {
+  if (!texto) return null;
+  const matchCae = texto.match(/Nro\.\s+de\s+CAE\s+\d+\s+Serie\s+[A-Za-z]+\s+(\d+)/i);
+  if (matchCae) return matchCae[1];
+  const matchSimple = texto.match(/(?:Serie\s+)?[A-Za-z]+-(\d+)/i);
+  if (matchSimple) return matchSimple[1];
+  return null;
+};
+
+/* ── Modal "Ajustar saldo" ────────────────────────────────────────────────
+   Corrección manual del saldo de una cuenta de DINERO (por ahora, no aplica a
+   cuentas de recurso/metros). Usa el endpoint ya existente y probado
+   POST /api/contabilidad/movimientos/ajuste (AJUSTE_POS/AJUSTE_NEG vía
+   registrarMovimiento) — no crea un mecanismo nuevo, solo una UI enfocada. */
+const ModalAjusteSaldo = ({ cuentas, cuentaDefaultId, clienteNombre, onClose, onSuccess }) => {
+  const [cueId, setCueId]   = useState(cuentaDefaultId ? String(cuentaDefaultId) : (cuentas[0] ? String(cuentas[0].CueIdCuenta) : ''));
+  const [signo, setSigno]   = useState('favor'); // 'favor' (AJUSTE_POS) | 'contra' (AJUSTE_NEG)
+  const [monto, setMonto]   = useState('');
+  const [motivo, setMotivo] = useState('');
+  const [fecha, setFecha]   = useState(() => new Date().toISOString().split('T')[0]);
+  const [saving, setSaving] = useState(false);
+  const hoy = new Date().toISOString().split('T')[0];
+
+  const cuenta = cuentas.find(c => String(c.CueIdCuenta) === cueId);
+  const simbolo = cuenta?.MonSimbolo || (cuenta?.CueTipo === 'DINERO_USD' ? 'US$' : '$');
+  const saldoActual = Number(cuenta?.CueSaldoActual || 0);
+  const importe = Math.abs(parseFloat(monto) || 0);
+  const delta = signo === 'favor' ? importe : -importe;
+  const saldoNuevo = saldoActual + delta;
+  const puedeGuardar = cuenta && importe > 0 && motivo.trim().length >= 5 && !saving;
+
+  const handleGuardar = async () => {
+    if (!puedeGuardar) return;
+    setSaving(true);
+    try {
+      await api.post('/contabilidad/movimientos/ajuste', {
+        CueIdCuenta: cuenta.CueIdCuenta,
+        MovTipo: signo === 'favor' ? 'AJUSTE_POS' : 'AJUSTE_NEG',
+        MovConcepto: motivo.trim(),
+        MovImporte: importe,
+        MovFecha: fecha !== hoy ? fecha : undefined, // solo si es retroactiva (hoy = default del propio SP)
+      });
+      toast.success('Ajuste registrado.');
+      onSuccess?.();
+    } catch (e) {
+      toast.error(e.response?.data?.error || e.message || 'No se pudo registrar el ajuste.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 px-4" onClick={onClose}>
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md border border-slate-200 overflow-hidden" onClick={e => e.stopPropagation()}>
+        <div className="px-6 py-4 bg-gradient-to-r from-slate-700 to-slate-600 text-white flex items-center justify-between">
+          <h2 className="font-bold text-base flex items-center gap-2"><Scale size={18} /> Ajustar saldo</h2>
+          <button onClick={onClose} className="text-white/80 hover:text-white"><X size={18} /></button>
+        </div>
+        <div className="px-6 py-5 space-y-4">
+          <p className="text-xs text-slate-500">
+            Corrige el saldo general de <strong>{clienteNombre}</strong>. Queda como movimiento visible
+            ("Ajuste manual") en el Estado de Cuenta, con el motivo que escribas acá — no borra ni
+            reemplaza ningún documento.
+          </p>
+
+          {cuentas.length === 0 && (
+            <p className="text-xs text-rose-500 bg-rose-50 border border-rose-200 rounded-lg px-3 py-2">
+              Este cliente no tiene ninguna cuenta de dinero abierta todavía.
+            </p>
+          )}
+
+          {cuentas.length > 1 && (
+            <div>
+              <label className="block text-xs font-bold text-slate-600 mb-1.5">Cuenta</label>
+              <select value={cueId} onChange={e => setCueId(e.target.value)}
+                className="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-sm font-semibold text-slate-700 outline-none focus:border-slate-400">
+                {cuentas.map(c => (
+                  <option key={c.CueIdCuenta} value={c.CueIdCuenta}>
+                    {c.MonSimbolo || (c.CueTipo === 'DINERO_USD' ? 'US$' : '$')} — saldo actual {fmtMoney(Number(c.CueSaldoActual || 0))}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+
+          <div>
+            <label className="block text-xs font-bold text-slate-600 mb-1.5">Efecto del ajuste</label>
+            <div className="grid grid-cols-2 gap-2">
+              <button type="button" onClick={() => setSigno('favor')}
+                className={`px-3 py-2 rounded-lg text-xs font-bold border transition-colors ${signo === 'favor' ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-white text-slate-600 border-slate-200 hover:border-emerald-300'}`}>
+                A favor del cliente (+)
+              </button>
+              <button type="button" onClick={() => setSigno('contra')}
+                className={`px-3 py-2 rounded-lg text-xs font-bold border transition-colors ${signo === 'contra' ? 'bg-rose-600 text-white border-rose-600' : 'bg-white text-slate-600 border-slate-200 hover:border-rose-300'}`}>
+                En contra del cliente (−)
+              </button>
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-xs font-bold text-slate-600 mb-1.5">Monto ({simbolo})</label>
+            <input type="number" min="0" step="0.01" value={monto} onChange={e => setMonto(e.target.value)}
+              placeholder="0.00"
+              className="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-sm font-semibold text-slate-700 outline-none focus:border-slate-400" />
+          </div>
+
+          <div>
+            <label className="block text-xs font-bold text-slate-600 mb-1.5">Fecha del ajuste</label>
+            <input type="date" value={fecha} max={hoy} onChange={e => setFecha(e.target.value)}
+              className="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-sm font-semibold text-slate-700 outline-none focus:border-slate-400" />
+            {fecha !== hoy && (
+              <p className="text-[11px] text-amber-600 mt-1">
+                Fecha retroactiva: el ajuste queda ubicado ahí en el historial (útil para que un estado de cuenta de ese período ya salga cuadrado).
+              </p>
+            )}
+          </div>
+
+          <div>
+            <label className="block text-xs font-bold text-slate-600 mb-1.5">Motivo (obligatorio)</label>
+            <textarea value={motivo} onChange={e => setMotivo(e.target.value)} rows={2}
+              placeholder="Ej: sobrante de FA-127/128 no se expone como saldo a favor"
+              className="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-700 outline-none focus:border-slate-400 resize-none" />
+            {motivo.trim().length > 0 && motivo.trim().length < 5 && (
+              <p className="text-[11px] text-rose-500 mt-1">Escribí un motivo un poco más claro.</p>
+            )}
+          </div>
+
+          {cuenta && importe > 0 && (
+            <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 text-xs">
+              <p className="text-slate-500">El saldo de <strong>{clienteNombre}</strong> ({simbolo}) pasa de</p>
+              <p className="font-black text-sm text-slate-800 mt-0.5">
+                {simbolo} {fmtMoney(Math.abs(saldoActual))}{saldoActual < 0 ? ' (a favor)' : ''}
+                {' → '}
+                {simbolo} {fmtMoney(Math.abs(saldoNuevo))}{saldoNuevo < 0 ? ' (a favor)' : ''}
+              </p>
+            </div>
+          )}
+        </div>
+        <div className="px-6 pb-5 flex gap-3">
+          <button onClick={onClose} disabled={saving}
+            className="flex-1 px-4 py-2.5 text-sm font-semibold text-slate-600 bg-slate-100 hover:bg-slate-200 rounded-xl transition-colors">Cancelar</button>
+          <button onClick={handleGuardar} disabled={!puedeGuardar}
+            className="flex-1 px-4 py-2.5 text-sm font-black text-white bg-slate-700 hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed rounded-xl transition-colors flex items-center justify-center gap-2">
+            {saving ? <RefreshCw size={14} className="animate-spin" /> : <Scale size={14} />}
+            {saving ? 'Guardando...' : 'Confirmar ajuste'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
 
 /* ── KPI card ─────────────────────────────────────────────────────────── */
 const Kpi = ({ label, value, sub, tone = 'slate', icon: Icon, children }) => {
@@ -109,6 +265,11 @@ function ResumenDocumentosPanel({ CliIdCliente, desde, hasta, trigger, incluirAn
   const [pagos, setPagos]     = useState([]);
   // Pendiente REAL por moneda (foto de hoy, ignora el período): { 'US$': {total, fueraPeriodo}, ... }
   const [pendReal, setPendReal] = useState(null);
+  // Saldo de arrastre por moneda: posición real de la cuenta AL INICIO del período
+  // elegido (deuda de facturas viejas, aunque su cargo no aparezca en la lista de
+  // abajo). Sin esto, un pago dentro del período que cancela una factura de antes
+  // queda como abono huérfano y el saldo corrido termina "a favor" sin serlo.
+  const [saldoArrastre, setSaldoArrastre] = useState({});
   const [loading, setLoading] = useState(true);
   const [error, setError]     = useState(null);
   const [vista, setVista]     = useState('ESTADO'); // 'ESTADO' | 'DOCS' | 'PAGOS' | 'ORDENES'
@@ -162,8 +323,8 @@ function ResumenDocumentosPanel({ CliIdCliente, desde, hasta, trigger, incluirAn
     if (desde) p.append('desde', desde);
     if (hasta) p.append('hasta', hasta);
     fetchAPI(`/api/contabilidad/clientes/${CliIdCliente}/resumen-documentos?${p}`)
-      .then(r => { if (alive) { setDocs(r.data?.documentos || []); setPagos(r.data?.pagos || []); setPendReal(r.data?.pendientePorMoneda || null); } })
-      .catch(e => { if (alive) { setError(e.message); setDocs([]); setPagos([]); setPendReal(null); } })
+      .then(r => { if (alive) { setDocs(r.data?.documentos || []); setPagos(r.data?.pagos || []); setPendReal(r.data?.pendientePorMoneda || null); setSaldoArrastre(r.data?.saldoArrastrePorMoneda || {}); } })
+      .catch(e => { if (alive) { setError(e.message); setDocs([]); setPagos([]); setPendReal(null); setSaldoArrastre({}); } })
       .finally(() => { if (alive) setLoading(false); });
     return () => { alive = false; };
   }, [CliIdCliente, desde, hasta, trigger]);
@@ -211,6 +372,17 @@ function ResumenDocumentosPanel({ CliIdCliente, desde, hasta, trigger, incluirAn
       if (!map[m]) map[m] = { moneda: m, totalPend: 0, fueraPeriodo: 0, pagados: 0, total: 0, aFavor: 0 };
       map[m].aFavor = Number(v) || 0;
     });
+    // A favor IMPLÍCITO: si la billetera es negativa pero debe MENOS que el pendiente
+    // (billetera = -pendiente + anticipos), la diferencia es saldo a favor que convive
+    // con la deuda y el chip no se mostraba (caso Anibal Lozada: pendiente 665,30,
+    // billetera -663,19 → 2,11 a favor invisible = parecía un descuadre).
+    Object.values(map).forEach(r => {
+      if (r.aFavor <= 0.01) {
+        const saldo = Number(saldosPorMoneda?.[r.moneda]) || 0;
+        const implicito = r.totalPend + saldo;
+        if (saldo < 0 && implicito > 0.05) r.aFavor = implicito;
+      }
+    });
     return Object.values(map);
   }, [docs, incluirAnulados, saldosPorMoneda, pendReal]);
 
@@ -228,24 +400,34 @@ function ResumenDocumentosPanel({ CliIdCliente, desde, hasta, trigger, incluirAn
         clase: 'DOC', key: 'D' + d.DocIdDocumento, fecha: d.fecha, moneda: d.MonSimbolo,
         tipoKey: prefijoDoc(d), tipoLabel: d.tipo, etiqueta: d.documento,
         descripcion: d.descripcion, factura: d.factura, cfeEstado: d.cfeEstado,
+        cfeNumeroOficial: d.cfeNumeroOficial || null,
         cargo: Number(d.total || 0), abono: 0, estado: d.estado,
       })),
       ...pagos.map((p, i) => ({
         clase: 'PAGO', key: 'P' + i, fecha: p.fecha, moneda: p.MonSimbolo,
-        tipoKey: 'PAGO', tipoLabel: p.tipo, etiqueta: p.aplicadoA || null,
-        esFavor: !!p.esFavor, medioPago: p.medioPago, cheques: p.cheques, recibo: p.recibo,
+        tipoKey: 'PAGO', tipoLabel: p.tipo, etiqueta: p.aplicadoA || null, concepto: p.concepto || null,
+        cfeEstado: p.cfeEstado || null, cfeNumeroOficial: p.cfeNumeroOficial || null,
+        esFavor: !!p.esFavor, esConsumo: !!p.esConsumo, medioPago: p.medioPago, cheques: p.cheques, recibo: p.recibo,
+        pagIdPago: p.pagIdPago || null,
         pagoMoneda: p.pagoMoneda, pagoMonto: p.pagoMonto, pagoCotiz: p.pagoCotiz,
-        cargo: 0, abono: Number(p.importe || 0), estado: p.esFavor ? 'A FAVOR' : 'COBRO',
+        // esConsumo: el lado débito de un cruce de moneda (plata SALIENDO de esta
+        // cuenta para financiar la otra moneda) — va como CARGO, no abono, o un
+        // anticipo ya gastado sigue apareciendo "a favor" en el saldo corrido.
+        cargo: p.esConsumo ? Number(p.importe || 0) : 0,
+        abono: p.esConsumo ? 0 : Number(p.importe || 0),
+        estado: p.esConsumo ? 'Aplicado' : (p.esFavor ? 'A FAVOR' : 'COBRO'),
       })),
     ];
     let filtradas = filas;
     if (fTipoEC !== 'TODOS') filtradas = filtradas.filter(f => f.tipoKey === fTipoEC);
     if (fMonEC !== 'TODAS')  filtradas = filtradas.filter(f => f.moneda === fMonEC);
-    // Búsqueda por concepto: matchea documento, tipo, e-Ticket, descripción o medio de pago.
+    // Búsqueda por concepto: matchea documento, tipo, e-Ticket, descripción, medio de
+    // pago o el recibo del cobro (ej. "RC-90") — así se encuentra un pago puntual sin
+    // saber a qué factura se aplicó.
     const q = fConceptoEC.trim().toLowerCase();
     if (q) {
       filtradas = filtradas.filter(f => (
-        `${f.etiqueta || ''} ${f.tipoLabel || ''} ${f.descripcion || ''} ${f.factura || ''} ${f.medioPago || ''}`
+        `${f.etiqueta || ''} ${f.tipoLabel || ''} ${f.descripcion || ''} ${f.factura || ''} ${f.medioPago || ''} ${f.recibo || ''}`
           .toLowerCase().includes(q)
       ));
     }
@@ -259,7 +441,9 @@ function ResumenDocumentosPanel({ CliIdCliente, desde, hasta, trigger, incluirAn
       if (d !== 0) return d;
       return (a.clase === 'DOC' ? 0 : 1) - (b.clase === 'DOC' ? 0 : 1); // cargo primero
     });
-    const acums = {};
+    // Arranca del saldo REAL al inicio del período (no de 0): si el período recorta
+    // una factura vieja cuyo pago sí entra, el corrido antes daba "a favor" falso.
+    const acums = { ...saldoArrastre };
     for (const m of filtradas) {
       if (m.estado !== 'ANULADO') acums[m.moneda] = (acums[m.moneda] || 0) + m.cargo - m.abono;
       m.saldo = acums[m.moneda] || 0;
@@ -267,7 +451,7 @@ function ResumenDocumentosPanel({ CliIdCliente, desde, hasta, trigger, incluirAn
     // Display: más reciente arriba.
     filtradas.reverse();
     return filtradas;
-  }, [docs, pagos, incluirAnulados, fTipoEC, fMonEC, fConceptoEC]);
+  }, [docs, pagos, incluirAnulados, fTipoEC, fMonEC, fConceptoEC, saldoArrastre]);
   // El saldo corriente solo es legible con TODOS los movimientos: un subconjunto (por tipo
   // o por búsqueda de concepto) daría un acumulado parcial sin sentido. La moneda no lo
   // afecta: el saldo es por moneda.
@@ -298,8 +482,28 @@ function ResumenDocumentosPanel({ CliIdCliente, desde, hasta, trigger, incluirAn
       m[f.moneda].cargos += f.cargo;
       m[f.moneda].abonos += f.abono;
     }
-    return Object.entries(m).map(([moneda, v]) => ({ moneda, ...v, saldo: v.cargos - v.abonos }));
-  }, [movimientos]);
+    // El "saldo" del pie es la posición FINAL real (arrastre + movimiento del
+    // período), no solo el neto del período — para que coincida con el saldo
+    // corrido de la última fila de la tabla (misma cuenta, un solo número).
+    return Object.entries(m).map(([moneda, v]) => ({
+      moneda, ...v,
+      saldo: (saldoArrastre[moneda] || 0) + v.cargos - v.abonos,
+    }));
+  }, [movimientos, saldoArrastre]);
+
+  // Agrupa TODOS los pagos (sin los filtros de la tabla) por PagIdPago: un mismo cobro
+  // puede cancelar 2+ documentos, y cada aplicación es su propia fila en "pagos" — esto
+  // arma el resumen "este cobro se aplicó a X e Y" para el botón "Ver detalle".
+  const pagosPorGrupo = useMemo(() => {
+    const map = new Map();
+    pagos.forEach(p => {
+      if (!p.pagIdPago) return;
+      if (!map.has(p.pagIdPago)) map.set(p.pagIdPago, []);
+      map.get(p.pagIdPago).push(p);
+    });
+    return map;
+  }, [pagos]);
+  const [detallePago, setDetallePago] = useState(null); // fila de pago cuyo detalle se muestra
 
   // Órdenes filtradas (pestaña Órdenes) — filtros por orden, documento, facturación, moneda y situación de pago
   const ordenesFiltradas = ordenesMov.filter(o => {
@@ -395,10 +599,13 @@ function ResumenDocumentosPanel({ CliIdCliente, desde, hasta, trigger, incluirAn
             </div>
             <span className="text-[11px] font-semibold text-slate-400">{movimientos.length} movimiento{movimientos.length !== 1 ? 's' : ''}</span>
           </div>
-          {mostrarSaldo && (desde || hasta) && (
+          {mostrarSaldo && desde && Object.values(saldoArrastre).some(v => Math.abs(v) > 0.01) && (
             <div className="px-4 pb-2 -mt-1">
               <span className="text-[10px] text-amber-600 font-semibold">
-                El saldo arranca en cero al inicio del período — no incluye la deuda anterior a {desde ? fmtFechaCorta(desde) : 'la fecha'}.
+                Incluye el saldo real acumulado antes de {fmtFechaCorta(desde)}:{' '}
+                {Object.entries(saldoArrastre).filter(([, v]) => Math.abs(v) > 0.01)
+                  .map(([mon, v]) => `${mon} ${v > 0 ? '' : '-'}${fmtMoney(Math.abs(v))}${v > 0 ? ' (debía)' : ' (a favor)'}`)
+                  .join(' · ')}.
               </span>
             </div>
           )}
@@ -423,6 +630,11 @@ function ResumenDocumentosPanel({ CliIdCliente, desde, hasta, trigger, incluirAn
                   {movimientos.map(m => {
                     const anulado = m.estado === 'ANULADO';
                     const esDoc = m.clase === 'DOC';
+                    // N° oficial de DGI (ej. "27614"): una vez aceptado el CFE, es la
+                    // referencia que reconoce el cliente — el código interno (FA-189)
+                    // pasa a ser secundario, no desaparece (sigue sirviendo para buscar).
+                    // Aplica tanto al documento (factura) como al cobro que lo canceló.
+                    const nroOficial = m.cfeEstado === 'ACEPTADO_DGI' ? parseNroOficialDgi(m.cfeNumeroOficial) : null;
                     return (
                       <tr key={m.key} className={`border-b border-slate-100 last:border-0 hover:bg-slate-50/60 ${esDoc ? '' : 'bg-emerald-50/20'}`}>
                         <td className="px-4 py-3 tabular-nums text-slate-500 whitespace-nowrap align-middle">{fmtFechaCorta(m.fecha)}</td>
@@ -431,14 +643,19 @@ function ResumenDocumentosPanel({ CliIdCliente, desde, hasta, trigger, incluirAn
                             cuentas), sin importar el largo del badge de tipo. */}
                         <td className="px-4 py-3 align-middle whitespace-nowrap">
                           <span className={`text-[9px] font-black px-1.5 py-0.5 rounded uppercase tracking-wide border ${esDoc ? 'bg-slate-50 text-slate-500 border-slate-200' : 'bg-emerald-50 text-emerald-600 border-emerald-200'}`}>
-                            {esDoc ? m.tipoLabel : (m.esFavor ? 'A favor' : 'Cobro')}
+                            {esDoc ? m.tipoLabel : (m.esConsumo ? m.tipoLabel : (m.esFavor ? 'A favor' : 'Cobro'))}
                           </span>
                         </td>
                         <td className="px-4 py-3 align-middle">
                           <div className="flex items-center gap-2 flex-wrap">
-                            <span className={`font-bold ${anulado ? 'text-slate-400 line-through' : 'text-slate-800'}`}>
-                              {m.etiqueta || (esDoc ? '' : (m.recibo || 'Cobro'))}
+                            <span className={`font-bold ${anulado ? 'text-slate-400 line-through' : 'text-slate-800'}`} title={nroOficial ? `Documento interno: ${m.etiqueta}` : undefined}>
+                              {nroOficial ? `N° ${nroOficial}` : (m.etiqueta || (esDoc ? '' : (m.recibo || m.concepto || m.tipoLabel || 'Cobro')))}
                             </span>
+                            {/* Con N° oficial de DGI, el código interno queda como referencia
+                                secundaria (para buscar en el sistema), no se pierde. */}
+                            {nroOficial && (
+                              <span className="text-[11px] font-semibold text-slate-400">{m.etiqueta}</span>
+                            )}
                             {/* Estado DGI del propio documento (dato fiable). NO se muestra la
                                 referencia al e-Ticket: se derivaba por texto y podía traer el
                                 número de otro documento (bug del campo 'factura'). */}
@@ -465,6 +682,17 @@ function ResumenDocumentosPanel({ CliIdCliente, desde, hasta, trigger, incluirAn
                                 · pagado {m.pagoMoneda} {fmtMoney(m.pagoMonto)}{m.pagoCotiz > 1 ? ` @ ${fmtMoney(m.pagoCotiz)}` : ''}
                               </span>
                             )}
+                            {/* Resumen de a qué documento(s) se aplicó este cobro — útil sobre
+                                todo cuando un mismo pago canceló 2+ facturas a la vez. Solo para
+                                cobros reales (no un ajuste o el lado "Aplicado" de un cruce), y
+                                solo cuando el filtro está en "Pagos / Cobros": bajo "Todos" (que
+                                mezcla documentos y pagos) el botón queda oculto. */}
+                            {!esDoc && !m.esConsumo && fTipoEC === 'PAGO' && (
+                              <button type="button" onClick={() => setDetallePago(m)}
+                                className="text-[11px] font-bold text-cyan-600 hover:text-cyan-800 hover:underline">
+                                Ver detalle
+                              </button>
+                            )}
                           </div>
                         </td>
                         <td className={`px-4 py-3 text-right tabular-nums font-bold align-middle whitespace-nowrap ${anulado ? 'text-slate-400 line-through' : 'text-slate-800'}`}>
@@ -481,8 +709,8 @@ function ResumenDocumentosPanel({ CliIdCliente, desde, hasta, trigger, incluirAn
                         )}
                         <td className="px-4 py-3 text-center align-middle">
                           {esDoc ? <EstadoChip estado={m.estado} /> : (
-                            <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-bold border ${m.esFavor ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-cyan-50 text-cyan-700 border-cyan-200'}`}>
-                              {m.esFavor ? 'A favor' : 'Cobro'}
+                            <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-bold border ${m.esConsumo ? 'bg-slate-50 text-slate-600 border-slate-200' : m.esFavor ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-cyan-50 text-cyan-700 border-cyan-200'}`}>
+                              {m.esConsumo ? 'Aplicado' : (m.esFavor ? 'A favor' : 'Cobro')}
                             </span>
                           )}
                         </td>
@@ -674,6 +902,61 @@ function ResumenDocumentosPanel({ CliIdCliente, desde, hasta, trigger, incluirAn
           </div>
         )
       )}
+
+      {/* ── "Ver detalle" de un cobro: a qué documento(s) se aplicó, sin tener que
+          leer todo el estado de cuenta. Un mismo cobro puede cancelar 2+ facturas
+          a la vez (cada una es su propia fila arriba); acá se ven juntas. ── */}
+      {detallePago && (() => {
+        const grupo = detallePago.pagIdPago ? (pagosPorGrupo.get(detallePago.pagIdPago) || []) : [];
+        const items = grupo.length ? grupo : [{
+          aplicadoA: detallePago.etiqueta,
+          importe: detallePago.esConsumo ? detallePago.cargo : detallePago.abono,
+          MonSimbolo: detallePago.moneda,
+        }];
+        const total = items.reduce((s, it) => s + Number(it.importe || 0), 0);
+        return (
+          <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 px-4" onClick={() => setDetallePago(null)}>
+            <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm border border-cyan-100 overflow-hidden" onClick={e => e.stopPropagation()}>
+              <div className="px-6 py-4 bg-gradient-to-r from-cyan-700 to-cyan-600 text-white flex items-center justify-between">
+                <h2 className="font-bold text-base flex items-center gap-2"><DollarSign size={18} /> Detalle del cobro</h2>
+                <button onClick={() => setDetallePago(null)} className="text-white/80 hover:text-white"><X size={18} /></button>
+              </div>
+              <div className="px-6 py-5 space-y-3">
+                <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-slate-500">
+                  <span>{fmtFechaCorta(detallePago.fecha)}</span>
+                  {detallePago.recibo && <span className="font-bold text-slate-700">{detallePago.recibo}</span>}
+                  {detallePago.medioPago && <span>· {detallePago.medioPago}{detallePago.cheques ? ` · Cheque N° ${detallePago.cheques}` : ''}</span>}
+                </div>
+                <div className="p-3 rounded-xl bg-slate-50 border border-slate-200">
+                  <p className="text-[10px] font-black uppercase tracking-wider text-slate-400 mb-1">
+                    {detallePago.esConsumo ? 'Aplicado a cruce de moneda' : 'Total del cobro'}
+                  </p>
+                  <p className="text-xl font-black text-slate-800">{detallePago.moneda} {fmtMoney(total)}</p>
+                </div>
+                <div>
+                  <p className="text-[10px] font-black uppercase tracking-wider text-slate-400 mb-1.5">
+                    Aplicado a{items.length > 1 ? ` (${items.length} documentos)` : ''}
+                  </p>
+                  <ul className="space-y-1.5">
+                    {items.map((it, i) => (
+                      <li key={i} className="flex items-center justify-between text-sm bg-white border border-slate-100 rounded-lg px-3 py-2">
+                        <span className="font-bold text-slate-700">{it.aplicadoA || 'Sin documento vinculado'}</span>
+                        <span className="tabular-nums font-bold text-slate-600">{it.MonSimbolo || detallePago.moneda} {fmtMoney(Number(it.importe || 0))}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              </div>
+              <div className="px-6 pb-5">
+                <button onClick={() => setDetallePago(null)}
+                  className="w-full px-4 py-2.5 text-sm font-semibold text-slate-600 bg-slate-100 hover:bg-slate-200 rounded-xl transition-colors">
+                  Cerrar
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 }
@@ -702,6 +985,7 @@ export default function ClienteVista360() {
   const [showBandejaCFE, setShowBandejaCFE]       = useState(false);
   const [showFacturaManual, setShowFacturaManual] = useState(false);
   const [showSaldoInicial, setShowSaldoInicial]   = useState(false);
+  const [showAjusteSaldo, setShowAjusteSaldo]     = useState(false);
 
   const [globalDesde, setGlobalDesde] = useState(() => { const d = new Date(); d.setMonth(d.getMonth() - 1); return d.toISOString().split('T')[0]; });
   const [globalHasta, setGlobalHasta] = useState(() => new Date().toISOString().split('T')[0]);
@@ -1078,6 +1362,10 @@ export default function ClienteVista360() {
                       className="flex items-center gap-1.5 px-3 py-2 bg-white border border-slate-200 hover:border-slate-300 text-slate-700 text-xs font-bold rounded-lg transition-colors">
                       <PlusCircle size={14} /> Saldo Inicial
                     </button>
+                    <button onClick={() => setShowAjusteSaldo(true)} title="Corregir el saldo de una cuenta de dinero, con motivo obligatorio"
+                      className="flex items-center gap-1.5 px-3 py-2 bg-white border border-slate-200 hover:border-slate-300 text-slate-700 text-xs font-bold rounded-lg transition-colors">
+                      <Scale size={14} /> Ajustar saldo
+                    </button>
                     <button onClick={() => { setVentaTipo('recursos'); setVentaPaso('conceptos'); setOpModal('VENTA'); }}
                       className="flex items-center gap-1.5 px-3 py-2 bg-white border border-slate-200 hover:border-slate-300 text-slate-700 text-xs font-bold rounded-lg transition-colors">
                       <ShoppingCart size={14} /> Venta de recursos
@@ -1305,6 +1593,22 @@ export default function ClienteVista360() {
           cliente={clienteSel}
           onClose={() => setShowSaldoInicial(false)}
           onSuccess={() => { setShowSaldoInicial(false); recargarCuentas(); setRefreshBilletera(v => v + 1); }}
+        />
+      )}
+
+      {/* Ajustar saldo — por ahora solo cuentas de dinero (USD/UYU), no recursos */}
+      {showAjusteSaldo && clienteSel && (
+        <ModalAjusteSaldo
+          cuentas={cuentas.filter(c => !esRecurso(c))}
+          cuentaDefaultId={cuentaActiva?.CueIdCuenta}
+          clienteNombre={clienteSel.Nombre}
+          onClose={() => setShowAjusteSaldo(false)}
+          onSuccess={() => {
+            setShowAjusteSaldo(false);
+            recargarCuentas();
+            setRefreshBilletera(v => v + 1);
+            setGlobalFiltroTrigger(v => v + 1); // refresca el Estado de Cuenta (ResumenDocumentosPanel)
+          }}
         />
       )}
 

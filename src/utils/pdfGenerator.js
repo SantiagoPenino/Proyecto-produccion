@@ -81,7 +81,11 @@ const cargarImagenBase64 = (src) => new Promise((resolve) => {
     } catch (e) { resolve(null); }
 });
 
-export const generarPdfFacturaDGI = async (doc, detalles) => {
+// opciones.retornarBase64 = true  → devuelve { base64, nombreArchivo } en vez de
+// descargar el archivo. Se usa para adjuntar la factura a un email: el PDF lo dibuja
+// el navegador, así el cliente recibe exactamente el mismo comprobante que ve el
+// operador y no hay que mantener una segunda maquetación en el backend.
+export const generarPdfFacturaDGI = async (doc, detalles, opciones = {}) => {
     // Parse SISNET DGI fields from our DB fields if they exist
     if (doc.CfeUrlImpresion && doc.CfeUrlImpresion.includes('?')) {
         try {
@@ -686,6 +690,12 @@ export const generarPdfFacturaDGI = async (doc, detalles) => {
     // (window.open) deja el nombre a criterio del visor de PDF del sistema operativo
     // (algunos ignoran el título y usan el UUID del blob). pdf.save() dispara la
     // descarga del navegador con el nombre de archivo exacto.
+    if (opciones.retornarBase64) {
+        return {
+            base64: pdf.output('datauristring').split(',')[1],
+            nombreArchivo: `${nombreArchivo}.pdf`,
+        };
+    }
     pdf.save(`${nombreArchivo}.pdf`);
 };
 
@@ -867,7 +877,9 @@ export const generarPdfEstadoCuenta = (cliente, cuentas, secciones, planes, desd
                 cellPadding: 3
             },
             columnStyles: {
-                0: { cellWidth: 16 },
+                // Fecha en 22mm: a fontSize 8, "20/7/2026" no entra en 16mm y se
+                // parte en 2 líneas — 22mm le da margen sin tocar el resto.
+                0: { cellWidth: 22 },
                 1: { cellWidth: 18 },
                 2: { cellWidth: 32 },
                 3: { cellWidth: 'auto' },

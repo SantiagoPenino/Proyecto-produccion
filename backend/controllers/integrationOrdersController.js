@@ -5,6 +5,7 @@ const axios = require('axios');
 const { PDFDocument, StandardFonts, rgb } = require('pdf-lib');
 const logger = require('../utils/logger');
 const ERPSyncService = require('../services/erpSyncService');
+const { construirNombreArchivo, materialParaNombre, usaNombreNuevo } = require('../utils/nombreArchivoOrden');
 
 // --- CONSTANTES Y MAPEOS ---
 const SERVICE_TO_AREA_MAP = {
@@ -679,7 +680,19 @@ exports.createPlanillaOrder = async (req, res) => {
                         }
                     }
 
-                    const finalName = `${exec.codigoOrden.replace(/\//g, '-')}_${sanitize(nombreCliente)}_${sanitize(jobName)}_Archivo ${i + 1} de ${exec.items.length} (x${safeCopies})${ext}`;
+                    // SUBLIMACIÓN: {MATERIAL}-{ORDEN}_{CLIENTE}_Arch {i} de {n} (x{copias}).ext
+                    // Resto de áreas: formato de siempre.
+                    const finalName = (await usaNombreNuevo(exec.areaID))
+                        ? construirNombreArchivo({
+                            material: materialParaNombre(exec.material, null),
+                            codigoOrden: exec.codigoOrden,
+                            cliente: nombreCliente,
+                            idx: i + 1,
+                            total: exec.items.length,
+                            copias: safeCopies,
+                            ext
+                        })
+                        : `${exec.codigoOrden.replace(/\//g, '-')}_${sanitize(nombreCliente)}_${sanitize(jobName)}_Archivo ${i + 1} de ${exec.items.length} (x${safeCopies})${ext}`;
 
                     let obsFile = item.observaciones || '';
                     if (item.originalUrl && typeof item.originalUrl === 'string' && item.originalUrl.startsWith('http')) {

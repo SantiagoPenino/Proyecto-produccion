@@ -335,7 +335,7 @@ exports.getMovimientos = async (req, res) => {
  */
 exports.registrarAjusteManual = async (req, res) => {
   try {
-    const { CueIdCuenta, MovTipo, MovConcepto, MovImporte, MovObservaciones } = req.body;
+    const { CueIdCuenta, MovTipo, MovConcepto, MovImporte, MovObservaciones, MovFecha } = req.body;
     const UsuarioAlta = req.user?.id ?? 1;
 
     if (!['AJUSTE_POS', 'AJUSTE_NEG'].includes(MovTipo)) {
@@ -344,18 +344,45 @@ exports.registrarAjusteManual = async (req, res) => {
     if (!CueIdCuenta || !MovConcepto || MovImporte === undefined) {
       return res.status(400).json({ success: false, error: 'CueIdCuenta, MovConcepto y MovImporte son obligatorios.' });
     }
+    // Fecha opcional (retroactiva): sin ella, SP_RegistrarMovimiento usa GETDATE().
+    // No se permite futuro: un ajuste no puede "pasar" antes de crearse.
+    if (MovFecha && new Date(MovFecha) > new Date()) {
+      return res.status(400).json({ success: false, error: 'La fecha del ajuste no puede ser futura.' });
+    }
 
     // Forzar signo según tipo
     const importe = MovTipo === 'AJUSTE_NEG' ? -Math.abs(MovImporte) : Math.abs(MovImporte);
 
+    const cueId = parseInt(CueIdCuenta);
     const resultado = await svc.registrarMovimiento({
-      CueIdCuenta: parseInt(CueIdCuenta),
+      CueIdCuenta: cueId,
       MovTipo,
       MovConcepto,
       MovImporte: importe,
       MovUsuarioAlta: UsuarioAlta,
       MovObservaciones,
+      MovFecha: MovFecha || null,
     });
+
+    // Si la fecha es retroactiva, el ajuste quedó insertado EN MEDIO del
+    // historial: MovSaldoPosterior de esa fila y de todas las posteriores
+    // queda desalineado (el SP solo conoce el saldo de HOY). Se recalcula acá
+    // en orden cronológico, excluyendo ORDEN/ORDEN_ANTICIPO (igual que el resto
+    // del sistema — esas nunca afectan el saldo mostrado).
+    if (MovFecha) {
+      const pool = await getPool();
+      await pool.request().input('c', sql.Int, cueId).query(`
+        ;WITH ord AS (
+          SELECT MovIdMovimiento,
+                 SUM(CASE WHEN MovTipo NOT IN ('ORDEN','ORDEN_ANTICIPO') THEN MovImporte ELSE 0 END)
+                   OVER (ORDER BY MovFecha, MovIdMovimiento ROWS UNBOUNDED PRECEDING) AS run
+          FROM dbo.MovimientosCuenta
+          WHERE CueIdCuenta = @c AND (MovAnulado IS NULL OR MovAnulado = 0)
+        )
+        UPDATE m SET m.MovSaldoPosterior = ord.run
+        FROM dbo.MovimientosCuenta m JOIN ord ON ord.MovIdMovimiento = m.MovIdMovimiento;
+      `);
+    }
 
     res.json({ success: true, data: resultado });
   } catch (err) {

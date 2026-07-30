@@ -162,7 +162,9 @@ const EditModal = ({ article, allArticles, onClose, onSaved }) => {
 
     const UBICACIONES_PT = [
         { v: 'ARRIBA', l: 'Arriba' }, { v: 'ABAJO', l: 'Abajo' },
-        { v: 'ARRIBA_ABAJO', l: 'Arriba y abajo' }, { v: 'COSTADOS', l: 'Costados' },
+        { v: 'ARRIBA_ABAJO', l: 'Arriba y abajo' },
+        { v: 'IZQUIERDA', l: 'Izquierda' }, { v: 'DERECHA', l: 'Derecha' },
+        { v: 'COSTADOS', l: 'Ambos costados' },
         { v: 'PERIMETRO', l: 'Perímetro' },
     ];
 

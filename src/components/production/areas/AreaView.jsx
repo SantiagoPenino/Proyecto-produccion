@@ -3,7 +3,7 @@ import { Routes, Route, useNavigate, useLocation, Navigate } from "react-router-
 import { io } from "socket.io-client";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { CirclePile, AlertTriangle } from "lucide-react";
-import { LayoutGrid, CalendarCheck, ScanLine, Truck } from "lucide-react";
+import { LayoutGrid, CalendarCheck, ScanLine, Truck, ListChecks } from "lucide-react";
 import Tippy from '@tippyjs/react';
 import 'tippy.js/dist/tippy.css';
 import Swal from 'sweetalert2';
@@ -15,6 +15,7 @@ import OrderDetailModal from "../../production/components/OrderDetailModal";
 import RollsKanban from "../../pages/RollsKanban";
 import ProductionKanban from "../../pages/ProductionKanban";
 import FilePrintControl from "../../pages/FilePrintControl";
+import EcoUvFinishing from "../../pages/EcoUvFinishing";
 import LogisticsDashboard from "../../logistics/LogisticsDashboard";
 import PlaneacionTrabajo from "../../pages/PlaneacionTrabajo";
 import ImportadorManualView from "../ImportadorManualView";
@@ -228,7 +229,9 @@ export default function AreaView({ areaKey: rawAreaKey, areaConfig, onSwitchTab 
         }
     };
 
-    const hideImportar = ['corte', 'costura', 'bordado', 'estampado', 'twc', 'twt', 'emb'].includes((areaKey || '').toLowerCase());
+    const hideImportar = ['corte', 'costura', 'bordado', 'estampado', 'twc', 'twt', 'emb', 'terminac'].includes((areaKey || '').toLowerCase());
+    // TERMINAC: sin Planeación (pedido 28/07 — las hermanas XEUV no se planifican en tablero)
+    const hidePlaneacion = (areaKey || '').toLowerCase() === 'terminac';
 
     // 3. CARGA DE DATOS (React Query)
     const { data: dbOrders = [], isLoading: loadingOrders, refetch } = useQuery({
@@ -906,7 +909,13 @@ export default function AreaView({ areaKey: rawAreaKey, areaConfig, onSwitchTab 
                             </button>
                         )}
                         <button className={`${btnBaseClass} px-3 h-8 text-xs tablet:px-2 tablet:h-7 tablet:text-[11px] ${isActive('') ? btnPrimaryClass : btnSecondaryClass}`} onClick={() => goTo('')}><LayoutGrid size={14} /> Planilla</button>
-                        <button className={`${btnBaseClass} px-3 h-8 text-xs tablet:px-2 tablet:h-7 tablet:text-[11px] ${isActive('planeacion') ? btnPrimaryClass : btnSecondaryClass}`} onClick={() => goTo('planeacion')}><CalendarCheck size={14} /> Planeación</button>
+                        {hidePlaneacion ? (
+                            /* TERMINAC: en el lugar de Planeación va la Bandeja (checklist de
+                               terminaciones con material recibido); Control queda aparte. */
+                            <button className={`${btnBaseClass} px-3 h-8 text-xs tablet:px-2 tablet:h-7 tablet:text-[11px] ${isActive('bandeja') ? btnPrimaryClass : btnSecondaryClass}`} onClick={() => goTo('bandeja')}><ListChecks size={14} /> Bandeja</button>
+                        ) : (
+                            <button className={`${btnBaseClass} px-3 h-8 text-xs tablet:px-2 tablet:h-7 tablet:text-[11px] ${isActive('planeacion') ? btnPrimaryClass : btnSecondaryClass}`} onClick={() => goTo('planeacion')}><CalendarCheck size={14} /> Planeación</button>
+                        )}
                         <button className={`${btnBaseClass} px-3 h-8 text-xs tablet:px-2 tablet:h-7 tablet:text-[11px] ${isActive('control') ? btnPrimaryClass : btnSecondaryClass}`} onClick={() => goTo('control')}><ScanLine size={14} /> Control</button>
                         <button className={`${btnBaseClass} px-3 h-8 text-xs tablet:px-2 tablet:h-7 tablet:text-[11px] ${isActive('logistica') ? btnPrimaryClass : btnSecondaryClass}`} onClick={() => goTo('logistica')}><Truck size={14} /> Logística</button>
                     </div>
@@ -951,7 +960,7 @@ export default function AreaView({ areaKey: rawAreaKey, areaConfig, onSwitchTab 
             <div className="flex flex-1 overflow-hidden">
 
 
-                <main className={`flex-1 bg-zinc-50 overflow-hidden flex flex-col h-full items-stretch ${isActive('') || isActive('tabla') || isActive('planeacion') || isActive('control') || isActive('logistica') ? 'p-0' : 'p-6'}`}>
+                <main className={`flex-1 bg-zinc-50 overflow-hidden flex flex-col h-full items-stretch ${isActive('') || isActive('tabla') || isActive('planeacion') || isActive('bandeja') || isActive('control') || isActive('logistica') ? 'p-0' : 'p-6'}`}>
                     <Routes>
                         <Route index element={<ProductionTable rowData={filteredOrders} onRowSelected={setSelectedIds} selectedRowIds={selectedIds} onRowClick={setSelectedOrder} columnDefs={areaConfig.defaultColDefs} toolbarContent={tableToolbar} flashingRowIds={flashingRows} />} />
                         <Route path="tabla" element={<ProductionTable rowData={filteredOrders} onRowSelected={setSelectedIds} selectedRowIds={selectedIds} onRowClick={setSelectedOrder} columnDefs={areaConfig.defaultColDefs} toolbarContent={tableToolbar} flashingRowIds={flashingRows} />} />
@@ -959,7 +968,11 @@ export default function AreaView({ areaKey: rawAreaKey, areaConfig, onSwitchTab 
                         <Route path="lotes" element={<RollsKanban areaCode={areaKey} />} />
 
                         <Route path="produccion" element={<ProductionKanban areaCode={areaKey} />} />
-                        <Route path="control" element={<FilePrintControl areaCode={areaKey} />} />
+                        {/* TERMINAC (29/07): Bandeja = trabajos con material recibido (checklist);
+                            Control = órdenes terminadas esperando aprobación. El resto de las
+                            áreas usa el control de archivos de siempre. */}
+                        <Route path="bandeja" element={<EcoUvFinishing />} />
+                        <Route path="control" element={areaKey === 'TERMINAC' ? <EcoUvFinishing fase="control" /> : <FilePrintControl areaCode={areaKey} />} />
                         <Route path="planeacion" element={<PlaneacionTrabajo AreaID={areaKey} />} />
                         <Route path="logistica" element={<LogisticsDashboard areaCode={areaKey} />} />
 

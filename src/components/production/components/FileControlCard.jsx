@@ -3,6 +3,13 @@ import { API_URL } from '../../../services/apiClient';
 import { FileImage, FileBox, FileText } from 'lucide-react';
 import { fileControlService } from '../../../services/modules/fileControlService';
 
+// Etiquetas legibles de las ubicaciones de terminaciones (ECOUV)
+const UBI_LABEL = {
+    ARRIBA: 'Arriba', ABAJO: 'Abajo', ARRIBA_ABAJO: 'Arriba y abajo',
+    IZQUIERDA: 'Izquierda', DERECHA: 'Derecha',
+    COSTADOS: 'Ambos costados', PERIMETRO: 'Perímetro',
+};
+
 const FileControlCard = ({ file, refreshOrder, onAction }) => {
     const [controlCount, setControlCount] = useState(file.Controlcopias || 0);
     const [status, setStatus] = useState(file.EstadoArchivo || 'Pendiente');
@@ -191,6 +198,24 @@ const FileControlCard = ({ file, refreshOrder, onAction }) => {
                         )}
                         {area > 0 && <span className="text-brand-cyan font-bold ml-auto">{parseFloat(area).toFixed(2)} m</span>}
                     </div>
+
+                    {/* PRODUCTO TERMINADO (ECOUV): ficha del producto que viaja en la nota de la orden */}
+                    {file.ProductoInfo && (
+                        <div className="text-[10px] font-bold text-purple-700 bg-purple-50 border border-purple-100 rounded-md px-2 py-1 break-words" title={file.ProductoInfo}>
+                            <i className="fa-solid fa-cube mr-1"></i>{file.ProductoInfo}
+                        </div>
+                    )}
+
+                    {/* TERMINACIONES del archivo (ECOUV): qué lleva y dónde */}
+                    {Array.isArray(file.Terminaciones) && file.Terminaciones.length > 0 && (
+                        <div className="flex flex-wrap items-center gap-1">
+                            {file.Terminaciones.map((t, i) => (
+                                <span key={i} className="text-[9px] font-black uppercase tracking-wide bg-amber-50 text-amber-700 border border-amber-200 rounded px-1.5 py-0.5">
+                                    {t.Nombre} ×{parseFloat(t.Cantidad) || 1}{t.Ubicacion ? ` · ${UBI_LABEL[String(t.Ubicacion).trim()] || t.Ubicacion}` : ''}
+                                </span>
+                            ))}
+                        </div>
+                    )}
                 </div>
 
                 {/* 3. ACTIONS (Counter + Button) */}

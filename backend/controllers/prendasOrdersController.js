@@ -37,6 +37,7 @@ const path = require('path');
 const contabilidadService = require('../services/contabilidadService');
 const ERPSyncService = require('../services/erpSyncService');
 const { generateThumbnail } = require('../utils/thumbnailGenerator');
+const { construirNombreArchivo, materialParaNombre, usaNombreNuevo } = require('../utils/nombreArchivoOrden');
 
 
 // ──────────────────────────────────────────────────
@@ -1026,6 +1027,24 @@ exports.createWebOrder = async (req, res) => {
                 }
 
 
+                // --- NOMBRE DE LOS ARCHIVOS: MATERIAL AL PRINCIPIO (SOLO SUBLIMACIÓN) ---
+                // El resto de las áreas mantiene el nombre de siempre (ORDEN_CLIENTE_TRABAJO_Archivo...).
+                const nombreNuevo = await usaNombreNuevo(exec.areaID);
+                let materialNombreArchivo = '';
+                if (nombreNuevo) {
+                    // Tela de cliente: al material se le agrega el PRE de la recepción de esa tela.
+                    let preTelaCliente = null;
+                    if (bobinaId && !exec.isExtra) {
+                        try {
+                            const telaRes = await new sql.Request(transaction)
+                                .input('BID', sql.Int, parseInt(bobinaId))
+                                .query('SELECT Referencia FROM InventarioBobinas WHERE BobinaID = @BID');
+                            preTelaCliente = telaRes.recordset[0]?.Referencia || null;
+                        } catch (_) { /* sin PRE: el nombre queda solo con el material */ }
+                    }
+                    materialNombreArchivo = materialParaNombre(exec.material, preTelaCliente);
+                }
+
                 // --- REGISTRAR ARCHIVOS ESPERADOS (PLACEHOLDERS) ---
                 let totalMagnitud = 0;
                 let fileCount = 0;
@@ -1061,8 +1080,19 @@ exports.createWebOrder = async (req, res) => {
                         const parts = safeItemName.split('.');
                         const ext = parts.length > 1 ? `.${parts.pop()}` : '';
 
-                        // NUEVO FORMATO: ORD-XX... (xCOPIAS).ext
-                        const finalName = `${exec.codigoOrden.replace(/\//g, '-')}_${sanitize(nombreCliente)}_${sanitize(jobName)}_Archivo ${i + 1} de ${exec.items.length} (x${item.copies || 1})${ext}`;
+                        // SUBLIMACIÓN: {MATERIAL}-{ORDEN}_{CLIENTE}_Arch {i} de {n} (x{copias}).ext
+                        // Resto de áreas: formato de siempre.
+                        const finalName = nombreNuevo
+                            ? construirNombreArchivo({
+                                material: materialNombreArchivo,
+                                codigoOrden: exec.codigoOrden,
+                                cliente: nombreCliente,
+                                idx: i + 1,
+                                total: exec.items.length,
+                                copias: item.copies || 1,
+                                ext
+                            })
+                            : `${exec.codigoOrden.replace(/\//g, '-')}_${sanitize(nombreCliente)}_${sanitize(jobName)}_Archivo ${i + 1} de ${exec.items.length} (x${item.copies || 1})${ext}`;
 
                         const resFile = await new sql.Request(transaction)
                             .input('OID', sql.Int, newOID)
@@ -1197,7 +1227,18 @@ exports.createWebOrder = async (req, res) => {
                         const safeBackName = sanitizeFileName(item.fileBackName);
                         const partsBack = safeBackName.split('.');
                         const extBack = partsBack.length > 1 ? `.${partsBack.pop()}` : '';
-                        const finalNameBack = `${exec.codigoOrden.replace(/\//g, '-')}_${sanitize(nombreCliente)}_${sanitize(jobName)}_DORSO Archivo ${i + 1} de ${exec.items.length} (x${item.copies || 1})${extBack}`;
+                        const finalNameBack = nombreNuevo
+                            ? construirNombreArchivo({
+                                material: materialNombreArchivo,
+                                codigoOrden: exec.codigoOrden,
+                                cliente: nombreCliente,
+                                idx: i + 1,
+                                total: exec.items.length,
+                                copias: item.copies || 1,
+                                ext: extBack,
+                                dorso: true
+                            })
+                            : `${exec.codigoOrden.replace(/\//g, '-')}_${sanitize(nombreCliente)}_${sanitize(jobName)}_DORSO Archivo ${i + 1} de ${exec.items.length} (x${item.copies || 1})${extBack}`;
 
                         const obsBack = (item.observacionesBack || '') + (item.observacionesBack?.includes('DORSO') ? '' : ' [DORSO]');
 
@@ -1255,6 +1296,17 @@ exports.createWebOrder = async (req, res) => {
                     if (cantTpu > 0) {
                         await new sql.Request(transaction).input('OID', sql.Int, newOID).input('Mag', sql.Decimal(10, 2), cantTpu)
                             .query("UPDATE Ordenes SET Magnitud = CAST(@Mag AS VARCHAR) WHERE OrdenID = @OID");
+                    }
+                }
+
+                // HERMANA TERMINAC DESDE EL INGRESO (pedido negocio 28/07): si la orden ECOUV
+                // quedó con terminaciones, la hermana XEUV-{doc} se crea YA. Idempotente.
+                if (String(exec.areaID || '').toUpperCase() === 'ECOUV') {
+                    try {
+                        const { crearHermanaTerminaciones } = require('../utils/hermanaTerminaciones');
+                        await crearHermanaTerminaciones(transaction, newOID);
+                    } catch (eHer) {
+                        logger.warn(`[PrendasOrder] No se pudo crear la hermana de terminaciones de la orden ${newOID}:`, eHer.message);
                     }
                 }
 

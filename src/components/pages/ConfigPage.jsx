@@ -18,6 +18,7 @@ import ConfigSyncModal from '../modals/config/ConfigSyncModal';
 import ConfigSincroArticulosModal from '../modals/config/ConfigSincroArticulosModal';
 import StockArtEditModal from '../modals/config/StockArtEditModal';
 import ConfigUrgenciaDescuentoRolloModal from '../modals/config/ConfigUrgenciaDescuentoRolloModal';
+import ConfigGlobalModal from '../modals/config/ConfigGlobalModal';
 import EmpresasAdminPanel from './admin/EmpresasAdminPanel';
 
 export default function ConfigPage({ onBack }) {
@@ -254,6 +255,13 @@ export default function ConfigPage({ onBack }) {
                             colorClass="from-teal-500 to-cyan-600"
                             onClick={() => setActiveModal(prev => prev === 'empresas' ? null : 'empresas')}
                         />
+                        <ConfigCard
+                            title="Configuración General"
+                            subtitle="Claves globales del sistema"
+                            icon="fa-sliders"
+                            colorClass="from-cyan-500 to-sky-600"
+                            onClick={() => setActiveModal('config-global')}
+                        />
                     </div>
 
                     {/* Panel de Empresas: inline, no tapa el menú ni el navbar */}
@@ -376,6 +384,7 @@ export default function ConfigPage({ onBack }) {
             {activeModal === 'sincro-articulos' && <ConfigSincroArticulosModal isOpen={true} onClose={() => setActiveModal(null)} />}
             {activeModal === 'stockart' && <StockArtEditModal isOpen={true} onClose={() => setActiveModal(null)} />}
             {activeModal === 'urgencia-descuento-rollo' && <ConfigUrgenciaDescuentoRolloModal isOpen={true} onClose={() => setActiveModal(null)} />}
+            {activeModal === 'config-global' && <ConfigGlobalModal isOpen={true} onClose={() => setActiveModal(null)} />}
 
             <ImportLogModal
                 isOpen={isLogModalOpen}

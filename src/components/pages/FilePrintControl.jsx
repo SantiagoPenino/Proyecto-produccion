@@ -242,7 +242,7 @@ const FilePrintControl = ({ areaCode }) => {
         setFiles(data || []);
 
         // Also fetch full details for Stepper (using same service as visualizer)
-        const fullDetails = await fileControlService.getPedidoMetrics(selectedOrder.code || selectedOrder.id);
+        const fullDetails = await fileControlService.getPedidoMetrics(selectedOrder.code || selectedOrder.id, areaCode);
         setPedidoMetrics(fullDetails);
 
       } catch (e) { console.error(e); }
@@ -426,7 +426,7 @@ const FilePrintControl = ({ areaCode }) => {
   const refreshCurrentOrder = () => {
     if (selectedOrder) {
       fileControlService.getArchivosPorOrden(selectedOrder.id).then(setFiles);
-      fileControlService.getPedidoMetrics(selectedOrder.code || selectedOrder.id).then(setPedidoMetrics);
+      fileControlService.getPedidoMetrics(selectedOrder.code || selectedOrder.id, areaCode).then(setPedidoMetrics);
     }
     // Refrescar métricas del lote para actualizar el progreso en la sidebar
     if (activeRoll?.id) {
@@ -464,6 +464,89 @@ const FilePrintControl = ({ areaCode }) => {
       return;
     }
     setSelectedOrder(order);
+  };
+
+  // Tarjetas de "órdenes hermanas" (mismo pedido, misma área): 1/2, 2/2, etc.
+  const siblingOrders = React.useMemo(() => {
+    if (!pedidoMetrics?.ordenes) return [];
+    const sameArea = pedidoMetrics.ordenes.filter(o => o.AreaID === areaCode);
+    if (sameArea.length < 2) return [];
+    return sameArea
+      .map(o => ({
+        ordenId: o.OrdenID,
+        code: o.CodigoOrden,
+        status: o.Estado,
+        statusArea: o.EstadoenArea,
+        canasto: o.Canasto,
+        material: o.Material,
+        rolloId: o.RolloID,
+        lote: o.NombreRollo,
+        maquina: o.NombreMaquina,
+        files: (pedidoMetrics.allFiles || []).filter(f => String(f.OrdenID) === String(o.OrdenID))
+      }))
+      .sort((a, b) => String(a.code).localeCompare(String(b.code), undefined, { numeric: true }));
+  }, [pedidoMetrics, areaCode]);
+
+  // Solo las hermanas (sin la orden que se está controlando ahora mismo)
+  const otherSiblingOrders = React.useMemo(() => {
+    return siblingOrders.filter(s => s.ordenId !== selectedOrder?.id);
+  }, [siblingOrders, selectedOrder]);
+
+  // Mismos tonos que OrderCard.getStatusColor, para que las hermanas se vean consistentes con el resto de la app
+  const orderStatusTone = (status) => {
+    const s = (status || '').toLowerCase();
+    if (s.includes('imprimiendo') || s.includes('proceso')) return 'bg-blue-100 text-blue-700 border-blue-200';
+    if (s.includes('detenido') || s.includes('falla') || s.includes('retenido')) return 'bg-red-100 text-red-700 border-red-200';
+    if (s.includes('control') || s.includes('calidad')) return 'bg-purple-100 text-purple-700 border-purple-200';
+    if (s.includes('finalizado') || s.includes('entregado') || s.includes('pronto')) return 'bg-emerald-100 text-emerald-700 border-emerald-200';
+    return 'bg-zinc-100 text-zinc-600 border-zinc-200';
+  };
+
+  const fileStatusTone = (status) => {
+    const s = (status || '').toUpperCase();
+    if (['OK', 'FINALIZADO'].includes(s)) return 'bg-brand-cyan/10 text-brand-cyan';
+    if (s === 'FALLA') return 'bg-red-100 text-red-600';
+    if (s === 'CANCELADO') return 'bg-zinc-100 text-zinc-500';
+    return 'bg-zinc-100 text-zinc-400';
+  };
+
+  // "Ver esta orden" en la tarjeta de una hermana: si ya está en la lista del lote activo la
+  // selecciona directo; si no (otro lote), la busca por código antes de seleccionarla.
+  const handleSelectSiblingOrder = async (ordenId, codigoOrden) => {
+    if (selectedOrder?.id === ordenId) return;
+    const existing = orders.find(o => o.id === ordenId);
+    if (existing) {
+      handleSelectOrder(existing);
+      return;
+    }
+    try {
+      const data = await fileControlService.getOrdenes(codigoOrden, '', areaCode || 'DTF');
+      const found = (data || []).find(o => o.OrdenID === ordenId) || (data || []).find(o => o.CodigoOrden === codigoOrden);
+      if (!found) {
+        setToast({ visible: true, message: `No se encontró la orden ${codigoOrden}`, type: 'error' });
+        return;
+      }
+      handleSelectOrder({
+        id: found.OrdenID,
+        code: found.CodigoOrden,
+        client: found.Cliente,
+        clienteId: found.IDCliente || '',
+        material: found.Material,
+        status: found.Estado,
+        statusArea: found.EstadoenArea,
+        controlled: found.Controlada === 1,
+        sequence: found.Secuencia || 0,
+        failures: found.CantidadFallas || 0,
+        hasLabels: found.CantidadEtiquetas || 0,
+        rolloId: found.RolloID || null,
+        nextService: found.ProximoServicio,
+        meters: parseFloat(found.Magnitud) || 0,
+        priority: found.Prioridad || 'Normal'
+      });
+    } catch (e) {
+      console.error(e);
+      setToast({ visible: true, message: 'Error al cargar la orden', type: 'error' });
+    }
   };
 
   // --- ACTIONS HANDLERS ---
@@ -1231,6 +1314,55 @@ const FilePrintControl = ({ areaCode }) => {
                 </div>
               )}
             </div>
+
+            {/* SIBLING ORDERS (hermanas del mismo pedido, misma área: 1/2, 2/2, etc. — NO incluye la que se está controlando) */}
+            {otherSiblingOrders.length > 0 && (
+              <div className="border-t border-slate-200">
+                <div className="flex items-center justify-between px-6 py-3 bg-slate-50 border-b border-slate-200">
+                  <div className="text-xs font-black text-slate-500 uppercase tracking-widest">
+                    Órdenes hermanas de este pedido
+                  </div>
+                </div>
+                <div className="p-3 grid gap-2.5" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))' }}>
+                  {otherSiblingOrders.map(s => (
+                    <div key={s.ordenId} className="bg-white border border-zinc-200 rounded-lg p-2.5 hover:border-brand-cyan/40 transition-colors">
+                      <div className="flex items-center justify-between gap-2 mb-1.5">
+                        <span className="font-mono text-[10px] font-black text-zinc-400 truncate">ORD {s.code}</span>
+                        <span className={`text-[9px] font-black px-1.5 py-0.5 rounded border uppercase shrink-0 ${orderStatusTone(s.status)}`}>
+                          {s.status || '-'}
+                        </span>
+                      </div>
+
+                      <div className="text-xs font-bold text-zinc-700 truncate mb-1" title={s.material}>{s.material || '-'}</div>
+
+                      <div className="flex items-center gap-2.5 text-[10px] text-zinc-400 font-semibold mb-1.5">
+                        <span className="truncate flex items-center gap-1" title={s.lote}><i className="fa-solid fa-layer-group text-[9px]"></i>{s.lote || 'Sin lote'}</span>
+                        <span className="truncate flex items-center gap-1" title={s.maquina}><i className="fa-solid fa-print text-[9px]"></i>{s.maquina || 'Sin máquina'}</span>
+                      </div>
+
+                      <div className="flex flex-col gap-1 text-[10px] text-zinc-800 font-semibold mb-1.5">
+                        <span className="truncate flex items-center gap-1" title={s.statusArea}><i className="fa-solid fa-layer-group text-[9px] text-zinc-300"></i>Estado en área: {s.statusArea || '-'}</span>
+                        <span className="truncate flex items-center gap-1" title={s.canasto}><i className="fa-solid fa-basket-shopping text-[9px] text-zinc-300"></i>Canasto: {s.canasto || '-'}</span>
+                      </div>
+
+                      <div className="flex flex-col gap-1 border-t border-zinc-100 pt-1.5 max-h-20 overflow-y-auto">
+                        {s.files.length === 0 ? (
+                          <div className="text-[10px] text-zinc-300 italic">Sin archivos</div>
+                        ) : s.files.map((f, idx) => (
+                          <div key={idx} className="flex items-center justify-between text-[10px] gap-2">
+                            <span className="truncate text-zinc-800">{f.NombreArchivo}</span>
+                            <div className="flex items-center gap-1.5 shrink-0">
+                              <span className="text-zinc-800 font-bold">{f.Controlcopias || 0}/{f.Copias || 1}</span>
+                              <span className={`px-1.5 py-0.5 rounded font-bold uppercase ${fileStatusTone(f.Estado)}`}>{f.Estado || 'PEND'}</span>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
 
             {/* BOTTOM COMPLETION BUTTON - aparece cuando todos los archivos están listos o el lote entero está controlado */}
             {((orderMetrics.done === orderMetrics.total && orderMetrics.total > 0 && selectedOrder && !['FINALIZADO', 'ENTREGADO'].includes(selectedOrder.status?.toUpperCase())) || 

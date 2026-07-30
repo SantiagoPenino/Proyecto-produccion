@@ -965,6 +965,34 @@ exports.receiveDispatch = async (req, res) => {
                             receivedOrdersSet.add(Number(OrdenID));
                         }
 
+                        // CHECK-IN EN TERMINAC: al recibir el material impreso, la orden hermana
+                        // XEUV del mismo pedido pasa de 'Pendiente' a 'Material Recibido' — recién
+                        // ahí queda disponible en la bandeja de terminaciones para trabajar.
+                        if (OrdenID && (areaReceptora || '').toUpperCase() === 'TERMINAC') {
+                            try {
+                                const herRes = await new sql.Request(transaction)
+                                    .input('OID', sql.Int, OrdenID)
+                                    .query(`
+                                        SELECT H.OrdenID FROM Ordenes H
+                                        WHERE H.AreaID = 'TERMINAC' AND H.Estado NOT IN ('Cancelado')
+                                          AND ISNULL(H.EstadoenArea, 'Pendiente') = 'Pendiente'
+                                          AND H.NoDocERP = (SELECT NoDocERP FROM Ordenes WHERE OrdenID = @OID)
+                                    `);
+                                for (const her of herRes.recordset) {
+                                    await changeOrderState(transaction, {
+                                        target : { type: 'ORDER', id: her.OrdenID },
+                                        estado : 'Material Recibido',
+                                        userObj: req.user || 'Sistema',
+                                        detalle: `Material impreso recibido en Terminaciones (bulto ${CodigoEtiqueta || item.bultoId})`,
+                                        io     : req.app.get('socketio')
+                                    });
+                                    logger.info(`[Check-in TERMINAC] Orden ${her.OrdenID} -> Material Recibido (bulto ${CodigoEtiqueta})`);
+                                }
+                            } catch (eTer) {
+                                logger.warn('[Check-in TERMINAC] No se pudo actualizar la hermana de terminaciones:', eTer.message);
+                            }
+                        }
+
                         const { Cliente } = bultoInfo;
                         logger.info("Resolved Order Data:", { OrdenID, Cliente, Ref: bultoInfo.Referencias });
 
@@ -1310,7 +1338,7 @@ exports.receiveDispatch = async (req, res) => {
                         // --- GATE ESPERAR BULTOS: si la orden aún no tiene todos sus bultos, no contabilizar ---
                         if (ordenBultos[L_OrdenID] && !ordenBultos[L_OrdenID].lista) continue;
                         
-                        const oData = await poolLocal.request().input('OID', require('mssql').Int, L_OrdenID).query("SELECT Cliente, CodCliente, CliIdCliente, CodigoOrden, DescripcionTrabajo, ProIdProducto, TRY_CAST(Magnitud AS FLOAT) AS Magnitud FROM Ordenes WITH(NOLOCK) WHERE OrdenID = @OID");
+                        const oData = await poolLocal.request().input('OID', require('mssql').Int, L_OrdenID).query("SELECT Cliente, CodCliente, CliIdCliente, CodigoOrden, DescripcionTrabajo, ProIdProducto, AreaID, TRY_CAST(Magnitud AS FLOAT) AS Magnitud FROM Ordenes WITH(NOLOCK) WHERE OrdenID = @OID");
                         if (oData.recordset.length === 0) continue;
                         const oRow = oData.recordset[0];
                         const logPrefix = `[CONTABILIDAD-WMS] [${oRow.CodigoOrden}] ${oRow.DescripcionTrabajo.substring(0,30)}`;
@@ -1384,7 +1412,13 @@ if (triggerReversal || triggerForward) {
                                            // Las fallas (-F) son internas: su material se incorpora a la madre,
                                            // no deben crear registro propio en OrdenesDeposito (sino el job WSP las avisaría).
                                            const esFallaInterna = (oRow.CodigoOrden || '').includes('-F');
-                                           if (depCheck.recordset.length === 0 && details.recordset.length > 0 && !esFallaInterna) {
+                                           // Las hermanas de terminaciones (XEUV, área TERMINAC) son igual de internas:
+                                           // contienen el TRABAJO de terminación, no un producto aparte. Lo que el
+                                           // cliente retira es la orden madre (EUV) con su cantidad e importe. Si
+                                           // entraran a OrdenesDeposito, el retiro mostraría una línea fantasma
+                                           // (cant 1, costo 0) y el job de WhatsApp avisaría el pedido dos veces.
+                                           const esHermanaTerminac = (oRow.AreaID || '').trim().toUpperCase() === 'TERMINAC';
+                                           if (depCheck.recordset.length === 0 && details.recordset.length > 0 && !esFallaInterna && !esHermanaTerminac) {
                                                // Línea de cobranza de ESTA orden (no del pedido completo): cada orden hermana
                                                // entra con su propio importe/cantidad/producto para no duplicar el total en el retiro.
                                                // Fallback al comportamiento previo si el detalle no tuviera la orden desglosada.
@@ -1575,7 +1609,11 @@ if (triggerReversal || triggerForward) {
 
                                      // Las fallas (-F) son internas: tampoco deben crear registro por el fallback
                                      const esFallaFb = (oRow.CodigoOrden || '').includes('-F');
-                                     if (fallbackCheck.recordset.length === 0 && !esFallaFb) {
+                                     // Ídem hermanas de terminaciones (XEUV): no tienen línea propia de
+                                     // cobranza — justamente por eso caen SIEMPRE en este fallback — y
+                                     // entrarían al depósito como una orden fantasma de costo 0.
+                                     const esTerminacFb = (oRow.AreaID || '').trim().toUpperCase() === 'TERMINAC';
+                                     if (fallbackCheck.recordset.length === 0 && !esFallaFb && !esTerminacFb) {
                                          const cliPKFb = oRow.CliIdCliente || oRow.CodCliente;
                                          const lugarFbReq = await poolLocal.request()
                                              .input('CID', require('mssql').Int, cliPKFb)
@@ -1806,13 +1844,18 @@ exports.getDashboard = async (req, res) => {
             // OPTIMIZACIÓN: NOT EXISTS en lugar de LEFT JOIN — mucho más eficiente con índices
             pool.request().input('A', sql.VarChar, areaId)
                 .query(`
-                    SELECT 
+                    SELECT
                         o.OrdenID, o.CodigoOrden, o.Cliente, o.DescripcionTrabajo, o.Estado, o.AreaID, o.EstadoLogistica
                     FROM Ordenes o WITH(NOLOCK)
                     WHERE o.AreaID = @A
                     AND o.Estado NOT IN ('Entregado', 'Finalizado', 'Cancelado', 'Pendiente')
                     AND NOT EXISTS (
-                        SELECT 1 FROM Logistica_Bultos lb WITH(NOLOCK) WHERE lb.OrdenID = o.OrdenID
+                        -- OJO: en bultos de ENCOMIENDA el OrdenID es el N° de OrdenesRetiro,
+                        -- NO de Ordenes — sin este filtro una encomienda ajena con el mismo
+                        -- número "tapa" a la orden y desaparece del canasto.
+                        SELECT 1 FROM Logistica_Bultos lb WITH(NOLOCK)
+                        WHERE lb.OrdenID = o.OrdenID
+                          AND ISNULL(lb.Tipocontenido, '') <> 'ENCOMIENDA'
                     )
                 `)
         ]);

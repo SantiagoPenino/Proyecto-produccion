@@ -282,14 +282,22 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
     const normalizeType = (t) => (t || '').toUpperCase();
     const servTypes = ['SERVICIO', 'ACABADO'];
 
-    // Archivos de Impresión = select * from ArchivosOrden (TODAS LAS ÁREAS, pero editable solo si es el dueño)
-    const productionFiles = files.filter(f => f.Categoria === 'produccion' || (!f.Categoria && !servTypes.includes(normalizeType(f.tipo))));
-
     // ¿Esta orden es una reposición? (código termina en -R1, -R2, ...). En ese caso el
     // integral trae el archivo de la orden madre (readonly) Y el de la reposición (editable),
     // que se ven idénticos porque heredan el mismo nombre → los etiquetamos para distinguirlos.
     const isRepoOrder = /-R\d+/i.test(String(currentOrder?.code || ''));
-    
+
+    // Archivos de Impresión = select * from ArchivosOrden, pero el integral trae los de TODAS las
+    // órdenes hermanas del pedido (mismo NoDocERP, incluidas otras hermanas de bultos tipo 1/2, 2/2).
+    // Acá solo debe verse el arte de ESTA orden puntual; la excepción es la reposición, que sí debe
+    // mostrar también el archivo de la orden madre (readonly) junto al propio.
+    const productionFiles = files.filter(f => {
+        const esProduccion = f.Categoria === 'produccion' || (!f.Categoria && !servTypes.includes(normalizeType(f.tipo)));
+        if (!esProduccion) return false;
+        if (isRepoOrder) return true;
+        return String(f.OrdenID) === String(currentOrder?.id);
+    });
+
     // Archivos de Referencia = select * from ArchivosReferencia
     const referenceFiles = files.filter(f => f.Categoria === 'referencia');
 

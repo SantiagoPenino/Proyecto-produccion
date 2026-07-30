@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const sharp = require('sharp');
 const { PDFDocument, PDFName } = require('pdf-lib');
+const { construirNombreArchivo, materialParaNombre, usaNombreNuevo } = require('../utils/nombreArchivoOrden');
 
 // /UserUnit de una página pdf-lib (default 1). Los PDF de más de ~5.08m (límite 14400pt)
 // traen UserUnit (ej. 10): sin aplicarlo el trabajo se mide N veces más chico.
@@ -87,9 +88,11 @@ exports.processBatch = async (req, res) => {
         const filesQuery = await pool.request().query(`
             SELECT 
                 AO.ArchivoID, AO.RutaAlmacenamiento, AO.NombreArchivo, AO.Copias, AO.OrdenID,
-                O.CodigoOrden, O.Cliente, O.DescripcionTrabajo
+                O.CodigoOrden, O.Cliente, O.DescripcionTrabajo, O.Material, O.AreaID,
+                ibt.Referencia AS PreTelaCliente
             FROM dbo.ArchivosOrden AO
             INNER JOIN dbo.Ordenes O ON AO.OrdenID = O.OrdenID
+            LEFT JOIN dbo.InventarioBobinas ibt WITH(NOLOCK) ON ibt.BobinaID = O.BobinaTelaID
             WHERE AO.ArchivoID IN (${fileIds.join(',')})
         `);
 
@@ -124,10 +127,16 @@ exports.processBatch = async (req, res) => {
 
                 let baseName = file.NombreArchivo;
                 if (!baseName || baseName.length < 3) {
-                    const pOrder = sanitize(file.CodigoOrden || file.OrdenID.toString());
-                    const pClient = sanitize(file.Cliente);
-                    const pJob = sanitize(file.DescripcionTrabajo || 'Trabajo');
-                    baseName = `${pOrder}_${pClient}_${pJob} Archivo 1 de 1 (x${file.Copias || 1} COPIAS)`;
+                    baseName = (await usaNombreNuevo(file.AreaID))
+                        ? construirNombreArchivo({
+                            material: materialParaNombre(file.Material, file.PreTelaCliente),
+                            codigoOrden: file.CodigoOrden || file.OrdenID.toString(),
+                            cliente: file.Cliente,
+                            idx: 1,
+                            total: 1,
+                            copias: file.Copias || 1
+                        })
+                        : `${sanitize(file.CodigoOrden || file.OrdenID.toString())}_${sanitize(file.Cliente)}_${sanitize(file.DescripcionTrabajo || 'Trabajo')} Archivo 1 de 1 (x${file.Copias || 1} COPIAS)`;
                 } else {
                     baseName = sanitize(baseName);
                 }
@@ -188,11 +197,13 @@ exports.processOrdersBatch = async (req, res) => {
         const filesQuery = await pool.request().query(`
             SELECT 
                 AO.ArchivoID, AO.RutaAlmacenamiento, AO.RutaLocal, AO.NombreArchivo, AO.Copias,
-                O.OrdenID, O.CodigoOrden, O.Cliente, O.DescripcionTrabajo, O.AreaID,
+                O.OrdenID, O.CodigoOrden, O.Cliente, O.DescripcionTrabajo, O.AreaID, O.Material,
+                ibt.Referencia AS PreTelaCliente,
                 ISNULL(R.Nombre, 'Lote ' + CAST(O.RolloID as VARCHAR)) as RollName
             FROM dbo.ArchivosOrden AO
             INNER JOIN dbo.Ordenes O ON AO.OrdenID = O.OrdenID
             LEFT JOIN dbo.Rollos R ON O.RolloID = R.RolloID
+            LEFT JOIN dbo.InventarioBobinas ibt WITH(NOLOCK) ON ibt.BobinaID = O.BobinaTelaID
             WHERE O.OrdenID IN (${orderIds.join(',')})
         `);
 
@@ -236,7 +247,16 @@ exports.processOrdersBatch = async (req, res) => {
 
                 // Determinar Nombre Base Temporal
                 let ext = path.extname(file.NombreArchivo || '').toLowerCase() || '.pdf';
-                let baseName = `${file.CodigoOrden}_${sanitize(file.Cliente)}_${sanitize(file.DescripcionTrabajo)} Archivo ${file.idxInOrder} de ${file.totalInOrder}`;
+                let baseName = (await usaNombreNuevo(file.AreaID))
+                    ? construirNombreArchivo({
+                        material: materialParaNombre(file.Material, file.PreTelaCliente),
+                        codigoOrden: file.CodigoOrden,
+                        cliente: file.Cliente,
+                        idx: file.idxInOrder,
+                        total: file.totalInOrder,
+                        copias: file.Copias || 1
+                    })
+                    : `${file.CodigoOrden}_${sanitize(file.Cliente)}_${sanitize(file.DescripcionTrabajo)} Archivo ${file.idxInOrder} de ${file.totalInOrder}`;
                 let fileName = baseName + ext;
                 let destPath = path.join(targetDir, fileName);
 
@@ -509,11 +529,13 @@ exports.downloadOrdersZip = async (req, res) => {
         const filesQuery = await pool.request().query(`
             SELECT 
                 AO.ArchivoID, AO.RutaAlmacenamiento, AO.RutaLocal, AO.NombreArchivo, AO.Copias,
-                O.OrdenID, O.CodigoOrden, O.Cliente, O.DescripcionTrabajo, O.AreaID,
+                O.OrdenID, O.CodigoOrden, O.Cliente, O.DescripcionTrabajo, O.AreaID, O.Material,
+                ibt.Referencia AS PreTelaCliente,
                 ISNULL(R.Nombre, 'Lote ' + CAST(O.RolloID as VARCHAR)) as RollName
             FROM dbo.ArchivosOrden AO
             INNER JOIN dbo.Ordenes O ON AO.OrdenID = O.OrdenID
             LEFT JOIN dbo.Rollos R ON O.RolloID = R.RolloID
+            LEFT JOIN dbo.InventarioBobinas ibt WITH(NOLOCK) ON ibt.BobinaID = O.BobinaTelaID
             WHERE O.OrdenID IN (${orderIds.join(',')})
         `);
 
@@ -584,7 +606,16 @@ exports.downloadOrdersZip = async (req, res) => {
                 if (file.NombreArchivo && file.NombreArchivo.length > 10) {
                     finalName = sanitize(file.NombreArchivo);
                 } else {
-                    finalName = `${file.CodigoOrden}_${sanitize(file.Cliente)}_${sanitize(file.DescripcionTrabajo)} Archivo ${file.idxInOrder} de ${file.totalInOrder} (x${file.Copias || 1} COPIAS)`;
+                    finalName = (await usaNombreNuevo(file.AreaID))
+                        ? construirNombreArchivo({
+                            material: materialParaNombre(file.Material, file.PreTelaCliente),
+                            codigoOrden: file.CodigoOrden,
+                            cliente: file.Cliente,
+                            idx: file.idxInOrder,
+                            total: file.totalInOrder,
+                            copias: file.Copias || 1
+                        })
+                        : `${file.CodigoOrden}_${sanitize(file.Cliente)}_${sanitize(file.DescripcionTrabajo)} Archivo ${file.idxInOrder} de ${file.totalInOrder} (x${file.Copias || 1} COPIAS)`;
                 }
                 if (!finalName.toLowerCase().endsWith(ext)) finalName += ext;
 
@@ -660,11 +691,13 @@ async function buildFilesManifest(orderIds) {
     const filesQuery = await pool.request().query(`
         SELECT
             AO.ArchivoID, AO.RutaAlmacenamiento, AO.NombreArchivo, AO.Copias,
-            O.OrdenID, O.CodigoOrden, O.Cliente, O.DescripcionTrabajo,
+            O.OrdenID, O.CodigoOrden, O.Cliente, O.DescripcionTrabajo, O.Material, O.AreaID,
+            ibt.Referencia AS PreTelaCliente,
             ISNULL(R.Nombre, 'Lote ' + CAST(O.RolloID as VARCHAR)) as RollName
         FROM dbo.ArchivosOrden AO
         INNER JOIN dbo.Ordenes O ON AO.OrdenID = O.OrdenID
         LEFT JOIN dbo.Rollos R ON O.RolloID = R.RolloID
+        LEFT JOIN dbo.InventarioBobinas ibt WITH(NOLOCK) ON ibt.BobinaID = O.BobinaTelaID
         WHERE O.OrdenID IN (${ids.join(',')})
     `);
 
@@ -677,19 +710,32 @@ async function buildFilesManifest(orderIds) {
     const out = [];
     for (const oId in byOrder) {
         const group = byOrder[oId].sort((a, b) => a.ArchivoID - b.ArchivoID);
-        group.forEach((f, idx) => {
+        // for...of (y no forEach) porque el interruptor del nombre nuevo se lee de la base (await).
+        for (const [idx, f] of group.entries()) {
             const sourcePath = f.RutaAlmacenamiento || '';
             let ext = path.extname(f.NombreArchivo || '').toLowerCase();
             if (!ext) ext = path.extname(sourcePath).split('?')[0].toLowerCase();
             if (!ext) ext = '.pdf';
 
-            let finalName = (f.NombreArchivo && f.NombreArchivo.length > 10)
-                ? sanitizeFileName(f.NombreArchivo)
-                : `${f.CodigoOrden}_${sanitizeFileName(f.Cliente)}_${sanitizeFileName(f.DescripcionTrabajo)} Archivo ${idx + 1} de ${group.length} (x${f.Copias || 1} COPIAS)`;
+            let finalName;
+            if (f.NombreArchivo && f.NombreArchivo.length > 10) {
+                finalName = sanitizeFileName(f.NombreArchivo);
+            } else if (await usaNombreNuevo(f.AreaID)) {
+                finalName = construirNombreArchivo({
+                    material: materialParaNombre(f.Material, f.PreTelaCliente),
+                    codigoOrden: f.CodigoOrden,
+                    cliente: f.Cliente,
+                    idx: idx + 1,
+                    total: group.length,
+                    copias: f.Copias || 1
+                });
+            } else {
+                finalName = `${f.CodigoOrden}_${sanitizeFileName(f.Cliente)}_${sanitizeFileName(f.DescripcionTrabajo)} Archivo ${idx + 1} de ${group.length} (x${f.Copias || 1} COPIAS)`;
+            }
             if (!finalName.toLowerCase().endsWith(ext)) finalName += ext;
 
             out.push({ ...f, finalName });
-        });
+        }
     }
     return out;
 }

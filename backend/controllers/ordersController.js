@@ -32,10 +32,18 @@ const recalculateOrderMagnitude = async (transaction, ordenId) => {
                     WHERE OrdenID = @OID AND ISNULL(EstadoArchivo, '') != 'CANCELADO';
                 END
 
-                -- Suma de Cantidad en ServiciosExtraOrden (siempre en unidades)
-                SELECT @Total = @Total + ISNULL(SUM(CAST(ISNULL(Cantidad, 0) AS FLOAT)), 0)
-                FROM dbo.ServiciosExtraOrden
-                WHERE OrdenID = @OID;
+                -- Servicios extra (terminaciones: ojales, soldaduras...): NO se suman a la
+                -- magnitud cuando la orden tiene archivos. Son unidades, no metros — sumarlos
+                -- inflaba la magnitud (3,32 m² + 11 ojales = 14,32 "m²") y el motor cotizaba
+                -- el material por esa cifra. Cada servicio ya se cobra en su propia línea.
+                -- Solo son la magnitud si la orden NO tiene archivos (orden de solo servicios),
+                -- para que no quede en 0.
+                IF @Total = 0
+                BEGIN
+                    SELECT @Total = ISNULL(SUM(CAST(ISNULL(Cantidad, 0) AS FLOAT)), 0)
+                    FROM dbo.ServiciosExtraOrden
+                    WHERE OrdenID = @OID;
+                END
 
                 -- Guardar solo el número, sin sufijo de unidad (la columna UM ya tiene la unidad)
                 UPDATE dbo.Ordenes
@@ -1445,6 +1453,12 @@ exports.getIntegralPedidoDetailsV2 = async (req, res) => {
             historialData = hResult.recordset;
 
             // B. Logística (Bultos asociados a estas órdenes)
+            // OJO: Logistica_Bultos.OrdenID está sobrecargado -> en los bultos de PRODUCCION
+            // apunta a Ordenes.OrdenID, pero en los de ENCOMIENDA apunta a
+            // OrdenesRetiro.OReIdOrdenRetiro (ver logisticsController: UPDATE OrdenesRetiro
+            // ... WHERE OReIdOrdenRetiro IN (SELECT b.OrdenID ... Tipocontenido='ENCOMIENDA')).
+            // Sin excluirlas, una encomienda de otro cliente cuyo Nro de retiro coincide con
+            // el OrdenID del pedido aparece colgada acá con su remito. Nunca son bultos del pedido.
             const bQuery = `
                 SELECT 
                     LB.BultoID, 
@@ -1459,6 +1473,7 @@ exports.getIntegralPedidoDetailsV2 = async (req, res) => {
                 FROM Logistica_Bultos LB
                 INNER JOIN Ordenes O ON LB.OrdenID = O.OrdenID
                 WHERE LB.OrdenID IN (${safeIds})
+                  AND ISNULL(LB.Tipocontenido, '') <> 'ENCOMIENDA'
                 ORDER BY LB.BultoID ASC
             `;
             const bResult = await pool.request().query(bQuery);
@@ -1558,7 +1573,11 @@ exports.getIntegralPedidoDetailsV2 = async (req, res) => {
         }
 
         // --- Pre-consulta DEPOSITO (fuera del .map sincrónico) ---
-        let depoStatusResult = 'Pendiente';
+        // El estado del paso DEPOSITO sale SIEMPRE de OrdenesDeposito (la orden recibida en depósito).
+        // Si todavía no existe esa fila, la orden NO llegó al depósito => "PENDIENTE A RECIBIR".
+        // NUNCA se usa el estado del bulto como fallback: un bulto puede figurar ENTREGADO /
+        // CLIENTE_FINAL por logística sin que la orden haya ingresado nunca al depósito.
+        let depoStatusResult = 'PENDIENTE A RECIBIR';
         try {
             const orderIdsForDepo = orders.map(o => o.OrdenID);
             const noDocERPs = [...new Set(orders.map(o => o.NoDocERP).filter(Boolean))];
@@ -1578,10 +1597,8 @@ exports.getIntegralPedidoDetailsV2 = async (req, res) => {
             }
 
             if (depoRow) {
-                depoStatusResult = depoRow.NombreEstado || 'PENDIENTE';
-            } else if (bultosData.length > 0) {
-                const primerBulto = bultosData[0];
-                depoStatusResult = primerBulto.Estado || primerBulto.Ubicacion || 'PENDIENTE';
+                // Estado real de la orden dentro del depósito (EstadosOrdenes)
+                depoStatusResult = depoRow.NombreEstado || 'PENDIENTE A RECIBIR';
             }
         } catch (depoErr) {
             logger.warn(`[IntegralV2] Error consultando OrdenesDeposito: ${depoErr.message}`);

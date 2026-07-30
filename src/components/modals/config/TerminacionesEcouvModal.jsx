@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import api from '../../../services/apiClient';
-import toast from 'react-hot-toast';
+import { toast } from 'sonner';
 import { X, Plus, Loader2, RefreshCw, Save, Scissors, ChevronDown, ChevronRight } from 'lucide-react';
 
 // Configuración de terminaciones ECOUV (una sola puerta para la matriz):
@@ -9,13 +9,36 @@ import { X, Plus, Loader2, RefreshCw, Save, Scissors, ChevronDown, ChevronRight 
 const API = '/stockart';
 const GRUPO_ECOUV = '1.3';
 
+// Ubicaciones con simbología tipo "bordes" (Word/Excel): un rectángulo con el/los
+// lado(s) donde va la terminación resaltados. `lados` = qué bordes se pintan.
 const UBICACIONES = [
-    { v: 'ARRIBA', l: 'Arriba' },
-    { v: 'ABAJO', l: 'Abajo' },
-    { v: 'ARRIBA_ABAJO', l: 'Arriba y abajo' },
-    { v: 'COSTADOS', l: 'Costados' },
-    { v: 'PERIMETRO', l: 'Todo el perímetro' },
+    { v: 'ARRIBA', l: 'Arriba', lados: ['t'] },
+    { v: 'ABAJO', l: 'Abajo', lados: ['b'] },
+    { v: 'ARRIBA_ABAJO', l: 'Arriba y abajo', lados: ['t', 'b'] },
+    { v: 'IZQUIERDA', l: 'Izquierda', lados: ['l'] },
+    { v: 'DERECHA', l: 'Derecha', lados: ['r'] },
+    { v: 'COSTADOS', l: 'Ambos costados', lados: ['l', 'r'] },
+    { v: 'PERIMETRO', l: 'Todo el perímetro', lados: ['t', 'b', 'l', 'r'] },
 ];
+
+// Ícono de bordes: rectángulo gris con los lados activos marcados.
+const IconoBordes = ({ lados = [], activo = false }) => {
+    const base = activo ? '#ffffff' : '#cbd5e1';       // borde inactivo del rectángulo
+    const on = activo ? '#ffffff' : '#f59e0b';         // lado resaltado
+    const has = (s) => lados.includes(s);
+    return (
+        <svg width="26" height="20" viewBox="0 0 26 20" aria-hidden="true">
+            {/* Rectángulo base (punteado suave) */}
+            <rect x="3" y="2.5" width="20" height="15" fill="none" stroke={base}
+                strokeWidth="1" strokeDasharray="2 2" opacity={activo ? 0.5 : 0.8} />
+            {/* Lados donde va la terminación */}
+            {has('t') && <line x1="3" y1="2.5" x2="23" y2="2.5" stroke={on} strokeWidth="2.5" strokeLinecap="round" />}
+            {has('b') && <line x1="3" y1="17.5" x2="23" y2="17.5" stroke={on} strokeWidth="2.5" strokeLinecap="round" />}
+            {has('l') && <line x1="3" y1="2.5" x2="3" y2="17.5" stroke={on} strokeWidth="2.5" strokeLinecap="round" />}
+            {has('r') && <line x1="23" y1="2.5" x2="23" y2="17.5" stroke={on} strokeWidth="2.5" strokeLinecap="round" />}
+        </svg>
+    );
+};
 const REGLAS = [
     { v: 'FIJA', l: 'Cantidad fija' },
     { v: 'CADA_X_CM', l: '1 cada X cm del tramo' },
@@ -36,6 +59,7 @@ export default function TerminacionesEcouvModal({ isOpen, onClose }) {
     const [saving, setSaving] = useState(false);
     const [nuevoNombre, setNuevoNombre] = useState('');
     const [creating, setCreating] = useState(false);
+    const nuevoNombreRef = React.useRef(null);
 
     const load = useCallback(async () => {
         setLoading(true);
@@ -139,7 +163,11 @@ export default function TerminacionesEcouvModal({ isOpen, onClose }) {
     };
 
     const crear = async () => {
-        if (!nuevoNombre.trim()) { toast.error('Poné un nombre'); return; }
+        if (!nuevoNombre.trim()) {
+            toast.error('Escribí el nombre de la nueva terminación en el cuadro y después tocá +');
+            nuevoNombreRef.current?.focus();
+            return;
+        }
         setCreating(true);
         try {
             await api.post(`${API}/terminaciones`, { nombre: nuevoNombre.trim(), unidadCobro: 'U', reglaCantidad: 'FIJA', paramCantidad: 1 });
@@ -183,7 +211,7 @@ export default function TerminacionesEcouvModal({ isOpen, onClose }) {
                     {/* LISTA */}
                     <div className="border-r border-slate-100 flex flex-col overflow-hidden">
                         <div className="p-3 border-b border-slate-100 flex gap-2">
-                            <input value={nuevoNombre} onChange={e => setNuevoNombre(e.target.value)}
+                            <input ref={nuevoNombreRef} value={nuevoNombre} onChange={e => setNuevoNombre(e.target.value)}
                                 onKeyDown={e => e.key === 'Enter' && crear()}
                                 placeholder="Nueva terminación..."
                                 className="flex-1 bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs outline-none focus:border-amber-400" />
@@ -268,10 +296,12 @@ export default function TerminacionesEcouvModal({ isOpen, onClose }) {
                                             const on = form.ubicaciones.has(u.v);
                                             return (
                                                 <button key={u.v} type="button" onClick={() => toggleUbi(u.v)}
-                                                    className={`px-3 py-1.5 rounded-full text-xs font-bold border transition-all ${on
-                                                        ? 'bg-amber-500 border-amber-500 text-white'
-                                                        : 'bg-white border-slate-200 text-slate-500 hover:border-amber-300'}`}>
-                                                    {on ? '✓ ' : ''}{u.l}
+                                                    title={`${u.l}${on ? ' (habilitada)' : ''}`}
+                                                    className={`w-[86px] px-2 py-2 rounded-xl border transition-all flex flex-col items-center gap-1 ${on
+                                                        ? 'bg-amber-500 border-amber-500 text-white shadow-sm'
+                                                        : 'bg-white border-slate-200 text-slate-500 hover:border-amber-300 hover:bg-amber-50/50'}`}>
+                                                    <IconoBordes lados={u.lados} activo={on} />
+                                                    <span className="text-[10px] font-bold leading-tight text-center">{u.l}</span>
                                                 </button>
                                             );
                                         })}

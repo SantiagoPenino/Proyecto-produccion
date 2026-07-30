@@ -267,6 +267,33 @@ const getArchivosPorOrden = async (req, res) => {
             return archivo;
         });
 
+        // TERMINACIONES POR ARCHIVO + PRODUCTO TERMINADO (ECOUV): en control cada archivo
+        // muestra sus terminaciones y, si la orden es de un producto terminado, la ficha
+        // del producto que viaja en la nota como [PRODUCTO: ... | Medidas ... | Incluye ...].
+        try {
+            const [termRes, notaRes] = await Promise.all([
+                pool.request().input('OrdenID', sql.Int, ordenId).query(`
+                    SELECT OT.ArchivoID, LTRIM(RTRIM(T.Nombre)) AS Nombre, OT.Cantidad, OT.Ubicacion, OT.Estado
+                    FROM OrdenTerminaciones OT WITH (NOLOCK)
+                    INNER JOIN Terminaciones T WITH (NOLOCK) ON T.TerminacionID = OT.TerminacionID
+                    WHERE OT.OrdenID = @OrdenID
+                       OR OT.ArchivoID IN (SELECT ArchivoID FROM ArchivosOrden WITH (NOLOCK) WHERE OrdenID = @OrdenID)`),
+                pool.request().input('OrdenID', sql.Int, ordenId)
+                    .query(`SELECT Nota FROM Ordenes WITH (NOLOCK) WHERE OrdenID = @OrdenID`)
+            ]);
+            const nota = notaRes.recordset[0]?.Nota || '';
+            const productoMatch = nota.match(/\[PRODUCTO:[^\]]*\]/);
+            const productoInfo = productoMatch ? productoMatch[0].slice(1, -1) : null; // sin corchetes
+            for (const a of mappedArchivos) {
+                if (a.isService) continue;
+                const terms = termRes.recordset.filter(t => t.ArchivoID === a.ArchivoID);
+                if (terms.length > 0) a.Terminaciones = terms;
+                if (productoInfo) a.ProductoInfo = productoInfo;
+            }
+        } catch (eTerm) {
+            // Tablas de terminaciones ausentes (entorno sin la migración ECOUV): seguir sin adornos.
+        }
+
         res.json(mappedArchivos);
 
     } catch (err) {
@@ -843,102 +870,45 @@ const postControlArchivo = async (req, res) => {
                     const ordenesConTermPend = new Set();
                     if (areaId === 'ECOUV' && destinoLogistica === 'Canasto Produccion') {
                         try {
+                            // Las filas de OrdenTerminaciones pueden apuntar a la orden ECOUV (legacy)
+                            // o ya a su hermana XEUV/TERMINAC (modelo actual: se crea al ingresar el
+                            // pedido). El ArchivoID SIEMPRE apunta a los archivos de la ECOUV, así que
+                            // se mapea por archivo para encontrar la orden dueña.
                             const termReq = new sql.Request(transaction).input('OID', sql.Int, ordenId);
                             let termQuery;
                             if (noDocERP) {
                                 termReq.input('NoDoc', sql.VarChar(50), noDocERP).input('AreaID', sql.VarChar(50), areaId);
-                                termQuery = `SELECT DISTINCT OT.OrdenID FROM OrdenTerminaciones OT
-                                             INNER JOIN Ordenes O ON O.OrdenID = OT.OrdenID
+                                termQuery = `SELECT DISTINCT AO.OrdenID FROM OrdenTerminaciones OT
+                                             INNER JOIN ArchivosOrden AO ON AO.ArchivoID = OT.ArchivoID
+                                             INNER JOIN Ordenes O ON O.OrdenID = AO.OrdenID
                                              WHERE O.NoDocERP = @NoDoc AND O.AreaID = @AreaID AND OT.Estado = 'Pendiente'`;
                             } else {
-                                termQuery = `SELECT DISTINCT OrdenID FROM OrdenTerminaciones WHERE OrdenID = @OID AND Estado = 'Pendiente'`;
+                                termQuery = `SELECT DISTINCT ISNULL(AO.OrdenID, OT.OrdenID) AS OrdenID
+                                             FROM OrdenTerminaciones OT
+                                             LEFT JOIN ArchivosOrden AO ON AO.ArchivoID = OT.ArchivoID
+                                             WHERE (OT.OrdenID = @OID OR AO.OrdenID = @OID) AND OT.Estado = 'Pendiente'`;
                             }
                             (await termReq.query(termQuery)).recordset.forEach(r => ordenesConTermPend.add(r.OrdenID));
                         } catch (eTerm) {
                             logger.warn('[postControlArchivo] No se pudo evaluar terminaciones pendientes:', eTerm.message);
                         }
                     }
-                    // TERMINACIONES COMO ÁREA (decisión negocio 21/07, reemplaza al sub-estado):
-                    // la orden ECOUV sale por el camino NORMAL (Pronto/Canasto) pero con
-                    // ProximoServicio=TERMINAC (el remito entre locales sale del despacho de
-                    // siempre), y se crea UNA orden hermana contenedora en el área TERMINAC
-                    // con las OrdenTerminaciones repuntadas (patrón Corte/Costura).
+                    // TERMINACIONES COMO ÁREA: la orden ECOUV sale por el camino NORMAL
+                    // (Pronto/Canasto) con ProximoServicio=TERMINAC. La hermana XEUV
+                    // contenedora se crea DESDE EL INGRESO del pedido (webOrdersController);
+                    // este llamado queda como red de seguridad para órdenes anteriores al
+                    // cambio (el helper es idempotente: si ya existe hermana, no hace nada).
+                    const { crearHermanaTerminaciones } = require('../utils/hermanaTerminaciones');
                     const crearHermanaTerminac = async (ecouvId) => {
-                        const src = await new sql.Request(transaction)
-                            .input('OID', sql.Int, ecouvId)
-                            .query('SELECT TOP 1 * FROM Ordenes WHERE OrdenID = @OID');
-                        const o = src.recordset[0];
-                        if (!o) return;
-
-                        // Guard anti-duplicado (reproceso de control): si ya existe hermana viva de esta orden, no crear otra
-                        const ya = await new sql.Request(transaction)
-                            .input('Nota', sql.NVarChar(200), `%[TERMINACIONES DE ${String(o.CodigoOrden || '').trim()}]%`)
-                            .query("SELECT TOP 1 OrdenID FROM Ordenes WHERE AreaID = 'TERMINAC' AND Estado NOT IN ('Cancelado') AND Nota LIKE @Nota");
-                        if (ya.recordset.length > 0) return;
-
-                        const pendCnt = await new sql.Request(transaction)
-                            .input('OID', sql.Int, ecouvId)
-                            .query("SELECT COUNT(*) AS C FROM OrdenTerminaciones WHERE OrdenID = @OID");
-                        const cantTerm = pendCnt.recordset[0]?.C || 1;
-
-                        const docTrim = String(o.NoDocERP || ecouvId).trim();
-                        const baseCod = `TER-${docTrim}`;
-                        const dupCod = await new sql.Request(transaction)
-                            .input('Cod', sql.VarChar(60), baseCod + '%')
-                            .query("SELECT COUNT(*) AS C FROM Ordenes WHERE CodigoOrden LIKE @Cod");
-                        const codigoHermana = dupCod.recordset[0].C > 0 ? `${baseCod}(${dupCod.recordset[0].C + 1})` : baseCod;
-
-                        const insH = await new sql.Request(transaction)
-                            .input('Cliente', sql.NVarChar(200), o.Cliente)
-                            .input('CodCliente', sql.Int, o.CodCliente)
-                            .input('IdCliR', sql.VarChar(50), o.IdClienteReact != null ? String(o.IdClienteReact) : null)
-                            .input('Desc', sql.NVarChar(300), o.DescripcionTrabajo)
-                            .input('Prio', sql.VarChar(20), o.Prioridad || 'Normal')
-                            .input('FEE', sql.DateTime, o.FechaEstimadaEntrega)
-                            .input('Mat', sql.VarChar(255), o.Material)
-                            .input('Var', sql.VarChar(100), o.Variante)
-                            .input('Cod', sql.VarChar(50), codigoHermana)
-                            .input('Doc', sql.VarChar(50), o.NoDocERP)
-                            .input('Nota', sql.NVarChar(sql.MAX), `[TERMINACIONES DE ${String(o.CodigoOrden || '').trim()}]${o.Nota ? ' ' + o.Nota : ''}`)
-                            .input('Mag', sql.VarChar(50), String(cantTerm))
-                            .input('CliId', sql.Int, o.CliIdCliente)
-                            .query(`
-                                INSERT INTO Ordenes (
-                                    AreaID, Cliente, CodCliente, IdClienteReact, DescripcionTrabajo, Prioridad,
-                                    FechaIngreso, FechaEstimadaEntrega, Material, Variante,
-                                    CodigoOrden, NoDocERP, Nota, Magnitud, ProximoServicio, UM,
-                                    Estado, EstadoenArea, CliIdCliente
-                                )
-                                OUTPUT INSERTED.OrdenID
-                                VALUES (
-                                    'TERMINAC', @Cliente, @CodCliente, @IdCliR, @Desc, @Prio,
-                                    GETDATE(), @FEE, @Mat, @Var,
-                                    @Cod, @Doc, @Nota, @Mag, 'DEPOSITO', 'u',
-                                    'Pendiente', 'Pendiente', @CliId
-                                )
-                            `);
-                        const hermanaId = insH.recordset[0].OrdenID;
-
-                        // Repuntar el detalle de terminaciones a la hermana (ArchivoID sigue
-                        // apuntando a los archivos de la ECOUV: sirve de referencia visual)
-                        await new sql.Request(transaction)
-                            .input('HID', sql.Int, hermanaId)
-                            .input('OID', sql.Int, ecouvId)
-                            .query("UPDATE OrdenTerminaciones SET OrdenID = @HID WHERE OrdenID = @OID");
-
-                        // La ECOUV viaja al local de terminaciones vía despacho normal
-                        await new sql.Request(transaction)
-                            .input('OID', sql.Int, ecouvId)
-                            .query("UPDATE Ordenes SET ProximoServicio = 'TERMINAC' WHERE OrdenID = @OID");
-
+                        const creada = await crearHermanaTerminaciones(transaction, ecouvId);
+                        if (!creada) return;
                         await changeOrderState(transaction, {
-                            target: { type: 'ORDER', id: hermanaId },
+                            target: { type: 'ORDER', id: creada.hermanaId },
                             estado: 'Pendiente',
                             userObj: req.user || 'Sistema',
-                            detalle: `Orden de terminaciones creada desde ${String(o.CodigoOrden || '').trim()} (${cantTerm} terminaciones)`,
+                            detalle: `Orden de terminaciones creada (${creada.cantTerm} terminaciones)`,
                             io: req.app.get('socketio')
                         });
-                        logger.info(`[postControlArchivo] Hermana TERMINAC ${codigoHermana} (${hermanaId}) creada desde orden ${ecouvId}`);
                     };
 
                     const detalleDe = (oid) => ordenesConTermPend.has(oid) ? 'Control OK — sale hacia Terminaciones (TERMINAC)' : 'Control finalizado en Área';

@@ -221,7 +221,10 @@ const ModalNotaCredito = ({ mov, cuenta, cliente, onClose, onSuccess }) => {
         docIdOrigen, monto: Number(monto), motivo,
         clienteId: cliente?.CliIdCliente || cuenta?.CliIdCliente, cuentaId: cuenta?.CueIdCuenta, monedaId: cuenta?.MonIdMoneda || 1,
       })});
-      toast.success(r.message || 'NC generada'); onSuccess?.(); onClose();
+      toast.success(r.message || 'NC generada');
+      // Si la factura era una compra de recurso: qué pasó con los metros del rollo
+      if (r?.avisoRecurso) toast.info(r.avisoRecurso, { duration: 12000 });
+      onSuccess?.(); onClose();
     } catch(err) { toast.error(err.message); } finally { setSaving(false); }
   };
   return (
