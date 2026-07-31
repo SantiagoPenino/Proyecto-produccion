@@ -2123,19 +2123,27 @@ const procesarPagoDeudaInterno = async (req, res) => {
       //   HABER: Anticipos   — por el excedente (saldo a favor / prepago)
       if (totalPagadoBase > 0) {
         try {
+          // Se agrupa por moneda Y por si entró en cheque: un cheque no es plata en la
+          // caja, va a Valores a Depositar (1.1.5). Antes todo se mandaba a Caja.
+          const idsCheque = await _metodosChequeIds(transaction);
           const cashPorMoneda = {};
           for (const p of pagos) {
             if (!p.montoOriginal) continue;
-            const pMon = parseInt(p.monedaId, 10) === 2 ? 'USD' : 'UYU';
-            cashPorMoneda[pMon] = (cashPorMoneda[pMon] || 0) + (Number(p.montoOriginal) || 0);
+            const pMon  = parseInt(p.monedaId, 10) === 2 ? 'USD' : 'UYU';
+            const esChq = idsCheque.has(parseInt(p.metodoPagoId, 10));
+            const clave = `${pMon}|${esChq ? 'CHEQUE' : 'CAJA'}`;
+            cashPorMoneda[clave] = (cashPorMoneda[clave] || 0) + (Number(p.montoOriginal) || 0);
           }
           const cotizBase = monedaBaseStr === 'USD' ? cotizTC : 1;
           const lineasAsiento = [];
-          // DEBE: Caja (por moneda del efectivo recibido)
-          for (const [mon, monto] of Object.entries(cashPorMoneda)) {
+          // DEBE: Caja o Valores a Depositar, por moneda de lo recibido
+          for (const [clave, monto] of Object.entries(cashPorMoneda)) {
             if (monto <= 0) continue;
+            const [mon, destino] = clave.split('|');
             lineasAsiento.push({
-              codigoCuenta: mon === 'USD' ? contabilidadCore.CUENTAS.CAJA_USD : contabilidadCore.CUENTAS.CAJA_UYU,
+              codigoCuenta: destino === 'CHEQUE'
+                ? contabilidadCore.CUENTAS.VALORES_DEPOSITAR
+                : (mon === 'USD' ? contabilidadCore.CUENTAS.CAJA_USD : contabilidadCore.CUENTAS.CAJA_UYU),
               debeBase:  monto,
               haberBase: 0,
               monedaId:   mon === 'USD' ? 2 : 1,
@@ -2995,6 +3003,28 @@ const reversarDocumento = async (req, res) => {
   } catch (err) { logger.error('[REVERSAR-DOC]', err.message); return res.status(500).json({ error: err.message }); }
 };
 
+/**
+ * Ids de MetodosPagos que son cheque. Se resuelve por nombre contra el catálogo en vez de
+ * hardcodear el id: si mañana se agrega "Cheque diferido" sigue funcionando.
+ *
+ * Un cobro con cheque NO es plata en la caja: va a Valores a Depositar (1.1.5) y recién
+ * pasa a Banco cuando se deposita. Mismo criterio que cajaService._metodosCheque(), que
+ * ya lo aplicaba en el cobro de retiros; acá faltaba.
+ */
+async function _metodosChequeIds(transaction = null) {
+  try {
+    const reqMc = transaction ? new sql.Request(transaction) : (await getPool()).request();
+    const r = await reqMc.query(`
+      SELECT MPaIdMetodoPago FROM dbo.MetodosPagos WITH(NOLOCK)
+      WHERE MPaDescripcionMetodo LIKE '%heque%'
+    `);
+    return new Set(r.recordset.map(x => x.MPaIdMetodoPago));
+  } catch (e) {
+    logger.warn(`[CAJA] No se pudo resolver los métodos de tipo cheque: ${e.message}`);
+    return new Set();
+  }
+}
+
 // ─────────────────────────────────────────────
 // POST /contabilidad/caja/pago-anticipo
 // Body: { clienteId, cuentaId, importe, metodoPagoId, monedaId, concepto }
@@ -3003,7 +3033,7 @@ const registrarPagoAnticipo = async (req, res) => {
   // Multiempresa: empresa a la que se atribuye el anticipo (null => la BD aplica el DEFAULT)
   const empresaId = req.body?.empresaId || req.user?.empresaId || null;
   try {
-    const { clienteId, cuentaId, importe, metodoPagoId, monedaId, concepto, admin, fecha } = req.body;
+    const { clienteId, cuentaId, importe, metodoPagoId, monedaId, concepto, admin, fecha, cotizacion } = req.body;
     if (!clienteId || !importe)
       return res.status(400).json({ error: 'Faltan parámetros: clienteId, importe' });
     const montoNum = Number(importe);
@@ -3020,6 +3050,20 @@ const registrarPagoAnticipo = async (req, res) => {
       const monStr = monId === 2 ? 'USD' : 'UYU';
       const cliId  = parseInt(clienteId);
       const conceptoFull = concepto || 'Pago anticipado cuenta corriente';
+      // Cotización del anticipo en US$. Iba fija en 1: un anticipo de US$ 3.000 entraba
+      // al Libro Mayor (que lleva base UYU) como $ 3.000 en vez de ~$ 120.000.
+      const cotizNum = monId === 2 ? (Number(cotizacion) > 0 ? Number(cotizacion) : 1) : 1;
+      if (monId === 2 && cotizNum === 1) {
+        logger.warn(`[ANTICIPO] Anticipo en USD sin cotización (Cli=${cliId}, ${montoNum}). El asiento queda a TC 1.`);
+      }
+
+      // ¿Entró por cheque? Entonces no es plata en caja: es un valor a depositar (1.1.5).
+      // Antes esto no se miraba y todo anticipo se asentaba contra Caja.
+      const idsCheque = await _metodosChequeIds(transaction);
+      const esCheque  = metodoPagoId ? idsCheque.has(parseInt(metodoPagoId)) : false;
+      const codCuentaIngreso = esCheque
+        ? contabilidadCore.CUENTAS.VALORES_DEPOSITAR
+        : (monStr === 'USD' ? contabilidadCore.CUENTAS.CAJA_USD : contabilidadCore.CUENTAS.CAJA_UYU);
 
       // ─────────────────────────────────────────────
       let cueId = cuentaId ? parseInt(cuentaId) : null;
@@ -3091,15 +3135,17 @@ const registrarPagoAnticipo = async (req, res) => {
           .input('Monto',sql.Decimal(18,4),montoNum)
           .input('Usr',  sql.Int,          usuarioId)
           .input('FEmis',sql.DateTime,     fechaAnticipo) // retrofecha; null => GETDATE()
+          .input('Cotiz',sql.Decimal(18,4),cotizNum)
+          .input('Conv', sql.Decimal(18,4),montoNum * cotizNum)
           .query(`INSERT INTO dbo.Pagos(PagTcaIdTransaccion,MPaIdMetodoPago,PagIdMonedaPago,PagMontoPago,PagFechaPago,PagUsuarioAlta,PagCotizacion,PagMontoConvertido,PagTipoMovimiento)
-                  VALUES(@Tca,@Met,@MonId,@Monto,ISNULL(@FEmis,GETDATE()),@Usr,1,@Monto,'INGRESO')`);
+                  VALUES(@Tca,@Met,@MonId,@Monto,ISNULL(@FEmis,GETDATE()),@Usr,@Cotiz,@Conv,'INGRESO')`);
       }
 
       // ─────────────────────────────────────────────
       let docId = null;
       try {
         const rCaja = await new sql.Request(transaction)
-          .input('codCaja', sql.VarChar(20), monStr === 'USD' ? contabilidadCore.CUENTAS.CAJA_USD : contabilidadCore.CUENTAS.CAJA_UYU)
+          .input('codCaja', sql.VarChar(20), codCuentaIngreso)
           .query(`SELECT CueId FROM Cont_PlanCuentas WHERE CueCodigo = @codCaja`);
         const cueCaja = rCaja.recordset.length ? rCaja.recordset[0].CueId : 1;
 
@@ -3195,7 +3241,7 @@ const registrarPagoAnticipo = async (req, res) => {
       try {
         const deudasR = await new sql.Request(transaction)
           .input('Cue', sql.Int, cueId)
-          .query(`SELECT DDeIdDocumento, DDeImportePendiente
+          .query(`SELECT DDeIdDocumento, DDeImportePendiente, DocIdDocumento
                   FROM dbo.DeudaDocumento WITH(NOLOCK)
                   WHERE CueIdCuenta=@Cue AND DDeEstado IN ('PENDIENTE','PARCIAL') AND DDeImportePendiente > 0
                   ORDER BY DDeFechaEmision ASC`);
@@ -3208,7 +3254,11 @@ const registrarPagoAnticipo = async (req, res) => {
           const nuevoPend = Math.max(0, pendiente - aplicar);
           const nuevoEstado = nuevoPend < 0.01 ? 'COBRADO' : 'PARCIAL';
 
-          // Imputar anticipo a deuda: centralizado
+          // Imputar anticipo a deuda: centralizado. La imputación automática (en la
+          // misma operación en que entra el anticipo) NO descuenta el libro — el
+          // anticipo queda entero como billetera; DeudaDocumento es quien dice qué
+          // factura está paga. (Distinto del botón manual "Imputar anticipo", que sí
+          // resta: ahí la plata YA estaba contada como disponible antes de gastarla).
           await contabilidadSvc.reducirDeuda({ ddeId: d.DDeIdDocumento, monto: aplicar }, transaction);
 
           saldoDisponible -= aplicar;
@@ -3228,11 +3278,12 @@ const registrarPagoAnticipo = async (req, res) => {
       try {
         const remanente = Math.max(0, montoNum - montoImputado);
         const lineasAsiento = [{
-          codigoCuenta: monStr === 'USD' ? contabilidadCore.CUENTAS.CAJA_USD : contabilidadCore.CUENTAS.CAJA_UYU,
+          // Cheque → Valores a Depositar (1.1.5). Efectivo/otros → Caja.
+          codigoCuenta: codCuentaIngreso,
           debeBase:  montoNum,
           haberBase: 0,
           monedaId: monId,
-          cotizacion: 1,
+          cotizacion: cotizNum,
         }];
         if (montoImputado > 0.001) {
           lineasAsiento.push({
@@ -3240,7 +3291,7 @@ const registrarPagoAnticipo = async (req, res) => {
             debeBase:  0,
             haberBase: montoImputado,
             monedaId: monId,
-            cotizacion: 1,
+            cotizacion: cotizNum,
             entidadId:   cliId,
             entidadTipo: 'CLIENTE',
           });
@@ -3251,7 +3302,7 @@ const registrarPagoAnticipo = async (req, res) => {
             debeBase:  0,
             haberBase: remanente,
             monedaId: monId,
-            cotizacion: 1,
+            cotizacion: cotizNum,
             entidadId:   cliId,
             entidadTipo: 'CLIENTE',
           });

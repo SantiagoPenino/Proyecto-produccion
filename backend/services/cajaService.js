@@ -1671,6 +1671,11 @@ async function procesarTransaccion(payload) {
                            `);
                          const pagId = pagRes.recordset[0].PagIdPago;
 
+                         // Imputación automática (en la misma operación en que se crea el
+                         // documento): NO descuenta el libro — el anticipo/cheque queda
+                         // entero como billetera; DeudaDocumento es quien dice qué factura
+                         // está paga. (Distinto del botón manual "Imputar anticipo", que sí
+                         // resta: ahí la plata YA estaba contada como disponible).
                          await new sql.Request(transaction)
                            .input('PagIdPago',       sql.Int,          pagId)
                            .input('MontoDisponible', sql.Decimal(18,4), montoAAplicar)

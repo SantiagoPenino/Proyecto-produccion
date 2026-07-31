@@ -98,21 +98,21 @@ export const SERVICES_LIST = [
 
 
         config: {
-            // Variantes VIRTUALES (pedido del negocio): no salen de StockArt porque
-            // "Material Impreso" y "Personalizado" comparten los mismos materiales.
+            // Variantes VIRTUALES (pedido del negocio): no salen de StockArt.
             // La clasificación física (Lonas/Canvas/Vinilos/Cuadros...) sigue en
             // StockArt como organización interna del catálogo.
-            //  - MATERIAL sin terminaciones  → impresión simple por m2
-            //  - MATERIAL con terminaciones  → chips por archivo (solo materiales
-            //    que tienen terminaciones asignadas en MaterialTerminaciones)
-            //  - PRODUCTO_TERMINADO          → ficha con precio cerrado
+            //  - MATERIAL           → impresión por m2. Las terminaciones que se ofrecen
+            //    las define CADA MATERIAL en MaterialTerminaciones (30/07): las lonas
+            //    llevan soldadura, ojales y bolsillo; el canvas, bastidor. El material
+            //    que no tenga ninguna configurada simplemente no las muestra.
+            //  - PRODUCTO_TERMINADO → ficha con precio cerrado
             variantMode: 'virtual',
             virtualVariants: [
-                { label: 'Material Impreso', tipo: 'MATERIAL', terminaciones: false },
-                // Personalizados oculto a pedido (22/07) — descomentar para reactivar
-                // los chips de terminaciones por archivo en el portal:
-                // { label: 'Productos Personalizados (Armar a Medida)', tipo: 'MATERIAL', terminaciones: true, soloConTerminaciones: true },
-                { label: 'Productos Terminados', tipo: 'PRODUCTO_TERMINADO', terminaciones: false },
+                { label: 'Material Impreso', tipo: 'MATERIAL' },
+                // 'Productos Personalizados (Armar a Medida)' se retiró: era una categoría
+                // aparte para poder elegir terminaciones. Ya no hace falta — ahora se
+                // ofrecen dentro de Material Impreso según lo que admita cada material.
+                { label: 'Productos Terminados', tipo: 'PRODUCTO_TERMINADO' },
             ],
             defaultVariant: 'Material Impreso',
             materialMode: 'single', // Material global (default para archivos nuevos)

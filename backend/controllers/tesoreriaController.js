@@ -50,6 +50,9 @@ exports.recibirCheque = async (req, res) => {
     // Moneda del cheque (1 = $, 2 = US$). Antes iba fija en 1: un cheque en dólares
     // entraba a cartera con su importe contado como pesos.
     IdMoneda = 1,
+    // TC del cheque en US$. El asiento se lleva en pesos: sin cotización, US$ 1.000
+    // entrarían al mayor como $ 1.000.
+    Cotizacion = 1,
     // false cuando el cheque se está dando de alta DESDE UN COBRO DE CAJA: ese cobro
     // genera su propio asiento (Valores a Depositar / Deudores). Si acá generáramos otro,
     // el mismo cheque se contabilizaría dos veces y la deuda del cliente se cancelaría doble.
@@ -121,9 +124,17 @@ exports.recibirCheque = async (req, res) => {
 
     // Asiento contable — se saltea si el cobro de caja ya lo va a contabilizar.
     if (contabilizar !== false) {
+      const esUSD = Number(IdMoneda) === 2;
+      const cotiz = esUSD ? (Number(Cotizacion) > 0 ? Number(Cotizacion) : 1) : 1;
+      if (esUSD && cotiz === 1) {
+        logger.warn(`[TESORERIA] Cheque #${NumeroCheque} en USD sin cotización: el asiento queda a TC 1.`);
+      }
       const lineas = await resolverLineasDesdeMotor('TES_CHEQUE_REC', {
         totalNeto: Monto,
-        clienteId: IdClienteOrigen
+        clienteId: IdClienteOrigen,
+        // Sin esto el motor asume pesos y el asiento del cheque en US$ va sin convertir.
+        moneda: esUSD ? 'USD' : 'UYU',
+        cotizacion: cotiz
       });
 
       if (lineas.length > 0) {

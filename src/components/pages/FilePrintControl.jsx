@@ -103,6 +103,8 @@ const FilePrintControl = ({ areaCode }) => {
   const [controlAction, setControlAction] = useState(null);
   const [selectedFileForAction, setSelectedFileForAction] = useState(null);
   const [completedOrderData, setCompletedOrderData] = useState(null);
+  // Órdenes que se cerraron pero NO generaron etiqueta: sin bulto no se pueden despachar.
+  const [etiquetasFallidas, setEtiquetasFallidas] = useState(null);
   const [fallaTypes, setFallaTypes] = useState([]);
   const [finalizandoOrden, setFinalizandoOrden] = useState(false);
   const [pendingSelectCode, setPendingSelectCode] = useState(null);
@@ -200,7 +202,8 @@ const FilePrintControl = ({ areaCode }) => {
           rolloId: o.RolloID || null,
           nextService: o.ProximoServicio,
           meters: parseFloat(o.Magnitud) || 0,
-          priority: o.Prioridad || 'Normal'
+          priority: o.Prioridad || 'Normal',
+          modoRetiro: o.ModoRetiro || ''
         }));
         setOrders(normalized);
         // Auto-select pending order after lote switch
@@ -287,7 +290,8 @@ const FilePrintControl = ({ areaCode }) => {
             rolloId: o.RolloID || null,
             nextService: o.ProximoServicio,
             meters: parseFloat(o.Magnitud) || 0,
-          priority: o.Prioridad || 'Normal'
+          priority: o.Prioridad || 'Normal',
+          modoRetiro: o.ModoRetiro || ''
           }));
           setOrders(normalized);
 
@@ -448,7 +452,8 @@ const FilePrintControl = ({ areaCode }) => {
           hasLabels: o.CantidadEtiquetas || 0,
           nextService: o.ProximoServicio,
           meters: parseFloat(o.Magnitud) || 0,
-          priority: o.Prioridad || 'Normal'
+          priority: o.Prioridad || 'Normal',
+          modoRetiro: o.ModoRetiro || ''
         }));
         setOrders(normalized);
       }).catch(console.error);
@@ -631,7 +636,8 @@ const FilePrintControl = ({ areaCode }) => {
           failures: o.CantidadFallas || 0, hasLabels: o.CantidadEtiquetas || 0,
           rolloId: o.RolloID || null, nextService: o.ProximoServicio,
           meters: parseFloat(o.Magnitud) || 0,
-          priority: o.Prioridad || 'Normal'
+          priority: o.Prioridad || 'Normal',
+          modoRetiro: o.ModoRetiro || ''
         }));
         setOrders(normalized);
 
@@ -686,6 +692,7 @@ const FilePrintControl = ({ areaCode }) => {
       let someError = null;
       const faltantesAcc = new Set();
       const liberadasAcc = new Set();
+      const sinEtiqueta = [];   // órdenes que quedaron sin etiqueta (no se pueden despachar)
 
       for (const order of ordersToComplete) {
         const res = await fileControlService.completarOrden(order.id);
@@ -695,10 +702,19 @@ const FilePrintControl = ({ areaCode }) => {
             (res.faltantesPedido || []).forEach(c => faltantesAcc.add(c));
           }
           (res.ordenesLiberadas || []).forEach(c => liberadasAcc.add(c));
+          // La orden se cerró, pero sin etiqueta no hay bulto y sin bulto no hay remito.
+          // Antes esto solo quedaba en el log del servidor.
+          if (res.etiquetasError) {
+            sinEtiqueta.push({ code: res.codigoOrden || order.code || order.id, motivo: res.etiquetasError });
+          }
         } else {
           someError = res.error || `Error al finalizar la orden ${order.code || order.id}`;
           setToast({ visible: true, message: someError, type: 'error' });
         }
+      }
+
+      if (sinEtiqueta.length > 0) {
+        setEtiquetasFallidas(sinEtiqueta);
       }
 
       // Si en este mismo batch se completó o liberó una orden que figuraba como
@@ -739,7 +755,8 @@ const FilePrintControl = ({ areaCode }) => {
             rolloId: o.RolloID || null,
             nextService: o.ProximoServicio,
             meters: parseFloat(o.Magnitud) || 0,
-          priority: o.Prioridad || 'Normal'
+          priority: o.Prioridad || 'Normal',
+          modoRetiro: o.ModoRetiro || ''
           }));
           setOrders(normalized);
         }).catch(console.error);
@@ -1195,6 +1212,13 @@ const FilePrintControl = ({ areaCode }) => {
                     <span className="px-2 py-0.5 rounded bg-brand-cyan/10 text-brand-cyan text-[10px] font-black uppercase tracking-widest border border-brand-cyan/20">
                       SEC: {selectedOrder.sequence || '-'}
                     </span>
+                    {/* Forma de envío del pedido: cómo lo recibe el cliente */}
+                    {selectedOrder.modoRetiro && (
+                      <span className="px-2 py-0.5 rounded bg-violet-50 text-violet-700 text-[10px] font-black uppercase tracking-widest border border-violet-200"
+                        title="Forma de envío elegida por el cliente">
+                        <i className="fa-solid fa-truck-fast mr-1"></i>{selectedOrder.modoRetiro}
+                      </span>
+                    )}
                     {(selectedOrder.status === 'PRONTO' || (selectedOrder.EstadoenArea || selectedOrder.areaStatus) === 'Pronto') && <span className="px-2 py-0.5 rounded bg-brand-cyan text-white text-[10px] font-black uppercase tracking-widest">COMPLETA</span>}
                   </div>
 
@@ -1574,6 +1598,44 @@ const FilePrintControl = ({ areaCode }) => {
             </div>
           </div>
         </div >
+      )}
+
+      {/* AVISO: la orden se cerró pero NO se generó su etiqueta.
+          Sin etiqueta no hay bulto, y sin bulto no se puede armar el remito.
+          Antes esto solo quedaba en el log y el operario lo descubría al despachar. */}
+      {etiquetasFallidas && etiquetasFallidas.length > 0 && (
+        <div className="fixed inset-0 z-[1700] bg-black/70 flex items-center justify-center p-6 animate-in fade-in duration-200">
+          <div className="bg-white w-full max-w-lg rounded-3xl shadow-2xl overflow-hidden border-4 border-amber-400">
+            <div className="bg-amber-400 p-6 flex items-center gap-4 text-amber-950">
+              <i className="fa-solid fa-triangle-exclamation text-4xl"></i>
+              <div>
+                <h2 className="text-xl font-black uppercase tracking-wide leading-tight">Sin etiqueta: no se puede despachar</h2>
+                <p className="text-sm font-bold opacity-80">La orden quedó pronta, pero no se generó su bulto.</p>
+              </div>
+            </div>
+            <div className="p-6 space-y-3">
+              {etiquetasFallidas.map((x, i) => (
+                <div key={i} className="bg-amber-50 border border-amber-200 rounded-xl p-3">
+                  <p className="font-black text-slate-800 text-sm mb-1">{x.code}</p>
+                  <p className="text-xs text-slate-600 leading-snug">{x.motivo}</p>
+                </div>
+              ))}
+              <div className="bg-slate-50 border border-slate-200 rounded-xl p-3">
+                <p className="text-xs text-slate-600 leading-relaxed">
+                  <b>Cómo se resuelve:</b> abrí la orden → pestaña <b>Cotizar Productos</b>, cargá el precio
+                  y guardá. Después generá la etiqueta desde el botón <b>Etiquetas</b>. Recién con el bulto
+                  creado vas a poder incluirla en un remito.
+                </p>
+              </div>
+            </div>
+            <div className="px-6 pb-6">
+              <button onClick={() => setEtiquetasFallidas(null)}
+                className="w-full py-3 rounded-xl bg-slate-800 text-white font-black uppercase tracking-wide hover:bg-slate-700 transition-colors">
+                Entendido
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* 2. Completed Order Modal (Pronto Sector) */}

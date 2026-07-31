@@ -870,6 +870,7 @@ export default function CajaPanelPago({
             initialMonto={pagos.find(p => p.id === chequeIndexActivo)?.monto || ''}
             // El cheque se da de alta en la moneda de la línea de pago.
             initialMonedaId={pagos.find(p => p.id === chequeIndexActivo)?.moneda === 'USD' ? 2 : 1}
+          initialCotizacion={cotizacion}
             onClose={() => setChequeIndexActivo(null)}
             onSuccess={(idCheque) => {
               updatePago(chequeIndexActivo, 'idCheque', idCheque);
@@ -1327,6 +1328,7 @@ export default function CajaPanelPago({
           origenCaja
           initialMonto={pagos.find(p => p.id === chequeIndexActivo)?.monto || ''}
           initialMonedaId={pagos.find(p => p.id === chequeIndexActivo)?.moneda === 'USD' ? 2 : 1}
+          initialCotizacion={cotizacion}
           onClose={() => setChequeIndexActivo(null)}
           onSuccess={(idCheque) => {
             updatePago(chequeIndexActivo, 'idCheque', idCheque);

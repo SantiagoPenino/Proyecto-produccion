@@ -214,6 +214,10 @@ export default function CierreCicloPreviewModal({
   const totalUYU = monedaFactura === 'UYU' ? granTotalNeto : granTotalNeto * cotDolar;
   // Pedido Caja es borrador interno (no fiscal) → nunca exige datos DGI
   const requiereDatosDGI = docType !== 'PEDIDO_CAJA' && tipoDocumento.includes('TICKET') && totalUYU > DGI_UMBRAL_UYU;
+  // Nombre/Documento/Dirección/Ciudad son obligatorios solo cuando DGI los exige:
+  // e-Factura siempre (necesita RUT del receptor), e-Ticket solo si supera el umbral.
+  // Pedido Caja nunca los exige (borrador interno, no fiscal).
+  const requiereDatosComprobante = docType === 'E-FACTURA' || requiereDatosDGI;
 
   // Paso 1: abre el modal de confirmación (siempre que haya cambios)
   const handleGuardarPrecios = () => {
@@ -282,16 +286,16 @@ export default function CierreCicloPreviewModal({
     setWorking(true);
     setValError('');
     
-    // Validación de obligatoriedad de campos siempre activa (Requerimiento interno del cliente)
-    if (!cliDgiNombre || !cliDgiDocumento || !cliDgiDireccion || !cliDgiCiudad) {
+    // Nombre/Documento/Dirección/Ciudad solo son obligatorios cuando DGI los exige
+    if (requiereDatosComprobante && (!cliDgiNombre || !cliDgiDocumento || !cliDgiDireccion || !cliDgiCiudad)) {
       setValError('Todos los datos del comprobante (Nombre, Documento, Dirección y Ciudad) son obligatorios para continuar.');
       setWorking(false);
       return;
     }
 
-    // Validación de longitud y formato numérico
+    // Validación de longitud y formato numérico (solo si se cargó un documento)
     const docLimpio = String(cliDgiDocumento).replace(/\s/g, '');
-    if (!/^\d+$/.test(docLimpio)) {
+    if (docLimpio && !/^\d+$/.test(docLimpio)) {
       setValError('El documento debe contener únicamente números.');
       setWorking(false);
       return;
@@ -385,26 +389,26 @@ export default function CierreCicloPreviewModal({
     setWorking(true);
     setValError('');
     try {
-      if (!cliDgiNombre || !cliDgiDocumento || !cliDgiDireccion || !cliDgiCiudad) {
+      if (requiereDatosComprobante && (!cliDgiNombre || !cliDgiDocumento || !cliDgiDireccion || !cliDgiCiudad)) {
         setValError('Todos los datos del comprobante son obligatorios para actualizar el cliente.');
         setWorking(false);
         return;
       }
-      
+
       const docLimpio = String(cliDgiDocumento).replace(/\s/g, '');
-      if (!/^\d+$/.test(docLimpio)) {
+      if (docLimpio && !/^\d+$/.test(docLimpio)) {
         setValError('El documento debe contener únicamente números.');
         setWorking(false);
         return;
       }
 
-      if (tipoDocumento.includes('TICKET')) {
+      if (docLimpio && tipoDocumento.includes('TICKET')) {
         if (docLimpio.length !== 8) {
           setValError('Para emitir un e-Ticket, la Cédula (CI) debe tener exactamente 8 dígitos.');
           setWorking(false);
           return;
         }
-      } else if (tipoDocumento.includes('FACTURA')) {
+      } else if (docLimpio && tipoDocumento.includes('FACTURA')) {
         if (docLimpio.length !== 12) {
           setValError('Para emitir una e-Factura, el RUT debe tener exactamente 12 dígitos.');
           setWorking(false);
@@ -608,25 +612,25 @@ export default function CierreCicloPreviewModal({
 
   const handlePreviewPDF = () => {
     setValError('');
-    // Validación de obligatoriedad de campos siempre activa (Requerimiento interno del cliente)
-    if (!cliDgiNombre || !cliDgiDocumento || !cliDgiDireccion || !cliDgiCiudad) {
+    // Nombre/Documento/Dirección/Ciudad solo son obligatorios cuando DGI los exige
+    if (requiereDatosComprobante && (!cliDgiNombre || !cliDgiDocumento || !cliDgiDireccion || !cliDgiCiudad)) {
       setValError('Todos los datos del comprobante (Nombre, Documento, Dirección y Ciudad) son obligatorios para continuar.');
       return;
     }
 
-    // Validación de longitud y formato numérico
+    // Validación de longitud y formato numérico (solo si se cargó un documento)
     const docLimpio = String(cliDgiDocumento).replace(/\s/g, '');
-    if (!/^\d+$/.test(docLimpio)) {
+    if (docLimpio && !/^\d+$/.test(docLimpio)) {
       setValError('El documento debe contener únicamente números.');
       return;
     }
 
-    if (tipoDocumento.includes('TICKET')) {
+    if (docLimpio && tipoDocumento.includes('TICKET')) {
       if (docLimpio.length !== 8) {
         setValError('Para emitir un e-Ticket, la Cédula (CI) debe tener exactamente 8 dígitos.');
         return;
       }
-    } else if (tipoDocumento.includes('FACTURA')) {
+    } else if (docLimpio && tipoDocumento.includes('FACTURA')) {
       if (docLimpio.length !== 12) {
         setValError('Para emitir una e-Factura, el RUT debe tener exactamente 12 dígitos.');
         return;

@@ -249,11 +249,23 @@ async function crearDeudaDocumento(params, transaction = null) {
   let { CueIdCuenta, OrdIdOrden = null, DocIdDocumento = null, Importe, ImportePendiente = Importe } = params;
 
   // Auto-consumir Saldo a Favor existente en la cuenta para no crear deuda irreal
+  // OJO: SaldoActual NO sale de CuentasCliente.CueSaldoActual — esa columna
+  // acumula también las ORDEN abiertas (bug conocido, ver
+  // project_bug_saldoactual_duplica_orden.md) y da un número mucho más negativo
+  // que el real, así que este auto-consumo casi nunca se disparaba aunque el
+  // cliente tuviera plata a favor real (caso Posse Gutierrez, 30-jul-2026).
+  // Se recalcula acá con la MISMA fórmula que usa el resto del sistema
+  // (getSaldoCliente, getMovimientos): todo menos ORDEN/ORDEN_ANTICIPO.
   const ctaRes = await mkReq()
     .input('CueIdCuenta', sql.Int, CueIdCuenta)
     .query(`
-      SELECT 
-        ISNULL(cc.CueSaldoActual, 0) AS SaldoActual,
+      SELECT
+        ISNULL((
+          SELECT SUM(MovImporte) FROM dbo.MovimientosCuenta WITH(UPDLOCK)
+          WHERE CueIdCuenta = cc.CueIdCuenta
+            AND (MovAnulado IS NULL OR MovAnulado = 0)
+            AND MovTipo NOT IN ('ORDEN', 'ORDEN_ANTICIPO')
+        ), 0) AS SaldoActual,
         ISNULL(cp.CPaDiasVencimiento, 0) AS DiasVencimiento
       FROM   dbo.CuentasCliente cc WITH(UPDLOCK)
       JOIN   dbo.CondicionesPago cp ON cp.CPaIdCondicion = cc.CPaIdCondicion
@@ -574,14 +586,30 @@ async function hookOrdenCreada(params, transaction = null) {
       // Intentar cruzar desde otra cuenta si tiene dinero (Ej: Debe USD, pero tiene UYU a favor)
       const tipoOtra = MonIdMoneda === 2 ? 'DINERO_UYU' : 'DINERO_USD';
       const reqOtra = transaction ? new sql.Request(transaction) : pool.request();
+      // OJO: NO leer CueSaldoActual — esa columna acumula también las ORDEN abiertas
+      // (bug conocido, ver project_bug_saldoactual_duplica_orden.md) y puede mostrar
+      // saldo positivo que no existe de verdad, cruzando plata real desde una cuenta
+      // que en los hechos no la tenía (caso Yesusport, 30-jul-2026: -74.492,61 reales
+      // contra -523 del cache). Se recalcula con la MISMA fórmula que usa el resto del
+      // sistema (getSaldoCliente, crearDeudaDocumento): todo menos ORDEN/ORDEN_ANTICIPO.
       const ctaOtraRes = await reqOtra
          .input('Cli', sql.Int, CliIdCliente)
          .input('Tipo', sql.VarChar(20), tipoOtra)
-         .query(`SELECT CueIdCuenta, CueSaldoActual FROM dbo.CuentasCliente WITH (UPDLOCK, ROWLOCK) WHERE CliIdCliente=@Cli AND CueTipo=@Tipo AND CueActiva=1 AND CueSaldoActual > 0`);
-      
-      if (ctaOtraRes.recordset.length > 0) {
+         .query(`
+           SELECT cc.CueIdCuenta,
+                  ISNULL((
+                    SELECT SUM(m.MovImporte) FROM dbo.MovimientosCuenta m WITH(UPDLOCK)
+                    WHERE m.CueIdCuenta = cc.CueIdCuenta
+                      AND (m.MovAnulado IS NULL OR m.MovAnulado = 0)
+                      AND m.MovTipo NOT IN ('ORDEN', 'ORDEN_ANTICIPO')
+                  ), 0) AS SaldoReal
+           FROM   dbo.CuentasCliente cc WITH (UPDLOCK, ROWLOCK)
+           WHERE  cc.CliIdCliente = @Cli AND cc.CueTipo = @Tipo AND cc.CueActiva = 1
+         `);
+
+      if (ctaOtraRes.recordset.length > 0 && Number(ctaOtraRes.recordset[0].SaldoReal) > 0.01) {
         const ctaOtra = ctaOtraRes.recordset[0];
-        
+
         let coti = 1;
         const reqCoti = transaction ? new sql.Request(transaction) : pool.request();
         const cotiRes = await reqCoti.query('SELECT TOP 1 CotDolar FROM dbo.Cotizaciones WITH(NOLOCK) ORDER BY CotFecha DESC');
@@ -590,7 +618,7 @@ async function hookOrdenCreada(params, transaction = null) {
         // Si la orden es en USD(2) y la otra es UYU(1) -> La otra cuenta vale su saldo / coti en USD
         // Si la orden es en UYU(1) y la otra es USD(2) -> La otra cuenta vale su saldo * coti en UYU
         let tasaConvertirAOrden = MonIdMoneda === 2 ? (1 / coti) : coti;
-        let saldoOtraConvertido = ctaOtra.CueSaldoActual * tasaConvertirAOrden;
+        let saldoOtraConvertido = Number(ctaOtra.SaldoReal) * tasaConvertirAOrden;
 
         let aDescontarOrden = Math.min(deudaAislada, saldoOtraConvertido);
         
@@ -1676,7 +1704,9 @@ async function getResumenDocumentos(CliIdCliente, desde = null, hasta = null) {
         dc.MonIdMoneda,
         CAST(dc.DocTotal AS DECIMAL(18,2)) AS DocTotal,
         dc.DocEstado, dc.DocPagado, dc.CfeEstado, dc.CfeNumeroOficial, dc.CfeCAE,
-        CONVERT(varchar(10), dc.DocFechaEmision, 23) AS Emision,
+        -- Fecha completa (con hora), no solo el día: 2 documentos del mismo día
+        -- deben ordenarse por cuándo pasó cada uno, no quedar en orden al azar.
+        dc.DocFechaEmision AS Emision,
         -- 'CANCELADO'/'ANULADO' (masculino) también son deuda muerta: los escriben el
         -- fix de duplicadas (bucketA 22-jul) y la cobertura por plan. Sin excluirlos,
         -- la fila cancelada (pendiente 0) gana el ORDER BY y el doc figura PAGADO
@@ -1798,7 +1828,8 @@ async function getResumenDocumentos(CliIdCliente, desde = null, hasta = null) {
     .input('hasta', sql.Date, hasta || null)
     .query(`
       SELECT
-        CONVERT(varchar(10), m.MovFecha, 23) AS Fecha,
+        -- Fecha completa (con hora): igual motivo que en Emision arriba.
+        m.MovFecha AS Fecha,
         m.MovTipo,
         m.PagIdPago,
         ISNULL(mo.MonSimbolo,'$') AS MonSimbolo,
@@ -1973,8 +2004,10 @@ async function getResumenDocumentos(CliIdCliente, desde = null, hasta = null) {
   if (desde || hasta) {
     const allRes = await runDocsQuery(null, null);
     for (const d of allRes.recordset) {
-      // Emision es varchar(10) ISO (yyyy-mm-dd): comparación de strings es cronológica
-      const fuera = (desde && d.Emision < String(desde)) || (hasta && d.Emision > String(hasta));
+      // Emision ahora es datetime completo (para poder ordenar por hora) — para
+      // decidir si cae "fuera del período" comparamos solo el DÍA, igual que antes.
+      const soloFecha = d.Emision ? new Date(d.Emision).toISOString().slice(0, 10) : null;
+      const fuera = (desde && soloFecha < String(desde)) || (hasta && soloFecha > String(hasta));
       acumular(d, !!fuera);
     }
   } else {

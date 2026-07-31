@@ -8,5 +8,6 @@ router.put('/items/:itemId', controller.updateExtraItem); // update quantity
 router.put('/terminaciones/:id/estado', controller.updateTerminacionEstado); // Pendiente | Hecha
 router.post('/orders/:id/control', controller.controlOrder);
 router.put('/archivos/:archivoId/control-copias', controller.updateControlCopiasArchivo); // copias controladas POR ARCHIVO (control de terminaciones)
+router.post('/orders/:id/confirmar-magnitudes', controller.confirmarMagnitudes);          // cantidades reales del taller -> actualiza la cotización
 
 module.exports = router;

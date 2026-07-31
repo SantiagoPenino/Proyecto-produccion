@@ -10,6 +10,20 @@ const ERPSyncService = require('../services/erpSyncService');
 const { generateThumbnail } = require('../utils/thumbnailGenerator');
 const { construirNombreArchivo, materialParaNombre, usaNombreNuevo } = require('../utils/nombreArchivoOrden');
 
+// Ubicación de una terminación en texto legible para la NOTA que lee producción.
+// Acepta las canónicas ('PERIMETRO') y las combinaciones libres ('ARRIBA,IZQUIERDA').
+const UBI_TEXTO = {
+    ARRIBA: 'arriba', ABAJO: 'abajo', ARRIBA_ABAJO: 'arriba y abajo',
+    IZQUIERDA: 'izquierda', DERECHA: 'derecha',
+    COSTADOS: 'ambos costados', PERIMETRO: 'todo el perímetro',
+};
+const etiquetaUbicacion = (ubi) => {
+    const v = String(ubi || '').trim();
+    if (!v) return '';
+    if (UBI_TEXTO[v]) return UBI_TEXTO[v];
+    return v.split(',').map(p => UBI_TEXTO[p.trim()] || p.trim().toLowerCase()).join(' + ');
+};
+
 
 // ──────────────────────────────────────────────────
 // HELPER: Generar comprobante PDF y guardarlo en disco
@@ -923,6 +937,50 @@ exports.createWebOrder = async (req, res) => {
                                     }
                                 }
                             }
+
+                            // MATERIAL IMPRESO con terminaciones: mismo criterio que el producto
+                            // terminado — el área de impresión ve en la NOTA qué se le va a hacer
+                            // después a esa pieza (dónde va cada terminación y con qué medida).
+                            if (st.TipoStock !== 'PRODUCTO_TERMINADO') {
+                                try {
+                                    const idsTerm = [...new Set((exec.items || [])
+                                        .flatMap(it => Array.isArray(it.terminaciones) ? it.terminaciones : [])
+                                        .map(t => parseInt(t.terminacionId)).filter(n => !isNaN(n)))];
+                                    if (idsTerm.length > 0) {
+                                        const catRes = await new sql.Request(transaction)
+                                            .query(`SELECT TerminacionID, LTRIM(RTRIM(Nombre)) AS Nombre, UnidadCobro, ReglaCantidad
+                                                    FROM Terminaciones WHERE TerminacionID IN (${idsTerm.join(',')})`);
+                                        const cat = new Map(catRes.recordset.map(t => [t.TerminacionID, t]));
+                                        // Se listan sin repetir: la misma terminación en varios archivos
+                                        // con la misma ubicación es una sola línea en la nota.
+                                        const vistas = new Set();
+                                        const partes = [];
+                                        (exec.items || []).forEach(it => {
+                                            (it.terminaciones || []).forEach(t => {
+                                                const info = cat.get(parseInt(t.terminacionId));
+                                                if (!info) return;
+                                                const ubi = (t.ubicacion || '').trim();
+                                                const clave = `${info.TerminacionID}|${ubi}|${t.param ?? ''}`;
+                                                if (vistas.has(clave)) return;
+                                                vistas.add(clave);
+                                                const donde = ubi ? ` (${etiquetaUbicacion(ubi)})` : '';
+                                                let como = '';
+                                                if (t.param != null && t.param !== '') {
+                                                    como = (info.ReglaCantidad === 'CADA_X_CM')
+                                                        ? ` c/${t.param} cm`
+                                                        : (/bolsillo/i.test(info.Nombre) ? ` a ${t.param} cm del borde` : '');
+                                                }
+                                                partes.push(`${info.Nombre}${donde}${como}`);
+                                            });
+                                        });
+                                        if (partes.length > 0) {
+                                            notaMaterialImpresion = `[TERMINACIONES: ${partes.join(' | ')}]`;
+                                        }
+                                    }
+                                } catch (eNotaTerm) {
+                                    logger.warn('[WebOrder] No se pudo armar la nota de terminaciones:', eNotaTerm.message);
+                                }
+                            }
                         }
                     } catch (_) { /* sin TipoStock/StockArt: se mantiene UM del área y variante original */ }
                 }
@@ -1183,13 +1241,18 @@ exports.createWebOrder = async (req, res) => {
                                     continue;
                                 }
                                 const cantTerm = parseFloat(term.cantidad) || 1;
+                                // ParamCliente: lo que el cliente ajustó en el plano — separación
+                                // de los ojales o distancia del bolsillo al borde (en cm).
+                                const paramCli = (term.param !== undefined && term.param !== null && term.param !== '')
+                                    ? parseFloat(term.param) : null;
                                 await new sql.Request(transaction)
                                     .input('OID', sql.Int, newOID)
                                     .input('AID', sql.Int, archivoId)
                                     .input('TID', sql.Int, tid)
                                     .input('Cnt', sql.Decimal(18, 2), cantTerm)
                                     .input('Ubi', sql.VarChar(30), term.ubicacion ? String(term.ubicacion).trim() : null)
-                                    .query("INSERT INTO OrdenTerminaciones (OrdenID, ArchivoID, TerminacionID, Cantidad, Ubicacion) VALUES (@OID, @AID, @TID, @Cnt, @Ubi)");
+                                    .input('Par', sql.Decimal(9, 2), isNaN(paramCli) ? null : paramCli)
+                                    .query("INSERT INTO OrdenTerminaciones (OrdenID, ArchivoID, TerminacionID, Cantidad, Ubicacion, ParamCliente) VALUES (@OID, @AID, @TID, @Cnt, @Ubi, @Par)");
 
                                 if (tInfo.CodArticulo) {
                                     await new sql.Request(transaction)
@@ -1198,9 +1261,13 @@ exports.createWebOrder = async (req, res) => {
                                         .input('Des', sql.NVarChar(255), `Terminación: ${tInfo.Nombre}`)
                                         .input('Cnt', sql.Decimal(18, 2), cantTerm)
                                         .query(`
+                                            -- Estado OK de entrada: esta línea existe SOLO para facturar.
+                                            -- El trabajo se controla en el área de Terminaciones (checklist
+                                            -- de OrdenTerminaciones); en el control de IMPRESIÓN no debe
+                                            -- aparecer como algo para contar ni frenar la orden.
                                             INSERT INTO ServiciosExtraOrden
-                                            (OrdenID, CodArt, CodStock, Descripcion, Cantidad, PrecioUnitario, TotalLinea, Observacion, FechaRegistro)
-                                            VALUES (@OID, @Cod, '', @Des, @Cnt, 0, 0, 'Terminación por archivo (WebOrder)', GETDATE())
+                                            (OrdenID, CodArt, CodStock, Descripcion, Cantidad, PrecioUnitario, TotalLinea, Observacion, FechaRegistro, Estado, Controlcopias)
+                                            VALUES (@OID, @Cod, '', @Des, @Cnt, 0, 0, 'Terminación por archivo (WebOrder)', GETDATE(), 'OK', @Cnt)
                                         `);
                                 }
                             }
@@ -1936,6 +2003,7 @@ exports.getClientOrders = async (req, res) => {
                     FROM Ordenes o WITH(NOLOCK)
                     WHERE o.CodCliente = @cod
                       AND o.CodigoOrden NOT LIKE '%-F%'   -- las fallas (-F) son internas: no cuentan para el cliente
+                      AND ISNULL(o.AreaID,'') <> 'TERMINAC'  -- la hermana de terminaciones es interna: el cliente ve su pedido, no el trabajo interno
                     UNION ALL
                     SELECT o.OrdCodigoOrden AS DocID, e.EOrNombreEstado AS Estado, 'ERP' AS Origen
                     FROM OrdenesDeposito o WITH(NOLOCK)
@@ -2045,6 +2113,7 @@ exports.getClientOrders = async (req, res) => {
                     LEFT JOIN Disenadores dis WITH(NOLOCK) ON dis.DisenadorID = o.DisenadorID
                     WHERE o.CodCliente = @cod
                       AND o.CodigoOrden NOT LIKE '%-F%'   -- las fallas (-F) son internas: no se muestran al cliente
+                      AND ISNULL(o.AreaID,'') <> 'TERMINAC'  -- ídem la hermana XEUV: es el trabajo de terminación, no una pieza más del pedido
 
                     UNION ALL
 

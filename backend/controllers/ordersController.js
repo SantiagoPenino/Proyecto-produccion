@@ -85,6 +85,9 @@ const recotizarPedidoDeOrden = async (pool, ordenId, userId = 1, userName = 'Sis
         logger.error('[Recotizar] ❌ Error recotizando pedido tras cambio de magnitud:', e.message);
     }
 };
+// Se exporta para reusarlo desde otras áreas que cambian cantidades cobrables
+// (ej. Terminaciones confirma las magnitudes reales del trabajo).
+exports.recotizarPedidoDeOrden = recotizarPedidoDeOrden;
 
 // =====================================================================
 // =====================================================================
