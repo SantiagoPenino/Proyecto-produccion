@@ -95,6 +95,40 @@ export const LoginPage = () => {
     const [successMsg, setSuccessMsg] = useState('');
     const [loading, setLoading] = useState(false);
 
+    // Cuenta sin activar: el backend lo marca con accountInactive y manda el correo enmascarado.
+    // No es un error de credenciales, así que va con su propio bloque y un botón para reenviar.
+    const [inactiva, setInactiva] = useState(null);   // { maskedEmail }
+    const [reenvioEmail, setReenvioEmail] = useState('');
+    const [reenvioMsg, setReenvioMsg] = useState('');
+    const [reenvioErr, setReenvioErr] = useState('');
+    const [reenviando, setReenviando] = useState(false);
+    const [espera, setEspera] = useState(0);          // segundos hasta poder reenviar de nuevo
+
+    // Cuenta regresiva del botón de reenvío.
+    React.useEffect(() => {
+        if (espera <= 0) return;
+        const t = setTimeout(() => setEspera(s => s - 1), 1000);
+        return () => clearTimeout(t);
+    }, [espera]);
+
+    const handleReenviar = async () => {
+        setReenvioMsg('');
+        setReenvioErr('');
+        setReenviando(true);
+        try {
+            const r = await apiClient.post('/web-auth/resend-activation', {
+                identifier: formData.idcliente,
+                email: reenvioEmail,
+            });
+            setReenvioMsg(r?.message || 'Correo de activación reenviado. Revisá tu bandeja de entrada.');
+            setEspera(60); // solo tras un envío OK: si falló por correo equivocado, que reintente ya
+        } catch (e) {
+            setReenvioErr(e.message || 'No se pudo reenviar el correo.');
+        } finally {
+            setReenviando(false);
+        }
+    };
+
     // Initial Load of Nomenclators
     React.useEffect(() => {
         if (!isLogin) {
@@ -123,6 +157,9 @@ export const LoginPage = () => {
     const handleSubmit = async (e) => {
         e.preventDefault();
         setError('');
+        setInactiva(null);
+        setReenvioMsg('');
+        setReenvioErr('');
         setLoading(true);
 
         try {
@@ -179,7 +216,13 @@ export const LoginPage = () => {
             }
             navigate(from, { replace: true });
         } catch (err) {
-            setError(err.message || 'Error en autenticación');
+            // Cuenta sin activar: no es una credencial mala, se resuelve con el mail de activación.
+            if (err?.data?.accountInactive) {
+                setInactiva({ maskedEmail: err.data.maskedEmail || '' });
+                setError('');
+            } else {
+                setError(err.message || 'Error en autenticación');
+            }
         } finally {
             setLoading(false);
         }
@@ -297,6 +340,34 @@ export const LoginPage = () => {
                     {error && (
                         <div className="p-3 bg-red-100 text-red-700 rounded text-sm text-center">
                             {error}
+                        </div>
+                    )}
+
+                    {inactiva && (
+                        <div className="p-3 bg-amber-50 border border-amber-200 rounded text-sm space-y-2">
+                            <p className="text-amber-800">
+                                <b>Tu cuenta todavía no está activada.</b> Buscá en tu correo el mail de activación
+                                {inactiva.maskedEmail ? <> que enviamos a <b>{inactiva.maskedEmail}</b></> : null} y abrí el enlace.
+                                Mirá también en spam.
+                            </p>
+                            <p className="text-amber-700 text-xs">Si no te llegó o venció, reenvialo confirmando tu correo:</p>
+                            <input
+                                type="email"
+                                placeholder="Tu correo electrónico"
+                                className="w-full p-2 border border-amber-300 rounded text-sm focus:outline-none focus:border-amber-500"
+                                value={reenvioEmail}
+                                onChange={(e) => setReenvioEmail(e.target.value)}
+                            />
+                            <button
+                                type="button"
+                                onClick={handleReenviar}
+                                disabled={reenviando || espera > 0 || !reenvioEmail.trim()}
+                                className="w-full py-2 rounded text-xs font-bold uppercase tracking-wide bg-amber-600 text-white hover:bg-amber-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                            >
+                                {reenviando ? 'Enviando…' : espera > 0 ? `Reenviar en ${espera}s` : 'Reenviar activación'}
+                            </button>
+                            {reenvioMsg && <p className="text-green-700 text-xs text-center">{reenvioMsg}</p>}
+                            {reenvioErr && <p className="text-red-600 text-xs text-center">{reenvioErr}</p>}
                         </div>
                     )}
 

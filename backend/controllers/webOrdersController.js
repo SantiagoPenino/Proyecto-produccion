@@ -2492,8 +2492,8 @@ const EXT_TEXTURAS = new Set(['.svg', '.png', '.jpg', '.jpeg', '.webp']);
 //   sacarlo — con el viewBox pelado el tile daba ~98 mm y la textura se dibujaba UNA sola vez.
 // · altura = cuánto se marca el relieve (0 = plano). Va por textura porque un tejido fino y un
 //   cuero grueso no se marcan igual.
-const REPETICIONES_DEFAULT = 12;
-const ALTURA_DEFAULT = 0.6;
+const REPETICIONES_DEFAULT = 2;
+const ALTURA_DEFAULT = 1;
 
 // En producción las texturas viven en backend/public (salida del build de Vite); en desarrollo
 // el front las sirve Vite desde el public/ del repo y el backend corre aparte. Se prueban las dos.
@@ -2564,7 +2564,8 @@ exports.leerTexturasOrden = async (pool, ordenId, codCliente = null) => {
         .input('OID', sql.Int, ordenId)
         .input('cod', sql.Int, codCliente || 0)
         .query(`
-            SELECT t.ZonaIndice, t.ArchivoTextura, t.ElegidaPor, t.FechaEleccion, t.FechaModificacion
+            SELECT t.ZonaIndice, t.ArchivoTextura, ISNULL(t.Barniz, 0) AS Barniz,
+                   t.ElegidaPor, t.FechaEleccion, t.FechaModificacion
             FROM dbo.OrdenTexturasTPU t WITH(NOLOCK)
             JOIN dbo.Ordenes o WITH(NOLOCK) ON o.OrdenID = t.OrdenID
             WHERE t.OrdenID = @OID ${codCliente ? 'AND o.CodCliente = @cod' : ''}
@@ -2573,22 +2574,38 @@ exports.leerTexturasOrden = async (pool, ordenId, codCliente = null) => {
     return r.recordset;
 };
 
+// El valor de una zona admite dos formas:
+//   'lino.svg' | null            → solo textura (lo que manda el detalle de orden interno)
+//   { textura, barniz }          → textura + barniz sectorizado (lo que manda el visor 3D)
+const normalizaZona = (valor) => {
+    if (valor && typeof valor === 'object') {
+        return { textura: valor.textura || null, barniz: !!valor.barniz };
+    }
+    return { textura: valor || null, barniz: false };
+};
+
+// Valida el valor de una zona venga en la forma que venga.
+exports.zonaValida = (valor) => exports.texturaValida(normalizaZona(valor).textura);
+exports.texturaDeZona = (valor) => normalizaZona(valor).textura;
+
 // Guarda SOLO las zonas que vienen en el payload (no reescribe las otras): si el operario cambia
 // una zona, las que eligió el cliente tienen que conservar su ElegidaPor.
 exports.guardarTexturasOrden = async (pool, ordenId, elecciones, elegidaPor, usuarioId = null) => {
-    for (const [zonaStr, archivo] of Object.entries(elecciones || {})) {
+    for (const [zonaStr, valor] of Object.entries(elecciones || {})) {
         const zona = parseInt(zonaStr, 10);
         if (!Number.isInteger(zona) || zona < 0) continue;
-        const valor = archivo ? String(archivo).substring(0, 255) : null;
+        const { textura, barniz } = normalizaZona(valor);
+        const archivo = textura ? String(textura).substring(0, 255) : null;
         const upd = await pool.request()
             .input('OID', sql.Int, ordenId)
             .input('Z', sql.Int, zona)
-            .input('A', sql.NVarChar(255), valor)
+            .input('A', sql.NVarChar(255), archivo)
+            .input('B', sql.Bit, barniz ? 1 : 0)
             .input('P', sql.VarChar(10), elegidaPor)
             .input('U', sql.Int, usuarioId || null)
             .query(`
                 UPDATE dbo.OrdenTexturasTPU
-                SET ArchivoTextura = @A, ElegidaPor = @P,
+                SET ArchivoTextura = @A, Barniz = @B, ElegidaPor = @P,
                     ModificadaPorUsuarioID = @U, FechaModificacion = GETDATE()
                 WHERE OrdenID = @OID AND ZonaIndice = @Z
             `);
@@ -2596,11 +2613,12 @@ exports.guardarTexturasOrden = async (pool, ordenId, elecciones, elegidaPor, usu
             await pool.request()
                 .input('OID', sql.Int, ordenId)
                 .input('Z', sql.Int, zona)
-                .input('A', sql.NVarChar(255), valor)
+                .input('A', sql.NVarChar(255), archivo)
+                .input('B', sql.Bit, barniz ? 1 : 0)
                 .input('P', sql.VarChar(10), elegidaPor)
                 .query(`
-                    INSERT INTO dbo.OrdenTexturasTPU (OrdenID, ZonaIndice, ArchivoTextura, ElegidaPor, FechaEleccion)
-                    VALUES (@OID, @Z, @A, @P, GETDATE())
+                    INSERT INTO dbo.OrdenTexturasTPU (OrdenID, ZonaIndice, ArchivoTextura, Barniz, ElegidaPor, FechaEleccion)
+                    VALUES (@OID, @Z, @A, @B, @P, GETDATE())
                 `);
         }
     }
@@ -2629,8 +2647,8 @@ exports.setTexturasOrden = async (req, res) => {
     if (!ordenId || !codCliente || !elecciones || typeof elecciones !== 'object') {
         return res.status(400).json({ error: 'Datos inválidos' });
     }
-    for (const archivo of Object.values(elecciones)) {
-        if (!exports.texturaValida(archivo)) return res.status(400).json({ error: `Textura desconocida: ${archivo}` });
+    for (const valor of Object.values(elecciones)) {
+        if (!exports.zonaValida(valor)) return res.status(400).json({ error: `Textura desconocida: ${exports.texturaDeZona(valor)}` });
     }
     try {
         const pool = await getPool();

@@ -126,16 +126,41 @@ exports.getReporteFallasReposiciones = async (req, res) => {
             ISNULL(o.Cliente, '')  AS Cliente,
             CAST(ROUND(${mag()}, 2) AS DECIMAL(10,2)) AS Metros,
             ISNULL(o.Material, '') AS Material,
+            ISNULL(tipos.Titulos, '') AS TipoFalla,
             ISNULL(o.Nota, ISNULL(o.Observaciones, '')) AS Causa,
             ISNULL(o.Estado, '')   AS Estado
+        `;
+
+        // Tipo de falla en palabras. FallasProduccion.TipoFalla es un ID (el número que se veía);
+        // el nombre está en TiposFallas.Titulo.
+        //
+        // La falla se registra contra la orden MADRE, no contra la -F que se crea: no hay columna
+        // que apunte a la -F. Así que se resuelve el código madre sacándole el sufijo (mismo
+        // criterio que getFallasImagenes) y se traen sus tipos, sin repetir.
+        // Límite conocido: si una madre tuvo VARIAS -F, todas muestran el conjunto de tipos de la
+        // madre. Sin una FK a la orden de falla no se puede afinar más.
+        const TIPOS_APPLY = `
+            OUTER APPLY (
+                SELECT STRING_AGG(y.Titulo, ' · ') WITHIN GROUP (ORDER BY y.Titulo) AS Titulos
+                FROM (
+                    SELECT DISTINCT ISNULL(NULLIF(LTRIM(RTRIM(tf.Titulo)), ''), CONCAT('Tipo ', fp.TipoFalla)) AS Titulo
+                    FROM dbo.FallasProduccion fp WITH(NOLOCK)
+                    JOIN dbo.Ordenes om WITH(NOLOCK) ON om.OrdenID = fp.OrdenID
+                    LEFT JOIN dbo.TiposFallas tf WITH(NOLOCK) ON tf.FallaID = fp.TipoFalla
+                    WHERE om.CodigoOrden = CASE
+                            WHEN o.CodigoOrden LIKE '%-F[0-9]%' THEN LEFT(o.CodigoOrden, CHARINDEX('-F', o.CodigoOrden) - 1)
+                            WHEN o.CodigoOrden LIKE '%-R[0-9]%' THEN LEFT(o.CodigoOrden, CHARINDEX('-R', o.CodigoOrden) - 1)
+                            ELSE o.CodigoOrden END
+                ) y
+            ) tipos
         `;
 
         const fallaWhere = buildW(`UPPER(LTRIM(RTRIM(o.Prioridad))) IN ('F','FALLA')`);
         const reposWhere = buildW(`(UPPER(LTRIM(RTRIM(o.Prioridad))) IN ('R','REPOSICION','REPOSICIÓN') OR UPPER(LEFT(LTRIM(RTRIM(ISNULL(o.CodigoOrden,''))), 1)) = 'R')`);
 
         const [fallaRes, reposRes] = await Promise.all([
-            mkR().query(`SELECT ${COLS} FROM dbo.Ordenes o WITH(NOLOCK) ${fallaWhere} ORDER BY o.FechaIngreso DESC`),
-            mkR().query(`SELECT ${COLS} FROM dbo.Ordenes o WITH(NOLOCK) ${reposWhere} ORDER BY o.FechaIngreso DESC`),
+            mkR().query(`SELECT ${COLS} FROM dbo.Ordenes o WITH(NOLOCK) ${TIPOS_APPLY} ${fallaWhere} ORDER BY o.FechaIngreso DESC`),
+            mkR().query(`SELECT ${COLS} FROM dbo.Ordenes o WITH(NOLOCK) ${TIPOS_APPLY} ${reposWhere} ORDER BY o.FechaIngreso DESC`),
         ]);
 
         const totales = {

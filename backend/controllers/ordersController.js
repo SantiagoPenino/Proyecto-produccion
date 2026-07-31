@@ -282,8 +282,8 @@ exports.setTexturasOrdenInterno = async (req, res) => {
     }
     try {
         const wo = require('./webOrdersController');
-        for (const archivo of Object.values(elecciones)) {
-            if (!wo.texturaValida(archivo)) return res.status(400).json({ error: `Textura desconocida: ${archivo}` });
+        for (const valor of Object.values(elecciones)) {
+            if (!wo.zonaValida(valor)) return res.status(400).json({ error: `Textura desconocida: ${wo.texturaDeZona(valor)}` });
         }
         const pool = await getPool();
         const ord = await pool.request()
@@ -299,9 +299,9 @@ exports.setTexturasOrdenInterno = async (req, res) => {
         // no pisar la fila abierta del estado real — mismo patrón que la edición de archivos.
         const previo = new Map(antes.map(r => [r.ZonaIndice, r.ArchivoTextura]));
         const cambios = Object.entries(elecciones)
-            .map(([z, a]) => {
+            .map(([z, valor]) => {
                 const de = previo.get(parseInt(z, 10)) || 'sin textura';
-                const hacia = a || 'sin textura';
+                const hacia = wo.texturaDeZona(valor) || 'sin textura';
                 return de === hacia ? null : `Zona ${parseInt(z, 10) + 1}: ${de} → ${hacia}`;
             })
             .filter(Boolean);

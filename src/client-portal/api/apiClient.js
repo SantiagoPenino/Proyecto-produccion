@@ -21,8 +21,13 @@ const handleResponse = async (response) => {
             errorMessage = data.error;
         }
 
-        // Return an Error object so err.message works in catch blocks
-        return Promise.reject(new Error(errorMessage));
+        // Error con el payload adjunto: err.message sigue funcionando como siempre, pero además
+        // queda accesible el resto de la respuesta (banderas como accountInactive, datos como
+        // maskedEmail) que antes se perdía y obligaba a decidir por el texto del mensaje.
+        const err = new Error(errorMessage);
+        err.status = response.status;
+        err.data = data;
+        return Promise.reject(err);
     }
 
     return data;

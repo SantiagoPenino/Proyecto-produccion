@@ -1566,6 +1566,12 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
                                                                             : (tex?.nombre || <span className="text-amber-600">{t.ArchivoTextura} — textura no encontrada</span>)}
                                                                     </div>
                                                                 </div>
+                                                                {!!t.Barniz && (
+                                                                    <span
+                                                                        className="shrink-0 px-1.5 py-0.5 rounded text-[9px] font-black uppercase tracking-wide bg-brand-cyan/10 text-brand-cyan border border-brand-cyan/30"
+                                                                        title="El cliente pidió barniz en esta zona"
+                                                                    >Barniz</span>
+                                                                )}
                                                                 {t.ElegidaPor === 'OPERARIO' && (
                                                                     <span
                                                                         className="shrink-0 px-1.5 py-0.5 rounded text-[9px] font-black uppercase tracking-wide bg-amber-50 text-amber-700 border border-amber-200"

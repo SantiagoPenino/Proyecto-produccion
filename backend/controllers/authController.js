@@ -115,9 +115,16 @@ exports.login = async (req, res) => {
                 return res.status(401).json({ success: false, message: 'Credenciales inválidas.' });
             }
 
-            // Verificar si el cliente está activo (después de validar contraseña)
+            // Verificar si el cliente está activo (después de validar contraseña).
+            // WebActive = 0 NO es "esperando que alguien apruebe": es que el cliente todavía no
+            // abrió el enlace del mail de registro. Decirle que contacte al administrador generaba
+            // llamados por algo que resuelve solo.
             if (!client.WebActive) {
-                return res.status(403).json({ success: false, message: 'Tu cuenta está pendiente de aprobación. Contactá al administrador.' });
+                return res.status(403).json({
+                    success: false,
+                    accountInactive: true,
+                    message: 'Tu cuenta todavía no está activada. Buscá en tu correo el mail de activación (mirá también en spam) y abrí el enlace. Si no te llegó o venció, escribinos y te lo reenviamos.'
+                });
             }
 
             // Update Password if first time
@@ -226,7 +233,11 @@ exports.googleLogin = async (req, res) => {
             const cl = clientResult.recordset[0];
 
             if (!cl.WebActive) {
-                return res.status(403).json({ success: false, message: 'Tu cuenta está pendiente de aprobación. Contactá al administrador.' });
+                return res.status(403).json({
+                    success: false,
+                    accountInactive: true,
+                    message: 'Tu cuenta todavía no está activada. Buscá en tu correo el mail de activación (mirá también en spam) y abrí el enlace. Si no te llegó o venció, escribinos y te lo reenviamos.'
+                });
             }
 
             const token = jwt.sign(

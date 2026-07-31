@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { X, Loader2, Rotate3d } from 'lucide-react';
+import { X, Loader2, Rotate3d, Sparkles, Gauge, Save, ChevronRight, ChevronLeft } from 'lucide-react';
 import { API_BASE_URL } from '../api/apiClient';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -54,7 +54,9 @@ const rasterizar = async ({ page }, { scale, sx = 0, sy = 0, outW, outH, occ = n
     canvas.width = Math.ceil(outW);
     canvas.height = Math.ceil(outH);
     await page.render({
-        canvasContext: canvas.getContext('2d'),
+        // willReadFrequently: de este canvas se leen los píxeles (máscaras, silueta, arte). Sin el
+        // flag Chrome lo deja en la GPU y cada getImageData es una bajada GPU→CPU que frena todo.
+        canvasContext: canvas.getContext('2d', { willReadFrequently: true }),
         viewport,
         transform: [1, 0, 0, 1, -sx, -sy],
         background: 'rgba(0,0,0,0)',
@@ -67,7 +69,40 @@ const rasterizar = async ({ page }, { scale, sx = 0, sy = 0, outW, outH, occ = n
 // Multiplicador global del bumpMap. La intensidad real de cada textura se hornea en el mapa
 // (ver `altura` en cargarTile), porque bumpScale es del MATERIAL y hay un solo material para
 // todas las zonas: no se puede tener una altura distinta por zona desde acá.
-const RELIEVE_FUERZA = 1;
+const RELIEVE_FUERZA = 2;
+// Subdivisión de la lámina del arte: sin segmentos no hay vértices que desplazar. 128 alcanza —
+// con 1 a 3 repeticiones los rasgos del tile ocupan decenas de píxeles del mapa, y bajar de 256
+// a 128 son 4 veces menos vértices.
+const RELIEVE_SEGMENTOS = 128;
+// Altura REAL del relieve, en unidades de la escena (el parche mide 10 de ancho).
+// El límite es la pendiente, no la altura: si entre dos vértices vecinos el mapa salta mucho más
+// que el lado del cuadro de la malla (10 / 128 ≈ 0,078), la superficie se rompe en púas. Como al
+// desplazamiento se le pasa el mapa DESENFOCADO a esa misma escala, el salto entre vecinos ya viene
+// acotado y se puede levantar bastante la altura sin que se quiebre.
+const RELIEVE_ALTURA_MUNDO = 0.08;
+// El desplazamiento se muestrea POR VÉRTICE, así que solo puede representar detalle más grande que
+// un cuadro de la malla; con las líneas finas de la textura salían púas en vez de relieve. Se le
+// pasa una copia DESENFOCADA a esa escala: el volumen lo da el desplazamiento y el detalle fino
+// queda para el bumpMap, que trabaja por píxel y sí lo resuelve.
+const DESPLAZ_SUAVIZADO_PX = Math.round(1024 / RELIEVE_SEGMENTOS);
+// Ancho de la franja donde el relieve se apaga hacia el borde del parche. Sin esto la lámina se
+// levanta también en el filo, se despega de la base y por abajo asoma el blanco: las puntas quedan
+// como solapas. Tiene que ser bastante más que la altura del relieve (0,08 ≈ 8 px acá).
+const BORDE_APAGADO_PX = 18;
+// Barniz sectorizado: es una capa brillante sobre una zona. Se resuelve con el roughnessMap —
+// menos rugosidad = más brillo especular. El material queda con roughness 1 y el mapa manda.
+// 128 ≈ 0.50: es el mismo acabado que tenía el material antes del barniz. Subirlo apaga el
+// especular y con él se apaga el relieve del bump, que se lee justamente por el brillo.
+const RUGOSIDAD_MATE = 128;
+// 64 ≈ 0.25. Un barniz NO es un espejo: con 0.08 la zona reflejaba casi puntual y, como el bump le
+// perturba la normal, cada faceta devolvía un punto de luz duro — se veía como sal y pimienta sobre
+// el negro. A 0.25 el reflejo se abre y queda un lustre parejo.
+const RUGOSIDAD_BARNIZ = 64;
+// Cuánto se ACHICA la base blanca respecto del arte, en píxeles de la grilla de contornos (CW=640).
+// El arte queda entonces sobresaliendo apenas por todo el borde y de frente no asoma nada de blanco.
+const BASE_ACHICA_PX = 4;
+const REPETICIONES_MIN = 1, REPETICIONES_MAX = 3;
+const ALTURA_MIN = 1, ALTURA_MAX = 2;
 
 // Carga una textura y la deja rasterizada como TILE de tamaño entero en píxeles, EN GRISES.
 // La textura no pinta color: el color lo sigue poniendo el arte. Se usa como mapa de RELIEVE
@@ -77,9 +112,9 @@ const RELIEVE_FUERZA = 1;
 // del archivo: los SVG traen viewBox pero sin medida física, así que no hay tamaño real del que
 // deducirlo. El lado se redondea a ENTERO — si saliera fraccionario, el resto se acumula en cada
 // repetición hasta que aparece una costura visible.
-// `altura` = cuánto SOBRESALE el trazo (0 = plano). En un bumpMap lo más claro es lo más alto, así
-// que el gris se INVIERTE: la tinta del dibujo pasa a blanco (sube) y el fondo a negro (nivel base).
-// Sin invertir, el dibujo quedaba grabado hacia adentro en vez de en relieve.
+// `altura` = cuánto SOBRESALE el trazo (1 = medio relieve, 2 = relieve completo). En un bumpMap lo
+// más claro es lo más alto, así que el gris se INVIERTE: la tinta del dibujo pasa a blanco (sube) y
+// el fondo a negro (nivel base). Sin invertir, el dibujo quedaba grabado hacia adentro.
 const cargarTile = async (url, anchoRenderPx, repeticiones, altura) => {
     const img = new Image();
     await new Promise((ok, fail) => {
@@ -93,7 +128,7 @@ const cargarTile = async (url, anchoRenderPx, repeticiones, altura) => {
     const h = Math.max(4, Math.round(w * aspecto));
     const c = document.createElement('canvas');
     c.width = w; c.height = h;
-    const ctx = c.getContext('2d');
+    const ctx = c.getContext('2d', { willReadFrequently: true });
     // Sobre BLANCO antes de dibujar: las texturas suelen ser trazo oscuro sobre fondo
     // transparente. Sin este relleno, el fondo queda en alpha 0 y al pasar a grises todo
     // da 0 — la textura entera quedaría plana, sin relieve.
@@ -101,16 +136,58 @@ const cargarTile = async (url, anchoRenderPx, repeticiones, altura) => {
     ctx.fillRect(0, 0, w, h);
     ctx.drawImage(img, 0, 0, w, h);
 
-    const k = Math.max(0, Number(altura) || 0);
     const d = ctx.getImageData(0, 0, w, h);
+
+    // 1) Luminancia + rango real de la imagen.
+    const grises = new Float32Array(w * h);
+    let min = 255, max = 0;
     for (let i = 0; i < w * h; i++) {
-        const gris = 0.299 * d.data[i * 4] + 0.587 * d.data[i * 4 + 1] + 0.114 * d.data[i * 4 + 2];
-        // Invertido: trazo oscuro → alto. 0 (negro) es el nivel base, así que con altura 0 queda
-        // todo en 0 → plano, igual que el fondo del mapa.
-        const v = Math.max(0, Math.min(255, Math.round((255 - gris) * k)));
+        const g = 0.299 * d.data[i * 4] + 0.587 * d.data[i * 4 + 1] + 0.114 * d.data[i * 4 + 2];
+        grises[i] = g;
+        if (g < min) min = g;
+        if (g > max) max = g;
+    }
+    const rango = Math.max(1, max - min);
+
+    // 2) Polaridad automática. Lo que tiene que sobresalir es el DIBUJO, que siempre es la minoría
+    //    de la superficie. Algunos SVG vienen como trazo oscuro sobre fondo claro y otros al revés
+    //    (mancha oscura con el patrón calado); con una regla fija, en la mitad de los casos se
+    //    levantaba el fondo. Se mide qué proporción quedaría alta y, si es mayoría, se da vuelta.
+    let suma = 0;
+    for (let i = 0; i < w * h; i++) suma += 1 - (grises[i] - min) / rango;
+    const media = suma / (w * h);
+    const invertido = media > 0.5;
+    const piso = invertido ? 1 - media : media; // nivel promedio con la polaridad ya resuelta
+
+    // 3) Normalizar, restar el piso y RECIÉN AHÍ escalar por altura.
+    //    - Restar el piso es lo que hace que suba SOLO el dibujo: sin eso, un patrón denso deja el
+    //      mapa alto en casi toda la zona y el desplazamiento la levanta entera como un bloque, en
+    //      vez de despegar el trazo de la superficie. Peor todavía con el desenfoque, que funde los
+    //      trazos en una meseta pareja.
+    //    - Escalar al final y hacia abajo desde el rango completo: multiplicar el contraste (×3, ×6)
+    //      saturaba en blanco y los dos pasos de altura daban el mismo mapa.
+    const escala = Math.max(0, Math.min(1, (Number(altura) || 0) / ALTURA_MAX));
+    for (let i = 0; i < w * h; i++) {
+        const norm = (grises[i] - min) / rango;               // 0 = el tono más oscuro del tile
+        const alto = invertido ? norm : (1 - norm);           // 0 = al ras del parche
+        const v = Math.round(255 * Math.max(0, alto - piso) * escala);
         d.data[i * 4] = v; d.data[i * 4 + 1] = v; d.data[i * 4 + 2] = v; d.data[i * 4 + 3] = 255;
     }
     ctx.putImageData(d, 0, 0);
+    return c;
+};
+
+// Máscara → canvas de color sólido (para los mini mapas de zona).
+const mascaraAColor = ({ m, w, h }, [r, g, bl]) => {
+    const c = document.createElement('canvas');
+    c.width = w; c.height = h;
+    const ctx = c.getContext('2d');
+    const img = ctx.createImageData(w, h);
+    for (let i = 0; i < w * h; i++) {
+        if (!m[i]) continue;
+        img.data[i * 4] = r; img.data[i * 4 + 1] = g; img.data[i * 4 + 2] = bl; img.data[i * 4 + 3] = 255;
+    }
+    ctx.putImageData(img, 0, 0);
     return c;
 };
 
@@ -217,7 +294,7 @@ const mantenerMayorComponente = ({ m, w, h }) => {
 const mascaraACanvas = ({ m, w, h }) => {
     const c = document.createElement('canvas');
     c.width = w; c.height = h;
-    const ctx = c.getContext('2d');
+    const ctx = c.getContext('2d', { willReadFrequently: true });
     const img = ctx.createImageData(w, h);
     for (let i = 0; i < w * h; i++) {
         const v = m[i] ? 255 : 0;
@@ -231,7 +308,7 @@ const mascaraACanvas = ({ m, w, h }) => {
 const recortarFraccion = (canvas, fr, outW, outH) => {
     const c = document.createElement('canvas');
     c.width = outW; c.height = outH;
-    const ctx = c.getContext('2d');
+    const ctx = c.getContext('2d', { willReadFrequently: true });
     ctx.drawImage(
         canvas,
         fr.x0 * canvas.width, fr.y0 * canvas.height,
@@ -280,8 +357,18 @@ export const Tpu3DViewer = ({ ordenId, codigo, onClose }) => {
     const [zonas, setZonas] = useState([]);           // [{ idx, nombre }] — idx 0 = la de más arriba
     const [texturas, setTexturas] = useState([]);     // catálogo (carpeta assets/textures)
     const [elecciones, setElecciones] = useState({}); // { zonaIdx: 'lino-crudo.svg' }
-    const [zonaActiva, setZonaActiva] = useState(0);
+    const [barnices, setBarnices] = useState({});     // { zonaIdx: true } — barniz sectorizado
+    const [zonaActiva, setZonaActiva] = useState(0); // null = ninguna (parche sin marcar)
+    // Arranca cerrado: el modal abre mostrando el parche. Se despliega al tocar una zona y se
+    // vuelve a cerrar al elegir la textura, que es cuando el cliente quiere ver cómo quedó.
+    const [panelAbierto, setPanelAbierto] = useState(false);
+    // Relieve real (desplaza geometría) vs solo sombreado (bump). Lo segundo es mucho más liviano.
+    // Queda guardado por dispositivo: en un celular flojo no hay que volver a bajarlo cada vez.
+    const [modoRelieve, setModoRelieve] = useState(() => {
+        try { return localStorage.getItem('tpu3d_relieve') !== '0'; } catch { return true; }
+    });
     const [errorGuardado, setErrorGuardado] = useState('');
+    const [guardando, setGuardando] = useState(false);
     const escenaRef = useRef(null);                   // { componer, anchoRenderPx }
     const tilesRef = useRef(new Map());               // clave archivo|rep|alt → canvas del tile
     const ultimoGuardado = useRef('{}');              // evita re-postear lo que se acaba de cargar
@@ -289,9 +376,10 @@ export const Tpu3DViewer = ({ ordenId, codigo, onClose }) => {
     // Repetición y altura de la textura elegida, ajustables en el momento. Los valores de arranque
     // salen del catálogo (assets/textures/texturas.json).
     const [ajustes, setAjustes] = useState({});       // archivo → { repeticiones, altura }
+    const acotar = (v, min, max) => Math.min(max, Math.max(min, v));
     const ajusteDe = (t) => ({
-        repeticiones: ajustes[t.archivo]?.repeticiones ?? t.repeticiones ?? 12,
-        altura:       ajustes[t.archivo]?.altura       ?? t.altura       ?? 0.6,
+        repeticiones: acotar(ajustes[t.archivo]?.repeticiones ?? t.repeticiones ?? 2, REPETICIONES_MIN, REPETICIONES_MAX),
+        altura:       acotar(ajustes[t.archivo]?.altura       ?? t.altura       ?? 1, ALTURA_MIN, ALTURA_MAX),
     });
 
     // Catálogo de texturas
@@ -311,34 +399,55 @@ export const Tpu3DViewer = ({ ordenId, codigo, onClose }) => {
             .then(r => r.json())
             .then(j => {
                 if (!vivo || !j?.success) return;
-                const previas = {};
-                (j.data || []).forEach(r => { if (r.ArchivoTextura) previas[r.ZonaIndice] = r.ArchivoTextura; });
-                ultimoGuardado.current = JSON.stringify(previas);
-                setElecciones(previas);
+                const e = {}, b = {};
+                (j.data || []).forEach(r => {
+                    if (r.ArchivoTextura) e[r.ZonaIndice] = r.ArchivoTextura;
+                    if (r.Barniz) b[r.ZonaIndice] = true;
+                });
+                ultimoGuardado.current = JSON.stringify({ e, b });
+                setElecciones(e);
+                setBarnices(b);
             })
             .catch(() => { /* sin elección previa */ });
         return () => { vivo = false; };
     }, [ordenId]);
 
-    // Guardar apenas cambia: si el cliente cierra el visor sin más, la elección ya quedó.
-    useEffect(() => {
-        const serializado = JSON.stringify(elecciones);
-        if (serializado === ultimoGuardado.current) return;
-        ultimoGuardado.current = serializado;
-        let vivo = true;
-        fetch(`${API_BASE_URL}/web-orders/orden/${ordenId}/texturas`, {
-            method: 'POST',
-            headers: { ...authHeaders(), 'Content-Type': 'application/json' },
-            body: JSON.stringify({ elecciones }),
-        })
-            .then(async r => {
-                if (r.ok) { if (vivo) setErrorGuardado(''); return; }
+    // Nada se persiste hasta que se aprieta "Guardar cambios": probar texturas en el 3D no debe
+    // dejar rastro si el cliente no confirma.
+    const estadoActual = JSON.stringify({ e: elecciones, b: barnices });
+    const hayCambios = estadoActual !== ultimoGuardado.current;
+
+    const guardar = async () => {
+        setGuardando(true);
+        setErrorGuardado('');
+        try {
+            // Una entrada por zona tocada, con textura y barniz juntos.
+            const zonasPayload = {};
+            for (const k of new Set([...Object.keys(elecciones), ...Object.keys(barnices)])) {
+                zonasPayload[k] = { textura: elecciones[k] || null, barniz: !!barnices[k] };
+            }
+            const r = await fetch(`${API_BASE_URL}/web-orders/orden/${ordenId}/texturas`, {
+                method: 'POST',
+                headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+                body: JSON.stringify({ elecciones: zonasPayload }),
+            });
+            if (!r.ok) {
                 const j = await r.json().catch(() => ({}));
-                if (vivo) setErrorGuardado(j.error || 'No se pudo guardar la elección.');
-            })
-            .catch(() => { if (vivo) setErrorGuardado('No se pudo guardar la elección (sin conexión).'); });
-        return () => { vivo = false; };
-    }, [elecciones, ordenId]);
+                setErrorGuardado(j.error || 'No se pudo guardar la elección.');
+                return;
+            }
+            ultimoGuardado.current = estadoActual;
+        } catch {
+            setErrorGuardado('No se pudo guardar la elección (sin conexión).');
+        } finally {
+            setGuardando(false);
+        }
+    };
+
+    useEffect(() => {
+        escenaRef.current?.aplicarModo?.(modoRelieve);
+        try { localStorage.setItem('tpu3d_relieve', modoRelieve ? '1' : '0'); } catch { /* modo privado */ }
+    }, [modoRelieve, estado]);
 
     // Repintar el arte cuando cambia una elección. No rearma la escena: recompone el canvas de
     // color y avisa a three.js con needsUpdate.
@@ -363,10 +472,11 @@ export const Tpu3DViewer = ({ ordenId, codigo, onClose }) => {
                 }
                 tiles[idx] = tilesRef.current.get(clave);
             }
-            if (vivo) e.componer(tiles);
+            if (vivo) e.componer(tiles, barnices);
         })();
         return () => { vivo = false; };
-    }, [elecciones, texturas, ajustes, estado]);
+    }, [elecciones, barnices, texturas, ajustes, estado]);
+
 
     useEffect(() => {
         let vivo = true;
@@ -495,6 +605,27 @@ export const Tpu3DViewer = ({ ordenId, codigo, onClose }) => {
                 });
                 const zonasAlpha = zonasPix.map(m => mascaraAAlpha({ m, w: W, h: H }));
 
+                // MINI MAPA por zona: la silueta del parche en gris con esa zona en cian, reducida
+                // a una miniatura. Va en el chip del cajón.
+                // Se probaron dos caminos sobre el modelo y los dos fallan: el contorno, porque dos
+                // zonas contiguas comparten borde y el mismo trazo marca las dos; y atenuar el resto,
+                // porque lava el parche entero justo cuando el cliente lo está evaluando. El mapa
+                // resuelve lo mismo sin tocar el render.
+                const siluetaPix = new Uint8Array(W * H);
+                for (let i = 0; i < W * H; i++) siluetaPix[i] = dSil[i * 4] > 127 ? 1 : 0;
+                const cvSilueta = mascaraAColor({ m: siluetaPix, w: W, h: H }, [82, 82, 91]);
+                const miniDe = (m) => {
+                    const grande = document.createElement('canvas'); grande.width = W; grande.height = H;
+                    const g = grande.getContext('2d');
+                    g.drawImage(cvSilueta, 0, 0);
+                    g.drawImage(mascaraAColor({ m, w: W, h: H }, [189, 12, 126]), 0, 0); // brand-magenta
+                    const mw = 120, mh = Math.max(24, Math.round(mw * (H / W)));
+                    const chico = document.createElement('canvas'); chico.width = mw; chico.height = mh;
+                    chico.getContext('2d').drawImage(grande, 0, 0, mw, mh);
+                    return chico.toDataURL('image/png');
+                };
+                const zonasMini = zonasPix.map(miniDe);
+
                 // Mapa de RELIEVE. La textura NO pinta color: el color lo pone el arte y queda
                 // arriba. La textura va abajo y solo deforma cómo pega la luz — que es como se ve
                 // en el parche real (el material tiene trama, la tinta va encima).
@@ -504,12 +635,66 @@ export const Tpu3DViewer = ({ ordenId, codigo, onClose }) => {
                 const ctxRelieve = cRelieve.getContext('2d');
                 ctxRelieve.fillStyle = '#000000';
                 ctxRelieve.fillRect(0, 0, W, H); // plano hasta que se elija una textura
+                // Mapa de rugosidad: arranca todo mate y las zonas con barniz se pintan oscuras.
+                const cBarniz = document.createElement('canvas'); cBarniz.width = W; cBarniz.height = H;
+                const ctxBarniz = cBarniz.getContext('2d');
+                const grisRug = (v) => `rgb(${v},${v},${v})`;
+                ctxBarniz.fillStyle = grisRug(RUGOSIDAD_MATE);
+                ctxBarniz.fillRect(0, 0, W, H);
+
+                // Máscara que apaga el relieve hacia el borde: blanco en el interior, negro en el
+                // filo. Se erosiona la silueta y después se desenfoca, para que el degradado empiece
+                // en 0 justo en el contorno y no a mitad de camino.
+                const cvApagaBorde = document.createElement('canvas'); cvApagaBorde.width = W; cvApagaBorde.height = H;
+                {
+                    const cvEro = document.createElement('canvas'); cvEro.width = W; cvEro.height = H;
+                    const ctxE2 = cvEro.getContext('2d', { willReadFrequently: true });
+                    ctxE2.filter = `blur(${BORDE_APAGADO_PX}px)`;
+                    ctxE2.drawImage(cvSilCrop, 0, 0);
+                    ctxE2.filter = 'none';
+                    const iB = ctxE2.getImageData(0, 0, W, H);
+                    for (let i = 0; i < W * H; i++) {
+                        const v = iB.data[i * 4] > 235 ? 255 : 0; // umbral alto = erosión
+                        iB.data[i * 4] = v; iB.data[i * 4 + 1] = v; iB.data[i * 4 + 2] = v; iB.data[i * 4 + 3] = 255;
+                    }
+                    ctxE2.putImageData(iB, 0, 0);
+
+                    const ctxB = cvApagaBorde.getContext('2d');
+                    ctxB.fillStyle = '#000000';
+                    ctxB.fillRect(0, 0, W, H);
+                    ctxB.filter = `blur(${BORDE_APAGADO_PX}px)`;
+                    ctxB.drawImage(cvEro, 0, 0);
+                    ctxB.filter = 'none';
+                }
+
+                // Copia desenfocada del relieve, solo para el desplazamiento (ver DESPLAZ_SUAVIZADO_PX).
+                const cRelieveSuave = document.createElement('canvas'); cRelieveSuave.width = W; cRelieveSuave.height = H;
+                const ctxRelieveSuave = cRelieveSuave.getContext('2d');
+
                 const cTmp = document.createElement('canvas'); cTmp.width = W; cTmp.height = H;
                 const ctxTmp = cTmp.getContext('2d');
+                const ctxColor = cColor.getContext('2d');
 
                 // Se pinta de MENOR a MAYOR prioridad para que la capa de arriba quede encima,
                 // igual que en el PDF.
-                const componer = (tiles) => {
+                const componer = (tiles, barnices = {}) => {
+                    // Barniz: la zona pasa a ser mucho menos rugosa, o sea que refleja la luz en
+                    // vez de difundirla. Se recorta el gris con la máscara, igual que la textura.
+                    ctxBarniz.globalCompositeOperation = 'source-over';
+                    ctxBarniz.fillStyle = grisRug(RUGOSIDAD_MATE);
+                    ctxBarniz.fillRect(0, 0, W, H);
+                    for (let z = 0; z < zonasAlpha.length; z++) {
+                        if (!barnices?.[z]) continue;
+                        ctxTmp.globalCompositeOperation = 'source-over';
+                        ctxTmp.clearRect(0, 0, W, H);
+                        ctxTmp.fillStyle = grisRug(RUGOSIDAD_BARNIZ);
+                        ctxTmp.fillRect(0, 0, W, H);
+                        ctxTmp.globalCompositeOperation = 'destination-in';
+                        ctxTmp.drawImage(zonasAlpha[z], 0, 0);
+                        ctxBarniz.drawImage(cTmp, 0, 0);
+                    }
+                    texBarniz.needsUpdate = true;
+
                     ctxRelieve.globalCompositeOperation = 'source-over';
                     ctxRelieve.fillStyle = '#000000';
                     ctxRelieve.fillRect(0, 0, W, H);
@@ -524,35 +709,48 @@ export const Tpu3DViewer = ({ ordenId, codigo, onClose }) => {
                         ctxTmp.drawImage(zonasAlpha[z], 0, 0);
                         ctxRelieve.drawImage(cTmp, 0, 0);
                     }
+                    // Apagar el relieve contra el borde, para que la lámina siga pegada a la base.
+                    ctxRelieve.globalCompositeOperation = 'multiply';
+                    ctxRelieve.drawImage(cvApagaBorde, 0, 0);
+                    ctxRelieve.globalCompositeOperation = 'source-over';
                     texRelieve.needsUpdate = true;
+
+                    ctxRelieveSuave.clearRect(0, 0, W, H);
+                    ctxRelieveSuave.filter = `blur(${DESPLAZ_SUAVIZADO_PX}px)`;
+                    ctxRelieveSuave.drawImage(cRelieve, 0, 0);
+                    ctxRelieveSuave.filter = 'none';
+                    texRelieveSuave.needsUpdate = true;
                 };
 
-                // Alpha ERO­SIONADO para la lámina del arte: la silueta se encoge unos px para que
-                // la lámina no llegue al borde del parche — si llega, su canto asoma sobre la pared
-                // blanca de la extrusión y se ve como vetas de color en el borde (visto de costado).
-                const cAlphaEro = document.createElement('canvas'); cAlphaEro.width = W; cAlphaEro.height = H;
-                {
-                    const ctxE = cAlphaEro.getContext('2d');
-                    ctxE.filter = 'blur(6px)';
-                    ctxE.drawImage(cAlpha, 0, 0);
-                    ctxE.filter = 'none';
-                    const iE = ctxE.getImageData(0, 0, W, H);
-                    for (let i = 0; i < W * H; i++) {
-                        const v = iE.data[i * 4] > 235 ? 255 : 0; // umbral alto = erosión
-                        iE.data[i * 4] = v; iE.data[i * 4 + 1] = v; iE.data[i * 4 + 2] = v; iE.data[i * 4 + 3] = 255;
-                    }
-                    ctxE.putImageData(iE, 0, 0);
-                }
+                // La lámina del arte usa la silueta EXACTA — ni encogida ni agrandada. Encogerla
+                // dejaba ver la base blanca; agrandarla destapa el blanco del propio canvas de color.
+                // Quien se corre es la base (ver BASE_ACHICA_PX más abajo).
+                const cAlphaArte = cAlpha;
 
                 // 5. Contornos de la silueta (a escala reducida) → polígonos con agujeros.
                 // d3-contour (marching squares): devuelve los anillos YA armados por polígono
                 // (exterior + agujeros) e interpola las diagonales — el trazador casero armaba
                 // lazos cruzados y la pared salía con bandas tipo código de barras.
+                // La base se traza con la silueta ACHICADA unos píxeles, para que quede por dentro
+                // de la lámina del arte. Si la base es igual o más grande, su blanco asoma alrededor
+                // del diseño mirando de frente. Dilatar el arte en vez de achicar la base NO sirve:
+                // fuera de la silueta el canvas de color es blanco, así que agrandar el alpha lo
+                // único que hace es destapar más blanco.
                 const CW = 640, CH = Math.max(40, Math.round(CW * aspecto));
                 const cvSilChico = recortarFraccion(cvSilCrop, { x0: 0, x1: 1, y0: 0, y1: 1 }, CW, CH);
-                const dChico = cvSilChico.getContext('2d').getImageData(0, 0, CW, CH).data;
+                // A un canvas APARTE: dibujarlo sobre sí mismo con filtro no erosiona nada.
+                const cvSilErosion = document.createElement('canvas');
+                cvSilErosion.width = CW; cvSilErosion.height = CH;
+                {
+                    const ctxS = cvSilErosion.getContext('2d', { willReadFrequently: true });
+                    ctxS.filter = `blur(${BASE_ACHICA_PX}px)`;
+                    ctxS.drawImage(cvSilChico, 0, 0);
+                    ctxS.filter = 'none';
+                }
+                const dChico = cvSilErosion.getContext('2d').getImageData(0, 0, CW, CH).data;
                 const valores = new Float64Array(CW * CH);
-                for (let i = 0; i < CW * CH; i++) valores[i] = dChico[i * 4] > 127 ? 1 : 0;
+                // Umbral ALTO sobre el desenfoque = erosión: la silueta se encoge.
+                for (let i = 0; i < CW * CH; i++) valores[i] = dChico[i * 4] > 230 ? 1 : 0;
 
                 const { contours } = await import('d3-contour');
                 const multi = contours().size([CW, CH]).thresholds([0.5])(valores)[0];
@@ -622,8 +820,8 @@ export const Tpu3DViewer = ({ ordenId, codigo, onClose }) => {
                 // Base: EXTRUSIÓN de la silueta, TODA blanca (tapas y paredes) — el DORSO del
                 // parche real es blanco. Antes las dos tapas llevaban el arte y de atrás se veía
                 // el diseño espejado (y girarlo parecía "solo un espejo", como si no rotara).
-                const GROSOR = 0.5;
-                const BISEL = 0.06; // ojo: el bisel EXTIENDE la tapa frontal hasta GROSOR + BISEL
+                const GROSOR = 0.25; // espesor del parche, en unidades de escena (10 de ancho)
+                const BISEL = 0.03; // ojo: el bisel EXTIENDE la tapa frontal hasta GROSOR + BISEL
                 const geoBase = new THREE.ExtrudeGeometry(shapes, {
                     depth: GROSOR,
                     bevelEnabled: true,
@@ -637,33 +835,61 @@ export const Tpu3DViewer = ({ ordenId, codigo, onClose }) => {
                 escena.add(base);
 
                 // Arte: lámina PLANA solo del frente (el dorso queda blanco), con el alpha
-                // EROSIONADO para no asomar por el borde. Sin relieve: solo CMYK + corte.
-                const texAlphaEro = new THREE.CanvasTexture(cAlphaEro);
+                // DILATADO para que no asome la base blanca por el borde visto de frente.
+                const texAlphaArte = new THREE.CanvasTexture(cAlphaArte);
+                // Sin mipmaps: es una máscara de recorte, no una imagen. Con mipmaps, mirando el
+                // parche de canto cada píxel abarca media textura, el alpha se promedia, pasa el
+                // alphaTest donde debería descartar y aparecen líneas del color de afuera de la
+                // silueta (blanco) arriba y abajo del canto.
+                texAlphaArte.generateMipmaps = false;
+                texAlphaArte.minFilter = THREE.LinearFilter;
+                texAlphaArte.magFilter = THREE.LinearFilter;
                 // Relieve de las texturas elegidas: mapa en grises que solo altera la normal, así
                 // el material se lee en la luz sin tocar el color del arte.
                 const texRelieve = new THREE.CanvasTexture(cRelieve);
                 texRelieve.anisotropy = renderer.capabilities.getMaxAnisotropy();
-                const geoArte = new THREE.PlaneGeometry(anchoMundo, altoMundo, 1, 1);
+                const texRelieveSuave = new THREE.CanvasTexture(cRelieveSuave);
+                const texBarniz = new THREE.CanvasTexture(cBarniz);
+                // Lámina subdividida: el desplazamiento mueve VÉRTICES, así que sin segmentos no
+                // pasa nada. 256 alcanza y sobra — con 1 a 3 repeticiones los rasgos del tile son
+                // grandes.
+                // Arranca SIEMPRE con la malla llana. La subdividida se crea recién si se pide el
+                // modo relieve: si el cliente quedó en "solo sombreado", nunca se allocan ni se
+                // suben esos ~11.000 vértices a la GPU.
+                const geoArteLlana = new THREE.PlaneGeometry(anchoMundo, altoMundo, 1, 1);
+                let geoArteRelieve = null;
                 const matArte = new THREE.MeshStandardMaterial({
                     map: texColor,
-                    alphaMap: texAlphaEro,
+                    alphaMap: texAlphaArte,
+                    // El desplazamiento lo cuelga aplicarModo(): así el modo liviano no arranca ni
+                    // por un frame con el shader que lee una textura por vértice.
                     bumpMap: texRelieve,
                     bumpScale: RELIEVE_FUERZA,
+                    // roughness 1 para que el mapa mande sin atenuarse (three lo multiplica).
+                    roughnessMap: texBarniz,
+                    roughness: 1,
                     transparent: true,
                     alphaTest: 0.5,
-                    roughness: 0.5,
                     metalness: 0,
                 });
-                const laminaArte = new THREE.Mesh(geoArte, matArte);
+                const laminaArte = new THREE.Mesh(geoArteLlana, matArte);
                 // Por ENCIMA del bisel: a GROSOR + 0.02 quedaba DENTRO del sólido (la tapa con
                 // bisel llega a GROSOR + BISEL) y la base blanca tapaba el arte entero.
                 laminaArte.position.z = GROSOR + BISEL + 0.015;
                 escena.add(laminaArte);
 
-                escena.add(new THREE.HemisphereLight(0xffffff, 0x555566, 1.15));
-                const luz = new THREE.DirectionalLight(0xffffff, 1.5);
+                // El relieve se lee por cómo cambia el sombreado con la normal, y una hemisférica
+                // fuerte lo APLANA (ilumina casi igual venga de donde venga). Se baja la ambiente y
+                // se sube la direccional: mismo brillo general, mucho más contraste de relieve.
+                escena.add(new THREE.HemisphereLight(0xffffff, 0x555566, 0.65));
+                const luz = new THREE.DirectionalLight(0xffffff, 2.2);
                 luz.position.set(6, 8, 12);
                 escena.add(luz);
+                // Segunda direccional rasante desde el otro lado: sin ella hay ángulos de giro donde
+                // la textura queda sin sombra y desaparece.
+                const luz2 = new THREE.DirectionalLight(0xffffff, 0.8);
+                luz2.position.set(-8, -4, 6);
+                escena.add(luz2);
 
                 // Rotar: arrastrar · Zoom: rueda / pinch · Mover (pan): botón derecho / dos dedos.
                 const controles = new OrbitControls(camara, renderer.domElement);
@@ -695,30 +921,70 @@ export const Tpu3DViewer = ({ ordenId, codigo, onClose }) => {
                     puntero.y = -((ev.clientY - r.top) / r.height) * 2 + 1;
                     raycaster.setFromCamera(puntero, camara);
                     const hit = raycaster.intersectObject(laminaArte, false)[0];
-                    if (!hit?.uv) return;
+                    // Sin impacto = se tocó el fondo, fuera del parche: también deselecciona.
+                    // Antes salía por acá y la marca quedaba pegada.
+                    if (!hit?.uv) { setZonaActiva(null); return; }
                     const px = Math.min(W - 1, Math.max(0, Math.round(hit.uv.x * W)));
                     const py = Math.min(H - 1, Math.max(0, Math.round((1 - hit.uv.y) * H)));
                     const i = py * W + px;
                     for (let z = 0; z < zonasPix.length; z++) {
-                        if (zonasPix[z][i]) { setZonaActiva(z); return; }
+                        // Tocar una zona del parche despliega el cajón con sus texturas.
+                        if (zonasPix[z][i]) { setZonaActiva(z); setPanelAbierto(true); return; }
                     }
+                    // Fuera del parche: se deselecciona, así se saca el contorno de encima y el
+                    // escudo se puede mirar limpio.
+                    setZonaActiva(null);
                 };
                 renderer.domElement.addEventListener('pointerdown', alBajar);
                 renderer.domElement.addEventListener('pointerup', alSoltar);
 
+                // El alto del canvas no es fijo: en mobile ocupa lo que sobra, y el panel de texturas
+                // recién aparece cuando el modelo está listo — o sea DESPUÉS de este setup. Sin esto
+                // el render se quedaba con la medida vieja y salía estirado.
+                let ultimoW = ancho, ultimoH = alto;
+                const ro = new ResizeObserver(() => {
+                    const w = cont.clientWidth, h = cont.clientHeight;
+                    // Solo si CAMBIÓ de verdad: setSize reasigna el buffer de dibujo, y dejarlo
+                    // dispararse con cada notificación del observer es tirar trabajo a la basura.
+                    if (!w || !h || (w === ultimoW && h === ultimoH)) return;
+                    ultimoW = w; ultimoH = h;
+                    camara.aspect = w / h;
+                    camara.updateProjectionMatrix();
+                    renderer.setSize(w, h);
+                });
+                ro.observe(cont);
+
                 limpiar = () => {
                     renderer.setAnimationLoop(null);
+                    ro.disconnect();
                     renderer.domElement.removeEventListener('pointerdown', alBajar);
                     renderer.domElement.removeEventListener('pointerup', alSoltar);
                     controles.dispose();
-                    geoBase.dispose(); geoArte.dispose();
+                    geoBase.dispose(); geoArteLlana.dispose(); geoArteRelieve?.dispose();
                     matBlanco.dispose(); matArte.dispose();
-                    texColor.dispose(); texAlphaEro.dispose(); texRelieve.dispose();
+                    texColor.dispose(); texAlphaArte.dispose(); texRelieve.dispose();
+                    texRelieveSuave.dispose(); texBarniz.dispose();
                     renderer.dispose();
                     if (renderer.domElement.parentNode === cont) cont.removeChild(renderer.domElement);
                 };
 
-                escenaRef.current = { componer, anchoRenderPx: W };
+                // Cambio de modo sin rearmar nada: se intercambia la malla y se saca el mapa de
+                // desplazamiento. Sacarlo (y no solo poner la escala en 0) evita que el shader siga
+                // leyendo una textura por vértice en cada frame, que es lo caro.
+                const aplicarModo = (conRelieve) => {
+                    if (conRelieve && !geoArteRelieve) {
+                        geoArteRelieve = new THREE.PlaneGeometry(
+                            anchoMundo, altoMundo,
+                            RELIEVE_SEGMENTOS, Math.max(8, Math.round(RELIEVE_SEGMENTOS * (H / W)))
+                        );
+                    }
+                    laminaArte.geometry = conRelieve ? geoArteRelieve : geoArteLlana;
+                    matArte.displacementMap = conRelieve ? texRelieveSuave : null;
+                    matArte.displacementScale = conRelieve ? RELIEVE_ALTURA_MUNDO : 0;
+                    matArte.needsUpdate = true;
+                };
+
+                escenaRef.current = { componer, aplicarModo, anchoRenderPx: W };
                 // Si el diseñador le puso nombre a la capa ("Fondo", "Estrellas") se muestra ese;
                 // si quedó el default de Illustrator ("Capa 2") no dice nada útil y encima el orden
                 // va al revés que la numeración, así que se usa "Zona N".
@@ -726,6 +992,7 @@ export const Tpu3DViewer = ({ ordenId, codigo, onClose }) => {
                 setZonas(mascarasZona.map((z, i) => ({
                     idx: i,
                     nombre: esNombrePorDefecto(z.nombre) ? `Zona ${i + 1}` : z.nombre,
+                    mini: zonasMini[i],
                 })));
                 setEstado('listo');
             } catch (e) {
@@ -739,14 +1006,16 @@ export const Tpu3DViewer = ({ ordenId, codigo, onClose }) => {
 
     return createPortal(
         <div
-            className="fixed inset-0 z-[9999] bg-black/60 flex items-center justify-center p-4"
+            className="fixed inset-0 z-[9999] bg-black/95 flex items-center justify-center p-0 sm:p-4"
             // Cerrar SOLO si el click empezó Y terminó en el overlay: un drag de rotación que
             // termina fuera del canvas generaba un click en el overlay y cerraba el modal.
             onMouseDown={(e) => { downEnOverlay.current = e.target === e.currentTarget; }}
             onClick={(e) => { if (downEnOverlay.current && e.target === e.currentTarget) onClose(); }}
         >
-            <div className="relative bg-zinc-900 border border-zinc-700 rounded-2xl w-full max-w-3xl shadow-2xl overflow-hidden">
-                <div className="flex items-center justify-between gap-3 px-4 py-3 border-b border-zinc-800">
+            {/* Mobile: pantalla completa, en columna — el canvas se queda con lo que sobra después
+                del header y del panel de texturas. Desktop: modal centrado como siempre. */}
+            <div className="relative bg-zinc-900 border-0 sm:border border-zinc-700 rounded-none sm:rounded-2xl w-full max-w-none sm:max-w-3xl shadow-2xl flex flex-col h-[100dvh] sm:h-auto sm:max-h-[95dvh] overflow-y-auto">
+                <div className="shrink-0 flex items-center justify-between gap-3 px-4 py-3 border-b border-zinc-800">
                     <div className="min-w-0 flex items-center gap-2">
                         <Rotate3d size={16} className="text-cyan-400 shrink-0" />
                         <div className="min-w-0">
@@ -754,15 +1023,65 @@ export const Tpu3DViewer = ({ ordenId, codigo, onClose }) => {
                             <p className="text-xs font-bold text-zinc-300 truncate">{codigo}</p>
                         </div>
                     </div>
-                    <button
-                        type="button"
-                        onClick={onClose}
-                        className="shrink-0 w-8 h-8 rounded-lg text-zinc-400 hover:text-white hover:bg-zinc-800 flex items-center justify-center"
-                        title="Cerrar"
-                    ><X size={16} /></button>
+
+                    {/* Acciones: barniz (por zona), calidad del render y guardar. */}
+                    <div className="shrink-0 flex items-center gap-1">
+                        {estado === 'listo' && zonas.length > 0 && (
+                            <>
+                                <button
+                                    type="button"
+                                    onClick={() => zonaActiva !== null && setBarnices(p => ({ ...p, [zonaActiva]: !p[zonaActiva] }))}
+                                    disabled={zonaActiva === null}
+                                    title={zonaActiva === null
+                                        ? 'Elegí una zona para barnizarla'
+                                        : (barnices[zonaActiva] ? 'Sacar el barniz de esta zona' : 'Barnizar esta zona')}
+                                    className={`w-8 h-8 rounded-lg flex items-center justify-center transition-colors disabled:opacity-30 ${
+                                        zonaActiva !== null && barnices[zonaActiva]
+                                            ? 'text-cyan-300 bg-cyan-500/15'
+                                            : 'text-zinc-400 hover:text-white hover:bg-zinc-800'
+                                    }`}
+                                ><Sparkles size={16} /></button>
+
+                                <button
+                                    type="button"
+                                    onClick={guardar}
+                                    disabled={!hayCambios || guardando}
+                                    title={guardando ? 'Guardando…' : hayCambios ? 'Guardar cambios' : 'No hay cambios sin guardar'}
+                                    className={`w-8 h-8 rounded-lg flex items-center justify-center transition-colors disabled:opacity-30 ${
+                                        hayCambios ? 'text-emerald-300 bg-emerald-500/15 hover:bg-emerald-500/25' : 'text-zinc-400'
+                                    }`}
+                                >{guardando ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />}</button>
+                            </>
+                        )}
+                        {estado === 'listo' && (
+                            <button
+                                type="button"
+                                onClick={() => setModoRelieve(v => !v)}
+                                title={modoRelieve
+                                    ? 'Relieve 3D (más realista) — tocá para aligerar'
+                                    : 'Solo sombreado (más liviano) — tocá para el relieve'}
+                                className={`w-8 h-8 rounded-lg flex items-center justify-center transition-colors ${
+                                    modoRelieve ? 'text-cyan-300 bg-cyan-500/15' : 'text-zinc-400 hover:text-white hover:bg-zinc-800'
+                                }`}
+                            ><Gauge size={16} /></button>
+                        )}
+                        <button
+                            type="button"
+                            onClick={onClose}
+                            className="w-8 h-8 rounded-lg text-zinc-400 hover:text-white hover:bg-zinc-800 flex items-center justify-center"
+                            title="Cerrar"
+                        ><X size={16} /></button>
+                    </div>
                 </div>
 
-                <div ref={mountRef} className="relative w-full h-[60vh] min-h-[320px] bg-gradient-to-b from-zinc-900 to-zinc-800">
+                {/* Cuerpo: el canvas ocupa todo y el cajón de zonas/texturas se le monta encima por
+                    la derecha. Al abrirlo y cerrarlo el canvas NO cambia de tamaño, así que no hay
+                    reasignación del buffer de dibujo. */}
+                {/* overflow-hidden: el cajón cerrado queda trasladado fuera del contenedor y, sin
+                    esto, sigue contando para el ancho — aparecía una barra de scroll horizontal. */}
+                <div className="relative flex-1 min-h-[240px] sm:flex-none sm:h-[60vh] sm:min-h-[360px] overflow-hidden">
+                    <div ref={mountRef} className="absolute inset-0 bg-gradient-to-b from-zinc-900 to-zinc-800" />
+
                     {estado === 'cargando' && (
                         <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 text-zinc-400">
                             <Loader2 size={28} className="animate-spin text-cyan-400" />
@@ -775,49 +1094,82 @@ export const Tpu3DViewer = ({ ordenId, codigo, onClose }) => {
                             <span className="text-xs text-zinc-500">{errorMsg}</span>
                         </div>
                     )}
-                </div>
 
-                {estado === 'listo' && zonas.length > 0 && (
-                    <div className="px-4 py-3 border-t border-zinc-800 space-y-2.5">
-                        <div className="flex items-center gap-1.5 flex-wrap">
-                            <span className="text-[10px] font-black uppercase tracking-widest text-zinc-500 mr-1">Zona</span>
-                            {zonas.map(z => (
-                                <button
-                                    key={z.idx}
-                                    type="button"
-                                    onClick={() => setZonaActiva(z.idx)}
-                                    className={`px-2.5 py-1 rounded-lg text-[10px] font-black uppercase tracking-wide border transition-all ${
-                                        zonaActiva === z.idx
-                                            ? 'text-cyan-300 border-cyan-500/50 bg-cyan-500/15'
-                                            : 'text-zinc-400 border-zinc-700 hover:border-zinc-600 hover:text-zinc-200'
-                                    }`}
-                                >
-                                    {z.nombre}
-                                    {elecciones[z.idx] && <span className="ml-1 text-cyan-400">•</span>}
-                                </button>
-                            ))}
+                    {/* El error de guardado va flotando sobre el canvas: guardar se dispara desde el
+                        header, así que el aviso no puede vivir adentro del cajón (podría estar cerrado). */}
+                    {errorGuardado && (
+                        <div className="absolute left-3 bottom-3 right-3 sm:right-auto sm:max-w-sm px-3 py-2 rounded-lg bg-amber-500/15 border border-amber-500/30 text-[11px] text-amber-300">
+                            {errorGuardado}
+                        </div>
+                    )}
+
+                    {estado === 'listo' && zonas.length > 0 && (
+                    <>
+                    <button
+                        type="button"
+                        onClick={() => setPanelAbierto(v => !v)}
+                        /* bg-zinc-950: el canvas detrás es un degradado zinc-900→zinc-800 y la pestaña
+                           cae justo donde el fondo vale casi lo mismo. Con un tono parecido, aunque sea
+                           opaca, se lee como vidrio esmerilado. Necesita contrastar de verdad. */
+                        className={`absolute top-1/2 -translate-y-1/2 z-10 w-6 h-16 rounded-l-lg bg-zinc-950 border border-r-0 border-zinc-600 text-zinc-300 hover:text-white flex items-center justify-center transition-all duration-150 ${
+                            panelAbierto ? 'right-[78%] sm:right-72' : 'right-0'
+                        }`}
+                        title={panelAbierto ? 'Ocultar texturas' : 'Elegir texturas'}
+                    >{panelAbierto ? <ChevronRight size={14} /> : <ChevronLeft size={14} />}</button>
+
+                    <aside className={`absolute inset-y-0 right-0 w-[78%] sm:w-72 bg-zinc-900 border-l border-zinc-800 overflow-y-auto transition-transform duration-150 ${
+                        panelAbierto ? 'translate-x-0' : 'translate-x-full'
+                    }`}>
+                    <div className="p-3 space-y-2.5">
+                        <div>
+                            <span className="block text-[10px] font-black uppercase tracking-widest text-zinc-500 mb-1.5">Zona</span>
+                            <div className="grid grid-cols-3 gap-2">
+                                {zonas.map(z => (
+                                    <button
+                                        key={z.idx}
+                                        type="button"
+                                        onClick={() => setZonaActiva(z.idx)}
+                                        className={`relative rounded-lg border p-1 transition-all ${
+                                            zonaActiva === z.idx
+                                                ? 'border-brand-magenta bg-brand-magenta/10'
+                                                : 'border-zinc-700 hover:border-zinc-500'
+                                        }`}
+                                        title={z.nombre}
+                                    >
+                                        <img src={z.mini} alt="" className="w-full h-11 object-contain" />
+                                        <span className={`block mt-0.5 text-[9px] font-bold uppercase tracking-wide truncate ${
+                                            zonaActiva === z.idx ? 'text-brand-magenta' : 'text-zinc-400'
+                                        }`}>{z.nombre}</span>
+                                        {elecciones[z.idx] && (
+                                            <span className="absolute top-1 right-1 w-1.5 h-1.5 rounded-full bg-brand-magenta" />
+                                        )}
+                                    </button>
+                                ))}
+                            </div>
                         </div>
 
-                        {errorGuardado && (
-                            <p className="text-[11px] text-amber-400">{errorGuardado}</p>
-                        )}
-
-                        {texturas.length === 0 ? (
+                        {zonaActiva === null ? (
+                            <p className="text-[11px] text-zinc-500">
+                                Tocá una zona del parche o elegila arriba para asignarle una textura.
+                            </p>
+                        ) : texturas.length === 0 ? (
                             <p className="text-[11px] text-zinc-500">
                                 No hay texturas cargadas todavía.
                             </p>
                         ) : (
-                            <div className="flex items-start gap-2 overflow-x-auto pb-1">
+                            /* 3 columnas: el cajón es angosto y las muestras tienen que seguir
+                               siendo lo bastante grandes como para distinguir el material. */
+                            <div className="grid grid-cols-3 gap-2">
                                 <button
                                     type="button"
-                                    onClick={() => setElecciones(p => ({ ...p, [zonaActiva]: null }))}
-                                    className={`shrink-0 w-14 text-center group`}
+                                    onClick={() => { setElecciones(p => ({ ...p, [zonaActiva]: null })); setPanelAbierto(false); }}
+                                    className="text-center group"
                                     title="Dejar la zona como está en el boceto"
                                 >
-                                    <div className={`w-14 h-14 rounded-lg border-2 flex items-center justify-center transition-all ${
+                                    <div className={`w-full aspect-square rounded-lg border-2 flex items-center justify-center transition-all ${
                                         !elecciones[zonaActiva] ? 'border-cyan-400' : 'border-zinc-700 group-hover:border-zinc-500'
                                     }`}>
-                                        <X size={14} className="text-zinc-500" />
+                                        <X size={16} className="text-zinc-500" />
                                     </div>
                                     <span className="block mt-1 text-[9px] text-zinc-500 leading-tight">Sin textura</span>
                                 </button>
@@ -825,15 +1177,17 @@ export const Tpu3DViewer = ({ ordenId, codigo, onClose }) => {
                                     <button
                                         key={t.archivo}
                                         type="button"
-                                        onClick={() => setElecciones(p => ({ ...p, [zonaActiva]: t.archivo }))}
-                                        className="shrink-0 w-14 text-center group"
+                                        onClick={() => { setElecciones(p => ({ ...p, [zonaActiva]: t.archivo })); setPanelAbierto(false); }}
+                                        className="text-center group"
                                         title={t.nombre}
                                     >
                                         <div
-                                            className={`w-14 h-14 rounded-lg border-2 bg-zinc-800 transition-all ${
+                                            className={`w-full aspect-square rounded-lg border-2 bg-zinc-800 transition-all ${
                                                 elecciones[zonaActiva] === t.archivo ? 'border-cyan-400' : 'border-zinc-700 group-hover:border-zinc-500'
                                             }`}
-                                            style={{ backgroundImage: `url("${t.url}")`, backgroundSize: '200%' }}
+                                            /* 400% = se ve un cuarto del tile: con menos repeticiones a la
+                                               vista se distingue de qué material se trata. */
+                                            style={{ backgroundImage: `url("${t.url}")`, backgroundSize: '400%', backgroundPosition: 'center' }}
                                         />
                                         <span className="block mt-1 text-[9px] text-zinc-400 leading-tight truncate">{t.nombre}</span>
                                     </button>
@@ -855,7 +1209,7 @@ export const Tpu3DViewer = ({ ordenId, codigo, onClose }) => {
                                     <label className="flex items-center gap-2 text-[11px] text-zinc-400">
                                         <span className="w-20 shrink-0">Repeticiones</span>
                                         <input
-                                            type="range" min="1" max="60" step="1" value={a.repeticiones}
+                                            type="range" min={REPETICIONES_MIN} max={REPETICIONES_MAX} step="1" value={a.repeticiones}
                                             onChange={(e) => set('repeticiones', Number(e.target.value))}
                                             className="flex-1 accent-cyan-400"
                                         />
@@ -864,20 +1218,24 @@ export const Tpu3DViewer = ({ ordenId, codigo, onClose }) => {
                                     <label className="flex items-center gap-2 text-[11px] text-zinc-400">
                                         <span className="w-20 shrink-0">Altura</span>
                                         <input
-                                            type="range" min="0" max="3" step="0.05" value={a.altura}
+                                            type="range" min={ALTURA_MIN} max={ALTURA_MAX} step="1" value={a.altura}
                                             onChange={(e) => set('altura', Number(e.target.value))}
                                             className="flex-1 accent-cyan-400"
                                         />
-                                        <span className="w-9 text-right font-mono text-zinc-300">{Number(a.altura).toFixed(2)}</span>
+                                        <span className="w-9 text-right font-mono text-zinc-300">{a.altura}</span>
                                     </label>
                                 </div>
                             );
                         })()}
+
                     </div>
-                )}
+                    </aside>
+                    </>
+                    )}
+                </div>
 
                 {estado === 'listo' && (
-                    <div className="px-4 py-2 border-t border-zinc-800 text-[11px] text-zinc-500 text-center">
+                    <div className="shrink-0 px-4 py-2 border-t border-zinc-800 text-[11px] text-zinc-500 text-center">
                         {zonas.length > 0
                             ? 'Tocá una parte del parche para elegir la zona · Girá arrastrando · Zoom con la rueda'
                             : 'Girá: arrastrá · Zoom: rueda o pinch · Mover: botón derecho o dos dedos'}

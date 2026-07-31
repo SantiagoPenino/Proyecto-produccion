@@ -179,6 +179,7 @@ CREATE TABLE dbo.OrdenTexturasTPU (
     OrdenID                INT           NOT NULL,
     ZonaIndice             INT           NOT NULL,
     ArchivoTextura         NVARCHAR(255) NULL,          -- NULL = "sin textura" (queda el arte)
+    Barniz                 BIT           NOT NULL CONSTRAINT DF_OrdTexTPU_Barniz DEFAULT (0),
     ElegidaPor             VARCHAR(10)   NOT NULL CONSTRAINT DF_OrdTexTPU_Por   DEFAULT ('CLIENTE'),
     FechaEleccion          DATETIME      NOT NULL CONSTRAINT DF_OrdTexTPU_Fecha DEFAULT (GETDATE()),
     ModificadaPorUsuarioID INT           NULL,

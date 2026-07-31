@@ -53,6 +53,7 @@ const COLUMNS = {
         { key: 'Cliente',      label: 'Cliente' },
         { key: 'Metros',       label: 'Metros' },
         { key: 'Material',     label: 'Material' },
+        { key: 'TipoFalla',    label: 'Tipo de Falla' },
         { key: 'Causa',        label: 'Causa / Observación' },
         { key: 'Estado',       label: 'Estado' },
     ],
