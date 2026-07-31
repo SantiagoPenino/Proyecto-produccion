@@ -7,6 +7,7 @@ import ReferenceItem from './ReferenceItem';
 import { toast } from 'sonner';
 import OrderRequirementsList from '../../logistics/OrderRequirementsList';
 import { printLabelsHelper } from "../../../utils/printHelper";
+import { labelUbicacion } from "../../../utils/terminacionesGeo";
 import QuotationEditModal from '../../logistics/QuotationEditModal';
 import { useAuth } from '../../../context/AuthContext';
 import { Listbox, Transition } from '@headlessui/react';
@@ -1349,7 +1350,7 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
                                                                     </p>
                                                                     {t.Ubicacion && (
                                                                         <span className="text-[10px] font-black uppercase text-amber-700 bg-amber-100 px-1.5 py-0.5 rounded">
-                                                                            {String(t.Ubicacion).replace('_', ' y ').toLowerCase()}
+                                                                            {labelUbicacion(String(t.Ubicacion).trim())}
                                                                         </span>
                                                                     )}
                                                                     <span className="text-xs font-black text-zinc-400">

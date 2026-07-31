@@ -168,6 +168,29 @@ de US$87,40, montos distintos).
 parcialmente, o dejar como está?). No replicar este fix en otros clientes
 hasta resolverlo.
 
+**CAUSA RAÍZ ENCONTRADA (30/7, Yesusport CliIdCliente 347):** el mecanismo de
+cruce (`contabilidadService.js` ~línea 558-635, dentro del registro de
+`ORDEN`) decide si hay plata para cruzar leyendo **`CueSaldoActual`
+directamente de `CuentasCliente`** (`WHERE ... AND CueSaldoActual > 0`) — la
+MISMA columna cacheada que el BUG 6 ya marca como no confiable. Si esa
+columna está inflada (por cualquiera de los otros bugs de este catálogo, o
+por un fix manual viejo que no la actualizó), el mecanismo "ve" plata que no
+existe y cruza igual, generando un `PAGO_CRUZADO` real que sale de una cuenta
+que en los hechos no tenía saldo. Esto explica por qué revertir cruces
+(como se hizo en Palmero) no cierra la cuenta: el cruce en sí fue una
+consecuencia de un dato corrupto, no algo que haya que simplemente deshacer.
+
+**Yesusport (CliIdCliente 347), cuenta UYU 613:** `CueSaldoActual` cacheado
+= -523,00 mientras el libro recalculado da **-74.492,61** — 62 movimientos
+`PAGO_CRUZADO` entre el 24/06 y el 23/07/2026, todos UYU→USD, ninguno atado a
+documento ni deuda (por eso siguen figurando "18 órdenes por facturar,
+US$448,30": nunca se facturaron, solo se marcaron cubiertas por plata que la
+cuenta UYU no tenía de verdad). Diagnóstico: [`diag_brecha_yesusport.sql`](diag_brecha_yesusport.sql).
+**NO se tocó nada de esta cuenta** — mismo motivo que arriba: hay que decidir
+el fix de CÓDIGO (¿el trigger debería leer el saldo recalculado en vivo en
+vez del cacheado?) antes de tocar los datos, si no el próximo pedido de este
+cliente vuelve a repetirlo.
+
 ---
 
 ## BUG 6 — (ya documentado antes, memoria `project_ciclo_anticipo_facturacion`)

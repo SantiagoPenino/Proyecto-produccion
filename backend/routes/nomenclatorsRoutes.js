@@ -274,7 +274,10 @@ router.get('/producto-terminado/:codArticulo', async (req, res) => {
             .input('PID', sql.Int, p.ID)
             .query(`
                 SELECT PT.TerminacionID, PT.Cantidad, LTRIM(RTRIM(ISNULL(PT.Ubicacion, ''))) AS Ubicacion,
-                       T.Nombre, T.UnidadCobro
+                       T.Nombre, T.UnidadCobro,
+                       -- Necesarios para DIBUJAR la terminación en el plano del producto
+                       -- (ojales repartidos, ancho del bolsillo...).
+                       T.ReglaCantidad, ISNULL(PT.ParamCliente, T.ParamCantidad) AS ParamCantidad
                 FROM ProductoTerminadoTerminaciones PT
                 INNER JOIN Terminaciones T ON T.TerminacionID = PT.TerminacionID
                 WHERE PT.ProductoID = @PID

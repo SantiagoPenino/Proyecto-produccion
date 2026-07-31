@@ -180,6 +180,9 @@ export default function CajaSaldoAnticipoTab({ sesion, metodosPago, cotizacion, 
         importe:      importeNum,
         metodoPagoId: parseInt(pagosValidos[0].metodoPagoId),
         monedaId:     moneda === 'USD' ? 2 : 1,
+        // TC del día: sin esto el asiento del anticipo en US$ entraba al Libro Mayor
+        // (que lleva base $) por el importe en dólares, sin convertir.
+        cotizacion:   moneda === 'USD' ? (Number(cotizacion) > 0 ? Number(cotizacion) : 1) : 1,
         concepto:     observaciones || concepto || 'Ingreso de saldo anticipado',
         fecha:        fechaRegistro, // fecha de registro (el backend debe honrarla; si no, usa hoy)
       });

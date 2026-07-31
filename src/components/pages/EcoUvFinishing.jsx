@@ -1,7 +1,10 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import api from '../../services/api';
+import { API_URL } from '../../services/apiClient';
 import { toast } from 'sonner';
 import { printLabelsHelper } from '../../utils/printHelper';
+import { labelUbicacion } from '../../utils/terminacionesGeo';
+import PlanoPieza, { COLOR_CAPA } from '../shared/PlanoPieza';
 
 // fase 'trabajo' (Bandeja): órdenes con Material Recibido / En Terminaciones — marcar la
 //   primera terminación pasa la orden a 'En Terminaciones'; "Finalizar Tarea" la manda a
@@ -15,6 +18,9 @@ const EcoUvFinishing = ({ fase = 'trabajo' }) => {
     const [loading, setLoading] = useState(false);
     // Bultos físicos que salen de terminaciones por orden (ej. 3 cuadros por separado)
     const [bultosPorOrden, setBultosPorOrden] = useState({});
+    // Magnitudes reales que el taller ajusta antes de confirmar { OrdenTerminacionID: valor }
+    const [magnitudes, setMagnitudes] = useState({});
+    const [confirmando, setConfirmando] = useState(null);
 
     // Cache de detalles: { ordenId: [items] }
     const [ordersDetails, setOrdersDetails] = useState({});
@@ -176,6 +182,64 @@ const EcoUvFinishing = ({ fase = 'trabajo' }) => {
         }
     };
 
+    // URL del arte para dibujarlo dentro del boceto. Solo imágenes: un PDF no se
+    // puede pintar dentro del SVG, ahí queda el recuadro vacío con las terminaciones.
+    const arteDeArchivo = (grupo) => {
+        if (!grupo?.arteUrl) return null;
+        const nombre = (grupo.nombre || '').toLowerCase();
+        if (!/\.(png|jpe?g|webp|gif|bmp)$/.test(nombre)) return null;
+        if (grupo.arteUrl.startsWith('/api/')) {
+            const base = API_URL.endsWith('/api') ? API_URL.replace('/api', '') : API_URL;
+            return `${base}${grupo.arteUrl}`;
+        }
+        return grupo.arteUrl;
+    };
+
+    // Confirmar las magnitudes REALES del trabajo: actualiza lo que se cobra y
+    // recotiza el pedido (el cliente pidió una estimación, el taller confirma lo hecho).
+    const confirmarMagnitudes = async (ordenId) => {
+        const det = ordersDetails[ordenId];
+        const terms = det?.terminaciones || [];
+        const items = terms
+            .filter(t => magnitudes[t.ID] !== undefined && magnitudes[t.ID] !== '')
+            .map(t => ({ id: t.ID, cantidad: parseFloat(magnitudes[t.ID]) }))
+            .filter(x => Number.isFinite(x.cantidad));
+        if (items.length === 0) return toast.info('No cambiaste ninguna cantidad.');
+
+        const resumen = items.map(x => {
+            const t = terms.find(y => y.ID === x.id);
+            return `${t?.Nombre}: ${parseFloat(t?.Cantidad)} → ${x.cantidad}`;
+        }).join('\n');
+        if (!window.confirm(`Se van a guardar estas cantidades y se va a actualizar la cotización del pedido:\n\n${resumen}`)) return;
+
+        setConfirmando(ordenId);
+        try {
+            const res = await api.post(`/finishing/orders/${ordenId}/confirmar-magnitudes`, { items });
+            const n = res.data?.cambios?.length || 0;
+            toast.success(`${n} cantidad(es) confirmada(s)${res.data?.recotizada ? ' — cotización actualizada' : ''}`);
+            setMagnitudes(prev => {
+                const next = { ...prev };
+                items.forEach(x => delete next[x.id]);
+                return next;
+            });
+            // Releer el detalle para mostrar lo que quedó guardado
+            const r = await api.get(`/finishing/orders/${ordenId}/details`);
+            const rawExtras = r.data.extras || [];
+            setOrdersDetails(prev => ({
+                ...prev,
+                [ordenId]: {
+                    extras: rawExtras.filter(ex => (ex.Observacion || '') !== 'Terminación por archivo (WebOrder)'),
+                    terminaciones: r.data.terminaciones || [],
+                    archivos: r.data.archivos || []
+                }
+            }));
+        } catch (e) {
+            toast.error('Error confirmando magnitudes: ' + (e.response?.data?.error || e.message));
+        } finally {
+            setConfirmando(null);
+        }
+    };
+
     // Reimprimir etiquetas ya generadas de la orden
     const handlePrintLabels = (ordenId) => {
         printLabelsHelper(null, { id: ordenId });
@@ -328,6 +392,12 @@ const EcoUvFinishing = ({ fase = 'trabajo' }) => {
                                                 </div>
                                             </div>
                                             <div className="flex items-center gap-3">
+                                                {ord.ModoRetiro && (
+                                                    <span className="px-2 py-1 rounded text-[10px] font-black uppercase bg-violet-50 text-violet-700 border border-violet-200"
+                                                        title="Forma de envío elegida por el cliente">
+                                                        <i className="fa-solid fa-truck-fast mr-1"></i>{ord.ModoRetiro}
+                                                    </span>
+                                                )}
                                                 {(ord.CantidadEtiquetas || 0) > 0 && (
                                                     <button
                                                         onClick={() => handlePrintLabels(ord.MadreOrdenID || ord.OrdenID)}
@@ -353,47 +423,117 @@ const EcoUvFinishing = ({ fase = 'trabajo' }) => {
                                                 </div>
                                             )}
 
-                                            {/* TERMINACIONES POR ARCHIVO (modelo nuevo: viven en la orden madre) */}
+                                            {/* TERMINACIONES POR ARCHIVO, agrupadas: cada archivo con SU boceto
+                                                (lo que el cliente marcó) y las cantidades a confirmar. */}
                                             {terminaciones.length > 0 && (
                                                 <div className="mb-4">
-                                                    <h4 className="text-xs font-black text-amber-500 uppercase tracking-wider mb-3">
-                                                        <i className="fa-solid fa-scissors mr-1.5"></i>
-                                                        Terminaciones por archivo ({terminaciones.filter(t => t.Estado === 'Hecha').length}/{terminaciones.length} hechas)
-                                                    </h4>
-                                                    <div className="bg-white border border-amber-200 rounded-lg overflow-hidden divide-y divide-slate-100">
-                                                        {terminaciones.map(t => {
-                                                            const hecha = t.Estado === 'Hecha';
-                                                            return (
-                                                                <div key={t.ID} className={`flex items-center gap-3 px-4 py-2.5 ${hecha ? 'bg-emerald-50/60' : ''}`}>
-                                                                    <button
-                                                                        onClick={() => !isFinished && toggleTerminacion(ord.OrdenID, t)}
-                                                                        disabled={isFinished}
-                                                                        className={`w-6 h-6 rounded-md border-2 flex items-center justify-center shrink-0 transition-all ${hecha
-                                                                            ? 'bg-emerald-500 border-emerald-500 text-white'
-                                                                            : 'bg-white border-slate-300 text-transparent hover:border-emerald-400'}`}
-                                                                        title={hecha ? 'Marcar pendiente' : 'Marcar hecha'}
-                                                                    >
-                                                                        <i className="fa-solid fa-check text-xs"></i>
-                                                                    </button>
-                                                                    <div className="flex-1 min-w-0">
-                                                                        <p className={`text-sm font-bold ${hecha ? 'text-emerald-700 line-through' : 'text-slate-700'}`}>
-                                                                            {t.Nombre}
-                                                                            {t.Ubicacion && <span className="ml-1.5 text-[10px] font-black uppercase text-amber-600 bg-amber-100 px-1.5 py-0.5 rounded">{String(t.Ubicacion).replace('_', ' y ').toLowerCase()}</span>}
-                                                                            <span className="ml-2 text-xs font-black text-slate-400">× {parseFloat(t.Cantidad)} {t.UnidadCobro === 'M2' ? 'm²' : t.UnidadCobro === 'M' ? 'm' : 'u.'}</span>
-                                                                        </p>
-                                                                        {t.NombreArchivo && (
-                                                                            <p className="text-[10px] text-slate-400 truncate" title={t.NombreArchivo}>
-                                                                                <i className="fa-regular fa-file mr-1"></i>{t.NombreArchivo}
-                                                                            </p>
-                                                                        )}
-                                                                    </div>
-                                                                    <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase shrink-0 ${hecha ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}`}>
-                                                                        {t.Estado}
-                                                                    </span>
-                                                                </div>
-                                                            );
-                                                        })}
+                                                    <div className="flex items-center justify-between gap-3 mb-3 flex-wrap">
+                                                        <h4 className="text-xs font-black text-amber-500 uppercase tracking-wider">
+                                                            <i className="fa-solid fa-scissors mr-1.5"></i>
+                                                            Terminaciones por archivo ({terminaciones.filter(t => t.Estado === 'Hecha').length}/{terminaciones.length} hechas)
+                                                        </h4>
+                                                        {!isFinished && (
+                                                            <button
+                                                                onClick={() => confirmarMagnitudes(ord.OrdenID)}
+                                                                disabled={confirmando === ord.OrdenID}
+                                                                className="px-3 py-1.5 rounded-lg text-[11px] font-bold bg-blue-50 text-blue-700 border border-blue-200 hover:bg-blue-100 disabled:opacity-50 transition-colors flex items-center gap-1.5"
+                                                                title="Guardar las cantidades reales del trabajo y actualizar la cotización del pedido">
+                                                                <i className={`fa-solid ${confirmando === ord.OrdenID ? 'fa-circle-notch fa-spin' : 'fa-calculator'}`}></i>
+                                                                Confirmar magnitudes y recotizar
+                                                            </button>
+                                                        )}
                                                     </div>
+
+                                                    {/* Un bloque por archivo: boceto + sus terminaciones */}
+                                                    {Object.values(terminaciones.reduce((acc, t) => {
+                                                        const k = t.ArchivoID || 'sin-archivo';
+                                                        (acc[k] ||= { archivoId: t.ArchivoID, nombre: t.NombreArchivo, ancho: t.Ancho, alto: t.Alto, copias: t.Copias, arteUrl: t.arteUrl, items: [] }).items.push(t);
+                                                        return acc;
+                                                    }, {})).map(grupo => {
+                                                        // Capas del boceto: lo que el cliente marcó en el portal
+                                                        const capas = grupo.items.map((t, i) => ({
+                                                            id: t.ID, nombre: t.Nombre,
+                                                            color: COLOR_CAPA[i % COLOR_CAPA.length],
+                                                            ubicacion: t.Ubicacion,
+                                                            tipo: (t.ReglaCantidad === 'CADA_X_CM') ? 'ojales'
+                                                                : /bolsillo/i.test(t.Nombre || '') ? 'bolsillo'
+                                                                    : /palo/i.test(t.Nombre || '') ? 'palos'
+                                                                        : /roll up/i.test(t.Nombre || '') ? 'rollup' : 'linea',
+                                                            pasoM: (parseFloat(t.Param) || 50) / 100,
+                                                            anchoCm: parseFloat(t.Param) || 8,
+                                                        }));
+                                                        const w = parseFloat(grupo.ancho) || 0, h = parseFloat(grupo.alto) || 0;
+                                                        return (
+                                                            <div key={grupo.archivoId} className="bg-white border border-amber-200 rounded-lg mb-2 overflow-hidden">
+                                                                <div className="px-4 py-2 bg-amber-50/60 border-b border-amber-100 flex items-center gap-2 flex-wrap">
+                                                                    <i className="fa-regular fa-file text-amber-500"></i>
+                                                                    <span className="text-[11px] font-bold text-slate-600 truncate">{grupo.nombre || 'Archivo'}</span>
+                                                                    {w > 0 && h > 0 && (
+                                                                        <span className="text-[10px] font-black text-slate-400">{w.toFixed(2)} × {h.toFixed(2)} m</span>
+                                                                    )}
+                                                                    {grupo.copias > 1 && (
+                                                                        <span className="text-[10px] font-black text-slate-500 bg-slate-100 px-1.5 py-0.5 rounded">×{grupo.copias} copias</span>
+                                                                    )}
+                                                                </div>
+                                                                <div className="flex gap-4 p-3 items-start flex-wrap md:flex-nowrap">
+                                                                    {/* EL BOCETO: cómo lo pidió el cliente */}
+                                                                    {w > 0 && h > 0 && (
+                                                                        <div className="shrink-0 bg-slate-900 rounded-lg p-2 text-slate-300">
+                                                                            <PlanoPieza anchoM={w} altoM={h} capas={capas} size="md"
+                                                                                arteUrl={arteDeArchivo(grupo)} />
+                                                                        </div>
+                                                                    )}
+                                                                    <div className="flex-1 min-w-0 divide-y divide-slate-100">
+                                                                        {grupo.items.map((t, i) => {
+                                                                            const hecha = t.Estado === 'Hecha';
+                                                                            const unidad = t.UnidadCobro === 'M2' ? 'm²' : t.UnidadCobro === 'M' ? 'm' : 'u.';
+                                                                            const editada = magnitudes[t.ID];
+                                                                            return (
+                                                                                <div key={t.ID} className={`flex items-center gap-3 py-2 ${hecha ? 'opacity-80' : ''}`}>
+                                                                                    <button
+                                                                                        onClick={() => !isFinished && toggleTerminacion(ord.OrdenID, t)}
+                                                                                        disabled={isFinished}
+                                                                                        className={`w-6 h-6 rounded-md border-2 flex items-center justify-center shrink-0 transition-all ${hecha
+                                                                                            ? 'bg-emerald-500 border-emerald-500 text-white'
+                                                                                            : 'bg-white border-slate-300 text-transparent hover:border-emerald-400'}`}
+                                                                                        title={hecha ? 'Marcar pendiente' : 'Marcar hecha'}>
+                                                                                        <i className="fa-solid fa-check text-xs"></i>
+                                                                                    </button>
+                                                                                    <span className="w-2.5 h-2.5 rounded-sm shrink-0" style={{ background: COLOR_CAPA[i % COLOR_CAPA.length] }} />
+                                                                                    <div className="flex-1 min-w-0">
+                                                                                        <p className={`text-sm font-bold ${hecha ? 'text-emerald-700' : 'text-slate-700'}`}>
+                                                                                            {t.Nombre}
+                                                                                            {t.Ubicacion && <span className="ml-1.5 text-[10px] font-black uppercase text-amber-600 bg-amber-100 px-1.5 py-0.5 rounded">{labelUbicacion(String(t.Ubicacion).trim())}</span>}
+                                                                                        </p>
+                                                                                        {t.Param > 0 && (
+                                                                                            <p className="text-[10px] text-slate-400">
+                                                                                                {t.ReglaCantidad === 'CADA_X_CM' ? `uno cada ${t.Param} cm` : (/bolsillo/i.test(t.Nombre || '') ? `a ${t.Param} cm del borde` : '')}
+                                                                                            </p>
+                                                                                        )}
+                                                                                    </div>
+                                                                                    {/* Magnitud real del trabajo */}
+                                                                                    <span className="flex items-center gap-1 shrink-0">
+                                                                                        <input type="number" min="0"
+                                                                                            step={t.UnidadCobro === 'U' ? 1 : 0.01}
+                                                                                            value={editada !== undefined ? editada : (parseFloat(t.Cantidad) || 0)}
+                                                                                            onChange={e => setMagnitudes(prev => ({ ...prev, [t.ID]: e.target.value }))}
+                                                                                            disabled={isFinished}
+                                                                                            title="Cantidad real del trabajo — al confirmar se actualiza la cotización"
+                                                                                            className={`w-20 px-2 py-1 text-sm font-black text-center bg-white border rounded outline-none ${editada !== undefined && parseFloat(editada) !== parseFloat(t.Cantidad)
+                                                                                                ? 'border-blue-400 text-blue-700 bg-blue-50' : 'border-slate-200 text-slate-700'}`} />
+                                                                                        <span className="text-[10px] font-black text-slate-400 w-5">{unidad}</span>
+                                                                                    </span>
+                                                                                    <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase shrink-0 ${hecha ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}`}>
+                                                                                        {t.Estado}
+                                                                                    </span>
+                                                                                </div>
+                                                                            );
+                                                                        })}
+                                                                    </div>
+                                                                </div>
+                                                            </div>
+                                                        );
+                                                    })}
                                                 </div>
                                             )}
 

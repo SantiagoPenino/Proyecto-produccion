@@ -24,6 +24,11 @@ import { FormInput } from '../pautas/FormInput';
 import { PrintSettingsPanel } from '../pautas/PrintSettingsPanel';
 
 import { CustomSelect } from '../pautas/CustomSelect';
+import PlanoPieza, { COLOR_CAPA, IconoBordes, PRESETS_BORDE } from '../../components/shared/PlanoPieza';
+import {
+    cantidadSugerida, textoReparto, labelUbicacion,
+    ladosDeUbicacion, ubicacionDeLados
+} from '../../utils/terminacionesGeo';
 import ErrorModal from './order-form/components/ErrorModal';
 import UploadProgressModal from './order-form/components/UploadProgressModal';
 import FileUploadZone from './order-form/components/FileUploadZone';
@@ -177,13 +182,15 @@ const OrderForm = ({ serviceId: propServiceId }) => {
     const isSubliTelaCliente = svcId === 'sublimacion' && /tela de cliente/i.test(serviceSubType || '');
 
     // ECOUV: comportamiento por VARIANTE VIRTUAL elegida (services.js → variantsInfo).
-    // Material Impreso        → impresión por m2, SIN terminaciones.
-    // Personalizado (a medida)→ impresión por m2 + chips de terminaciones POR ARCHIVO.
-    // Productos Terminados    → ficha con dimensiones/incluidas y precio cerrado.
+    // Material Impreso     → impresión por m2. Las terminaciones que se ofrecen las
+    //                        define EL MATERIAL (tabla MaterialTerminaciones): las lonas
+    //                        llevan soldadura, ojales y bolsillo; el canvas, bastidor; etc.
+    //                        Si el material no tiene ninguna configurada, no se muestra nada.
+    // Productos Terminados → ficha con dimensiones/incluidas y precio cerrado.
     const ecouvVariantInfo = config?.variantMode === 'virtual'
         ? (variantsInfo || {})[(serviceSubType || '').trim()]
         : null;
-    const isEcouvMaterial = !!ecouvVariantInfo && ecouvVariantInfo.tipoStock === 'MATERIAL' && ecouvVariantInfo.terminaciones === true;
+    const isEcouvMaterial = !!ecouvVariantInfo && ecouvVariantInfo.tipoStock === 'MATERIAL';
     const isEcouvPT = !!ecouvVariantInfo && ecouvVariantInfo.tipoStock === 'PRODUCTO_TERMINADO';
 
     // Terminaciones permitidas POR MATERIAL (multimaterial: cada archivo puede llevar
@@ -272,11 +279,6 @@ const OrderForm = ({ serviceId: propServiceId }) => {
 
     // ── Terminaciones por archivo: manera de aplicación (ubicación) + cantidad
     //    SUGERIDA por la regla de la terminación, siempre visible y editable. ──
-    const UBI_LABEL = {
-        ARRIBA: 'Arriba', ABAJO: 'Abajo', ARRIBA_ABAJO: 'Arriba y abajo',
-        IZQUIERDA: 'Izquierda', DERECHA: 'Derecha',
-        COSTADOS: 'Ambos costados', PERIMETRO: 'Perímetro'
-    };
 
     const dimsDeItem = (it) => {
         const w = parseFloat(it.printSettings?.finalWidthM) || (it.file?.width ? (it.file.unit === 'meters' ? it.file.width : (it.file.width / 300) * 0.0254) : 0);
@@ -333,26 +335,10 @@ const OrderForm = ({ serviceId: propServiceId }) => {
             actions.setErrorModalOpen(true);
         }
     }, [isEcouvPT, fichaPT, globalMaterial, items]);
-    const tramoM = (ubi, w, h) => {
-        switch (ubi) {
-            case 'ARRIBA': case 'ABAJO': return w;
-            case 'ARRIBA_ABAJO': return w * 2;
-            case 'IZQUIERDA': case 'DERECHA': return h;   // un solo costado
-            case 'COSTADOS': return h * 2;                // los dos costados
-            case 'PERIMETRO': default: return (w + h) * 2;
-        }
-    };
-    const cantidadSugerida = (term, ubi, item) => {
-        const { w, h } = dimsDeItem(item);
-        const regla = term.ReglaCantidad || 'FIJA';
-        if (regla === 'METROS_TRAMO') return Math.round(tramoM(ubi, w, h) * 100) / 100;
-        if (regla === 'CADA_X_CM') {
-            const pasoM = (parseFloat(term.ParamCantidad) || 50) / 100;
-            const tramo = tramoM(ubi, w, h);
-            return tramo > 0 ? Math.max(1, Math.ceil(tramo / pasoM)) : (parseFloat(term.ParamCantidad) ? 1 : 1);
-        }
-        return parseFloat(term.ParamCantidad) || 1;
-    };
+    // Cantidad sugerida y reparto salen del cálculo compartido (utils/terminacionesGeo):
+    // los ojales se cuentan como PUNTOS sobre el borde (7 en 3 m cada 50 cm, no 6) y
+    // las esquinas no se cuentan dos veces. Lo mismo usa la orden de taller.
+    const cantidadSugeridaItem = (term, ubi, item) => cantidadSugerida(term, ubi, dimsDeItem(item));
 
     const toggleItemTerminacion = (item, term) => {
         const current = Array.isArray(item.terminaciones) ? item.terminaciones : [];
@@ -362,11 +348,14 @@ const OrderForm = ({ serviceId: propServiceId }) => {
             next = current.filter(t => t.terminacionId !== term.TerminacionID);
         } else {
             const ubis = (term.Ubicaciones || '').split(',').map(x => x.trim()).filter(Boolean);
-            const ubi = ubis[0] || '';
+            // Default: todo el perímetro si está habilitado (es lo más pedido, y en
+            // ojales garantiza las 4 esquinas como mínimo). Si no, la primera opción.
+            const ubi = ubis.includes('PERIMETRO') ? 'PERIMETRO' : (ubis[0] || '');
             next = [...current, {
                 terminacionId: term.TerminacionID,
                 ubicacion: ubi,
-                cantidad: cantidadSugerida(term, ubi, item),
+                cantidad: cantidadSugeridaItem(term, ubi, item),
+                param: term.ParamCantidad != null ? parseFloat(term.ParamCantidad) : null,
                 nombre: term.Nombre,
                 unidad: term.UnidadCobro
             }];
@@ -375,16 +364,81 @@ const OrderForm = ({ serviceId: propServiceId }) => {
     };
     const setItemTerminacionCantidad = (item, terminacionId, cantidad) => {
         const current = Array.isArray(item.terminaciones) ? item.terminaciones : [];
+        // manual: el cliente la escribió él. A partir de ahí no se vuelve a pisar
+        // con la sugerencia automática.
         actions.updateItem(item.id, 'terminaciones', current.map(t =>
-            t.terminacionId === terminacionId ? { ...t, cantidad } : t
+            t.terminacionId === terminacionId ? { ...t, cantidad, manual: true } : t
         ));
     };
     const setItemTerminacionUbicacion = (item, term, ubi) => {
         const current = Array.isArray(item.terminaciones) ? item.terminaciones : [];
-        // Al cambiar la ubicación se recalcula la sugerencia (el cliente puede volver a ajustarla)
-        actions.updateItem(item.id, 'terminaciones', current.map(t =>
-            t.terminacionId === term.TerminacionID ? { ...t, ubicacion: ubi, cantidad: cantidadSugerida(term, ubi, item) } : t
-        ));
+        // Al cambiar la ubicación se recalcula la sugerencia respetando el parámetro
+        // QUE ELIGIÓ EL CLIENTE (ojales cada X cm), no el del catálogo: si no, al
+        // tocar un borde la cantidad volvía al reparto por defecto.
+        actions.updateItem(item.id, 'terminaciones', current.map(t => {
+            if (t.terminacionId !== term.TerminacionID) return t;
+            const efectivo = (t.param !== undefined && t.param !== null && t.param !== '')
+                ? { ...term, ParamCantidad: t.param } : term;
+            return { ...t, ubicacion: ubi, cantidad: cantidadSugeridaItem(efectivo, ubi, item) };
+        }));
+    };
+    // Marcar/desmarcar un borde en el plano: el cliente arma la combinación que
+    // quiera (arriba, arriba+izquierda, los cuatro...) tocando la pieza.
+    const toggleLadoTerminacion = (item, term, sel, lado) => {
+        const actuales = ladosDeUbicacion(sel.ubicacion);
+        const nuevos = actuales.includes(lado)
+            ? actuales.filter(l => l !== lado)
+            : [...actuales, lado];
+        setItemTerminacionUbicacion(item, term, ubicacionDeLados(nuevos));
+    };
+    // Cuál de las terminaciones se está marcando en el plano, por archivo
+    const [terminacionActiva, setTerminacionActiva] = useState({});
+
+    // Miniatura del arte para dibujarla dentro del plano. El preview que guarda
+    // fileService viene recortado, así que se arma desde el File original y se
+    // cachea por archivo (un solo objectURL por item).
+    const artesRef = React.useRef({});
+    const arteDeItem = (item) => {
+        const f = item?.file;
+        if (!f?.fileData || !(f.type || '').startsWith('image/')) return null;
+        const clave = `${item.id}|${f.name}|${f.size}`;
+        if (!artesRef.current[clave]) {
+            try { artesRef.current[clave] = URL.createObjectURL(f.fileData); }
+            catch { return null; }
+        }
+        return artesRef.current[clave];
+    };
+    useEffect(() => () => {   // liberar los objectURL al desmontar el formulario
+        Object.values(artesRef.current).forEach(u => { try { URL.revokeObjectURL(u); } catch { } });
+    }, []);
+
+    // Cómo se dibuja cada terminación en el plano, según lo que es
+    const tipoCapa = (term) => {
+        const n = (term?.Nombre || '').toLowerCase();
+        if ((term?.ReglaCantidad || '') === 'CADA_X_CM') return 'ojales';
+        if (n.includes('bolsillo')) return 'bolsillo';
+        if (n.includes('palo')) return 'palos';
+        if (n.includes('roll up')) return 'rollup';
+        return 'linea';
+    };
+    // Palos y roll up van siempre en los extremos: no se eligen bordes
+    const usaBordes = (term) => !!(term?.Ubicaciones || '').trim()
+        && term?.ClienteElige !== false
+        && !['palos', 'rollup'].includes(tipoCapa(term));
+    // Parámetro que el cliente ajusta: separación de los ojales (cm) o
+    // distancia del bolsillo al borde (cm). Al cambiarlo se recalcula la cantidad.
+    const setItemTerminacionParam = (item, term, valor) => {
+        const v = parseFloat(valor);
+        const current = Array.isArray(item.terminaciones) ? item.terminaciones : [];
+        actions.updateItem(item.id, 'terminaciones', current.map(t => {
+            if (t.terminacionId !== term.TerminacionID) return t;
+            const next = { ...t, param: isNaN(v) ? '' : v };
+            // Los ojales dependen del paso: se recalcula el reparto
+            if ((term.ReglaCantidad || '') === 'CADA_X_CM' && v > 0) {
+                next.cantidad = cantidadSugeridaItem({ ...term, ParamCantidad: v }, t.ubicacion, item);
+            }
+            return next;
+        }));
     };
     const unidadLabel = (u) => u === 'M2' ? 'm²' : u === 'M' ? 'm' : 'u.';
 
@@ -1123,7 +1177,15 @@ const OrderForm = ({ serviceId: propServiceId }) => {
                             const permit = termsDeMaterial(it.material || globalMaterial);
                             return (it.terminaciones || [])
                                 .filter(t => permit.some(p => p.TerminacionID === t.terminacionId))
-                                .map(t => ({ terminacionId: t.terminacionId, cantidad: parseFloat(t.cantidad) || 1, ubicacion: t.ubicacion || null }));
+                                .map(t => ({
+                                    terminacionId: t.terminacionId,
+                                    cantidad: parseFloat(t.cantidad) || 1,
+                                    ubicacion: t.ubicacion || null,
+                                    // Lo que el cliente ajustó en el plano: separación de los
+                                    // ojales o distancia del bolsillo al borde (cm).
+                                    param: (t.param !== undefined && t.param !== null && t.param !== '')
+                                        ? parseFloat(t.param) : null,
+                                }));
                         })()
                         : []
                 });
@@ -1692,28 +1754,8 @@ const OrderForm = ({ serviceId: propServiceId }) => {
                                 )}
                             </div>
 
-                            {/* ECOUV Producto Terminado: ficha con dimensiones, material y terminaciones incluidas */}
-                            {isEcouvPT && fichaPT && (
-                                <div className="p-4 bg-purple-500/10 border border-purple-500/30 rounded-2xl space-y-2">
-                                    <p className="text-[10px] font-black uppercase tracking-wider text-purple-300">Producto terminado — precio cerrado</p>
-                                    <div className="flex flex-wrap gap-x-6 gap-y-1 text-xs text-zinc-300">
-                                        {(fichaPT.anchoM != null || fichaPT.altoM != null) && (
-                                            <span><span className="text-zinc-500 font-bold uppercase text-[10px] mr-1">Medidas:</span>{fichaPT.anchoM ?? '—'} × {fichaPT.altoM ?? '—'} m</span>
-                                        )}
-                                    </div>
-                                    {(fichaPT.terminacionesIncluidas || []).length > 0 && (
-                                        <div className="flex flex-wrap items-center gap-1.5 pt-1">
-                                            <span className="text-zinc-500 font-bold uppercase text-[10px]">Incluye:</span>
-                                            {fichaPT.terminacionesIncluidas.map(t => (
-                                                <span key={t.TerminacionID} className="px-2 py-0.5 rounded-full bg-purple-500/20 border border-purple-500/30 text-purple-200 text-[10px] font-bold">
-                                                    {t.Nombre}{t.Cantidad > 1 ? ` ×${t.Cantidad}` : ''}{t.Ubicacion ? ` · ${UBI_LABEL[t.Ubicacion] || t.Ubicacion}` : ''}
-                                                </span>
-                                            ))}
-                                        </div>
-                                    )}
-                                    <p className="text-[10px] text-zinc-500">Subí el arte a imprimir y elegí la cantidad en cada archivo.</p>
-                                </div>
-                            )}
+                            {/* La ficha del producto terminado NO va acá: se ve en su propia
+                                pestaña dentro del archivo, junto al arte (solo lectura). */}
 
                             {/* Sublimación Tela de Cliente: elegí tu bobina (valida ancho/largo y descuenta metros) */}
                             {isSubliTelaCliente && (
@@ -1932,7 +1974,278 @@ const OrderForm = ({ serviceId: propServiceId }) => {
                                                     </div>
                                                 )}
 
-                                                <div className="grid grid-cols-1 md:grid-cols-12 gap-6">
+                                                {/* ══ ECOUV: UNA sola vista del arte con sus terminaciones + tabs al lado ══
+                                                    En vez de repetir el arte (preview + plano), el plano ES la vista:
+                                                    muestra la pieza con lo que se le va a hacer. A la derecha, la
+                                                    configuración de impresión y cada terminación en su pestaña. */}
+                                                {(() => {
+                                                    const esEcouv = isEcouvMaterial || isEcouvPT;
+                                                    const dimsIt = dimsDeItem(item);
+                                                    // En producto terminado la pieza mide lo que dice la FICHA
+                                                    const wPlano = isEcouvPT && fichaPT?.anchoM ? parseFloat(fichaPT.anchoM) : dimsIt.w;
+                                                    const hPlano = isEcouvPT && fichaPT?.altoM ? parseFloat(fichaPT.altoM) : dimsIt.h;
+                                                    if (!esEcouv || !item.file || !(wPlano > 0 && hPlano > 0)) return null;
+
+                                                    const termsItem = isEcouvPT ? [] : termsDeMaterial(item.material || globalMaterial);
+                                                    const elegidas = item.terminaciones || [];
+                                                    // Producto terminado: las terminaciones vienen de la ficha (no se eligen)
+                                                    const incluidas = isEcouvPT ? (fichaPT?.terminacionesIncluidas || []) : [];
+
+                                                    const capas = isEcouvPT
+                                                        ? incluidas.map((t, i) => ({
+                                                            id: t.TerminacionID, nombre: t.Nombre,
+                                                            color: COLOR_CAPA[i % COLOR_CAPA.length],
+                                                            ubicacion: t.Ubicacion,
+                                                            tipo: tipoCapa(t),
+                                                            pasoM: (parseFloat(t.ParamCantidad) || 50) / 100,
+                                                            anchoCm: parseFloat(t.ParamCantidad) || 8,
+                                                        }))
+                                                        : elegidas.map(sel => {
+                                                            const t = termsItem.find(x => x.TerminacionID === sel.terminacionId);
+                                                            if (!t) return null;
+                                                            const idx = termsItem.findIndex(x => x.TerminacionID === sel.terminacionId);
+                                                            const param = parseFloat(sel.param ?? t.ParamCantidad);
+                                                            return {
+                                                                id: sel.terminacionId, nombre: t.Nombre,
+                                                                color: COLOR_CAPA[idx % COLOR_CAPA.length],
+                                                                ubicacion: sel.ubicacion, tipo: tipoCapa(t),
+                                                                pasoM: (param || 50) / 100, anchoCm: param || 8,
+                                                            };
+                                                        }).filter(Boolean);
+
+                                                    const tab = terminacionActiva[item.id] ?? 'impresion';
+                                                    const termTab = (tab !== 'impresion') ? termsItem.find(x => x.TerminacionID === tab) : null;
+                                                    const selTab = termTab ? elegidas.find(x => x.terminacionId === tab) : null;
+                                                    const capaTab = capas.find(c => c.id === tab) || null;
+                                                    const fueraMedida = itemsFueraDeMedida.some(m => m.id === item.id);
+
+                                                    return (
+                                                    <div className="grid grid-cols-1 md:grid-cols-12 gap-4">
+                                                        {/* ── EL ARTE, con sus terminaciones dibujadas ── */}
+                                                        <div className="md:col-span-5">
+                                                            <div className="bg-zinc-900/60 border border-zinc-700/50 rounded-2xl p-3 flex flex-col items-center text-zinc-400">
+                                                                <PlanoPieza
+                                                                    anchoM={wPlano} altoM={hPlano} size="md"
+                                                                    capas={capas} arteUrl={arteDeItem(item)}
+                                                                    interactivo={!!(capaTab && usaBordes(termTab))}
+                                                                    capaActivaId={capaTab?.id}
+                                                                    onToggleLado={(lado) => {
+                                                                        if (termTab && selTab) toggleLadoTerminacion(item, termTab, selTab, lado);
+                                                                    }}
+                                                                />
+                                                                {isEcouvPT && (
+                                                                    <p className="text-[10px] text-purple-300/80 font-bold text-center mt-1">
+                                                                        {globalMaterial} — {wPlano.toFixed(2)} × {hPlano.toFixed(2)} m
+                                                                        {fichaPT?.bordeCm ? ` (+${fichaPT.bordeCm} cm de borde)` : ''}
+                                                                    </p>
+                                                                )}
+                                                                <div className="mt-2 flex items-center gap-2 w-full">
+                                                                    <span className="flex-1 min-w-0 text-[10px] font-bold text-zinc-400 bg-zinc-900/60 px-2 py-1 rounded border border-zinc-700/50 truncate flex items-center gap-1">
+                                                                        <FileCode size={11} className="text-cyan-400/60 shrink-0" />{item.file.name}
+                                                                    </span>
+                                                                    <button type="button"
+                                                                        onClick={() => document.getElementById(`cambiar-arte-${item.id}`)?.click()}
+                                                                        className="text-[10px] font-bold text-cyan-400 hover:text-cyan-300 px-2 py-1 rounded border border-cyan-500/30 hover:border-cyan-400 transition-colors shrink-0">
+                                                                        Cambiar arte
+                                                                    </button>
+                                                                    <input id={`cambiar-arte-${item.id}`} type="file" className="hidden"
+                                                                        accept="image/png, application/pdf, .png, .pdf, .jpg, .jpeg"
+                                                                        onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ''; if (f) handleFileUpload(item.id, 'file', f); }} />
+                                                                </div>
+                                                            </div>
+                                                            {fueraMedida && (
+                                                                <div className="mt-2 flex items-start gap-2 bg-red-500/10 border border-red-500/40 rounded-xl px-3 py-2">
+                                                                    <AlertTriangle className="text-red-400 shrink-0 mt-0.5" size={14} />
+                                                                    <p className="text-[10px] text-red-300 leading-snug">
+                                                                        El arte mide <strong>{dimsIt.w.toFixed(2)} × {dimsIt.h.toFixed(2)} m</strong> y este producto
+                                                                        se imprime a <strong>{medidaPTTexto(fichaPT)}</strong>.
+                                                                    </p>
+                                                                </div>
+                                                            )}
+                                                        </div>
+
+                                                        {/* ── TABS: impresión + una por terminación ── */}
+                                                        <div className="md:col-span-7">
+                                                            <div className="flex flex-wrap items-center gap-1 mb-2 border-b border-zinc-700/40 pb-2">
+                                                                <button type="button" onClick={() => setTerminacionActiva(prev => ({ ...prev, [item.id]: 'impresion' }))}
+                                                                    className={`px-2.5 py-1 rounded-lg text-[11px] font-bold border transition-all ${tab === 'impresion'
+                                                                        ? 'bg-cyan-400/15 border-cyan-500/50 text-cyan-300'
+                                                                        : 'bg-zinc-900/60 border-zinc-700/60 text-zinc-400 hover:border-zinc-600'}`}>
+                                                                    Impresión
+                                                                </button>
+                                                                {/* Producto terminado: su ficha, solo lectura (el cliente no la edita) */}
+                                                                {isEcouvPT && fichaPT && (
+                                                                    <button type="button" onClick={() => setTerminacionActiva(prev => ({ ...prev, [item.id]: 'producto' }))}
+                                                                        className={`px-2.5 py-1 rounded-lg text-[11px] font-bold border transition-all ${tab === 'producto'
+                                                                            ? 'bg-purple-500/20 border-purple-500/50 text-purple-200'
+                                                                            : 'bg-zinc-900/60 border-zinc-700/60 text-zinc-400 hover:border-purple-500/40'}`}>
+                                                                        Producto
+                                                                    </button>
+                                                                )}
+                                                                {termsItem.map(t => {
+                                                                    const sel = elegidas.find(x => x.terminacionId === t.TerminacionID);
+                                                                    const idx = termsItem.findIndex(x => x.TerminacionID === t.TerminacionID);
+                                                                    const color = COLOR_CAPA[idx % COLOR_CAPA.length];
+                                                                    const precio = parseFloat(t.Precio) || 0;
+                                                                    const mon = t.Moneda === 'USD' ? 'US$' : '$';
+                                                                    if (!sel) {
+                                                                        return (
+                                                                            <button type="button" key={t.TerminacionID}
+                                                                                onClick={() => { toggleItemTerminacion(item, t); setTerminacionActiva(prev => ({ ...prev, [item.id]: t.TerminacionID })); }}
+                                                                                className="px-2.5 py-1 rounded-lg text-[11px] font-bold border border-dashed border-zinc-700 text-zinc-500 hover:border-amber-500/50 hover:text-zinc-300 transition-all">
+                                                                                + {t.Nombre}
+                                                                                {precio > 0 && <span className="ml-1 text-[9px] text-zinc-600">{mon}{precio}</span>}
+                                                                            </button>
+                                                                        );
+                                                                    }
+                                                                    return (
+                                                                        <button type="button" key={t.TerminacionID}
+                                                                            onClick={() => setTerminacionActiva(prev => ({ ...prev, [item.id]: t.TerminacionID }))}
+                                                                            className={`px-2.5 py-1 rounded-lg text-[11px] font-bold border flex items-center gap-1.5 transition-all ${tab === t.TerminacionID
+                                                                                ? 'bg-zinc-800 border-zinc-500 text-zinc-100'
+                                                                                : 'bg-zinc-900/60 border-zinc-700/60 text-zinc-400 hover:border-zinc-600'}`}>
+                                                                            <span className="w-2.5 h-2.5 rounded-sm shrink-0" style={{ background: color }} />
+                                                                            {t.Nombre}
+                                                                            <span onClick={(e) => { e.stopPropagation(); toggleItemTerminacion(item, t); setTerminacionActiva(prev => ({ ...prev, [item.id]: 'impresion' })); }}
+                                                                                className="text-zinc-600 hover:text-red-400 pl-0.5" title="Quitar">×</span>
+                                                                        </button>
+                                                                    );
+                                                                })}
+                                                            </div>
+
+                                                            {/* Contenido de la pestaña */}
+                                                            {tab === 'producto' && isEcouvPT && fichaPT ? (
+                                                                <div className="bg-purple-500/10 border border-purple-500/30 rounded-xl p-3 space-y-2">
+                                                                    <p className="text-[10px] font-black uppercase tracking-wider text-purple-300">
+                                                                        Producto terminado — precio cerrado
+                                                                    </p>
+                                                                    <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 text-[11px]">
+                                                                        <div>
+                                                                            <span className="block text-[9px] font-bold uppercase text-zinc-500">Medidas</span>
+                                                                            <span className="text-zinc-200 font-bold">
+                                                                                {fichaPT.anchoM ?? '—'} × {fichaPT.altoM ?? '—'} m
+                                                                                {fichaPT.bordeCm ? ` (+${fichaPT.bordeCm} cm de borde)` : ''}
+                                                                            </span>
+                                                                        </div>
+                                                                        <div>
+                                                                            <span className="block text-[9px] font-bold uppercase text-zinc-500">Se imprime en</span>
+                                                                            <span className="text-zinc-200 font-bold">{fichaPT.materialDescripcion || '— a definir en producción —'}</span>
+                                                                        </div>
+                                                                        <div>
+                                                                            <span className="block text-[9px] font-bold uppercase text-zinc-500">Tinta</span>
+                                                                            <span className="text-zinc-200 font-bold">{fichaPT.tinta || '— a definir en producción —'}</span>
+                                                                        </div>
+                                                                    </div>
+                                                                    {incluidas.length > 0 && (
+                                                                        <div className="pt-1.5 border-t border-purple-500/20">
+                                                                            <span className="block text-[9px] font-bold uppercase text-zinc-500 mb-1">Incluye (dentro del precio)</span>
+                                                                            <div className="flex flex-wrap gap-1.5">
+                                                                                {incluidas.map((t, i) => (
+                                                                                    <span key={t.TerminacionID}
+                                                                                        className="px-2 py-0.5 rounded-full bg-purple-500/20 border border-purple-500/30 text-purple-200 text-[10px] font-bold flex items-center gap-1.5">
+                                                                                        <span className="w-2 h-2 rounded-sm" style={{ background: COLOR_CAPA[i % COLOR_CAPA.length] }} />
+                                                                                        {t.Nombre}{t.Cantidad > 1 ? ` ×${t.Cantidad}` : ''}{t.Ubicacion ? ` · ${labelUbicacion(t.Ubicacion)}` : ''}
+                                                                                    </span>
+                                                                                ))}
+                                                                            </div>
+                                                                        </div>
+                                                                    )}
+                                                                    <p className="text-[10px] text-zinc-500 pt-1">
+                                                                        Lo define la ficha del producto: solo elegís la cantidad en la pestaña Impresión.
+                                                                    </p>
+                                                                </div>
+                                                            ) : tab === 'impresion' ? (
+                                                                item.file.width ? (
+                                                                    <PrintSettingsPanel
+                                                                        originalWidthM={item.file.unit === 'meters' ? item.file.width : (item.file.width / 300) * 0.0254}
+                                                                        originalHeightM={item.file.unit === 'meters' ? item.file.height : (item.file.height / 300) * 0.0254}
+                                                                        materialMaxWidthM={itemMatInfo(item).ancho}
+                                                                        medidaFija={itemMatInfo(item).largoFijo > 0}
+                                                                        values={item.printSettings || {}} copies={item.copies}
+                                                                        onCopiesChange={(v) => actions.updateItem(item.id, 'copies', v)}
+                                                                        onChange={(s) => actions.updateItem(item.id, 'printSettings', s)}
+                                                                        disableScaling={itemMatInfo(item).largoFijo > 0 || isEcouvPT}
+                                                                        unidadTotal={config.unidadTotal || 'm'}
+                                                                        hideRaport hideHeader
+                                                                    />
+                                                                ) : (
+                                                                    <p className="text-[11px] text-zinc-500 p-3">No se pudieron leer las medidas del archivo.</p>
+                                                                )
+                                                            ) : (termTab && selTab) ? (() => {
+                                                                const esOjal = tipoCapa(termTab) === 'ojales';
+                                                                const esBolsillo = tipoCapa(termTab) === 'bolsillo';
+                                                                const eligeBordes = usaBordes(termTab);
+                                                                const paramVal = selTab.param ?? termTab.ParamCantidad ?? (esOjal ? 50 : 8);
+                                                                const ladosSel = ladosDeUbicacion(selTab.ubicacion);
+                                                                const precio = parseFloat(termTab.Precio) || 0;
+                                                                const mon = termTab.Moneda === 'USD' ? 'US$' : '$';
+                                                                const subtotal = precio * (parseFloat(selTab.cantidad) || 0);
+                                                                return (
+                                                                    <div className="bg-zinc-900/40 border border-zinc-700/50 rounded-xl p-3 space-y-3">
+                                                                        {eligeBordes ? (
+                                                                            <div>
+                                                                                <p className="text-[10px] font-black uppercase tracking-wide mb-1.5" style={{ color: capaTab?.color }}>
+                                                                                    ¿Dónde va?
+                                                                                </p>
+                                                                                <div className="flex flex-wrap items-center gap-1.5">
+                                                                                    {PRESETS_BORDE.map(p => {
+                                                                                        const igual = p.lados.length === ladosSel.length && p.lados.every(l => ladosSel.includes(l));
+                                                                                        return (
+                                                                                            <button type="button" key={p.label} title={p.label}
+                                                                                                onClick={() => setItemTerminacionUbicacion(item, termTab, ubicacionDeLados(p.lados))}
+                                                                                                className={`p-1 rounded-md border transition-all ${igual ? 'border-zinc-400 bg-zinc-800' : 'border-zinc-700 bg-zinc-900 hover:border-zinc-500'}`}>
+                                                                                                <IconoBordes lados={p.lados} color={capaTab?.color || '#fbbf24'} size={18} />
+                                                                                            </button>
+                                                                                        );
+                                                                                    })}
+                                                                                    <span className="text-[10px] text-zinc-500 ml-1">
+                                                                                        {ladosSel.length ? labelUbicacion(selTab.ubicacion) : 'tocá un borde en el arte'}
+                                                                                    </span>
+                                                                                </div>
+                                                                            </div>
+                                                                        ) : (
+                                                                            <p className="text-[10px] text-zinc-500">
+                                                                                Va en los extremos de la pieza: no hay que elegir lado.
+                                                                            </p>
+                                                                        )}
+
+                                                                        <div className="flex flex-wrap items-center gap-3">
+                                                                            {(esOjal || esBolsillo) && (
+                                                                                <span className="flex items-center gap-1.5">
+                                                                                    <span className="text-[10px] text-zinc-500">{esOjal ? 'Uno cada' : 'A'}</span>
+                                                                                    <input type="number" min="1" step="1" value={paramVal}
+                                                                                        onChange={e => setItemTerminacionParam(item, termTab, e.target.value)}
+                                                                                        className="w-14 px-1 py-0.5 text-[11px] font-bold text-zinc-100 bg-zinc-900 border border-zinc-600 rounded outline-none text-center" />
+                                                                                    <span className="text-[10px] text-zinc-500">{esOjal ? 'cm' : 'cm del borde'}</span>
+                                                                                </span>
+                                                                            )}
+                                                                            <span className="flex items-center gap-1.5 ml-auto">
+                                                                                <span className="text-[10px] text-zinc-500">Cantidad</span>
+                                                                                <input type="number" min="0" step={termTab.UnidadCobro === 'U' ? 1 : 0.01}
+                                                                                    value={selTab.cantidad}
+                                                                                    onChange={e => setItemTerminacionCantidad(item, termTab.TerminacionID, e.target.value)}
+                                                                                    className="w-16 px-1 py-0.5 text-[11px] font-black text-amber-200 bg-zinc-900 border border-zinc-600 rounded outline-none text-center" />
+                                                                                <span className="text-[10px] font-black text-zinc-500">{unidadLabel(termTab.UnidadCobro)}</span>
+                                                                                {precio > 0 && (
+                                                                                    <span className="text-[11px] font-black text-amber-300 ml-2">{mon} {Math.round(subtotal * 100) / 100}</span>
+                                                                                )}
+                                                                            </span>
+                                                                        </div>
+
+                                                                        {esOjal && selTab.ubicacion && (
+                                                                            <p className="text-[10px] text-zinc-500 leading-snug">
+                                                                                {textoReparto({ ...termTab, ParamCantidad: paramVal }, selTab.ubicacion, dimsIt)}
+                                                                            </p>
+                                                                        )}
+                                                                    </div>
+                                                                );
+                                                            })() : null}
+                                                        </div>
+                                                    </div>
+                                                    );
+                                                })()}
+
+                                                <div className={`grid grid-cols-1 md:grid-cols-12 gap-6 ${(isEcouvMaterial || isEcouvPT) && item.file ? 'hidden' : ''}`}>
                                                     <div className={isBlackoutSelected ? "md:col-span-4" : "md:col-span-6"}>
                                                         {/* modoBandera: solo en materiales de medida fija (Bandera Confeccionada) se muestra
                                                             la miniatura con la guía de 2,5 cm y el modal de la bandera terminada. */}
@@ -2022,63 +2335,179 @@ const OrderForm = ({ serviceId: propServiceId }) => {
                                                     </div>
                                                 )}
 
-                                                {/* ECOUV: terminaciones de ESTE archivo (según el material DE ESTE archivo, se cobran aparte) */}
-                                                {isEcouvMaterial && (() => {
+                                                {/* ECOUV sin archivo todavía: los chips para ir eligiendo terminaciones.
+                                                    Con archivo cargado, todo esto vive en las pestañas de arriba,
+                                                    al lado del arte. */}
+                                                {isEcouvMaterial && !item.file && (() => {
                                                     const termsItem = termsDeMaterial(item.material || globalMaterial);
                                                     if (termsItem.length === 0) return null;
+                                                    const dims = dimsDeItem(item);
+                                                    const elegidas = item.terminaciones || [];
+                                                    // Capas del plano: una por terminación elegida. Cada una con su
+                                                    // color y su símbolo (ojales, bolsillo, palos, roll up...) para
+                                                    // verlas TODAS dibujadas sobre la MISMA pieza.
+                                                    const capas = elegidas.map((sel) => {
+                                                        const t = termsItem.find(x => x.TerminacionID === sel.terminacionId);
+                                                        if (!t) return null;
+                                                        const idx = termsItem.findIndex(x => x.TerminacionID === sel.terminacionId);
+                                                        const param = parseFloat(sel.param ?? t.ParamCantidad);
+                                                        return {
+                                                            id: sel.terminacionId, nombre: t.Nombre,
+                                                            color: COLOR_CAPA[idx % COLOR_CAPA.length],
+                                                            ubicacion: sel.ubicacion,
+                                                            tipo: tipoCapa(t),
+                                                            pasoM: (param || 50) / 100,
+                                                            anchoCm: param || 8,
+                                                        };
+                                                    }).filter(Boolean);
+                                                    // La que se está marcando: solo cuentan las que usan bordes
+                                                    const conBordes = capas.filter(c => usaBordes(termsItem.find(x => x.TerminacionID === c.id)));
+                                                    const activa = conBordes.find(c => c.id === terminacionActiva[item.id]) || conBordes[0] || null;
+                                                    const termActiva = activa ? termsItem.find(x => x.TerminacionID === activa.id) : null;
+                                                    const selActiva = activa ? elegidas.find(x => x.terminacionId === activa.id) : null;
                                                     return (
                                                     <div className="mt-4 pt-3 border-t border-zinc-700/30">
                                                         <p className="text-[9px] uppercase font-black tracking-wider text-amber-400/90 mb-2">
                                                             Terminaciones para este archivo <span className="text-zinc-500 normal-case font-bold">(opcionales, se cobran aparte)</span>
                                                         </p>
-                                                        <div className="flex flex-wrap gap-2">
+
+                                                        {/* TABS: una por terminación elegida + las disponibles para agregar */}
+                                                        <div className="flex flex-wrap items-center gap-1 mb-2 border-b border-zinc-700/40 pb-2">
                                                             {termsItem.map(t => {
-                                                                const sel = (item.terminaciones || []).find(x => x.terminacionId === t.TerminacionID);
-                                                                const ubis = (t.Ubicaciones || '').split(',').map(x => x.trim()).filter(Boolean);
+                                                                const sel = elegidas.find(x => x.terminacionId === t.TerminacionID);
+                                                                const idx = termsItem.findIndex(x => x.TerminacionID === t.TerminacionID);
+                                                                const color = COLOR_CAPA[idx % COLOR_CAPA.length];
                                                                 const precio = parseFloat(t.Precio) || 0;
                                                                 const mon = t.Moneda === 'USD' ? 'US$' : '$';
                                                                 if (!sel) {
                                                                     return (
                                                                         <button type="button" key={t.TerminacionID} onClick={() => toggleItemTerminacion(item, t)}
-                                                                            className="px-3 py-1.5 rounded-full text-xs font-bold border bg-zinc-900/60 border-zinc-700/60 text-zinc-400 hover:border-amber-500/40 transition-all">
+                                                                            className="px-2.5 py-1 rounded-lg text-[11px] font-bold border border-dashed border-zinc-700 text-zinc-500 hover:border-amber-500/50 hover:text-zinc-300 transition-all">
                                                                             + {t.Nombre}
-                                                                            {precio > 0 && <span className="ml-1.5 text-[10px] text-zinc-500">{mon} {precio} {unidadLabel(t.UnidadCobro) === 'u.' ? 'c/u' : `x ${unidadLabel(t.UnidadCobro)}`}</span>}
+                                                                            {precio > 0 && <span className="ml-1 text-[9px] text-zinc-600">{mon}{precio}</span>}
                                                                         </button>
                                                                     );
                                                                 }
-                                                                const subtotal = precio * (parseFloat(sel.cantidad) || 0);
+                                                                const esActiva = activa?.id === t.TerminacionID;
                                                                 return (
-                                                                    <div key={t.TerminacionID}
-                                                                        className="w-full flex flex-wrap items-center gap-2 bg-amber-500/10 border border-amber-500/40 rounded-xl px-3 py-2">
-                                                                        <button type="button" onClick={() => toggleItemTerminacion(item, t)}
-                                                                            className="text-xs font-bold text-amber-300 hover:text-red-400 transition-colors" title="Quitar">
-                                                                            ✓ {t.Nombre}
-                                                                        </button>
-                                                                        {ubis.length > 0 && (t.ClienteElige !== false ? (
-                                                                            <select value={sel.ubicacion || ''}
-                                                                                onChange={e => setItemTerminacionUbicacion(item, t, e.target.value)}
-                                                                                className="bg-zinc-900 border border-amber-500/40 text-amber-200 text-[11px] font-bold rounded-lg px-1.5 py-1 outline-none">
-                                                                                {ubis.map(u => <option key={u} value={u}>{UBI_LABEL[u] || u}</option>)}
-                                                                            </select>
-                                                                        ) : (
-                                                                            <span className="text-[10px] font-bold text-amber-400/70 uppercase">{UBI_LABEL[sel.ubicacion] || ''}</span>
-                                                                        ))}
-                                                                        <span className="flex items-center gap-1 ml-auto">
-                                                                            <input type="number" min="0" step="0.5" value={sel.cantidad}
-                                                                                onChange={e => setItemTerminacionCantidad(item, t.TerminacionID, e.target.value)}
-                                                                                className="w-16 px-1.5 py-0.5 text-xs font-black text-amber-200 bg-zinc-900 border border-amber-500/40 rounded-full outline-none text-center"
-                                                                                title="Cantidad (sugerida por las medidas, ajustable)" />
-                                                                            <span className="text-[9px] font-black text-amber-400/70">{unidadLabel(t.UnidadCobro)}</span>
-                                                                        </span>
-                                                                        {precio > 0 && (
-                                                                            <span className="text-[11px] font-black text-amber-300 min-w-[60px] text-right">
-                                                                                {mon} {Math.round(subtotal * 100) / 100}
-                                                                            </span>
-                                                                        )}
-                                                                    </div>
+                                                                    <button type="button" key={t.TerminacionID}
+                                                                        onClick={() => setTerminacionActiva(prev => ({ ...prev, [item.id]: t.TerminacionID }))}
+                                                                        className={`px-2.5 py-1 rounded-lg text-[11px] font-bold border flex items-center gap-1.5 transition-all ${esActiva
+                                                                            ? 'bg-zinc-800 border-zinc-500 text-zinc-100'
+                                                                            : 'bg-zinc-900/60 border-zinc-700/60 text-zinc-400 hover:border-zinc-600'}`}>
+                                                                        <span className="w-2.5 h-2.5 rounded-sm shrink-0" style={{ background: color }} />
+                                                                        {t.Nombre}
+                                                                        <span onClick={(e) => { e.stopPropagation(); toggleItemTerminacion(item, t); }}
+                                                                            className="text-zinc-600 hover:text-red-400 pl-0.5" title="Quitar">×</span>
+                                                                    </button>
                                                                 );
                                                             })}
                                                         </div>
+
+                                                        {elegidas.length > 0 && (
+                                                        <div className="flex gap-3 items-start flex-wrap md:flex-nowrap">
+                                                            {/* UN SOLO PLANO: el arte con todas las terminaciones encima */}
+                                                            {dims.w > 0 && dims.h > 0 && (
+                                                                <div className="shrink-0 bg-zinc-900/50 border border-zinc-700/50 rounded-xl p-2 text-zinc-400">
+                                                                    <PlanoPieza
+                                                                        anchoM={dims.w} altoM={dims.h} size="sm"
+                                                                        capas={capas} arteUrl={arteDeItem(item)}
+                                                                        interactivo={!!activa}
+                                                                        capaActivaId={activa?.id}
+                                                                        onToggleLado={(lado) => {
+                                                                            if (termActiva && selActiva) toggleLadoTerminacion(item, termActiva, selActiva, lado);
+                                                                        }}
+                                                                    />
+                                                                </div>
+                                                            )}
+
+                                                            {/* Panel de la terminación activa */}
+                                                            <div className="flex-1 min-w-0 space-y-2">
+                                                                {activa && termActiva && selActiva && (() => {
+                                                                    const esOjal = tipoCapa(termActiva) === 'ojales';
+                                                                    const esBolsillo = tipoCapa(termActiva) === 'bolsillo';
+                                                                    const paramVal = selActiva.param ?? termActiva.ParamCantidad ?? (esOjal ? 50 : 8);
+                                                                    const ladosSel = ladosDeUbicacion(selActiva.ubicacion);
+                                                                    return (
+                                                                        <div className="bg-zinc-900/40 border border-zinc-700/50 rounded-lg p-2.5">
+                                                                            <p className="text-[10px] font-black uppercase tracking-wide mb-1.5" style={{ color: activa.color }}>
+                                                                                {activa.nombre} — ¿dónde va?
+                                                                            </p>
+                                                                            {/* Atajos de borde, simbología tipo Word */}
+                                                                            <div className="flex flex-wrap items-center gap-1.5">
+                                                                                {PRESETS_BORDE.map(p => {
+                                                                                    const igual = p.lados.length === ladosSel.length && p.lados.every(l => ladosSel.includes(l));
+                                                                                    return (
+                                                                                        <button type="button" key={p.label} title={p.label}
+                                                                                            onClick={() => setItemTerminacionUbicacion(item, termActiva, ubicacionDeLados(p.lados))}
+                                                                                            className={`p-1 rounded-md border transition-all ${igual
+                                                                                                ? 'border-zinc-400 bg-zinc-800'
+                                                                                                : 'border-zinc-700 bg-zinc-900 hover:border-zinc-500'}`}>
+                                                                                            <IconoBordes lados={p.lados} color={activa.color} size={18} />
+                                                                                        </button>
+                                                                                    );
+                                                                                })}
+                                                                                <span className="text-[10px] text-zinc-500 ml-1">
+                                                                                    {ladosSel.length ? labelUbicacion(selActiva.ubicacion) : 'tocá un borde en el plano'}
+                                                                                </span>
+                                                                            </div>
+
+                                                                            {(esOjal || esBolsillo) && (
+                                                                                <div className="flex items-center gap-1.5 mt-2">
+                                                                                    <span className="text-[10px] text-zinc-500">{esOjal ? 'Uno cada' : 'A'}</span>
+                                                                                    <input type="number" min="1" step="1" value={paramVal}
+                                                                                        onChange={e => setItemTerminacionParam(item, termActiva, e.target.value)}
+                                                                                        className="w-14 px-1 py-0.5 text-[11px] font-bold text-zinc-100 bg-zinc-900 border border-zinc-600 rounded outline-none text-center" />
+                                                                                    <span className="text-[10px] text-zinc-500">{esOjal ? 'cm' : 'cm del borde'}</span>
+                                                                                </div>
+                                                                            )}
+                                                                            {esOjal && selActiva.ubicacion && (
+                                                                                <p className="text-[10px] text-zinc-500 mt-1 leading-snug">
+                                                                                    {textoReparto({ ...termActiva, ParamCantidad: paramVal }, selActiva.ubicacion, dims)}
+                                                                                </p>
+                                                                            )}
+                                                                        </div>
+                                                                    );
+                                                                })()}
+
+                                                                {/* Resumen de todo lo elegido, con cantidad y precio */}
+                                                                <div className="space-y-1">
+                                                                    {elegidas.map(sel => {
+                                                                        const t = termsItem.find(x => x.TerminacionID === sel.terminacionId);
+                                                                        if (!t) return null;
+                                                                        const idx = termsItem.findIndex(x => x.TerminacionID === sel.terminacionId);
+                                                                        const color = COLOR_CAPA[idx % COLOR_CAPA.length];
+                                                                        const precio = parseFloat(t.Precio) || 0;
+                                                                        const mon = t.Moneda === 'USD' ? 'US$' : '$';
+                                                                        const subtotal = precio * (parseFloat(sel.cantidad) || 0);
+                                                                        return (
+                                                                            <div key={sel.terminacionId} className="flex items-center gap-2 text-[11px]">
+                                                                                <span className="w-2 h-2 rounded-sm shrink-0" style={{ background: color }} />
+                                                                                <span className="font-bold text-zinc-300 truncate">{t.Nombre}</span>
+                                                                                {sel.ubicacion && <span className="text-[9px] uppercase text-zinc-600 truncate">{labelUbicacion(sel.ubicacion)}</span>}
+                                                                                <span className="flex items-center gap-1 ml-auto shrink-0">
+                                                                                    {/* Paso según la unidad: las unidades van de a 1, los metros de a 1 cm.
+                                                                                        Con step 0.5, 1,34 m saltaba a 1,00 al tocar la flecha. */}
+                                                                                    <input type="number" min="0"
+                                                                                        step={t.UnidadCobro === 'U' ? 1 : 0.01}
+                                                                                        value={sel.cantidad}
+                                                                                        onChange={e => setItemTerminacionCantidad(item, t.TerminacionID, e.target.value)}
+                                                                                        title="Cantidad sugerida por las medidas — la podés ajustar"
+                                                                                        className="w-16 px-1 py-0.5 text-[11px] font-black text-amber-200 bg-zinc-900 border border-zinc-600 rounded outline-none text-center" />
+                                                                                    <span className="text-[9px] font-black text-zinc-500 w-3">{unidadLabel(t.UnidadCobro)}</span>
+                                                                                </span>
+                                                                                {precio > 0 && (
+                                                                                    <span className="text-[10px] font-black text-amber-300 min-w-[52px] text-right shrink-0">
+                                                                                        {mon} {Math.round(subtotal * 100) / 100}
+                                                                                    </span>
+                                                                                )}
+                                                                            </div>
+                                                                        );
+                                                                    })}
+                                                                </div>
+                                                            </div>
+                                                        </div>
+                                                        )}
                                                     </div>
                                                     );
                                                 })()}

@@ -3,12 +3,7 @@ import { API_URL } from '../../../services/apiClient';
 import { FileImage, FileBox, FileText } from 'lucide-react';
 import { fileControlService } from '../../../services/modules/fileControlService';
 
-// Etiquetas legibles de las ubicaciones de terminaciones (ECOUV)
-const UBI_LABEL = {
-    ARRIBA: 'Arriba', ABAJO: 'Abajo', ARRIBA_ABAJO: 'Arriba y abajo',
-    IZQUIERDA: 'Izquierda', DERECHA: 'Derecha',
-    COSTADOS: 'Ambos costados', PERIMETRO: 'Perímetro',
-};
+import { labelUbicacion } from '../../../utils/terminacionesGeo';
 
 const FileControlCard = ({ file, refreshOrder, onAction }) => {
     const [controlCount, setControlCount] = useState(file.Controlcopias || 0);
@@ -211,7 +206,10 @@ const FileControlCard = ({ file, refreshOrder, onAction }) => {
                         <div className="flex flex-wrap items-center gap-1">
                             {file.Terminaciones.map((t, i) => (
                                 <span key={i} className="text-[9px] font-black uppercase tracking-wide bg-amber-50 text-amber-700 border border-amber-200 rounded px-1.5 py-0.5">
-                                    {t.Nombre} ×{parseFloat(t.Cantidad) || 1}{t.Ubicacion ? ` · ${UBI_LABEL[String(t.Ubicacion).trim()] || t.Ubicacion}` : ''}
+                                    {t.Nombre} ×{parseFloat(t.Cantidad) || 1}{t.Ubicacion ? ` · ${labelUbicacion(String(t.Ubicacion).trim())}` : ''}
+                                    {t.Param > 0 && (t.ReglaCantidad === 'CADA_X_CM'
+                                        ? ` · c/${t.Param} cm`
+                                        : (/bolsillo/i.test(t.Nombre || '') ? ` · a ${t.Param} cm del borde` : ''))}
                                 </span>
                             ))}
                         </div>

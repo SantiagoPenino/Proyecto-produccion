@@ -140,7 +140,10 @@ const getOrdenes = async (req, res) => {
                             (SELECT COUNT(*) FROM ArchivosOrden AO WITH(NOLOCK) WHERE AO.OrdenID = O.OrdenID AND AO.EstadoArchivo = 'CANCELADO') as CantidadCancelados,
                                 (CASE WHEN(SELECT COUNT(*) FROM ArchivosOrden AO WITH(NOLOCK) WHERE AO.OrdenID = O.OrdenID AND AO.EstadoArchivo = 'Pendiente') = 0 THEN 1 ELSE 0 END) as Controlada,
                                 O.Magnitud,
-                                O.EstadoenArea
+                                O.EstadoenArea,
+                                -- Forma de envío elegida en el pedido: el área necesita saber
+                                -- si el trabajo se retira, va por encomienda o a domicilio.
+                                LTRIM(RTRIM(ISNULL(O.ModoRetiro, ''))) AS ModoRetiro
             FROM Ordenes O WITH(NOLOCK)
             LEFT JOIN dbo.Clientes c WITH(NOLOCK) ON O.CliIdCliente = c.CliIdCliente
         WHERE
@@ -267,6 +270,10 @@ const getArchivosPorOrden = async (req, res) => {
             FROM ServiciosExtraOrden SEO WITH (NOLOCK)
             LEFT JOIN Ordenes O WITH (NOLOCK) ON SEO.OrdenID = O.OrdenID
             WHERE SEO.OrdenID = @OrdenID
+              -- Las terminaciones NO se controlan acá: en esta área solo se controla la
+              -- impresión. Su línea existe para facturar y su trabajo se controla en el
+              -- área de Terminaciones. Igual se ven, como dato, en los chips del archivo.
+              AND ISNULL(SEO.Observacion, '') NOT LIKE N'%rminaci%por archivo%'
             ORDER BY NombreArchivo ASC
         `;
 
@@ -308,6 +315,7 @@ const getArchivosPorOrden = async (req, res) => {
                         FROM ServiciosExtraOrden SEO WITH (NOLOCK)
                         INNER JOIN Ordenes O WITH (NOLOCK) ON SEO.OrdenID = O.OrdenID
                         WHERE O.NoDocERP = @Doc AND (O.AreaID = 'Corte' OR O.AreaID = 'TWC')
+                          AND ISNULL(SEO.Observacion, '') NOT LIKE N'%rminaci%por archivo%'
                     `);
 
                 const corteDocs = reqCorte.recordset.map(d => ({
@@ -339,7 +347,8 @@ const getArchivosPorOrden = async (req, res) => {
         try {
             const [termRes, notaRes] = await Promise.all([
                 pool.request().input('OrdenID', sql.Int, ordenId).query(`
-                    SELECT OT.ArchivoID, LTRIM(RTRIM(T.Nombre)) AS Nombre, OT.Cantidad, OT.Ubicacion, OT.Estado
+                    SELECT OT.ArchivoID, LTRIM(RTRIM(T.Nombre)) AS Nombre, OT.Cantidad, OT.Ubicacion, OT.Estado,
+                           ISNULL(OT.ParamCliente, T.ParamCantidad) AS Param, T.ReglaCantidad
                     FROM OrdenTerminaciones OT WITH (NOLOCK)
                     INNER JOIN Terminaciones T WITH (NOLOCK) ON T.TerminacionID = OT.TerminacionID
                     WHERE OT.OrdenID = @OrdenID
@@ -827,6 +836,7 @@ const postControlArchivo = async (req, res) => {
 
         let orderCompleted = false; // Flag para la generación de etiquetas
         let totalBultos = 0;
+        let etiquetasError = null;  // motivo por el que no se generaron, para avisar en pantalla
 
         // B. Verificación GLOBAL (Pedido Completo EN EL ÁREA ACTUAL)
         let groupCompleted = true;
@@ -1185,13 +1195,18 @@ const postControlArchivo = async (req, res) => {
                             totalBultos = labelResult.totalBultos;
                             logger.info(`[postControlArchivo] Etiquetas generadas OK: ${totalBultos}`);
                         } else {
+                            // Se devuelve a la pantalla: sin etiqueta no hay bulto y sin bulto
+                            // no se puede armar el remito.
+                            etiquetasError = labelResult.error;
                             logger.warn(`[postControlArchivo] Fallo generación etiquetas: ${labelResult.error}`);
                         }
                     } else {
+                        etiquetasError = 'La orden no tiene cantidad cotizada, así que no se generaron etiquetas. Revisá "Cotizar Productos".';
                         logger.info(`[postControlArchivo] Magnitud 0, saltando etiquetas.`);
                     }
                 }
             } catch (eLabels) {
+                etiquetasError = eLabels.message;
                 logger.error(`[postControlArchivo] Error generando etiquetas post-control: ${eLabels.message}`);
             }
         }
@@ -1209,6 +1224,7 @@ const postControlArchivo = async (req, res) => {
             success: true,
             orderCompleted,
             totalBultos,
+            etiquetasError,   // si viene, la orden quedó SIN etiqueta (no se puede despachar)
             nuevoEstado,
             destinoLogistica,
             proximoServicio,
@@ -2210,6 +2226,7 @@ async function completarOrden(req, res) {
         // Guard: si ya tienen etiquetas (generadas en postControlArchivo) no regenerar para evitar descalce de códigos
         // IMPORTANTE: también se generan para órdenes con fallas (Retenido) para que circulen físicamente
         let totalBultos = 0;
+        let etiquetasError = null;   // motivo por el que no se generaron, para avisar en pantalla
         try {
             const existingLabels = await pool.request()
                 .input('OID', sql.Int, ordenId)
@@ -2240,13 +2257,19 @@ async function completarOrden(req, res) {
                         totalBultos = labelResult.totalBultos;
                         logger.info(`[completarOrden] Etiquetas generadas para orden ${nuevoEstado} ${ordenId}: ${totalBultos} bulto(s).`);
                     } else {
+                        // El motivo VUELVE A LA PANTALLA: sin etiqueta no hay bulto y sin
+                        // bulto no se puede armar el remito. Si esto se queda solo en el
+                        // log, el operario se entera recién al ir a despachar.
+                        etiquetasError = labelResult.error;
                         logger.warn(`[completarOrden] No se pudieron generar etiquetas: ${labelResult.error}`);
                     }
                 } else {
+                    etiquetasError = 'La orden no tiene cantidad cotizada, así que no se generaron etiquetas. Revisá "Cotizar Productos".';
                     logger.info(`[completarOrden] Orden ${ordenId} sin magnitud cotizada, no se generan etiquetas.`);
                 }
             }
         } catch (eLabels) {
+            etiquetasError = eLabels.message;
             logger.warn(`[completarOrden] Error etiquetas: ${eLabels.message}`);
         }
 
@@ -2258,6 +2281,8 @@ async function completarOrden(req, res) {
 
         res.json({
             success: true, nuevoEstado, estadoLogistica, totalBultos,
+            etiquetasError,          // si viene, la orden quedó SIN etiqueta (y sin bulto para el remito)
+            codigoOrden,
             pedidoCompletoEnArea,
             faltantesPedido,
             ordenesLiberadas: ordenesLiberadas.map(o => o.CodigoOrden)

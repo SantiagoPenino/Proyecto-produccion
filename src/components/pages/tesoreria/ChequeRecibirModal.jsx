@@ -8,7 +8,7 @@ import { toast } from 'sonner';
  * cobro genera su propio asiento (Valores a Depositar / Deudores), así que acá NO se
  * contabiliza: si no, el mismo cheque se asienta dos veces.
  */
-export default function ChequeRecibirModal({ onClose, onSuccess, initialMonto = '', initialMonedaId = 1, origenCaja = false }) {
+export default function ChequeRecibirModal({ onClose, onSuccess, initialMonto = '', initialMonedaId = 1, initialCotizacion = null, origenCaja = false }) {
   const [bancos, setBancos] = useState([]);
   const [clientes, setClientes] = useState([]);
   const [cuentas, setCuentas] = useState([]);
@@ -24,6 +24,9 @@ export default function ChequeRecibirModal({ onClose, onSuccess, initialMonto = 
     // 1 = $ (peso uruguayo), 2 = US$. Antes no se preguntaba y el alta lo escribía fijo
     // en pesos: un cheque en dólares entraba a cartera con el importe leído como pesos.
     IdMoneda: String(initialMonedaId || 1),
+    // TC del día. Solo se usa si el cheque es en US$: el asiento se lleva en pesos, así
+    // que sin cotización un cheque de US$ 1.000 entra al mayor como $ 1.000.
+    Cotizacion: initialCotizacion ? String(initialCotizacion) : '',
     FechaEmision: new Date().toISOString().split('T')[0],
     FechaVencimiento: new Date().toISOString().split('T')[0],
     IdClienteOrigen: '',
@@ -40,6 +43,15 @@ export default function ChequeRecibirModal({ onClose, onSuccess, initialMonto = 
     fetchBancos();
     fetchClientes();
     fetchCuentas();
+    // TC del día para los cheques en US$ (desde caja lo manda el panel del cobro).
+    if (!initialCotizacion) {
+      api.get('/contabilidad/cotizacion-hoy')
+        .then(r => {
+          const tc = r.data?.cotizacion ?? r.data?.data?.cotizacion;
+          if (tc) setFormData(f => (f.Cotizacion ? f : { ...f, Cotizacion: String(tc) }));
+        })
+        .catch(() => {});
+    }
   }, []);
 
   const fetchBancos = async () => {
@@ -81,12 +93,18 @@ export default function ChequeRecibirModal({ onClose, onSuccess, initialMonto = 
     if (!formData.NumeroCheque || !formData.IdBanco || !formData.Monto) {
       return toast.error('Completar campos obligatorios');
     }
+    // Sin TC el cheque en dólares entra al Libro Mayor (que lleva pesos) por el importe
+    // en dólares, sin convertir.
+    if (String(formData.IdMoneda) === '2' && !(parseFloat(formData.Cotizacion) > 0)) {
+      return toast.error('Falta la cotización del dólar: sin ella el cheque en US$ se contabiliza como si fueran pesos.');
+    }
     setProcesando(true);
     try {
       const payload = {
         ...formData,
         Monto: parseFloat(formData.Monto),
         IdMoneda: parseInt(formData.IdMoneda) || 1,
+        Cotizacion: parseFloat(formData.Cotizacion) || 1,
         IdClienteOrigen: formData.IdClienteOrigen ? parseInt(formData.IdClienteOrigen) : null,
         RubroContableId: formData.RubroContableId ? parseInt(formData.RubroContableId) : null,
         contabilizar: !origenCaja,
@@ -168,15 +186,48 @@ export default function ChequeRecibirModal({ onClose, onSuccess, initialMonto = 
                 </label>
                 <div className="flex gap-2">
                   {/* Moneda del cheque: sin esto un cheque en dólares entraba a cartera
-                      con el importe contado como pesos. */}
-                  <select name="IdMoneda" value={formData.IdMoneda} onChange={handleChange}
-                    className="w-[86px] shrink-0 border border-slate-200 rounded-xl px-2 py-2.5 font-black text-slate-800 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 bg-white"
-                    title="Moneda en la que está escrito el cheque">
-                    <option value="1">$</option>
-                    <option value="2">US$</option>
-                  </select>
+                      con el importe contado como pesos.
+                      Desde caja NO se elige: es la moneda de la línea de pago. Si se
+                      pudiera cambiar acá, el cheque quedaría en US$ y el recibo y el
+                      saldo del cliente en $ (o al revés). */}
+                  {origenCaja ? (
+                    <div className="w-[86px] shrink-0 border border-slate-200 bg-slate-100 rounded-xl px-2 py-2.5 font-black text-slate-500 text-center"
+                      title="Moneda del cobro. Para cargar un cheque en otra moneda, cambiá la moneda de la operación.">
+                      {String(formData.IdMoneda) === '2' ? 'US$' : '$'}
+                    </div>
+                  ) : (
+                    <select name="IdMoneda" value={formData.IdMoneda} onChange={handleChange}
+                      className="w-[86px] shrink-0 border border-slate-200 rounded-xl px-2 py-2.5 font-black text-slate-800 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 bg-white"
+                      title="Moneda en la que está escrito el cheque">
+                      <option value="1">$</option>
+                      <option value="2">US$</option>
+                    </select>
+                  )}
                   <input type="number" step="0.01" name="Monto" value={formData.Monto} onChange={handleChange} required placeholder="0.00" className="w-full border border-slate-200 rounded-xl px-4 py-2.5 font-black text-slate-800 focus:outline-none focus:ring-2 focus:ring-emerald-500/20" />
                 </div>
+                {origenCaja && (
+                  <p className="text-[11px] font-semibold text-slate-400 mt-1.5">
+                    Se carga en {String(formData.IdMoneda) === '2' ? 'US$' : '$'} porque es la moneda del cobro. Si el
+                    cheque está en la otra moneda, cerrá y cambiá la moneda de la operación.
+                  </p>
+                )}
+                {/* El asiento del cheque se lleva en pesos: sin TC, US$ 1.000 entran al mayor como $ 1.000. */}
+                {String(formData.IdMoneda) === '2' && (
+                  <div className="mt-2">
+                    <label className="text-xs font-bold text-amber-700 mb-1 block">
+                      Cotización del día * <span className="font-medium text-amber-600/70">(1 US$ = $ …)</span>
+                    </label>
+                    <input type="number" step="0.01" name="Cotizacion" value={formData.Cotizacion} onChange={handleChange}
+                      placeholder="Ej. 40.50"
+                      className="w-full border border-amber-200 bg-amber-50/50 rounded-xl px-4 py-2 font-black text-amber-900 focus:outline-none focus:ring-2 focus:ring-amber-500/20" />
+                    <p className="text-[11px] font-medium text-amber-600/80 mt-1">
+                      Con este tipo de cambio se contabiliza el cheque.
+                      {parseFloat(formData.Monto) > 0 && parseFloat(formData.Cotizacion) > 0
+                        ? ` US$ ${formData.Monto} = $ ${(parseFloat(formData.Monto) * parseFloat(formData.Cotizacion)).toLocaleString('es-UY', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}.`
+                        : ''}
+                    </p>
+                  </div>
+                )}
               </div>
 
               <div className="col-span-2 mt-1">

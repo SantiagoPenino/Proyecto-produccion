@@ -56,6 +56,7 @@ exports.getFinishingOrders = async (req, res) => {
                 SELECT
                     O.OrdenID, O.CodigoOrden, O.NoDocERP, O.Cliente, O.DescripcionTrabajo, O.Prioridad, O.Estado,
                     O.Material, O.Variante, O.FechaIngreso, O.Magnitud, O.UM, O.Nota, O.EstadoenArea,
+                    LTRIM(RTRIM(ISNULL(O.ModoRetiro, ''))) AS ModoRetiro,
                     -- Las etiquetas del producto terminado van a nombre de la orden MADRE
                     -- (la de impresión, dueña de los archivos): de ahí salen el contador
                     -- y el botón de reimprimir de la bandeja.
@@ -143,7 +144,13 @@ exports.getOrderDetails = async (req, res) => {
             .query(`
                 SELECT OT.ID, OT.ArchivoID, OT.TerminacionID, OT.Cantidad, OT.Estado,
                        LTRIM(RTRIM(ISNULL(OT.Ubicacion, ''))) AS Ubicacion,
-                       T.Nombre, T.UnidadCobro,
+                       -- Lo que definió el cliente: separación de los ojales o
+                       -- distancia del bolsillo al borde (cm). Si no lo tocó, el
+                       -- valor por defecto del catálogo.
+                       ISNULL(OT.ParamCliente, T.ParamCantidad) AS Param,
+                       T.ReglaCantidad, T.Nombre, T.UnidadCobro,
+                       A.Ancho, A.Alto, A.Copias,
+                       A.RutaAlmacenamiento,
                        A.NombreArchivo
                 FROM OrdenTerminaciones OT
                 INNER JOIN Terminaciones T ON T.TerminacionID = OT.TerminacionID
@@ -179,7 +186,20 @@ exports.getOrderDetails = async (req, res) => {
             logger.warn('[Finishing] Conteo por archivo no disponible:', eArch.message);
         }
 
-        res.json({ extras: extras.recordset, terminaciones: terminaciones.recordset, archivos });
+        // URL del arte para dibujarlo dentro del boceto. Los archivos de Drive se
+        // sirven por el proxy del backend (mismo que usa el control de impresión).
+        const conArte = terminaciones.recordset.map(t => {
+            const ruta = (t.RutaAlmacenamiento || '').trim();
+            if (!ruta) return t;
+            return {
+                ...t,
+                arteUrl: ruta.includes('drive.google.com')
+                    ? `/api/production-file-control/view-drive-file?url=${encodeURIComponent(ruta)}`
+                    : ruta
+            };
+        });
+
+        res.json({ extras: extras.recordset, terminaciones: conArte, archivos });
     } catch (e) {
         logger.error("Error getOrderDetails:", e);
         res.status(500).json({ error: e.message });
@@ -288,6 +308,101 @@ exports.updateExtraItem = async (req, res) => {
         res.json({ success: true });
     } catch (e) {
         logger.error("Error updateExtraItem:", e);
+        res.status(500).json({ error: e.message });
+    }
+};
+
+/**
+ * CONFIRMAR MAGNITUDES del trabajo real de terminaciones.
+ *
+ * El cliente pidió una cantidad estimada (ojales sugeridos, metros de soldadura);
+ * el taller confirma lo que REALMENTE hizo. Eso actualiza:
+ *   1. OrdenTerminaciones.Cantidad  → lo que ve el taller
+ *   2. ServiciosExtraOrden.Cantidad → la línea que se cobra
+ *   3. la cotización del pedido (misma vía que usa el detalle de orden)
+ *
+ * body: { items: [{ id, cantidad }] }  (id = OrdenTerminaciones.ID)
+ */
+exports.confirmarMagnitudes = async (req, res) => {
+    const { id } = req.params;               // OrdenID de la hermana TERMINAC
+    const items = Array.isArray(req.body?.items) ? req.body.items : [];
+    if (items.length === 0) return res.status(400).json({ error: 'No se recibió ninguna cantidad para confirmar.' });
+    try {
+        const pool = await getPool();
+        const cambios = [];
+        for (const it of items) {
+            const cant = parseFloat(it.cantidad);
+            if (!Number.isFinite(cant) || cant < 0) continue;
+
+            // La terminación (para saber a qué artículo de cobro corresponde)
+            const info = await pool.request()
+                .input('ID', sql.Int, parseInt(it.id))
+                .query(`SELECT OT.ID, OT.OrdenID, OT.ArchivoID, OT.Cantidad, OT.TerminacionID,
+                               LTRIM(RTRIM(ISNULL(T.CodArticulo,''))) AS CodArt, T.Nombre
+                        FROM OrdenTerminaciones OT
+                        JOIN Terminaciones T ON T.TerminacionID = OT.TerminacionID
+                        WHERE OT.ID = @ID`);
+            const row = info.recordset[0];
+            if (!row) continue;
+            if (parseFloat(row.Cantidad) === cant) continue;   // sin cambios
+
+            await pool.request()
+                .input('ID', sql.Int, row.ID)
+                .input('C', sql.Decimal(18, 2), cant)
+                .query('UPDATE OrdenTerminaciones SET Cantidad = @C WHERE ID = @ID');
+
+            // La línea de cobro vive en la orden de IMPRESIÓN (dueña del archivo),
+            // no en la hermana: se ubica por archivo + artículo.
+            if (row.CodArt) {
+                await pool.request()
+                    .input('AID', sql.Int, row.ArchivoID)
+                    .input('Cod', sql.VarChar(50), row.CodArt)
+                    .input('C', sql.Decimal(18, 2), cant)
+                    .query(`
+                        UPDATE SEO SET Cantidad = @C
+                        FROM ServiciosExtraOrden SEO
+                        WHERE LTRIM(RTRIM(SEO.CodArt)) = @Cod
+                          AND ISNULL(SEO.Observacion,'') LIKE N'%rminaci%por archivo%'
+                          AND SEO.OrdenID = (SELECT OrdenID FROM ArchivosOrden WHERE ArchivoID = @AID)`);
+            }
+            cambios.push({ nombre: row.Nombre, antes: parseFloat(row.Cantidad), ahora: cant, ordenImpresionArchivo: row.ArchivoID });
+        }
+
+        // Recotizar el pedido: las líneas cambiaron de cantidad
+        let recotizada = false;
+        if (cambios.length > 0) {
+            try {
+                const ordImp = await pool.request()
+                    .input('OID', sql.Int, id)
+                    .query(`SELECT TOP 1 AO.OrdenID FROM OrdenTerminaciones OT
+                            JOIN ArchivosOrden AO ON AO.ArchivoID = OT.ArchivoID
+                            WHERE OT.OrdenID = @OID`);
+                const ordenImpresion = ordImp.recordset[0]?.OrdenID || parseInt(id);
+                const { recotizarPedidoDeOrden } = require('./ordersController');
+                if (typeof recotizarPedidoDeOrden === 'function') {
+                    await recotizarPedidoDeOrden(pool, ordenImpresion, req.user?.id || 1, req.user?.usuario || 'Sistema');
+                    recotizada = true;
+                } else {
+                    // Fallback: el motor directo (misma vía, sin empujar a ERP)
+                    const doc = await pool.request().input('OID', sql.Int, ordenImpresion)
+                        .query('SELECT NoDocERP FROM Ordenes WHERE OrdenID = @OID');
+                    const noDoc = (doc.recordset[0]?.NoDocERP || '').toString().trim();
+                    if (noDoc) {
+                        const ERPSyncService = require('../services/erpSyncService');
+                        await ERPSyncService.syncFinalOrderIntegration(noDoc, req.user?.id || 1,
+                            String(req.user?.usuario || 'Sistema').substring(0, 99), null, { onlyCalculate: true });
+                        recotizada = true;
+                    }
+                }
+            } catch (eRec) {
+                logger.error('[Finishing] Error recotizando tras confirmar magnitudes:', eRec.message);
+            }
+        }
+
+        logger.info(`[Finishing] Magnitudes confirmadas en orden ${id}: ${cambios.length} cambio(s)${recotizada ? ' + cotización actualizada' : ''}`);
+        res.json({ success: true, cambios, recotizada });
+    } catch (e) {
+        logger.error('Error confirmarMagnitudes:', e);
         res.status(500).json({ error: e.message });
     }
 };

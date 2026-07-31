@@ -1143,12 +1143,19 @@ exports.createWebOrder = async (req, res) => {
                                     continue;
                                 }
                                 const cantTerm = parseFloat(term.cantidad) || 1;
+                                // Ubicacion (en qué bordes va) y ParamCliente (separación de los
+                                // ojales / distancia del bolsillo al borde) viajan igual que en
+                                // el pedido web: sin esto el taller no sabe dónde ni cómo hacerlo.
+                                const paramCli = (term.param !== undefined && term.param !== null && term.param !== '')
+                                    ? parseFloat(term.param) : null;
                                 await new sql.Request(transaction)
                                     .input('OID', sql.Int, newOID)
                                     .input('AID', sql.Int, archivoId)
                                     .input('TID', sql.Int, tid)
                                     .input('Cnt', sql.Decimal(18, 2), cantTerm)
-                                    .query("INSERT INTO OrdenTerminaciones (OrdenID, ArchivoID, TerminacionID, Cantidad) VALUES (@OID, @AID, @TID, @Cnt)");
+                                    .input('Ubi', sql.VarChar(30), term.ubicacion ? String(term.ubicacion).trim() : null)
+                                    .input('Par', sql.Decimal(9, 2), isNaN(paramCli) ? null : paramCli)
+                                    .query("INSERT INTO OrdenTerminaciones (OrdenID, ArchivoID, TerminacionID, Cantidad, Ubicacion, ParamCliente) VALUES (@OID, @AID, @TID, @Cnt, @Ubi, @Par)");
 
                                 if (tInfo.CodArticulo) {
                                     await new sql.Request(transaction)
@@ -1157,9 +1164,11 @@ exports.createWebOrder = async (req, res) => {
                                         .input('Des', sql.NVarChar(255), `Terminación: ${tInfo.Nombre}`)
                                         .input('Cnt', sql.Decimal(18, 2), cantTerm)
                                         .query(`
+                                            -- Estado OK de entrada: la línea es solo para facturar; el
+                                            -- trabajo se controla en el área de Terminaciones.
                                             INSERT INTO ServiciosExtraOrden
-                                            (OrdenID, CodArt, CodStock, Descripcion, Cantidad, PrecioUnitario, TotalLinea, Observacion, FechaRegistro)
-                                            VALUES (@OID, @Cod, '', @Des, @Cnt, 0, 0, 'Terminación por archivo (WebOrder)', GETDATE())
+                                            (OrdenID, CodArt, CodStock, Descripcion, Cantidad, PrecioUnitario, TotalLinea, Observacion, FechaRegistro, Estado, Controlcopias)
+                                            VALUES (@OID, @Cod, '', @Des, @Cnt, 0, 0, 'Terminación por archivo (WebOrder)', GETDATE(), 'OK', @Cnt)
                                         `);
                                 }
                             }

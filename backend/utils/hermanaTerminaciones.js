@@ -57,19 +57,22 @@ async function crearHermanaTerminaciones(transaction, ecouvId) {
         .input('Nota', sql.NVarChar(sql.MAX), `[TERMINACIONES DE ${String(o.CodigoOrden || '').trim()}]${o.Nota ? ' ' + o.Nota : ''}`)
         .input('Mag', sql.VarChar(50), String(cantTerm))
         .input('CliId', sql.Int, o.CliIdCliente)
+        // Forma de envío del pedido: el taller de terminaciones también necesita saber
+        // si el trabajo se retira, va por encomienda o a domicilio.
+        .input('ModoRet', sql.VarChar(100), o.ModoRetiro || null)
         .query(`
             INSERT INTO Ordenes (
                 AreaID, Cliente, CodCliente, IdClienteReact, DescripcionTrabajo, Prioridad,
                 FechaIngreso, FechaEstimadaEntrega, Material, Variante,
                 CodigoOrden, NoDocERP, Nota, Magnitud, ProximoServicio, UM,
-                Estado, EstadoenArea, CliIdCliente
+                Estado, EstadoenArea, CliIdCliente, ModoRetiro
             )
             OUTPUT INSERTED.OrdenID
             VALUES (
                 'TERMINAC', @Cliente, @CodCliente, @IdCliR, @Desc, @Prio,
                 GETDATE(), @FEE, @Mat, @Var,
                 @Cod, @Doc, @Nota, @Mag, 'DEPOSITO', 'u',
-                'Pendiente', 'Pendiente', @CliId
+                'Pendiente', 'Pendiente', @CliId, @ModoRet
             )
         `);
     const hermanaId = insH.recordset[0].OrdenID;

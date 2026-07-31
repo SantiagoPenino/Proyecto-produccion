@@ -31,7 +31,7 @@ import api from '../../services/api';
 import { generarPdfEstadoCuenta, generarPdfEstadoCuentaResumen } from '../../utils/pdfGenerator';
 import { exportarExcelEstadoCuenta } from '../../utils/excelGenerator';
 import ClienteBilletera from '../common/ClienteBilletera';
-import { fechaOrden } from '../../utils/fechas';
+import { fechaOrden, fmtFechaHora } from '../../utils/fechas';
 // Reuso directo de las piezas ya construidas y probadas de la vista de cuentas.
 import {
   fetchAPI, fmt, FilaCliente, MovimientosPanel, PlanesPanel, ModalSaldoInicial,
@@ -637,7 +637,7 @@ function ResumenDocumentosPanel({ CliIdCliente, desde, hasta, trigger, incluirAn
                     const nroOficial = m.cfeEstado === 'ACEPTADO_DGI' ? parseNroOficialDgi(m.cfeNumeroOficial) : null;
                     return (
                       <tr key={m.key} className={`border-b border-slate-100 last:border-0 hover:bg-slate-50/60 ${esDoc ? '' : 'bg-emerald-50/20'}`}>
-                        <td className="px-4 py-3 tabular-nums text-slate-500 whitespace-nowrap align-middle">{fmtFechaCorta(m.fecha)}</td>
+                        <td className="px-4 py-3 tabular-nums text-slate-500 whitespace-nowrap align-middle text-xs">{fmtFechaHora(m.fecha)}</td>
                         {/* TIPO y DOCUMENTO en columnas separadas: así los códigos de
                             documento quedan alineados uno debajo del otro (como la vista de
                             cuentas), sin importar el largo del badge de tipo. */}
