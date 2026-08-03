@@ -344,7 +344,7 @@ const MoveOrderModal = ({ isOpen, onClose, onConfirm, currentRollId, areaCode })
     );
 };
 
-const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { }, lockReorder = false, readOnly = false, avancePorCopias = false }) => {
+const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { }, lockReorder = false, readOnly = false, avancePorCopias = false, segundaEstacion = false, palabraMarca = '' }) => {
     // Referencia para cerrar al hacer clic fuera
     const modalRef = useRef(null);
 
@@ -505,7 +505,16 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { }, lo
     // Cuando el lote está en una máquina no-impresora (lockReorder, ej. calandra en SB) el check
     // pasa a ser "Calandrado" (Ordenes.Calandrado) en vez de "Impreso". El estado local es el mismo
     // (una orden está en un solo tipo de máquina a la vez); solo cambia el campo que refleja/persiste.
-    const printedField = lockReorder ? 'calandered' : 'printed';
+    // La marca de la SEGUNDA ESTACIÓN (la máquina que sigue a la impresora) comparte columna:
+    // Ordenes.Calandrado. En SB esa estación es la calandra y la marca se llama "calandrado"; en TPU
+    // es el samurai y se llama "cortado". Es el mismo concepto — "ya pasó por la máquina de después" —
+    // así que reusa el campo y solo cambia cómo se lo nombra en pantalla.
+    const enSegundaEstacion = lockReorder || segundaEstacion;
+    const printedField = enSegundaEstacion ? 'calandered' : 'printed';
+    // Participio para los mensajes y el encabezado. El singular va por mapa y no por regex:
+    // 'impresas' → 'impresado' no existe.
+    const marcaPlural = palabraMarca || (enSegundaEstacion ? 'calandradas' : 'impresas');
+    const marcaSingular = ({ impresas: 'impreso', calandradas: 'calandrado', cortadas: 'cortado' })[marcaPlural] || marcaPlural;
     const [printedOrderIds, setPrintedOrderIds] = useState(() => (freshRoll?.orders || []).filter(o => o[printedField]).map(o => o.id));
     const backendPrintedKey = orders.filter(o => o[printedField]).map(o => o.id).sort((a, b) => a - b).join(',');
     useEffect(() => {
@@ -537,7 +546,11 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { }, lo
     const cuentaCopias = (o) => avancePorCopias && !esOrdenParcial(o);
     const [cantidadesLocal, setCantidadesLocal] = useState({});
     const [editandoCantidad, setEditandoCantidad] = useState(null); // orderId en edición
-    const getCantidadImpresa = (o) => cantidadesLocal[o.id] !== undefined ? cantidadesLocal[o.id] : (o.cantidadImpresa || 0);
+    // En la segunda estación el avance es el de CORTE (CantidadCortada); en la impresora, el de
+    // impresión. Es el mismo contador en pantalla, apoyado en columnas distintas.
+    const getCantidadImpresa = (o) => cantidadesLocal[o.id] !== undefined
+        ? cantidadesLocal[o.id]
+        : ((enSegundaEstacion ? o.cantidadCortada : o.cantidadImpresa) || 0);
     // Total objetivo: copias (MIMAKI) y piezas → entero; metros → magnitud exacta (con decimales)
     const getTotalUnidades = (o) => {
         if (cuentaCopias(o)) return Math.max(1, Math.round(o.totalCopias || 0));
@@ -546,7 +559,7 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { }, lo
     const printedUnits = orders.reduce((s, o) => s + (esOrdenTPU(o) ? Math.min(getCantidadImpresa(o), getTotalUnidades(o)) : 0), 0);
 
     // Al llegar datos frescos del server, soltar los overrides locales (el server es la verdad)
-    const backendCantidadKey = orders.map(o => `${o.id}:${o.cantidadImpresa || 0}`).join(',');
+    const backendCantidadKey = orders.map(o => `${o.id}:${(enSegundaEstacion ? o.cantidadCortada : o.cantidadImpresa) || 0}`).join(',');
     useEffect(() => { setCantidadesLocal({}); }, [backendCantidadKey]);
 
     const handleGuardarCantidad = async (o, rawValue) => {
@@ -564,11 +577,11 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { }, lo
         setCantidadesLocal(prev => ({ ...prev, [o.id]: nuevo }));
         setPrintedOrderIds(prev => nuevo >= total ? [...new Set([...prev, o.id])] : prev.filter(x => x !== o.id));
         try {
-            await rollsService.setCantidadImpresa(o.id, nuevo);
+            await rollsService.setCantidadImpresa(o.id, nuevo, enSegundaEstacion);
         } catch (e) {
             setCantidadesLocal(prev => ({ ...prev, [o.id]: previo }));
             setPrintedOrderIds(prev => previo >= total ? [...new Set([...prev, o.id])] : prev.filter(x => x !== o.id));
-            toast.error('No se pudo guardar el avance de impresión');
+            toast.error(`No se pudo guardar el avance de ${enSegundaEstacion ? 'corte' : 'impresión'}`);
         }
     };
 
@@ -850,14 +863,14 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { }, lo
         const willPrint = !printedOrderIds.includes(id);
         if (!canTogglePrinted(id)) {
             toast.error(willPrint
-                ? `Tenés que marcar ${lockReorder ? 'calandradas' : 'impresas'} las órdenes anteriores primero (se procesa en orden)`
+                ? `Tenés que marcar ${marcaPlural} las órdenes anteriores primero (se procesa en orden)`
                 : 'Primero desmarcá las órdenes posteriores');
             return;
         }
         setPrintedOrderIds(prev => willPrint ? [...prev, id] : prev.filter(x => x !== id));
-        (lockReorder ? rollsService.setCalandered : rollsService.setPrinted)(id, willPrint).catch(() => {
+        (enSegundaEstacion ? rollsService.setCalandered : rollsService.setPrinted)(id, willPrint).catch(() => {
             setPrintedOrderIds(prev => willPrint ? prev.filter(x => x !== id) : [...prev, id]);
-            toast.error(`No se pudo guardar el estado de ${lockReorder ? 'calandrado' : 'impreso'}`);
+            toast.error(`No se pudo guardar el estado de ${marcaSingular}`);
         });
     };
 
@@ -888,7 +901,7 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { }, lo
             return next;
         });
         ids.forEach(id => {
-            (lockReorder ? rollsService.setCalandered : rollsService.setPrinted)(id, willPrint).catch(() => {
+            (enSegundaEstacion ? rollsService.setCalandered : rollsService.setPrinted)(id, willPrint).catch(() => {
                 setPrintedOrderIds(prev => willPrint ? prev.filter(x => x !== id) : [...new Set([...prev, id])]);
                 toast.error(`No se pudo guardar el estado de ${lockReorder ? 'calandrado' : 'impreso'}`);
             });
@@ -1422,7 +1435,7 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { }, lo
         };
         const persistSiValido = (flatIds) => {
             if (rompeSecuencia(flatIds)) {
-                toast.error(`No se puede mover por encima de las órdenes ya ${lockReorder ? 'calandradas' : 'impresas'} (se procesa en orden)`);
+                toast.error(`No se puede mover por encima de las órdenes ya ${marcaPlural} (se procesa en orden)`);
                 return;
             }
             persistOrder(flatIds);
@@ -1459,7 +1472,7 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { }, lo
         items.splice(result.destination.index, 0, reorderedItem);
 
         if (rompeSecuencia(items.map(o => o.id || o.OrdenID))) {
-            toast.error(`No se puede mover por encima de las órdenes ya ${lockReorder ? 'calandradas' : 'impresas'} (se procesa en orden)`);
+            toast.error(`No se puede mover por encima de las órdenes ya ${marcaPlural} (se procesa en orden)`);
             return;
         }
 
@@ -1602,7 +1615,7 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { }, lo
                             <div className="flex justify-between items-center mb-2">
                                 <span className={`text-[9px] font-black uppercase tracking-widest flex items-center gap-1 ${allPrinted ? 'text-emerald-600' : 'text-zinc-400'}`}>
                                     {allPrinted && <i className="fa-solid fa-circle-check" />}
-                                    Total {lockReorder ? 'Calandrado' : 'Impreso'}
+                                    Total {marcaSingular.charAt(0).toUpperCase() + marcaSingular.slice(1)}
                                 </span>
                                 <span className="text-xs font-bold text-zinc-600">
                                     <span className={`text-emerald-600 ${allPrinted ? 'font-black' : ''}`}>{isLoteTPU ? printedUnits : printedMeters.toFixed(1)}</span>
@@ -1621,7 +1634,7 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { }, lo
                                 </div>
                             </div>
                             <div className={`text-[9px] mt-1 text-right ${allPrinted ? 'text-emerald-600 font-black' : 'text-zinc-400 font-bold'}`}>
-                                {allPrinted ? `✓ ¡Todo ${lockReorder ? 'calandrado' : 'impreso'}!` : `${printedCount}/${totalOrders} ${lockReorder ? 'calandradas' : 'impresas'}`}
+                                {allPrinted ? `✓ ¡Todo ${marcaSingular}!` : `${printedCount}/${totalOrders} ${marcaPlural}`}
                             </div>
                         </div>
 
@@ -1898,7 +1911,7 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { }, lo
                                         <th className="px-4 py-3 w-48">Cliente / Trabajo</th>
                                         <th className="px-4 py-3 w-48">Material / Variante</th>
                                         <th className="px-4 py-3 w-16 text-center"><i className="fa-solid fa-paperclip" /></th>
-                                        <th className="px-4 py-3 w-20 text-center">Metros</th>
+                                        <th className="px-4 py-3 w-20 text-center">{isLoteTPU ? 'Unidades' : 'Metros'}</th>
                                         <th className="px-4 py-3 w-28 text-center">Prioridad</th>
                                         <th className="px-4 py-3 w-10 text-center"><i className="fa-regular fa-comment-dots" /></th>
                                         <th className="px-4 py-3 w-44 text-center">Acciones</th>
@@ -1998,8 +2011,8 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { }, lo
                                                 )}
                                             </td>
                                             <td className="px-4 py-3 text-center w-20">
-                                                <span className="font-black text-zinc-800 text-sm">{o.magnitude || 0}</span>
-                                                <span className="text-[10px] text-zinc-400 ml-0.5">m</span>
+                                                <span className="font-black text-zinc-800 text-sm">{isLoteTPU ? Math.round(o.magnitude || 0) : (o.magnitude || 0)}</span>
+                                                <span className="text-[10px] text-zinc-400 ml-0.5">{isLoteTPU ? 'u' : 'm'}</span>
                                                 {copiasBandera(o) > 0 && (
                                                     <div className="text-[10px] font-bold text-brand-cyan leading-tight" title="Cantidad de banderas (copias del arte)">
                                                         {copiasBandera(o)} {copiasBandera(o) === 1 ? 'bandera' : 'banderas'}

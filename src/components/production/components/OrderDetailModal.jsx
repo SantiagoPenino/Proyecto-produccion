@@ -16,6 +16,13 @@ import ModalConfirmacionFalla from './ModalConfirmacionFalla';
 import ModalLiberacionFalla from './ModalLiberacionFalla';
 import Swal from 'sweetalert2';
 
+// Visor 3D del parche TPU (el mismo del portal, en modo interno: el diseñador elige las texturas).
+// Lazy: carga three.js/pdfjs solo si se abre.
+const Tpu3DViewer = React.lazy(() => import('../../../client-portal/modulos/Tpu3DViewer'));
+
+// Capas del arte TPU: son EXACTAMENTE estas, ni una más ni una menos. Espeja CAPAS_ARTE_TPU del
+// backend (ordersController) — el que manda es el backend, esto es UX para no dejar subir de más.
+const CAPAS_ARTE_TPU = 5;
 
 const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) => {
     // Estado Pestañas
@@ -58,34 +65,30 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
     const [loadingLabels, setLoadingLabels] = useState(false);
     const [draftStates, setDraftStates] = useState({ status: '', areaStatus: '' });
 
-    // TPU — texturas por zona: lo que el cliente eligió en el visor 3D al aprobar el boceto.
-    // Producción las tiene que ver (es lo que se fabrica) y puede corregirlas.
-    const [texturasOrden, setTexturasOrden] = useState([]);   // filas de OrdenTexturasTPU
-    const [catalogoTexturas, setCatalogoTexturas] = useState([]);
-    const [zonaEditando, setZonaEditando] = useState(null);   // índice de zona en edición | null
-    const [guardandoTextura, setGuardandoTextura] = useState(false);
+    // Fase del flujo TPU: hasta que el cliente aprueba, lo único que se sube es el boceto.
+    // También decide el texto del botón del 3D (ver vs. seleccionar texturas).
+    // Las texturas elegidas NO se listan acá: se ven y se corrigen en el visor 3D, que es donde
+    // se ve lo que se está tocando.
+    const [tpuEstado, setTpuEstado] = useState({ aprobado: false, rechazado: false, enLote: false, texturasElige: null });
+    const [visor3D, setVisor3D] = useState(false); // visor TPU interno (elegir texturas)
 
     // Reuso de matriz TPU con cantidad distinta: la orden trae arte "base" a regenerar y NO va a
-    // aprobación del cliente — al subir las 6 capas nuevas, entra directo a producción.
+    // aprobación del cliente — al subir las capas nuevas, entra directo a producción.
     const esReusoRegen = isTPU && (
         /\[REUSO-REGEN\]/i.test(String(currentOrder?.Nota || currentOrder?.nota || order?.Nota || order?.nota || '')) ||
         files.some(f => /REGENERAR|ARTE BASE/i.test(String(f.TipoArchivo || f.tipo || f.NombreArchivo || f.nombre || '')))
     );
 
-    // TPU: traer la elección de texturas + el catálogo (para mostrar nombre y muestra).
+    // TPU: en qué fase está el flujo (aprobado / rechazado / en lote / quién elige las texturas).
     useEffect(() => {
         if (!isTPU || !currentOrder?.id) return;
         let vivo = true;
         (async () => {
             try {
-                const [t, c] = await Promise.all([
-                    ordersService.getTexturasOrden(currentOrder.id),
-                    ordersService.getCatalogoTexturas(),
-                ]);
+                const t = await ordersService.getTexturasOrden(currentOrder.id);
                 if (!vivo) return;
-                setTexturasOrden(t?.data || []);
-                setCatalogoTexturas(c?.data || []);
-            } catch (_) { /* sin texturas: la sección simplemente no aparece */ }
+                setTpuEstado({ aprobado: !!t?.aprobado, rechazado: !!t?.rechazado, enLote: !!t?.enLote, texturasElige: t?.texturasElige || null });
+            } catch (_) { /* sin datos: el modal se comporta como antes de la aprobación */ }
         })();
         return () => { vivo = false; };
     }, [isTPU, currentOrder?.id]);
@@ -293,8 +296,21 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
     };
 
     // TPU: eliminar un archivo de arte (por si el operario se equivocó al subir). Borra la fila.
-    const handleDeleteFileTPU = (fileId) => {
-        if (!confirm('¿Eliminar este archivo? Esta acción no se puede deshacer.')) return;
+    const handleDeleteFileTPU = async (fileId) => {
+        // Modal propio en vez del confirm() del navegador: el nativo se dibuja pegado al borde de
+        // la ventana, fuera del modal de la orden, y no se puede leer como parte de la pantalla.
+        const r = await Swal.fire({
+            title: '¿Eliminar el boceto?',
+            html: 'Se borra el archivo de la orden. <b>No se puede deshacer.</b><br/>Después vas a poder subir uno nuevo.',
+            icon: 'warning',
+            showCancelButton: true,
+            confirmButtonText: 'Sí, eliminar',
+            cancelButtonText: 'Cancelar',
+            confirmButtonColor: '#dc2626',
+            cancelButtonColor: '#71717a',
+            customClass: { container: '!z-[99999]' },
+        });
+        if (!r.isConfirmed) return;
         toast.promise(
             ordersService.deleteFile(fileId),
             {
@@ -347,6 +363,11 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
     const printFilesVista = productionFiles.filter(f => !esBocetoProduccion(f));
     const bocetosProduccion = productionFiles.filter(esBocetoProduccion);
 
+    // Fase BOCETO del flujo TPU: el cliente todavía no aprobó → lo único que se sube es el boceto
+    // de producción (un solo PDF). El resto del arte recién va después de la aprobación. El reuso
+    // no pasa por aprobación, así que sube sus capas directo.
+    const faseBocetoTPU = isTPU && !esReusoRegen && !tpuEstado.aprobado;
+
     // Cotizar Productos = select * from ServiciosExtraOrden
     const serviceFiles = files.filter(f => f.Categoria === 'servicio' || (f.tipo && servTypes.includes(normalizeType(f.tipo))));
 
@@ -371,16 +392,35 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
     // TPU: subir los PDFs de arte (producción) a la orden desde el detalle
     const handleUploadTPUFiles = async (fileList) => {
         const todos = Array.from(fileList || []);
-        const validos = todos.filter(f => {
+        let validos = todos.filter(f => {
             const n = (f.name || '').toLowerCase();
             return n.endsWith('.pdf') || n.endsWith('.plt') || f.type === 'application/pdf';
         });
         if (validos.length === 0) return toast.error('Solo se permiten archivos PDF o PLT.');
         if (validos.length !== todos.length) toast.error('Se ignoraron archivos que no son PDF/PLT.');
-        // Máximo 6 archivos de arte (sin contar los cancelados)
-        const yaHay = productionFiles.filter(f => (f.Estado || f.estado || f.EstadoArchivo || '').toUpperCase() !== 'CANCELADO').length;
-        if (yaHay + validos.length > 6) {
-            return toast.error(`Máximo 6 archivos de arte (ya hay ${yaHay}).`);
+
+        const activos = productionFiles.filter(f => (f.Estado || f.estado || f.EstadoArchivo || '').toUpperCase() !== 'CANCELADO');
+        const yaHay = activos.length;
+        // Para el tope del arte NO cuenta el boceto: es lo que el cliente aprobó, no una capa, y
+        // se muestra en la pestaña de referencias. Contándolo, el tope se comía una capa de arte.
+        const yaHayArte = activos.filter(f => !esBocetoProduccion(f)).length;
+        if (faseBocetoTPU) {
+            // Antes de la aprobación: UN archivo, PDF, y es el boceto de producción.
+            if (yaHay >= 1) return toast.error('Ya hay un boceto de producción cargado. Envialo a aprobación (si está mal, borralo y subí otro).');
+            if (todos.length > 1) return toast.error('Antes de la aprobación se sube UN solo archivo: el boceto de producción.');
+            const f = validos[0];
+            if (!(f.name || '').toLowerCase().endsWith('.pdf') && f.type !== 'application/pdf') {
+                return toast.error('El boceto de producción debe ser un PDF.');
+            }
+            // La convención es que el nombre lleve "boceto" (así lo reconocen el portal y el visor
+            // 3D). Si el operario no lo nombró así, se renombra solo en vez de rebotar la subida.
+            validos = /boceto/i.test(f.name || '')
+                ? [f]
+                : [new File([f], `BOCETO-${f.name}`, { type: f.type })];
+        } else if (yaHayArte + validos.length > CAPAS_ARTE_TPU) {
+            // El arte son CAPAS_ARTE_TPU capas exactas (sin contar las canceladas). Acá es tope
+            // porque se suben de a poco; el "ni una menos" se exige al enviar.
+            return toast.error(`El arte son ${CAPAS_ARTE_TPU} archivos, ni más ni menos (ya hay ${yaHayArte}).`);
         }
         if (!currentOrder?.id) return;
         setUploadingTPU(true);
@@ -409,32 +449,16 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
         }
     };
 
-    // TPU: el operario corrige la textura de una zona. Se manda SOLO esa zona: el backend no toca
-    // las demás, así que las que eligió el cliente conservan su marca.
-    const handleCambiarTextura = async (zonaIndice, archivo) => {
-        if (!currentOrder?.id) return;
-        setGuardandoTextura(true);
-        try {
-            await ordersService.setTexturasOrden(currentOrder.id, { [zonaIndice]: archivo });
-            const t = await ordersService.getTexturasOrden(currentOrder.id);
-            setTexturasOrden(t?.data || []);
-            setZonaEditando(null);
-            toast.success(`Zona ${zonaIndice + 1} actualizada.`);
-        } catch (e) {
-            toast.error('Error: ' + (e?.response?.data?.error || e?.message || ''));
-        } finally {
-            setGuardandoTextura(false);
-        }
-    };
-
     // TPU: enviar la orden a aprobación del cliente (con confirmación)
     const handleEnviarAprobacion = async () => {
         if (!currentOrder?.id) return;
+        if (tpuEstado.aprobado) return toast.error('El cliente ya aprobó este pedido.');
         const activos = productionFiles.filter(f => (f.Estado || f.estado || f.EstadoArchivo || '').toUpperCase() !== 'CANCELADO');
         if (esReusoRegen) {
             // El reuso no pasa por el cliente: va directo a fabricar, así que necesita el arte completo.
-            if (activos.length !== 6) {
-                return toast.error(`Se necesitan exactamente 6 archivos de arte para enviar a producción (hay ${activos.length}).`);
+            const capasArte = activos.filter(f => !esBocetoProduccion(f)).length;
+            if (capasArte !== CAPAS_ARTE_TPU) {
+                return toast.error(`Se necesitan exactamente ${CAPAS_ARTE_TPU} archivos de arte para enviar a producción (hay ${capasArte}).`);
             }
         } else if (!activos.some(esBocetoProduccion)) {
             // Lo único que se manda a aprobar es el BOCETO; el resto del arte se sube después.
@@ -443,7 +467,7 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
         const r = await Swal.fire({
             title: esReusoRegen ? '¿Enviar a producción?' : '¿Enviar a aprobación del cliente?',
             html: esReusoRegen
-                ? 'Es un <b>reuso de matriz</b> con cantidad distinta: el diseño ya está aprobado.<br/>Con las 6 capas nuevas, la orden entra <b>directo a producción</b> (sin aprobación del cliente).'
+                ? `Es un <b>reuso de matriz</b> con cantidad distinta: el diseño ya está aprobado.<br/>Con las ${CAPAS_ARTE_TPU} capas nuevas, la orden entra <b>directo a producción</b> (sin aprobación del cliente).`
                 : 'El cliente verá el <b>boceto</b> y deberá aprobarlo.<br/>La orden queda <b>retenida</b> hasta que apruebe.',
             icon: 'question',
             showCancelButton: true,
@@ -1155,6 +1179,13 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
                             <label className="text-[10px] uppercase font-bold text-zinc-400 block mb-1">Magnitud Global</label>
                             <div className="font-black text-brand-cyan text-lg leading-none">
                                 {(() => {
+                                    // TPU no se recalcula: su Magnitud es la CANTIDAD PEDIDA en
+                                    // unidades, fijada al crear el pedido. Sus archivos son las capas
+                                    // del arte (sin metros) y su único servicio extra es la matriz,
+                                    // con Cantidad 1 — sumar eso mostraba "1.00 U" en una orden de 15.
+                                    // Mismo criterio que el backend (recalculateOrderMagnitude).
+                                    if (isTPU) return currentOrder.magnitude || '0';
+
                                     // 1. Suma de Producción
                                     const prodTotal = productionFiles.reduce((acc, f) => {
                                         const fStatus = (f.Estado || f.estado || f.EstadoArchivo || '').toUpperCase();
@@ -1391,7 +1422,74 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
                             {/* PESTAÑA: ARCHIVOS DE PRODUCCIÓN */}
                             {activeTab === 'files' && (
                                 <div className="space-y-2 pr-1 custom-scrollbar">
-                                    {isTPU && (
+                                    {/* Boceto rechazado: el operario tiene que borrarlo (desde Referencias),
+                                        subir el corregido y reenviar a aprobación. */}
+                                    {isTPU && tpuEstado.rechazado && (
+                                        <div className="flex items-center gap-2 p-3 mb-2 rounded-xl bg-red-50 border border-red-200 text-red-700 text-xs font-bold">
+                                            <i className="fa-solid fa-circle-xmark"></i>
+                                            El cliente RECHAZÓ el boceto. Borralo en Referencias, subí el corregido y reenvialo a aprobación.
+                                        </div>
+                                    )}
+
+                                    {/* Acción principal del flujo TPU, ARRIBA de todo: antes quedaba al
+                                        fondo de la pestaña, después del listado, y había que scrollear
+                                        para encontrarla. */}
+                                    {isTPU && productionFiles.length > 0 && (
+                                        esReusoRegen ? (
+                                            currentOrder?.status === 'Cargando...' ? (
+                                                <button onClick={handleEnviarAprobacion} className="w-full flex items-center justify-center gap-2 py-3 mb-2 rounded-xl bg-emerald-600 text-white text-sm font-bold uppercase tracking-wide hover:opacity-90 transition-opacity shadow-sm">
+                                                    <i className="fa-solid fa-industry"></i> Enviar a producción
+                                                </button>
+                                            ) : (
+                                                <div className="flex items-center justify-center gap-2 py-3 mb-2 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-700 text-xs font-bold uppercase tracking-wide">
+                                                    <i className="fa-solid fa-check"></i> En producción
+                                                </div>
+                                            )
+                                        ) : tpuEstado.aprobado ? (
+                                            // Aprobado: el botón de enviar NO vuelve a aparecer — re-enviarla
+                                            // retendría una orden que ya está en producción.
+                                            <div className="flex items-center justify-center gap-2 py-3 mb-2 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-700 text-xs font-bold uppercase tracking-wide">
+                                                <i className="fa-solid fa-check-double"></i> Boceto aprobado por el cliente — subí el arte ({CAPAS_ARTE_TPU} capas)
+                                            </div>
+                                        ) : currentOrder?.status === 'Cargando...' ? (
+                                            <div className="flex items-center justify-center gap-2 py-3 mb-2 rounded-xl bg-amber-50 border border-amber-200 text-amber-700 text-xs font-bold uppercase tracking-wide">
+                                                <i className="fa-regular fa-clock"></i> Esperando aprobación del cliente
+                                            </div>
+                                        ) : (
+                                            <button onClick={handleEnviarAprobacion} className="w-full flex items-center justify-center gap-2 py-3 mb-2 rounded-xl bg-brand-cyan text-white text-sm font-bold uppercase tracking-wide hover:opacity-90 transition-opacity shadow-sm">
+                                                <i className="fa-solid fa-paper-plane"></i> Enviar a cliente para aprobación
+                                            </button>
+                                        )
+                                    )}
+
+                                    {/* Visor 3D interno: con el boceto cargado, el diseñador puede elegir
+                                        las texturas por zona antes de mandar a aprobación (o corregirlas
+                                        después). Es el mismo visor del portal, en modo interno. */}
+                                    {/* Cliente aprobó SIN elegir texturas → las define el diseñador acá. */}
+                                    {isTPU && tpuEstado.aprobado && tpuEstado.texturasElige === 'DISENADOR' && (
+                                        <div className="flex items-center gap-2 p-3 mb-2 rounded-xl bg-brand-cyan/5 border border-brand-cyan/30 text-brand-cyan text-xs font-bold">
+                                            <i className="fa-solid fa-wand-magic-sparkles"></i>
+                                            El cliente aprobó el boceto sin elegir texturas: definilas en el visor 3D.
+                                        </div>
+                                    )}
+
+                                    {isTPU && bocetosProduccion.length > 0 && (
+                                        <button
+                                            type="button"
+                                            onClick={() => setVisor3D(true)}
+                                            className="w-full flex items-center justify-center gap-2 py-2.5 mb-2 rounded-xl border border-brand-cyan/40 text-brand-cyan text-xs font-bold uppercase tracking-wide hover:bg-brand-cyan/5 transition-colors"
+                                        >
+                                            {/* El texto dice de quién es la decisión: solo cuando el
+                                                cliente aprobó sin elegir le toca definirlas al
+                                                diseñador. En los otros casos el visor abre para ver
+                                                (con candado adentro si igual hay que corregir). */}
+                                            <i className="fa-solid fa-cube"></i> {tpuEstado.texturasElige === 'DISENADOR' ? 'Seleccionar texturas' : 'Ver en 3D'}
+                                        </button>
+                                    )}
+
+                                    {/* En fase boceto con el boceto ya cargado no hay nada más que subir:
+                                        el siguiente paso es el botón de enviar a aprobación. */}
+                                    {isTPU && !(faseBocetoTPU && bocetosProduccion.length > 0) && (
                                         <label className={`relative overflow-hidden flex items-center justify-center gap-2 py-3 mb-2 rounded-xl border-2 border-dashed transition-colors ${uploadingTPU ? 'border-brand-cyan/30 text-brand-cyan pointer-events-none' : 'border-brand-cyan/40 text-brand-cyan hover:bg-brand-cyan/5 cursor-pointer'}`}>
                                             {/* Barra de progreso de la subida (relleno de fondo, % por bytes) */}
                                             {uploadingTPU && progresoTPU && (
@@ -1406,9 +1504,14 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
                                                     ? (progresoTPU
                                                         ? `Subiendo ${progresoTPU.actual}/${progresoTPU.total} · ${progresoTPU.pct}%`
                                                         : 'Subiendo...')
-                                                    : 'Subir arte (PDF / PLT · máx. 6)'}
+                                                    : faseBocetoTPU
+                                                        ? 'Subir boceto de producción (PDF)'
+                                                        : `Subir arte (PDF / PLT · ${CAPAS_ARTE_TPU} capas)`}
                                             </span>
-                                            <input type="file" accept="application/pdf,.pdf,.plt" multiple className="hidden" disabled={uploadingTPU}
+                                            <input type="file"
+                                                accept={faseBocetoTPU ? 'application/pdf,.pdf' : 'application/pdf,.pdf,.plt'}
+                                                multiple={!faseBocetoTPU}
+                                                className="hidden" disabled={uploadingTPU}
                                                 onChange={(e) => { handleUploadTPUFiles(e.target.files); e.target.value = ''; }} />
                                         </label>
                                     )}
@@ -1475,8 +1578,9 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
                                             );
                                         })
                                     )}
-                                    {/* Footer Totales */}
-                                    {productionFiles.length > 0 && (
+                                    {/* Footer Totales — en TPU no aplica: la orden es por unidades y el
+                                        metraje de las capas del arte no significa nada. */}
+                                    {!isTPU && productionFiles.length > 0 && (
                                         <div className="mt-4 pt-3 border-t border-zinc-100 flex justify-between items-center text-sm px-2">
                                             <span className="font-bold text-zinc-400 uppercase text-xs tracking-wider">Metraje Total Estimado</span>
                                             <span className="font-black text-brand-cyan text-xl font-mono">
@@ -1487,27 +1591,6 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
                                                 }, 0).toFixed(2)}m
                                             </span>
                                         </div>
-                                    )}
-                                    {isTPU && productionFiles.length > 0 && (
-                                        esReusoRegen ? (
-                                            currentOrder?.status === 'Cargando...' ? (
-                                                <button onClick={handleEnviarAprobacion} className="mt-4 w-full flex items-center justify-center gap-2 py-3 rounded-xl bg-emerald-600 text-white text-sm font-bold uppercase tracking-wide hover:opacity-90 transition-opacity shadow-sm">
-                                                    <i className="fa-solid fa-industry"></i> Enviar a producción
-                                                </button>
-                                            ) : (
-                                                <div className="mt-4 flex items-center justify-center gap-2 py-3 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-700 text-xs font-bold uppercase tracking-wide">
-                                                    <i className="fa-solid fa-check"></i> En producción
-                                                </div>
-                                            )
-                                        ) : currentOrder?.status === 'Cargando...' ? (
-                                            <div className="mt-4 flex items-center justify-center gap-2 py-3 rounded-xl bg-amber-50 border border-amber-200 text-amber-700 text-xs font-bold uppercase tracking-wide">
-                                                <i className="fa-regular fa-clock"></i> Esperando aprobación del cliente
-                                            </div>
-                                        ) : (
-                                            <button onClick={handleEnviarAprobacion} className="mt-4 w-full flex items-center justify-center gap-2 py-3 rounded-xl bg-brand-cyan text-white text-sm font-bold uppercase tracking-wide hover:opacity-90 transition-opacity shadow-sm">
-                                                <i className="fa-solid fa-paper-plane"></i> Enviar a cliente para aprobación
-                                            </button>
-                                        )
                                     )}
                                 </div>
                             )}
@@ -1541,90 +1624,6 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
                                         </div>
                                     )}
 
-                                    {/* TPU: lo que el cliente eligió en el visor 3D. Es lo que se fabrica,
-                                        así que producción lo ve acá y lo puede corregir. */}
-                                    {isTPU && texturasOrden.length > 0 && (
-                                        <div className="mb-3">
-                                            <div className="text-[11px] font-black text-brand-cyan uppercase tracking-wider mb-2 flex items-center gap-1.5">
-                                                <i className="fa-solid fa-swatchbook"></i> Texturas elegidas ({texturasOrden.length})
-                                            </div>
-                                            <div className="space-y-1.5">
-                                                {texturasOrden.map(t => {
-                                                    const tex = catalogoTexturas.find(c => c.archivo === t.ArchivoTextura);
-                                                    const editando = zonaEditando === t.ZonaIndice;
-                                                    return (
-                                                        <div key={t.ZonaIndice} className="rounded-lg border border-zinc-200 bg-white p-2">
-                                                            <div className="flex items-center gap-2.5">
-                                                                <div
-                                                                    className="w-9 h-9 rounded-md border border-zinc-200 bg-zinc-100 shrink-0"
-                                                                    style={tex ? { backgroundImage: `url("${tex.url}")`, backgroundSize: '200%' } : undefined}
-                                                                />
-                                                                <div className="min-w-0 flex-1">
-                                                                    <div className="text-[10px] font-black uppercase tracking-wider text-zinc-400">Zona {t.ZonaIndice + 1}</div>
-                                                                    <div className="text-sm font-bold text-zinc-700 truncate">
-                                                                        {!t.ArchivoTextura
-                                                                            ? <span className="text-zinc-400 italic font-normal">Sin textura</span>
-                                                                            : (tex?.nombre || <span className="text-amber-600">{t.ArchivoTextura} — textura no encontrada</span>)}
-                                                                    </div>
-                                                                </div>
-                                                                {!!t.Barniz && (
-                                                                    <span
-                                                                        className="shrink-0 px-1.5 py-0.5 rounded text-[9px] font-black uppercase tracking-wide bg-brand-cyan/10 text-brand-cyan border border-brand-cyan/30"
-                                                                        title="El cliente pidió barniz en esta zona"
-                                                                    >Barniz</span>
-                                                                )}
-                                                                {t.ElegidaPor === 'OPERARIO' && (
-                                                                    <span
-                                                                        className="shrink-0 px-1.5 py-0.5 rounded text-[9px] font-black uppercase tracking-wide bg-amber-50 text-amber-700 border border-amber-200"
-                                                                        title="La cambió producción, no es lo que aprobó el cliente"
-                                                                    >Modificada</span>
-                                                                )}
-                                                                <button
-                                                                    type="button"
-                                                                    onClick={() => setZonaEditando(editando ? null : t.ZonaIndice)}
-                                                                    className="shrink-0 w-7 h-7 rounded-md text-zinc-400 hover:text-brand-cyan hover:bg-brand-cyan/5 flex items-center justify-center"
-                                                                    title="Cambiar la textura de esta zona"
-                                                                ><i className={`fa-solid ${editando ? 'fa-xmark' : 'fa-pen'} text-xs`}></i></button>
-                                                            </div>
-
-                                                            {editando && (
-                                                                <div className="mt-2 pt-2 border-t border-zinc-100 flex items-start gap-2 overflow-x-auto">
-                                                                    <button
-                                                                        type="button"
-                                                                        disabled={guardandoTextura}
-                                                                        onClick={() => handleCambiarTextura(t.ZonaIndice, null)}
-                                                                        className="shrink-0 w-12 text-center group disabled:opacity-50"
-                                                                    >
-                                                                        <div className={`w-12 h-12 rounded-md border-2 flex items-center justify-center ${!t.ArchivoTextura ? 'border-brand-cyan' : 'border-zinc-200 group-hover:border-zinc-400'}`}>
-                                                                            <i className="fa-solid fa-ban text-zinc-400 text-xs"></i>
-                                                                        </div>
-                                                                        <span className="block mt-0.5 text-[9px] text-zinc-500 leading-tight">Sin textura</span>
-                                                                    </button>
-                                                                    {catalogoTexturas.map(c => (
-                                                                        <button
-                                                                            key={c.archivo}
-                                                                            type="button"
-                                                                            disabled={guardandoTextura}
-                                                                            onClick={() => handleCambiarTextura(t.ZonaIndice, c.archivo)}
-                                                                            className="shrink-0 w-12 text-center group disabled:opacity-50"
-                                                                            title={c.nombre}
-                                                                        >
-                                                                            <div
-                                                                                className={`w-12 h-12 rounded-md border-2 bg-zinc-100 ${t.ArchivoTextura === c.archivo ? 'border-brand-cyan' : 'border-zinc-200 group-hover:border-zinc-400'}`}
-                                                                                style={{ backgroundImage: `url("${c.url}")`, backgroundSize: '200%' }}
-                                                                            />
-                                                                            <span className="block mt-0.5 text-[9px] text-zinc-500 leading-tight truncate">{c.nombre}</span>
-                                                                        </button>
-                                                                    ))}
-                                                                </div>
-                                                            )}
-                                                        </div>
-                                                    );
-                                                })}
-                                            </div>
-                                        </div>
-                                    )}
-
                                     {referenceFiles.length === 0 && bocetosProduccion.length === 0 && !(isSB && fallaImages.length > 0) ? (
                                         <div className="py-8 text-center text-zinc-400 bg-zinc-50 rounded-lg border border-dashed border-zinc-200">
                                             <i className="fa-regular fa-image text-2xl mb-2 block opacity-50"></i>
@@ -1637,8 +1636,23 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
                                             ))}
                                             {/* TPU: el arte "boceto" (uno de los 6) se muestra acá, debajo del boceto
                                                 del cliente, como BOCETO DE PRODUCCIÓN — es lo que el cliente aprueba. */}
+                                            {/* En fase boceto se puede BORRAR (para reemplazarlo, ej. tras un
+                                                rechazo); una vez aprobado ya no: es lo que el cliente aprobó. */}
                                             {bocetosProduccion.map((f, idx) => (
-                                                <ReferenceItem key={`bocprod-${idx}`} file={{ ...f, tipo: 'BOCETO DE PRODUCCION', TipoArchivo: 'BOCETO DE PRODUCCION' }} />
+                                                <div key={`bocprod-${idx}`} className="relative">
+                                                    <ReferenceItem file={{ ...f, tipo: 'BOCETO DE PRODUCCION', TipoArchivo: 'BOCETO DE PRODUCCION' }} />
+                                                    {faseBocetoTPU && (
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => handleDeleteFileTPU(f.id || f.ArchivoID)}
+                                                            /* A la IZQUIERDA del botón de descargar, no encima: ReferenceItem lo pone último en
+                                                               una fila flex con padding 12px, así que ocupa los 44px de
+                                                               la derecha. Centrado en vertical para que queden alineados. */
+                                                            className="absolute right-14 top-1/2 -translate-y-1/2 w-7 h-7 rounded-md bg-white border border-red-200 text-red-500 hover:bg-red-50 flex items-center justify-center shadow-sm"
+                                                            title="Borrar el boceto para subir uno nuevo"
+                                                        ><i className="fa-solid fa-trash-can text-xs"></i></button>
+                                                    )}
+                                                </div>
                                             ))}
                                         </>
                                     )}
@@ -1873,6 +1887,27 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
                         </div>
                     </div>
                 </div>
+            )}
+
+            {/* Visor 3D TPU en modo interno (elige/corrige texturas el diseñador). */}
+            {visor3D && (
+                <React.Suspense fallback={null}>
+                    <Tpu3DViewer
+                        modo="interno"
+                        ordenId={currentOrder.id}
+                        codigo={currentOrder.code}
+                        onClose={async () => {
+                            setVisor3D(false);
+                            // Guardar en el visor deja el PNG del boceto aprobado en referencias:
+                            // sin recargar la lista, la pestaña no lo muestra hasta reabrir el modal.
+                            reloadFiles();
+                            try {
+                                const t = await ordersService.getTexturasOrden(currentOrder.id);
+                                setTpuEstado({ aprobado: !!t?.aprobado, rechazado: !!t?.rechazado, enLote: !!t?.enLote, texturasElige: t?.texturasElige || null });
+                            } catch (_) { /* sin refresco: se verá al reabrir */ }
+                        }}
+                    />
+                </React.Suspense>
             )}
             </div>
         </>,

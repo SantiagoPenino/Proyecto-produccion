@@ -66,11 +66,13 @@ const GUARD_ORDENES_RESUELTAS =
 // NO bloquean — vuelven a la Mesa de Armado conservando su avance (Ordenes.CantidadImpresa) para
 // continuar otro día en un lote nuevo. Ver docs/impresion-parcial-plan.md
 // DIRECTA cuenta piezas o metros según el artículo (misma mecánica).
-const AREAS_IMPRESION_PARCIAL = ['TPU', 'DIRECTA'];
+// TPU salió de acá (03/08/2026, pedido del usuario): en TPU el lote no se finaliza con órdenes
+// sin terminar de imprimir — pasó al bloqueo duro de abajo.
+const AREAS_IMPRESION_PARCIAL = ['DIRECTA'];
 
 // Áreas con BLOQUEO DURO al finalizar: el lote no se puede finalizar con órdenes sin marcar
 // (espeja el gate del front en MachineControl). 'DF'/'DTF' son la misma área según el entorno.
-const AREAS_GATE_MARCADO = ['SB', 'DF', 'DTF'];
+const AREAS_GATE_MARCADO = ['SB', 'DF', 'DTF', 'TPU'];
 
 exports.toggleRollStatus = async (req, res) => {
     try {
@@ -239,7 +241,13 @@ exports.toggleRollStatus = async (req, res) => {
                     // 'Calandrado' (que nadie marca en una impresora) → lote imposible de finalizar.
                     // Mismo criterio que el front (MachineControl: esCalandra) y que el lockDrag.
                     const esCalandra = /^\s*calandra/i.test(String(currentRoll.NombreEquipo || ''));
-                    const colMarca = (areaRollUp === 'SB' && esCalandra) ? 'Calandrado' : 'Impreso'; // valor interno fijo, no input del cliente
+                    // TPU: la estación que sigue a la impresora es el SAMURAI y su marca es "cortado".
+                    // Comparte columna con el calandrado (es el mismo concepto: pasó por la máquina de
+                    // después); lo único que cambia es cómo se lo nombra.
+                    const esSamurai = /^\s*samurai/i.test(String(currentRoll.NombreEquipo || ''));
+                    const enSegundaEstacion = (areaRollUp === 'SB' && esCalandra) || (areaRollUp === 'TPU' && esSamurai);
+                    const colMarca = enSegundaEstacion ? 'Calandrado' : 'Impreso'; // valor interno fijo, no input del cliente
+                    const palabraMarca = enSegundaEstacion ? (areaRollUp === 'TPU' ? 'cortado' : 'calandrado') : 'impreso';
                     const marcaRes = await new sql.Request(transaction)
                         .input('RID', sql.VarChar(50), currentRoll.RolloID.toString())
                         .query(`SELECT COUNT(*) AS Faltan FROM dbo.Ordenes
@@ -288,7 +296,7 @@ exports.toggleRollStatus = async (req, res) => {
                         // Bloqueo duro (SB y DTF, espeja el gate del front en MachineControl):
                         // en el resto de las áreas el marcado no aplica y se finaliza sin exigirlo.
                         await transaction.rollback();
-                        return res.status(400).json({ error: `No se puede finalizar: faltan ${faltanMarca} orden(es) sin marcar como ${colMarca === 'Calandrado' ? 'calandrado' : 'impreso'}.` });
+                        return res.status(400).json({ error: `No se puede finalizar: faltan ${faltanMarca} orden(es) sin marcar como ${palabraMarca}.` });
                     }
                 }
 
@@ -315,14 +323,18 @@ exports.toggleRollStatus = async (req, res) => {
                     });
 
                 } else if (destination === 'calender') {
-                    // Opción C: finalizó en una IMPRESORA → el lote continúa en una CALANDRA:
-                    // una máquina cuyo NOMBRE empiece con "calandra" (la de menos cola), no cualquier no-impresora.
+                    // Opción C: finalizó en una IMPRESORA → el lote continúa en el equipo que sigue,
+                    // el de menos cola: se busca por NOMBRE, no por "cualquier no-impresora".
+                    // En TPU ese equipo es el SAMURAI; en el resto de las áreas, la calandra.
+                    const areaDestino = String(currentRoll.AreaID || '').trim().toUpperCase();
+                    const patronDestino = areaDestino === 'TPU' ? 'samurai%' : 'calandra%';
                     const calRes = await new sql.Request(transaction)
                         .input('Area', sql.VarChar, currentRoll.AreaID)
+                        .input('Patron', sql.VarChar(30), patronDestino)
                         .query(`
                             SELECT TOP 1 e.EquipoID
                             FROM dbo.ConfigEquipos e
-                            WHERE e.AreaID = @Area AND e.Activo = 1 AND LTRIM(LOWER(e.Nombre)) LIKE 'calandra%'
+                            WHERE e.AreaID = @Area AND e.Activo = 1 AND LTRIM(LOWER(e.Nombre)) LIKE @Patron
                             ORDER BY (
                                 SELECT COUNT(*) FROM dbo.Rollos r
                                 WHERE r.MaquinaID = e.EquipoID AND r.Estado NOT IN ('Finalizado','Cerrado','Cancelado')
@@ -518,7 +530,7 @@ exports.printEtiquetaLote = async (req, res) => {
         const loteRes = await pool.request()
             .input('RID', sql.VarChar(50), rollId)
             .query(`
-                SELECT TOP 1 rl.Nombre AS LoteNombre,
+                SELECT TOP 1 rl.Nombre AS LoteNombre, rl.AreaID,
                        CONVERT(VARCHAR(10), f.Fin, 103) + ', ' + CONVERT(VARCHAR(5), f.Fin, 108) AS FechaFinStr
                 FROM dbo.Rollos rl WITH(NOLOCK)
                 CROSS APPLY (
@@ -544,6 +556,12 @@ exports.printEtiquetaLote = async (req, res) => {
         const metros = Number(agg.MetrosTotales || 0);
         const urgentes = Number(agg.Urgentes || 0);
         const fallas = Number(agg.Fallas || 0);
+
+        // TPU se mide en UNIDADES (parches), no en metros: la suma de Magnitud es la cantidad
+        // pedida. La etiqueta decía "Metros totales — 15.00 m" en un lote de 15 parches.
+        const esTPU = String(lote.AreaID || '').trim().toUpperCase() === 'TPU';
+        const totalRotulo = esTPU ? 'Unidades totales' : 'Metros totales';
+        const totalValor = esTPU ? `${Math.round(metros)} u` : `${metros.toFixed(2)} m`;
 
         // Fallback solo si el rollo no existe (sin fila): ahí sí se formatea en JS, con zona explícita.
         const fechaStr = lote.FechaFinStr || new Date().toLocaleString('es-UY', { timeZone: 'America/Montevideo', day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false });
@@ -572,7 +590,7 @@ exports.printEtiquetaLote = async (req, res) => {
   <div class="label">
     <div class="lote">${esc(nombreLote)}</div>
     <div class="row"><div class="lbl">Finalizado</div><div class="val">${fechaStr}</div></div>
-    <div class="row"><div class="lbl">Metros totales</div><div class="metros">${metros.toFixed(2)} m</div></div>
+    <div class="row"><div class="lbl">${totalRotulo}</div><div class="metros">${totalValor}</div></div>
     ${urgentes > 0 ? `<div class="banner">${urgentes} URGENTE${urgentes > 1 ? 'S' : ''}</div>` : ''}
     ${fallas > 0 ? `<div class="banner">${fallas} FALLA${fallas > 1 ? 'S' : ''}</div>` : ''}
   </div>

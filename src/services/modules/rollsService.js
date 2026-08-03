@@ -32,8 +32,10 @@ export const rollsService = {
     },
     // Impresión parcial (TPU): setea las unidades impresas de una orden (valor absoluto).
     // El backend deriva Ordenes.Impreso (1 al completar) y clampa 0..Magnitud.
-    setCantidadImpresa: async (orderId, cantidad) => {
-        const { data } = await api.post('/rolls/order-cantidad-impresa', { orderId, cantidad });
+    // `segundaEstacion`: el avance es del samurai/calandra → el backend cuenta en CantidadCortada
+    // y deriva Calandrado. Sin el flag, cuenta la impresión como siempre.
+    setCantidadImpresa: async (orderId, cantidad, segundaEstacion = false) => {
+        const { data } = await api.post('/rolls/order-cantidad-impresa', { orderId, cantidad, segundaEstacion });
         return data;
     },
     setOrderMagnitud: async (orderId, magnitud) => {

@@ -22,7 +22,10 @@ const SmallRollMetrics = ({ roll, metrics }) => {
   const execution = metrics?.stats?.execution || 0;
   const currentMeters = metrics?.stats?.metrosProducidos ?? 0;
   const totalMeters = metrics?.stats?.metrosTotales ?? roll.metros ?? 0;
-  const metersText = metrics?.stats ? `${currentMeters}/${totalMeters}m` : `${totalMeters}m`;
+  // La unidad la decide el backend según el área del lote: TPU va en unidades (parches), el resto
+  // en metros. Estaba fija en 'm' y un lote de TPU mostraba "15/15m".
+  const unidad = metrics?.stats?.unidad || 'm';
+  const metersText = metrics?.stats ? `${currentMeters}/${totalMeters}${unidad}` : `${totalMeters}${unidad}`;
 
   return (
     <div className="bg-white px-4 py-3 flex flex-col w-full">
@@ -422,11 +425,47 @@ const FilePrintControl = ({ areaCode }) => {
 
 
   // --- HELPERS ---
+  // TPU: lo que se controla son los PARCHES, no las capas del arte. Los archivos de una orden TPU
+  // son el diseño (cmyk, corte, relieve…), todos con Copias = 1: controlarlos uno por uno no dice
+  // nada y muestra 5 líneas donde debería haber una. Se colapsa a UNA línea, con el nombre
+  // CodigoOrden_Trabajo y la cantidad pedida como copias a controlar.
+  // El contador se apoya en el primer archivo de arte (el boceto queda afuera: no se fabrica), y el
+  // backend, para TPU, topea por Ordenes.Magnitud en vez de por Copias del archivo.
+  const esControlTPU = String(areaCode || '').toUpperCase() === 'TPU';
+  const filesVista = useMemo(() => {
+    if (!esControlTPU) return files;
+    const arte = files.filter(f => !f.isService && !/boceto/i.test(String(f.NombreArchivo || '')));
+    const portador = arte[0];
+    if (!portador) return files;
+    const cantidad = Math.max(1, Math.round(parseFloat(
+      String(portador.OrdenMagnitud ?? '0').replace(',', '.')
+    ) || 0));
+    const codigo = portador.OrdenCodigo || selectedOrder?.code || '';
+    const trabajo = (portador.OrdenTrabajo || '').trim();
+    return [{
+      ...portador,
+      NombreArchivo: trabajo ? `${codigo}_${trabajo}` : codigo,
+      Copias: cantidad,
+      Metros: 0,
+    }];
+  }, [files, esControlTPU, selectedOrder]);
+
   const orderMetrics = React.useMemo(() => {
+    // TPU: la unidad de control es el PARCHE. El progreso son copias controladas sobre la cantidad
+    // pedida — contando archivos daría 1/5 (solo la línea colapsada llega a OK) y el botón de
+    // finalizar no aparecería nunca.
+    if (esControlTPU && filesVista.length === 1 && !filesVista[0].isService) {
+      const linea = filesVista[0];
+      const total = parseInt(linea.Copias) || 1;
+      const done = ['OK', 'FINALIZADO', 'CANCELADO'].includes(linea.EstadoArchivo)
+        ? total
+        : Math.min(total, parseInt(linea.Controlcopias) || 0);
+      return { total, done, percent: total > 0 ? Math.round((done / total) * 100) : 0 };
+    }
     const total = files.length;
     const done = files.filter(f => ['OK', 'FINALIZADO', 'CANCELADO'].includes(f.EstadoArchivo)).length;
     return { total, done, percent: total > 0 ? Math.round((done / total) * 100) : 0 };
-  }, [files]);
+  }, [files, filesVista, esControlTPU]);
 
   const refreshCurrentOrder = () => {
     if (selectedOrder) {
@@ -1298,7 +1337,7 @@ const FilePrintControl = ({ areaCode }) => {
                   <i className="fa-solid fa-circle-notch fa-spin text-3xl mb-2"></i>
                   <div>Cargando archivos...</div>
                 </div>
-              ) : files.length === 0 ? (
+              ) : filesVista.length === 0 ? (
                 <div className="py-20 text-center text-slate-400 italic">
                   Sin archivos de producción
                 </div>
@@ -1306,7 +1345,7 @@ const FilePrintControl = ({ areaCode }) => {
                 <div className="flex flex-col overflow-hidden border-b border-slate-200 divide-y divide-slate-200">
                   <div className="flex items-center justify-between px-6 py-3 bg-slate-50">
                     <div className="text-xs font-black text-slate-500 uppercase tracking-widest">
-                      {files.length} ARCHIVOS EN ORDEN
+                      {filesVista.length} {esControlTPU ? 'LÍNEA A CONTROLAR' : 'ARCHIVOS EN ORDEN'}
                     </div>
                     {selectedOrder?.priority && (
                       <span className={`px-2.5 py-1 rounded-lg text-[10px] font-black uppercase tracking-wider border ${['urgente', 'falla', 'reposición', 'reposicion'].includes(String(selectedOrder.priority).toLowerCase()) ? 'bg-brand-magenta/10 text-brand-magenta border-brand-magenta/20' : 'bg-white text-zinc-400 border-zinc-200'}`}>
@@ -1316,7 +1355,7 @@ const FilePrintControl = ({ areaCode }) => {
                     {(() => {
                       // Suma de lo imprimible: Metros × Copias de cada archivo (sin servicios ni cancelados),
                       // mismo cálculo que muestra cada tarjeta.
-                      const totalMetros = files.reduce((acc, f) => {
+                      const totalMetros = filesVista.reduce((acc, f) => {
                         if (f.isService || String(f.EstadoArchivo || '').toUpperCase() === 'CANCELADO') return acc;
                         return acc + ((parseFloat(f.Metros) || 0) * (parseInt(f.Copias) || 1));
                       }, 0);
@@ -1329,7 +1368,7 @@ const FilePrintControl = ({ areaCode }) => {
                     })()}
                   </div>
 
-                  {files.map(file => (
+                  {filesVista.map(file => (
                     <FileControlCard
                       key={file.isService ? `service-${file.ArchivoID}` : `file-${file.ArchivoID}`}
                       file={file}

@@ -81,16 +81,31 @@ const MachineControl = ({ machine, onAssign, onToggleStatus, onViewDetails, onUn
     // NOMBRE (esCalandra), NO por !isPrinter: SeparacionImpresion está en 0 en impresoras reales como
     // MIMAKI, y con !isPrinter el gate les exigía 'calandrado' → lote imposible de finalizar.
     const isDTF = ['DF', 'DTF'].includes(String(areaCode || '').toUpperCase());
-    const printedField = (isSB && esCalandra) ? 'calandered' : 'printed';
+    // Cómo se llama el equipo que sigue a la impresora, según el área. El destino que se manda al
+    // backend es siempre 'calender' (es el nombre del paso, no del equipo): acá solo cambia cómo se
+    // lo nombra en pantalla, para que el operario lea el equipo que tiene al lado.
+    const esTPU = String(areaCode || '').toUpperCase() === 'TPU';
+    const siguienteEquipo = esTPU ? 'Samurai' : 'Calandra';
+    const textoSiguiente = esTPU
+        ? 'La impresión terminó → el lote pasa a un samurai (el de menos cola).'
+        : 'La impresión terminó → el lote pasa a una calandra (la de menos cola).';
+    // Segunda estación (la máquina que sigue a la impresora): en SB la calandra, en TPU el samurai.
+    // Comparten la columna de la marca (Ordenes.Calandrado) porque es el mismo concepto; lo que
+    // cambia es el nombre — "calandrado" en SB, "cortado" en TPU.
+    const esSamurai = /^\s*samurai/i.test(String(machine.name || ''));
+    const enSegundaEstacion = (isSB && esCalandra) || (esTPU && esSamurai);
+    const printedField = enSegundaEstacion ? 'calandered' : 'printed';
+    const palabraMarca = enSegundaEstacion ? (esTPU ? 'cortado' : 'calandrado') : 'impreso';
     const rollOrders = activeRoll?.orders || [];
     const hasMarkData = rollOrders.some(o => o[printedField] !== undefined);
-    // Bloqueo duro: SB y DTF — para finalizar, todo el lote debe estar marcado.
-    const unmarkedCount = ((isSB || isDTF) && hasMarkData) ? rollOrders.filter(o => !o[printedField]).length : 0;
+    // Bloqueo duro: SB, DTF y TPU — para finalizar, todo el lote debe estar marcado.
+    const unmarkedCount = ((isSB || isDTF || esTPU) && hasMarkData) ? rollOrders.filter(o => !o[printedField]).length : 0;
     const canFinish = isRunning && unmarkedCount === 0;
-    // Impresión PARCIAL (TPU): finalizar no se bloquea — las órdenes incompletas (contador
-    // CantidadImpresa < Magnitud) vuelven a la Mesa de Armado conservando su avance (lo hace el
-    // backend al finalizar). Acá solo se detectan para AVISAR en el modal de confirmación.
-    const isPartialArea = String(areaCode || '').toUpperCase() === 'TPU';
+    // Impresión PARCIAL: el área finaliza el lote aunque queden órdenes incompletas — vuelven a la
+    // Mesa de Armado conservando su avance (lo hace el backend) y acá solo se avisa en el modal.
+    // TPU salió de este grupo (03/08/2026): ahora no se puede finalizar sin todo impreso, así que no
+    // hay incompletas que avisar. Espeja AREAS_IMPRESION_PARCIAL del backend.
+    const isPartialArea = false;
     const incompletas = (isPartialArea && hasMarkData) ? rollOrders.filter(o => !o[printedField]) : [];
 
     return (
@@ -143,7 +158,7 @@ const MachineControl = ({ machine, onAssign, onToggleStatus, onViewDetails, onUn
                                 ? `Finalizar Lote — ${incompletas.length} incompleta${incompletas.length === 1 ? '' : 's'} vuelve${incompletas.length === 1 ? '' : 'n'} a la Mesa de Armado`
                                 : 'Finalizar Lote')
                             : (unmarkedCount > 0
-                                ? `Faltan ${unmarkedCount} orden${unmarkedCount === 1 ? '' : 'es'} sin marcar como ${printedField === 'calandered' ? 'calandrado' : 'impreso'}`
+                                ? `Faltan ${unmarkedCount} orden${unmarkedCount === 1 ? '' : 'es'} sin marcar como ${palabraMarca}`
                                 : 'Finalizar Lote')}>
                             {/* span para que el tooltip se muestre aun con el botón deshabilitado */}
                             <span className="inline-flex">
@@ -350,7 +365,7 @@ const MachineControl = ({ machine, onAssign, onToggleStatus, onViewDetails, onUn
                                 <h3 className="text-xl font-black text-zinc-800 tracking-tight mb-1">{isPrinter ? 'Finalizar Impresión' : 'Finalizar Producción'}</h3>
                                 <p className="text-sm text-zinc-500 font-medium leading-tight">
                                     {isPrinter
-                                        ? 'La impresión terminó → el lote pasa a una calandra (la de menos cola).'
+                                        ? textoSiguiente
                                         : '¿El lote ha terminado completamente o debe continuar en otro equipo?'}
                                 </p>
                             </div>
@@ -371,13 +386,13 @@ const MachineControl = ({ machine, onAssign, onToggleStatus, onViewDetails, onUn
                         <div className="px-6 pb-6 bg-white">
                             <div className="flex flex-col gap-2.5">
                                 {isPrinter ? (
-                                    /* IMPRESORA: el lote continúa en una calandra (no va a Calidad). */
+                                    /* IMPRESORA: el lote continúa en el equipo siguiente (no va a Calidad). */
                                     <button
                                         onClick={() => confirmFinish('calender')}
                                         className="group relative w-full py-3 px-4 bg-brand-cyan hover:bg-cyan-500 text-white rounded-xl font-bold flex items-center justify-center gap-2 transition-all shadow-md shadow-brand-cyan/30 active:scale-[0.98] overflow-hidden"
                                     >
                                         <i className="fa-solid fa-arrow-right-long relative z-10"></i>
-                                        <span className="relative z-10">Enviar a Calandra</span>
+                                        <span className="relative z-10">Enviar a {siguienteEquipo}</span>
                                     </button>
                                 ) : (
                                     <>

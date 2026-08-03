@@ -30,6 +30,30 @@ const FileControlCard = ({ file, refreshOrder, onAction }) => {
         setDraft(String(file.Controlcopias || 0));
     }, [file.Controlcopias, file.EstadoArchivo]);
 
+    // Suma de a N. TPU puede tener órdenes de cientos de parches y el +1 obligaba a apretar una vez
+    // por unidad. El backend topea en Copias, así que pasarse no rompe nada (queda en el total).
+    const SALTO = 10;
+    const sumar = async (cuanto) => {
+        if (loading || isCompleted || isFailed || isCancelled) return;
+        setLoading(true);
+        const previo = controlCount;
+        const nextCount = Math.min(totalCopies, controlCount + cuanto);
+        try {
+            setControlCount(nextCount); // Optimistic
+            const res = await fileControlService.updateFileCopyCount(file.ArchivoID, nextCount, file.isService);
+            if (res.success) {
+                setControlCount(res.newCount);
+                setStatus(res.newStatus);
+                if (res.isCompletedNow || res.orderFullyCompleted) refreshOrder();
+            }
+        } catch (error) {
+            console.error(error);
+            setControlCount(previo); // Revert
+        } finally {
+            setLoading(false);
+        }
+    };
+
     const handleIncrement = async (e) => {
         e.stopPropagation();
         if (loading || isCompleted || isFailed || isCancelled) return;
@@ -114,6 +138,20 @@ const FileControlCard = ({ file, refreshOrder, onAction }) => {
         return file.url || file.link || file.RutaAlmacenamiento || file.Link || '#';
     };
     const fileUrl = getBaseFileUrl();
+    // Miniatura del archivo (la genera el backend al subirlo, en /thumbnails/{codigoOrden}/{id}.jpg).
+    // Sirve para ver el BOCETO DE PRODUCCIÓN en el control de TPU, donde el archivo es un PDF y
+    // hasta ahora se mostraba un ícono genérico. Si no hay miniatura, el onError vuelve al ícono.
+    const codigoThumb = file.OrdenCodigo || file.CodigoOrden || file._codigoOrden || '';
+    const [miniatura, setMiniatura] = useState(
+        (!file.isService && file.ArchivoID && codigoThumb)
+            ? `/thumbnails/${encodeURIComponent(codigoThumb)}/${file.ArchivoID}.jpg`
+            : null
+    );
+    useEffect(() => {
+        setMiniatura((!file.isService && file.ArchivoID && codigoThumb)
+            ? `/thumbnails/${encodeURIComponent(codigoThumb)}/${file.ArchivoID}.jpg`
+            : null);
+    }, [file.ArchivoID, codigoThumb, file.isService]);
     const isImage = fileUrl.match(/\.(jpeg|jpg|gif|png|webp|bmp)$/i);
     const isPdf = fileUrl.match(/\.(pdf)$/i);
     const ext = fileUrl.split('.').pop()?.substring(0, 3).toUpperCase() || 'FILE';
@@ -154,6 +192,16 @@ const FileControlCard = ({ file, refreshOrder, onAction }) => {
                 >
                     {isImage ? (
                         <img src={fileUrl} alt="Preview" className="w-full h-full object-cover transform group-hover:scale-110 transition-transform duration-500" />
+                    ) : miniatura ? (
+                        // PDF (el boceto de producción en TPU): se muestra la miniatura que genera el
+                        // backend al subir el archivo. Si no existe todavía, onError la descarta y cae
+                        // al ícono de siempre.
+                        <img
+                            src={miniatura}
+                            alt="Preview"
+                            className="w-full h-full object-cover transform group-hover:scale-110 transition-transform duration-500"
+                            onError={() => setMiniatura(null)}
+                        />
                     ) : (
                         <div className="w-full h-full flex items-center justify-center text-zinc-400 bg-zinc-50/50">
                             {file.isService ? (
@@ -245,6 +293,22 @@ const FileControlCard = ({ file, refreshOrder, onAction }) => {
                             </div>
                         )}
                     </div>
+
+                    {/* Salto de a SALTO copias: solo tiene sentido en archivos de muchas copias
+                        (una orden TPU de 500 parches con el +1 son 500 clicks). Se esconde cuando
+                        ya está completo/fallado/cancelado, igual que el +1. */}
+                    {!isCompleted && !isFailed && !isCancelled && totalCopies >= SALTO && (
+                        <button
+                            onClick={(e) => { e.stopPropagation(); sumar(SALTO); }}
+                            disabled={loading || controlCount >= totalCopies}
+                            title={`Controlar ${SALTO} copias de una`}
+                            className={`w-12 h-12 tablet:w-10 tablet:h-10 shrink-0 rounded-full flex items-center justify-center shadow-sm transition-all active:scale-95 text-sm font-black
+                                ${loading || controlCount >= totalCopies
+                                    ? 'bg-zinc-100 text-zinc-400'
+                                    : 'bg-brand-cyan/10 text-brand-cyan hover:bg-brand-cyan hover:text-white'}
+                            `}
+                        >+{SALTO}</button>
+                    )}
 
                     {/* Button */}
                     <div className="w-12 h-12 tablet:w-10 tablet:h-10 shrink-0 relative group/btn">

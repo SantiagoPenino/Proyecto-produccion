@@ -119,6 +119,25 @@ const resolveMaterialWidth = (matObj) => {
     return 1.83;
 };
 
+// TPU: el tope de medida viene en el NOMBRE del producto ("Parche (De hasta 10x8)", "Hasta 4x4",
+// "ETIQUETAS OFICIALES HASTA 4X4"). No hay campo aparte en el catálogo, así que se lee de ahí.
+// El primer número es el alto y el segundo el ancho. Sin medida en el nombre (ej. "TPU STANDARD")
+// devuelve null y los selectores no aparecen.
+const medidaMaximaTPU = (nombreMaterial) => {
+    const m = String(nombreMaterial || '').match(/(\d+(?:[.,]\d+)?)\s*[x×]\s*(\d+(?:[.,]\d+)?)/i);
+    if (!m) return null;
+    const alto = parseFloat(m[1].replace(',', '.'));
+    const ancho = parseFloat(m[2].replace(',', '.'));
+    if (!(alto > 0) || !(ancho > 0)) return null;
+    return { alto, ancho };
+};
+
+// Opciones de 1 cm hasta el tope, incluido.
+const opcionesCm = (max) => Array.from({ length: Math.floor(max) }, (_, i) => {
+    const v = String(i + 1);
+    return { value: v, label: `${v} cm` };
+});
+
 const OrderForm = ({ serviceId: propServiceId }) => {
     const { serviceId: paramServiceId } = useParams();
     const navigate = useNavigate();
@@ -541,6 +560,9 @@ const OrderForm = ({ serviceId: propServiceId }) => {
 
     // TPU — modo (trabajo nuevo vs reusar una matriz) y listado de "Mis matrices"
     const [tpuMode, setTpuMode] = useState('nuevo');
+    // Medida del parche que pide el cliente, acotada por el tope del producto elegido.
+    const [tpuAlto, setTpuAlto] = useState('');
+    const [tpuAncho, setTpuAncho] = useState('');
     // Reuso con cantidad distinta a la de la matriz: se regenera el arte (aviso en el modal de éxito).
     const [reusoRegen, setReusoRegen] = useState(false);
     const [matrices, setMatrices] = useState([]);
@@ -1069,6 +1091,11 @@ const OrderForm = ({ serviceId: propServiceId }) => {
             if (config.bocetoMode && !bocetoFile) {
                 return addToast('Subí el boceto de lo que querés (PNG, JPG o PDF).', 'error');
             }
+            // La medida es obligatoria cuando el producto tiene un tope (o sea, cuando los selectores
+            // están a la vista). Con un producto sin medida en el nombre no hay nada que elegir.
+            if (medidaMaximaTPU(globalMaterial) && (!tpuAlto || !tpuAncho)) {
+                return addToast('Elegí el alto y el ancho del parche.', 'error');
+            }
             const invalidCopies = items.length === 0 || items.some(it => (it.copies || 0) < minTpu);
             if (invalidCopies) {
                 return addToast(`El pedido mínimo para TPU es de ${minTpu} unidades.`, 'error');
@@ -1259,6 +1286,7 @@ const OrderForm = ({ serviceId: propServiceId }) => {
 
                 let extraNote = it.printSettings?.observation ? ` [${it.printSettings.observation}]` : '';
                 if (serviceId === 'tpu' && tpuForma) extraNote += ` [Forma: ${tpuForma}]`;
+                if (serviceId === 'tpu' && tpuAlto && tpuAncho) extraNote += ` [Medida: ${tpuAlto} x ${tpuAncho} cm]`;
 
                 const printNote = extraNote;
                 const isSpecialPrint = it.printSettings?.mode && it.printSettings.mode !== 'normal';
@@ -1750,8 +1778,10 @@ const OrderForm = ({ serviceId: propServiceId }) => {
 
                         </div>
 
-                        {/* Forma de envío del pedido (nomenclador FormasEnvio del retiro) */}
-                        {formasEnvio.length > 0 && (
+                        {/* Forma de envío del pedido (nomenclador FormasEnvio del retiro).
+                            Solo se elige en EcoUV; en el resto queda el default (Retiro en el
+                            Local) y viaja igual a la orden. */}
+                        {formasEnvio.length > 0 && svcId === 'ecouv' && (
                             <div>
                                 <p className="block text-sm font-medium text-zinc-400 mb-2">Forma de envío *</p>
                                 <CustomSelect
@@ -1815,7 +1845,17 @@ const OrderForm = ({ serviceId: propServiceId }) => {
                                 )}
 
                                 {/* Global Material Selector - Hidden for Bordado and Sublimacion */}
-                                {config.materialMode === 'single' && svcId !== 'bordado' && svcId !== 'emb' && svcId !== 'sublimacion' && (
+                                {config.materialMode === 'single' && svcId !== 'bordado' && svcId !== 'emb' && svcId !== 'sublimacion' && (() => {
+                                    // TPU: al lado del producto van la medida del parche. El tope sale del
+                                    // nombre del producto elegido ("Parche (De hasta 10x8)"), así que los
+                                    // selectores solo aparecen cuando ese nombre trae una medida.
+                                    const topeTPU = serviceId === 'tpu' ? medidaMaximaTPU(globalMaterial) : null;
+                                    // md:col-span-2: el contenedor de arriba es un grid de 2 columnas, así que
+                                    // sin esto los tres selectores se apretaban en la mitad izquierda. Con las dos
+                                    // columnas tomadas, el producto se lleva la mitad del ancho REAL y cada medida
+                                    // un cuarto.
+                                    return (
+                                    <div className={topeTPU ? 'md:col-span-2 grid grid-cols-1 md:grid-cols-[2fr_1fr_1fr] gap-3 items-end' : ''}>
                                     <div>
                                         <p className="block text-xs font-bold uppercase text-zinc-400 mb-2">{isEcouvPT ? 'Producto' : (serviceInfo?.config?.materialLabel || 'Material / Soporte')} *</p>
                                         <CustomSelect
@@ -1831,7 +1871,42 @@ const OrderForm = ({ serviceId: propServiceId }) => {
                                             variant="black"
                                         />
                                     </div>
-                                )}
+
+                                    {topeTPU && (
+                                        <>
+                                            <div>
+                                                <p className="block text-xs font-bold uppercase text-zinc-400 mb-2">
+                                                    Alto <span className="text-red-400">*</span> <span className="text-zinc-600 normal-case font-normal">(máx. {topeTPU.alto} cm)</span>
+                                                </p>
+                                                <CustomSelect
+                                                    name="tpuAlto"
+                                                    aria-label="Alto del parche"
+                                                    value={tpuAlto}
+                                                    onChange={setTpuAlto}
+                                                    options={opcionesCm(topeTPU.alto)}
+                                                    placeholder="Alto..."
+                                                    variant="black"
+                                                />
+                                            </div>
+                                            <div>
+                                                <p className="block text-xs font-bold uppercase text-zinc-400 mb-2">
+                                                    Ancho <span className="text-red-400">*</span> <span className="text-zinc-600 normal-case font-normal">(máx. {topeTPU.ancho} cm)</span>
+                                                </p>
+                                                <CustomSelect
+                                                    name="tpuAncho"
+                                                    aria-label="Ancho del parche"
+                                                    value={tpuAncho}
+                                                    onChange={setTpuAncho}
+                                                    options={opcionesCm(topeTPU.ancho)}
+                                                    placeholder="Ancho..."
+                                                    variant="black"
+                                                />
+                                            </div>
+                                        </>
+                                    )}
+                                    </div>
+                                    );
+                                })()}
 
                                 {/* Producto Terminado: material y tinta de la FICHA, visibles pero NO editables
                                     (los define el negocio en la ficha del producto, no el cliente). */}
@@ -2946,9 +3021,12 @@ const OrderForm = ({ serviceId: propServiceId }) => {
                         <div className="flex gap-10 flex-wrap">
                             <div><p className="text-[11px] uppercase font-bold text-zinc-500">Servicio</p><p className="text-xl font-bold text-zinc-100">{serviceInfo?.label}</p></div>
                             <div><p className="text-[11px] uppercase font-bold text-zinc-500">Prioridad</p><p className={`text-xl font-bold ${urgency?.toLowerCase() === 'urgente' ? 'text-custom-magenta' : 'text-cyan-400'}`}>{urgency}</p></div>
-                            <div><p className="text-[11px] uppercase font-bold text-zinc-500">Items (Total)</p><p className="text-2xl font-black text-zinc-100">{items.length}</p></div>
+                            {/* TPU se pide por UNIDADES: el total es la cantidad (copies del único
+                                item), y el largo en metros no existe — el boceto no tiene medida. */}
+                            <div><p className="text-[11px] uppercase font-bold text-zinc-500">{serviceId === 'tpu' ? 'Cantidad' : 'Items (Total)'}</p><p className="text-2xl font-black text-zinc-100">{serviceId === 'tpu' ? items.reduce((acc, it) => acc + (parseInt(it.copies) || 0), 0) : items.length}</p></div>
                             {/* Total del pedido: superficie en gran formato (EcoUV cotiza por m²),
                                 metros lineales de rollo en el resto. */}
+                            {serviceId !== 'tpu' && (
                             <div><p className="text-[11px] uppercase font-bold text-zinc-500">{config.unidadTotal === 'm2' ? 'Área Total' : 'Largo Total'}</p><p className="text-2xl font-black text-cyan-400">{items.reduce((acc, it) => {
                                 const h = it.printSettings?.finalHeightM || (it.file?.unit === 'meters' ? it.file?.height : (it.file?.height ? (it.file.height / 300) * 0.0254 : 0)) || 0;
                                 const w = it.printSettings?.finalWidthM || (it.file?.unit === 'meters' ? it.file?.width : (it.file?.width ? (it.file.width / 300) * 0.0254 : 0)) || 0;
@@ -2956,6 +3034,7 @@ const OrderForm = ({ serviceId: propServiceId }) => {
                                 const factorCopias = (it.printSettings?.mode === 'raport') ? 1 : (it.copies || 1);
                                 return acc + ((config.unidadTotal === 'm2' ? (w * h) : h) * factorCopias);
                             }, 0).toFixed(2)}{config.unidadTotal === 'm2' ? ' m²' : 'm'}</p></div>
+                            )}
                         </div>
                         <CustomButton type="submit" variant="primary" className="w-full md:w-auto px-14 py-5 !bg-cyan-400 !text-zinc-900 hover:!bg-cyan-300 font-black text-lg rounded-2xl shadow-lg shadow-cyan-500/20" isLoading={loading} icon={Save}>Confirmar Pedido</CustomButton>
                     </div>

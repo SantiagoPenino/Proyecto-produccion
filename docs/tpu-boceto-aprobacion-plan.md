@@ -17,6 +17,54 @@ es lo que el cliente ve para aprobar. Las otras capas del arte se suben **despu�
 ya en producción. Antes había que terminar el arte completo (6 capas) para recién ahí preguntarle al
 cliente si le gustaba.
 
+**Ajustes del 31/07/2026 — fases explícitas.** El uploader del detalle ahora respeta la fase:
+- **Antes de la aprobación** solo se puede subir **UN PDF: el boceto de producción** (si el nombre no
+  trae "boceto", el front lo renombra `BOCETO-...` solo). Con el boceto ya cargado, el uploader
+  desaparece — el siguiente paso es el botón de enviar a aprobación.
+- **Después de la aprobación** vuelve el uploader normal (máx. 6 en total).
+- **"Enviar a aprobación" no reaparece tras la aprobación**: en su lugar hay un badge verde
+  "Boceto aprobado por el cliente". El backend además rechaza el re-envío (y también si la orden ya
+  está en un lote).
+- La fase se persiste en **`Ordenes.FechaAprobacionCliente`** (NULL = nunca aprobó), columna que se
+  auto-crea (`ensureColFechaAprobacion`) y que setea `aprobarPedido`. Sin marca no había forma de
+  distinguir "todavía no se envió" de "ya aprobado" (ambos son Estado='Pendiente').
+- El reuso `[REUSO-REGEN]` queda exento de la fase boceto: nunca se aprueba, sube sus 6 capas directo.
+- ⚠️ Órdenes aprobadas ANTES de este cambio quedan con fecha NULL → el sistema las trata como fase
+  boceto y no deja subirles el resto del arte. Para las de prueba:
+  `UPDATE Ordenes SET FechaAprobacionCliente = GETDATE() WHERE OrdenID IN (...)`.
+
+**Quién elige las texturas (31/07): lo decide EL CLIENTE, y las dos vías son aprobación.**
+- **Vía 1 — elige él:** abre el visor 3D, elige texturas/barniz y el botón de guardar ES aprobar
+  ("Aprobar el boceto con estas texturas": guarda la elección y llama a `aprobar-pedido`).
+- **Vía 2 — aprueba pelado (✓):** si es TPU sin texturas elegidas (flag `TieneTexturas` de
+  `getClientOrders`), el ✓ abre un modal con los dos caminos: **"Aprobar — el diseñador elige las
+  texturas"** (aprueba ya) o **"Elegir mis texturas (ver 3D)"** (abre el visor, donde confirmar
+  también aprueba). Con texturas ya elegidas o pedidos no-TPU, el ✓ usa el confirm normal.
+`aprobarPedido` deriva y persiste `Ordenes.TexturasElige`: 'CLIENTE' si hay filas de OrdenTexturasTPU
+elegidas por el cliente, 'DISENADOR' si aprobó sin elegir. Con 'DISENADOR', el detalle interno
+muestra el aviso "definilas en el visor 3D" y el botón **"Ver en 3D / elegir texturas"** — el mismo
+`Tpu3DViewer` en `modo="interno"` (endpoints `GET /orders/:ordenId/tpu-model[...]` sin scope,
+guarda por `PUT /orders/:id/texturas` con `ElegidaPor=OPERARIO`; el badge en ese caso dice
+"Diseñador", no "Modificada"). `enviarAprobacionTPU` resetea `TexturasElige=NULL` en cada envío.
+El schema TPU (columnas + tabla `OrdenTexturasTPU`) ahora se auto-crea (`ensureColFechaAprobacion`).
+
+**Aprobó → no cancela (31/07):** una vez aprobado el boceto, el cliente ya no puede cancelar ni
+eliminar el pedido desde el portal: el botón de cancelar se oculta (`Aprobado` en `getClientOrders`)
+y `deleteIncompleteOrder`/`deleteOrderBundle` lo rechazan del lado del server. Mientras espera
+aprobación tampoco se puede eliminar (la salida es rechazar con motivo). El tachito de "eliminar
+error" dejó de aparecer en pedidos retenidos por aprobación (compartían el estado `Cargando...` con
+los zombies de subida y el hard-delete se los podía llevar).
+
+**Rechazo del cliente (31/07):** junto a "Aprobar", el pedido TPU retenido tiene **"Rechazar"**
+(`POST /web-orders/rechazar-pedido`). Rechaza → `FechaRechazoCliente = GETDATE()`, se descarta la
+elección de texturas (las zonas del boceto nuevo pueden no coincidir) y la orden vuelve a `Pendiente`
+con el motivo en el historial (y en la Nota, si lo mandan). En el tablero del área, la celda **Estado
+en Área** se pinta: **emerald-500** si el cliente aprobó, **red-500 pulsante** si rechazó (solo TPU;
+el texto sigue siendo el estado normal — los estados 'Aprobado'/'Rechazado' como filas de
+ConfigEstados quedaron PARA DESPUÉS). El operario borra el boceto desde Referencias (botón de borrar,
+solo en fase boceto), sube el corregido y reenvía: ahí `FechaRechazoCliente` se limpia y la marca
+roja se apaga. Aprobar también la limpia.
+
 Qué cambió en el código:
 - `enviarAprobacionTPU` ([ordersController.js](../backend/controllers/ordersController.js)): el chequeo de
   "exactamente 6 archivos" quedó **solo** para el reuso de matriz (`[REUSO-REGEN]`, que va directo a

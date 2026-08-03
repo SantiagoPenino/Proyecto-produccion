@@ -134,6 +134,8 @@ router.post('/create', verifyToken, impersonarCliente, webOrdersController.creat
 // POST /api/web-orders/aprobar-pedido — el CLIENTE aprueba un pedido retenido de su diseñador.
 // SIN impersonarCliente a propósito: el diseñador no puede aprobar en nombre del cliente.
 router.post('/aprobar-pedido', verifyToken, webOrdersController.aprobarPedido);
+// POST /api/web-orders/rechazar-pedido — el CLIENTE rechaza el boceto; vuelve a producción marcada.
+router.post('/rechazar-pedido', verifyToken, webOrdersController.rechazarPedido);
 
 // --- INTEGRACIÓN EXTERNA (API KEY) ---
 const INTEGRATION_KEY = process.env.INTEGRATION_API_KEY || 'macrosoft-secret-key';
@@ -186,6 +188,11 @@ const upload = multer({
 });
 
 router.post('/upload-stream', verifyToken, impersonarCliente, upload.single('file'), webOrdersController.uploadOrderFile);
+
+// TPU: PNG del boceto aprobado (parche renderizado + referencia de texturas) → ArchivosReferencia.
+// Va acá abajo y no con el resto de las rutas TPU porque necesita `upload`, que se define recién
+// unas líneas más arriba.
+router.post('/orden/:ordenId/boceto-aprobado', verifyToken, impersonarCliente, upload.single('file'), webOrdersController.subirBocetoAprobado);
 
 // TPU: "Mis matrices" — pedidos TPU finalizados del cliente con arte, para reusar.
 router.get('/mis-matrices', verifyToken, impersonarCliente, webOrdersController.getMisMatrices);

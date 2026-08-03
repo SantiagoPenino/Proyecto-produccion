@@ -160,7 +160,37 @@ export default function ProductionTable({ rowData = [], onRowSelected, selectedR
             return <span className="text-xs tablet:text-[11px] font-bold text-zinc-700">{`${display}${unitDisplay ? ' ' + unitDisplay : ''}`}</span>;
         }},
         { field: 'status', headerName: 'Estado General', width: 130, cellRenderer: StatusRenderer },
-        { field: 'areaStatus', headerName: 'Estado en Área', width: 130 },
+        { field: 'areaStatus', headerName: 'Estado en Área', width: 130, cellRenderer: ({ value, data }) => {
+            // TPU: el propio EstadoenArea cuenta la fase de aprobación del boceto (Esperando →
+            // Aprobado / Rechazado → Para Imprimir), así que el color sale del estado real y no de
+            // banderas derivadas. PULSA mientras alguien tenga algo que hacer y queda FIJO cuando la
+            // orden está lista para lote. Los estados del flujo normal (En Lote, En Maquina, Control
+            // y Calidad…) caen al render de siempre, sin fondo.
+            // Ocupa la celda ENTERA: `absolute inset-0` contra el <td>, que lleva `relative` para
+            // esto. Se probó con ancho + márgenes negativos y no alcanza — el alto de la fila lo
+            // fija otra columna (la fecha, que va en dos líneas), así que quedaba una franja sin
+            // pintar arriba y abajo. Con inset-0 se cubre también el padding de la celda.
+            const celda = 'absolute inset-0 flex items-center justify-center text-xs tablet:text-[11px] font-bold';
+            const estado = String(value || '').trim();
+            if (String(data?.area || '').toUpperCase() === 'TPU') {
+                if (estado === 'Rechazado') return (
+                    <div className={`${celda} text-white bg-red-500 animate-pulse`} title="El cliente RECHAZÓ el boceto: corregilo y reenvialo a aprobación">
+                        {estado}
+                    </div>
+                );
+                if (estado === 'Aprobado') return (
+                    <div className={`${celda} text-white bg-emerald-500 animate-pulse`} title="Boceto aprobado: falta subir el arte">
+                        {estado}
+                    </div>
+                );
+                if (estado === 'Diseñado') return (
+                    <div className={`${celda} text-white bg-emerald-500`} title="Arte completo: lista para asignar a un lote">
+                        {estado}
+                    </div>
+                );
+            }
+            return value;
+        } },
         { field: 'filesCount', headerName: 'Archivos', width: 80, cellRenderer: FilesRenderer },
         { field: 'rollId', headerName: 'Lote', width: 100, cellRenderer: BatchRenderer },
         { field: 'printer', headerName: 'Máquina', width: 120 },
@@ -316,6 +346,12 @@ export default function ProductionTable({ rowData = [], onRowSelected, selectedR
         }
     });
 
+    // Unidad del total de abajo: TPU se mide en UNIDADES (parches), el resto en metros. Se deduce de
+    // las propias filas — la tabla no recibe el área como prop y esta pantalla siempre muestra una.
+    const totalEnUnidades = rowData.length > 0
+        && rowData.every(o => String(o.area || '').toUpperCase() === 'TPU');
+    const fmtTotal = (n) => totalEnUnidades ? `${Math.round(n)} u` : `${n.toFixed(2)} m`;
+
     return (
         <div className="flex flex-col h-full w-full bg-white overflow-hidden animate-in fade-in duration-300 relative">
             
@@ -446,8 +482,12 @@ export default function ProductionTable({ rowData = [], onRowSelected, selectedR
                                         `}
                                         style={{ animationDelay: `${Math.min(rowIndex, 20) * 30}ms` }}
                                     >
+                                        {/* `relative` en el <td>: deja que un renderer se estire a la celda ENTERA
+                                            con `absolute inset-0` (lo usa el estado en área de TPU). Sin esto no
+                                            hay forma — el alto de la fila lo fija otra columna y un `h-full` no
+                                            resuelve contra un <td> de alto automático. */}
                                         {row.getVisibleCells().map(cell => (
-                                            <td key={cell.id} className={`py-2 px-2 tablet:py-1 tablet:px-1 align-middle border-r border-zinc-200/40 last:border-r-0 text-center overflow-hidden whitespace-nowrap text-ellipsis max-w-[0px]`}>
+                                            <td key={cell.id} className={`relative py-2 px-2 tablet:py-1 tablet:px-1 align-middle border-r border-zinc-200/40 last:border-r-0 text-center overflow-hidden whitespace-nowrap text-ellipsis max-w-[0px]`}>
                                                 {flexRender(cell.column.columnDef.cell, cell.getContext())}
                                             </td>
                                         ))}
@@ -469,11 +509,11 @@ export default function ProductionTable({ rowData = [], onRowSelected, selectedR
                     <span className="font-medium text-zinc-400 tablet:hidden">({rowData.length} órdenes en total)</span>
                     <span className="hidden tablet:inline font-medium text-zinc-400">({rowData.length})</span>
                     <span className="bg-brand-cyan/10 text-brand-cyan px-2 py-1 tablet:px-1.5 tablet:py-0.5 rounded-md font-bold">
-                        {rowData.reduce((sum, o) => sum + (parseFloat(o.magnitude) || 0), 0).toFixed(2)} m
+                        {fmtTotal(rowData.reduce((sum, o) => sum + (parseFloat(o.magnitude) || 0), 0))}
                     </span>
                     {table.getSelectedRowModel().rows.length > 0 && (
                         <span className="bg-indigo-100 text-indigo-700 px-2 py-1 tablet:px-1.5 tablet:py-0.5 rounded-md font-bold">
-                            {table.getSelectedRowModel().rows.length} sel. · {table.getSelectedRowModel().rows.reduce((sum, r) => sum + (parseFloat(r.original.magnitude) || 0), 0).toFixed(2)} m
+                            {table.getSelectedRowModel().rows.length} sel. · {fmtTotal(table.getSelectedRowModel().rows.reduce((sum, r) => sum + (parseFloat(r.original.magnitude) || 0), 0))}
                         </span>
                     )}
                 </span>

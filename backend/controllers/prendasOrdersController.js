@@ -246,7 +246,9 @@ exports.createWebOrder = async (req, res) => {
 
     // Mapeo inverso para compatibilidad
     // Soporte para Payroads en Español (Renombrado técnico solicitado por usuario)
-    const serviceId = idServicio || req.body.serviceId;
+    // `idServicioBase` es la clave que manda el portal (PrendaOrderForm); sin ella `serviceId`
+    // quedaba undefined y las ramas que dependen de él no corrían. Espeja webOrdersController.
+    const serviceId = idServicio || req.body.idServicioBase || req.body.serviceId;
     const jobName = nombreTrabajo || req.body.jobName;
     const urgency = prioridad || req.body.urgency || 'Normal';
     const generalNote = notasGenerales || req.body.generalNote;
@@ -1303,8 +1305,9 @@ exports.createWebOrder = async (req, res) => {
                     // copies de los items — si no, la orden queda en Magnitud 0 y no se cotiza la producción.
                     const cantTpu = (exec.items || []).reduce((s, it) => s + (parseInt(it.copies) || 0), 0);
                     if (cantTpu > 0) {
-                        await new sql.Request(transaction).input('OID', sql.Int, newOID).input('Mag', sql.Decimal(10, 2), cantTpu)
-                            .query("UPDATE Ordenes SET Magnitud = CAST(@Mag AS VARCHAR) WHERE OrdenID = @OID");
+                        // Entero y como texto: TPU se mide en UNIDADES (espeja webOrdersController).
+                        await new sql.Request(transaction).input('OID', sql.Int, newOID).input('Mag', sql.VarChar(50), String(Math.round(cantTpu)))
+                            .query("UPDATE Ordenes SET Magnitud = @Mag WHERE OrdenID = @OID");
                     }
                 }
 

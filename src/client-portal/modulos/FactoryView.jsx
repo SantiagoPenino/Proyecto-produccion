@@ -1,7 +1,8 @@
 import React, { useEffect, useState, lazy, Suspense } from 'react';
+import { createPortal } from 'react-dom';
 import { GlassCard } from '../pautas/GlassCard';
 import { apiClient } from '../api/apiClient';
-import { Loader2, RefreshCw, Layers, Trash2, Check, Settings, Circle, Ban, AlertTriangle, Search, Factory, Truck, MessageSquareWarning, Palette, ShieldCheck } from 'lucide-react';
+import { Loader2, RefreshCw, Layers, Trash2, Check, Settings, Circle, Ban, AlertTriangle, Search, Factory, Truck, MessageSquareWarning, Palette, ShieldCheck, X } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useNavigate } from 'react-router-dom';
 import { ConfirmationModal } from '../pautas/ConfirmationModal';
@@ -207,8 +208,33 @@ export const FactoryView = () => {
 
     // F4 diseñadores: aprobar un pedido retenido (todas las sub-órdenes con AprobacionPendiente).
     // Al aprobar, el backend lo activa igual que un pedido normal recién completo.
+    const ejecutarAprobacion = async (project) => {
+        setLoading(true);
+        try {
+            for (const oid of project.pendientesAprobacion) {
+                await apiClient.post('/web-orders/aprobar-pedido', { ordenId: oid });
+            }
+            setPage(1);
+            if (page === 1) await fetchOrders(1, false);
+        } catch (err) {
+            alert('Error al aprobar el pedido: ' + err.message);
+            setLoading(false);
+        }
+    };
+
+    // TPU sin texturas elegidas: el ✓ no aprueba directo — abre un modal con los dos caminos
+    // ("que las elija el diseñador" aprueba ya; "elegir mis texturas" abre el visor 3D, donde
+    // confirmar la elección también aprueba).
+    const [aprobarTpuModal, setAprobarTpuModal] = useState({ isOpen: false, project: null });
+
     const handleAprobarPedido = (project, e) => {
         e?.stopPropagation();
+        const esTpuSinTexturas = (project.subOrders || []).some(so => /^TPU-/i.test(so.CodigoOrden || ''))
+            && !(project.subOrders || []).some(so => Number(so.TieneTexturas) === 1);
+        if (esTpuSinTexturas) {
+            setAprobarTpuModal({ isOpen: true, project });
+            return;
+        }
         setModal({
             isOpen: true,
             title: 'Aprobar Pedido',
@@ -217,20 +243,33 @@ export const FactoryView = () => {
                 : 'Revisá el arte del pedido. Al aprobarlo, entra a producción.',
             type: 'warning',
             confirmText: 'Aprobar',
-            onConfirm: async () => {
-                setLoading(true);
-                try {
-                    for (const oid of project.pendientesAprobacion) {
-                        await apiClient.post('/web-orders/aprobar-pedido', { ordenId: oid });
-                    }
-                    setPage(1);
-                    if (page === 1) await fetchOrders(1, false);
-                } catch (err) {
-                    alert('Error al aprobar el pedido: ' + err.message);
-                    setLoading(false);
-                }
-            }
+            onConfirm: () => ejecutarAprobacion(project)
         });
+    };
+
+    // TPU: rechazar el boceto, con MOTIVO OBLIGATORIO — es lo único que le dice al diseñador qué
+    // corregir. El pedido vuelve a producción marcado en rojo hasta que lo reenvíen a aprobación.
+    const [rechazoModal, setRechazoModal] = useState({ isOpen: false, project: null });
+    const [rechazoMotivo, setRechazoMotivo] = useState('');
+    const handleRechazarPedido = (project, e) => {
+        e?.stopPropagation();
+        setRechazoMotivo('');
+        setRechazoModal({ isOpen: true, project });
+    };
+    const confirmarRechazo = async (motivo) => {
+        const project = rechazoModal.project;
+        if (!project) return;
+        setLoading(true);
+        try {
+            for (const oid of project.pendientesAprobacion) {
+                await apiClient.post('/web-orders/rechazar-pedido', { ordenId: oid, motivo });
+            }
+            setPage(1);
+            if (page === 1) await fetchOrders(1, false);
+        } catch (err) {
+            alert('Error al rechazar el pedido: ' + err.message);
+            setLoading(false);
+        }
     };
 
     // Iniciar un reclamo sobre un pedido entregado: lleva al centro de soporte con el modal de
@@ -504,7 +543,13 @@ export const FactoryView = () => {
                         const isLast = pIdx === filteredProjects.length - 1;
                         const projectStatus = getProjectStatus(project.subOrders);
                         const statusConf = STATUS_CONFIG[projectStatus];
-                        const hasZombies = project.subOrders.some(so => so.Estado === 'Cargando...');
+                        // Zombie = subida que murió a mitad de camino. Un pedido reteniendo por
+                        // APROBACIÓN también vive en 'Cargando...' pero no es un error: sin este
+                        // filtro aparecía el tachito y el cliente podía borrar un TPU con el
+                        // boceto ya diseñado.
+                        const hasZombies = project.subOrders.some(so => so.Estado === 'Cargando...' && !so.AprobacionPendiente);
+                        // Aprobado el boceto, el pedido entró a producción: cancelar ya no es opción.
+                        const yaAprobado = project.subOrders.some(so => Number(so.Aprobado) === 1);
                         const allPending = project.subOrders.every(so => ['Pendiente', 'Cargando...'].includes(so.Estado));
                         const materialList = Array.from(project.materials);
                         // Multitela: el pedido tiene varias telas = varias sub-órdenes WEB (hermanas 1/2, 2/2…),
@@ -565,7 +610,7 @@ export const FactoryView = () => {
                                             {esperandoAprobacion ? (
                                                 <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-black uppercase tracking-wider bg-amber-500/10 text-amber-400 border-amber-500/30 border">
                                                     <ShieldCheck size={15} />
-                                                    ESPERA TU APROBACIÓN
+                                                    ESPERANDO APROBACIÓN
                                                 </span>
                                             ) : (
                                             <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-black uppercase tracking-wider ${statusConf.bg} ${statusConf.color} ${statusConf.border} border`}>
@@ -573,10 +618,23 @@ export const FactoryView = () => {
                                                 {statusConf.label}
                                             </span>
                                             )}
-                                            {esperandoAprobacion && (() => {
+                                            {/* Veredicto pegado al badge: ✓ aprueba, ✗ rechaza (solo TPU) */}
+                                            {esperandoAprobacion && (
+                                                <button onClick={(e) => handleAprobarPedido(project, e)} className="p-1.5 rounded-lg text-emerald-300 border border-emerald-500/30 bg-emerald-500/10 hover:bg-emerald-500/20 transition-all" title="Aprobar y enviar a producción">
+                                                    <Check size={13} strokeWidth={3} />
+                                                </button>
+                                            )}
+                                            {esperandoAprobacion && (project.subOrders || []).some(so => /^TPU-/i.test(so.CodigoOrden || '')) && (
+                                                <button onClick={(e) => handleRechazarPedido(project, e)} className="p-1.5 rounded-lg text-red-300 border border-red-500/30 bg-red-500/10 hover:bg-red-500/20 transition-all" title="Rechazar el boceto para que lo corrijan">
+                                                    <X size={13} strokeWidth={3} />
+                                                </button>
+                                            )}
+                                            {(() => {
                                                 // TPU: el cliente puede ver el parche armado en 3D a partir del mismo
                                                 // boceto que está aprobando. Solo si esa capa existe (PDF): sin ella
                                                 // el visor no tiene con qué armar el modelo y abría para fallar.
+                                                // También DESPUÉS de aprobar: ahí es solo mirar (el visor lo bloquea
+                                                // solo), y sirve tanto si eligió él como si las definió el diseñador.
                                                 const soTpu = (project.subOrders || []).find(so => /^TPU-/i.test(so.CodigoOrden || '') && Number(so.TieneArte3D) === 1);
                                                 return soTpu?.OrdenID ? (
                                                     <button
@@ -588,11 +646,6 @@ export const FactoryView = () => {
                                                     </button>
                                                 ) : null;
                                             })()}
-                                            {esperandoAprobacion && (
-                                                <button onClick={(e) => handleAprobarPedido(project, e)} className="px-2.5 py-1 rounded-lg text-[10px] font-black uppercase tracking-wide text-emerald-300 border border-emerald-500/30 bg-emerald-500/10 hover:bg-emerald-500/20 transition-all" title="Aprobar y enviar a producción">
-                                                    Aprobar
-                                                </button>
-                                            )}
                                             {projectStatus === 'finalizado' && !isDelivered && (
                                                 <button onClick={(e) => { e.stopPropagation(); navigate('/portal/pickup'); }} className="p-1.5 rounded-lg text-emerald-400 border border-emerald-500/20 bg-emerald-500/5 hover:bg-emerald-500/10 transition-all" title="Crear Retiro">
                                                     <Truck size={12} />
@@ -603,7 +656,7 @@ export const FactoryView = () => {
                                                     <MessageSquareWarning size={12} />
                                                 </button>
                                             )}
-                                            {(hasZombies || allPending) && (
+                                            {(hasZombies || (allPending && !yaAprobado)) && (
                                                 hasZombies ? (
                                                     <button onClick={(e) => handleDeleteBundle(project.id, e)} className="p-1.5 rounded-lg text-red-400 border border-red-500/20 bg-red-500/5 hover:bg-red-500/10 transition-all" title="Eliminar error">
                                                         <Trash2 size={12} />
@@ -912,7 +965,12 @@ export const FactoryView = () => {
             {/* Visor 3D del parche TPU (aprobación) */}
             {tpu3D && (
                 <Suspense fallback={null}>
-                    <Tpu3DViewer ordenId={tpu3D.ordenId} codigo={tpu3D.codigo} onClose={() => setTpu3D(null)} />
+                    <Tpu3DViewer
+                        ordenId={tpu3D.ordenId}
+                        codigo={tpu3D.codigo}
+                        onClose={() => setTpu3D(null)}
+                        onAprobado={() => { setTpu3D(null); setPage(1); if (page === 1) fetchOrders(1, false); }}
+                    />
                 </Suspense>
             )}
 
@@ -981,6 +1039,116 @@ export const FactoryView = () => {
                     </div>
                 </div>
             )}
+
+            {/* Aprobación TPU sin texturas: los dos caminos del cliente.
+                Por PORTAL a body: un fixed adentro de un ancestro con transform (animaciones de
+                framer) se posiciona contra ese ancestro — el overlay oscurecía solo la columna de
+                contenido y el panel quedaba centrado fuera de la pantalla. */}
+            {aprobarTpuModal.isOpen && createPortal((() => {
+                const proj = aprobarTpuModal.project;
+                const soTpu = (proj?.subOrders || []).find(so => /^TPU-/i.test(so.CodigoOrden || '') && Number(so.TieneArte3D) === 1);
+                return (
+                    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70">
+                        <div className="bg-zinc-900 border border-zinc-700 rounded-2xl p-6 w-full max-w-md shadow-2xl">
+                            <div className="flex items-start gap-3 mb-4">
+                                <div className="w-10 h-10 rounded-full bg-cyan-500/15 flex items-center justify-center flex-shrink-0">
+                                    <Palette className="w-5 h-5 text-cyan-400" />
+                                </div>
+                                <div>
+                                    <h3 className="text-white font-semibold text-base">¿Y las texturas del parche?</h3>
+                                    <p className="text-zinc-400 text-sm mt-1">
+                                        Todavía no elegiste texturas. Podés elegirlas vos en el visor 3D, o aprobar el boceto y que las defina nuestro diseñador.
+                                    </p>
+                                </div>
+                            </div>
+
+                            <div className="flex flex-col gap-2.5">
+                                <button
+                                    onClick={async () => {
+                                        setAprobarTpuModal({ isOpen: false, project: null });
+                                        await ejecutarAprobacion(proj);
+                                    }}
+                                    className="w-full px-4 py-2.5 rounded-lg bg-emerald-600 text-white text-sm font-semibold hover:bg-emerald-500 transition-colors"
+                                >
+                                    Aprobar (el diseñador elige las texturas)
+                                </button>
+                                <button
+                                    disabled={!soTpu?.OrdenID}
+                                    onClick={() => {
+                                        setAprobarTpuModal({ isOpen: false, project: null });
+                                        setTpu3D({ ordenId: soTpu.OrdenID, codigo: soTpu.CodigoOrden });
+                                    }}
+                                    className="w-full px-4 py-2.5 rounded-lg border border-cyan-500/40 text-cyan-300 text-sm font-semibold hover:bg-cyan-500/10 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                                >
+                                    Elegir mis texturas (ver 3D)
+                                </button>
+                                <button
+                                    onClick={() => setAprobarTpuModal({ isOpen: false, project: null })}
+                                    className="w-full px-4 py-2 rounded-lg text-zinc-400 text-sm font-medium hover:bg-zinc-800 transition-colors"
+                                >
+                                    Volver
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                );
+            })(), document.body)}
+
+            {/* Modal de Rechazo de boceto (TPU) — motivo OBLIGATORIO: es lo que le dice al
+                diseñador qué corregir. Mismo patrón que el de cancelación (portal a body, ídem). */}
+            {rechazoModal.isOpen && createPortal(
+                <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70">
+                    <div className="bg-zinc-900 border border-zinc-700 rounded-2xl p-6 w-full max-w-md shadow-2xl">
+                        <div className="flex items-start gap-3 mb-4">
+                            <div className="w-10 h-10 rounded-full bg-red-500/15 flex items-center justify-center flex-shrink-0">
+                                <X className="w-5 h-5 text-red-400" strokeWidth={2.5} />
+                            </div>
+                            <div>
+                                <h3 className="text-white font-semibold text-base">Rechazar boceto</h3>
+                                <p className="text-zinc-400 text-sm mt-1">
+                                    El boceto vuelve a producción para que lo corrijan y te lo reenvíen a aprobar.
+                                </p>
+                            </div>
+                        </div>
+
+                        <div className="mb-5">
+                            <label className="block text-zinc-400 text-xs font-semibold uppercase tracking-wider mb-2">
+                                ¿Qué hay que corregir? <span className="text-red-400">*</span>
+                            </label>
+                            <textarea
+                                className="w-full bg-zinc-800 border border-zinc-600 rounded-lg px-3 py-2.5 text-white text-sm placeholder-zinc-500 resize-none focus:outline-none focus:border-red-500/60 transition-colors"
+                                rows={3}
+                                placeholder="Ej: El logo va más grande, el fondo era azul marino..."
+                                value={rechazoMotivo}
+                                onChange={e => setRechazoMotivo(e.target.value)}
+                                maxLength={300}
+                                autoFocus
+                            />
+                            <div className="text-right text-zinc-600 text-[10px] mt-1">{rechazoMotivo.length}/300</div>
+                        </div>
+
+                        <div className="flex gap-3">
+                            <button
+                                onClick={() => setRechazoModal({ isOpen: false, project: null })}
+                                className="flex-1 px-4 py-2.5 rounded-lg border border-zinc-700 text-zinc-300 text-sm font-medium hover:bg-zinc-800 transition-colors"
+                            >
+                                Volver
+                            </button>
+                            <button
+                                disabled={!rechazoMotivo.trim()}
+                                onClick={async () => {
+                                    const motivo = rechazoMotivo.trim();
+                                    setRechazoModal({ isOpen: false, project: rechazoModal.project });
+                                    await confirmarRechazo(motivo);
+                                }}
+                                className="flex-1 px-4 py-2.5 rounded-lg bg-red-500 text-white text-sm font-semibold hover:bg-red-400 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                            >
+                                Rechazar boceto
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            , document.body)}
         </div>
     );
 };

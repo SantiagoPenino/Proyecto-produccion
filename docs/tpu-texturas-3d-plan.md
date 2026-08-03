@@ -97,6 +97,27 @@ recuperar la separación desde el raster.
 **Fallback:** si un boceto no trae capas, el visor muestra una sola zona (el parche entero) y avisa.
 No se rompe nada, simplemente no hay elección.
 
+**Sin desplazamiento (31/07):** hubo un toggle "relieve 3D / solo sombreado" (`displacementMap` +
+malla de 128 segmentos). Se **eliminó**: con las texturas reales el desplazamiento daba ruido en vez
+de volumen — el relieve de un parche TPU es más fino que lo que puede representar una malla
+razonable — y costaba una lectura de textura por vértice. Queda solo el `bumpMap`, que trabaja por
+píxel y sí resuelve ese detalle. La lámina del arte vuelve a ser un plano de 4 vértices.
+
+**Zonas excluyentes (31/07):** las máscaras se reparten por prioridad — cada píxel queda en la capa
+MÁS ALTA que lo cubre y se le resta a las de abajo. Sin esto, una capa `fondo` (mancha que cubre todo
+el parche, con estrellas y bastones dibujados encima) texturizaba el parche entero: solo la tapaban
+las zonas de arriba que además tuvieran textura elegida. Coincide con el criterio del raycast (la
+primera máscara que cubre el píxel gana) y también arregla los mini mapas.
+
+**Halo blanco en el borde (31/07):** el arte llega con antialias (alpha ~0,5 en el filo) y mezclarlo
+contra el blanco de la base dibujaba un halo claro siguiendo el contorno. Se trata como opaco a
+partir de 0,5 — mismo umbral que usa el `alphaTest` para recortar la lámina.
+
+**Capa "extras" (31/07):** los bocetos de producción traen una capa llamada `extras`
+(anotaciones/medidas del diseñador). El visor la APAGA por completo — no se dibuja en el arte, no
+suma tinta a la silueta y no se ofrece como zona. Match exacto del nombre (`extra`/`extras`,
+case-insensitive, con espacios tolerados); un nombre compuesto ("Texturas extra") NO se excluye.
+
 ---
 
 ## Cómo se aplica al render

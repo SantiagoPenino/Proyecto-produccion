@@ -7,6 +7,36 @@ const { v4: uuidv4 } = require('uuid');
 const { getPool, sql } = require('../config/db');
 const logger = require('../utils/logger');
 
+// Columnas para poder cruzar un comprobante bancario con la transacción. El cliente que paga por
+// "pago de servicios" del banco tipea el identificador de HANDY, no nuestro TransactionId, así que
+// sin esto un comprobante de BROU no se puede rastrear (pasó el 28/07/2026 y costó media tarde).
+// RawResponse guarda la respuesta cruda: si Handy cambia el nombre del campo, el dato igual queda.
+let _handyColsEnsured = false;
+async function ensureHandyColumns(pool) {
+    if (_handyColsEnsured) return;
+    await pool.request().query(`
+        IF COL_LENGTH('dbo.HandyTransactions', 'HandyPaymentId') IS NULL
+            ALTER TABLE dbo.HandyTransactions ADD HandyPaymentId VARCHAR(100) NULL;
+        IF COL_LENGTH('dbo.HandyTransactions', 'RawResponse') IS NULL
+            ALTER TABLE dbo.HandyTransactions ADD RawResponse NVARCHAR(MAX) NULL;
+    `);
+    _handyColsEnsured = true;
+}
+
+// El id de Handy puede venir en la respuesta con distintos nombres o embebido en la URL de pago,
+// que hoy tiene la forma https://pago.handy.uy?sessionId=<uuid>. Se prueban las dos vías.
+// OJO: el sessionId NO es el identificador que el cliente tipea en el "pago de servicios" del
+// banco — ese es otro, que Handy genera recién cuando el cliente elige pagar por el banco y que
+// nunca llega hasta acá. Por eso además se guarda RawResponse entera.
+function extraerIdHandy(data, paymentUrl) {
+    const d = data || {};
+    const directo = d.id || d.Id || d.paymentId || d.PaymentId || d.transactionId || d.TransactionId
+        || d.sessionId || d.SessionId || d.paymentRequestId || d.PaymentRequestId || d.reference || d.Reference;
+    if (directo) return String(directo).substring(0, 100);
+    const m = String(paymentUrl || '').match(/[?&]sessionId=([^&]+)/i);
+    return m ? decodeURIComponent(m[1]).substring(0, 100) : null;
+}
+
 /**
  * Crea un link de pago en Handy y guarda la transacción en HandyTransactions
  * @param {Object} options
@@ -88,23 +118,31 @@ async function createPaymentLink({
     }
 
     const paymentUrl = response.data.url;
-    logger.info(`${logPrefix} Link generado:`, paymentUrl);
+    logger.info(`${logPrefix} Link generado: ${paymentUrl}`);
+    // Respuesta completa en el log: es la única forma de descubrir con qué nombre viaja el id de
+    // Handy sin tener su documentación a mano.
+    logger.info(`${logPrefix} Respuesta Handy: ${JSON.stringify(response.data)}`);
+    const handyPaymentId = extraerIdHandy(response.data, paymentUrl);
+    logger.info(`${logPrefix} Identificador Handy (el que ve el cliente en el banco): ${handyPaymentId || '(no se pudo determinar)'}`);
 
     // Guardar en HandyTransactions para reconciliar con el webhook
     try {
         const pool = await getPool();
         const orderIdsJson = JSON.stringify(ordersData);
 
+        await ensureHandyColumns(pool);
         await pool.request()
             .input('txId', sql.VarChar(100), transactionId)
             .input('payUrl', sql.VarChar(500), paymentUrl)
+            .input('handyId', sql.VarChar(100), handyPaymentId)
+            .input('raw', sql.NVarChar(sql.MAX), JSON.stringify(response.data || {}))
             .input('amount', sql.Decimal(18, 2), totalAmount)
             .input('currency', sql.Int, currencyCode)
             .input('ordersJson', sql.NVarChar(sql.MAX), orderIdsJson)
             .input('codCliente', sql.Int, codCliente)
             .query(`
-                INSERT INTO HandyTransactions (TransactionId, PaymentUrl, TotalAmount, Currency, OrdersJson, CodCliente, Status, CreatedAt)
-                VALUES (@txId, @payUrl, @amount, @currency, @ordersJson, @codCliente, 'Creado', GETDATE())
+                INSERT INTO HandyTransactions (TransactionId, PaymentUrl, TotalAmount, Currency, OrdersJson, CodCliente, Status, CreatedAt, HandyPaymentId, RawResponse)
+                VALUES (@txId, @payUrl, @amount, @currency, @ordersJson, @codCliente, 'Creado', GETDATE(), @handyId, @raw)
             `);
         logger.info(`${logPrefix} TransactionId ${transactionId} guardado en HandyTransactions.`);
     } catch (dbErr) {

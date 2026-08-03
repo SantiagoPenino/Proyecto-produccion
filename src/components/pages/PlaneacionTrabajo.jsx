@@ -510,8 +510,9 @@ const PlaneacionTrabajo = ({ AreaID }) => {
             // SOLO en máquinas marcadas como IMPRESORA (flag SeparacionImpresion de ConfigEquipos, el
             // que se tilda en el modal de equipos): la etiqueta acompaña al lote impreso hacia la
             // calandra. Al finalizar en una calandra (el lote va a Calidad) no se imprime nada.
+            // TPU tampoco imprime etiqueta al finalizar (a pedido, 03/08/2026).
             const areaUp = String(areaCode || '').toUpperCase();
-            const imprimeEtiquetaAlFinalizar = !['DF', 'DTF'].includes(areaUp);
+            const imprimeEtiquetaAlFinalizar = !['DF', 'DTF', 'TPU'].includes(areaUp);
             // OJO: separacionImpresion puede venir como CHAR ('0'/'1') y un '0' string es TRUTHY en JS
             // (mismo problema que ya se corrigió en el gate del backend). Parse explícito.
             const sepImp = machDelLote?.separacionImpresion;
@@ -915,6 +916,21 @@ const PlaneacionTrabajo = ({ AreaID }) => {
                             const mach = (localBoardData.machines || []).find(m => (m.rolls || []).some(r => String(r.id) === String(inspectingRollId)));
                             const esCalandra = !!mach && /^\s*calandra/i.test(String(mach.name || ''));
                             return String(areaCode || '').toUpperCase() === 'SB' && esCalandra;
+                        })()}
+                        segundaEstacion={(() => {
+                            // TPU: el equipo que sigue a la impresora es el SAMURAI. Ahí la marca no es
+                            // "impreso" sino "cortado" — mismo concepto que la calandra en SB, y comparte
+                            // la columna (Ordenes.Calandrado). No congela el orden como la calandra:
+                            // por eso va aparte de lockReorder.
+                            const mach = (localBoardData.machines || []).find(m => (m.rolls || []).some(r => String(r.id) === String(inspectingRollId)));
+                            const esSamurai = !!mach && /^\s*samurai/i.test(String(mach.name || ''));
+                            return String(areaCode || '').toUpperCase() === 'TPU' && esSamurai;
+                        })()}
+                        palabraMarca={(() => {
+                            const mach = (localBoardData.machines || []).find(m => (m.rolls || []).some(r => String(r.id) === String(inspectingRollId)));
+                            const esSamurai = !!mach && /^\s*samurai/i.test(String(mach.name || ''));
+                            if (String(areaCode || '').toUpperCase() === 'TPU' && esSamurai) return 'cortadas';
+                            return '';
                         })()}
                         avancePorCopias={(() => {
                             // MIMAKI: el avance de impresión se carga por COPIAS (contador parcial) en vez

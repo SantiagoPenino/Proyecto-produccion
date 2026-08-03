@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { X, Loader2, Rotate3d, Sparkles, Gauge, Save, ChevronRight, ChevronLeft } from 'lucide-react';
+import { X, Loader2, Rotate3d, Sparkles, Save, Check, ChevronRight, ChevronLeft, Move, Eye, EyeOff, Lock, LockOpen } from 'lucide-react';
 import { API_BASE_URL } from '../api/apiClient';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -16,9 +16,10 @@ import { API_BASE_URL } from '../api/apiClient';
 //
 // El modelo es una EXTRUSIÓN REAL de la silueta (marching por bordes de píxel →
 // contornos con agujeros → THREE.Shape → ExtrudeGeometry): paredes blancas lisas
-// también de canto — un heightfield con displacement dejaba los bordes como peines.
-// El arte va como textura de la tapa, y el relieve se agrega como micro-
-// displacement de una lámina superior (bultos chicos, no paredes).
+// también de canto. El arte va como textura de una lámina plana sobre la tapa, y la
+// textura del material se lee SOLO por sombreado (bumpMap): se probó desplazar la
+// malla y con texturas reales daba ruido, no volumen — el relieve de un TPU es
+// demasiado fino para lo que una malla razonable puede representar.
 // three.js se carga lazy (solo al abrir el visor).
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -35,6 +36,13 @@ const authHeaders = () => {
 // Abre un PDF y devuelve la página 1 con sus dimensiones base (a escala 1).
 const abrirPdf = async (buf) => {
     const pdfjsLib = await import('pdfjs-dist');
+    // El worker se configura ACÁ y no se asume: en el portal lo setea fileService al arrancar,
+    // pero este visor también corre en la app interna (modo interno), donde nadie lo configuró
+    // y pdf.js moría con 'No "GlobalWorkerOptions.workerSrc" specified'.
+    if (!pdfjsLib.GlobalWorkerOptions.workerSrc) {
+        const worker = await import('pdfjs-dist/build/pdf.worker.min.mjs?url');
+        pdfjsLib.GlobalWorkerOptions.workerSrc = worker.default;
+    }
     const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
     const page = await pdf.getPage(1);
     const base = page.getViewport({ scale: 1 });
@@ -70,30 +78,23 @@ const rasterizar = async ({ page }, { scale, sx = 0, sy = 0, outW, outH, occ = n
 // (ver `altura` en cargarTile), porque bumpScale es del MATERIAL y hay un solo material para
 // todas las zonas: no se puede tener una altura distinta por zona desde acá.
 const RELIEVE_FUERZA = 2;
-// Subdivisión de la lámina del arte: sin segmentos no hay vértices que desplazar. 128 alcanza —
-// con 1 a 3 repeticiones los rasgos del tile ocupan decenas de píxeles del mapa, y bajar de 256
-// a 128 son 4 veces menos vértices.
-const RELIEVE_SEGMENTOS = 128;
-// Altura REAL del relieve, en unidades de la escena (el parche mide 10 de ancho).
-// El límite es la pendiente, no la altura: si entre dos vértices vecinos el mapa salta mucho más
-// que el lado del cuadro de la malla (10 / 128 ≈ 0,078), la superficie se rompe en púas. Como al
-// desplazamiento se le pasa el mapa DESENFOCADO a esa misma escala, el salto entre vecinos ya viene
-// acotado y se puede levantar bastante la altura sin que se quiebre.
-const RELIEVE_ALTURA_MUNDO = 0.08;
-// El desplazamiento se muestrea POR VÉRTICE, así que solo puede representar detalle más grande que
-// un cuadro de la malla; con las líneas finas de la textura salían púas en vez de relieve. Se le
-// pasa una copia DESENFOCADA a esa escala: el volumen lo da el desplazamiento y el detalle fino
-// queda para el bumpMap, que trabaja por píxel y sí lo resuelve.
-const DESPLAZ_SUAVIZADO_PX = Math.round(1024 / RELIEVE_SEGMENTOS);
-// Ancho de la franja donde el relieve se apaga hacia el borde del parche. Sin esto la lámina se
-// levanta también en el filo, se despega de la base y por abajo asoma el blanco: las puntas quedan
-// como solapas. Tiene que ser bastante más que la altura del relieve (0,08 ≈ 8 px acá).
+// Ancho de la franja donde el relieve se apaga hacia el borde del parche: el filo del parche es un
+// canto limpio, no material texturado. (Venía del modo con desplazamiento, donde además evitaba que
+// la lámina se despegara de la base; sigue valiendo para el sombreado.)
 const BORDE_APAGADO_PX = 18;
+// Cuántos píxeles se empuja el color del arte HACIA AFUERA de la silueta. No agranda el parche (el
+// alphaTest recorta igual): solo evita que el filtrado bilineal de la textura mezcle el blanco de
+// afuera con el arte en el filo, que es lo que dibujaba una línea blanca en todo el contorno.
+const COLOR_EXTIENDE_PX = 4;
 // Barniz sectorizado: es una capa brillante sobre una zona. Se resuelve con el roughnessMap —
 // menos rugosidad = más brillo especular. El material queda con roughness 1 y el mapa manda.
-// 128 ≈ 0.50: es el mismo acabado que tenía el material antes del barniz. Subirlo apaga el
-// especular y con él se apaga el relieve del bump, que se lee justamente por el brillo.
-const RUGOSIDAD_MATE = 128;
+// 235 ≈ 0.92: MUY mate, que es lo que es un parche de TPU. Estuvo en 128 (≈0.50) y ahí el
+// especular dieléctrico (F0 = 0.04) tendía un velo blanco parejo sobre todo el parche: contra un
+// albedo casi negro (el fondo del escudo es #1f1a16 → 0.014 lineal) ese velo valía varias veces
+// el difuso, así que el negro salía gris medio y los amarillos saturados se iban al pastel. Eso
+// era el "lavado". El relieve no se pierde: se lee sobre todo por cómo el bump cambia el N·L del
+// difuso, no por el brillo.
+const RUGOSIDAD_MATE = 235;
 // 64 ≈ 0.25. Un barniz NO es un espejo: con 0.08 la zona reflejaba casi puntual y, como el bump le
 // perturba la normal, cada faceta devolvía un punto de luz duro — se veía como sal y pimienta sobre
 // el negro. A 0.25 el reflejo se abre y queda un lustre parejo.
@@ -101,17 +102,26 @@ const RUGOSIDAD_BARNIZ = 64;
 // Cuánto se ACHICA la base blanca respecto del arte, en píxeles de la grilla de contornos (CW=640).
 // El arte queda entonces sobresaliendo apenas por todo el borde y de frente no asoma nada de blanco.
 const BASE_ACHICA_PX = 4;
-const REPETICIONES_MIN = 1, REPETICIONES_MAX = 3;
-const ALTURA_MIN = 1, ALTURA_MAX = 2;
+// ESCALA de la textura dentro de la zona: 1 = el tamaño que define el catálogo (texturas.json),
+// 2 = el dibujo del material al doble. Se expone escala y no "repeticiones" porque es lo que se
+// está mirando — agrandar o achicar la trama — y porque el número de repeticiones depende del
+// tamaño del parche, que el cliente no tiene por qué tener en la cabeza.
+const ESCALA_MIN = 1, ESCALA_MAX = 3, ESCALA_PASO = 0.5;
+// ALTURA_PASO queda sin usar a propósito: el slider de altura está escondido (todas las texturas
+// van al relieve máximo) y el paso es lo único que hace falta para volver a mostrarlo.
+const ALTURA_MIN = 0.5, ALTURA_MAX = 2, ALTURA_PASO = 0.25;
+// Tope del tile respecto del ancho del render: sin esto, escalas grandes generan un canvas de
+// varios miles de píxeles y el recorrido píxel a píxel de cargarTile se hace notar.
+const TILE_MAX_FACTOR = 1.5;
 
 // Carga una textura y la deja rasterizada como TILE de tamaño entero en píxeles, EN GRISES.
 // La textura no pinta color: el color lo sigue poniendo el arte. Se usa como mapa de RELIEVE
 // (bumpMap), así que de cada píxel solo importa el brillo.
 //
-// `repeticiones` = cuántas veces entra a lo ancho del parche. Viene por textura del catálogo, no
-// del archivo: los SVG traen viewBox pero sin medida física, así que no hay tamaño real del que
-// deducirlo. El lado se redondea a ENTERO — si saliera fraccionario, el resto se acumula en cada
-// repetición hasta que aparece una costura visible.
+// `repeticiones` = cuántas veces entra a lo ancho del parche. El valor base viene por textura del
+// catálogo (no del archivo: los SVG traen viewBox pero sin medida física, así que no hay tamaño
+// real del que deducirlo) y la escala que elige el cliente lo divide. Puede ser fraccionario —
+// incluso menor que 1, o sea un tile más grande que el parche.
 // `altura` = cuánto SOBRESALE el trazo (1 = medio relieve, 2 = relieve completo). En un bumpMap lo
 // más claro es lo más alto, así que el gris se INVIERTE: la tinta del dibujo pasa a blanco (sube) y
 // el fondo a negro (nivel base). Sin invertir, el dibujo quedaba grabado hacia adentro.
@@ -124,7 +134,10 @@ const cargarTile = async (url, anchoRenderPx, repeticiones, altura) => {
     });
     const aspecto = (img.naturalHeight || 1) / (img.naturalWidth || 1);
 
-    const w = Math.max(4, Math.round(anchoRenderPx / Math.max(1, repeticiones)));
+    const w = Math.max(4, Math.min(
+        Math.round(anchoRenderPx * TILE_MAX_FACTOR),
+        Math.round(anchoRenderPx / Math.max(0.05, repeticiones))
+    ));
     const h = Math.max(4, Math.round(w * aspecto));
     const c = document.createElement('canvas');
     c.width = w; c.height = h;
@@ -347,7 +360,218 @@ const simplificar = (pts, eps) => {
     return out;
 };
 
-export const Tpu3DViewer = ({ ordenId, codigo, onClose }) => {
+// ─── Imagen del boceto aprobado ──────────────────────────────────────────────
+// Lo que queda archivado al aprobar: a la izquierda el parche renderizado con las texturas
+// puestas, a la derecha la referencia de qué se le aplicó a cada zona. Es el documento que mira
+// producción para fabricar, así que va sobre blanco y con los datos en TEXTO, no solo dibujados.
+const FOTO_ANCHO = 820, LEYENDA_ANCHO = 640, PAD = 30, CABECERA = 86, FILA_ALTO = 112;
+const FUENTE = 'system-ui, "Segoe UI", Roboto, sans-serif';
+
+const cargarImagen = (src) => new Promise((ok, fail) => {
+    const img = new Image();
+    img.onload = () => ok(img);
+    img.onerror = () => fail(new Error('No se pudo cargar la imagen.'));
+    img.src = src;
+});
+
+// Dibuja la imagen entera adentro de la caja, sin deformarla.
+const dibujarContenida = (x, img, bx, by, bw, bh) => {
+    const e = Math.min(bw / img.width, bh / img.height);
+    const w = img.width * e, h = img.height * e;
+    x.drawImage(img, bx + (bw - w) / 2, by + (bh - h) / 2, w, h);
+};
+
+const armarImagenAprobacion = async ({ foto, codigo, fecha, filas }) => {
+    const imgFoto = await cargarImagen(foto);
+    // Mini mapas y muestras son opcionales: si alguna no carga, la fila se dibuja igual. La imagen
+    // tiene que salir sí o sí — es el respaldo de una aprobación.
+    const extras = await Promise.all(filas.map(async (f) => ({
+        mini: f.mini ? await cargarImagen(f.mini).catch(() => null) : null,
+        muestra: f.texturaUrl ? await cargarImagen(f.texturaUrl).catch(() => null) : null,
+    })));
+
+    const fotoAlto = Math.round(FOTO_ANCHO * (imgFoto.height / imgFoto.width));
+    const W = PAD * 3 + FOTO_ANCHO + LEYENDA_ANCHO;
+    const H = Math.max(
+        CABECERA + PAD * 2 + fotoAlto,
+        CABECERA + PAD * 2 + 34 + filas.length * FILA_ALTO,
+        460
+    );
+
+    const c = document.createElement('canvas');
+    c.width = W; c.height = H;
+    const x = c.getContext('2d');
+    x.fillStyle = '#ffffff';
+    x.fillRect(0, 0, W, H);
+    x.textBaseline = 'middle';
+
+    // Cabecera
+    x.fillStyle = '#18181b';
+    x.fillRect(0, 0, W, CABECERA);
+    x.fillStyle = '#ffffff';
+    x.font = `bold 30px ${FUENTE}`;
+    x.fillText('BOCETO APROBADO', PAD, 34);
+    x.fillStyle = '#a1a1aa';
+    x.font = `bold 20px ${FUENTE}`;
+    x.fillText(codigo || '', PAD, 63);
+    x.textAlign = 'right';
+    x.font = `16px ${FUENTE}`;
+    x.fillText(fecha, W - PAD, CABECERA / 2);
+    x.textAlign = 'left';
+
+    // Parche. El render viene con fondo transparente (el canvas del visor es alpha), así que se
+    // apoya sobre un gris claro: el cuerpo del parche es blanco y sobre blanco no se vería el filo.
+    const fx = PAD, fy = CABECERA + PAD;
+    x.fillStyle = '#efeff1';
+    x.fillRect(fx, fy, FOTO_ANCHO, fotoAlto);
+    x.drawImage(imgFoto, fx, fy, FOTO_ANCHO, fotoAlto);
+    x.strokeStyle = '#d4d4d8';
+    x.lineWidth = 1;
+    x.strokeRect(fx + 0.5, fy + 0.5, FOTO_ANCHO - 1, fotoAlto - 1);
+
+    // Referencia por zona
+    const lx = PAD * 2 + FOTO_ANCHO;
+    x.fillStyle = '#71717a';
+    x.font = `bold 15px ${FUENTE}`;
+    x.fillText('ZONAS Y TEXTURAS', lx, fy + 8);
+
+    filas.forEach((f, i) => {
+        const top = fy + 34 + i * FILA_ALTO;
+        x.strokeStyle = '#e4e4e7';
+        x.beginPath();
+        x.moveTo(lx, top + 0.5);
+        x.lineTo(lx + LEYENDA_ANCHO, top + 0.5);
+        x.stroke();
+
+        const my = top + 18;
+        if (extras[i].mini) dibujarContenida(x, extras[i].mini, lx, my, 78, 76);
+
+        // Muestra de la textura, con el mismo encuadre que en el visor (se ve un cuarto del tile).
+        const sx = lx + 92, sw = 62;
+        x.fillStyle = '#fafafa';
+        x.fillRect(sx, my + 7, sw, sw);
+        if (extras[i].muestra) {
+            x.save();
+            x.beginPath();
+            x.rect(sx, my + 7, sw, sw);
+            x.clip();
+            x.drawImage(extras[i].muestra, sx - sw / 2, my + 7 - sw / 2, sw * 2, sw * 2);
+            x.restore();
+        }
+        x.strokeStyle = '#d4d4d8';
+        x.strokeRect(sx + 0.5, my + 7.5, sw - 1, sw - 1);
+
+        const tx = lx + 174;
+        x.fillStyle = '#71717a';
+        x.font = `bold 13px ${FUENTE}`;
+        x.fillText(String(f.zona || '').toUpperCase(), tx, my + 10);
+        x.fillStyle = '#18181b';
+        x.font = `bold 21px ${FUENTE}`;
+        x.fillText(f.textura, tx, my + 36);
+        x.fillStyle = '#52525b';
+        x.font = `15px ${FUENTE}`;
+        x.fillText(f.detalle, tx, my + 62);
+    });
+
+    return await new Promise((res) => c.toBlob(res, 'image/png'));
+};
+
+// Pad para CORRER la textura dentro de la zona: se arrastra el punto y la trama se mueve con él.
+// El recorrido es UNA repetición del tile en cada eje y nada más: las texturas son seamless, así
+// que correrla un tile entero da exactamente el mismo dibujo — con este cuadradito ya se alcanza
+// cualquier posición posible. dx/dy van en 0..1 y 0.5 es "sin correr" (el centro del pad).
+const PadMover = ({ dx, dy, onChange, onReset, clase }) => {
+    const ref = useRef(null);
+    const mover = (ev) => {
+        const r = ref.current?.getBoundingClientRect();
+        if (!r) return;
+        const x = Math.min(1, Math.max(0, (ev.clientX - r.left) / r.width));
+        const y = Math.min(1, Math.max(0, (ev.clientY - r.top) / r.height));
+        onChange(Math.round(x * 100) / 100, Math.round(y * 100) / 100);
+    };
+    return (
+        <div
+            ref={ref}
+            // Con captura de puntero el arrastre sigue andando aunque el dedo se vaya del cuadrado.
+            onPointerDown={(e) => { e.currentTarget.setPointerCapture(e.pointerId); mover(e); }}
+            onPointerMove={(e) => { if (e.currentTarget.hasPointerCapture(e.pointerId)) mover(e); }}
+            onDoubleClick={onReset}
+            title="Arrastrá para correr la textura dentro de la zona · doble clic para centrarla"
+            // touch-none: sin esto, en mobile el gesto lo toma el scroll del modal y el pad no responde.
+            className={`relative w-11 h-11 rounded-lg border cursor-grab active:cursor-grabbing touch-none ${clase}`}
+        >
+            <span className="absolute inset-x-1 top-1/2 border-t border-dashed border-current opacity-25" />
+            <span className="absolute inset-y-1 left-1/2 border-l border-dashed border-current opacity-25" />
+            <span
+                className="absolute w-2.5 h-2.5 rounded-full bg-brand-magenta"
+                style={{ left: `${dx * 100}%`, top: `${dy * 100}%`, transform: 'translate(-50%,-50%)' }}
+            />
+        </div>
+    );
+};
+
+// `modo`:
+//  · 'cliente' (default) — portal: endpoints /web-orders scopeados al dueño. Si el pedido tiene
+//    TexturasElige='DISENADOR', la UI de elección se oculta y el cliente solo mira y aprueba.
+//  · 'interno' — detalle de la orden: endpoints /orders sin scope; el diseñador elige las texturas
+//    (se guardan con PUT, que marca ElegidaPor=OPERARIO y deja historial).
+// `onAprobado` (solo modo cliente): callback tras aprobar desde el visor, para refrescar la lista.
+export const Tpu3DViewer = ({ ordenId, codigo, onClose, onAprobado, modo = 'cliente' }) => {
+    const esInterno = modo === 'interno';
+    // Tema: el portal es oscuro; la app interna es clara (zinc-100), así que el visor interno
+    // usa superficies claras para no verse como un parche de otra app.
+    const ui = esInterno ? {
+        panel: 'bg-zinc-100 border-zinc-300',
+        headerBorde: 'border-zinc-300',
+        titulo: 'text-cyan-700/90',
+        codigo: 'text-zinc-700',
+        botonHeader: 'text-zinc-500 hover:text-zinc-900 hover:bg-zinc-200',
+        canvas: 'bg-gradient-to-b from-zinc-100 to-zinc-300',
+        cargandoTxt: 'text-zinc-500',
+        drawer: 'bg-zinc-100 border-zinc-300',
+        etiqueta: 'text-zinc-500',
+        cardBorde: 'border-zinc-300 hover:border-zinc-400',
+        cardTxt: 'text-zinc-600',
+        swatchBorde: 'border-zinc-300 group-hover:border-zinc-400',
+        swatchTxt: 'text-zinc-600',
+        separador: 'border-zinc-300',
+        pestania: 'bg-white border-zinc-400 text-zinc-500 hover:text-zinc-900',
+        pie: 'border-zinc-300 text-zinc-500',
+        padFondo: 'bg-white',
+        barraFondo: 'bg-zinc-100',
+    } : {
+        panel: 'bg-zinc-900 border-zinc-700',
+        headerBorde: 'border-zinc-800',
+        titulo: 'text-cyan-400/80',
+        codigo: 'text-zinc-300',
+        botonHeader: 'text-zinc-400 hover:text-white hover:bg-zinc-800',
+        canvas: 'bg-gradient-to-b from-zinc-900 to-zinc-800',
+        cargandoTxt: 'text-zinc-400',
+        drawer: 'bg-zinc-900 border-zinc-800',
+        etiqueta: 'text-zinc-500',
+        cardBorde: 'border-zinc-700 hover:border-zinc-500',
+        cardTxt: 'text-zinc-400',
+        swatchBorde: 'border-zinc-700 group-hover:border-zinc-500',
+        swatchTxt: 'text-zinc-400',
+        separador: 'border-zinc-800',
+        pestania: 'bg-zinc-950 border-zinc-600 text-zinc-300 hover:text-white',
+        pie: 'border-zinc-800 text-zinc-500',
+        padFondo: 'bg-zinc-950',
+        barraFondo: 'bg-zinc-900',
+    };
+    const rutas = esInterno ? {
+        capas: `${API_BASE_URL}/orders/${ordenId}/tpu-model`,
+        archivo: (id) => `${API_BASE_URL}/orders/${ordenId}/tpu-model/archivo/${id}`,
+        texturas: `${API_BASE_URL}/orders/${ordenId}/texturas`,
+        bocetoAprobado: `${API_BASE_URL}/orders/${ordenId}/boceto-aprobado`,
+        metodoGuardar: 'PUT',
+    } : {
+        capas: `${API_BASE_URL}/web-orders/tpu-model/${ordenId}`,
+        archivo: (id) => `${API_BASE_URL}/web-orders/tpu-model/${ordenId}/archivo/${id}`,
+        texturas: `${API_BASE_URL}/web-orders/orden/${ordenId}/texturas`,
+        bocetoAprobado: `${API_BASE_URL}/web-orders/orden/${ordenId}/boceto-aprobado`,
+        metodoGuardar: 'POST',
+    };
     const mountRef = useRef(null);
     const downEnOverlay = useRef(false);
     const [estado, setEstado] = useState('cargando'); // cargando | listo | error
@@ -362,25 +586,56 @@ export const Tpu3DViewer = ({ ordenId, codigo, onClose }) => {
     // Arranca cerrado: el modal abre mostrando el parche. Se despliega al tocar una zona y se
     // vuelve a cerrar al elegir la textura, que es cuando el cliente quiere ver cómo quedó.
     const [panelAbierto, setPanelAbierto] = useState(false);
-    // Relieve real (desplaza geometría) vs solo sombreado (bump). Lo segundo es mucho más liviano.
-    // Queda guardado por dispositivo: en un celular flojo no hay que volver a bajarlo cada vez.
-    const [modoRelieve, setModoRelieve] = useState(() => {
-        try { return localStorage.getItem('tpu3d_relieve') !== '0'; } catch { return true; }
-    });
+    // Ojo del header: saca de encima la pestaña del cajón, el joystick y la barra de escala, para
+    // mirar el parche sin nada arriba. No cambia nada de lo elegido, solo esconde los controles.
+    const [controlesVisibles, setControlesVisibles] = useState(true);
+    // El ojo no desmonta nada: desvanece. Así el fade se ve en las dos direcciones (un elemento
+    // que se desmonta no puede animar su salida) y no hay que orquestar timers.
+    const fade = `transition-opacity duration-200 ${controlesVisibles ? 'opacity-100' : 'opacity-0 pointer-events-none'}`;
     const [errorGuardado, setErrorGuardado] = useState('');
     const [guardando, setGuardando] = useState(false);
     const escenaRef = useRef(null);                   // { componer, anchoRenderPx }
     const tilesRef = useRef(new Map());               // clave archivo|rep|alt → canvas del tile
     const ultimoGuardado = useRef('{}');              // evita re-postear lo que se acaba de cargar
 
-    // Repetición y altura de la textura elegida, ajustables en el momento. Los valores de arranque
-    // salen del catálogo (assets/textures/texturas.json).
-    const [ajustes, setAjustes] = useState({});       // archivo → { repeticiones, altura }
+    // Cómo queda PUESTA la textura en cada zona: escala, altura del relieve y corrimiento.
+    // Va por ZONA y no por textura: la misma textura puede ir en dos zonas y no tiene por qué
+    // quedar igual puesta en las dos. Lo que no está tocado sale del catálogo (texturas.json).
+    const [ajustes, setAjustes] = useState({});       // zonaIdx → { escala, altura, dx, dy }
+    // Copia DIFERIDA, solo para lo que obliga a rehacer el tile (escala y altura): un slider
+    // dispara un cambio por píxel de arrastre y regenerar la textura cuesta un canvas entero más
+    // dos recorridos píxel a píxel. El pad de mover NO pasa por acá — corre la trama sin tocar el
+    // tile, así que tiene que responder al instante.
+    const [ajustesTile, setAjustesTile] = useState({});
+    useEffect(() => {
+        const id = setTimeout(() => setAjustesTile(ajustes), 80);
+        return () => clearTimeout(id);
+    }, [ajustes]);
+
     const acotar = (v, min, max) => Math.min(max, Math.max(min, v));
-    const ajusteDe = (t) => ({
-        repeticiones: acotar(ajustes[t.archivo]?.repeticiones ?? t.repeticiones ?? 2, REPETICIONES_MIN, REPETICIONES_MAX),
-        altura:       acotar(ajustes[t.archivo]?.altura       ?? t.altura       ?? 1, ALTURA_MIN, ALTURA_MAX),
-    });
+    const ajusteDe = (zona, t, fuente = ajustes) => {
+        const a = fuente[zona] || {};
+        return {
+            escala: acotar(Number(a.escala ?? 1), ESCALA_MIN, ESCALA_MAX),
+            // Altura sin control por ahora: todas las texturas van al relieve máximo. Se sigue
+            // guardando y respetando lo que ya esté guardado, así que volver a mostrar el slider
+            // es solo devolverlo a la barra.
+            altura: acotar(Number(a.altura ?? ALTURA_MAX), ALTURA_MIN, ALTURA_MAX),
+            dx: acotar(Number(a.dx ?? 0.5), 0, 1),
+            dy: acotar(Number(a.dy ?? 0.5), 0, 1),
+        };
+    };
+    // Repeticiones que se le pide al tile: la base del catálogo dividida por la escala elegida.
+    const repeticionesDe = (t, escala) => (Number(t?.repeticiones) || 2) / Math.max(0.05, escala);
+
+    // Textura de la zona seleccionada y sus perillas. Los controles viven en dos lugares (el
+    // joystick sobre el render, la escala en la barra de abajo) y los dos leen de acá.
+    const texturaActiva = (zonaActiva !== null && elecciones[zonaActiva])
+        ? texturas.find(x => x.archivo === elecciones[zonaActiva])
+        : null;
+    const ajusteActivo = texturaActiva ? ajusteDe(zonaActiva, texturaActiva) : null;
+    const setAjuste = (campo, valor) => setAjustes(p => ({ ...p, [zonaActiva]: { ...ajusteActivo, [campo]: valor } }));
+    const moverTextura = (dx, dy) => setAjustes(p => ({ ...p, [zonaActiva]: { ...ajusteActivo, dx, dy } }));
 
     // Catálogo de texturas
     useEffect(() => {
@@ -392,21 +647,56 @@ export const Tpu3DViewer = ({ ordenId, codigo, onClose }) => {
         return () => { vivo = false; };
     }, []);
 
+    // Fase del pedido, para decidir quién puede tocar las texturas. null = todavía no se sabe:
+    // hasta que llegue, nadie edita (si la lectura falla, se queda en mirar, que es lo seguro).
+    const [estadoTpu, setEstadoTpu] = useState(null); // { aprobado, eligeCliente, texturasElige }
+    // Interno: el diseñador levanta el candado a propósito para corregir una elección del cliente.
+    const [desbloqueado, setDesbloqueado] = useState(false);
+
+    // ¿Quién puede elegir acá?
+    //  · Interno — solo si las texturas las define el diseñador ('DISENADOR'). En los otros dos
+    //    casos (el cliente las eligió, o todavía no aprobó) el visor abre como "ver": se puede
+    //    editar igual, pero levantando el candado, y eso queda en el historial de la orden.
+    //  · Cliente — solo mientras el pedido espera su aprobación Y le toca elegir a él. Aprobado,
+    //    el visor sigue abriéndose para ver lo que quedó, sin poder cambiarlo.
+    const puedeElegir = esInterno
+        ? (desbloqueado || estadoTpu?.texturasElige === 'DISENADOR')
+        : !!estadoTpu && !estadoTpu.aprobado && estadoTpu.eligeCliente !== false;
+    const conCandado = esInterno && !desbloqueado && estadoTpu?.texturasElige !== 'DISENADOR';
+
     // Elección ya guardada (reabrir el visor tiene que mostrar lo que había elegido)
     useEffect(() => {
         let vivo = true;
-        fetch(`${API_BASE_URL}/web-orders/orden/${ordenId}/texturas`, { headers: authHeaders() })
+        fetch(rutas.texturas, { headers: authHeaders() })
             .then(r => r.json())
             .then(j => {
                 if (!vivo || !j?.success) return;
-                const e = {}, b = {};
+                const e = {}, b = {}, a = {};
                 (j.data || []).forEach(r => {
                     if (r.ArchivoTextura) e[r.ZonaIndice] = r.ArchivoTextura;
                     if (r.Barniz) b[r.ZonaIndice] = true;
+                    // Solo lo que está guardado de verdad: lo que venga NULL lo resuelve ajusteDe
+                    // con el default del catálogo. Sembrar defaults acá haría que el estado inicial
+                    // no coincidiera con ultimoGuardado y el visor abriría diciendo "hay cambios".
+                    const aj = {};
+                    if (r.Escala != null) aj.escala = Number(r.Escala);
+                    if (r.Altura != null) aj.altura = Number(r.Altura);
+                    if (r.OffsetX != null) aj.dx = Number(r.OffsetX);
+                    if (r.OffsetY != null) aj.dy = Number(r.OffsetY);
+                    if (Object.keys(aj).length) a[r.ZonaIndice] = aj;
                 });
-                ultimoGuardado.current = JSON.stringify({ e, b });
+                ultimoGuardado.current = JSON.stringify({ e, b, a });
                 setElecciones(e);
                 setBarnices(b);
+                // Los dos a la vez: si el diferido arranca vacío, el primer armado usa la escala
+                // por defecto del catálogo y 80 ms después la corrige a la vista.
+                setAjustes(a);
+                setAjustesTile(a);
+                setEstadoTpu({
+                    aprobado: !!j.aprobado,
+                    eligeCliente: j.eligeCliente !== false,
+                    texturasElige: j.texturasElige || null,
+                });
             })
             .catch(() => { /* sin elección previa */ });
         return () => { vivo = false; };
@@ -414,40 +704,112 @@ export const Tpu3DViewer = ({ ordenId, codigo, onClose }) => {
 
     // Nada se persiste hasta que se aprieta "Guardar cambios": probar texturas en el 3D no debe
     // dejar rastro si el cliente no confirma.
-    const estadoActual = JSON.stringify({ e: elecciones, b: barnices });
+    const estadoActual = JSON.stringify({ e: elecciones, b: barnices, a: ajustes });
     const hayCambios = estadoActual !== ultimoGuardado.current;
 
+    // Arma el PNG del boceto aprobado (parche renderizado + referencia por zona) y lo manda a
+    // archivos de referencia de la orden. Se llama al guardar, en los dos modos: del lado cliente
+    // guardar ES aprobar, y del lado interno es el diseñador definiendo las texturas de un boceto
+    // que el cliente aprobó "pelado" — en los dos casos queda documentado qué se va a fabricar.
+    const archivarBoceto = async () => {
+        try {
+            const foto = escenaRef.current?.capturar?.();
+            if (!foto) return;
+
+            const filas = zonas.map((z) => {
+                const archivo = elecciones[z.idx] || null;
+                const t = archivo ? texturas.find((x) => x.archivo === archivo) : null;
+                const a = t ? ajusteDe(z.idx, t) : null;
+                const partes = [];
+                if (a) partes.push(`Escala ${a.escala.toFixed(1)}×`, `Altura ${a.altura.toFixed(2)}`);
+                partes.push(barnices[z.idx] ? 'Con barniz' : 'Sin barniz');
+                return {
+                    mini: z.mini,
+                    zona: z.nombre,
+                    // Una textura que ya no está en la carpeta se nombra igual: producción tiene que
+                    // ver que hay algo elegido que no se puede resolver, no un "sin textura" falso.
+                    textura: t ? t.nombre : (archivo ? `${archivo} — no encontrada` : 'Sin textura'),
+                    texturaUrl: t?.url || null,
+                    detalle: partes.join(' · '),
+                };
+            });
+
+            const blob = await armarImagenAprobacion({
+                foto,
+                codigo,
+                fecha: new Date().toLocaleString('es-UY', { dateStyle: 'short', timeStyle: 'short' }),
+                filas,
+            });
+            if (!blob) return;
+
+            // El mismo detalle en texto, para que se lea desde la lista de referencias sin abrir la imagen.
+            const resumen = filas.map(f => `${f.zona}: ${f.textura} (${f.detalle})`).join('\n');
+            const fd = new FormData();
+            fd.append('file', blob, `BOCETO APROBADO - ${String(codigo || ordenId).replace(/\//g, '-')}.png`);
+            fd.append('resumen', resumen);
+            // Sin Content-Type a mano: lo pone el browser con el boundary del multipart.
+            await fetch(rutas.bocetoAprobado, { method: 'POST', headers: authHeaders(), body: fd });
+        } catch (e) {
+            console.warn('[TPU-3D] No se pudo archivar el boceto aprobado:', e);
+        }
+    };
+
+    // Interno: guarda la elección del diseñador y listo.
+    // Cliente: guardar ES aprobar — elige sus texturas y con eso el boceto queda aprobado (las dos
+    // vías del portal terminan en aprobación; la otra es el ✓ pelado, donde elige el diseñador).
     const guardar = async () => {
         setGuardando(true);
         setErrorGuardado('');
         try {
-            // Una entrada por zona tocada, con textura y barniz juntos.
-            const zonasPayload = {};
-            for (const k of new Set([...Object.keys(elecciones), ...Object.keys(barnices)])) {
-                zonasPayload[k] = { textura: elecciones[k] || null, barniz: !!barnices[k] };
+            if (hayCambios) {
+                // Una entrada por zona tocada, con textura, barniz y cómo queda puesta.
+                const zonasPayload = {};
+                for (const k of new Set([...Object.keys(elecciones), ...Object.keys(barnices), ...Object.keys(ajustes)])) {
+                    const archivo = elecciones[k] || null;
+                    const t = archivo ? texturas.find(x => x.archivo === archivo) : null;
+                    // Sin textura no hay puesta en página que guardar: van los campos en null y el
+                    // backend deja los valores que ya estaban.
+                    const a = t ? ajusteDe(k, t) : {};
+                    zonasPayload[k] = { textura: archivo, barniz: !!barnices[k], ...a };
+                }
+                const r = await fetch(rutas.texturas, {
+                    method: rutas.metodoGuardar,
+                    headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ elecciones: zonasPayload }),
+                });
+                if (!r.ok) {
+                    const j = await r.json().catch(() => ({}));
+                    setErrorGuardado(j.error || 'No se pudo guardar la elección.');
+                    return;
+                }
+                ultimoGuardado.current = estadoActual;
             }
-            const r = await fetch(`${API_BASE_URL}/web-orders/orden/${ordenId}/texturas`, {
-                method: 'POST',
-                headers: { ...authHeaders(), 'Content-Type': 'application/json' },
-                body: JSON.stringify({ elecciones: zonasPayload }),
-            });
-            if (!r.ok) {
-                const j = await r.json().catch(() => ({}));
-                setErrorGuardado(j.error || 'No se pudo guardar la elección.');
-                return;
+
+            // El PNG del boceto aprobado. NUNCA puede frenar la aprobación: si falla el render, la
+            // subida o Drive, se avisa por consola y se sigue. Va antes de aprobar para que, cuando
+            // producción vea la orden aprobada, el documento ya esté ahí.
+            await archivarBoceto();
+
+            if (!esInterno) {
+                const rAprob = await fetch(`${API_BASE_URL}/web-orders/aprobar-pedido`, {
+                    method: 'POST',
+                    headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ ordenId }),
+                });
+                if (!rAprob.ok) {
+                    const j = await rAprob.json().catch(() => ({}));
+                    setErrorGuardado(j.error || 'No se pudo aprobar el pedido.');
+                    return;
+                }
+                onAprobado?.();
+                onClose?.();
             }
-            ultimoGuardado.current = estadoActual;
         } catch {
             setErrorGuardado('No se pudo guardar la elección (sin conexión).');
         } finally {
             setGuardando(false);
         }
     };
-
-    useEffect(() => {
-        escenaRef.current?.aplicarModo?.(modoRelieve);
-        try { localStorage.setItem('tpu3d_relieve', modoRelieve ? '1' : '0'); } catch { /* modo privado */ }
-    }, [modoRelieve, estado]);
 
     // Repintar el arte cuando cambia una elección. No rearma la escena: recompone el canvas de
     // color y avisa a three.js con needsUpdate.
@@ -456,36 +818,44 @@ export const Tpu3DViewer = ({ ordenId, codigo, onClose }) => {
         if (!e) return;
         let vivo = true;
         (async () => {
-            const tiles = {};
+            const tiles = {}, corrimientos = {};
             for (const [idx, archivo] of Object.entries(elecciones)) {
                 if (!archivo) continue;
                 const t = texturas.find(x => x.archivo === archivo);
                 if (!t) continue;
-                const { repeticiones, altura } = ajusteDe(t);
-                // La clave incluye los ajustes: moverlos en calibración tiene que regenerar el tile.
-                const clave = `${archivo}|${repeticiones}|${altura}`;
+                const { dx, dy } = ajusteDe(idx, t);                         // al instante
+                const { escala, altura } = ajusteDe(idx, t, ajustesTile);    // diferidos
+                // La clave incluye escala y altura porque cambian el tile. dx/dy NO: mover la
+                // textura es solo dibujar el mismo tile desde otro origen, y regenerarlo por cada
+                // píxel de arrastre haría que el pad se sintiera pesado.
+                const clave = `${archivo}|${escala}|${altura}`;
                 if (!tilesRef.current.has(clave)) {
                     // null = textura que no cargó: la zona queda sin relieve en vez de romper el render.
                     let tile = null;
-                    try { tile = await cargarTile(t.url, e.anchoRenderPx, repeticiones, altura); } catch { tile = null; }
+                    try { tile = await cargarTile(t.url, e.anchoRenderPx, repeticionesDe(t, escala), altura); } catch { tile = null; }
                     tilesRef.current.set(clave, tile);
                 }
                 tiles[idx] = tilesRef.current.get(clave);
+                corrimientos[idx] = { dx, dy };
             }
-            if (vivo) e.componer(tiles, barnices);
+            if (vivo) e.componer(tiles, barnices, corrimientos);
         })();
         return () => { vivo = false; };
-    }, [elecciones, barnices, texturas, ajustes, estado]);
+    }, [elecciones, barnices, texturas, ajustes, ajustesTile, estado]);
 
 
     useEffect(() => {
         let vivo = true;
         let limpiar = null;
 
+        // Lo setea el armado de la escena; componer() lo llama para redibujar tras un cambio de
+        // textura (con render bajo demanda, sin esto el cambio no se vería hasta mover la cámara).
+        let pedirRender = () => {};
+
         (async () => {
             try {
                 // 1. Capas disponibles
-                const resCapas = await fetch(`${API_BASE_URL}/web-orders/tpu-model/${ordenId}`, { headers: authHeaders() });
+                const resCapas = await fetch(rutas.capas, { headers: authHeaders() });
                 const jCapas = await resCapas.json();
                 if (!resCapas.ok) throw new Error(jCapas.error || 'No se pudieron obtener las capas.');
                 const capas = jCapas.capas || {};
@@ -496,7 +866,7 @@ export const Tpu3DViewer = ({ ordenId, codigo, onClose }) => {
                 if (!capaArte) throw new Error('El pedido todavía no tiene el boceto cargado.');
 
                 const traer = async (archivoId) => {
-                    const r = await fetch(`${API_BASE_URL}/web-orders/tpu-model/${ordenId}/archivo/${archivoId}`, { headers: authHeaders() });
+                    const r = await fetch(rutas.archivo(archivoId), { headers: authHeaders() });
                     if (!r.ok) throw new Error('No se pudo leer una capa del arte.');
                     return r.arrayBuffer();
                 };
@@ -514,12 +884,22 @@ export const Tpu3DViewer = ({ ordenId, codigo, onClose }) => {
                 const pdfCorte = bufCorte ? await abrirPdf(bufCorte) : null;
                 if (!vivo) return;
 
+                // Capa "extras" del boceto: anotaciones/medidas del diseñador para producción — NO
+                // es parte del parche. Se apaga para TODO el 3D: si se dibujara, las notas saldrían
+                // impresas en el arte, su tinta agrandaría la silueta y aparecería como una zona más.
+                const occArte = await pdfArte.pdf.getOptionalContentConfig();
+                const esCapaExtras = (n) => /^\s*extras?\s*$/i.test(String(n || ''));
+                const idsCapas = (occArte.getOrder() || []).filter(x => typeof x === 'string');
+                for (const id of idsCapas) {
+                    if (esCapaExtras(occArte.getGroup(id)?.name)) occArte.setVisibility(id, false);
+                }
+
                 // 3a. PASADA 1 (barata, plancha entera a baja resolución): detectar dónde está UNA copia.
-                const rasterFull = (pdf, maxDim) => {
+                const rasterFull = (pdf, maxDim, occ = null) => {
                     const e = maxDim / Math.max(pdf.baseW, pdf.baseH);
-                    return rasterizar(pdf, { scale: e, outW: pdf.baseW * e, outH: pdf.baseH * e });
+                    return rasterizar(pdf, { scale: e, outW: pdf.baseW * e, outH: pdf.baseH * e, occ });
                 };
-                const cvGuia = pdfCorte ? await rasterFull(pdfCorte, 1400) : await rasterFull(pdfArte, 1400);
+                const cvGuia = pdfCorte ? await rasterFull(pdfCorte, 1400) : await rasterFull(pdfArte, 1400, occArte);
                 if (!vivo) return;
                 // Silueta: interior del corte; sin corte, interior de la tinta del arte
                 // (no sirve el alpha pelado: la plancha puede traer fondo blanco OPACO).
@@ -544,28 +924,28 @@ export const Tpu3DViewer = ({ ordenId, codigo, onClose }) => {
                         occ,
                     });
                 };
-                const cvArteCrop = await rasterCrop(pdfArte);
+                const cvArteCrop = await rasterCrop(pdfArte, occArte);
                 const cvCorteCrop = pdfCorte ? await rasterCrop(pdfCorte) : null;
                 if (!vivo) return;
 
-                // 3c. ZONAS: cada capa (OCG) del boceto es una zona texturable. Se rasteriza el
-                // MISMO recorte una vez por capa, con solo esa capa visible → máscaras alineadas al
-                // píxel con el arte. getOrder() viene de arriba hacia abajo del panel de capas, o sea
-                // en orden de prioridad: la primera que cubre un píxel es la que se ve.
-                const occ = await pdfArte.pdf.getOptionalContentConfig();
-                const idsZonas = (occ.getOrder() || []).filter(x => typeof x === 'string');
+                // 3c. ZONAS: cada capa (OCG) del boceto es una zona texturable — menos "extras".
+                // Se rasteriza el MISMO recorte una vez por capa, con solo esa capa visible →
+                // máscaras alineadas al píxel con el arte. getOrder() viene de arriba hacia abajo
+                // del panel de capas, o sea en orden de prioridad: la primera que cubre un píxel gana.
+                const idsZonas = idsCapas.filter(id => !esCapaExtras(occArte.getGroup(id)?.name));
                 const mascarasZona = [];
                 for (const id of idsZonas) {
-                    for (const [otro] of occ) occ.setVisibility(otro, otro === id);
-                    const cv = await rasterCrop(pdfArte, occ);
+                    for (const [otro] of occArte) occArte.setVisibility(otro, otro === id);
+                    const cv = await rasterCrop(pdfArte, occArte);
                     if (!vivo) return;
                     const msk = mascaraTinta(cv);
                     // Una capa sin tinta dentro del recorte no sirve como zona (queda fuera de la
                     // copia aislada, o es una capa de guías): se descarta en vez de ofrecer una
                     // zona que al pintarla no cambia nada.
-                    if (msk.m.some(v => v)) mascarasZona.push({ id, msk, nombre: occ.getGroup(id)?.name || '' });
+                    if (msk.m.some(v => v)) mascarasZona.push({ id, msk, nombre: occArte.getGroup(id)?.name || '' });
                 }
-                for (const [otro] of occ) occ.setVisibility(otro, true); // dejar el config como estaba
+                // Restaurar: todo visible MENOS extras (que queda apagada para siempre en este visor).
+                for (const [otro, g] of occArte) occArte.setVisibility(otro, !esCapaExtras(g?.name));
 
                 // Silueta del recorte (a resolución completa) — y solo el componente mayor, por si
                 // entra una puntita de la copia vecina en el margen del recorte.
@@ -585,14 +965,53 @@ export const Tpu3DViewer = ({ ordenId, codigo, onClose }) => {
 
                 for (let i = 0; i < W * H; i++) {
                     const dentro = dSil[i * 4] > 127;
-                    const af = dArt[i * 4 + 3] / 255;
-                    iColor.data[i * 4]     = dentro ? Math.round(dArt[i * 4] * af + 255 * (1 - af)) : 255;
-                    iColor.data[i * 4 + 1] = dentro ? Math.round(dArt[i * 4 + 1] * af + 255 * (1 - af)) : 255;
-                    iColor.data[i * 4 + 2] = dentro ? Math.round(dArt[i * 4 + 2] * af + 255 * (1 - af)) : 255;
+                    // Donde HAY tinta se usa el color del arte TAL CUAL, sin mezclarlo con el blanco
+                    // de la base. El borde del arte viene con antialias y mascaraTinta lo cuenta como
+                    // tinta desde alpha 6%: al mezclar, esos píxeles quedaban casi blancos y dibujaban
+                    // un halo alrededor de todo el parche. El canal RGB del canvas no está
+                    // premultiplicado, así que aun con alpha baja trae el color real del trazo.
+                    // El blanco queda solo donde no hay nada de tinta (huecos reales del diseño).
+                    const conTinta = dArt[i * 4 + 3] > 4;
+                    const usarArte = dentro && conTinta;
+                    iColor.data[i * 4]     = usarArte ? dArt[i * 4] : 255;
+                    iColor.data[i * 4 + 1] = usarArte ? dArt[i * 4 + 1] : 255;
+                    iColor.data[i * 4 + 2] = usarArte ? dArt[i * 4 + 2] : 255;
                     iColor.data[i * 4 + 3] = 255;
                     const va = dentro ? 255 : 0;
                     iAlpha.data[i * 4] = va; iAlpha.data[i * 4 + 1] = va; iAlpha.data[i * 4 + 2] = va; iAlpha.data[i * 4 + 3] = 255;
                 }
+                // EXTENSIÓN DEL BORDE: se empuja el color del arte unos píxeles fuera de la silueta,
+                // para que al interpolar la textura en el filo haya arte de los dos lados en vez de
+                // blanco. Es la causa real del halo: el alphaTest recorta bien, pero el color que
+                // sobrevive al corte ya venía mezclado con el blanco de afuera.
+                {
+                    const lleno = new Uint8Array(W * H);
+                    for (let i = 0; i < W * H; i++) lleno[i] = dSil[i * 4] > 127 ? 1 : 0;
+                    const px = iColor.data;
+                    for (let paso = 0; paso < COLOR_EXTIENDE_PX; paso++) {
+                        const nuevos = [];
+                        for (let y = 0; y < H; y++) {
+                            for (let x = 0; x < W; x++) {
+                                const i = y * W + x;
+                                if (lleno[i]) continue;
+                                let src = -1;
+                                if (x > 0 && lleno[i - 1]) src = i - 1;
+                                else if (x < W - 1 && lleno[i + 1]) src = i + 1;
+                                else if (y > 0 && lleno[i - W]) src = i - W;
+                                else if (y < H - 1 && lleno[i + W]) src = i + W;
+                                if (src < 0) continue;
+                                px[i * 4] = px[src * 4];
+                                px[i * 4 + 1] = px[src * 4 + 1];
+                                px[i * 4 + 2] = px[src * 4 + 2];
+                                nuevos.push(i);
+                            }
+                        }
+                        // Recién al terminar la pasada: si no, el color se arrastraría muchos píxeles
+                        // en una sola vuelta en vez de avanzar de a uno.
+                        for (const i of nuevos) lleno[i] = 1;
+                    }
+                }
+
                 cColor.getContext('2d').putImageData(iColor, 0, 0);
                 cAlpha.getContext('2d').putImageData(iAlpha, 0, 0);
 
@@ -603,6 +1022,21 @@ export const Tpu3DViewer = ({ ordenId, codigo, onClose }) => {
                     for (let i = 0; i < W * H; i++) m[i] = (z.msk.m[i] && dSil[i * 4] > 127) ? 1 : 0;
                     return m;
                 });
+
+                // Zonas EXCLUYENTES: cada píxel pertenece a la capa MÁS ALTA que lo cubre, y se le
+                // resta a las de abajo. Una capa "fondo" es una mancha que cubre todo el parche, con
+                // las estrellas y los bastones dibujados ENCIMA: sin esto, texturizar el fondo pintaba
+                // el parche entero (las otras zonas solo lo tapaban si además tenían textura elegida).
+                // getOrder() viene de arriba hacia abajo, así que recorrer 0→n reparte por prioridad.
+                const ocupado = new Uint8Array(W * H);
+                for (const m of zonasPix) {
+                    for (let i = 0; i < W * H; i++) {
+                        if (!m[i]) continue;
+                        if (ocupado[i]) m[i] = 0;
+                        else ocupado[i] = 1;
+                    }
+                }
+
                 const zonasAlpha = zonasPix.map(m => mascaraAAlpha({ m, w: W, h: H }));
 
                 // MINI MAPA por zona: la silueta del parche en gris con esa zona en cian, reducida
@@ -667,17 +1101,13 @@ export const Tpu3DViewer = ({ ordenId, codigo, onClose }) => {
                     ctxB.filter = 'none';
                 }
 
-                // Copia desenfocada del relieve, solo para el desplazamiento (ver DESPLAZ_SUAVIZADO_PX).
-                const cRelieveSuave = document.createElement('canvas'); cRelieveSuave.width = W; cRelieveSuave.height = H;
-                const ctxRelieveSuave = cRelieveSuave.getContext('2d');
-
                 const cTmp = document.createElement('canvas'); cTmp.width = W; cTmp.height = H;
                 const ctxTmp = cTmp.getContext('2d');
                 const ctxColor = cColor.getContext('2d');
 
                 // Se pinta de MENOR a MAYOR prioridad para que la capa de arriba quede encima,
                 // igual que en el PDF.
-                const componer = (tiles, barnices = {}) => {
+                const componer = (tiles, barnices = {}, corrimientos = {}) => {
                     // Barniz: la zona pasa a ser mucho menos rugosa, o sea que refleja la luz en
                     // vez de difundirla. Se recorta el gris con la máscara, igual que la textura.
                     ctxBarniz.globalCompositeOperation = 'source-over';
@@ -701,10 +1131,19 @@ export const Tpu3DViewer = ({ ordenId, codigo, onClose }) => {
                     for (let z = zonasAlpha.length - 1; z >= 0; z--) {
                         const tile = tiles?.[z];
                         if (!tile) continue;
+                        // Corrimiento de la textura dentro de la zona: el patrón se pinta con el
+                        // lienzo trasladado, así que se mueve la trama sin tocar el tile. Alcanza con
+                        // media repetición para cada lado — más allá el dibujo se repite igual.
+                        const c = corrimientos?.[z];
+                        const ox = Math.round(((c?.dx ?? 0.5) - 0.5) * tile.width);
+                        const oy = Math.round(((c?.dy ?? 0.5) - 0.5) * tile.height);
                         ctxTmp.globalCompositeOperation = 'source-over';
                         ctxTmp.clearRect(0, 0, W, H);
+                        ctxTmp.save();
+                        ctxTmp.translate(ox, oy);
                         ctxTmp.fillStyle = ctxTmp.createPattern(tile, 'repeat');
-                        ctxTmp.fillRect(0, 0, W, H);
+                        ctxTmp.fillRect(-ox, -oy, W, H);
+                        ctxTmp.restore();
                         ctxTmp.globalCompositeOperation = 'destination-in';
                         ctxTmp.drawImage(zonasAlpha[z], 0, 0);
                         ctxRelieve.drawImage(cTmp, 0, 0);
@@ -714,12 +1153,7 @@ export const Tpu3DViewer = ({ ordenId, codigo, onClose }) => {
                     ctxRelieve.drawImage(cvApagaBorde, 0, 0);
                     ctxRelieve.globalCompositeOperation = 'source-over';
                     texRelieve.needsUpdate = true;
-
-                    ctxRelieveSuave.clearRect(0, 0, W, H);
-                    ctxRelieveSuave.filter = `blur(${DESPLAZ_SUAVIZADO_PX}px)`;
-                    ctxRelieveSuave.drawImage(cRelieve, 0, 0);
-                    ctxRelieveSuave.filter = 'none';
-                    texRelieveSuave.needsUpdate = true;
+                    pedirRender();
                 };
 
                 // La lámina del arte usa la silueta EXACTA — ni encogida ni agrandada. Encogerla
@@ -808,7 +1242,11 @@ export const Tpu3DViewer = ({ ordenId, codigo, onClose }) => {
 
                 // DPR tope 1.5: con 2 en pantallas grandes el canvas se va a millones de píxeles
                 // y la rotación se siente pesada. A 1.5 no se nota y vuela.
-                const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+                // preserveDrawingBuffer: al aprobar hay que sacarle una foto al render (el PNG que
+                // se archiva). Sin esto el navegador puede descartar el buffer apenas compone el
+                // frame y toDataURL devuelve un canvas en blanco. Con la escena estática y el
+                // render bajo demanda, el costo es despreciable.
+                const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, preserveDrawingBuffer: true });
                 renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
                 renderer.setSize(ancho, alto);
                 cont.appendChild(renderer.domElement);
@@ -848,21 +1286,18 @@ export const Tpu3DViewer = ({ ordenId, codigo, onClose }) => {
                 // el material se lee en la luz sin tocar el color del arte.
                 const texRelieve = new THREE.CanvasTexture(cRelieve);
                 texRelieve.anisotropy = renderer.capabilities.getMaxAnisotropy();
-                const texRelieveSuave = new THREE.CanvasTexture(cRelieveSuave);
                 const texBarniz = new THREE.CanvasTexture(cBarniz);
                 // Lámina subdividida: el desplazamiento mueve VÉRTICES, así que sin segmentos no
                 // pasa nada. 256 alcanza y sobra — con 1 a 3 repeticiones los rasgos del tile son
                 // grandes.
-                // Arranca SIEMPRE con la malla llana. La subdividida se crea recién si se pide el
-                // modo relieve: si el cliente quedó en "solo sombreado", nunca se allocan ni se
-                // suben esos ~11.000 vértices a la GPU.
+                // Lámina llana (4 vértices): la textura se lee SOLO por sombreado (bumpMap). Hubo un
+                // modo con displacementMap y malla subdividida y se sacó — pesaba (lectura de textura
+                // por vértice) y con las texturas reales no aportaba: el relieve de un parche TPU es
+                // demasiado fino para la malla y aparecía como ruido antes que como volumen.
                 const geoArteLlana = new THREE.PlaneGeometry(anchoMundo, altoMundo, 1, 1);
-                let geoArteRelieve = null;
                 const matArte = new THREE.MeshStandardMaterial({
                     map: texColor,
                     alphaMap: texAlphaArte,
-                    // El desplazamiento lo cuelga aplicarModo(): así el modo liviano no arranca ni
-                    // por un frame con el shader que lee una textura por vértice.
                     bumpMap: texRelieve,
                     bumpScale: RELIEVE_FUERZA,
                     // roughness 1 para que el mapa mande sin atenuarse (three lo multiplica).
@@ -881,8 +1316,15 @@ export const Tpu3DViewer = ({ ordenId, codigo, onClose }) => {
                 // El relieve se lee por cómo cambia el sombreado con la normal, y una hemisférica
                 // fuerte lo APLANA (ilumina casi igual venga de donde venga). Se baja la ambiente y
                 // se sube la direccional: mismo brillo general, mucho más contraste de relieve.
-                escena.add(new THREE.HemisphereLight(0xffffff, 0x555566, 0.65));
-                const luz = new THREE.DirectionalLight(0xffffff, 2.2);
+                // Ambiente NEUTRA: el gris de abajo estaba en 0x555566 (azulado) y ese tinte le
+                // comía saturación al amarillo del escudo.
+                escena.add(new THREE.HemisphereLight(0xffffff, 0x555555, 0.65));
+                // 3.0 y no 2.2: con three 0.185 las luces son físicas (la contribución difusa de una
+                // direccional es I·(N·L)/π), y sumando las tres el parche recibía ~0.78 — o sea que
+                // el color salía un 20% más apagado que el del boceto. A 3.0 la suma da ~0.98 y el
+                // amarillo del PDF llega a pantalla como es. Sin tone mapping no hay nada más que lo
+                // toque, así que el número es directo.
+                const luz = new THREE.DirectionalLight(0xffffff, 3.0);
                 luz.position.set(6, 8, 12);
                 escena.add(luz);
                 // Segunda direccional rasante desde el otro lado: sin ella hay ángulos de giro donde
@@ -902,7 +1344,19 @@ export const Tpu3DViewer = ({ ordenId, codigo, onClose }) => {
                 controles.minDistance = fitDist * 0.3;
                 controles.maxDistance = fitDist * 3;
 
-                renderer.setAnimationLoop(() => { controles.update(); renderer.render(escena, camara); });
+                // Render BAJO DEMANDA: la escena es estática, así que redibujar 60 veces por segundo
+                // mientras nadie la toca es trabajo tirado — y en la app interna ese trabajo compite
+                // con la tabla, el polling y los sockets de la pantalla de atrás.
+                // controles.update() devuelve true mientras el damping sigue moviendo la cámara.
+                let pedido = true;
+                pedirRender = () => { pedido = true; };
+                controles.addEventListener('change', pedirRender);
+                renderer.setAnimationLoop(() => {
+                    const moviendo = controles.update();
+                    if (!moviendo && !pedido) return;
+                    pedido = false;
+                    renderer.render(escena, camara);
+                });
 
                 // Elegir zona tocándola en el parche. La lámina del arte tiene UVs 0..1, así que
                 // del raycast sale directo la coordenada de píxel y se consulta qué máscara la cubre
@@ -921,9 +1375,11 @@ export const Tpu3DViewer = ({ ordenId, codigo, onClose }) => {
                     puntero.y = -((ev.clientY - r.top) / r.height) * 2 + 1;
                     raycaster.setFromCamera(puntero, camara);
                     const hit = raycaster.intersectObject(laminaArte, false)[0];
-                    // Sin impacto = se tocó el fondo, fuera del parche: también deselecciona.
-                    // Antes salía por acá y la marca quedaba pegada.
-                    if (!hit?.uv) { setZonaActiva(null); return; }
+                    // Tocar fuera del parche = "quiero ver el escudo limpio": se deselecciona la
+                    // zona Y se cierra el cajón. Solo deseleccionar dejaba el cajón abierto pero
+                    // vacío ("elegí una zona"), tapando el parche justo cuando se lo quiere mirar.
+                    const soltarTodo = () => { setZonaActiva(null); setPanelAbierto(false); };
+                    if (!hit?.uv) { soltarTodo(); return; }
                     const px = Math.min(W - 1, Math.max(0, Math.round(hit.uv.x * W)));
                     const py = Math.min(H - 1, Math.max(0, Math.round((1 - hit.uv.y) * H)));
                     const i = py * W + px;
@@ -931,9 +1387,9 @@ export const Tpu3DViewer = ({ ordenId, codigo, onClose }) => {
                         // Tocar una zona del parche despliega el cajón con sus texturas.
                         if (zonasPix[z][i]) { setZonaActiva(z); setPanelAbierto(true); return; }
                     }
-                    // Fuera del parche: se deselecciona, así se saca el contorno de encima y el
-                    // escudo se puede mirar limpio.
-                    setZonaActiva(null);
+                    // Impacto en la lámina pero fuera de la silueta (el rectángulo del plano llega
+                    // más lejos que el parche): mismo caso que tocar el fondo.
+                    soltarTodo();
                 };
                 renderer.domElement.addEventListener('pointerdown', alBajar);
                 renderer.domElement.addEventListener('pointerup', alSoltar);
@@ -943,6 +1399,7 @@ export const Tpu3DViewer = ({ ordenId, codigo, onClose }) => {
                 // el render se quedaba con la medida vieja y salía estirado.
                 let ultimoW = ancho, ultimoH = alto;
                 const ro = new ResizeObserver(() => {
+                    pedirRender();
                     const w = cont.clientWidth, h = cont.clientHeight;
                     // Solo si CAMBIÓ de verdad: setSize reasigna el buffer de dibujo, y dejarlo
                     // dispararse con cada notificación del observer es tirar trabajo a la basura.
@@ -956,35 +1413,43 @@ export const Tpu3DViewer = ({ ordenId, codigo, onClose }) => {
 
                 limpiar = () => {
                     renderer.setAnimationLoop(null);
+                    controles.removeEventListener('change', pedirRender);
                     ro.disconnect();
                     renderer.domElement.removeEventListener('pointerdown', alBajar);
                     renderer.domElement.removeEventListener('pointerup', alSoltar);
                     controles.dispose();
-                    geoBase.dispose(); geoArteLlana.dispose(); geoArteRelieve?.dispose();
+                    geoBase.dispose(); geoArteLlana.dispose();
                     matBlanco.dispose(); matArte.dispose();
                     texColor.dispose(); texAlphaArte.dispose(); texRelieve.dispose();
-                    texRelieveSuave.dispose(); texBarniz.dispose();
+                    texBarniz.dispose();
                     renderer.dispose();
+                    // dispose() libera lo que three subió a la GPU pero NO el contexto WebGL en sí:
+                    // el navegador permite unos 16 vivos a la vez y abrir y cerrar el visor los iba
+                    // acumulando ("Too many active WebGL contexts. Oldest context will be lost." en
+                    // consola) hasta matar el más viejo — que podía ser el visor abierto.
+                    renderer.forceContextLoss();
                     if (renderer.domElement.parentNode === cont) cont.removeChild(renderer.domElement);
                 };
 
-                // Cambio de modo sin rearmar nada: se intercambia la malla y se saca el mapa de
-                // desplazamiento. Sacarlo (y no solo poner la escala en 0) evita que el shader siga
-                // leyendo una textura por vértice en cada frame, que es lo caro.
-                const aplicarModo = (conRelieve) => {
-                    if (conRelieve && !geoArteRelieve) {
-                        geoArteRelieve = new THREE.PlaneGeometry(
-                            anchoMundo, altoMundo,
-                            RELIEVE_SEGMENTOS, Math.max(8, Math.round(RELIEVE_SEGMENTOS * (H / W)))
-                        );
-                    }
-                    laminaArte.geometry = conRelieve ? geoArteRelieve : geoArteLlana;
-                    matArte.displacementMap = conRelieve ? texRelieveSuave : null;
-                    matArte.displacementScale = conRelieve ? RELIEVE_ALTURA_MUNDO : 0;
-                    matArte.needsUpdate = true;
+                // Foto del parche para el archivo de aprobación. SIEMPRE de frente y con el encuadre
+                // inicial: el cliente pudo dejarlo girado o con zoom, y lo que se archiva tiene que
+                // mostrar el parche entero. Al doble de resolución — updateStyle=false cambia solo el
+                // buffer de dibujo, no el tamaño en pantalla, así que agrandar y volver no se ve.
+                const capturar = () => {
+                    const tam = new THREE.Vector2();
+                    renderer.getSize(tam);
+                    const camFoto = new THREE.PerspectiveCamera(38, tam.x / tam.y, 0.1, 200);
+                    camFoto.position.set(0, 0, fitDist);
+                    camFoto.lookAt(0, 0, 0);
+                    renderer.setSize(tam.x * 2, tam.y * 2, false);
+                    renderer.render(escena, camFoto);
+                    const url = renderer.domElement.toDataURL('image/png');
+                    renderer.setSize(tam.x, tam.y, false);
+                    renderer.render(escena, camara); // deja la pantalla como estaba
+                    return url;
                 };
 
-                escenaRef.current = { componer, aplicarModo, anchoRenderPx: W };
+                escenaRef.current = { componer, anchoRenderPx: W, capturar };
                 // Si el diseñador le puso nombre a la capa ("Fondo", "Estrellas") se muestra ese;
                 // si quedó el default de Illustrator ("Capa 2") no dice nada útil y encima el orden
                 // va al revés que la numeración, así que se usa "Zona N".
@@ -1006,7 +1471,9 @@ export const Tpu3DViewer = ({ ordenId, codigo, onClose }) => {
 
     return createPortal(
         <div
-            className="fixed inset-0 z-[9999] bg-black/95 flex items-center justify-center p-0 sm:p-4"
+            // Fondo OPACO, no translúcido: con transparencia el navegador tiene que recomponer todo
+            // lo que hay detrás (en la app interna, la tabla del área entera) en cada frame del 3D.
+            className="fixed inset-0 z-[9999] bg-black flex items-center justify-center p-0 sm:p-4"
             // Cerrar SOLO si el click empezó Y terminó en el overlay: un drag de rotación que
             // termina fuera del canvas generaba un click en el overlay y cerraba el modal.
             onMouseDown={(e) => { downEnOverlay.current = e.target === e.currentTarget; }}
@@ -1014,61 +1481,70 @@ export const Tpu3DViewer = ({ ordenId, codigo, onClose }) => {
         >
             {/* Mobile: pantalla completa, en columna — el canvas se queda con lo que sobra después
                 del header y del panel de texturas. Desktop: modal centrado como siempre. */}
-            <div className="relative bg-zinc-900 border-0 sm:border border-zinc-700 rounded-none sm:rounded-2xl w-full max-w-none sm:max-w-3xl shadow-2xl flex flex-col h-[100dvh] sm:h-auto sm:max-h-[95dvh] overflow-y-auto">
-                <div className="shrink-0 flex items-center justify-between gap-3 px-4 py-3 border-b border-zinc-800">
+            <div className={`relative ${ui.panel} border-0 sm:border rounded-none sm:rounded-2xl w-full max-w-none sm:max-w-5xl xl:max-w-6xl shadow-2xl flex flex-col h-[100dvh] sm:h-auto sm:max-h-[95dvh] overflow-y-auto`}>
+                <div className={`shrink-0 flex items-center justify-between gap-3 px-4 py-3 border-b ${ui.headerBorde}`}>
                     <div className="min-w-0 flex items-center gap-2">
                         <Rotate3d size={16} className="text-cyan-400 shrink-0" />
                         <div className="min-w-0">
-                            <p className="text-[10px] font-black uppercase tracking-widest text-cyan-400/80">Vista 3D del parche</p>
-                            <p className="text-xs font-bold text-zinc-300 truncate">{codigo}</p>
+                            <p className={`text-[10px] font-black uppercase tracking-widest ${ui.titulo}`}>Vista 3D del parche</p>
+                            <p className={`text-xs font-bold ${ui.codigo} truncate`}>{codigo}</p>
                         </div>
                     </div>
 
-                    {/* Acciones: barniz (por zona), calidad del render y guardar. */}
+                    {/* Acciones: candado (interno), ocultar controles y guardar. */}
                     <div className="shrink-0 flex items-center gap-1">
-                        {estado === 'listo' && zonas.length > 0 && (
+                        {/* Candado: solo interno y solo cuando el visor abrió como "ver" — o el
+                            cliente eligió sus texturas, o todavía no aprobó. Levantarlo habilita la
+                            edición; el PUT queda marcado como OPERARIO y con su línea en el historial,
+                            porque se está cambiando lo que se fabrica respecto de lo que aprobó el cliente. */}
+                        {estado === 'listo' && zonas.length > 0 && esInterno && (conCandado || desbloqueado) && (
+                            <button
+                                type="button"
+                                onClick={() => setDesbloqueado(v => !v)}
+                                title={desbloqueado
+                                    ? 'Volver a solo ver'
+                                    : 'Habilitar la edición (queda registrado en el historial de la orden)'}
+                                className={`w-8 h-8 rounded-lg flex items-center justify-center transition-colors ${
+                                    desbloqueado ? 'text-amber-600 bg-amber-500/15' : ui.botonHeader
+                                }`}
+                            >{desbloqueado ? <LockOpen size={16} /> : <Lock size={16} />}</button>
+                        )}
+
+                        {estado === 'listo' && zonas.length > 0 && puedeElegir && (
                             <>
                                 <button
                                     type="button"
-                                    onClick={() => zonaActiva !== null && setBarnices(p => ({ ...p, [zonaActiva]: !p[zonaActiva] }))}
-                                    disabled={zonaActiva === null}
-                                    title={zonaActiva === null
-                                        ? 'Elegí una zona para barnizarla'
-                                        : (barnices[zonaActiva] ? 'Sacar el barniz de esta zona' : 'Barnizar esta zona')}
-                                    className={`w-8 h-8 rounded-lg flex items-center justify-center transition-colors disabled:opacity-30 ${
-                                        zonaActiva !== null && barnices[zonaActiva]
-                                            ? 'text-cyan-300 bg-cyan-500/15'
-                                            : 'text-zinc-400 hover:text-white hover:bg-zinc-800'
+                                    /* Cierra el cajón en las dos direcciones: si se tocó una zona
+                                       con los controles ocultos, al volver a mostrarlos no tiene
+                                       que aparecer el cajón desplegado de sorpresa. */
+                                    onClick={() => { setControlesVisibles(v => !v); setPanelAbierto(false); }}
+                                    title={controlesVisibles ? 'Ver el parche sin los controles' : 'Mostrar los controles'}
+                                    className={`w-8 h-8 rounded-lg flex items-center justify-center transition-colors ${
+                                        controlesVisibles ? ui.botonHeader : 'text-cyan-300 bg-cyan-500/15'
                                     }`}
-                                ><Sparkles size={16} /></button>
+                                >{controlesVisibles ? <Eye size={16} /> : <EyeOff size={16} />}</button>
 
                                 <button
                                     type="button"
                                     onClick={guardar}
-                                    disabled={!hayCambios || guardando}
-                                    title={guardando ? 'Guardando…' : hayCambios ? 'Guardar cambios' : 'No hay cambios sin guardar'}
+                                    disabled={guardando || (esInterno && !hayCambios)}
+                                    title={guardando
+                                        ? 'Guardando…'
+                                        : esInterno
+                                            ? (hayCambios ? 'Guardar cambios' : 'No hay cambios sin guardar')
+                                            : 'Aprobar el boceto con estas texturas'}
                                     className={`w-8 h-8 rounded-lg flex items-center justify-center transition-colors disabled:opacity-30 ${
-                                        hayCambios ? 'text-emerald-300 bg-emerald-500/15 hover:bg-emerald-500/25' : 'text-zinc-400'
+                                        (esInterno ? hayCambios : true) ? 'text-emerald-300 bg-emerald-500/15 hover:bg-emerald-500/25' : 'text-zinc-400'
                                     }`}
-                                >{guardando ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />}</button>
+                                >{guardando
+                                    ? <Loader2 size={16} className="animate-spin" />
+                                    : esInterno ? <Save size={16} /> : <Check size={16} strokeWidth={3} />}</button>
                             </>
-                        )}
-                        {estado === 'listo' && (
-                            <button
-                                type="button"
-                                onClick={() => setModoRelieve(v => !v)}
-                                title={modoRelieve
-                                    ? 'Relieve 3D (más realista) — tocá para aligerar'
-                                    : 'Solo sombreado (más liviano) — tocá para el relieve'}
-                                className={`w-8 h-8 rounded-lg flex items-center justify-center transition-colors ${
-                                    modoRelieve ? 'text-cyan-300 bg-cyan-500/15' : 'text-zinc-400 hover:text-white hover:bg-zinc-800'
-                                }`}
-                            ><Gauge size={16} /></button>
                         )}
                         <button
                             type="button"
                             onClick={onClose}
-                            className="w-8 h-8 rounded-lg text-zinc-400 hover:text-white hover:bg-zinc-800 flex items-center justify-center"
+                            className={`w-8 h-8 rounded-lg ${ui.botonHeader} flex items-center justify-center`}
                             title="Cerrar"
                         ><X size={16} /></button>
                     </div>
@@ -1079,11 +1555,11 @@ export const Tpu3DViewer = ({ ordenId, codigo, onClose }) => {
                     reasignación del buffer de dibujo. */}
                 {/* overflow-hidden: el cajón cerrado queda trasladado fuera del contenedor y, sin
                     esto, sigue contando para el ancho — aparecía una barra de scroll horizontal. */}
-                <div className="relative flex-1 min-h-[240px] sm:flex-none sm:h-[60vh] sm:min-h-[360px] overflow-hidden">
-                    <div ref={mountRef} className="absolute inset-0 bg-gradient-to-b from-zinc-900 to-zinc-800" />
+                <div className="relative flex-1 min-h-[240px] sm:flex-none sm:h-[78vh] xl:h-[82vh] sm:min-h-[420px] overflow-hidden">
+                    <div ref={mountRef} className={`absolute inset-0 ${ui.canvas}`} />
 
                     {estado === 'cargando' && (
-                        <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 text-zinc-400">
+                        <div className={`absolute inset-0 flex flex-col items-center justify-center gap-3 ${ui.cargandoTxt}`}>
                             <Loader2 size={28} className="animate-spin text-cyan-400" />
                             <span className="text-xs font-bold uppercase tracking-wide">Armando el modelo…</span>
                         </div>
@@ -1098,12 +1574,64 @@ export const Tpu3DViewer = ({ ordenId, codigo, onClose }) => {
                     {/* El error de guardado va flotando sobre el canvas: guardar se dispara desde el
                         header, así que el aviso no puede vivir adentro del cajón (podría estar cerrado). */}
                     {errorGuardado && (
-                        <div className="absolute left-3 bottom-3 right-3 sm:right-auto sm:max-w-sm px-3 py-2 rounded-lg bg-amber-500/15 border border-amber-500/30 text-[11px] text-amber-300">
+                        <div className="absolute left-3 bottom-3 right-3 sm:right-auto sm:max-w-sm z-20 px-3 py-2 rounded-lg bg-amber-500/15 border border-amber-500/30 text-[11px] text-amber-300">
                             {errorGuardado}
                         </div>
                     )}
 
-                    {estado === 'listo' && zonas.length > 0 && (
+                    {/* Todo lo de abajo (joystick, escala, pie) va SUPERPUESTO al canvas y NO en el
+                        flujo del modal. Estando en el flujo, mostrarlo u ocultarlo le cambiaba el
+                        alto al canvas → saltaba el ResizeObserver → se recalculaba la cámara y el
+                        parche cambiaba de tamaño en pantalla. Ahora el canvas mide siempre igual y
+                        el ojo no toca el render en absoluto. */}
+                    {estado === 'listo' && (
+                        <div className={`absolute inset-x-0 bottom-0 flex flex-col ${fade}`}>
+                            {/* self-end: el bloque del joystick se achica a su contenido, así el
+                                resto de la franja no se come los clicks de rotar el parche. */}
+                            {puedeElegir && ajusteActivo && (
+                                <div className="self-end mr-3 mb-2 flex flex-col items-center gap-1">
+                                    <span className={`flex items-center gap-1 text-[9px] font-black uppercase tracking-widest ${ui.etiqueta}`}>
+                                        <Move size={10} /> Mover
+                                    </span>
+                                    <PadMover
+                                        dx={ajusteActivo.dx} dy={ajusteActivo.dy}
+                                        onChange={moverTextura}
+                                        onReset={() => moverTextura(0.5, 0.5)}
+                                        clase={`${ui.padFondo} ${ui.cardBorde} ${ui.cardTxt}`}
+                                    />
+                                </div>
+                            )}
+
+                            {puedeElegir && ajusteActivo && (
+                                <div className={`border-t ${ui.separador} ${ui.barraFondo} px-4 py-2.5 flex flex-wrap items-center gap-x-5 gap-y-1`}>
+                                    <div className="min-w-0 max-w-[40%] sm:max-w-[9rem]">
+                                        <p className={`text-[9px] font-black uppercase tracking-widest ${ui.etiqueta} leading-tight truncate`}>
+                                            {zonas[zonaActiva]?.nombre || `Zona ${zonaActiva + 1}`}
+                                        </p>
+                                        <p className={`text-[11px] font-bold ${ui.codigo} truncate`}>{texturaActiva.nombre}</p>
+                                    </div>
+
+                                    <label className={`flex-1 min-w-[180px] flex items-center gap-2 text-[11px] ${ui.cardTxt}`}>
+                                        <span className="w-11 shrink-0">Escala</span>
+                                        <input
+                                            type="range" min={ESCALA_MIN} max={ESCALA_MAX} step={ESCALA_PASO} value={ajusteActivo.escala}
+                                            onChange={(e) => setAjuste('escala', Number(e.target.value))}
+                                            className="flex-1 accent-cyan-400"
+                                        />
+                                        <span className={`w-11 text-right font-mono ${ui.codigo}`}>{ajusteActivo.escala.toFixed(1)}×</span>
+                                    </label>
+                                </div>
+                            )}
+
+                            <div className={`px-4 py-2 border-t ${ui.pie} ${ui.barraFondo} text-[11px] text-center`}>
+                                {zonas.length > 0 && puedeElegir
+                                    ? 'Tocá una parte del parche para elegir textura.'
+                                    : 'Girá: arrastrá · Zoom: rueda o pinch · Mover: botón derecho o dos dedos'}
+                            </div>
+                        </div>
+                    )}
+
+                    {estado === 'listo' && zonas.length > 0 && puedeElegir && (
                     <>
                     <button
                         type="button"
@@ -1111,18 +1639,18 @@ export const Tpu3DViewer = ({ ordenId, codigo, onClose }) => {
                         /* bg-zinc-950: el canvas detrás es un degradado zinc-900→zinc-800 y la pestaña
                            cae justo donde el fondo vale casi lo mismo. Con un tono parecido, aunque sea
                            opaca, se lee como vidrio esmerilado. Necesita contrastar de verdad. */
-                        className={`absolute top-1/2 -translate-y-1/2 z-10 w-6 h-16 rounded-l-lg bg-zinc-950 border border-r-0 border-zinc-600 text-zinc-300 hover:text-white flex items-center justify-center transition-all duration-150 ${
+                        className={`absolute top-1/2 -translate-y-1/2 z-10 w-6 h-16 rounded-l-lg border border-r-0 ${ui.pestania} flex items-center justify-center transition-all duration-150 ${
                             panelAbierto ? 'right-[78%] sm:right-72' : 'right-0'
-                        }`}
+                        } ${controlesVisibles ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}
                         title={panelAbierto ? 'Ocultar texturas' : 'Elegir texturas'}
                     >{panelAbierto ? <ChevronRight size={14} /> : <ChevronLeft size={14} />}</button>
 
-                    <aside className={`absolute inset-y-0 right-0 w-[78%] sm:w-72 bg-zinc-900 border-l border-zinc-800 overflow-y-auto transition-transform duration-150 ${
+                    <aside className={`absolute inset-y-0 right-0 w-[78%] sm:w-72 ${ui.drawer} border-l overflow-y-auto transition-all duration-150 ${
                         panelAbierto ? 'translate-x-0' : 'translate-x-full'
-                    }`}>
+                    } ${controlesVisibles ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}>
                     <div className="p-3 space-y-2.5">
                         <div>
-                            <span className="block text-[10px] font-black uppercase tracking-widest text-zinc-500 mb-1.5">Zona</span>
+                            <span className={`block text-[10px] font-black uppercase tracking-widest ${ui.etiqueta} mb-1.5`}>Zona</span>
                             <div className="grid grid-cols-3 gap-2">
                                 {zonas.map(z => (
                                     <button
@@ -1132,34 +1660,75 @@ export const Tpu3DViewer = ({ ordenId, codigo, onClose }) => {
                                         className={`relative rounded-lg border p-1 transition-all ${
                                             zonaActiva === z.idx
                                                 ? 'border-brand-magenta bg-brand-magenta/10'
-                                                : 'border-zinc-700 hover:border-zinc-500'
+                                                : ui.cardBorde + ' '
                                         }`}
                                         title={z.nombre}
                                     >
+                                        {/* Qué tiene puesta la zona, arriba de todo y adentro del
+                                            chip: el nombre de la textura y la chispa del barniz.
+                                            Antes eran dos puntitos de color en las esquinas — decían
+                                            que había algo, no QUÉ. Con los nombres a la vista se lee
+                                            el parche entero sin ir zona por zona. */}
+                                        {(elecciones[z.idx] || barnices[z.idx]) && (
+                                            <span className="flex items-center justify-center gap-0.5 mb-0.5">
+                                                {barnices[z.idx] && (
+                                                    <Sparkles size={9} strokeWidth={2.5} className="text-cyan-300 shrink-0" />
+                                                )}
+                                                {elecciones[z.idx] && (
+                                                    <span className="text-[9px] font-bold text-brand-magenta leading-tight truncate">
+                                                        {texturas.find(x => x.archivo === elecciones[z.idx])?.nombre || elecciones[z.idx]}
+                                                    </span>
+                                                )}
+                                            </span>
+                                        )}
                                         <img src={z.mini} alt="" className="w-full h-11 object-contain" />
                                         <span className={`block mt-0.5 text-[9px] font-bold uppercase tracking-wide truncate ${
-                                            zonaActiva === z.idx ? 'text-brand-magenta' : 'text-zinc-400'
+                                            zonaActiva === z.idx ? 'text-brand-magenta' : ui.cardTxt
                                         }`}>{z.nombre}</span>
-                                        {elecciones[z.idx] && (
-                                            <span className="absolute top-1 right-1 w-1.5 h-1.5 rounded-full bg-brand-magenta" />
-                                        )}
                                     </button>
                                 ))}
                             </div>
                         </div>
 
-                        {zonaActiva === null ? (
-                            <p className="text-[11px] text-zinc-500">
+                        {/* Barniz de la zona activa. Vive acá y no en el header porque es una
+                            decisión sobre LA ZONA, igual que la textura: separado arriba había que
+                            acordarse de qué zona estaba seleccionada para saber a qué se aplicaba. */}
+                        {zonaActiva !== null && (
+                            <button
+                                type="button"
+                                onClick={() => setBarnices(p => ({ ...p, [zonaActiva]: !p[zonaActiva] }))}
+                                title="Barniz sectorizado: la zona queda brillante en vez de mate"
+                                className={`w-full flex items-center justify-between gap-2 px-2.5 py-2 rounded-lg border text-[11px] font-bold transition-colors ${
+                                    barnices[zonaActiva]
+                                        ? 'border-cyan-400 bg-cyan-500/10 text-cyan-300'
+                                        : `${ui.cardBorde} ${ui.cardTxt}`
+                                }`}
+                            >
+                                <span className="flex items-center gap-1.5"><Sparkles size={13} /> Barniz</span>
+                                <span className={`text-[9px] font-black uppercase tracking-widest ${
+                                    barnices[zonaActiva] ? 'text-cyan-300' : ui.etiqueta
+                                }`}>{barnices[zonaActiva] ? 'Sí' : 'No'}</span>
+                            </button>
+                        )}
+
+                        {zonaActiva === null && (
+                            <p className={`text-[11px] ${ui.etiqueta}`}>
                                 Tocá una zona del parche o elegila arriba para asignarle una textura.
                             </p>
-                        ) : texturas.length === 0 ? (
-                            <p className="text-[11px] text-zinc-500">
+                        )}
+
+                        {texturas.length === 0 ? (
+                            <p className={`text-[11px] ${ui.etiqueta}`}>
                                 No hay texturas cargadas todavía.
                             </p>
                         ) : (
-                            /* 3 columnas: el cajón es angosto y las muestras tienen que seguir
+                            /* Las muestras se ven SIEMPRE, con zona seleccionada o sin ella: el
+                               catálogo es lo que el cliente vino a mirar, y esconderlo detrás de
+                               "elegí una zona" dejaba el cajón vacío. Sin zona no hay a qué
+                               aplicarlas, así que quedan atenuadas y sin click.
+                               3 columnas: el cajón es angosto y las muestras tienen que seguir
                                siendo lo bastante grandes como para distinguir el material. */
-                            <div className="grid grid-cols-3 gap-2">
+                            <div className={`grid grid-cols-3 gap-2 ${zonaActiva === null ? 'opacity-40 pointer-events-none' : ''}`}>
                                 <button
                                     type="button"
                                     onClick={() => { setElecciones(p => ({ ...p, [zonaActiva]: null })); setPanelAbierto(false); }}
@@ -1167,11 +1736,11 @@ export const Tpu3DViewer = ({ ordenId, codigo, onClose }) => {
                                     title="Dejar la zona como está en el boceto"
                                 >
                                     <div className={`w-full aspect-square rounded-lg border-2 flex items-center justify-center transition-all ${
-                                        !elecciones[zonaActiva] ? 'border-cyan-400' : 'border-zinc-700 group-hover:border-zinc-500'
+                                        zonaActiva !== null && !elecciones[zonaActiva] ? 'border-cyan-400' : ui.swatchBorde
                                     }`}>
                                         <X size={16} className="text-zinc-500" />
                                     </div>
-                                    <span className="block mt-1 text-[9px] text-zinc-500 leading-tight">Sin textura</span>
+                                    <span className={`block mt-1 text-[9px] ${ui.swatchTxt} leading-tight`}>Sin textura</span>
                                 </button>
                                 {texturas.map(t => (
                                     <button
@@ -1183,64 +1752,23 @@ export const Tpu3DViewer = ({ ordenId, codigo, onClose }) => {
                                     >
                                         <div
                                             className={`w-full aspect-square rounded-lg border-2 bg-zinc-800 transition-all ${
-                                                elecciones[zonaActiva] === t.archivo ? 'border-cyan-400' : 'border-zinc-700 group-hover:border-zinc-500'
+                                                elecciones[zonaActiva] === t.archivo ? 'border-cyan-400' : ui.swatchBorde
                                             }`}
                                             /* 400% = se ve un cuarto del tile: con menos repeticiones a la
                                                vista se distingue de qué material se trata. */
                                             style={{ backgroundImage: `url("${t.url}")`, backgroundSize: '400%', backgroundPosition: 'center' }}
                                         />
-                                        <span className="block mt-1 text-[9px] text-zinc-400 leading-tight truncate">{t.nombre}</span>
+                                        <span className={`block mt-1 text-[9px] ${ui.swatchTxt} leading-tight truncate`}>{t.nombre}</span>
                                     </button>
                                 ))}
                             </div>
                         )}
-
-                        {/* Perillas de la textura elegida en la zona activa */}
-                        {elecciones[zonaActiva] && (() => {
-                            const t = texturas.find(x => x.archivo === elecciones[zonaActiva]);
-                            if (!t) return null;
-                            const a = ajusteDe(t);
-                            const set = (campo, valor) => setAjustes(p => ({ ...p, [t.archivo]: { ...a, [campo]: valor } }));
-                            return (
-                                <div className="pt-2 border-t border-zinc-800 space-y-1.5">
-                                    <div className="text-[10px] font-black uppercase tracking-widest text-zinc-500">
-                                        {t.nombre}
-                                    </div>
-                                    <label className="flex items-center gap-2 text-[11px] text-zinc-400">
-                                        <span className="w-20 shrink-0">Repeticiones</span>
-                                        <input
-                                            type="range" min={REPETICIONES_MIN} max={REPETICIONES_MAX} step="1" value={a.repeticiones}
-                                            onChange={(e) => set('repeticiones', Number(e.target.value))}
-                                            className="flex-1 accent-cyan-400"
-                                        />
-                                        <span className="w-9 text-right font-mono text-zinc-300">{a.repeticiones}</span>
-                                    </label>
-                                    <label className="flex items-center gap-2 text-[11px] text-zinc-400">
-                                        <span className="w-20 shrink-0">Altura</span>
-                                        <input
-                                            type="range" min={ALTURA_MIN} max={ALTURA_MAX} step="1" value={a.altura}
-                                            onChange={(e) => set('altura', Number(e.target.value))}
-                                            className="flex-1 accent-cyan-400"
-                                        />
-                                        <span className="w-9 text-right font-mono text-zinc-300">{a.altura}</span>
-                                    </label>
-                                </div>
-                            );
-                        })()}
 
                     </div>
                     </aside>
                     </>
                     )}
                 </div>
-
-                {estado === 'listo' && (
-                    <div className="shrink-0 px-4 py-2 border-t border-zinc-800 text-[11px] text-zinc-500 text-center">
-                        {zonas.length > 0
-                            ? 'Tocá una parte del parche para elegir la zona · Girá arrastrando · Zoom con la rueda'
-                            : 'Girá: arrastrá · Zoom: rueda o pinch · Mover: botón derecho o dos dedos'}
-                    </div>
-                )}
             </div>
         </div>,
         document.body
