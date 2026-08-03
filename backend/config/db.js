@@ -16,7 +16,12 @@ const config = {
         instanceName: process.env.DB_INSTANCE || undefined,
         encrypt: false,
         trustServerCertificate: true,
-        enableArithAbort: true
+        enableArithAbort: true,
+        // Las fechas se escriben con GETDATE(), o sea HORA LOCAL de Uruguay, en columnas `datetime`
+        // que no guardan zona horaria. El default de mssql (`useUTC: true`) las lee como si fueran
+        // UTC: el driver devolvía las 17:03 etiquetadas como 17:03Z y el navegador las volvía a
+        // pasar a local, mostrando 14:03. Tres horas menos en TODA fecha del sistema.
+        useUTC: false
     },
     pool: {
         max: 10,

@@ -791,16 +791,23 @@ export default function AreaView({ areaKey: rawAreaKey, areaConfig, onSwitchTab 
                         }
 
                         const upperArea = (areaKey || '').toUpperCase();
-                        if (upperArea === 'DF' || upperArea === 'DTF' || upperArea === 'DIRECTA' || upperArea === 'IMD') {
+                        // ECOUV entra a la misma regla con otro criterio: NO restringe la variante
+                        // (puede convivir en el lote) pero SÍ la tinta, que es lo que rutea el lote
+                        // a la máquina. Mismo criterio que el backend en assignRoll.
+                        const chequeaVariante = upperArea !== 'ECOUV';
+                        const chequeaTinta    = upperArea === 'ECOUV';
+                        if (upperArea === 'DF' || upperArea === 'DTF' || upperArea === 'DIRECTA' || upperArea === 'IMD' || upperArea === 'ECOUV') {
                             const variantSet = new Set();
                             const materialSet = new Set();
-                            
+                            const inkSet = new Set();
+
                             selectedOrdersList.forEach(o => {
                                 variantSet.add((o.variantCode || '').trim().toLowerCase());
                                 materialSet.add((o.material || '').trim().toLowerCase());
+                                inkSet.add((o.ink || '').trim().toLowerCase());
                             });
 
-                            if (variantSet.size > 1) {
+                            if (chequeaVariante && variantSet.size > 1) {
                                 Swal.fire({
                                     title: 'Error!',
                                     text: 'No se permite asignar órdenes con distinto material al mismo lote.',
@@ -828,6 +835,28 @@ export default function AreaView({ areaKey: rawAreaKey, areaConfig, onSwitchTab 
                                     text: 'No se permite asignar órdenes con distinto material al mismo lote.',
                                     iconHtml: '<svg xmlns="http://www.w3.org/2000/svg" width="60" height="60" viewBox="0 0 24 24" fill="none" stroke="#BD0C7E" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="m4.9 4.9 14.2 14.2"/></svg>',
                                     customClass: { 
+                                        popup: '!p-0 overflow-hidden rounded-xl',
+                                        icon: 'border-none !mt-5 !mb-2',
+                                        title: '!pt-0',
+                                        htmlContainer: 'mb-5 px-6',
+                                        actions: '!w-full !m-0',
+                                        confirmButton: '!w-full !m-0 !rounded-none py-4 text-lg font-bold'
+                                    },
+                                    background: '#f4f4f5',
+                                    color: '#000000',
+                                    confirmButtonColor: '#BD0C7E',
+                                    confirmButtonText: 'Aceptar'
+                                }).then(() => {
+                                    setSelectedIds([]);
+                                });
+                                return;
+                            }
+                            if (chequeaTinta && inkSet.size > 1) {
+                                Swal.fire({
+                                    title: 'Error!',
+                                    text: 'No se permite asignar órdenes con distinta tinta al mismo lote.',
+                                    iconHtml: '<svg xmlns="http://www.w3.org/2000/svg" width="60" height="60" viewBox="0 0 24 24" fill="none" stroke="#BD0C7E" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="m4.9 4.9 14.2 14.2"/></svg>',
+                                    customClass: {
                                         popup: '!p-0 overflow-hidden rounded-xl',
                                         icon: 'border-none !mt-5 !mb-2',
                                         title: '!pt-0',

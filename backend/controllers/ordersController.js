@@ -196,9 +196,12 @@ exports.uploadProductionFile = async (req, res) => {
         } catch (e) { logger.warn('[uploadProductionFile] thumb read: ' + e.message); }
 
         // TPU: con la ÚLTIMA capa del arte la orden queda lista para fabricar. El estado de área
-        // pasa a 'Para Imprimir' — que cuelga de Producción, así que el general salta solo y el
-        // tablero deja de pulsar. `nArchivos` es el conteo previo a este INSERT (sin el boceto).
-        if (esTPUOrden && orden.FechaAprobacionCliente && (nArchivos + 1) === CAPAS_ARTE_TPU) {
+        // pasa a 'Diseñado' — que cuelga de Producción, así que el general salta solo y el tablero
+        // deja de pulsar. `nArchivos` es el conteo previo a este INSERT (sin el boceto).
+        // El reuso va por `esReusoTPU`, igual que el gate de arriba: nunca tiene fecha de aprobación
+        // (el diseño ya lo aprobó el cliente en la orden original), así que exigirla lo dejaba
+        // clavado en Pendiente con las 5 capas subidas.
+        if (esTPUOrden && (orden.FechaAprobacionCliente || esReusoTPU) && (nArchivos + 1) === CAPAS_ARTE_TPU) {
             const tx = new sql.Transaction(pool);
             await tx.begin();
             try {
@@ -927,47 +930,64 @@ exports.assignRoll = async (req, res) => {
         }
 
         // ----------------------------------------------------
-        // REGLA DE NEGOCIO PARA DTF (DF) e IMPRESIÓN DIRECTA
-        // No permitir mezclar variantes o materiales en el mismo lote (un lote por material)
+        // REGLA DE NEGOCIO PARA DTF (DF), IMPRESIÓN DIRECTA y ECOUV
+        // No permitir mezclar variantes o materiales en el mismo lote (un lote por material).
+        // ECOUV va por otro lado: NO restringe la variante (puede convivir en el lote) pero SÍ la
+        // tinta, porque la tinta es lo que rutea el lote a la máquina — un lote mitad Ecosolvente
+        // y mitad UV no se puede imprimir de una sola pasada.
         // ----------------------------------------------------
-        if (areaCode === 'DF' || areaCode === 'DIRECTA') {
-            const areaLbl = areaCode === 'DIRECTA' ? 'Impresión Directa' : 'DTF';
+        if (areaCode === 'DF' || areaCode === 'DIRECTA' || areaCode === 'ECOUV') {
+            const areaLbl = areaCode === 'DIRECTA' ? 'Impresión Directa'
+                          : areaCode === 'ECOUV'   ? 'EcoUV'
+                          : 'DTF';
+            const chequeaVariante = areaCode !== 'ECOUV';
+            const chequeaTinta    = areaCode === 'ECOUV';
             const orderData = await new sql.Request(pool)
-                .query(`SELECT Variante, Material FROM dbo.Ordenes WHERE OrdenID IN (${targetOrderIds.join(',')})`);
-            
+                .query(`SELECT Variante, Material, Tinta FROM dbo.Ordenes WHERE OrdenID IN (${targetOrderIds.join(',')})`);
+
             const variantSet = new Set();
             const materialSet = new Set();
-            
+            const tintaSet = new Set();
+
             orderData.recordset.forEach(o => {
                 variantSet.add((o.Variante || '').trim().toLowerCase());
                 materialSet.add((o.Material || '').trim().toLowerCase());
+                tintaSet.add((o.Tinta || '').trim().toLowerCase());
             });
 
-            if (variantSet.size > 1) {
+            if (chequeaVariante && variantSet.size > 1) {
                 return res.status(400).json({ error: `⛔ En ${areaLbl} no se permite asignar órdenes con distinta Variante al mismo lote.` });
             }
             if (materialSet.size > 1) {
                 return res.status(400).json({ error: `⛔ En ${areaLbl} no se permite asignar órdenes con distinto Material al mismo lote.` });
             }
+            if (chequeaTinta && tintaSet.size > 1) {
+                return res.status(400).json({ error: `⛔ En ${areaLbl} no se permite asignar órdenes con distinta Tinta al mismo lote.` });
+            }
 
             if (!isNew && rollId) {
                 const existingOrdersData = await new sql.Request(pool)
                     .input('RID_CHECK', typeof rollId === 'number' ? sql.Int : sql.VarChar(20), rollId)
-                    .query(`SELECT TOP 1 Variante, Material FROM dbo.Ordenes WHERE RolloID = @RID_CHECK`);
-                
+                    .query(`SELECT TOP 1 Variante, Material, Tinta FROM dbo.Ordenes WHERE RolloID = @RID_CHECK`);
+
                 if (existingOrdersData.recordset.length > 0) {
                     const existingOrder = existingOrdersData.recordset[0];
                     const existingVariant = (existingOrder.Variante || '').trim().toLowerCase();
                     const existingMaterial = (existingOrder.Material || '').trim().toLowerCase();
-                    
+                    const existingTinta = (existingOrder.Tinta || '').trim().toLowerCase();
+
                     const newVariant = Array.from(variantSet)[0];
                     const newMaterial = Array.from(materialSet)[0];
+                    const newTinta = Array.from(tintaSet)[0];
 
-                    if (existingVariant && existingVariant !== newVariant) {
+                    if (chequeaVariante && existingVariant && existingVariant !== newVariant) {
                         return res.status(400).json({ error: `⛔ El lote seleccionado ya contiene órdenes con variante '${existingOrder.Variante}'. No puedes mezclar variantes en ${areaLbl}.` });
                     }
                     if (existingMaterial && existingMaterial !== newMaterial) {
                         return res.status(400).json({ error: `⛔ El lote seleccionado ya contiene órdenes con material '${existingOrder.Material}'. No puedes mezclar materiales en ${areaLbl}.` });
+                    }
+                    if (chequeaTinta && existingTinta && existingTinta !== newTinta) {
+                        return res.status(400).json({ error: `⛔ El lote seleccionado ya contiene órdenes con tinta '${existingOrder.Tinta}'. No puedes mezclar tintas en ${areaLbl}.` });
                     }
                 }
             }

@@ -1029,12 +1029,18 @@ const OrderForm = ({ serviceId: propServiceId }) => {
             const cant = items[0]?.copies || 0;
             const minTpu = config.minCopies || 15;
             if (cant < minTpu) return addToast(`El pedido mínimo para TPU es de ${minTpu} unidades.`, 'error');
+            // La medida se exige igual que en trabajo nuevo: los selectores están a la vista y
+            // marcados con *, pero esta rama sale antes de la validación de abajo y los ignoraba.
+            if (medidaMaximaTPU(globalMaterial) && (!tpuAlto || !tpuAncho)) {
+                return addToast('Elegí el alto y el ancho del parche.', 'error');
+            }
             actions.setLoading(true);
             try {
                 const resp = await apiClient.post('/web-orders/reuse-matriz', {
                     matrizOrdenId: matrizSel.OrdenID,
                     cantidad: cant,
-                    nombreTrabajo: jobName.trim()
+                    nombreTrabajo: jobName.trim(),
+                    medida: (tpuAlto && tpuAncho) ? `${tpuAlto} x ${tpuAncho} cm` : null
                 });
                 const cod = resp?.codigoOrden || resp?.data?.codigoOrden || '';
                 // Cantidad distinta a la de la matriz: el arte se regenera con la nueva cantidad
@@ -2091,20 +2097,25 @@ const OrderForm = ({ serviceId: propServiceId }) => {
                                                     Todavía no tenés matrices finalizadas. Empezá con un trabajo nuevo.
                                                 </div>
                                             ) : (
-                                                <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                                                <div className="grid gap-2 [grid-template-columns:repeat(auto-fill,minmax(130px,130px))]">
+                                                    {/* Tamaño de tarjeta FIJO (130px) y las que entren por fila. Con columnas
+                                                        fijas cada tarjeta se estiraba al ancho del form y quedaban gigantes. */}
                                                     {matrices.map(m => {
                                                         const sel = matrizSel?.OrdenID === m.OrdenID;
                                                         return (
                                                             <button type="button" key={m.OrdenID} onClick={() => setMatrizSel(m)}
-                                                                className={`text-left rounded-xl border-2 overflow-hidden transition-all ${sel ? 'border-cyan-400 ring-2 ring-cyan-400/30' : 'border-zinc-700 hover:border-zinc-600'}`}>
-                                                                <div className="aspect-square bg-zinc-800 flex items-center justify-center">
-                                                                    <img src={`/thumbnails/${m.CodigoOrden}/${m.CmykArchivoID}.jpg`} alt={m.DescripcionTrabajo || m.CodigoOrden}
-                                                                        className="w-full h-full object-contain"
+                                                                className={`text-left rounded-lg border-2 overflow-hidden transition-all ${sel ? 'border-cyan-400 ring-2 ring-cyan-400/30' : 'border-zinc-700 hover:border-zinc-600'}`}>
+                                                                {/* El cartel va DEBAJO de la imagen: si el thumbnail no existe (404) el onError
+                                                                    esconde el <img> y queda el aviso, en vez de un recuadro vacío. */}
+                                                                <div className="aspect-square bg-zinc-800 flex items-center justify-center relative">
+                                                                    <span className="absolute inset-0 flex items-center justify-center text-[9px] text-zinc-600 font-bold uppercase tracking-wide text-center px-1">Sin vista previa</span>
+                                                                    <img src={`/thumbnails/${m.CodigoOrden}/${m.ArteArchivoID}.jpg`} alt={m.DescripcionTrabajo || m.CodigoOrden}
+                                                                        className="w-full h-full object-contain relative bg-zinc-800"
                                                                         onError={e => { e.target.style.display = 'none'; }} />
                                                                 </div>
-                                                                <div className="p-2">
-                                                                    <div className="text-xs font-bold text-zinc-200 truncate">{m.DescripcionTrabajo || m.CodigoOrden}</div>
-                                                                    <div className="text-[10px] text-zinc-500 font-mono">{m.CodigoOrden}</div>
+                                                                <div className="p-1.5">
+                                                                    <div className="text-[11px] font-bold text-zinc-200 truncate leading-tight">{m.DescripcionTrabajo || m.CodigoOrden}</div>
+                                                                    <div className="text-[9px] text-zinc-500 font-mono">{m.CodigoOrden}</div>
                                                                 </div>
                                                             </button>
                                                         );

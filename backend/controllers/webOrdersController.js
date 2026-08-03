@@ -2455,19 +2455,20 @@ exports.getMisMatrices = async (req, res) => {
             .input('cod', sql.Int, codCliente)
             .query(`
                 SELECT o.OrdenID, o.CodigoOrden, o.DescripcionTrabajo, o.Material, o.FechaIngreso,
+                       -- Vista previa de la matriz: el BOCETO de producción (el PDF que subió el
+                       -- operario y aprobó el cliente). Antes se buscaba por 'cmyk', que dejaba sin
+                       -- imagen a toda matriz cuyas capas no llevaran esa palabra en el nombre.
                        (SELECT TOP 1 ao.ArchivoID FROM dbo.ArchivosOrden ao WITH(NOLOCK)
                           WHERE ao.OrdenID = o.OrdenID AND ao.RutaAlmacenamiento IS NOT NULL
-                            AND LOWER(ao.NombreArchivo) LIKE '%cmyk%'
-                          ORDER BY ao.ArchivoID ASC) AS CmykArchivoID,
+                            AND LOWER(ao.NombreArchivo) LIKE '%boceto%'
+                          ORDER BY ao.ArchivoID ASC) AS ArteArchivoID,
                        (SELECT TOP 1 ao.NombreArchivo FROM dbo.ArchivosOrden ao WITH(NOLOCK)
-                          WHERE ao.OrdenID = o.OrdenID AND LOWER(ao.NombreArchivo) LIKE '%cmyk%'
-                          ORDER BY ao.ArchivoID ASC) AS CmykNombre
+                          WHERE ao.OrdenID = o.OrdenID AND LOWER(ao.NombreArchivo) LIKE '%boceto%'
+                          ORDER BY ao.ArchivoID ASC) AS ArteNombre
                 FROM dbo.Ordenes o WITH(NOLOCK)
                 WHERE o.CodCliente = @cod
                   AND UPPER(LTRIM(RTRIM(o.AreaID))) = 'TPU'
                   AND o.Estado IN ('Finalizado','FINALIZADO','Entregado','ENTREGADO','Cerrado','CERRADO')
-                  AND EXISTS (SELECT 1 FROM dbo.ArchivosOrden ao WITH(NOLOCK)
-                                WHERE ao.OrdenID = o.OrdenID AND LOWER(ao.NombreArchivo) LIKE '%cmyk%')
                 ORDER BY o.FechaIngreso DESC
             `);
         res.json({ success: true, data: result.recordset });
@@ -2484,6 +2485,9 @@ exports.reuseMatrizTPU = async (req, res) => {
     const matrizOrdenId = parseInt(req.body?.matrizOrdenId);
     const cantidad = parseInt(req.body?.cantidad) || 0;
     const nombreTrabajo = (req.body?.nombreTrabajo || '').trim();
+    // Medida del parche elegida por el cliente. Igual que en un trabajo nuevo va DENTRO de la nota
+    // (`[Medida: alto x ancho cm]`): el alto/ancho de un TPU no tiene columna propia en Ordenes.
+    const medidaTpu = String(req.body?.medida || '').trim();
     if (!codCliente) return res.status(401).json({ error: 'No autenticado.' });
     if (!matrizOrdenId || cantidad < 1) return res.status(400).json({ error: 'Faltan datos (matriz y cantidad).' });
 
@@ -2527,14 +2531,25 @@ exports.reuseMatrizTPU = async (req, res) => {
         //  - Misma cantidad  → directo a producción ('Pendiente') con el arte de la matriz copiado.
         //  - Cantidad distinta → 'Cargando...': producción regenera las 5 capas y recién ahí entra a
         //    producción. La marca [REUSO-REGEN] indica que NO requiere aprobación del cliente.
-        const estadoNueva = regenerar ? 'Cargando...' : 'Pendiente';
-        const notaNueva = regenerar
+        // El reuso NO pasa por 'Cargando...': ese estado es para un pedido web que todavía está
+        // subiendo archivos, acá la orden nace completa. Lo único que cambia es si el arte de la
+        // matriz sirve tal cual o hay que rehacerlo:
+        //  - arte copiado (misma cantidad) → Produccion / Diseñado: lista para asignar a un lote.
+        //  - hay que regenerar las 5 capas → Pendiente / Aprobado: el cliente ya aprobó el diseño en
+        //    la matriz, falta que producción suba el arte (con la 5ª capa pasa sola a Diseñado).
+        const estadoGenNueva  = regenerar ? 'Pendiente' : 'Produccion';
+        const estadoAreaNueva = regenerar ? 'Aprobado'  : 'Diseñado';
+        const notaNueva = (regenerar
             ? `Reuso de matriz ${matCod} [REUSO-REGEN] · regenerar 5 capas para ${cantidad} u (matriz: ${matMag || '?'} u)`
-            : `Reuso de matriz ${matCod}`;
+            : `Reuso de matriz ${matCod}`)
+            + (medidaTpu ? ` [Medida: ${medidaTpu}]` : '');
         const insOrd = await new sql.Request(transaction)
             .input('Cliente', sql.NVarChar(200), mat.Cliente)
             .input('CodCli', sql.Int, codCliente)
-            .input('IdCliReact', sql.VarChar(50), mat.IdClienteReact)
+            // Ordenes.IdClienteReact es NUMERIC: el driver lo devuelve como number y bindearlo
+            // como VarChar sin convertir revienta con "Validation failed ... Invalid string".
+            // Mismo patrón que createWebOrder.
+            .input('IdCliReact', sql.VarChar(50), mat.IdClienteReact ? mat.IdClienteReact.toString() : null)
             .input('Desc', sql.NVarChar(300), nombreTrabajo || `Reposición ${matCod}`)
             .input('Mat', sql.VarChar(255), mat.Material)
             .input('Var', sql.VarChar(100), mat.Variante || 'TPU')
@@ -2542,7 +2557,8 @@ exports.reuseMatrizTPU = async (req, res) => {
             .input('ERP', sql.VarChar(50), erpDocNumber)
             .input('Nota', sql.NVarChar(sql.MAX), notaNueva)
             .input('Mag', sql.VarChar(50), String(cantidad))
-            .input('Estado', sql.VarChar(50), estadoNueva)
+            .input('EstadoGen', sql.VarChar(50), estadoGenNueva)
+            .input('EstadoArea', sql.VarChar(50), estadoAreaNueva)
             .input('CodArt', sql.VarChar(50), mat.CodArticulo)
             .input('ProId', sql.Int, mat.ProIdProducto)
             .input('CliId', sql.Int, mat.CliIdCliente)
@@ -2554,7 +2570,7 @@ exports.reuseMatrizTPU = async (req, res) => {
                 OUTPUT INSERTED.OrdenID
                 VALUES ('TPU', @Cliente, @CodCli, @IdCliReact, @Desc, 'Normal',
                     GETDATE(), DATEADD(day,3,GETDATE()), @Mat, @Var, @Cod, @ERP, @Nota, @Mag,
-                    'DEPOSITO', @UM, @Estado, @Estado, @CodArt, @ProId, @CliId, GETDATE())`);
+                    'DEPOSITO', @UM, @EstadoGen, @EstadoArea, @CodArt, @ProId, @CliId, GETDATE())`);
         const newOID = insOrd.recordset[0].OrdenID;
 
         // 4. Traer el arte de la matriz.

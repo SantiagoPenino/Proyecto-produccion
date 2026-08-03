@@ -346,11 +346,31 @@ export default function ProductionTable({ rowData = [], onRowSelected, selectedR
         }
     });
 
-    // Unidad del total de abajo: TPU se mide en UNIDADES (parches), el resto en metros. Se deduce de
-    // las propias filas — la tabla no recibe el área como prop y esta pantalla siempre muestra una.
-    const totalEnUnidades = rowData.length > 0
-        && rowData.every(o => String(o.area || '').toUpperCase() === 'TPU');
-    const fmtTotal = (n) => totalEnUnidades ? `${Math.round(n)} u` : `${n.toFixed(2)} m`;
+    // Totales de abajo: cada orden trae su unidad de medida (`unit` = Ordenes.UM, 'u' o 'm'), así que
+    // los metros y las unidades se suman por separado y se muestran los dos. Antes se sumaba todo
+    // junto y se rotulaba con una sola unidad deducida del área (TPU = u, el resto = m): un producto
+    // terminado de ECOUV —un cuadro, UM='u'— entraba al total como "1.00 m". La unidad se resuelve
+    // igual que en la columna Cantidad: `unit` y, si viene vacía, las letras pegadas a la magnitud.
+    const unidadDe = (o) => {
+        const u = String(o?.unit ?? '').trim().toLowerCase();
+        return u || String(o?.magnitude ?? '').replace(/[\d. ]/g, '').trim().toLowerCase() || 'm';
+    };
+    // Un total por unidad que aparezca (m, m2, u…), sin lista cerrada: si mañana entra otra UM se
+    // muestra sola. El orden es el de ORDEN_UNIDADES y lo desconocido va al final.
+    const ORDEN_UNIDADES = ['m', 'm2', 'u'];
+    const fmtTotal = (filas) => {
+        const totales = filas.reduce((acc, o) => {
+            const unidad = unidadDe(o);
+            acc[unidad] = (acc[unidad] || 0) + (parseFloat(o.magnitude) || 0);
+            return acc;
+        }, {});
+        const peso = (k) => { const i = ORDEN_UNIDADES.indexOf(k); return i < 0 ? ORDEN_UNIDADES.length : i; };
+        const partes = Object.keys(totales)
+            .filter(k => totales[k] > 0)
+            .sort((a, b) => peso(a) - peso(b) || a.localeCompare(b))
+            .map(k => `${k === 'u' ? Math.round(totales[k]) : totales[k].toFixed(2)} ${k}`);
+        return partes.join(' · ') || '0.00 m';
+    };
 
     return (
         <div className="flex flex-col h-full w-full bg-white overflow-hidden animate-in fade-in duration-300 relative">
@@ -509,11 +529,11 @@ export default function ProductionTable({ rowData = [], onRowSelected, selectedR
                     <span className="font-medium text-zinc-400 tablet:hidden">({rowData.length} órdenes en total)</span>
                     <span className="hidden tablet:inline font-medium text-zinc-400">({rowData.length})</span>
                     <span className="bg-brand-cyan/10 text-brand-cyan px-2 py-1 tablet:px-1.5 tablet:py-0.5 rounded-md font-bold">
-                        {fmtTotal(rowData.reduce((sum, o) => sum + (parseFloat(o.magnitude) || 0), 0))}
+                        {fmtTotal(rowData)}
                     </span>
                     {table.getSelectedRowModel().rows.length > 0 && (
                         <span className="bg-indigo-100 text-indigo-700 px-2 py-1 tablet:px-1.5 tablet:py-0.5 rounded-md font-bold">
-                            {table.getSelectedRowModel().rows.length} sel. · {fmtTotal(table.getSelectedRowModel().rows.reduce((sum, r) => sum + (parseFloat(r.original.magnitude) || 0), 0))}
+                            {table.getSelectedRowModel().rows.length} sel. · {fmtTotal(table.getSelectedRowModel().rows.map(r => r.original))}
                         </span>
                     )}
                 </span>

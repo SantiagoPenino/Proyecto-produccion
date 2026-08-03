@@ -1172,7 +1172,16 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
 
                         <div className="md:col-span-2 lg:col-span-2">
                             <label className="text-[10px] uppercase font-bold text-zinc-400 block mb-1">Material / Sustrato</label>
-                            <div className="font-semibold text-zinc-700 text-sm leading-tight">{currentOrder.variant || currentOrder.material || '-'}</div>
+                            <div className="font-semibold text-zinc-700 text-sm leading-tight">
+                                {currentOrder.variant || currentOrder.material || '-'}
+                                {/* La medida que eligió el cliente para el parche viaja en la nota como
+                                    "[Medida: alto x ancho cm]" (OrderForm del portal): el alto/ancho de
+                                    un TPU no tiene columna propia en Ordenes. */}
+                                {(() => {
+                                    const m = isTPU && String(currentOrder.note || '').match(/\[Medida:\s*([^\]]+)\]/i);
+                                    return m ? <span className="ml-2 text-brand-cyan font-black whitespace-nowrap">{m[1].trim()}</span> : null;
+                                })()}
+                            </div>
                         </div>
 
                         <div>
