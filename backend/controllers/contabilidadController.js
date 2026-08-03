@@ -1362,11 +1362,13 @@ exports.guardarPrecios = async (req, res) => {
         `);
 
       // Recalcular MontoTotal en PedidosCobranza padre
+      // "Comprar y personalizar": no sumar las líneas hermanas (EMB/DF/TPU/EST) — ya
+      // están incluidas dentro del subtotal de la línea de PRO.
       await mk()
         .input('PID', sql.Int, PedidoCobranzaID)
         .query(`
           UPDATE dbo.PedidosCobranza
-          SET MontoTotal = (SELECT ISNULL(SUM(Subtotal),0) FROM dbo.PedidosCobranzaDetalle WHERE PedidoCobranzaID = @PID)
+          SET MontoTotal = (SELECT ISNULL(SUM(Subtotal),0) FROM dbo.PedidosCobranzaDetalle WHERE PedidoCobranzaID = @PID AND ISNULL(EsHermanaConsolidada,0) = 0)
           WHERE ID = @PID
         `);
 
@@ -1386,6 +1388,14 @@ exports.guardarPrecios = async (req, res) => {
             AND m.MovTipo IN ('ORDEN','ORDEN_ANTICIPO')
             ${cicloFilter}
             AND (
+              -- Match principal: por OrdenID del detalle. NoDocERP va SIN prefijo
+              -- ('9669') y CodigoOrden CON prefijo ('SUB-9669'): los matches por
+              -- texto de abajo casi nunca aplican (bug TDH ET-3815).
+              EXISTS (
+                SELECT 1 FROM dbo.PedidosCobranzaDetalle pcd
+                WHERE pcd.PedidoCobranzaID = pc.ID AND pcd.OrdenID = m.OrdIdOrden
+              )
+              OR
               EXISTS (
                 SELECT 1 FROM dbo.Ordenes erp
                 WHERE erp.OrdenID = m.OrdIdOrden
@@ -1398,6 +1408,13 @@ exports.guardarPrecios = async (req, res) => {
                   AND LTRIM(RTRIM(pc.NoDocERP)) = od.OrdCodigoOrden
               )
             )
+            -- Con movimientos partidos (misma orden en 2+ movs del ciclo) no se
+            -- puede pisar cada uno con el total sin duplicar: no tocar.
+            AND 1 = (SELECT COUNT(*) FROM dbo.MovimientosCuenta m2
+                     WHERE m2.OrdIdOrden = m.OrdIdOrden
+                       AND ISNULL(m2.CicIdCiclo,0) = ISNULL(m.CicIdCiclo,0)
+                       AND m2.MovTipo IN ('ORDEN','ORDEN_ANTICIPO')
+                       AND (m2.MovAnulado IS NULL OR m2.MovAnulado = 0))
         `);
 
       // Si el ciclo ya fue cerrado, registrar el delta contra el documento de facturación
@@ -1680,10 +1697,11 @@ exports.guardarPreciosCiclo = async (req, res) => {
         .input('Log',     sql.NVarChar(sql.MAX), nuevoLog)
         .query(`UPDATE dbo.PedidosCobranzaDetalle SET PrecioUnitario=@Precio, Subtotal=@Subtotal, LogPrecioAplicado=@Log WHERE ID=@ID`);
 
-      // Recalcular MontoTotal del PedidosCobranza padre
+      // Recalcular MontoTotal del PedidosCobranza padre ("Comprar y personalizar": no
+      // sumar las líneas hermanas EMB/DF/TPU/EST, ya incluidas en el subtotal de PRO).
       await mk()
         .input('PID', sql.Int, PedidoCobranzaID)
-        .query(`UPDATE dbo.PedidosCobranza SET MontoTotal = (SELECT ISNULL(SUM(Subtotal),0) FROM dbo.PedidosCobranzaDetalle WHERE PedidoCobranzaID=@PID) WHERE ID=@PID`);
+        .query(`UPDATE dbo.PedidosCobranza SET MontoTotal = (SELECT ISNULL(SUM(Subtotal),0) FROM dbo.PedidosCobranzaDetalle WHERE PedidoCobranzaID=@PID AND ISNULL(EsHermanaConsolidada,0) = 0) WHERE ID=@PID`);
 
       // Actualizar la ORDEN del ciclo (ERP o depósito/WMS) al nuevo total del pedido
       await mk()
@@ -1694,8 +1712,15 @@ exports.guardarPreciosCiclo = async (req, res) => {
           FROM dbo.MovimientosCuenta m
           JOIN dbo.PedidosCobranza pc ON pc.ID = @PID
           WHERE m.CicIdCiclo=@cic AND m.MovTipo IN ('ORDEN','ORDEN_ANTICIPO') AND (m.MovAnulado IS NULL OR m.MovAnulado=0)
-            AND ( EXISTS (SELECT 1 FROM dbo.Ordenes erp WHERE erp.OrdenID=m.OrdIdOrden AND LTRIM(RTRIM(pc.NoDocERP))=erp.CodigoOrden)
+            -- Match principal por OrdenID del detalle: NoDocERP va sin prefijo y
+            -- CodigoOrden con prefijo, los matches por texto casi nunca aplican (bug TDH ET-3815).
+            AND ( EXISTS (SELECT 1 FROM dbo.PedidosCobranzaDetalle pcd WHERE pcd.PedidoCobranzaID=pc.ID AND pcd.OrdenID=m.OrdIdOrden)
+               OR EXISTS (SELECT 1 FROM dbo.Ordenes erp WHERE erp.OrdenID=m.OrdIdOrden AND LTRIM(RTRIM(pc.NoDocERP))=erp.CodigoOrden)
                OR EXISTS (SELECT 1 FROM dbo.OrdenesDeposito od WHERE (od.OrdIdOrden=m.OrdIdOrden OR od.OReIdOrdenRetiro=m.OReIdOrdenRetiro) AND LTRIM(RTRIM(pc.NoDocERP))=od.OrdCodigoOrden) )
+            -- Movimientos partidos: no pisar cada mov con el total (duplicaría)
+            AND 1 = (SELECT COUNT(*) FROM dbo.MovimientosCuenta m2
+                     WHERE m2.OrdIdOrden=m.OrdIdOrden AND m2.CicIdCiclo=m.CicIdCiclo
+                       AND m2.MovTipo IN ('ORDEN','ORDEN_ANTICIPO') AND (m2.MovAnulado IS NULL OR m2.MovAnulado=0))
         `);
 
       // Registrar el delta contra el documento de facturación (para propagar al CIERRE_CICLO)

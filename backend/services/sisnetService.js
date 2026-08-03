@@ -405,7 +405,9 @@ exports.prepararCFE = async (doc, lineas, cotDolar = 40.0, empresa = null) => {
         wsVarios: {
             fchEmis: new Date().toLocaleDateString('en-GB'), // DD/MM/YYYY
             fhcVenc: new Date().toLocaleDateString('en-GB'), // Podría sumarle DocDiasVencimiento
-            fmaPago: doc.DocPagado ? 1 : 2, // 1 Contado, 2 Credito
+            // 1 Contado, 2 Credito. El tipo "CONTADO" del documento manda aunque
+            // todavía no esté cobrado (DocPagado se estampa recién al saldar la deuda).
+            fmaPago: (doc.DocPagado || /CONTADO|CAJA/i.test(doc.DocTipo || '')) ? 1 : 2,
             comprobanteTipo: tipoCFE,
             mntBruto: 0,
             textoObservacion: doc.DocObservaciones ? doc.DocObservaciones.substring(0, 100) : ''
