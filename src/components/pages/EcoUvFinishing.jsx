@@ -3,8 +3,12 @@ import api from '../../services/api';
 import { API_URL } from '../../services/apiClient';
 import { toast } from 'sonner';
 import { printLabelsHelper } from '../../utils/printHelper';
-import { labelUbicacion } from '../../utils/terminacionesGeo';
+import {
+    labelUbicacion, ladosDeUbicacion,
+    SOLDADURA_CM, profundidadBolsilloCm, margenOjalCm
+} from '../../utils/terminacionesGeo';
 import PlanoPieza, { COLOR_CAPA } from '../shared/PlanoPieza';
+import OrdenProntaModal from '../production/components/OrdenProntaModal';
 
 // fase 'trabajo' (Bandeja): órdenes con Material Recibido / En Terminaciones — marcar la
 //   primera terminación pasa la orden a 'En Terminaciones'; "Finalizar Tarea" la manda a
@@ -21,6 +25,7 @@ const EcoUvFinishing = ({ fase = 'trabajo' }) => {
     // Magnitudes reales que el taller ajusta antes de confirmar { OrdenTerminacionID: valor }
     const [magnitudes, setMagnitudes] = useState({});
     const [confirmando, setConfirmando] = useState(null);
+    const [completedOrderData, setCompletedOrderData] = useState(null);
 
     // Cache de detalles: { ordenId: [items] }
     const [ordersDetails, setOrdersDetails] = useState({});
@@ -169,12 +174,18 @@ const EcoUvFinishing = ({ fase = 'trabajo' }) => {
                 bultos: esControl ? (parseInt(bultosPorOrden[ordenId], 10) || 1) : undefined,
             });
             const bultos = res.data?.totalBultos || 0;
-            toast.success(esControl
-                ? `Control aprobado${bultos ? ` — ${bultos} etiqueta(s) del producto listas para despachar` : ''}`
-                : "Trabajo terminado: la orden pasó a Control y Calidad");
-            // Al aprobar, abrir la impresión de etiquetas (igual que el control de las
-            // demás áreas). La etiqueta es de la orden MADRE: es la que se despacha.
-            if (esControl && bultos > 0) printLabelsHelper(null, { id: res.data?.labelOrdenId || ordenId });
+            if (esControl) {
+                // Mismo modal "¡Orden Pronta!" que el área de Impresión (FilePrintControl) y
+                // Bordado/Estampado/Corte/Costura (EmbBandeja), para que la confirmación se
+                // vea/comporte igual en todas las áreas.
+                setCompletedOrderData({
+                    ordenId: res.data?.labelOrdenId || ordenId,
+                    destino: res.data?.destino,
+                    proximoServicio: res.data?.proximoServicio,
+                });
+            } else {
+                toast.success("Trabajo terminado: la orden pasó a Control y Calidad");
+            }
             // Refrescar datos
             fetchDocuments();
         } catch (e) {
@@ -247,6 +258,7 @@ const EcoUvFinishing = ({ fase = 'trabajo' }) => {
     };
 
     return (
+        <>
         <div className="flex h-full bg-slate-100 overflow-hidden">
             {/* LEFT PANEL: LISTA */}
             <div className="w-80 bg-white border-r border-slate-200 flex flex-col z-10 shadow-lg">
@@ -450,18 +462,39 @@ const EcoUvFinishing = ({ fase = 'trabajo' }) => {
                                                         (acc[k] ||= { archivoId: t.ArchivoID, nombre: t.NombreArchivo, ancho: t.Ancho, alto: t.Alto, copias: t.Copias, arteUrl: t.arteUrl, items: [] }).items.push(t);
                                                         return acc;
                                                     }, {})).map(grupo => {
-                                                        // Capas del boceto: lo que el cliente marcó en el portal
-                                                        const capas = grupo.items.map((t, i) => ({
-                                                            id: t.ID, nombre: t.Nombre,
-                                                            color: COLOR_CAPA[i % COLOR_CAPA.length],
-                                                            ubicacion: t.Ubicacion,
-                                                            tipo: (t.ReglaCantidad === 'CADA_X_CM') ? 'ojales'
+                                                        // Capas del boceto con las medidas del taller a la vista:
+                                                        // soldadura toma 5 cm, ojal a 2,5 (7,5 con soldadura en el
+                                                        // lado), bolsillo = tamaño×2 + 5.
+                                                        const ladosSold = new Set(grupo.items
+                                                            .filter(t => /soldadura/i.test(t.Nombre || ''))
+                                                            .flatMap(t => ladosDeUbicacion(t.Ubicacion)));
+                                                        const capas = grupo.items.map((t, i) => {
+                                                            const tipo = (t.ReglaCantidad === 'CADA_X_CM') ? 'ojales'
                                                                 : /bolsillo/i.test(t.Nombre || '') ? 'bolsillo'
                                                                     : /palo/i.test(t.Nombre || '') ? 'palos'
-                                                                        : /roll up/i.test(t.Nombre || '') ? 'rollup' : 'linea',
-                                                            pasoM: (parseFloat(t.Param) || 50) / 100,
-                                                            anchoCm: parseFloat(t.Param) || 8,
-                                                        }));
+                                                                        : /roll up/i.test(t.Nombre || '') ? 'rollup' : 'linea';
+                                                            const capa = {
+                                                                id: t.ID, nombre: t.Nombre,
+                                                                color: COLOR_CAPA[i % COLOR_CAPA.length],
+                                                                ubicacion: t.Ubicacion, tipo,
+                                                                pasoM: (parseFloat(t.Param) || 50) / 100,
+                                                            };
+                                                            if (tipo === 'bolsillo') {
+                                                                const tam = parseFloat(t.Param) || 5;
+                                                                capa.anchoCm = profundidadBolsilloCm(tam);
+                                                                capa.detalle = `${tam}×2+${SOLDADURA_CM} = ${profundidadBolsilloCm(tam)} cm`;
+                                                            }
+                                                            if (tipo === 'linea' && /soldadura/i.test(t.Nombre || '')) capa.detalle = `${SOLDADURA_CM} cm`;
+                                                            if (tipo === 'ojales') {
+                                                                const insets = {};
+                                                                const misLados = ladosDeUbicacion(t.Ubicacion);
+                                                                misLados.forEach(l => { insets[l] = margenOjalCm(ladosSold.has(l)); });
+                                                                capa.insets = insets;
+                                                                capa.detalle = misLados.some(l => ladosSold.has(l))
+                                                                    ? `a ${SOLDADURA_CM + 2.5} cm (sold. + ojal)` : 'a 2,5 cm';
+                                                            }
+                                                            return capa;
+                                                        });
                                                         const w = parseFloat(grupo.ancho) || 0, h = parseFloat(grupo.alto) || 0;
                                                         return (
                                                             <div key={grupo.archivoId} className="bg-white border border-amber-200 rounded-lg mb-2 overflow-hidden">
@@ -694,6 +727,16 @@ const EcoUvFinishing = ({ fase = 'trabajo' }) => {
                 )}
             </div>
         </div>
+        <OrdenProntaModal
+            data={completedOrderData}
+            onImprimir={() => {
+                const id = completedOrderData?.ordenId;
+                setCompletedOrderData(null);
+                if (id) printLabelsHelper(null, { id });
+            }}
+            onClose={() => setCompletedOrderData(null)}
+        />
+        </>
     );
 };
 

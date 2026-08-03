@@ -132,6 +132,33 @@ export const cantidadSugerida = (term, ubi, { w, h }) => {
     return parseFloat(term?.ParamCantidad) || 1;
 };
 
+// ── Reglas físicas del taller (definidas por el negocio 01/08) ──
+// La soldadura toma 5 cm del borde. El ojal mide 2 cm y se coloca a 2,5 cm del
+// borde; si el lado además lleva soldadura, el ojal corre 5 + 2,5 = 7,5 cm.
+// El bolsillo lo define el cliente por su TAMAÑO: el borde consume
+// tamaño × 2 (doblez) + 5 cm de soldadura.
+export const SOLDADURA_CM = 5;
+export const OJAL_DIAMETRO_CM = 2;
+export const OJAL_MARGEN_CM = 2.5;
+
+/** Cuánto borde consume un bolsillo de tamaño X: doblez (X×2) + soldadura. */
+export const profundidadBolsilloCm = (tamanoCm) =>
+    (parseFloat(tamanoCm) || 0) * 2 + SOLDADURA_CM;
+
+/** A qué distancia del borde va el ojal (7,5 cm si el lado comparte soldadura). */
+export const margenOjalCm = (comparteSoldadura) =>
+    comparteSoldadura ? SOLDADURA_CM + OJAL_MARGEN_CM : OJAL_MARGEN_CM;
+
+/**
+ * Separación máxima válida entre ojales para una ubicación: no puede superar
+ * el lado más corto donde van (en un lado de 21 cm no entran "cada 70 cm").
+ */
+export const pasoMaxCm = (ubi, w, h) => {
+    const lados = ladosDeUbicacion(ubi);
+    if (!lados.length) return 0;
+    return Math.max(1, Math.floor(Math.min(...lados.map(l => largoLado(l, w, h))) * 100));
+};
+
 /** Texto del reparto para mostrar al cliente y al taller. */
 export const textoReparto = (term, ubi, { w, h }) => {
     const regla = term?.ReglaCantidad || 'FIJA';

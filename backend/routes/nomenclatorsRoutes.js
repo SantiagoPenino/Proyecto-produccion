@@ -260,10 +260,11 @@ router.get('/producto-terminado/:codArticulo', async (req, res) => {
             .query(`
                 SELECT P.ID, P.AnchoM, P.AltoM, P.BordeCm, LTRIM(RTRIM(P.MaterialCodArticulo)) AS MaterialCodArticulo,
                        LTRIM(RTRIM(P.Tinta)) AS Tinta,
-                       M.Descripcion AS MaterialDescripcion
+                       M.Descripcion AS MaterialDescripcion,
+                       M.Ancho AS MaterialAncho
                 FROM ProductosTerminados P
                 OUTER APPLY (
-                    SELECT TOP 1 LTRIM(RTRIM(A.Descripcion)) AS Descripcion
+                    SELECT TOP 1 LTRIM(RTRIM(A.Descripcion)) AS Descripcion, A.anchoimprimible AS Ancho
                     FROM articulos A WHERE LTRIM(RTRIM(A.CodArticulo)) = LTRIM(RTRIM(P.MaterialCodArticulo))
                 ) M
                 WHERE LTRIM(RTRIM(P.CodArticulo)) = LTRIM(RTRIM(@Art)) AND P.Activo = 1
@@ -288,6 +289,9 @@ router.get('/producto-terminado/:codArticulo', async (req, res) => {
                 anchoM: p.AnchoM, altoM: p.AltoM, bordeCm: p.BordeCm,
                 materialCodArticulo: p.MaterialCodArticulo || null,
                 materialDescripcion: p.MaterialDescripcion || null,
+                // Ancho del rollo del material de impresión: el arte (medida + borde)
+                // tiene que entrar en su ancho imprimible (ancho − 3 cm de margen).
+                materialAncho: p.MaterialAncho != null ? parseFloat(p.MaterialAncho) : null,
                 tinta: p.Tinta || null,
                 terminacionesIncluidas: terms.recordset
             }

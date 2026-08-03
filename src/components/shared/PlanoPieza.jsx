@@ -94,21 +94,38 @@ export default function PlanoPieza({
                     );
                 }
 
+                // BORDE (producto terminado): la demasía de montaje alrededor de la
+                // medida final — línea de corte punteada a su distancia REAL del borde
+                if (capa.tipo === 'borde') {
+                    const inset = Math.max(3, ((capa.anchoCm || 5) / 100) * pxPorM);
+                    return (
+                        <rect key={capa.id}
+                            x={x0 + inset} y={y0 + inset} width={w - inset * 2} height={h - inset * 2}
+                            fill="none" stroke={capa.color} strokeWidth={grosor * 0.8}
+                            strokeDasharray="6 3" opacity="0.95" />
+                    );
+                }
+
                 const lados = ladosDeUbicacion(capa.ubicacion);
                 if (!lados.length) return null;
 
-                // OJALES: van SOBRE el borde, sin desplazar por capa — si se corrieran
-                // hacia adentro, el punto de la esquina del lado de arriba y el del
-                // lateral caerían en lugares distintos y la esquina saldría con dos
-                // ojales. Se calculan todos los puntos y se descartan los repetidos.
+                // OJALES: a su distancia REAL del borde (2,5 cm; 7,5 cm si el lado
+                // comparte soldadura — capa.insets viene con el margen por lado).
+                // Las esquinas con el mismo margen caen en el mismo punto y se
+                // dibujan una sola vez.
                 if (capa.tipo === 'ojales') {
                     const vistos = new Set();
                     const puntos = [];
                     lados.forEach(lado => {
+                        const insetCm = capa.insets?.[lado] != null ? capa.insets[lado] : 2.5;
+                        const inset = Math.max(2, (insetCm / 100) * pxPorM);
                         const n = ojalesEnLado(largoLado(lado, W, H), capa.pasoM || 0.5);
                         posicionesOjales(n).forEach(f => {
-                            const cx = (lado === 'l') ? x0 : (lado === 'r') ? x1 : x0 + f * w;
-                            const cy = (lado === 't') ? y0 : (lado === 'b') ? y1 : y0 + f * h;
+                            let cx, cy;
+                            if (lado === 't') { cy = y0 + inset; cx = x0 + inset + f * (w - inset * 2); }
+                            else if (lado === 'b') { cy = y1 - inset; cx = x0 + inset + f * (w - inset * 2); }
+                            else if (lado === 'l') { cx = x0 + inset; cy = y0 + inset + f * (h - inset * 2); }
+                            else { cx = x1 - inset; cy = y0 + inset + f * (h - inset * 2); }
                             const clave = `${Math.round(cx)}|${Math.round(cy)}`;
                             if (vistos.has(clave)) return;   // esquina ya dibujada
                             vistos.add(clave);
@@ -123,7 +140,7 @@ export default function PlanoPieza({
 
                 // BOLSILLO: borde + costura interior a la distancia real
                 if (capa.tipo === 'bolsillo') {
-                    const anchoPx = Math.max(3, Math.min(((capa.anchoCm || 8) / 100) * pxPorM, Math.min(w, h) / 3));
+                    const anchoPx = Math.max(3, Math.min(((capa.anchoCm || 5) / 100) * pxPorM, Math.min(w, h) / 3));
                     return lados.map(lado => {
                         const g = seg[lado];
                         const [dx, dy] = haciaAdentro(lado, sep);
@@ -147,6 +164,33 @@ export default function PlanoPieza({
                         x1={g[0] + dx} y1={g[1] + dy} x2={g[2] + dx} y2={g[3] + dy}
                         stroke={capa.color} strokeWidth={grosor} strokeLinecap="square" />;
                 });
+            })}
+
+            {/* Medidas de cada terminación, escritas sobre su primer lado:
+                soldadura "5 cm", ojales "a 2,5 cm", bolsillo "8×2+5 = 21 cm"... */}
+            {capas.map((capa, ci) => {
+                if (!capa.detalle) return null;
+                const ladosCapa = (capa.tipo === 'palos' || capa.tipo === 'rollup' || capa.tipo === 'borde')
+                    ? ['t'] : ladosDeUbicacion(capa.ubicacion);
+                if (!ladosCapa.length) return null;
+                const lado = ladosCapa[0];
+                const off = (size === 'sm' ? 11 : 17) + ci * (size === 'sm' ? 8 : 11);
+                const fs = size === 'sm' ? 6.5 : 9;
+                if (lado === 't' || lado === 'b') {
+                    const y = lado === 't' ? y0 + off : y1 - off + fs;
+                    return <text key={`det-${capa.id}`} x={(x0 + x1) / 2} y={y}
+                        fill={capa.color} fontSize={fs} fontWeight="700" textAnchor="middle"
+                        style={{ paintOrder: 'stroke', stroke: 'rgba(13,13,15,.85)', strokeWidth: 2.5 }}>
+                        {capa.detalle}
+                    </text>;
+                }
+                const x = lado === 'l' ? x0 + off : x1 - off;
+                return <text key={`det-${capa.id}`}
+                    transform={`translate(${x},${(y0 + y1) / 2}) rotate(-90)`}
+                    fill={capa.color} fontSize={fs} fontWeight="700" textAnchor="middle"
+                    style={{ paintOrder: 'stroke', stroke: 'rgba(13,13,15,.85)', strokeWidth: 2.5 }}>
+                    {capa.detalle}
+                </text>;
             })}
 
             {/* Bordes clickeables: aplican a la capa activa */}

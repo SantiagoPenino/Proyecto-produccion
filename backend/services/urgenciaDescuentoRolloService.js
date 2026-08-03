@@ -2,8 +2,14 @@
  * urgenciaDescuentoRolloService.js
  * ──────────────────────────────────────────────────────────────────────────
  * Recargo de metros de "rollo por adelantado" (PlanesMetros) para órdenes
- * marcadas Urgente cuyo recargo de urgencia NO se cobró en dinero (el
- * cliente tiene una fila matching en UrgenciaExcepciones).
+ * marcadas Urgente que se pagan (total o parcialmente) con ese rollo.
+ *
+ * Por qué no se valida contra UrgenciaExcepciones: para estos clientes la
+ * urgencia no se cobra en $ porque el pedido queda con precio final $0 al
+ * estar cubierto por el plan prepago (regla "recargos omitidos: precio ya
+ * es 0" de pricingService.js) — NO porque tengan una fila cargada ahí. Esta
+ * función se llama siempre DESDE ADENTRO del descuento de metros del rollo,
+ * así que si se llegó hasta acá, el pedido ya se está pagando con el rollo.
  *
  * Regla de negocio: si no se cobra la urgencia en $, el cliente igual paga
  * ese costo — pero en metros: la orden consume los metros normales MÁS un
@@ -70,31 +76,16 @@ async function aplicarRecargoUrgenciaRollo({
     const pctFinal = (pct > 0 && pct <= 100) ? pct : PCT_FALLBACK;
     const modoPiloto = (cfg['URGENCIA_DESCUENTO_ROLLO_MODO'] || 'TODOS') === 'PILOTO';
 
-    // 2. La orden debe ser Urgente
+    // 2. La orden debe ser Urgente. No se valida UrgenciaExcepciones: para
+    //    estos clientes la urgencia ya no se cobra en $ porque el pedido
+    //    queda en $0 al estar cubierto por el rollo (ver nota de arriba).
     const ordRes = await req()
       .input('OrdId', sql.Int, OrdIdOrden)
       .query(`SELECT TOP 1 Prioridad, AreaID FROM dbo.Ordenes WITH(NOLOCK) WHERE OrdenID = @OrdId`);
     const orden = ordRes.recordset[0];
     if (!orden || orden.Prioridad !== 'Urgente') return null;
 
-    // 3. Excepción de urgencia — misma consulta que pricingService.js para decidir
-    //    si el recargo de urgencia no se cobró en $ (exención total, por artículo o por área)
-    const excRes = await req()
-      .input('CliId',   sql.Int,         CliIdCliente)
-      .input('ProId',   sql.Int,         ProIdProducto || -1)
-      .input('CodArea', sql.VarChar(20), (orden.AreaID || '').trim())
-      .query(`
-        SELECT TOP 1 ID FROM dbo.UrgenciaExcepciones
-        WHERE CliIdCliente = @CliId AND Activo = 1
-          AND (
-            (ProIdProducto IS NULL AND CodArea IS NULL)
-            OR ProIdProducto = @ProId
-            OR CodArea = @CodArea
-          )
-      `);
-    if (excRes.recordset.length === 0) return null;
-
-    // 4. Tabla de clientes — su significado depende del modo:
+    // 3. Tabla de clientes — su significado depende del modo:
     //    PILOTO = lista blanca (solo aplica si el cliente ESTÁ en la tabla)
     //    TODOS  = lista negra (aplica salvo que el cliente ESTÉ en la tabla)
     const listaRes = await req()
@@ -111,7 +102,7 @@ async function aplicarRecargoUrgenciaRollo({
       return null;
     }
 
-    // 5. Aplicar recargo: consumir metros ADICIONALES del plan + movimiento visible en el estado de cuenta
+    // 4. Aplicar recargo: consumir metros ADICIONALES del plan + movimiento visible en el estado de cuenta
     const recargo = Math.round(metrosConsumidos * (pctFinal / 100) * 10000) / 10000;
     if (recargo <= 0) return null;
 

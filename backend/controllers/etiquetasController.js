@@ -268,13 +268,27 @@ const printEtiquetas = async (req, res) => {
             WHERE o2.OrdenID IN (${idsStr})
             ORDER BY o.OrdenID ASC
         `);
+        // RUTA DE LA ETIQUETA: un paso por ÁREA, no por orden. Un pedido puede tener
+        // varias órdenes en la misma área (multitela en Sublimación, multimaterial en
+        // EcoUV) y el recorrido físico sigue siendo uno solo.
+        // El chequeo contra "el anterior" no alcanzaba: con órdenes intercaladas
+        // (ECOUV, TERMINAC, ECOUV) el área volvía a aparecer, y la etiqueta salía con
+        // el mismo paso dos veces. Ahora se agrupa por área en toda la lista, y el
+        // paso se da por hecho solo si TODAS las órdenes de esa área están prontas.
         const serviciosPorOrden = {};
         routingResult.recordset.forEach(s => {
-            if (!serviciosPorOrden[s.BaseOrdenID]) serviciosPorOrden[s.BaseOrdenID] = [];
-            // Solo agregar si es de un area distinta al anterior para evitar duplicados en la lista (ej. 2 SB)
-            const arr = serviciosPorOrden[s.BaseOrdenID];
-            if (arr.length === 0 || arr[arr.length - 1].AreaDestino !== s.AreaDestino) {
-                arr.push(s);
+            const arr = (serviciosPorOrden[s.BaseOrdenID] ||= []);
+            const area = (s.AreaDestino || '').trim().toUpperCase();
+            const estadoArea = (s.EstadoenArea || '').toUpperCase().trim();
+            const estadoGen = (s.Estado || '').toUpperCase().trim();
+            const completa = estadoArea === 'PRONTO' || estadoArea === 'EN TRANSITO' || estadoGen === 'FINALIZADO';
+
+            const yaEsta = arr.find(x => (x.AreaDestino || '').trim().toUpperCase() === area);
+            if (yaEsta) {
+                // Ya hay un paso de esta área: queda pendiente si alguna de sus órdenes lo está
+                if (!completa) yaEsta.Completa = false;
+            } else {
+                arr.push({ ...s, Completa: completa });
             }
         });
 
@@ -451,12 +465,9 @@ const printEtiquetas = async (req, res) => {
                                     const srvs = serviciosPorOrden[label.OrdenID] || [];
                                     let listHtml = '';
                                     srvs.forEach(srv => {
-                                        const estadoArea = (srv.EstadoenArea || '').toUpperCase().trim();
-                                        const estadoGen  = (srv.Estado     || '').toUpperCase().trim();
-                                        const isCompleted = 
-                                            estadoArea === 'PRONTO' ||
-                                            estadoArea === 'EN TRANSITO' ||
-                                            estadoGen  === 'FINALIZADO';
+                                        // Ya viene consolidado por área (ver arriba): el paso está
+                                        // hecho solo si todas las órdenes de esa área lo están.
+                                        const isCompleted = srv.Completa === true;
                                         const checkMark = isCompleted ? '✔' : '';
                                         const colorStyle = isCompleted ? 'color: #000;' : 'color: #666;';
                                         

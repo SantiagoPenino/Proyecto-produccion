@@ -809,12 +809,18 @@ exports.createWebOrder = async (req, res) => {
 
             for (let idx = 0; idx < pendingOrderExecutions.length; idx++) {
                 const exec = pendingOrderExecutions[idx];
-                const fisicasSB = pendingOrderExecutions.filter(e => e.areaID === 'SB');
+                // Varias órdenes del pedido en la MISMA área (multitela en Sublimación,
+                // multimaterial en EcoUV...) se numeran (1/N), (2/N). Sin esto quedaban
+                // dos órdenes distintas con el MISMO CodigoOrden, y ese código es la
+                // clave con la que caja, contabilidad, el ERP y el aviso de WhatsApp
+                // encuentran la orden: con duplicados, los JOIN devuelven el doble de
+                // filas y el importe del retiro se cobra dos veces.
+                const hermanasArea = pendingOrderExecutions.filter(e => e.areaID === exec.areaID);
                 let docNumber = erpDocNumber;
-                
-                if (exec.areaID === 'SB' && fisicasSB.length > 1) {
-                    const indexSB = fisicasSB.findIndex(e => e === exec) + 1;
-                    docNumber = `${erpDocNumber} (${indexSB}/${fisicasSB.length})`;
+
+                if (hermanasArea.length > 1) {
+                    const indexArea = hermanasArea.findIndex(e => e === exec) + 1;
+                    docNumber = `${erpDocNumber} (${indexArea}/${hermanasArea.length})`;
                 }
 
                 const areaPrefix = areaPrefixMap[exec.areaID.toUpperCase()] || 'ORD';
@@ -960,9 +966,27 @@ exports.createWebOrder = async (req, res) => {
                                         const cat = new Map(catRes.recordset.map(t => [t.TerminacionID, t]));
                                         // Se listan sin repetir: la misma terminación en varios archivos
                                         // con la misma ubicación es una sola línea en la nota.
+                                        // Reglas físicas del taller (01/08): la soldadura toma 5 cm del
+                                        // borde; el ojal (2 cm) se coloca a 2,5 cm — a 7,5 si el lado
+                                        // comparte soldadura; el bolsillo consume tamaño×2 (doblez) + 5.
+                                        // Estos detalles viajan en la nota para que producción los vea.
+                                        const ladosDeUbi = (u) => {
+                                            const MAPA = { ARRIBA: ['t'], ABAJO: ['b'], ARRIBA_ABAJO: ['t', 'b'], IZQUIERDA: ['l'], DERECHA: ['r'], COSTADOS: ['l', 'r'], PERIMETRO: ['t', 'r', 'b', 'l'] };
+                                            const set = new Set();
+                                            String(u || '').split(',').forEach(p => (MAPA[p.trim()] || []).forEach(l => set.add(l)));
+                                            return set;
+                                        };
                                         const vistas = new Set();
                                         const partes = [];
                                         (exec.items || []).forEach(it => {
+                                            // Lados con soldadura EN ESTE archivo (para el margen de los ojales)
+                                            const ladosSold = new Set();
+                                            (it.terminaciones || []).forEach(t => {
+                                                const info = cat.get(parseInt(t.terminacionId));
+                                                if (info && /soldadura/i.test(info.Nombre)) {
+                                                    ladosDeUbi(t.ubicacion).forEach(l => ladosSold.add(l));
+                                                }
+                                            });
                                             (it.terminaciones || []).forEach(t => {
                                                 const info = cat.get(parseInt(t.terminacionId));
                                                 if (!info) return;
@@ -972,10 +996,19 @@ exports.createWebOrder = async (req, res) => {
                                                 vistas.add(clave);
                                                 const donde = ubi ? ` (${etiquetaUbicacion(ubi)})` : '';
                                                 let como = '';
-                                                if (t.param != null && t.param !== '') {
-                                                    como = (info.ReglaCantidad === 'CADA_X_CM')
-                                                        ? ` c/${t.param} cm`
-                                                        : (/bolsillo/i.test(info.Nombre) ? ` a ${t.param} cm del borde` : '');
+                                                if (info.ReglaCantidad === 'CADA_X_CM') {
+                                                    const comparte = [...ladosDeUbi(ubi)].some(l => ladosSold.has(l));
+                                                    const margen = comparte ? 'a 7,5 cm del borde (soldadura 5 + ojal 2,5)' : 'a 2,5 cm del borde';
+                                                    como = `${t.param != null && t.param !== '' ? ` c/${t.param} cm,` : ''} ${margen}`;
+                                                } else if (/bolsillo/i.test(info.Nombre)) {
+                                                    const tam = parseFloat(t.param) || 5;
+                                                    como = ` tamaño ${tam} cm (doblez ${tam}×2 + 5 de soldadura = ${tam * 2 + 5} cm por lado)`;
+                                                } else if (/soldadura/i.test(info.Nombre)) {
+                                                    como = ' (toma 5 cm del borde)';
+                                                } else if (/palo/i.test(info.Nombre)) {
+                                                    como = ' (en los extremos superior e inferior)';
+                                                } else if (/roll up/i.test(info.Nombre)) {
+                                                    como = ' (estuche abajo, varilla arriba)';
                                                 }
                                                 partes.push(`${info.Nombre}${donde}${como}`);
                                             });
