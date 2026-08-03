@@ -36,11 +36,15 @@ async function crearHermanaTerminaciones(transaction, ecouvId) {
         .query("SELECT TOP 1 OrdenID FROM Ordenes WHERE AreaID = 'TERMINAC' AND Estado NOT IN ('Cancelado') AND Nota LIKE @Nota ESCAPE '!'");
     if (ya.recordset.length > 0) return null;
 
+    // El código de la hermana espeja al de la madre: EUV-10987 (1/2) → XEUV-10987 (1/2).
+    // Así se ve de un vistazo a qué orden de impresión pertenece, incluso cuando el
+    // pedido tiene varias (multimaterial).
+    const codMadre = String(o.CodigoOrden || '').trim();
     const docTrim = String(o.NoDocERP || ecouvId).trim();
-    const baseCod = `XEUV-${docTrim}`;
+    const baseCod = codMadre ? `X${codMadre}` : `XEUV-${docTrim}`;
     const dupCod = await new sql.Request(transaction)
-        .input('Cod', sql.VarChar(60), baseCod + '%')
-        .query('SELECT COUNT(*) AS C FROM Ordenes WHERE CodigoOrden LIKE @Cod');
+        .input('Cod', sql.VarChar(60), baseCod)
+        .query('SELECT COUNT(*) AS C FROM Ordenes WHERE LTRIM(RTRIM(CodigoOrden)) = @Cod');
     const codigoHermana = dupCod.recordset[0].C > 0 ? `${baseCod}(${dupCod.recordset[0].C + 1})` : baseCod;
 
     const insH = await new sql.Request(transaction)

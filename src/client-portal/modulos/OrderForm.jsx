@@ -27,8 +27,11 @@ import { CustomSelect } from '../pautas/CustomSelect';
 import PlanoPieza, { COLOR_CAPA, IconoBordes, PRESETS_BORDE } from '../../components/shared/PlanoPieza';
 import {
     cantidadSugerida, textoReparto, labelUbicacion,
-    ladosDeUbicacion, ubicacionDeLados
+    ladosDeUbicacion, ubicacionDeLados, LADO_NOMBRE,
+    SOLDADURA_CM, profundidadBolsilloCm, margenOjalCm, pasoMaxCm
 } from '../../utils/terminacionesGeo';
+import * as pdfjsLib from 'pdfjs-dist';
+import pdfjsWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import ErrorModal from './order-form/components/ErrorModal';
 import UploadProgressModal from './order-form/components/UploadProgressModal';
 import FileUploadZone from './order-form/components/FileUploadZone';
@@ -290,20 +293,26 @@ const OrderForm = ({ serviceId: propServiceId }) => {
     // Se acepta girado y con el borde (demasía) ya incluido. Tolerancia 2 cm.
     // Se usa al subir el archivo Y al cambiar de producto (revalida lo ya cargado).
     const TOL_PT = 0.02;
+    // Con borde en la ficha, el arte DEBE traer la demasía: un cuadro de 1,00 × 1,00
+    // con 5 cm de borde exige un archivo de 1,10 × 1,10 (5 cm por cada lado).
+    // Sin borde configurado, el arte mide la medida final. Girado siempre vale.
     const medidaPTOk = (w, h, ficha) => {
         if (!ficha || ficha.anchoM == null || ficha.altoM == null || !w || !h) return true;
         const W = parseFloat(ficha.anchoM), H = parseFloat(ficha.altoM);
         const b = (parseFloat(ficha.bordeCm) || 0) / 100;
+        const reqW = W + 2 * b, reqH = H + 2 * b;
         const matchea = (ew, eh) => Math.abs(w - ew) <= TOL_PT && Math.abs(h - eh) <= TOL_PT;
-        return matchea(W, H) || matchea(H, W)
-            || (b > 0 && (matchea(W + 2 * b, H + 2 * b) || matchea(H + 2 * b, W + 2 * b)));
+        return matchea(reqW, reqH) || matchea(reqH, reqW);
     };
     const medidaPTTexto = (ficha) => {
         if (!ficha || ficha.anchoM == null || ficha.altoM == null) return '';
         const W = parseFloat(ficha.anchoM), H = parseFloat(ficha.altoM);
         const b = (parseFloat(ficha.bordeCm) || 0) / 100;
-        return `${W.toFixed(2)} x ${H.toFixed(2)} m` +
-            (b > 0 ? ` (o ${(W + 2 * b).toFixed(2)} x ${(H + 2 * b).toFixed(2)} m si el arte ya incluye el borde)` : '');
+        if (b > 0) {
+            return `${(W + 2 * b).toFixed(2)} x ${(H + 2 * b).toFixed(2)} m ` +
+                `(${W.toFixed(2)} x ${H.toFixed(2)} de medida final + ${parseFloat(ficha.bordeCm)} cm de borde por lado)`;
+        }
+        return `${W.toFixed(2)} x ${H.toFixed(2)} m`;
     };
     // Archivos ya cargados que NO cumplen la medida del producto elegido
     const itemsFueraDeMedida = (!isEcouvPT || !fichaPT) ? [] : items.filter(it => {
@@ -327,7 +336,7 @@ const OrderForm = ({ serviceId: propServiceId }) => {
         });
         if (malos.length > 0) {
             actions.setErrorModalMessage(
-                `Cambiaste el producto a "${globalMaterial}", que se imprime a ${medidaPTTexto(fichaPT)}. ` +
+                `Cambiaste el producto a "${globalMaterial}", cuyo arte debe medir ${medidaPTTexto(fichaPT)}. ` +
                 `${malos.length === 1 ? 'El archivo' : `${malos.length} archivos`} que ya cargaste no mide${malos.length === 1 ? '' : 'n'} esa medida: ` +
                 malos.map(m => { const d = dimsDeItem(m); return `"${m.file?.name}" (${d.w.toFixed(2)} x ${d.h.toFixed(2)} m)`; }).join(', ') +
                 `. Quitalo${malos.length === 1 ? '' : 's'} y subí el arte en la medida del producto, o volvé al producto anterior.`
@@ -340,6 +349,24 @@ const OrderForm = ({ serviceId: propServiceId }) => {
     // las esquinas no se cuentan dos veces. Lo mismo usa la orden de taller.
     const cantidadSugeridaItem = (term, ubi, item) => cantidadSugerida(term, ubi, dimsDeItem(item));
 
+    // Bolsillo y soldadura NO conviven en un mismo lado: el doblez del bolsillo
+    // YA incluye su propia soldadura (tamaño×2 + 5 cm), sumarle otra es contradictorio.
+    const esSoldaduraTerm = (x) => /soldadura/i.test(x?.Nombre || x?.nombre || '');
+    const esBolsilloTerm = (x) => /bolsillo/i.test(x?.Nombre || x?.nombre || '');
+    // Lados de `lados` que ya ocupa la terminación rival (bolsillo↔soldadura) en el item
+    const ladosEnConflicto = (item, term, lados) => {
+        const rival = esBolsilloTerm(term) ? esSoldaduraTerm
+            : (esSoldaduraTerm(term) ? esBolsilloTerm : null);
+        if (!rival) return [];
+        const current = Array.isArray(item.terminaciones) ? item.terminaciones : [];
+        const ocupados = new Set(current
+            .filter(t => t.terminacionId !== term.TerminacionID && rival(t))
+            .flatMap(t => ladosDeUbicacion(t.ubicacion)));
+        return lados.filter(l => ocupados.has(l));
+    };
+    const nombreRival = (term) => esBolsilloTerm(term) ? 'soldadura' : 'bolsillo';
+    const nombraLados = (lados) => lados.map(l => LADO_NOMBRE[l]).join(' y ');
+
     const toggleItemTerminacion = (item, term) => {
         const current = Array.isArray(item.terminaciones) ? item.terminaciones : [];
         const exists = current.find(t => t.terminacionId === term.TerminacionID);
@@ -350,7 +377,19 @@ const OrderForm = ({ serviceId: propServiceId }) => {
             const ubis = (term.Ubicaciones || '').split(',').map(x => x.trim()).filter(Boolean);
             // Default: todo el perímetro si está habilitado (es lo más pedido, y en
             // ojales garantiza las 4 esquinas como mínimo). Si no, la primera opción.
-            const ubi = ubis.includes('PERIMETRO') ? 'PERIMETRO' : (ubis[0] || '');
+            let ubi = ubis.includes('PERIMETRO') ? 'PERIMETRO' : (ubis[0] || '');
+            // Si el default pisa lados donde ya está la rival (bolsillo↔soldadura),
+            // se arranca solo con los lados libres — y si no queda ninguno, no se agrega.
+            const conflicto = ladosEnConflicto(item, term, ladosDeUbicacion(ubi));
+            if (conflicto.length) {
+                const libres = ladosDeUbicacion(ubi).filter(l => !conflicto.includes(l));
+                if (!libres.length) {
+                    addToast(`No se puede agregar "${term.Nombre}": todos los lados ya tienen ${nombreRival(term)}, y bolsillo y soldadura no van en el mismo lado (el doblez del bolsillo ya incluye la soldadura).`, 'error');
+                    return;
+                }
+                ubi = ubicacionDeLados(libres);
+                addToast(`"${term.Nombre}" quedó en ${labelUbicacion(ubi)}: en ${nombraLados(conflicto)} ya hay ${nombreRival(term)}, y bolsillo y soldadura no van en el mismo lado.`, 'error');
+            }
             next = [...current, {
                 terminacionId: term.TerminacionID,
                 ubicacion: ubi,
@@ -371,6 +410,12 @@ const OrderForm = ({ serviceId: propServiceId }) => {
         ));
     };
     const setItemTerminacionUbicacion = (item, term, ubi) => {
+        // Frenar bolsillo y soldadura compartiendo lado (presets y clicks en el plano)
+        const conflicto = ladosEnConflicto(item, term, ladosDeUbicacion(ubi));
+        if (conflicto.length) {
+            addToast(`En ${nombraLados(conflicto)} ya hay ${nombreRival(term)}: bolsillo y soldadura no van en el mismo lado (el doblez del bolsillo ya incluye la soldadura). Quitá ${nombreRival(term)} de ese lado primero.`, 'error');
+            return;
+        }
         const current = Array.isArray(item.terminaciones) ? item.terminaciones : [];
         // Al cambiar la ubicación se recalcula la sugerencia respetando el parámetro
         // QUE ELIGIÓ EL CLIENTE (ojales cada X cm), no el del catálogo: si no, al
@@ -396,18 +441,52 @@ const OrderForm = ({ serviceId: propServiceId }) => {
 
     // Miniatura del arte para dibujarla dentro del plano. El preview que guarda
     // fileService viene recortado, así que se arma desde el File original y se
-    // cachea por archivo (un solo objectURL por item).
+    // cachea por archivo (un solo objectURL por item). Los PDF se renderizan
+    // (primera página, vía pdfjs) a una imagen; mientras se genera, el plano
+    // sale sin arte y aparece solo cuando termina.
     const artesRef = React.useRef({});
+    const [artesPdf, setArtesPdf] = useState({});
+    const esPdf = (f) => (f?.type || '') === 'application/pdf' || /\.pdf$/i.test(f?.name || '');
     const arteDeItem = (item) => {
         const f = item?.file;
-        if (!f?.fileData || !(f.type || '').startsWith('image/')) return null;
+        if (!f?.fileData) return null;
         const clave = `${item.id}|${f.name}|${f.size}`;
+        if (esPdf(f)) return artesPdf[clave] || null;
+        if (!(f.type || '').startsWith('image/')) return null;
         if (!artesRef.current[clave]) {
             try { artesRef.current[clave] = URL.createObjectURL(f.fileData); }
             catch { return null; }
         }
         return artesRef.current[clave];
     };
+    useEffect(() => {
+        items.forEach(item => {
+            const f = item?.file;
+            if (!f?.fileData || !esPdf(f)) return;
+            const clave = `${item.id}|${f.name}|${f.size}`;
+            if (artesRef.current[clave]) return;      // ya renderizado o en curso
+            artesRef.current[clave] = 'pdf-en-curso';
+            (async () => {
+                try {
+                    pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker;
+                    const buf = await f.fileData.arrayBuffer();
+                    const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
+                    const page = await pdf.getPage(1);
+                    const vp = page.getViewport({ scale: 1 });
+                    // Miniatura de hasta ~600px del lado mayor: alcanza para el plano
+                    const escala = Math.min(2, 600 / Math.max(vp.width, vp.height));
+                    const v2 = page.getViewport({ scale: escala });
+                    const canvas = document.createElement('canvas');
+                    canvas.width = Math.ceil(v2.width);
+                    canvas.height = Math.ceil(v2.height);
+                    await page.render({ canvasContext: canvas.getContext('2d'), viewport: v2 }).promise;
+                    setArtesPdf(prev => ({ ...prev, [clave]: canvas.toDataURL('image/jpeg', 0.8) }));
+                } catch {
+                    // sin preview: el plano queda con el fondo neutro
+                }
+            })();
+        });
+    }, [items]);
     useEffect(() => () => {   // liberar los objectURL al desmontar el formulario
         Object.values(artesRef.current).forEach(u => { try { URL.revokeObjectURL(u); } catch { } });
     }, []);
@@ -428,10 +507,20 @@ const OrderForm = ({ serviceId: propServiceId }) => {
     // Parámetro que el cliente ajusta: separación de los ojales (cm) o
     // distancia del bolsillo al borde (cm). Al cambiarlo se recalcula la cantidad.
     const setItemTerminacionParam = (item, term, valor) => {
-        const v = parseFloat(valor);
+        let v = parseFloat(valor);
         const current = Array.isArray(item.terminaciones) ? item.terminaciones : [];
         actions.updateItem(item.id, 'terminaciones', current.map(t => {
             if (t.terminacionId !== term.TerminacionID) return t;
+            // Ojales: la separación no puede superar el lado más corto donde van
+            // (en un lado de 21 cm no entran "cada 70 cm").
+            if ((term.ReglaCantidad || '') === 'CADA_X_CM' && v > 0) {
+                const { w, h } = dimsDeItem(item);
+                const max = pasoMaxCm(t.ubicacion, w, h);
+                if (max > 0 && v > max) {
+                    v = max;
+                    addToast(`La separación máxima para esos lados es ${max} cm.`, 'warning');
+                }
+            }
             const next = { ...t, param: isNaN(v) ? '' : v };
             // Los ojales dependen del paso: se recalcula el reparto
             if ((term.ReglaCantidad || '') === 'CADA_X_CM' && v > 0) {
@@ -486,9 +575,30 @@ const OrderForm = ({ serviceId: propServiceId }) => {
     const areaConUrgencia = !Array.isArray(areasConUrgencia)
         ? true
         : areasConUrgencia.includes(String(serviceInfo?.areaId || '').toUpperCase());
-    const prioridadesVisibles = (prioritiesList || []).filter(
-        p => areaConUrgencia || (p.Nombre || '').toLowerCase() !== 'urgente'
+    // ECOUV (regla 01/08): la urgencia SOLO aplica a Material Impreso sin
+    // terminaciones. Un producto terminado o un trabajo con terminaciones pasa por
+    // el taller de armado y ese tiempo no se puede comprimir.
+    const urgenciaBloqueadaEcouv = (serviceId === 'ecouv') && (
+        isEcouvPT || items.some(it => (it.terminaciones || []).length > 0)
     );
+    const prioridadesVisibles = (prioritiesList || []).filter(
+        p => (areaConUrgencia && !urgenciaBloqueadaEcouv) || (p.Nombre || '').toLowerCase() !== 'urgente'
+    );
+    // Si ya estaba marcada Urgente y el pedido dejó de admitirla (eligió producto
+    // terminado o agregó una terminación): avisar con un modal y volver a Normal.
+    useEffect(() => {
+        if (!urgenciaBloqueadaEcouv || (urgency || '').toLowerCase() !== 'urgente') return;
+        actions.setUrgency('Normal');
+        Swal.fire({
+            icon: 'info',
+            title: 'La urgencia no aplica a este pedido',
+            html: isEcouvPT
+                ? 'Los <b>productos terminados</b> llevan armado en taller y no pueden ir con urgencia.<br>El pedido sigue como <b>Normal</b>.'
+                : 'Los trabajos con <b>terminaciones</b> (ojales, soldadura, bolsillo...) llevan taller y no pueden ir con urgencia.<br>El pedido sigue como <b>Normal</b>.',
+            confirmButtonText: 'Entendido',
+            confirmButtonColor: '#06b6d4',
+        });
+    }, [urgenciaBloqueadaEcouv, urgency]);
 
     // Initial Config for Specific Services
     useEffect(() => {
@@ -776,7 +886,10 @@ const OrderForm = ({ serviceId: propServiceId }) => {
                         actions.setErrorModalOpen(true);
                         return false;
                     }
-                } else if (fileWidthRounded > maxPrintableWidth + 1e-9) {
+                } else if (!(isEcouvPT && fichaPT?.anchoM != null) && fileWidthRounded > maxPrintableWidth + 1e-9) {
+                    // (Producto terminado: el "material" del combo es el PRODUCTO, no el rollo —
+                    // este tope de ancho no aplica; el PT valida contra su ficha más abajo,
+                    // incluido el ancho imprimible del material real.)
                     const matLabel = selectedMatName || `ancho máximo ${maxWidth.toFixed(2)}m`;
                     actions.setErrorModalMessage(
                         `El ancho del archivo (${fileWidthRounded.toFixed(2)}m) excede el ancho imprimible del material "${matLabel}" (${maxPrintableWidth.toFixed(2)}m). Por favor, ajuste el archivo o seleccione otro material.`
@@ -818,10 +931,29 @@ const OrderForm = ({ serviceId: propServiceId }) => {
                 const fh = result.unit === 'meters' ? result.height : (result.height / 300) * 0.0254;
                 if (!medidaPTOk(fw, fh, fichaPT)) {
                     actions.setErrorModalMessage(
-                        `El producto "${globalMaterial}" se imprime a ${medidaPTTexto(fichaPT)}, pero tu archivo mide ${fw.toFixed(2)} x ${fh.toFixed(2)} m. Ajustá el arte a la medida del producto y volvé a subirlo.`
+                        `El arte de "${globalMaterial}" debe medir ${medidaPTTexto(fichaPT)}, pero tu archivo mide ${fw.toFixed(2)} x ${fh.toFixed(2)} m. Ajustá el arte y volvé a subirlo.`
                     );
                     actions.setErrorModalOpen(true);
                     return false;
+                }
+                // El arte (medida + borde) tiene que entrar en el rollo del MATERIAL real
+                // de la ficha, descontando los 3 cm de margen no imprimible — la misma
+                // regla de "ancho − 3 cm" que usan las demás áreas contra su material.
+                const matAncho = parseFloat(fichaPT.materialAncho);
+                if (matAncho > 0) {
+                    const imprimible = Math.round((matAncho - 0.03) * 100) / 100;
+                    const b = (parseFloat(fichaPT.bordeCm) || 0) / 100;
+                    const reqW = parseFloat(fichaPT.anchoM) + 2 * b;
+                    const reqH = parseFloat(fichaPT.altoM) + 2 * b;
+                    if (Math.min(reqW, reqH) > imprimible + 1e-9) {
+                        actions.setErrorModalMessage(
+                            `El producto "${globalMaterial}" con su borde necesita ${reqW.toFixed(2)} x ${reqH.toFixed(2)} m, ` +
+                            `pero su material (${fichaPT.materialDescripcion || 'sin definir'}) imprime hasta ${imprimible.toFixed(2)} m de ancho ` +
+                            `(rollo de ${matAncho.toFixed(2)} m menos 3 cm de margen). Revisá la ficha del producto.`
+                        );
+                        actions.setErrorModalOpen(true);
+                        return false;
+                    }
                 }
             }
 
@@ -911,7 +1043,7 @@ const OrderForm = ({ serviceId: propServiceId }) => {
         // (Puede pasar si el cliente cambió de producto DESPUÉS de subir el archivo.)
         if (itemsFueraDeMedida.length > 0) {
             return addToast(
-                `"${globalMaterial}" se imprime a ${medidaPTTexto(fichaPT)}. Corregí los archivos marcados en rojo antes de confirmar.`,
+                `El arte de "${globalMaterial}" debe medir ${medidaPTTexto(fichaPT)}. Corregí los archivos marcados en rojo antes de confirmar.`,
                 'error'
             );
         }
@@ -1981,9 +2113,12 @@ const OrderForm = ({ serviceId: propServiceId }) => {
                                                 {(() => {
                                                     const esEcouv = isEcouvMaterial || isEcouvPT;
                                                     const dimsIt = dimsDeItem(item);
-                                                    // En producto terminado la pieza mide lo que dice la FICHA
-                                                    const wPlano = isEcouvPT && fichaPT?.anchoM ? parseFloat(fichaPT.anchoM) : dimsIt.w;
-                                                    const hPlano = isEcouvPT && fichaPT?.altoM ? parseFloat(fichaPT.altoM) : dimsIt.h;
+                                                    // En producto terminado la pieza mide lo que dice la FICHA.
+                                                    // Si la ficha tiene borde, el plano muestra el ARTE completo
+                                                    // (medida final + borde por cada lado) con el corte marcado.
+                                                    const bordePT = isEcouvPT ? ((parseFloat(fichaPT?.bordeCm) || 0) / 100) : 0;
+                                                    const wPlano = isEcouvPT && fichaPT?.anchoM ? parseFloat(fichaPT.anchoM) + 2 * bordePT : dimsIt.w;
+                                                    const hPlano = isEcouvPT && fichaPT?.altoM ? parseFloat(fichaPT.altoM) + 2 * bordePT : dimsIt.h;
                                                     if (!esEcouv || !item.file || !(wPlano > 0 && hPlano > 0)) return null;
 
                                                     const termsItem = isEcouvPT ? [] : termsDeMaterial(item.material || globalMaterial);
@@ -1991,27 +2126,56 @@ const OrderForm = ({ serviceId: propServiceId }) => {
                                                     // Producto terminado: las terminaciones vienen de la ficha (no se eligen)
                                                     const incluidas = isEcouvPT ? (fichaPT?.terminacionesIncluidas || []) : [];
 
-                                                    const capas = isEcouvPT
-                                                        ? incluidas.map((t, i) => ({
+                                                    // Reglas físicas visibles en el dibujo: soldadura toma 5 cm,
+                                                    // ojal a 2,5 cm (7,5 si el lado comparte soldadura), bolsillo
+                                                    // = tamaño×2 (doblez) + 5 cm de soldadura.
+                                                    const armarCapa = (t, sel, idx) => {
+                                                        const tipo = tipoCapa(t);
+                                                        const param = parseFloat(sel?.param ?? t.ParamCantidad);
+                                                        const capa = {
                                                             id: t.TerminacionID, nombre: t.Nombre,
-                                                            color: COLOR_CAPA[i % COLOR_CAPA.length],
-                                                            ubicacion: t.Ubicacion,
-                                                            tipo: tipoCapa(t),
-                                                            pasoM: (parseFloat(t.ParamCantidad) || 50) / 100,
-                                                            anchoCm: parseFloat(t.ParamCantidad) || 8,
-                                                        }))
+                                                            color: COLOR_CAPA[idx % COLOR_CAPA.length],
+                                                            ubicacion: sel?.ubicacion ?? t.Ubicacion,
+                                                            tipo, pasoM: (param || 50) / 100,
+                                                        };
+                                                        if (tipo === 'bolsillo') {
+                                                            const tam = param || 5;
+                                                            capa.anchoCm = profundidadBolsilloCm(tam);
+                                                            capa.detalle = `${tam}×2+${SOLDADURA_CM} = ${profundidadBolsilloCm(tam)} cm`;
+                                                        }
+                                                        if (tipo === 'linea' && /soldadura/i.test(t.Nombre || '')) {
+                                                            capa.detalle = `${SOLDADURA_CM} cm`;
+                                                        }
+                                                        return capa;
+                                                    };
+                                                    const capasBase = isEcouvPT
+                                                        ? [
+                                                            // El borde del producto (demasía de montaje) se dibuja
+                                                            // como línea de corte por dentro del arte
+                                                            ...(bordePT > 0 ? [{
+                                                                id: '__borde_pt', nombre: 'Borde',
+                                                                color: '#f59e0b', tipo: 'borde',
+                                                                anchoCm: parseFloat(fichaPT.bordeCm),
+                                                                detalle: `borde ${parseFloat(fichaPT.bordeCm)} cm por lado`,
+                                                            }] : []),
+                                                            ...incluidas.map((t, i) => armarCapa(t, null, i)),
+                                                        ]
                                                         : elegidas.map(sel => {
                                                             const t = termsItem.find(x => x.TerminacionID === sel.terminacionId);
                                                             if (!t) return null;
-                                                            const idx = termsItem.findIndex(x => x.TerminacionID === sel.terminacionId);
-                                                            const param = parseFloat(sel.param ?? t.ParamCantidad);
-                                                            return {
-                                                                id: sel.terminacionId, nombre: t.Nombre,
-                                                                color: COLOR_CAPA[idx % COLOR_CAPA.length],
-                                                                ubicacion: sel.ubicacion, tipo: tipoCapa(t),
-                                                                pasoM: (param || 50) / 100, anchoCm: param || 8,
-                                                            };
+                                                            return armarCapa(t, sel, termsItem.findIndex(x => x.TerminacionID === sel.terminacionId));
                                                         }).filter(Boolean);
+                                                    // Margen de los ojales por lado: 7,5 cm donde también hay soldadura
+                                                    const ladosSold = new Set(capasBase
+                                                        .filter(c => c.detalle && c.tipo === 'linea')
+                                                        .flatMap(c => ladosDeUbicacion(c.ubicacion)));
+                                                    const capas = capasBase.map(c => {
+                                                        if (c.tipo !== 'ojales') return c;
+                                                        const insets = {};
+                                                        ladosDeUbicacion(c.ubicacion).forEach(l => { insets[l] = margenOjalCm(ladosSold.has(l)); });
+                                                        const conSold = ladosDeUbicacion(c.ubicacion).some(l => ladosSold.has(l));
+                                                        return { ...c, insets, detalle: conSold ? `a ${SOLDADURA_CM + 2.5} cm (sold. ${SOLDADURA_CM} + ojal 2,5)` : 'a 2,5 cm' };
+                                                    });
 
                                                     const tab = terminacionActiva[item.id] ?? 'impresion';
                                                     const termTab = (tab !== 'impresion') ? termsItem.find(x => x.TerminacionID === tab) : null;
@@ -2035,8 +2199,10 @@ const OrderForm = ({ serviceId: propServiceId }) => {
                                                                 />
                                                                 {isEcouvPT && (
                                                                     <p className="text-[10px] text-purple-300/80 font-bold text-center mt-1">
-                                                                        {globalMaterial} — {wPlano.toFixed(2)} × {hPlano.toFixed(2)} m
-                                                                        {fichaPT?.bordeCm ? ` (+${fichaPT.bordeCm} cm de borde)` : ''}
+                                                                        {globalMaterial}
+                                                                        {bordePT > 0
+                                                                            ? ` — arte ${wPlano.toFixed(2)} × ${hPlano.toFixed(2)} m · medida final ${parseFloat(fichaPT.anchoM).toFixed(2)} × ${parseFloat(fichaPT.altoM).toFixed(2)} m (borde ${parseFloat(fichaPT.bordeCm)} cm/lado)`
+                                                                            : ` — ${wPlano.toFixed(2)} × ${hPlano.toFixed(2)} m`}
                                                                     </p>
                                                                 )}
                                                                 <div className="mt-2 flex items-center gap-2 w-full">
@@ -2058,7 +2224,7 @@ const OrderForm = ({ serviceId: propServiceId }) => {
                                                                     <AlertTriangle className="text-red-400 shrink-0 mt-0.5" size={14} />
                                                                     <p className="text-[10px] text-red-300 leading-snug">
                                                                         El arte mide <strong>{dimsIt.w.toFixed(2)} × {dimsIt.h.toFixed(2)} m</strong> y este producto
-                                                                        se imprime a <strong>{medidaPTTexto(fichaPT)}</strong>.
+                                                                        necesita un arte de <strong>{medidaPTTexto(fichaPT)}</strong>.
                                                                     </p>
                                                                 </div>
                                                             )}
@@ -2124,8 +2290,12 @@ const OrderForm = ({ serviceId: propServiceId }) => {
                                                                             <span className="block text-[9px] font-bold uppercase text-zinc-500">Medidas</span>
                                                                             <span className="text-zinc-200 font-bold">
                                                                                 {fichaPT.anchoM ?? '—'} × {fichaPT.altoM ?? '—'} m
-                                                                                {fichaPT.bordeCm ? ` (+${fichaPT.bordeCm} cm de borde)` : ''}
                                                                             </span>
+                                                                            {bordePT > 0 && (
+                                                                                <span className="block text-[10px] text-amber-300/90 font-bold">
+                                                                                    El arte debe medir {wPlano.toFixed(2)} × {hPlano.toFixed(2)} m ({fichaPT.bordeCm} cm de borde por lado)
+                                                                                </span>
+                                                                            )}
                                                                         </div>
                                                                         <div>
                                                                             <span className="block text-[9px] font-bold uppercase text-zinc-500">Se imprime en</span>
@@ -2159,14 +2329,16 @@ const OrderForm = ({ serviceId: propServiceId }) => {
                                                                     <PrintSettingsPanel
                                                                         originalWidthM={item.file.unit === 'meters' ? item.file.width : (item.file.width / 300) * 0.0254}
                                                                         originalHeightM={item.file.unit === 'meters' ? item.file.height : (item.file.height / 300) * 0.0254}
-                                                                        materialMaxWidthM={itemMatInfo(item).ancho}
+                                                                        // Producto terminado: el "material" es el PRODUCTO (1,00 no es un rollo);
+                                                                        // la medida exacta ya la valida la ficha, acá no se topea el ancho.
+                                                                        materialMaxWidthM={isEcouvPT ? 0 : itemMatInfo(item).ancho}
                                                                         medidaFija={itemMatInfo(item).largoFijo > 0}
                                                                         values={item.printSettings || {}} copies={item.copies}
                                                                         onCopiesChange={(v) => actions.updateItem(item.id, 'copies', v)}
                                                                         onChange={(s) => actions.updateItem(item.id, 'printSettings', s)}
                                                                         disableScaling={itemMatInfo(item).largoFijo > 0 || isEcouvPT}
                                                                         unidadTotal={config.unidadTotal || 'm'}
-                                                                        hideRaport hideHeader
+                                                                        hideRaport hideHeader hideScale
                                                                     />
                                                                 ) : (
                                                                     <p className="text-[11px] text-zinc-500 p-3">No se pudieron leer las medidas del archivo.</p>
@@ -2175,7 +2347,7 @@ const OrderForm = ({ serviceId: propServiceId }) => {
                                                                 const esOjal = tipoCapa(termTab) === 'ojales';
                                                                 const esBolsillo = tipoCapa(termTab) === 'bolsillo';
                                                                 const eligeBordes = usaBordes(termTab);
-                                                                const paramVal = selTab.param ?? termTab.ParamCantidad ?? (esOjal ? 50 : 8);
+                                                                const paramVal = selTab.param ?? termTab.ParamCantidad ?? (esOjal ? 50 : 5);
                                                                 const ladosSel = ladosDeUbicacion(selTab.ubicacion);
                                                                 const precio = parseFloat(termTab.Precio) || 0;
                                                                 const mon = termTab.Moneda === 'USD' ? 'US$' : '$';
@@ -2210,31 +2382,68 @@ const OrderForm = ({ serviceId: propServiceId }) => {
                                                                         )}
 
                                                                         <div className="flex flex-wrap items-center gap-3">
-                                                                            {(esOjal || esBolsillo) && (
+                                                                            {esOjal && (() => {
+                                                                                // La separación no puede superar el lado más corto
+                                                                                const maxPaso = pasoMaxCm(selTab.ubicacion, dimsIt.w, dimsIt.h);
+                                                                                return (
+                                                                                    <span className="flex items-center gap-1.5">
+                                                                                        <span className="text-[10px] text-zinc-500">Uno cada</span>
+                                                                                        <input type="number" min="1" step="1" max={maxPaso || undefined} value={paramVal}
+                                                                                            onChange={e => setItemTerminacionParam(item, termTab, e.target.value)}
+                                                                                            className="w-14 px-1 py-0.5 text-[11px] font-bold text-zinc-100 bg-zinc-900 border border-zinc-600 rounded outline-none text-center" />
+                                                                                        <span className="text-[10px] text-zinc-500">cm{maxPaso > 0 ? ` (máx ${maxPaso})` : ''}</span>
+                                                                                    </span>
+                                                                                );
+                                                                            })()}
+                                                                            {esBolsillo && (
                                                                                 <span className="flex items-center gap-1.5">
-                                                                                    <span className="text-[10px] text-zinc-500">{esOjal ? 'Uno cada' : 'A'}</span>
+                                                                                    <span className="text-[10px] text-zinc-500">Tamaño del bolsillo</span>
                                                                                     <input type="number" min="1" step="1" value={paramVal}
                                                                                         onChange={e => setItemTerminacionParam(item, termTab, e.target.value)}
                                                                                         className="w-14 px-1 py-0.5 text-[11px] font-bold text-zinc-100 bg-zinc-900 border border-zinc-600 rounded outline-none text-center" />
-                                                                                    <span className="text-[10px] text-zinc-500">{esOjal ? 'cm' : 'cm del borde'}</span>
+                                                                                    <span className="text-[10px] text-zinc-500">cm</span>
                                                                                 </span>
                                                                             )}
+                                                                            {/* La cantidad la calcula el sistema por las medidas: el cliente no la toca */}
                                                                             <span className="flex items-center gap-1.5 ml-auto">
                                                                                 <span className="text-[10px] text-zinc-500">Cantidad</span>
-                                                                                <input type="number" min="0" step={termTab.UnidadCobro === 'U' ? 1 : 0.01}
-                                                                                    value={selTab.cantidad}
-                                                                                    onChange={e => setItemTerminacionCantidad(item, termTab.TerminacionID, e.target.value)}
-                                                                                    className="w-16 px-1 py-0.5 text-[11px] font-black text-amber-200 bg-zinc-900 border border-zinc-600 rounded outline-none text-center" />
-                                                                                <span className="text-[10px] font-black text-zinc-500">{unidadLabel(termTab.UnidadCobro)}</span>
+                                                                                <span className="px-2 py-0.5 text-[11px] font-black text-amber-200 bg-zinc-900/80 border border-zinc-700 rounded"
+                                                                                    title="Calculada por las medidas de la pieza">
+                                                                                    {selTab.cantidad} {unidadLabel(termTab.UnidadCobro)}
+                                                                                </span>
                                                                                 {precio > 0 && (
                                                                                     <span className="text-[11px] font-black text-amber-300 ml-2">{mon} {Math.round(subtotal * 100) / 100}</span>
                                                                                 )}
                                                                             </span>
                                                                         </div>
 
+                                                                        {/* Descripción de lo que se va a hacer — misma info que viaja
+                                                                            en la nota de la orden para que producción la lea igual. */}
+                                                                        {esBolsillo && (
+                                                                            <p className="text-[10px] text-zinc-500 leading-snug">
+                                                                                El borde consume {paramVal}×2 (doblez) + {SOLDADURA_CM} cm de soldadura
+                                                                                = <b className="text-zinc-300">{profundidadBolsilloCm(paramVal)} cm</b> por lado.
+                                                                            </p>
+                                                                        )}
                                                                         {esOjal && selTab.ubicacion && (
                                                                             <p className="text-[10px] text-zinc-500 leading-snug">
                                                                                 {textoReparto({ ...termTab, ParamCantidad: paramVal }, selTab.ubicacion, dimsIt)}
+                                                                                {' · '}se colocan a {capaTab?.insets && Object.values(capaTab.insets).some(v => v > 2.5)
+                                                                                    ? `${SOLDADURA_CM + 2.5} cm del borde en los lados con soldadura (5 + 2,5), a 2,5 cm en el resto`
+                                                                                    : '2,5 cm del borde'}
+                                                                            </p>
+                                                                        )}
+                                                                        {!esOjal && !esBolsillo && /soldadura/i.test(termTab.Nombre || '') && (
+                                                                            <p className="text-[10px] text-zinc-500 leading-snug">
+                                                                                La soldadura toma <b className="text-zinc-300">{SOLDADURA_CM} cm</b> del borde
+                                                                                en cada lado elegido; los metros se calculan por el largo de esos lados.
+                                                                            </p>
+                                                                        )}
+                                                                        {!esOjal && !esBolsillo && !/soldadura/i.test(termTab.Nombre || '') && (
+                                                                            <p className="text-[10px] text-zinc-500 leading-snug">
+                                                                                {tipoCapa(termTab) === 'palos' ? 'Los palos van en los extremos superior e inferior de la pieza.'
+                                                                                    : tipoCapa(termTab) === 'rollup' ? 'El roll up lleva el estuche abajo y la varilla arriba; la pieza va armada en el mecanismo.'
+                                                                                        : 'La cantidad se calcula por las medidas de la pieza.'}
                                                                             </p>
                                                                         )}
                                                                     </div>
@@ -2295,7 +2504,7 @@ const OrderForm = ({ serviceId: propServiceId }) => {
                                                                 <AlertTriangle className="text-red-400 shrink-0 mt-0.5" size={16} />
                                                                 <p className="text-[11px] text-red-300 leading-snug">
                                                                     Este arte mide <strong>{dimsDeItem(item).w.toFixed(2)} x {dimsDeItem(item).h.toFixed(2)} m</strong> y
-                                                                    “{globalMaterial}” se imprime a <strong>{medidaPTTexto(fichaPT)}</strong>.
+                                                                    “{globalMaterial}” necesita un arte de <strong>{medidaPTTexto(fichaPT)}</strong>.
                                                                     Subí el arte en la medida del producto para poder confirmar el pedido.
                                                                 </p>
                                                             </div>
@@ -2304,7 +2513,7 @@ const OrderForm = ({ serviceId: propServiceId }) => {
                                                             <PrintSettingsPanel
                                                                 originalWidthM={item.file.unit === 'meters' ? item.file.width : (item.file.width / 300) * 0.0254}
                                                                 originalHeightM={item.file.unit === 'meters' ? item.file.height : (item.file.height / 300) * 0.0254}
-                                                                materialMaxWidthM={itemMatInfo(item).ancho}
+                                                                materialMaxWidthM={isEcouvPT ? 0 : itemMatInfo(item).ancho}
                                                                 medidaFija={itemMatInfo(item).largoFijo > 0}
                                                                 values={item.printSettings || {}} copies={item.copies}
                                                                 onCopiesChange={(v) => actions.updateItem(item.id, 'copies', v)}
@@ -2486,14 +2695,11 @@ const OrderForm = ({ serviceId: propServiceId }) => {
                                                                                 <span className="font-bold text-zinc-300 truncate">{t.Nombre}</span>
                                                                                 {sel.ubicacion && <span className="text-[9px] uppercase text-zinc-600 truncate">{labelUbicacion(sel.ubicacion)}</span>}
                                                                                 <span className="flex items-center gap-1 ml-auto shrink-0">
-                                                                                    {/* Paso según la unidad: las unidades van de a 1, los metros de a 1 cm.
-                                                                                        Con step 0.5, 1,34 m saltaba a 1,00 al tocar la flecha. */}
-                                                                                    <input type="number" min="0"
-                                                                                        step={t.UnidadCobro === 'U' ? 1 : 0.01}
-                                                                                        value={sel.cantidad}
-                                                                                        onChange={e => setItemTerminacionCantidad(item, t.TerminacionID, e.target.value)}
-                                                                                        title="Cantidad sugerida por las medidas — la podés ajustar"
-                                                                                        className="w-16 px-1 py-0.5 text-[11px] font-black text-amber-200 bg-zinc-900 border border-zinc-600 rounded outline-none text-center" />
+                                                                                    {/* La cantidad la calcula el sistema por las medidas: el cliente no la edita */}
+                                                                                    <span className="px-2 py-0.5 text-[11px] font-black text-amber-200 bg-zinc-900/80 border border-zinc-700 rounded"
+                                                                                        title="Calculada por las medidas de la pieza">
+                                                                                        {sel.cantidad}
+                                                                                    </span>
                                                                                     <span className="text-[9px] font-black text-zinc-500 w-3">{unidadLabel(t.UnidadCobro)}</span>
                                                                                 </span>
                                                                                 {precio > 0 && (

@@ -561,6 +561,8 @@ exports.controlOrder = async (req, res) => {
 
         res.json({
             success: true, totalBultos, labelOrdenId,
+            destino: 'Canasto Producción',
+            proximoServicio: 'DEPOSITO',
             message: `Orden marcada como Pronto (Canasto Producción)${totalBultos ? ` — ${totalBultos} bulto(s) generados` : ''}.`
         });
     } catch (e) {
