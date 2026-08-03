@@ -13,6 +13,10 @@ async function ensureOrderColumns(pool) {
             ALTER TABLE dbo.Ordenes ADD Calandrado BIT NOT NULL CONSTRAINT DF_Ordenes_Calandrado DEFAULT 0;
         IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE Name = 'CantidadImpresa' AND Object_ID = Object_ID('dbo.Ordenes'))
             ALTER TABLE dbo.Ordenes ADD CantidadImpresa DECIMAL(10,2) NOT NULL CONSTRAINT DF_Ordenes_CantidadImpresa DEFAULT 0;
+        -- Avance de la SEGUNDA ESTACIÓN (samurai en TPU, calandra en SB): mismo contador que
+        -- CantidadImpresa pero para lo que se corta/calandra. Al completarlo se deriva Calandrado.
+        IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE Name = 'CantidadCortada' AND Object_ID = Object_ID('dbo.Ordenes'))
+            ALTER TABLE dbo.Ordenes ADD CantidadCortada DECIMAL(10,2) NOT NULL CONSTRAINT DF_Ordenes_CantidadCortada DEFAULT 0;
         -- Auto-heal: bases donde la columna se creó como INT (TPU unidades) → ampliar a DECIMAL para
         -- soportar también metros (Impresión Directa cuenta piezas O metros según el artículo).
         -- OJO: no se puede ALTER COLUMN si tiene un DEFAULT colgado (error 5074). Hay que soltar el
@@ -132,7 +136,7 @@ exports.getBoardData = async (req, res) => {
                     o.Secuencia,
                     o.Tinta, -- ✅ AGREGADO
                     o.Impreso, o.Calandrado, -- Estado impreso/calandrado (gate "Finalizar Lote" en planeación)
-                    o.UM, o.CantidadImpresa, -- Impresión parcial (TPU: unidades impresas contra Magnitud)
+                    o.UM, o.CantidadImpresa, o.CantidadCortada, -- Avance parcial: impresión y segunda estación (corte/calandra)
 
                     -- ✅ SUBCONSULTA PARA CONTAR ARCHIVOS (Usando tu tabla dbo.ArchivosOrden)
                     (SELECT COUNT(*) FROM dbo.ArchivosOrden WITH(NOLOCK) WHERE OrdenID = o.OrdenID) AS CantidadArchivos,
@@ -213,6 +217,7 @@ exports.getBoardData = async (req, res) => {
                 calandered: !!o.Calandrado, // gate "Finalizar Lote": máquina no-impresora (calandra)
                 um: (o.UM || '').trim(),                    // Impresión parcial (TPU)
                 cantidadImpresa: o.CantidadImpresa || 0,    // unidades/copias ya impresas
+                cantidadCortada: o.CantidadCortada || 0,    // ídem para la segunda estación (corte/calandra)
                 totalCopias: o.TotalCopias || 0,            // total de copias del arte (avance en MIMAKI)
                 modoImpresion: o.ModoImpresion || null,     // 'raport' | 'escala' | null (colorea el ojo)
 
@@ -1033,6 +1038,7 @@ exports.getRolloMetrics = async (req, res) => {
                     r.Nombre, 
                     r.Estado, 
                     r.MaquinaID,
+                    r.AreaID,
                     ce.Nombre as NombreMaquina
                 FROM dbo.Rollos r WITH (NOLOCK)
                 LEFT JOIN dbo.ConfigEquipos ce WITH (NOLOCK) ON r.MaquinaID = ce.EquipoID
@@ -1074,7 +1080,29 @@ exports.getRolloMetrics = async (req, res) => {
                         INNER JOIN dbo.Ordenes O2 WITH (NOLOCK) ON AO2.OrdenID = O2.OrdenID
                         WHERE CAST(O2.RolloID AS VARCHAR(50)) = CAST(@RID AS VARCHAR(50)) 
                         AND AO2.EstadoArchivo IN ('OK', 'Finalizado', 'FALLA', 'Falla', 'CANCELADO', 'Cancelado')
-                    ) as MetrosProducidos
+                    ) as MetrosProducidos,
+
+                    -- TPU: el lote se mide en UNIDADES (parches), no en metros — los archivos son las
+                    -- capas del arte y tienen Metros = 0, así que la ejecución por metros daba 0 y caía
+                    -- al conteo de archivos (1 de 6 = 17% con todo controlado). Total = cantidad pedida;
+                    -- controladas = el contador de la línea de control, que es el MAX de Controlcopias
+                    -- entre las capas (las que nadie toca quedan en 0).
+                    (
+                        SELECT SUM(TRY_CAST(REPLACE(REPLACE(ISNULL(O4.Magnitud,'0'),' ',''),',','.') AS FLOAT))
+                        FROM dbo.Ordenes O4 WITH (NOLOCK)
+                        WHERE CAST(O4.RolloID AS VARCHAR(50)) = CAST(@RID AS VARCHAR(50))
+                    ) as UnidadesTotales,
+                    (
+                        SELECT SUM(ctrl.Controladas)
+                        FROM dbo.Ordenes O5 WITH (NOLOCK)
+                        CROSS APPLY (
+                            SELECT ISNULL(MAX(ISNULL(AO5.Controlcopias, 0)), 0) AS Controladas
+                            FROM dbo.ArchivosOrden AO5 WITH (NOLOCK)
+                            WHERE AO5.OrdenID = O5.OrdenID
+                              AND LOWER(AO5.NombreArchivo) NOT LIKE '%boceto%'
+                        ) ctrl
+                        WHERE CAST(O5.RolloID AS VARCHAR(50)) = CAST(@RID AS VARCHAR(50))
+                    ) as UnidadesControladas
 
                 FROM dbo.Ordenes O WITH (NOLOCK)
                 LEFT JOIN dbo.ArchivosOrden AO WITH (NOLOCK) ON O.OrdenID = AO.OrdenID
@@ -1087,9 +1115,13 @@ exports.getRolloMetrics = async (req, res) => {
         const totalFiles = m.TotalFiles || 0;
         const okFiles = m.OKFiles || 0;
 
+        // TPU se mide en unidades: el progreso son parches controlados sobre parches pedidos.
+        const esLoteTPU = String(rolloData.AreaID || '').trim().toUpperCase() === 'TPU';
+        const unidad = esLoteTPU ? 'u' : 'm';
+
         // Si MetrosTotalesLote es nulo (no hay ordenes o magnitud vacia), asumimos 0
-        const metrosTotales = m.MetrosTotalesLote || 0;
-        const metrosProducidos = m.MetrosProducidos || 0;
+        const metrosTotales = esLoteTPU ? (m.UnidadesTotales || 0) : (m.MetrosTotalesLote || 0);
+        const metrosProducidos = esLoteTPU ? (m.UnidadesControladas || 0) : (m.MetrosProducidos || 0);
 
         let execution = 0;
         // Calculo de Ejecución: Preferimos Metros, si no Archivos
@@ -1113,8 +1145,9 @@ exports.getRolloMetrics = async (req, res) => {
                 completedOrders: m.CompletedOrders || 0,
                 failOrders: m.FailOrders || 0,
                 execution: parseInt(execution),
-                metrosTotales: parseFloat(metrosTotales).toFixed(2),
-                metrosProducidos: parseFloat(metrosProducidos).toFixed(2)
+                unidad, // 'm' | 'u' — la vista lo usa como sufijo del progreso
+                metrosTotales: esLoteTPU ? String(Math.round(metrosTotales)) : parseFloat(metrosTotales).toFixed(2),
+                metrosProducidos: esLoteTPU ? String(Math.round(metrosProducidos)) : parseFloat(metrosProducidos).toFixed(2)
             },
             fileStats: {
                 total: totalFiles,
@@ -1194,7 +1227,7 @@ exports.getRollDetails = async (req, res) => {
                 SELECT 
                     o.OrdenID, o.CodigoOrden, o.Cliente, o.DescripcionTrabajo, 
                     o.Magnitud, o.Material, o.Variante, o.RolloID, 
-                    o.Prioridad, o.Estado, o.FechaIngreso, o.Secuencia, o.Tinta, o.NoDocERP, o.IdCabezalERP, o.Nota, o.Impreso, o.Calandrado, o.UM, o.CantidadImpresa, o.MetrosGrupoFalla, o.GrupoManual,
+                    o.Prioridad, o.Estado, o.FechaIngreso, o.Secuencia, o.Tinta, o.NoDocERP, o.IdCabezalERP, o.Nota, o.Impreso, o.Calandrado, o.UM, o.CantidadImpresa, o.CantidadCortada, o.MetrosGrupoFalla, o.GrupoManual,
                     o.BobinaTelaID,
                     -- TELA DE CLIENTE: partes de la bobina elegida (para mostrar como material y agrupar por Referencia)
                     ibt.Referencia AS BobRef, ibt.DescripcionTela AS BobDesc, COALESCE(ibt.AnchoReal, ibt.Ancho) AS BobAncho,
@@ -1268,6 +1301,7 @@ exports.getRollDetails = async (req, res) => {
                 calandered: !!o.Calandrado,
                 um: (o.UM || '').trim(),                    // Impresión parcial (TPU)
                 cantidadImpresa: o.CantidadImpresa || 0,    // unidades/copias ya impresas
+                cantidadCortada: o.CantidadCortada || 0,    // ídem para la segunda estación (corte/calandra)
                 totalCopias: o.TotalCopias || 0,            // total de copias del arte (avance en MIMAKI)
                 modoImpresion: o.ModoImpresion || null,     // 'raport' | 'escala' | null (colorea el ojo)
                 groupId: o.GrupoManual,
@@ -1373,7 +1407,11 @@ exports.setOrderCalandered = async (req, res) => {
 // Ver docs/impresion-parcial-plan.md
 // ==========================================
 exports.setOrderCantidadImpresa = async (req, res) => {
-    const { orderId, cantidad } = req.body;
+    // `segundaEstacion` = el avance es de la máquina que sigue a la impresora (samurai / calandra):
+    // se cuenta en CantidadCortada y al completarse deriva Calandrado en vez de Impreso.
+    const { orderId, cantidad, segundaEstacion } = req.body;
+    const colCant = segundaEstacion ? 'CantidadCortada' : 'CantidadImpresa';
+    const colFlag = segundaEstacion ? 'Calandrado'      : 'Impreso';
     if (!orderId || cantidad === undefined || cantidad === null || isNaN(Number(cantidad))) {
         return res.status(400).json({ error: 'orderId y cantidad son requeridos' });
     }
@@ -1427,8 +1465,8 @@ exports.setOrderCantidadImpresa = async (req, res) => {
                     : `(SELECT ISNULL(TRY_CONVERT(DECIMAL(10,2), TRY_CONVERT(FLOAT, Magnitud)), 0) FROM dbo.Ordenes WHERE OrdenID = @OID)`};
                 DECLARE @Val DECIMAL(10,2) = CASE WHEN @C < 0 THEN 0 WHEN @Total > 0 AND @C > @Total THEN @Total ELSE @C END;
                 UPDATE dbo.Ordenes
-                SET CantidadImpresa = @Val,
-                    Impreso = CASE WHEN @Total > 0 AND @Val >= @Total THEN 1 ELSE 0 END
+                SET ${colCant} = @Val,
+                    ${colFlag} = CASE WHEN @Total > 0 AND @Val >= @Total THEN 1 ELSE 0 END
                 WHERE OrdenID = @OID;
                 SELECT @Val AS CantidadImpresa, @Total AS Total, CASE WHEN @Total > 0 AND @Val >= @Total THEN 1 ELSE 0 END AS Impreso;
             `);

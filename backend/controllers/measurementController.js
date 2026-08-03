@@ -495,10 +495,14 @@ exports.saveMeasurements = async (req, res) => {
                     .query(`SELECT SUM(ISNULL(Copias, 1) * ISNULL(Metros, 0)) as Total FROM dbo.ArchivosOrden WHERE OrdenID = @OID`);
                 const newTotal = calcRes.recordset[0].Total || 0;
 
+                // TPU afuera: su Magnitud es la CANTIDAD PEDIDA en unidades, no metros de archivos.
+                // Sus archivos son las capas del arte y el boceto no tiene metros, así que este
+                // recálculo le dejaría la cantidad en 0.00.
                 await new sql.Request(transaction)
                     .input('OID', sql.Int, orderId)
                     .input('Mag', sql.VarChar(50), newTotal.toFixed(2))
-                    .query("UPDATE dbo.Ordenes SET Magnitud = @Mag WHERE OrdenID = @OID");
+                    .query(`UPDATE dbo.Ordenes SET Magnitud = @Mag
+                            WHERE OrdenID = @OID AND UPPER(LTRIM(RTRIM(ISNULL(AreaID, '')))) <> 'TPU'`);
 
                 await registrarHistorialOrden(transaction, orderId, currentStatus, currentUserId, `Medición actualizada. Nueva Magnitud: ${newTotal.toFixed(2)}m`);
             }

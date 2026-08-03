@@ -2,11 +2,26 @@ const { getPool, sql } = require('../config/db');
 const logger = require('../utils/logger');
 const pushService = require('../services/pushNotificationService');
 const { changeOrderState } = require('../services/stateManagerService');
+
+// Capas del arte TPU: son EXACTAMENTE estas, ni una más ni una menos. Al subir funciona como
+// tope (se cargan de a poco) y al mandar a producción se exige el número justo.
+const CAPAS_ARTE_TPU = 5;
+
 // HELPER: Recalcular Magnitud de la Orden (Suma de piezas de Archivos + Servicios)
 // Se usa en add, update, delete y cancel para mantener la coherencia.
 const recalculateOrderMagnitude = async (transaction, ordenId) => {
     if (!ordenId) return;
     try {
+        // TPU queda AFUERA del recálculo: su Magnitud es la CANTIDAD PEDIDA (unidades a producir),
+        // fijada al crear el pedido. Sus archivos son las capas del arte (boceto, cmyk, corte...),
+        // no unidades — recalcular desde ahí pisaba la cantidad (borrar el boceto la dejaba en 0,
+        // subir las capas del arte la convertía en el número de capas) y encima disparaba la
+        // recotización con ese número.
+        const areaRes = await new sql.Request(transaction)
+            .input('OID', sql.Int, ordenId)
+            .query('SELECT AreaID FROM dbo.Ordenes WHERE OrdenID = @OID');
+        if (String(areaRes.recordset[0]?.AreaID || '').trim().toUpperCase() === 'TPU') return;
+
         await new sql.Request(transaction)
             .input('OID', sql.Int, ordenId)
             .query(`
@@ -114,21 +129,44 @@ exports.uploadProductionFile = async (req, res) => {
         const { generateThumbnail } = require('../utils/thumbnailGenerator');
         const pool = await getPool();
 
+        await require('./webOrdersController').ensureColFechaAprobacion(pool);
         const ordRes = await pool.request()
             .input('OID', sql.Int, parseInt(ordenId))
-            .query('SELECT OrdenID, CodigoOrden, AreaID FROM Ordenes WHERE OrdenID = @OID');
+            .query('SELECT OrdenID, CodigoOrden, AreaID, Nota, FechaAprobacionCliente FROM Ordenes WHERE OrdenID = @OID');
         if (!ordRes.recordset.length) return res.status(404).json({ error: "Orden no encontrada." });
         const orden = ordRes.recordset[0];
 
-        // Máximo 6 archivos de arte por orden (sin contar cancelados)
+        // Se cuentan las CAPAS DE ARTE, sin el boceto: el boceto es lo que el cliente aprobó, no
+        // es arte, y vive en la pestaña de referencias. Contándolo, el tope de 5 se comía una capa.
         const cntRes = await pool.request()
             .input('OID', sql.Int, orden.OrdenID)
-            .query(`SELECT COUNT(*) AS n FROM ArchivosOrden WHERE OrdenID = @OID AND ISNULL(EstadoArchivo,'') <> 'Cancelado'`);
-        if ((cntRes.recordset[0]?.n || 0) >= 6) {
-            return res.status(400).json({ error: 'La orden ya tiene 6 archivos de arte (máximo).' });
-        }
-
+            .query(`SELECT COUNT(*) AS n FROM ArchivosOrden
+                    WHERE OrdenID = @OID AND ISNULL(EstadoArchivo,'') <> 'Cancelado'
+                      AND LOWER(NombreArchivo) NOT LIKE '%boceto%'`);
+        const nArchivos = cntRes.recordset[0]?.n || 0;
         const finalName = file.originalname;
+
+        // TPU en dos fases. Antes de la aprobación del cliente solo existe UNA subida válida: el
+        // BOCETO DE PRODUCCIÓN (PDF con 'boceto' en el nombre). Las otras capas del arte recién se
+        // suben con el pedido aprobado. El reuso [REUSO-REGEN] no pasa por aprobación: sube las
+        // capas directo, así que queda exento.
+        const esTPUOrden = String(orden.AreaID || '').toUpperCase() === 'TPU';
+        const esReusoTPU = /\[REUSO-REGEN\]/i.test(orden.Nota || '');
+        if (esTPUOrden && !esReusoTPU && !orden.FechaAprobacionCliente) {
+            if (nArchivos >= 1) {
+                return res.status(400).json({ error: 'Ya hay un boceto de producción cargado. Envialo a aprobación del cliente (si está mal, borralo y subí otro).' });
+            }
+            if (!/boceto/i.test(finalName)) {
+                return res.status(400).json({ error: 'Antes de la aprobación solo se sube el BOCETO DE PRODUCCIÓN: el nombre del archivo debe incluir "boceto".' });
+            }
+            if (!(file.mimetype || '').toLowerCase().includes('pdf') && !nombreLower.endsWith('.pdf')) {
+                return res.status(400).json({ error: 'El boceto de producción debe ser un PDF (es lo que el cliente ve y el visor 3D rasteriza).' });
+            }
+        } else if (nArchivos >= CAPAS_ARTE_TPU) {
+            // El arte son CAPAS_ARTE_TPU capas exactas (sin contar cancelados). Acá es un tope
+            // porque se suben de a poco; el "ni una menos" se exige al mandar a producción.
+            return res.status(400).json({ error: `La orden ya tiene ${CAPAS_ARTE_TPU} archivos de arte (son ${CAPAS_ARTE_TPU}, ni más ni menos).` });
+        }
 
         // 1. INSERT fila ArchivosOrden (ruta pendiente hasta que suba a Drive)
         const insRes = await pool.request()
@@ -157,6 +195,28 @@ exports.uploadProductionFile = async (req, res) => {
             if (buffer) generateThumbnail(buffer, orden.CodigoOrden, archivoId, finalName).catch(e => logger.warn('[uploadProductionFile] thumb: ' + e.message));
         } catch (e) { logger.warn('[uploadProductionFile] thumb read: ' + e.message); }
 
+        // TPU: con la ÚLTIMA capa del arte la orden queda lista para fabricar. El estado de área
+        // pasa a 'Para Imprimir' — que cuelga de Producción, así que el general salta solo y el
+        // tablero deja de pulsar. `nArchivos` es el conteo previo a este INSERT (sin el boceto).
+        if (esTPUOrden && orden.FechaAprobacionCliente && (nArchivos + 1) === CAPAS_ARTE_TPU) {
+            const tx = new sql.Transaction(pool);
+            await tx.begin();
+            try {
+                await changeOrderState(tx, {
+                    target : { type: 'ORDER', id: orden.OrdenID },
+                    estado : 'Diseñado',
+                    userObj: req.user || 'Sistema',
+                    detalle: `Arte completo (${CAPAS_ARTE_TPU} capas) — lista para asignar a un lote`,
+                    io     : req.app.get('socketio'),
+                });
+                await tx.commit();
+            } catch (e) {
+                await tx.rollback();
+                // El archivo ya se subió: que falle el cambio de estado no puede tirar abajo la subida.
+                logger.error('[uploadProductionFile] No se pudo pasar la orden a Para Imprimir: ' + e.message);
+            }
+        }
+
         logger.info(`[uploadProductionFile] Orden ${orden.CodigoOrden}: +archivo ${finalName} (ArchivoID ${archivoId})`);
         res.json({ success: true, archivoId, nombre: finalName, url: driveUrl });
     } catch (err) {
@@ -178,10 +238,11 @@ exports.enviarAprobacionTPU = async (req, res) => {
     if (!ordenId) return res.status(400).json({ error: 'Falta ordenId.' });
     try {
         const pool = await getPool();
+        await require('./webOrdersController').ensureColFechaAprobacion(pool);
         const check = await pool.request()
             .input('OID', sql.Int, ordenId)
             .query(`
-                SELECT o.OrdenID, o.AreaID, o.Estado, o.Nota,
+                SELECT o.OrdenID, o.AreaID, o.Estado, o.Nota, o.RolloID, o.FechaAprobacionCliente, o.AprobacionPendiente,
                        (SELECT COUNT(*) FROM ArchivosOrden ao
                           WHERE ao.OrdenID = o.OrdenID AND ISNULL(ao.EstadoArchivo,'') <> 'Cancelado') AS archivos,
                        (SELECT COUNT(*) FROM ArchivosOrden ao
@@ -194,14 +255,15 @@ exports.enviarAprobacionTPU = async (req, res) => {
         if (String(o.AreaID || '').toUpperCase() !== 'TPU') return res.status(400).json({ error: 'Solo aplica a órdenes TPU.' });
 
         // Reuso de matriz con cantidad distinta ([REUSO-REGEN]): el diseño ya está aprobado, así que al
-        // completar las 6 capas regeneradas la orden entra DIRECTO a producción, sin aprobación del cliente.
+        // completar las capas regeneradas la orden entra DIRECTO a producción, sin aprobación del cliente.
         const esReuso = /\[REUSO-REGEN\]/i.test(o.Nota || '');
 
         if (esReuso) {
             // El reuso NO pasa por el cliente: entra directo a fabricar, así que el arte tiene que
-            // estar completo (las 6 capas regeneradas para la cantidad nueva).
-            if (o.archivos !== 6) {
-                return res.status(400).json({ error: `Se necesitan exactamente 6 archivos de arte para enviar a producción (hay ${o.archivos}).` });
+            // estar completo (las capas regeneradas para la cantidad nueva).
+            const capasArte = (o.archivos || 0) - (o.bocetos || 0); // el boceto no es una capa de arte
+            if (capasArte !== CAPAS_ARTE_TPU) {
+                return res.status(400).json({ error: `Se necesitan exactamente ${CAPAS_ARTE_TPU} archivos de arte para enviar a producción (hay ${capasArte}).` });
             }
             if (String(o.Estado || '') !== 'Cargando...') return res.status(400).json({ error: 'La orden ya está en producción.' });
             // Activar directo a producción (sin aprobación del cliente).
@@ -227,6 +289,16 @@ exports.enviarAprobacionTPU = async (req, res) => {
             return res.json({ success: true, aProduccion: true });
         }
 
+        // Una vez que el cliente aprobó, no hay vuelta atrás por este botón: re-enviar a aprobación
+        // retendría una orden que ya está en producción (Estado='Cargando...' la saca del flujo,
+        // incluso estando en un lote).
+        if (o.FechaAprobacionCliente) {
+            return res.status(400).json({ error: 'El cliente ya aprobó este pedido: no se puede volver a enviar a aprobación.' });
+        }
+        if (o.RolloID != null) {
+            return res.status(400).json({ error: 'La orden ya está asignada a un lote: no se puede enviar a aprobación.' });
+        }
+
         // Lo único que el cliente aprueba es el BOCETO (un PDF con 'boceto' en el nombre, que se
         // muestra en Archivos de Referencia). Las otras capas del arte se suben DESPUÉS de que
         // apruebe, ya en producción — por eso acá no se exigen los 6 archivos.
@@ -234,11 +306,15 @@ exports.enviarAprobacionTPU = async (req, res) => {
             return res.status(400).json({ error: 'Falta el boceto: subí un PDF con "boceto" en el nombre para enviar a aprobación.' });
         }
 
-        if (o.Estado === 'Cargando...') return res.status(400).json({ error: 'La orden ya está esperando la aprobación del cliente.' });
+        if (o.AprobacionPendiente) return res.status(400).json({ error: 'La orden ya está esperando la aprobación del cliente.' });
 
+        // FechaRechazoCliente = NULL: si venía de un rechazo, al reenviar el boceto corregido la
+        // marca roja del tablero se apaga (vuelve a estar en manos del cliente).
+        // TexturasElige = NULL: la decisión es DEL CLIENTE y se resuelve al aprobar (aprobarPedido):
+        // si guardó texturas en el visor son suyas; si aprobó pelado, las define el diseñador.
         await pool.request()
             .input('OID', sql.Int, ordenId)
-            .query(`UPDATE Ordenes SET AprobacionPendiente = 1, Estado = 'Cargando...', EstadoenArea = 'Cargando...' WHERE OrdenID = @OID`);
+            .query(`UPDATE Ordenes SET AprobacionPendiente = 1, Estado = 'Pendiente', EstadoenArea = 'Esperando', FechaRechazoCliente = NULL, TexturasElige = NULL WHERE OrdenID = @OID`);
 
         try {
             const io = req.app.get('socketio');
@@ -261,13 +337,28 @@ exports.enviarAprobacionTPU = async (req, res) => {
 // =====================================================================
 
 // GET /api/orders/:ordenId/texturas — lectura para el detalle de la orden (sin scope de cliente).
+// Además de la elección, devuelve la FASE del flujo TPU (aprobado / en lote): el modal la necesita
+// para decidir qué uploader mostrar y ya hace esta llamada al abrir — así se evita otro request.
 exports.getTexturasOrdenInterno = async (req, res) => {
     const ordenId = parseInt(req.params.ordenId, 10);
     if (!ordenId) return res.status(400).json({ error: 'Falta ordenId.' });
     try {
         const wo = require('./webOrdersController');
         const pool = await getPool();
-        res.json({ success: true, data: await wo.leerTexturasOrden(pool, ordenId) });
+        await wo.ensureColFechaAprobacion(pool);
+        const [data, ordRes] = await Promise.all([
+            wo.leerTexturasOrden(pool, ordenId),
+            pool.request().input('OID', sql.Int, ordenId)
+                .query('SELECT FechaAprobacionCliente, FechaRechazoCliente, RolloID, TexturasElige FROM dbo.Ordenes WITH(NOLOCK) WHERE OrdenID = @OID'),
+        ]);
+        const o = ordRes.recordset[0] || {};
+        res.json({
+            success: true, data,
+            aprobado: !!o.FechaAprobacionCliente,
+            rechazado: !!o.FechaRechazoCliente,
+            enLote: o.RolloID != null,
+            texturasElige: o.TexturasElige || null, // 'DISENADOR' = aprobó sin elegir: las define el diseñador
+        });
     } catch (err) {
         logger.error('[getTexturasOrdenInterno] ' + err.message);
         res.status(500).json({ error: 'No se pudieron leer las texturas de la orden.' });
@@ -289,6 +380,7 @@ exports.setTexturasOrdenInterno = async (req, res) => {
             if (!wo.zonaValida(valor)) return res.status(400).json({ error: `Textura desconocida: ${wo.texturaDeZona(valor)}` });
         }
         const pool = await getPool();
+        await wo.ensureColFechaAprobacion(pool);
         const ord = await pool.request()
             .input('OID', sql.Int, ordenId)
             .query('SELECT OrdenID FROM dbo.Ordenes WHERE OrdenID = @OID');
@@ -327,6 +419,99 @@ exports.setTexturasOrdenInterno = async (req, res) => {
     }
 };
 
+// POST /api/orders/:ordenId/boceto-aprobado — mismo archivo pero generado desde el visor interno,
+// cuando el cliente aprobó "pelado" y las texturas las define el diseñador. Sin scope de cliente.
+exports.subirBocetoAprobadoInterno = async (req, res) => {
+    const ordenId = parseInt(req.params.ordenId, 10);
+    if (!ordenId || !req.file) return res.status(400).json({ error: 'Datos inválidos' });
+    try {
+        const wo = require('./webOrdersController');
+        const pool = await getPool();
+        const chk = await pool.request()
+            .input('OID', sql.Int, ordenId)
+            .query('SELECT CodigoOrden FROM dbo.Ordenes WHERE OrdenID = @OID');
+        if (!chk.recordset.length) return res.status(404).json({ error: 'Orden no encontrada.' });
+
+        const buffer = await wo.leerYBorrarTmp(req.file);
+        if (!buffer) return res.status(400).json({ error: 'No llegó la imagen.' });
+        const out = await wo.guardarBocetoAprobado(
+            pool, ordenId, buffer, chk.recordset[0].CodigoOrden, req.body?.resumen);
+        res.json({ success: true, ...out });
+    } catch (err) {
+        logger.error('[subirBocetoAprobadoInterno] ' + err.message);
+        res.status(500).json({ error: 'No se pudo archivar el boceto aprobado.' });
+    }
+};
+
+// ─── TPU: VISOR 3D INTERNO ───────────────────────────────────────────────────
+// Mismas capas que expone el portal (webOrdersController.getTpuModelCapas/Archivo) pero SIN el
+// scope de CodCliente: el visor también se abre desde el detalle de la orden para que el
+// DISEÑADOR elija las texturas antes de mandar el boceto a aprobación.
+
+// GET /api/orders/:ordenId/tpu-model
+exports.getTpuModelCapasInterno = async (req, res) => {
+    const ordenId = parseInt(req.params.ordenId, 10);
+    if (!ordenId) return res.status(400).json({ error: 'Datos inválidos' });
+    try {
+        const wo = require('./webOrdersController');
+        const pool = await getPool();
+        const r = await pool.request()
+            .input('OID', sql.Int, ordenId)
+            .query(`
+                SELECT ao.ArchivoID, ao.NombreArchivo
+                FROM dbo.ArchivosOrden ao WITH(NOLOCK)
+                JOIN dbo.Ordenes o WITH(NOLOCK) ON o.OrdenID = ao.OrdenID
+                WHERE ao.OrdenID = @OID
+                  AND UPPER(LTRIM(RTRIM(o.AreaID))) = 'TPU'
+                  AND ISNULL(ao.EstadoArchivo,'') <> 'Cancelado'
+                  AND ao.RutaAlmacenamiento IS NOT NULL
+            `);
+        const capas = {};
+        for (const row of r.recordset) {
+            const rol = wo.rolCapaTpu(row.NombreArchivo);
+            const esPdf = /\.pdf$/i.test(String(row.NombreArchivo || ''));
+            if (rol && esPdf && !capas[rol]) capas[rol] = row.ArchivoID;
+        }
+        res.json({ success: true, capas });
+    } catch (err) {
+        logger.error(`[TPU-3D interno] capas: ${err.message}`);
+        res.status(500).json({ error: 'Error al obtener las capas del modelo.' });
+    }
+};
+
+// GET /api/orders/:ordenId/tpu-model/archivo/:archivoId
+exports.getTpuModelArchivoInterno = async (req, res) => {
+    const ordenId = parseInt(req.params.ordenId, 10);
+    const archivoId = parseInt(req.params.archivoId, 10);
+    if (!ordenId || !archivoId) return res.status(400).json({ error: 'Datos inválidos' });
+    try {
+        const driveService = require('../services/driveService');
+        const pool = await getPool();
+        const r = await pool.request()
+            .input('OID', sql.Int, ordenId)
+            .input('AID', sql.Int, archivoId)
+            .query(`
+                SELECT TOP 1 ao.RutaAlmacenamiento
+                FROM dbo.ArchivosOrden ao WITH(NOLOCK)
+                JOIN dbo.Ordenes o WITH(NOLOCK) ON o.OrdenID = ao.OrdenID
+                WHERE ao.ArchivoID = @AID AND ao.OrdenID = @OID
+                  AND UPPER(LTRIM(RTRIM(o.AreaID))) = 'TPU'
+                  AND ISNULL(ao.EstadoArchivo,'') <> 'Cancelado'
+            `);
+        const ruta = r.recordset[0]?.RutaAlmacenamiento;
+        const driveId = ruta ? (String(ruta).match(/(?:id=|\/d\/)([\w-]+)/) || [])[1] : null;
+        if (!driveId) return res.status(404).json({ error: 'Capa no encontrada.' });
+
+        const file = await driveService.getFileStream(driveId);
+        res.setHeader('Content-Type', file.mimeType || 'application/pdf');
+        res.setHeader('Cache-Control', 'private, max-age=3600');
+        file.stream.pipe(res);
+    } catch (err) {
+        logger.error(`[TPU-3D interno] archivo: ${err.message}`);
+        res.status(500).json({ error: 'Error al leer la capa.' });
+    }
+};
+
 // =====================================================================
 // 1. OBTENER ÓRDENES (ACTUALIZADO: Lee Material, Variante y CodigoOrden)
 // =====================================================================
@@ -353,9 +538,12 @@ exports.getOrdersByArea = async (req, res) => {
 
 
         const pool = await getPool();
+        // Auto-heal de FechaAprobacionCliente/FechaRechazoCliente: el SELECT las lee siempre.
+        // La función cachea tras el primer llamado, así que en el camino caliente no cuesta nada.
+        await require('./webOrdersController').ensureColFechaAprobacion(pool);
 
         let query = `
-            SELECT 
+            SELECT
                 o.OrdenID,
                 o.CodigoOrden,      -- <--- NUEVO: Código Visual (UV-14 1/3)
                 o.IdCabezalERP,
@@ -367,6 +555,16 @@ exports.getOrdersByArea = async (req, res) => {
                 o.AreaID,
                 o.Estado,
                 o.EstadoenArea,     -- <--- NUEVO: Estado especifico del area
+                o.FechaAprobacionCliente,  -- TPU: pintan la celda de estado (verde aprobado / rojo rechazado)
+                o.FechaRechazoCliente,
+                -- TPU: capas de arte ya subidas (sin el boceto, que no es arte). Decide si el verde
+                -- de la celda parpadea (falta arte) o queda fijo (ya está completo). Va dentro del
+                -- CASE para que la subconsulta no corra en las órdenes de las otras áreas.
+                CASE WHEN UPPER(LTRIM(RTRIM(o.AreaID))) = 'TPU' THEN (
+                    SELECT COUNT(*) FROM dbo.ArchivosOrden ao WITH(NOLOCK)
+                    WHERE ao.OrdenID = o.OrdenID AND ISNULL(ao.EstadoArchivo,'') <> 'Cancelado'
+                      AND LOWER(ao.NombreArchivo) NOT LIKE '%boceto%'
+                ) ELSE 0 END AS CapasArte,
                 o.Prioridad,
                 o.FechaIngreso,
                 o.FechaHabilitacion,    -- <--- NUEVO: Fecha Real de Habilitación
@@ -470,6 +668,12 @@ exports.getOrdersByArea = async (req, res) => {
             area: o.AreaID,
             status: o.Estado,
             areaStatus: o.EstadoenArea, // <--- Mapeamos EstadoenArea
+            // TPU: veredicto del cliente sobre el boceto — el tablero pinta la celda de estado.
+            // `arteCompleto` se resuelve ACÁ y no en el front para que el número de capas viva en
+            // un solo lado (CAPAS_ARTE_TPU) y no haya una copia más que se pueda desincronizar.
+            clienteAprobo: !!o.FechaAprobacionCliente,
+            clienteRechazo: !!o.FechaRechazoCliente,
+            arteCompleto: (o.CapasArte || 0) >= CAPAS_ARTE_TPU,
             priority: o.Prioridad,
             entryDate: o.FechaIngreso,
 
@@ -765,6 +969,37 @@ exports.assignRoll = async (req, res) => {
                     if (existingMaterial && existingMaterial !== newMaterial) {
                         return res.status(400).json({ error: `⛔ El lote seleccionado ya contiene órdenes con material '${existingOrder.Material}'. No puedes mezclar materiales en ${areaLbl}.` });
                     }
+                }
+            }
+        }
+
+        // ----------------------------------------------------
+        // REGLA DE NEGOCIO PARA TPU
+        // A un lote solo entra la orden con el ARTE COMPLETO: las CAPAS_ARTE_TPU capas, sin contar
+        // el boceto (que es lo que aprobó el cliente, no se fabrica). Sin esto se podía mandar a
+        // imprimir una orden a la que todavía le faltan capas.
+        // ----------------------------------------------------
+        if (areaCode === 'TPU') {
+            const idsTPU = targetOrderIds.map(x => parseInt(x, 10)).filter(Number.isInteger);
+            if (idsTPU.length > 0) {
+                const arteRes = await new sql.Request(pool)
+                    .query(`
+                        SELECT o.OrdenID, o.CodigoOrden,
+                               (SELECT COUNT(*) FROM dbo.ArchivosOrden ao
+                                 WHERE ao.OrdenID = o.OrdenID
+                                   AND ISNULL(ao.EstadoArchivo, '') <> 'Cancelado'
+                                   AND LOWER(ao.NombreArchivo) NOT LIKE '%boceto%') AS Capas
+                        FROM dbo.Ordenes o
+                        WHERE o.OrdenID IN (${idsTPU.join(',')})
+                    `);
+                const incompletas = arteRes.recordset.filter(o => (o.Capas || 0) !== CAPAS_ARTE_TPU);
+                if (incompletas.length > 0) {
+                    const detalle = incompletas
+                        .map(o => `${o.CodigoOrden} (${o.Capas || 0}/${CAPAS_ARTE_TPU})`)
+                        .join(', ');
+                    return res.status(400).json({
+                        error: `⛔ Falta el arte para asignar a un lote: ${detalle}. Subí las ${CAPAS_ARTE_TPU} capas antes de mandarla a imprimir.`
+                    });
                 }
             }
         }

@@ -325,7 +325,13 @@ const processOrderListInternal = async (orderIds, io, targetFileIds = null) => {
                             .input('H', sql.Decimal(10, 2), heightM)
                             .query("UPDATE dbo.ArchivosOrden SET Metros=@M, Ancho=@W, Alto=@H, MedidaConfirmada=1 WHERE ArchivoID=@ID");
 
-                        // Recalcular Magnitud Global de la Orden
+                        // Recalcular Magnitud Global de la Orden.
+                        // TPU queda AFUERA (mismo guard que ordersController.recalculateOrderMagnitude):
+                        // su Magnitud es la CANTIDAD PEDIDA en unidades, fijada al crear el pedido, y
+                        // sus archivos son las capas del arte, no unidades. Acá además el boceto no
+                        // tiene metros, así que el recálculo daría 0 y le borraría la cantidad.
+                        // Va como condición del UPDATE y no como SELECT aparte para no agregar un viaje
+                        // más a la base en un bucle que corre por cada archivo medido.
                         await pool.request()
                             .input('OID', sql.Int, file.OrdenID)
                             .query(`
@@ -338,7 +344,8 @@ const processOrderListInternal = async (orderIds, io, targetFileIds = null) => {
                                 -- propia línea. Solo hacen de magnitud si no hay archivos.
                                 IF ISNULL(@TotalProd, 0) = 0
                                     SELECT @TotalServ = SUM(ISNULL(Cantidad, 0)) FROM ServiciosExtraOrden WHERE OrdenID = @OID;
-                                UPDATE dbo.Ordenes SET Magnitud = CAST((ISNULL(@TotalProd, 0) + ISNULL(@TotalServ, 0)) AS NVARCHAR(50)) WHERE OrdenID = @OID
+                                UPDATE dbo.Ordenes SET Magnitud = CAST((ISNULL(@TotalProd, 0) + ISNULL(@TotalServ, 0)) AS NVARCHAR(50))
+                                WHERE OrdenID = @OID AND UPPER(LTRIM(RTRIM(ISNULL(AreaID, '')))) <> 'TPU'
                             `);
 
                         if (io) {

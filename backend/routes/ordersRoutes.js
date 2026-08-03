@@ -78,6 +78,13 @@ router.post('/:ordenId/enviar-aprobacion', verifyToken, ordersController.enviarA
 // registrada en el historial — cambia lo que se fabrica respecto de lo que el cliente aprobó.
 router.get('/:ordenId/texturas', verifyToken, ordersController.getTexturasOrdenInterno);
 router.put('/:ordenId/texturas', verifyToken, soloInternoConRol(), ordersController.setTexturasOrdenInterno);
+
+// TPU: PNG del boceto aprobado (parche renderizado + referencia de texturas) → ArchivosReferencia.
+router.post('/:ordenId/boceto-aprobado', verifyToken, uploadProdFile.single('file'), ordersController.subirBocetoAprobadoInterno);
+
+// TPU: visor 3D interno (el diseñador elige texturas desde el detalle de la orden).
+router.get('/:ordenId/tpu-model', verifyToken, ordersController.getTpuModelCapasInterno);
+router.get('/:ordenId/tpu-model/archivo/:archivoId', verifyToken, ordersController.getTpuModelArchivoInterno);
 router.post('/file/cancel', verifyToken, ordersController.cancelFile);
 router.post('/reactivate', verifyToken, ordersController.reactivateOrder);
 router.post('/reactivate-request', verifyToken, ordersController.reactivateRequest);

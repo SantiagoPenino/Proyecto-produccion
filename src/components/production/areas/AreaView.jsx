@@ -760,12 +760,17 @@ export default function AreaView({ areaKey: rawAreaKey, areaConfig, onSwitchTab 
                     onClick={() => {
                         const selectedOrdersList = dbOrders.filter(o => selectedIds.includes(o.id));
                         
-                        // Validación de Estado Pendiente (Aplica a todas las áreas)
-                        const hasNonPending = selectedOrdersList.some(o => (o.status || 'Pendiente').toLowerCase() !== 'pendiente');
+                        // Validación de estado general. En TPU el arte se sube DESPUÉS de que el cliente
+                        // aprueba el boceto, así que para cuando la orden está lista para imprimir ya pasó
+                        // a 'Produccion' (estado en área 'Diseñado'): exigirle 'Pendiente' la dejaba afuera
+                        // de todo lote. El resto de las áreas sigue igual.
+                        const estadoParaLote = areaKey === 'TPU' ? 'produccion' : 'pendiente';
+                        const estadoParaLoteLabel = areaKey === 'TPU' ? 'Producción' : 'Pendiente';
+                        const hasNonPending = selectedOrdersList.some(o => (o.status || 'Pendiente').toLowerCase() !== estadoParaLote);
                         if (hasNonPending) {
                             Swal.fire({
                                 title: 'Error!',
-                                text: 'Solo se pueden asignar a un lote las órdenes que tengan estado "Pendiente".',
+                                text: `Solo se pueden asignar a un lote las órdenes que tengan estado "${estadoParaLoteLabel}".`,
                                 iconHtml: '<svg xmlns="http://www.w3.org/2000/svg" width="60" height="60" viewBox="0 0 24 24" fill="none" stroke="#BD0C7E" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="m4.9 4.9 14.2 14.2"/></svg>',
                                 customClass: { 
                                     popup: '!p-0 overflow-hidden rounded-xl',

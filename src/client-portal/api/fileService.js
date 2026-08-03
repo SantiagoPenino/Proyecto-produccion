@@ -27,15 +27,6 @@ export const validateFile = (file, { allowJpeg = false } = {}) => {
     return { valid: true };
 };
 
-const fileToBase64 = (file) => {
-    return new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.readAsDataURL(file);
-        reader.onload = () => resolve(reader.result);
-        reader.onerror = error => reject(error);
-    });
-};
-
 const getImageDimensions = (base64) => {
     return new Promise((resolve) => {
         const img = new Image();
@@ -156,6 +147,23 @@ const getMimeTypeFromMagic = (base64) => {
     return null;
 };
 
+// Magic number leyendo SOLO los primeros bytes. base64 codifica de a grupos de 3 bytes, así que
+// el base64 de un slice arranca idéntico al del archivo completo: la firma se reconoce igual y
+// no hay que convertir 77MB para mirar 11 caracteres.
+const getMimeTypeFromHead = (file) => {
+    return new Promise((resolve) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(getMimeTypeFromMagic(reader.result));
+        reader.onerror = () => resolve(null);
+        reader.readAsDataURL(file.slice(0, 64));
+    });
+};
+
+// Arriba de este tamaño el navegador NO cuenta páginas (ver uploadFile): contar obliga a cargar
+// el archivo entero a RAM y en mobile es lo que rompe la subida. El backend valida el multipágina
+// con pdf-lib y rechaza con motivo, que es la validación que manda.
+const PAGE_COUNT_MAX_SIZE = 25 * 1024 * 1024; // 25MB
+
 const getPdfDimensionsFromFile = (file) => {
     return new Promise((resolve) => {
         const headSize = Math.min(file.size, 500000);
@@ -266,19 +274,15 @@ export const fileService = {
         if (!validation.valid) throw new Error(validation.error);
 
         try {
-            const LARGE_FILE = 500 * 1024 * 1024; // 500MB
-            const isLarge = file.size > LARGE_FILE;
+            // El archivo NUNCA se copia a RAM acá: el object URL es una referencia al Blob y el tipo
+            // sale de los primeros 64 bytes. Antes todo lo que bajaba de 500MB pasaba por
+            // fileToBase64 → un string de ~1,4x el tamaño del archivo, que después se tiraba entero
+            // salvo 500 caracteres guardados en `preview`, campo que no lee nadie. En desktop no se
+            // notaba; en un celular un PDF de 77MB se comía ~250MB de heap entre esto y el conteo de
+            // páginas, y la subida moría sin llegar a mandar un byte (nginx ni la registraba).
+            const previewData = URL.createObjectURL(file);
 
-            // Archivos grandes: object URL (sin copiar a RAM). Chicos: base64 para preview.
-            const previewData = isLarge ? URL.createObjectURL(file) : await fileToBase64(file);
-
-            // Detectar tipo: para archivos grandes confiar en extensión, para chicos usar magic bytes
-            let detectedType;
-            if (isLarge) {
-                detectedType = file.type || 'application/octet-stream';
-            } else {
-                detectedType = getMimeTypeFromMagic(previewData) || file.type;
-            }
+            let detectedType = await getMimeTypeFromHead(file) || file.type || 'application/octet-stream';
             if (file.name.toLowerCase().endsWith('.pdf')) detectedType = 'application/pdf';
 
             let dimensions = { width: null, height: null, unit: null };
@@ -367,7 +371,10 @@ export const fileService = {
                     // Si es multipágina, calcular el alto total (suma) y ancho máximo
                     try {
                         let pdfRef = null;
-                        if (!pageCount) {
+                        // El guard de tamaño es lo que evita el arrayBuffer() del archivo entero.
+                        // Si no se cuenta, pageCount queda null y no se bloquea acá: el multipágina
+                        // lo corta el backend (uploadOrderFile, pdf-lib) con el motivo concreto.
+                        if (!pageCount && file.size <= PAGE_COUNT_MAX_SIZE) {
                             const arrayBuffer = await file.arrayBuffer();
                             pdfRef = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
                             pageCount = pdfRef.numPages;
@@ -433,7 +440,7 @@ export const fileService = {
 
             return {
                 name: file.name,
-                preview: isLarge ? previewData : previewData.substring(0, 500) + '...',
+                preview: previewData,
                 fileData: file,
                 size: file.size,
                 type: detectedType,

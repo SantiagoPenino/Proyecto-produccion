@@ -156,7 +156,7 @@ export default function ContactPage() {
                     </a>
                     <p className="mt-4 text-zinc-400 font-semibold text-sm flex items-center gap-2">
                         <Clock size={16} className="text-zinc-500" />
-                        Lunes a Viernes — 9:00 a 17:00 hs
+                        Lunes a Viernes — 8:00 a 18:00 hs
                     </p>
                 </div>
             </div>

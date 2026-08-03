@@ -254,7 +254,10 @@ const getArchivosPorOrden = async (req, res) => {
                 AO.Controlcopias, AO.EstadoArchivo, AO.UsuarioControl, AO.FechaControl, AO.Observaciones, AO.TipoArchivo,
                 AO.Ancho, AO.Alto, AO.CodigoArticulo, AO.FechaSubida,
                 AO.PreflightVeredicto, AO.PreflightReporte,
-                O.Material as Material, O.Cliente as Cliente, O.AreaID as AreaActual, O.NoDocERP, 0 as isService
+                O.Material as Material, O.Cliente as Cliente, O.AreaID as AreaActual, O.NoDocERP, 0 as isService,
+                -- TPU: el control es por PARCHE, no por capa del arte. La vista arma una sola línea
+                -- por orden con estos datos (código_trabajo y la cantidad pedida como copias).
+                O.CodigoOrden as OrdenCodigo, O.DescripcionTrabajo as OrdenTrabajo, O.Magnitud as OrdenMagnitud
             FROM ArchivosOrden AO WITH (NOLOCK)
             LEFT JOIN Ordenes O WITH (NOLOCK) ON AO.OrdenID = O.OrdenID
             WHERE AO.OrdenID = @OrdenID
@@ -266,7 +269,8 @@ const getArchivosPorOrden = async (req, res) => {
                 ISNULL(SEO.Controlcopias, 0) as Controlcopias, SEO.Estado as EstadoArchivo, SEO.UsuarioControl, SEO.FechaControl, SEO.Observaciones as Observaciones, 'Servicio' as TipoArchivo,
                 0 as Ancho, 0 as Alto, SEO.CodArt as CodigoArticulo, SEO.FechaRegistro as FechaSubida,
                 NULL as PreflightVeredicto, NULL as PreflightReporte,
-                O.Material as Material, O.Cliente as Cliente, O.AreaID as AreaActual, O.NoDocERP, 1 as isService
+                O.Material as Material, O.Cliente as Cliente, O.AreaID as AreaActual, O.NoDocERP, 1 as isService,
+                O.CodigoOrden as OrdenCodigo, O.DescripcionTrabajo as OrdenTrabajo, O.Magnitud as OrdenMagnitud
             FROM ServiciosExtraOrden SEO WITH (NOLOCK)
             LEFT JOIN Ordenes O WITH (NOLOCK) ON SEO.OrdenID = O.OrdenID
             WHERE SEO.OrdenID = @OrdenID
@@ -727,11 +731,20 @@ const postControlArchivo = async (req, res) => {
 
                 // Si el archivo ya existe en la orden -F (mismo NombreArchivo),
                 // actualizar sus metros en lugar de duplicarlo
+                // Las observaciones se HEREDAN de la madre y la nota de reposición se anexa. Pisarlas
+                // con un texto fijo borraba el detalle técnico de impresión ([RAPORT] ORIG: ... ->
+                // FINAL: ...), que es de donde se deduce el modo de impresión: la -F nacía sin saber
+                // que iba con rapport y el ojo del lote se veía gris. Se reconstruye siempre desde la
+                // madre (no se acumula al reprocesar) y la nota va una sola vez.
                 await insertRequest.query(`
                     -- Si ya existe el archivo, actualizar los metros
                     UPDATE AO2
                     SET AO2.Metros = ${metrosUpd},
-                        AO2.Observaciones = 'Reposición por Falla (actualizado)'
+                        AO2.Observaciones = CASE
+                            WHEN ISNULL(AO_SRC.Observaciones, '') LIKE '%Reposición por Falla%'
+                                THEN AO_SRC.Observaciones
+                            ELSE LTRIM(RTRIM(ISNULL(AO_SRC.Observaciones, ''))) + ' [Reposición por Falla]'
+                        END
                     FROM dbo.ArchivosOrden AO2
                     INNER JOIN dbo.ArchivosOrden AO_SRC ON AO_SRC.ArchivoID = @OldFileID
                     WHERE AO2.OrdenID = @NewOrderID
@@ -745,7 +758,11 @@ const postControlArchivo = async (req, res) => {
                             TipoArchivo, FechaSubida, EstadoArchivo
                         )
                         SELECT
-                            @NewOrderID, NombreArchivo, RutaAlmacenamiento, ${metrosIns}, Copias, Ancho, Alto, 'Reposición por Falla',
+                            @NewOrderID, NombreArchivo, RutaAlmacenamiento, ${metrosIns}, Copias, Ancho, Alto,
+                            CASE
+                                WHEN ISNULL(Observaciones, '') LIKE '%Reposición por Falla%' THEN Observaciones
+                                ELSE LTRIM(RTRIM(ISNULL(Observaciones, ''))) + ' [Reposición por Falla]'
+                            END,
                             TipoArchivo, GETDATE(), 'Pendiente'
                         FROM dbo.ArchivosOrden
                         WHERE ArchivoID = @OldFileID
@@ -1498,9 +1515,10 @@ const updateFileCopyCount = async (req, res) => {
             const fileRes = await new sql.Request(transaction)
                 .input('ID', sql.Int, archivoId)
                 .query(`
-                    SELECT AO.Copias, AO.Controlcopias, AO.EstadoArchivo, AO.OrdenID, AO.NombreArchivo, 
-                           O.CodigoOrden 
-                    FROM ArchivosOrden AO WITH (UPDLOCK) 
+                    SELECT AO.Copias, AO.Controlcopias, AO.EstadoArchivo, AO.OrdenID, AO.NombreArchivo,
+                           O.CodigoOrden, O.AreaID,
+                           TRY_CAST(REPLACE(REPLACE(ISNULL(O.Magnitud,'0'),' ',''),',','.') AS FLOAT) AS MagnitudOrden
+                    FROM ArchivosOrden AO WITH (UPDLOCK)
                     INNER JOIN Ordenes O ON AO.OrdenID = O.OrdenID
                     WHERE AO.ArchivoID = @ID
                 `);
@@ -1512,7 +1530,14 @@ const updateFileCopyCount = async (req, res) => {
         }
 
         const ordenId = file.OrdenID;
-        const totalCopies = file.Copias || 1;
+        // TPU: lo que se controla son los PARCHES, no las capas del arte. Los archivos de una orden
+        // TPU son el diseño (cmyk, corte, relieve…), todos con Copias = 1, así que el tope tiene que
+        // salir de la cantidad pedida (Ordenes.Magnitud). La vista de control muestra una sola línea
+        // por orden apoyada en uno de esos archivos; este es el tope que le corresponde.
+        const esTPUControl = !isService && String(file.AreaID || '').trim().toUpperCase() === 'TPU';
+        const totalCopies = esTPUControl
+            ? Math.max(1, Math.round(Number(file.MagnitudOrden) || 0))
+            : (file.Copias || 1);
         let newCount = parseInt(count);
 
         // Validaciones
@@ -1871,7 +1896,11 @@ const createCustomerReplacementOrder = async (req, res) => {
                         SELECT @Total = ISNULL(SUM(CAST(ISNULL(Metros,0) AS FLOAT)),0) FROM dbo.ArchivosOrden WHERE OrdenID = @ID AND ISNULL(EstadoArchivo,'') <> 'CANCELADO';
                     ELSE
                         SELECT @Total = ISNULL(SUM(CAST(ISNULL(Copias,0) AS FLOAT)),0) FROM dbo.ArchivosOrden WHERE OrdenID = @ID AND ISNULL(EstadoArchivo,'') <> 'CANCELADO';
-                    UPDATE dbo.Ordenes SET Magnitud = CAST(FORMAT(@Total,'0.##') AS NVARCHAR(20)) WHERE OrdenID = @ID;
+                    -- TPU afuera: con UM='u' cae en la rama de SUM(Copias) y contaría las CAPAS del
+                    -- arte (boceto + cmyk + corte + …) como si fueran unidades pedidas — una orden
+                    -- de 15 parches quedaba en 7. La cantidad de TPU se fija al crear el pedido.
+                    UPDATE dbo.Ordenes SET Magnitud = CAST(FORMAT(@Total,'0.##') AS NVARCHAR(20))
+                    WHERE OrdenID = @ID AND UPPER(LTRIM(RTRIM(ISNULL(AreaID,'')))) <> 'TPU';
                 `);
         } catch (e) { logger.info('Update Magnitud reposición failed (ignoring):', e.message); }
 
@@ -2030,10 +2059,21 @@ async function completarOrden(req, res) {
                     (SELECT COUNT(*) FROM ArchivosOrden WHERE OrdenID = @OID AND EstadoArchivo != 'CANCELADO') + 
                     (SELECT COUNT(*) FROM ServiciosExtraOrden WHERE OrdenID = @OID AND Estado != 'CANCELADO') as Total,
                     (SELECT COUNT(*) FROM ArchivosOrden WHERE OrdenID = @OID AND EstadoArchivo IN ('OK', 'FINALIZADO')) +
-                    (SELECT COUNT(*) FROM ServiciosExtraOrden WHERE OrdenID = @OID AND Estado IN ('OK', 'FINALIZADO')) as Completed
+                    (SELECT COUNT(*) FROM ServiciosExtraOrden WHERE OrdenID = @OID AND Estado IN ('OK', 'FINALIZADO')) as Completed,
+                    (SELECT UPPER(LTRIM(RTRIM(ISNULL(AreaID, '')))) FROM Ordenes WHERE OrdenID = @OID) as Area,
+                    -- TPU: en control hay UNA línea por orden (los archivos son las capas del arte),
+                    -- así que alcanza con que esa línea haya llegado a OK.
+                    (SELECT COUNT(*) FROM ArchivosOrden
+                      WHERE OrdenID = @OID AND EstadoArchivo IN ('OK', 'FINALIZADO')
+                        AND LOWER(NombreArchivo) NOT LIKE '%boceto%') as ArteControlada
             `);
 
-        const { Total, Completed } = checkOrder.recordset[0];
+        const { Total, Completed, Area, ArteControlada } = checkOrder.recordset[0];
+        // TPU: el control es por PARCHE, no por archivo. La vista muestra una sola línea (apoyada en
+        // una capa del arte) y el resto de las capas queda en Pendiente porque nadie las cuenta; la
+        // matriz, que vive en ServiciosExtraOrden, tampoco se controla. Contando filas esto daba
+        // 1 de 6 y el cierre rebotaba. Acá la condición es que la línea de control esté completa.
+        const esTPUCierre = String(Area || '') === 'TPU';
         
         // Si todos los archivos están cancelados (Total de válidos = 0), cancelar la orden entera
         if (Total === 0) {
@@ -2057,9 +2097,13 @@ async function completarOrden(req, res) {
             return res.json({ success: true, nuevoEstado: 'CANCELADO', estadoLogistica: 'Cancelado', totalBultos: 0 });
         }
 
-        if (Total !== Completed) {
+        if (esTPUCierre ? (ArteControlada || 0) === 0 : (Total !== Completed)) {
             await transaction.rollback();
-            return res.status(400).json({ error: 'La orden aún tiene archivos sin completar.' });
+            return res.status(400).json({
+                error: esTPUCierre
+                    ? 'Todavía faltan copias por controlar: la orden se cierra al llegar a la cantidad pedida.'
+                    : 'La orden aún tiene archivos sin completar.'
+            });
         }
 
         // Verificar si tiene fallas pendientes

@@ -229,7 +229,12 @@ exports.createWebOrder = async (req, res) => {
 
     // Mapeo inverso para compatibilidad
     // Soporte para Payroads en Español (Renombrado técnico solicitado por usuario)
-    const serviceId = idServicio || req.body.serviceId;
+    // `idServicioBase` es la clave que manda el PORTAL (OrderForm/PrendaOrderForm); `idServicio` y
+    // `serviceId` vienen de los otros clientes. Faltaba el primero, así que en todo pedido del
+    // portal `serviceId` quedaba undefined y las dos ramas que dependen de él morían en silencio:
+    // el cargo de matriz TPU (nunca se cobró) y la magnitud inicial (las órdenes salían en 0 U).
+    // integrationOrdersController ya contemplaba las tres.
+    const serviceId = idServicio || req.body.idServicioBase || req.body.serviceId;
     const jobName = nombreTrabajo || req.body.jobName;
     const urgency = prioridad || req.body.urgency || 'Normal';
     const generalNote = notasGenerales || req.body.generalNote;
@@ -480,8 +485,10 @@ exports.createWebOrder = async (req, res) => {
                     // la orden quedaba en "0 U" en todos lados, rompiendo además el contador de
                     // impresión parcial (el total es la Magnitud). El resto de los servicios sigue
                     // en 0: su Magnitud real la suman los archivos al procesarse.
+                    // Tolerante a las dos formas del payload (cantidad / copies): las órdenes de
+                    // prueba llegaban igual con Magnitud '0' — un solo nombre de campo no alcanzó.
                     magnitudInicial: (serviceId === 'tpu' && srv.esPrincipal)
-                        ? (srv.items || []).reduce((s, it) => s + (parseInt(it.cantidad) || 0), 0)
+                        ? (srv.items || []).reduce((s, it) => s + (parseInt(it?.cantidad ?? it?.copies) || 0), 0)
                         : 0,
                     notaAdicional: serviceNote, // Nota completa para la Orden
                     techInfo: techInfo // Info técnica limpia para ServiciosExtraOrden
@@ -1397,14 +1404,20 @@ exports.createWebOrder = async (req, res) => {
                 if (fileCount > 0) {
                     await new sql.Request(transaction).input('OID', sql.Int, newOID).input('C', sql.Int, fileCount).input('Mag', sql.Decimal(10, 2), totalMagnitud)
                         .query("UPDATE Ordenes SET ArchivosCount = @C, Magnitud = CAST(@Mag AS VARCHAR) WHERE OrdenID = @OID");
-                } else if (serviceId === 'tpu' && String(exec.areaID || '').toUpperCase() === 'TPU') {
+                } else if (String(exec.areaID || '').toUpperCase() === 'TPU' && !exec.isExtra) {
                     // TPU (boceto): el cliente sube un boceto, no arte, así que no hay ArchivosOrden que
-                    // lleven la cantidad. La Magnitud (unidades de TPU a producir) sale de la suma de
-                    // copies de los items — si no, la orden queda en Magnitud 0 y no se cotiza la producción.
-                    const cantTpu = (exec.items || []).reduce((s, it) => s + (parseInt(it.copies) || 0), 0);
+                    // lleven la cantidad. La Magnitud (unidades de TPU a producir) sale de los items o
+                    // del magnitudInicial ya calculado — tolerante a cantidad/copies, porque con un solo
+                    // nombre de campo esto quedaba en 0 y la orden mostraba "0 U" en todos lados.
+                    const cantTpu = (exec.items || []).reduce((s, it) => s + (parseInt(it?.cantidad ?? it?.copies) || 0), 0)
+                        || parseInt(exec.magnitudInicial) || 0;
                     if (cantTpu > 0) {
-                        await new sql.Request(transaction).input('OID', sql.Int, newOID).input('Mag', sql.Decimal(10, 2), cantTpu)
-                            .query("UPDATE Ordenes SET Magnitud = CAST(@Mag AS VARCHAR) WHERE OrdenID = @OID");
+                        // Entero y como texto: TPU se mide en UNIDADES. Con Decimal(10,2) el CAST dejaba
+                        // "15.00" y la planilla mostraba "15.00 U" — medio parche no existe.
+                        await new sql.Request(transaction).input('OID', sql.Int, newOID).input('Mag', sql.VarChar(50), String(Math.round(cantTpu)))
+                            .query("UPDATE Ordenes SET Magnitud = @Mag WHERE OrdenID = @OID");
+                    } else {
+                        logger.warn(`[WebOrder][TPU] Orden ${newOID}: sin cantidad en items ni magnitudInicial — queda Magnitud 0. items=${JSON.stringify((exec.items || []).map(i => ({ c: i?.cantidad, k: i?.copies })))}`);
                     }
                 }
 
@@ -1992,6 +2005,8 @@ exports.getClientOrders = async (req, res) => {
 
     try {
         const pool = await getPool();
+        // El SELECT lee OrdenTexturasTPU (flag TieneTexturas): garantizar el schema TPU primero.
+        await exports.ensureColFechaAprobacion(pool);
 
         // 1. Calcular contadores globales (solo en la página 1 para no repetir trabajo)
         let counts = null;
@@ -2093,6 +2108,16 @@ exports.getClientOrders = async (req, res) => {
                            AND (UPPER(LTRIM(RTRIM(o.AreaID))) <> 'TPU' OR LOWER(NombreArchivo) LIKE '%boceto%' OR LOWER(NombreArchivo) LIKE '%cmyk%')
                          ORDER BY CASE WHEN UPPER(LTRIM(RTRIM(o.AreaID))) = 'TPU' AND LOWER(NombreArchivo) LIKE '%boceto%' THEN 0 ELSE 1 END, ArchivoID ASC) AS DriveFileId,
                         ISNULL(o.AprobacionPendiente, 0) AS AprobacionPendiente,
+                        -- ¿Ya aprobó? Una vez aprobado, el portal esconde el cancelar (la regla se
+                        -- refuerza también en deleteIncompleteOrder/deleteOrderBundle).
+                        CASE WHEN o.FechaAprobacionCliente IS NOT NULL THEN 1 ELSE 0 END AS Aprobado,
+                        -- TPU: ¿el cliente ya guardó texturas? Distingue las dos vías de aprobación
+                        -- (con texturas propias vs "que elija el diseñador") para el texto del ✓.
+                        CASE WHEN EXISTS (
+                            SELECT 1 FROM dbo.OrdenTexturasTPU t
+                            WHERE t.OrdenID = o.OrdenID AND t.ElegidaPor = 'CLIENTE'
+                              AND (t.ArchivoTextura IS NOT NULL OR t.Barniz = 1)
+                        ) THEN 1 ELSE 0 END AS TieneTexturas,
                         -- El visor 3D arma el parche con el BOCETO DE PRODUCCIÓN (cmyk como fallback
                         -- para pedidos anteriores al cambio de flujo). Sin el flag, el botón "Ver 3D"
                         -- aparecía siempre — también en órdenes sin ninguna capa — y siempre fallaba.
@@ -2135,6 +2160,8 @@ exports.getClientOrders = async (req, res) => {
                         NULL                AS PrimerArchivoID,
                         NULL                AS DriveFileId,
                         0                   AS AprobacionPendiente,
+                        0                   AS Aprobado,
+                        0                   AS TieneTexturas,
                         0                   AS TieneArte3D,
                         NULL                AS DisenadorID,
                         NULL                AS DisenadorNombre
@@ -2164,6 +2191,47 @@ exports.getClientOrders = async (req, res) => {
     }
 };
 
+// Columnas Ordenes.FechaAprobacionCliente / FechaRechazoCliente (auto-heal, mismo patrón que
+// ensureOrderColumns): cuándo aprobó / cuándo rechazó el boceto el cliente. NULL = nunca.
+// ALTER de columna nullable = solo metadata, instantáneo.
+let _colAprobEnsured = false;
+exports.ensureColFechaAprobacion = async (pool) => {
+    if (_colAprobEnsured) return;
+    await pool.request().query(`
+        IF COL_LENGTH('dbo.Ordenes', 'FechaAprobacionCliente') IS NULL
+            ALTER TABLE dbo.Ordenes ADD FechaAprobacionCliente DATETIME NULL;
+        IF COL_LENGTH('dbo.Ordenes', 'FechaRechazoCliente') IS NULL
+            ALTER TABLE dbo.Ordenes ADD FechaRechazoCliente DATETIME NULL;
+        IF COL_LENGTH('dbo.Ordenes', 'TexturasElige') IS NULL
+            ALTER TABLE dbo.Ordenes ADD TexturasElige VARCHAR(10) NULL; -- se fija AL APROBAR: 'CLIENTE' (eligió texturas) · 'DISENADOR' (aprobó sin elegir → las define el diseñador)
+        IF OBJECT_ID('dbo.OrdenTexturasTPU', 'U') IS NULL
+            CREATE TABLE dbo.OrdenTexturasTPU (
+                OrdenID                INT           NOT NULL,
+                ZonaIndice             INT           NOT NULL,
+                ArchivoTextura         NVARCHAR(255) NULL,
+                Barniz                 BIT           NOT NULL CONSTRAINT DF_OrdTexTPU_Barniz DEFAULT (0),
+                ElegidaPor             VARCHAR(10)   NOT NULL CONSTRAINT DF_OrdTexTPU_Por    DEFAULT ('CLIENTE'),
+                FechaEleccion          DATETIME      NOT NULL CONSTRAINT DF_OrdTexTPU_Fecha  DEFAULT (GETDATE()),
+                ModificadaPorUsuarioID INT           NULL,
+                FechaModificacion      DATETIME      NULL,
+                CONSTRAINT PK_OrdenTexturasTPU PRIMARY KEY CLUSTERED (OrdenID, ZonaIndice)
+            );
+        IF COL_LENGTH('dbo.OrdenTexturasTPU', 'Barniz') IS NULL
+            ALTER TABLE dbo.OrdenTexturasTPU ADD Barniz BIT NOT NULL CONSTRAINT DF_OrdTexTPU_Barniz DEFAULT (0);
+        -- Cómo queda puesta la textura en la zona (lo que el cliente ajusta en el visor 3D).
+        -- NULL = nunca se tocó → el visor usa el default del catálogo (texturas.json).
+        IF COL_LENGTH('dbo.OrdenTexturasTPU', 'Escala') IS NULL
+            ALTER TABLE dbo.OrdenTexturasTPU ADD Escala FLOAT NULL;   -- 1 = tamaño de catálogo; 2 = el doble de grande
+        IF COL_LENGTH('dbo.OrdenTexturasTPU', 'Altura') IS NULL
+            ALTER TABLE dbo.OrdenTexturasTPU ADD Altura FLOAT NULL;   -- cuánto sobresale el relieve
+        IF COL_LENGTH('dbo.OrdenTexturasTPU', 'OffsetX') IS NULL
+            ALTER TABLE dbo.OrdenTexturasTPU ADD OffsetX FLOAT NULL;  -- 0..1 dentro de UNA repetición (0.5 = sin correr)
+        IF COL_LENGTH('dbo.OrdenTexturasTPU', 'OffsetY') IS NULL
+            ALTER TABLE dbo.OrdenTexturasTPU ADD OffsetY FLOAT NULL;
+    `);
+    _colAprobEnsured = true;
+};
+
 // POST /api/web-orders/aprobar-pedido — F4 diseñadores: el CLIENTE aprueba un pedido retenido.
 // Solo con token de cliente (la ruta NO pasa por impersonarCliente: un diseñador no puede aprobar).
 // Limpia AprobacionPendiente y ejecuta la misma activación que hace uploadOrderFile al completar archivos.
@@ -2181,28 +2249,55 @@ exports.aprobarPedido = async (req, res) => {
             .input('OID', sql.Int, ordenId)
             .input('Cod', sql.Int, codCliente)
             .query(`
-                SELECT OrdenID FROM Ordenes
+                SELECT OrdenID, AreaID FROM Ordenes
                 WHERE OrdenID = @OID AND CodCliente = @Cod
-                  AND ISNULL(AprobacionPendiente, 0) = 1 AND Estado = 'Cargando...'
+                  AND ISNULL(AprobacionPendiente, 0) = 1
             `);
         if (check.recordset.length === 0) {
             return res.status(404).json({ error: 'Pedido no encontrado o ya aprobado.' });
         }
+        const esTPUAprob = String(check.recordset[0].AreaID || '').toUpperCase() === 'TPU';
 
-        await pool.request().input('OID', sql.Int, ordenId)
-            .query('UPDATE Ordenes SET AprobacionPendiente = 0 WHERE OrdenID = @OID');
+        // La fecha es la marca PERSISTENTE de que el cliente ya aprobó: AprobacionPendiente vuelve
+        // a 0 y el Estado a 'Pendiente', igual que antes de enviar a aprobación — sin esta columna
+        // no hay forma de distinguir "todavía no se envió" de "ya está aprobado" (y de eso dependen
+        // el uploader por fases de TPU y el bloqueo de re-envío a aprobación).
+        await exports.ensureColFechaAprobacion(pool);
+
+        // TPU: las DOS vías del cliente terminan acá y las dos son aprobación. La diferencia queda
+        // registrada en TexturasElige: si guardó texturas en el visor 3D, son suyas ('CLIENTE');
+        // si aprobó el boceto pelado, las define el DISEÑADOR desde el detalle de la orden.
+        let quienTexturas = null;
+        if (esTPUAprob) {
+            const texRes = await pool.request().input('OID', sql.Int, ordenId).query(`
+                SELECT COUNT(*) AS n FROM dbo.OrdenTexturasTPU
+                WHERE OrdenID = @OID AND ElegidaPor = 'CLIENTE'
+                  AND (ArchivoTextura IS NOT NULL OR Barniz = 1)
+            `);
+            quienTexturas = (texRes.recordset[0]?.n || 0) > 0 ? 'CLIENTE' : 'DISENADOR';
+        }
+
+        await pool.request()
+            .input('OID', sql.Int, ordenId)
+            .input('TE', sql.VarChar(10), quienTexturas)
+            .query('UPDATE Ordenes SET AprobacionPendiente = 0, FechaAprobacionCliente = GETDATE(), FechaRechazoCliente = NULL, TexturasElige = @TE WHERE OrdenID = @OID');
 
         // Activación (idéntica a la de uploadOrderFile cuando no hay retención)
         const { changeOrderState } = require('../services/stateManagerService');
         const txAct = new sql.Transaction(pool);
         await txAct.begin();
         try {
+            // TPU: el estado de área pasa a 'Aprobado' (cuelga de Pendiente, así que el general
+            // queda igual que en el resto). Es el tramo en que la pelota vuelve a producción: falta
+            // subir el arte, y por eso el tablero lo pinta verde PULSANTE hasta completarlo.
+            // El guard por 'Cargando...' queda solo para el hold de diseñadores, que sí espera ahí;
+            // en TPU la orden aguarda en 'Pendiente' desde que se manda a aprobación.
             await changeOrderState(txAct, {
                 target : { type: 'ORDER', id: ordenId },
-                estado : 'Pendiente',
+                estado : esTPUAprob ? 'Aprobado' : 'Pendiente',
                 userObj: req.user || 'Sistema',
-                detalle: 'Pedido de diseñador aprobado por el cliente',
-                guard  : "Estado = 'Cargando...'",
+                detalle: esTPUAprob ? 'Boceto aprobado por el cliente' : 'Pedido de diseñador aprobado por el cliente',
+                guard  : esTPUAprob ? null : "Estado = 'Cargando...'",
                 io     : req.app.get('socketio'),
             });
             await txAct.commit();
@@ -2234,6 +2329,83 @@ exports.aprobarPedido = async (req, res) => {
     } catch (err) {
         logger.error('❌ Error aprobando pedido de diseñador:', err);
         res.status(500).json({ error: 'No se pudo aprobar el pedido.' });
+    }
+};
+
+// POST /api/web-orders/rechazar-pedido — el CLIENTE rechaza el boceto de un pedido retenido.
+// La orden vuelve a producción (Estado 'Pendiente') con FechaRechazoCliente marcada: el tablero
+// del área la pinta en rojo y el operario corrige el boceto y la reenvía a aprobación (ahí se
+// limpia la marca). Mismos guards que aprobarPedido: solo el cliente dueño, solo mientras espera.
+exports.rechazarPedido = async (req, res) => {
+    try {
+        const codCliente = req.user?.codCliente;
+        const ordenId = parseInt(req.body?.ordenId);
+        const motivo = String(req.body?.motivo || '').trim().substring(0, 300);
+        if (!codCliente || req.user?.role !== 'WEB_CLIENT' || req.disenadorId) {
+            return res.status(403).json({ error: 'Solo el cliente puede rechazar sus pedidos.' });
+        }
+        if (!ordenId) return res.status(400).json({ error: 'Falta ordenId.' });
+        // El motivo es OBLIGATORIO: sin él, producción no sabe qué corregir del boceto.
+        if (!motivo) return res.status(400).json({ error: 'Contanos qué hay que corregir del boceto.' });
+
+        const pool = await getPool();
+        const check = await pool.request()
+            .input('OID', sql.Int, ordenId)
+            .input('Cod', sql.Int, codCliente)
+            .query(`
+                SELECT OrdenID FROM Ordenes
+                WHERE OrdenID = @OID AND CodCliente = @Cod
+                  AND ISNULL(AprobacionPendiente, 0) = 1
+            `);
+        if (check.recordset.length === 0) {
+            return res.status(404).json({ error: 'Pedido no encontrado o ya resuelto.' });
+        }
+
+        await exports.ensureColFechaAprobacion(pool);
+        await pool.request().input('OID', sql.Int, ordenId)
+            .query('UPDATE Ordenes SET AprobacionPendiente = 0, FechaRechazoCliente = GETDATE() WHERE OrdenID = @OID');
+
+        // La elección de texturas era sobre el boceto rechazado: las zonas del boceto nuevo pueden
+        // no coincidir, así que se descarta (misma regla que al re-subir el boceto).
+        try {
+            await pool.request().input('OID', sql.Int, ordenId)
+                .query('DELETE FROM dbo.OrdenTexturasTPU WHERE OrdenID = @OID');
+        } catch (_) { /* tabla aún no creada: no hay nada que borrar */ }
+
+        // Volver a 'Pendiente' para que el área la vea y la trabaje (el rechazo se lee por la marca).
+        const { changeOrderState } = require('../services/stateManagerService');
+        const tx = new sql.Transaction(pool);
+        await tx.begin();
+        try {
+            // 'Rechazado' cuelga de Pendiente: el general queda igual que antes y la columna del
+            // área dice qué pasó. Sin guard por 'Cargando...' — desde que se manda a aprobación la
+            // orden espera en 'Pendiente', no ahí.
+            await changeOrderState(tx, {
+                target : { type: 'ORDER', id: ordenId },
+                estado : 'Rechazado',
+                userObj: req.user || 'Cliente',
+                detalle: `Boceto RECHAZADO por el cliente${motivo ? `: ${motivo}` : ''}`,
+                io     : req.app.get('socketio'),
+            });
+            await tx.commit();
+        } catch (e) { await tx.rollback(); throw e; }
+
+        // El motivo también va a la Nota, que es lo que producción tiene a la vista en el detalle.
+        if (motivo) {
+            await pool.request()
+                .input('OID', sql.Int, ordenId)
+                .input('Mot', sql.NVarChar(400), `\nRECHAZO CLIENTE: ${motivo}`)
+                .query('UPDATE Ordenes SET Nota = CONCAT(ISNULL(Nota, \'\'), @Mot) WHERE OrdenID = @OID');
+        }
+
+        const io = req.app.get('socketio');
+        if (io) io.emit('server:ordersUpdated', { count: 1, source: 'rechazar-pedido' });
+
+        logger.info(`🚫 [TPU] Orden ${ordenId} RECHAZADA por el cliente ${codCliente}${motivo ? ` (motivo: ${motivo})` : ''}.`);
+        res.json({ success: true });
+    } catch (err) {
+        logger.error('❌ Error rechazando pedido:', err);
+        res.status(500).json({ error: 'No se pudo rechazar el pedido.' });
     }
 };
 
@@ -2462,13 +2634,15 @@ exports.getOrderFiles = async (req, res) => {
 };
 
 // ─── TPU: VISOR 3D DEL PARCHE (portal) ───────────────────────────────────────
-// El arte TPU son 6 capas (boceto, cmyk, corte, relieve, relieve 2, barniz). El portal solo
+// El arte TPU son varias capas (boceto, cmyk, corte, relieve…) — el número exacto lo fija
+// CAPAS_ARTE_TPU en ordersController, acá solo importan los roles. El portal solo
 // LISTA el boceto (getOrderFiles), pero el visor 3D necesita el CONTENIDO de las capas internas
 // para armar el modelo (silueta del corte + arte cmyk + relieve como altura). Estos endpoints
 // exponen ese contenido SOLO al dueño del pedido (CodCliente del token) y solo en órdenes TPU.
 
 // Rol de una capa según el nombre del archivo (misma convención de nombres que usa producción).
-const rolCapaTpu = (nombre) => {
+// Exportado: los endpoints internos del visor (ordersController) usan la misma convención.
+const rolCapaTpu = exports.rolCapaTpu = (nombre) => {
     const n = String(nombre || '').toLowerCase();
     if (n.includes('boceto')) return 'boceto';
     if (n.includes('cmyk')) return 'cmyk';
@@ -2634,6 +2808,7 @@ exports.leerTexturasOrden = async (pool, ordenId, codCliente = null) => {
         .input('cod', sql.Int, codCliente || 0)
         .query(`
             SELECT t.ZonaIndice, t.ArchivoTextura, ISNULL(t.Barniz, 0) AS Barniz,
+                   t.Escala, t.Altura, t.OffsetX, t.OffsetY,
                    t.ElegidaPor, t.FechaEleccion, t.FechaModificacion
             FROM dbo.OrdenTexturasTPU t WITH(NOLOCK)
             JOIN dbo.Ordenes o WITH(NOLOCK) ON o.OrdenID = t.OrdenID
@@ -2643,14 +2818,33 @@ exports.leerTexturasOrden = async (pool, ordenId, codCliente = null) => {
     return r.recordset;
 };
 
+// Número dentro de un rango, o null si no vino (null = "no lo mandes al UPDATE, dejá lo que había").
+const numEnRango = (v, min, max) => {
+    if (v === undefined || v === null || v === '') return null;
+    const n = Number(v);
+    if (!Number.isFinite(n)) return null;
+    return Math.min(max, Math.max(min, n));
+};
+
 // El valor de una zona admite dos formas:
 //   'lino.svg' | null            → solo textura (lo que manda el detalle de orden interno)
-//   { textura, barniz }          → textura + barniz sectorizado (lo que manda el visor 3D)
+//   { textura, barniz, escala, altura, dx, dy }
+//                                → textura + barniz sectorizado + cómo queda puesta (visor 3D)
+// Los ajustes ausentes viajan como null y el UPDATE los conserva: el selector de textura del
+// detalle de orden manda solo el nombre del archivo y no tiene por qué borrar la puesta en página
+// que eligió el cliente.
 const normalizaZona = (valor) => {
     if (valor && typeof valor === 'object') {
-        return { textura: valor.textura || null, barniz: !!valor.barniz };
+        return {
+            textura: valor.textura || null,
+            barniz: !!valor.barniz,
+            escala: numEnRango(valor.escala, 0.1, 10),
+            altura: numEnRango(valor.altura, 0, 4),
+            dx: numEnRango(valor.dx, 0, 1),
+            dy: numEnRango(valor.dy, 0, 1),
+        };
     }
-    return { textura: valor || null, barniz: false };
+    return { textura: valor || null, barniz: false, escala: null, altura: null, dx: null, dy: null };
 };
 
 // Valida el valor de una zona venga en la forma que venga.
@@ -2663,44 +2857,132 @@ exports.guardarTexturasOrden = async (pool, ordenId, elecciones, elegidaPor, usu
     for (const [zonaStr, valor] of Object.entries(elecciones || {})) {
         const zona = parseInt(zonaStr, 10);
         if (!Number.isInteger(zona) || zona < 0) continue;
-        const { textura, barniz } = normalizaZona(valor);
+        const { textura, barniz, escala, altura, dx, dy } = normalizaZona(valor);
         const archivo = textura ? String(textura).substring(0, 255) : null;
-        const upd = await pool.request()
+        const conAjustes = (req) => req
+            .input('E', sql.Float, escala)
+            .input('H', sql.Float, altura)
+            .input('X', sql.Float, dx)
+            .input('Y', sql.Float, dy);
+        const upd = await conAjustes(pool.request()
             .input('OID', sql.Int, ordenId)
             .input('Z', sql.Int, zona)
             .input('A', sql.NVarChar(255), archivo)
             .input('B', sql.Bit, barniz ? 1 : 0)
             .input('P', sql.VarChar(10), elegidaPor)
-            .input('U', sql.Int, usuarioId || null)
+            .input('U', sql.Int, usuarioId || null))
             .query(`
                 UPDATE dbo.OrdenTexturasTPU
                 SET ArchivoTextura = @A, Barniz = @B, ElegidaPor = @P,
+                    Escala = ISNULL(@E, Escala), Altura = ISNULL(@H, Altura),
+                    OffsetX = ISNULL(@X, OffsetX), OffsetY = ISNULL(@Y, OffsetY),
                     ModificadaPorUsuarioID = @U, FechaModificacion = GETDATE()
                 WHERE OrdenID = @OID AND ZonaIndice = @Z
             `);
         if (upd.rowsAffected[0] === 0) {
-            await pool.request()
+            await conAjustes(pool.request()
                 .input('OID', sql.Int, ordenId)
                 .input('Z', sql.Int, zona)
                 .input('A', sql.NVarChar(255), archivo)
                 .input('B', sql.Bit, barniz ? 1 : 0)
-                .input('P', sql.VarChar(10), elegidaPor)
+                .input('P', sql.VarChar(10), elegidaPor))
                 .query(`
-                    INSERT INTO dbo.OrdenTexturasTPU (OrdenID, ZonaIndice, ArchivoTextura, Barniz, ElegidaPor, FechaEleccion)
-                    VALUES (@OID, @Z, @A, @B, @P, GETDATE())
+                    INSERT INTO dbo.OrdenTexturasTPU (OrdenID, ZonaIndice, ArchivoTextura, Barniz, Escala, Altura, OffsetX, OffsetY, ElegidaPor, FechaEleccion)
+                    VALUES (@OID, @Z, @A, @B, @E, @H, @X, @Y, @P, GETDATE())
                 `);
         }
     }
 };
 
+// ─── TPU: BOCETO APROBADO (imagen de archivo) ────────────────────────────────
+// Al aprobar, el visor 3D arma un PNG con el parche renderizado + la referencia de qué textura,
+// escala y altura le tocó a cada zona, y lo manda acá. Queda como archivo de REFERENCIA de la
+// orden: es el documento que mira producción para fabricar.
+//
+// Va a ArchivosReferencia y no a ArchivosOrden porque no es algo que se imprima: es documentación.
+// Se REEMPLAZA en cada guardado (el diseñador puede redefinir las texturas después de la
+// aprobación) — una orden tiene un boceto aprobado, no una pila de versiones casi iguales.
+const NOMBRE_BOCETO_APROBADO = 'BOCETO APROBADO';
+exports.guardarBocetoAprobado = async (pool, ordenId, buffer, codigoOrden, resumen) => {
+    const driveService = require('../services/driveService');
+    const nombre = `${NOMBRE_BOCETO_APROBADO} - ${String(codigoOrden || ordenId).replace(/\//g, '-')}.png`;
+    // Data URL y no el Buffer pelado: con un Buffer, uploadToDrive manda el archivo como
+    // application/octet-stream y Drive lo trata como binario — no se previsualiza, se descarga.
+    // La rama de data URL saca el mime del prefijo, que es justo lo que hace falta acá.
+    const url = await driveService.uploadToDrive(
+        'data:image/png;base64,' + buffer.toString('base64'), nombre, 'TPU');
+
+    await pool.request()
+        .input('OID', sql.Int, ordenId)
+        .input('Pre', sql.VarChar(50), NOMBRE_BOCETO_APROBADO + '%')
+        .query('DELETE FROM dbo.ArchivosReferencia WHERE OrdenID = @OID AND NombreOriginal LIKE @Pre');
+
+    await pool.request()
+        .input('OID', sql.Int, ordenId)
+        .input('Tipo', sql.VarChar(50), 'Boceto aprobado')
+        .input('Nom', sql.NVarChar(255), nombre)
+        .input('Not', sql.NVarChar(sql.MAX), String(resumen || '').substring(0, 3999))
+        .input('Ubi', sql.VarChar(500), url)
+        .query(`
+            INSERT INTO dbo.ArchivosReferencia (OrdenID, TipoArchivo, NombreOriginal, NotasAdicionales, FechaSubida, UbicacionStorage)
+            VALUES (@OID, @Tipo, @Nom, @Not, GETDATE(), @Ubi)
+        `);
+    return { nombre, url };
+};
+
+// Lee el PNG que dejó multer en disco y limpia el temporal pase lo que pase.
+const leerYBorrarTmp = async (file) => {
+    const fs = require('fs');
+    if (!file?.path) return file?.buffer || null;
+    try { return await fs.promises.readFile(file.path); }
+    finally { fs.promises.unlink(file.path).catch(() => {}); }
+};
+exports.leerYBorrarTmp = leerYBorrarTmp;
+
+// POST /api/web-orders/orden/:ordenId/boceto-aprobado — lo manda el visor del cliente al aprobar.
+exports.subirBocetoAprobado = async (req, res) => {
+    const ordenId = parseInt(req.params.ordenId, 10);
+    const codCliente = req.user?.codCliente;
+    if (!ordenId || !codCliente || !req.file) return res.status(400).json({ error: 'Datos inválidos' });
+    try {
+        const pool = await getPool();
+        const chk = await pool.request()
+            .input('OID', sql.Int, ordenId)
+            .input('cod', sql.Int, codCliente)
+            .query('SELECT CodigoOrden FROM dbo.Ordenes WHERE OrdenID = @OID AND CodCliente = @cod');
+        if (!chk.recordset.length) return res.status(404).json({ error: 'Orden no encontrada.' });
+
+        const buffer = await leerYBorrarTmp(req.file);
+        if (!buffer) return res.status(400).json({ error: 'No llegó la imagen.' });
+        const out = await exports.guardarBocetoAprobado(
+            pool, ordenId, buffer, chk.recordset[0].CodigoOrden, req.body?.resumen);
+        res.json({ success: true, ...out });
+    } catch (err) {
+        logger.error('[subirBocetoAprobado] ' + err.message);
+        res.status(500).json({ error: 'No se pudo archivar el boceto aprobado.' });
+    }
+};
+
 // GET /api/web-orders/orden/:ordenId/texturas — lo que el cliente ya eligió (para reabrir el visor).
+// `eligeCliente` le dice al visor si mostrar la UI de elección: cuando las texturas las define el
+// diseñador ('DISENADOR'), el cliente solo mira el 3D y aprueba.
 exports.getTexturasOrden = async (req, res) => {
     const ordenId = parseInt(req.params.ordenId, 10);
     const codCliente = req.user?.codCliente;
     if (!ordenId || !codCliente) return res.status(400).json({ error: 'Datos inválidos' });
     try {
         const pool = await getPool();
-        res.json({ success: true, data: await exports.leerTexturasOrden(pool, ordenId, codCliente) });
+        await exports.ensureColFechaAprobacion(pool);
+        const [data, ordRes] = await Promise.all([
+            exports.leerTexturasOrden(pool, ordenId, codCliente),
+            pool.request().input('OID', sql.Int, ordenId).input('cod', sql.Int, codCliente)
+                .query('SELECT TexturasElige, FechaAprobacionCliente FROM dbo.Ordenes WITH(NOLOCK) WHERE OrdenID = @OID AND CodCliente = @cod'),
+        ]);
+        const o = ordRes.recordset[0] || {};
+        const eligeCliente = String(o.TexturasElige || '').toUpperCase() !== 'DISENADOR';
+        // `aprobado` apaga la edición del lado cliente: después de aprobar el visor sigue
+        // abriéndose (para ver lo elegido, sea propio o del diseñador) pero es solo mirar.
+        res.json({ success: true, data, eligeCliente, aprobado: !!o.FechaAprobacionCliente });
     } catch (err) {
         logger.error('[getTexturasOrden] ' + err.message);
         res.status(500).json({ error: 'No se pudieron leer las texturas de la orden.' });
@@ -2721,16 +3003,20 @@ exports.setTexturasOrden = async (req, res) => {
     }
     try {
         const pool = await getPool();
+        await exports.ensureColFechaAprobacion(pool);
         const chk = await pool.request()
             .input('OID', sql.Int, ordenId)
             .input('cod', sql.Int, codCliente)
             .query(`
-                SELECT OrdenID FROM dbo.Ordenes
+                SELECT OrdenID, TexturasElige FROM dbo.Ordenes
                 WHERE OrdenID = @OID AND CodCliente = @cod
-                  AND ISNULL(AprobacionPendiente, 0) = 1 AND Estado = 'Cargando...'
+                  AND ISNULL(AprobacionPendiente, 0) = 1
             `);
         if (!chk.recordset.length) {
             return res.status(409).json({ error: 'El pedido ya no está esperando tu aprobación: la elección quedó congelada.' });
+        }
+        if (String(chk.recordset[0].TexturasElige || '').toUpperCase() === 'DISENADOR') {
+            return res.status(403).json({ error: 'Las texturas de este pedido las definió el diseñador.' });
         }
         await exports.guardarTexturasOrden(pool, ordenId, elecciones, 'CLIENTE');
         res.json({ success: true });
@@ -2788,12 +3074,24 @@ exports.deleteIncompleteOrder = async (req, res) => {
         const pool = await getPool();
 
         // Verificar que sea del cliente y esté en 'Cargando...'
+        await exports.ensureColFechaAprobacion(pool);
         const check = await pool.request()
             .input('OID', sql.Int, id)
             .input('Cod', sql.Int, codCliente)
-            .query("SELECT OrdenID, Estado FROM Ordenes WHERE OrdenID = @OID AND CodCliente = @Cod");
+            .query("SELECT OrdenID, Estado, ISNULL(AprobacionPendiente, 0) AS AprobacionPendiente, FechaAprobacionCliente FROM Ordenes WHERE OrdenID = @OID AND CodCliente = @Cod");
 
         if (check.recordset.length === 0) return res.status(404).json({ error: "Pedido no encontrado o no autorizado." });
+
+        // Retenido por APROBACIÓN: está en 'Cargando...' a propósito, no es una subida fallida.
+        // Sin esta guarda, el "eliminar error" hard-deleteaba un pedido con el boceto ya diseñado.
+        if (check.recordset[0].AprobacionPendiente) {
+            return res.status(400).json({ error: 'Este pedido está esperando tu aprobación, no se puede eliminar. Si no lo querés, rechazalo contando el motivo.' });
+        }
+
+        // Ya APROBADO: entró a producción — desde el portal no se cancela más.
+        if (check.recordset[0].FechaAprobacionCliente) {
+            return res.status(400).json({ error: 'Ya aprobaste este pedido y entró a producción: no se puede cancelar desde el portal. Contactanos si necesitás frenarlo.' });
+        }
 
         // Permitir cancelar si está Cargando (fail) o Pendiente (aún no tomado)
         const estado = check.recordset[0].Estado;
@@ -2857,9 +3155,10 @@ exports.deleteOrderBundle = async (req, res) => {
 
         // 1. Identificar todas las órdenes del bundle
         const findQuery = `
-            SELECT OrdenID, Estado, CodigoOrden 
-            FROM Ordenes 
-            WHERE CodCliente = @Cod 
+            SELECT OrdenID, Estado, CodigoOrden,
+                   ISNULL(AprobacionPendiente, 0) AS AprobacionPendiente
+            FROM Ordenes
+            WHERE CodCliente = @Cod
             AND (NoDocERP = @Doc OR CodigoOrden = @Doc)
         `;
 
@@ -2869,6 +3168,12 @@ exports.deleteOrderBundle = async (req, res) => {
             .query(findQuery);
 
         if (check.recordset.length === 0) return res.status(404).json({ error: "Proyecto no encontrado." });
+
+        // Retenido por aprobación: vive en 'Cargando...' a propósito (hay un boceto diseñado
+        // adentro) — no es un proyecto fallido y el borrado de zombies no lo puede arrastrar.
+        if (check.recordset.some(o => o.AprobacionPendiente)) {
+            return res.status(400).json({ error: 'Este pedido está esperando tu aprobación, no se puede eliminar. Si no lo querés, rechazalo contando el motivo.' });
+        }
 
         const orders = check.recordset;
         const ids = orders.map(o => o.OrdenID);
