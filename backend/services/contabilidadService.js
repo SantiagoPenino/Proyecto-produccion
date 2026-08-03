@@ -2532,22 +2532,41 @@ async function cerrarCicloCompleto({
             WHERE ID = @ID
           `);
           
-        // 3. Recalcular MontoTotal de PedidosCobranza
+        // 3. Recalcular MontoTotal de PedidosCobranza ("Comprar y personalizar": no sumar
+        // las líneas hermanas EMB/DF/TPU/EST, ya incluidas en el subtotal de PRO).
         await pool.request().input('PID', sql.Int, PedidoCobranzaID).query(`
           UPDATE dbo.PedidosCobranza
-          SET MontoTotal = (SELECT ISNULL(SUM(Subtotal),0) FROM dbo.PedidosCobranzaDetalle WHERE PedidoCobranzaID = @PID)
+          SET MontoTotal = (SELECT ISNULL(SUM(Subtotal),0) FROM dbo.PedidosCobranzaDetalle WHERE PedidoCobranzaID = @PID AND ISNULL(EsHermanaConsolidada,0) = 0)
           WHERE ID = @PID
         `);
         
-        // 4. Actualizar el MovImporte en MovimientosCuenta asociado a esta Orden
-        await pool.request().input('PID', sql.Int, PedidoCobranzaID).input('CicIdCiclo', sql.Int, CicIdCiclo).query(`
+        // 4. Actualizar el MovImporte en MovimientosCuenta asociado a esta Orden.
+        // OJO: PedidosCobranza.NoDocERP guarda el número SIN prefijo ('9669') y
+        // Ordenes.CodigoOrden lo lleva CON prefijo de área ('SUB-9669'), por eso el
+        // match principal es por PedidosCobranzaDetalle.OrdenID (caso TDH ET-3815:
+        // el JOIN por texto no matcheaba nada y el cierre facturaba precios viejos).
+        // Solo se toca si la orden tiene UN único mov ORDEN vivo en el ciclo: con
+        // movimientos partidos no se puede repartir el MontoTotal sin duplicar.
+        const movUpd = await pool.request().input('PID', sql.Int, PedidoCobranzaID).input('CicIdCiclo', sql.Int, CicIdCiclo).query(`
           UPDATE m
           SET m.MovImporte = - (SELECT MontoTotal FROM dbo.PedidosCobranza WHERE ID = @PID)
           FROM dbo.MovimientosCuenta m
-          JOIN dbo.Ordenes erp ON erp.OrdenID = m.OrdIdOrden
-          JOIN dbo.PedidosCobranza pc ON LTRIM(RTRIM(pc.NoDocERP)) = erp.CodigoOrden
-          WHERE pc.ID = @PID AND m.MovTipo = 'ORDEN' AND m.CicIdCiclo = @CicIdCiclo
+          WHERE m.MovTipo = 'ORDEN' AND m.CicIdCiclo = @CicIdCiclo
+            AND (m.MovAnulado IS NULL OR m.MovAnulado = 0)
+            AND (
+              EXISTS (SELECT 1 FROM dbo.PedidosCobranzaDetalle pcd
+                      WHERE pcd.PedidoCobranzaID = @PID AND pcd.OrdenID = m.OrdIdOrden)
+              OR EXISTS (SELECT 1 FROM dbo.Ordenes erp
+                         JOIN dbo.PedidosCobranza pc ON LTRIM(RTRIM(pc.NoDocERP)) = erp.CodigoOrden
+                         WHERE erp.OrdenID = m.OrdIdOrden AND pc.ID = @PID)
+            )
+            AND 1 = (SELECT COUNT(*) FROM dbo.MovimientosCuenta m2
+                     WHERE m2.OrdIdOrden = m.OrdIdOrden AND m2.CicIdCiclo = m.CicIdCiclo
+                       AND m2.MovTipo = 'ORDEN' AND (m2.MovAnulado IS NULL OR m2.MovAnulado = 0))
         `);
+        if ((movUpd.rowsAffected?.[0] || 0) === 0) {
+          logger.warn(`[CICLO] Ajuste manual: no se actualizó ningún mov ORDEN del pedido ${PedidoCobranzaID} en el ciclo ${CicIdCiclo}; el total del cierre puede no reflejar el precio editado.`);
+        }
       }
     }
   }
@@ -2598,8 +2617,11 @@ async function cerrarCicloCompleto({
     FROM   dbo.MovimientosCuenta
     WHERE  CicIdCiclo = @CicIdCiclo
       AND  (MovAnulado IS NULL OR MovAnulado = 0)
-      AND  MovTipo    != 'CIERRE_CICLO'
-      AND  MovImporte  < 0              -- SOLO órdenes/débitos. Los pagos son operaciones separadas.
+      AND  MovTipo IN ('ORDEN','ORDEN_ANTICIPO') -- SOLO órdenes. Débitos sueltos (PAGO_CRUZADO negativo,
+                                        -- reversas ENTREGA) NO se facturan: no aparecen en las líneas de la
+                                        -- pre-factura ni los vincula el paso de link (caso CAPA ET-3719:
+                                        -- inflaban el total 402,17 USD y se iban a re-facturar en el ciclo siguiente).
+      AND  MovImporte  < 0
       AND  DocIdDocumento IS NULL       -- excluir órdenes ya facturadas individualmente
   `);
   
@@ -2802,6 +2824,21 @@ async function cerrarCicloCompleto({
         }
       }
 
+      // GUARD anti-descuadre: el total del cabezal sale de los movimientos y las
+      // líneas vienen de la pre-factura del front. Si no coinciden, el documento
+      // nace roto (cabezal/deuda ≠ PDF/DGI, casos TDH ET-3815 y Casas FA-360:
+      // órdenes que entraron al ciclo después de abrir la pre-factura). Mejor
+      // frenar acá y que el usuario reabra la pre-factura actualizada.
+      if (mappedLineas.length > 0 && !(montoDescuentoCalculado > 0)) {
+        const sumLineas = mappedLineas.reduce((acc, l) => acc + (l.total || 0), 0);
+        if (Math.abs(sumLineas - docTotal) > 1) {
+          throw new Error(
+            `El total del ciclo (${docTotal.toFixed(2)}) no coincide con la suma de las líneas de la pre-factura (${sumLineas.toFixed(2)}). ` +
+            `Cerrá y volvé a abrir la pre-factura para refrescar las órdenes/precios del ciclo antes de facturar.`
+          );
+        }
+      }
+
       DocIdDocumento = await contabilidadCore.crearDocumentoContable({
         header: {
           cueIdCuenta: cueIdFactura,
@@ -2818,7 +2855,12 @@ async function cerrarCicloCompleto({
           cfeEstado: 'PENDIENTE',
           usuarioId: UsuarioAlta,
           observaciones: docObservaciones,
-          docPagado: tipoDocumento.toUpperCase().includes('CONTADO'),
+          // El cierre de ciclo NUNCA cobra en el acto: DocPagado lo estampa la caja
+          // al saldar la deuda (cajaController pago-deuda). Marcarlo acá dejaba
+          // docs "pagados" con DeudaDocumento PENDIENTE y activaba el candado de
+          // factura cobrada. La forma de pago Contado ante DGI la resuelve
+          // sisnetService por el tipo de documento, no por este flag.
+          docPagado: false,
           cicIdCiclo: CicIdCiclo,
           docFechaDesde: ciclo.CicFechaInicio,
           docFechaHasta: fechaCierreReal,
