@@ -167,7 +167,9 @@ const PAGE_COUNT_MAX_SIZE = 25 * 1024 * 1024; // 25MB
 const getPdfDimensionsFromFile = (file) => {
     return new Promise((resolve) => {
         const headSize = Math.min(file.size, 500000);
-        const tailSize = file.size > 1000000 ? Math.min(3000000, file.size - headSize) : 0;
+        // Leer la cola SIEMPRE que quede algo después del head (antes arrancaba recién en 1MB,
+        // así que los archivos de 500KB–1MB nunca veían su propio final).
+        const tailSize = file.size > headSize ? Math.min(3000000, file.size - headSize) : 0;
 
         const searchMediaBox = (text) => {
             const data = text.replace(/\r\n?/g, ' ').replace(/\n/g, ' ');
@@ -226,24 +228,19 @@ const getPdfDimensionsFromFile = (file) => {
         headReader.onload = (e) => {
             try {
                 const headResult = searchMediaBox(e.target.result);
-                // Si encontramos MediaBox en el inicio, listo
-                if (headResult && headResult.type === 'MediaBox') {
-                    finalize(headResult);
-                    return;
-                }
-
-                // Si el archivo es grande, leer también el final
+                // NO cortar acá aunque el head ya traiga un MediaBox: los PDF guardados de forma
+                // INCREMENTAL (Illustrator) dejan la página vieja al principio del archivo y anexan
+                // la vigente al final. Quedarse con la del head devuelve la medida de una versión
+                // anterior del arte (caso real: 0,21 × 0,53 m en vez de 0,78 × 2,00 m).
+                // El final del archivo es la única fuente confiable: ahí está lo último que se guardó.
                 if (tailSize > 0) {
                     const tailReader = new FileReader();
                     tailReader.onload = (e2) => {
                         try {
                             const tailResult = searchMediaBox(e2.target.result);
-                            // Priorizar MediaBox del tail, sino lo que tengamos
-                            if (tailResult && tailResult.type === 'MediaBox') {
-                                finalize(tailResult);
-                            } else {
-                                finalize(headResult || tailResult);
-                            }
+                            // El final manda: es lo último que se guardó, o sea la versión vigente
+                            // de la página. Al head se cae solo si en la cola no había ninguna caja.
+                            finalize(tailResult || headResult);
                         } catch (err) {
                             console.error("[PDF PARSER] Error leyendo tail:", err);
                             finalize(headResult);

@@ -524,14 +524,13 @@ exports.printEtiquetaLote = async (req, res) => {
         const rollId = String(req.params.id || '');
         const pool = await getPool();
 
-        // La fecha se formatea EN SQL (dd/mm/yyyy, hh:mi) a propósito: el driver lee el DATETIME
-        // (guardado en hora local) como si fuera UTC, y formatearlo después en JS restaba 3h
-        // (un lote finalizado 11:01 se imprimía 08:01). Así sale tal cual quedó guardado.
+        // La fecha viaja como DATETIME y se formatea abajo pidiendo la zona de Montevideo. Armarla
+        // acá con CONVERT devolvía la hora TAL CUAL está guardada, y el SQL de producción corre en
+        // UTC: la etiqueta se imprimía con 3 horas de más. Ver backend/config/db.js (useUTC).
         const loteRes = await pool.request()
             .input('RID', sql.VarChar(50), rollId)
             .query(`
-                SELECT TOP 1 rl.Nombre AS LoteNombre, rl.AreaID,
-                       CONVERT(VARCHAR(10), f.Fin, 103) + ', ' + CONVERT(VARCHAR(5), f.Fin, 108) AS FechaFinStr
+                SELECT TOP 1 rl.Nombre AS LoteNombre, rl.AreaID, f.Fin AS FechaFin
                 FROM dbo.Rollos rl WITH(NOLOCK)
                 CROSS APPLY (
                     SELECT ISNULL((SELECT MAX(b.FechaFin) FROM dbo.BitacoraProduccion b WITH(NOLOCK)
@@ -564,7 +563,7 @@ exports.printEtiquetaLote = async (req, res) => {
         const totalValor = esTPU ? `${Math.round(metros)} u` : `${metros.toFixed(2)} m`;
 
         // Fallback solo si el rollo no existe (sin fila): ahí sí se formatea en JS, con zona explícita.
-        const fechaStr = lote.FechaFinStr || new Date().toLocaleString('es-UY', { timeZone: 'America/Montevideo', day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false });
+        const fechaStr = new Date(lote.FechaFin || Date.now()).toLocaleString('es-UY', { timeZone: 'America/Montevideo', day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false });
         const esc = (s) => String(s).replace(/[<>&]/g, c => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[c]));
 
         // El nombre del lote se achica según su largo para ocupar el ancho de la etiqueta en vez de

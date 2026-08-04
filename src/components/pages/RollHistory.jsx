@@ -177,11 +177,11 @@ const RollHistory = () => {
                 const finalizado = parse(info.row.original.FechaFinalizacion);
                 // Formato compacto para que las dos fechas entren sin ensanchar la columna:
                 // fecha DD/MM/YY y hora 24hs (sin AM/PM).
-                // timeZone UTC a propósito: SQL guarda la hora LOCAL, pero el driver la entrega como si
-                // fuera UTC. Formatear en la zona del navegador (-3) mostraba 3 horas menos (un lote
-                // creado 19:19 salía 16:19). Con UTC se muestra tal cual quedó guardada.
-                const fFecha = (d) => d.toLocaleDateString('es-UY', { day: '2-digit', month: '2-digit', year: '2-digit', timeZone: 'UTC' });
-                const fHora  = (d) => d.toLocaleTimeString('es-UY', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'UTC' });
+                // Zona fija de Montevideo, no la del dispositivo: el driver ya entrega el instante
+                // correcto (ver backend/config/db.js, useUTC), así que solo hay que pedir la hora de
+                // Uruguay. Fijarla evita que una tablet con la zona mal configurada muestre otra hora.
+                const fFecha = (d) => d.toLocaleDateString('es-UY', { day: '2-digit', month: '2-digit', year: '2-digit', timeZone: 'America/Montevideo' });
+                const fHora  = (d) => d.toLocaleTimeString('es-UY', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'America/Montevideo' });
                 const Bloque = ({ date, color, title }) => (
                     <div className="flex flex-col text-center whitespace-nowrap" title={title}>
                         {date ? (
