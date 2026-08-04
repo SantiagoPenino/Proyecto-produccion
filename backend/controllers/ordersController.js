@@ -2356,6 +2356,14 @@ exports.cancelOrder = async (req, res) => {
                 io       : req.app.get('socketio')
             });
 
+            // ECOUV: cancelar también su hermana de terminaciones (XEUV-*): sin la
+            // impresión no hay material que terminar. No-op para el resto de las áreas.
+            const { cancelarHermanaTerminaciones } = require('../utils/hermanaTerminaciones');
+            await cancelarHermanaTerminaciones(transaction, orderId, {
+                userObj : req.user || req.body.usuario,
+                io      : req.app.get('socketio')
+            });
+
             await transaction.commit();
 
             // AUTO-CLEANUP: si el lote quedó solo con órdenes muertas (Pronto/finalizadas/canceladas
@@ -2873,6 +2881,12 @@ exports.cancelFile = async (req, res) => {
                         detalle : 'Orden Auto-Cancelada (Sin archivos activos)',
                 io       : req.app.get('socketio')
             });
+                    // ECOUV: la hermana de terminaciones cae junto con la madre
+                    const { cancelarHermanaTerminaciones } = require('../utils/hermanaTerminaciones');
+                    await cancelarHermanaTerminaciones(transaction, ordenId, {
+                        userObj : req.user || req.body.usuario,
+                        io      : req.app.get('socketio')
+                    });
                     orderCancelled = true;
                 }
 

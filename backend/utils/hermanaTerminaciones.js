@@ -97,4 +97,54 @@ async function crearHermanaTerminaciones(transaction, ecouvId) {
     return { hermanaId, codigo: codigoHermana, cantTerm };
 }
 
-module.exports = { crearHermanaTerminaciones };
+/**
+ * Cancela la orden hermana TERMINAC (XEUV-*) cuando se cancela su orden ECOUV madre:
+ * sin la impresión no hay material que terminar. Idempotente: si la orden no es ECOUV
+ * o no tiene hermana viva, no hace nada y devuelve null.
+ * @param {object} transaction transacción sql activa
+ * @param {number} ecouvId OrdenID de la orden ECOUV que se está cancelando
+ * @param {object} [opts] { userObj, motivo, io } — mismo formato que changeOrderState
+ * @returns {Promise<{hermanaId:number, codigo:string}|null>}
+ */
+async function cancelarHermanaTerminaciones(transaction, ecouvId, opts = {}) {
+    const src = await new sql.Request(transaction)
+        .input('OID', sql.Int, ecouvId)
+        .query('SELECT TOP 1 CodigoOrden, AreaID FROM Ordenes WHERE OrdenID = @OID');
+    const o = src.recordset[0];
+    if (!o || String(o.AreaID || '').trim().toUpperCase() !== 'ECOUV') return null;
+
+    // Misma búsqueda que el guard anti-duplicado de crearHermanaTerminaciones:
+    // corchetes escapados para no matchear la hermana de otro pedido.
+    const ya = await new sql.Request(transaction)
+        .input('Nota', sql.NVarChar(200), `%![TERMINACIONES DE ${String(o.CodigoOrden || '').trim()}!]%`)
+        .query(`SELECT TOP 1 OrdenID, CodigoOrden FROM Ordenes
+                WHERE AreaID = 'TERMINAC' AND Estado NOT IN ('Cancelado','CANCELADO')
+                  AND Nota LIKE @Nota ESCAPE '!'`);
+    const hermana = ya.recordset[0];
+    if (!hermana) return null;
+
+    const motivo = opts.motivo || `Cancelada junto a su orden de impresión ${String(o.CodigoOrden || '').trim()}`;
+    await new sql.Request(transaction)
+        .input('HID', sql.Int, hermana.OrdenID)
+        .input('Obs', sql.NVarChar, ` [CANCELADO: ${motivo}]`)
+        .query(`UPDATE Ordenes
+                SET RolloID = NULL,
+                    Nota = CONCAT(ISNULL(Nota, ''), @Obs),
+                    Observaciones = CONCAT(ISNULL(Observaciones, ''), @Obs)
+                WHERE OrdenID = @HID`);
+
+    // Estado + historial + socket por el servicio central, igual que la orden madre
+    const { changeOrderState } = require('../services/stateManagerService');
+    await changeOrderState(transaction, {
+        target  : { type: 'ORDER', id: hermana.OrdenID },
+        estado  : 'Cancelado',
+        userObj : opts.userObj,
+        detalle : motivo,
+        io      : opts.io
+    });
+
+    logger.info(`[Terminaciones] Hermana ${String(hermana.CodigoOrden || '').trim()} (${hermana.OrdenID}) cancelada en cascada por cancelación de la ECOUV ${ecouvId}`);
+    return { hermanaId: hermana.OrdenID, codigo: String(hermana.CodigoOrden || '').trim() };
+}
+
+module.exports = { crearHermanaTerminaciones, cancelarHermanaTerminaciones };

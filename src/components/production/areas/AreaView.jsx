@@ -126,10 +126,13 @@ export default function AreaView({ areaKey: rawAreaKey, areaConfig, onSwitchTab 
         try { return sessionStorage.getItem(`areaSearch_${areaKey}`) || ""; } catch { return ""; }
     });
     const [activeFilters, setActiveFilters] = useState(() => {
+        // inks: filtro por tinta, solo se usa/muestra en ECOUV. El merge con el default
+        // cubre filtros guardados en sesión de antes de que existiera la categoría.
+        const emptyFilters = { priorities: [], statuses: [], areaStatuses: [], variants: [], inks: [] };
         try {
             const saved = sessionStorage.getItem(`areaFilters_${areaKey}`);
-            return saved ? JSON.parse(saved) : { priorities: [], statuses: [], areaStatuses: [], variants: [] };
-        } catch { return { priorities: [], statuses: [], areaStatuses: [], variants: [] }; }
+            return saved ? { ...emptyFilters, ...JSON.parse(saved) } : emptyFilters;
+        } catch { return emptyFilters; }
     });
     const [isFilterDropdownOpen, setIsFilterDropdownOpen] = useState(false);
     const filterDropdownRef = React.useRef(null);
@@ -164,12 +167,12 @@ export default function AreaView({ areaKey: rawAreaKey, areaConfig, onSwitchTab 
     };
 
     const clearFilters = () => {
-        const empty = { priorities: [], statuses: [], areaStatuses: [], variants: [] };
+        const empty = { priorities: [], statuses: [], areaStatuses: [], variants: [], inks: [] };
         setActiveFilters(empty);
         try { sessionStorage.removeItem(`areaFilters_${areaKey}`); } catch {}
     };
 
-    const activeFilterCount = (activeFilters.priorities?.length || 0) + (activeFilters.statuses?.length || 0) + (activeFilters.areaStatuses?.length || 0) + (activeFilters.variants?.length || 0);
+    const activeFilterCount = (activeFilters.priorities?.length || 0) + (activeFilters.statuses?.length || 0) + (activeFilters.areaStatuses?.length || 0) + (activeFilters.variants?.length || 0) + (activeFilters.inks?.length || 0);
 
     const [isNewOrderOpen, setIsNewOrderOpen] = useState(false);
     const [isStockOpen, setIsStockOpen] = useState(false);
@@ -446,12 +449,24 @@ export default function AreaView({ areaKey: rawAreaKey, areaConfig, onSwitchTab 
         return [...Array.from(unique).sort((a, b) => a.localeCompare(b))];
     }, [dbOrders]);
 
+    // Tintas presentes en la planilla (solo se muestra en ECOUV: la tinta es la que
+    // rutea el lote a la máquina — mismo dato que valida la asignación a lote)
+    const availableInks = useMemo(() => {
+        const unique = new Set(
+            dbOrders
+                .map(o => (o.ink || '').trim().toUpperCase())
+                .filter(v => v && v !== 'N/A')
+        );
+        return [...Array.from(unique).sort((a, b) => a.localeCompare(b))];
+    }, [dbOrders]);
+
     const isDTF = ['DF', 'DTF'].includes((areaKey || '').toUpperCase());
     const isSB = (areaKey || '').toUpperCase() === 'SB';
     // DIRECTA arma lotes por material igual que DTF: filtro por Material (la variante es única)
     // y validación de material uniforme al asignar a lote.
     const isDirecta = ['DIRECTA', 'IMD'].includes((areaKey || '').toUpperCase());
     const lotePorMaterial = isDTF || isDirecta;
+    const isEcouv = (areaKey || '').toUpperCase() === 'ECOUV';
 
     // 5. FILTRADO
     const displayOrders = showCancelled ? cancelledOrders : (showPronto ? prontoOrders : dbOrders);
@@ -504,6 +519,9 @@ export default function AreaView({ areaKey: rawAreaKey, areaConfig, onSwitchTab 
             } else {
                 result = result.filter(o => activeFilters.variants.includes((o.variantCode || '').trim().toUpperCase()));
             }
+        }
+        if (isEcouv && activeFilters.inks && activeFilters.inks.length > 0) {
+            result = result.filter(o => activeFilters.inks.includes((o.ink || '').trim().toUpperCase()));
         }
         if (activeFilters.statuses && activeFilters.statuses.length > 0) {
             result = result.filter(o => activeFilters.statuses.some(s => s.toLowerCase() === (o.areaStatus || o.status || 'Pendiente').toLowerCase()));
@@ -696,6 +714,29 @@ export default function AreaView({ areaKey: rawAreaKey, areaConfig, onSwitchTab 
                                         </div>
                                     </div>
                                 )
+                            )}
+
+                            {/* Tinta — solo ECOUV (rutea el lote a la máquina) */}
+                            {isEcouv && availableInks.length > 0 && (
+                                <div>
+                                    <span className="text-[10px] uppercase font-black text-zinc-400 tracking-wider mb-2 block">Tinta</span>
+                                    <div className="flex flex-wrap gap-2">
+                                        {availableInks.map(t => {
+                                            const isSelected = (activeFilters.inks || []).includes(t);
+                                            return (
+                                                <button
+                                                    key={t}
+                                                    onClick={() => toggleFilter('inks', t)}
+                                                    className={`px-3 py-1.5 text-xs font-bold border rounded-lg transition-colors capitalize shadow-sm ${
+                                                        isSelected ? 'bg-violet-600 text-white border-violet-600' : 'bg-white text-zinc-600 border-zinc-200 hover:bg-zinc-50 hover:border-zinc-300'
+                                                    }`}
+                                                >
+                                                    {t}
+                                                </button>
+                                            );
+                                        })}
+                                    </div>
+                                </div>
                             )}
 
                             {/* Separador + Cancelados / Prontas */}
