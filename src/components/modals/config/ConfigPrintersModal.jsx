@@ -56,13 +56,18 @@ const ConfigPrintersModal = ({ isOpen, onClose, areaCode, equipos }) => {
     };
 
     // --- EDITAR ---
+    // Valores legacy de Estado (ej. "OK") no existen en el select: el navegador muestra
+    // la primera opción pero el estado interno conserva el valor viejo y al guardar se
+    // re-guarda "OK". Se normaliza al entrar en edición para que lo que se ve sea lo que se guarda.
+    const ESTADOS_CONFIG = ['DISPONIBLE', 'MANTENIMIENTO', 'OCUPADO'];
     const startEdit = (eq) => {
         setEditingId(eq.EquipoID);
+        const estadoActual = String(eq.Estado || '').trim().toUpperCase();
         setEditForm({
             nombre: eq.Nombre,
             cap: eq.Capacidad || 100,
             vel: eq.Velocidad || 10,
-            estado: eq.Estado || 'DISPONIBLE',
+            estado: ESTADOS_CONFIG.includes(estadoActual) ? estadoActual : 'DISPONIBLE',
             estadoProceso: eq.EstadoProceso || 'DETENIDO',
             activo: eq.Activo !== false,
             separacionImpresion: !!(eq.SeparacionImpresion ?? eq.separacionImpresion ?? eq.separacionimpresion)
