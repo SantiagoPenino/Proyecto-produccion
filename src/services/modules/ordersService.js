@@ -71,9 +71,16 @@ export const ordersService = {
         return response.data;
     },
     // Sube un PDF de producción (arte) a una orden existente. Uso interno (TPU).
-    uploadProductionFile: async (ordenId, file, onProgress) => {
+    // tipoArchivo: 'Impresion' (default) | 'MATRIZ' (Bordado, DST/EMB de Wilcom).
+    uploadProductionFile: async (ordenId, file, onProgress, tipoArchivo = 'Impresion', extraFields = null) => {
         const formData = new FormData();
         formData.append('file', file);
+        formData.append('tipoArchivo', tipoArchivo);
+        // [PRO] Campos extra de la subida desde el detalle de la orden madre:
+        // copias del archivo + procesarPortal='1' (medición/renombrado como el portal).
+        if (extraFields) {
+            Object.entries(extraFields).forEach(([k, v]) => formData.append(k, v));
+        }
         const response = await api.post(`/orders/${ordenId}/production-file`, formData, {
             headers: { 'Content-Type': 'multipart/form-data' },
             // Progreso de subida (bytes enviados de ESTE archivo) para la barra del modal TPU.
@@ -84,6 +91,15 @@ export const ordersService = {
     // TPU: enviar la orden a aprobación del cliente (retiene hasta que apruebe).
     enviarAprobacionTPU: async (ordenId) => {
         const response = await api.post(`/orders/${ordenId}/enviar-aprobacion`);
+        return response.data;
+    },
+    // Notas de producción por orden — ADITIVAS (cada llamada agrega, nunca pisa).
+    getOrderNotes: async (ordenId) => {
+        const response = await api.get(`/orders/${ordenId}/notas`);
+        return response.data?.data || [];
+    },
+    addOrderNote: async (ordenId, texto) => {
+        const response = await api.post(`/orders/${ordenId}/notas`, { texto });
         return response.data;
     },
     // TPU: texturas por zona que eligió el cliente al aprobar el boceto.
@@ -184,6 +200,35 @@ export const ordersService = {
     },
     getReferences: async (orderId) => {
         const response = await api.get(`/orders/${orderId}/references`);
+        return response.data;
+    },
+    // [PRO] Archivos de referencia: alta manual con tipo (catálogo) + nota, y baja.
+    getTiposReferencia: async () => {
+        const response = await api.get('/orders/referencia-tipos');
+        return response.data;
+    },
+    uploadReferenceFile: async (ordenId, file, tipo, nota = '') => {
+        const formData = new FormData();
+        formData.append('file', file);
+        formData.append('tipo', tipo || 'REFERENCIA');
+        formData.append('nota', nota);
+        const response = await api.post(`/orders/${ordenId}/reference-file`, formData, {
+            headers: { 'Content-Type': 'multipart/form-data' },
+        });
+        return response.data;
+    },
+    deleteReferenceFile: async (refId) => {
+        const response = await api.delete(`/orders/reference/${refId}`);
+        return response.data;
+    },
+    // [PRO] Cantidad a fabricar (Magnitud global): edición manual, recotiza el pedido.
+    updateMagnitud: async (ordenId, magnitud) => {
+        const response = await api.put(`/orders/${ordenId}/magnitud`, { magnitud });
+        return response.data;
+    },
+    // [PRO] Reordenar Costura/Bordado/Estampado: `areas` es el nuevo orden deseado (AreaID).
+    updateRoutePriority: async (ordenId, areas) => {
+        const response = await api.put(`/orders/${ordenId}/route-priority`, { areas });
         return response.data;
     },
     getServices: async (orderId) => {

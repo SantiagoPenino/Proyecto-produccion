@@ -42,8 +42,16 @@ class LabelGenerationService {
             // a propósito (el precio viaja en la orden ECOUV). Sus etiquetas van con
             // importe 0 intencional — nunca el importe del pedido (duplicaría el retiro).
             const esTerminac = (o.AreaID || '').trim().toUpperCase() === 'TERMINAC';
+            // [PRENDAS] Bordado/DTF/TPU/Estampado/Corte/Costura de una prenda
+            // comprada+personalizada: trabajo interno de una orden madre PRO (el precio
+            // único viaja ahí). Mismo trato que TERMINAC arriba — necesitan poder imprimir
+            // su propio bulto de "próximo destino" sin cotización propia.
+            const esHermanaPrendaLbl = ['EMB', 'DF', 'TPU', 'EST', 'TWC', 'TWT', 'SB'].includes((o.AreaID || '').trim().toUpperCase())
+                ? (await pool.request().input('Doc', sql.VarChar, String(o.NoDocERP || ''))
+                    .query("SELECT TOP 1 1 AS X FROM Ordenes WHERE NoDocERP = @Doc AND AreaID = 'PRO'")).recordset.length > 0
+                : false;
 
-            if (magnitudValor <= 0 && !esRepoLocal && !esTerminac) {
+            if (magnitudValor <= 0 && !esRepoLocal && !esTerminac && !esHermanaPrendaLbl) {
                 return { success: false, error: `No se pueden generar etiquetas: La magnitud cotizada es 0 o inválida. Revise la cotización de los items para esta área en 'Cotizar Productos'.` };
             }
 
@@ -102,7 +110,7 @@ class LabelGenerationService {
             const esReposicion = codOrd.includes('-R') || prioridad === 'REPOSICIÓN' || prioridad === 'REPOSICION';
             const esPrepago = (dbPerfilesPrecio && dbPerfilesPrecio.toLowerCase().includes('prepago')) || (dbDetalleCostos && dbDetalleCostos.toLowerCase().includes('prepago'));
             
-            if (!esReposicion && !esPrepago && !esTerminac && (importeTotalStr === '0.00' || importeTotalStr === '0' || Number(importeTotalStr) <= 0)) {
+            if (!esReposicion && !esPrepago && !esTerminac && !esHermanaPrendaLbl && (importeTotalStr === '0.00' || importeTotalStr === '0' || Number(importeTotalStr) <= 0)) {
                 return { success: false, error: 'Calculo Frio: La orden no cuenta con un costo válido (Es $0). Vaya a Edit Cotización e ingrese un valor, o asegúrese de aplicar prepago o código R para habilitar $0.' };
             }
 

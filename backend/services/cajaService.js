@@ -458,7 +458,10 @@ async function procesarVentaDirecta(payload) {
               SELECT ISNULL(SUM(pcd.Subtotal),0) AS T
               FROM dbo.PedidosCobranza pc
               JOIN dbo.PedidosCobranzaDetalle pcd ON pcd.PedidoCobranzaID = pc.ID
-              WHERE LTRIM(RTRIM(CAST(pc.NoDocERP AS VARCHAR(100)))) = @ND`);
+              WHERE LTRIM(RTRIM(CAST(pc.NoDocERP AS VARCHAR(100)))) = @ND
+                -- "Comprar y personalizar": no sumar las líneas hermanas (EMB/DF/TPU/EST),
+                -- ya están incluidas dentro del subtotal de la línea de PRO.
+                AND ISNULL(pcd.EsHermanaConsolidada, 0) = 0`);
             const v = parseFloat(t.recordset[0]?.T) || 0; tot.set(pk, v); sumTot += v;
           }
           for (const pk of keys) {
@@ -479,7 +482,8 @@ async function procesarVentaDirecta(payload) {
           JOIN dbo.PedidosCobranzaDetalle pcd ON pcd.PedidoCobranzaID = pc.ID
           LEFT JOIN dbo.Ordenes o2 WITH(NOLOCK) ON o2.OrdenID = pcd.OrdenID
           LEFT JOIN dbo.Articulos art WITH(NOLOCK) ON art.ProIdProducto = pcd.ProIdProducto
-          WHERE LTRIM(RTRIM(CAST(pc.NoDocERP AS VARCHAR(100)))) = @ND`);
+          WHERE LTRIM(RTRIM(CAST(pc.NoDocERP AS VARCHAR(100)))) = @ND
+            AND ISNULL(pcd.EsHermanaConsolidada, 0) = 0`);
         const rows = det.recordset || [];
         const totalLineas = rows.reduce((s, r) => s + (parseFloat(r.Subtotal) || 0), 0);
 

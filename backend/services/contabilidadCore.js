@@ -456,7 +456,12 @@ const resolverLineasDetalle = async ({ tcaIdTransaccion, orderIds, monedaFactura
                  CASE WHEN CHARINDEX(' ', ISNULL(od.OrdCodigoOrden, CAST(td.TdeCodigoReferencia AS VARCHAR(100)))) > 0
                       THEN CHARINDEX(' ', ISNULL(od.OrdCodigoOrden, CAST(td.TdeCodigoReferencia AS VARCHAR(100)))) - 1
                       ELSE LEN(ISNULL(od.OrdCodigoOrden, CAST(td.TdeCodigoReferencia AS VARCHAR(100)))) END)
-        LEFT JOIN dbo.PedidosCobranzaDetalle pcd ON pcd.PedidoCobranzaID = pc.ID
+        -- "Comprar y personalizar": PedidosCobranzaDetalle puede tener, para el mismo
+        -- pedido, la línea de PRO (ya consolidada, lo que se factura) MÁS las líneas de
+        -- sus hermanas EMB/DF/TPU/EST (guardadas para detalle futuro, EsHermanaConsolidada=1,
+        -- ya sumadas DENTRO del subtotal de PRO). Sin este filtro, el join fanea a una fila
+        -- por cada línea del pedido y duplica el ítem de la factura.
+        LEFT JOIN dbo.PedidosCobranzaDetalle pcd ON pcd.PedidoCobranzaID = pc.ID AND ISNULL(pcd.EsHermanaConsolidada, 0) = 0
         LEFT JOIN dbo.Articulos art    ON art.ProIdProducto   = ISNULL(pcd.ProIdProducto, od.ProIdProducto)
         LEFT JOIN dbo.Articulos artod  ON artod.ProIdProducto = od.ProIdProducto
         WHERE td.TcaIdTransaccion = @tcaId
@@ -528,7 +533,9 @@ const resolverLineasDetalle = async ({ tcaIdTransaccion, orderIds, monedaFactura
              ELSE ISNULL(pc.Moneda, ISNULL(pcd.Moneda, 'UYU')) END AS MonedaPC
       FROM dbo.OrdenesDeposito od
       LEFT JOIN dbo.PedidosCobranza pc          ON LTRIM(RTRIM(pc.NoDocERP)) = od.OrdCodigoOrden
-      LEFT JOIN dbo.PedidosCobranzaDetalle pcd  ON pcd.PedidoCobranzaID = pc.ID
+      -- Ver nota de MODO 1: excluir hermanas consolidadas (EMB/DF/TPU/EST de "Comprar y
+      -- personalizar") para que el join no faneé a más de una fila por pedido.
+      LEFT JOIN dbo.PedidosCobranzaDetalle pcd  ON pcd.PedidoCobranzaID = pc.ID AND ISNULL(pcd.EsHermanaConsolidada, 0) = 0
       LEFT JOIN dbo.Articulos art               ON art.ProIdProducto    = od.ProIdProducto
       LEFT JOIN dbo.Articulos art_pcd           ON art_pcd.ProIdProducto = pcd.ProIdProducto
       WHERE od.OrdIdOrden IN (${idList})

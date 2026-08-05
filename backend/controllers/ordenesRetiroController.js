@@ -1189,12 +1189,13 @@ const editarCostoOrden = async (req, res) => {
             `);
         }
 
-        // Recalcular MontoTotal del pedido
+        // Recalcular MontoTotal del pedido ("Comprar y personalizar": no sumar las líneas
+        // hermanas EMB/DF/TPU/EST, ya incluidas en el subtotal de PRO).
         await transaction.request()
           .input('PID', sql.Int, pcId)
           .query(`
             UPDATE dbo.PedidosCobranza
-            SET MontoTotal = (SELECT ISNULL(SUM(Subtotal),0) FROM dbo.PedidosCobranzaDetalle WHERE PedidoCobranzaID = @PID)
+            SET MontoTotal = (SELECT ISNULL(SUM(Subtotal),0) FROM dbo.PedidosCobranzaDetalle WHERE PedidoCobranzaID = @PID AND ISNULL(EsHermanaConsolidada,0) = 0)
             WHERE ID = @PID
           `);
       }

@@ -1,10 +1,14 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, forwardRef, useImperativeHandle } from 'react';
 import { toast } from 'sonner';
 import { Search, ShoppingCart, Package, Plus, Minus, Trash2, CheckCircle, RefreshCw, X, User } from 'lucide-react';
 import { wmsService } from '../../../services/api';
 import { clientsService } from '../../../services/api';
 
-const WmsOrderPage = () => {
+// [PRENDAS] embedded/initialClient son ADITIVOS: sin props (uso normal en
+// /atencion-cliente/pedidos-wms) el comportamiento es idéntico al de siempre.
+// Se usan para incrustar este mismo carrito dentro de /ventas/pedido-prenda
+// cuando el vendedor elige "Comprar prendas", con el cliente ya elegido arriba.
+const WmsOrderPage = forwardRef(({ embedded = false, initialClient = null, onCartChange = null, personalizacionResumen = [], showOwnCheckout = true } = {}, ref) => {
     const [catalog, setCatalog] = useState([]);
     const [loading, setLoading] = useState(false);
     const [syncing, setSyncing] = useState(false);
@@ -18,8 +22,24 @@ const WmsOrderPage = () => {
     const [clientSearchTerm, setClientSearchTerm] = useState('');
     const [searchResults, setSearchResults] = useState([]);
     const [isSearchingClient, setIsSearchingClient] = useState(false);
-    const [selectedClient, setSelectedClient] = useState(null);
+    const [selectedClient, setSelectedClient] = useState(initialClient);
     const searchTimeoutRef = useRef(null);
+
+    // [PRENDAS] Si el padre cambia el cliente elegido, este carrito lo sigue.
+    useEffect(() => {
+        if (initialClient) setSelectedClient(initialClient);
+    }, [initialClient]);
+
+    // [PRENDAS] Tema: embebido usa dark (combina con /ventas/pedido-prenda), standalone
+    // sigue con el theme claro de siempre. `t('claro', 'oscuro')` elige según el modo.
+    const t = (lightCls, darkCls) => (embedded ? darkCls : lightCls);
+
+    // [PRENDAS] Avisa al padre qué hay en el carrito (array completo, no solo el total) —
+    // el padre lo usa para precargar "Cantidad Total" en Personalizar y, si personaliza,
+    // para armar la línea de producto terminado que se suma al mismo pedido de producción.
+    useEffect(() => {
+        if (onCartChange) onCartChange(cart);
+    }, [cart, onCartChange]);
 
     const [variantModalItem, setVariantModalItem] = useState(null);
     const [selectedVariantId, setSelectedVariantId] = useState(null);
@@ -299,12 +319,12 @@ const WmsOrderPage = () => {
     };
 
     const handleCheckout = async () => {
-        if (cart.length === 0) return;
+        if (cart.length === 0) return { success: false };
         if (!selectedClient) {
             toast.error('Por favor, selecciona un cliente para el pedido');
-            return;
+            return { success: false };
         }
-        
+
         const convertedItems = cart.map(i => {
             let itemPrice = i.precio;
             if (orderCurrency === 'USD' && i.moneda !== 'USD') {
@@ -341,14 +361,27 @@ const WmsOrderPage = () => {
                 setOrderState(prev => ({ ...prev, successCode: res.codigoVenta }));
                 printTicketData(res.codigoVenta, false); // Print the actual order ticket
                 setCart([]);
-                setSelectedClient(null);
-                setClientSearchTerm('');
+                if (!embedded) {
+                    setSelectedClient(null);
+                    setClientSearchTerm('');
+                }
                 toast.success('Pedido registrado con éxito y ticket generado');
+                return { success: true, codigoVenta: res.codigoVenta };
             }
+            return { success: false, message: res.message };
         } catch (error) {
             toast.error('Error al generar el pedido');
+            return { success: false, message: error?.response?.data?.error || error?.message || 'Error al generar el pedido' };
         }
     };
+
+    // [PRENDAS] Cuando está embebido y "Comprar" no personaliza, el botón "Confirmar
+    // Pedido" de PrendaOrderForm es el único punto de confirmación — dispara la compra
+    // WMS desde acá vía ref, reusando handleCheckout tal cual (misma conversión de
+    // moneda, mismo ticket) en vez de reimplementarlo aparte.
+    useImperativeHandle(ref, () => ({
+        confirmarCompra: () => handleCheckout(),
+    }));
 
     const filteredCatalog = catalog.filter(p => {
         const matchesSearch = p.Descripcion.toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -360,8 +393,8 @@ const WmsOrderPage = () => {
     // const totalCart = ... calculated at the top
 
     return (
-        <div className="p-6 bg-slate-50 min-h-screen relative">
-            
+        <div className={embedded ? "relative" : "p-6 bg-slate-50 min-h-screen relative"}>
+
             {/* Modal Variantes */}
             {variantModalItem && (
                 <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[100] flex items-center justify-center p-4">
@@ -373,7 +406,7 @@ const WmsOrderPage = () => {
                                 <h3 className="font-bold text-slate-800 text-lg">Opciones: {variantModalItem.Descripcion}</h3>
                                 <p className="text-xs text-slate-500 font-medium">Selecciona la variante que deseas añadir</p>
                             </div>
-                            <button onClick={() => setVariantModalItem(null)} className="p-2 bg-white rounded-full text-slate-400 hover:text-slate-700 shadow-sm border border-slate-200 transition-colors">
+                            <button type="button" onClick={() => setVariantModalItem(null)} className="p-2 bg-white rounded-full text-slate-400 hover:text-slate-700 shadow-sm border border-slate-200 transition-colors">
                                 <X size={18} />
                             </button>
                         </div>
@@ -456,7 +489,8 @@ const WmsOrderPage = () => {
                                             </div>
                                             <div className="flex flex-wrap gap-2">
                                                 {sizes.map(sz => (
-                                                    <button 
+                                                    <button
+                                                        type="button"
                                                         key={sz}
                                                         onClick={() => {
                                                             setSelectedSize(sz);
@@ -487,7 +521,8 @@ const WmsOrderPage = () => {
                                                     {colorsForSize.map(v => {
                                                         const hexColor = getColorHex(v.color);
                                                         return (
-                                                        <button 
+                                                        <button
+                                                            type="button"
                                                             key={v.color}
                                                             onClick={() => {
                                                                 if(v.stock > 0) {
@@ -551,8 +586,9 @@ const WmsOrderPage = () => {
                         <div className="p-6 border-t border-slate-100 bg-white">
                             <div className="flex items-center gap-4">
                                 <div className="flex items-center bg-slate-100 rounded-xl border border-slate-200 h-12">
-                                    <button 
-                                        onClick={() => setVariantQty(Math.max(1, variantQty - 1))} 
+                                    <button
+                                        type="button"
+                                        onClick={() => setVariantQty(Math.max(1, variantQty - 1))}
                                         className="px-4 h-full hover:bg-slate-200 rounded-l-xl transition-colors text-slate-600 font-bold"
                                         disabled={!selectedVariantId}
                                     >
@@ -570,18 +606,20 @@ const WmsOrderPage = () => {
                                         disabled={!selectedVariantId}
                                         className="w-16 text-center text-sm font-bold text-slate-800 bg-transparent border-none outline-none"
                                     />
-                                    <button 
+                                    <button
+                                        type="button"
                                         onClick={() => {
                                             const variant = variantModalItem.variantes.find(v => v.wms_variante_id === selectedVariantId);
                                             if (variant && variantQty < variant.stock) setVariantQty(variantQty + 1);
-                                        }} 
+                                        }}
                                         className="px-4 h-full hover:bg-slate-200 rounded-r-xl transition-colors text-slate-600 font-bold"
                                         disabled={!selectedVariantId}
                                     >
                                         <Plus size={16} />
                                     </button>
                                 </div>
-                                <button 
+                                <button
+                                    type="button"
                                     onClick={handleAddToCart}
                                     disabled={!selectedVariantId}
                                     className={`flex-1 h-12 rounded-xl font-bold text-white shadow-lg transition-all flex items-center justify-center gap-2 ${
@@ -612,7 +650,8 @@ const WmsOrderPage = () => {
                             <p className="text-xs text-slate-500 uppercase font-bold tracking-wider mb-1">CÓDIGO DE PEDIDO</p>
                             <p className="text-3xl font-mono font-black text-blue-600">{orderState.successCode}</p>
                         </div>
-                        <button 
+                        <button
+                            type="button"
                             onClick={() => setOrderState(prev => ({ ...prev, successCode: null }))}
                             className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3.5 px-4 rounded-xl shadow-lg shadow-blue-500/30 transition-all"
                         >
@@ -628,7 +667,8 @@ const WmsOrderPage = () => {
                 <div className="flex-1 min-w-0">
                     
                     {/* Header */}
-                    <div className="bg-white rounded-3xl shadow-sm border border-slate-200 p-6 mb-8 flex flex-col md:flex-row md:items-center justify-between gap-4">
+                    <div className={`rounded-3xl shadow-sm p-6 mb-8 flex flex-col md:flex-row md:items-center justify-between gap-4 ${t('bg-white border border-slate-200', 'bg-zinc-900/60 border border-zinc-700/50')}`}>
+                        {!embedded && (
                         <div className="flex items-center gap-4">
                             <div className="bg-gradient-to-tr from-blue-600 to-cyan-400 p-4 rounded-2xl text-white shadow-lg shadow-blue-200">
                                 <Package size={28} strokeWidth={2.5} />
@@ -638,13 +678,14 @@ const WmsOrderPage = () => {
                                 <p className="text-slate-500 font-medium mt-1">Catálogo de Venta Sincronizado</p>
                             </div>
                         </div>
-                        
+                        )}
+
                         <div className="flex items-center gap-4">
                             <button
                                 type="button"
                                 onClick={() => setHideOutOfStock(v => !v)}
                                 title={hideOutOfStock ? 'Mostrando solo productos con stock' : 'Mostrando todos los productos'}
-                                className="flex items-center gap-2.5 px-4 py-3 bg-slate-100 hover:bg-slate-200 rounded-2xl font-bold text-sm text-slate-700 transition-all"
+                                className={`flex items-center gap-2.5 px-4 py-3 rounded-2xl font-bold text-sm transition-all ${t('bg-slate-100 hover:bg-slate-200 text-slate-700', 'bg-zinc-800 hover:bg-zinc-700 text-zinc-300')}`}
                             >
                                 <span className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors ${hideOutOfStock ? 'bg-blue-600' : 'bg-slate-300'}`}>
                                     <span className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${hideOutOfStock ? 'translate-x-6' : 'translate-x-1'}`} />
@@ -655,7 +696,7 @@ const WmsOrderPage = () => {
                                 type="button"
                                 onClick={() => setShowImages(v => !v)}
                                 title={showImages ? 'Mostrando fotos en las cards' : 'Fotos ocultas en las cards'}
-                                className="flex items-center gap-2.5 px-4 py-3 bg-slate-100 hover:bg-slate-200 rounded-2xl font-bold text-sm text-slate-700 transition-all"
+                                className={`flex items-center gap-2.5 px-4 py-3 rounded-2xl font-bold text-sm transition-all ${t('bg-slate-100 hover:bg-slate-200 text-slate-700', 'bg-zinc-800 hover:bg-zinc-700 text-zinc-300')}`}
                             >
                                 <span className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors ${showImages ? 'bg-blue-600' : 'bg-slate-300'}`}>
                                     <span className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${showImages ? 'translate-x-6' : 'translate-x-1'}`} />
@@ -663,19 +704,20 @@ const WmsOrderPage = () => {
                                 Mostrar fotos
                             </button>
                             <div className="relative">
-                                <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
-                                <input 
-                                    type="text" 
-                                    placeholder="Buscar producto..." 
-                                    className="pl-11 pr-4 py-3 bg-slate-100 border border-transparent rounded-2xl w-full md:w-72 focus:border-blue-500 focus:bg-white focus:ring-4 focus:ring-blue-500/10 transition-all font-medium text-slate-700"
+                                <Search className={`absolute left-4 top-1/2 -translate-y-1/2 ${t('text-slate-400', 'text-zinc-500')}`} size={18} />
+                                <input
+                                    type="text"
+                                    placeholder="Buscar producto..."
+                                    className={`pl-11 pr-4 py-3 border rounded-2xl w-full md:w-72 focus:ring-4 transition-all font-medium ${t('bg-slate-100 border-transparent focus:border-blue-500 focus:bg-white focus:ring-blue-500/10 text-slate-700', 'bg-zinc-800 border-zinc-700 focus:border-cyan-500 focus:ring-cyan-500/10 text-zinc-200 placeholder-zinc-500')}`}
                                     value={searchTerm}
                                     onChange={(e) => setSearchTerm(e.target.value)}
                                 />
                             </div>
-                            <button 
-                                onClick={handleSync} 
+                            <button
+                                type="button"
+                                onClick={handleSync}
                                 disabled={syncing}
-                                className="flex items-center gap-2 bg-white border border-slate-200 hover:border-slate-300 hover:bg-slate-50 text-slate-700 px-5 py-3 rounded-2xl font-bold transition-all shadow-sm"
+                                className={`flex items-center gap-2 border px-5 py-3 rounded-2xl font-bold transition-all shadow-sm ${t('bg-white border-slate-200 hover:border-slate-300 hover:bg-slate-50 text-slate-700', 'bg-zinc-800 border-zinc-700 hover:border-zinc-600 hover:bg-zinc-700 text-zinc-300')}`}
                             >
                                 <RefreshCw size={18} className={syncing ? 'animate-spin text-blue-600' : 'text-slate-400'} />
                                 {syncing ? 'Sincronizando' : 'Sincronizar'}
@@ -691,37 +733,37 @@ const WmsOrderPage = () => {
                     ) : (
                         <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-6">
                             {filteredCatalog.map(product => (
-                                <div key={product.ProIdProducto} 
+                                <div key={product.ProIdProducto}
                                      onClick={() => openVariantModal(product)}
-                                     className="bg-white rounded-[1.5rem] border border-slate-200 overflow-hidden hover:shadow-xl hover:-translate-y-1 hover:border-blue-200 transition-all duration-300 cursor-pointer flex flex-col h-full group relative"
+                                     className={`rounded-[1.5rem] border overflow-hidden hover:shadow-xl hover:-translate-y-1 transition-all duration-300 cursor-pointer flex flex-col h-full group relative ${t('bg-white border-slate-200 hover:border-blue-200', 'bg-zinc-900/60 border-zinc-700/50 hover:border-cyan-500/50')}`}
                                 >
                                     {/* Image Placeholder */}
                                     {showImages && (
-                                        <div className="h-32 bg-slate-50 flex flex-col justify-center items-center relative overflow-hidden p-4">
+                                        <div className={`h-32 flex flex-col justify-center items-center relative overflow-hidden p-4 ${t('bg-slate-50', 'bg-zinc-800/60')}`}>
                                             {product.imagen ? (
                                                 <img src={product.imagen} alt={product.Descripcion} className="w-full h-full object-contain mix-blend-multiply group-hover:scale-105 transition-transform duration-500" />
                                             ) : (
-                                                <Package size={48} strokeWidth={1} className="text-slate-300 group-hover:scale-110 transition-transform duration-500" />
+                                                <Package size={48} strokeWidth={1} className={`group-hover:scale-110 transition-transform duration-500 ${t('text-slate-300', 'text-zinc-600')}`} />
                                             )}
                                         </div>
                                     )}
-                                    
-                                    <div className="p-4 flex-1 flex flex-col bg-white">
-                                        <h3 className="font-bold text-slate-800 text-base mb-2 leading-tight group-hover:text-blue-600 transition-colors line-clamp-2">{product.Descripcion}</h3>
-                                        
-                                        <div className="mt-auto flex justify-between items-center pt-3 border-t border-slate-100">
+
+                                    <div className={`p-4 flex-1 flex flex-col ${t('bg-white', 'bg-zinc-900/60')}`}>
+                                        <h3 className={`font-bold text-base mb-2 leading-tight transition-colors line-clamp-2 ${t('text-slate-800 group-hover:text-blue-600', 'text-zinc-100 group-hover:text-cyan-400')}`}>{product.Descripcion}</h3>
+
+                                        <div className={`mt-auto flex justify-between items-center pt-3 border-t ${t('border-slate-100', 'border-zinc-700/50')}`}>
                                             <div className="flex flex-col">
-                                                <span className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-0.5">Precio</span>
-                                                <span className="font-black text-lg text-slate-800">
+                                                <span className={`text-xs font-bold uppercase tracking-wider mb-0.5 ${t('text-slate-400', 'text-zinc-500')}`}>Precio</span>
+                                                <span className={`font-black text-lg ${t('text-slate-800', 'text-zinc-100')}`}>
                                                     {product.moneda === 'USD' ? 'U$S' : '$'} {Number(product.precio || 0).toFixed(2)}
                                                 </span>
                                             </div>
-                                            
+
                                             <div className="flex flex-col text-right">
                                                 {product.total_stock < 9999 && (
                                                     <>
-                                                        <span className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-0.5">Stock</span>
-                                                        <span className="font-black text-lg text-slate-700">
+                                                        <span className={`text-xs font-bold uppercase tracking-wider mb-0.5 ${t('text-slate-400', 'text-zinc-500')}`}>Stock</span>
+                                                        <span className={`font-black text-lg ${t('text-slate-700', 'text-zinc-300')}`}>
                                                             {product.total_stock}
                                                         </span>
                                                     </>
@@ -735,25 +777,34 @@ const WmsOrderPage = () => {
                     )}
                 </div>
 
-                {/* Cart Sidebar (Right) */}
-                <div className="w-full lg:w-[400px] shrink-0">
-                    <div className="bg-slate-800 rounded-[2.5rem] shadow-2xl overflow-hidden sticky top-6 h-[calc(100vh-3rem)] flex flex-col relative">
-                        
+                {/* Cart Sidebar (Right) — "chico" en modo embebido: más angosto, sin el
+                    h-[100vh] que asume página completa, todo más compacto. */}
+                <div className={`w-full shrink-0 ${t('lg:w-[400px]', 'lg:w-[300px]')}`}>
+                    <div className={`bg-slate-800 shadow-2xl overflow-hidden sticky flex flex-col relative ${t('rounded-[2.5rem] top-6 h-[calc(100vh-3rem)]', 'rounded-2xl top-4 max-h-[75vh]')}`}>
+
                         {/* Header Cart */}
-                        <div className="p-8 pb-6">
-                            <div className="flex justify-between items-center mb-8">
-                                <div className="flex items-center gap-3">
-                                    <ShoppingCart size={24} className="text-blue-400" />
-                                    <h2 className="font-extrabold text-xl text-white">Carrito de Pedido</h2>
+                        <div className={t('p-8 pb-6', 'p-4 pb-3')}>
+                            <div className={`flex justify-between items-center ${t('mb-8', 'mb-3')}`}>
+                                <div className="flex items-center gap-2">
+                                    <ShoppingCart size={embedded ? 18 : 24} className="text-blue-400" />
+                                    <h2 className={`font-extrabold text-white ${t('text-xl', 'text-sm')}`}>Carrito</h2>
                                 </div>
-                                <span className="bg-white/10 text-white text-xs font-bold px-3 py-1.5 rounded-full">
+                                <span className={`bg-white/10 text-white font-bold rounded-full ${t('text-xs px-3 py-1.5', 'text-[10px] px-2 py-1')}`}>
                                     {cart.length} items
                                 </span>
                             </div>
-                            
+
                             {/* Client Search / Card */}
                             <div>
-                                {!selectedClient ? (
+                                {embedded && selectedClient ? null : !selectedClient && embedded ? (
+                                    // [PRENDAS] Embebido: el cliente lo elige el vendedor arriba, en
+                                    // "Datos Generales del Pedido" — acá nunca se busca ni se cambia.
+                                    <div className="bg-slate-700/30 border border-dashed border-slate-600 rounded-2xl p-4 text-center">
+                                        <p className="text-xs text-slate-400 font-bold uppercase tracking-wider">
+                                            Elegí el cliente arriba, en "Datos Generales del Pedido"
+                                        </p>
+                                    </div>
+                                ) : !selectedClient ? (
                                     <div className="relative">
                                         <label className="text-xs text-slate-400 font-bold uppercase tracking-wider mb-2 block">Cliente</label>
                                         <div className="relative">
@@ -792,13 +843,16 @@ const WmsOrderPage = () => {
                                     </div>
                                 ) : (
                                     <div className="bg-white rounded-2xl p-5 shadow-lg border border-slate-200 relative">
-                                        <button 
+                                        {!initialClient && (
+                                        <button
+                                            type="button"
                                             onClick={() => setSelectedClient(null)}
                                             className="absolute top-4 right-4 p-2 bg-slate-50 hover:bg-red-50 text-slate-400 hover:text-red-500 rounded-xl transition-colors"
                                             title="Cambiar cliente"
                                         >
                                             <Trash2 size={18} />
                                         </button>
+                                        )}
                                         <div className="flex items-center gap-4 mb-4 border-b border-slate-100 pb-4">
                                             <div className="w-12 h-12 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center">
                                                 <User size={24} />
@@ -820,21 +874,21 @@ const WmsOrderPage = () => {
                         </div>
 
                         {/* Cart Items */}
-                        <div className="flex-1 overflow-y-auto px-6 pb-6 space-y-3 custom-scrollbar">
+                        <div className={`flex-1 overflow-y-auto custom-scrollbar ${t('px-6 pb-6 space-y-3', 'px-3 pb-3 space-y-2')}`}>
                             {cart.length === 0 ? (
-                                <div className="h-full flex flex-col items-center justify-center text-slate-400 opacity-50 pt-10">
-                                    <ShoppingCart size={64} strokeWidth={1} className="mb-4" />
-                                    <p className="font-medium">No hay productos seleccionados</p>
+                                <div className={`h-full flex flex-col items-center justify-center text-slate-400 opacity-50 ${t('pt-10', 'pt-4')}`}>
+                                    <ShoppingCart size={embedded ? 32 : 64} strokeWidth={1} className="mb-2" />
+                                    <p className={t('font-medium', 'text-xs font-medium')}>No hay productos seleccionados</p>
                                 </div>
                             ) : (
                                 cart.map(item => (
-                                    <div key={item.wms_variante_id} className="bg-slate-700/30 p-4 rounded-2xl flex gap-4 relative group">
-                                        <div className="flex-1">
-                                            <h4 className="text-sm font-bold text-white leading-tight pr-6 mb-1">{item.nombre}</h4>
-                                            <div className="flex justify-between items-end mt-3">
+                                    <div key={item.wms_variante_id} className={`bg-slate-700/30 rounded-xl flex gap-2 relative group ${t('p-4 rounded-2xl gap-4', 'p-2.5')}`}>
+                                        <div className="flex-1 min-w-0">
+                                            <h4 className={`font-bold text-white leading-tight pr-5 ${t('text-sm mb-1', 'text-xs mb-1.5 line-clamp-2')}`}>{item.nombre}</h4>
+                                            <div className={`flex justify-between items-end ${t('mt-3', 'mt-1.5')}`}>
                                                 <div className="flex items-center bg-slate-800 rounded-lg p-0.5 border border-slate-600">
-                                                    <button onClick={() => updateQuantity(item.wms_variante_id, -1)} className="p-1.5 hover:bg-slate-700 rounded-md transition-colors text-white">
-                                                        <Minus size={14} />
+                                                    <button type="button" onClick={() => updateQuantity(item.wms_variante_id, -1)} className={`hover:bg-slate-700 rounded-md transition-colors text-white ${t('p-1.5', 'p-1')}`}>
+                                                        <Minus size={embedded ? 10 : 14} />
                                                     </button>
                                                     <input
                                                         type="number"
@@ -848,87 +902,128 @@ const WmsOrderPage = () => {
                                                                     : ci
                                                             ));
                                                         }}
-                                                        className="w-12 text-center text-xs font-bold text-white bg-transparent border-none outline-none"
+                                                        className={`text-center font-bold text-white bg-transparent border-none outline-none ${t('w-12 text-xs', 'w-8 text-[11px]')}`}
                                                     />
-                                                    <button onClick={() => updateQuantity(item.wms_variante_id, 1)} className="p-1.5 hover:bg-slate-700 rounded-md transition-colors text-white">
-                                                        <Plus size={14} />
+                                                    <button type="button" onClick={() => updateQuantity(item.wms_variante_id, 1)} className={`hover:bg-slate-700 rounded-md transition-colors text-white ${t('p-1.5', 'p-1')}`}>
+                                                        <Plus size={embedded ? 10 : 14} />
                                                     </button>
                                                 </div>
-                                                <div className="flex flex-col items-end gap-1.5">
-                                                    <p className="text-sm font-bold text-white">{item.moneda === 'USD' ? 'U$S' : '$'} {(item.precio * item.cantidad).toFixed(2)}</p>
+                                                <div className={`flex flex-col items-end ${t('gap-1.5', 'gap-1')}`}>
+                                                    <p className={`font-bold text-white ${t('text-sm', 'text-xs')}`}>{item.moneda === 'USD' ? 'U$S' : '$'} {(item.precio * item.cantidad).toFixed(2)}</p>
+                                                    {!embedded && (
                                                     <div className="flex items-center gap-1.5">
                                                         <span className="text-[9px] font-bold text-slate-500 uppercase tracking-wider">PRECIO:</span>
                                                         <div className="relative w-16">
-                                                            <input 
-                                                                type="number" 
+                                                            <input
+                                                                type="number"
                                                                 min="0"
                                                                 step="0.01"
-                                                                value={item.precio} 
+                                                                value={item.precio}
                                                                 onChange={(e) => updatePrice(item.wms_variante_id, parseFloat(e.target.value) || 0)}
                                                                 className="w-full bg-slate-800 border border-slate-600 rounded-md text-[10px] font-bold text-white px-2 py-0.5 focus:outline-none focus:border-blue-500 transition-colors text-center"
                                                             />
                                                         </div>
                                                     </div>
+                                                    )}
                                                 </div>
                                             </div>
                                         </div>
-                                        <button 
+                                        <button
+                                            type="button"
                                             onClick={() => removeItem(item.wms_variante_id)}
-                                            className="absolute top-4 right-4 text-slate-400 hover:text-red-400 transition-colors p-1"
+                                            className={`absolute text-slate-400 hover:text-red-400 transition-colors ${t('top-4 right-4 p-1', 'top-2 right-2 p-0.5')}`}
                                         >
-                                            <Trash2 size={16} />
+                                            <Trash2 size={embedded ? 13 : 16} />
                                         </button>
                                     </div>
                                 ))
                             )}
                         </div>
 
+                        {/* [PRENDAS] Resumen de personalización — sin precio, no es parte de
+                            esta venta: son las Órdenes de producción que se van a crear aparte. */}
+                        {embedded && personalizacionResumen.length > 0 && (
+                            <div className="px-3 pb-2">
+                                <div className="bg-slate-900/60 border border-slate-700 rounded-xl p-2.5">
+                                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">Personalización agregada</p>
+                                    <div className="space-y-1">
+                                        {personalizacionResumen.map((s, idx) => (
+                                            <div key={idx} className="flex justify-between text-[11px]">
+                                                <span className="text-slate-300 font-medium">{s.label}</span>
+                                                <span className="text-slate-400">{s.cantidad || 0} prendas</span>
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+
                         {/* Footer / Total */}
-                        <div className="bg-slate-900 p-8 pt-6 z-10 border-t border-slate-700/50">
+                        <div className={`bg-slate-900 z-10 border-t border-slate-700/50 ${t('p-8 pt-6', 'p-3 pt-3')}`}>
+                            {!embedded && (
                             <div className="flex justify-between items-center mb-4 text-xs font-bold text-slate-400 bg-slate-800/50 px-4 py-2 rounded-xl border border-slate-700">
                                 <span className="flex items-center gap-2"><RefreshCw size={12} className="text-blue-400"/> TIPO DE CAMBIO</span>
                                 <span className="text-blue-400">${exchangeRate.toFixed(2)}</span>
                             </div>
-                            <div className="space-y-3 mb-6">
+                            )}
+                            <div className={t('space-y-3 mb-6', 'space-y-1.5 mb-3')}>
+                                {!embedded && (
                                 <div className="flex justify-between text-sm text-slate-400">
                                     <span>Subtotal:</span>
                                     <span>{orderCurrency === 'USD' ? 'U$S' : '$'} {totalCart.toFixed(2)}</span>
                                 </div>
-                                <div className="flex justify-between items-end pt-3 border-t border-slate-700">
-                                    <span className="text-slate-300 font-bold text-lg">Total:</span>
+                                )}
+                                <div className={`flex justify-between items-end ${t('pt-3 border-t border-slate-700', '')}`}>
+                                    <span className={`text-slate-300 font-bold ${t('text-lg', 'text-xs')}`}>Total:</span>
                                     <div className="text-right">
-                                        <span className="text-3xl font-black text-white tracking-tight">{orderCurrency === 'USD' ? 'U$S' : '$'} {totalCart.toFixed(2)}</span>
+                                        <span className={`font-black text-white tracking-tight ${t('text-3xl', 'text-lg')}`}>{orderCurrency === 'USD' ? 'U$S' : '$'} {totalCart.toFixed(2)}</span>
                                     </div>
                                 </div>
+                                {/* [PRENDAS] La personalización (Bordado/DTF/TPU/Estampado) se cotiza
+                                    aparte — este total es solo de lo comprado acá. */}
+                                {embedded && personalizacionResumen.length > 0 && (
+                                    <p className="text-[10px] text-slate-500 italic">No incluye el costo de la personalización</p>
+                                )}
                             </div>
-                            <div className="flex gap-3">
-                                <button 
+                            {showOwnCheckout && (
+                            <div className={t('flex gap-3', 'flex gap-2')}>
+                                {!embedded && (
+                                <button
+                                    type="button"
                                     onClick={handleCotizar}
                                     disabled={cart.length === 0}
                                     className={`w-1/3 py-4 rounded-2xl font-bold text-white text-sm transition-all duration-300 flex items-center justify-center ${
-                                        cart.length > 0 
-                                        ? 'bg-slate-700 hover:bg-slate-600 shadow-lg border border-slate-600' 
+                                        cart.length > 0
+                                        ? 'bg-slate-700 hover:bg-slate-600 shadow-lg border border-slate-600'
                                         : 'bg-slate-800 text-slate-600 cursor-not-allowed border border-transparent'
                                     }`}
                                 >
                                     Cotizar
                                 </button>
-                                <button 
+                                )}
+                                <button
+                                    type="button"
                                     onClick={handleCheckout}
                                     disabled={cart.length === 0 || !selectedClient}
                                     title={!selectedClient ? 'Debes seleccionar un cliente antes de confirmar' : ''}
-                                    className={`w-2/3 py-4 rounded-2xl font-bold text-white text-lg transition-all duration-300 flex items-center justify-center gap-2 ${
+                                    className={`rounded-2xl font-bold text-white transition-all duration-300 flex items-center justify-center gap-2 ${t('w-2/3 py-4 text-lg', 'w-full py-2.5 text-sm')} ${
                                         cart.length > 0 && selectedClient
-                                        ? 'bg-blue-600 hover:bg-blue-500 shadow-lg shadow-blue-600/30 hover:-translate-y-1' 
+                                        ? 'bg-blue-600 hover:bg-blue-500 shadow-lg shadow-blue-600/30 hover:-translate-y-1'
                                         : 'bg-slate-800 text-slate-600 cursor-not-allowed'
                                     }`}
                                 >
-                                    {!selectedClient && cart.length > 0 
+                                    {!selectedClient && cart.length > 0
                                         ? <><i className="fa-solid fa-user-slash text-sm"></i> Sin cliente</>
                                         : 'Confirmar'
                                     }
                                 </button>
                             </div>
+                            )}
+                            {!showOwnCheckout && (
+                                <p className="text-[11px] text-slate-500 text-center">
+                                    Se confirma con el botón "Confirmar Pedido" de abajo.
+                                </p>
+                            )}
                         </div>
 
                     </div>
@@ -937,6 +1032,8 @@ const WmsOrderPage = () => {
             </div>
         </div>
     );
-};
+});
+
+WmsOrderPage.displayName = 'WmsOrderPage';
 
 export default WmsOrderPage;

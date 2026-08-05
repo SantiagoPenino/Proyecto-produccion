@@ -38,6 +38,7 @@ const contabilidadService = require('../services/contabilidadService');
 const ERPSyncService = require('../services/erpSyncService');
 const { generateThumbnail } = require('../utils/thumbnailGenerator');
 const { construirNombreArchivo, materialParaNombre, usaNombreNuevo } = require('../utils/nombreArchivoOrden');
+const { descontarStockWmsExterno } = require('../services/wmsStockService');
 
 
 // ──────────────────────────────────────────────────
@@ -231,6 +232,184 @@ const SERVICE_TO_AREA_MAP = {
     'estampado': 'EST'
 };
 
+// ══════════════════════════════════════════════════════════════════════════
+// [PRENDAS] "Comprar y personalizar" — Retiro WMS pendiente
+// ══════════════════════════════════════════════════════════════════════════
+// Equivalente de getPendingOrders/confirmPreparation (logisticaWmsController.js)
+// pero apuntando a Ordenes en vez de PedidosCobranza: la prenda comprada ya
+// no pasa por WMS/VEN-xxx, es una Orden real (PRODUCTO_TERMINADO) que además
+// bloquea a sus hermanas de Bordado/DTF/TPU hasta que se confirme el retiro.
+
+// [PRENDAS] Igual que el flujo VEN (Iniciar Preparación / Confirmar Preparación): el
+// almacenero necesita saber cuáles ya empezó a preparar y poder ajustar la cantidad real
+// antes de descontar del WMS (puede variar del pedido original por faltante de stock).
+const ESTADOS_RETIRO_WMS = ['ESPERANDO_RETIRO_WMS', 'EN_PREPARACION_WMS'];
+
+// GET /api/prendas-orders/retiros-wms-pendientes
+exports.getRetirosWmsPendientes = async (req, res) => {
+    try {
+        const pool = await getPool();
+        // [PRENDAS] La fila a mostrar es la prenda comprada, no sus hermanas de
+        // personalización (Bordado/DTF/TPU) — todas comparten EstadoDependencia, pero
+        // SOLO la prenda tiene WmsVarianteId. No filtramos por el prefijo PROD- del
+        // código porque ese depende de que el artículo ya esté marcado PRODUCTO_TERMINADO
+        // en StockArt (dato de catálogo, no siempre cargado) — WmsVarianteId es confiable
+        // porque lo pone el frontend directo, sin depender de esa marca.
+        const r = await pool.request().query(`
+            SELECT OrdenID, CodigoOrden, NoDocERP, Cliente, DescripcionTrabajo,
+                   Material, Magnitud, WmsVarianteId, FechaIngreso, EstadoDependencia
+            FROM Ordenes
+            WHERE EstadoDependencia IN ('${ESTADOS_RETIRO_WMS.join("','")}')
+              AND WmsVarianteId IS NOT NULL
+            ORDER BY FechaIngreso ASC
+        `);
+        res.json({ success: true, data: r.recordset });
+    } catch (e) {
+        logger.error('[Prendas] getRetirosWmsPendientes:', e.message);
+        res.status(500).json({ error: e.message });
+    }
+};
+
+// PUT /api/prendas-orders/:ordenId/iniciar-preparacion-retiro
+exports.iniciarPreparacionRetiroWms = async (req, res) => {
+    const { ordenId } = req.params;
+    try {
+        const pool = await getPool();
+        const r = await pool.request()
+            .input('OID', sql.Int, ordenId)
+            .query(`
+                UPDATE Ordenes SET EstadoDependencia = 'EN_PREPARACION_WMS'
+                WHERE OrdenID = @OID AND EstadoDependencia = 'ESPERANDO_RETIRO_WMS' AND WmsVarianteId IS NOT NULL
+            `);
+        if (!r.rowsAffected[0]) {
+            return res.json({ success: false, message: 'Esta orden no está esperando retiro WMS.' });
+        }
+        res.json({ success: true, message: 'Preparación iniciada' });
+    } catch (e) {
+        logger.error('[Prendas] iniciarPreparacionRetiroWms:', e.message);
+        res.status(500).json({ error: e.message });
+    }
+};
+
+// PUT /api/prendas-orders/:ordenId/actualizar-cantidad-retiro
+exports.actualizarCantidadRetiroWms = async (req, res) => {
+    const { ordenId } = req.params;
+    const nuevaCantidad = parseFloat(req.body?.nuevaCantidad);
+    try {
+        if (!Number.isFinite(nuevaCantidad) || nuevaCantidad <= 0) {
+            return res.status(400).json({ error: 'Cantidad inválida.' });
+        }
+        const pool = await getPool();
+        const r = await pool.request()
+            .input('OID', sql.Int, ordenId)
+            .input('Mag', sql.VarChar(50), String(nuevaCantidad))
+            .query(`
+                UPDATE Ordenes SET Magnitud = @Mag
+                WHERE OrdenID = @OID
+                  AND EstadoDependencia IN ('${ESTADOS_RETIRO_WMS.join("','")}')
+                  AND WmsVarianteId IS NOT NULL
+            `);
+        if (!r.rowsAffected[0]) {
+            return res.json({ success: false, message: 'Esta orden no está esperando retiro WMS.' });
+        }
+        res.json({ success: true, message: 'Cantidad actualizada' });
+    } catch (e) {
+        logger.error('[Prendas] actualizarCantidadRetiroWms:', e.message);
+        res.status(500).json({ error: e.message });
+    }
+};
+
+// PUT /api/prendas-orders/:ordenId/confirmar-retiro-wms
+exports.confirmarRetiroWms = async (req, res) => {
+    const { ordenId } = req.params;
+    try {
+        const pool = await getPool();
+        const ordenRes = await pool.request()
+            .input('OID', sql.Int, ordenId)
+            .query(`SELECT OrdenID, NoDocERP, WmsVarianteId, Magnitud, EstadoDependencia FROM Ordenes WHERE OrdenID = @OID`);
+        const orden = ordenRes.recordset[0];
+        if (!orden) return res.status(404).json({ error: 'Orden no encontrada' });
+        if (!ESTADOS_RETIRO_WMS.includes(orden.EstadoDependencia)) {
+            return res.json({ success: false, message: `Esta orden no está esperando retiro WMS (estado actual: ${orden.EstadoDependencia || 'sin gate'}).` });
+        }
+        if (!orden.WmsVarianteId) {
+            return res.status(400).json({ error: 'Esta orden no tiene wms_variante_id asociado — no se puede descontar stock.' });
+        }
+
+        // Descuento real de stock contra el WMS externo — misma lógica que
+        // logisticaWmsController.confirmPreparation (helper compartido).
+        const { wmsDisponible, wmsErrors } = await descontarStockWmsExterno([
+            { wms_variante_id: orden.WmsVarianteId, Cantidad: parseFloat(orden.Magnitud) || 1 }
+        ]);
+        if (!wmsDisponible) {
+            return res.status(503).json({
+                success: false,
+                message: 'El WMS no está disponible. Verificá la conexión con el servidor de Johnson.',
+                wmsErrors
+            });
+        }
+
+        // Libera esta Orden + todas sus hermanas del mismo pedido que estén en el
+        // mismo gate (Bordado/DTF/TPU esperando este mismo retiro).
+        const transaction = new sql.Transaction(pool);
+        await transaction.begin();
+        try {
+            const { changeOrderState } = require('../services/stateManagerService');
+            const hermanas = await new sql.Request(transaction)
+                .input('NoDoc', sql.VarChar, String(orden.NoDocERP))
+                .query(`SELECT OrdenID, AreaID FROM Ordenes WHERE NoDocERP = @NoDoc AND EstadoDependencia IN ('${ESTADOS_RETIRO_WMS.join("','")}')`);
+            for (const h of hermanas.recordset) {
+                await new sql.Request(transaction)
+                    .input('OID', sql.Int, h.OrdenID)
+                    .query(`UPDATE Ordenes SET EstadoDependencia = 'OK' WHERE OrdenID = @OID`);
+                await changeOrderState(transaction, {
+                    target : { type: 'ORDER', id: h.OrdenID },
+                    estado : 'Pendiente',
+                    userObj: req.user || 'Sistema',
+                    detalle: 'Retiro WMS confirmado',
+                    guard  : "Estado = 'Cargando...'",
+                    io     : req.app.get('socketio'),
+                });
+            }
+            // [PRENDAS] El requisito "PRENDA" de Bordado/Estampado NO se cumple acá — recién
+            // cuando el bulto de PRO llegue físicamente a esa área y se haga el check-in del
+            // remito (receiveDispatch ya tiene el mecanismo "AUTO-FULFILL REQUIREMENT ON
+            // CHECK-IN", que mira Areas.Entrega del área de ORIGEN). Ver migración
+            // activar_entrega_area_pro.sql — solo falta que Areas.Entrega de 'PRO' diga
+            // 'PRENDAS', igual que ya tienen EMB/EST/TWT.
+            await transaction.commit();
+
+            // [PRENDAS] Bulto físico del retiro: le dice al almacenero a qué área llevar
+            // la prenda (campo DESTINO en la etiqueta = Ordenes.ProximoServicio, ya
+            // apuntando a la primera personalización activa). Sin cotización todavía —
+            // por eso addOneBulto, no regenerateLabelsForOrder (ese exige precio).
+            let bultoWarning = null;
+            try {
+                const LabelGenerationService = require('../services/LabelGenerationService');
+                const lr = await LabelGenerationService.addOneBulto(orden.OrdenID, req.user?.id || 1, req.user?.usuario || 'Sistema', {});
+                if (!lr.success) bultoWarning = lr.error;
+            } catch (eLab) {
+                logger.warn('[Prendas] confirmarRetiroWms: no se pudo generar el bulto de retiro:', eLab.message);
+                bultoWarning = eLab.message;
+            }
+
+            res.json({
+                success: true,
+                message: wmsErrors.length > 0 ? `Retiro confirmado con advertencias: ${wmsErrors.join('; ')}` : 'Retiro confirmado, stock descontado.',
+                liberadas: hermanas.recordset.length,
+                wmsErrors,
+                bultoWarning
+            });
+        } catch (txErr) {
+            await transaction.rollback();
+            throw txErr;
+        }
+    } catch (e) {
+        logger.error('[Prendas] confirmarRetiroWms:', e.message);
+        res.status(500).json({ error: e.message });
+    }
+};
+
 // --- CONTROLADOR PRINCIPAL ---
 exports.createWebOrder = async (req, res) => {
     logger.info("📥 [WebOrder] Iniciando proceso de creación (MODO STREAMING)...");
@@ -241,7 +420,8 @@ exports.createWebOrder = async (req, res) => {
         especificacionesCorte, lineas, archivosReferencia, archivosTecnicos, serviciosExtras,
         bobinaId,  // TELA CLIENTE: BobinaID seleccionada por el usuario
         magnitud,  // TELA CLIENTE: metros del pedido a descontar de la bobina (top-level en el payload)
-        tinta      // ECOUV: tinta de impresión (Ecosolvente/UV) — rutea el lote a la máquina
+        tinta,     // ECOUV: tinta de impresión (Ecosolvente/UV) — rutea el lote a la máquina
+        talles     // [PRENDAS] Roster del pedido completo (número/jugador/talle/categoría), no por servicio
     } = req.body;
 
     // Mapeo inverso para compatibilidad
@@ -464,6 +644,20 @@ exports.createWebOrder = async (req, res) => {
                     if (!finalIdProductoReact) finalIdProductoReact = cabecera.material.idProductoReact || cabecera.material.idProducto || cabecera.material.id;
                 }
 
+                // [PRENDAS] Estampado DTF vs Estampado TPU: el front manda SIEMPRE el mismo
+                // artículo genérico (antes "Estampado (Servicio)", CodArt '110') para las dos
+                // ramas de Estampado — nunca tuvo precio base cargado. Ahora que existen los
+                // dos artículos separados (110=Estampado DTF, 157=Estampado TPU, cada uno con
+                // su propio precio), se elige acá según a qué orden está encadenada esta
+                // Estampado (srv.chainedAfterAreaId ya viaja con 'DF' o 'TPU'). Se pisa también
+                // ProIdProducto para que la resolución de más abajo (mapArtByProId, que prioriza
+                // ProIdProducto sobre CodArticulo) no la vuelva a pisar con el valor viejo.
+                if (areaID === 'EST' && srv.chainedAfterAreaId) {
+                    const cadenaEst = String(srv.chainedAfterAreaId).trim().toUpperCase();
+                    if (cadenaEst === 'DF') { finalCodArt = '110'; finalProIdProducto = 29; }
+                    else if (cadenaEst === 'TPU') { finalCodArt = '157'; finalProIdProducto = 418; }
+                }
+
                 // Construir Nota con Metadatos Técnicos
                 let serviceNote = srv.notas || '';
                 let techInfo = '';
@@ -496,11 +690,29 @@ exports.createWebOrder = async (req, res) => {
                     extraOriginId: srv.areaId,
                     // TPU: Magnitud = cantidad pedida (el ítem no trae archivo y el recálculo por
                     // archivos nunca la fijaba → quedaba "0 U"). Espejo del fix en webOrdersController.
-                    magnitudInicial: (serviceId === 'tpu' && srv.esPrincipal)
+                    // [PRENDAS] Mismo problema con la prenda comprada por WMS: tampoco trae archivo,
+                    // así que sin esto quedaba en Magnitud=0 (y "confirmar retiro" descontaría 1
+                    // unidad del WMS externo en vez de la cantidad real comprada).
+                    magnitudInicial: ((serviceId === 'tpu' && srv.esPrincipal) || srv.esProductoComprado || srv.esProductoFabricado)
                         ? (srv.items || []).reduce((s, it) => s + (parseInt(it.cantidad) || 0), 0)
                         : 0,
                     notaAdicional: serviceNote, // Nota completa para la Orden
-                    techInfo: techInfo // Info técnica limpia para ServiciosExtraOrden
+                    techInfo: techInfo, // Info técnica limpia para ServiciosExtraOrden
+                    // [PRENDAS] Estampado fusionado con DTF/TPU: si esta Orden depende de que
+                    // OTRA termine primero (ej. Estampado espera a su DTF/TPU), acá viaja el
+                    // AreaID de esa Orden — se resuelve a OrdenID real más abajo, en el loop.
+                    chainedAfterAreaId: srv.chainedAfterAreaId || null,
+                    // [PRENDAS] "Comprar y personalizar": esta línea es la prenda comprada por
+                    // WMS (no un servicio de decoración) — dispara el gate ESPERANDO_RETIRO_WMS
+                    // y guarda su wms_variante_id para poder descontar el stock correcto.
+                    esProductoComprado: !!srv.esProductoComprado,
+                    wmsVarianteId: cabecera.wmsVarianteId || null,
+                    // [PRENDAS] "Fabricar a Medida" con Producto Terminado: análogo a
+                    // esProductoComprado, pero la prenda NO sale de un depósito WMS — se arma
+                    // acá mismo (Sublimación → Corte → Costura). No dispara el gate de retiro
+                    // WMS; en cambio, esta orden PRO queda encadenada a Costura (o Corte si no
+                    // hay Costura) y nace recién cuando esa termina.
+                    esProductoFabricado: !!srv.esProductoFabricado,
                 });
             });
 
@@ -669,6 +881,11 @@ exports.createWebOrder = async (req, res) => {
             return pA - pB;
         });
 
+        // [PRENDAS] Las Ordenes encadenadas (ej. Estampado esperando a su DTF/TPU) tienen que
+        // insertarse DESPUÉS de la Orden de la que dependen, para poder guardar su OrdenID real
+        // (ver más abajo, "insertedOrdenIdByAreaId"). Sort estable: no reordena nada más.
+        pendingOrderExecutions.sort((a, b) => (a.chainedAfterAreaId ? 1 : 0) - (b.chainedAfterAreaId ? 1 : 0));
+
         // --- LIMPIEZA DE DATOS (FIX IDPRODUCTOREACT) ---
         // Asegurar que CodArticulo no tenga espacios antes de buscar IDReact
         pendingOrderExecutions.forEach(exec => {
@@ -776,6 +993,11 @@ exports.createWebOrder = async (req, res) => {
         // sync ERP. Los servicios por unidad (costura, corte, TPU-boceto) miden en 'u' → quedan exentos.
         const ordenSinArte = pendingOrderExecutions.find(exec => {
             if (exec.isExtra) return false;
+            // [PRENDAS] La prenda comprada por WMS es un producto físico, no algo que se
+            // imprime — nunca requiere arte, aunque su StockArt todavía no esté marcado
+            // PRODUCTO_TERMINADO (ese chequeo recién corre más abajo, dentro de la
+            // transacción). No depender de esa detección acá para no rechazarla de más.
+            if (exec.esProductoComprado) return false;
             const um = (mapaAreasUM[exec.areaID] || 'u').toLowerCase();
             if (um === 'u') return false; // por unidad → no requiere arte del cliente
             return !(exec.items || []).some(it => it.fileName || it.fileBackName);
@@ -785,6 +1007,28 @@ exports.createWebOrder = async (req, res) => {
             return res.status(400).json({
                 error: `El servicio de impresión (${ordenSinArte.areaID}) necesita al menos un archivo de arte. Subí el arte a imprimir antes de confirmar el pedido.`
             });
+        }
+
+        // [PRENDAS] ¿Este lote incluye una prenda comprada (producto terminado)? Si es así,
+        // Bordado/DTF/TPU (y la propia prenda) tienen que esperar a que el almacenero
+        // confirme el retiro físico del depósito WMS antes de poder trabajarse — ver el
+        // gate más abajo ("ESPERANDO_RETIRO_WMS"). Chequeo liviano, fuera de la transacción.
+        let hayProductoTerminadoEnLote = false;
+        {
+            const codStocksUnicos = [...new Set(pendingOrderExecutions.map(e => e.codStock).filter(Boolean).map(s => String(s).trim()))];
+            if (codStocksUnicos.length > 0) {
+                try {
+                    const req2 = pool.request();
+                    const clauses2 = codStocksUnicos.map((cs, i) => {
+                        req2.input(`cs${i}`, sql.VarChar, cs);
+                        return `LTRIM(RTRIM(CodStock)) = @cs${i}`;
+                    });
+                    const tipoStockRes = await req2.query(`SELECT TipoStock FROM StockArt WHERE ${clauses2.join(' OR ')} AND TipoStock = 'PRODUCTO_TERMINADO'`);
+                    hayProductoTerminadoEnLote = tipoStockRes.recordset.length > 0;
+                } catch (e) {
+                    logger.warn('[Prendas] No se pudo chequear PRODUCTO_TERMINADO del lote:', e.message);
+                }
+            }
         }
 
         // --- 6. TRANSACCIÓN DB ---
@@ -797,16 +1041,30 @@ exports.createWebOrder = async (req, res) => {
             const generatedIDs = [];
             const timestamp = Date.now();
             let telaDescontada = false; // TELA CLIENTE: garantiza UN solo descuento por pedido
+            // [PRENDAS] OrdenID real de cada área ya insertada en ESTE loop — permite que una
+            // Orden encadenada (ej. Estampado) guarde el OrdenID real de aquella de la que
+            // depende (ej. su DTF/TPU), aunque esta última se haya creado unos pasos antes.
+            const insertedOrdenIdByAreaId = {};
 
 
             for (let idx = 0; idx < pendingOrderExecutions.length; idx++) {
                 const exec = pendingOrderExecutions[idx];
                 const fisicasSB = pendingOrderExecutions.filter(e => e.areaID === 'SB');
                 let docNumber = erpDocNumber;
-                
+
                 if (exec.areaID === 'SB' && fisicasSB.length > 1) {
                     const indexSB = fisicasSB.findIndex(e => e === exec) + 1;
                     docNumber = `${erpDocNumber} (${indexSB}/${fisicasSB.length})`;
+                }
+
+                // [PRENDAS] Ídem para Estampado: si DTF y TPU están activos a la vez se crean
+                // 2 órdenes de EST (una por cada una, ver chainedAfterAreaId) — sin esto las dos
+                // saldrían con el MISMO CodigoOrden (EST-10994), indistinguibles en cualquier
+                // pantalla/listado.
+                const fisicasEST = pendingOrderExecutions.filter(e => e.areaID === 'EST');
+                if (exec.areaID === 'EST' && fisicasEST.length > 1) {
+                    const indexEST = fisicasEST.findIndex(e => e === exec) + 1;
+                    docNumber = `${erpDocNumber} (${indexEST}/${fisicasEST.length})`;
                 }
 
                 const areaPrefix = areaPrefixMap[exec.areaID.toUpperCase()] || 'ORD';
@@ -825,23 +1083,93 @@ exports.createWebOrder = async (req, res) => {
                     return base + ext;
                 };
 
-                // --- CALCULAR PRÓXIMO SERVICIO (Lógica Secuencial Homogénea) ---
-                // Al estar ordenado por prioridad, el próximo servicio es simplemente el siguiente en la lista.
+                // --- CALCULAR PRÓXIMO SERVICIO ---
                 let proximoServicio = 'DEPOSITO';
 
-                // Buscar siguiente servicio distinto al actual
-                for (let k = idx + 1; k < pendingOrderExecutions.length; k++) {
-                    const nextExec = pendingOrderExecutions[k];
-                    if (nextExec.areaID !== exec.areaID) {
-                        proximoServicio = nextExec.areaID;
-                        break;
+                // [PRENDAS] "Comprar y personalizar": el orden por el que se pushearon los
+                // servicios (según qué botones tocó el vendedor) NO refleja la dependencia
+                // física real, así que "siguiente en el array" da rutas incorrectas. Acá NO es
+                // una cadena lineal — son ramas independientes que convergen en Estampado:
+                //   - PRO (la prenda física) va a Bordado si está activo (Bordado trabaja SOBRE
+                //     la prenda); si no hay Bordado pero sí DTF/TPU, la prenda va directo a
+                //     Estampado (ahí se prensa el transfer); si no hay ninguno de los dos, listo.
+                //   - Bordado, una vez terminada la prenda, va a Estampado si hay DTF/TPU
+                //     esperando (si no, ya está terminada).
+                //   - DTF y TPU NO dependen entre sí — cada uno imprime SU PROPIO transfer
+                //     (no toca la prenda) y va directo a SU Estampado encadenado, nunca al otro.
+                //   - Estampado siempre termina en Depósito.
+                const esProductoFabricadoEnLote = pendingOrderExecutions.some(e => e.esProductoFabricado);
+                const hayOrdenMadrePro = pendingOrderExecutions.some(e => e.esProductoComprado || e.esProductoFabricado);
+                if (hayOrdenMadrePro) {
+                    const areasActivas = new Set(pendingOrderExecutions.map(e => e.areaID));
+                    const hayEstampado = areasActivas.has('EST'); // implica DTF y/o TPU activos
+                    if (esProductoFabricadoEnLote) {
+                        // [PRENDAS] "Fabricar a Medida" con Producto Terminado: PRO NO es un
+                        // paso físico — nace junto con todo lo demás (sin gate) y es solo el
+                        // "pilar" que agrupa el pedido para precio/factura/aviso, igual que la
+                        // hermana TERMINAC de ECOUV. La prenda física la arma la cadena real:
+                        // Sublimación → Corte → Costura → Bordado → Estampado → Depósito (Costura
+                        // hace de "prenda lista", el mismo rol que cumplía PRO en "Comprar y
+                        // personalizar"). Por ahora la decoración siempre es DESPUÉS de armar la
+                        // prenda — a futuro se podrá elegir antes/después.
+                        switch (exec.areaID) {
+                            case 'SB':
+                                proximoServicio = areasActivas.has('TWC') ? 'TWC'
+                                    : (areasActivas.has('TWT') ? 'TWT'
+                                        : (areasActivas.has('EMB') ? 'EMB' : (hayEstampado ? 'EST' : 'DEPOSITO')));
+                                break;
+                            case 'TWC':
+                                proximoServicio = areasActivas.has('TWT') ? 'TWT'
+                                    : (areasActivas.has('EMB') ? 'EMB' : (hayEstampado ? 'EST' : 'DEPOSITO'));
+                                break;
+                            case 'TWT':
+                                // Termina de armar la prenda física — de acá en más, mismo destino
+                                // que tenía PRO en "Comprar y personalizar".
+                                proximoServicio = areasActivas.has('EMB') ? 'EMB' : (hayEstampado ? 'EST' : 'DEPOSITO');
+                                break;
+                            case 'PRO':
+                                // No es un paso físico: no la usa nadie, pero le dejamos un valor
+                                // no vacío por consistencia con el resto de las órdenes.
+                                proximoServicio = 'DEPOSITO';
+                                break;
+                            case 'EMB':
+                                proximoServicio = hayEstampado ? 'EST' : 'DEPOSITO';
+                                break;
+                            case 'DF':
+                            case 'TPU':
+                                proximoServicio = 'EST';
+                                break;
+                            case 'EST':
+                            default:
+                                proximoServicio = 'DEPOSITO';
+                        }
+                    } else {
+                        switch (exec.areaID) {
+                            case 'PRO':
+                                proximoServicio = areasActivas.has('EMB') ? 'EMB' : (hayEstampado ? 'EST' : 'DEPOSITO');
+                                break;
+                            case 'EMB':
+                                proximoServicio = hayEstampado ? 'EST' : 'DEPOSITO';
+                                break;
+                            case 'DF':
+                            case 'TPU':
+                                proximoServicio = 'EST'; // siempre tiene su propia orden de Estampado encadenada
+                                break;
+                            case 'EST':
+                            default:
+                                proximoServicio = 'DEPOSITO';
+                        }
                     }
-                }
-
-                // Fallback a lógica de rutas si no hay siguiente en lista (ej. ultimo paso que salta a instalación o cliente)
-                if (proximoServicio === 'DEPOSITO') {
-                    // Lógica legacy de rutas para casos terminales o branches no lineales
-                    // ... se mantiene o se simplifica. Por ahora el secuencial cubre el 90% de casos.
+                } else {
+                    // Lógica secuencial homogénea de siempre (resto de flujos, sin orden madre PRO):
+                    // al estar ordenado por prioridad, el próximo servicio es el siguiente en la lista.
+                    for (let k = idx + 1; k < pendingOrderExecutions.length; k++) {
+                        const nextExec = pendingOrderExecutions[k];
+                        if (nextExec.areaID !== exec.areaID) {
+                            proximoServicio = nextExec.areaID;
+                            break;
+                        }
+                    }
                 }
 
                 // Determinar UM + variante física (desde StockArt del CodStock elegido)
@@ -897,6 +1225,36 @@ exports.createWebOrder = async (req, res) => {
                     } catch (_) { /* sin TipoStock/StockArt: se mantiene UM del área y variante original */ }
                 }
 
+                // [PRENDAS] Producto terminado: código de orden con prefijo PROD- en vez del
+                // prefijo del área (SB-/EST-/...) — se distingue a simple vista una venta de
+                // stock de un trabajo de impresión real, sin tocar el AreaID (misma cola/ruta).
+                // Excepción: la orden PRO de "Fabricar a Medida" — aunque su CodStock resuelva
+                // a un producto terminado (así se le calcula el precio), sigue siendo la orden
+                // madre del pedido y tiene que llamarse PRO-, no PROD- (mismo criterio que la
+                // PRO de "Comprar y personalizar", que tampoco lleva CodStock de producto
+                // terminado en su cabecera).
+                if (esProductoTerminado && !exec.esProductoFabricado) {
+                    exec.codigoOrden = `PROD-${docNumber}`;
+                }
+
+                // [PRENDAS] Gate secuencial — "Comprar y personalizar": la prenda se retira
+                // físicamente del depósito WMS antes de poder bordarse/imprimirse, y un DTF/TPU
+                // impreso necesita pasar por Estampado antes de darse por terminado. Ninguna de
+                // las dos cosas existe hoy fuera de este flujo: si el lote no trae un producto
+                // terminado, esto no hace nada (null = comportamiento de siempre).
+                let estadoDependenciaExec = null;
+                let liberaCuandoOrdenIDExec = null;
+                if (exec.chainedAfterAreaId) {
+                    estadoDependenciaExec = 'ESPERANDO_IMPRESION';
+                    liberaCuandoOrdenIDExec = insertedOrdenIdByAreaId[exec.chainedAfterAreaId.toUpperCase()] || null;
+                    if (!liberaCuandoOrdenIDExec) {
+                        logger.warn(`[Prendas] Estampado sin OrdenID de ${exec.chainedAfterAreaId} para encadenar (¿no se creó esa Orden?) — queda sin gate.`);
+                        estadoDependenciaExec = null;
+                    }
+                } else if (hayProductoTerminadoEnLote && !esProductoFabricadoEnLote && (exec.esProductoComprado || esProductoTerminado || ['EMB', 'DF', 'TPU'].includes(exec.areaID.toUpperCase()))) {
+                    estadoDependenciaExec = 'ESPERANDO_RETIRO_WMS';
+                }
+
                 // ID del producto (si lo tenemos en exec)
                 const idProdReact = exec.idProductoReact || null;
 
@@ -939,13 +1297,16 @@ exports.createWebOrder = async (req, res) => {
                     .input('BobID', sql.Int, (bobinaId && !exec.isExtra) ? parseInt(bobinaId) : null) // TELA CLIENTE: solo la orden principal (los extras no consumen tela)
                     .input('DisenadorID', sql.Int, req.disenadorId || null) // pedido creado por un DISEÑADOR en nombre del cliente
                     .input('Tinta', sql.VarChar(50), tintaFinal) // ECOUV: rutea lote (magic sort agrupa por Tinta); producto terminado la toma de su ficha
+                    .input('EstadoDep', sql.VarChar(50), estadoDependenciaExec)
+                    .input('LiberaCuando', sql.Int, liberaCuandoOrdenIDExec)
+                    .input('WmsVarianteId', sql.Int, exec.wmsVarianteId ? parseInt(exec.wmsVarianteId) : null)
                     .query(`
                         INSERT INTO Ordenes (
                             AreaID, Cliente, CodCliente, IdClienteReact, DescripcionTrabajo, Prioridad,
                             FechaIngreso, FechaEstimadaEntrega, Material, Variante,
                             CodigoOrden, NoDocERP, Nota, Magnitud, ProximoServicio, UM, Estado, EstadoenArea,
                             CodArticulo, IdProductoReact, ProIdProducto, CliIdCliente, FechaEntradaSector,
-                            BobinaTelaID, DisenadorID, Tinta
+                            BobinaTelaID, DisenadorID, Tinta, EstadoDependencia, LiberaCuandoOrdenID, WmsVarianteId
                         )
                         OUTPUT INSERTED.OrdenID
                         VALUES (
@@ -953,13 +1314,18 @@ exports.createWebOrder = async (req, res) => {
                             GETDATE(), DATEADD(day, 3, GETDATE()), @Mat, @Var,
                             @Cod, @ERP, @Nota, @Mag, @Prox, @UM, @Estado, @Estado,
                             @CodArt, @IdProdReact, @ProIdProducto, @CliIdCliente, @F_EntSec,
-                            @BobID, @DisenadorID, @Tinta
+                            @BobID, @DisenadorID, @Tinta, @EstadoDep, @LiberaCuando, @WmsVarianteId
                         )
                     `);
 
                 const newOID = resOrder.recordset[0].OrdenID;
                 generatedOrders.push(exec.codigoOrden);
                 generatedIDs.push(newOID);
+                // [PRENDAS] Guarda el primer OrdenID insertado para esta área — es lo que
+                // usa una Orden encadenada más adelante en el loop (ej. Estampado → su DTF/TPU).
+                if (!insertedOrdenIdByAreaId[exec.areaID.toUpperCase()]) {
+                    insertedOrdenIdByAreaId[exec.areaID.toUpperCase()] = newOID;
+                }
 
                 // TPU trabajo nuevo: cobrar la matriz (artículo 156 = US$15) como línea de facturación.
                 // El reuso de matriz va por /reuse-matriz y NO pasa por acá, así que ahí no se cobra.
@@ -1361,7 +1727,16 @@ exports.createWebOrder = async (req, res) => {
                 // *** NUEVO: SOPORTE FACTURACIÓN (ServiciosExtraOrden) ***
                 // Si la orden es un servicio extra (no principal) o es explícitamente Estampado/Bordado, guardamos item de facturación
                 // El usuario pidió explícitamente replicar lógica de Sync para "que me sirva para la facturacion".
-                if (exec.isExtra || ['EST', 'EMB', 'TWT', 'TWC'].includes(exec.areaID)) {
+                // EXCLUSIÓN DF/DTF/SB: a diferencia de EST/EMB/TWT/TWC (sin archivo, se cobran por
+                // esta línea "a mano"), DTF y Sublimación SIEMPRE cotizan por el archivo real
+                // (metraje × copias), igual que un pedido de portal normal. Si se le agrega esta
+                // línea además del archivo, aparece como un ítem fantasma más para controlar en
+                // Planilla/Control — rompe el proceso del área, que tiene que ser IDÉNTICO venga
+                // de donde venga el pedido (solo cambian origen/destino, nunca el proceso de
+                // impresión). SB entra acá porque "Fabricar a Medida" con Producto Terminado la
+                // puede demotear a exec.isExtra=true (deja de ser la principal, pasa a ser
+                // hermana de PRO) sin dejar de tener su archivo real.
+                if ((exec.isExtra && !['DF', 'DTF', 'SB'].includes(exec.areaID)) || ['EST', 'EMB', 'TWT', 'TWC'].includes(exec.areaID)) {
                     // Calcular cantidad total (suma de copias o magnitud inicial)
                     let qtyFact = exec.magnitudInicial || 0;
                     if (qtyFact === 0 && exec.items && exec.items.length > 0) {
@@ -1372,6 +1747,14 @@ exports.createWebOrder = async (req, res) => {
                     // Insertar
                     if (exec.codArticulo) {
                         const obsFacturacion = exec.techInfo || 'Generado desde WebOrder';
+                        // Estado: SIN forzar 'OK' — nace 'PENDIENTE' (default de la columna), igual
+                        // que cualquier archivo/servicio normal. Áreas que todavía usan el Control
+                        // clásico (TPU, y cualquier otra que no tenga Bandeja propia) necesitan que
+                        // el operario la cuente con el "+1"/tipeado de siempre (FileControlCard) —
+                        // si nace en 'OK' esa tarjeta aparece "ya completa" y bloquea tipear o sumar.
+                        // EMB/EST/TWT/TWC ya no dependen de este Estado para nada: desde que tienen
+                        // su propia Bandeja/Control (aprobarControl), nunca pasan por el guard de
+                        // completarOrden que originalmente motivó forzar 'OK' acá.
                         await new sql.Request(transaction)
                             .input('OID', sql.Int, newOID)
                             .input('Cod', sql.VarChar(50), exec.codArticulo)
@@ -1380,8 +1763,8 @@ exports.createWebOrder = async (req, res) => {
                             .input('Cnt', sql.Decimal(18, 2), qtyFact)
                             .input('Obs', sql.NVarChar(sql.MAX), obsFacturacion)
                             .query(`
-                                INSERT INTO ServiciosExtraOrden 
-                                (OrdenID, CodArt, CodStock, Descripcion, Cantidad, PrecioUnitario, TotalLinea, Observacion, FechaRegistro) 
+                                INSERT INTO ServiciosExtraOrden
+                                (OrdenID, CodArt, CodStock, Descripcion, Cantidad, PrecioUnitario, TotalLinea, Observacion, FechaRegistro)
                                 VALUES (@OID, @Cod, @Stk, @Des, @Cnt, 0, 0, @Obs, GETDATE())
                             `);
                     }
@@ -1474,6 +1857,36 @@ exports.createWebOrder = async (req, res) => {
                 // (Bloque residual eliminado para limpieza)
 
             } // Fin loop ejecuciones
+
+            // [PRENDAS] Talles: roster del pedido completo (número/jugador/talle/categoría),
+            // ligado a la orden PRINCIPAL (no a los complementarios). Tolera que la tabla
+            // OrdenTalles todavía no exista en esta base (falla silenciosa, no aborta el
+            // pedido) — mismo criterio que /productos-terminados con TipoStock.
+            if (Array.isArray(talles) && talles.length > 0) {
+                const principalIdx = pendingOrderExecutions.findIndex(e => !e.isExtra);
+                const principalOID = generatedIDs[principalIdx >= 0 ? principalIdx : 0];
+                try {
+                    for (const t of talles) {
+                        await new sql.Request(transaction)
+                            .input('OID', sql.Int, principalOID)
+                            .input('Tipo', sql.VarChar(10), t.tipo || 'ADULTO')
+                            .input('TSup', sql.VarChar(10), t.talleSup || null)
+                            .input('TInf', sql.VarChar(10), t.talleInf || null)
+                            .input('Cat', sql.VarChar(30), t.categoria || null)
+                            .input('Num', sql.VarChar(10), t.numero || null)
+                            .input('Jug', sql.NVarChar(100), t.jugador || null)
+                            .input('Nota', sql.NVarChar(300), t.nota || null)
+                            .input('Cant', sql.Int, parseInt(t.cantidad, 10) || 1)
+                            .query(`
+                                INSERT INTO OrdenTalles (OrdenID, Tipo, TalleSup, TalleInf, Categoria, Numero, Jugador, Nota, Cantidad)
+                                VALUES (@OID, @Tipo, @TSup, @TInf, @Cat, @Num, @Jug, @Nota, @Cant)
+                            `);
+                    }
+                    logger.info(`[Prendas] ${talles.length} talles guardados para Orden ${principalOID}.`);
+                } catch (talleErr) {
+                    logger.warn(`[Prendas] No se pudieron guardar los talles (¿falta la tabla OrdenTalles?): ${talleErr.message}`);
+                }
+            }
 
             // ACTIVAR AUTOMÁTICAMENTE ORDENES SIN ARCHIVOS PENDIENTES (Ej. Solo Costura)
             for (const oid of generatedIDs) {

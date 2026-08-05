@@ -178,6 +178,22 @@ try {
 } catch (e) { logger.error("❌ Error loading finishing routes:", e); }
 
 try {
+    app.use('/api/emb', require('./routes/embRoutes'));
+} catch (e) { logger.error("❌ Error loading EMB board routes:", e); }
+
+try {
+    app.use('/api/est', require('./routes/estRoutes'));
+} catch (e) { logger.error("❌ Error loading EST board routes:", e); }
+
+try {
+    app.use('/api/twc', require('./routes/twcRoutes'));
+} catch (e) { logger.error("❌ Error loading TWC (Corte) board routes:", e); }
+
+try {
+    app.use('/api/twt', require('./routes/twtRoutes'));
+} catch (e) { logger.error("❌ Error loading TWT (Costura) board routes:", e); }
+
+try {
     app.use('/api/color', require('./routes/colorRoutes'));
     logger.info('✅ [MÓDULO] Igualador de Color activado en /api/color');
 } catch (e) { logger.error('❌ Error loading color routes:', e.message); }

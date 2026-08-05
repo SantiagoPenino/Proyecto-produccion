@@ -19,6 +19,7 @@ import EcoUvFinishing from "../../pages/EcoUvFinishing";
 import LogisticsDashboard from "../../logistics/LogisticsDashboard";
 import PlaneacionTrabajo from "../../pages/PlaneacionTrabajo";
 import ImportadorManualView from "../ImportadorManualView";
+import EmbBandeja from "../EmbBandeja";
 
 // Modales y Sidebars
 import NewOrderModal from "../../modals/NewOrderModal";
@@ -26,10 +27,15 @@ import ReportFailureModal from "../../modals/ReportFailureModal";
 import StockRequestModal from "../../modals/StockRequestModal";
 import LogisticsCartModal from "../../modals/LogisticsCartModal";
 import RollAssignmentModal from "../../modals/RollAssignmentModal";
+// [PRO] Herramientas propias del área Producción (prendas): rutas de producción,
+// cotizaciones del área y ficha de productos terminados.
+import ConfigFlowsModal from "../../modals/config/ConfigFlowsModal";
+import NuevoProductoTerminadoModal from "../../modals/config/NuevoProductoTerminadoModal";
+import QuotationView from "../../logistics/QuotationView";
 import RollSidebar from "../../layout/RollSidebar";
 import MatrixSidebar from "../../layout/MatrixSidebar";
 
-import { ordersService, rollsService } from '../../../services/api';
+import { ordersService, rollsService, areasService } from '../../../services/api';
 import { SOCKET_URL } from '../../../services/apiClient';
 import { useAuth } from '../../../context/AuthContext';
 
@@ -180,6 +186,10 @@ export default function AreaView({ areaKey: rawAreaKey, areaConfig, onSwitchTab 
     const [isCartOpen, setIsCartOpen] = useState(false);
     const [isRollModalOpen, setIsRollModalOpen] = useState(false);
     const [isImportModalOpen, setIsImportModalOpen] = useState(false);
+    // [PRO] Modales propios del área Producción (prendas)
+    const [isFlowsModalOpen, setIsFlowsModalOpen] = useState(false);
+    const [isQuotationModalOpen, setIsQuotationModalOpen] = useState(false);
+    const [isProductosModalOpen, setIsProductosModalOpen] = useState(false);
     const [flashingRows, setFlashingRows] = useState([]);
     const [showCancelled, setShowCancelled] = useState(false);
     const [cancelledOrders, setCancelledOrders] = useState([]);
@@ -198,7 +208,8 @@ export default function AreaView({ areaKey: rawAreaKey, areaConfig, onSwitchTab 
             setLoadingCancelled(true);
             try {
                 // Reutilizamos getByArea (mismo que órdenes activas) con mode='cancelled'
-                const data = await ordersService.getByArea(areaKey, 'cancelled');
+                // ([PRO] respeta el selector "Ver área": canceladas del área que se está viendo)
+                const data = await ordersService.getByArea(areaDatos, 'cancelled');
                 setCancelledOrders(Array.isArray(data) ? data : []);
             } catch (e) {
                 console.error('Error cargando canceladas:', e);
@@ -219,7 +230,8 @@ export default function AreaView({ areaKey: rawAreaKey, areaConfig, onSwitchTab 
         if (next && areaKey && areaKey.toLowerCase() !== 'area') {
             setLoadingPronto(true);
             try {
-                const data = await ordersService.getByArea(areaKey, 'pronto');
+                // ([PRO] respeta el selector "Ver área", igual que canceladas)
+                const data = await ordersService.getByArea(areaDatos, 'pronto');
                 setProntoOrders(Array.isArray(data) ? data : []);
             } catch (e) {
                 console.error('Error cargando prontas:', e);
@@ -233,24 +245,55 @@ export default function AreaView({ areaKey: rawAreaKey, areaConfig, onSwitchTab 
     };
 
     const hideImportar = ['corte', 'costura', 'bordado', 'estampado', 'twc', 'twt', 'emb', 'terminac'].includes((areaKey || '').toLowerCase());
-    // TERMINAC: sin Planeación (pedido 28/07 — las hermanas XEUV no se planifican en tablero)
-    const hidePlaneacion = (areaKey || '').toLowerCase() === 'terminac';
+    // [PRO] Producción (prendas): sin Importar/Asignar a Lote/Historial ni tabs de
+    // Planeación/Control/Logística. En su lugar: Ingresar Orden (form interno de prendas),
+    // Modificar Flujo (rutas), Editar Cotización y Configurar Productos (producto terminado).
+    const isPro = (areaKey || '').toUpperCase() === 'PRO';
+
+    // [PRO] Selector "Ver área": la planilla puede mostrar las órdenes de OTRA área
+    // (DTF, SB, etc.) sin salir de /area/pro — cambia solo QUÉ datos se cargan; los
+    // botones/acciones de PRO quedan igual. 'PRO' = las órdenes propias (default).
+    const [proAreaVista, setProAreaVista] = useState(() => {
+        try { return sessionStorage.getItem('proAreaVista') || 'PRO'; } catch { return 'PRO'; }
+    });
+    const cambiarAreaVista = (code) => {
+        setProAreaVista(code);
+        try { sessionStorage.setItem('proAreaVista', code); } catch {}
+    };
+    // Área cuyos DATOS se muestran en la planilla (para todo lo demás manda areaKey).
+    const areaDatos = isPro ? (proAreaVista || 'PRO') : areaKey;
+
+    // Lista de áreas para el selector (solo se pide en PRO).
+    const { data: areasCatalogo = [] } = useQuery({
+        queryKey: ['areasCatalogo'],
+        queryFn: () => areasService.getAll(),
+        enabled: isPro,
+        staleTime: 5 * 60 * 1000,
+    });
+    // Áreas de "servicio" sin archivo de impresión propio (Magnitud='0' a propósito):
+    // comparten la misma Bandeja/Control genérica sin lotes (EmbBandeja) en vez de Mesa de
+    // Armado/lotes o el control de archivos que usa el resto de las áreas.
+    const AREAS_BANDEJA_SIN_LOTES = ['EMB', 'EST', 'TWC', 'TWT'];
+    // TERMINAC: sin Planeación (pedido 28/07 — las hermanas XEUV no se planifican en tablero).
+    const hidePlaneacion = ['terminac', ...AREAS_BANDEJA_SIN_LOTES.map(a => a.toLowerCase())].includes((areaKey || '').toLowerCase());
 
     // 3. CARGA DE DATOS (React Query)
     const { data: dbOrders = [], isLoading: loadingOrders, refetch } = useQuery({
-        queryKey: ['orders', areaKey],
+        // [PRO] areaDatos = areaKey salvo en PRO con el selector "Ver área" activo:
+        // ahí la planilla carga las órdenes del área elegida (DTF, SB, ...).
+        queryKey: ['orders', areaKey, areaDatos],
         queryFn: async () => {
             if (!areaKey || areaKey.toLowerCase() === 'area') return [];
-            console.log(`📡 API: Pidiendo datos para área [${areaKey}]`);
+            console.log(`📡 API: Pidiendo datos para área [${areaDatos}]`);
             // areaKey ya viene normalizado a MAYÚSCULA, así que una sola llamada alcanza
             // (antes se reintentaba con toUpperCase porque podía venir en minúscula).
-            let data = await ordersService.getByArea(areaKey, 'active');
+            let data = await ordersService.getByArea(areaDatos, 'active');
 
             // --- CROSS-COMPATIBILITY PATCH ---
             // El portal usa códigos diferentes ('DF', 'SB') que los de AreaView ('DTF', 'SUB').
             // Buscamos ambos y combinamos los resultados para que no se pierdan pedidos.
             let extraData = [];
-            const upperArea = areaKey.toUpperCase();
+            const upperArea = areaDatos.toUpperCase();
             
             if (upperArea === 'DTF') {
                 extraData = await ordersService.getByArea('DF', 'active');
@@ -584,14 +627,52 @@ export default function AreaView({ areaKey: rawAreaKey, areaConfig, onSwitchTab 
 
     const tableToolbar = (
         <div className="flex flex-nowrap gap-3 tablet:gap-1.5 items-center">
-            <button
-                className="flex items-center gap-2 px-3 py-1.5 tablet:px-2 tablet:py-1 text-xs tablet:text-[11px] font-bold bg-white border border-zinc-200 rounded-lg text-zinc-600 hover:bg-zinc-50 hover:text-brand-cyan hover:border-brand-cyan/30 transition-colors shadow-sm capitalize"
-                onClick={() => navigate('/consultas/rollos', { state: { areaFilter: areaKey } })}
-            >
-                <i className="fa-solid fa-clock-rotate-left"></i> <span className="tablet:hidden">Historial</span>
-            </button>
+            {!isPro && (
+                <>
+                    <button
+                        className="flex items-center gap-2 px-3 py-1.5 tablet:px-2 tablet:py-1 text-xs tablet:text-[11px] font-bold bg-white border border-zinc-200 rounded-lg text-zinc-600 hover:bg-zinc-50 hover:text-brand-cyan hover:border-brand-cyan/30 transition-colors shadow-sm capitalize"
+                        onClick={() => navigate('/consultas/rollos', { state: { areaFilter: areaKey } })}
+                    >
+                        <i className="fa-solid fa-clock-rotate-left"></i> <span className="tablet:hidden">Historial</span>
+                    </button>
 
-            <div className="w-px h-5 bg-zinc-200 mx-1"></div>
+                    <div className="w-px h-5 bg-zinc-200 mx-1"></div>
+                </>
+            )}
+
+            {/* [PRO] Selector "Ver área": muestra en la planilla las órdenes del área elegida */}
+            {isPro && (
+                <>
+                    <div className="flex items-center gap-1.5">
+                        <i className="fa-solid fa-eye text-zinc-400 text-xs"></i>
+                        <label className="text-[10px] font-black uppercase tracking-wider text-zinc-400 shrink-0">Ver área:</label>
+                        <select
+                            value={proAreaVista}
+                            onChange={e => cambiarAreaVista(e.target.value)}
+                            className={`text-xs font-bold border rounded-lg px-2 py-1.5 h-[30px] focus:outline-none focus:border-brand-cyan shadow-sm ${
+                                proAreaVista !== 'PRO'
+                                    ? 'bg-brand-cyan text-white border-brand-cyan'
+                                    : 'bg-white text-zinc-700 border-zinc-200'
+                            }`}
+                            title="Elegí qué área ver en la planilla (solo cambia qué órdenes se muestran)"
+                        >
+                            <option value="PRO">Producción (PRO)</option>
+                            {areasCatalogo
+                                .filter(a => (a.code || '').toUpperCase() !== 'PRO')
+                                .map(a => (
+                                    <option key={a.code} value={a.code}>{a.name} ({a.code})</option>
+                                ))}
+                        </select>
+                        {proAreaVista !== 'PRO' && (
+                            <span className="text-[10px] font-bold text-brand-cyan whitespace-nowrap">
+                                Viendo órdenes de {proAreaVista}
+                            </span>
+                        )}
+                    </div>
+
+                    <div className="w-px h-5 bg-zinc-200 mx-1"></div>
+                </>
+            )}
 
             {/* Filtro Multiselector */}
             <div className="relative" ref={filterDropdownRef}>
@@ -792,6 +873,12 @@ export default function AreaView({ areaKey: rawAreaKey, areaConfig, onSwitchTab 
                 )}
             </div>
 
+            {/* [PRO] Producción no arma lotes: sin Asignar a Lote.
+                Tampoco las áreas sin lotes (TERMINAC/EMB/EST/TWC/TWT): sus órdenes se
+                trabajan desde la Bandeja — si se asignan a un lote quedan 'En Lote' y
+                el check-in del material ya no las toma (caso XEUV-12044). */}
+            {!isPro && !hidePlaneacion && (
+            <>
             <div className="w-px h-5 bg-zinc-200 mx-1"></div>
 
             {/* Asignar Lote */}
@@ -939,6 +1026,8 @@ export default function AreaView({ areaKey: rawAreaKey, areaConfig, onSwitchTab 
                     <div className="w-[30px] h-[30px]"></div>
                 )}
             </div>
+            </>
+            )}
         </div>
     );
 
@@ -949,6 +1038,31 @@ export default function AreaView({ areaKey: rawAreaKey, areaConfig, onSwitchTab 
             <ReportFailureModal isOpen={isFailureOpen} onClose={() => setIsFailureOpen(false)} areaName={areaConfig.name} areaCode={areaKey} />
             <LogisticsCartModal isOpen={isCartOpen} onClose={() => setIsCartOpen(false)} areaName={areaConfig.name} areaCode={areaKey} onSuccess={() => refetch()} />
             <RollAssignmentModal isOpen={isRollModalOpen} onClose={() => setIsRollModalOpen(false)} selectedIds={selectedIds} areaCode={areaKey} onSuccess={() => { setSelectedIds([]); refetch(); }} />
+
+            {/* [PRO] Modales del área Producción (prendas) */}
+            {isPro && (
+                <>
+                    <ConfigFlowsModal isOpen={isFlowsModalOpen} onClose={() => setIsFlowsModalOpen(false)} />
+                    {isProductosModalOpen && (
+                        <NuevoProductoTerminadoModal isOpen={true} onClose={() => setIsProductosModalOpen(false)} onCreated={() => refetch()} />
+                    )}
+                    {isQuotationModalOpen && (
+                        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 animate-fade-in">
+                            <div className="bg-white w-full max-w-7xl h-[95vh] rounded-xl overflow-hidden shadow-2xl flex flex-col relative">
+                                <button
+                                    className="absolute top-4 right-6 text-slate-500 hover:text-slate-800 z-10 bg-white hover:bg-slate-200 p-2 rounded-full transition"
+                                    onClick={() => { setIsQuotationModalOpen(false); refetch(); }}
+                                >
+                                    <i className="fa-solid fa-xmark text-xl"></i>
+                                </button>
+                                <div className="flex-1 overflow-hidden">
+                                    <QuotationView areaFilter={areaKey} />
+                                </div>
+                            </div>
+                        </div>
+                    )}
+                </>
+            )}
 
             {isImportModalOpen && (
                 <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 animate-fade-in">
@@ -975,7 +1089,7 @@ export default function AreaView({ areaKey: rawAreaKey, areaConfig, onSwitchTab 
 
                     {/* CENTRO ABSOLUTO: Tabs de Navegación (Siempre en el centro exacto de la pantalla) */}
                     <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 flex items-center gap-1 tablet:gap-0.5 z-30 pointer-events-auto">
-                        {!hideImportar && (
+                        {!hideImportar && !isPro && (
                             <button
                                 className={`${btnBaseClass} px-3 h-8 text-xs tablet:px-2 tablet:h-7 tablet:text-[11px] ${btnSecondaryClass}`}
                                 onClick={() => setIsImportModalOpen(true)}
@@ -983,7 +1097,42 @@ export default function AreaView({ areaKey: rawAreaKey, areaConfig, onSwitchTab 
                                 <i className="fa-solid fa-file-import"></i> <span className="tablet:hidden">Importar Orden</span><span className="hidden tablet:inline">Importar</span>
                             </button>
                         )}
+                        {isPro && (
+                            <button
+                                className={`${btnBaseClass} px-3 h-8 text-xs tablet:px-2 tablet:h-7 tablet:text-[11px] ${btnSecondaryClass}`}
+                                onClick={() => navigate('/ventas/pedido-prenda')}
+                                title="Abrir el formulario interno de pedido de prendas"
+                            >
+                                <i className="fa-solid fa-plus"></i> <span className="tablet:hidden">Ingresar Orden</span><span className="hidden tablet:inline">Ingresar</span>
+                            </button>
+                        )}
                         <button className={`${btnBaseClass} px-3 h-8 text-xs tablet:px-2 tablet:h-7 tablet:text-[11px] ${isActive('') ? btnPrimaryClass : btnSecondaryClass}`} onClick={() => goTo('')}><LayoutGrid size={14} /> Planilla</button>
+                        {isPro ? (
+                            <>
+                                <button
+                                    className={`${btnBaseClass} px-3 h-8 text-xs tablet:px-2 tablet:h-7 tablet:text-[11px] ${btnSecondaryClass}`}
+                                    onClick={() => setIsFlowsModalOpen(true)}
+                                    title="Gestionar las rutas de producción (secuencia de áreas)"
+                                >
+                                    <i className="fa-solid fa-diagram-project"></i> <span className="tablet:hidden">Modificar Flujo</span><span className="hidden tablet:inline">Flujo</span>
+                                </button>
+                                <button
+                                    className={`${btnBaseClass} px-3 h-8 text-xs tablet:px-2 tablet:h-7 tablet:text-[11px] ${btnSecondaryClass}`}
+                                    onClick={() => setIsQuotationModalOpen(true)}
+                                    title="Revisar y ajustar las cotizaciones pendientes del área"
+                                >
+                                    <i className="fa-solid fa-file-invoice-dollar"></i> <span className="tablet:hidden">Editar Cotización</span><span className="hidden tablet:inline">Cotización</span>
+                                </button>
+                                <button
+                                    className={`${btnBaseClass} px-3 h-8 text-xs tablet:px-2 tablet:h-7 tablet:text-[11px] ${btnSecondaryClass}`}
+                                    onClick={() => setIsProductosModalOpen(true)}
+                                    title="Configurar la ficha de los productos terminados"
+                                >
+                                    <i className="fa-solid fa-cube"></i> <span className="tablet:hidden">Configurar Productos</span><span className="hidden tablet:inline">Productos</span>
+                                </button>
+                            </>
+                        ) : (
+                            <>
                         {hidePlaneacion ? (
                             /* TERMINAC: en el lugar de Planeación va la Bandeja (checklist de
                                terminaciones con material recibido); Control queda aparte. */
@@ -993,6 +1142,8 @@ export default function AreaView({ areaKey: rawAreaKey, areaConfig, onSwitchTab 
                         )}
                         <button className={`${btnBaseClass} px-3 h-8 text-xs tablet:px-2 tablet:h-7 tablet:text-[11px] ${isActive('control') ? btnPrimaryClass : btnSecondaryClass}`} onClick={() => goTo('control')}><ScanLine size={14} /> Control</button>
                         <button className={`${btnBaseClass} px-3 h-8 text-xs tablet:px-2 tablet:h-7 tablet:text-[11px] ${isActive('logistica') ? btnPrimaryClass : btnSecondaryClass}`} onClick={() => goTo('logistica')}><Truck size={14} /> Logística</button>
+                            </>
+                        )}
                     </div>
 
                     {/* LADO IZQUIERDO (Mitad de la pantalla menos un margen protector para las tabs) */}
@@ -1044,10 +1195,17 @@ export default function AreaView({ areaKey: rawAreaKey, areaConfig, onSwitchTab 
 
                         <Route path="produccion" element={<ProductionKanban areaCode={areaKey} />} />
                         {/* TERMINAC (29/07): Bandeja = trabajos con material recibido (checklist);
-                            Control = órdenes terminadas esperando aprobación. El resto de las
-                            áreas usa el control de archivos de siempre. */}
-                        <Route path="bandeja" element={<EcoUvFinishing />} />
-                        <Route path="control" element={areaKey === 'TERMINAC' ? <EcoUvFinishing fase="control" /> : <FilePrintControl areaCode={areaKey} />} />
+                            Control = órdenes terminadas esperando aprobación. EMB/EST/TWC/TWT
+                            comparten la misma Bandeja/Control genérica (sin lotes). El resto de
+                            las áreas usa el control de archivos de siempre. */}
+                        <Route path="bandeja" element={
+                            AREAS_BANDEJA_SIN_LOTES.includes(areaKey) ? <EmbBandeja area={areaKey} fase="trabajo" onSelectOrder={setSelectedOrder} /> : <EcoUvFinishing />
+                        } />
+                        <Route path="control" element={
+                            areaKey === 'TERMINAC' ? <EcoUvFinishing fase="control" />
+                                : AREAS_BANDEJA_SIN_LOTES.includes(areaKey) ? <EmbBandeja area={areaKey} fase="control" onSelectOrder={setSelectedOrder} />
+                                : <FilePrintControl areaCode={areaKey} />
+                        } />
                         <Route path="planeacion" element={<PlaneacionTrabajo AreaID={areaKey} />} />
                         <Route path="logistica" element={<LogisticsDashboard areaCode={areaKey} />} />
 

@@ -52,7 +52,7 @@ const getDriveId = (url) => {
  * @param {Object} io - Instancia de Socket.io para notificaciones (opcional)
  * @param {Array<number>} targetFileIds - (Opcional) IDs específicos de archivo a procesar
  */
-const processOrderListInternal = async (orderIds, io, targetFileIds = null) => {
+const processOrderListInternal = async (orderIds, io, targetFileIds = null, opts = {}) => {
     if (!orderIds || orderIds.length === 0) return;
 
     logger.info(`⚡ [FileProcessing] Iniciando procesamiento asíncrono para ${orderIds.length} órdenes...` + (targetFileIds ? ` (Target Files: ${targetFileIds.length})` : ''));
@@ -330,6 +330,8 @@ const processOrderListInternal = async (orderIds, io, targetFileIds = null) => {
                         // su Magnitud es la CANTIDAD PEDIDA en unidades, fijada al crear el pedido, y
                         // sus archivos son las capas del arte, no unidades. Acá además el boceto no
                         // tiene metros, así que el recálculo daría 0 y le borraría la cantidad.
+                        // [PRO] Producción (prendas) también: su Magnitud es la CANTIDAD DE PRENDAS,
+                        // editable a mano en el detalle — medir un arte no debe pisarla.
                         // Va como condición del UPDATE y no como SELECT aparte para no agregar un viaje
                         // más a la base en un bucle que corre por cada archivo medido.
                         await pool.request()
@@ -345,7 +347,7 @@ const processOrderListInternal = async (orderIds, io, targetFileIds = null) => {
                                 IF ISNULL(@TotalProd, 0) = 0
                                     SELECT @TotalServ = SUM(ISNULL(Cantidad, 0)) FROM ServiciosExtraOrden WHERE OrdenID = @OID;
                                 UPDATE dbo.Ordenes SET Magnitud = CAST((ISNULL(@TotalProd, 0) + ISNULL(@TotalServ, 0)) AS NVARCHAR(50))
-                                WHERE OrdenID = @OID AND UPPER(LTRIM(RTRIM(ISNULL(AreaID, '')))) <> 'TPU'
+                                WHERE OrdenID = @OID AND UPPER(LTRIM(RTRIM(ISNULL(AreaID, '')))) NOT IN ('TPU', 'PRO')
                             `);
 
                         if (io) {
@@ -355,6 +357,22 @@ const processOrderListInternal = async (orderIds, io, targetFileIds = null) => {
 
                 } catch (fileErr) {
                     logger.error(`      ❌ Error procesando archivo ${file.ArchivoID}:`, fileErr.message);
+                }
+            }
+
+            // Recotizar el pedido tras medir — SOLO cuando el llamador lo pide (ej. subida
+            // manual desde el detalle de la orden PRO): la medida recién calculada cambió la
+            // magnitud de la orden destino y el importe debe seguirla. El flujo de creación
+            // del portal NO usa esto (cotiza aparte, en su propio circuito).
+            if (opts.recotizarPedido) {
+                try {
+                    // require acá adentro (no arriba) para no crear un ciclo con ordersController
+                    const { recotizarPedidoDeOrden } = require('../controllers/ordersController');
+                    for (const oid of orderIds) {
+                        await recotizarPedidoDeOrden(pool, oid);
+                    }
+                } catch (eCot) {
+                    logger.error('[FileProcessing] Error recotizando tras medición: ' + eCot.message);
                 }
             }
 
@@ -373,7 +391,7 @@ exports.processOrderList = processOrderListInternal;
  * Nueva función para procesar lista de ARCHIVOS específicos.
  * Internamente resuelve las Órdenes y reutiliza processOrderList con filtro.
  */
-exports.processFiles = async (fileIds, io) => {
+exports.processFiles = async (fileIds, io, opts = {}) => {
     if (!fileIds || fileIds.length === 0) return;
     try {
         const pool = await getPool();
@@ -384,7 +402,7 @@ exports.processFiles = async (fileIds, io) => {
         const orderIds = res.recordset.map(r => r.OrdenID);
         if (orderIds.length > 0) {
             // Llamar a processOrderListInternal pasando los fileIds como target
-            await processOrderListInternal(orderIds, io, fileIds);
+            await processOrderListInternal(orderIds, io, fileIds, opts);
         }
     } catch (err) {
         logger.error("Error processFiles:", err);

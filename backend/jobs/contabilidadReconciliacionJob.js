@@ -61,9 +61,12 @@ async function run() {
         for (const row of rows) {
             const tag = `[ReconciliacionCtb] [${row.CodigoOrden}]`;
             try {
+                // "Comprar y personalizar": no traer las líneas hermanas EMB/DF/TPU/EST,
+                // ya están incluidas dentro del subtotal de la línea de PRO — traerlas
+                // infla el total reconciliado (metros y monto) del pedido.
                 const detRes = await pool.request()
                     .input('PID', sql.Int, row.PCId)
-                    .query('SELECT Cantidad, Subtotal AS TotalLinea, ProIdProducto AS IDProdReact, Moneda FROM PedidosCobranzaDetalle WHERE PedidoCobranzaID = @PID');
+                    .query("SELECT Cantidad, Subtotal AS TotalLinea, ProIdProducto AS IDProdReact, Moneda FROM PedidosCobranzaDetalle WHERE PedidoCobranzaID = @PID AND ISNULL(EsHermanaConsolidada,0) = 0");
 
                 const detalles = detRes.recordset;
                 if (detalles.length === 0) {
