@@ -248,11 +248,15 @@ const OrderForm = ({ serviceId: propServiceId }) => {
         apiClient.get('/nomenclators/shipping-methods')
             .then(res => {
                 const lista = res.success ? (res.data || []) : [];
-                setFormasEnvio(lista);
+                // El nomenclador trae las cuatro formas, pero acá (ECOUV, el único servicio con
+                // este selector) solo se ofrecen RETIRO EN EL LOCAL y ENCOMIENDA: entrega
+                // coordinada y envío a domicilio no aplican.
+                const permitidas = lista.filter(f => /retiro|encomienda/i.test(f.Nombre || ''));
+                setFormasEnvio(permitidas);
                 // Default: Retiro en el Local (lo más habitual). El cliente puede cambiarlo,
                 // pero el pedido nunca queda sin forma de envío definida.
                 setFormaEnvioId(prev => prev ?? (
-                    lista.find(f => /retiro/i.test(f.Nombre || ''))?.ID ?? lista[0]?.ID ?? null
+                    permitidas.find(f => /retiro/i.test(f.Nombre || ''))?.ID ?? permitidas[0]?.ID ?? null
                 ));
             })
             .catch(() => setFormasEnvio([]));
@@ -1627,7 +1631,13 @@ const OrderForm = ({ serviceId: propServiceId }) => {
                 idServicioBase: serviceId,
                 nombreTrabajo: jobName,
                 prioridad: urgency,
-                notasGenerales: generalNote,
+                // TPU: la medida del parche va acá para que llegue a `Ordenes.Nota`, que es de donde
+                // la lee el detalle de orden. Abajo también se agrega a la nota del ÍTEM, pero esa
+                // termina en ArchivosOrden.Observaciones y un pedido de TPU no tiene archivo al
+                // crearse (el boceto va a Referencias): por ese camino la medida se perdía.
+                notasGenerales: (serviceId === 'tpu' && tpuAlto && tpuAncho)
+                    ? `${generalNote || ''} [Medida: ${tpuAlto} x ${tpuAncho} cm]`.trim()
+                    : generalNote,
 
                 // Forma de envío elegida (FormasEnvio.ID) — el backend la guarda en Ordenes.ModoRetiro
                 formaEnvioId: formaEnvioId || null,

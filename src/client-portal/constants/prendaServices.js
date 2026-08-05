@@ -94,12 +94,13 @@ export const SERVICES_LIST = [
         label: 'EcoUV',
         desc: 'Impresión UV alta resolución.',
         icon: ImageIcon,
-        // EcoUV redirige al Google Form correspondiente (en vez del form interno /portal/order/ecouv).
-        externalUrl: 'https://docs.google.com/forms/d/e/1FAIpQLSciNCn6SjH57kR-QeRmXqLK4pOnRrk9PaKZyiiKOqc_kkCvPw/viewform',
-        formEntries: {
-            clienteId: 'entry.1901865367',
-            terminos: { id: 'entry.261786299', value: 'Acepto' }
-        },
+        // externalUrl deshabilitado: EcoUV ahora usa el form interno /portal/order/ecouv.
+        // Se dejan el link del Google Form y sus entries comentados por si hay que revertir.
+        // externalUrl: 'https://docs.google.com/forms/d/e/1FAIpQLSciNCn6SjH57kR-QeRmXqLK4pOnRrk9PaKZyiiKOqc_kkCvPw/viewform',
+        // formEntries: {
+        //     clienteId: 'entry.1901865367',
+        //     terminos: { id: 'entry.261786299', value: 'Acepto' }
+        // },
 
 
         config: {
@@ -222,10 +223,12 @@ export const SERVICES_LIST = [
         label: 'TPU',
         desc: 'Etiquetas y parches en PU.',
         icon: Box,
-        externalUrl: 'https://docs.google.com/forms/d/e/1FAIpQLSfGsRWRkshDjsW5AsQD0oIJiKo_oR15x8mjSA0DnEhtsxv5AA/viewform',
-        formEntries: {
-            clienteId: 'entry.1683355647'
-        },
+        // externalUrl deshabilitado: TPU ahora usa el form interno /portal/order/tpu.
+        // Se dejan el link del Google Form y sus entries comentados por si hay que revertir.
+        // externalUrl: 'https://docs.google.com/forms/d/e/1FAIpQLSfGsRWRkshDjsW5AsQD0oIJiKo_oR15x8mjSA0DnEhtsxv5AA/viewform',
+        // formEntries: {
+        //     clienteId: 'entry.1683355647'
+        // },
 
 
         config: {

@@ -17,11 +17,15 @@ const config = {
         encrypt: false,
         trustServerCertificate: true,
         enableArithAbort: true,
-        // Las fechas se escriben con GETDATE(), o sea HORA LOCAL de Uruguay, en columnas `datetime`
-        // que no guardan zona horaria. El default de mssql (`useUTC: true`) las lee como si fueran
-        // UTC: el driver devolvía las 17:03 etiquetadas como 17:03Z y el navegador las volvía a
-        // pasar a local, mostrando 14:03. Tres horas menos en TODA fecha del sistema.
-        useUTC: false
+        // Cómo interpretar las columnas `datetime` (no guardan zona horaria). Depende del reloj
+        // del SQL Server, que NO es el mismo en los dos entornos:
+        //   - PRODUCCIÓN: el server está en UTC, así que GETDATE() escribe UTC → useUTC = true
+        //     (el default de la librería, y el correcto: el navegador lo pasa a local solo).
+        //   - LOCAL: el SQL está en hora de Uruguay, GETDATE() escribe hora local → useUTC = false,
+        //     si no el driver la etiqueta como UTC y el navegador le resta 3 horas más.
+        // Se controla con DB_USE_UTC en el .env; sin la variable queda el comportamiento de
+        // producción. Para verificar en qué está parado un server: SELECT GETDATE(), GETUTCDATE().
+        useUTC: process.env.DB_USE_UTC !== 'false'
     },
     pool: {
         max: 10,

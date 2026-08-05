@@ -357,10 +357,11 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { }, lo
     const currentAreaCode = roll?.areaId || roll?.AreaID || freshRoll?.areaId || freshRoll?.AreaID || (typeof window !== 'undefined' ? window.location.pathname.split('/')[2] : 'ECOUV');
     // SB: las órdenes del lote se agrupan/ordenan por material/variante (A-Z), no por secuencia manual.
     const isSB = (currentAreaCode || '').toUpperCase() === 'SB';
-    // DF (DTF): marcado LIBRE — se puede marcar/desmarcar impresa CUALQUIER orden, sin exigir que
-    // las anteriores estén impresas (no aplica el invariante impresos-prefijo ni el bloque FUERA DE
-    // ORDEN ni el rechazo de drags por secuencia). Pedido del usuario: solo /area/df.
-    const marcadoLibre = (currentAreaCode || '').toUpperCase() === 'DF';
+    // Marcado LIBRE — se puede marcar/desmarcar impresa CUALQUIER orden, sin exigir que las
+    // anteriores estén impresas (no aplica el invariante impresos-prefijo ni el bloque FUERA DE
+    // ORDEN ni el rechazo de drags por secuencia). Son las áreas que no imprimen en cola.
+    const AREAS_MARCADO_LIBRE = ['DF', 'ECOUV'];
+    const marcadoLibre = AREAS_MARCADO_LIBRE.includes((currentAreaCode || '').toUpperCase());
 
     // Metros editables de órdenes de falla (-F): por orden (Magnitud) y total del grupo (independiente).
     const [metersDraft, setMetersDraft] = React.useState({});          // orderId -> string
@@ -668,6 +669,26 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { }, lo
             return cleaned.length === prev.length ? prev : cleaned;
         });
     }, [orderIdsKey, loteEnArmado]);
+
+    // Órdenes ya expulsadas al bloque del final por quedar fuera de secuencia: se QUEDAN ahí
+    // aunque después se marquen impresas. La máquina las imprimió al final de la cola, no en
+    // su grupo de material; devolverlas al grupo haría que la vista mienta sobre el orden real.
+    const outSeqStorageKey = `lote_outseq_ids_${roll?.id ?? freshRoll?.id ?? 'x'}`;
+    const [outSeqIds, setOutSeqIds] = useState(() => {
+        try { const v = sessionStorage.getItem(outSeqStorageKey); return v ? JSON.parse(v) : []; } catch { return []; }
+    });
+    useEffect(() => {
+        try { sessionStorage.setItem(outSeqStorageKey, JSON.stringify(outSeqIds)); } catch {}
+    }, [outSeqIds, outSeqStorageKey]);
+    // Olvidar las que ya no están en el lote (se movieron o se sacaron).
+    useEffect(() => {
+        const ids = orders.map(o => o.id);
+        setOutSeqIds(prev => {
+            const cleaned = prev.filter(id => ids.includes(id));
+            return cleaned.length === prev.length ? prev : cleaned;
+        });
+    }, [orderIdsKey]);
+
     // En el Historial (readOnly) no existe el concepto de "orden nueva" (recién asignada/movida):
     // el lote ya terminó, así que todo se agrupa por material como corresponde (sin bloques "NUEVA").
     const isNewOrder = (id) => !readOnly && loteEnArmado && placedIds !== null && !placedIds.includes(id);
@@ -793,9 +814,12 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { }, lo
                 laterGroupHasPrinted[gi] = accPrinted;
                 if (list[gi].orders.some(o => printedSet.has(o.id))) accPrinted = true;
             }
-            if (lastPrintedIdx >= 0) {
+            if (lastPrintedIdx >= 0 || outSeqIds.length > 0) {
                 const outOfSeq = new Set();
                 list.forEach((u, gi) => u.orders.forEach(o => {
+                    // Ya mostrada al final: sigue al final aunque ahora esté impresa (se imprimió
+                    // ahí). Sin esto, marcarla la devolvía de golpe a su grupo de material.
+                    if (outSeqIds.includes(o.id)) { outOfSeq.add(o.id); return; }
                     if (printedSet.has(o.id)) return;
                     if (isFalla(o)) {
                         // Falla (reposición tardía): al final SOLO si un grupo posterior ya empezó a imprimirse.
@@ -834,10 +858,15 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { }, lo
     // Impresión EN ORDEN: solo se puede marcar la siguiente (todas las anteriores impresas) y solo
     // desmarcar la última impresa (ninguna posterior impresa). Evita marcar salteado / dejar huecos.
     const flatVisualIds = renderUnits.flatMap(u => u.orders.map(o => o.id));
+    // Las que hoy se ven en el bloque del final (NUEVA / fuera de secuencia): al marcarlas
+    // impresas quedan fijadas ahí en vez de saltar a su grupo de material.
+    const tailOrderIds = new Set(
+        renderUnits.filter(u => u.kind === 'new' || u.kind === 'outseq').flatMap(u => u.orders.map(o => o.id))
+    );
     const canTogglePrinted = (id) => {
         const idx = flatVisualIds.indexOf(id);
         if (idx < 0) return false;
-        if (marcadoLibre) return true; // DF: cualquier orden, en cualquier momento
+        if (marcadoLibre) return true; // DF / ECOUV: cualquier orden, en cualquier momento
         if (printedOrderIds.includes(id)) return flatVisualIds.slice(idx + 1).every(pid => !printedOrderIds.includes(pid));
         return flatVisualIds.slice(0, idx).every(pid => printedOrderIds.includes(pid));
     };
@@ -867,6 +896,8 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { }, lo
                 : 'Primero desmarcá las órdenes posteriores');
             return;
         }
+        // Estaba en el bloque del final: se imprimió ahí, así que se queda ahí.
+        if (willPrint && tailOrderIds.has(id)) setOutSeqIds(prev => prev.includes(id) ? prev : [...prev, id]);
         setPrintedOrderIds(prev => willPrint ? [...prev, id] : prev.filter(x => x !== id));
         (enSegundaEstacion ? rollsService.setCalandered : rollsService.setPrinted)(id, willPrint).catch(() => {
             setPrintedOrderIds(prev => willPrint ? prev.filter(x => x !== id) : [...prev, id]);
@@ -892,6 +923,9 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { }, lo
             toast.error('Primero desmarcá los grupos/órdenes posteriores');
             return;
         }
+        // Ídem para el tick del grupo entero: lo que estaba al final, al final queda.
+        const enCola = ids.filter(id => tailOrderIds.has(id));
+        if (willPrint && enCola.length) setOutSeqIds(prev => [...new Set([...prev, ...enCola])]);
         setPrintedOrderIds(prev => willPrint ? [...new Set([...prev, ...ids])] : prev.filter(x => !ids.includes(x)));
         // TPU / MIMAKI: el toggle grupal sincroniza también los contadores (unidades o copias)
         // (el backend hace lo mismo en DB: tick manual → CantidadImpresa = total/0)
@@ -1424,7 +1458,7 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { }, lo
         // después el reacomodo la mandaba al final marcada como NUEVA, que no era ni su lugar ni su
         // etiqueta). Devuelve true si el orden propuesto rompe el invariante.
         const rompeSecuencia = (flatIds) => {
-            if (marcadoLibre) return false; // DF: sin invariante de secuencia, todo drop vale
+            if (marcadoLibre) return false; // DF / ECOUV: sin invariante de secuencia, todo drop vale
             const printedSet = new Set(printedOrderIds);
             let vistoSinImprimir = false;
             for (const id of flatIds) {
