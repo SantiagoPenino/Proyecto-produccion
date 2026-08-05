@@ -4,6 +4,68 @@ const logger = require('../utils/logger');
 const { changeOrderState } = require('../services/stateManagerService');
 const { isPedidoCompletoEnArea, isPedidoCompletoGlobal, sqlExistsHermanaNoPronta } = require('../services/pedidoCompletoService');
 
+// [PRENDAS] "Comprar y personalizar": Bordado/DTF/TPU/Estampado/Corte/Costura que cuelgan
+// de una orden madre PRO (prenda comprada + personalizaciones, un solo precio) son trabajo
+// interno — mismo trato que la hermana TERMINAC de ECOUV: no generan fila propia en
+// OrdenesDeposito, así que no se cobran aparte ni disparan su propio WhatsApp. Solo la
+// orden PRO cobra/avisa.
+const esHermanaDePrendaPersonalizada = async (pool, codigoOrden) => {
+    if (!codigoOrden) return false;
+    try {
+        const r = await pool.request()
+            .input('Cod', require('mssql').VarChar, codigoOrden)
+            .query(`
+                SELECT TOP 1 1 AS X
+                FROM Ordenes o
+                JOIN Ordenes madre ON madre.NoDocERP = o.NoDocERP AND madre.AreaID = 'PRO'
+                WHERE o.CodigoOrden = @Cod AND o.AreaID IN ('EMB', 'DF', 'TPU', 'EST', 'TWC', 'TWT', 'SB')
+            `);
+        return r.recordset.length > 0;
+    } catch (e) {
+        logger.warn('[Prendas] esHermanaDePrendaPersonalizada:', e.message);
+        return false;
+    }
+};
+
+// [PRENDAS] A qué orden corresponde REALMENTE el registro de OrdenesDeposito: si la orden
+// que llega a Depósito es una hermana (EMB/DF/TPU/EST/TWC/TWT) de una PRO, hay que
+// REDIRIGIR el registro a la madre — no simplemente omitirlo. Con varias hermanas
+// convergiendo por separado (ej. Estampado partido en 1/2 y 2/2, cada una con su propio
+// check-in), si la hermana se limita a excluirse sin redirigir, cuando la ÚLTIMA en llegar
+// es justo una hermana, nada crea el registro y el pedido entero se queda sin cobrar ni
+// avisar. Las llamadas siguientes (de otras hermanas del mismo pedido) van a encontrar el
+// registro de la madre ya creado — el checkeo "existe" de cada call site sigue funcionando
+// igual, solo que ahora busca por el CodigoOrden de la madre en vez del de la hermana.
+// Devuelve null si no hay hermana que redirigir (orden normal, sigue su propio camino) o si
+// es hermana pero no se pudo resolver la madre (más seguro no crear nada que facturar mal).
+const resolverOrdenParaDeposito = async (pool, ordenId, codigoOrden) => {
+    const esHermana = await esHermanaDePrendaPersonalizada(pool, codigoOrden);
+    if (!esHermana) return { ordenId, codigoOrden };
+    try {
+        const r = await pool.request()
+            .input('OID', require('mssql').Int, ordenId)
+            .query(`
+                SELECT TOP 1 madre.OrdenID, madre.CodigoOrden, madre.CliIdCliente, madre.CodCliente,
+                       madre.DescripcionTrabajo, madre.ProIdProducto, madre.Magnitud
+                FROM Ordenes o
+                JOIN Ordenes madre ON madre.NoDocERP = o.NoDocERP AND madre.AreaID = 'PRO'
+                WHERE o.OrdenID = @OID
+            `);
+        if (r.recordset.length > 0) {
+            const m = r.recordset[0];
+            return {
+                ordenId: m.OrdenID, codigoOrden: m.CodigoOrden,
+                cliIdCliente: m.CliIdCliente, codCliente: m.CodCliente,
+                descripcionTrabajo: m.DescripcionTrabajo, proIdProducto: m.ProIdProducto,
+                magnitud: m.Magnitud,
+            };
+        }
+    } catch (e) {
+        logger.warn('[Prendas] resolverOrdenParaDeposito:', e.message);
+    }
+    return null;
+};
+
 /**
  * Valida la regla de pedido completo para un conjunto de órdenes a despachar/recibir:
  *  - destino DEPOSITO  → el pedido debe estar completo GLOBALMENTE (todas las áreas).
@@ -904,6 +966,7 @@ exports.receiveDispatch = async (req, res) => {
 
             let receivedCount = 0;
             const receivedOrdersSet = new Set();
+            const recibidasIntermedias = new Set();
 
             for (const item of itemsRecibidos) {
                 // Update Logistica_EnvioItems
@@ -965,6 +1028,14 @@ exports.receiveDispatch = async (req, res) => {
                             receivedOrdersSet.add(Number(OrdenID));
                         }
 
+                        // [PRENDAS] Recepción en un área INTERMEDIA (no Depósito): la orden que mandó
+                        // el bulto queda 'En transito' para siempre si nadie la cierra acá — nada más
+                        // la avanza. Se junta para procesar después del loop (ver más abajo), igual
+                        // patrón que receivedOrdersSet pero sin la contabilidad/gate de Depósito.
+                        if (OrdenID && areaReceptora && areaReceptora !== 'DEPOSITO' && item.estado === 'ESCANEADO' && bultoInfo.Tipocontenido !== 'ENCOMIENDA') {
+                            recibidasIntermedias.add(Number(OrdenID));
+                        }
+
                         // CHECK-IN EN TERMINAC: al recibir el material impreso, la orden hermana
                         // XEUV del mismo pedido pasa de 'Pendiente' a 'Material Recibido' — recién
                         // ahí queda disponible en la bandeja de terminaciones para trabajar.
@@ -1003,8 +1074,14 @@ exports.receiveDispatch = async (req, res) => {
                             let originAreaID = '';
 
                             // 1. Averiguar ORIGEN del Remito asociado
+                            // bultoInfo NO trae BultoID (el SELECT de extData no lo pide) — quedaba
+                            // undefined y esta consulta no encontraba NUNCA el remito, por lo que
+                            // el auto-cumplimiento de requisitos por Origen→Entrega jamás disparaba
+                            // (silenciosamente caía al fallback por Tipocontenido, que tampoco
+                            // reconoce 'PROD_TERMINADO'). item.bultoId es el ID real del bulto que
+                            // se está procesando en esta vuelta del loop.
                             const remitoRes = await new sql.Request(transaction)
-                                .input('BID', sql.Int, bultoInfo.BultoID)
+                                .input('BID', sql.Int, item.bultoId)
                                 .query(`
                                     SELECT TOP 1 e.AreaOrigenID, a.Entrega
                                     FROM Logistica_EnvioItems ei
@@ -1016,9 +1093,14 @@ exports.receiveDispatch = async (req, res) => {
 
                             if (remitoRes.recordset.length > 0) {
                                 const row = remitoRes.recordset[0];
-                                originAreaID = row.AreaOrigenID;
-                                if (row.Entrega) {
-                                    reqTypeToFulfill = row.Entrega; // Ej: 'DTF', 'PRENDAS', 'TELA'
+                                originAreaID = (row.AreaOrigenID || '').trim();
+                                // Areas.Entrega es CHAR de ancho fijo (relleno con espacios, ej.
+                                // 'PRENDAS   ') — sin el trim la normalización plural->singular de
+                                // abajo (=== 'PRENDAS') nunca daba verdadero y el LIKE de más abajo
+                                // jamás matcheaba nada: el requisito quedaba "Pendiente" para siempre
+                                // aunque el check-in se hiciera perfecto.
+                                if (row.Entrega && row.Entrega.trim()) {
+                                    reqTypeToFulfill = row.Entrega.trim(); // Ej: 'DTF', 'PRENDAS', 'TELA'
                                     logger.info(`[AutoCheck] Requisito detectado por Origen ${originAreaID}: ${reqTypeToFulfill}`);
                                 }
                             }
@@ -1042,6 +1124,11 @@ exports.receiveDispatch = async (req, res) => {
                                 if (searchPattern === 'PRENDAS') searchPattern = 'PRENDA';
                                 if (searchPattern === 'CORTES') searchPattern = 'CORTES';
                                 if (searchPattern === 'DTF') searchPattern = 'DISENO'; // Si definimos que DTF satisface REQ-DISENO
+                                // [PRENDAS] TPU también estampa un transfer, igual que DTF — sin esto,
+                                // un TPU llegando a Estampado nunca cumple el requisito "DTF a Estampar"
+                                // (CodigoRequisito='DTF', matcheado vía DISENO) y la orden queda
+                                // bloqueada para siempre aunque el transfer ya esté físicamente ahí.
+                                if (searchPattern === 'TPU') searchPattern = 'DISENO';
 
                                 // Query de cumplimiento
                                 await new sql.Request(transaction)
@@ -1228,6 +1315,23 @@ exports.receiveDispatch = async (req, res) => {
                 }
             }
 
+            // [PRENDAS] Cerrar en su área de ORIGEN cada orden cuyo bulto se acaba de recibir en una
+            // área intermedia (no Depósito, que tiene su propio flujo de 'Ingresado' + contabilidad
+            // más abajo). Sin esto, la orden queda 'En transito' para siempre y la Hoja de Ruta la
+            // muestra como "en producción" aunque ya se haya entregado del todo en esa área. Guard
+            // "EstadoenArea = 'En transito'": si por lo que sea la orden no estaba en ese estado
+            // (ej. re-escaneo, o el bulto no vino de un despacho normal), no se toca nada.
+            for (const oid of recibidasIntermedias) {
+                await changeOrderState(transaction, {
+                    target : { type: 'ORDER', id: oid },
+                    estado : 'Recibido en Destino',
+                    userObj: req.user || req.body.usuario || usuarioId || 'Sistema',
+                    detalle: `Bulto recibido en ${areaReceptora}`,
+                    guard  : "EstadoenArea = 'En transito'",
+                    io     : req.app.get('socketio'),
+                });
+            }
+
             // Check if full reception (solo si hay remito; el forzar-puro desde la bandeja no trae envioId)
             let newStatus = 'RECIBIDO_TOTAL';
             if (envioId) {
@@ -1405,10 +1509,6 @@ if (triggerReversal || triggerForward) {
                                          const details = await poolLocal.request().input('PID', require('mssql').Int, pc.ID).query("SELECT Cantidad, Subtotal as TotalLinea, ProIdProducto as IDProdReact, Moneda, OrdenID FROM PedidosCobranzaDetalle WHERE PedidoCobranzaID = @PID");
                                            
                                            // --- EN ESTE PUNTO LA ORDEN YA LLAMÓ AL CHECKIN WMS, INSERTAMOS EN ORDENESDEPOSITO SI FALTA ---
-                                           const cliPKForDep = oRow.CliIdCliente || oRow.CodCliente;
-                                           const depCheck = await poolLocal.request().input('Cod', require('mssql').VarChar, oRow.CodigoOrden)
-                                               .query("SELECT OrdIdOrden FROM OrdenesDeposito WITH(NOLOCK) WHERE OrdCodigoOrden = @Cod");
-                                           
                                            // Las fallas (-F) son internas: su material se incorpora a la madre,
                                            // no deben crear registro propio en OrdenesDeposito (sino el job WSP las avisaría).
                                            const esFallaInterna = (oRow.CodigoOrden || '').includes('-F');
@@ -1418,26 +1518,43 @@ if (triggerReversal || triggerForward) {
                                            // entraran a OrdenesDeposito, el retiro mostraría una línea fantasma
                                            // (cant 1, costo 0) y el job de WhatsApp avisaría el pedido dos veces.
                                            const esHermanaTerminac = (oRow.AreaID || '').trim().toUpperCase() === 'TERMINAC';
-                                           if (depCheck.recordset.length === 0 && details.recordset.length > 0 && !esFallaInterna && !esHermanaTerminac) {
-                                               // Línea de cobranza de ESTA orden (no del pedido completo): cada orden hermana
-                                               // entra con su propio importe/cantidad/producto para no duplicar el total en el retiro.
+                                           // [PRENDAS] Bordado/DTF/TPU/Estampado/Corte/Costura de una prenda comprada
+                                           // + personalizada: la que factura y avisa es SIEMPRE la orden madre PRO,
+                                           // nunca la hermana — mismo trato que TERMINAC arriba, pero acá SE
+                                           // REDIRIGE a la madre en vez de no crear nada: con varias hermanas
+                                           // convergiendo en Depósito por separado (ej. Estampado partido en 1/2 y
+                                           // 2/2), si la que llega de última fuera simplemente excluida, el pedido
+                                           // se quedaba sin ningún registro — sin cobrar ni avisar por WhatsApp.
+                                           const ordenDeposito = (esFallaInterna || esHermanaTerminac)
+                                               ? null
+                                               : await resolverOrdenParaDeposito(poolLocal, L_OrdenID, oRow.CodigoOrden);
+
+                                           if (ordenDeposito) {
+                                               const depCheck = await poolLocal.request().input('Cod', require('mssql').VarChar, ordenDeposito.codigoOrden)
+                                                   .query("SELECT OrdIdOrden FROM OrdenesDeposito WITH(NOLOCK) WHERE OrdCodigoOrden = @Cod");
+
+                                               if (depCheck.recordset.length === 0 && details.recordset.length > 0) {
+                                               // Línea de cobranza de ESTA orden (o de la madre, si se redirigió) — no
+                                               // del pedido completo: cada orden hermana entra con su propio
+                                               // importe/cantidad/producto para no duplicar el total en el retiro.
                                                // Fallback al comportamiento previo si el detalle no tuviera la orden desglosada.
                                                // Reposiciones cliente (-R): NUNCA tienen línea propia en PedidosCobranzaDetalle y el
                                                // fallback a la 1ª línea del pedido les copiaba el costo de la MADRE (el retiro les
                                                // mostraba importe). Son re-trabajo sin cargo: siempre costo 0 y su propia cantidad.
                                                const esRepoCliente = /-R\d+$/i.test(oRow.CodigoOrden || '');
-                                               const dOrden = esRepoCliente ? null : (details.recordset.find(d => Number(d.OrdenID) === Number(L_OrdenID)) || details.recordset[0]);
-                                               const cantOrden  = (dOrden && dOrden.Cantidad   != null) ? parseFloat(dOrden.Cantidad)   : (parseFloat(oRow.Magnitud) || totalMetros || 0);
+                                               const dOrden = esRepoCliente ? null : (details.recordset.find(d => Number(d.OrdenID) === Number(ordenDeposito.ordenId)) || details.recordset[0]);
+                                               const cantOrden  = (dOrden && dOrden.Cantidad   != null) ? parseFloat(dOrden.Cantidad)   : (parseFloat(ordenDeposito.magnitud ?? oRow.Magnitud) || totalMetros || 0);
                                                const costoOrden = esRepoCliente ? 0 : ((dOrden && dOrden.TotalLinea != null) ? parseFloat(dOrden.TotalLinea) : currentMonto);
-                                               const prodOrden  = (dOrden && dOrden.IDProdReact)        ? dOrden.IDProdReact           : (oRow.ProIdProducto || null);
+                                               const prodOrden  = (dOrden && dOrden.IDProdReact)        ? dOrden.IDProdReact           : (ordenDeposito.proIdProducto ?? oRow.ProIdProducto ?? null);
+                                               const cliPKForDep = ordenDeposito.cliIdCliente || ordenDeposito.codCliente || oRow.CliIdCliente || oRow.CodCliente;
                                                const lugarReq = await poolLocal.request().input('CID', require('mssql').Int, cliPKForDep).query("SELECT FormaEnvioID FROM Clientes WITH(NOLOCK) WHERE CliIdCliente = @CID");
                                                const lugarRetiro = lugarReq.recordset[0]?.FormaEnvioID ? parseInt(lugarReq.recordset[0].FormaEnvioID) : null;
 
                                                const insertResult = await poolLocal.request()
-                                                   .input('Cod', require('mssql').VarChar, oRow.CodigoOrden)
+                                                   .input('Cod', require('mssql').VarChar, ordenDeposito.codigoOrden)
                                                    .input('Cant', require('mssql').Float, cantOrden)
                                                    .input('Cli', require('mssql').Int, cliPKForDep)
-                                                   .input('Trab', require('mssql').VarChar, oRow.DescripcionTrabajo)
+                                                   .input('Trab', require('mssql').VarChar, ordenDeposito.descripcionTrabajo || oRow.DescripcionTrabajo)
                                                    .input('Prod', require('mssql').Int, prodOrden)
                                                    .input('Mon', require('mssql').Int, finalMonId)
                                                    .input('Costo', require('mssql').Float, costoOrden)
@@ -1461,7 +1578,8 @@ if (triggerReversal || triggerForward) {
                                                        .input('Usr', require('mssql').Int, usuarioId || 1)
                                                        .query("INSERT INTO HistoricoEstadosOrdenes (OrdIdOrden, EOrIdEstadoOrden, HEOFechaEstado, HEOUsuarioAlta) VALUES (@OID, 1, GETDATE(), @Usr)");
                                                }
-                                               console.log(`[WMS-INTERNAL] Creado OrdenesDeposito para ${oRow.CodigoOrden}`);
+                                               console.log(`[WMS-INTERNAL] Creado OrdenesDeposito para ${ordenDeposito.codigoOrden}${ordenDeposito.codigoOrden !== oRow.CodigoOrden ? ` (redirigido desde hermana ${oRow.CodigoOrden})` : ''}`);
+                                               }
                                            }
                                            // ------------------------------------------------------------------------------------------------
                                          
@@ -1603,38 +1721,46 @@ if (triggerReversal || triggerForward) {
                                  // no entran al bloque contable, pero igual deben insertarse en OrdenesDeposito
                                  // para que el aviso funcione.
                                  try {
-                                     const fallbackCheck = await poolLocal.request()
-                                         .input('Cod', require('mssql').VarChar, oRow.CodigoOrden)
-                                         .query("SELECT OrdIdOrden FROM OrdenesDeposito WITH(NOLOCK) WHERE OrdCodigoOrden = @Cod");
-
                                      // Las fallas (-F) son internas: tampoco deben crear registro por el fallback
                                      const esFallaFb = (oRow.CodigoOrden || '').includes('-F');
                                      // Ídem hermanas de terminaciones (XEUV): no tienen línea propia de
                                      // cobranza — justamente por eso caen SIEMPRE en este fallback — y
                                      // entrarían al depósito como una orden fantasma de costo 0.
                                      const esTerminacFb = (oRow.AreaID || '').trim().toUpperCase() === 'TERMINAC';
-                                     if (fallbackCheck.recordset.length === 0 && !esFallaFb && !esTerminacFb) {
-                                         const cliPKFb = oRow.CliIdCliente || oRow.CodCliente;
+                                     // [PRENDAS] Hermana de una prenda comprada+personalizada: redirigir a la
+                                     // madre PRO en vez de simplemente omitir (ver resolverOrdenParaDeposito).
+                                     const ordenDepositoFb = (esFallaFb || esTerminacFb)
+                                         ? null
+                                         : await resolverOrdenParaDeposito(poolLocal, L_OrdenID, oRow.CodigoOrden);
+
+                                     if (ordenDepositoFb) {
+                                         const fallbackCheck = await poolLocal.request()
+                                             .input('Cod', require('mssql').VarChar, ordenDepositoFb.codigoOrden)
+                                             .query("SELECT OrdIdOrden FROM OrdenesDeposito WITH(NOLOCK) WHERE OrdCodigoOrden = @Cod");
+
+                                         if (fallbackCheck.recordset.length === 0) {
+                                         const cliPKFb = ordenDepositoFb.cliIdCliente || ordenDepositoFb.codCliente || oRow.CliIdCliente || oRow.CodCliente;
                                          const lugarFbReq = await poolLocal.request()
                                              .input('CID', require('mssql').Int, cliPKFb)
                                              .query("SELECT FormaEnvioID FROM Clientes WITH(NOLOCK) WHERE CliIdCliente = @CID");
                                          const lugarFb = lugarFbReq.recordset[0]?.FormaEnvioID ? parseInt(lugarFbReq.recordset[0].FormaEnvioID) : null;
 
-                                         // Importe/cantidad/producto de la línea de ESTA orden (no 0 fijo):
-                                         // cubre hermanas cuyo pedido ya quedó contabilizado (marca) en esta misma pasada.
+                                         // Importe/cantidad/producto de la línea de ESTA orden (o de la madre, si
+                                         // se redirigió) — no 0 fijo: cubre hermanas cuyo pedido ya quedó
+                                         // contabilizado (marca) en esta misma pasada.
                                          const linFb = await poolLocal.request()
-                                             .input('OID', require('mssql').Int, L_OrdenID)
+                                             .input('OID', require('mssql').Int, ordenDepositoFb.ordenId)
                                              .query(`SELECT SUM(Cantidad) AS Cant, SUM(Subtotal) AS Imp, MIN(ProIdProducto) AS Prod
                                                      FROM PedidosCobranzaDetalle WITH(NOLOCK) WHERE OrdenID=@OID`);
-                                         const fbCant  = parseFloat(linFb.recordset[0]?.Cant) || oRow.Magnitud || 0;
+                                         const fbCant  = parseFloat(linFb.recordset[0]?.Cant) || ordenDepositoFb.magnitud || oRow.Magnitud || 0;
                                          const fbCosto = parseFloat(linFb.recordset[0]?.Imp) || 0;
-                                         const fbProd  = linFb.recordset[0]?.Prod || oRow.ProIdProducto || null;
+                                         const fbProd  = linFb.recordset[0]?.Prod || ordenDepositoFb.proIdProducto || oRow.ProIdProducto || null;
                                          const fbMon   = (pcReq.recordset[0]?.Moneda === 'USD') ? 2 : 1;
 
                                          const fbInsert = await poolLocal.request()
-                                             .input('Cod', require('mssql').VarChar, oRow.CodigoOrden)
+                                             .input('Cod', require('mssql').VarChar, ordenDepositoFb.codigoOrden)
                                              .input('Cli', require('mssql').Int, cliPKFb)
-                                             .input('Trab', require('mssql').VarChar, oRow.DescripcionTrabajo)
+                                             .input('Trab', require('mssql').VarChar, ordenDepositoFb.descripcionTrabajo || oRow.DescripcionTrabajo)
                                              .input('Prod', require('mssql').Int, fbProd)
                                              .input('Cant', require('mssql').Float, fbCant)
                                              .input('Mon', require('mssql').Int, fbMon)
@@ -1658,7 +1784,8 @@ if (triggerReversal || triggerForward) {
                                                  .input('OID', require('mssql').Int, fbInsert.recordset[0].OrdIdOrden)
                                                  .input('Usr', require('mssql').Int, usuarioId || 1)
                                                  .query("INSERT INTO HistoricoEstadosOrdenes (OrdIdOrden, EOrIdEstadoOrden, HEOFechaEstado, HEOUsuarioAlta) VALUES (@OID, 1, GETDATE(), @Usr)");
-                                             console.log(`[WMS-FALLBACK] Creado OrdenesDeposito para repo/sin-PC: ${oRow.CodigoOrden}`);
+                                             console.log(`[WMS-FALLBACK] Creado OrdenesDeposito para repo/sin-PC: ${ordenDepositoFb.codigoOrden}${ordenDepositoFb.codigoOrden !== oRow.CodigoOrden ? ` (redirigido desde hermana ${oRow.CodigoOrden})` : ''}`);
+                                         }
                                          }
                                      }
                                  } catch (eFb) {
@@ -1679,8 +1806,27 @@ if (triggerReversal || triggerForward) {
                     for (const oid of ordenesProcesar) {
                         const bInfo = ordenBultos[oid];
                         if (!bInfo) continue;
-                        const upd = await poolCnt.request()
+
+                        const oInf = await poolCnt.request()
                             .input('OID', require('mssql').Int, oid)
+                            .query(`SELECT CodigoOrden, CliIdCliente, CodCliente, DescripcionTrabajo, ProIdProducto,
+                                           TRY_CAST(Magnitud AS FLOAT) AS Magnitud,
+                                           LTRIM(RTRIM(CAST(NoDocERP AS VARCHAR(50)))) AS NoDoc
+                                    FROM Ordenes WITH(NOLOCK) WHERE OrdenID=@OID`);
+                        const oi = oInf.recordset[0];
+                        // Las fallas (-F) son internas: no gestionan fila propia en depósito.
+                        // [PRENDAS] Hermana de una prenda comprada+personalizada: los contadores
+                        // (Esperados/Recibidos, YA calculados a nivel PEDIDO más arriba) se
+                        // actualizan sobre la fila de la madre PRO, no sobre una fila propia de
+                        // la hermana (que nunca existe — ver resolverOrdenParaDeposito).
+                        const esFallaUp = (oi?.CodigoOrden || '').includes('-F');
+                        const ordenDepositoUp = (oi && !esFallaUp)
+                            ? await resolverOrdenParaDeposito(poolCnt, oid, oi.CodigoOrden)
+                            : null;
+                        if (!ordenDepositoUp) continue;
+
+                        const upd = await poolCnt.request()
+                            .input('Cod', require('mssql').VarChar, ordenDepositoUp.codigoOrden)
                             .input('Esp', require('mssql').Int, bInfo.esperados)
                             .input('Rec', require('mssql').Int, bInfo.recibidos)
                             .input('Est', require('mssql').Int, bInfo.lista ? 1 : 13)
@@ -1688,7 +1834,7 @@ if (triggerReversal || triggerForward) {
                                 UPDATE OrdenesDeposito
                                 SET BultosEsperados=@Esp, BultosRecibidos=@Rec,
                                     OrdEstadoActual=@Est, OrdFechaEstadoActual=GETDATE()
-                                WHERE OrdCodigoOrden = (SELECT TOP 1 CodigoOrden FROM Ordenes WITH(NOLOCK) WHERE OrdenID=@OID)
+                                WHERE OrdCodigoOrden = @Cod
                                   -- Solo gestiona órdenes recién entrando (1) o esperando (13).
                                   -- No toca las ya avisadas/en retiro/entregadas/canceladas/perdidas.
                                   AND OrdEstadoActual NOT IN (6,7,9,10,11,12)
@@ -1696,37 +1842,27 @@ if (triggerReversal || triggerForward) {
 
                         // UPSERT: sin fila y pedido incompleto → crearla en estado 13 (visibilidad en bandeja)
                         if (!bInfo.lista && (upd.rowsAffected?.[0] || 0) === 0) {
-                            const existe = await poolCnt.request()
-                                .input('OID', require('mssql').Int, oid)
-                                .query(`SELECT TOP 1 OrdIdOrden FROM OrdenesDeposito WITH(NOLOCK)
-                                        WHERE OrdCodigoOrden = (SELECT TOP 1 CodigoOrden FROM Ordenes WITH(NOLOCK) WHERE OrdenID=@OID)`);
-                            if (existe.recordset.length === 0) {
-                                const oInf = await poolCnt.request()
-                                    .input('OID', require('mssql').Int, oid)
-                                    .query(`SELECT CodigoOrden, CliIdCliente, CodCliente, DescripcionTrabajo, ProIdProducto,
-                                                   TRY_CAST(Magnitud AS FLOAT) AS Magnitud,
-                                                   LTRIM(RTRIM(CAST(NoDocERP AS VARCHAR(50)))) AS NoDoc
-                                            FROM Ordenes WITH(NOLOCK) WHERE OrdenID=@OID`);
-                                const oi = oInf.recordset[0];
-                                // Las fallas (-F) son internas: no crean registro propio en depósito
-                                if (oi && !(oi.CodigoOrden || '').includes('-F')) {
+                                const existe = await poolCnt.request()
+                                    .input('Cod', require('mssql').VarChar, ordenDepositoUp.codigoOrden)
+                                    .query(`SELECT TOP 1 OrdIdOrden FROM OrdenesDeposito WITH(NOLOCK) WHERE OrdCodigoOrden = @Cod`);
+                                if (existe.recordset.length === 0) {
                                     const lin = await poolCnt.request()
-                                        .input('OID', require('mssql').Int, oid)
+                                        .input('OID', require('mssql').Int, ordenDepositoUp.ordenId)
                                         .query(`SELECT SUM(Cantidad) AS Cant, SUM(Subtotal) AS Imp, MIN(ProIdProducto) AS Prod
                                                 FROM PedidosCobranzaDetalle WITH(NOLOCK) WHERE OrdenID=@OID`);
                                     const monR = await poolCnt.request()
                                         .input('ND', require('mssql').VarChar, oi.NoDoc || '')
                                         .query(`SELECT TOP 1 Moneda FROM PedidosCobranza WITH(NOLOCK) WHERE LTRIM(RTRIM(CAST(NoDocERP AS VARCHAR(50)))) = @ND`);
-                                    const cliPkUp = oi.CliIdCliente || oi.CodCliente;
+                                    const cliPkUp = ordenDepositoUp.cliIdCliente || ordenDepositoUp.codCliente || oi.CliIdCliente || oi.CodCliente;
                                     const lugR = await poolCnt.request()
                                         .input('CID', require('mssql').Int, cliPkUp)
                                         .query("SELECT FormaEnvioID FROM Clientes WITH(NOLOCK) WHERE CliIdCliente=@CID");
                                     const insUp = await poolCnt.request()
-                                        .input('Cod', require('mssql').VarChar, oi.CodigoOrden)
-                                        .input('Cant', require('mssql').Float, parseFloat(lin.recordset[0]?.Cant) || oi.Magnitud || 0)
+                                        .input('Cod', require('mssql').VarChar, ordenDepositoUp.codigoOrden)
+                                        .input('Cant', require('mssql').Float, parseFloat(lin.recordset[0]?.Cant) || ordenDepositoUp.magnitud || oi.Magnitud || 0)
                                         .input('Cli', require('mssql').Int, cliPkUp)
-                                        .input('Trab', require('mssql').VarChar, oi.DescripcionTrabajo)
-                                        .input('Prod', require('mssql').Int, lin.recordset[0]?.Prod || oi.ProIdProducto || null)
+                                        .input('Trab', require('mssql').VarChar, ordenDepositoUp.descripcionTrabajo || oi.DescripcionTrabajo)
+                                        .input('Prod', require('mssql').Int, lin.recordset[0]?.Prod || ordenDepositoUp.proIdProducto || oi.ProIdProducto || null)
                                         .input('Mon', require('mssql').Int, (monR.recordset[0]?.Moneda === 'USD') ? 2 : 1)
                                         .input('Costo', require('mssql').Float, parseFloat(lin.recordset[0]?.Imp) || 0)
                                         .input('Usr', require('mssql').Int, usuarioId || 1)
@@ -1750,9 +1886,8 @@ if (triggerReversal || triggerForward) {
                                             .input('Usr', require('mssql').Int, usuarioId || 1)
                                             .query("INSERT INTO HistoricoEstadosOrdenes (OrdIdOrden, EOrIdEstadoOrden, HEOFechaEstado, HEOUsuarioAlta) VALUES (@OID, 13, GETDATE(), @Usr)");
                                     }
-                                    console.log(`[REWORK-BULTOS] Fila creada en Esperando (13) para ${oi.CodigoOrden}`);
+                                    console.log(`[REWORK-BULTOS] Fila creada en Esperando (13) para ${ordenDepositoUp.codigoOrden}${ordenDepositoUp.codigoOrden !== oi.CodigoOrden ? ` (redirigido desde hermana ${oi.CodigoOrden})` : ''}`);
                                 }
-                            }
                         }
                     }
                 } catch (eCnt) {
@@ -2454,7 +2589,15 @@ exports.getOrderRequirements = async (req, res) => {
 };
 
 exports.toggleRequirement = async (req, res) => {
-    const { ordenId, requisitoId, cumplido, observaciones } = req.body; // cumplido: bool
+    // [FIX] La versión anterior armaba un MERGE cross-orden (aplicar a TODAS las
+    // hermanas del mismo NoDocERP con un CodigoRequisito que matcheara @Type) pero
+    // nunca declaraba @Doc ni @Type como inputs — cualquier click en el check de
+    // Requisitos tiraba "Must declare the scalar variable @Doc" y no hacía nada.
+    // Simplificado a lo que en verdad hace falta: togglear ESTA orden y ESTE
+    // requisito puntual, nada más.
+    // fechaCumplimiento (opcional): ISO string — para cuando la aprobación pasó ANTES
+    // de que alguien la cargue acá (ej. WhatsApp de ayer a la tarde). Si no viene, GETDATE().
+    const { ordenId, requisitoId, cumplido, observaciones, fechaCumplimiento } = req.body; // cumplido: bool
     try {
         const pool = await getPool();
         if (cumplido) {
@@ -2462,93 +2605,41 @@ exports.toggleRequirement = async (req, res) => {
                 .input('OID', sql.Int, ordenId)
                 .input('RID', sql.Int, requisitoId)
                 .input('Obs', sql.NVarChar, observaciones || '')
+                .input('Fecha', sql.DateTime, fechaCumplimiento ? new Date(fechaCumplimiento) : new Date())
                 .query(`
                     DECLARE @Area NVARCHAR(50) = (SELECT AreaID FROM ConfigRequisitosProduccion WHERE RequisitoID = @RID);
-                    
                     MERGE OrdenCumplimientoRequisitos AS target
-                                        USING (
-                                            SELECT DISTINCT req.RequisitoID, req.AreaID, dest.OrdenID
-                                            FROM ConfigRequisitosProduccion req
-                                            CROSS JOIN (
-                                                SELECT OrdenID FROM Ordenes 
-                                                WHERE 
-                                                   (
-                                                       (@Doc != '' AND NoDocERP = @Doc)
-                                                       OR 
-                                                       (@Doc = '' AND NoDocERP = (SELECT TOP 1 NoDocERP FROM Ordenes WHERE OrdenID = @OID))
-                                                       OR
-                                                       (@Doc = '' AND OrdenID = @OID)
-                                                   )
-                                                   AND AreaID = @Area 
-                                                   AND Estado != 'CANCELADO'
-                                            ) dest
-                                            WHERE (
-                                                req.CodigoRequisito LIKE @Type
-                                                OR (@Type LIKE '%DISENO%' AND req.CodigoRequisito LIKE '%DTF%')
-                                                OR (@Type LIKE '%DTF%' AND req.CodigoRequisito LIKE '%DISENO%')
-                                            )
-                                            AND req.AreaID = @Area
-                                        ) AS source
-                    ON (target.OrdenID = source.OrdenID AND target.RequisitoID = source.RequisitoID)
+                    USING (SELECT @RID AS RequisitoID, @Area AS AreaID) AS source
+                    ON (target.OrdenID = @OID AND target.RequisitoID = source.RequisitoID)
                     WHEN MATCHED THEN
-                        UPDATE SET Estado = 'CUMPLIDO', FechaCumplimiento = GETDATE(), Observaciones = @Obs
+                        UPDATE SET Estado = 'CUMPLIDO', FechaCumplimiento = @Fecha, Observaciones = @Obs
                     WHEN NOT MATCHED THEN
                         INSERT (OrdenID, AreaID, RequisitoID, Estado, FechaCumplimiento, Observaciones)
-                        VALUES (@OID, @Area, @RID, 'CUMPLIDO', GETDATE(), @Obs);
+                        VALUES (@OID, source.AreaID, source.RequisitoID, 'CUMPLIDO', @Fecha, @Obs);
                 `);
-        } else {
-            // Si desmarca, borramos o ponemos PENDIENTE.
-            // Opcionalmente podríamos dejarlo como PENDIENTE y borrar observaciones?
-            // Por ahora mantenemos la lógica de eliminar para limpiar history, O
-            // Si hay Observaciones, tal vez deberíamos preservar el registro como 'PENDIENTE' con la nota de por qué falla?
-            // "ponme unas observaciones en esa tabla"
-            // El usuario suele querer observaciones cuando FALTA algo también.
-            // Para cambiar lógica simple check, vamos a permitir guardar registro 'PENDIENTE' si hay observación.
-
-            if (observaciones) {
-                await pool.request()
-                    .input('OID', sql.Int, ordenId)
-                    .input('RID', sql.Int, requisitoId)
-                    .input('Obs', sql.NVarChar, observaciones)
-                    .query(`
+        } else if (observaciones) {
+            // Desmarca pero deja la observación (ej. "por qué falta") — mismo criterio
+            // que ya tenía la versión vieja.
+            await pool.request()
+                .input('OID', sql.Int, ordenId)
+                .input('RID', sql.Int, requisitoId)
+                .input('Obs', sql.NVarChar, observaciones)
+                .query(`
                     DECLARE @Area NVARCHAR(50) = (SELECT AreaID FROM ConfigRequisitosProduccion WHERE RequisitoID = @RID);
                     MERGE OrdenCumplimientoRequisitos AS target
-                                        USING (
-                                            SELECT DISTINCT req.RequisitoID, req.AreaID, dest.OrdenID
-                                            FROM ConfigRequisitosProduccion req
-                                            CROSS JOIN (
-                                                SELECT OrdenID FROM Ordenes 
-                                                WHERE 
-                                                   (
-                                                       (@Doc != '' AND NoDocERP = @Doc)
-                                                       OR 
-                                                       (@Doc = '' AND NoDocERP = (SELECT TOP 1 NoDocERP FROM Ordenes WHERE OrdenID = @OID))
-                                                       OR
-                                                       (@Doc = '' AND OrdenID = @OID)
-                                                   )
-                                                   AND AreaID = @Area 
-                                                   AND Estado != 'CANCELADO'
-                                            ) dest
-                                            WHERE (
-                                                req.CodigoRequisito LIKE @Type
-                                                OR (@Type LIKE '%DISENO%' AND req.CodigoRequisito LIKE '%DTF%')
-                                                OR (@Type LIKE '%DTF%' AND req.CodigoRequisito LIKE '%DISENO%')
-                                            )
-                                            AND req.AreaID = @Area
-                                        ) AS source
-                    ON (target.OrdenID = source.OrdenID AND target.RequisitoID = source.RequisitoID)
+                    USING (SELECT @RID AS RequisitoID, @Area AS AreaID) AS source
+                    ON (target.OrdenID = @OID AND target.RequisitoID = source.RequisitoID)
                     WHEN MATCHED THEN
                         UPDATE SET Estado = 'PENDIENTE', Observaciones = @Obs
                     WHEN NOT MATCHED THEN
                         INSERT (OrdenID, AreaID, RequisitoID, Estado, FechaCumplimiento, Observaciones)
-                        VALUES (@OID, @Area, @RID, 'PENDIENTE', NULL, @Obs);
+                        VALUES (@OID, source.AreaID, source.RequisitoID, 'PENDIENTE', NULL, @Obs);
                 `);
-            } else {
-                await pool.request()
-                    .input('OID', sql.Int, ordenId)
-                    .input('RID', sql.Int, requisitoId)
-                    .query("DELETE FROM OrdenCumplimientoRequisitos WHERE OrdenID = @OID AND RequisitoID = @RID");
-            }
+        } else {
+            await pool.request()
+                .input('OID', sql.Int, ordenId)
+                .input('RID', sql.Int, requisitoId)
+                .query("DELETE FROM OrdenCumplimientoRequisitos WHERE OrdenID = @OID AND RequisitoID = @RID");
         }
         res.json({ success: true });
     } catch (err) {

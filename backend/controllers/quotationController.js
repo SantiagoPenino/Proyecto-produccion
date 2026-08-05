@@ -118,6 +118,7 @@ exports.getQuotation = async (req, res) => {
                     PCD.PrecioUnitarioOriginal,
                     PCD.SubtotalOriginal,
                     PCD.ProIdProducto,
+                    PCD.EsHermanaConsolidada,
                     O.CodigoOrden,
                     O.DescripcionTrabajo,
                     O.AreaID,
@@ -476,10 +477,16 @@ exports.saveQuotation = async (req, res) => {
                 .input('Mon', sql.VarChar, lineaMon)
                 .input('Perfil', sql.NVarChar(sql.MAX), linea.PerfilAplicado || 'Manual')
                 .input('Trace', sql.NVarChar(sql.MAX), linea.PricingTrace || 'Edición manual')
-                .query(`INSERT INTO PedidosCobranzaDetalle 
-                    (PedidoCobranzaID, OrdenID, CodArticulo, ProIdProducto, Cantidad, DatoTecnico, PrecioUnitario, Subtotal, 
-                     LogPrecioAplicado, Moneda, PerfilAplicado, PricingTrace, MonedaOriginal, PrecioUnitarioOriginal, SubtotalOriginal)
-                    VALUES (@PID, @OID, @Cod, @ProId, @Cant, @DT, @PU, @ST, @Log, @Mon, @Perfil, @Trace, @MonOrig, @PUOrig, @STOrig)`);
+                // "Comprar y personalizar": esta pantalla borra y re-inserta TODAS las líneas
+                // del pedido en cada guardado — si no se preserva el flag acá, cualquier
+                // guardado "aplana" las líneas hermanas (EMB/DF/TPU/EST) a facturables y
+                // duplica el total. El frontend las manda de vuelta tal cual (son de solo
+                // lectura ahí) para que sobrevivan al guardado.
+                .input('EsHnaCons', sql.Bit, linea.EsHermanaConsolidada ? 1 : 0)
+                .query(`INSERT INTO PedidosCobranzaDetalle
+                    (PedidoCobranzaID, OrdenID, CodArticulo, ProIdProducto, Cantidad, DatoTecnico, PrecioUnitario, Subtotal,
+                     LogPrecioAplicado, Moneda, PerfilAplicado, PricingTrace, MonedaOriginal, PrecioUnitarioOriginal, SubtotalOriginal, EsHermanaConsolidada)
+                    VALUES (@PID, @OID, @Cod, @ProId, @Cant, @DT, @PU, @ST, @Log, @Mon, @Perfil, @Trace, @MonOrig, @PUOrig, @STOrig, @EsHnaCons)`);
         }
 
         // Determinar moneda final revisando todas las líneas de la base de datos
@@ -490,23 +497,25 @@ exports.saveQuotation = async (req, res) => {
             `);
         const monedaFinal = curRes.recordset[0].MonedaFinal;
 
-        // Recalcular MontoTotal sumando TODAS las líneas, transformando a la moneda final
+        // Recalcular MontoTotal sumando TODAS las líneas, transformando a la moneda final.
+        // "Comprar y personalizar": excluir las líneas hermanas (EMB/DF/TPU/EST) — ya están
+        // incluidas dentro del subtotal de la línea de PRO, sumarlas de nuevo duplica el total.
         const totRes = await new sql.Request(transaction)
             .input('PID', sql.Int, pedidoId)
             .input('Cotiz', sql.Decimal(18, 4), parseFloat(cotizacion) || 40)
             .input('MFinal', sql.VarChar(10), monedaFinal)
             .query(`
-                SELECT 
+                SELECT
                     ISNULL(SUM(
-                        CASE 
+                        CASE
                             WHEN @MFinal = 'USD' AND Moneda = 'UYU' THEN Subtotal / @Cotiz
                             WHEN @MFinal = 'UYU' AND Moneda = 'USD' THEN Subtotal * @Cotiz
                             ELSE Subtotal
                         END
-                    ), 0) as Total, 
-                    ISNULL(SUM(Cantidad), 0) as TotalCant 
-                FROM PedidosCobranzaDetalle 
-                WHERE PedidoCobranzaID = @PID
+                    ), 0) as Total,
+                    ISNULL(SUM(Cantidad), 0) as TotalCant
+                FROM PedidosCobranzaDetalle
+                WHERE PedidoCobranzaID = @PID AND ISNULL(EsHermanaConsolidada, 0) = 0
             `);
 
         const nuevoTotal = parseFloat(totRes.recordset[0].Total) || 0;

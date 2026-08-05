@@ -19,6 +19,8 @@ router.get('/details/:id', ordersController.getOrderFullDetails); // También li
 router.get('/search/integral/:ref', ordersController.getIntegralPedidoDetailsV2); // Nueva Ruta Integral (Version SQL SP)
 router.get('/priorities', ordersController.getPrioritiesConfig);
 router.get('/estados', ordersController.getEstadosConfig);
+// [PRO] Catálogo de tipos de archivo de referencia (selector del detalle de orden)
+router.get('/referencia-tipos', ordersController.getTiposArchivoReferencia);
 
 // Ruta para el resumen de la ActiveOrdersCard.jsx (Protegida)
 router.get('/active', verifyToken, authorizeAdminOrArea, ordersController.getActiveOrdersSummary);
@@ -74,6 +76,11 @@ router.post('/:ordenId/production-file', verifyToken, uploadProdFile.single('fil
 // TPU: enviar la orden a aprobación del cliente (retiene hasta que apruebe el arte).
 router.post('/:ordenId/enviar-aprobacion', verifyToken, ordersController.enviarAprobacionTPU);
 
+// Notas de producción por orden — ADITIVAS: cada llamada agrega una fila nueva, nunca
+// pisa las anteriores (a diferencia de Ordenes.Nota, que es un solo campo).
+router.get('/:ordenId/notas', verifyToken, ordersController.getOrderNotes);
+router.post('/:ordenId/notas', verifyToken, ordersController.addOrderNote);
+
 // TPU: texturas por zona elegidas por el cliente. La edición es interna (cualquier rol) y queda
 // registrada en el historial — cambia lo que se fabrica respecto de lo que el cliente aprobó.
 router.get('/:ordenId/texturas', verifyToken, ordersController.getTexturasOrdenInterno);
@@ -81,6 +88,16 @@ router.put('/:ordenId/texturas', verifyToken, soloInternoConRol(), ordersControl
 
 // TPU: PNG del boceto aprobado (parche renderizado + referencia de texturas) → ArchivosReferencia.
 router.post('/:ordenId/boceto-aprobado', verifyToken, uploadProdFile.single('file'), ordersController.subirBocetoAprobadoInterno);
+
+// [PRO] Archivos de referencia: subir (multipart {file, tipo, nota}) y eliminar.
+router.post('/:ordenId/reference-file', verifyToken, uploadProdFile.single('file'), ordersController.uploadReferenceFile);
+router.delete('/reference/:refId', verifyToken, ordersController.deleteReferenceFile);
+
+// [PRO] Cantidad a fabricar (Magnitud): edición manual + recotización del pedido.
+router.put('/:ordenId/magnitud', verifyToken, ordersController.updateOrderMagnitud);
+
+// [PRO] Reordenar Costura/Bordado/Estampado del pedido (solo si ninguna arrancó).
+router.put('/:ordenId/route-priority', verifyToken, ordersController.updateOrderRoutePriority);
 
 // TPU: visor 3D interno (el diseñador elige texturas desde el detalle de la orden).
 router.get('/:ordenId/tpu-model', verifyToken, ordersController.getTpuModelCapasInterno);

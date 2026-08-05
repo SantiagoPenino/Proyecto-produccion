@@ -348,24 +348,28 @@ const printEtiquetas = async (req, res) => {
 
                     /* COLUMNA DERECHA: SERVICIOS */
                     .right-col { width: 40%; padding-left: 5px; }
-                    .services-title { 
-                        border-bottom: 2px solid #000; 
-                        margin-bottom: 10px; 
-                        font-weight: 900; 
-                        font-size: 14px; 
-                        text-align: center; 
-                        padding-bottom: 4px;
+                    /* Lista compacta: con pedidos de muchas áreas (prendas: SB+DTF+Corte+
+                       Costura+Bordado+PRO+Estampado+DEPOSITO) la versión grande se iba
+                       hasta abajo y pisaba el bloque de la orden/bulto. */
+                    .services-title {
+                        border-bottom: 2px solid #000;
+                        margin-bottom: 6px;
+                        font-weight: 900;
+                        font-size: 13px;
+                        text-align: center;
+                        padding-bottom: 3px;
                     }
                     .service-list { list-style: none; padding: 0; margin: 0; }
-                    .service-item { display: flex; align-items: center; font-size: 14px; font-weight: bold; margin-bottom: 15px; }
-                    .check-box { 
-                        width: 18px; height: 18px; 
-                        border: 2px solid #000; 
-                        margin-right: 8px; 
-                        display: flex; 
-                        align-items: center; 
-                        justify-content: center; 
-                        font-size: 14px;
+                    .service-item { display: flex; align-items: center; font-size: 11px; font-weight: bold; margin-bottom: 7px; }
+                    .check-box {
+                        width: 13px; height: 13px;
+                        border: 2px solid #000;
+                        margin-right: 6px;
+                        display: flex;
+                        align-items: center;
+                        justify-content: center;
+                        font-size: 10px;
+                        flex-shrink: 0;
                     }
                     .destination-block {
                         margin-top: auto;
@@ -505,7 +509,7 @@ const printEtiquetas = async (req, res) => {
 
                             <div class="destination-block">
                                 <div class="label-bold">DESTINO</div>
-                                <div style="font-size: 18px; color: #000;">${nextService}</div>
+                                <div style="font-size: 13px; font-weight: 700; color: #000;">${nextService}</div>
                             </div>
                         </div>
                     </div>

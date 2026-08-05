@@ -919,6 +919,11 @@ const DynamicRouter = ({ menuItems }) => {
     if (normalizedPath === '/area/terminac' || normalizedPath.startsWith('/area/terminac/')) {
         return <AreaView key="TERMINAC" areaKey="terminac" areaConfig={{ name: 'Terminaciones' }} />;
     }
+    // [PRENDAS] Área PRO (orden madre de "comprar y personalizar"): tampoco tiene ítem de
+    // menú propio todavía. Match directo, mismo criterio que TERMINAC arriba.
+    if (normalizedPath === '/area/pro' || normalizedPath.startsWith('/area/pro/')) {
+        return <AreaView key="PRO" areaKey="pro" areaConfig={{ name: 'Producción' }} />;
+    }
     const matches = menuItems.filter(item => {
         if (!item.Ruta) return false;
         const normalizedRuta = item.Ruta.endsWith('/') && item.Ruta !== '/' ? item.Ruta.slice(0, -1) : item.Ruta;

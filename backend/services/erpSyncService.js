@@ -14,6 +14,29 @@ class ERPSyncService {
         const { onlyCalculate = false, userNotes = '', priceOverride = null, quantityOverride = null, profileOverride = null, syncTarget = null, forcedReactPayload = null, forcedErpPayload = null, skipDeposito = false } = options;
         if (!noDocERP) throw new Error("NoDocERP es requerido para la sincronización.");
 
+        // Interruptor global (tabla ConfiguracionesSync, procesos SYNC_REACT_CORE /
+        // SYNC_ERP_MACROSOFT — ya están en Activo=false, marcados obsoletos). Antes solo
+        // lo respetaba el flujo de despacho (que pasaba isReactEnabledGlobal/isErpEnabledGlobal
+        // a mano); el resto de los llamadores a esta función nunca lo consultaba, así que
+        // React/ERP real se seguían llamando igual. Ahora se resuelve acá adentro, una sola
+        // vez, para TODOS los llamadores — salvo que alguno pase el valor explícito (como ya
+        // hace logisticsController), en cuyo caso se respeta ese override.
+        let isReactEnabledGlobal = options.isReactEnabledGlobal;
+        let isErpEnabledGlobal = options.isErpEnabledGlobal;
+        if (isReactEnabledGlobal === undefined || isErpEnabledGlobal === undefined) {
+            try {
+                const { isProcessActive } = require('../controllers/configuracionesController');
+                if (isReactEnabledGlobal === undefined) isReactEnabledGlobal = await isProcessActive('SYNC_REACT_CORE');
+                if (isErpEnabledGlobal === undefined) isErpEnabledGlobal = await isProcessActive('SYNC_ERP_MACROSOFT');
+            } catch (eCfg) {
+                logger.warn('[ERPSync] No se pudo leer ConfiguracionesSync, se asume desactivado por seguridad:', eCfg.message);
+                if (isReactEnabledGlobal === undefined) isReactEnabledGlobal = false;
+                if (isErpEnabledGlobal === undefined) isErpEnabledGlobal = false;
+            }
+        }
+        options.isReactEnabledGlobal = isReactEnabledGlobal;
+        options.isErpEnabledGlobal = isErpEnabledGlobal;
+
         const pool = await getPool();
         logger.info(`[ERPSync] Iniciando integración final para NoDocERP: ${noDocERP}${bultoCode ? ' (Bulto: ' + bultoCode + ')' : ''}`);
 
@@ -75,6 +98,12 @@ class ERPSyncService {
             logger.warn('[ERPSync] No se pudo cargar perfil Reposicion:', eCfg.message);
         }
 
+        // [PRENDAS] "Comprar y personalizar": si este pedido tiene una orden madre PRO,
+        // Bordado/DTF/TPU/Estampado son trabajo interno — el precio único vive en la
+        // orden PRO. Mismo criterio que TERMINAC más abajo, calculado una sola vez acá
+        // (no por sib, ya que "siblings" trae todas las órdenes del pedido).
+        const hayOrdenMadrePro = siblings.some(s => (s.AreaID || '').toString().trim().toUpperCase() === 'PRO');
+
         for (const sib of siblings) {
             try {
                 // Si la orden está cancelada, no suma ni cuesta nada
@@ -122,16 +151,24 @@ class ERPSyncService {
                 // Se usa CliIdCliente en lugar de CodCliente porque PreciosEspeciales ahora relaciona a través de CliIdCliente
                 let internalClientId = sib.Cli_CliIdCliente || sib.CliIdCliente || null;
 
+                // Reposiciones y fallas SIN CARGO:
+                //  - Códigos que empiezan con R (ej: R-12345, REPO-xxx)
+                //  - Sufijo -R# = reposición cliente (ej: SUB-9319-R1)
+                //  - Sufijo -F# = reposición interna por falla (ej: SUB-9471-F1)
+                // La línea igual se inserta en la cotización, pero con precio 0.
+                // (El perfil "Reposiciones" no tiene reglas cargadas, por eso no alcanza
+                // con inyectarlo: hay que forzar el precio a 0 acá.)
+                const codigoOrdenCheck = (sib.CodigoOrden || sib.NoDocERP || '').trim().toUpperCase();
+                const esSinCargo = codigoOrdenCheck.startsWith('R') || /-R\d+|-F\d+/.test(codigoOrdenCheck);
+
                 // Perfiles Extra (Urgencia, Tinta, Reposición)
                 const extraProfiles = profileOverride ? [parseInt(profileOverride)] : [];
                 if (extraProfiles.length === 0) {
                     if (sib.Prioridad && sib.Prioridad.toString().trim().toLowerCase().includes('urgente')) extraProfiles.push(2);
                     if (sib.Tinta && (sib.Tinta.toUpperCase().includes('UV') || sib.Tinta.toUpperCase().includes('LATEX'))) extraProfiles.push(3);
-                    // Reposición: aplicar si el código de orden comienza con R (ej: R-12345, REPO-xxx)
-                    const codigoOrdenCheck = (sib.CodigoOrden || sib.NoDocERP || '').trim().toUpperCase();
-                    if (idReposicion && codigoOrdenCheck.startsWith('R')) {
+                    if (idReposicion && esSinCargo) {
                         extraProfiles.push(idReposicion);
-                        logger.info(`[ERPSync] 🔄 Orden de Reposición detectada (${codigoOrdenCheck}), inyectando Perfil #${idReposicion}`);
+                        logger.info(`[ERPSync] 🔄 Orden de Reposición/Falla detectada (${codigoOrdenCheck}), inyectando Perfil #${idReposicion}`);
                     }
                 }
 
@@ -179,6 +216,17 @@ class ERPSyncService {
                     SubtotalOriginal = costoCalculado;
                     MonedaOriginal = targetCurrency;
                     logger.info(`[ERPSync] Aplicando Precio Override: ${costoCalculado}`);
+                } else if (esSinCargo) {
+                    // Reposición (-R#) / Falla (-F#): NO SE COBRA. Línea en 0 para que figure
+                    // en la cotización sin sumar al total.
+                    costoCalculado = 0;
+                    precioUnitario = 0;
+                    textLog = "Reposición/Falla sin cargo — precio forzado a 0";
+                    perfilAplicado = "Reposición sin cargo";
+                    PUOriginal = 0;
+                    SubtotalOriginal = 0;
+                    MonedaOriginal = targetCurrency;
+                    logger.info(`[ERPSync] 🔄 ${codigoOrdenCheck}: reposición/falla — se cotiza en 0 (sin cargo)`);
                 } else {
                     const priceResult = await PricingService.calculatePrice(
                         { codArticulo: sib.CodArticulo || '', proIdProducto: sib.ProIdProducto || null },
@@ -261,8 +309,10 @@ class ERPSyncService {
                 }
 
                 // Determinar si aplica cobertura de prepago
+                // (una reposición/falla sin cargo NO consume plan: ya va en 0, no debe
+                // figurar como "Cubierto por Plan")
                 const metrosPedido = effectiveQty;
-                const hayPlan = planIdActivo !== null && metrosDisponibles > 0;
+                const hayPlan = !esSinCargo && planIdActivo !== null && metrosDisponibles > 0;
                 const coberturaTotal = hayPlan && metrosDisponibles >= metrosPedido;
                 const coberturaParcial = hayPlan && !coberturaTotal;
 
@@ -412,9 +462,19 @@ class ERPSyncService {
                 }
 
                 // --- SERVICIOS EXTRA ---
-                const srvRes = await pool.request()
-                    .input('OID', sql.Int, sib.OrdenID)
-                    .query("SELECT * FROM ServiciosExtraOrden WHERE OrdenID = @OID");
+                // "Comprar y personalizar": las hermanas EMB/DF/TPU/EST/TWC/TWT YA se
+                // cotizaron arriba por su propia línea base (sib.CodArticulo, con piso de
+                // cantidad ||1 cuando Magnitud='0' — ver línea ~231-240). Si además se cotiza
+                // su fila de ServiciosExtraOrden (mismo CodArt, mismo piso de cantidad) el
+                // servicio se cobra DOS VECES. La fila de ServiciosExtraOrden sigue
+                // existiendo igual — la necesita el control de producción (completarOrden,
+                // Control) — solo se deja de usar para cotizar.
+                const esHermanaPrendaParaPrecio = hayOrdenMadrePro && ['EMB', 'DF', 'TPU', 'EST', 'TWC', 'TWT', 'SB'].includes((sib.AreaID || '').toString().trim().toUpperCase());
+                const srvRes = esHermanaPrendaParaPrecio
+                    ? { recordset: [] }
+                    : await pool.request()
+                        .input('OID', sql.Int, sib.OrdenID)
+                        .query("SELECT * FROM ServiciosExtraOrden WHERE OrdenID = @OID");
 
                 for (const srv of srvRes.recordset) {
                     const srvVars = { puntadas: srv.Puntadas || 0, bajadas: srv.Bajadas || 0, bajadasAdicionales: srv.BajadasAdicionales || 0, skipPrepago: true };
@@ -424,10 +484,18 @@ class ERPSyncService {
                     }
 
                     const srvPriceRes = await PricingService.calculatePrice(srv.CodArt || '', srvQty, internalClientId, extraProfiles, srvVars, targetCurrency, null, sib.AreaID);
+                    // Servicios de una reposición/falla sin cargo: tampoco se cobran
+                    if (esSinCargo) {
+                        srvPriceRes.precioTotal = 0;
+                        srvPriceRes.precioUnitario = 0;
+                        srvPriceRes.precioUnitarioOriginal = 0;
+                        srvPriceRes.precioTotalOriginal = 0;
+                        srvPriceRes.txt = "Reposición/Falla sin cargo — servicio en 0";
+                    }
                     const srvCostoTotal = srvPriceRes.precioTotal || 0;
                     totalPriceSum += srvCostoTotal;
 
-                    const srvPerfil = (srvPriceRes.perfilesAplicados && srvPriceRes.perfilesAplicados.length > 0) ? srvPriceRes.perfilesAplicados.join(', ') : 'Precio Base';
+                    const srvPerfil = esSinCargo ? 'Reposición sin cargo' : ((srvPriceRes.perfilesAplicados && srvPriceRes.perfilesAplicados.length > 0) ? srvPriceRes.perfilesAplicados.join(', ') : 'Precio Base');
 
                     const srvPUOrig = srvPriceRes.precioUnitarioOriginal || (srvPriceRes.precioUnitario || 0);
                     const srvSubOrig = srvPriceRes.precioTotalOriginal || srvCostoTotal;
@@ -458,6 +526,38 @@ class ERPSyncService {
 
             } catch (errCalc) {
                 logger.error(`[ERPSync] Error calculando precio para Orden ${sib.OrdenID}: ${errCalc.message}`);
+            }
+        }
+
+        // [PRENDAS] "Comprar y personalizar": si hay orden madre PRO, el costo de
+        // Bordado/DTF/TPU/Estampado/Corte/Costura (recién calculado arriba con su
+        // archivo/cantidad real, igual que cualquier otro trabajo de impresión) se SUMA al
+        // de PRO en vez de facturarse aparte — "un solo precio" para el cliente, pero
+        // construido con el costo real de cada personalización, no un monto fijo a mano.
+        if (hayOrdenMadrePro) {
+            const areaByOrdenId = {};
+            siblings.forEach(s => { areaByOrdenId[s.OrdenID] = (s.AreaID || '').toString().trim().toUpperCase(); });
+            const esHermana = (ordenId) => ['EMB', 'DF', 'TPU', 'EST', 'TWC', 'TWT', 'SB'].includes(areaByOrdenId[ordenId]);
+            const lineaProIdx = detallesCobranza.findIndex(d => areaByOrdenId[d.OrdenID] === 'PRO');
+            const lineasHermanas = detallesCobranza.filter(d => esHermana(d.OrdenID));
+
+            if (lineaProIdx !== -1 && lineasHermanas.length > 0) {
+                const sumaHermanas = lineasHermanas.reduce((s, d) => s + (parseFloat(d.Subtotal) || 0), 0);
+                const lineaPro = detallesCobranza[lineaProIdx];
+                lineaPro.Subtotal = (parseFloat(lineaPro.Subtotal) || 0) + sumaHermanas;
+                lineaPro.SubtotalOriginal = (parseFloat(lineaPro.SubtotalOriginal) || 0) + sumaHermanas;
+                const cantPro = parseFloat(lineaPro.Cantidad) || 0;
+                lineaPro.PrecioUnitario = cantPro > 0 ? lineaPro.Subtotal / cantPro : lineaPro.Subtotal;
+                lineaPro.PrecioUnitarioOriginal = cantPro > 0 ? lineaPro.SubtotalOriginal / cantPro : lineaPro.SubtotalOriginal;
+                lineaPro.LogPrecioAplicado = `${lineaPro.LogPrecioAplicado || ''}\n+ Personalizaciones (Bordado/DTF/TPU/Estampado): ${sumaHermanas.toFixed(2)}`.trim();
+
+                // El cliente sigue pagando UN SOLO total (ya sumado en la línea de PRO), pero
+                // las líneas de las hermanas ya NO se borran: quedan marcadas como
+                // "consolidadas" para poder ver/facturar el detalle por servicio a futuro sin
+                // duplicar el cobro. Todo lo que arme un total A NIVEL PEDIDO (factura/CFE,
+                // caja, recálculo de MontoTotal) tiene que excluir EsHermanaConsolidada=1 —
+                // ver docs/migrations/agregar_eshermanaconsolidada_pedidoscobranzadetalle.sql.
+                lineasHermanas.forEach(d => { d.esHermanaConsolidada = true; });
             }
         }
 
@@ -842,7 +942,8 @@ class ERPSyncService {
                     .input('MonOrig',sql.VarChar(10),       monOrig)
                     .input('PUOrig', sql.Decimal(18, 4),    puOrig)
                     .input('STOrig', sql.Decimal(18, 4),    stOrig)
-                    .query("INSERT INTO PedidosCobranzaDetalle (PedidoCobranzaID, OrdenID, CodArticulo, ProIdProducto, Cantidad, PrecioUnitario, Subtotal, LogPrecioAplicado, Moneda, PerfilAplicado, PricingTrace, MonedaOriginal, PrecioUnitarioOriginal, SubtotalOriginal) VALUES (@Pid, @OID, @CodArt, @ProdID, @Cant, @PU, @ST, @Log, @Mon, @Perfil, @Trace, @MonOrig, @PUOrig, @STOrig)");
+                    .input('EsHnaCons', sql.Bit,            d.esHermanaConsolidada ? 1 : 0)
+                    .query("INSERT INTO PedidosCobranzaDetalle (PedidoCobranzaID, OrdenID, CodArticulo, ProIdProducto, Cantidad, PrecioUnitario, Subtotal, LogPrecioAplicado, Moneda, PerfilAplicado, PricingTrace, MonedaOriginal, PrecioUnitarioOriginal, SubtotalOriginal, EsHermanaConsolidada) VALUES (@Pid, @OID, @CodArt, @ProdID, @Cant, @PU, @ST, @Log, @Mon, @Perfil, @Trace, @MonOrig, @PUOrig, @STOrig, @EsHnaCons)");
             } catch (eRow) {
                 logger.error(`[ERPSync] ❌ Error insertando detalle cobranza para OrdenID=${d.OrdenID}: ${eRow?.message || eRow}`);
             }

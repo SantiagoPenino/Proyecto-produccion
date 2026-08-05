@@ -2191,6 +2191,32 @@ async function completarOrden(req, res) {
                 io       : req.app.get('socketio')
             });
 
+        // [PRENDAS] Gate secuencial "Comprar y personalizar": si esta Orden es un DTF o
+        // TPU que acaba de quedar Pronto, libera la Orden de Estampado que la esperaba
+        // (si no tiene ninguna encadenada, la query no devuelve nada y no pasa nada).
+        if (nuevoEstadoArea === 'Pronto' && ['DF', 'TPU'].includes(String(areaOrden || '').toUpperCase())) {
+            try {
+                const chainedRes = await new sql.Request(transaction)
+                    .input('OID', sql.Int, ordenId)
+                    .query(`SELECT OrdenID FROM Ordenes WHERE LiberaCuandoOrdenID = @OID AND EstadoDependencia = 'ESPERANDO_IMPRESION'`);
+                for (const row of chainedRes.recordset) {
+                    await new sql.Request(transaction)
+                        .input('OID', sql.Int, row.OrdenID)
+                        .query(`UPDATE Ordenes SET EstadoDependencia = 'OK' WHERE OrdenID = @OID`);
+                    await changeOrderState(transaction, {
+                        target : { type: 'ORDER', id: row.OrdenID },
+                        estado : 'Pendiente',
+                        userObj: req.user || 'Sistema',
+                        detalle: `DTF/TPU (Orden ${ordenId}) terminó — Estampado habilitado`,
+                        guard  : "Estado = 'Cargando...'",
+                        io     : req.app.get('socketio'),
+                    });
+                }
+            } catch (eChain) {
+                logger.warn(`[completarOrden] No se pudo liberar Estampado encadenado de Orden ${ordenId}: ${eChain.message}`);
+            }
+        }
+
         await transaction.commit();
 
         // Emitir socket para actualizar todas las pantallas

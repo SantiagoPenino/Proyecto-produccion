@@ -54,5 +54,31 @@ export const wmsService = {
     markDelivered: async (pedidoId) => {
         const response = await api.put(`/wms-logistica/deliver/${pedidoId}`);
         return response.data;
+    },
+
+    // [PRENDAS] "Comprar y personalizar" — la prenda es una Orden real (no PedidosCobranza),
+    // así que su retiro de depósito WMS pasa por prendas-orders, no por wms-logistica.
+    getRetirosPrendas: async () => {
+        const response = await api.get('/prendas-orders/retiros-wms-pendientes');
+        return response.data?.data || [];
+    },
+    iniciarPreparacionPrenda: async (ordenId) => {
+        const response = await api.put(`/prendas-orders/${ordenId}/iniciar-preparacion-retiro`);
+        return response.data;
+    },
+    actualizarCantidadPrenda: async (ordenId, nuevaCantidad) => {
+        const response = await api.put(`/prendas-orders/${ordenId}/actualizar-cantidad-retiro`, { nuevaCantidad });
+        return response.data;
+    },
+    confirmarRetiroPrendas: async (ordenId) => {
+        const response = await api.put(`/prendas-orders/${ordenId}/confirmar-retiro-wms`);
+        return response.data;
+    },
+
+    // [PRENDAS/WMS] Bandeja de etiquetas del área PRO (prendas personalizadas + ventas
+    // directas) para reimprimir sin salir de Logística WMS.
+    getEtiquetasPro: async (search = '') => {
+        const response = await api.get('/production-file-control/ordenes-labels', { params: { area: 'PRO', search } });
+        return response.data;
     }
 };

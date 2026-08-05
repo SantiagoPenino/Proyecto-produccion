@@ -19,6 +19,29 @@ export const AuthProvider = ({ children }) => {
     }, []);
 
     const checkSession = async () => {
+        // [PRENDAS] Uso interno (PedidoPrendaPage.jsx envuelve PrendaOrderForm con ESTE
+        // AuthProvider dentro de la app admin): si ya hay sesión de la app principal
+        // ('user' en localStorage), esa es la fuente de verdad y NUNCA hay que validar
+        // contra /web-auth/me — ese endpoint espera un cliente del portal (busca por
+        // CodCliente) y con un token de admin (misma clave 'auth_token', pero es OTRO
+        // token) siempre falla. Antes, como 'auth_token' ya estaba seteado por el login
+        // del admin, el fallback de abajo (pensado para este caso) nunca corría — se
+        // intentaba igual validar el token de admin como si fuera de cliente, fallaba,
+        // y el catch BORRABA el auth_token real del admin (deslogueo silencioso de toda
+        // la app interna, incluida la subida de archivos del pedido).
+        const mainAppUser = localStorage.getItem('user');
+        if (mainAppUser) {
+            try {
+                const parsed = JSON.parse(mainAppUser);
+                setUser(parsed);
+                setIsLoggedIn(true);
+                setLoading(false);
+                return;
+            } catch (e) {
+                console.error('Error leyendo sesión de la app principal', e);
+            }
+        }
+
         // 1. Check URL for token (SSO style fallback)
         const params = new URLSearchParams(window.location.search);
         const urlToken = params.get('t');
@@ -29,20 +52,6 @@ export const AuthProvider = ({ children }) => {
         }
 
         let token = localStorage.getItem('auth_token');
-
-        // Fallback: Check if Main App logged us in
-        if (!token) {
-            const mainAppUser = localStorage.getItem('user');
-            if (mainAppUser) {
-                try {
-                    const parsed = JSON.parse(mainAppUser);
-                    if (parsed.token) {
-                        token = parsed.token;
-                        localStorage.setItem('auth_token', token);
-                    }
-                } catch (e) { console.error("Error syncing token from main app", e); }
-            }
-        }
 
         if (token) {
             // Fast path: show cached session instantly (avoids loading flash)

@@ -59,7 +59,7 @@ const { registrarAuditoria, registrarHistorialOrden } = require('../services/tra
 // depósito → 'Ingresado') NO debe volver a "Control y Calidad" porque finalicen su máquina. Sin estos,
 // una orden despachada antes de finalizar el rollo quedaba desprotegida y se pisaba hacia atrás.
 const GUARD_ORDENES_RESUELTAS =
-    "ISNULL(EstadoenArea,'') NOT IN ('Pronto','En transito','En Transito','En Tránsito','Ingresado','Pronto para entregar','Con Falla','Retenido','Finalizado','Entregado','Avisado','Para Avisar','Cancelado') " +
+    "ISNULL(EstadoenArea,'') NOT IN ('Pronto','En transito','En Transito','En Tránsito','Recibido en Destino','Ingresado','Pronto para entregar','Con Falla','Retenido','Finalizado','Entregado','Avisado','Para Avisar','Cancelado') " +
     "AND Estado NOT IN ('Finalizado','Cancelado','Entregado')";
 
 // Áreas con IMPRESIÓN PARCIAL (por unidades o metros): al finalizar un lote, las órdenes incompletas

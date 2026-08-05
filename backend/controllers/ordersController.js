@@ -17,10 +17,13 @@ const recalculateOrderMagnitude = async (transaction, ordenId) => {
         // no unidades — recalcular desde ahí pisaba la cantidad (borrar el boceto la dejaba en 0,
         // subir las capas del arte la convertía en el número de capas) y encima disparaba la
         // recotización con ese número.
+        // [PRO] Producción (prendas) también queda AFUERA: su Magnitud es la CANTIDAD DE PRENDAS
+        // a fabricar, se fija en el pedido y se edita a mano desde el detalle (PUT /:ordenId/magnitud).
+        // Sus archivos son artes/guías, no unidades.
         const areaRes = await new sql.Request(transaction)
             .input('OID', sql.Int, ordenId)
             .query('SELECT AreaID FROM dbo.Ordenes WHERE OrdenID = @OID');
-        if (String(areaRes.recordset[0]?.AreaID || '').trim().toUpperCase() === 'TPU') return;
+        if (['TPU', 'PRO'].includes(String(areaRes.recordset[0]?.AreaID || '').trim().toUpperCase())) return;
 
         await new sql.Request(transaction)
             .input('OID', sql.Int, ordenId)
@@ -116,11 +119,25 @@ exports.uploadProductionFile = async (req, res) => {
     const fs = require('fs');
     if (!file || !ordenId) return res.status(400).json({ error: "Falta archivo u orden." });
 
+    // [BORDADO] Matriz de bordado (Wilcom/Tajima): mismo endpoint que ya usaba TPU para
+    // subir arte, pero con su propio tipo/extensión — DST y EMB son binarios de máquina,
+    // no PDF/PLT. tipoArchivo llega del formData; 'Impresion' es el default de siempre
+    // (TPU y el resto de las áreas que ya usan este endpoint no cambian).
+    const tipoArchivo = (req.body?.tipoArchivo || 'Impresion').trim();
+    const esMatriz = tipoArchivo.toUpperCase() === 'MATRIZ';
+    // [PRO] Subida desde el detalle de la orden madre: llega la cantidad de COPIAS del
+    // archivo y el flag para procesarlo igual que una subida del portal (renombrado con
+    // la convención + medición del PDF → Metros/Ancho/Alto + magnitud del área destino).
+    const copias = Math.max(1, parseInt(req.body?.copias, 10) || 1);
+    const procesarPortal = String(req.body?.procesarPortal || '') === '1';
+
     const nombreLower = (file.originalname || '').toLowerCase();
-    const esValido = (file.mimetype || '').toLowerCase().includes('pdf') || nombreLower.endsWith('.pdf') || nombreLower.endsWith('.plt');
+    const esValido = esMatriz
+        ? (nombreLower.endsWith('.dst') || nombreLower.endsWith('.emb'))
+        : ((file.mimetype || '').toLowerCase().includes('pdf') || nombreLower.endsWith('.pdf') || nombreLower.endsWith('.plt'));
     if (!esValido) {
         if (file.path) { try { fs.unlinkSync(file.path); } catch (_) {} }
-        return res.status(400).json({ error: "Solo se permiten archivos PDF o PLT." });
+        return res.status(400).json({ error: esMatriz ? "Solo se permiten archivos DST o EMB." : "Solo se permiten archivos PDF o PLT." });
     }
 
     const tmpPath = file.path || null;
@@ -138,11 +155,13 @@ exports.uploadProductionFile = async (req, res) => {
 
         // Se cuentan las CAPAS DE ARTE, sin el boceto: el boceto es lo que el cliente aprobó, no
         // es arte, y vive en la pestaña de referencias. Contándolo, el tope de 5 se comía una capa.
+        // [BORDADO] La matriz tampoco cuenta como capa de arte (categoría aparte, ver abajo).
         const cntRes = await pool.request()
             .input('OID', sql.Int, orden.OrdenID)
             .query(`SELECT COUNT(*) AS n FROM ArchivosOrden
                     WHERE OrdenID = @OID AND ISNULL(EstadoArchivo,'') <> 'Cancelado'
-                      AND LOWER(NombreArchivo) NOT LIKE '%boceto%'`);
+                      AND LOWER(NombreArchivo) NOT LIKE '%boceto%'
+                      AND ISNULL(TipoArchivo,'') <> 'MATRIZ'`);
         const nArchivos = cntRes.recordset[0]?.n || 0;
         const finalName = file.originalname;
 
@@ -151,6 +170,9 @@ exports.uploadProductionFile = async (req, res) => {
         // suben con el pedido aprobado. El reuso [REUSO-REGEN] no pasa por aprobación: sube las
         // capas directo, así que queda exento.
         const esTPUOrden = String(orden.AreaID || '').toUpperCase() === 'TPU';
+        // [PRO] Producción (prendas): sube artes desde el detalle de la orden. Son artes por
+        // prenda, no capas de un arte único, así que no aplica el tope de capas de TPU.
+        const esPROOrden = String(orden.AreaID || '').trim().toUpperCase() === 'PRO';
         const esReusoTPU = /\[REUSO-REGEN\]/i.test(orden.Nota || '');
         if (esTPUOrden && !esReusoTPU && !orden.FechaAprobacionCliente) {
             if (nArchivos >= 1) {
@@ -162,20 +184,31 @@ exports.uploadProductionFile = async (req, res) => {
             if (!(file.mimetype || '').toLowerCase().includes('pdf') && !nombreLower.endsWith('.pdf')) {
                 return res.status(400).json({ error: 'El boceto de producción debe ser un PDF (es lo que el cliente ve y el visor 3D rasteriza).' });
             }
-        } else if (nArchivos >= CAPAS_ARTE_TPU) {
+        } else if (!esMatriz && !esPROOrden && nArchivos >= CAPAS_ARTE_TPU) {
             // El arte son CAPAS_ARTE_TPU capas exactas (sin contar cancelados). Acá es un tope
             // porque se suben de a poco; el "ni una menos" se exige al mandar a producción.
+            // [BORDADO] La matriz no ocupa capa de arte: queda exenta del tope.
+            // [PRO] Producción (prendas) también queda exenta del tope: sus archivos son
+            // artes por prenda, no capas (y no tocan la Magnitud, que es la cantidad pedida).
             return res.status(400).json({ error: `La orden ya tiene ${CAPAS_ARTE_TPU} archivos de arte (son ${CAPAS_ARTE_TPU}, ni más ni menos).` });
         }
 
         // 1. INSERT fila ArchivosOrden (ruta pendiente hasta que suba a Drive)
+        // La matriz (DST/EMB) no tiene un paso de "control" posterior como sí lo tiene un
+        // PDF de impresión (control de copias) — subirla YA es la tarea completa, así que
+        // nace en 'OK' directo. Si nace en 'Pendiente' como el resto, completarOrden
+        // ("Finalizar") la ve como "archivo sin completar" y bloquea el cierre de la orden
+        // para siempre (nadie más la marca OK).
         const insRes = await pool.request()
             .input('OID', sql.Int, orden.OrdenID)
             .input('Nom', sql.NVarChar(255), finalName)
+            .input('Tipo', sql.VarChar(50), esMatriz ? 'MATRIZ' : 'Impresion')
+            .input('EstArch', sql.VarChar(20), esMatriz ? 'OK' : 'Pendiente')
+            .input('Copias', sql.Int, copias)
             .query(`
                 INSERT INTO ArchivosOrden (OrdenID, NombreArchivo, TipoArchivo, Copias, EstadoArchivo, FechaSubida)
                 OUTPUT INSERTED.ArchivoID
-                VALUES (@OID, @Nom, 'Impresion', 1, 'Pendiente', GETDATE())
+                VALUES (@OID, @Nom, @Tipo, @Copias, @EstArch, GETDATE())
             `);
         const archivoId = insRes.recordset[0].ArchivoID;
 
@@ -189,11 +222,14 @@ exports.uploadProductionFile = async (req, res) => {
             .input('Url', sql.VarChar(500), driveUrl)
             .query('UPDATE ArchivosOrden SET RutaAlmacenamiento = @Url, FechaSubida = GETDATE() WHERE ArchivoID = @ID');
 
-        // 4. Thumbnail (PDF → 1ª página) en background, fire-and-forget
-        try {
-            const buffer = tmpPath ? await fs.promises.readFile(tmpPath) : file.buffer;
-            if (buffer) generateThumbnail(buffer, orden.CodigoOrden, archivoId, finalName).catch(e => logger.warn('[uploadProductionFile] thumb: ' + e.message));
-        } catch (e) { logger.warn('[uploadProductionFile] thumb read: ' + e.message); }
+        // 4. Thumbnail (PDF → 1ª página) en background, fire-and-forget — no aplica a
+        // binarios de máquina (DST/EMB), no son renderizables como PDF.
+        if (!esMatriz) {
+            try {
+                const buffer = tmpPath ? await fs.promises.readFile(tmpPath) : file.buffer;
+                if (buffer) generateThumbnail(buffer, orden.CodigoOrden, archivoId, finalName).catch(e => logger.warn('[uploadProductionFile] thumb: ' + e.message));
+            } catch (e) { logger.warn('[uploadProductionFile] thumb read: ' + e.message); }
+        }
 
         // TPU: con la ÚLTIMA capa del arte la orden queda lista para fabricar. El estado de área
         // pasa a 'Diseñado' — que cuelga de Producción, así que el general salta solo y el tablero
@@ -220,13 +256,369 @@ exports.uploadProductionFile = async (req, res) => {
             }
         }
 
-        logger.info(`[uploadProductionFile] Orden ${orden.CodigoOrden}: +archivo ${finalName} (ArchivoID ${archivoId})`);
+        // 5. [BORDADO] Subir la matriz cumple sola el requisito bloqueante "MATRIZ" de
+        // Bordado (ver ConfigRequisitosProduccion EMB/MATRIZ) — mismo mecanismo MERGE que
+        // ya uso para "PRENDA" al hacer check-in.
+        if (esMatriz && (orden.AreaID || '').trim().toUpperCase() === 'EMB') {
+            try {
+                await pool.request()
+                    .input('OID', sql.Int, orden.OrdenID)
+                    .query(`
+                        MERGE OrdenCumplimientoRequisitos AS target
+                        USING (
+                            SELECT RequisitoID, AreaID FROM ConfigRequisitosProduccion
+                            WHERE AreaID = 'EMB' AND CodigoRequisito = 'MATRIZ'
+                        ) AS source
+                        ON (target.OrdenID = @OID AND target.RequisitoID = source.RequisitoID)
+                        WHEN MATCHED THEN
+                            UPDATE SET Estado = 'CUMPLIDO', FechaCumplimiento = GETDATE(),
+                                       Observaciones = 'Matriz subida'
+                        WHEN NOT MATCHED THEN
+                            INSERT (OrdenID, AreaID, RequisitoID, Estado, FechaCumplimiento, Observaciones)
+                            VALUES (@OID, source.AreaID, source.RequisitoID, 'CUMPLIDO', GETDATE(), 'Matriz subida');
+                    `);
+            } catch (eReq) {
+                logger.warn('[uploadProductionFile] No se pudo marcar el requisito MATRIZ:', eReq.message);
+            }
+        }
+
+        // [PRO→pedido] Subida desde el detalle de la orden madre: el archivo se procesa
+        // IGUAL que si el cliente lo subiera por el portal — fileProcessingService lo
+        // renombra con la convención, lo baja a la carpeta del área, MIDE el PDF
+        // (Metros/Ancho/Alto/MedidaConfirmada) y recalcula la magnitud de la orden
+        // destino (TPU y PRO quedan excluidos del recálculo: su magnitud es la cantidad
+        // pedida). Al terminar recotiza el pedido para que el importe siga a la medida.
+        // Corre en background (setImmediate) — la respuesta no espera la medición.
+        if (procesarPortal && !esMatriz) {
+            try {
+                const fileProcessingService = require('../services/fileProcessingService');
+                fileProcessingService.processFiles([archivoId], req.app.get('socketio'), { recotizarPedido: true });
+            } catch (eProc) {
+                logger.error('[uploadProductionFile] No se pudo lanzar el procesamiento portal: ' + eProc.message);
+            }
+        }
+
+        // [PRO] Avisar a las pantallas abiertas que la orden cambió.
+        if (esPROOrden) {
+            const io = req.app.get('socketio');
+            if (io) io.emit('server:order_updated', { orderId: orden.OrdenID });
+        }
+
+        logger.info(`[uploadProductionFile] Orden ${orden.CodigoOrden}: +archivo ${finalName} (ArchivoID ${archivoId}, tipo ${esMatriz ? 'MATRIZ' : 'Impresion'})`);
         res.json({ success: true, archivoId, nombre: finalName, url: driveUrl });
     } catch (err) {
         logger.error('[uploadProductionFile] ' + err.message);
         res.status(500).json({ error: err.message });
     } finally {
         if (tmpPath) { try { fs.unlinkSync(tmpPath); } catch (_) {} }
+    }
+};
+
+// =====================================================================
+// [PRO] ARCHIVOS DE REFERENCIA: catálogo de tipos + subir + eliminar
+// La gestión manual de referencias se hace desde el detalle de la orden PRO
+// (Producción/prendas). Las referencias NO tocan la Magnitud ni la cotización:
+// son guías (bocetos, matrices de logos, info de corte), no unidades a fabricar.
+// =====================================================================
+
+// GET /orders/referencia-tipos — catálogo para el selector del front.
+// Si la tabla ConfigTiposArchivoReferencia todavía no existe en la base (deploy
+// pendiente), cae al fallback con los tipos ya usados en ArchivosReferencia en
+// vez de romper (lección del incidente del 13/07 con TipoStock).
+const TIPOS_REFERENCIA_FALLBACK = [
+    { Codigo: 'BOCETO',         Nombre: 'Boceto' },
+    { Codigo: 'BOCETO_BORDADO', Nombre: 'Boceto de Bordado' },
+    { Codigo: 'BOCETO_CORTE',   Nombre: 'Boceto de Corte' },
+    { Codigo: 'INFO_CORTE',     Nombre: 'Información de Corte' },
+    { Codigo: 'MATRIZ_LOGOS',   Nombre: 'Matriz de Logos' },
+    { Codigo: 'REFERENCIA',     Nombre: 'Referencia General' },
+];
+exports.getTiposArchivoReferencia = async (req, res) => {
+    try {
+        const pool = await getPool();
+        const r = await pool.request().query(`
+            SELECT Codigo, Nombre FROM dbo.ConfigTiposArchivoReferencia
+            WHERE ISNULL(Activo, 1) = 1
+            ORDER BY Orden, Nombre
+        `);
+        res.json({ success: true, data: r.recordset.length ? r.recordset : TIPOS_REFERENCIA_FALLBACK });
+    } catch (e) {
+        logger.warn('[getTiposArchivoReferencia] ' + e.message + ' — usando fallback');
+        res.json({ success: true, data: TIPOS_REFERENCIA_FALLBACK, warning: e.message });
+    }
+};
+
+// POST /orders/:ordenId/reference-file — multipart {file, tipo, nota}
+exports.uploadReferenceFile = async (req, res) => {
+    const { ordenId } = req.params;
+    const file = req.file;
+    const fs = require('fs');
+    if (!file || !ordenId) return res.status(400).json({ error: 'Falta archivo u orden.' });
+
+    const tipo = String(req.body?.tipo || 'REFERENCIA').trim().substring(0, 50);
+    const nota = String(req.body?.nota || '').trim();
+    const tmpPath = file.path || null;
+    try {
+        const driveService = require('../services/driveService');
+        const pool = await getPool();
+        const ordRes = await pool.request()
+            .input('OID', sql.Int, parseInt(ordenId))
+            .query('SELECT OrdenID, CodigoOrden, AreaID FROM Ordenes WHERE OrdenID = @OID');
+        if (!ordRes.recordset.length) return res.status(404).json({ error: 'Orden no encontrada.' });
+        const orden = ordRes.recordset[0];
+
+        // 1. Fila en ArchivosReferencia (ruta pendiente hasta que suba a Drive)
+        const insRes = await pool.request()
+            .input('OID', sql.Int, orden.OrdenID)
+            .input('Tipo', sql.VarChar(50), tipo)
+            .input('Nom', sql.VarChar(200), (file.originalname || 'referencia').substring(0, 199))
+            .input('Not', sql.NVarChar(sql.MAX), nota)
+            .query(`
+                INSERT INTO dbo.ArchivosReferencia (OrdenID, TipoArchivo, NombreOriginal, NotasAdicionales, FechaSubida, UbicacionStorage)
+                OUTPUT INSERTED.RefID
+                VALUES (@OID, @Tipo, @Nom, @Not, GETDATE(), 'Pendiente')
+            `);
+        const refId = insRes.recordset[0].RefID;
+
+        // 2. Binario a Drive + guardar ruta
+        const fileInput = tmpPath ? fs.createReadStream(tmpPath) : file.buffer;
+        const driveUrl = await driveService.uploadToDrive(fileInput, file.originalname, 'GENERAL');
+        await pool.request()
+            .input('ID', sql.Int, refId)
+            .input('Url', sql.NVarChar(sql.MAX), driveUrl)
+            .query('UPDATE dbo.ArchivosReferencia SET UbicacionStorage = @Url WHERE RefID = @ID');
+
+        // 3. Historial
+        const safeUser = String(req.user?.usuario || req.user?.id || 'Sistema');
+        pool.request()
+            .input('OID', sql.Int, orden.OrdenID)
+            .input('User', sql.VarChar, safeUser)
+            .input('Det', sql.NVarChar, `Referencia agregada (${tipo}): ${file.originalname}`.substring(0, 499))
+            .query(`
+                INSERT INTO [SecureAppDB].[dbo].[HistorialOrdenes] (OrdenID, Estado, FechaInicio, FechaFin, Usuario, Detalle)
+                SELECT @OID, ISNULL(EstadoenArea, 'Pendiente'), GETDATE(), GETDATE(), @User, @Det FROM Ordenes WHERE OrdenID = @OID
+            `).catch(e => logger.error('Log Error:', e));
+
+        logger.info(`[uploadReferenceFile] Orden ${orden.CodigoOrden}: +referencia ${file.originalname} (RefID ${refId}, tipo ${tipo})`);
+        res.json({ success: true, refId, nombre: file.originalname, url: driveUrl });
+    } catch (err) {
+        logger.error('[uploadReferenceFile] ' + err.message);
+        res.status(500).json({ error: err.message });
+    } finally {
+        if (tmpPath) { try { fs.unlinkSync(tmpPath); } catch (_) {} }
+    }
+};
+
+// DELETE /orders/reference/:refId
+exports.deleteReferenceFile = async (req, res) => {
+    const { refId } = req.params;
+    try {
+        const pool = await getPool();
+        const findRes = await pool.request()
+            .input('ID', sql.Int, parseInt(refId))
+            .query('SELECT OrdenID, NombreOriginal, TipoArchivo FROM dbo.ArchivosReferencia WHERE RefID = @ID');
+        if (!findRes.recordset.length) return res.status(404).json({ error: 'Referencia no encontrada.' });
+        const ref = findRes.recordset[0];
+
+        await pool.request()
+            .input('ID', sql.Int, parseInt(refId))
+            .query('DELETE FROM dbo.ArchivosReferencia WHERE RefID = @ID');
+
+        const safeUser = String(req.user?.usuario || req.user?.id || 'Sistema');
+        pool.request()
+            .input('OID', sql.Int, ref.OrdenID)
+            .input('User', sql.VarChar, safeUser)
+            .input('Det', sql.NVarChar, `Referencia eliminada (${ref.TipoArchivo || 'Referencia'}): ${ref.NombreOriginal || refId}`.substring(0, 499))
+            .query(`
+                INSERT INTO [SecureAppDB].[dbo].[HistorialOrdenes] (OrdenID, Estado, FechaInicio, FechaFin, Usuario, Detalle)
+                SELECT @OID, ISNULL(EstadoenArea, 'Pendiente'), GETDATE(), GETDATE(), @User, @Det FROM Ordenes WHERE OrdenID = @OID
+            `).catch(e => logger.error('Log Error:', e));
+
+        logger.info(`[deleteReferenceFile] RefID ${refId} eliminada (orden ${ref.OrdenID})`);
+        res.json({ success: true });
+    } catch (err) {
+        logger.error('[deleteReferenceFile] ' + err.message);
+        res.status(500).json({ error: err.message });
+    }
+};
+
+// =====================================================================
+// [PRO] CANTIDAD A FABRICAR (Magnitud global de la orden)
+// PUT /orders/:ordenId/magnitud  body: { magnitud }
+// En PRO la Magnitud es la CANTIDAD DE PRENDAS del pedido — se fija/edita a mano
+// (los archivos no la tocan, ver recalculateOrderMagnitude). Al cambiarla se
+// recotiza el pedido completo, que es lo que arrastra el nuevo importe.
+// =====================================================================
+exports.updateOrderMagnitud = async (req, res) => {
+    const { ordenId } = req.params;
+    const magnitud = parseFloat(req.body?.magnitud);
+    if (!ordenId || isNaN(magnitud) || magnitud <= 0) {
+        return res.status(400).json({ error: 'Cantidad inválida: debe ser un número mayor a 0.' });
+    }
+    try {
+        const pool = await getPool();
+        const ordRes = await pool.request()
+            .input('OID', sql.Int, parseInt(ordenId))
+            .query('SELECT OrdenID, CodigoOrden, AreaID, Magnitud FROM dbo.Ordenes WHERE OrdenID = @OID');
+        if (!ordRes.recordset.length) return res.status(404).json({ error: 'Orden no encontrada.' });
+        const orden = ordRes.recordset[0];
+
+        // Solo PRO: en el resto de las áreas la Magnitud sale de los archivos
+        // (recalculateOrderMagnitude) y un valor manual se pisaría en la próxima edición.
+        if (String(orden.AreaID || '').trim().toUpperCase() !== 'PRO') {
+            return res.status(400).json({ error: 'La cantidad manual solo aplica a órdenes de Producción (PRO); en las demás áreas la magnitud sale de los archivos.' });
+        }
+
+        const magnitudStr = String(Number(magnitud.toFixed(2)));
+        await pool.request()
+            .input('OID', sql.Int, orden.OrdenID)
+            .input('Mag', sql.NVarChar(20), magnitudStr)
+            .query('UPDATE dbo.Ordenes SET Magnitud = @Mag WHERE OrdenID = @OID');
+
+        // Historial con el antes → después (claridad al auditar)
+        const safeUser = String(req.user?.usuario || req.user?.id || 'Sistema');
+        pool.request()
+            .input('OID', sql.Int, orden.OrdenID)
+            .input('User', sql.VarChar, safeUser)
+            .input('Det', sql.NVarChar, `Cantidad a fabricar modificada: ${orden.Magnitud || '—'} → ${magnitudStr}`.substring(0, 499))
+            .query(`
+                INSERT INTO [SecureAppDB].[dbo].[HistorialOrdenes] (OrdenID, Estado, FechaInicio, FechaFin, Usuario, Detalle)
+                SELECT @OID, ISNULL(EstadoenArea, 'Pendiente'), GETDATE(), GETDATE(), @User, @Det FROM Ordenes WHERE OrdenID = @OID
+            `).catch(e => logger.error('Log Error:', e));
+
+        // Recotizar el pedido con la nueva cantidad (mismo circuito que updateFile)
+        await recotizarPedidoDeOrden(pool, orden.OrdenID, req.user?.id || 1, safeUser);
+
+        const io = req.app.get('socketio');
+        if (io) io.emit('server:order_updated', { orderId: orden.OrdenID });
+
+        logger.info(`[updateOrderMagnitud] Orden ${orden.CodigoOrden}: Magnitud ${orden.Magnitud || '—'} → ${magnitudStr}`);
+        res.json({ success: true, magnitud: magnitudStr });
+    } catch (err) {
+        logger.error('[updateOrderMagnitud] ' + err.message);
+        res.status(500).json({ error: err.message });
+    }
+};
+
+// =====================================================================
+// [PRO] REORDENAR COSTURA/BORDADO/ESTAMPADO — cambiar el orden físico en el que
+// se decoran las prendas de un pedido (ej. Corte → Bordado → Costura en vez del
+// fijo Corte → Costura → Bordado). Solo reescribe Ordenes.ProximoServicio: no hace
+// falta ningún gate nuevo porque lo que hoy impide que un área arranque antes de
+// tiempo es la custodia física del bulto (todavía no llegó), no un EstadoDependencia
+// — ese mecanismo sigue funcionando igual sea cual sea el orden nuevo. DTF/TPU y su
+// Estampado encadenado (EstadoDependencia='ESPERANDO_IMPRESION') quedan afuera: son
+// trabajos de impresión paralelos, no posiciones de la cadena física.
+// =====================================================================
+const AREAS_REORDENABLES = ['TWT', 'EMB', 'EST'];
+const AREA_NOMBRES_REORDEN = { TWT: 'Costura', EMB: 'Bordado', EST: 'Estampado' };
+const ESTADOS_REORDENABLES = ['Cargando...', 'Pendiente'];
+
+exports.updateOrderRoutePriority = async (req, res) => {
+    const { ordenId } = req.params;
+    const areasDeseadas = Array.isArray(req.body?.areas)
+        ? req.body.areas.map(a => String(a || '').trim().toUpperCase())
+        : null;
+    if (!ordenId || !areasDeseadas || areasDeseadas.length === 0) {
+        return res.status(400).json({ error: 'Falta el nuevo orden de áreas.' });
+    }
+    try {
+        const pool = await getPool();
+        const ordRes = await pool.request()
+            .input('OID', sql.Int, parseInt(ordenId))
+            .query('SELECT OrdenID, CodigoOrden, AreaID, NoDocERP FROM dbo.Ordenes WHERE OrdenID = @OID');
+        if (!ordRes.recordset.length) return res.status(404).json({ error: 'Orden no encontrada.' });
+        const orden = ordRes.recordset[0];
+
+        // Solo PRO: es la única que administra el pedido completo.
+        if (String(orden.AreaID || '').trim().toUpperCase() !== 'PRO') {
+            return res.status(400).json({ error: 'Reordenar el flujo solo aplica desde la orden de Producción (PRO) del pedido.' });
+        }
+        if (!orden.NoDocERP) return res.status(400).json({ error: 'La orden no tiene un pedido (NoDocERP) asociado.' });
+
+        const hermanasRes = await pool.request()
+            .input('NoDoc', sql.VarChar, String(orden.NoDocERP))
+            .query('SELECT OrdenID, AreaID, Estado, ProximoServicio FROM dbo.Ordenes WHERE NoDocERP = @NoDoc');
+        const hermanas = hermanasRes.recordset.map(h => ({ ...h, AreaID: String(h.AreaID || '').trim().toUpperCase() }));
+
+        const activas = hermanas.filter(h => AREAS_REORDENABLES.includes(h.AreaID));
+        if (activas.length < 2) {
+            return res.status(400).json({ error: 'Este pedido no tiene al menos 2 áreas reordenables (Costura/Bordado/Estampado) activas.' });
+        }
+
+        // El conjunto pedido tiene que ser EXACTAMENTE el de las áreas activas — ni de más ni de menos.
+        const setActivas = new Set(activas.map(a => a.AreaID));
+        const setDeseadas = new Set(areasDeseadas);
+        const mismoConjunto = setActivas.size === setDeseadas.size && [...setActivas].every(a => setDeseadas.has(a));
+        if (!mismoConjunto) {
+            return res.status(400).json({ error: 'El nuevo orden no coincide con las áreas activas del pedido.' });
+        }
+
+        const bloqueada = activas.find(a => !ESTADOS_REORDENABLES.includes(a.Estado));
+        if (bloqueada) {
+            const nombre = AREA_NOMBRES_REORDEN[bloqueada.AreaID] || bloqueada.AreaID;
+            return res.status(400).json({ error: `La orden de ${nombre} ya está en curso (${bloqueada.Estado}) — no se puede reordenar.` });
+        }
+
+        // Cadena ACTUAL entre las activas: quién es la primera (nadie de las activas la apunta)
+        // y quién es la última (su ProximoServicio no apunta a otra activa).
+        const targetsActivos = new Set(activas.map(a => a.ProximoServicio ? String(a.ProximoServicio).trim().toUpperCase() : null).filter(Boolean));
+        const primeraActual = activas.find(a => !targetsActivos.has(a.AreaID));
+        const ultimaActual = activas.find(a => !setActivas.has((a.ProximoServicio || '').toString().trim().toUpperCase()));
+        const tailNext = ultimaActual ? (ultimaActual.ProximoServicio || 'DEPOSITO') : 'DEPOSITO';
+
+        // Predecesora: hermana NO reordenable cuyo ProximoServicio hoy apunta a la primera de la cadena actual.
+        const predecesora = primeraActual
+            ? hermanas.find(h => !AREAS_REORDENABLES.includes(h.AreaID) && (h.ProximoServicio || '').toString().trim().toUpperCase() === primeraActual.AreaID)
+            : null;
+
+        // Mapa nuevo: areasDeseadas[i] -> areasDeseadas[i+1], y la última -> tailNext.
+        const nuevoProximo = {};
+        areasDeseadas.forEach((areaId, i) => {
+            nuevoProximo[areaId] = (i < areasDeseadas.length - 1) ? areasDeseadas[i + 1] : tailNext;
+        });
+
+        const transaction = new sql.Transaction(pool);
+        await transaction.begin();
+        try {
+            for (const a of activas) {
+                await new sql.Request(transaction)
+                    .input('OID', sql.Int, a.OrdenID)
+                    .input('Prox', sql.VarChar(50), nuevoProximo[a.AreaID])
+                    .query(`UPDATE dbo.Ordenes SET ProximoServicio = @Prox WHERE OrdenID = @OID AND Estado IN ('Cargando...','Pendiente')`);
+            }
+            if (predecesora) {
+                await new sql.Request(transaction)
+                    .input('OID', sql.Int, predecesora.OrdenID)
+                    .input('Prox', sql.VarChar(50), areasDeseadas[0])
+                    .query(`UPDATE dbo.Ordenes SET ProximoServicio = @Prox WHERE OrdenID = @OID`);
+            }
+
+            const safeUser = String(req.user?.usuario || req.user?.id || 'Sistema');
+            const detalle = `Flujo reordenado: ${areasDeseadas.map(a => AREA_NOMBRES_REORDEN[a] || a).join(' → ')}`.substring(0, 499);
+            await new sql.Request(transaction)
+                .input('OID', sql.Int, orden.OrdenID)
+                .input('User', sql.VarChar, safeUser)
+                .input('Det', sql.NVarChar, detalle)
+                .query(`
+                    INSERT INTO [SecureAppDB].[dbo].[HistorialOrdenes] (OrdenID, Estado, FechaInicio, FechaFin, Usuario, Detalle)
+                    SELECT @OID, ISNULL(EstadoenArea, 'Pendiente'), GETDATE(), GETDATE(), @User, @Det FROM Ordenes WHERE OrdenID = @OID
+                `);
+
+            await transaction.commit();
+        } catch (txErr) {
+            await transaction.rollback();
+            throw txErr;
+        }
+
+        const io = req.app.get('socketio');
+        if (io) io.emit('server:ordersUpdated', { count: activas.length + (predecesora ? 1 : 0) });
+
+        logger.info(`[updateOrderRoutePriority] Pedido ${orden.NoDocERP}: nuevo orden ${areasDeseadas.join(' → ')}`);
+        res.json({ success: true });
+    } catch (err) {
+        logger.error('[updateOrderRoutePriority] ' + err.message);
+        res.status(500).json({ error: err.message });
     }
 };
 
@@ -328,6 +720,56 @@ exports.enviarAprobacionTPU = async (req, res) => {
         res.json({ success: true });
     } catch (err) {
         logger.error('[enviarAprobacionTPU] ' + err.message);
+        res.status(500).json({ error: err.message });
+    }
+};
+
+// =====================================================================
+// NOTAS DE PRODUCCIÓN POR ORDEN — aditivas (tabla OrdenNotasProduccion), a diferencia
+// de Ordenes.Nota que es un solo campo que se pisa. Equivalente a la hoja "NOTAS" del
+// Apps Script viejo de Bordado (chat: textarea + historial, inserción al frente).
+// =====================================================================
+
+exports.getOrderNotes = async (req, res) => {
+    const ordenId = parseInt(req.params.ordenId, 10);
+    if (!ordenId) return res.status(400).json({ error: 'ordenId inválido.' });
+    try {
+        const pool = await getPool();
+        const r = await pool.request()
+            .input('OID', sql.Int, ordenId)
+            .query(`
+                SELECT NotaID, OrdenID, Texto, UsuarioID, UsuarioNombre, FechaCreacion
+                FROM OrdenNotasProduccion
+                WHERE OrdenID = @OID
+                ORDER BY FechaCreacion DESC
+            `);
+        res.json({ success: true, data: r.recordset });
+    } catch (err) {
+        logger.error('[getOrderNotes] ' + err.message);
+        res.status(500).json({ error: err.message });
+    }
+};
+
+exports.addOrderNote = async (req, res) => {
+    const ordenId = parseInt(req.params.ordenId, 10);
+    const texto = (req.body?.texto || '').trim();
+    if (!ordenId) return res.status(400).json({ error: 'ordenId inválido.' });
+    if (!texto) return res.status(400).json({ error: 'La nota no puede estar vacía.' });
+    try {
+        const pool = await getPool();
+        const r = await pool.request()
+            .input('OID', sql.Int, ordenId)
+            .input('Texto', sql.NVarChar(sql.MAX), texto)
+            .input('UID', sql.Int, req.user?.id || null)
+            .input('UNom', sql.NVarChar(100), req.user?.usuario || req.user?.name || 'Sistema')
+            .query(`
+                INSERT INTO OrdenNotasProduccion (OrdenID, Texto, UsuarioID, UsuarioNombre, FechaCreacion)
+                OUTPUT INSERTED.NotaID, INSERTED.OrdenID, INSERTED.Texto, INSERTED.UsuarioID, INSERTED.UsuarioNombre, INSERTED.FechaCreacion
+                VALUES (@OID, @Texto, @UID, @UNom, GETDATE())
+            `);
+        res.json({ success: true, data: r.recordset[0] });
+    } catch (err) {
+        logger.error('[addOrderNote] ' + err.message);
         res.status(500).json({ error: err.message });
     }
 };
@@ -631,6 +1073,10 @@ exports.getOrdersByArea = async (req, res) => {
             // No filtrar por estado
         } else {
             query += ` AND o.Estado NOT IN (${estadosFinales})`;
+            // [PRENDAS] Gate secuencial (Comprar y personalizar): una Orden bloqueada
+            // (esperando retiro WMS o esperando su DTF/TPU) no es trabajable todavía —
+            // no debe aparecer en la grilla activa de producción.
+            query += ` AND (o.EstadoDependencia IS NULL OR o.EstadoDependencia = 'OK')`;
             // ECOUV — separación física de locales: la vista del local de IMPRESIÓN
             // no muestra las órdenes que ya pasaron a Terminaciones (sub-estado).
             // Esas las trabaja la bandeja del local de terminaciones.
@@ -1955,18 +2401,46 @@ exports.getIntegralPedidoDetailsV2 = async (req, res) => {
             if (isStorageStep) {
                 // Estado directo de la tabla OrdenesDeposito
                 stepStatus = depoStatusResult;
-            } else {
-                // Estado directo de la tabla Ordenes (primer orden viva del área)
-                const estadoDirecto = step.orders.find(o => o.Estado)?.Estado;
-                stepStatus = estadoDirecto || 'PENDIENTE';
+            } else if (step.orders.length > 0) {
+                // [PRENDAS] Multiorden: si el área tiene varias órdenes del pedido (ej. 2 telas
+                // distintas en Sublimación), el paso solo está tan avanzado como la orden MÁS
+                // ATRASADA — antes se mostraba la primera que apareciera, sin importar las demás.
+                // Usa EstadoenArea (específico: Pendiente/Pronto/En tránsito/Recibido en Destino)
+                // en vez de Estado (general: hoy dice "Produccion" para casi todo el recorrido y
+                // no distingue una orden ya entregada en la siguiente área de una recién creada).
+                const RANGO_ESTADO = { 'PRONTO': 5, 'EN TRANSITO': 6, 'RECIBIDO EN DESTINO': 7, 'INGRESADO': 8, 'FINALIZADO': 9, 'AVISADO': 9, 'ENTREGADO': 10 };
+                const rango = (o) => RANGO_ESTADO[(o.EstadoenArea || o.Estado || '').toString().trim().toUpperCase()] ?? 1;
+                const masAtrasada = step.orders.reduce((peor, o) => rango(o) < rango(peor) ? o : peor, step.orders[0]);
+                stepStatus = (masAtrasada.EstadoenArea || masAtrasada.Estado || '').toString().trim() || 'PENDIENTE';
+
+                // [PRENDAS] "Ingresado" es válido y no se toca en la base — cuando el pedido
+                // COMPLETO llega a Depósito, esa lógica (ya existía, no es de esta sesión) marca
+                // a TODAS las hermanas como Ingresado, sea cual sea su área. Pero mostrar
+                // literalmente "INGRESADO" debajo de Corte/Bordado/etc. no tiene sentido — ese
+                // término es de depósito. Es solo una traducción de ETIQUETA para este paso del
+                // grafo; el dato real (Ordenes.EstadoenArea) sigue intacto para contabilidad/aviso.
+                const areaId = (step.id || '').toString().trim().toUpperCase();
+                if (areaId !== 'PRO' && stepStatus.toUpperCase() === 'INGRESADO') {
+                    stepStatus = 'Entregado';
+                }
             }
+
+            // [PRENDAS] Áreas a las que apuntan las órdenes de este paso (Ordenes.ProximoServicio,
+            // normalizado) — el front arma el grafo de dependencias con esto. Aditivo: no cambia
+            // nada de lo que ya se leía de "ruta" (id/label/status/date/count).
+            const nextAreas = [...new Set(
+                step.orders
+                    .map(o => (o.ProximoServicio || '').toString().trim().toUpperCase())
+                    .filter(Boolean)
+            )];
 
             return {
                 id: step.id,
                 label: step.label,
                 status: stepStatus,
                 date: step.date,
-                count: step.orders.length
+                count: step.orders.length,
+                nextAreas
             };
         });
 

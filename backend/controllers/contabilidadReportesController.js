@@ -94,9 +94,12 @@ const condEsVenta = (alias = 'doc') => `(
 const COND_ES_VENTA = condEsVenta('doc');
 
 // Área a partir del prefijo de un código de orden (ej. 'dcd.OrdCodigoOrden'). Si el
-// código es NULL (línea sin código todavía), el CASE/ISNULL de abajo cae solo a
-// 'Sin área' — no hace falta filtrarlo aparte. Nomenclatura confirmada con el usuario.
-const areaDesdeCodigo = (expr) => `ISNULL(CASE UPPER(LTRIM(RTRIM(
+// código es NULL (línea sin código todavía) o el prefijo no matchea, se intenta un
+// segundo fallback por dcd.DcdNomItem (nombre del ítem vendido, ej. líneas de insumo
+// sin orden asociada) antes de caer a 'Sin área'. Todo llamador usa alias 'dcd' para
+// DocumentosContablesDetalle, así que dcd.DcdNomItem siempre está disponible acá.
+// Nomenclatura confirmada con el usuario.
+const areaDesdeCodigo = (expr) => `ISNULL(COALESCE(CASE UPPER(LTRIM(RTRIM(
         LEFT(${expr}, CASE WHEN CHARINDEX('-', ${expr}) > 0 THEN CHARINDEX('-', ${expr}) - 1 ELSE LEN(${expr}) END)
     )))
     WHEN 'DF'     THEN 'DTF' WHEN 'DTF'    THEN 'DTF' WHEN 'UVDF'   THEN 'DTF' WHEN 'RDF'    THEN 'DTF' WHEN 'RUVDF'  THEN 'DTF' WHEN 'RRDF' THEN 'DTF' WHEN 'RRUVDF' THEN 'DTF'
@@ -112,7 +115,9 @@ const areaDesdeCodigo = (expr) => `ISNULL(CASE UPPER(LTRIM(RTRIM(
     WHEN 'PRO'    THEN 'Productos Confeccionados'
     WHEN 'VEN'    THEN 'Venta Directa'
     ELSE NULL
-END, 'Sin área')`;
+END,
+CASE WHEN UPPER(LTRIM(RTRIM(dcd.DcdNomItem))) = 'DTF TEXTIL COMUN' THEN 'DTF' END
+), 'Sin área')`;
 
 // Lista fija de áreas posibles (salida de areaDesdeCodigo), para poblar el filtro sin
 // depender de una tabla.

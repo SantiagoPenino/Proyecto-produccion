@@ -1,6 +1,42 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import api from '../../services/apiClient';
 
+// Convierte un monto entre monedas usando la cotización del día — mismo criterio que ya
+// usa el resto del modal (USD→UYU multiplica, UYU→USD divide).
+const convertirMoneda = (monto, monedaOrigen, monedaDestino, cotizacion) => {
+    const m = parseFloat(monto) || 0;
+    const origen = monedaOrigen || 'UYU';
+    const destino = monedaDestino || 'UYU';
+    if (origen === destino) return m;
+    if (origen === 'USD' && destino === 'UYU') return m * (cotizacion || 40);
+    if (origen === 'UYU' && destino === 'USD') return m / (cotizacion || 40);
+    return m;
+};
+
+// "Comprar y personalizar": recalcula la línea de PRO para que su Subtotal sea "lo suyo
+// propio" (lo que tenía al cargar, sin las hermanas) + la suma EN VIVO de las hermanas
+// (editables por cada área). `sumaHermanasAlCargar` es la foto de cuánto de PRO eran las
+// hermanas al momento de abrir el modal (ver sumaHermanasAlCargarRef). Devuelve null si el
+// pedido no tiene línea de PRO (nada que rehornear). Compartido por el total en vivo
+// (nuevoTotalConHermanas) y el guardado (handleSave), para que nunca queden desalineados.
+function rehornearLineaPro(lineas, cotizacion, sumaHermanasAlCargar) {
+    const proLinea = lineas.find(l => (l.AreaIDInterna || l.AreaID) === 'PRO');
+    if (!proLinea) return null;
+    const monedaPro = proLinea.Moneda || 'UYU';
+    const proSubtotalActual = (parseFloat(proLinea.Cantidad) || 0) * (parseFloat(proLinea.PrecioUnitario) || 0);
+    const sumaHermanasEnVivo = lineas
+        .filter(l => l.EsHermanaConsolidada)
+        .reduce((acc, h) => acc + convertirMoneda(
+            (parseFloat(h.Cantidad) || 0) * (parseFloat(h.PrecioUnitario) || 0),
+            h.Moneda, monedaPro, cotizacion
+        ), 0);
+    const proBaseSinHermanas = proSubtotalActual - sumaHermanasAlCargar;
+    const subtotalRehorneado = proBaseSinHermanas + sumaHermanasEnVivo;
+    const cantidad = parseFloat(proLinea.Cantidad) || 0;
+    const precioUnitarioRehorneado = cantidad > 0 ? subtotalRehorneado / cantidad : subtotalRehorneado;
+    return { tempId: proLinea._tempId, monedaPro, proSubtotalActual, subtotalRehorneado, precioUnitarioRehorneado };
+}
+
 const AREA_COLORS = {
     DF: 'bg-blue-100 text-blue-700',
     SB: 'bg-purple-100 text-purple-700',
@@ -145,8 +181,16 @@ function LineRow({ line, userArea, isAdmin, areaFilter, cotizacion, monedaFinal,
     // Permission base rule
     const hasPermission = isAdmin || !userArea || areaTag.toUpperCase() === userArea.toUpperCase();
     // Context rule (UX filter override)
-    // ONLY allow edit if it's the target area (or no filter) AND user has permission
-    const puedoEditar = !readOnly && hasPermission && (!isFiltered || isLineTargetArea);
+    // ONLY allow edit if it's the target area (or no filter) AND user has permission.
+    const esHermanaConsolidada = !!line.EsHermanaConsolidada;
+    const puedeEditarBase = !readOnly && hasPermission && (!isFiltered || isLineTargetArea);
+    // Líneas hermanas ("Comprar y personalizar": EMB/DF/TPU/EST ya sumadas dentro de PRO):
+    // el PRODUCTO y el borrado quedan fijos (no tiene sentido cambiar QUÉ personalización
+    // es, ni borrarla desde acá) — pero cantidad/dato técnico/precio SÍ son editables:
+    // solo el área que hizo el trabajo sabe la producción real (puntadas, bajadas,
+    // cantidad real). "Guardar Cotización" recalcula el total de PRO con estos valores.
+    const puedoEditar = puedeEditarBase && !esHermanaConsolidada;
+    const puedoEditarValores = puedeEditarBase;
     const subtotal = (parseFloat(line.Cantidad) || 0) * (parseFloat(line.PrecioUnitario) || 0);
     const nombreVisible = line.NombreArticulo || line.DescripcionArticulo || line.CodArticulo;
     const timeoutRef = useRef(null);
@@ -167,7 +211,7 @@ function LineRow({ line, userArea, isAdmin, areaFilter, cotizacion, monedaFinal,
     }, [allProducts, areaTag, line.CodigoOrden]);
 
     return (
-        <tr className={`border-b last:border-0 transition-colors group ${puedoEditar ? 'hover:bg-slate-50/80' : 'bg-slate-50/30 opacity-75'}`}>
+        <tr className={`border-b last:border-0 transition-colors group ${esHermanaConsolidada ? 'bg-amber-50/40' : (puedoEditar ? 'hover:bg-slate-50/80' : 'bg-slate-50/30 opacity-75')}`}>
             {/* Área */}
             <td className="px-3 py-2.5 w-20 text-center">
                 {areaTag ? (
@@ -209,8 +253,16 @@ function LineRow({ line, userArea, isAdmin, areaFilter, cotizacion, monedaFinal,
                     </div>
                 ) : (
                     <div className="px-2 py-1">
-                        <div className="font-semibold text-slate-800 text-sm leading-tight truncate" title={nombreVisible}>
-                            {nombreVisible}
+                        <div className="flex items-center gap-1.5">
+                            <div className="font-semibold text-slate-800 text-sm leading-tight truncate" title={nombreVisible}>
+                                {nombreVisible}
+                            </div>
+                            {esHermanaConsolidada && (
+                                <span className="shrink-0 text-[9px] font-black uppercase tracking-wide bg-amber-100 text-amber-700 border border-amber-200 px-1.5 py-0.5 rounded"
+                                    title="Ya sumado dentro del total de la línea PRO — solo detalle, no se cobra aparte">
+                                    Incluido en PRO
+                                </span>
+                            )}
                         </div>
                         <div className="text-[11px] text-slate-400 font-mono mt-0.5">{line.CodArticulo}</div>
                     </div>
@@ -227,7 +279,7 @@ function LineRow({ line, userArea, isAdmin, areaFilter, cotizacion, monedaFinal,
             {/* Cantidad */}
             <td className="px-3 py-2.5 w-24 text-right">
                 <input type="number" min="0" step="0.01"
-                    disabled={!puedoEditar}
+                    disabled={!puedoEditarValores}
                     value={line.Cantidad}
                     onChange={e => {
                         const newQ = e.target.value;
@@ -236,7 +288,7 @@ function LineRow({ line, userArea, isAdmin, areaFilter, cotizacion, monedaFinal,
                         handleDebouncedCalc({ ...line, Cantidad: newQ, SubtotalOriginal: numQ * puOrig, PricingTrace: 'Calculando precio...' });
                     }}
                     className={`w-20 text-right text-sm font-mono border rounded-lg px-2 py-1 focus:outline-none focus:ring-2 focus:ring-indigo-400
-                        ${puedoEditar ? 'border-slate-200 bg-white hover:border-indigo-300 group-hover:border-slate-300' : 'border-transparent bg-transparent cursor-not-allowed text-slate-500'}`}
+                        ${puedoEditarValores ? 'border-slate-200 bg-white hover:border-indigo-300 group-hover:border-slate-300' : 'border-transparent bg-transparent cursor-not-allowed text-slate-500'}`}
                 />
             </td>
             {/* Dato Técnico (Puntadas/Bajadas) */}
@@ -244,11 +296,11 @@ function LineRow({ line, userArea, isAdmin, areaFilter, cotizacion, monedaFinal,
                 <td className="px-2 py-2.5 w-24 text-right">
                     <input type="number" min="0" step="1"
                         placeholder="Punt."
-                        disabled={!puedoEditar}
+                        disabled={!puedoEditarValores}
                         value={line.DatoTecnico || ''}
                         onChange={e => handleDebouncedCalc({ ...line, DatoTecnico: e.target.value, PricingTrace: 'Calculando precio...' })}
                         className={`w-20 text-right text-sm font-mono border rounded-lg px-2 py-1 focus:outline-none focus:ring-2 focus:ring-indigo-400
-                            ${puedoEditar ? 'border-slate-200 bg-white hover:border-indigo-300' : 'border-transparent bg-transparent cursor-not-allowed text-slate-400'}`}
+                            ${puedoEditarValores ? 'border-slate-200 bg-white hover:border-indigo-300' : 'border-transparent bg-transparent cursor-not-allowed text-slate-400'}`}
                     />
                 </td>
             )}
@@ -261,7 +313,7 @@ function LineRow({ line, userArea, isAdmin, areaFilter, cotizacion, monedaFinal,
             {/* Precio Unit. */}
             <td className="px-2 py-2.5 w-24 text-right">
                 <input type="number" min="0" step="0.01"
-                    disabled={!puedoEditar}
+                    disabled={!puedoEditarValores}
                     value={line.PrecioUnitario}
                     onChange={e => {
                         const newP = e.target.value;
@@ -270,7 +322,7 @@ function LineRow({ line, userArea, isAdmin, areaFilter, cotizacion, monedaFinal,
                         onChange({ ...line, PrecioUnitario: newP, PrecioUnitarioOriginal: numP, SubtotalOriginal: qty * numP, PricingTrace: 'Edición manual' })
                     }}
                     className={`w-28 text-right text-sm font-mono border rounded-lg px-2 py-1 focus:outline-none focus:ring-2 focus:ring-indigo-400
-                        ${puedoEditar ? 'border-slate-200 bg-white hover:border-indigo-300 group-hover:border-slate-300' : 'border-transparent bg-transparent cursor-not-allowed text-slate-500'}`}
+                        ${puedoEditarValores ? 'border-slate-200 bg-white hover:border-indigo-300 group-hover:border-slate-300' : 'border-transparent bg-transparent cursor-not-allowed text-slate-500'}`}
                 />
             </td>
             {/* Subtotal Original */}
@@ -327,6 +379,12 @@ export default function QuotationEditModal({ noDocERP, onClose, onSaved, current
     const [cotizacion, setCotizacion] = useState(40); // Backup default
     const [allProducts, setAllProducts] = useState([]);
     const [recalculating, setRecalculating] = useState(false);
+    // "Comprar y personalizar": la línea de PRO trae, tal como vino del server, la suma de
+    // las hermanas YA horneada adentro (erpSyncService la consolida ahí). Para poder editar
+    // cada hermana con la producción real de su área y que el total de PRO lo refleje, hay
+    // que saber cuánto de PRO era "las hermanas" al momento de cargar — este ref guarda esa
+    // foto (en la moneda de PRO) y no cambia aunque el usuario edite después.
+    const sumaHermanasAlCargarRef = useRef(0);
 
     const userArea = currentUser?.AreaID || null;
     const isAdmin = !userArea || currentUser?.rol === 'ADMIN' || currentUser?.esAdmin;
@@ -345,7 +403,19 @@ export default function QuotationEditModal({ noDocERP, onClose, onSaved, current
         api.get(`/quotation/${encodeURIComponent(noDocERP)}`)
             .then(res => {
                 setCabecera(res.data.cabecera);
-                setLineas(res.data.detalle.map((l, i) => ({ ...l, _tempId: i })));
+                const detalle = res.data.detalle.map((l, i) => ({ ...l, _tempId: i }));
+                setLineas(detalle);
+
+                // Foto de "cuánto de PRO son las hermanas" al momento de cargar — ver
+                // declaración del ref para el porqué.
+                const proLinea = detalle.find(l => (l.AreaIDInterna || l.AreaID) === 'PRO');
+                const monedaPro = proLinea?.Moneda || 'UYU';
+                sumaHermanasAlCargarRef.current = detalle
+                    .filter(l => l.EsHermanaConsolidada)
+                    .reduce((acc, h) => acc + convertirMoneda(
+                        (parseFloat(h.Cantidad) || 0) * (parseFloat(h.PrecioUnitario) || 0),
+                        h.Moneda, monedaPro, cotizacion
+                    ), 0);
             })
             .catch(err => setError(err.response?.data?.error || err.message))
             .finally(() => setLoading(false));
@@ -481,7 +551,11 @@ export default function QuotationEditModal({ noDocERP, onClose, onSaved, current
     }, [lineas]);
 
     // Permisos y estados calculados
+    // "Comprar y personalizar": las líneas hermanas (EMB/DF/TPU/EST, EsHermanaConsolidada=1)
+    // son solo el DETALLE de lo que ya está sumado dentro de la línea de PRO — sumarlas de
+    // nuevo acá duplicaría el total que paga el cliente.
     const totalCalculadoFinal = lineas.reduce((acc, line) => {
+        if (line.EsHermanaConsolidada) return acc;
         const sub = (parseFloat(line.Cantidad) || 0) * (parseFloat(line.PrecioUnitario) || 0);
         if (monedaFinal === 'USD') {
             return acc + (line.Moneda === 'UYU' ? sub / (cotizacion || 40) : sub);
@@ -489,7 +563,19 @@ export default function QuotationEditModal({ noDocERP, onClose, onSaved, current
             return acc + (line.Moneda === 'USD' ? sub * (cotizacion || 40) : sub);
         }
     }, 0);
-    
+
+    // Total real a cobrar, reemplazando el aporte de PRO (que totalCalculadoFinal toma tal
+    // cual está guardado, con la foto VIEJA de las hermanas adentro) por PRO recalculado con
+    // la suma de hermanas EN VIVO — así una edición en la línea de DTF/TPU/EMB/EST (cantidad,
+    // dato técnico, precio) se refleja en el total sin tener que tocar la línea de PRO a mano.
+    const nuevoTotalConHermanas = useMemo(() => {
+        const rebake = rehornearLineaPro(lineas, cotizacion, sumaHermanasAlCargarRef.current);
+        if (!rebake) return totalCalculadoFinal; // pedido sin orden PRO: nada que rehornear
+        const proContribActualEnFinal = convertirMoneda(rebake.proSubtotalActual, rebake.monedaPro, monedaFinal, cotizacion);
+        const proContribRehorneadaEnFinal = convertirMoneda(rebake.subtotalRehorneado, rebake.monedaPro, monedaFinal, cotizacion);
+        return totalCalculadoFinal - proContribActualEnFinal + proContribRehorneadaEnFinal;
+    }, [lineas, cotizacion, monedaFinal, totalCalculadoFinal]);
+
     // We compare with a small epsilon to avoid float matching issues, however we are changing to USD
     // so we will always consider it a change if DB was in UYU. To simplify let's just allow save if valid.
     const hayDiferencia = lineas.length > 0;
@@ -499,7 +585,17 @@ export default function QuotationEditModal({ noDocERP, onClose, onSaved, current
         setError('');
         setSuccess('');
         try {
-            const payload = lineas.map(l => ({
+            // Antes de guardar, rehornear PRO con la suma de hermanas EN VIVO — si no,
+            // se persistiría el Subtotal viejo de PRO (con la foto de hermanas de cuando
+            // se abrió el modal) y los cambios de cantidad/dato técnico/precio en las
+            // líneas de área quedarían sin reflejarse en lo que realmente se cobra.
+            const rebake = rehornearLineaPro(lineas, cotizacion, sumaHermanasAlCargarRef.current);
+            const lineasParaGuardar = rebake
+                ? lineas.map(l => l._tempId === rebake.tempId
+                    ? { ...l, PrecioUnitario: rebake.precioUnitarioRehorneado, PrecioUnitarioOriginal: rebake.precioUnitarioRehorneado, SubtotalOriginal: rebake.subtotalRehorneado }
+                    : l)
+                : lineas;
+            const payload = lineasParaGuardar.map(l => ({
                 OrdenID: l.OrdenID,
                 CodArticulo: l.CodArticulo,
                 ProIdProducto: l.ProIdProducto,
@@ -512,7 +608,11 @@ export default function QuotationEditModal({ noDocERP, onClose, onSaved, current
                 MonedaOriginal: l.MonedaOriginal || l.Moneda || 'UYU',
                 PrecioUnitarioOriginal: parseFloat(l.PrecioUnitarioOriginal) || parseFloat(l.PrecioUnitario) || 0,
                 SubtotalOriginal: parseFloat(l.SubtotalOriginal) || ((parseFloat(l.Cantidad) || 0) * (parseFloat(l.PrecioUnitarioOriginal) || parseFloat(l.PrecioUnitario) || 0)),
-                DatoTecnico: parseFloat(l.DatoTecnico) || null
+                DatoTecnico: parseFloat(l.DatoTecnico) || null,
+                // Esta pantalla borra y re-inserta TODAS las líneas del pedido al guardar —
+                // hay que mandar de vuelta el flag tal cual vino, si no el guardado "aplana"
+                // la línea hermana a facturable y duplica el total.
+                EsHermanaConsolidada: !!l.EsHermanaConsolidada
             }));
             await api.put(`/quotation/${encodeURIComponent(noDocERP)}`, {
                 lineas: payload,
@@ -681,10 +781,13 @@ export default function QuotationEditModal({ noDocERP, onClose, onSaved, current
 
                     {/* Total calculado */}
                     {!loading && (
-                        <div className="flex justify-end mt-3">
+                        <div className="flex flex-col items-end gap-1 mt-3">
                             <div className={`px-5 py-2 rounded-xl border font-bold font-mono text-lg shadow-sm transition-colors text-emerald-800 bg-emerald-50 border-emerald-200`}>
-                                Nuevo Total: {monedaFinal} {totalCalculadoFinal.toFixed(2)}
+                                Nuevo Total: {monedaFinal} {nuevoTotalConHermanas.toFixed(2)}
                             </div>
+                            {lineas.some(l => l.EsHermanaConsolidada) && (
+                                <p className="text-[10px] text-slate-400 pr-1">Incluye las personalizaciones (DTF/TPU/EMB/EST) con los valores actuales de cada línea</p>
+                            )}
                         </div>
                     )}
                 </div>
@@ -846,10 +949,13 @@ export default function QuotationEditModal({ noDocERP, onClose, onSaved, current
 
                     {/* Total calculado */}
                     {!loading && (
-                        <div className="flex justify-end mt-3">
+                        <div className="flex flex-col items-end gap-1 mt-3">
                             <div className={`px-5 py-2 rounded-xl border font-bold font-mono text-lg shadow-sm transition-colors text-emerald-800 bg-emerald-50 border-emerald-200`}>
-                                Nuevo Total: {monedaFinal} {totalCalculadoFinal.toFixed(2)}
+                                Nuevo Total: {monedaFinal} {nuevoTotalConHermanas.toFixed(2)}
                             </div>
+                            {lineas.some(l => l.EsHermanaConsolidada) && (
+                                <p className="text-[10px] text-slate-400 pr-1">Incluye las personalizaciones (DTF/TPU/EMB/EST) con los valores actuales de cada línea</p>
+                            )}
                         </div>
                     )}
                 </div>

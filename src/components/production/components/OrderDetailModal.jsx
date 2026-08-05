@@ -6,6 +6,8 @@ import FileItem, { ActionButton } from './FileItem';
 import ReferenceItem from './ReferenceItem';
 import { toast } from 'sonner';
 import OrderRequirementsList from '../../logistics/OrderRequirementsList';
+// [PRO] Hoja de ruta del pedido (mismo tracker que la vista integral, con modo grafo PRENDAS)
+import OrderRouteTracker, { AREA_NAMES } from '../../orders/OrderRouteTracker';
 import { printLabelsHelper } from "../../../utils/printHelper";
 import { labelUbicacion } from "../../../utils/terminacionesGeo";
 import QuotationEditModal from '../../logistics/QuotationEditModal';
@@ -23,6 +25,10 @@ const Tpu3DViewer = React.lazy(() => import('../../../client-portal/modulos/Tpu3
 // Capas del arte TPU: son EXACTAMENTE estas, ni una más ni una menos. Espeja CAPAS_ARTE_TPU del
 // backend (ordersController) — el que manda es el backend, esto es UX para no dejar subir de más.
 const CAPAS_ARTE_TPU = 5;
+
+// [PRO] Costura/Bordado/Estampado: las únicas 3 áreas reordenables del flujo físico.
+// Mismo conjunto que backend/controllers/ordersController.js (updateOrderRoutePriority).
+const AREAS_REORDENABLES = ['TWT', 'EMB', 'EST'];
 
 const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) => {
     // Estado Pestañas
@@ -55,10 +61,47 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
         return area === 'SB' || /^SUB-/i.test(code);
     })();
     const isTPU = String(order?.area || order?.AreaID || currentOrder?.area || currentOrder?.AreaID || '').toUpperCase() === 'TPU';
+    const isEMB = String(order?.area || order?.AreaID || currentOrder?.area || currentOrder?.AreaID || '').toUpperCase() === 'EMB';
+    // DF/DTF: las órdenes armadas a mano desde "Comprar y personalizar" nacen sin ningún
+    // archivo (no vienen de un pedido web con arte ya adjunto) — necesitan el mismo
+    // dropzone manual que ya tiene TPU para poder subir el PDF/PLT de impresión.
+    const isDF = ['DF', 'DTF'].includes(String(order?.area || order?.AreaID || currentOrder?.area || currentOrder?.AreaID || '').toUpperCase());
+    // [PRO] Producción (prendas): gestiona a mano archivos de impresión y de referencia (con
+    // tipo). La Magnitud es la CANTIDAD DE PRENDAS del pedido — editable acá (recotiza el
+    // pedido); los archivos NO la tocan.
+    const isPRO = String(order?.area || order?.AreaID || currentOrder?.area || currentOrder?.AreaID || '').toUpperCase() === 'PRO';
     const [files, setFiles] = useState([]);
     const [uploadingTPU, setUploadingTPU] = useState(false);
     // Progreso de la subida TPU: % global ponderado por bytes + archivo en curso (para la barra).
     const [progresoTPU, setProgresoTPU] = useState(null); // { pct, actual, total } | null
+    // [BORDADO] Matriz de bordado (DST/EMB de Wilcom) — mismo endpoint que TPU, tipo distinto.
+    const [uploadingMatriz, setUploadingMatriz] = useState(false);
+    // [PRO] Referencias: catálogo de tipos + subida con tipo elegido.
+    const [tiposReferencia, setTiposReferencia] = useState([]);
+    const [refTipoSel, setRefTipoSel] = useState('REFERENCIA');
+    // [PRO] Cantidad a fabricar (Magnitud = cantidad de prendas del pedido, editable a mano).
+    const [editandoMagnitud, setEditandoMagnitud] = useState(false);
+    const [magnitudDraft, setMagnitudDraft] = useState('');
+    const [guardandoMagnitud, setGuardandoMagnitud] = useState(false);
+    // [PRO] Pedido completo (del integral): órdenes hermanas (para requisitos de todas
+    // las áreas) y ruta (para el tab Flujo del Pedido).
+    const [ordenesPedido, setOrdenesPedido] = useState([]);
+    const [rutaPedido, setRutaPedido] = useState([]);
+    // [PRO] Reordenar Costura/Bordado/Estampado: lista local editable con flechas, se
+    // sincroniza desde ordenesPedido cada vez que se recarga el pedido.
+    const [ordenReorder, setOrdenReorder] = useState([]);
+    const [guardandoOrden, setGuardandoOrden] = useState(false);
+    // [PRO] Modal de subida: se elige a QUÉ ORDEN/ÁREA del pedido se asocia el archivo.
+    // null | { categoria: 'impresion'|'referencia', ordenId }
+    const [uploadPRO, setUploadPRO] = useState(null);
+    const [subiendoPRO, setSubiendoPRO] = useState(false);
+    // [PRO] Copias del archivo de impresión (como las pide el portal al cliente).
+    const [copiasPRO, setCopiasPRO] = useState('1');
+    // Notas de producción — aditivas, tabla OrdenNotasProduccion (nunca se pisan).
+    const [notasProduccion, setNotasProduccion] = useState([]);
+    const [loadingNotas, setLoadingNotas] = useState(false);
+    const [nuevaNotaTexto, setNuevaNotaTexto] = useState('');
+    const [guardandoNota, setGuardandoNota] = useState(false);
     const [configEstados, setConfigEstados] = useState([]);
     const [loadingFiles, setLoadingFiles] = useState(false);
     const [labels, setLabels] = useState([]);
@@ -295,13 +338,20 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
         );
     };
 
-    // TPU: eliminar un archivo de arte (por si el operario se equivocó al subir). Borra la fila.
+    // TPU/DF: eliminar un archivo de arte subido a mano (por si el operario se equivocó al
+    // subir) — borra la fila entera, a diferencia del resto de las áreas que solo cancelan
+    // (EstadoArchivo='CANCELADO', conservan el historial). TPU y DF suben el archivo desde
+    // esta misma ficha (nace sin nada, no viene de un pedido web), así que corregir un
+    // error de carga es al toque, no una excepción a auditar.
     const handleDeleteFileTPU = async (fileId) => {
         // Modal propio en vez del confirm() del navegador: el nativo se dibuja pegado al borde de
         // la ventana, fuera del modal de la orden, y no se puede leer como parte de la pantalla.
         const r = await Swal.fire({
-            title: '¿Eliminar el boceto?',
-            html: 'Se borra el archivo de la orden. <b>No se puede deshacer.</b><br/>Después vas a poder subir uno nuevo.',
+            title: '¿Eliminar el archivo?',
+            html: isPRO
+                // [PRO] Los archivos no tocan cantidad/cotización — decirlo para que no queden dudas.
+                ? 'Se borra el archivo de la orden. <b>No se puede deshacer.</b><br/>No cambia la cantidad a fabricar ni la cotización.'
+                : 'Se borra el archivo de la orden. <b>No se puede deshacer.</b><br/>Después vas a poder subir uno nuevo.',
             icon: 'warning',
             showCancelButton: true,
             confirmButtonText: 'Sí, eliminar',
@@ -349,6 +399,9 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
         const esProduccion = f.Categoria === 'produccion' || (!f.Categoria && !servTypes.includes(normalizeType(f.tipo)));
         if (!esProduccion) return false;
         if (isRepoOrder) return true;
+        // [PRO] La orden madre administra el pedido: se ven los archivos de TODAS las
+        // hermanas (cada uno etiquetado con su área/orden en la lista).
+        if (isPRO) return true;
         return String(f.OrdenID) === String(currentOrder?.id);
     });
 
@@ -360,7 +413,12 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
     // MUESTRA en la pestaña de Referencias (debajo del boceto del cliente) con su propio tag — es el
     // que el cliente ve en el portal para aprobar (el backend filtra por 'boceto' con fallback a cmyk).
     const esBocetoProduccion = (f) => isTPU && /boceto/i.test(String(f.nombre || f.NombreArchivo || ''));
-    const printFilesVista = productionFiles.filter(f => !esBocetoProduccion(f));
+    // [BORDADO] La matriz (DST/EMB) es un binario de máquina, no un arte imprimible —
+    // se saca de la vista de "Archivos de Impresión" (rompería el visor de PDF) y se
+    // muestra aparte, mismo criterio que el boceto de TPU.
+    const esMatrizBordado = (f) => isEMB && (String(f.tipo || f.TipoArchivo || '').toUpperCase() === 'MATRIZ');
+    const matrizFiles = productionFiles.filter(esMatrizBordado);
+    const printFilesVista = productionFiles.filter(f => !esBocetoProduccion(f) && !esMatrizBordado(f));
     const bocetosProduccion = productionFiles.filter(esBocetoProduccion);
 
     // Fase BOCETO del flujo TPU: el cliente todavía no aprobó → lo único que se sube es el boceto
@@ -417,9 +475,10 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
             validos = /boceto/i.test(f.name || '')
                 ? [f]
                 : [new File([f], `BOCETO-${f.name}`, { type: f.type })];
-        } else if (yaHayArte + validos.length > CAPAS_ARTE_TPU) {
+        } else if (!isPRO && yaHayArte + validos.length > CAPAS_ARTE_TPU) {
             // El arte son CAPAS_ARTE_TPU capas exactas (sin contar las canceladas). Acá es tope
             // porque se suben de a poco; el "ni una menos" se exige al enviar.
+            // [PRO] Producción no tiene tope: cada archivo es un arte que suma unidades a la Magnitud.
             return toast.error(`El arte son ${CAPAS_ARTE_TPU} archivos, ni más ni menos (ya hay ${yaHayArte}).`);
         }
         if (!currentOrder?.id) return;
@@ -446,6 +505,238 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
         } finally {
             setUploadingTPU(false);
             setProgresoTPU(null);
+        }
+    };
+
+    // [BORDADO] Subir la matriz de bordado (DST/EMB, exportado de Wilcom) — un solo
+    // archivo, no cuenta contra el máximo de 6 archivos de arte, y al subirse cumple
+    // solo el requisito bloqueante "Matriz/Archivo de Bordado".
+    const handleUploadMatrizFile = async (fileList) => {
+        const file = (fileList || [])[0];
+        if (!file) return;
+        const n = (file.name || '').toLowerCase();
+        if (!n.endsWith('.dst') && !n.endsWith('.emb')) {
+            return toast.error('Solo se permiten archivos DST o EMB.');
+        }
+        if (!currentOrder?.id) return;
+        setUploadingMatriz(true);
+        try {
+            await ordersService.uploadProductionFile(currentOrder.id, file, null, 'MATRIZ');
+            toast.success('Matriz de bordado subida.');
+            loadData(currentOrder.id, currentOrder.area);
+            onOrderUpdated?.();
+        } catch (e) {
+            toast.error('Error al subir la matriz: ' + (e?.response?.data?.error || e?.message || ''));
+        } finally {
+            setUploadingMatriz(false);
+        }
+    };
+
+    // [PRO] Catálogo de tipos de referencia: se carga al abrir la pestaña o el modal de subida.
+    useEffect(() => {
+        if (!isPRO || tiposReferencia.length > 0) return;
+        if (activeTab !== 'refs' && uploadPRO?.categoria !== 'referencia') return;
+        ordersService.getTiposReferencia()
+            .then(res => {
+                const data = res?.data || [];
+                setTiposReferencia(data);
+                if (data.length && !data.some(t => t.Codigo === refTipoSel)) setRefTipoSel(data[0].Codigo);
+            })
+            .catch(e => console.error('Error cargando tipos de referencia:', e));
+    }, [isPRO, activeTab, uploadPRO, tiposReferencia.length]);
+
+    // [PRO] Órdenes del pedido elegibles como destino de una subida (hermanas de todas
+    // las áreas). Si el integral no cargó, al menos la orden actual.
+    const ordenesDestinoPRO = ordenesPedido.length > 0
+        ? ordenesPedido
+        : (currentOrder ? [{ OrdenID: currentOrder.id, CodigoOrden: currentOrder.code, AreaID: currentOrder.area }] : []);
+
+    // [PRO] Subida desde el modal: los archivos van a la ORDEN/ÁREA elegida en el selector
+    // (impresión → ArchivosOrden de esa orden; referencia → ArchivosReferencia con el tipo).
+    const handleUploadPRO = async (fileList) => {
+        const archivos = Array.from(fileList || []);
+        if (archivos.length === 0 || !uploadPRO?.ordenId) return;
+        if (uploadPRO.categoria === 'impresion') {
+            const invalidos = archivos.filter(f => {
+                const n = (f.name || '').toLowerCase();
+                return !(n.endsWith('.pdf') || n.endsWith('.plt') || f.type === 'application/pdf');
+            });
+            if (invalidos.length > 0) return toast.error('Solo se permiten archivos PDF o PLT para impresión.');
+        }
+        const copias = Math.max(1, parseInt(copiasPRO, 10) || 1);
+        const ordenSel = ordenesDestinoPRO.find(o => String(o.OrdenID) === String(uploadPRO.ordenId));
+        const etiquetaDestino = ordenSel ? `${ordenSel.AreaID} (${ordenSel.CodigoOrden})` : 'la orden elegida';
+        setSubiendoPRO(true);
+        try {
+            for (const f of archivos) {
+                if (uploadPRO.categoria === 'impresion') {
+                    // procesarPortal: el backend lo mide/renombra igual que una subida del
+                    // portal del cliente y recotiza el pedido con la nueva medida.
+                    await ordersService.uploadProductionFile(uploadPRO.ordenId, f, null, 'Impresion', {
+                        copias: String(copias),
+                        procesarPortal: '1',
+                    });
+                } else {
+                    await ordersService.uploadReferenceFile(uploadPRO.ordenId, f, refTipoSel);
+                }
+            }
+            toast.success(`${archivos.length} archivo(s) subido(s) a ${etiquetaDestino}.`);
+            setUploadPRO(null);
+            reloadFiles();
+            onOrderUpdated?.();
+        } catch (e) {
+            toast.error('Error al subir: ' + (e?.response?.data?.error || e?.message || ''));
+        } finally {
+            setSubiendoPRO(false);
+        }
+    };
+
+    // [PRO] Guardar la cantidad a fabricar: actualiza Ordenes.Magnitud y recotiza el pedido.
+    const handleGuardarMagnitud = async () => {
+        const cant = parseFloat(magnitudDraft);
+        if (isNaN(cant) || cant <= 0) return toast.error('Ingresá una cantidad mayor a 0.');
+        if (!currentOrder?.id) return;
+        setGuardandoMagnitud(true);
+        try {
+            await ordersService.updateMagnitud(currentOrder.id, cant);
+            toast.success(`Cantidad a fabricar: ${cant}. Se recalculó la cotización del pedido.`);
+            setEditandoMagnitud(false);
+            reloadFiles();
+            onOrderUpdated?.();
+        } catch (e) {
+            toast.error('Error al guardar la cantidad: ' + (e?.response?.data?.error || e?.message || ''));
+        } finally {
+            setGuardandoMagnitud(false);
+        }
+    };
+
+    // [PRO] Reordenar Costura/Bordado/Estampado: derivar el orden ACTUAL de ordenesPedido
+    // caminando la cadena de ProximoServicio entre esas 3 áreas (las que estén activas).
+    useEffect(() => {
+        const activas = (ordenesPedido || []).filter(o => AREAS_REORDENABLES.includes(String(o.AreaID || '').toUpperCase()));
+        if (activas.length < 2) { setOrdenReorder([]); return; }
+        const porArea = {};
+        activas.forEach(o => { porArea[String(o.AreaID).toUpperCase()] = o; });
+        const targets = new Set(activas.map(o => (o.ProximoServicio || '').toString().trim().toUpperCase()));
+        let actual = activas.find(o => !targets.has(String(o.AreaID).toUpperCase()));
+        const ordenados = [];
+        const vistos = new Set();
+        while (actual && !vistos.has(actual.AreaID)) {
+            ordenados.push(actual);
+            vistos.add(actual.AreaID);
+            const next = (actual.ProximoServicio || '').toString().trim().toUpperCase();
+            actual = porArea[next];
+        }
+        // Por si la cadena no cierra prolijo (datos viejos): completar con lo que falte, sin perder nada.
+        activas.forEach(o => { if (!vistos.has(String(o.AreaID).toUpperCase())) ordenados.push(o); });
+        setOrdenReorder(ordenados);
+    }, [ordenesPedido]);
+
+    const puedeReordenarFlujo = ordenReorder.length >= 2 && ordenReorder.every(o => ['Cargando...', 'Pendiente'].includes(o.Estado));
+    const ordenFlujoCambio = ordenReorder.some((o, i) => {
+        const activas = (ordenesPedido || []).filter(x => AREAS_REORDENABLES.includes(String(x.AreaID || '').toUpperCase()));
+        return activas[i] && activas[i].AreaID !== o.AreaID;
+    });
+
+    const moveOrdenFlujo = (idx, dir) => {
+        if (dir === 'up' && idx === 0) return;
+        if (dir === 'down' && idx === ordenReorder.length - 1) return;
+        const swapIdx = dir === 'up' ? idx - 1 : idx + 1;
+        const next = [...ordenReorder];
+        [next[idx], next[swapIdx]] = [next[swapIdx], next[idx]];
+        setOrdenReorder(next);
+    };
+
+    const handleGuardarOrdenFlujo = async () => {
+        if (!currentOrder?.id) return;
+        setGuardandoOrden(true);
+        try {
+            await ordersService.updateRoutePriority(currentOrder.id, ordenReorder.map(o => o.AreaID));
+            toast.success('Orden del flujo actualizado.');
+            reloadFiles();
+            onOrderUpdated?.();
+        } catch (e) {
+            toast.error('Error al reordenar: ' + (e?.response?.data?.error || e?.message || ''));
+        } finally {
+            setGuardandoOrden(false);
+        }
+    };
+
+    // [PRO] Borrar un archivo de referencia (solo la referencia: no toca magnitud ni cotización).
+    const handleDeleteReferencia = async (refId, nombre) => {
+        const r = await Swal.fire({
+            title: '¿Eliminar la referencia?',
+            html: `Se borra <b>${nombre || 'el archivo'}</b> de las referencias del pedido. <b>No se puede deshacer.</b><br/>No cambia la magnitud ni la cotización.`,
+            icon: 'warning',
+            showCancelButton: true,
+            confirmButtonText: 'Sí, eliminar',
+            cancelButtonText: 'Cancelar',
+            confirmButtonColor: '#dc2626',
+            cancelButtonColor: '#71717a',
+            customClass: { container: '!z-[99999]' },
+        });
+        if (!r.isConfirmed) return;
+        toast.promise(
+            ordersService.deleteReferenceFile(refId),
+            {
+                loading: 'Eliminando...',
+                success: () => { reloadFiles(); return 'Referencia eliminada'; },
+                error: (e) => 'Error al eliminar: ' + (e?.response?.data?.error || e?.message || '')
+            }
+        );
+    };
+
+    // Notas de producción: aditivas, se cargan al abrir la orden y se pueden agregar
+    // desde cualquier área — cada una queda como fila propia, nunca se pisan entre sí.
+    const loadNotas = async () => {
+        if (!currentOrder?.id) return;
+        setLoadingNotas(true);
+        try {
+            const data = await ordersService.getOrderNotes(currentOrder.id);
+            setNotasProduccion(data || []);
+        } catch (e) {
+            console.error('Error cargando notas de producción', e);
+        } finally {
+            setLoadingNotas(false);
+        }
+    };
+
+    useEffect(() => {
+        if (currentOrder?.id) loadNotas();
+    }, [currentOrder?.id]);
+
+    const handleAgregarNota = async () => {
+        const texto = nuevaNotaTexto.trim();
+        if (!texto || !currentOrder?.id) return;
+        setGuardandoNota(true);
+        try {
+            const res = await ordersService.addOrderNote(currentOrder.id, texto);
+            if (res.success && res.data) {
+                setNotasProduccion(prev => [res.data, ...prev]);
+                setNuevaNotaTexto('');
+            }
+        } catch (e) {
+            toast.error('Error al agregar la nota: ' + (e?.response?.data?.error || e?.message || ''));
+        } finally {
+            setGuardandoNota(false);
+        }
+    };
+
+    // TPU: el operario corrige la textura de una zona. Se manda SOLO esa zona: el backend no toca
+    // las demás, así que las que eligió el cliente conservan su marca.
+    const handleCambiarTextura = async (zonaIndice, archivo) => {
+        if (!currentOrder?.id) return;
+        setGuardandoTextura(true);
+        try {
+            await ordersService.setTexturasOrden(currentOrder.id, { [zonaIndice]: archivo });
+            const t = await ordersService.getTexturasOrden(currentOrder.id);
+            setTexturasOrden(t?.data || []);
+            setZonaEditando(null);
+            toast.success(`Zona ${zonaIndice + 1} actualizada.`);
+        } catch (e) {
+            toast.error('Error: ' + (e?.response?.data?.error || e?.message || ''));
+        } finally {
+            setGuardandoTextura(false);
         }
     };
 
@@ -536,6 +827,10 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
                     const refCode = data.code || data.codigoOrden || data.NoDocERP;
                     if (refCode) {
                         ordersService.getIntegralDetails(refCode).then(integralData => {
+                            // [PRO] Guardar el pedido completo: hermanas (requisitos de todas
+                            // las áreas) y ruta (tab Flujo del Pedido).
+                            setOrdenesPedido(integralData?.ordenes || []);
+                            setRutaPedido(integralData?.ruta || []);
                             if (integralData && integralData.archivos) {
                                 // Código de la orden de cada archivo: el modal muestra los archivos de TODAS
                                 // las órdenes del pedido, así que sin esto no se puede distinguir cuáles vienen
@@ -568,6 +863,9 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
                             setFiles([]);
                         }).finally(() => setLoadingFiles(false));
                     } else {
+                        // Sin NoDocERP no hay pedido integral: limpiar hermanas/ruta.
+                        setOrdenesPedido([]);
+                        setRutaPedido([]);
                         Promise.all([
                             ordersService.getReferences(orderId).catch(e => []),
                             ordersService.getServices(orderId).catch(e => [])
@@ -965,13 +1263,15 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
                     {rawStatus}
                 </div>
 
-                {isEditing && !f.readonly && !readOnly ? (
+                {isEditing && (!f.readonly || isPRO) && !readOnly ? (
                     <div className="flex gap-1 animate-in zoom-in-95 duration-200">
                         <ActionButton icon="fa-check" color="emerald" onClick={saveEditing} title="Guardar Cambios" />
                         <ActionButton icon="fa-xmark" color="zinc" onClick={() => setEditingFileId(null)} title="Cancelar" />
                     </div>
                 ) : (
-                    !isCancelled && !isOrderCancelled && !f.readonly && !readOnly && (
+                    // [PRO] La orden madre administra el pedido: puede editar/borrar también los
+                    // archivos de las hermanas (llegan con readonly=true por ser de otra orden).
+                    !isCancelled && !isOrderCancelled && (!f.readonly || isPRO) && !readOnly && (
                         <div className='flex gap-1'>
                             <ActionButton
                                 icon="fa-pen"
@@ -979,7 +1279,25 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
                                 onClick={() => startEditing({ ...f, id: fileId })}
                                 title="Editar Dimensiones y Cantidad"
                             />
-                            {isTPU ? (
+                            {/* [PRO] Único caso que cambia: administra archivos de verdad, así que
+                                tiene Eliminar (borrado físico) ADEMÁS de Cancelar. El resto de las
+                                áreas (TPU, DF, etc.) sigue exactamente igual que en producción — no se toca. */}
+                            {isPRO ? (
+                                <>
+                                    <ActionButton
+                                        icon="fa-trash"
+                                        color="red"
+                                        onClick={() => handleDeleteFileTPU(fileId)}
+                                        title="Eliminar archivo"
+                                    />
+                                    <ActionButton
+                                        icon="fa-ban"
+                                        color="red"
+                                        onClick={() => startCancellingFile({ ...f, id: fileId })}
+                                        title="Cancelar Archivo"
+                                    />
+                                </>
+                            ) : isTPU ? (
                                 <ActionButton
                                     icon="fa-trash"
                                     color="red"
@@ -1014,6 +1332,98 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
                 onConfirm={handleLiberarFalla}
                 loading={liberandoFalla}
             />
+
+            {/* [PRO] Modal de subida: elegir a QUÉ orden/área del pedido se asocia el archivo
+                (y el tipo, si es una referencia) antes de elegir el archivo. */}
+            {uploadPRO && (
+                <div className="fixed inset-0 z-[99998] flex items-center justify-center bg-slate-900/50 p-4 animate-in fade-in duration-200">
+                    <div className="bg-white rounded-xl shadow-2xl w-full max-w-md overflow-hidden border border-zinc-200 animate-in zoom-in-95 duration-200">
+                        <div className="px-4 py-3 bg-brand-cyan/10 border-b border-brand-cyan/20 flex justify-between items-center">
+                            <h3 className="font-bold text-zinc-800 text-sm flex items-center gap-2">
+                                <i className={`fa-solid ${uploadPRO.categoria === 'impresion' ? 'fa-layer-group' : 'fa-paperclip'} text-brand-cyan`}></i>
+                                {uploadPRO.categoria === 'impresion' ? 'Subir archivo de impresión' : 'Subir archivo de referencia'}
+                            </h3>
+                            <button
+                                onClick={() => setUploadPRO(null)}
+                                disabled={subiendoPRO}
+                                className="text-zinc-400 hover:text-red-500 w-7 h-7 flex items-center justify-center rounded-full hover:bg-zinc-100 transition-colors"
+                            ><i className="fa-solid fa-xmark"></i></button>
+                        </div>
+                        <div className="p-4 space-y-3">
+                            <div>
+                                <label className="text-[10px] font-black uppercase tracking-wider text-zinc-400 block mb-1">
+                                    ¿A qué orden / área del pedido va el archivo?
+                                </label>
+                                <select
+                                    value={uploadPRO.ordenId}
+                                    onChange={e => setUploadPRO(prev => ({ ...prev, ordenId: e.target.value }))}
+                                    disabled={subiendoPRO}
+                                    className="w-full text-sm font-bold text-zinc-700 border border-zinc-200 rounded-lg px-2 py-2 bg-white focus:outline-none focus:border-brand-cyan"
+                                >
+                                    {ordenesDestinoPRO.map(o => (
+                                        <option key={o.OrdenID} value={o.OrdenID}>
+                                            {o.AreaID} — {o.CodigoOrden}
+                                        </option>
+                                    ))}
+                                </select>
+                                <p className="text-[10px] text-zinc-400 mt-1">
+                                    El archivo queda asociado a esa orden y lo ve esa área.
+                                </p>
+                            </div>
+                            {uploadPRO.categoria === 'impresion' && (
+                                <div>
+                                    <label className="text-[10px] font-black uppercase tracking-wider text-zinc-400 block mb-1">Copias</label>
+                                    <input
+                                        type="number" min="1" step="1"
+                                        value={copiasPRO}
+                                        onChange={e => setCopiasPRO(e.target.value)}
+                                        disabled={subiendoPRO}
+                                        className="w-full text-sm font-bold text-zinc-700 border border-zinc-200 rounded-lg px-2 py-2 bg-white focus:outline-none focus:border-brand-cyan"
+                                    />
+                                    <p className="text-[10px] text-zinc-400 mt-1">
+                                        Cuántas copias de este archivo se imprimen (igual que lo carga el cliente en el portal). Las medidas del PDF se calculan solas al subirlo y actualizan la cotización del área destino.
+                                    </p>
+                                </div>
+                            )}
+                            {uploadPRO.categoria === 'referencia' && (
+                                <div>
+                                    <label className="text-[10px] font-black uppercase tracking-wider text-zinc-400 block mb-1">Tipo de archivo</label>
+                                    <select
+                                        value={refTipoSel}
+                                        onChange={e => setRefTipoSel(e.target.value)}
+                                        disabled={subiendoPRO}
+                                        className="w-full text-sm font-bold text-zinc-700 border border-zinc-200 rounded-lg px-2 py-2 bg-white focus:outline-none focus:border-brand-cyan"
+                                    >
+                                        {(tiposReferencia.length ? tiposReferencia : [{ Codigo: 'REFERENCIA', Nombre: 'Referencia General' }]).map(t => (
+                                            <option key={t.Codigo} value={t.Codigo}>{t.Nombre}</option>
+                                        ))}
+                                    </select>
+                                </div>
+                            )}
+                            <label className={`relative overflow-hidden flex items-center justify-center gap-2 py-4 rounded-xl border-2 border-dashed transition-colors ${subiendoPRO ? 'border-brand-cyan/30 text-brand-cyan pointer-events-none' : 'border-brand-cyan/40 text-brand-cyan hover:bg-brand-cyan/5 cursor-pointer'}`}>
+                                <i className={`fa-solid ${subiendoPRO ? 'fa-circle-notch fa-spin' : 'fa-file-arrow-up'}`}></i>
+                                <span className="text-xs font-bold uppercase tracking-wide">
+                                    {subiendoPRO
+                                        ? 'Subiendo...'
+                                        : uploadPRO.categoria === 'impresion'
+                                            ? 'Elegir archivo(s) PDF / PLT y subir'
+                                            : 'Elegir archivo(s) y subir'}
+                                </span>
+                                <input type="file" multiple className="hidden" disabled={subiendoPRO}
+                                    accept={uploadPRO.categoria === 'impresion' ? 'application/pdf,.pdf,.plt' : undefined}
+                                    onChange={(e) => { handleUploadPRO(e.target.files); e.target.value = ''; }} />
+                            </label>
+                        </div>
+                        <div className="px-4 py-3 bg-zinc-50 border-t border-zinc-100 flex justify-end">
+                            <button
+                                onClick={() => setUploadPRO(null)}
+                                disabled={subiendoPRO}
+                                className="px-4 py-1.5 text-xs font-bold text-zinc-500 hover:text-zinc-700"
+                            >Cancelar</button>
+                        </div>
+                    </div>
+                </div>
+            )}
             <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4 sm:p-6">
 
             <div
@@ -1171,8 +1581,10 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
                     <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3 mb-6 bg-zinc-50 p-4 rounded-xl border border-zinc-100 shadow-sm">
 
                         <div className="md:col-span-2 lg:col-span-2">
-                            <label className="text-[10px] uppercase font-bold text-zinc-400 block mb-1">Material / Sustrato</label>
+                            {/* [PRO] La orden es FABRICAR un producto: el label lo dice explícito */}
+                            <label className="text-[10px] uppercase font-bold text-zinc-400 block mb-1">{isPRO ? 'Producto a Fabricar' : 'Material / Sustrato'}</label>
                             <div className="font-semibold text-zinc-700 text-sm leading-tight">
+                                {isPRO && <span className="text-brand-cyan font-black uppercase mr-1">Fabricar:</span>}
                                 {currentOrder.variant || currentOrder.material || '-'}
                                 {/* La medida que eligió el cliente para el parche viaja en la nota como
                                     "[Medida: alto x ancho cm]" (OrderForm del portal): el alto/ancho de
@@ -1185,7 +1597,34 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
                         </div>
 
                         <div>
-                            <label className="text-[10px] uppercase font-bold text-zinc-400 block mb-1">Magnitud Global</label>
+                            <label className="text-[10px] uppercase font-bold text-zinc-400 block mb-1">{isPRO ? 'Cantidad a Fabricar' : 'Magnitud Global'}</label>
+                            {/* [PRO] La cantidad de prendas se edita ACÁ (lápiz): guarda Ordenes.Magnitud
+                                y recotiza el pedido completo. Los archivos no la tocan. */}
+                            {isPRO && editandoMagnitud ? (
+                                <div className="flex items-center gap-1">
+                                    <input
+                                        type="number" min="1" step="1" autoFocus
+                                        value={magnitudDraft}
+                                        onChange={e => setMagnitudDraft(e.target.value)}
+                                        onKeyDown={e => { if (e.key === 'Enter') handleGuardarMagnitud(); if (e.key === 'Escape') setEditandoMagnitud(false); }}
+                                        className="w-20 text-lg font-black text-brand-cyan border border-brand-cyan/40 rounded-lg px-2 py-0.5 focus:outline-none focus:ring-2 focus:ring-brand-cyan/20 bg-white"
+                                        disabled={guardandoMagnitud}
+                                    />
+                                    <span className="text-xs font-bold text-zinc-500">{currentOrder.UM || currentOrder.unit || 'u'}</span>
+                                    <button
+                                        onClick={handleGuardarMagnitud}
+                                        disabled={guardandoMagnitud}
+                                        className="w-7 h-7 rounded-md bg-emerald-50 border border-emerald-200 text-emerald-600 hover:bg-emerald-100 flex items-center justify-center shadow-sm disabled:opacity-50"
+                                        title="Guardar la cantidad y recalcular la cotización del pedido"
+                                    ><i className={`fa-solid ${guardandoMagnitud ? 'fa-circle-notch fa-spin' : 'fa-check'} text-xs`}></i></button>
+                                    <button
+                                        onClick={() => setEditandoMagnitud(false)}
+                                        disabled={guardandoMagnitud}
+                                        className="w-7 h-7 rounded-md bg-white border border-zinc-200 text-zinc-400 hover:text-zinc-600 flex items-center justify-center shadow-sm"
+                                        title="Cancelar sin guardar"
+                                    ><i className="fa-solid fa-xmark text-xs"></i></button>
+                                </div>
+                            ) : (
                             <div className="font-black text-brand-cyan text-lg leading-none">
                                 {(() => {
                                     // TPU no se recalcula: su Magnitud es la CANTIDAD PEDIDA en
@@ -1193,7 +1632,8 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
                                     // del arte (sin metros) y su único servicio extra es la matriz,
                                     // con Cantidad 1 — sumar eso mostraba "1.00 U" en una orden de 15.
                                     // Mismo criterio que el backend (recalculateOrderMagnitude).
-                                    if (isTPU) return currentOrder.magnitude || '0';
+                                    // [PRO] ídem: la Magnitud es la cantidad de prendas del pedido.
+                                    if (isTPU || isPRO) return currentOrder.magnitude || '0';
 
                                     // 1. Suma de Producción
                                     const prodTotal = productionFiles.reduce((acc, f) => {
@@ -1202,10 +1642,12 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
                                         return acc + ((parseFloat(f.copias || f.Copias || 1)) * (parseFloat(f.metros || f.width || f.Metros || 0)));
                                     }, 0);
 
-                                    // 2. Suma de Servicios Extras
-                                    const servTotal = serviceFiles.reduce((acc, s) => {
-                                        return acc + (parseFloat(s.copias || s.Cantidad || 0));
-                                    }, 0);
+                                    // 2. Suma de Servicios Extras — SOLO de esta orden, no de sus
+                                    // hermanas del pedido (serviceFiles trae el grupo entero, igual
+                                    // que productionFiles antes de filtrar por currentOrder.id).
+                                    const servTotal = serviceFiles
+                                        .filter(s => String(s.OrdenID) === String(currentOrder?.id))
+                                        .reduce((acc, s) => acc + (parseFloat(s.copias || s.Cantidad || 0)), 0);
 
                                     // 3. Total Real
                                     const totalMag = prodTotal + servTotal;
@@ -1214,7 +1656,15 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
                                     return totalMag > 0 ? totalMag.toFixed(2) : (currentOrder.magnitude || '0');
                                 })()}
                                 <span className="text-xs font-bold text-zinc-500 ml-1">{currentOrder.UM || currentOrder.unit || ''}</span>
+                                {isPRO && !readOnly && (
+                                    <button
+                                        onClick={() => { setMagnitudDraft(String(parseFloat(currentOrder.magnitude) || '')); setEditandoMagnitud(true); }}
+                                        className="ml-2 w-6 h-6 rounded-md bg-white border border-zinc-200 text-zinc-400 hover:text-brand-cyan hover:border-brand-cyan/40 inline-flex items-center justify-center shadow-sm align-middle"
+                                        title="Editar la cantidad de prendas a fabricar (recalcula la cotización del pedido)"
+                                    ><i className="fa-solid fa-pen text-[10px]"></i></button>
+                                )}
                             </div>
+                            )}
                         </div>
 
                         <div>
@@ -1324,8 +1774,13 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
                                 ...(terminacionesOrden.length > 0 ? [{ id: 'terminaciones', label: 'Terminaciones', count: terminacionesOrden.length, icon: 'fa-scissors' }] : []),
                                 { id: 'refs', label: 'Archivos de Referencia', count: referenceFiles.length + bocetosProduccion.length + (isSB ? fallaImages.length : 0), icon: 'fa-paperclip' },
                                 { id: 'services', label: 'Cotizar Productos', count: serviceFiles.length, icon: 'fa-box-open' },
-                                { id: 'labels', label: 'Etiquetas', count: labels.length, icon: 'fa-tags' },
-                                { id: 'reqs', label: 'Requisitos', count: 0, icon: 'fa-list-check' }
+                                // [PRO] Sin Etiquetas (los bultos se gestionan en las áreas físicas);
+                                // en su lugar, el Flujo del Pedido (hoja de ruta de todas las áreas).
+                                ...(isPRO
+                                    ? [{ id: 'flujo', label: 'Flujo del Pedido', count: rutaPedido.length, icon: 'fa-timeline' }]
+                                    : [{ id: 'labels', label: 'Etiquetas', count: labels.length, icon: 'fa-tags' }]),
+                                { id: 'reqs', label: 'Requisitos', count: 0, icon: 'fa-list-check' },
+                                { id: 'notas', label: 'Notas', count: notasProduccion.length, icon: 'fa-comment-dots' }
                             ].map(tab => (
                                 <button
                                     key={tab.id}
@@ -1416,15 +1871,148 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
                                     <div className="bg-brand-cyan/10 border border-brand-cyan/20 p-3 rounded-lg flex gap-3 text-brand-cyan text-sm mb-4">
                                         <i className="fa-solid fa-circle-info mt-0.5"></i>
                                         <p>
-                                            Verifique que los materiales para <b>{currentOrder.area}</b> estén listos.
+                                            {isPRO
+                                                ? <>Requisitos de <b>todas las áreas del pedido</b> (una sección por orden).</>
+                                                : <>Verifique que los materiales para <b>{currentOrder.area}</b> estén listos.</>}
                                             <br />
                                             Los elementos <span className="font-bold text-green-600">Verdes</span> ya están disponibles.
                                         </p>
                                     </div>
-                                    <OrderRequirementsList
-                                        ordenId={currentOrder.id}
-                                        areaId={currentOrder.area}
-                                    />
+                                    {isPRO ? (
+                                        /* [PRO] Un bloque de requisitos por cada orden del pedido (todas las
+                                           áreas). Si un área no tiene requisitos configurados, su bloque
+                                           no muestra nada (OrderRequirementsList devuelve null). */
+                                        ordenesDestinoPRO.map(o => (
+                                            <div key={o.OrdenID} className="mb-3">
+                                                <div className="text-[11px] font-black uppercase tracking-wider text-zinc-500 mb-1 flex items-center gap-2">
+                                                    <i className="fa-solid fa-industry text-zinc-300"></i>
+                                                    {o.AreaID} <span className="font-mono text-zinc-400">{o.CodigoOrden}</span>
+                                                </div>
+                                                <OrderRequirementsList
+                                                    ordenId={o.OrdenID}
+                                                    areaId={o.AreaID}
+                                                />
+                                            </div>
+                                        ))
+                                    ) : (
+                                        <OrderRequirementsList
+                                            ordenId={currentOrder.id}
+                                            areaId={currentOrder.area}
+                                        />
+                                    )}
+                                </div>
+                            )}
+
+                            {/* [PRO] PESTAÑA: FLUJO DEL PEDIDO — hoja de ruta de todas las áreas
+                                (mismo tracker que la vista integral, con la ruta del pedido). */}
+                            {activeTab === 'flujo' && isPRO && (
+                                <div className="p-1">
+                                    {/* [PRO] Reordenar Costura/Bordado/Estampado: solo si el pedido tiene
+                                        2 o más de esas áreas activas. Sublimación y Corte quedan siempre
+                                        fijas al principio — no aparecen acá. */}
+                                    {ordenReorder.length >= 2 && (
+                                        <div className="mb-6 bg-white border border-zinc-200 rounded-xl p-4">
+                                            <h4 className="text-sm font-bold text-zinc-700 mb-1 flex items-center gap-2">
+                                                <i className="fa-solid fa-arrow-down-up-across-line text-brand-cyan"></i>
+                                                Reordenar Costura / Bordado / Estampado
+                                            </h4>
+                                            {!puedeReordenarFlujo ? (
+                                                <p className="text-xs text-amber-600 font-bold mb-3">
+                                                    La producción ya avanzó — no se puede reordenar.
+                                                </p>
+                                            ) : (
+                                                <p className="text-xs text-zinc-400 mb-3">
+                                                    Definí en qué orden se hace cada paso. Solo se puede cambiar mientras ninguno arrancó.
+                                                </p>
+                                            )}
+                                            <div className="space-y-1.5">
+                                                {ordenReorder.map((o, idx) => (
+                                                    <div key={o.OrdenID} className="flex items-center gap-2 bg-zinc-50 border border-zinc-200 rounded-lg px-3 py-2">
+                                                        <span className="text-xs font-black text-zinc-400 w-5">{idx + 1}</span>
+                                                        <span className="text-sm font-bold text-zinc-700 flex-1">
+                                                            {AREA_NAMES[o.AreaID] || o.AreaID}
+                                                        </span>
+                                                        <div className="flex flex-col gap-0.5">
+                                                            <button
+                                                                onClick={() => moveOrdenFlujo(idx, 'up')}
+                                                                disabled={idx === 0 || !puedeReordenarFlujo}
+                                                                className="w-6 h-6 flex items-center justify-center bg-white hover:bg-brand-cyan/10 text-zinc-400 hover:text-brand-cyan rounded border border-zinc-200 disabled:opacity-30 disabled:cursor-not-allowed"
+                                                                title="Subir"
+                                                            ><i className="fa-solid fa-chevron-up text-[10px]"></i></button>
+                                                            <button
+                                                                onClick={() => moveOrdenFlujo(idx, 'down')}
+                                                                disabled={idx === ordenReorder.length - 1 || !puedeReordenarFlujo}
+                                                                className="w-6 h-6 flex items-center justify-center bg-white hover:bg-brand-cyan/10 text-zinc-400 hover:text-brand-cyan rounded border border-zinc-200 disabled:opacity-30 disabled:cursor-not-allowed"
+                                                                title="Bajar"
+                                                            ><i className="fa-solid fa-chevron-down text-[10px]"></i></button>
+                                                        </div>
+                                                    </div>
+                                                ))}
+                                            </div>
+                                            {puedeReordenarFlujo && (
+                                                <button
+                                                    onClick={handleGuardarOrdenFlujo}
+                                                    disabled={!ordenFlujoCambio || guardandoOrden}
+                                                    className="mt-3 w-full py-2 rounded-lg bg-brand-cyan text-white text-xs font-bold uppercase tracking-wide hover:bg-brand-cyan/90 disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                                                >
+                                                    <i className={`fa-solid ${guardandoOrden ? 'fa-circle-notch fa-spin' : 'fa-check'}`}></i>
+                                                    Guardar Orden
+                                                </button>
+                                            )}
+                                        </div>
+                                    )}
+                                    {rutaPedido.length === 0 ? (
+                                        <div className="py-8 text-center text-zinc-400 bg-zinc-50 rounded-lg border border-dashed border-zinc-200">
+                                            <i className="fa-solid fa-timeline text-2xl mb-2 block opacity-50"></i>
+                                            No se pudo cargar la ruta del pedido.
+                                        </div>
+                                    ) : (
+                                        <OrderRouteTracker
+                                            steps={rutaPedido}
+                                            title={`Flujo del Pedido ${currentOrder.noDocERP || currentOrder.NoDocERP || currentOrder.code || ''}`}
+                                        />
+                                    )}
+                                </div>
+                            )}
+
+                            {/* PESTAÑA: NOTAS DE PRODUCCIÓN — aditivas, cada una queda como fila propia */}
+                            {activeTab === 'notas' && (
+                                <div className="p-1 flex flex-col h-full">
+                                    <div className="flex gap-2 mb-4">
+                                        <textarea
+                                            value={nuevaNotaTexto}
+                                            onChange={(e) => setNuevaNotaTexto(e.target.value)}
+                                            placeholder="Agregar una nota de producción para esta orden..."
+                                            rows={2}
+                                            className="flex-1 text-sm border border-zinc-200 rounded-lg p-2.5 resize-none focus:outline-none focus:border-brand-cyan"
+                                        />
+                                        <button
+                                            onClick={handleAgregarNota}
+                                            disabled={guardandoNota || !nuevaNotaTexto.trim()}
+                                            className="px-4 rounded-lg bg-brand-cyan text-white font-bold text-xs uppercase tracking-wide disabled:opacity-40 disabled:cursor-not-allowed hover:bg-brand-cyan/90 transition-colors shrink-0"
+                                        >
+                                            {guardandoNota ? <i className="fa-solid fa-circle-notch fa-spin"></i> : 'Agregar'}
+                                        </button>
+                                    </div>
+
+                                    {loadingNotas ? (
+                                        <div className="text-center text-zinc-400 text-sm py-8">Cargando notas...</div>
+                                    ) : notasProduccion.length === 0 ? (
+                                        <div className="py-8 text-center text-zinc-400 italic bg-zinc-50 rounded-xl border border-dashed border-zinc-200">
+                                            Sin notas todavía.
+                                        </div>
+                                    ) : (
+                                        <div className="space-y-2">
+                                            {notasProduccion.map(n => (
+                                                <div key={n.NotaID} className="bg-white border border-zinc-200 rounded-xl p-3">
+                                                    <p className="text-sm text-zinc-700 whitespace-pre-wrap">{n.Texto}</p>
+                                                    <div className="mt-1.5 text-[10px] font-bold text-zinc-400 uppercase tracking-wide">
+                                                        {n.UsuarioNombre || 'Sistema'} · {new Date(n.FechaCreacion).toLocaleString('es-UY', { day: '2-digit', month: '2-digit', year: '2-digit', hour: '2-digit', minute: '2-digit' })}
+                                                    </div>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    )}
                                 </div>
                             )}
 
@@ -1496,9 +2084,47 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
                                         </button>
                                     )}
 
+                                    {/* [BORDADO] La matriz (DST/EMB) tiene su subida propia, aparte del arte */}
+                                    {isEMB && (
+                                        <>
+                                            <label className={`relative overflow-hidden flex items-center justify-center gap-2 py-3 mb-2 rounded-xl border-2 border-dashed transition-colors ${uploadingMatriz ? 'border-indigo-300 text-indigo-500 pointer-events-none' : 'border-indigo-400 text-indigo-600 hover:bg-indigo-50 cursor-pointer'}`}>
+                                                <i className={`fa-solid ${uploadingMatriz ? 'fa-circle-notch fa-spin' : 'fa-plus'}`}></i>
+                                                <span className="text-xs font-bold uppercase tracking-wide">
+                                                    {uploadingMatriz ? 'Subiendo...' : 'Subir Matriz de Bordado (DST / EMB)'}
+                                                </span>
+                                                <input type="file" accept=".dst,.emb" className="hidden" disabled={uploadingMatriz}
+                                                    onChange={(e) => { handleUploadMatrizFile(e.target.files); e.target.value = ''; }} />
+                                            </label>
+                                            {matrizFiles.length > 0 && (
+                                                <div className="space-y-2 mb-4">
+                                                    {matrizFiles.map((f, idx) => (
+                                                        <ReferenceItem key={`matriz-${idx}`} file={{ ...f, tipo: 'MATRIZ DE BORDADO (WILCOM)' }} />
+                                                    ))}
+                                                </div>
+                                            )}
+                                        </>
+                                    )}
                                     {/* En fase boceto con el boceto ya cargado no hay nada más que subir:
-                                        el siguiente paso es el botón de enviar a aprobación. */}
-                                    {isTPU && !(faseBocetoTPU && bocetosProduccion.length > 0) && (
+                                        el siguiente paso es el botón de enviar a aprobación. DF sube el
+                                        arte a mano desde acá mismo (no tiene fase de boceto). */}
+                                    {/* [PRO] Los archivos son artes/guías: no tocan la cantidad ni la cotización */}
+                    {isPRO && !readOnly && (
+                        <>
+                            <div className="flex items-center gap-2 p-3 mb-2 rounded-xl bg-brand-cyan/5 border border-brand-cyan/30 text-brand-cyan text-xs font-bold">
+                                <i className="fa-solid fa-circle-info"></i>
+                                Acá se ven los archivos de impresión de TODO el pedido, etiquetados por área. Agregarlos o borrarlos no cambia la cantidad a fabricar ni la cotización (se edita arriba, en “Cantidad a Fabricar”).
+                            </div>
+                            {/* La subida abre un modal que pregunta a QUÉ orden/área del pedido va el archivo */}
+                            <button
+                                type="button"
+                                onClick={() => { setCopiasPRO('1'); setUploadPRO({ categoria: 'impresion', ordenId: currentOrder.id }); }}
+                                className="w-full flex items-center justify-center gap-2 py-3 mb-2 rounded-xl border-2 border-dashed border-brand-cyan/40 text-brand-cyan text-xs font-bold uppercase tracking-wide hover:bg-brand-cyan/5 transition-colors"
+                            >
+                                <i className="fa-solid fa-plus"></i> Subir archivo de impresión (elegís a qué área/orden va)
+                            </button>
+                        </>
+                    )}
+                    {isTPU && !(faseBocetoTPU && bocetosProduccion.length > 0) && (
                                         <label className={`relative overflow-hidden flex items-center justify-center gap-2 py-3 mb-2 rounded-xl border-2 border-dashed transition-colors ${uploadingTPU ? 'border-brand-cyan/30 text-brand-cyan pointer-events-none' : 'border-brand-cyan/40 text-brand-cyan hover:bg-brand-cyan/5 cursor-pointer'}`}>
                                             {/* Barra de progreso de la subida (relleno de fondo, % por bytes) */}
                                             {uploadingTPU && progresoTPU && (
@@ -1545,7 +2171,18 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
                                                 ? (f.readonly
                                                     ? { text: 'Original (madre)', tone: 'zinc' }
                                                     : { text: 'Reposición', tone: 'cyan' })
-                                                : null;
+                                                // [PRO] Cada archivo del pedido dice de qué ÁREA/ORDEN es
+                                                // (la lista trae las hermanas, no solo la orden PRO).
+                                                : isPRO
+                                                    ? (() => {
+                                                        const o = ordenesDestinoPRO.find(x => String(x.OrdenID) === String(f.OrdenID));
+                                                        const esPropio = String(f.OrdenID) === String(currentOrder?.id);
+                                                        return {
+                                                            text: o ? `${o.AreaID} · ${o.CodigoOrden}` : (f._codigoOrden || 'Orden'),
+                                                            tone: esPropio ? 'cyan' : 'zinc'
+                                                        };
+                                                    })()
+                                                    : null;
                                             // Relación con una FALLA — se marca SIEMPRE, esté sanada o no:
                                             //  · el archivo está fallado ahora
                                             //  · ya fue repuesto (la cura le deja la marca [Repuesto])
@@ -1588,8 +2225,10 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
                                         })
                                     )}
                                     {/* Footer Totales — en TPU no aplica: la orden es por unidades y el
-                                        metraje de las capas del arte no significa nada. */}
-                                    {!isTPU && productionFiles.length > 0 && (
+                                        metraje de las capas del arte no significa nada.
+                                        [PRO] tampoco: la lista mezcla archivos de varias áreas y la
+                                        orden se mide en prendas, no en metros. */}
+                                    {!isTPU && !isPRO && productionFiles.length > 0 && (
                                         <div className="mt-4 pt-3 border-t border-zinc-100 flex justify-between items-center text-sm px-2">
                                             <span className="font-bold text-zinc-400 uppercase text-xs tracking-wider">Metraje Total Estimado</span>
                                             <span className="font-black text-brand-cyan text-xl font-mono">
@@ -1607,6 +2246,22 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
                             {/* PESTAÑA: REFERENCIAS */}
                             {activeTab === 'refs' && (
                                 <div className="space-y-2">
+                                    {/* [PRO] Alta de referencias: abre el modal que pregunta a QUÉ
+                                        orden/área va el archivo y con qué tipo (boceto, matriz de logos...) */}
+                                    {isPRO && !readOnly && (
+                                        <>
+                                            <button
+                                                type="button"
+                                                onClick={() => setUploadPRO({ categoria: 'referencia', ordenId: currentOrder.id })}
+                                                className="w-full flex items-center justify-center gap-2 py-3 mb-1 rounded-xl border-2 border-dashed border-brand-cyan/40 text-brand-cyan text-xs font-bold uppercase tracking-wide hover:bg-brand-cyan/5 transition-colors"
+                                            >
+                                                <i className="fa-solid fa-plus"></i> Subir archivo de referencia (elegís área/orden y tipo)
+                                            </button>
+                                            <p className="text-[10px] text-zinc-400 mb-2">
+                                                Las referencias son guías: subirlas o borrarlas <b>no</b> cambia la cantidad a fabricar ni la cotización.
+                                            </p>
+                                        </>
+                                    )}
                                     {/* Fallas marcadas (recuadro dibujado en Control) — solo SB */}
                                     {isSB && fallaImages.length > 0 && (
                                         <div className="mb-3">
@@ -1641,7 +2296,19 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
                                     ) : (
                                         <>
                                             {referenceFiles.map((f, idx) => (
-                                                <ReferenceItem key={idx} file={f} />
+                                                /* [PRO] Cada referencia se puede borrar (mismo patrón visual
+                                                   que el boceto TPU: tacho a la izquierda del de descargar). */
+                                                <div key={idx} className="relative">
+                                                    <ReferenceItem file={f} />
+                                                    {isPRO && !readOnly && (f.id || f.RefID) && (
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => handleDeleteReferencia(f.id || f.RefID, f.nombre || f.NombreOriginal)}
+                                                            className="absolute right-14 top-1/2 -translate-y-1/2 w-7 h-7 rounded-md bg-white border border-red-200 text-red-500 hover:bg-red-50 flex items-center justify-center shadow-sm"
+                                                            title="Eliminar esta referencia (no cambia magnitud ni cotización)"
+                                                        ><i className="fa-solid fa-trash-can text-xs"></i></button>
+                                                    )}
+                                                </div>
                                             ))}
                                             {/* TPU: el arte "boceto" (uno de los 6) se muestra acá, debajo del boceto
                                                 del cliente, como BOCETO DE PRODUCCIÓN — es lo que el cliente aprueba. */}
@@ -1675,7 +2342,10 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
                                         embedded={true}
                                         noDocERP={currentOrder.code || currentOrder.id}
                                         currentUser={user}
-                                        areaFilter={currentOrder.area}
+                                        /* [PRO] Desde Producción se edita la cotización del PEDIDO COMPLETO
+                                           (todas las áreas), no solo la línea de PRO: 'TODOS' desbloquea
+                                           todas las líneas y el buscador de productos de cualquier área. */
+                                        areaFilter={isPRO ? 'TODOS' : currentOrder.area}
                                         onSaved={reloadFiles}
                                         readOnly={readOnly}
                                     />

@@ -12,6 +12,22 @@ const OrderRequirementsList = ({ ordenId, areaId, readOnly = false }) => {
     const [availableResources, setAvailableResources] = useState([]);
     const [selectedReq, setSelectedReq] = useState(null); // The requirement being toggled
 
+    // [BORDADO] "Aprobación del Cliente": no es un recurso físico a vincular, sino
+    // registrar CÓMO se enteró/aprobó (portal, WhatsApp, teléfono, presencial) —
+    // la fecha/hora ya la pone FechaCumplimiento solo, acá solo pedimos la vía.
+    const [viaModalOpen, setViaModalOpen] = useState(false);
+    const [viaSeleccionada, setViaSeleccionada] = useState('WhatsApp');
+    const [fechaAprobacion, setFechaAprobacion] = useState(''); // valor de <input type="datetime-local">
+    const VIAS_APROBACION = ['Portal', 'WhatsApp', 'Teléfono', 'Email', 'Presencial', 'Otro'];
+
+    // Formato que espera <input type="datetime-local">: YYYY-MM-DDTHH:mm, en hora local
+    // (no UTC — si no, el "ahora" por defecto queda corrido varias horas).
+    const nowForDatetimeLocal = () => {
+        const d = new Date();
+        const pad = (n) => String(n).padStart(2, '0');
+        return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    };
+
     const fetchRequirements = async () => {
         if (!ordenId || !areaId) return;
         try {
@@ -32,6 +48,15 @@ const OrderRequirementsList = ({ ordenId, areaId, readOnly = false }) => {
     const handleToggleAttempt = async (req, currentStatus) => {
         if (readOnly) return;
         const newStatus = !currentStatus;
+
+        // [BORDADO] "Aprobación del Cliente": pedir por qué vía, no un recurso físico.
+        if (newStatus && req.CodigoRequisito === 'APROBACION') {
+            setSelectedReq(req);
+            setViaSeleccionada('WhatsApp');
+            setFechaAprobacion(nowForDatetimeLocal());
+            setViaModalOpen(true);
+            return;
+        }
 
         // Si se está MARCANDO como listo y es un requisito de material tangible
         if (newStatus && (req.CodigoRequisito.includes('TELA') || req.CodigoRequisito.includes('PRENDA') || req.CodigoRequisito.includes('CORTES'))) {
@@ -58,15 +83,16 @@ const OrderRequirementsList = ({ ordenId, areaId, readOnly = false }) => {
         executeToggle(req.RequisitoID, newStatus);
     };
 
-    const executeToggle = async (reqId, newStatus, observation = '') => {
+    const executeToggle = async (reqId, newStatus, observation = '', fechaCumplimiento = null) => {
         // Optimistic update
         setRequirements(prev => prev.map(r =>
-            r.RequisitoID === reqId ? { ...r, Cumplido: newStatus, Observaciones: observation || r.Observaciones } : r
+            r.RequisitoID === reqId ? { ...r, Cumplido: newStatus, Observaciones: observation || r.Observaciones, FechaCumplimiento: fechaCumplimiento || r.FechaCumplimiento } : r
         ));
 
         try {
             await api.post('/logistics/requirements/toggle', {
                 ordenId,
+                fechaCumplimiento,
                 requisitoId: reqId,
                 cumplido: newStatus,
                 observaciones: observation
@@ -76,6 +102,16 @@ const OrderRequirementsList = ({ ordenId, areaId, readOnly = false }) => {
             toast.error("Error al actualizar requisito");
             fetchRequirements(); // Revert
         }
+    };
+
+    const handleConfirmVia = () => {
+        if (!selectedReq) return;
+        // El <input datetime-local> da "YYYY-MM-DDTHH:mm" en hora LOCAL sin offset — new Date()
+        // de ese string lo interpreta local también, así que viaja correcto sin conversiones.
+        const fechaISO = fechaAprobacion ? new Date(fechaAprobacion).toISOString() : null;
+        executeToggle(selectedReq.RequisitoID, true, `Vía: ${viaSeleccionada}`, fechaISO);
+        setViaModalOpen(false);
+        setSelectedReq(null);
     };
 
     const handleResourceSelect = (resource) => {
@@ -135,7 +171,12 @@ const OrderRequirementsList = ({ ordenId, areaId, readOnly = false }) => {
                                 {req.Cumplido ? (
                                     <>
                                         <div className="text-emerald-600 font-bold">OK</div>
-                                        {req.Observaciones && <div className="text-[9px] text-emerald-500 max-w-[100px] truncate" title={req.Observaciones}>{req.Observaciones}</div>}
+                                        {req.Observaciones && <div className="text-[9px] text-emerald-500 max-w-[120px] truncate" title={req.Observaciones}>{req.Observaciones}</div>}
+                                        {req.FechaCumplimiento && (
+                                            <div className="text-[9px] text-emerald-400">
+                                                {new Date(req.FechaCumplimiento).toLocaleString('es-UY', { day: '2-digit', month: '2-digit', year: '2-digit', hour: '2-digit', minute: '2-digit' })}
+                                            </div>
+                                        )}
                                     </>
                                 ) : (
                                     <div className="text-gray-400">Pendiente</div>
@@ -200,6 +241,67 @@ const OrderRequirementsList = ({ ordenId, areaId, readOnly = false }) => {
                                 className="px-3 py-1.5 text-xs font-bold text-indigo-600 hover:bg-indigo-50 rounded"
                             >
                                 Confirmar sin vincular
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* VÍA DE APROBACIÓN DEL CLIENTE (Bordado) */}
+            {viaModalOpen && (
+                <div className="fixed inset-0 z-[3000] flex items-center justify-center p-4 bg-black/40 animate-in fade-in duration-200">
+                    <div className="bg-white rounded-xl shadow-2xl w-full max-w-sm overflow-hidden border border-gray-100 animate-in zoom-in-95 duration-200">
+                        <div className="px-4 py-3 bg-emerald-50 border-b border-emerald-100 flex justify-between items-center">
+                            <h3 className="font-bold text-emerald-900 text-sm flex items-center gap-2">
+                                <CheckCircle size={16} />
+                                Registrar Aprobación del Cliente
+                            </h3>
+                            <button onClick={() => setViaModalOpen(false)} className="text-emerald-400 hover:text-emerald-700">
+                                <XCircle size={18} />
+                            </button>
+                        </div>
+                        <div className="p-4">
+                            <label className="block text-xs font-bold text-gray-500 uppercase tracking-wide mb-1">
+                                Fecha y hora de la aprobación
+                            </label>
+                            <input
+                                type="datetime-local"
+                                value={fechaAprobacion}
+                                onChange={(e) => setFechaAprobacion(e.target.value)}
+                                max={nowForDatetimeLocal()}
+                                className="w-full p-2 mb-3 border border-gray-200 rounded-lg text-sm focus:outline-none focus:border-emerald-400"
+                            />
+                            <p className="text-xs text-gray-500 mb-2">
+                                Por defecto es ahora — cambiala si el cliente aprobó antes (ej. te escribió ayer y recién ahora lo cargás). Elegí por qué vía aprobó:
+                            </p>
+                            <div className="grid grid-cols-2 gap-2">
+                                {VIAS_APROBACION.map(via => (
+                                    <button
+                                        key={via}
+                                        onClick={() => setViaSeleccionada(via)}
+                                        className={`p-2 rounded-lg border text-sm font-bold transition-all ${
+                                            viaSeleccionada === via
+                                                ? 'border-emerald-400 bg-emerald-50 text-emerald-700'
+                                                : 'border-gray-200 text-gray-500 hover:border-gray-300'
+                                        }`}
+                                    >
+                                        {via}
+                                    </button>
+                                ))}
+                            </div>
+                        </div>
+                        <div className="p-3 bg-gray-50 border-t border-gray-100 flex justify-between">
+                            <button
+                                onClick={() => setViaModalOpen(false)}
+                                className="px-3 py-1.5 text-xs font-bold text-gray-500 hover:text-gray-700"
+                            >
+                                Cancelar
+                            </button>
+                            <button
+                                onClick={handleConfirmVia}
+                                className="px-4 py-1.5 text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg"
+                            >
+                                Confirmar Aprobación
                             </button>
                         </div>
                     </div>

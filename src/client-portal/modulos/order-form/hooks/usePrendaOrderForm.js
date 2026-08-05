@@ -55,6 +55,23 @@ const initialState = {
     bordadoMaterial: '',
     bordadoVariant: '',
 
+    // [PRENDAS] DTF como servicio complementario (un solo toggle: archivo a imprimir +
+    // boceto de ubicación). Mismo patrón fetch-driven que Bordado, área DF.
+    dtfArchivos: [],
+    dtfBocetoFile: null,
+    dtfMaterial: '',
+    dtfVariant: '',
+    dtfVariants: [],
+    dtfMaterials: [],
+
+    // [PRENDAS] TPU como servicio complementario — mismo criterio que DTF (2 archivos).
+    tpuArchivos: [],
+    tpuBocetoFile: null,
+    tpuMaterial: '',
+    tpuVariant: '',
+    tpuVariants: [],
+    tpuMaterials: [],
+
     // Estampado Data
     estampadoFile: null,
     estampadoQuantity: '',
@@ -302,6 +319,14 @@ export const usePrendaOrderForm = (serviceId, overrides = {}) => {
     const setCosturaNote = (v) => setField('costuraNote', v);
     const setBordadoMaterial = (v) => setField('bordadoMaterial', v);
     const setBordadoVariant = (v) => setField('bordadoVariant', v);
+
+    const setDtfBocetoFile = (v) => setField('dtfBocetoFile', v);
+    const setDtfMaterial = (v) => setField('dtfMaterial', v);
+    const setDtfVariant = (v) => setField('dtfVariant', v);
+
+    const setTpuBocetoFile = (v) => setField('tpuBocetoFile', v);
+    const setTpuMaterial = (v) => setField('tpuMaterial', v);
+    const setTpuVariant = (v) => setField('tpuVariant', v);
 
     const setEstampadoFile = (v) => setField('estampadoFile', v);
     const setEstampadoQuantity = (v) => setField('estampadoQuantity', v);
@@ -568,6 +593,50 @@ export const usePrendaOrderForm = (serviceId, overrides = {}) => {
         }
     }, [serviceId, serviceInfo, visibleComplementaryOptions.length]); // Added visibleComplementaryOptions dep
 
+    // 3a. [PRENDAS] Fetch DTF Data if Complementary — área DF, variante fija "DTF Textil"
+    // (no se elige por dropdown), solo se busca el material (Film) disponible para ella.
+    useEffect(() => {
+        const hasDtf = visibleComplementaryOptions.some(o => o.id === 'DF');
+        if (hasDtf && serviceId !== 'DF' && (serviceId || '').toLowerCase() !== 'df') {
+            const VARIANTE_FIJA = 'DTF Textil';
+            dispatch({ type: actionTypes.SET_DATA, data: { dtfVariant: VARIANTE_FIJA } });
+            apiClient.get(`/nomenclators/materials/DF/${encodeURIComponent(VARIANTE_FIJA)}`).then(mRes => {
+                if (mRes.success && mRes.data.length > 0) {
+                    dispatch({
+                        type: actionTypes.SET_DATA,
+                        data: { dtfMaterials: mRes.data, dtfMaterial: mRes.data[0].Material }
+                    });
+                }
+            });
+        }
+    }, [serviceId, serviceInfo, visibleComplementaryOptions.length]);
+
+    // 3a2. [PRENDAS] Fetch TPU Data if Complementary — mismo patrón, área TPU.
+    useEffect(() => {
+        const hasTpu = visibleComplementaryOptions.some(o => o.id === 'TPU');
+        if (hasTpu && serviceId !== 'tpu') {
+            apiClient.get('/nomenclators/variants/TPU').then(res => {
+                if (res.success && res.data.length > 0) {
+                    const variants = res.data.map(item => item.Variante);
+                    const firstVariant = variants[0];
+                    dispatch({
+                        type: actionTypes.SET_DATA,
+                        data: { tpuVariants: variants, tpuVariant: firstVariant }
+                    });
+
+                    apiClient.get(`/nomenclators/materials/TPU/${encodeURIComponent(firstVariant)}`).then(mRes => {
+                        if (mRes.success && mRes.data.length > 0) {
+                            dispatch({
+                                type: actionTypes.SET_DATA,
+                                data: { tpuMaterials: mRes.data, tpuMaterial: mRes.data[0].Material }
+                            });
+                        }
+                    });
+                }
+            });
+        }
+    }, [serviceId, serviceInfo, visibleComplementaryOptions.length]);
+
     // 3b. Tela de Cliente: cargar bobinas disponibles del cliente al elegir ese origen.
     // El backend resuelve el cliente desde el token del portal (no hace falta pasar clienteId).
     useEffect(() => {
@@ -680,6 +749,19 @@ export const usePrendaOrderForm = (serviceId, overrides = {}) => {
         });
     };
 
+    const handleTpuVariantChange = (newVariant) => {
+        setTpuVariant(newVariant);
+        apiClient.get(`/nomenclators/materials/TPU/${encodeURIComponent(newVariant)}`).then(res => {
+            if (res.success && res.data.length > 0) {
+                dispatch({ type: actionTypes.SET_DATA, data: { tpuMaterials: res.data } });
+                setTpuMaterial(res.data[0].Material);
+            } else {
+                dispatch({ type: actionTypes.SET_DATA, data: { tpuMaterials: [] } });
+                setTpuMaterial('');
+            }
+        });
+    };
+
     const toggleComplementary = (id) => {
         const current = state.selectedComplementary[id];
         let newComp;
@@ -730,6 +812,24 @@ export const usePrendaOrderForm = (serviceId, overrides = {}) => {
 
     const removePonchadoFile = (index) => {
         dispatch({ type: actionTypes.SET_FIELD, field: 'ponchadoFiles', value: state.ponchadoFiles.filter((_, i) => i !== index) });
+    };
+
+    const addDtfArchivos = (files) => {
+        const newFiles = Array.isArray(files) ? files : [files];
+        dispatch({ type: actionTypes.SET_FIELD, field: 'dtfArchivos', value: [...state.dtfArchivos, ...newFiles] });
+    };
+
+    const removeDtfArchivo = (index) => {
+        dispatch({ type: actionTypes.SET_FIELD, field: 'dtfArchivos', value: state.dtfArchivos.filter((_, i) => i !== index) });
+    };
+
+    const addTpuArchivos = (files) => {
+        const newFiles = Array.isArray(files) ? files : [files];
+        dispatch({ type: actionTypes.SET_FIELD, field: 'tpuArchivos', value: [...state.tpuArchivos, ...newFiles] });
+    };
+
+    const removeTpuArchivo = (index) => {
+        dispatch({ type: actionTypes.SET_FIELD, field: 'tpuArchivos', value: state.tpuArchivos.filter((_, i) => i !== index) });
     };
 
     const handleUploadProcess = async (manifest, fileMap) => {
@@ -850,6 +950,17 @@ export const usePrendaOrderForm = (serviceId, overrides = {}) => {
             setCosturaNote,
             setBordadoMaterial,
             setBordadoVariant,
+            setDtfBocetoFile,
+            setDtfMaterial,
+            setDtfVariant,
+            addDtfArchivos,
+            removeDtfArchivo,
+            setTpuBocetoFile,
+            setTpuMaterial,
+            setTpuVariant,
+            handleTpuVariantChange,
+            addTpuArchivos,
+            removeTpuArchivo,
             setEstampadoFile,
             setEstampadoQuantity,
             setEstampadoPrints,

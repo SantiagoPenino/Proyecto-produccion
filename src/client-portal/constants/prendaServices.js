@@ -30,16 +30,9 @@ export const SERVICES_LIST = [
 
         // Configuration
         config: {
-            // Variant Config
-            // [PRENDAS] Acá la variante es SIEMPRE Sublimación en Tela: no se elige.
-            // 'fixed' deja uniqueVariants vacío (sin selector) y busca los materiales
-            // de esa variante. Original: variantMode 'select' + defaultVariant.
+            // Variant Config — acá es SIEMPRE Sublimación en Tela: sin selector, fija por defecto.
             variantMode: 'fixed',
             fixedVariant: 'Sublimacion Tela',
-
-            // [PRENDAS] Estos productos no llevan Raport ni A Escala.
-            hideRaport: true,
-            hideScale: true,
 
             // Material Config
             materialMode: 'multiple', // multiple = per item, single = global — [PRENDAS] permite más de una tela
@@ -61,8 +54,12 @@ export const SERVICES_LIST = [
         complementaryOptions: [
             // [PRENDAS] EMB reactivado SOLO en esta copia. En constants/services.js (el portal
             // del cliente) sigue comentado y así queda — no se toca.
-            { id: 'EMB', label: 'Servicio de Bordado', hasFile: true, fullWidth: true, inputLabel: 'Adjuntar Ponchado/Logo' },
-            { id: 'EST', label: 'Estampado', fullWidth: true }
+            { id: 'EMB', label: 'Bordado', hasFile: true, fullWidth: true, inputLabel: 'Adjuntar Ponchado/Logo' },
+            // [PRENDAS] "Estampado" NO es un botón propio acá: DTF y TPU son formas de
+            // aplicarlo y ya llevan sus campos fusionados (ver DtfTechnicalUI/TpuTechnicalUI).
+            // { id: 'EST', label: 'Estampado', fullWidth: true },
+            { id: 'DF', label: 'Estampados DTF', fullWidth: true },
+            { id: 'TPU', label: 'Estampados TPU', fullWidth: true }
         ]
     },
     {

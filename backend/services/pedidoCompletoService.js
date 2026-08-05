@@ -18,7 +18,7 @@ const sql = require('mssql');
 // Fragmento SQL reutilizable: la orden con alias dado está "pronta o más allá".
 // Se chequean ambas columnas porque Estado (general) se deriva de ConfigEstados
 // y su mapeo es configurable; EstadoenArea guarda el estado específico.
-const ESTADOS_LISTA = "('PRONTO', 'EN TRANSITO', 'FINALIZADO', 'INGRESADO', 'AVISADO', 'ENTREGADO')";
+const ESTADOS_LISTA = "('PRONTO', 'EN TRANSITO', 'RECIBIDO EN DESTINO', 'FINALIZADO', 'INGRESADO', 'AVISADO', 'ENTREGADO')";
 const sqlOrdenPronta = (alias) => `(
     UPPER(LTRIM(RTRIM(ISNULL(${alias}.EstadoenArea, '')))) IN ${ESTADOS_LISTA}
     OR UPPER(LTRIM(RTRIM(ISNULL(${alias}.Estado, '')))) IN ${ESTADOS_LISTA}
@@ -78,7 +78,11 @@ async function checkPedidoCompleto(db, noDocERP, { areaId = null, asumirProntaOr
     if (!noDocERP) return { completo: true, faltantes: [] };
 
     const req = makeRequest(db).input('NoDoc', sql.VarChar, String(noDocERP));
-    let where = `O.NoDocERP = @NoDoc AND ${sqlOrdenNoCancelada('O')} AND NOT ${sqlOrdenPronta('O')}`;
+    // [PRENDAS] PRO nunca cuenta como "falta" acá: no es un paso físico (es el pilar que
+    // agrupa el pedido para precio/factura), no tiene Bandeja ni botón de terminar, así que
+    // nunca llega a Pronto — sin esta exclusión NINGÚN pedido con PRO podría salir jamás a
+    // Depósito ni avisarse al cliente (el candado global lo daba por incompleto para siempre).
+    let where = `O.NoDocERP = @NoDoc AND ${sqlOrdenNoCancelada('O')} AND UPPER(LTRIM(RTRIM(ISNULL(O.AreaID,'')))) <> 'PRO' AND NOT ${sqlOrdenPronta('O')}`;
     if (areaId) {
         where += ' AND O.AreaID = @Area';
         req.input('Area', sql.VarChar, areaId);
