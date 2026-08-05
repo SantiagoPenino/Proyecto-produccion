@@ -30,8 +30,7 @@ import {
     ladosDeUbicacion, ubicacionDeLados, LADO_NOMBRE,
     SOLDADURA_CM, profundidadBolsilloCm, margenOjalCm, pasoMaxCm
 } from '../../utils/terminacionesGeo';
-import * as pdfjsLib from 'pdfjs-dist';
-import pdfjsWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
+import { rasterizarPdf, liberarPdfPreviews } from '../api/pdfPreview';
 import ErrorModal from './order-form/components/ErrorModal';
 import UploadProgressModal from './order-form/components/UploadProgressModal';
 import FileUploadZone from './order-form/components/FileUploadZone';
@@ -489,29 +488,20 @@ const OrderForm = ({ serviceId: propServiceId }) => {
             const clave = `${item.id}|${f.name}|${f.size}`;
             if (artesRef.current[clave]) return;      // ya renderizado o en curso
             artesRef.current[clave] = 'pdf-en-curso';
-            (async () => {
-                try {
-                    pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker;
-                    const buf = await f.fileData.arrayBuffer();
-                    const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
-                    const page = await pdf.getPage(1);
-                    const vp = page.getViewport({ scale: 1 });
-                    // Miniatura de hasta ~600px del lado mayor: alcanza para el plano
-                    const escala = Math.min(2, 600 / Math.max(vp.width, vp.height));
-                    const v2 = page.getViewport({ scale: escala });
-                    const canvas = document.createElement('canvas');
-                    canvas.width = Math.ceil(v2.width);
-                    canvas.height = Math.ceil(v2.height);
-                    await page.render({ canvasContext: canvas.getContext('2d'), viewport: v2 }).promise;
-                    setArtesPdf(prev => ({ ...prev, [clave]: canvas.toDataURL('image/jpeg', 0.8) }));
-                } catch {
-                    // sin preview: el plano queda con el fondo neutro
-                }
-            })();
+            // Mismo render que la miniatura de la tarjeta (FileUploadZone): api/pdfPreview lo genera
+            // UNA vez por archivo y los dos lo comparten. Antes cada uno abría y rasterizaba el
+            // mismo PDF por su cuenta, y con los artes de sublimación eso era la mitad del
+            // `drawImage` de pdf.js — el 47,8% del tiempo del hilo medido con el profiler.
+            rasterizarPdf(f.fileData, 600).then((url) => {
+                if (!url) { delete artesRef.current[clave]; return; } // un fallo se puede reintentar
+                artesRef.current[clave] = url;   // reemplaza la marca 'pdf-en-curso'
+                setArtesPdf(prev => ({ ...prev, [clave]: url }));
+            });
         });
     }, [items]);
     useEffect(() => () => {   // liberar los objectURL al desmontar el formulario
         Object.values(artesRef.current).forEach(u => { try { URL.revokeObjectURL(u); } catch { } });
+        liberarPdfPreviews();  // y los renders compartidos con las tarjetas de archivo
     }, []);
 
     // Cómo se dibuja cada terminación en el plano, según lo que es

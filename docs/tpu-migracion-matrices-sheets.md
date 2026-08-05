@@ -99,15 +99,21 @@ Los 26 códigos con varias filas en `MATRIZ` son versiones sucesivas del mismo a
 
 215 traen 5 archivos (lo esperado) pero 18 traen 6 y una trae 4. `CAPAS_ARTE_TPU = 5` funciona como **tope al subir**, no se valida al insertar, así que entran igual. Queda decidir si a esas 18 se les migra todo o se recorta.
 
-### b) No va a haber miniatura
+### b) Miniatura — RESUELTO: sale de "Diseños origen"
 
-El thumbnail se genera al subir el archivo y vive en el disco del server (`backend/thumbnails/`). Estas rutas apuntan a Drive y nunca pasaron por ahí, así que las 193 van a mostrar **"SIN VISTA PREVIA"**.
+En el sistema viejo, cada orden tiene **DISEÑOS ORIGEN → VER ARCHIVO**: es la columna **G "Carga logo"** de `BASE`, el arte que subió el cliente. Es el archivo reconocible (no una capa de separación de color) y **está en las 188 sin excepción** (176 con un link, 11 con dos, 1 con tres).
 
-Se puede resolver bajando cada archivo de Drive y generándole el thumbnail en la migración (~193 descargas, corre una sola vez). **¿Lo hacemos o van sin imagen?**
+La migración lo inserta como **una fila más de `ArchivosOrden` con el nombre `BOCETO-<trabajo>`**, y le genera el thumbnail bajándolo de Drive.
 
-### c) `leopalla`
+El nombre no es casual: `getMisMatrices` elige la vista previa con `NombreArchivo LIKE '%boceto%'`, así que la matriz migrada muestra imagen **sin tocar una línea de la query**, igual que una nativa. Y encaja con el modelo nuevo, donde el boceto es justamente el diseño que el cliente aprobó.
 
-Un cliente sin match. ¿Se le busca el `CodCliente` a mano, o se saltean sus órdenes?
+Quedan **6 archivos por matriz**: las 5 capas de arte + el boceto. Son ~188 descargas de Drive, corre una sola vez dentro de la migración.
+
+> Detalle para el script: la extensión hay que sacarla del `mimeType` que devuelve la API de Drive, no del link (que no la trae). `generateThumbnail` necesita saber si es PDF o imagen.
+
+### c) `leopalla` — RESUELTO: se saltea
+
+Único cliente sin match contra `Clientes.IDCliente`. Decisión: **no se migra**, queda fuera de la corrida. Son las órdenes marcadas "Cliente sin match" en el Excel de revisión.
 
 ### d) ¿Dónde se corre?
 
@@ -115,7 +121,47 @@ La planilla y la base de producción son las que importan. Propongo correrlo **p
 
 ---
 
-## 5. Cómo se corre
+### e) Artículo de cada matriz — 44 casos
+
+**Esto no es cosmético:** `reuseMatrizTPU` copia `CodArticulo` y `ProIdProducto` de la matriz a la orden nueva, y con eso se auto-cotiza. Una matriz sin artículo genera un pedido que no se puede cotizar.
+
+De los 9 "Tipo de parche" de la planilla, 4 existen igual en `articulos`:
+
+| Tipo de parche (planilla) | N | CodArticulo / ProIdProducto |
+|---|---|---|
+| Parche (De hasta 10x8) | 109 | 152 / 413 |
+| Parche con un maximo de 4 estrellas (De hasta 10x8) | 17 | 154 / 415 |
+| Parche (Hasta 7,5 x 4) | 10 | 155 / 416 |
+| Parche (Hasta 4x4) | 8 | 153 / 414 |
+
+Los otros 5 son nombres viejos que ya no están en el catálogo. **Mapeo CONFIRMADO:**
+
+| Tipo viejo | N | → Artículo | Criterio |
+|---|---|---|---|
+| Escudo (De hasta 8x8) | 30 | **152** / 413 | lo que antes era 8x8 hoy es "De hasta 10x8" |
+| Etiqueta Producto Oficial (Hasta 4x4) | 6 | 153 / 414 | misma medida |
+| Escudo con estrella (De hasta 10x8) | 5 | **154** / 415 | misma medida, **lleva estrellas** |
+| Logo de Marca (Hasta 7,5 x 4) | 2 | 155 / 416 | misma medida |
+| Logo de Marca (`TP-41`) | 1 | **153** / 414 | ver abajo |
+
+⚠️ **Las 8x8 y las "10x8 con estrellas" NO son lo mismo**: van a 152 y 154 respectivamente, que tienen precio distinto (US$ 3,50 vs 4,50). Confundirlas descotiza el reuso.
+
+`TP-41` ("Logo de Marca", sin medida en el nombre y sin tamaño de referencia cargado) se resolvió por el costo que quedó registrado en la planilla: **60,00 de Costo Pedido ÷ 30 unidades = US$ 2,00**, que es exactamente el precio de *Parche (Hasta 4x4)* en `PreciosBase`.
+
+## 5. Plan de ejecución
+
+**Paso 1 — Cerrar el mapeo de artículos.** Confirmar la tabla de arriba y resolver el único "Logo de Marca". Sin esto no se arranca.
+
+**Paso 2 — Script `backend/scripts/migrar-matrices-tpu.js`.**
+Lee la planilla con el OAuth que ya existe, aplica los mismos filtros del Excel de revisión y escribe. **Idempotente**: si ya hay una orden con ese `CodigoOrden`, la saltea, así se puede correr las veces que haga falta. Arranca en `--dry-run` (imprime el resumen sin tocar nada) y solo escribe con `--commit`.
+
+**Paso 3 — Correr en local.** Verificar en el portal, con un par de los clientes de la lista, que "Mis matrices" las muestra y que un reuso genera la orden bien cotizada.
+
+**Paso 4 — Producción.** Backup de `Ordenes` y `ArchivosOrden`, correr con `--dry-run`, comparar contra el Excel, y recién ahí `--commit`.
+
+Para deshacer: todas quedan marcadas con `[MIGRADO-TPU-SHEETS]` en la `Nota`, así que se borran con un `DELETE` filtrando por eso.
+
+## 6. Cómo se corre
 
 Script de una sola vez en `backend/scripts/`, **idempotente**: antes de insertar chequea si ya existe una orden con ese `CodigoOrden`, así se puede repetir sin duplicar. Con `--dry-run` para ver el resumen sin escribir nada.
 

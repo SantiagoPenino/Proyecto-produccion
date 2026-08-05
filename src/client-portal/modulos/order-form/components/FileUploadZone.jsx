@@ -1,9 +1,15 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { UploadCloud, CheckCircle } from 'lucide-react';
+import { rasterizarPdf } from '../../../api/pdfPreview';
 
 // Guía de margen de seguridad dibujada sobre la vista previa: 2,5 cm hacia adentro del arte.
 const MARGEN_SEGURIDAD_M = 0.025;
+
+// Resolución del rasterizado del PDF. 600px es la misma medida que usa el croquis del plano, así
+// los dos comparten un único render (ver api/pdfPreview). Los 1600px solo cuando el cliente amplía.
+const MINIATURA_PX = 600;
+const AMPLIADO_PX = 1600;
 
 // Fondo tipo damero (como Photoshop) para que se vea qué partes del arte son TRANSPARENTES.
 // Se usa en DTF, donde el arte va sobre film transparente. No toca los píxeles del archivo.
@@ -224,43 +230,46 @@ export const FileUploadZone = ({ id, onFileSelected, selectedFile, label, icon: 
         if (esImagen) {
             setPreview(objectUrl);
         } else {
-            (async () => {
-                try {
-                    const pdfjsLib = await import('pdfjs-dist');
-                    const buf = await file.arrayBuffer();
-                    if (cancelado) return;
-                    const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
-                    const page = await pdf.getPage(1);
-                    // Lado mayor a ~1600px: la miniatura necesita poco, pero la MISMA imagen se usa
-                    // en el modal ampliado. Con 320px la vista previa se mostraba a su tamaño real
-                    // (una tira diminuta) porque max-h/max-w solo limitan, no agrandan.
-                    const base = page.getViewport({ scale: 1 });
-                    const viewport = page.getViewport({ scale: 1600 / Math.max(base.width, base.height) });
-                    const canvas = document.createElement('canvas');
-                    canvas.width = Math.ceil(viewport.width);
-                    canvas.height = Math.ceil(viewport.height);
-                    // background transparente: pdf.js por defecto RELLENA el canvas de BLANCO antes
-                    // de dibujar, y eso tapaba la transparencia real del PDF (en DTF el arte va sobre
-                    // film transparente, como se ve al abrirlo en Photoshop). Con esto el PNG queda
-                    // con el alpha del archivo, sin tocar un solo píxel del arte.
-                    await page.render({
-                        canvasContext: canvas.getContext('2d'),
-                        viewport,
-                        background: 'rgba(0,0,0,0)',
-                    }).promise;
-                    if (!cancelado) setPreview(canvas.toDataURL('image/png'));
-                } catch (e) {
-                    console.warn('[FileUploadZone] No se pudo generar la vista previa del PDF:', e);
-                    if (!cancelado) setPreview(null);
-                }
-            })();
+            // El render se COMPARTE con el croquis del plano (ver api/pdfPreview). Antes cada uno
+            // abría y rasterizaba el mismo PDF por su cuenta: medido con el profiler, `drawImage`
+            // dentro de pdf.js era el 47,8% del tiempo del hilo y la mitad era trabajo repetido.
+            rasterizarPdf(file, MINIATURA_PX).then((url) => {
+                if (cancelado) return;
+                setPreview(url || null);
+            });
         }
 
         return () => {
             cancelado = true;
             URL.revokeObjectURL(objectUrl);
+            // El objectURL del PDF NO se revoca acá: es del caché compartido y lo puede estar
+            // usando el croquis. Se libera al salir del formulario (liberarPdfPreviews).
         };
     }, [selectedFile, multiple, quitarFondoPdf]);
+
+    // ── Versión en alta, SOLO cuando el cliente amplía ────────────────────────────────
+    // Mientras llega se muestra la miniatura, así el modal abre al instante. Antes esta
+    // resolución se pagaba en cada archivo subido, lo ampliara alguien o no.
+    const [previewGrande, setPreviewGrande] = useState(null);
+    useEffect(() => { setPreviewGrande(null); }, [selectedFile, multiple]);
+    useEffect(() => {
+        if (!modalAbierto || previewGrande) return;
+        const sel = multiple ? null : selectedFile;
+        const file = (typeof Blob !== 'undefined' && sel instanceof Blob)
+            ? sel
+            : ((sel?.fileData instanceof Blob) ? sel.fileData : null);
+        if (!file) return;
+        const nombre = String(sel?.name || file.name || '').toLowerCase();
+        const tipo = String(sel?.type || file.type || '').toLowerCase();
+        if (!(tipo === 'application/pdf' || nombre.endsWith('.pdf'))) return; // las imágenes ya van completas
+
+        let cancelado = false;
+        rasterizarPdf(file, AMPLIADO_PX).then((url) => {
+            if (!cancelado && url) setPreviewGrande(url);
+        });
+        return () => { cancelado = true; };
+        // El objectURL sale del caché compartido, así que no se revoca acá.
+    }, [modalAbierto, selectedFile, multiple, previewGrande]);
 
     const handleDrop = (e) => {
         e.preventDefault();
@@ -440,7 +449,7 @@ export const FileUploadZone = ({ id, onFileSelected, selectedFile, label, icon: 
                             modal se sintiera lento sin ningún beneficio. */}
                         {modoBandera ? (
                             <VistaBandera
-                                src={preview}
+                                src={previewGrande || preview}
                                 fx={recorte.fx}
                                 fy={recorte.fy}
                                 utilW={recorte.utilW}
@@ -449,7 +458,7 @@ export const FileUploadZone = ({ id, onFileSelected, selectedFile, label, icon: 
                             />
                         ) : (
                             <img
-                                src={preview}
+                                src={previewGrande || preview}
                                 alt="Vista previa del archivo"
                                 className="w-auto h-auto max-h-[calc(94vh-5rem)] max-w-[calc(95vw-2.5rem)] object-contain block"
                             />

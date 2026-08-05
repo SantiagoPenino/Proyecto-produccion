@@ -252,8 +252,8 @@ export const MainLayout = ({ children }) => {
                     {/* 1.5 Mi Fábrica */}
                     <NavItem to="/portal/factory" icon={Factory} label="Mi Fábrica" />
 
-                    {/* 2. Servicios (Link directo a catálogo) */}
-                    <NavItem to="/portal" icon={Package} label="Servicios" />
+                    {/* 2. Realizar Pedido (link directo al catálogo de servicios) */}
+                    <NavItem to="/portal" icon={Package} label="Realizar Pedido" />
 
                     {/* --- Servicios Collapsible (comentado temporalmente) ---
                     <div className="space-y-1">
