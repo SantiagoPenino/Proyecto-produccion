@@ -119,8 +119,13 @@ export const FactoryView = () => {
     const [cancelRazon, setCancelRazon] = useState('');
     const [tpu3D, setTpu3D] = useState(null); // { ordenId, codigo } → visor 3D del parche TPU abierto
 
-    const fetchOrders = async (pageNum = 1, shouldAppend = false) => {
-        if (pageNum === 1) setLoading(true);
+    // `silencioso`: refresca los datos SIN encender `loading`. Importa porque el spinner de
+    // página 1 es un early-return que reemplaza la vista ENTERA — buscador, lista y visor 3D —
+    // así que cada loading desmonta y remonta todo (el visor re-rasteriza el PDF desde cero).
+    // Con los eventos de socket (el job de WSP avisa casi continuo) eso pasaba cada ~8s: la
+    // pantalla "se refrescaba sola" mientras el cliente elegía texturas.
+    const fetchOrders = async (pageNum = 1, shouldAppend = false, { silencioso = false } = {}) => {
+        if (pageNum === 1) { if (!silencioso) setLoading(true); }
         else setLoadingMore(true);
 
         try {
@@ -302,7 +307,7 @@ export const FactoryView = () => {
                 debounceTimer = null;
                 lastFetchAt = Date.now();
                 setPage(1);
-                if (page === 1) fetchOrders(1, false);
+                if (page === 1) fetchOrders(1, false, { silencioso: true });
             }, wait);
         };
 
@@ -476,8 +481,10 @@ export const FactoryView = () => {
                         <p className="text-zinc-500 text-[10px] font-bold tracking-[0.2em] uppercase mt-0.5">Estado de Producción</p>
                     </div>
                 </div>
+                {/* Ojo: pasarlo pelado (onClick={fetchOrders}) manda el click event como pageNum
+                    → pedía ?page=[object Object] y encendía loadingMore en vez de loading. */}
                 <button
-                    onClick={fetchOrders}
+                    onClick={() => fetchOrders(1, false)}
                     className="p-2.5 rounded-xl border border-zinc-700/50 bg-custom-dark hover:border-brand-cyan/30 hover:bg-brand-cyan/5 transition-all group shrink-0"
                     title="Refrescar"
                 >

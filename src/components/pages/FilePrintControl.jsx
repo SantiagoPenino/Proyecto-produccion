@@ -115,6 +115,9 @@ const FilePrintControl = ({ areaCode }) => {
   // Falla Form
   const [failureType, setFailureType] = useState('');
   const [metersToReprint, setMetersToReprint] = useState('');
+  // FALLA POR COPIAS: cuántas copias fallaron (archivos multi-copia, fuera de TPU). La -F repone
+  // solo esas y las buenas se siguen contando. TPU queda whole-file (controla por parches).
+  const [copiasFalladas, setCopiasFalladas] = useState('1');
   const [reponerCompleto, setReponerCompleto] = useState(false);
   const [actionReason, setActionReason] = useState('');
   const [annotatedImage, setAnnotatedImage] = useState(null); // dataURL del thumbnail con el recuadro de falla
@@ -883,14 +886,25 @@ const FilePrintControl = ({ areaCode }) => {
   };
 
 
+  // ¿La falla de este archivo va POR COPIAS? (multi-copia, no servicio, no TPU)
+  const fallaPorCopiasAplica = (file) =>
+    !!file && !file.isService && !esControlTPU && (parseInt(file.Copias) || 1) > 1;
+  // Copias que quedan sin resolver (sin contar ni fallar): el máximo reportable
+  const copiasRestantesDe = (file) => Math.max(1,
+    (parseInt(file?.Copias) || 1) - (parseInt(file?.Controlcopias) || 0) - (parseInt(file?.CopiasFalladas) || 0));
+
   const openActionModal = (file, action) => {
     setSelectedFileForAction(file);
     setControlAction(action);
     setActionReason('');
     setFailureType('');
-    setMetersToReprint('');
     setReponerCompleto(false);
     setAnnotatedImage(null);
+    setCopiasFalladas('1');
+    // Metros sugeridos = 1 copia (metros por copia del archivo); el operario puede corregirlos.
+    const mCopia = parseFloat(file?.Metros || file?.Alto || 0);
+    setMetersToReprint(action === 'FALLA' && !isSB && fallaPorCopiasAplica(file) && mCopia > 0
+      ? mCopia.toFixed(2) : '');
   };
 
   const closeModal = () => {
@@ -900,13 +914,34 @@ const FilePrintControl = ({ areaCode }) => {
     setAnnotatedImage(null);
   };
 
-  const printFailureLabel = ({ order, file, tipoFalla, observacion }) => {
+  // UNA etiqueta por archivo, cuando queda RESUELTO (contadas + falladas = total),
+  // listando TODAS sus fallas acumuladas. Antes salía una etiqueta por cada reporte.
+  const printFailureLabel = ({ order, file, fallas = [] }) => {
     const orderCode = order?.code || order?.CodigoOrden || '---';
     const client = order?.client || order?.Cliente || '---';
     const material = file?.Material || file?.material || order?.material || '';
     const ancho = parseFloat(file?.Ancho || 0).toFixed(2);
     const alto = parseFloat(file?.Alto || 0).toFixed(2);
     const fecha = new Date().toLocaleDateString('es-ES');
+
+    const esc = (s) => String(s ?? '').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const itemsFalla = fallas.map((f) => {
+      const partes = [];
+      // Qué copia salió mala (registrada al reportar). Con varias, el rango N-M.
+      if (f.CopiaDesde) {
+        const n = parseInt(f.CopiasFalla) || 1;
+        partes.push(n > 1 ? `COPIAS ${f.CopiaDesde}-${f.CopiaDesde + n - 1}` : `COPIA ${f.CopiaDesde}`);
+      } else if (f.CopiasFalla) {
+        partes.push(`x${f.CopiasFalla} ${f.CopiasFalla === 1 ? 'copia' : 'copias'}`);
+      }
+      if (f.CantidadFalla) partes.push(`${parseFloat(f.CantidadFalla).toFixed(2)} m`);
+      const cant = partes.length ? ` — ${partes.join(' · ')}` : '';
+      return `
+        <div class="falla-item">
+          <div class="falla-tipo">${esc(f.TipoFalla)}${cant}</div>
+          ${f.Observaciones ? `<div class="falla-obs">${esc(f.Observaciones)}</div>` : ''}
+        </div>`;
+    }).join('');
 
     const html = `<!DOCTYPE html>
 <html>
@@ -927,19 +962,14 @@ const FilePrintControl = ({ areaCode }) => {
     .label-bold { font-weight: 900; font-size: 11px; text-transform: uppercase; color: #000; }
     .value-text { font-size: 14px; font-weight: 800; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: #000; }
     .body-section { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 8px 0; gap: 12px; }
-    .falla-word {
-      font-size: 88px; font-weight: 900; line-height: 1; letter-spacing: -2px;
-      background: #000; color: #fff;
-      width: 100%; text-align: center; padding: 8px 0;
-    }
     .tipo-falla {
       font-size: 20px; font-weight: 900; text-transform: uppercase; text-align: center;
       border: 3px solid #000; padding: 6px 20px; width: 90%; box-sizing: border-box;
     }
-    .obs-box {
-      font-size: 13px; font-weight: 600; text-align: center; color: #000;
-      width: 90%; line-height: 1.4; border-top: 1px solid #000; padding-top: 10px;
-    }
+    .fallas-list { width: 92%; display: flex; flex-direction: column; gap: 5px; }
+    .falla-item { border: 2px solid #000; padding: 4px 8px; }
+    .falla-tipo { font-size: 11px; font-weight: 900; text-transform: uppercase; }
+    .falla-obs { font-size: 9px; font-weight: 600; line-height: 1.25; margin-top: 2px; }
     .footer { border-top: 3px solid #000; padding-top: 8px; margin-top: 8px; text-align: center; }
     .order-num { font-size: 38px; font-weight: 900; display: inline-block; white-space: nowrap; color: #000; }
     .dim-text { font-size: 12px; color: #000; margin-top: 2px; }
@@ -963,9 +993,8 @@ const FilePrintControl = ({ areaCode }) => {
     </div>
 
     <div class="body-section">
-      <div class="falla-word">FALLA</div>
-      ${tipoFalla ? `<div class="tipo-falla">${tipoFalla}</div>` : ''}
-      ${observacion ? `<div class="obs-box">${observacion}</div>` : ''}
+      <div class="tipo-falla">${fallas.length} ${fallas.length === 1 ? 'FALLA REGISTRADA' : 'FALLAS REGISTRADAS'}</div>
+      <div class="fallas-list">${itemsFalla}</div>
     </div>
 
     <div class="footer">
@@ -1024,6 +1053,10 @@ const FilePrintControl = ({ areaCode }) => {
       motivo: actionReason,
       tipoFalla: failureType,
       metrosReponer: isSB ? '' : metersToReprint,
+      // Falla por copias: la -F repone SOLO estas (el backend igual la topea a las restantes)
+      copiasFalladas: (controlAction === 'FALLA' && fallaPorCopiasAplica(selectedFileForAction))
+        ? Math.min(parseInt(copiasFalladas) || 1, copiasRestantesDe(selectedFileForAction))
+        : undefined,
       usuario: user?.usuario || user?.username || 'Sistema',
       isService: selectedFileForAction.isService,
       annotatedImage: controlAction === 'FALLA' ? annotatedImage : null
@@ -1034,13 +1067,13 @@ const FilePrintControl = ({ areaCode }) => {
       const res = await fileControlService.controlarArchivo(payload);
       if (res.success) {
         setToast({ visible: true, message: 'Acción registrada correctamente', type: 'success' });
-        if (controlAction === 'FALLA') {
-          const fallaLabel = fallaTypes.find(f => f.FallaID === failureType)?.Titulo || failureType;
+        // Etiqueta: solo cuando el backend dice que el archivo quedó RESUELTO (una etiqueta
+        // con TODAS sus fallas). Si quedan copias buenas por contar, saldrá al contar la última.
+        if (controlAction === 'FALLA' && res.imprimirEtiquetaFalla && Array.isArray(res.fallasArchivo) && res.fallasArchivo.length) {
           printFailureLabel({
             order: selectedOrder,
             file: selectedFileForAction,
-            tipoFalla: fallaLabel,
-            observacion: actionReason,
+            fallas: res.fallasArchivo,
           });
         }
         refreshCurrentOrder();
@@ -1374,6 +1407,7 @@ const FilePrintControl = ({ areaCode }) => {
                       file={file}
                       refreshOrder={refreshCurrentOrder}
                       onAction={openActionModal}
+                      onFallaResuelta={(f, fallas) => printFailureLabel({ order: selectedOrder, file: f, fallas })}
                     />
                   ))}
                 </div>
@@ -1558,9 +1592,48 @@ const FilePrintControl = ({ areaCode }) => {
                 </div>
               )}
 
+              {/* FALLA POR COPIAS: cuántas fallaron. Solo multi-copia fuera de TPU; la -F repone
+                  esas copias y las buenas se siguen contando en la card. */}
+              {controlAction === 'FALLA' && fallaPorCopiasAplica(selectedFileForAction) && (() => {
+                const maxF = copiasRestantesDe(selectedFileForAction);
+                const mCopia = parseFloat(selectedFileForAction?.Metros || selectedFileForAction?.Alto || 0);
+                return (
+                  <div>
+                    <label className="block text-xs font-bold text-slate-500 uppercase mb-2">
+                      ¿Cuántas copias fallaron?
+                    </label>
+                    <div className="flex items-center gap-3">
+                      <input
+                        type="number"
+                        min="1"
+                        max={maxF}
+                        step="1"
+                        className="w-28 p-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:border-[#BD0C7E] font-bold text-sm text-slate-700"
+                        value={copiasFalladas}
+                        onChange={(e) => {
+                          let v = parseInt(e.target.value);
+                          if (isNaN(v)) { setCopiasFalladas(''); return; }
+                          if (v < 1) v = 1;
+                          if (v > maxF) v = maxF;
+                          setCopiasFalladas(String(v));
+                          // Sugerir metros = f × metros por copia (editable después)
+                          if (!isSB && mCopia > 0 && !reponerCompleto) setMetersToReprint((v * mCopia).toFixed(2));
+                        }}
+                      />
+                      <span className="text-xs font-semibold text-slate-500">
+                        de <span className="font-black text-slate-700">{maxF}</span> sin resolver
+                        · las copias buenas se siguen contando
+                      </span>
+                    </div>
+                  </div>
+                );
+              })()}
+
               {controlAction === 'FALLA' && !isSB && (() => {
                 const fileAlto = parseFloat(selectedFileForAction?.Alto || 0);
-                const maxReponer = fileAlto > 0 ? Math.max(0, fileAlto - 0.01) : null;
+                const fPorCopias = fallaPorCopiasAplica(selectedFileForAction) ? (parseInt(copiasFalladas) || 1) : 1;
+                // Con falla por copias el tope de metros escala con f (f copias = f alturas)
+                const maxReponer = fileAlto > 0 ? Math.max(0, fileAlto * fPorCopias - 0.01) : null;
                 return (
                   <div>
                     <label className="block text-xs font-bold text-slate-500 uppercase mb-2">
@@ -1592,7 +1665,8 @@ const FilePrintControl = ({ areaCode }) => {
                           onChange={(e) => {
                             setReponerCompleto(e.target.checked);
                             if (e.target.checked) {
-                              setMetersToReprint(fileAlto > 0 ? fileAlto.toFixed(2) : '');
+                              // "Completo" = todas las copias que se están reportando (f × alto)
+                              setMetersToReprint(fileAlto > 0 ? (fileAlto * fPorCopias).toFixed(2) : '');
                             } else {
                               setMetersToReprint('');
                             }
@@ -1600,7 +1674,7 @@ const FilePrintControl = ({ areaCode }) => {
                           className="w-4 h-4 accent-[#BD0C7E] cursor-pointer"
                         />
                         <span className="text-xs font-semibold text-slate-600 whitespace-nowrap">
-                          Completo ({fileAlto > 0 ? fileAlto.toFixed(2) : '?'} m)
+                          Completo ({fileAlto > 0 ? (fileAlto * fPorCopias).toFixed(2) : '?'} m)
                         </span>
                       </label>
                     </div>

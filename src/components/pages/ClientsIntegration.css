@@ -98,6 +98,10 @@
   flex-shrink: 0;
 }
 
+/* Contador: el número manda, la palabra acompaña */
+.ci-count { font-size: 11px; color: #94a3b8; font-weight: 500; white-space: nowrap; }
+.ci-count strong { font-size: 14px; color: #1e1b4b; font-weight: 800; font-variant-numeric: tabular-nums; margin-right: 3px; }
+
 .ci-search {
   flex: 1;
   min-width: 220px;
@@ -165,21 +169,36 @@
 }
 .ci-btn-primary:hover { background: #4338ca; transform: translateY(-1px); box-shadow: 0 4px 12px rgba(79,70,229,.35); }
 
-/* ── Dup legend ───────────────────────────────────────────────────────────── */
-.ci-dup-legend {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 28px;
-  background: #fffbeb;
-  border-bottom: 1px solid #fde68a;
-  font-size: 11px;
-  font-weight: 600;
-  color: #92400e;
-  flex-shrink: 0;
+/* ── Duplicados ───────────────────────────────────────────────────────────────
+   Antes era una banda amarilla fija con la leyenda de los 6 colores, siempre
+   presente y robando una franja de la pantalla. Ahora es un chip en la toolbar
+   con el conteo, y la leyenda aparece solo al pasar el mouse. */
+.ci-dup-chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 6px 11px; border-radius: 8px;
+  background: #fffbeb; border: 1px solid #fde68a;
+  font-size: 11.5px; font-weight: 700; color: #b45309;
+  cursor: pointer; white-space: nowrap;
+  transition: background .15s, border-color .15s;
+  position: relative;
 }
-.ci-dup-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+.ci-dup-chip:hover { background: #fef3c7; border-color: #fcd34d; }
+.ci-dup-chip.activo { background: #fef3c7; border-color: #f59e0b; color: #92400e; }
+
+/* Leyenda flotante (hover del chip) */
+.ci-dup-pop {
+  position: absolute; top: calc(100% + 6px); left: 0; z-index: 30;
+  display: none; flex-direction: column; gap: 5px;
+  padding: 9px 11px; min-width: 165px;
+  background: #fff; border: 1px solid #e2e8f0; border-radius: 9px;
+  box-shadow: 0 8px 24px rgba(15,23,42,.13);
+  font-size: 10.5px; font-weight: 600; color: #475569;
+  cursor: default;
+}
+.ci-dup-chip:hover .ci-dup-pop { display: flex; }
+.ci-dup-pop-title { font-size: 9px; text-transform: uppercase; letter-spacing: .5px; color: #94a3b8; font-weight: 800; margin-bottom: 1px; }
+.ci-dup-pop-row { display: flex; align-items: center; gap: 6px; }
+.ci-dup-dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; flex-shrink: 0; }
 
 /* ── Content area ─────────────────────────────────────────────────────────── */
 .ci-content { flex: 1; overflow-y: auto; overflow-x: hidden; padding: 16px 28px; display: flex; flex-direction: column; box-sizing: border-box; min-height: 0; }
@@ -216,35 +235,126 @@
   flex-shrink: 0; letter-spacing: -.3px;
 }
 
-/* ── KANBAN GRID ──────────────────────────────────────────────────────────── */
-.ci-kanban { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 14px; padding-bottom: 12px; align-content: start; }
+/* Avatar de la tarjeta: gradiente + brillo diagonal, y una sombra del propio
+   color. Un cuadrado de color plano repetido 5.000 veces es lo que hacía que la
+   grilla se viera muerta. */
+.ci-avatar-wrap { flex-shrink: 0; }
+.ci-card .ci-avatar {
+  width: 36px; height: 36px; border-radius: 11px;
+  font-size: 12.5px; letter-spacing: -.4px;
+  position: relative; overflow: hidden;
+  box-shadow: 0 3px 8px -2px rgba(15,23,42,.28);
+  transition: transform .18s ease, box-shadow .18s ease;
+}
+.ci-card .ci-avatar::after {
+  content: '';
+  position: absolute; inset: 0;
+  background: linear-gradient(135deg, rgba(255,255,255,.30) 0%, rgba(255,255,255,0) 48%);
+}
+.ci-card:hover .ci-avatar { transform: scale(1.06) rotate(-2deg); box-shadow: 0 5px 14px -3px rgba(15,23,42,.34); }
+
+/* ── KANBAN GRID ──────────────────────────────────────────────────────────────
+   Tarjetas COMPACTAS y de altura PAREJA: son 5.000+ clientes, así que lo que
+   importa es cuántos entran de un vistazo. Antes cada tarjeta crecía según los
+   datos que tuviera (un cliente sin teléfono quedaba más bajo que el de al lado)
+   y la grilla parecía rota. Ahora las filas de datos tienen alto fijo y el
+   footer va anclado abajo, así todas miden igual. */
+.ci-kanban { display: grid; grid-template-columns: repeat(auto-fill, minmax(232px, 1fr)); gap: 10px; padding-bottom: 12px; align-content: start; }
 
 .ci-card {
   background: #fff;
-  border-radius: 12px;
-  border: 1.5px solid #e8eaed;
-  padding: 16px;
+  border-radius: 14px;
+  border: 1px solid #eef0f4;
+  padding: 13px 14px 11px;
   cursor: pointer;
-  transition: all .2s ease;
+  transition: border-color .18s ease, box-shadow .18s ease, transform .18s ease;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 9px;
   position: relative;
   overflow: hidden;
+  box-shadow: 0 1px 2px rgba(15,23,42,.04);
 }
-.ci-card:hover { border-color: #818cf8; box-shadow: 0 6px 20px rgba(79,70,229,.12); transform: translateY(-2px); }
-.ci-card.dup-card { border-left: 4px solid var(--dup-color, #ef4444); }
+/* Barra de acento arriba: invisible en reposo, se pinta al pasar el mouse.
+   Es lo que le da el "click" visual a la tarjeta sin ensuciarla en reposo. */
+.ci-card::before {
+  content: '';
+  position: absolute; top: 0; left: 0; right: 0; height: 3px;
+  background: linear-gradient(90deg, #4f46e5, #7c3aed 55%, #0891b2);
+  transform: scaleX(0); transform-origin: left;
+  transition: transform .25s ease;
+}
+.ci-card:hover::before { transform: scaleX(1); }
+.ci-card:hover {
+  border-color: #ddd9fe;
+  box-shadow: 0 8px 22px -6px rgba(79,70,229,.22), 0 2px 6px rgba(15,23,42,.05);
+  transform: translateY(-1px);
+}
+.ci-card.dup-card { border-left: 3px solid var(--dup-color, #ef4444); padding-left: 12px; }
 
-.ci-card-header { display: flex; align-items: flex-start; gap: 10px; }
+.ci-card-header { display: flex; align-items: center; gap: 10px; }
 .ci-card-info { flex: 1; min-width: 0; }
-.ci-card-name { font-size: 14px; font-weight: 700; color: #1e1b4b; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.ci-card-sub { font-size: 11px; color: #888; margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
-.ci-card-body { display: flex; flex-direction: column; gap: 5px; }
-.ci-card-row { display: flex; align-items: center; gap: 6px; font-size: 12px; color: #555; }
-.ci-card-row-icon { font-size: 11px; width: 14px; text-align: center; color: #9ca3af; }
+/* El ID es el dato con el que se busca al cliente: va primero y en mono, que es
+   como se lee un código. El nombre queda abajo, en tono humano. */
+.ci-card-id {
+  font-size: 12.5px; font-weight: 800; color: #1e1b4b;
+  letter-spacing: -.2px; line-height: 1.2;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  font-variant-numeric: tabular-nums;
+}
+.ci-card-name { font-size: 11px; font-weight: 500; color: #8b93a7; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; line-height: 1.2; }
+.ci-card-name.sin-nombre { color: #d7dbe3; font-style: italic; }
 
-.ci-card-footer { display: flex; align-items: center; justify-content: space-between; padding-top: 8px; border-top: 1px solid #f1f3f9; }
+/* Cuerpo: alto FIJO (2 filas) para que todas las tarjetas midan lo mismo aunque
+   al cliente le falten datos. El footer queda pegado abajo con margin-top:auto. */
+/* Contacto sobre un panel suave: separa visualmente "cómo lo contacto" del
+   encabezado, y de paso tapa la sensación de tarjeta vacía cuando faltan datos. */
+.ci-card-body {
+  display: flex; flex-direction: column; gap: 4px; min-height: 34px;
+  background: #f8fafc; border-radius: 9px; padding: 7px 9px;
+  transition: background .18s ease;
+}
+.ci-card:hover .ci-card-body { background: #f5f3ff; }
+.ci-card-row { display: flex; align-items: center; gap: 7px; font-size: 11.5px; color: #55617a; min-width: 0; font-variant-numeric: tabular-nums; }
+.ci-card-row > span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ci-card-row-icon { flex-shrink: 0; color: #a9b2c6; }
+.ci-card-row.vacia { color: #d7dbe3; }
+.ci-card-row.vacia .ci-card-row-icon { color: #e4e8ef; }
+
+.ci-card-meta { display: flex; align-items: center; gap: 5px; font-size: 10px; color: #94a3b8; min-width: 0; padding: 0 2px; }
+.ci-card-meta .sep { color: #dde1e9; }
+.ci-card-meta span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Eliminar: flotante en la esquina, solo al pasar el mouse. Al sacar el footer
+   (chips PL/MS y #CodCliente) la tarjeta quedó más baja y sin una fila que solo
+   servía para alojar este botón. */
+.ci-card-del {
+  position: absolute; top: 7px; right: 7px;
+  background: none; border: none; cursor: pointer;
+  color: #cbd5e1; padding: 4px; line-height: 0; border-radius: 6px;
+  opacity: 0; transition: opacity .15s, color .15s, background .15s;
+}
+.ci-card:hover .ci-card-del { opacity: 1; }
+.ci-card-del:hover { color: #dc2626; background: #fee2e2; }
+
+/* Integraciones como puntos: dos pastillas de 10px ocupaban media tarjeta.
+   Verde = Planilla, violeta = Macrosoft; apagado = no vinculado. */
+.ci-int { display: flex; gap: 4px; align-items: center; }
+.ci-int-pill {
+  width: 17px; height: 17px; border-radius: 6px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 8px; font-weight: 900; letter-spacing: -.2px;
+  transition: transform .15s ease;
+}
+.ci-card:hover .ci-int-pill { transform: translateY(-1px); }
+.ci-int-pill.on-planilla  { background: linear-gradient(135deg, #bbf7d0, #dcfce7); color: #15803d; box-shadow: 0 1px 3px rgba(21,128,61,.18); }
+.ci-int-pill.on-macrosoft { background: linear-gradient(135deg, #ddd6fe, #ede9fe); color: #6d28d9; box-shadow: 0 1px 3px rgba(109,40,217,.18); }
+.ci-int-pill.off          { background: #f8fafc; color: #d7dbe3; border: 1px dashed #e4e8ef; }
+
+.ci-card-cod { font-size: 9.5px; color: #cbd5e1; font-weight: 700; font-variant-numeric: tabular-nums; }
+.ci-card-del { background: none; border: none; cursor: pointer; color: #e2e8f0; padding: 2px; line-height: 0; border-radius: 4px; transition: color .15s, background .15s; }
+.ci-card-del:hover { color: #dc2626; background: #fee2e2; }
 
 /* ── Status badge ─────────────────────────────────────────────────────────── */
 .ci-badge {
@@ -267,9 +377,35 @@
 .ci-int-dot.active { background: #ede9fe; }
 .ci-int-dot.inactive { background: #f8fafc; border: 1px dashed #e2e8f0; opacity: .5; }
 
-/* ── Dup tags ─────────────────────────────────────────────────────────────── */
-.ci-dup-tags { display: flex; flex-wrap: wrap; gap: 3px; }
-.ci-dup-tag { font-size: 9px; font-weight: 700; padding: 1px 5px; border-radius: 4px; }
+/* ── Punto de duplicado (dentro de la tarjeta) ───────────────────────────────
+   UNO por tarjeta: al pulsarlo trae todos los hermanitos del cliente. Por qué
+   campo duplica lo dice la barra de color del borde izquierdo. */
+.ci-dup-tag {
+  width: 8px; height: 8px; border-radius: 50%;
+  cursor: pointer; flex-shrink: 0;
+  transition: transform .12s, box-shadow .12s;
+}
+.ci-dup-tag:hover { transform: scale(1.6); box-shadow: 0 0 0 3px rgba(15,23,42,.07); }
+
+/* ── Banner "hermanitos" ─────────────────────────────────────────────────── */
+.ci-hermanos {
+  display: flex; align-items: center; gap: 9px; flex-shrink: 0;
+  padding: 9px 28px; background: #1e1b4b; color: #fff;
+  font-size: 12.5px; font-weight: 600;
+}
+.ci-hermanos-lbl { opacity: .65; }
+.ci-hermanos-cli { font-weight: 800; font-size: 13.5px; }
+.ci-hermanos-por { display: flex; align-items: center; gap: 5px; opacity: .9; }
+.ci-hermanos-campo { border: 1px solid; border-radius: 6px; padding: 1px 8px; font-size: 11px; font-weight: 800; }
+.ci-hermanos-n { opacity: .55; font-size: 11px; }
+.ci-hermanos-x {
+  display: inline-flex; align-items: center; gap: 5px;
+  margin-left: auto; padding: 4px 11px;
+  background: rgba(255,255,255,.14); border: none; border-radius: 7px;
+  color: #fff; font-size: 11.5px; font-weight: 700; cursor: pointer;
+  transition: background .15s;
+}
+.ci-hermanos-x:hover { background: rgba(255,255,255,.26); }
 
 /* ── ÁRBOL ────────────────────────────────────────────────────────────────── */
 .ci-tree { display: flex; flex-direction: column; gap: 10px; padding-bottom: 12px; }
@@ -308,36 +444,181 @@
 
 /* ── MODALS ───────────────────────────────────────────────────────────────── */
 .ci-overlay { position: fixed; inset: 0; background: rgba(15,15,35,.45); z-index: 50; display: flex; align-items: center; justify-content: center; padding: 20px; }
-.ci-modal { background: #fff; border-radius: 16px; box-shadow: 0 20px 60px rgba(0,0,0,.2); width: 100%; max-width: 660px; max-height: 92vh; overflow-y: auto; animation: modal-in .18s ease; }
+/* Ancho y centrado: el modal era angosto (660px) y las 15 secciones caían una
+   debajo de la otra, así que siempre había scroll. Ahora ocupa el 90% del alto,
+   va centrado de verdad (el body scrollea solo si no entra) y las secciones se
+   reparten en dos columnas — ver .ci-modal-body. */
+.ci-modal {
+  background: #fff; border-radius: 16px;
+  box-shadow: 0 24px 70px rgba(15,23,42,.28);
+  width: 100%; max-width: 1080px;
+  max-height: 90vh;
+  display: flex; flex-direction: column;   /* header y footer fijos, body scrollea */
+  overflow: hidden;
+  animation: modal-in .18s ease;
+}
 @keyframes modal-in { from { opacity:0; transform: scale(.96) translateY(8px); } to { opacity:1; transform: scale(1) translateY(0); } }
 
-.ci-modal-header { position: sticky; top: 0; background: #fff; border-bottom: 1px solid #f0f0f8; padding: 20px 24px 16px; display: flex; align-items: flex-start; justify-content: space-between; border-radius: 16px 16px 0 0; z-index: 5; }
-.ci-modal-title { font-size: 17px; font-weight: 800; color: #1e1b4b; }
-.ci-modal-sub { font-size: 12px; color: #888; margin-top: 2px; }
-.ci-modal-close { background: #f4f5f7; border: none; width: 30px; height: 30px; border-radius: 8px; font-size: 16px; cursor: pointer; color: #555; display: flex; align-items: center; justify-content: center; }
+/* Cabecera con la identidad del cliente, en el mismo lenguaje que las tarjetas:
+   avatar con gradiente, ID como título y nombre debajo. */
+/* Header y footer FIJOS por el flex-column del .ci-modal (ya no necesitan
+   sticky): solo scrollea el body, así los botones siempre quedan a la vista. */
+.ci-modal-header {
+  flex-shrink: 0;
+  background: linear-gradient(180deg, #fbfbff 0%, #fff 100%);
+  border-bottom: 1px solid #eef0f6;
+  padding: 15px 22px; display: flex; align-items: center; gap: 12px;
+  border-radius: 16px 16px 0 0;
+}
+.ci-modal-avatar {
+  width: 42px; height: 42px; border-radius: 13px; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  color: #fff; font-weight: 800; font-size: 15px; letter-spacing: -.4px;
+  box-shadow: 0 4px 10px -2px rgba(15,23,42,.3);
+  position: relative; overflow: hidden;
+}
+.ci-modal-avatar::after {
+  content: ''; position: absolute; inset: 0;
+  background: linear-gradient(135deg, rgba(255,255,255,.3) 0%, rgba(255,255,255,0) 48%);
+}
+.ci-modal-headinfo { flex: 1; min-width: 0; }
+.ci-modal-title { font-size: 17px; font-weight: 800; color: #1e1b4b; letter-spacing: -.3px; line-height: 1.2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ci-modal-sub { font-size: 12px; color: #8b93a7; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ci-modal-tags { display: flex; align-items: center; gap: 5px; flex-shrink: 0; }
+.ci-modal-cod { font-size: 10px; font-weight: 700; color: #c3c9d6; font-variant-numeric: tabular-nums; margin-left: 2px; }
+.ci-modal-close { background: #f4f5f7; border: none; width: 30px; height: 30px; border-radius: 9px; cursor: pointer; color: #64748b; display: flex; align-items: center; justify-content: center; flex-shrink: 0; transition: background .15s, color .15s; }
 .ci-modal-close:hover { background: #fee2e2; color: #dc2626; }
 
-.ci-modal-body { padding: 20px 24px; display: flex; flex-direction: column; gap: 20px; }
-.ci-modal-section-title { font-size: 10px; font-weight: 800; color: #6366f1; text-transform: uppercase; letter-spacing: 1px; border-bottom: 1.5px solid #e8eaf6; padding-bottom: 6px; margin-bottom: 10px; }
+/* DOS COLUMNAS de secciones: Identificación y Contacto a la izquierda,
+   Ubicación y Clasificación a la derecha. Con el modal ancho, apilarlas en una
+   sola columna dejaba media pantalla vacía y obligaba a scrollear siempre.
+   `align-content: start` evita que las secciones se estiren para rellenar. */
+.ci-modal-body {
+  flex: 1; min-height: 0; overflow-y: auto;
+  padding: 18px 22px 22px;
+  display: grid; grid-template-columns: 1fr 1fr;
+  gap: 18px 26px; align-content: start;
+}
+/* Bajo 900px vuelve a una sola columna (el modal ya ocupa casi todo el ancho) */
+@media (max-width: 900px) { .ci-modal-body { grid-template-columns: 1fr; } }
+.ci-modal-col { display: flex; flex-direction: column; gap: 18px; min-width: 0; }
+
+/* Checkbox "Web activo": alineado con los campos de al lado (antes se empujaba
+   con un paddingTop:22 a ojo y quedaba flotando). */
+.ci-check {
+  display: flex; align-items: center; gap: 8px;
+  align-self: end; height: 38px; padding: 0 11px;
+  border: 1.5px solid #e9edf3; border-radius: 9px; background: #f9fafc;
+  cursor: pointer; user-select: none;
+  transition: border-color .16s, background .16s;
+}
+.ci-check:hover { border-color: #d7dde8; }
+.ci-check input { width: 15px; height: 15px; accent-color: #006E97; cursor: pointer; margin: 0; }
+.ci-check span { font-size: 12.5px; font-weight: 600; color: #475569; }
+
+/* ── Desplegables (HeadlessUI Listbox) ───────────────────────────────────────
+   Reemplazan al <select> nativo, cuyo panel lo dibuja el sistema operativo y no
+   se puede estilar. El botón imita exactamente al input para que el formulario
+   se lea parejo. El panel se ancla por fuera (prop `anchor`), así no lo recorta
+   el scroll del cuerpo del modal. */
+.ci-lb { position: relative; }
+.ci-lb-btn {
+  width: 100%; padding: 9px 11px; box-sizing: border-box;
+  border: 1.5px solid #e9edf3; border-radius: 9px; background: #f9fafc;
+  font-size: 13px; font-family: 'Inter', sans-serif; font-weight: 500; color: #1e1b4b;
+  cursor: pointer; text-align: left;
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  transition: border-color .16s, box-shadow .16s, background .16s;
+}
+.ci-lb-btn:hover { border-color: #d7dde8; }
+.ci-lb-btn[data-open], .ci-lb-btn:focus-visible {
+  border-color: #006E97; background: #fff; outline: none;
+  box-shadow: 0 0 0 3px rgba(0,110,151,.13);
+}
+.ci-lb-btn > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ci-lb-btn svg { color: #a9b2c6; flex-shrink: 0; }
+.ci-lb-ph { color: #b6bdcc; }
+
+.ci-lb-panel {
+  z-index: 90;                      /* por encima del modal (z-index 50) */
+  width: var(--button-width);       /* lo expone HeadlessUI: mismo ancho que el botón */
+  max-height: 260px; overflow-y: auto;
+  margin-top: 5px; padding: 5px;
+  background: #fff; border: 1px solid #e6eaf1; border-radius: 11px;
+  box-shadow: 0 12px 30px -6px rgba(15,23,42,.20);
+  font-size: 13px;
+  /* sin animación de entrada: con listas de 300+ localidades se notaba el lag */
+}
+.ci-lb-opt {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 7px 9px; border-radius: 7px; cursor: pointer;
+  color: #334155; font-weight: 500;
+}
+.ci-lb-opt > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ci-lb-opt[data-focus] { background: #eff8fb; color: #00567a; }      /* teclado / hover */
+.ci-lb-opt[data-selected] { background: #e2f2f7; color: #006E97; font-weight: 700; }
+.ci-lb-opt svg { color: #006E97; flex-shrink: 0; }
+
+/* Vínculos: IDs de sistemas externos. Van en mono y apagados — son códigos que
+   se leen y se comparan, no datos que se escriban a diario. */
+.ci-field-hint { font-weight: 600; color: #c3c9d6; text-transform: none; letter-spacing: 0; margin-left: 4px; }
+.ci-vinculos input {
+  font-family: 'SFMono-Regular', Menlo, Consolas, monospace;
+  font-size: 12px; letter-spacing: .2px; color: #64748b;
+}
+/* Título de sección: sin la línea que cruzaba todo el ancho — el icono y el color
+   ya separan los bloques, y la regla horizontal partía el modal en cuatro. */
+.ci-modal-section-title {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 10px; font-weight: 800; color: #006E97;   /* brand-cyan */
+  text-transform: uppercase; letter-spacing: 1px;
+  margin-bottom: 10px;
+}
+.ci-modal-section-title svg { color: #006E97; opacity: .65; }
 .ci-field-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .ci-field-grid .full { grid-column: 1/-1; }
 
-.ci-field label { display: block; font-size: 11px; font-weight: 700; color: #6b7280; text-transform: uppercase; letter-spacing: .4px; margin-bottom: 5px; }
+.ci-field label { display: block; font-size: 10px; font-weight: 700; color: #94a3b8; text-transform: uppercase; letter-spacing: .5px; margin-bottom: 4px; }
+/* Campos sobre gris suave: en blanco sobre blanco solo se veía el borde y el
+   formulario parecía una lista de rectángulos vacíos. Al enfocar pasan a blanco. */
 .ci-field input, .ci-field select {
-  width: 100%; padding: 9px 12px; border: 1.5px solid #e2e8f0; border-radius: 8px;
-  font-size: 13px; font-family: 'Inter', sans-serif; outline: none; transition: all .18s;
-  background: #fff; color: #1e1b4b; box-sizing: border-box;
+  width: 100%; padding: 9px 11px; border: 1.5px solid #e9edf3; border-radius: 9px;
+  font-size: 13px; font-family: 'Inter', sans-serif; outline: none;
+  transition: border-color .16s, box-shadow .16s, background .16s;
+  background: #f9fafc; color: #1e1b4b; box-sizing: border-box; font-weight: 500;
 }
-.ci-field input:focus, .ci-field select:focus { border-color: #6366f1; box-shadow: 0 0 0 3px rgba(99,102,241,.12); }
-.ci-field input[readonly] { background: #f8f9ff; color: #9ca3af; cursor: not-allowed; }
+.ci-field input:hover, .ci-field select:hover { border-color: #d7dde8; }
+.ci-field input:focus, .ci-field select:focus { border-color: #818cf8; background: #fff; box-shadow: 0 0 0 3px rgba(99,102,241,.13); }
+.ci-field input::placeholder { color: #c3c9d6; }
+.ci-field input[readonly] { background: #f1f3f9; color: #9ca3af; cursor: not-allowed; }
 
-.ci-modal-footer { position: sticky; bottom: 0; background: #fff; border-top: 1px solid #f0f0f8; padding: 16px 24px; display: flex; justify-content: flex-end; gap: 8px; border-radius: 0 0 16px 16px; }
+.ci-modal-footer { flex-shrink: 0; background: #fff; border-top: 1px solid #eef0f6; padding: 13px 22px; display: flex; align-items: center; justify-content: flex-end; gap: 8px; border-radius: 0 0 16px 16px; }
 
-.ci-btn-cancel { padding: 9px 18px; background: #f4f5f7; border: none; border-radius: 8px; font-size: 13px; font-weight: 600; cursor: pointer; color: #555; transition: background .15s; }
-.ci-btn-cancel:hover { background: #e8eaed; }
-.ci-btn-save { padding: 9px 22px; background: #4f46e5; color: #fff; border: none; border-radius: 8px; font-size: 13px; font-weight: 700; cursor: pointer; transition: all .18s; box-shadow: 0 2px 8px rgba(79,70,229,.3); }
-.ci-btn-save:hover { background: #4338ca; }
-.ci-btn-save:disabled { opacity: .5; cursor: not-allowed; }
+.ci-btn-cancel { padding: 9px 18px; background: #f4f5f7; border: none; border-radius: 9px; font-size: 13px; font-weight: 600; cursor: pointer; color: #64748b; transition: background .15s, color .15s; }
+.ci-btn-cancel:hover { background: #e8eaed; color: #334155; }
+
+.ci-btn-save {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 9px 20px; border: none; border-radius: 9px;
+  background: linear-gradient(135deg, #006E97, #00567a);   /* brand-cyan */
+  color: #fff; font-size: 13px; font-weight: 700; cursor: pointer;
+  box-shadow: 0 3px 10px -2px rgba(0,110,151,.45);
+  transition: box-shadow .18s ease, transform .18s ease, filter .18s ease;
+}
+.ci-btn-save:hover { filter: brightness(1.12); box-shadow: 0 5px 16px -3px rgba(0,110,151,.55); transform: translateY(-1px); }
+.ci-btn-save:disabled { opacity: .55; cursor: not-allowed; transform: none; box-shadow: none; }
+
+/* Eliminar: a la izquierda y en tono discreto — es destructivo, no tiene que
+   competir con Guardar. Antes tenía los estilos y el hover en JS inline. */
+.ci-btn-delete {
+  display: inline-flex; align-items: center; gap: 6px;
+  margin-right: auto; padding: 9px 15px;
+  background: none; border: 1.5px solid #fecaca; border-radius: 9px;
+  color: #dc2626; font-size: 13px; font-weight: 700; cursor: pointer;
+  transition: background .15s, border-color .15s;
+}
+.ci-btn-delete:hover { background: #fee2e2; border-color: #fca5a5; }
+.ci-btn-delete:disabled { opacity: .5; cursor: not-allowed; }
 
 /* ── Sheets/Macrosoft compare ─────────────────────────────────────────────── */
 .ci-compare-table { width: 100%; border-collapse: collapse; font-size: 13px; }

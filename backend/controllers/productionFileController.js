@@ -14,11 +14,41 @@ async function ensureFallaColumn(pool) {
     await pool.request().query(`
         IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE Name = 'ImagenFalla' AND Object_ID = Object_ID('dbo.FallasProduccion'))
             ALTER TABLE dbo.FallasProduccion ADD ImagenFalla NVARCHAR(300) NULL;
+        -- Falla POR COPIAS: cuántas copias del archivo están "en reposición" (falladas y aún no
+        -- repuestas). 0 = sin fallas parciales (whole-file legacy). Ver docs/falla-por-copias-propuesta.md
+        IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE Name = 'CopiasFalladas' AND Object_ID = Object_ID('dbo.ArchivosOrden'))
+            ALTER TABLE dbo.ArchivosOrden ADD CopiasFalladas INT NOT NULL CONSTRAINT DF_ArchivosOrden_CopiasFalladas DEFAULT 0;
+        -- Copias falladas del reporte (CantidadFalla sigue siendo METROS: la consumen los informes)
+        IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE Name = 'CopiasFalla' AND Object_ID = Object_ID('dbo.FallasProduccion'))
+            ALTER TABLE dbo.FallasProduccion ADD CopiasFalla INT NULL;
+        -- Número de la PRIMERA copia reportada en esta falla (contadas + falladas previas + 1):
+        -- el operario controla en orden, así que identifica qué copia salió mala. La etiqueta
+        -- muestra "COPIA N" (o "COPIAS N-M" si CopiasFalla > 1).
+        IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE Name = 'CopiaDesde' AND Object_ID = Object_ID('dbo.FallasProduccion'))
+            ALTER TABLE dbo.FallasProduccion ADD CopiaDesde INT NULL;
     `);
     _fallaColEnsured = true;
 }
 const { isPedidoCompletoEnArea } = require('../services/pedidoCompletoService');
 const { cancelarLoteSiVacio } = require('../services/loteCleanupService');
+
+// Todas las fallas registradas de un ítem (archivo o servicio), para la etiqueta.
+// La etiqueta de falla sale UNA vez por archivo — cuando queda resuelto (contadas +
+// falladas = total) — y lista todo lo acumulado; antes salía una por cada reporte.
+async function getFallasDeArchivo(db, archivoId) {
+    const r = await new sql.Request(db)
+        .input('AID', sql.Int, archivoId)
+        .query(`
+            SELECT FP.FechaFalla, FP.CantidadFalla, FP.CopiasFalla, FP.CopiaDesde,
+                   CAST(FP.Observaciones AS NVARCHAR(500)) AS Observaciones,
+                   ISNULL(TF.Titulo, CONCAT('Tipo #', FP.TipoFalla)) AS TipoFalla
+            FROM FallasProduccion FP WITH (NOLOCK)
+            LEFT JOIN TiposFallas TF WITH (NOLOCK) ON TF.FallaID = FP.TipoFalla
+            WHERE FP.ArchivoID = @AID
+            ORDER BY FP.FechaFalla ASC
+        `);
+    return r.recordset;
+}
 
 /**
  * Cura la familia tras cerrar una reposición (-F) sin fallas.
@@ -37,7 +67,7 @@ const { cancelarLoteSiVacio } = require('../services/loteCleanupService');
  *
  * @param db  pool o transacción activa
  */
-async function sanarFamiliaTrasReposicion(db, { ordenId, codigoOrden, noDocERP, areaId }) {
+async function sanarFamiliaTrasReposicion(db, { ordenId, codigoOrden, noDocERP, areaId, soloNombreArchivo = null }) {
     const codigoRaiz = (codigoOrden || '').split('-F')[0];
     // "Misma familia": por NoDocERP si existe; si no, por código raíz (madre y sus -F). Excluye la propia.
     const filtroFamilia = (alias) => `
@@ -53,25 +83,54 @@ async function sanarFamiliaTrasReposicion(db, { ordenId, codigoOrden, noDocERP, 
         .input('CodigoRaiz', sql.NVarChar, codigoRaiz)
         .input('AreaID', sql.VarChar(50), areaId)
         .input('CurrentOrderID', sql.Int, ordenId)
+        .input('SoloNombre', sql.NVarChar, soloNombreArchivo)
         .query(`
-            UPDATE ParentFiles
-            SET EstadoArchivo = 'OK', Observaciones = CONCAT(ISNULL(ParentFiles.Observaciones, ''), ' [Repuesto]')
-            FROM dbo.ArchivosOrden AS ParentFiles
-            INNER JOIN dbo.Ordenes AS ParentOrder ON ParentFiles.OrdenID = ParentOrder.OrdenID
+            -- Cura por archivo, en DOS modos según cómo se reportó la falla:
+            --  · WHOLE-FILE (legacy, CopiasFalladas=0 y estado FALLA): como siempre — OK + [Repuesto]
+            --    y el contador al total.
+            --  · PARCIAL (CopiasFalladas>0): la -F repuso CurF.Copias copias de ese archivo; se
+            --    acreditan a la madre con tope en su pendiente (min(f, CopiasFalladas)) — así la
+            --    suma es acotada y repetir la cura no duplica crédito (idempotente). Si con eso el
+            --    archivo llega al total queda OK; si no, sigue en su estado (Pendiente: se siguen
+            --    contando buenas / FALLA: espera otra reposición del resto).
+            -- @SoloNombre acota la cura a UN archivo (updateFileCopyCount cura al completarse cada
+            -- archivo de la -F, no la -F entera — una -F reutilizada puede tener varios).
+            UPDATE PF
+            SET Controlcopias  = nuevo.Ctl,
+                CopiasFalladas = nuevo.Fall,
+                EstadoArchivo  = CASE WHEN nuevo.Ctl >= PF.Copias THEN 'OK' ELSE PF.EstadoArchivo END,
+                FechaControl   = GETDATE(),
+                Observaciones  = CONCAT(ISNULL(PF.Observaciones, ''),
+                    CASE WHEN nuevo.Ctl >= PF.Copias THEN ' [Repuesto]'
+                         ELSE CONCAT(' [Repuesta parcial x', nuevo.Rep, ']') END)
+            FROM dbo.ArchivosOrden AS PF
+            INNER JOIN dbo.Ordenes AS ParentOrder ON PF.OrdenID = ParentOrder.OrdenID
+            INNER JOIN dbo.ArchivosOrden AS CurF
+                ON CurF.OrdenID = @CurrentOrderID AND CurF.NombreArchivo = PF.NombreArchivo
+            CROSS APPLY (SELECT Rep = CASE
+                    WHEN ISNULL(PF.CopiasFalladas, 0) = 0 THEN NULL  -- whole-file legacy
+                    WHEN ISNULL(CurF.Copias, 1) <= PF.CopiasFalladas THEN ISNULL(CurF.Copias, 1)
+                    ELSE PF.CopiasFalladas END) rep0
+            CROSS APPLY (SELECT
+                    Ctl  = CASE WHEN rep0.Rep IS NULL THEN PF.Copias ELSE ISNULL(PF.Controlcopias, 0) + rep0.Rep END,
+                    Fall = CASE WHEN rep0.Rep IS NULL THEN 0 ELSE ISNULL(PF.CopiasFalladas, 0) - rep0.Rep END,
+                    Rep  = rep0.Rep) nuevo
             WHERE ${filtroFamilia('ParentOrder')}
-              AND ParentFiles.EstadoArchivo = 'FALLA'
-              AND ParentFiles.NombreArchivo IN (SELECT NombreArchivo FROM dbo.ArchivosOrden WHERE OrdenID = @CurrentOrderID);
+              AND (PF.EstadoArchivo = 'FALLA' OR ISNULL(PF.CopiasFalladas, 0) > 0)
+              AND (@SoloNombre IS NULL OR PF.NombreArchivo = @SoloNombre);
 
+            -- Servicios: siempre whole-file (no tienen parciales). No corre en curas por-archivo.
             UPDATE ParentServices
             SET Estado = 'OK', Observaciones = CONCAT(ISNULL(ParentServices.Observaciones, ''), ' [Repuesto]')
             FROM dbo.ServiciosExtraOrden AS ParentServices
             INNER JOIN dbo.Ordenes AS ParentOrder ON ParentServices.OrdenID = ParentOrder.OrdenID
-            WHERE ${filtroFamilia('ParentOrder')}
+            WHERE @SoloNombre IS NULL
+              AND ${filtroFamilia('ParentOrder')}
               AND ParentServices.Estado = 'FALLA'
               AND ParentServices.Descripcion IN (SELECT Descripcion FROM dbo.ServiciosExtraOrden WHERE OrdenID = @CurrentOrderID);
 
             -- Limpiar "[Esperando Reposición]" de las órdenes de la familia que ya no tengan NINGUNA
-            -- falla pendiente. Se sacan TODAS las ocurrencias (una orden puede acumular varias).
+            -- falla pendiente (estado FALLA o copias falladas sin reponer). Todas las ocurrencias.
             UPDATE ParentOrder
             SET Observaciones = NULLIF(LTRIM(RTRIM(
                     REPLACE(ISNULL(ParentOrder.Observaciones, ''), ' [Esperando Reposición]', '')
@@ -80,7 +139,8 @@ async function sanarFamiliaTrasReposicion(db, { ordenId, codigoOrden, noDocERP, 
             WHERE ${filtroFamilia('ParentOrder')}
               AND ParentOrder.Observaciones LIKE '%[[]Esperando Reposición]%'
               AND NOT EXISTS (SELECT 1 FROM dbo.ArchivosOrden AF
-                              WHERE AF.OrdenID = ParentOrder.OrdenID AND AF.EstadoArchivo = 'FALLA')
+                              WHERE AF.OrdenID = ParentOrder.OrdenID
+                                AND (AF.EstadoArchivo = 'FALLA' OR ISNULL(AF.CopiasFalladas, 0) > 0))
               AND NOT EXISTS (SELECT 1 FROM dbo.ServiciosExtraOrden SF
                               WHERE SF.OrdenID = ParentOrder.OrdenID AND SF.Estado = 'FALLA');
         `);
@@ -244,16 +304,18 @@ const getArchivosPorOrden = async (req, res) => {
         }
 
         const pool = await getPool();
+        await ensureFallaColumn(pool); // CopiasFalladas puede no existir aún en instalaciones viejas
 
         // logger.info(`Getting Archivos for OrdenID: ${ordenId} `);
 
         // 1. Obtener Archivos y Servicios (UNION)
         let queryStr = `
-            SELECT 
-                AO.ArchivoID, AO.OrdenID, AO.NombreArchivo, AO.RutaAlmacenamiento, AO.Metros, AO.Copias, 
+            SELECT
+                AO.ArchivoID, AO.OrdenID, AO.NombreArchivo, AO.RutaAlmacenamiento, AO.Metros, AO.Copias,
                 AO.Controlcopias, AO.EstadoArchivo, AO.UsuarioControl, AO.FechaControl, AO.Observaciones, AO.TipoArchivo,
                 AO.Ancho, AO.Alto, AO.CodigoArticulo, AO.FechaSubida,
                 AO.PreflightVeredicto, AO.PreflightReporte,
+                ISNULL(AO.CopiasFalladas, 0) as CopiasFalladas,
                 O.Material as Material, O.Cliente as Cliente, O.AreaID as AreaActual, O.NoDocERP, 0 as isService,
                 -- TPU: el control es por PARCHE, no por capa del arte. La vista arma una sola línea
                 -- por orden con estos datos (código_trabajo y la cantidad pedida como copias).
@@ -264,11 +326,12 @@ const getArchivosPorOrden = async (req, res) => {
 
             UNION ALL
 
-            SELECT 
-                SEO.ServicioID as ArchivoID, SEO.OrdenID, SEO.Descripcion as NombreArchivo, NULL as RutaAlmacenamiento, NULL as Metros, SEO.Cantidad as Copias, 
+            SELECT
+                SEO.ServicioID as ArchivoID, SEO.OrdenID, SEO.Descripcion as NombreArchivo, NULL as RutaAlmacenamiento, NULL as Metros, SEO.Cantidad as Copias,
                 ISNULL(SEO.Controlcopias, 0) as Controlcopias, SEO.Estado as EstadoArchivo, SEO.UsuarioControl, SEO.FechaControl, SEO.Observaciones as Observaciones, 'Servicio' as TipoArchivo,
                 0 as Ancho, 0 as Alto, SEO.CodArt as CodigoArticulo, SEO.FechaRegistro as FechaSubida,
                 NULL as PreflightVeredicto, NULL as PreflightReporte,
+                0 as CopiasFalladas,
                 O.Material as Material, O.Cliente as Cliente, O.AreaID as AreaActual, O.NoDocERP, 1 as isService,
                 O.CodigoOrden as OrdenCodigo, O.DescripcionTrabajo as OrdenTrabajo, O.Magnitud as OrdenMagnitud
             FROM ServiciosExtraOrden SEO WITH (NOLOCK)
@@ -443,6 +506,8 @@ const postControlArchivo = async (req, res) => {
                 .query(`
                     SELECT AO.OrdenID, AO.NombreArchivo, AO.Metros as MetrosArchivo,
                            AO.Observaciones as ObsActual,
+                           AO.Copias, ISNULL(AO.Controlcopias, 0) as Controlcopias,
+                           ISNULL(AO.CopiasFalladas, 0) as CopiasFalladas,
                            O.AreaID, O.CodigoOrden, O.NoDocERP, O.ProximoServicio,
                            O.CliIdCliente, O.ProIdProducto, O.IdClienteReact, O.IdProductoReact,
                            O.CodCliente, O.CodArticulo, O.Nota as NotaOriginal,
@@ -469,6 +534,28 @@ const postControlArchivo = async (req, res) => {
             proximoServicio = row.ProximoServicio;
             rolloId      = row.RolloID;  // para auto-cleanup post-commit
 
+            // ── FALLA POR COPIAS (docs/falla-por-copias-propuesta.md) ──────────────────────
+            // Si el front manda `copiasFalladas` (f) en un archivo multi-copia, la falla es POR
+            // CANTIDAD: se acumula en ArchivosOrden.CopiasFalladas y la -F repone SOLO f copias.
+            // Mientras queden copias buenas por contar, el archivo NO pasa a FALLA (el operario
+            // sigue controlando); pasa a FALLA recién cuando no queda nada contable (todas las
+            // buenas contadas + falladas registradas), y ahí el flujo aguas abajo es el de siempre.
+            // TPU queda EXCLUIDO (su control es por parches/Magnitud, no por copias del archivo);
+            // sin f (front viejo / archivos de 1 copia) el comportamiento es el whole-file actual.
+            const esTPUFalla   = String(row.AreaID || '').trim().toUpperCase() === 'TPU';
+            const copiasTotal  = parseInt(row.Copias) || 1;
+            const restantes    = Math.max(0, copiasTotal - (row.Controlcopias || 0) - (row.CopiasFalladas || 0));
+            const fPedidas     = parseInt(req.body.copiasFalladas);
+            const aplicaPorCopias = estado === 'FALLA' && !esTPUFalla && copiasTotal > 1
+                && Number.isFinite(fPedidas) && fPedidas >= 1 && restantes > 0;
+            req._fallaCopias = aplicaPorCopias ? {
+                f: Math.min(fPedidas, restantes),                    // copias que repone la -F
+                quedanBuenas: restantes - Math.min(fPedidas, restantes) > 0,  // ¿sigue contando?
+                // Qué copia salió mala: el operario controla en orden, así que la reportada es
+                // la siguiente a todo lo ya resuelto (contadas + falladas previas + 1).
+                copiaDesde: (row.Controlcopias || 0) + (row.CopiasFalladas || 0) + 1,
+            } : null;
+
             // La info TÉCNICA de impresión ([RAPORT]/[ESCALA] + Modo/AnchoFinal) describe al ARCHIVO
             // y no debe perderse al controlarlo. Antes este UPDATE hacía `Observaciones = @Motivo`:
             // pisaba el campo, y un control SIN motivo lo dejaba vacío → toda orden que pasaba por
@@ -484,12 +571,17 @@ const postControlArchivo = async (req, res) => {
                 .input('Usuario', sql.NVarChar, usuario || 'System')
                 .input('Obs', sql.NVarChar(sql.MAX), obsFinal)
                 .input('ID', sql.Int, archivoId)
+                // Falla por copias: acumular f; y si quedan buenas por contar, NO pisar el estado
+                // (el archivo sigue contable — pasa a FALLA recién sin nada pendiente de contar).
+                .input('FNuevas', sql.Int, req._fallaCopias ? req._fallaCopias.f : 0)
+                .input('MantenerEstado', sql.Bit, (req._fallaCopias && req._fallaCopias.quedanBuenas) ? 1 : 0)
                 .query(`
                     UPDATE ArchivosOrden
-                    SET EstadoArchivo = @Estado,
+                    SET EstadoArchivo = CASE WHEN @MantenerEstado = 1 THEN EstadoArchivo ELSE @Estado END,
                         FechaControl = GETDATE(),
                         UsuarioControl = @Usuario,
-                        Observaciones = @Obs
+                        Observaciones = @Obs,
+                        CopiasFalladas = ISNULL(CopiasFalladas, 0) + @FNuevas
                     WHERE ArchivoID = @ID
                 `);
         }
@@ -612,6 +704,8 @@ const postControlArchivo = async (req, res) => {
                     .input('AreaID',     sql.NVarChar,          areaId)
                     .input('NotaAdd',    sql.NVarChar(sql.MAX), ` || FALLA: ${notaFallaDetalle}`)
                     .input('ImagenFalla', sql.NVarChar(300), fallaImgPath)
+                    .input('CopiasFallaReg', sql.Int, req._fallaCopias ? req._fallaCopias.f : null)
+                    .input('CopiaDesde', sql.Int, req._fallaCopias ? req._fallaCopias.copiaDesde : null)
                     .query(`
                         -- Actualizamos la orden original
                         UPDATE dbo.Ordenes
@@ -623,8 +717,8 @@ const postControlArchivo = async (req, res) => {
                         SET Nota = CONCAT(ISNULL(Nota,''), @NotaAdd)
                         WHERE OrdenID = @NewFallaID;
 
-                        INSERT INTO FallasProduccion(OrdenID, ArchivoID, AreaID, FechaFalla, TipoFalla, CantidadFalla, EquipoID, Observaciones, ImagenFalla)
-                        VALUES(@OldID, @ArchivoID, @AreaID, GETDATE(), @TipoFallaID, @CantidadFalla, @EquipoID, @SafeMotivo, @ImagenFalla);
+                        INSERT INTO FallasProduccion(OrdenID, ArchivoID, AreaID, FechaFalla, TipoFalla, CantidadFalla, EquipoID, Observaciones, ImagenFalla, CopiasFalla, CopiaDesde)
+                        VALUES(@OldID, @ArchivoID, @AreaID, GETDATE(), @TipoFallaID, @CantidadFalla, @EquipoID, @SafeMotivo, @ImagenFalla, @CopiasFallaReg, @CopiaDesde);
                     `);
             } else {
                 // ── CREAR nueva orden -F ──
@@ -657,6 +751,8 @@ const postControlArchivo = async (req, res) => {
                     .input('IsSB',          sql.Bit,            esFallaSB ? 1 : 0)
                     .input('NotaFinal',     sql.NVarChar(sql.MAX), notaFinal)
                     .input('ImagenFalla',   sql.NVarChar(300), fallaImgPath)
+                    .input('CopiasFallaReg', sql.Int, req._fallaCopias ? req._fallaCopias.f : null)
+                    .input('CopiaDesde', sql.Int, req._fallaCopias ? req._fallaCopias.copiaDesde : null)
                     .query(`
                         -- Nueva Orden de Falla
                         INSERT INTO dbo.Ordenes(
@@ -692,8 +788,8 @@ const postControlArchivo = async (req, res) => {
                         WHERE OrdenID = @OldID;
 
                         -- Registrar Falla en tabla auxiliar
-                        INSERT INTO FallasProduccion(OrdenID, ArchivoID, AreaID, FechaFalla, TipoFalla, CantidadFalla, EquipoID, Observaciones, ImagenFalla)
-                        VALUES(@OldID, @ArchivoID, @AreaID, GETDATE(), @TipoFallaID, @CantidadFalla, @EquipoID, @SafeMotivo, @ImagenFalla);
+                        INSERT INTO FallasProduccion(OrdenID, ArchivoID, AreaID, FechaFalla, TipoFalla, CantidadFalla, EquipoID, Observaciones, ImagenFalla, CopiasFalla, CopiaDesde)
+                        VALUES(@OldID, @ArchivoID, @AreaID, GETDATE(), @TipoFallaID, @CantidadFalla, @EquipoID, @SafeMotivo, @ImagenFalla, @CopiasFallaReg, @CopiaDesde);
                     `);
 
                 // Obtener el ID de la nueva orden recién insertada
@@ -720,6 +816,15 @@ const postControlArchivo = async (req, res) => {
                 // desnuda es ambigua, se califica con AO_SRC. En el INSERT (una sola tabla) va desnuda.
                 const metrosUpd = esFallaSB ? `0` : (metrosReponer !== null ? `@MetrosReponer` : `AO_SRC.Metros`);
                 const metrosIns = esFallaSB ? `0` : (metrosReponer !== null ? `@MetrosReponer` : `Metros`);
+                // FALLA POR COPIAS: la -F lleva SOLO las f copias falladas (no las Copias completas
+                // del original, que era el "repone de más"). Al REUTILIZAR una -F que ya tenía este
+                // archivo, las copias se SUMAN (falla de hoy + falla de ayer) y los metros también.
+                // Sin parcial (legacy): clona Copias y pisa Metros, como siempre.
+                const fCopias    = req._fallaCopias ? req._fallaCopias.f : null;
+                const copiasUpd  = fCopias !== null ? `ISNULL(AO2.Copias, 1) + @CopiasF` : `AO2.Copias`;
+                const copiasIns  = fCopias !== null ? `@CopiasF` : `Copias`;
+                const metrosUpd2 = (fCopias !== null && metrosReponer !== null && !esFallaSB)
+                    ? `ISNULL(AO2.Metros, 0) + @MetrosReponer` : metrosUpd;
 
                 const insertRequest = new sql.Request(transaction)
                     .input('NewOrderID', sql.Int, newOrderId)
@@ -727,6 +832,9 @@ const postControlArchivo = async (req, res) => {
 
                 if (metrosReponer !== null) {
                     insertRequest.input('MetrosReponer', sql.Decimal(10, 2), metrosReponer);
+                }
+                if (fCopias !== null) {
+                    insertRequest.input('CopiasF', sql.Int, fCopias);
                 }
 
                 // Si el archivo ya existe en la orden -F (mismo NombreArchivo),
@@ -737,9 +845,10 @@ const postControlArchivo = async (req, res) => {
                 // que iba con rapport y el ojo del lote se veía gris. Se reconstruye siempre desde la
                 // madre (no se acumula al reprocesar) y la nota va una sola vez.
                 await insertRequest.query(`
-                    -- Si ya existe el archivo, actualizar los metros
+                    -- Si ya existe el archivo, actualizar metros y copias (parcial: SUMA acumulada)
                     UPDATE AO2
-                    SET AO2.Metros = ${metrosUpd},
+                    SET AO2.Metros = ${metrosUpd2},
+                        AO2.Copias = ${copiasUpd},
                         AO2.Observaciones = CASE
                             WHEN ISNULL(AO_SRC.Observaciones, '') LIKE '%Reposición por Falla%'
                                 THEN AO_SRC.Observaciones
@@ -750,7 +859,7 @@ const postControlArchivo = async (req, res) => {
                     WHERE AO2.OrdenID = @NewOrderID
                       AND AO2.NombreArchivo = AO_SRC.NombreArchivo;
 
-                    -- Si no existía, insertar
+                    -- Si no existía, insertar (parcial: con las f copias falladas, no todas)
                     IF @@ROWCOUNT = 0
                     BEGIN
                         INSERT INTO dbo.ArchivosOrden(
@@ -758,7 +867,7 @@ const postControlArchivo = async (req, res) => {
                             TipoArchivo, FechaSubida, EstadoArchivo
                         )
                         SELECT
-                            @NewOrderID, NombreArchivo, RutaAlmacenamiento, ${metrosIns}, Copias, Ancho, Alto,
+                            @NewOrderID, NombreArchivo, RutaAlmacenamiento, ${metrosIns}, ${copiasIns}, Ancho, Alto,
                             CASE
                                 WHEN ISNULL(Observaciones, '') LIKE '%Reposición por Falla%' THEN Observaciones
                                 ELSE LTRIM(RTRIM(ISNULL(Observaciones, ''))) + ' [Reposición por Falla]'
@@ -778,11 +887,25 @@ const postControlArchivo = async (req, res) => {
                         WHERE OrdenID = @FallaOrderID
                     `);
 
-                // Actualizar Magnitud con la suma real de metros de los archivos de la falla
-                // (la orden madre puede haber tenido Magnitud=0 si el ERP sync ocurrió después)
-                await new sql.Request(transaction)
-                    .input('FallaOrderID2', sql.Int, newOrderId)
-                    .query(`
+                // Actualizar Magnitud con la suma real de lo que repone la -F.
+                // · Legacy (sin f): solo si quedó en 0 (la madre pudo tener Magnitud=0 por el ERP sync).
+                // · FALLA POR COPIAS: SIEMPRE — la -F repone f copias / metros cargados, y al reutilizarse
+                //   acumula; la Magnitud tiene que seguir esa suma (mismo criterio por UM que usa la -R:
+                //   metros si UM='m…', copias si no; SB queda afuera: su Magnitud la carga la impresora).
+                const magnitudReq = new sql.Request(transaction).input('FallaOrderID2', sql.Int, newOrderId);
+                if (fCopias !== null && !esFallaSB) {
+                    await magnitudReq.query(`
+                        DECLARE @UM NVARCHAR(20) = (SELECT LTRIM(RTRIM(ISNULL(UM,'u'))) FROM dbo.Ordenes WHERE OrdenID = @FallaOrderID2);
+                        DECLARE @Total FLOAT = 0;
+                        IF LEFT(LOWER(@UM),1) = 'm'
+                            SELECT @Total = ISNULL(SUM(CAST(ISNULL(Metros,0) AS FLOAT)),0) FROM dbo.ArchivosOrden WHERE OrdenID = @FallaOrderID2 AND ISNULL(EstadoArchivo,'') <> 'CANCELADO';
+                        ELSE
+                            SELECT @Total = ISNULL(SUM(CAST(ISNULL(Copias,0) AS FLOAT)),0) FROM dbo.ArchivosOrden WHERE OrdenID = @FallaOrderID2 AND ISNULL(EstadoArchivo,'') <> 'CANCELADO';
+                        UPDATE dbo.Ordenes SET Magnitud = CAST(FORMAT(@Total,'0.##') AS NVARCHAR(20))
+                        WHERE OrdenID = @FallaOrderID2;
+                    `);
+                } else {
+                    await magnitudReq.query(`
                         UPDATE dbo.Ordenes
                         SET Magnitud = CAST(ISNULL(
                             (SELECT SUM(ISNULL(Metros, 0)) FROM dbo.ArchivosOrden WHERE OrdenID = @FallaOrderID2),
@@ -791,6 +914,7 @@ const postControlArchivo = async (req, res) => {
                         WHERE OrdenID = @FallaOrderID2
                           AND (Magnitud IS NULL OR TRY_CAST(Magnitud AS DECIMAL(10,2)) = 0 OR Magnitud = '' OR Magnitud = '0')
                     `);
+                }
             }
 
             // ── Capturar hermanas que ya estaban en Canasto Produccion (retroactivas) ──
@@ -828,6 +952,23 @@ const postControlArchivo = async (req, res) => {
 
             // Guardar para incluir en la respuesta final
             req._fallaData = { fallaDetectada: true, ordenesRetroactivas };
+
+            // ── ETIQUETA DE FALLA: una sola por archivo, al quedar RESUELTO ──
+            // Whole-file (sin f) y servicios quedan resueltos en este mismo reporte; con falla
+            // por copias, recién cuando esta falla consumió lo último contable. Si todavía
+            // quedan copias buenas por contar, la etiqueta la dispara updateFileCopyCount al
+            // contarse la última.
+            const itemResuelto = isService ? true : (req._fallaCopias ? !req._fallaCopias.quedanBuenas : true);
+            if (itemResuelto) {
+                try {
+                    req._etiquetaFalla = {
+                        imprimirEtiquetaFalla: true,
+                        fallasArchivo: await getFallasDeArchivo(transaction, archivoId),
+                    };
+                } catch (eEtq) {
+                    logger.warn('[postControlArchivo] No se pudieron leer las fallas para la etiqueta:', eEtq.message);
+                }
+            }
         }
 
         // 4. Verificación de Completitud
@@ -840,7 +981,9 @@ const postControlArchivo = async (req, res) => {
                 (SELECT COUNT(*) FROM ServiciosExtraOrden WHERE OrdenID = @OID AND Estado IN('OK', 'Finalizado', 'CANCELADO', 'FALLA')) as Controlados,
                 (SELECT COUNT(*) FROM ArchivosOrden WHERE OrdenID = @OID AND (EstadoArchivo IS NULL OR EstadoArchivo NOT IN('OK', 'Finalizado', 'CANCELADO', 'FALLA'))) +
                 (SELECT COUNT(*) FROM ServiciosExtraOrden WHERE OrdenID = @OID AND (Estado IS NULL OR Estado NOT IN('OK', 'Finalizado', 'CANCELADO', 'FALLA'))) as Pendientes,
-                (SELECT COUNT(*) FROM ArchivosOrden WHERE OrdenID = @OID AND EstadoArchivo = 'FALLA') + (SELECT COUNT(*) FROM ServiciosExtraOrden WHERE OrdenID = @OID AND Estado = 'FALLA') as Fallas,
+                -- Falla por copias: un archivo con CopiasFalladas>0 TIENE falla aunque su estado siga
+                -- 'Pendiente' (quedan copias buenas por contar) — la orden debe verse 'Con Falla' igual.
+                (SELECT COUNT(*) FROM ArchivosOrden WHERE OrdenID = @OID AND (EstadoArchivo = 'FALLA' OR ISNULL(CopiasFalladas, 0) > 0)) + (SELECT COUNT(*) FROM ServiciosExtraOrden WHERE OrdenID = @OID AND Estado = 'FALLA') as Fallas,
                 (SELECT COUNT(*) FROM ArchivosOrden WHERE OrdenID = @OID AND EstadoArchivo = 'CANCELADO') + (SELECT COUNT(*) FROM ServiciosExtraOrden WHERE OrdenID = @OID AND Estado = 'CANCELADO') as Cancelados
     `);
 
@@ -962,7 +1105,7 @@ const postControlArchivo = async (req, res) => {
                             WHERE O.NoDocERP = @NoDoc
                               AND O.AreaID   = @AreaID
                               AND O.OrdenID != @OID
-                              AND AO.EstadoArchivo = 'FALLA'
+                              AND (AO.EstadoArchivo = 'FALLA' OR ISNULL(AO.CopiasFalladas, 0) > 0)
                         `);
                     const tieneFallaHermana = (fallaHermanaRes.recordset[0]?.TieneFalla || 0) > 0;
                     if (tieneFallaHermana) {
@@ -979,7 +1122,8 @@ const postControlArchivo = async (req, res) => {
                         .input('NoDoc',  sql.VarChar(50), noDocERP)
                         .input('AreaID', sql.VarChar(50), areaId)
                         .query(`
-                            -- Archivos sin resolver (Pendiente o FALLA) de CUALQUIER orden del pedido en el área
+                            -- Archivos sin resolver (Pendiente, FALLA o con copias falladas sin reponer)
+                            -- de CUALQUIER orden del pedido en el área
                             SELECT COUNT(*) as SinResolver
                             FROM ArchivosOrden AO
                             INNER JOIN Ordenes O ON AO.OrdenID = O.OrdenID
@@ -987,7 +1131,8 @@ const postControlArchivo = async (req, res) => {
                               AND O.AreaID   = @AreaID
                               AND O.Estado  NOT IN ('CANCELADO')
                               AND (AO.EstadoArchivo IS NULL
-                                OR AO.EstadoArchivo NOT IN ('OK','Finalizado','CANCELADO'))
+                                OR AO.EstadoArchivo NOT IN ('OK','Finalizado','CANCELADO')
+                                OR ISNULL(AO.CopiasFalladas, 0) > 0)
                         `);
                     const sinResolver = (liberacionRes.recordset[0]?.SinResolver || 0);
                     if (sinResolver === 0) {
@@ -1129,7 +1274,8 @@ const postControlArchivo = async (req, res) => {
                                     INNER JOIN Ordenes O ON AO.OrdenID = O.OrdenID
                                     WHERE O.NoDocERP = @NoDoc AND O.AreaID = @AreaID
                                       AND O.Estado NOT IN ('CANCELADO')
-                                      AND (AO.EstadoArchivo IS NULL OR AO.EstadoArchivo NOT IN ('OK','Finalizado','CANCELADO'))
+                                      AND (AO.EstadoArchivo IS NULL OR AO.EstadoArchivo NOT IN ('OK','Finalizado','CANCELADO')
+                                        OR ISNULL(AO.CopiasFalladas, 0) > 0)
                                 `);
                             if ((chkResuelto.recordset[0]?.SinResolver || 0) === 0) {
                                 const enFalla = await new sql.Request(transaction)
@@ -1249,6 +1395,7 @@ const postControlArchivo = async (req, res) => {
             // Datos para modales del frontend:
             ...fallaData,       // { fallaDetectada, ordenesRetroactivas }
             ...liberacionData,  // { listoParaProduccion, ordenesParaLiberar }
+            ...(req._etiquetaFalla || {}),  // { imprimirEtiquetaFalla, fallasArchivo } — archivo resuelto con fallas
         });
 
     } catch (err) {
@@ -1489,6 +1636,7 @@ const updateFileCopyCount = async (req, res) => {
     let transaction;
     try {
         const pool = await getPool();
+        await ensureFallaColumn(pool);
         transaction = new sql.Transaction(pool);
         await transaction.begin();
 
@@ -1516,7 +1664,8 @@ const updateFileCopyCount = async (req, res) => {
                 .input('ID', sql.Int, archivoId)
                 .query(`
                     SELECT AO.Copias, AO.Controlcopias, AO.EstadoArchivo, AO.OrdenID, AO.NombreArchivo,
-                           O.CodigoOrden, O.AreaID,
+                           ISNULL(AO.CopiasFalladas, 0) as CopiasFalladas,
+                           O.CodigoOrden, O.AreaID, O.NoDocERP,
                            TRY_CAST(REPLACE(REPLACE(ISNULL(O.Magnitud,'0'),' ',''),',','.') AS FLOAT) AS MagnitudOrden
                     FROM ArchivosOrden AO WITH (UPDLOCK)
                     INNER JOIN Ordenes O ON AO.OrdenID = O.OrdenID
@@ -1535,9 +1684,13 @@ const updateFileCopyCount = async (req, res) => {
         // salir de la cantidad pedida (Ordenes.Magnitud). La vista de control muestra una sola línea
         // por orden apoyada en uno de esos archivos; este es el tope que le corresponde.
         const esTPUControl = !isService && String(file.AreaID || '').trim().toUpperCase() === 'TPU';
+        // FALLA POR COPIAS: las falladas no se cuentan a mano — las acredita la reposición al
+        // cerrarse. El tope de conteo del operario son las copias BUENAS (Copias - CopiasFalladas).
+        // TPU queda afuera del modelo (control por parches/Magnitud).
+        const falladas = (!isService && !esTPUControl) ? (file.CopiasFalladas || 0) : 0;
         const totalCopies = esTPUControl
             ? Math.max(1, Math.round(Number(file.MagnitudOrden) || 0))
-            : (file.Copias || 1);
+            : Math.max(0, (file.Copias || 1) - falladas);
         let newCount = parseInt(count);
 
         // Validaciones
@@ -1548,37 +1701,43 @@ const updateFileCopyCount = async (req, res) => {
         // Determinar Nuevo Estado
         let newStatus = file.EstadoArchivo;
         let isCompletedNow = false;
+        let etiquetaFalla = null;
 
         if (newCount >= totalCopies) {
-            if (file.EstadoArchivo !== 'OK' && file.EstadoArchivo !== 'FINALIZADO') {
+            if (falladas > 0) {
+                // Todas las buenas contadas pero hay copias en reposición: el archivo queda FALLA
+                // (mismo estado que el whole-file) y se resuelve cuando la -F acredite las que faltan.
+                if (file.EstadoArchivo !== 'FALLA') {
+                    newStatus = 'FALLA';
+                    // El archivo quedó RESUELTO (contadas + falladas = total): acá sale LA etiqueta
+                    // de falla, una sola, con todas las fallas acumuladas del archivo.
+                    try {
+                        etiquetaFalla = {
+                            imprimirEtiquetaFalla: true,
+                            fallasArchivo: await getFallasDeArchivo(transaction, archivoId),
+                        };
+                    } catch (eEtq) {
+                        logger.warn('[updateFileCopyCount] No se pudieron leer las fallas para la etiqueta:', eEtq.message);
+                    }
+                }
+            } else if (file.EstadoArchivo !== 'OK' && file.EstadoArchivo !== 'FINALIZADO') {
                 newStatus = 'OK';
                 isCompletedNow = true;
 
-                // LOGICA REPOSICIÓN (Solo para archivos)
-                if (!isService) {
-                    const codigoOrden = file.CodigoOrden || '';
-                    const isFallaOrder = codigoOrden.includes('-F');
-                    if (isFallaOrder) {
-                        const codigoMadre = codigoOrden.split('-F')[0];
-                        if (codigoMadre) {
-                            await new sql.Request(transaction)
-                                .input('CodigoMadre', sql.NVarChar, codigoMadre)
-                                .input('Nombre',      sql.NVarChar, file.NombreArchivo)
-                                .query(`
-                                    UPDATE dbo.ArchivosOrden
-                                    SET EstadoArchivo   = 'OK',
-                                        Controlcopias   = Copias,
-                                        FechaControl    = GETDATE(),
-                                        Observaciones   = CONCAT(ISNULL(Observaciones,''), ' [Reposición OK]')
-                                    WHERE NombreArchivo = @Nombre
-                                      AND OrdenID IN (
-                                          SELECT OrdenID FROM dbo.Ordenes
-                                          WHERE CodigoOrden = @CodigoMadre
-                                      )
-                                      AND EstadoArchivo = 'FALLA'
-                                `);
-                        }
-                    }
+                // CIERRE DE REPOSICIÓN por conteo (solo archivos): al completar un archivo de una
+                // -F, curar a la familia ese archivo. Antes había un heal propio que buscaba SOLO el
+                // código raíz exacto (split('-F')[0]) — en linajes (SUB-X-F123-2) ignoraba los
+                // eslabones intermedios. Ahora usa la misma cura familiar que los otros dos caminos
+                // (sanarFamiliaTrasReposicion), acotada a ESTE archivo; reparte con tope en el
+                // pendiente de cada pariente (min(f, CopiasFalladas)), así que repetirla no duplica.
+                if (!isService && (file.CodigoOrden || '').includes('-F')) {
+                    await sanarFamiliaTrasReposicion(transaction, {
+                        ordenId: file.OrdenID,
+                        codigoOrden: file.CodigoOrden,
+                        noDocERP: file.NoDocERP,
+                        areaId: file.AreaID,
+                        soloNombreArchivo: file.NombreArchivo,
+                    });
                 }
             }
         } else {
@@ -1640,7 +1799,8 @@ const updateFileCopyCount = async (req, res) => {
             newCount,
             newStatus,
             isCompletedNow,
-            orderFullyCompleted
+            orderFullyCompleted,
+            ...(etiquetaFalla || {}),  // { imprimirEtiquetaFalla, fallasArchivo } — resuelto con fallas
         });
 
     } catch (err) {
@@ -2026,6 +2186,7 @@ async function completarOrden(req, res) {
     let transaction;
     try {
         const pool = await getPool();
+        await ensureFallaColumn(pool); // el chequeo de fallas de abajo lee CopiasFalladas
 
         // ── GUARD: no re-procesar órdenes que ya están prontas o finalizadas ──
         // Se considera "ya lista" si: EstadoenArea IN ('Pronto', 'En Transito')
@@ -2109,7 +2270,7 @@ async function completarOrden(req, res) {
         // Verificar si tiene fallas pendientes
         const fallaCheck = await new sql.Request(transaction)
             .input('OID', sql.Int, ordenId)
-            .query(`SELECT COUNT(*) as Fallas FROM ArchivosOrden WHERE OrdenID = @OID AND EstadoArchivo = 'FALLA'`);
+            .query(`SELECT COUNT(*) as Fallas FROM ArchivosOrden WHERE OrdenID = @OID AND (EstadoArchivo = 'FALLA' OR ISNULL(CopiasFalladas, 0) > 0)`);
         const tieneFallas = (fallaCheck.recordset[0]?.Fallas || 0) > 0;
 
         // Verificar si es una orden de reposición (-F) y obtener código
@@ -2466,6 +2627,8 @@ module.exports = {
     getMotivosCancelacion,
     confirmarFalla,
     liberarCanastaFalla,
-    recalcularContadoresEtiquetas
+    recalcularContadoresEtiquetas,
+    // exportada para poder probar la cura (parcial/whole-file) de forma aislada
+    sanarFamiliaTrasReposicion
 };
 

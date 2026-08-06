@@ -5,7 +5,14 @@ import { fileControlService } from '../../../services/modules/fileControlService
 
 import { labelUbicacion } from '../../../utils/terminacionesGeo';
 
-const FileControlCard = ({ file, refreshOrder, onAction }) => {
+const FileControlCard = ({ file, refreshOrder, onAction, onFallaResuelta }) => {
+    // Aviso al padre cuando el conteo RESUELVE el archivo con fallas pendientes:
+    // ahí (y solo ahí) se imprime LA etiqueta de falla con todas las acumuladas.
+    const avisarFallaResuelta = (res) => {
+        if (res?.imprimirEtiquetaFalla && Array.isArray(res.fallasArchivo) && res.fallasArchivo.length) {
+            onFallaResuelta?.(file, res.fallasArchivo);
+        }
+    };
     const [controlCount, setControlCount] = useState(file.Controlcopias || 0);
     const [status, setStatus] = useState(file.EstadoArchivo || 'Pendiente');
     const [loading, setLoading] = useState(false);
@@ -14,21 +21,32 @@ const FileControlCard = ({ file, refreshOrder, onAction }) => {
     const [draft, setDraft] = useState(String(file.Controlcopias || 0));
 
     const totalCopies = parseInt(file.Copias || 1);
+    // FALLA POR COPIAS: las copias en reposición no se cuentan a mano — el tope del operario son
+    // las BUENAS (total − falladas). Las repuestas las acredita el backend al cerrarse la -F.
+    const copiasFalladas = parseInt(file.CopiasFalladas || 0);
+    const topeConteo = Math.max(0, totalCopies - copiasFalladas);
     const isCompleted = status === 'OK' || status === 'FINALIZADO';
 
     // Status Logic
     const isFailed = status === 'FALLA';
     const isCancelled = status === 'CANCELADO';
 
-    // Si el archivo tiene VARIAS copias, la falla solo se puede reportar en la ÚLTIMA copia
-    // (cuando ya se controlaron todas menos una). En archivos de 1 copia no hay restricción.
-    const canReportFalla = totalCopies <= 1 || controlCount === totalCopies - 1;
+    // La falla ahora es POR CANTIDAD (el modal pregunta cuántas copias fallaron), así que se puede
+    // reportar en cualquier momento. La restricción "solo en la última copia" era el parche del
+    // modelo whole-file, que bloqueaba las copias buenas (docs/falla-por-copias-propuesta.md).
+    const canReportFalla = true;
 
     useEffect(() => {
         setControlCount(file.Controlcopias || 0);
         setStatus(file.EstadoArchivo || 'Pendiente');
         setDraft(String(file.Controlcopias || 0));
     }, [file.Controlcopias, file.EstadoArchivo]);
+
+    // El contador vive en DOS estados: `controlCount` (lo que pinta la barra de progreso) y `draft`
+    // (el texto del input). Los botones +/− movían solo el primero, así que la barra avanzaba y el
+    // número se quedaba atrás hasta el próximo refresh del backend (se veía barra 3/5 y contador
+    // 2/5). Se cambian SIEMPRE juntos desde acá.
+    const aplicarCount = (n) => { setControlCount(n); setDraft(String(n)); };
 
     // Suma de a N. TPU puede tener órdenes de cientos de parches y el +1 obligaba a apretar una vez
     // por unidad. El backend topea en Copias, así que pasarse no rompe nada (queda en el total).
@@ -37,18 +55,19 @@ const FileControlCard = ({ file, refreshOrder, onAction }) => {
         if (loading || isCompleted || isFailed || isCancelled) return;
         setLoading(true);
         const previo = controlCount;
-        const nextCount = Math.min(totalCopies, controlCount + cuanto);
+        const nextCount = Math.min(topeConteo, controlCount + cuanto);
         try {
-            setControlCount(nextCount); // Optimistic
+            aplicarCount(nextCount); // Optimistic
             const res = await fileControlService.updateFileCopyCount(file.ArchivoID, nextCount, file.isService);
             if (res.success) {
-                setControlCount(res.newCount);
+                aplicarCount(res.newCount);
                 setStatus(res.newStatus);
-                if (res.isCompletedNow || res.orderFullyCompleted) refreshOrder();
+                avisarFallaResuelta(res);
+                if (res.isCompletedNow || res.orderFullyCompleted || res.imprimirEtiquetaFalla) refreshOrder();
             }
         } catch (error) {
             console.error(error);
-            setControlCount(previo); // Revert
+            aplicarCount(previo); // Revert
         } finally {
             setLoading(false);
         }
@@ -60,19 +79,20 @@ const FileControlCard = ({ file, refreshOrder, onAction }) => {
         setLoading(true);
         try {
             const nextCount = controlCount + 1;
-            setControlCount(nextCount); // Optimistic
+            aplicarCount(nextCount); // Optimistic
 
             const res = await fileControlService.updateFileCopyCount(file.ArchivoID, nextCount, file.isService);
             if (res.success) {
-                setControlCount(res.newCount);
+                aplicarCount(res.newCount);
                 setStatus(res.newStatus);
-                if (res.isCompletedNow || res.orderFullyCompleted) {
+                avisarFallaResuelta(res);
+                if (res.isCompletedNow || res.orderFullyCompleted || res.imprimirEtiquetaFalla) {
                     refreshOrder();
                 }
             }
         } catch (error) {
             console.error(error);
-            setControlCount(controlCount); // Revert
+            aplicarCount(controlCount); // Revert
             // alert("Error"); // Avoid alert spam
         } finally {
             setLoading(false);
@@ -85,17 +105,17 @@ const FileControlCard = ({ file, refreshOrder, onAction }) => {
         setLoading(true);
         try {
             const nextCount = controlCount - 1;
-            setControlCount(nextCount); // Optimistic
+            aplicarCount(nextCount); // Optimistic
 
             const res = await fileControlService.updateFileCopyCount(file.ArchivoID, nextCount, file.isService);
             if (res.success) {
-                setControlCount(res.newCount);
+                aplicarCount(res.newCount);
                 setStatus(res.newStatus);
                 refreshOrder(); // Refresh parent to update global metrics
             }
         } catch (error) {
             console.error(error);
-            setControlCount(controlCount); // Revert
+            aplicarCount(controlCount); // Revert
         } finally {
             setLoading(false);
         }
@@ -108,22 +128,21 @@ const FileControlCard = ({ file, refreshOrder, onAction }) => {
         let val = parseInt(draft, 10);
         if (isNaN(val)) { setDraft(String(controlCount)); return; }
         if (val < 0) val = 0;
-        if (val > totalCopies) val = totalCopies;
+        if (val > topeConteo) val = topeConteo;
         if (val === controlCount) { setDraft(String(val)); return; }
         setLoading(true);
         try {
-            setControlCount(val); // Optimistic
+            aplicarCount(val); // Optimistic
             const res = await fileControlService.updateFileCopyCount(file.ArchivoID, val, file.isService);
             if (res.success) {
-                setControlCount(res.newCount);
+                aplicarCount(res.newCount);
                 setStatus(res.newStatus);
-                setDraft(String(res.newCount));
+                avisarFallaResuelta(res);
                 refreshOrder(); // Puede completar/descompletar la orden → refrescar métricas
             }
         } catch (error) {
             console.error(error);
-            setControlCount(controlCount); // Revert
-            setDraft(String(controlCount));
+            aplicarCount(controlCount); // Revert
         } finally {
             setLoading(false);
         }
@@ -163,7 +182,9 @@ const FileControlCard = ({ file, refreshOrder, onAction }) => {
     const area = (file.Metros || 0) * totalCopies;
 
     // Progress Bar
-    const progress = Math.min((controlCount / totalCopies) * 100, 100);
+    // El avance cuenta lo RESUELTO (buenas contadas + falladas en reposición) sobre el total
+    // del archivo — coherente con el contador, que muestra N/total y el badge de falladas.
+    const progress = totalCopies > 0 ? Math.min(((controlCount + copiasFalladas) / totalCopies) * 100, 100) : 100;
 
     return (
         <div
@@ -267,7 +288,8 @@ const FileControlCard = ({ file, refreshOrder, onAction }) => {
                 {/* 3. ACTIONS (Counter + Button) */}
                 <div className="flex items-center justify-between sm:justify-end gap-4 tablet:gap-2.5 pl-0 sm:pl-4 tablet:sm:pl-2.5 border-l-0 sm:border-l border-zinc-50 w-full sm:w-auto">
 
-                    {/* Counter — editable (tipear la cantidad) cuando hay varias copias y no está en estado terminal */}
+                    {/* Counter — editable (tipear la cantidad) cuando hay varias copias y no está en estado terminal.
+                        El tope son las copias BUENAS (total − en reposición): las falladas las acredita la -F. */}
                     <div className="text-right flex flex-col justify-center">
                         <span className="text-[9px] font-black text-zinc-300 uppercase leading-none mb-0.5 tracking-wider">COPIAS</span>
                         {(totalCopies > 1 && !isCompleted && !isFailed && !isCancelled) ? (
@@ -275,7 +297,7 @@ const FileControlCard = ({ file, refreshOrder, onAction }) => {
                                 <input
                                     type="number"
                                     min={0}
-                                    max={totalCopies}
+                                    max={topeConteo}
                                     value={draft}
                                     disabled={loading}
                                     onClick={(e) => e.stopPropagation()}
@@ -288,22 +310,30 @@ const FileControlCard = ({ file, refreshOrder, onAction }) => {
                                 <span className="text-sm text-zinc-300 font-bold">/{totalCopies}</span>
                             </div>
                         ) : (
-                            <div className={`text-xl tablet:text-base font-black leading-none ${isCompleted ? 'text-brand-cyan' : (isFailed ? 'text-red-500' : 'text-zinc-700')}`}>
+                            // El contador son copias BUENAS: nunca en rojo, ni con el archivo en FALLA
+                            // (parecía la cantidad de fallas). El estado ya lo marcan el chip y el badge.
+                            <div className={`text-xl tablet:text-base font-black leading-none ${isCompleted ? 'text-brand-cyan' : 'text-zinc-700'}`}>
                                 {controlCount}<span className="text-sm text-zinc-300 font-bold">/{totalCopies}</span>
                             </div>
+                        )}
+                        {copiasFalladas > 0 && (
+                            <span
+                                className="mt-0.5 text-[9px] font-black uppercase tracking-wider text-brand-magenta leading-none"
+                                title="Copias reportadas como falla, esperando la reposición (-F). Se acreditan solas al completarse."
+                            >+{copiasFalladas} con falla</span>
                         )}
                     </div>
 
                     {/* Salto de a SALTO copias: solo tiene sentido en archivos de muchas copias
                         (una orden TPU de 500 parches con el +1 son 500 clicks). Se esconde cuando
                         ya está completo/fallado/cancelado, igual que el +1. */}
-                    {!isCompleted && !isFailed && !isCancelled && totalCopies >= SALTO && (
+                    {!isCompleted && !isFailed && !isCancelled && topeConteo >= SALTO && (
                         <button
                             onClick={(e) => { e.stopPropagation(); sumar(SALTO); }}
-                            disabled={loading || controlCount >= totalCopies}
+                            disabled={loading || controlCount >= topeConteo}
                             title={`Controlar ${SALTO} copias de una`}
                             className={`w-12 h-12 tablet:w-10 tablet:h-10 shrink-0 rounded-full flex items-center justify-center shadow-sm transition-all active:scale-95 text-sm font-black
-                                ${loading || controlCount >= totalCopies
+                                ${loading || controlCount >= topeConteo
                                     ? 'bg-zinc-100 text-zinc-400'
                                     : 'bg-brand-cyan/10 text-brand-cyan hover:bg-brand-cyan hover:text-white'}
                             `}
@@ -347,13 +377,14 @@ const FileControlCard = ({ file, refreshOrder, onAction }) => {
                     </div>
 
                     {/* Report Falla (Warning Icon) — oculto si ya está en FALLA o CANCELADO.
-                        En archivos de varias copias, solo habilitado en la última copia. */}
+                        Se puede reportar en cualquier momento: el modal pregunta CUÁNTAS copias
+                        fallaron y la -F repone solo esas (falla por copias). */}
                     {!isFailed && !isCancelled && (
                         <button
                             disabled={!canReportFalla}
                             className={`w-12 h-12 rounded-full flex items-center justify-center transition-colors ${canReportFalla ? 'text-zinc-300 hover:text-brand-magenta hover:bg-brand-magenta/10' : 'text-zinc-200 opacity-40 cursor-not-allowed'}`}
                             onClick={(e) => { e.stopPropagation(); if (canReportFalla) onAction(file, 'FALLA'); }}
-                            title={canReportFalla ? 'Reportar Falla' : 'En archivos de varias copias, la falla solo se puede reportar en la última copia: controlá primero las copias buenas'}
+                            title="Reportar Falla"
                         >
                             <i className="fa-solid fa-triangle-exclamation text-2xl"></i>
                         </button>

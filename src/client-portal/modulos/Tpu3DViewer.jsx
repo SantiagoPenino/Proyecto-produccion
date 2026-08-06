@@ -230,6 +230,28 @@ const mascaraTinta = (canvas) => {
     return { m, w, h };
 };
 
+// Máscara por CANAL ALFA: cuenta todo lo que la capa pinta, incluido el BLANCO. Para las máscaras
+// de zona, el descarte de casi-blanco de mascaraTinta es veneno: una capa "Fondo" pintada de
+// blanco puro quedaba "sin tinta" y se eliminaba como zona (el fondo del escudo no se podía
+// elegir). Las capas se rasterizan solas sobre lienzo transparente, así que el alfa alcanza
+// para saber qué pintó la capa. mascaraTinta sigue siendo la correcta para la SILUETA general,
+// donde el descarte de blanco protege de planchas con fondo de página blanco opaco.
+const mascaraAlfa = (canvas) => {
+    const w = canvas.width, h = canvas.height;
+    const d = canvas.getContext('2d').getImageData(0, 0, w, h).data;
+    const m = new Uint8Array(w * h);
+    for (let i = 0; i < w * h; i++) if (d[i * 4 + 3] >= 16) m[i] = 1;
+    return { m, w, h };
+};
+
+// Un diseño puede tener piezas SUELTAS además del cuerpo principal (las estrellas flotando
+// arriba de un escudo): manchas chicas respecto de la principal y cercanas a ella. El corte
+// físico las une con TPU transparente, pero en la fase de boceto no hay capa de corte, así que
+// "chica y cerca" es la mejor aproximación. Una copia vecina de la plancha NO califica: tiene
+// un área comparable a la principal.
+const SATELITE_AREA_MAX = 0.30; // ≤30% del área de la pieza principal
+const SATELITE_GAP_MAX = 0.25;  // a ≤25% del lado mayor de la principal
+
 // Interior del trazo de corte: flood-fill desde los bordes por píxeles sin tinta.
 const interiorDeCorte = ({ m, w, h }) => {
     const fuera = new Uint8Array(w * h);
@@ -247,60 +269,81 @@ const interiorDeCorte = ({ m, w, h }) => {
     return { m: interior, w, h };
 };
 
-// La plancha trae N copias: bbox (fracciones 0..1) del componente conexo más grande.
-const bboxUnaCopia = ({ m, w, h }) => {
+// Todos los componentes conexos de la máscara, con área y bbox.
+const componentesDe = ({ m, w, h }) => {
     const label = new Int32Array(w * h);
-    let next = 0, best = null;
+    let next = 0;
+    const comps = [];
     const stack = [];
     for (let s = 0; s < w * h; s++) {
         if (!m[s] || label[s]) continue;
         next++;
-        let area = 0, minX = w, maxX = 0, minY = h, maxY = 0;
+        let area = 0, minX = w, maxX = 0, minY = h, maxY = 0, tocaBorde = false;
         label[s] = next; stack.push(s);
         while (stack.length) {
             const i = stack.pop(); const x = i % w, y = (i - x) / w;
             area++;
             if (x < minX) minX = x; if (x > maxX) maxX = x;
             if (y < minY) minY = y; if (y > maxY) maxY = y;
+            if (x === 0 || x === w - 1 || y === 0 || y === h - 1) tocaBorde = true;
             if (x > 0) { const j = i - 1; if (m[j] && !label[j]) { label[j] = next; stack.push(j); } }
             if (x < w - 1) { const j = i + 1; if (m[j] && !label[j]) { label[j] = next; stack.push(j); } }
             if (y > 0) { const j = i - w; if (m[j] && !label[j]) { label[j] = next; stack.push(j); } }
             if (y < h - 1) { const j = i + w; if (m[j] && !label[j]) { label[j] = next; stack.push(j); } }
         }
-        if (!best || area > best.area) best = { area, minX, maxX, minY, maxY };
+        comps.push({ id: next, area, minX, maxX, minY, maxY, tocaBorde });
     }
-    if (!best) return null;
-    const mx = (best.maxX - best.minX) * 0.05 + 2;
-    const my = (best.maxY - best.minY) * 0.05 + 2;
+    return { comps, label };
+};
+
+// La plancha trae N copias: bbox (fracciones 0..1) de UNA copia = el componente conexo más
+// grande MÁS sus satélites (piezas chicas y cercanas — ver SATELITE_*). Antes se tomaba solo
+// el componente mayor y las piezas sueltas del diseño quedaban fuera del recorte: un escudo
+// con estrellas flotando arriba perdía las estrellas.
+const bboxUnaCopia = ({ m, w, h }) => {
+    const { comps } = componentesDe({ m, w, h });
+    if (!comps.length) return null;
+    const ppal = comps.reduce((a, b) => (b.area > a.area ? b : a));
+    const cluster = { minX: ppal.minX, maxX: ppal.maxX, minY: ppal.minY, maxY: ppal.maxY };
+    const ladoMayor = Math.max(ppal.maxX - ppal.minX, ppal.maxY - ppal.minY);
+    const gapMax = ladoMayor * SATELITE_GAP_MAX;
+    const usados = new Set([ppal.id]);
+    // Iterar hasta estabilizar: un satélite puede quedar "cerca" recién cuando el cluster creció.
+    let cambio = true;
+    while (cambio) {
+        cambio = false;
+        for (const c of comps) {
+            if (usados.has(c.id)) continue;
+            if (c.area > ppal.area * SATELITE_AREA_MAX) continue; // tamaño de copia vecina: no
+            const gapX = Math.max(0, c.minX - cluster.maxX, cluster.minX - c.maxX);
+            const gapY = Math.max(0, c.minY - cluster.maxY, cluster.minY - c.maxY);
+            if (Math.max(gapX, gapY) > gapMax) continue;
+            cluster.minX = Math.min(cluster.minX, c.minX); cluster.maxX = Math.max(cluster.maxX, c.maxX);
+            cluster.minY = Math.min(cluster.minY, c.minY); cluster.maxY = Math.max(cluster.maxY, c.maxY);
+            usados.add(c.id); cambio = true;
+        }
+    }
+    const mx = (cluster.maxX - cluster.minX) * 0.05 + 2;
+    const my = (cluster.maxY - cluster.minY) * 0.05 + 2;
     return {
-        x0: Math.max(0, best.minX - mx) / w,
-        x1: Math.min(w - 1, best.maxX + mx) / w,
-        y0: Math.max(0, best.minY - my) / h,
-        y1: Math.min(h - 1, best.maxY + my) / h,
+        x0: Math.max(0, cluster.minX - mx) / w,
+        x1: Math.min(w - 1, cluster.maxX + mx) / w,
+        y0: Math.max(0, cluster.minY - my) / h,
+        y1: Math.min(h - 1, cluster.maxY + my) / h,
     };
 };
 
-// Deja SOLO el componente conexo más grande de la máscara (borra motas y vecinos), in-place.
-const mantenerMayorComponente = ({ m, w, h }) => {
-    const label = new Int32Array(w * h);
-    let next = 0, mejor = 0, mejorArea = 0;
-    const stack = [];
-    for (let s = 0; s < w * h; s++) {
-        if (!m[s] || label[s]) continue;
-        next++;
-        let area = 0;
-        label[s] = next; stack.push(s);
-        while (stack.length) {
-            const i = stack.pop(); const x = i % w;
-            area++;
-            if (x > 0 && m[i - 1] && !label[i - 1]) { label[i - 1] = next; stack.push(i - 1); }
-            if (x < w - 1 && m[i + 1] && !label[i + 1]) { label[i + 1] = next; stack.push(i + 1); }
-            if (i >= w && m[i - w] && !label[i - w]) { label[i - w] = next; stack.push(i - w); }
-            if (i < w * (h - 1) && m[i + w] && !label[i + w]) { label[i + w] = next; stack.push(i + w); }
-        }
-        if (area > mejorArea) { mejorArea = area; mejor = next; }
-    }
-    for (let i = 0; i < w * h; i++) m[i] = label[i] === mejor && m[i] ? 1 : 0;
+// Limpia la silueta del recorte, in-place. Reemplaza al viejo "solo el componente mayor", que
+// también borraba las piezas SUELTAS del propio diseño (las estrellas sobre el escudo). Regla:
+// la pieza principal queda siempre; el resto queda solo si NO toca el borde del lienzo — lo que
+// entra por el margen del recorte (la puntita de la copia vecina) toca el borde sí o sí, una
+// pieza legítima del diseño queda adentro porque el recorte se hizo alrededor de su cluster.
+const limpiarSiluetaRecorte = ({ m, w, h }) => {
+    const { comps, label } = componentesDe({ m, w, h });
+    if (!comps.length) return;
+    const ppal = comps.reduce((a, b) => (b.area > a.area ? b : a));
+    const validos = new Set(comps.filter(c => c.id === ppal.id || !c.tocaBorde).map(c => c.id));
+    for (let i = 0; i < w * h; i++) m[i] = m[i] && validos.has(label[i]) ? 1 : 0;
 };
 
 // Máscara → canvas B/N (blanco = adentro).
@@ -594,7 +637,10 @@ export const Tpu3DViewer = ({ ordenId, codigo, onClose, onAprobado, modo = 'clie
     const fade = `transition-opacity duration-200 ${controlesVisibles ? 'opacity-100' : 'opacity-0 pointer-events-none'}`;
     const [errorGuardado, setErrorGuardado] = useState('');
     const [guardando, setGuardando] = useState(false);
-    const escenaRef = useRef(null);                   // { componer, anchoRenderPx }
+    const escenaRef = useRef(null);                   // { componer, anchoRenderPx, capturar, ajustarCentradoVisual }
+    const barraInferiorRef = useRef(null);            // franja inferior (escala + hint): su alto define el centrado vertical
+    const cajonRef = useRef(null);                    // aside de zonas: su ancho descuenta en horizontal
+    const panelAbiertoRef = useRef(false);            // espejo de panelAbierto para el closure de la escena (se desliza con transform: un observer no lo ve)
     const tilesRef = useRef(new Map());               // clave archivo|rep|alt → canvas del tile
     const ultimoGuardado = useRef('{}');              // evita re-postear lo que se acaba de cargar
 
@@ -843,6 +889,22 @@ export const Tpu3DViewer = ({ ordenId, codigo, onClose, onAprobado, modo = 'clie
         return () => { vivo = false; };
     }, [elecciones, barnices, texturas, ajustes, ajustesTile, estado]);
 
+    // Recentrar cuando cambia lo que tapa el canvas: el alto de la franja inferior (aparece la
+    // fila de escala al elegir zona — la mide un observer) y el cajón de zonas (se desliza con
+    // transform, un observer no lo ve: entra por el estado `panelAbierto`). La franja monta
+    // recién con estado 'listo' — DESPUÉS del armado de la escena — por eso vive acá.
+    useEffect(() => {
+        if (estado !== 'listo') return;
+        panelAbiertoRef.current = panelAbierto;
+        const fn = () => escenaRef.current?.ajustarCentradoVisual?.();
+        fn();
+        const el = barraInferiorRef.current;
+        if (!el || typeof ResizeObserver === 'undefined') return;
+        const ro = new ResizeObserver(fn);
+        ro.observe(el);
+        return () => ro.disconnect();
+    }, [estado, panelAbierto]);
+
 
     useEffect(() => {
         let vivo = true;
@@ -933,24 +995,36 @@ export const Tpu3DViewer = ({ ordenId, codigo, onClose, onAprobado, modo = 'clie
                 // máscaras alineadas al píxel con el arte. getOrder() viene de arriba hacia abajo
                 // del panel de capas, o sea en orden de prioridad: la primera que cubre un píxel gana.
                 const idsZonas = idsCapas.filter(id => !esCapaExtras(occArte.getGroup(id)?.name));
+
+                // Contenido que NO pertenece a ninguna capa (un fondo de página, marcas sueltas):
+                // se rasteriza con TODAS apagadas y se resta de cada zona, así lo común no cuenta
+                // como parte de todas. Es la salvaguarda que permite medir las zonas por ALFA.
+                for (const [otro] of occArte) occArte.setVisibility(otro, false);
+                const mBase = mascaraAlfa(await rasterCrop(pdfArte, occArte));
+                if (!vivo) return;
+
                 const mascarasZona = [];
                 for (const id of idsZonas) {
                     for (const [otro] of occArte) occArte.setVisibility(otro, otro === id);
                     const cv = await rasterCrop(pdfArte, occArte);
                     if (!vivo) return;
-                    const msk = mascaraTinta(cv);
-                    // Una capa sin tinta dentro del recorte no sirve como zona (queda fuera de la
-                    // copia aislada, o es una capa de guías): se descarta en vez de ofrecer una
+                    // Por ALFA y no por tinta: una capa pintada de blanco (el fondo del escudo)
+                    // es una zona válida — con mascaraTinta quedaba "vacía" y se descartaba.
+                    const msk = mascaraAlfa(cv);
+                    for (let i = 0; i < msk.m.length; i++) if (mBase.m[i]) msk.m[i] = 0;
+                    // Una capa sin contenido dentro del recorte no sirve como zona (queda fuera de
+                    // la copia aislada, o es una capa de guías): se descarta en vez de ofrecer una
                     // zona que al pintarla no cambia nada.
                     if (msk.m.some(v => v)) mascarasZona.push({ id, msk, nombre: occArte.getGroup(id)?.name || '' });
                 }
                 // Restaurar: todo visible MENOS extras (que queda apagada para siempre en este visor).
                 for (const [otro, g] of occArte) occArte.setVisibility(otro, !esCapaExtras(g?.name));
 
-                // Silueta del recorte (a resolución completa) — y solo el componente mayor, por si
-                // entra una puntita de la copia vecina en el margen del recorte.
+                // Silueta del recorte (a resolución completa). La limpieza saca lo que entra por
+                // el margen (la puntita de la copia vecina) pero CONSERVA las piezas sueltas del
+                // diseño — las estrellas sobre el escudo son parte del parche.
                 const silCrop = interiorDeCorte(mascaraTinta(cvCorteCrop || cvArteCrop));
-                mantenerMayorComponente(silCrop);
+                limpiarSiluetaRecorte(silCrop);
                 const cvSilCrop = mascaraACanvas(silCrop);
 
                 // 4. Texturas: color (arte sobre base blanca) y alpha (silueta). Nada más:
@@ -1077,28 +1151,57 @@ export const Tpu3DViewer = ({ ordenId, codigo, onClose, onAprobado, modo = 'clie
                 ctxBarniz.fillRect(0, 0, W, H);
 
                 // Máscara que apaga el relieve hacia el borde: blanco en el interior, negro en el
-                // filo. Se erosiona la silueta y después se desenfoca, para que el degradado empiece
-                // en 0 justo en el contorno y no a mitad de camino.
+                // filo. El ancho del degradado se escala AL TAMAÑO DE CADA PIEZA de la silueta:
+                // con un ancho fijo (erosión de BORDE_APAGADO_PX + blur), el escudo quedaba bien
+                // pero una pieza chica —las estrellas— se erosionaba entera y el relieve le quedaba
+                // solo en un puntito central. Distancia al borde (chamfer 3-4) + radio interior por
+                // componente: el escudo mantiene sus 18px, una estrella apaga en ~1/3 de su radio.
                 const cvApagaBorde = document.createElement('canvas'); cvApagaBorde.width = W; cvApagaBorde.height = H;
                 {
-                    const cvEro = document.createElement('canvas'); cvEro.width = W; cvEro.height = H;
-                    const ctxE2 = cvEro.getContext('2d', { willReadFrequently: true });
-                    ctxE2.filter = `blur(${BORDE_APAGADO_PX}px)`;
-                    ctxE2.drawImage(cvSilCrop, 0, 0);
-                    ctxE2.filter = 'none';
-                    const iB = ctxE2.getImageData(0, 0, W, H);
+                    const { label: lblSil, comps: compsSil } = componentesDe(silCrop);
+                    const dist = new Float32Array(W * H);
+                    for (let i = 0; i < W * H; i++) dist[i] = silCrop.m[i] ? 1e9 : 0;
+                    // chamfer 3-4 (≈3 por píxel): dos pasadas
+                    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+                        const i = y * W + x; if (!dist[i]) continue; let d = dist[i];
+                        if (x > 0) d = Math.min(d, dist[i - 1] + 3);
+                        if (y > 0) {
+                            d = Math.min(d, dist[i - W] + 3);
+                            if (x > 0) d = Math.min(d, dist[i - W - 1] + 4);
+                            if (x < W - 1) d = Math.min(d, dist[i - W + 1] + 4);
+                        }
+                        dist[i] = d;
+                    }
+                    for (let y = H - 1; y >= 0; y--) for (let x = W - 1; x >= 0; x--) {
+                        const i = y * W + x; if (!dist[i]) continue; let d = dist[i];
+                        if (x < W - 1) d = Math.min(d, dist[i + 1] + 3);
+                        if (y < H - 1) {
+                            d = Math.min(d, dist[i + W] + 3);
+                            if (x < W - 1) d = Math.min(d, dist[i + W + 1] + 4);
+                            if (x > 0) d = Math.min(d, dist[i + W - 1] + 4);
+                        }
+                        dist[i] = d;
+                    }
+                    // Radio interior (distancia máxima) de cada componente
+                    const radio = new Map();
                     for (let i = 0; i < W * H; i++) {
-                        const v = iB.data[i * 4] > 235 ? 255 : 0; // umbral alto = erosión
+                        const L = lblSil[i]; if (!L) continue;
+                        if (dist[i] > (radio.get(L) || 0)) radio.set(L, dist[i]);
+                    }
+                    const ctxB = cvApagaBorde.getContext('2d');
+                    const iB = ctxB.createImageData(W, H);
+                    const fadeMax = BORDE_APAGADO_PX * 3; // en unidades chamfer
+                    for (let i = 0; i < W * H; i++) {
+                        let v = 0;
+                        const L = lblSil[i];
+                        if (L) {
+                            const fade = Math.min(fadeMax, Math.max(6, (radio.get(L) || 0) * 0.35));
+                            v = Math.max(0, Math.min(255, Math.round(255 * dist[i] / fade)));
+                        }
                         iB.data[i * 4] = v; iB.data[i * 4 + 1] = v; iB.data[i * 4 + 2] = v; iB.data[i * 4 + 3] = 255;
                     }
-                    ctxE2.putImageData(iB, 0, 0);
-
-                    const ctxB = cvApagaBorde.getContext('2d');
-                    ctxB.fillStyle = '#000000';
-                    ctxB.fillRect(0, 0, W, H);
-                    ctxB.filter = `blur(${BORDE_APAGADO_PX}px)`;
-                    ctxB.drawImage(cvEro, 0, 0);
-                    ctxB.filter = 'none';
+                    ctxB.putImageData(iB, 0, 0);
+                    void compsSil; // el label alcanza; los bbox no se usan acá
                 }
 
                 const cTmp = document.createElement('canvas'); cTmp.width = W; cTmp.height = H;
@@ -1234,11 +1337,30 @@ export const Tpu3DViewer = ({ ordenId, codigo, onClose, onAprobado, modo = 'clie
 
                 const escena = new THREE.Scene();
                 const camara = new THREE.PerspectiveCamera(38, ancho / alto, 0.1, 200);
+
+                // La cámara mira al CENTROIDE de la silueta, no al centro del recorte: el origen
+                // del mundo es el centro del bbox, y una pieza con satélites arriba (las estrellas
+                // sobre el escudo) empuja ese bbox hacia arriba — el escudo quedaba colgando bajo
+                // en el modal. El centroide es la masa real del parche, que es lo que el ojo espera
+                // ver centrado. De paso el parche también ROTA alrededor de su masa.
+                let cenX = 0, cenY = 0, nSil = 0;
+                for (let i = 0; i < W * H; i++) {
+                    if (!silCrop.m[i]) continue;
+                    cenX += i % W; cenY += (i - (i % W)) / W; nSil++;
+                }
+                const objX = nSil ? ((cenX / nSil) / W - 0.5) * anchoMundo : 0;
+                const objY = nSil ? (0.5 - (cenY / nSil) / H) * altoMundo : 0;
+
                 // Encuadre automático: distancia para que la pieza ENTERA entre en el campo visual
                 // (con parches altos la cámara fija arrancaba recortada / con demasiado zoom).
-                const radio = Math.hypot(anchoMundo, altoMundo) / 2;
+                // El radio se mide DESDE EL CENTROIDE hasta la esquina más lejana del recorte:
+                // mirando descentrado, la mitad del bbox se queda corta del lado largo.
+                const radio = Math.hypot(
+                    anchoMundo / 2 + Math.abs(objX),
+                    altoMundo / 2 + Math.abs(objY)
+                );
                 const fitDist = (radio / Math.sin(THREE.MathUtils.degToRad(38 / 2))) * 1.12;
-                camara.position.set(0, -fitDist * 0.18, fitDist);
+                camara.position.set(objX, objY - fitDist * 0.18, fitDist);
 
                 // DPR tope 1.5: con 2 en pantallas grandes el canvas se va a millones de píxeles
                 // y la rotación se siente pesada. A 1.5 no se nota y vuela.
@@ -1335,6 +1457,7 @@ export const Tpu3DViewer = ({ ordenId, codigo, onClose, onAprobado, modo = 'clie
 
                 // Rotar: arrastrar · Zoom: rueda / pinch · Mover (pan): botón derecho / dos dedos.
                 const controles = new OrbitControls(camara, renderer.domElement);
+                controles.target.set(objX, objY, 0); // pivote = centroide (ver arriba)
                 controles.enableDamping = true;
                 controles.dampingFactor = 0.12;
                 controles.rotateSpeed = 1.35;   // giro más ágil
@@ -1343,6 +1466,7 @@ export const Tpu3DViewer = ({ ordenId, codigo, onClose, onAprobado, modo = 'clie
                 controles.screenSpacePanning = true;
                 controles.minDistance = fitDist * 0.3;
                 controles.maxDistance = fitDist * 3;
+                controles.update();
 
                 // Render BAJO DEMANDA: la escena es estática, así que redibujar 60 veces por segundo
                 // mientras nadie la toca es trabajo tirado — y en la app interna ese trabajo compite
@@ -1397,6 +1521,51 @@ export const Tpu3DViewer = ({ ordenId, codigo, onClose, onAprobado, modo = 'clie
                 // El alto del canvas no es fijo: en mobile ocupa lo que sobra, y el panel de texturas
                 // recién aparece cuando el modelo está listo — o sea DESPUÉS de este setup. Sin esto
                 // el render se quedaba con la medida vieja y salía estirado.
+                // Centrado VISUAL dinámico: la columna inferior (joystick + fila de escala + hint)
+                // es un overlay que tapa el pie del canvas — el parche, centrado en el canvas
+                // completo, quedaba descentrado en la franja que de verdad se ve. El view offset
+                // corre la PROYECCIÓN en píxeles (independiente del zoom, sin tocar canvas ni
+                // cámara), así que aparecer/desaparecer la fila de escala solo desplaza la vista.
+                // El ojo no mueve nada: esconde por opacidad y la altura de la barra no cambia.
+                const offCur = { x: 0, y: 0 };   // offset aplicado
+                const offObj = { x: 0, y: 0 };   // offset objetivo
+                let animCentrado = 0;
+                const aplicarOffset = () => {
+                    const w = cont.clientWidth || ancho, h = cont.clientHeight || alto;
+                    camara.setViewOffset(w, h, offCur.x, offCur.y, w, h);
+                    pedirRender();
+                };
+                // Interpolación hacia el objetivo (~0.35 por frame ≈ 120ms): acompaña la
+                // transición de la barra/cajón (150ms) sin arrastrarse — un salto seco al lado
+                // de esa transición se ve roto, y más lento se siente pesado.
+                const animarCentrado = () => {
+                    const dx = offObj.x - offCur.x, dy = offObj.y - offCur.y;
+                    if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5) {
+                        offCur.x = offObj.x; offCur.y = offObj.y;
+                        aplicarOffset();
+                        return;
+                    }
+                    offCur.x += dx * 0.35; offCur.y += dy * 0.35;
+                    aplicarOffset();
+                    animCentrado = requestAnimationFrame(animarCentrado);
+                };
+                const ajustarCentradoVisual = () => {
+                    // Vertical: solo la franja que TAPA el centro (fila de escala + hint) — el
+                    // joystick flota a la derecha y no cuenta. Horizontal: el cajón de zonas,
+                    // pero SOLO cuando es el panel angosto de desktop: en mobile ocupa el 78%
+                    // del ancho y descontarlo empujaba el parche afuera de la pantalla — ahí el
+                    // cajón es un overlay que se cierra para mirar, no una franja que convive.
+                    const hb = barraInferiorRef.current?.offsetHeight || 0;
+                    const w = cont.clientWidth || ancho;
+                    const dwRaw = (panelAbiertoRef.current && cajonRef.current) ? cajonRef.current.offsetWidth : 0;
+                    const dw = dwRaw < w * 0.5 ? dwRaw : 0;
+                    offObj.x = dw / 2;
+                    offObj.y = hb / 2;
+                    cancelAnimationFrame(animCentrado);
+                    animCentrado = requestAnimationFrame(animarCentrado);
+                };
+                ajustarCentradoVisual();
+
                 let ultimoW = ancho, ultimoH = alto;
                 const ro = new ResizeObserver(() => {
                     pedirRender();
@@ -1408,11 +1577,13 @@ export const Tpu3DViewer = ({ ordenId, codigo, onClose, onAprobado, modo = 'clie
                     camara.aspect = w / h;
                     camara.updateProjectionMatrix();
                     renderer.setSize(w, h);
+                    ajustarCentradoVisual(); // el offset es en píxeles: se recalcula con la medida nueva
                 });
                 ro.observe(cont);
 
                 limpiar = () => {
                     renderer.setAnimationLoop(null);
+                    cancelAnimationFrame(animCentrado);
                     controles.removeEventListener('change', pedirRender);
                     ro.disconnect();
                     renderer.domElement.removeEventListener('pointerdown', alBajar);
@@ -1439,8 +1610,8 @@ export const Tpu3DViewer = ({ ordenId, codigo, onClose, onAprobado, modo = 'clie
                     const tam = new THREE.Vector2();
                     renderer.getSize(tam);
                     const camFoto = new THREE.PerspectiveCamera(38, tam.x / tam.y, 0.1, 200);
-                    camFoto.position.set(0, 0, fitDist);
-                    camFoto.lookAt(0, 0, 0);
+                    camFoto.position.set(objX, objY, fitDist);
+                    camFoto.lookAt(objX, objY, 0);
                     renderer.setSize(tam.x * 2, tam.y * 2, false);
                     renderer.render(escena, camFoto);
                     const url = renderer.domElement.toDataURL('image/png');
@@ -1449,7 +1620,7 @@ export const Tpu3DViewer = ({ ordenId, codigo, onClose, onAprobado, modo = 'clie
                     return url;
                 };
 
-                escenaRef.current = { componer, anchoRenderPx: W, capturar };
+                escenaRef.current = { componer, anchoRenderPx: W, capturar, ajustarCentradoVisual };
                 // Si el diseñador le puso nombre a la capa ("Fondo", "Estrellas") se muestra ese;
                 // si quedó el default de Illustrator ("Capa 2") no dice nada útil y encima el orden
                 // va al revés que la numeración, así que se usa "Zona N".
@@ -1602,6 +1773,9 @@ export const Tpu3DViewer = ({ ordenId, codigo, onClose, onAprobado, modo = 'clie
                                 </div>
                             )}
 
+                            {/* Franja que define el centrado vertical: lo que tapa el CENTRO del
+                                canvas (el joystick de arriba flota a la derecha y no cuenta). */}
+                            <div ref={barraInferiorRef}>
                             {puedeElegir && ajusteActivo && (
                                 <div className={`border-t ${ui.separador} ${ui.barraFondo} px-4 py-2.5 flex flex-wrap items-center gap-x-5 gap-y-1`}>
                                     <div className="min-w-0 max-w-[40%] sm:max-w-[9rem]">
@@ -1628,6 +1802,7 @@ export const Tpu3DViewer = ({ ordenId, codigo, onClose, onAprobado, modo = 'clie
                                     ? 'Tocá una parte del parche para elegir textura.'
                                     : 'Girá: arrastrá · Zoom: rueda o pinch · Mover: botón derecho o dos dedos'}
                             </div>
+                            </div>
                         </div>
                     )}
 
@@ -1645,7 +1820,7 @@ export const Tpu3DViewer = ({ ordenId, codigo, onClose, onAprobado, modo = 'clie
                         title={panelAbierto ? 'Ocultar texturas' : 'Elegir texturas'}
                     >{panelAbierto ? <ChevronRight size={14} /> : <ChevronLeft size={14} />}</button>
 
-                    <aside className={`absolute inset-y-0 right-0 w-[78%] sm:w-72 ${ui.drawer} border-l overflow-y-auto transition-all duration-150 ${
+                    <aside ref={cajonRef} className={`absolute inset-y-0 right-0 w-[78%] sm:w-72 ${ui.drawer} border-l overflow-y-auto transition-all duration-150 ${
                         panelAbierto ? 'translate-x-0' : 'translate-x-full'
                     } ${controlesVisibles ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}>
                     <div className="p-3 space-y-2.5">

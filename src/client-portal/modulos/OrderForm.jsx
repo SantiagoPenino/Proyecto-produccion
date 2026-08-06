@@ -767,8 +767,9 @@ const OrderForm = ({ serviceId: propServiceId }) => {
     const handleFileUpload = async (itemId, field, file) => {
         if (!file) return false;
 
-        // Validation — sublimación acepta también JPEG (no necesita transparencia); el resto solo PNG/PDF
-        const allowJpeg = svcId === 'sublimacion';
+        // Validation — sublimación y ECOUV aceptan también JPEG (no necesitan transparencia:
+        // el arte va impreso sobre el material, no recortado); el resto solo PNG/PDF.
+        const allowJpeg = svcId === 'sublimacion' || svcId === 'ecouv';
         const allowed = ['image/png', 'application/pdf', ...(allowJpeg ? ['image/jpeg', 'image/jpg'] : [])];
         const extRegex = allowJpeg ? /\.(png|pdf|jpe?g)$/ : /\.(png|pdf)$/;
         const isAllowed = allowed.includes(file.type) || file.name.toLowerCase().match(extRegex);
@@ -2097,9 +2098,12 @@ const OrderForm = ({ serviceId: propServiceId }) => {
                                                     Todavía no tenés matrices finalizadas. Empezá con un trabajo nuevo.
                                                 </div>
                                             ) : (
-                                                <div className="grid gap-2 [grid-template-columns:repeat(auto-fill,minmax(130px,130px))]">
-                                                    {/* Tamaño de tarjeta FIJO (130px) y las que entren por fila. Con columnas
-                                                        fijas cada tarjeta se estiraba al ancho del form y quedaban gigantes. */}
+                                                <div className="grid gap-2 [grid-template-columns:repeat(auto-fill,minmax(120px,1fr))]">
+                                                    {/* Entran las que quepan por fila, de 120px para arriba. El `1fr` reparte el
+                                                        sobrante en vez de dejarlo muerto a la derecha: en un teléfono son 3 por
+                                                        fila ocupando todo el ancho, en desktop ~8 de 140px. Con un número fijo de
+                                                        columnas (grid-cols-N) cada tarjeta se estiraba al ancho del form y
+                                                        quedaban gigantes; con ancho fijo sobraba espacio en mobile. */}
                                                     {matrices.map(m => {
                                                         const sel = matrizSel?.OrdenID === m.OrdenID;
                                                         return (
@@ -2169,7 +2173,11 @@ const OrderForm = ({ serviceId: propServiceId }) => {
                                                                 </label>
                                                             )}
                                                         </div>
-                                                        {(index === 0 || !applyMaterialToAll) ? (
+                                                        {/* El selector se muestra también si ESTE archivo quedó sin
+                                                            material, aunque esté "aplicar a todo": si no, un archivo
+                                                            sin material mostraba el cartel "Global" (con el material
+                                                            del primero) y el cliente no tenía cómo corregirlo. */}
+                                                        {(index === 0 || !applyMaterialToAll || !item.material) ? (
                                                             <CustomSelect
                                                                 value={item.material}
                                                                 onChange={(val) => handleItemMaterialChange(item.id, val)}
@@ -2811,14 +2819,23 @@ const OrderForm = ({ serviceId: propServiceId }) => {
                                             type="file"
                                             id="add-item-file-input"
                                             className="hidden"
-                                            accept={svcId === 'sublimacion' ? 'image/png, image/jpeg, application/pdf, .png, .jpg, .jpeg, .pdf' : 'image/png, application/pdf, .png, .pdf'}
+                                            accept={(svcId === 'sublimacion' || svcId === 'ecouv') ? 'image/png, image/jpeg, application/pdf, .png, .jpg, .jpeg, .pdf' : 'image/png, application/pdf, .png, .pdf'}
                                             onChange={async (e) => {
                                                 const file = e.target.files[0];
                                                 if (!file) return;
                                                 e.target.value = ''; // Reset para poder elegir el mismo archivo
                                                 const newId = Date.now();
                                                 const lastItem = items[items.length - 1];
-                                                const newMaterial = globalMaterial;
+                                                // El archivo nuevo HEREDA el material (igual que addItem del hook):
+                                                // en modo material-por-archivo `globalMaterial` queda SIEMPRE vacío a
+                                                // propósito (no se autocompleta), así que soltando archivos acá nacían
+                                                // todos sin material. Con "Aplicar a todo el pedido" tildado el select
+                                                // queda oculto en los archivos siguientes: el cliente veía "Global" con
+                                                // el material del primero, pero el dato estaba vacío y al confirmar lo
+                                                // frenaba "Seleccioná el material de cada archivo" SIN poder corregirlo.
+                                                const newMaterial = applyMaterialToAll
+                                                    ? (items[0]?.material || globalMaterial)
+                                                    : (lastItem?.material || globalMaterial);
                                                 const newItem = { id: newId, file: null, fileBack: null, copies: 1, material: newMaterial, note: '', doubleSided: false, printSettings: {} };
                                                 actions.setItems([...items, newItem]);
                                                 const success = await handleFileUpload(newId, 'file', file);

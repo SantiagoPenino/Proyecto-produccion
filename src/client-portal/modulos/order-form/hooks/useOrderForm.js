@@ -456,7 +456,12 @@ export const useOrderForm = (serviceId, overrides = {}) => {
                 if (mRes.success && mRes.data.length > 0) {
                     // En modo "multiple" (material por archivo, p. ej. Sublimación) NO autocompletamos:
                     // el cliente debe elegir el material de cada archivo (se valida al confirmar).
-                    const firstMat = config.materialMode === 'multiple' ? '' : findDefaultMaterial(mRes.data);
+                    // EXCEPCIÓN: si la variante tiene UN SOLO material no hay nada que elegir
+                    // (p. ej. "Sublimación Tela de Cliente" → "Tela Cliente (Mínimo 5mts)"): se
+                    // autocompleta, así el cliente no tiene que ponerlo archivo por archivo.
+                    const unicoMaterial = mRes.data.length === 1;
+                    const firstMat = (config.materialMode === 'multiple' && !unicoMaterial)
+                        ? '' : findDefaultMaterial(mRes.data);
                     dispatch({
                         type: actionTypes.SET_DATA,
                         data: { dynamicMaterials: mRes.data, globalMaterial: firstMat }

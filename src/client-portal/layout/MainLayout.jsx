@@ -363,12 +363,15 @@ export const MainLayout = ({ children }) => {
 
                 <div className="p-4 border-t border-brand-dark bg-custom-dark rounded-b-2xl">
                     <div className="flex items-center gap-3 mb-4 px-2">
+                        {/* Fallback a nombre/usuario: cuando la sesión activa es la de la app de
+                            gestión (portal embebido / mismo dominio), el objeto trae `nombre` y
+                            `usuario` en vez de `name`/`idCliente` — sin esto quedaba la "U" pelada. */}
                         <div className="w-10 h-10 rounded-full bg-brand-dark flex items-center justify-center font-bold text-zinc-300 border border-zinc-300">
-                            {user?.avatar || user?.name?.charAt(0) || 'U'}
+                            {user?.avatar || (user?.name || user?.nombre)?.charAt(0)?.toUpperCase() || 'U'}
                         </div>
                         <div className="overflow-hidden">
-                            <p className="text-sm font-medium truncate">{user?.name}</p>
-                            <p className="text-xs text-zinc-300 truncate font-mono">{user?.idCliente}</p>
+                            <p className="text-sm font-medium truncate">{user?.name || user?.nombre}</p>
+                            <p className="text-xs text-zinc-300 truncate font-mono">{user?.idCliente || user?.usuario}</p>
                         </div>
                     </div>
                     <button

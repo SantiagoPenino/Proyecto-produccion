@@ -4,6 +4,8 @@ import { toast } from 'sonner';
 import Swal from 'sweetalert2';
 import Lottie from 'lottie-react';
 import api from '../../services/apiClient';
+import { Phone, Mail, Trash2, IdCard, MapPin, Tags, X, Check, Link2, ChevronsUpDown } from 'lucide-react';
+import { Listbox, ListboxButton, ListboxOptions, ListboxOption } from '@headlessui/react';
 import animationData from '../../assets/animations/Loading.json';
 
 // ─── Spinner Lottie reutilizable ──────────────────────────────────────────────
@@ -34,6 +36,17 @@ function Avatar({ name, size = 34 }) {
     );
 }
 
+// Nombre a mostrar: muchos clientes tienen `Nombre` vacío y solo `NombreFantasia`
+// (por eso media grilla mostraba avatares con "?"). Se usa el que exista.
+const nombreVisible = (c) => (c?.Nombre || '').trim() || (c?.NombreFantasia || '').trim() || '';
+
+// Gradiente del avatar: dos tonos derivados del color base, para que la ficha
+// tenga algo de vida en vez de un cuadrado de color plano.
+const getAvatarGradient = (name) => {
+    const c = getAvatarColor(name);
+    return `linear-gradient(135deg, ${c} 0%, ${c}cc 55%, ${c}99 100%)`;
+};
+
 // ─── Helpers de campo reutilizables (FUERA del modal para evitar remounts) ────
 // IMPORTANTE: si se definen dentro del componente, React los trata como nuevos
 // tipos en cada render y desmonta/remonta el input → pérdida de foco al tipear.
@@ -45,14 +58,75 @@ function ModalField({ label, field, type = 'text', readOnly = false, cls = '', f
         </div>
     );
 }
-function ModalSelect({ label, field, options = [], idKey = 'ID', nameKey = 'Nombre', cls = '', form, onChange }) {
+// Desplegable con HeadlessUI en vez del <select> nativo: el nativo no se puede
+// estilar (el panel lo dibuja el sistema operativo) y con listas largas —
+// localidades, vendedores— se veía distinto en cada máquina.
+// `anchor` posiciona el panel por fuera del contenedor: si no, el scroll del
+// cuerpo del modal lo recortaba.
+// Los catálogos vienen del ERP con la caja mezclada ("atlantida", "LAS TOSCAS",
+// "Ciudad de la Costa", "DAC") y las listas se veían desparejas. Se normaliza al
+// MOSTRAR; el dato guardado nunca se toca.
+//
+// Solo se corrige lo que está mal escrito — todo en MAYÚSCULA o todo en minúscula.
+// Si el texto ya mezcla ambas, viene bien tipeado y se respeta tal cual: aplicarle
+// la regla rompía "DePunta" → "Depunta", "Encomienda (Agencia)" → "(agencia)" y
+// "Retiro en el Local" → "Retiro En el Local".
+// Excepción: una palabra suelta de hasta 3 letras en mayúscula es una sigla (DAC).
+const MINUSCULAS = new Set(['de', 'del', 'la', 'las', 'el', 'los', 'y', 'e', 'en', 'a', 'al', 'con', 'para', 'por', 'o', 'u']);
+const capitalCase = (s) => {
+    const str = String(s ?? '').trim();
+    if (!str) return str;
+    const tieneMin = /[a-záéíóúüñ]/.test(str);
+    const tieneMay = /[A-ZÁÉÍÓÚÜÑ]/.test(str);
+    if (tieneMin && tieneMay) return str;                       // ya viene bien escrito
+    if (!tieneMin && str.length <= 3 && !str.includes(' ')) return str;  // sigla: DAC, UTE
+    return str.toLowerCase().split(/\s+/)
+        .map((w, i) => (i > 0 && MINUSCULAS.has(w))
+            ? w
+            : w.replace(/(^|\()([a-záéíóúüñ])/g, (m, p, c) => p + c.toUpperCase()))
+        .join(' ');
+};
+
+function CiSelect({ value, onChange, options = [], idKey = 'ID', nameKey = 'Nombre',
+    placeholder = 'Sin asignar', allowEmpty = true, format = capitalCase }) {
+    const sel = options.find(o => String(o[idKey]) === String(value ?? ''));
+    // Por defecto TODOS los desplegables normalizan a Capital Case: los catálogos
+    // vienen del ERP con la caja mezclada (DAC, "Encomienda (Agencia)", "Comun",
+    // nombres de vendedor en mayúscula). Solo cambia lo que se ve, no lo guardado.
+    const txt = (o) => format ? format(o[nameKey]) : o[nameKey];
+    return (
+        <Listbox value={value ?? ''} onChange={onChange}>
+            <div className="ci-lb">
+                <ListboxButton className="ci-lb-btn">
+                    <span className={sel ? '' : 'ci-lb-ph'}>{sel ? txt(sel) : placeholder}</span>
+                    <ChevronsUpDown size={13} strokeWidth={2.2} />
+                </ListboxButton>
+                <ListboxOptions anchor="bottom start" className="ci-lb-panel">
+                    {allowEmpty && (
+                        <ListboxOption value="" className="ci-lb-opt">
+                            <span className="ci-lb-ph">{placeholder}</span>
+                            {!sel && <Check size={13} strokeWidth={3} />}
+                        </ListboxOption>
+                    )}
+                    {options.map(o => (
+                        <ListboxOption key={o[idKey]} value={String(o[idKey])} className="ci-lb-opt">
+                            <span>{txt(o)}</span>
+                            {sel && String(sel[idKey]) === String(o[idKey]) && <Check size={13} strokeWidth={3} />}
+                        </ListboxOption>
+                    ))}
+                </ListboxOptions>
+            </div>
+        </Listbox>
+    );
+}
+
+function ModalSelect({ label, field, options = [], idKey = 'ID', nameKey = 'Nombre', cls = '', form, onChange, format }) {
     return (
         <div className={`ci-field ${cls}`}>
             <label>{label}</label>
-            <select value={form[field] ?? ''} onChange={onChange(field)}>
-                <option value="">— Sin asignar —</option>
-                {options.map(o => <option key={o[idKey]} value={o[idKey]}>{o[nameKey]}</option>)}
-            </select>
+            {/* Listbox devuelve el valor directo; `set` espera un evento, así que se envuelve */}
+            <CiSelect value={form[field]} options={options} idKey={idKey} nameKey={nameKey} format={format}
+                onChange={(v) => onChange(field)({ target: { value: v } })} />
         </div>
     );
 }
@@ -224,7 +298,10 @@ function ClientModal({ client, catalogs, onClose, onSaved, onDeleted }) {
     const handleDelete = async () => {
         const { value } = await Swal.fire({
             title: '¿Eliminar cliente?',
-            html: `<p style="margin-bottom:8px">Estás por eliminar <b>"${client.Nombre}"</b>.</p><p style="font-size:13px;color:#888">Esta acción no se puede deshacer. Escribí <b>eliminar</b> para confirmar.</p>`,
+            // Se identifica por ID CLIENTE, que es como se lo nombra en el sistema; con
+            // `Nombre` el cartel decía «Estás por eliminar ""» en la mitad de los casos,
+            // porque muchos clientes no lo tienen cargado.
+            html: `<p style="margin-bottom:8px">Estás por eliminar <b>"${String(client.IDCliente || '').trim() || `#${client.CodCliente}`}"</b>.</p><p style="font-size:13px;color:#888">Esta acción no se puede deshacer. Escribí <b>eliminar</b> para confirmar.</p>`,
             input: 'text',
             inputPlaceholder: 'Escribí "eliminar"',
             icon: 'warning',
@@ -250,75 +327,122 @@ function ClientModal({ client, catalogs, onClose, onSaved, onDeleted }) {
     return (
         <div className="ci-overlay">
             <div className="ci-modal" onClick={e => e.stopPropagation()}>
+                {/* Cabecera con la identidad del cliente (mismo lenguaje que las tarjetas):
+                    avatar, ID como título y nombre debajo. Antes decía "Editar:" a secas
+                    cuando el cliente no tenía Nombre cargado, que es la mitad de la base. */}
                 <div className="ci-modal-header">
-                    <div>
-                        <div className="ci-modal-title">{isNew ? '+ Nuevo Cliente' : `Editar: ${client.Nombre}`}</div>
-                        {!isNew && <div className="ci-modal-sub">CodCliente: {client.CodCliente} · IDReact: {client.IDReact || '—'}</div>}
+                    {!isNew && (
+                        <div className="ci-modal-avatar" style={{ background: getAvatarGradient(nombreVisible(client)) }}>
+                            {getInitials(nombreVisible(client))}
+                        </div>
+                    )}
+                    <div className="ci-modal-headinfo">
+                        <div className="ci-modal-title">
+                            {isNew ? 'Nuevo cliente' : (String(client.IDCliente || '').trim() || `#${client.CodCliente}`)}
+                        </div>
+                        {!isNew && (
+                            <div className="ci-modal-sub">
+                                {nombreVisible(client) || <em style={{ color: '#cbd5e1' }}>Sin nombre</em>}
+                            </div>
+                        )}
                     </div>
-                    <button className="ci-modal-close" onClick={onClose}>✕</button>
+                    {!isNew && (
+                        <div className="ci-modal-tags">
+                            <span className={`ci-int-pill ${client.IDReact ? 'on-planilla' : 'off'}`}
+                                title={client.IDReact ? `Planilla · IDReact ${client.IDReact}` : 'Sin vincular a Planilla'}>PL</span>
+                            <span className={`ci-int-pill ${client.CodReferencia ? 'on-macrosoft' : 'off'}`}
+                                title={client.CodReferencia ? `Macrosoft · ${client.CodReferencia}` : 'Sin vincular a Macrosoft'}>MS</span>
+                            <span className="ci-modal-cod">#{client.CodCliente}</span>
+                        </div>
+                    )}
+                    <button className="ci-modal-close" onClick={onClose} title="Cerrar"><X size={16} strokeWidth={2.4} /></button>
                 </div>
+                {/* Dos columnas: a la izquierda QUIÉN es el cliente (identificación y
+                    contacto), a la derecha A DÓNDE va y CÓMO se clasifica. Agrupadas en
+                    wrappers y no sueltas en el grid, para que las secciones de cada lado
+                    queden pegadas entre sí y no se alineen por filas. */}
                 <div className="ci-modal-body">
+                  <div className="ci-modal-col">
                     <div>
-                        <div className="ci-modal-section-title">Identificación</div>
+                        <div className="ci-modal-section-title"><IdCard size={13} strokeWidth={2.4} />Identificación</div>
                         <div className="ci-field-grid">
                             <ModalField label="Nombre y Apellido *" field="Nombre" cls="full" form={form} onChange={set} />
                             <ModalField label="Nombre Fantasía" field="NombreFantasia" form={form} onChange={set} />
                             <ModalField label="ID Cliente" field="IDCliente" form={form} onChange={set} />
-                            <ModalField label="RUC / C.I." field="CioRuc" form={form} onChange={set} />
-                            <ModalField label="IDReact" field="IDReact" form={form} onChange={set} />
-                            <ModalField label="CodReferencia (Macrosoft)" field="CodReferencia" form={form} onChange={set} />
+                            <ModalField label="RUC / C.I." field="CioRuc" cls="full" form={form} onChange={set} />
                         </div>
                     </div>
                     <div>
-                        <div className="ci-modal-section-title">Contacto</div>
+                        <div className="ci-modal-section-title"><Phone size={13} strokeWidth={2.4} />Contacto</div>
                         <div className="ci-field-grid">
                             <ModalField label="Teléfono" field="TelefonoTrabajo" form={form} onChange={set} />
                             <ModalField label="Email" field="Email" type="email" form={form} onChange={set} />
                             <ModalField label="Dirección" field="DireccionTrabajo" cls="full" form={form} onChange={set} />
                         </div>
                     </div>
+                  </div>
+
+                  <div className="ci-modal-col">
                     <div>
-                        <div className="ci-modal-section-title">Ubicación y Envío</div>
+                        <div className="ci-modal-section-title"><MapPin size={13} strokeWidth={2.4} />Ubicación y envío</div>
                         <div className="ci-field-grid">
                             <ModalSelect label="Departamento" field="DepartamentoID" options={catalogs.departamentos || []} form={form} onChange={set} />
-                            <ModalSelect label="Localidad" field="LocalidadID" options={locs} form={form} onChange={set} />
+                            <ModalSelect label="Localidad" field="LocalidadID" options={locs} form={form} onChange={set} format={capitalCase} />
                             <ModalSelect label="Agencia Envío" field="AgenciaID" options={catalogs.agencias || []} form={form} onChange={set} />
                             <ModalSelect label="Forma de Envío" field="FormaEnvioID" options={catalogs.formasEnvio || []} form={form} onChange={set} />
                         </div>
                     </div>
                     <div>
-                        <div className="ci-modal-section-title">Clasificación</div>
+                        <div className="ci-modal-section-title"><Tags size={13} strokeWidth={2.4} />Clasificación</div>
                         <div className="ci-field-grid">
                             <ModalSelect label="Tipo de Cliente" field="TClIdTipoCliente" options={catalogs.tiposClientes || []} form={form} onChange={set} />
                             <ModalSelect label="Vendedor" field="VendedorID" options={catalogs.vendedores || []} idKey="Cedula" form={form} onChange={set} />
                             <div className="ci-field">
                                 <label>Estado</label>
-                                <select value={form.ESTADO ?? ''} onChange={set('ESTADO')}>
-                                    <option value="">— Sin asignar —</option>
-                                    <option value="ACTIVO">ACTIVO</option>
-                                    <option value="INACTIVO">INACTIVO</option>
-                                    <option value="BLOQUEADO">BLOQUEADO</option>
-                                </select>
+                                {/* Sin opción vacía: un cliente siempre tiene estado (al guardar,
+                                    si viniera vacío se asume ACTIVO). */}
+                                <CiSelect value={form.ESTADO} idKey="ID" nameKey="Nombre" allowEmpty={false}
+                                    options={[{ ID: 'ACTIVO', Nombre: 'ACTIVO' }, { ID: 'INACTIVO', Nombre: 'INACTIVO' }, { ID: 'BLOQUEADO', Nombre: 'BLOQUEADO' }]}
+                                    onChange={(v) => set('ESTADO')({ target: { value: v } })} />
                             </div>
-                            <div className="ci-field" style={{ display: 'flex', alignItems: 'center', gap: 8, paddingTop: 22 }}>
-                                <input type="checkbox" id="wa-chk" checked={!!form.WebActive} onChange={set('WebActive')} style={{ width: 16, height: 16, accentColor: '#4f46e5' }} />
-                                <label htmlFor="wa-chk" style={{ textTransform: 'none', fontSize: 13, fontWeight: 600, color: '#374151', marginBottom: 0 }}>Web Activo</label>
+                            <label className="ci-check" htmlFor="wa-chk">
+                                <input type="checkbox" id="wa-chk" checked={!!form.WebActive} onChange={set('WebActive')} />
+                                <span>Web activo</span>
+                            </label>
+                        </div>
+                    </div>
+
+                    {/* Vínculos con los otros sistemas: son IDs técnicos, no datos del
+                        cliente — van al final y aparte para no mezclarlos con RUC o nombre.
+                        SOLO LECTURA: los asigna la sincronización con Planilla/Macrosoft;
+                        editarlos a mano rompe el vínculo (apunta a otro registro o a ninguno). */}
+                    <div>
+                        <div className="ci-modal-section-title"><Link2 size={13} strokeWidth={2.4} />Vínculos</div>
+                        <div className="ci-field-grid ci-vinculos">
+                            <div className="ci-field">
+                                <label>IDReact <span className="ci-field-hint">Planilla</span></label>
+                                <input value={form.IDReact ?? ''} readOnly placeholder="Sin vincular" title="Lo asigna la sincronización con Planilla" />
+                            </div>
+                            <div className="ci-field">
+                                <label>CodReferencia <span className="ci-field-hint">Macrosoft</span></label>
+                                <input value={form.CodReferencia ?? ''} readOnly placeholder="Sin vincular" title="Lo asigna la sincronización con Macrosoft" />
                             </div>
                         </div>
                     </div>
+                  </div>
                 </div>
                 <div className="ci-modal-footer">
                     {!isNew && (
-                        <button onClick={handleDelete} disabled={deleting}
-                            style={{ marginRight: 'auto', padding: '9px 16px', background: 'none', border: '1.5px solid #fca5a5', borderRadius: 8, color: '#dc2626', fontWeight: 700, fontSize: 13, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6, transition: 'all .15s' }}
-                            onMouseEnter={e => { e.currentTarget.style.background = '#fee2e2'; }}
-                            onMouseLeave={e => { e.currentTarget.style.background = 'none'; }}
-                        >
-                            {deleting ? '🗑 Eliminando…' : '🗑 Eliminar cliente'}
+                        <button className="ci-btn-delete" onClick={handleDelete} disabled={deleting}>
+                            <Trash2 size={14} strokeWidth={2.2} />
+                            {deleting ? 'Eliminando…' : 'Eliminar cliente'}
                         </button>
                     )}
                     <button className="ci-btn-cancel" onClick={onClose}>Cancelar</button>
-                    <button className="ci-btn-save" onClick={handleSave} disabled={saving}>{saving ? 'Guardando…' : isNew ? 'Crear Cliente' : 'Guardar Cambios'}</button>
+                    <button className="ci-btn-save" onClick={handleSave} disabled={saving}>
+                        {!saving && <Check size={15} strokeWidth={2.6} />}
+                        {saving ? 'Guardando…' : isNew ? 'Crear cliente' : 'Guardar cambios'}
+                    </button>
                 </div>
             </div>
         </div>
@@ -351,13 +475,20 @@ const TabTablaList = React.memo(function TabTablaList({ catalogs, onEdit, client
         return dup;
     }, [clients]);
 
-    const handleDupTagClick = useCallback((e, c, field) => {
+    // Un solo punto por tarjeta: al pulsarlo trae TODOS los hermanos del cliente,
+    // o sea los que comparten CUALQUIERA de sus campos duplicados (antes había un
+    // punto por campo y cada uno filtraba solo por ese). El color de la barra
+    // lateral sigue diciendo por cuál campo duplica.
+    const handleDupTagClick = useCallback((e, c, fields) => {
         e.stopPropagation();
-        const val = String(c[field] ?? '').trim().toLowerCase();
-        if (!val) return;
+        // Pares campo→valor por los que este cliente duplica
+        const criterios = [...fields]
+            .map(f => ({ field: f, value: String(c[f] ?? '').trim().toLowerCase() }))
+            .filter(x => x.value);
+        if (!criterios.length) return;
         setFocusDup(prev =>
-            prev && prev.field === field && prev.value === val ? null
-                : { field, value: val, label: c[field] }
+            (prev && prev.cod === c.CodCliente) ? null
+                : { cod: c.CodCliente, criterios, label: String(c.IDCliente || '').trim() || `#${c.CodCliente}` }
         );
     }, []);
 
@@ -366,7 +497,8 @@ const TabTablaList = React.memo(function TabTablaList({ catalogs, onEdit, client
         e.stopPropagation();
         const { value } = await Swal.fire({
             title: '¿Eliminar cliente?',
-            html: `<p style="margin-bottom:8px">Estás por eliminar <b>"${c.Nombre}"</b>.</p><p style="font-size:13px;color:#888">Esta acción no se puede deshacer. Escribí <b>eliminar</b> para confirmar.</p>`,
+            // Ídem el borrado desde el modal: identificar por ID Cliente, no por Nombre.
+            html: `<p style="margin-bottom:8px">Estás por eliminar <b>"${String(c.IDCliente || '').trim() || `#${c.CodCliente}`}"</b>.</p><p style="font-size:13px;color:#888">Esta acción no se puede deshacer. Escribí <b>eliminar</b> para confirmar.</p>`,
             input: 'text',
             inputPlaceholder: 'Escribí "eliminar"',
             icon: 'warning',
@@ -392,7 +524,9 @@ const TabTablaList = React.memo(function TabTablaList({ catalogs, onEdit, client
         return clients.filter(c => {
             // Modo hermanitos: mostrar solo los que comparten el mismo valor en el mismo campo
             if (focusDup) {
-                return String(c[focusDup.field] ?? '').trim().toLowerCase() === focusDup.value;
+                // Hermano = comparte AL MENOS uno de los campos duplicados del cliente elegido
+                return focusDup.criterios.some(cr =>
+                    String(c[cr.field] ?? '').trim().toLowerCase() === cr.value);
             }
             if (filterEstado && c.ESTADO !== filterEstado) return false;
             if (filterTipo && String(c.TClIdTipoCliente) !== filterTipo) return false;
@@ -442,9 +576,11 @@ const TabTablaList = React.memo(function TabTablaList({ catalogs, onEdit, client
         <div style={{ display: 'flex', flexDirection: 'column', flex: 1, overflow: 'hidden', gap: 0 }}>
             {/* Toolbar */}
             <div className="ci-toolbar">
-                <span style={{ fontSize: 11, color: '#94a3b8', fontWeight: 500, whiteSpace: 'nowrap' }}>{sorted.length} clientes</span>
+                <span className="ci-count">
+                    <strong>{sorted.length.toLocaleString('es-UY')}</strong> clientes
+                </span>
 
-                <div style={{ width: 1, height: 28, background: '#e2e8f0', flexShrink: 0 }} />
+                <div style={{ width: 1, height: 24, background: '#e2e8f0', flexShrink: 0 }} />
 
                 {/* Filtros */}
                 <input className="ci-search" type="text" placeholder="Buscar nombre, email, teléfono, RUC..." value={search} onChange={e => setSearch(e.target.value)} />
@@ -467,6 +603,26 @@ const TabTablaList = React.memo(function TabTablaList({ catalogs, onEdit, client
                     <option value="all">⚠ Solo duplicados</option>
                     {Object.keys(DUP_COLORS).map(f => <option key={f} value={f}>Dup por {f}</option>)}
                 </select>
+                {/* Duplicados: chip con el conteo (antes era una banda amarilla fija bajo la
+                    toolbar). Clic = filtrar solo duplicados; la leyenda de colores aparece al
+                    pasar el mouse, que es cuando hace falta. */}
+                {dupCount > 0 && (
+                    <div className={`ci-dup-chip ${filterDup ? 'activo' : ''}`}
+                        onClick={() => setFilterDup(filterDup ? '' : 'all')}
+                        title={filterDup ? 'Quitar el filtro de duplicados' : 'Ver solo los duplicados'}>
+                        <span className="ci-dup-dot" style={{ background: '#f59e0b' }} />
+                        {dupCount} duplicados
+                        <div className="ci-dup-pop" onClick={e => e.stopPropagation()}>
+                            <div className="ci-dup-pop-title">Duplicado por</div>
+                            {Object.entries(DUP_COLORS).map(([f, col]) => (
+                                <div key={f} className="ci-dup-pop-row">
+                                    <span className="ci-dup-dot" style={{ background: col }} />{f}
+                                </div>
+                            ))}
+                            <div className="ci-dup-pop-title" style={{ marginTop: 3 }}>Clic en un punto de la tarjeta para ver sus hermanitos</div>
+                        </div>
+                    </div>
+                )}
                 <div className="ci-view-toggle">
                     <button className={`ci-view-btn ${viewMode === 'kanban' ? 'active' : ''}`} onClick={() => setViewMode('kanban')}>⊞ Tarjetas</button>
                     <button className={`ci-view-btn ${viewMode === 'table' ? 'active' : ''}`} onClick={() => setViewMode('table')}>☰ Tabla</button>
@@ -474,23 +630,24 @@ const TabTablaList = React.memo(function TabTablaList({ catalogs, onEdit, client
                 <button className="ci-btn-primary" onClick={() => onEdit({})}>+ Nuevo Cliente</button>
             </div>
 
-            {/* Banner modo hermanitos */}
+            {/* Banner modo hermanitos: ahora el foco es UN CLIENTE y se listan todos los
+                que comparten alguno de sus campos duplicados (antes era un campo suelto). */}
             {focusDup && (
-                <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 28px', background: '#1e1b4b', color: '#fff', fontSize: 13, fontWeight: 600, flexShrink: 0 }}>
-                    <span style={{ opacity: .7 }}>Mostrando hermanitos de</span>
-                    <span style={{ background: `${DUP_COLORS[focusDup.field]}33`, border: `1px solid ${DUP_COLORS[focusDup.field]}`, borderRadius: 6, padding: '2px 10px', color: DUP_COLORS[focusDup.field], fontWeight: 800 }}>
-                        {focusDup.field}: &quot;{focusDup.label}&quot;
+                <div className="ci-hermanos">
+                    <span className="ci-hermanos-lbl">Hermanitos de</span>
+                    <span className="ci-hermanos-cli">{focusDup.label}</span>
+                    <span className="ci-hermanos-por">
+                        por
+                        {focusDup.criterios.map(cr => (
+                            <span key={cr.field} className="ci-hermanos-campo" style={{ background: `${DUP_COLORS[cr.field]}26`, color: DUP_COLORS[cr.field], borderColor: `${DUP_COLORS[cr.field]}66` }}>
+                                {cr.field}
+                            </span>
+                        ))}
                     </span>
-                    <span style={{ opacity: .7, fontSize: 11 }}>({sorted.length} clientes)</span>
-                    <button onClick={() => setFocusDup(null)} style={{ marginLeft: 'auto', background: 'rgba(255,255,255,.15)', border: 'none', borderRadius: 6, color: '#fff', padding: '4px 12px', cursor: 'pointer', fontWeight: 700, fontSize: 12 }}
-                    >✕ Limpiar</button>
-                </div>
-            )}
-            {/* Dup legend */}
-            {!focusDup && dupCount > 0 && (
-                <div className="ci-dup-legend">
-                    <span>Duplicados detectados — hacé clic en una etiqueta para ver sus hermanitos:</span>
-                    {Object.entries(DUP_COLORS).map(([f, c]) => (<span key={f} style={{ display: 'flex', alignItems: 'center', gap: 4 }}><span className="ci-dup-dot" style={{ background: c }} />{f}</span>))}
+                    <span className="ci-hermanos-n">{sorted.length} clientes</span>
+                    <button className="ci-hermanos-x" onClick={() => setFocusDup(null)}>
+                        <X size={13} strokeWidth={2.6} /> Limpiar
+                    </button>
                 </div>
             )}
 
@@ -509,55 +666,61 @@ const TabTablaList = React.memo(function TabTablaList({ catalogs, onEdit, client
                                 <div key={c.CodCliente} className={`ci-card ${dups ? 'dup-card' : ''}`}
                                     style={dups ? { '--dup-color': DUP_COLORS[firstDupField] } : {}}
                                     onClick={() => onEdit(c)}>
+                                    {/* Cabecera: el ID DEL CLIENTE es el dato principal (es con lo
+                                        que se lo busca y se lo nombra); el nombre va debajo. */}
                                     <div className="ci-card-header">
-                                        <Avatar name={c.Nombre} size={38} />
-                                        <div className="ci-card-info">
-                                            <div className="ci-card-name">{c.Nombre}</div>
-                                            <div className="ci-card-sub">{c.NombreFantasia || `Cód: ${c.CodCliente}`}</div>
+                                        <div className="ci-avatar-wrap">
+                                            <div className="ci-avatar" style={{ background: getAvatarGradient(nombreVisible(c)) }}>
+                                                {getInitials(nombreVisible(c))}
+                                            </div>
                                         </div>
-                                        {c.ESTADO && <Badge color={statusColor(c.ESTADO)}>{c.ESTADO}</Badge>}
+                                        <div className="ci-card-info">
+                                            <div className="ci-card-id">
+                                                {c.IDCliente ? String(c.IDCliente).trim() : `#${c.CodCliente}`}
+                                            </div>
+                                            <div className={`ci-card-name ${nombreVisible(c) ? '' : 'sin-nombre'}`}>
+                                                {nombreVisible(c) || 'Sin nombre'}
+                                            </div>
+                                        </div>
+                                        {/* UN punto por tarjeta: al pulsarlo trae todos los hermanos.
+                                            Por qué campo duplica lo dice la barra lateral de color. */}
+                                        {dups && (
+                                            <span className="ci-dup-tag"
+                                                onClick={e => handleDupTagClick(e, c, dups)}
+                                                style={{ background: DUP_COLORS[firstDupField] }}
+                                                title={`Duplicado por ${[...dups].join(', ')} — clic para ver sus hermanitos`} />
+                                        )}
+                                        {c.ESTADO && c.ESTADO !== 'ACTIVO' && <Badge color={statusColor(c.ESTADO)}>{c.ESTADO}</Badge>}
                                     </div>
-                                    {dups && (
-                                        <div className="ci-dup-tags">
-                                            {[...dups].map(f => (
-                                                <span key={f} className="ci-dup-tag"
-                                                    onClick={e => handleDupTagClick(e, c, f)}
-                                                    style={{ background: `${DUP_COLORS[f]}22`, color: DUP_COLORS[f], cursor: 'pointer', border: `1px solid ${DUP_COLORS[f]}55` }}
-                                                    title={`Clic para ver todos con el mismo ${f}`}>
-                                                    🔍 {f}
-                                                </span>
-                                            ))}
+
+                                    {/* Contacto: alto fijo, así todas las tarjetas miden igual
+                                        aunque al cliente le falte el teléfono o el mail. */}
+                                    <div className="ci-card-body">
+                                        <div className={`ci-card-row ${c.TelefonoTrabajo ? '' : 'vacia'}`}>
+                                            <Phone size={12} strokeWidth={2.2} className="ci-card-row-icon" />
+                                            <span>{c.TelefonoTrabajo || '—'}</span>
+                                        </div>
+                                        <div className={`ci-card-row ${c.Email ? '' : 'vacia'}`}>
+                                            <Mail size={12} strokeWidth={2.2} className="ci-card-row-icon" />
+                                            <span>{c.Email || '—'}</span>
+                                        </div>
+                                    </div>
+
+                                    {/* Tipo y vendedor: datos de contexto, en una sola línea chica */}
+                                    {(c.TipoClienteNombre || c.VendedorNombre) && (
+                                        <div className="ci-card-meta">
+                                            {c.TipoClienteNombre && <span>{c.TipoClienteNombre}</span>}
+                                            {c.TipoClienteNombre && c.VendedorNombre && <span className="sep">·</span>}
+                                            {c.VendedorNombre && <span>{c.VendedorNombre}</span>}
                                         </div>
                                     )}
-                                    <div className="ci-card-body">
-                                        {c.TelefonoTrabajo && <div className="ci-card-row"><span className="ci-card-row-icon">📞</span>{c.TelefonoTrabajo}</div>}
-                                        {c.Email && <div className="ci-card-row"><span className="ci-card-row-icon">✉</span><span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.Email}</span></div>}
-                                        {c.TipoClienteNombre && <div className="ci-card-row"><span className="ci-card-row-icon">🏷</span>{c.TipoClienteNombre}</div>}
-                                        {c.VendedorNombre && <div className="ci-card-row"><span className="ci-card-row-icon">👤</span>{c.VendedorNombre}</div>}
-                                    </div>
-                                    <div className="ci-card-footer">
-                                        <div style={{ display: 'flex', gap: 5 }}>
-                                            <span style={{
-                                                fontSize: 10, fontWeight: 700, padding: '2px 7px', borderRadius: 20,
-                                                background: c.IDReact ? '#dcfce7' : '#f1f5f9',
-                                                color: c.IDReact ? '#15803d' : '#94a3b8',
-                                                border: c.IDReact ? '1px solid #bbf7d0' : '1px dashed #cbd5e1'
-                                            }}>📊 Planilla</span>
-                                            <span style={{
-                                                fontSize: 10, fontWeight: 700, padding: '2px 7px', borderRadius: 20,
-                                                background: c.CodReferencia ? '#ede9fe' : '#f1f5f9',
-                                                color: c.CodReferencia ? '#7c3aed' : '#94a3b8',
-                                                border: c.CodReferencia ? '1px solid #ddd6fe' : '1px dashed #cbd5e1'
-                                            }}>🖥 Macrosoft</span>
-                                        </div>
-                                        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                                            <span style={{ fontSize: 10, color: '#bbb', fontWeight: 600 }}>#{c.CodCliente}</span>
-                                            <button onClick={e => handleCardDelete(e, c)} title="Eliminar cliente"
-                                                style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#fca5a5', fontSize: 14, padding: 2, lineHeight: 1 }}>
-                                                🗑
-                                            </button>
-                                        </div>
-                                    </div>
+
+                                    {/* Sin footer: los chips PL/MS y el #CodCliente son datos de
+                                        sistema, no del cliente — se ven en el modal al abrirlo.
+                                        Eliminar pasa a la esquina, visible al pasar el mouse. */}
+                                    <button className="ci-card-del" onClick={e => handleCardDelete(e, c)} title="Eliminar cliente">
+                                        <Trash2 size={13} strokeWidth={2.2} />
+                                    </button>
                                 </div>
                             );
                         })}

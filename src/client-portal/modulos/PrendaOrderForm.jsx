@@ -2144,9 +2144,10 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
                                                     Todavía no tenés matrices finalizadas. Empezá con un trabajo nuevo.
                                                 </div>
                                             ) : (
-                                                <div className="grid gap-2 [grid-template-columns:repeat(auto-fill,minmax(130px,130px))]">
-                                                    {/* Tamaño de tarjeta FIJO (130px) y las que entren por fila. Con columnas
-                                                        fijas cada tarjeta se estiraba al ancho del form y quedaban gigantes. */}
+                                                <div className="grid gap-2 [grid-template-columns:repeat(auto-fill,minmax(120px,1fr))]">
+                                                    {/* Entran las que quepan por fila, de 120px para arriba. El `1fr` reparte el
+                                                        sobrante en vez de dejarlo muerto a la derecha: en un teléfono son 3 por
+                                                        fila ocupando todo el ancho, en desktop ~8 de 140px. */}
                                                     {matrices.map(m => {
                                                         const sel = matrizSel?.OrdenID === m.OrdenID;
                                                         return (
@@ -2216,7 +2217,9 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
                                                                 </label>
                                                             )}
                                                         </div>
-                                                        {(index === 0 || !applyMaterialToAll) ? (
+                                                        {/* También si ESTE archivo quedó sin material: si no, mostraba
+                                                            "Global" y el cliente no tenía cómo corregirlo. */}
+                                                        {(index === 0 || !applyMaterialToAll || !item.material) ? (
                                                             <CustomSelect
                                                                 value={item.material}
                                                                 onChange={(val) => handleItemMaterialChange(item.id, val)}
@@ -2364,7 +2367,13 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
                                                 e.target.value = ''; // Reset para poder elegir el mismo archivo
                                                 const newId = Date.now();
                                                 const lastItem = items[items.length - 1];
-                                                const newMaterial = globalMaterial;
+                                                // Hereda el material (igual que addItem del hook): en modo
+                                                // material-por-archivo `globalMaterial` queda vacío a propósito, así
+                                                // que los archivos soltados acá nacían sin material y la confirmación
+                                                // los frenaba con "Seleccioná el material de cada archivo".
+                                                const newMaterial = applyMaterialToAll
+                                                    ? (items[0]?.material || globalMaterial)
+                                                    : (lastItem?.material || globalMaterial);
                                                 const newItem = { id: newId, file: null, fileBack: null, copies: 1, material: newMaterial, note: '', doubleSided: false, printSettings: {} };
                                                 actions.setItems([...items, newItem]);
                                                 const success = await handleFileUpload(newId, 'file', file);

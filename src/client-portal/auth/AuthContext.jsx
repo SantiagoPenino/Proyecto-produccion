@@ -20,17 +20,29 @@ export const AuthProvider = ({ children }) => {
 
     const checkSession = async () => {
         // [PRENDAS] Uso interno (PedidoPrendaPage.jsx envuelve PrendaOrderForm con ESTE
-        // AuthProvider dentro de la app admin): si ya hay sesión de la app principal
-        // ('user' en localStorage), esa es la fuente de verdad y NUNCA hay que validar
+        // AuthProvider dentro de la app admin): si hay sesión de la app principal
+        // ('user' en localStorage), esa es la fuente de verdad y NO hay que validar
         // contra /web-auth/me — ese endpoint espera un cliente del portal (busca por
         // CodCliente) y con un token de admin (misma clave 'auth_token', pero es OTRO
-        // token) siempre falla. Antes, como 'auth_token' ya estaba seteado por el login
-        // del admin, el fallback de abajo (pensado para este caso) nunca corría — se
-        // intentaba igual validar el token de admin como si fuera de cliente, fallaba,
-        // y el catch BORRABA el auth_token real del admin (deslogueo silencioso de toda
-        // la app interna, incluida la subida de archivos del pedido).
+        // token) siempre falla; el catch de abajo antes BORRABA el auth_token real del
+        // admin (deslogueo silencioso de toda la app interna).
+        //
+        // PERO solo aplica si NO existe una sesión PROPIA del portal: la gestión y el
+        // portal comparten dominio y claves, y este atajo corría SIEMPRE que existiera
+        // 'user' — logueado en la gestión y después en el portal (como cliente real),
+        // la UI mostraba el objeto de la GESTIÓN ({nombre, usuario…}, sin name ni
+        // idCliente): el sidebar quedaba con el avatar "U" y sin nombre, aunque los
+        // datos (token del último login) fueran del cliente.
         const mainAppUser = localStorage.getItem('user');
-        if (mainAppUser) {
+        let portalSession = null;
+        try {
+            const s = JSON.parse(localStorage.getItem('user_session') || 'null');
+            // user_session también la escribe la gestión: es "del portal" solo si tiene
+            // pinta de cliente/diseñador web (mismo criterio que el fast-path de abajo).
+            if (s && (s.codCliente || s.role === 'WEB_CLIENT' || s.role === 'WEB_DESIGNER')) portalSession = s;
+        } catch (e) { /* user_session corrupta: se ignora */ }
+
+        if (mainAppUser && !portalSession) {
             try {
                 const parsed = JSON.parse(mainAppUser);
                 setUser(parsed);
@@ -75,6 +87,17 @@ export const AuthProvider = ({ children }) => {
                 localStorage.setItem('user_session', JSON.stringify(freshUser));
             } catch (err) {
                 console.error('❌ [PortalAuth] Session validation failed:', err);
+                // Si el token vigente no es del portal (p.ej. el ÚLTIMO login fue en la
+                // gestión), volver a la sesión interna SIN tocar el storage: borrarlo acá
+                // deslogueaba al admin de toda la app.
+                if (mainAppUser) {
+                    try {
+                        setUser(JSON.parse(mainAppUser));
+                        setIsLoggedIn(true);
+                        setLoading(false);
+                        return;
+                    } catch (e2) { /* sesión interna corrupta: sigue el deslogueo normal */ }
+                }
                 setUser(null);
                 setIsLoggedIn(false);
                 localStorage.removeItem('auth_token');

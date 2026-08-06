@@ -1449,6 +1449,11 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { }, lo
         setIsAssignModalOpen(true);
     };
 
+    // El auto-scroll durante el drag lo hace @hello-pangea/dnd solo, PERO únicamente sobre el
+    // contenedor que registra como scroll-parent del Droppable: el div de la tabla. Por eso ese
+    // div lleva `overflow-auto` (los dos ejes) y el panel de afuera `overflow-hidden` — antes el
+    // scroll vertical estaba en el panel externo, la librería no lo veía, y ni scrolleaba ni
+    // recalculaba el hueco que muestra dónde va a caer el grupo.
     const handleDragEnd = async (result) => {
         if (!result.destination) return;
         if (lockReorder || readOnly) return; // calandra: no se reordena; historial: solo lectura
@@ -1705,10 +1710,16 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { }, lo
                         <span className="text-[9px] font-black uppercase tracking-widest">{statsCollapsed ? 'Mostrar resumen' : 'Ocultar'}</span>
                     </button>
 
-                    {/* Body Table */}
-                    <div className="flex-1 overflow-y-auto p-5 tablet:p-2.5 min-h-[300px] bg-zinc-50/40">
+                    {/* Body Table — sin scroll propio: lo tiene el contenedor de la tabla (ver abajo),
+                        que es el que @hello-pangea/dnd registra. Con scroll en los dos, quedaban
+                        anidados y el drag seguía sin recalcular el hueco. */}
+                    <div className="flex-1 overflow-hidden p-5 tablet:p-2.5 min-h-[300px] bg-zinc-50/40 flex flex-col">
                         {isSB ? (
-                          <div className="bg-white border border-zinc-200 rounded-xl shadow-sm overflow-x-auto">
+                          // overflow-AUTO en los dos ejes (no solo -x): este es el div que
+                          // @hello-pangea/dnd registra como scroll-parent del Droppable. Con el
+                          // scroll vertical afuera, la librería no se enteraba de que la lista se
+                          // movía y dejaba de correr el hueco que indica dónde va a caer el grupo.
+                          <div className="bg-white border border-zinc-200 rounded-xl shadow-sm overflow-auto max-h-full">
                             <div className="min-w-[880px]">
                               <div className="flex items-center px-2 py-3 tablet:py-1.5 bg-zinc-50 border-b border-zinc-200 text-[10px] tablet:text-[9px] text-zinc-500 uppercase font-black tracking-widest tablet:tracking-wide">
                                 <div className="w-10 flex justify-center">
@@ -1928,7 +1939,8 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { }, lo
                           </div>
                         ) : (
                         <DragDropContext onDragEnd={handleDragEnd}>
-                            <div className="bg-white border border-zinc-200 rounded-xl overflow-hidden shadow-sm overflow-x-auto">
+                            {/* ídem: el scroll vertical vive acá para que el dnd lo reconozca */}
+                            <div className="bg-white border border-zinc-200 rounded-xl shadow-sm overflow-auto max-h-full">
                             <table className="w-full text-sm text-left min-w-[800px]">
                                 <thead className="text-[10px] text-zinc-500 uppercase bg-zinc-50 border-b border-zinc-200 font-black tracking-widest sticky top-0 z-10">
                                     <tr>
