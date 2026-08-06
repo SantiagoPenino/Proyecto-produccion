@@ -36,6 +36,18 @@ const CAMPOS_ENRIQUECIDOS = `
         FOR JSON PATH
     ) AS RefsJson,
     (SELECT COUNT(*) FROM OrdenNotasProduccion WHERE OrdenID = o.OrdenID) AS NotasCount,
+    -- [CORTE] Tizadas de la orden con su medición y su avance propio: el trabajo y el
+    -- control se llevan POR ARCHIVO (cada tizada es un corte distinto), no de a una
+    -- bolsa de prendas sueltas. Solo trae los archivos que tienen piezas medidas.
+    (
+        SELECT ao.ArchivoID, ao.NombreArchivo, ao.Copias, ao.Piezas, ao.MetrosCorte,
+               ao.Metros, ao.Ancho, ao.Alto, ao.PiezasTrabajadas, ao.PiezasControladas,
+               ao.RutaAlmacenamiento
+        FROM ArchivosOrden ao
+        WHERE ao.OrdenID = o.OrdenID AND ao.Piezas IS NOT NULL
+        ORDER BY ao.ArchivoID
+        FOR JSON PATH
+    ) AS TizadasJson,
     (SELECT TOP 1 Texto FROM OrdenNotasProduccion WHERE OrdenID = o.OrdenID ORDER BY FechaCreacion DESC) AS UltimaNota,
     -- [PRENDAS] Hermana de una prenda comprada+personalizada: la cantidad REAL vive en la
     -- orden madre PRO (misma NoDocERP), la propia Magnitud queda en '0' a propósito (ver
@@ -124,8 +136,98 @@ function enriquecerPreview(row) {
     // Compat con lo que ya pintaba la tarjeta chica de la bandeja (primer archivo, cualquiera).
     row.PreviewUrl = row.Referencias[0]?.previewUrl || null;
     delete row.RefsJson;
+
+    // [CORTE] Tizadas con su avance propio (trabajo/control por archivo).
+    let tizadas = [];
+    try { tizadas = row.TizadasJson ? JSON.parse(row.TizadasJson) : []; } catch (e) { tizadas = []; }
+    row.Tizadas = tizadas.map(t => ({
+        ...t,
+        // Total de piezas de ESE archivo = piezas de la tizada × veces que se corta
+        PiezasTotal: (parseInt(t.Piezas) || 0) * (parseInt(t.Copias) || 1),
+        MetrosCorteTotal: (parseFloat(t.MetrosCorte) || 0) * (parseInt(t.Copias) || 1),
+        MetrosTelaTotal: (parseFloat(t.Metros) || 0) * (parseInt(t.Copias) || 1),
+    }));
+    delete row.TizadasJson;
     return row;
 }
+
+// [CORTE] Sincroniza el total de la ORDEN con la suma del avance de sus tizadas: el gate de
+// "Aprobar Control" y el % de la tarjeta siguen leyendo CantidadTerminada/CantidadControlada.
+async function recalcularAvanceDesdeArchivos(pool, ordenId) {
+    await pool.request()
+        .input('OID', sql.Int, ordenId)
+        .query(`
+            UPDATE Ordenes SET
+                CantidadTerminada  = ISNULL((SELECT SUM(ISNULL(ao.PiezasTrabajadas, 0))  FROM ArchivosOrden ao WHERE ao.OrdenID = @OID AND ao.Piezas IS NOT NULL), CantidadTerminada),
+                CantidadControlada = ISNULL((SELECT SUM(ISNULL(ao.PiezasControladas, 0)) FROM ArchivosOrden ao WHERE ao.OrdenID = @OID AND ao.Piezas IS NOT NULL), CantidadControlada)
+            WHERE OrdenID = @OID
+        `);
+}
+
+// GATE MÁQUINA + OPERARIO (todas las áreas de esta bandeja: EMB, EST, TWC, TWT).
+// Sin los dos asignados no se puede iniciar el trabajo ni cargar cantidades hechas: si no,
+// la producción queda sin responsable ni equipo y los reportes por operario/máquina salen
+// vacíos. El Control (calidad) NO pasa por acá — es otra fase, con otra persona.
+async function faltaMaquinaUOperario(pool, ordenId) {
+    const r = await pool.request()
+        .input('OID', sql.Int, ordenId)
+        .query('SELECT MaquinaID, OperarioAsignadoID FROM Ordenes WHERE OrdenID = @OID');
+    if (!r.recordset.length) return 'Orden no encontrada.';
+    const { MaquinaID, OperarioAsignadoID } = r.recordset[0];
+    const faltan = [];
+    if (!MaquinaID) faltan.push('la máquina');
+    if (!OperarioAsignadoID) faltan.push('el operario');
+    if (!faltan.length) return null;
+    return `Asigná ${faltan.join(' y ')} antes de iniciar o cargar el avance del trabajo.`;
+}
+
+// Piezas totales de UNA tizada (piezas del archivo × veces que se corta) — tope del contador.
+async function getPiezasDeArchivo(pool, ordenId, archivoId) {
+    const r = await pool.request()
+        .input('OID', sql.Int, ordenId)
+        .input('AID', sql.Int, archivoId)
+        .query(`SELECT ISNULL(Piezas, 0) * ISNULL(Copias, 1) AS PiezasTotal
+                FROM ArchivosOrden WHERE ArchivoID = @AID AND OrdenID = @OID`);
+    if (!r.recordset.length) return null;
+    return parseInt(r.recordset[0].PiezasTotal) || 0;
+}
+
+// PUT /orders/:ordenId/archivos/:archivoId/progreso — piezas cortadas de ESA tizada.
+// campo = 'PiezasTrabajadas' (trabajo) | 'PiezasControladas' (control).
+async function setAvanceArchivo(req, res, campo, etiqueta) {
+    const ordenId = parseInt(req.params.ordenId, 10);
+    const archivoId = parseInt(req.params.archivoId, 10);
+    const cantidad = parseInt(req.body?.cantidad, 10);
+    if (!ordenId || !archivoId) return res.status(400).json({ error: 'ordenId/archivoId inválido.' });
+    if (isNaN(cantidad) || cantidad < 0) return res.status(400).json({ error: 'Cantidad inválida.' });
+    try {
+        const pool = await getPool();
+        // El avance de TRABAJO exige máquina y operario; el de Control no.
+        if (etiqueta === 'trabajo') {
+            const falta = await faltaMaquinaUOperario(pool, ordenId);
+            if (falta) return res.status(400).json({ error: falta });
+        }
+        const total = await getPiezasDeArchivo(pool, ordenId, archivoId);
+        if (total === null) return res.status(404).json({ error: 'Tizada no encontrada en esta orden.' });
+        if (total > 0 && cantidad > total) {
+            return res.status(400).json({ error: `No puede superar las ${total} piezas de esta tizada.` });
+        }
+
+        await pool.request()
+            .input('AID', sql.Int, archivoId)
+            .input('Cant', sql.Int, cantidad)
+            .query(`UPDATE ArchivosOrden SET ${campo} = @Cant WHERE ArchivoID = @AID`);
+
+        await recalcularAvanceDesdeArchivos(pool, ordenId);
+        res.json({ success: true });
+    } catch (err) {
+        logger.error(`[Bandeja] avance ${etiqueta} por tizada: ` + err.message);
+        res.status(500).json({ error: err.message });
+    }
+}
+
+exports.setProgresoArchivo = (req, res) => setAvanceArchivo(req, res, 'PiezasTrabajadas', 'trabajo');
+exports.setProgresoControlArchivo = (req, res) => setAvanceArchivo(req, res, 'PiezasControladas', 'control');
 
 exports.getEmbOrders = async (req, res) => {
     const fase = (req.query.fase || 'trabajo').toLowerCase();
@@ -311,6 +413,13 @@ exports.setEstadoTrabajo = async (req, res) => {
     }
     try {
         const pool = await getPool();
+
+        // Iniciar exige máquina Y operario (pausar o desiniciar siempre se puede).
+        if (estado === 'EN_PROCESO') {
+            const falta = await faltaMaquinaUOperario(pool, ordenId);
+            if (falta) return res.status(400).json({ error: falta });
+        }
+
         await pool.request()
             .input('OID', sql.Int, ordenId)
             .input('Est', sql.VarChar(20), estado || null)
@@ -344,6 +453,10 @@ exports.setProgreso = async (req, res) => {
     if (isNaN(cantidad)) return res.status(400).json({ error: 'Cantidad inválida.' });
     try {
         const pool = await getPool();
+        // Cargar avance de TRABAJO exige máquina y operario asignados.
+        const falta = await faltaMaquinaUOperario(pool, ordenId);
+        if (falta) return res.status(400).json({ error: falta });
+
         const magnitud = await getMagnitudEfectiva(pool, ordenId);
         if (magnitud === null) return res.status(404).json({ error: 'Orden no encontrada.' });
 
@@ -374,6 +487,18 @@ exports.finalizarTrabajo = async (req, res) => {
     if (!ordenId) return res.status(400).json({ error: 'ordenId inválido.' });
     try {
         const pool = await getPool();
+
+        // No se finaliza lo que nunca se empezó: la orden tiene que haber pasado por
+        // "Iniciar" (queda EN_PROCESO, o PAUSADO si se frenó en el medio). Sin eso, la
+        // orden saltaría a Control sin registro de trabajo, máquina ni operario.
+        const est = await pool.request()
+            .input('OID', sql.Int, ordenId)
+            .query('SELECT EstadoTrabajoEmb FROM Ordenes WHERE OrdenID = @OID');
+        if (!est.recordset.length) return res.status(404).json({ error: 'Orden no encontrada.' });
+        if (!['EN_PROCESO', 'PAUSADO'].includes(est.recordset[0].EstadoTrabajoEmb)) {
+            return res.status(400).json({ error: 'Primero iniciá el trabajo: no se puede finalizar una orden que nunca se empezó.' });
+        }
+
         await changeOrderState(pool, {
             target : { type: 'ORDER', id: ordenId },
             estado : 'Control y Calidad',

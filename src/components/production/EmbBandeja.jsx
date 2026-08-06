@@ -3,6 +3,7 @@ import { RefreshCw, Search, Lock, CheckCircle2, MessageSquare, Image as ImageIco
 import { toast } from 'sonner';
 import { getBandejaService } from '../../services/modules/embBoardService';
 import { usersService } from '../../services/modules/usersService';
+import { useAuth } from '../../context/AuthContext';
 import { ordersService } from '../../services/modules/ordersService';
 import OrderRequirementsList from '../logistics/OrderRequirementsList';
 import { printLabelsHelper } from '../../utils/printHelper';
@@ -15,6 +16,118 @@ const AREA_META = {
     EST: { nombre: 'Estampado', verbo: 'trabajado' },
     TWC: { nombre: 'Corte', verbo: 'trabajado' },
     TWT: { nombre: 'Costura', verbo: 'trabajado' },
+};
+
+// [CORTE] Tarjeta de UNA TIZADA: el avance se lleva por archivo (cada tizada es un corte
+// distinto, con sus propias piezas), no de a una bolsa de piezas sueltas de la orden.
+// Sirve para las dos fases: `campo` decide si cuenta lo trabajado o lo controlado.
+const TizadaAvanceCard = ({ tizada, ordenId, service, campo, onChanged, bloqueado = false }) => {
+    const total = parseInt(tizada.PiezasTotal) || 0;
+    const valorInicial = parseInt(campo === 'control' ? tizada.PiezasControladas : tizada.PiezasTrabajadas) || 0;
+    const [count, setCount] = useState(valorInicial);
+    const [draft, setDraft] = useState(String(valorInicial));
+    const [loading, setLoading] = useState(false);
+
+    useEffect(() => {
+        setCount(valorInicial);
+        setDraft(String(valorInicial));
+    }, [tizada.ArchivoID, valorInicial]);
+
+    const isCompleted = total > 0 && count >= total;
+    const pct = total > 0 ? Math.min(100, Math.round((count / total) * 100)) : 0;
+    const esControl = campo === 'control';
+
+    const commit = async (nextVal) => {
+        const val = Math.max(0, Math.min(total || nextVal, nextVal));
+        const previo = count;
+        setLoading(true);
+        setCount(val); // optimista
+        try {
+            if (esControl) await service.setProgresoControlArchivo(ordenId, tizada.ArchivoID, val);
+            else await service.setProgresoArchivo(ordenId, tizada.ArchivoID, val);
+            onChanged?.(tizada.ArchivoID, val);
+        } catch (e) {
+            setCount(previo);
+            setDraft(String(previo));
+            toast.error(e?.response?.data?.error || 'Error al guardar el conteo');
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    const commitDraft = () => {
+        if (loading) return;
+        let val = parseInt(draft, 10);
+        if (isNaN(val)) { setDraft(String(count)); return; }
+        if (val < 0) val = 0;
+        if (total > 0 && val > total) val = total;
+        if (val === count) { setDraft(String(val)); return; }
+        commit(val);
+    };
+
+    // Nombre corto: el archivo viene con el prefijo largo de la orden
+    const nombreCorto = String(tizada.NombreArchivo || '').replace(/^.*?_Archivo /, 'Archivo ');
+
+    return (
+        <div className={`p-3 rounded-xl border transition-all ${isCompleted ? 'bg-emerald-50 border-emerald-300' : 'bg-white border-zinc-200'}`}>
+            <div className="flex items-center gap-3">
+                <div className="flex-1 min-w-0">
+                    <div className="font-bold text-zinc-700 text-sm truncate" title={tizada.NombreArchivo}>{nombreCorto}</div>
+                    <div className="flex flex-wrap gap-1.5 mt-1">
+                        <span className="text-[10px] font-bold text-zinc-500 bg-zinc-100 border border-zinc-200 rounded px-1.5 py-0.5">
+                            {tizada.Piezas} piezas × {tizada.Copias || 1} {(tizada.Copias || 1) === 1 ? 'corte' : 'cortes'}
+                        </span>
+                        {tizada.MetrosCorteTotal > 0 && (
+                            <span className="text-[10px] font-bold text-cyan-700 bg-cyan-50 border border-cyan-200 rounded px-1.5 py-0.5">
+                                {tizada.MetrosCorteTotal.toFixed(2)} m de corte
+                            </span>
+                        )}
+                        {tizada.MetrosTelaTotal > 0 && (
+                            <span className="text-[10px] font-bold text-amber-700 bg-amber-50 border border-amber-200 rounded px-1.5 py-0.5">
+                                {tizada.MetrosTelaTotal.toFixed(2)} m de tela
+                            </span>
+                        )}
+                    </div>
+                </div>
+
+                <div className="text-right shrink-0">
+                    <span className="text-[9px] font-black text-zinc-300 uppercase leading-none mb-0.5 tracking-wider block">
+                        {esControl ? 'Controladas' : 'Cortadas'}
+                    </span>
+                    <div className="flex items-baseline justify-end gap-0.5 leading-none">
+                        <input
+                            type="number" min={0} max={total}
+                            value={draft}
+                            disabled={loading || bloqueado}
+                            onClick={(e) => e.stopPropagation()}
+                            onChange={(e) => setDraft(e.target.value)}
+                            onBlur={commitDraft}
+                            onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); e.currentTarget.blur(); } }}
+                            title={esControl ? 'Piezas ya verificadas de esta tizada' : 'Piezas ya cortadas de esta tizada'}
+                            className="w-14 text-right text-xl font-black text-zinc-700 bg-zinc-50 border border-zinc-200 rounded-md px-1 py-0.5 outline-none focus:border-emerald-400 focus:ring-2 focus:ring-emerald-400/20 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                        />
+                        <span className="text-sm text-zinc-300 font-bold">/{total}</span>
+                    </div>
+                </div>
+
+                <div className="w-10 shrink-0 flex justify-center">
+                    {isCompleted
+                        ? <CheckCircle2 size={22} className="text-emerald-500" />
+                        : <button
+                            type="button"
+                            onClick={(e) => { e.stopPropagation(); if (!loading && !isCompleted && !bloqueado) { setDraft(String(count + 1)); commit(count + 1); } }}
+                            disabled={loading || bloqueado}
+                            title="Sumar una pieza"
+                            className="w-9 h-9 rounded-full bg-brand-cyan/10 text-brand-cyan border border-brand-cyan/30 hover:bg-brand-cyan hover:text-white transition-all flex items-center justify-center disabled:opacity-40"
+                        ><Plus size={16} /></button>}
+                </div>
+            </div>
+
+            <div className="mt-2 h-1.5 w-full bg-zinc-100 rounded-full overflow-hidden">
+                <div className={`h-full transition-all ${isCompleted ? 'bg-emerald-500' : 'bg-brand-cyan'}`} style={{ width: `${pct}%` }} />
+            </div>
+        </div>
+    );
 };
 
 // Tarjeta de conteo de Control — mismo lenguaje visual que FileControlCard.jsx (el "+1"
@@ -155,6 +268,7 @@ const ControlPrendaCard = ({ order, service, onChanged }) => {
 //   aprobar — recién ahí se generan las etiquetas y la orden pasa a Pronto (igual patrón
 //   que Terminaciones ECOUV, ver ecoUvFinishingController.controlOrder).
 export default function EmbBandeja({ area = 'EMB', fase = 'trabajo', onSelectOrder }) {
+    const { user } = useAuth();
     const service = getBandejaService(area);
     const meta = AREA_META[area] || { nombre: area, verbo: 'trabajado' };
     const [orders, setOrders] = useState([]);
@@ -200,13 +314,28 @@ export default function EmbBandeja({ area = 'EMB', fase = 'trabajo', onSelectOrd
 
     useEffect(() => { load(); }, [load]);
 
+    // Operarios: SOLO los del área (antes, si el área no tenía ninguno, caía en "todos" y
+    // aparecían usuarios de otras áreas — ej. el genérico de ECOUV en Corte). El usuario
+    // logueado se agrega siempre: es quien está trabajando acá ahora, y sin él un área sin
+    // usuarios cargados quedaría trabada (no se puede iniciar sin operario).
     useEffect(() => {
         usersService.getAll().then(list => {
             const todosUsr = Array.isArray(list) ? list : (list?.data || []);
-            const delArea = todosUsr.filter(u => (u.AreaUsuario || '').toUpperCase() === area && u.Activo !== false);
-            setOperarios(delArea.length > 0 ? delArea : todosUsr.filter(u => u.Activo !== false));
+            const delArea = todosUsr.filter(u => (u.AreaUsuario || '').trim().toUpperCase() === area && u.Activo !== false);
+            const yo = todosUsr.find(u => String(u.IdUsuario) === String(user?.id));
+            if (yo && !delArea.some(u => String(u.IdUsuario) === String(yo.IdUsuario))) delArea.push(yo);
+            setOperarios(delArea);
         }).catch(() => {});
-    }, [area]);
+    }, [area, user?.id]);
+
+    // Precargar al usuario logueado como operario de la orden que se abre, si todavía no
+    // tiene uno. Queda guardado (no es solo visual) para que el gate de iniciar lo tome.
+    useEffect(() => {
+        if (fase !== 'trabajo' || !selected || selected.OperarioAsignadoID || !user?.id) return;
+        if (!operarios.some(u => String(u.IdUsuario) === String(user.id))) return;
+        handleOperario(selected, user.id);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [selectedId, operarios.length, user?.id]);
 
     // Cargar notas del seleccionado
     const loadNotas = useCallback(async () => {
@@ -377,11 +506,56 @@ export default function EmbBandeja({ area = 'EMB', fase = 'trabajo', onSelectOrd
                             {bloqueada ? <Lock size={12} className="text-zinc-400" /> : isUrgent && <Flame size={12} className="text-amber-500" />}
                         </div>
                         <h3 className="font-bold text-zinc-800 text-sm leading-tight mb-1 line-clamp-1">{o.Cliente}</h3>
+                        {o.DescripcionTrabajo && (
+                            <p className="text-xs text-zinc-600 line-clamp-1 font-medium">{o.DescripcionTrabajo}</p>
+                        )}
                         <p className="text-xs text-zinc-500 line-clamp-1 italic">{o.Material}</p>
+
+                        {/* CORTE: lo que el operario necesita saber de un vistazo — cuántas
+                            tizadas entran, cuántas piezas salen y cuánto láser lleva. */}
+                        {(() => {
+                            const tz = o.Tizadas || [];
+                            if (tz.length === 0) return null;
+                            const piezas = tz.reduce((s, t) => s + (parseInt(t.PiezasTotal) || 0), 0);
+                            const corte = tz.reduce((s, t) => s + (parseFloat(t.MetrosCorteTotal) || 0), 0);
+                            const tela = tz.reduce((s, t) => s + (parseFloat(t.MetrosTelaTotal) || 0), 0);
+                            const hecho = tz.reduce((s, t) => s + (parseInt(t.PiezasTrabajadas) || 0), 0);
+                            const pct = piezas > 0 ? Math.min(100, Math.round((hecho / piezas) * 100)) : 0;
+                            return (
+                                <div className="mt-1.5">
+                                    <div className="flex flex-wrap gap-1">
+                                        <span className="bg-zinc-100 text-zinc-600 px-1.5 py-0.5 rounded text-[10px] font-bold border border-zinc-200">
+                                            {tz.length} {tz.length === 1 ? 'tizada' : 'tizadas'}
+                                        </span>
+                                        <span className="bg-cyan-50 text-cyan-700 px-1.5 py-0.5 rounded text-[10px] font-bold border border-cyan-200">
+                                            {corte.toFixed(2)} m láser
+                                        </span>
+                                        <span className="bg-amber-50 text-amber-700 px-1.5 py-0.5 rounded text-[10px] font-bold border border-amber-200">
+                                            {tela.toFixed(2)} m tela
+                                        </span>
+                                    </div>
+                                    {hecho > 0 && (
+                                        <div className="mt-1.5 flex items-center gap-1.5">
+                                            <div className="flex-1 h-1 bg-zinc-100 rounded-full overflow-hidden">
+                                                <div className={`h-full ${pct >= 100 ? 'bg-emerald-500' : 'bg-brand-cyan'}`} style={{ width: `${pct}%` }} />
+                                            </div>
+                                            <span className="text-[9px] font-black text-zinc-400">{hecho}/{piezas}</span>
+                                        </div>
+                                    )}
+                                </div>
+                            );
+                        })()}
+
                         <div className="mt-2 flex items-center gap-2">
-                            <span className="bg-zinc-100 text-zinc-600 px-2 py-0.5 rounded text-[10px] font-bold border border-zinc-200">
-                                {o.MagnitudEfectiva || o.Magnitud} u.
-                            </span>
+                            {/* Las órdenes bloqueadas vienen sin magnitud (su query no la trae):
+                                sin dato no se muestra el chip, antes decía "undefined u.". */}
+                            {(o.MagnitudEfectiva || o.Magnitud) && (
+                                <span className="bg-zinc-100 text-zinc-600 px-2 py-0.5 rounded text-[10px] font-bold border border-zinc-200">
+                                    {(o.Tizadas || []).length > 0
+                                        ? `${o.MagnitudEfectiva || o.Magnitud} piezas`
+                                        : `${o.MagnitudEfectiva || o.Magnitud} u.`}
+                                </span>
+                            )}
                             <span className="text-[10px] text-zinc-400 ml-auto">
                                 {o.FechaIngreso ? new Date(o.FechaIngreso).toLocaleDateString('es-UY') : ''}
                             </span>
@@ -542,16 +716,26 @@ export default function EmbBandeja({ area = 'EMB', fase = 'trabajo', onSelectOrd
                             </div>
                         )}
 
-                        {!selectedBloqueada && fase === 'trabajo' && (
+                        {!selectedBloqueada && fase === 'trabajo' && (() => {
+                        // Sin máquina Y operario no se puede iniciar ni cargar avance (el
+                        // backend también lo rechaza). Pausar/Finalizar siguen disponibles.
+                        const faltaMaq = !selected.MaquinaID;
+                        const faltaOp = !selected.OperarioAsignadoID;
+                        const sinAsignar = faltaMaq || faltaOp;
+                        const textoFalta = `Asigná ${[faltaMaq ? 'la máquina' : null, faltaOp ? 'el operario' : null].filter(Boolean).join(' y ')} para poder iniciar el trabajo y cargar las cantidades hechas.`;
+                        // Finalizar solo si el trabajo se inició alguna vez (sigue disponible
+                        // si quedó en pausa); si no, la orden saltaría a Control sin registro.
+                        const yaIniciada = ['EN_PROCESO', 'PAUSADO'].includes(selected.EstadoTrabajoEmb);
+                        return (
                             <div className="bg-white border border-zinc-200 rounded-2xl p-4 mb-5">
                                 <div className="flex items-center justify-between mb-3">
                                     <h3 className="text-xs font-black text-zinc-500 uppercase tracking-wide">Trabajo</h3>
                                     <div className="flex items-center gap-1 bg-zinc-50 border border-zinc-200 rounded-lg p-1">
                                         <button
                                             onClick={() => handleEstadoTrabajo(selected, 'EN_PROCESO')}
-                                            disabled={selected.EstadoTrabajoEmb === 'EN_PROCESO'}
-                                            title="Iniciar"
-                                            className={`w-8 h-8 rounded flex items-center justify-center transition-all ${selected.EstadoTrabajoEmb === 'EN_PROCESO' ? 'text-zinc-300 cursor-not-allowed' : 'text-brand-cyan hover:bg-brand-cyan/10'}`}
+                                            disabled={selected.EstadoTrabajoEmb === 'EN_PROCESO' || sinAsignar}
+                                            title={sinAsignar ? textoFalta : 'Iniciar'}
+                                            className={`w-8 h-8 rounded flex items-center justify-center transition-all ${(selected.EstadoTrabajoEmb === 'EN_PROCESO' || sinAsignar) ? 'text-zinc-300 cursor-not-allowed' : 'text-brand-cyan hover:bg-brand-cyan/10'}`}
                                         ><Play size={14} /></button>
                                         <button
                                             onClick={() => handleEstadoTrabajo(selected, 'PAUSADO')}
@@ -559,11 +743,16 @@ export default function EmbBandeja({ area = 'EMB', fase = 'trabajo', onSelectOrd
                                             title="Pausar"
                                             className={`w-8 h-8 rounded flex items-center justify-center transition-all ${selected.EstadoTrabajoEmb !== 'EN_PROCESO' ? 'text-zinc-300 cursor-not-allowed' : 'text-amber-500 hover:bg-amber-50'}`}
                                         ><Pause size={14} /></button>
+                                        {/* No se finaliza lo que nunca se inició (el backend
+                                            también lo rechaza): la orden tiene que estar
+                                            EN_PROCESO o PAUSADO. */}
                                         <button
                                             onClick={() => handleFin(selected)}
-                                            disabled={finalizando === selected.OrdenID}
-                                            title="Finalizar Tarea (pasa a Control y Calidad)"
-                                            className="w-8 h-8 rounded flex items-center justify-center text-rose-500 hover:bg-rose-50 transition-all disabled:opacity-40"
+                                            disabled={finalizando === selected.OrdenID || !yaIniciada}
+                                            title={!yaIniciada
+                                                ? 'Primero iniciá el trabajo: no se puede finalizar una orden que nunca se empezó.'
+                                                : 'Finalizar Tarea (pasa a Control y Calidad)'}
+                                            className={`w-8 h-8 rounded flex items-center justify-center transition-all ${!yaIniciada ? 'text-zinc-300 cursor-not-allowed' : 'text-rose-500 hover:bg-rose-50'} disabled:opacity-40`}
                                         ><FlagTriangleRight size={14} /></button>
                                     </div>
                                 </div>
@@ -573,11 +762,50 @@ export default function EmbBandeja({ area = 'EMB', fase = 'trabajo', onSelectOrd
                                     {!selected.EstadoTrabajoEmb && <span className="text-zinc-400">Sin iniciar</span>}
                                 </div>
 
-                                {/* Progreso de trabajo: cuántas prendas ya trabajadas, % de avance */}
+                                {/* Aviso claro de por qué está todo trabado */}
+                                {sinAsignar && (
+                                    <div className="mb-3 flex items-start gap-2 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2">
+                                        <Lock size={14} className="text-amber-500 shrink-0 mt-0.5" />
+                                        <p className="text-xs font-bold text-amber-700">{textoFalta}</p>
+                                    </div>
+                                )}
+
+                                {/* Progreso de trabajo. CORTE: una fila por TIZADA (cada archivo
+                                    lleva su propio conteo de piezas); el resto de las áreas
+                                    mantiene el contador único de prendas de la orden. */}
                                 {(() => {
                                     const total = parseFloat(selected.MagnitudEfectiva || selected.Magnitud) || 0;
                                     const hecho = parseFloat(selected.CantidadTerminada) || 0;
                                     const pct = total > 0 ? Math.min(100, Math.round((hecho / total) * 100)) : 0;
+                                    const tizadas = selected.Tizadas || [];
+
+                                    if (tizadas.length > 0) {
+                                        return (
+                                            <>
+                                                <div className="w-full h-2 bg-zinc-100 rounded-full overflow-hidden mb-1">
+                                                    <div className="h-full bg-brand-cyan transition-all" style={{ width: `${pct}%` }} />
+                                                </div>
+                                                <p className="text-xs text-zinc-400 mb-3">{hecho} de {total} piezas cortadas ({pct}%)</p>
+                                                <div className={`space-y-2 ${sinAsignar ? 'opacity-50 pointer-events-none select-none' : ''}`}>
+                                                    {tizadas.map(t => (
+                                                        <TizadaAvanceCard
+                                                            key={t.ArchivoID}
+                                                            tizada={t}
+                                                            ordenId={selected.OrdenID}
+                                                            service={service}
+                                                            campo="trabajo"
+                                                            bloqueado={sinAsignar}
+                                                            onChanged={(archivoId, val) => updateLocal(selected.OrdenID, {
+                                                                Tizadas: tizadas.map(x => x.ArchivoID === archivoId ? { ...x, PiezasTrabajadas: val } : x),
+                                                                CantidadTerminada: tizadas.reduce((s, x) => s + (x.ArchivoID === archivoId ? val : (parseInt(x.PiezasTrabajadas) || 0)), 0),
+                                                            })}
+                                                        />
+                                                    ))}
+                                                </div>
+                                            </>
+                                        );
+                                    }
+
                                     return (
                                         <>
                                             <div className="w-full h-2 bg-zinc-100 rounded-full overflow-hidden mb-2">
@@ -591,12 +819,16 @@ export default function EmbBandeja({ area = 'EMB', fase = 'trabajo', onSelectOrd
                                                     value={progresoInput}
                                                     onChange={(e) => setProgresoInput(e.target.value)}
                                                     placeholder="1"
-                                                    className="w-24 text-sm border border-zinc-200 rounded-lg px-2 py-1.5 focus:outline-none focus:border-brand-cyan"
+                                                    disabled={sinAsignar}
+                                                    title={sinAsignar ? textoFalta : undefined}
+                                                    className="w-24 text-sm border border-zinc-200 rounded-lg px-2 py-1.5 focus:outline-none focus:border-brand-cyan disabled:bg-zinc-100 disabled:text-zinc-400 disabled:cursor-not-allowed"
                                                 />
                                                 <span className="text-xs text-zinc-400">de {total} prendas trabajadas ({pct}%)</span>
                                                 <button
                                                     onClick={() => handleGuardarProgreso(selected)}
-                                                    className="ml-auto text-xs font-bold text-brand-cyan hover:bg-brand-cyan/5 border border-brand-cyan/30 rounded-lg px-3 py-1.5"
+                                                    disabled={sinAsignar}
+                                                    title={sinAsignar ? textoFalta : undefined}
+                                                    className="ml-auto text-xs font-bold text-brand-cyan hover:bg-brand-cyan/5 border border-brand-cyan/30 rounded-lg px-3 py-1.5 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent"
                                                 >
                                                     Guardar
                                                 </button>
@@ -605,7 +837,8 @@ export default function EmbBandeja({ area = 'EMB', fase = 'trabajo', onSelectOrd
                                     );
                                 })()}
                             </div>
-                        )}
+                        );
+                        })()}
 
                         {/* CONTROL: tarjeta de conteo estilo FileControlCard (+1 circular) —
                             contador de prendas controladas, aparte del de trabajo. "Aprobar
@@ -622,12 +855,33 @@ export default function EmbBandeja({ area = 'EMB', fase = 'trabajo', onSelectOrd
                                         Control de Calidad
                                     </h3>
 
-                                    <div className="mb-4">
-                                        <ControlPrendaCard
-                                            order={selected}
-                                            service={service}
-                                            onChanged={(val) => updateLocal(selected.OrdenID, { CantidadControlada: val })}
-                                        />
+                                    {/* CORTE: se controla TIZADA POR TIZADA (cada archivo con sus
+                                        piezas). El resto de las áreas cuenta la orden entera. */}
+                                    <div className="mb-4 space-y-2">
+                                        {(selected.Tizadas || []).length > 0 ? (
+                                            (selected.Tizadas || []).map(t => (
+                                                <TizadaAvanceCard
+                                                    key={t.ArchivoID}
+                                                    tizada={t}
+                                                    ordenId={selected.OrdenID}
+                                                    service={service}
+                                                    campo="control"
+                                                    onChanged={(archivoId, val) => {
+                                                        const tz = selected.Tizadas || [];
+                                                        updateLocal(selected.OrdenID, {
+                                                            Tizadas: tz.map(x => x.ArchivoID === archivoId ? { ...x, PiezasControladas: val } : x),
+                                                            CantidadControlada: tz.reduce((s, x) => s + (x.ArchivoID === archivoId ? val : (parseInt(x.PiezasControladas) || 0)), 0),
+                                                        });
+                                                    }}
+                                                />
+                                            ))
+                                        ) : (
+                                            <ControlPrendaCard
+                                                order={selected}
+                                                service={service}
+                                                onChanged={(val) => updateLocal(selected.OrdenID, { CantidadControlada: val })}
+                                            />
+                                        )}
                                     </div>
 
                                     <div className="flex items-center justify-end gap-2 pt-3 border-t border-zinc-100">

@@ -943,10 +943,10 @@ exports.createWebOrder = async (req, res) => {
                                         // otra orden): Material = material de la ficha, no el producto.
                                         // El producto (con medidas y terminaciones) viaja en la NOTA.
                                         if (ficha.MaterialImpresion) materialFinal = ficha.MaterialImpresion;
-                                        // La tinta del producto terminado la define la FICHA. Si la ficha NO la
-                                        // fija, vale la que eligió el cliente en el portal (tintaFinal ya la trae)
-                                        // — y el recargo % de UV/Latex aplica solo vía el perfil de tinta.
-                                        tintaFinal = ficha.TintaFicha || tintaFinal;
+                                        // TINTA: manda la que ELIGIÓ el cliente en el portal (arranca en la de
+                                        // la ficha y puede cambiarla); la ficha queda como fallback para pedidos
+                                        // sin tinta explícita. El recargo % de UV/Latex aplica solo vía perfil.
+                                        tintaFinal = tintaFinal || ficha.TintaFicha || null;
 
                                         // Nota: producto + medidas + terminaciones incluidas
                                         const incNota = await new sql.Request(transaction)

@@ -19,6 +19,10 @@ function createBandejaRoutes(area) {
     router.put('/orders/:ordenId/progreso', verifyToken, embBoardController.setProgreso);
     router.post('/orders/:ordenId/finalizar-trabajo', verifyToken, embBoardController.finalizarTrabajo);
     router.put('/orders/:ordenId/progreso-control', verifyToken, embBoardController.setProgresoControl);
+    // [CORTE] Avance POR TIZADA (archivo): cada tizada lleva su propio conteo y la orden
+    // queda con la suma. Trabajo y Control tienen contadores separados, igual que la orden.
+    router.put('/orders/:ordenId/archivos/:archivoId/progreso', verifyToken, embBoardController.setProgresoArchivo);
+    router.put('/orders/:ordenId/archivos/:archivoId/progreso-control', verifyToken, embBoardController.setProgresoControlArchivo);
     router.post('/orders/:ordenId/aprobar-control', verifyToken, embBoardController.aprobarControl);
 
     return router;

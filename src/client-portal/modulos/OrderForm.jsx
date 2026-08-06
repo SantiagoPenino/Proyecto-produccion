@@ -299,7 +299,13 @@ const OrderForm = ({ serviceId: propServiceId }) => {
         const codArt = (mat?.CodArticulo || '').trim();
         if (!codArt) { setFichaPT(null); return; }
         apiClient.get(`/nomenclators/producto-terminado/${encodeURIComponent(codArt)}`)
-            .then(res => setFichaPT(res.success ? res.data : null))
+            .then(res => {
+                const data = res.success ? res.data : null;
+                setFichaPT(data);
+                // La tinta de la ficha es el punto de partida; el cliente puede cambiarla
+                // en el selector (y el recargo % de UV/Latex aplica solo vía perfil).
+                if (data?.tinta) setTintaSeleccionada(data.tinta);
+            })
             .catch(() => setFichaPT(null));
     }, [isEcouvPT, globalMaterial, dynamicMaterials]);
 
@@ -2133,8 +2139,9 @@ const OrderForm = ({ serviceId: propServiceId }) => {
                                     );
                                 })()}
 
-                                {/* Producto Terminado: material y tinta de la FICHA, visibles pero NO editables
-                                    (los define el negocio en la ficha del producto, no el cliente). */}
+                                {/* Producto Terminado: el material lo define la FICHA (no editable);
+                                    la TINTA arranca en la de la ficha pero el cliente PUEDE cambiarla
+                                    — si elige UV/Latex, el recargo % aplica solo (perfil de tinta). */}
                                 {isEcouvPT && fichaPT && (
                                     <>
                                         <div>
@@ -2144,18 +2151,23 @@ const OrderForm = ({ serviceId: propServiceId }) => {
                                             </div>
                                         </div>
                                         <div>
-                                            <p className="block text-xs font-bold uppercase text-zinc-400 mb-2">Tinta <span className="text-zinc-600 normal-case font-normal">(definida por el producto)</span></p>
-                                            <div className="w-full px-4 py-3 bg-zinc-900/40 border border-zinc-700/40 rounded-[10px] text-sm font-medium text-zinc-400 cursor-not-allowed select-none">
-                                                {fichaPT.tinta || (tintaSeleccionada ? `${tintaSeleccionada} (la elegiste vos)` : '— La elegís vos en Tinta —')}
-                                            </div>
+                                            <p className="block text-xs font-bold uppercase text-zinc-400 mb-2">Tinta <span className="text-zinc-600 normal-case font-normal">{fichaPT.tinta ? '(sugerida por el producto — podés cambiarla)' : '(la elegís vos)'}</span></p>
+                                            <CustomSelect
+                                                name="tintaImpresionPT"
+                                                aria-label="Tinta"
+                                                value={tintaSeleccionada}
+                                                onChange={(val) => setTintaSeleccionada(val)}
+                                                options={(config.tintaOptions || ['Ecosolvente', 'UV']).map(t => ({ value: t, label: t }))}
+                                                placeholder="Seleccionar Tinta..."
+                                                variant="black"
+                                            />
                                         </div>
                                     </>
                                 )}
 
                                 {/* Tinta de impresión (ECOUV: rutea el lote a la máquina Ecosolvente/UV).
-                                    En Productos Terminados solo se muestra si la FICHA no la fija:
-                                    ahí la elige el cliente y el recargo % aplica solo (perfil tinta). */}
-                                {Array.isArray(config.tintaOptions) && config.tintaOptions.length > 0 && (!isEcouvPT || (fichaPT != null && !fichaPT.tinta)) && (
+                                    En Productos Terminados el selector va arriba, junto a la ficha. */}
+                                {Array.isArray(config.tintaOptions) && config.tintaOptions.length > 0 && !isEcouvPT && (
                                     <div>
                                         <p className="block text-xs font-bold uppercase text-zinc-400 mb-2">Tinta</p>
                                         <CustomSelect
@@ -2640,7 +2652,7 @@ const OrderForm = ({ serviceId: propServiceId }) => {
                                                                         </div>
                                                                         <div>
                                                                             <span className="block text-[9px] font-bold uppercase text-zinc-500">Tinta</span>
-                                                                            <span className="text-zinc-200 font-bold">{fichaPT.tinta || (tintaSeleccionada ? `${tintaSeleccionada} (la elegiste vos)` : '— la elegís vos —')}</span>
+                                                                            <span className="text-zinc-200 font-bold">{tintaSeleccionada || fichaPT.tinta || '— la elegís vos —'}</span>
                                                                         </div>
                                                                     </div>
                                                                     {incluidas.length > 0 && (

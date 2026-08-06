@@ -44,6 +44,16 @@ const createBandejaService = (basePath) => ({
         const response = await api.put(`${basePath}/orders/${ordenId}/progreso-control`, { cantidadControlada });
         return response.data;
     },
+    // [CORTE] Avance POR TIZADA: piezas cortadas / controladas de ESE archivo.
+    // La orden queda con la suma de todas sus tizadas (lo recalcula el backend).
+    setProgresoArchivo: async (ordenId, archivoId, cantidad) => {
+        const response = await api.put(`${basePath}/orders/${ordenId}/archivos/${archivoId}/progreso`, { cantidad });
+        return response.data;
+    },
+    setProgresoControlArchivo: async (ordenId, archivoId, cantidad) => {
+        const response = await api.put(`${basePath}/orders/${ordenId}/archivos/${archivoId}/progreso-control`, { cantidad });
+        return response.data;
+    },
     // Aprobar Control: pasa a Pronto y genera `bultos` etiquetas.
     aprobarControl: async (ordenId, bultos) => {
         const response = await api.post(`${basePath}/orders/${ordenId}/aprobar-control`, { bultos });
