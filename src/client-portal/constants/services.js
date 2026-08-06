@@ -190,10 +190,12 @@ export const SERVICES_LIST = [
         label: 'Corte',
         desc: 'Corte láser y tizada.',
         icon: Zap,
-        externalUrl: 'https://docs.google.com/forms/d/e/1FAIpQLSc-WAW7vfEbCIzLQt7Ty18d4ckEdzvHz6Fnqk4xe0NTqmmHVA/viewform',
-        formEntries: {
-            clienteId: 'entry.217602422'
-        },
+        // externalUrl deshabilitado: Corte ahora usa el form interno /portal/order/corte.
+        // Se dejan el link del Google Form y sus entries comentados por si hay que revertir.
+        // externalUrl: 'https://docs.google.com/forms/d/e/1FAIpQLSc-WAW7vfEbCIzLQt7Ty18d4ckEdzvHz6Fnqk4xe0NTqmmHVA/viewform',
+        // formEntries: {
+        //     clienteId: 'entry.217602422'
+        // },
 
 
         config: {
@@ -208,7 +210,8 @@ export const SERVICES_LIST = [
             ]
         },
         complementaryOptions: [
-            { id: 'EMB', label: 'Servicio de Bordado', hasFile: true, fullWidth: true, inputLabel: 'Adjuntar Ponchado/Logo' },
+            // Bordado OCULTO en el form de corte de cara al cliente (pedido 05/08)
+            // { id: 'EMB', label: 'Servicio de Bordado', hasFile: true, fullWidth: true, inputLabel: 'Adjuntar Ponchado/Logo' },
             { id: 'EST', label: 'Servicio de Estampado' }
         ]
     },

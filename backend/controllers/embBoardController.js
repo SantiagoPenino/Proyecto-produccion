@@ -40,7 +40,18 @@ const CAMPOS_ENRIQUECIDOS = `
     -- [PRENDAS] Hermana de una prenda comprada+personalizada: la cantidad REAL vive en la
     -- orden madre PRO (misma NoDocERP), la propia Magnitud queda en '0' a propósito (ver
     -- prendasOrdersController.js). Sin esto, el progreso nunca cierra para estas órdenes.
-    CASE WHEN TRY_CAST(o.Magnitud AS FLOAT) > 0 THEN o.Magnitud ELSE pro.Magnitud END AS MagnitudEfectiva
+    -- [CORTE] El CONTROL cuenta PIEZAS: si la orden tiene tizadas medidas (Piezas en los
+    -- archivos de producción ArchivosOrden — × copias — o en ArchivosReferencia para las
+    -- órdenes viejas), el total a controlar es la suma de piezas — la Magnitud puede estar
+    -- en METROS de corte (lo que se cotiza, según la UM del artículo) y no sirve para contar.
+    CASE
+        WHEN (SELECT SUM(ao.Piezas * ISNULL(ao.Copias, 1)) FROM ArchivosOrden ao WHERE ao.OrdenID = o.OrdenID AND ao.Piezas IS NOT NULL) > 0
+            THEN CAST((SELECT SUM(ao.Piezas * ISNULL(ao.Copias, 1)) FROM ArchivosOrden ao WHERE ao.OrdenID = o.OrdenID AND ao.Piezas IS NOT NULL) AS VARCHAR(50))
+        WHEN (SELECT SUM(ar.Piezas) FROM ArchivosReferencia ar WHERE ar.OrdenID = o.OrdenID AND ar.Piezas IS NOT NULL) > 0
+            THEN CAST((SELECT SUM(ar.Piezas) FROM ArchivosReferencia ar WHERE ar.OrdenID = o.OrdenID AND ar.Piezas IS NOT NULL) AS VARCHAR(50))
+        WHEN TRY_CAST(o.Magnitud AS FLOAT) > 0 THEN o.Magnitud
+        ELSE pro.Magnitud
+    END AS MagnitudEfectiva
 `;
 const JOINS_ENRIQUECIDOS = `
     LEFT JOIN ConfigEquipos m ON m.EquipoID = o.MaquinaID
@@ -75,7 +86,16 @@ async function getMagnitudEfectiva(pool, ordenId) {
     const r = await pool.request()
         .input('OID', sql.Int, ordenId)
         .query(`
-            SELECT CASE WHEN TRY_CAST(o.Magnitud AS FLOAT) > 0 THEN o.Magnitud ELSE pro.Magnitud END AS MagnitudEfectiva
+            SELECT CASE
+                -- [CORTE] el control cuenta PIEZAS (suma de las tizadas medidas), no la
+                -- Magnitud en metros de corte (misma regla que CAMPOS_ENRIQUECIDOS).
+                WHEN (SELECT SUM(ao.Piezas * ISNULL(ao.Copias, 1)) FROM ArchivosOrden ao WHERE ao.OrdenID = o.OrdenID AND ao.Piezas IS NOT NULL) > 0
+                    THEN CAST((SELECT SUM(ao.Piezas * ISNULL(ao.Copias, 1)) FROM ArchivosOrden ao WHERE ao.OrdenID = o.OrdenID AND ao.Piezas IS NOT NULL) AS VARCHAR(50))
+                WHEN (SELECT SUM(ar.Piezas) FROM ArchivosReferencia ar WHERE ar.OrdenID = o.OrdenID AND ar.Piezas IS NOT NULL) > 0
+                    THEN CAST((SELECT SUM(ar.Piezas) FROM ArchivosReferencia ar WHERE ar.OrdenID = o.OrdenID AND ar.Piezas IS NOT NULL) AS VARCHAR(50))
+                WHEN TRY_CAST(o.Magnitud AS FLOAT) > 0 THEN o.Magnitud
+                ELSE pro.Magnitud
+            END AS MagnitudEfectiva
             FROM Ordenes o
             LEFT JOIN Ordenes pro ON pro.NoDocERP = o.NoDocERP AND pro.AreaID = 'PRO'
             WHERE o.OrdenID = @OID
@@ -416,7 +436,15 @@ exports.aprobarControl = async (req, res) => {
             .query(`
                 SELECT o.CantidadControlada, o.AreaID, o.ProximoServicio,
                        LTRIM(RTRIM(CAST(o.NoDocERP AS VARCHAR(50)))) AS NoDoc,
-                       CASE WHEN TRY_CAST(o.Magnitud AS FLOAT) > 0 THEN o.Magnitud ELSE pro.Magnitud END AS MagnitudEfectiva
+                       CASE
+                           -- [CORTE] el control cuenta PIEZAS de las tizadas medidas, no metros
+                           WHEN (SELECT SUM(ao.Piezas * ISNULL(ao.Copias, 1)) FROM ArchivosOrden ao WHERE ao.OrdenID = o.OrdenID AND ao.Piezas IS NOT NULL) > 0
+                               THEN CAST((SELECT SUM(ao.Piezas * ISNULL(ao.Copias, 1)) FROM ArchivosOrden ao WHERE ao.OrdenID = o.OrdenID AND ao.Piezas IS NOT NULL) AS VARCHAR(50))
+                           WHEN (SELECT SUM(ar.Piezas) FROM ArchivosReferencia ar WHERE ar.OrdenID = o.OrdenID AND ar.Piezas IS NOT NULL) > 0
+                               THEN CAST((SELECT SUM(ar.Piezas) FROM ArchivosReferencia ar WHERE ar.OrdenID = o.OrdenID AND ar.Piezas IS NOT NULL) AS VARCHAR(50))
+                           WHEN TRY_CAST(o.Magnitud AS FLOAT) > 0 THEN o.Magnitud
+                           ELSE pro.Magnitud
+                       END AS MagnitudEfectiva
                 FROM Ordenes o
                 LEFT JOIN Ordenes pro ON pro.NoDocERP = o.NoDocERP AND pro.AreaID = 'PRO'
                 WHERE o.OrdenID = @OID

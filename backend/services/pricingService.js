@@ -251,6 +251,39 @@ class PricingService {
                   injectedUrgencia = true;
              }
         }
+
+        // Recargo por Tinta (ECOUV): mismo criterio que el sync (erpSyncService inyecta el
+        // perfil cuando Ordenes.Tinta contiene UV/LATEX). Los llamadores que recalculan una
+        // línea suelta (modal de cotización, simulador) no pasan extraProfileIds, así que si
+        // viene la referencia de la orden (variables.ordenId) la tinta se lee de la orden acá.
+        const idTinta = parseInt(globalConfigs['ID_PERFIL_TINTA']) || 3;
+        let injectedTinta = false;
+        let tintaOrden = variables.tinta || null;
+        if (!tintaOrden && variables.ordenId) {
+            try {
+                const ordenIdNum = parseInt(variables.ordenId);
+                const tReq = pool.request();
+                let tQuery;
+                if (!isNaN(ordenIdNum) && String(ordenIdNum) === String(variables.ordenId).trim()) {
+                    tReq.input('oid', sql.Int, ordenIdNum);
+                    tQuery = 'SELECT TOP 1 Tinta FROM Ordenes WITH(NOLOCK) WHERE OrdenID = @oid';
+                } else {
+                    tReq.input('cod', sql.VarChar(50), String(variables.ordenId).trim());
+                    tQuery = 'SELECT TOP 1 Tinta FROM Ordenes WITH(NOLOCK) WHERE LTRIM(RTRIM(CodigoOrden)) = @cod';
+                }
+                const tRes = await tReq.query(tQuery);
+                tintaOrden = tRes.recordset[0]?.Tinta || null;
+            } catch (eTinta) {
+                logger.warn('[PricingService] No se pudo leer la Tinta de la orden ' + variables.ordenId + ': ' + eTinta.message);
+            }
+        }
+        if (tintaOrden && (String(tintaOrden).toUpperCase().includes('UV') || String(tintaOrden).toUpperCase().includes('LATEX'))) {
+            if (!extraProfileIds.includes(idTinta)) {
+                extraProfileIds.push(idTinta);
+                injectedTinta = true;
+            }
+        }
+
         const cleanedProfiles = extraProfileIds.map(Number).filter(n => !isNaN(n));
 
         // Recuperar IDs de Clientes (Mix Legacy/New)
@@ -373,6 +406,9 @@ class PricingService {
         traceDecision += `Perfiles Activos: ${(extraProfileIds || []).join(',')} | Area: ${resolvedAreaId} (Nombre: ${resolvedAreaNombre})\n`;
         if (typeof injectedUrgencia !== 'undefined' && injectedUrgencia) {
             traceDecision += `[INFO] Modo URGENTE Activado (Inyectando Perfil ID ${idUrgencia} a la evaluación)\n`;
+        }
+        if (injectedTinta) {
+            traceDecision += `[INFO] Tinta ${tintaOrden} detectada (Inyectando Perfil ID ${idTinta} a la evaluación)\n`;
         }
         traceDecision += `Reglas encontradas en BD: ${todasLasReglas.length}\n`;
         todasLasReglas.forEach(r => {

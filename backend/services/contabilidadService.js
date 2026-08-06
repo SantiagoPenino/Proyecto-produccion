@@ -2665,14 +2665,27 @@ async function cerrarCicloCompleto({
   }
   // ───────────────────────────────────────────────────────────────────────
 
-  // Consultar saldo actual de la cuenta.
-  // El saldo YA incorpora todos los movimientos del ciclo: órdenes (débitos negativos) y pagos (créditos positivos).
-  // Si saldo < 0: el cliente aún debe → ImportePendiente = |saldo| (capeado por la factura bruta)
-  // Si saldo >= 0: el cliente tiene a favor → ImportePendiente = 0 (o la diferencia si el saldo a favor no alcanza)
+  // Consultar saldo de la cuenta.
+  // OJO: NO leer CueSaldoActual — esa columna está corrompida por el doble conteo de ORDEN
+  // (bug conocido, ver project_bug_saldoactual_duplica_orden.md): un positivo falso hacía
+  // nacer la DeudaDocumento del cierre como PAGADO/pendiente 0 y la factura desaparecía de
+  // "pendiente para cobrar" (caso Mrivero PC-2885/2886, 4-ago-2026). Se recalcula con la
+  // MISMA fórmula que el resto del sistema (getSaldoCliente, hookOrdenCreada): todo menos
+  // ORDEN/ORDEN_ANTICIPO. Como el cargo VTA_CAJA/CIERRE_CICLO de ESTA factura se registra
+  // más abajo y aún no está en la cuenta, se resta saldoFacturar para conservar la
+  // semántica original ("el saldo ya incorpora el ciclo"):
+  //   saldo < 0: el cliente aún debe → ImportePendiente = |saldo| (capeado por la factura bruta)
+  //   saldo >= 0: el cliente tiene a favor → ImportePendiente = 0
   const saldoCuentaRes = await pool.request()
     .input('CueIdCuenta', sql.Int, ciclo.CueIdCuenta)
-    .query(`SELECT CueSaldoActual FROM dbo.CuentasCliente WHERE CueIdCuenta = @CueIdCuenta`);
-  const saldoCuentaActual = saldoCuentaRes.recordset[0]?.CueSaldoActual || 0;
+    .query(`
+      SELECT ISNULL(SUM(m.MovImporte), 0) AS SaldoReal
+      FROM dbo.MovimientosCuenta m
+      WHERE m.CueIdCuenta = @CueIdCuenta
+        AND (m.MovAnulado IS NULL OR m.MovAnulado = 0)
+        AND m.MovTipo NOT IN ('ORDEN', 'ORDEN_ANTICIPO')
+    `);
+  const saldoCuentaActual = (Number(saldoCuentaRes.recordset[0]?.SaldoReal) || 0) - saldoFacturar;
 
   // El ImportePendiente es lo que realmente queda por cobrar de la factura que se genera.
   // REGLA:

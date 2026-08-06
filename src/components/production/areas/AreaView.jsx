@@ -275,7 +275,12 @@ export default function AreaView({ areaKey: rawAreaKey, areaConfig, onSwitchTab 
     // Armado/lotes o el control de archivos que usa el resto de las áreas.
     const AREAS_BANDEJA_SIN_LOTES = ['EMB', 'EST', 'TWC', 'TWT'];
     // TERMINAC: sin Planeación (pedido 28/07 — las hermanas XEUV no se planifican en tablero).
-    const hidePlaneacion = ['terminac', ...AREAS_BANDEJA_SIN_LOTES.map(a => a.toLowerCase())].includes((areaKey || '').toLowerCase());
+    // Pedido 05/08: estas áreas trabajan por Bandeja — sin Planeación, sin "Asignar a
+    // Lote" y sin "Historial" (de lotes) en la planilla. Se incluyen los alias de menú
+    // (bordado/estampado/corte/costura) además del código de área (EMB/EST/TWC/TWT).
+    const esAreaSinLotes = ['terminac', 'bordado', 'estampado', 'corte', 'costura',
+        ...AREAS_BANDEJA_SIN_LOTES.map(a => a.toLowerCase())].includes((areaKey || '').toLowerCase());
+    const hidePlaneacion = esAreaSinLotes;
 
     // 3. CARGA DE DATOS (React Query)
     const { data: dbOrders = [], isLoading: loadingOrders, refetch } = useQuery({
@@ -627,7 +632,8 @@ export default function AreaView({ areaKey: rawAreaKey, areaConfig, onSwitchTab 
 
     const tableToolbar = (
         <div className="flex flex-nowrap gap-3 tablet:gap-1.5 items-center">
-            {!isPro && (
+            {/* Historial = historial de LOTES: no aplica en las áreas sin lotes ni en PRO */}
+            {!isPro && !esAreaSinLotes && (
                 <>
                     <button
                         className="flex items-center gap-2 px-3 py-1.5 tablet:px-2 tablet:py-1 text-xs tablet:text-[11px] font-bold bg-white border border-zinc-200 rounded-lg text-zinc-600 hover:bg-zinc-50 hover:text-brand-cyan hover:border-brand-cyan/30 transition-colors shadow-sm capitalize"

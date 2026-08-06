@@ -114,11 +114,36 @@ const OrderRequirementsList = ({ ordenId, areaId, readOnly = false }) => {
         setSelectedReq(null);
     };
 
-    const handleResourceSelect = (resource) => {
+    const handleResourceSelect = async (resource) => {
         if (!selectedReq) return;
 
-        const note = `Asignado: ${resource.description} [${resource.label}]`;
+        // Observación del requisito: PRE del ingreso + datos de la tela (no solo "Bobina N")
+        const partes = [];
+        if (resource.pre) partes.push(resource.pre);
+        if (resource.tela) partes.push(resource.tela);
+        if (resource.metros != null) partes.push(`${resource.metros}m disp.`);
+        if (resource.ancho) partes.push(`ancho ${resource.ancho}m`);
+        const note = partes.length > 0
+            ? `Asignado: ${partes.join(' — ')} [${resource.label}]`
+            : `Asignado: ${resource.description} [${resource.label}]`;
         executeToggle(selectedReq.RequisitoID, true, note);
+
+        // Nota de producción de la orden (visible en "Notas de Producción" y la pestaña
+        // Notas): PRE del ingreso + datos de la tela elegida. Informativa — si falla,
+        // no corta la asignación.
+        if (resource.pre || resource.tela) {
+            try {
+                const datos = [
+                    resource.tela || 'Tela',
+                    resource.metros != null ? `${resource.metros}m disponibles` : null,
+                    resource.ancho ? `ancho ${resource.ancho}m` : null,
+                    resource.peso ? `${resource.peso}kg` : null
+                ].filter(Boolean).join(', ');
+                await api.post(`/orders/${ordenId}/notas`, {
+                    texto: `[TELA CLIENTE] ${resource.pre || resource.label} — ${datos} (${resource.label})`
+                });
+            } catch (e) { console.error('No se pudo agregar la nota de tela', e); }
+        }
 
         // Close modal
         setResourceModalOpen(false);
@@ -171,7 +196,8 @@ const OrderRequirementsList = ({ ordenId, areaId, readOnly = false }) => {
                                 {req.Cumplido ? (
                                     <>
                                         <div className="text-emerald-600 font-bold">OK</div>
-                                        {req.Observaciones && <div className="text-[9px] text-emerald-500 max-w-[120px] truncate" title={req.Observaciones}>{req.Observaciones}</div>}
+                                        {/* Texto completo (PRE, tela, metros...): sin truncar, se envuelve */}
+                                        {req.Observaciones && <div className="text-[10px] text-emerald-600 font-medium max-w-[280px] whitespace-normal break-words leading-snug" title={req.Observaciones}>{req.Observaciones}</div>}
                                         {req.FechaCumplimiento && (
                                             <div className="text-[9px] text-emerald-400">
                                                 {new Date(req.FechaCumplimiento).toLocaleString('es-UY', { day: '2-digit', month: '2-digit', year: '2-digit', hour: '2-digit', minute: '2-digit' })}
@@ -211,16 +237,54 @@ const OrderRequirementsList = ({ ordenId, areaId, readOnly = false }) => {
                                     onClick={() => handleResourceSelect(res)}
                                     className="p-3 mb-1 rounded-lg border border-gray-200 hover:border-indigo-300 hover:bg-indigo-50 cursor-pointer group transition-all"
                                 >
-                                    <div className="flex justify-between items-start">
-                                        <div>
-                                            <div className="font-bold text-slate-700 text-sm group-hover:text-indigo-700">{res.description}</div>
-                                            <div className="text-xs text-slate-400 font-mono mt-0.5">{res.label}</div>
+                                    <div className="flex justify-between items-start gap-2">
+                                        <div className="min-w-0">
+                                            {/* Tela + PRE del ingreso, con los datos visibles de la bobina */}
+                                            <div className="font-bold text-slate-700 text-sm group-hover:text-indigo-700">
+                                                {res.tela || res.description}
+                                            </div>
+                                            <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
+                                                {res.pre && (
+                                                    <span className="text-[10px] font-bold bg-indigo-100 text-indigo-700 px-1.5 py-0.5 rounded font-mono">{res.pre}</span>
+                                                )}
+                                                <span className="text-xs text-slate-400 font-mono">{res.label}</span>
+                                                {res.vinculadaAOrden === 1 && (
+                                                    <span className="text-[9px] bg-indigo-600 text-white px-1.5 py-0.5 rounded uppercase font-bold">Vinculada a esta orden</span>
+                                                )}
+                                                {res.esDelCliente === 1 && res.vinculadaAOrden !== 1 && (
+                                                    <span className="text-[9px] bg-emerald-100 text-emerald-700 px-1.5 py-0.5 rounded uppercase font-bold">De este cliente</span>
+                                                )}
+                                                {res.estadoBobina && res.estadoBobina !== 'Disponible' && (
+                                                    <span className={`text-[9px] px-1.5 py-0.5 rounded uppercase font-bold ${
+                                                        res.estadoBobina === 'Agotado' ? 'bg-rose-100 text-rose-600' : 'bg-amber-100 text-amber-700'
+                                                    }`}>{res.estadoBobina}</span>
+                                                )}
+                                            </div>
+                                            {(res.metros != null || res.ancho || res.peso) && (
+                                                <div className="text-xs text-slate-500 mt-1">
+                                                    {[
+                                                        res.metros != null ? `${res.metros}m disponibles` : null,
+                                                        res.ancho ? `ancho ${res.ancho}m` : null,
+                                                        res.peso ? `${res.peso}kg` : null
+                                                    ].filter(Boolean).join(' · ')}
+                                                </div>
+                                            )}
+                                            {res.clienteBobina && res.esDelCliente !== 1 && (
+                                                <div className="text-[10px] text-amber-600 font-bold mt-0.5">Cliente: {res.clienteBobina}</div>
+                                            )}
                                         </div>
-                                        {res.location && (
-                                            <span className="text-[10px] bg-gray-100 text-gray-500 px-1.5 py-0.5 rounded border border-gray-200 group-hover:bg-white">
-                                                {res.location}
-                                            </span>
-                                        )}
+                                        <div className="flex flex-col items-end gap-1 shrink-0">
+                                            {res.areaBobina && (
+                                                <span className="text-[10px] bg-gray-100 text-gray-500 px-1.5 py-0.5 rounded border border-gray-200 group-hover:bg-white">
+                                                    {res.areaBobina}
+                                                </span>
+                                            )}
+                                            {res.location && (
+                                                <span className="text-[10px] bg-gray-100 text-gray-500 px-1.5 py-0.5 rounded border border-gray-200 group-hover:bg-white">
+                                                    {res.location}
+                                                </span>
+                                            )}
+                                        </div>
                                     </div>
                                 </div>
                             ))}

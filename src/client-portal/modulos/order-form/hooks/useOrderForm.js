@@ -82,6 +82,8 @@ const initialState = {
     // Áreas con urgencia activa (viene con /nomenclators/priorities; misma regla que precios).
     // null = sin dato → no se oculta nada (fail-open).
     areasConUrgencia: null,
+    // Config del portal (ConfiguracionGlobal): { directaMinimoMetros }. 0/vacío = sin validación.
+    portalConfig: {},
     uniqueVariants: [],
     dynamicMaterials: [],
     activeSubOrders: [],
@@ -116,6 +118,8 @@ function orderFormReducer(state, action) {
                 prioritiesList: state.prioritiesList,
                 visibleConfig: state.visibleConfig,
                 visibleConfigByArea: state.visibleConfigByArea,
+                portalConfig: state.portalConfig,
+                areasConUrgencia: state.areasConUrgencia,
                 // Apply defaults from action if provided
                 ...action.defaults
             };
@@ -361,6 +365,10 @@ export const useOrderForm = (serviceId, overrides = {}) => {
                 } else {
                     updates.visibleConfig = {};
                     updates.visibleConfigByArea = {};
+                }
+                // Config del portal (mínimo de metros de Directa, etc.)
+                if (visRes.success && visRes.data?.portalConfig) {
+                    updates.portalConfig = visRes.data.portalConfig;
                 }
 
                 if (prioRes?.success && prioRes.data?.length > 0) {

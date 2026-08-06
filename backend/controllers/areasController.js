@@ -31,14 +31,15 @@ exports.getAllAreas = async (req, res) => {
         }
 
         if (withTelaCliente === 'true') {
-            // Solo áreas que tengan al menos una bobina de tela de cliente activa
+            // Áreas que tengan (o hayan tenido) bobinas de tela de cliente, SIN filtrar
+            // por estado: si la única bobina del área se agota, el área desaparecía del
+            // selector y la bobina quedaba invisible hasta en la pestaña "Agotadas"
+            // (pasó con TWC/corte). Los estados los filtra cada vista con sus pestañas.
             conditions.push(`EXISTS (
                 SELECT 1 FROM InventarioBobinas ib
                 WHERE ib.AreaID = a.AreaID
                   AND ib.ClienteID IS NOT NULL
                   AND ib.ClienteID <> ''
-                  AND ib.Estado IN ('Disponible', 'Pendiente', 'En Uso')
-                  AND ib.MetrosRestantes > 0
             )`);
         }
 

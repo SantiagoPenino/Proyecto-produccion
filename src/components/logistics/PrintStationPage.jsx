@@ -140,6 +140,63 @@ const PrintStationPage = () => {
         printQueueRef.current = printQueueRef.current.then(run, run); // sigue aunque uno falle
         return printQueueRef.current;
     }, [printTicket]);
+
+    // [WMS] Remitos A4 de pedidos de venta WMS — esta MISMA estación (la PC de retiros)
+    // también los imprime: escucha 'wms:pedido' (emitido al confirmar la venta en
+    // wmsController.createOrder) y carga la hoja A4 del backend en un iframe propio,
+    // encolada en la misma cola para no pisarse con los tickets de retiro. Aditivo:
+    // no toca en nada el flujo de retiros de arriba. También existe /wms-remito-station
+    // como estación dedicada, por si algún día el A4 sale por otra impresora.
+    const wmsIframeRef = useRef(null);
+    const printRemitoWms = useCallback((job) => {
+        if (!wmsIframeRef.current || !job?.pedidoId) return Promise.resolve();
+        return new Promise((resolve) => {
+            const iframe = wmsIframeRef.current;
+            let done = false;
+            const fire = () => {
+                if (done) return; // evita doble disparo (onload + fallback)
+                done = true;
+                try {
+                    iframe.contentWindow.focus();
+                    iframe.contentWindow.print();
+                    addLog(`Remito WMS impreso: ${job.codigoVenta || job.pedidoId}`, 'success');
+                    setPrintCount(prev => prev + 1);
+                } catch (err) {
+                    addLog(`Error imprimiendo remito WMS: ${err.message}`, 'error');
+                }
+                resolve();
+            };
+            iframe.onload = () => setTimeout(fire, 1200); // deja renderizar el QR (CDN)
+            iframe.src = `/api/wms/pedido/${job.pedidoId}/remito-print`;
+            setTimeout(fire, 5000); // fallback por si onload no llega
+        });
+    }, [addLog]);
+
+    useEffect(() => {
+        const handleWmsPedido = (data) => {
+            if (data?.type !== 'nuevo_pedido' || !data.pedidoId) return;
+            const jobId = data.codigoVenta || String(data.pedidoId);
+            if (printedIdsRef.current.has(jobId)) {
+                addLog(`Remito WMS ${jobId} ya fue impreso — omitido`, 'info', null, 'package');
+                return;
+            }
+            printedIdsRef.current.add(jobId);
+            try { localStorage.setItem('ps_printedIds', JSON.stringify([...printedIdsRef.current])); } catch { }
+
+            addLog(`Nuevo pedido WMS: ${jobId} — imprimiendo remito A4...`, 'info', null, 'printer');
+            if (soundEnabled) {
+                window.speechSynthesis.cancel();
+                const utt = new SpeechSynthesisUtterance(`Pedido ${jobId.replace(/^[A-Za-z]+-?/, '')}`);
+                utt.lang = 'es-UY';
+                utt.rate = 0.9;
+                window.speechSynthesis.speak(utt);
+            }
+            const run = () => printRemitoWms(data);
+            printQueueRef.current = printQueueRef.current.then(run, run);
+        };
+        socket.on('wms:pedido', handleWmsPedido);
+        return () => socket.off('wms:pedido', handleWmsPedido);
+    }, [soundEnabled, printRemitoWms, addLog]);
     // Escuchar eventos de nuevo retiro (con deduplicación)
     useEffect(() => {
         const handleRetiroUpdate = async (data) => {
@@ -554,6 +611,14 @@ const PrintStationPage = () => {
                 ref={iframeRef}
                 style={{ display: 'none' }}
                 title="print-frame"
+            />
+
+            {/* [WMS] Iframe propio para los remitos A4 de pedidos WMS (no comparte el de
+                tickets: acá se carga una URL del backend, no HTML escrito a mano) */}
+            <iframe
+                ref={wmsIframeRef}
+                style={{ display: 'none' }}
+                title="wms-remito-frame"
             />
         </div>
     );

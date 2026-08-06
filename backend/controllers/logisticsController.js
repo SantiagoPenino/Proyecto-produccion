@@ -788,7 +788,10 @@ exports.getRemitoByCode = async (req, res) => {
                        cli.Nombre AS ClienteRetiro
                 FROM Logistica_EnvioItems i
                 INNER JOIN Logistica_Bultos b ON i.BultoID = b.BultoID
-                LEFT JOIN Ordenes o ON b.OrdenID = o.OrdenID
+                -- OJO: en bultos de ENCOMIENDA el OrdenID es el N° de OrdenesRetiro, NO de
+                -- Ordenes — sin el filtro, una encomienda vieja se cuelga de la orden NUEVA
+                -- que nació con ese mismo OrdenID (caso XEUV-12142 vs PAQ-12662-535).
+                LEFT JOIN Ordenes o ON b.OrdenID = o.OrdenID AND ISNULL(b.Tipocontenido,'') <> 'ENCOMIENDA'
                 LEFT JOIN dbo.Clientes cliord WITH(NOLOCK) ON o.CliIdCliente = cliord.CliIdCliente
                 LEFT JOIN OrdenesRetiro ret ON b.OrdenID = ret.OReIdOrdenRetiro
                 LEFT JOIN Clientes cli ON ret.CodCliente = cli.CodCliente
@@ -830,7 +833,9 @@ exports.searchRemitos = async (req, res) => {
                 FROM Logistica_Envios e
                 INNER JOIN Logistica_EnvioItems i  ON e.EnvioID  = i.EnvioID
                 INNER JOIN Logistica_Bultos     b  ON i.BultoID  = b.BultoID
-                LEFT  JOIN Ordenes              o  ON o.OrdenID  = b.OrdenID
+                -- Encomiendas: su OrdenID es el N° de OrdenesRetiro, no de Ordenes — sin el
+                -- filtro, buscar una orden nueva encontraba remitos viejos de encomiendas ajenas.
+                LEFT  JOIN Ordenes              o  ON o.OrdenID  = b.OrdenID AND ISNULL(b.Tipocontenido,'') <> 'ENCOMIENDA'
                 LEFT  JOIN OrdenesDeposito      od ON od.OrdIdOrden = b.OrdenID
                 WHERE b.CodigoEtiqueta   LIKE @Q
                    OR CAST(b.OrdenID AS VARCHAR) = @QExact
@@ -1007,7 +1012,9 @@ exports.receiveDispatch = async (req, res) => {
                                 r.Referencias, -- Fetch raw references
                                 COALESCE(o.Cliente, r.Cliente) as Cliente
                             FROM Logistica_Bultos b
-                            LEFT JOIN Ordenes o ON b.OrdenID = o.OrdenID
+                            -- Encomiendas: OrdenID = N° de OrdenesRetiro → sin el filtro, el
+                            -- check-in tomaba Cliente/NoDocERP de una orden NUEVA ajena.
+                            LEFT JOIN Ordenes o ON b.OrdenID = o.OrdenID AND ISNULL(b.Tipocontenido,'') <> 'ENCOMIENDA'
                             LEFT JOIN Recepciones r ON b.CodigoEtiqueta = r.Codigo
                             WHERE b.BultoID = @BID
                         `);
@@ -1039,7 +1046,9 @@ exports.receiveDispatch = async (req, res) => {
                         // CHECK-IN EN TERMINAC: al recibir el material impreso, la orden hermana
                         // XEUV del mismo pedido pasa de 'Pendiente' a 'Material Recibido' — recién
                         // ahí queda disponible en la bandeja de terminaciones para trabajar.
-                        if (OrdenID && (areaReceptora || '').toUpperCase() === 'TERMINAC') {
+                        // (Nunca con encomiendas: su OrdenID es el N° de OrdenesRetiro y el
+                        // subselect por NoDocERP caería en una orden ajena.)
+                        if (OrdenID && (areaReceptora || '').toUpperCase() === 'TERMINAC' && bultoInfo.Tipocontenido !== 'ENCOMIENDA') {
                             try {
                                 const herRes = await new sql.Request(transaction)
                                     .input('OID', sql.Int, OrdenID)
@@ -1968,9 +1977,13 @@ exports.getDashboard = async (req, res) => {
                         b.BultoID, b.CodigoEtiqueta, b.Descripcion, b.Estado, b.UbicacionActual, b.Tipocontenido,
                         b.OrdenID,
                         o.CodigoOrden, o.Cliente, o.DescripcionTrabajo, o.ProximoServicio,
-                        (SELECT COUNT(*) FROM Logistica_Bultos WITH(NOLOCK) WHERE OrdenID = b.OrdenID) as TotalBultosOrden
+                        (SELECT COUNT(*) FROM Logistica_Bultos WITH(NOLOCK)
+                          WHERE OrdenID = b.OrdenID
+                            AND ISNULL(Tipocontenido,'') <> 'ENCOMIENDA') as TotalBultosOrden
                     FROM Logistica_Bultos b WITH(NOLOCK)
-                    LEFT JOIN Ordenes o WITH(NOLOCK) ON b.OrdenID = o.OrdenID
+                    -- Encomiendas: OrdenID = N° de OrdenesRetiro, no de Ordenes (evita colgar
+                    -- el bulto de una orden nueva que nació con ese mismo número)
+                    LEFT JOIN Ordenes o WITH(NOLOCK) ON b.OrdenID = o.OrdenID AND ISNULL(b.Tipocontenido,'') <> 'ENCOMIENDA'
                     WHERE b.UbicacionActual = @A 
                     AND b.Estado NOT IN ('PERDIDO', 'DESPACHADO', 'EN_TRANSITO')
                 `),
@@ -2445,7 +2458,9 @@ exports.getAreaStock = async (req, res) => {
                 COALESCE(r.FechaRecepcion, o.FechaIngreso, b.FechaCreacion) as FechaIngreso,
                 COALESCE(r.ProximoServicio, o.ProximoServicio, 'LOGISTICA') as ProximoServicio
             FROM Logistica_Bultos b
-            LEFT JOIN Ordenes o ON b.OrdenID = o.OrdenID
+            -- Encomiendas: OrdenID = N° de OrdenesRetiro, no de Ordenes (sin el filtro, los
+            -- datos de la orden fantasma pisaban al COALESCE con la recepción/bulto)
+            LEFT JOIN Ordenes o ON b.OrdenID = o.OrdenID AND ISNULL(b.Tipocontenido,'') <> 'ENCOMIENDA'
             LEFT JOIN dbo.Clientes cliord WITH(NOLOCK) ON o.CliIdCliente = cliord.CliIdCliente
             -- ROBUST JOIN: Priority to Explicit ID, Fallback to String Match
             LEFT JOIN Recepciones r ON (
@@ -2655,58 +2670,95 @@ exports.getAvailableResources = async (req, res) => {
     try {
         const pool = await getPool();
 
-        // 1. Obtener Datos de la Orden (Cliente)
+        // 1. Obtener Datos de la Orden (Cliente + área + bobina ya vinculada)
         const orderRes = await pool.request()
             .input('OID', sql.Int, ordenId)
-            .query("SELECT Cliente FROM Ordenes WHERE OrdenID = @OID");
+            .query("SELECT Cliente, CliIdCliente, AreaID, BobinaTelaID FROM Ordenes WHERE OrdenID = @OID");
 
         if (orderRes.recordset.length === 0) return res.json([]);
         const clienteNombre = orderRes.recordset[0].Cliente || '';
-        logger.info(`[REQ] Cliente: '${clienteNombre}'`);
+        const cliIdCliente = orderRes.recordset[0].CliIdCliente || null;
+        const areaOrden = (orderRes.recordset[0].AreaID || areaId || '').trim();
+        const bobinaTelaId = orderRes.recordset[0].BobinaTelaID || null;
+        logger.info(`[REQ] Cliente: '${clienteNombre}' (ID ${cliIdCliente}), Área: ${areaOrden}, BobinaTela: ${bobinaTelaId}`);
 
         let resources = [];
         let specificFound = false;
 
+        // Campos completos de la bobina de tela cliente: la etiqueta muestra tela,
+        // PRE del ingreso, metros, ancho y peso — no solo "Bobina N".
+        const CAMPOS_BOBINA = `
+            ib.BobinaID as id,
+            CASE WHEN ib.CodigoEtiqueta IS NULL THEN 'Bob-' + CAST(ib.BobinaID as varchar) ELSE ib.CodigoEtiqueta END as label,
+            'Bobina ' + CAST(ib.BobinaID as varchar) + ' (' + CAST(ib.MetrosRestantes as varchar) + 'm) - ' + ISNULL(ib.Referencia, '') as description,
+            ib.Ubicacion as location,
+            ib.Referencia as pre,
+            LTRIM(RTRIM(ISNULL(ib.DescripcionTela, ''))) as tela,
+            ib.MetrosRestantes as metros,
+            ib.MetrosIniciales as metrosIniciales,
+            ISNULL(ib.AnchoReal, ib.Ancho) as ancho,
+            ISNULL(ib.PesoReal, ib.Peso) as peso,
+            ib.AreaID as areaBobina,
+            ib.Estado as estadoBobina,
+            ISNULL(NULLIF(LTRIM(RTRIM(ib.NombreCliente)), ''), LTRIM(RTRIM(ISNULL(cli.Nombre, '')))) as clienteBobina,
+            CASE WHEN TRY_CAST(ib.ClienteID AS INT) = @CliId OR ib.OrdenID = @OID OR ib.BobinaID = @BobTela THEN 1 ELSE 0 END as esDelCliente,
+            CASE WHEN ib.BobinaID = @BobTela THEN 1 ELSE 0 END as vinculadaAOrden
+        `;
+        const JOIN_CLIENTE = `LEFT JOIN Clientes cli ON TRY_CAST(ib.ClienteID AS INT) = cli.CliIdCliente`;
+
         // Lógica según tipo de requisito
         if (reqCode && reqCode.includes('TELA')) {
-            // ESTRATEGIA 1: Búsqueda Específica
+            // ESTRATEGIA 1: bobinas DE ESTE CLIENTE (por CliIdCliente, por la orden, o por
+            // el nombre en la Referencia — legacy), en CUALQUIER estado — una tela
+            // Agotada por el consumo de esta misma orden sigue siendo LA tela del
+            // trabajo y tiene que verse (con su estado). La vinculada a la orden
+            // (Ordenes.BobinaTelaID, la eligió el form de corte) va primera SIEMPRE.
             const queryBob = `
-                    SELECT 
-                        BobinaID as id, 
-                        CASE WHEN CodigoEtiqueta IS NULL THEN 'Bob-' + CAST(BobinaID as varchar) ELSE CodigoEtiqueta END as label, 
-                        'Bobina ' + CAST(BobinaID as varchar) + ' (' + CAST(MetrosRestantes as varchar) + 'm) - ' + ISNULL(Referencia, '') as description,
-                        Ubicacion as location
-                    FROM InventarioBobinas 
-                    WHERE Estado IN ('Disponible', 'En Uso')
-                    AND InsumoID = 1146 -- Filtro Solicitado
+                    SELECT ${CAMPOS_BOBINA}
+                    FROM InventarioBobinas ib
+                    ${JOIN_CLIENTE}
+                    WHERE ib.InsumoID = 1146 -- Filtro Solicitado
                     AND (
-                         OrdenID = @OID 
-                         OR Referencia LIKE '%' + @CliName + '%'
+                         ib.BobinaID = @BobTela
+                         OR (ib.Estado IN ('Disponible', 'En Uso', 'Agotado') AND (
+                             ib.OrdenID = @OID
+                             OR TRY_CAST(ib.ClienteID AS INT) = @CliId
+                             OR ib.Referencia LIKE '%' + @CliName + '%'
+                         ))
                     )
+                    ORDER BY CASE WHEN ib.BobinaID = @BobTela THEN 0 ELSE 1 END,
+                             CASE WHEN LTRIM(RTRIM(ISNULL(ib.AreaID, ''))) = @AreaOrden THEN 0 ELSE 1 END,
+                             ib.FechaIngreso DESC
             `;
             const rSpecific = await pool.request()
                 .input('CliName', sql.NVarChar, clienteNombre || 'XXXXXXXX')
                 .input('OID', sql.Int, ordenId)
+                .input('CliId', sql.Int, cliIdCliente)
+                .input('AreaOrden', sql.VarChar(20), areaOrden)
+                .input('BobTela', sql.Int, bobinaTelaId)
                 .query(queryBob);
 
             resources = rSpecific.recordset;
 
             if (resources.length > 0) specificFound = true;
 
-            // ESTRATEGIA 2: Fallback (Top 50 disponibles recientes FILTRANDO InsumoID)
+            // ESTRATEGIA 2: Fallback — SOLO bobinas disponibles del ÁREA de la orden
+            // (antes traía las de cualquier cliente y cualquier área, y confundía).
             if (resources.length === 0) {
-                logger.info("[REQ] No specific coils found. Fetching generic available coils (Insumo 1146).");
+                logger.info(`[REQ] Sin bobinas del cliente. Trayendo disponibles del área ${areaOrden} (Insumo 1146).`);
                 const rFallback = await pool.request()
+                    .input('OID', sql.Int, ordenId)
+                    .input('CliId', sql.Int, cliIdCliente)
+                    .input('AreaOrden', sql.VarChar(20), areaOrden)
+                    .input('BobTela', sql.Int, bobinaTelaId)
                     .query(`
-                        SELECT TOP 50
-                            BobinaID as id, 
-                            CASE WHEN CodigoEtiqueta IS NULL THEN 'Bob-' + CAST(BobinaID as varchar) ELSE CodigoEtiqueta END as label, 
-                            'Bobina ' + CAST(BobinaID as varchar) + ' (' + CAST(MetrosRestantes as varchar) + 'm) - ' + ISNULL(Referencia, '') as description,
-                            Ubicacion as location
-                        FROM InventarioBobinas 
-                        WHERE Estado IN ('Disponible')
-                        AND InsumoID = 1146 -- Filtro Solicitado
-                        ORDER BY FechaIngreso DESC
+                        SELECT TOP 50 ${CAMPOS_BOBINA}
+                        FROM InventarioBobinas ib
+                        ${JOIN_CLIENTE}
+                        WHERE ib.Estado IN ('Disponible')
+                        AND ib.InsumoID = 1146 -- Filtro Solicitado
+                        AND LTRIM(RTRIM(ISNULL(ib.AreaID, ''))) = @AreaOrden
+                        ORDER BY ib.FechaIngreso DESC
                     `);
                 resources = rFallback.recordset;
             }

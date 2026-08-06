@@ -423,6 +423,9 @@ exports.createWebOrder = async (req, res) => {
                         observacionesBack: it.observacionesBack,
                         sinDPI: it.sinDPI,
                         sinDPIBack: it.sinDPIBack,
+                        // CORTE: medición de la tizada (calculada por el portal al subirla)
+                        piezas: it.piezas,
+                        metrosCorte: it.metrosCorte,
                         // ECOUV: terminaciones elegidas para ESTE archivo [{terminacionId, cantidad}]
                         terminaciones: Array.isArray(it.terminaciones) ? it.terminaciones : []
                     };
@@ -461,6 +464,11 @@ exports.createWebOrder = async (req, res) => {
                     if (srv.metadata.origen) metaParts.push(`Origen: ${srv.metadata.origen}`);
                     if (srv.metadata.moldType) metaParts.push(`Molde: ${srv.metadata.moldType}`);
                     if (srv.metadata.fabricOrigin) metaParts.push(`Tela: ${srv.metadata.fabricOrigin}`);
+                    // CORTE: medición de las tizadas (calculada por el portal al subirlas)
+                    if (srv.metadata.tela) metaParts.push(`Bobina: ${srv.metadata.tela}`);
+                    if (srv.metadata.piezasTotal) metaParts.push(`Piezas: ${srv.metadata.piezasTotal}`);
+                    if (srv.metadata.metrosCorteTotal) metaParts.push(`Corte laser: ${srv.metadata.metrosCorteTotal} m`);
+                    if (srv.metadata.largoTelaTotal) metaParts.push(`Largo tela: ${srv.metadata.largoTelaTotal} m`);
 
                     if (metaParts.length > 0) {
                         techInfo = metaParts.join(', '); // Format: "Prendas: 45, Bajadas: 3, Origen: Cliente"
@@ -487,9 +495,19 @@ exports.createWebOrder = async (req, res) => {
                     // en 0: su Magnitud real la suman los archivos al procesarse.
                     // Tolerante a las dos formas del payload (cantidad / copies): las órdenes de
                     // prueba llegaban igual con Magnitud '0' — un solo nombre de campo no alcanzó.
-                    magnitudInicial: (serviceId === 'tpu' && srv.esPrincipal)
+                    // CORTE standalone entra igual que TPU: item {cantidad} sin archivo,
+                    // Magnitud = total de piezas medidas en las tizadas (UM 'u').
+                    magnitudInicial: ((serviceId === 'tpu' || serviceId === 'corte') && srv.esPrincipal)
                         ? (srv.items || []).reduce((s, it) => s + (parseInt(it?.cantidad ?? it?.copies) || 0), 0)
                         : 0,
+                    // CORTE: metros lineales de corte del láser medidos en las tizadas. Si el
+                    // ARTÍCULO de corte está en UM Metros, esto reemplaza a las piezas como
+                    // Magnitud/cantidad a cotizar (ver rama TWC junto a la de DIRECTA).
+                    metrosCorteTotal: parseFloat(srv.metadata?.metrosCorteTotal) || 0,
+                    // CORTE multi-tela: cada servicio (una orden por bobina) trae SU bobina y
+                    // los metros de TELA a descontarle — no usa el bobinaId top-level del pedido.
+                    bobinaTelaId: srv.bobinaTelaId ? parseInt(srv.bobinaTelaId) : null,
+                    magnitudTela: parseFloat(srv.magnitudTela) || 0,
                     notaAdicional: serviceNote, // Nota completa para la Orden
                     techInfo: techInfo // Info técnica limpia para ServiciosExtraOrden
                 });
@@ -925,8 +943,10 @@ exports.createWebOrder = async (req, res) => {
                                         // otra orden): Material = material de la ficha, no el producto.
                                         // El producto (con medidas y terminaciones) viaja en la NOTA.
                                         if (ficha.MaterialImpresion) materialFinal = ficha.MaterialImpresion;
-                                        // La tinta del producto terminado la define la FICHA (el cliente no la elige)
-                                        tintaFinal = ficha.TintaFicha || null;
+                                        // La tinta del producto terminado la define la FICHA. Si la ficha NO la
+                                        // fija, vale la que eligió el cliente en el portal (tintaFinal ya la trae)
+                                        // — y el recargo % de UV/Latex aplica solo vía el perfil de tinta.
+                                        tintaFinal = ficha.TintaFicha || tintaFinal;
 
                                         // Nota: producto + medidas + terminaciones incluidas
                                         const incNota = await new sql.Request(transaction)
@@ -1032,6 +1052,16 @@ exports.createWebOrder = async (req, res) => {
                     areaUM = (Number(exec.uniIdUnidad) === 1) ? 'u' : 'm';
                 }
 
+                // CORTE (form standalone): la UM del ARTÍCULO de corte define qué se cotiza
+                // (regla 06/08): UniIdUnidad 1=Cantidades → Magnitud = piezas de la tizada;
+                // 2=Metros → Magnitud = metros lineales de corte del láser medidos al subirla.
+                if (serviceId === 'corte' && !exec.isExtra && exec.areaID === 'TWC' && exec.uniIdUnidad != null) {
+                    areaUM = (Number(exec.uniIdUnidad) === 1) ? 'u' : 'm';
+                    if (areaUM === 'm' && exec.metrosCorteTotal > 0) {
+                        exec.magnitudInicial = exec.metrosCorteTotal;
+                    }
+                }
+
                 // ID del producto (si lo tenemos en exec)
                 const idProdReact = exec.idProductoReact || null;
 
@@ -1071,7 +1101,11 @@ exports.createWebOrder = async (req, res) => {
                     .input('ProIdProducto', sql.Int, exec.proIdProducto || null)
                     .input('CliIdCliente', sql.Int, cliIdCliente)
                     .input('F_EntSec', sql.DateTime, fechaEntradaSector)
-                    .input('BobID', sql.Int, (bobinaId && !exec.isExtra) ? parseInt(bobinaId) : null) // TELA CLIENTE: solo la orden principal (los extras no consumen tela)
+                    // TELA CLIENTE: solo la orden principal (los extras no consumen tela).
+                    // Corte multi-tela: cada orden lleva SU bobina (exec.bobinaTelaId).
+                    .input('BobID', sql.Int, exec.bobinaTelaId
+                        ? exec.bobinaTelaId
+                        : ((bobinaId && !exec.isExtra) ? parseInt(bobinaId) : null))
                     .input('DisenadorID', sql.Int, req.disenadorId || null) // pedido creado por un DISEÑADOR en nombre del cliente
                     .input('Tinta', sql.VarChar(50), tintaFinal) // ECOUV: rutea lote (magic sort agrupa por Tinta); producto terminado la toma de su ficha
                     .input('ModoRet', sql.VarChar(100), modoRetiroNombre) // forma de envío elegida en el ingreso
@@ -1107,22 +1141,26 @@ exports.createWebOrder = async (req, res) => {
                 }
 
                 // --- TELA CLIENTE: Descontar metros de la bobina ---
-                // Una sola vez por pedido, en la orden principal. Los metros vienen del body
-                // (magnitud, top-level) porque exec.magnitudInicial de la principal es 0 al crear
-                // (la Magnitud real la van sumando los archivos después).
-                if (bobinaId && !exec.isExtra && !telaDescontada) {
-                    const bid = parseInt(bobinaId);
-                    const mag = parseFloat(magnitud) || parseFloat(exec.magnitudInicial) || 0;
+                // Flujo clásico (sublimación tela cliente): UNA bobina top-level por pedido,
+                // descontada una sola vez en la orden principal (metros = magnitud top-level).
+                // CORTE multi-tela: cada servicio/orden trae SU bobina (exec.bobinaTelaId) y
+                // SUS metros de tela (exec.magnitudTela) — se descuenta por orden.
+                const usaBobinaPropia = !!exec.bobinaTelaId;
+                if (!exec.isExtra && (usaBobinaPropia || (bobinaId && !telaDescontada))) {
+                    const bid = usaBobinaPropia ? exec.bobinaTelaId : parseInt(bobinaId);
+                    const mag = usaBobinaPropia
+                        ? (parseFloat(exec.magnitudTela) || 0)
+                        : (parseFloat(magnitud) || parseFloat(exec.magnitudInicial) || 0);
 
                     if (mag <= 0) {
                         logger.warn(`[TELA-CLIENTE] Orden ${newOID}: bobina ${bid} indicada pero sin metros a descontar (magnitud='${magnitud}').`);
                     } else {
                         const checkBob = await new sql.Request(transaction)
                             .input('BID', sql.Int, bid)
-                            .query(`SELECT MetrosRestantes, InsumoID FROM InventarioBobinas WHERE BobinaID = @BID`);
+                            .query(`SELECT MetrosRestantes, InsumoID, DescripcionTela, CodigoEtiqueta, Ancho, AnchoReal, Referencia FROM InventarioBobinas WHERE BobinaID = @BID`);
 
                         if (!checkBob.recordset.length) throw new Error('Bobina de tela no encontrada.');
-                        const { MetrosRestantes, InsumoID } = checkBob.recordset[0];
+                        const { MetrosRestantes, InsumoID, DescripcionTela, CodigoEtiqueta, Ancho, AnchoReal, Referencia } = checkBob.recordset[0];
                         if (mag > MetrosRestantes) {
                             throw new Error(`La bobina solo tiene ${MetrosRestantes}m disponibles. El pedido requiere ${mag}m.`);
                         }
@@ -1159,7 +1197,42 @@ exports.createWebOrder = async (req, res) => {
                                 VALUES (@IID, @BID, 'CONSUMO_ORDEN', -@Mts, @Ref, @UID, @OID, GETDATE())
                             `);
 
-                        telaDescontada = true;
+                        // El cliente YA eligió la bobina en el portal: si el área tiene requisito
+                        // de TELA (bloqueante en TWC), nace CUMPLIDO desde el ingreso con los
+                        // datos completos de la bobina — mismo formato "Asignado:" que la
+                        // asignación manual de OrderRequirementsList, así nadie tiene que
+                        // marcarlo a mano y sin datos.
+                        try {
+                            const reqTela = await new sql.Request(transaction)
+                                .input('Area', sql.VarChar(20), exec.areaID)
+                                .query(`SELECT RequisitoID FROM ConfigRequisitosProduccion WHERE AreaID = @Area AND CodigoRequisito LIKE '%TELA%'`);
+                            if (reqTela.recordset.length) {
+                                const partes = [];
+                                if (Referencia) partes.push(String(Referencia).trim());
+                                if (DescripcionTela) partes.push(String(DescripcionTela).trim());
+                                partes.push(`${mag}m usados (quedan ${(MetrosRestantes - mag).toFixed(2)}m)`);
+                                const anchoTela = AnchoReal ?? Ancho;
+                                if (anchoTela) partes.push(`ancho ${parseFloat(anchoTela).toFixed(2)}m`);
+                                const obsTela = `Asignado: ${partes.join(' — ')} [${(CodigoEtiqueta || `Bobina ${bid}`).trim()}]`;
+                                await new sql.Request(transaction)
+                                    .input('OID', sql.Int, newOID)
+                                    .input('Area', sql.VarChar(20), exec.areaID)
+                                    .input('RID', sql.Int, reqTela.recordset[0].RequisitoID)
+                                    .input('Obs', sql.NVarChar(500), obsTela)
+                                    .query(`
+                                        IF NOT EXISTS (SELECT 1 FROM OrdenCumplimientoRequisitos WHERE OrdenID = @OID AND RequisitoID = @RID)
+                                            INSERT INTO OrdenCumplimientoRequisitos (OrdenID, AreaID, RequisitoID, Estado, FechaCumplimiento, Observaciones)
+                                            VALUES (@OID, @Area, @RID, 'CUMPLIDO', GETDATE(), @Obs)
+                                    `);
+                            }
+                        } catch (reqErr) {
+                            // Informativo: si falla, el requisito queda pendiente para marcar a mano como antes.
+                            logger.warn(`[TELA-CLIENTE] Orden ${newOID}: no se pudo auto-cumplir el requisito TELA: ${reqErr.message}`);
+                        }
+
+                        // El candado "una vez por pedido" es solo del flujo clásico top-level;
+                        // con bobina propia cada orden descuenta la suya.
+                        if (!usaBobinaPropia) telaDescontada = true;
                         logger.info(`[TELA-CLIENTE] Orden ${newOID}: descontados ${mag}m de bobina ${bid}. Restantes: ${MetrosRestantes - mag}m`);
                     }
                 }
@@ -1232,6 +1305,8 @@ exports.createWebOrder = async (req, res) => {
                             })
                             : `${exec.codigoOrden.replace(/\//g, '-')}_${sanitize(nombreCliente)}_${sanitize(jobName)}_Archivo ${i + 1} de ${exec.items.length} (x${item.copies || 1})${ext}`;
 
+                        // CORTE: la tizada viaja como archivo de PRODUCCIÓN con su medición
+                        // (Piezas + MetrosCorte del láser); Ancho/Alto/Metros llevan la tela.
                         const resFile = await new sql.Request(transaction)
                             .input('OID', sql.Int, newOID)
                             .input('Nom', sql.VarChar(200), finalName)
@@ -1243,15 +1318,17 @@ exports.createWebOrder = async (req, res) => {
                             .input('Obs', sql.NVarChar(sql.MAX), item.observaciones || '')
                             .input('CodArt', sql.VarChar(50), exec.codArticulo || null)
                             .input('SinDPI', sql.Bit, item.sinDPI || null)
+                            .input('Piezas', sql.Int, (item.piezas !== undefined && item.piezas !== null) ? parseInt(item.piezas) : null)
+                            .input('MetrosCorte', sql.Decimal(10, 3), (item.metrosCorte !== undefined && item.metrosCorte !== null) ? parseFloat(item.metrosCorte) : null)
                             .query(`
                                 INSERT INTO ArchivosOrden (
                                     OrdenID, NombreArchivo, TipoArchivo, Copias, Metros, EstadoArchivo, FechaSubida,
-                                    Ancho, Alto, Observaciones, CodigoArticulo, SinDPI
-                                ) 
-                                OUTPUT INSERTED.ArchivoID 
+                                    Ancho, Alto, Observaciones, CodigoArticulo, SinDPI, Piezas, MetrosCorte
+                                )
+                                OUTPUT INSERTED.ArchivoID
                                 VALUES (
                                     @OID, @Nom, @Tipo, @Cop, @Met, 'Pendiente', GETDATE(),
-                                    @Ancho, @Alto, @Obs, @CodArt, @SinDPI
+                                    @Ancho, @Alto, @Obs, @CodArt, @SinDPI, @Piezas, @MetrosCorte
                                 )
                             `);
 
@@ -1349,7 +1426,14 @@ exports.createWebOrder = async (req, res) => {
                         }
 
                         // CÁLCULO DE MAGNITUD TOTAL
-                        if (umLower === 'u') {
+                        // CORTE con tizada medida: la Magnitud NO sale de los metros de TELA del
+                        // archivo sino de la medición del láser, según la UM del artículo de corte:
+                        // 'u' → piezas × copias | 'm' → metros de corte × copias.
+                        if (serviceId === 'corte' && !exec.isExtra && item.metrosCorte != null) {
+                            totalMagnitud += (umLower === 'u')
+                                ? (parseInt(item.piezas) || 0) * (item.copies || 1)
+                                : (parseFloat(item.metrosCorte) || 0) * (item.copies || 1);
+                        } else if (umLower === 'u') {
                             totalMagnitud += (item.copies || 1);
                         } else {
                             totalMagnitud += (valMetros * (item.copies || 1));
@@ -1487,11 +1571,15 @@ exports.createWebOrder = async (req, res) => {
                         const fName = `REF-${erpDocNumber}-${baseName}`;
                         const tipo = ref.tipo || 'REFERENCIA';
 
+                        // TIZADAS (ARCHIVO_CORTE): el portal las mide al subirlas y manda
+                        // piezas + metros de corte del láser; quedan guardados en el archivo.
                         const resRef = await new sql.Request(transaction)
                             .input('OID', sql.Int, newOID)
                             .input('Tipo', sql.VarChar(50), tipo)
                             .input('Nom', sql.VarChar(200), fName)
-                            .query(`INSERT INTO ArchivosReferencia (OrdenID, TipoArchivo, NombreOriginal, FechaSubida, UbicacionStorage) OUTPUT INSERTED.RefID VALUES (@OID, @Tipo, @Nom, GETDATE(), 'Pendiente')`);
+                            .input('Piezas', sql.Int, (ref.piezas !== undefined && ref.piezas !== null) ? parseInt(ref.piezas) : null)
+                            .input('MetrosCorte', sql.Decimal(10, 3), (ref.metrosCorte !== undefined && ref.metrosCorte !== null) ? parseFloat(ref.metrosCorte) : null)
+                            .query(`INSERT INTO ArchivosReferencia (OrdenID, TipoArchivo, NombreOriginal, FechaSubida, UbicacionStorage, Piezas, MetrosCorte) OUTPUT INSERTED.RefID VALUES (@OID, @Tipo, @Nom, GETDATE(), 'Pendiente', @Piezas, @MetrosCorte)`);
 
                         filesToUpload.push({
                             dbId: resRef.recordset[0].RefID,
@@ -1506,7 +1594,10 @@ exports.createWebOrder = async (req, res) => {
                 // *** NUEVO: SOPORTE FACTURACIÓN (ServiciosExtraOrden) ***
                 // Si la orden es un servicio extra (no principal) o es explícitamente Estampado/Bordado, guardamos item de facturación
                 // El usuario pidió explícitamente replicar lógica de Sync para "que me sirva para la facturacion".
-                if (exec.isExtra || ['EST', 'EMB', 'TWT', 'TWC'].includes(exec.areaID)) {
+                // EXCEPTO el corte standalone PRINCIPAL: esa orden ya carga el artículo 1375 con la
+                // magnitud medida y se cotiza por su propia línea — la fila acá la duplicaba.
+                const esCortePrincipal = (serviceId === 'corte' && !exec.isExtra);
+                if (!esCortePrincipal && (exec.isExtra || ['EST', 'EMB', 'TWT', 'TWC'].includes(exec.areaID))) {
                     // Calcular cantidad total (suma de copias o magnitud inicial)
                     let qtyFact = exec.magnitudInicial || 0;
                     if (qtyFact === 0 && exec.items && exec.items.length > 0) {
@@ -3367,8 +3458,19 @@ exports.getAreaMapping = async (req, res) => {
             });
         }
 
+        // Config del portal (ConfiguracionGlobal): valores que el form necesita.
+        // DIRECTA_MINIMO_METROS = mínimo de metros (Largo Total) para confirmar un pedido de Directa.
+        // NULL/0 = sin validación. Editable desde Configuración → Configuración General.
+        const portalConfig = { directaMinimoMetros: 0 };
+        try {
+            const cfgRes = await pool.request().query("SELECT Valor FROM ConfiguracionGlobal WHERE Clave = 'DIRECTA_MINIMO_METROS'");
+            portalConfig.directaMinimoMetros = parseFloat(cfgRes.recordset[0]?.Valor) || 0;
+        } catch (e) {
+            logger.warn("[getAreaMapping] No se pudo leer DIRECTA_MINIMO_METROS:", e.message);
+        }
+
         // Return structured data
-        res.json({ success: true, data: { names, visibility } });
+        res.json({ success: true, data: { names, visibility, portalConfig } });
     } catch (error) {
         logger.error("❌ Error fetching area mapping:", error);
         res.status(500).json({ success: false, error: "Error retrieving area mappings." });
