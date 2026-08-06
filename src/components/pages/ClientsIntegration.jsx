@@ -4,7 +4,7 @@ import { toast } from 'sonner';
 import Swal from 'sweetalert2';
 import Lottie from 'lottie-react';
 import api from '../../services/apiClient';
-import { Phone, Mail, Trash2, IdCard, MapPin, Tags, X, Check, Link2, ChevronsUpDown } from 'lucide-react';
+import { Phone, Mail, Trash2, IdCard, MapPin, Tags, X, Check, Link2, ChevronsUpDown, Users, List, Network, Copy } from 'lucide-react';
 import { Listbox, ListboxButton, ListboxOptions, ListboxOption } from '@headlessui/react';
 import animationData from '../../assets/animations/Loading.json';
 
@@ -73,6 +73,8 @@ function ModalField({ label, field, type = 'text', readOnly = false, cls = '', f
 // "Retiro en el Local" → "Retiro En el Local".
 // Excepción: una palabra suelta de hasta 3 letras en mayúscula es una sigla (DAC).
 const MINUSCULAS = new Set(['de', 'del', 'la', 'las', 'el', 'los', 'y', 'e', 'en', 'a', 'al', 'con', 'para', 'por', 'o', 'u']);
+// Razón social: se deja en mayúscula ("EMEXEM SAS" → "Emexem SAS", no "Emexem Sas")
+const SIGLAS = new Set(['SA', 'S.A', 'S.A.', 'SAS', 'S.A.S', 'S.A.S.', 'SRL', 'S.R.L', 'S.R.L.', 'LTDA', 'SCA', 'SC']);
 const capitalCase = (s) => {
     const str = String(s ?? '').trim();
     if (!str) return str;
@@ -80,12 +82,27 @@ const capitalCase = (s) => {
     const tieneMay = /[A-ZÁÉÍÓÚÜÑ]/.test(str);
     if (tieneMin && tieneMay) return str;                       // ya viene bien escrito
     if (!tieneMin && str.length <= 3 && !str.includes(' ')) return str;  // sigla: DAC, UTE
-    return str.toLowerCase().split(/\s+/)
-        .map((w, i) => (i > 0 && MINUSCULAS.has(w))
-            ? w
-            : w.replace(/(^|\()([a-záéíóúüñ])/g, (m, p, c) => p + c.toUpperCase()))
+    return str.split(/\s+/)
+        .map((orig, i) => {
+            if (SIGLAS.has(orig.toUpperCase())) return orig.toUpperCase();
+            const w = orig.toLowerCase();
+            return (i > 0 && MINUSCULAS.has(w))
+                ? w
+                : w.replace(/(^|\()([a-záéíóúüñ])/g, (m, p, c) => p + c.toUpperCase());
+        })
         .join(' ');
 };
+
+// Capital Case estricto: TODAS las palabras en mayúscula ("ROLLO POR ADELANTADO"
+// y "Rollo por adelantado" → "Rollo Por Adelantado"), sin respetar lo que ya viene
+// tipeado ni dejar los conectores en minúscula. Se usa en los tipos de cliente,
+// que son etiquetas; para localidades y agencias sigue mandando capitalCase, donde
+// "Ciudad de la Costa" tiene que quedar así.
+const titleCase = (s) => String(s ?? '').trim().split(/\s+/)
+    .map(orig => SIGLAS.has(orig.toUpperCase())
+        ? orig.toUpperCase()
+        : orig.toLowerCase().replace(/(^|\()([a-záéíóúüñ])/g, (m, p, c) => p + c.toUpperCase()))
+    .join(' ');
 
 function CiSelect({ value, onChange, options = [], idKey = 'ID', nameKey = 'Nombre',
     placeholder = 'Sin asignar', allowEmpty = true, format = capitalCase }) {
@@ -112,6 +129,36 @@ function CiSelect({ value, onChange, options = [], idKey = 'ID', nameKey = 'Nomb
                         <ListboxOption key={o[idKey]} value={String(o[idKey])} className="ci-lb-opt">
                             <span>{txt(o)}</span>
                             {sel && String(sel[idKey]) === String(o[idKey]) && <Check size={13} strokeWidth={3} />}
+                        </ListboxOption>
+                    ))}
+                </ListboxOptions>
+            </div>
+        </Listbox>
+    );
+}
+
+// Filtros de la toolbar: mismo Listbox, pero con la forma de los filtros —
+// items sueltos {value,label} en vez de un catálogo, y la opción "Todos" es un
+// item más (no un placeholder). El nativo no dejaba marcar el filtro activo ni
+// poner el color de cada campo duplicado.
+function CiFilter({ value, onChange, items = [], tone = '' }) {
+    const val = String(value ?? '');
+    const sel = items.find(i => String(i.value) === val);
+    return (
+        <Listbox value={val} onChange={onChange}>
+            <div className="ci-lb ci-filter">
+                <ListboxButton className={`ci-filter-btn ${val ? 'activo' : ''} ${tone}`}>
+                    <span>{sel ? sel.label : items[0]?.label}</span>
+                    <ChevronsUpDown size={13} strokeWidth={2.2} />
+                </ListboxButton>
+                <ListboxOptions anchor="bottom start" className="ci-lb-panel ci-filter-panel">
+                    {items.map(i => (
+                        <ListboxOption key={String(i.value)} value={String(i.value)} className="ci-lb-opt">
+                            <span style={i.color ? { color: i.color } : undefined}>
+                                {i.dot && <span className="ci-lb-dot" style={{ background: i.dot }} />}
+                                {i.label}
+                            </span>
+                            {val === String(i.value) && <Check size={13} strokeWidth={3} />}
                         </ListboxOption>
                     ))}
                 </ListboxOptions>
@@ -395,7 +442,7 @@ function ClientModal({ client, catalogs, onClose, onSaved, onDeleted }) {
                     <div>
                         <div className="ci-modal-section-title"><Tags size={13} strokeWidth={2.4} />Clasificación</div>
                         <div className="ci-field-grid">
-                            <ModalSelect label="Tipo de Cliente" field="TClIdTipoCliente" options={catalogs.tiposClientes || []} form={form} onChange={set} />
+                            <ModalSelect label="Tipo de Cliente" field="TClIdTipoCliente" options={catalogs.tiposClientes || []} form={form} onChange={set} format={titleCase} />
                             <ModalSelect label="Vendedor" field="VendedorID" options={catalogs.vendedores || []} idKey="Cedula" form={form} onChange={set} />
                             <div className="ci-field">
                                 <label>Estado</label>
@@ -456,7 +503,6 @@ const TabTablaList = React.memo(function TabTablaList({ catalogs, onEdit, client
     const [search, setSearch] = useState('');
     const [filterEstado, setFilterEstado] = useState('');
     const [filterTipo, setFilterTipo] = useState('');
-    const [filterVinculo, setFilterVinculo] = useState('');
     const [viewMode, setViewMode] = useState('kanban');
     const [sortCol, setSortCol] = useState('Nombre');
     const [sortDir, setSortDir] = useState('asc');
@@ -530,8 +576,6 @@ const TabTablaList = React.memo(function TabTablaList({ catalogs, onEdit, client
             }
             if (filterEstado && c.ESTADO !== filterEstado) return false;
             if (filterTipo && String(c.TClIdTipoCliente) !== filterTipo) return false;
-            if (filterVinculo === 'no-react' && c.IDReact) return false;
-            if (filterVinculo === 'no-macrosoft' && c.CodReferencia) return false;
             if (filterDup === 'all' && !dupSets[c.CodCliente]) return false;
             if (filterDup && filterDup !== 'all') {
                 const dups = dupSets[c.CodCliente];
@@ -540,7 +584,7 @@ const TabTablaList = React.memo(function TabTablaList({ catalogs, onEdit, client
             if (!t) return true;
             return [c.Nombre, c.Email, c.TelefonoTrabajo, c.CioRuc, String(c.CodCliente), c.IDCliente].some(v => v?.toLowerCase().includes(t));
         });
-    }, [clients, search, filterEstado, filterTipo, filterVinculo, filterDup, dupSets, focusDup]);
+    }, [clients, search, filterEstado, filterTipo, filterDup, dupSets, focusDup]);
 
     const sorted = useMemo(() => [...filtered].sort((a, b) => {
         const cmp = String(a[sortCol] ?? '').localeCompare(String(b[sortCol] ?? ''), 'es', { numeric: true });
@@ -580,38 +624,15 @@ const TabTablaList = React.memo(function TabTablaList({ catalogs, onEdit, client
                     <strong>{sorted.length.toLocaleString('es-UY')}</strong> clientes
                 </span>
 
-                <div style={{ width: 1, height: 24, background: '#e2e8f0', flexShrink: 0 }} />
-
-                {/* Filtros */}
-                <input className="ci-search" type="text" placeholder="Buscar nombre, email, teléfono, RUC..." value={search} onChange={e => setSearch(e.target.value)} />
-                <select className="ci-select" value={filterEstado} onChange={e => setFilterEstado(e.target.value)}>
-                    <option value="">Estado: Todos</option>
-                    {['ACTIVO', 'INACTIVO', 'BLOQUEADO'].map(s => <option key={s}>{s}</option>)}
-                </select>
-                <select className="ci-select" value={filterTipo} onChange={e => setFilterTipo(e.target.value)}>
-                    <option value="">Tipo: Todos</option>
-                    {(catalogs.tiposClientes || []).map(t => <option key={t.ID} value={t.ID}>{t.Nombre}</option>)}
-                </select>
-                <select className="ci-select" value={filterVinculo} onChange={e => setFilterVinculo(e.target.value)}>
-                    <option value="">Vínculos: Todos</option>
-                    <option value="no-react">⚠ Sin React</option>
-                    <option value="no-macrosoft">⚠ Sin Macrosoft</option>
-                </select>
-                <select className="ci-select" value={filterDup} onChange={e => setFilterDup(e.target.value)}
-                    style={filterDup ? { borderColor: '#dc2626', color: '#dc2626', fontWeight: 700 } : {}}>
-                    <option value="">Duplicados: Todos</option>
-                    <option value="all">⚠ Solo duplicados</option>
-                    {Object.keys(DUP_COLORS).map(f => <option key={f} value={f}>Dup por {f}</option>)}
-                </select>
-                {/* Duplicados: chip con el conteo (antes era una banda amarilla fija bajo la
-                    toolbar). Clic = filtrar solo duplicados; la leyenda de colores aparece al
-                    pasar el mouse, que es cuando hace falta. */}
+                {/* Duplicados: es un dato DEL CONJUNTO, no un filtro más — por eso va
+                    junto al contador y no perdido entre los desplegables. Clic = ver
+                    solo esos; la leyenda de colores aparece al pasar el mouse. */}
                 {dupCount > 0 && (
                     <div className={`ci-dup-chip ${filterDup ? 'activo' : ''}`}
                         onClick={() => setFilterDup(filterDup ? '' : 'all')}
                         title={filterDup ? 'Quitar el filtro de duplicados' : 'Ver solo los duplicados'}>
-                        <span className="ci-dup-dot" style={{ background: '#f59e0b' }} />
-                        {dupCount} duplicados
+                        <Copy size={13} strokeWidth={2.4} />
+                        <strong>{dupCount.toLocaleString('es-UY')}</strong> duplicados
                         <div className="ci-dup-pop" onClick={e => e.stopPropagation()}>
                             <div className="ci-dup-pop-title">Duplicado por</div>
                             {Object.entries(DUP_COLORS).map(([f, col]) => (
@@ -623,11 +644,29 @@ const TabTablaList = React.memo(function TabTablaList({ catalogs, onEdit, client
                         </div>
                     </div>
                 )}
+
+                <div style={{ width: 1, height: 24, background: '#e2e8f0', flexShrink: 0 }} />
+
+                {/* Filtros */}
+                <input className="ci-search" type="text" placeholder="Buscar nombre, email, teléfono, RUC..." value={search} onChange={e => setSearch(e.target.value)} />
+                <CiFilter value={filterEstado} onChange={setFilterEstado} items={[
+                    { value: '', label: 'Estados' },
+                    ...['ACTIVO', 'INACTIVO', 'BLOQUEADO'].map(s => ({ value: s, label: capitalCase(s) }))
+                ]} />
+                <CiFilter value={filterTipo} onChange={setFilterTipo} items={[
+                    { value: '', label: 'Tipos' },
+                    ...(catalogs.tiposClientes || []).map(t => ({ value: t.ID, label: titleCase(t.Nombre) }))
+                ]} />
+                <CiFilter value={filterDup} onChange={setFilterDup} tone="rojo" items={[
+                    { value: '', label: 'Duplicados' },
+                    { value: 'all', label: 'Solo duplicados', color: '#dc2626', dot: '#dc2626' },
+                    ...Object.keys(DUP_COLORS).map(f => ({ value: f, label: `Dup por ${f}`, dot: DUP_COLORS[f] }))
+                ]} />
                 <div className="ci-view-toggle">
                     <button className={`ci-view-btn ${viewMode === 'kanban' ? 'active' : ''}`} onClick={() => setViewMode('kanban')}>⊞ Tarjetas</button>
                     <button className={`ci-view-btn ${viewMode === 'table' ? 'active' : ''}`} onClick={() => setViewMode('table')}>☰ Tabla</button>
                 </div>
-                <button className="ci-btn-primary" onClick={() => onEdit({})}>+ Nuevo Cliente</button>
+                <button className="ci-btn-primary" onClick={() => onEdit({})}>Nuevo Cliente</button>
             </div>
 
             {/* Banner modo hermanitos: ahora el foco es UN CLIENTE y se listan todos los
@@ -664,7 +703,10 @@ const TabTablaList = React.memo(function TabTablaList({ catalogs, onEdit, client
                             const firstDupField = dups ? [...dups][0] : null;
                             return (
                                 <div key={c.CodCliente} className={`ci-card ${dups ? 'dup-card' : ''}`}
-                                    style={dups ? { '--dup-color': DUP_COLORS[firstDupField] } : {}}
+                                    style={dups ? {
+                                        '--dup-color': DUP_COLORS[firstDupField],
+                                        '--dup-tint': `${DUP_COLORS[firstDupField]}1a`
+                                    } : {}}
                                     onClick={() => onEdit(c)}>
                                     {/* Cabecera: el ID DEL CLIENTE es el dato principal (es con lo
                                         que se lo busca y se lo nombra); el nombre va debajo. */}
@@ -674,22 +716,17 @@ const TabTablaList = React.memo(function TabTablaList({ catalogs, onEdit, client
                                                 {getInitials(nombreVisible(c))}
                                             </div>
                                         </div>
+                                        {/* Caja normalizada SOLO al mostrar (el dato guardado no se toca):
+                                            el ID y el mail son identificadores → minúscula; el nombre es
+                                            un nombre propio → Capital Case. */}
                                         <div className="ci-card-info">
                                             <div className="ci-card-id">
-                                                {c.IDCliente ? String(c.IDCliente).trim() : `#${c.CodCliente}`}
+                                                {c.IDCliente ? String(c.IDCliente).trim().toLowerCase() : `#${c.CodCliente}`}
                                             </div>
                                             <div className={`ci-card-name ${nombreVisible(c) ? '' : 'sin-nombre'}`}>
-                                                {nombreVisible(c) || 'Sin nombre'}
+                                                {capitalCase(nombreVisible(c)) || 'Sin nombre'}
                                             </div>
                                         </div>
-                                        {/* UN punto por tarjeta: al pulsarlo trae todos los hermanos.
-                                            Por qué campo duplica lo dice la barra lateral de color. */}
-                                        {dups && (
-                                            <span className="ci-dup-tag"
-                                                onClick={e => handleDupTagClick(e, c, dups)}
-                                                style={{ background: DUP_COLORS[firstDupField] }}
-                                                title={`Duplicado por ${[...dups].join(', ')} — clic para ver sus hermanitos`} />
-                                        )}
                                         {c.ESTADO && c.ESTADO !== 'ACTIVO' && <Badge color={statusColor(c.ESTADO)}>{c.ESTADO}</Badge>}
                                     </div>
 
@@ -702,16 +739,29 @@ const TabTablaList = React.memo(function TabTablaList({ catalogs, onEdit, client
                                         </div>
                                         <div className={`ci-card-row ${c.Email ? '' : 'vacia'}`}>
                                             <Mail size={12} strokeWidth={2.2} className="ci-card-row-icon" />
-                                            <span>{c.Email || '—'}</span>
+                                            <span>{c.Email ? String(c.Email).trim().toLowerCase() : '—'}</span>
                                         </div>
                                     </div>
 
-                                    {/* Tipo y vendedor: datos de contexto, en una sola línea chica */}
-                                    {(c.TipoClienteNombre || c.VendedorNombre) && (
+                                    {/* Tipo y vendedor: datos de contexto, en una sola línea chica.
+                                        A la derecha, el botón de duplicados: acá no le pelea el lugar
+                                        al de eliminar (que flota arriba a la derecha en el hover) y
+                                        queda a la misma altura en todas las tarjetas. */}
+                                    {(c.TipoClienteNombre || c.VendedorNombre || dups) && (
                                         <div className="ci-card-meta">
                                             {c.TipoClienteNombre && <span>{c.TipoClienteNombre}</span>}
                                             {c.TipoClienteNombre && c.VendedorNombre && <span className="sep">·</span>}
                                             {c.VendedorNombre && <span>{c.VendedorNombre}</span>}
+                                            {/* Mismo icono que el contador de la barra: si allá es
+                                                "duplicados", acá también. El color dice por qué campo,
+                                                igual que la barra lateral de la tarjeta. */}
+                                            {dups && (
+                                                <button className="ci-dup-tag"
+                                                    onClick={e => handleDupTagClick(e, c, dups)}
+                                                    title={`Duplicado por ${[...dups].join(', ')} — clic para ver sus hermanitos`}>
+                                                    <Copy size={11} strokeWidth={2.6} />
+                                                </button>
+                                            )}
                                         </div>
                                     )}
 
@@ -1265,23 +1315,28 @@ export default function ClientsIntegration() {
     }, []);
 
     const TABS = [
-        { id: 'tabla', icon: '📋', label: 'Clientes' },
-        { id: 'arbol', icon: '👤', label: 'Vendedores/Tipo' },
+        { id: 'tabla', icon: List, label: 'Clientes' },
+        { id: 'arbol', icon: Network, label: 'Vendedores/Tipo' },
     ];
 
     return (
         <div className="ci-root">
+            {/* Título y pestañas en la misma línea: las pestañas van al extremo
+                derecho (margin-left:auto en .ci-tabs), no en una fila propia. */}
             <div className="ci-header">
                 <div className="ci-header-top">
-                    <span style={{ fontSize: 24 }}>👥</span>
+                    <Users size={22} strokeWidth={2.3} className="ci-title-icon" />
                     <span className="ci-title">Gestión de Clientes</span>
-                </div>
-                <div className="ci-tabs">
-                    {TABS.map(t => (
-                        <button key={t.id} className={`ci-tab ${tab === t.id ? 'active' : ''}`} onClick={() => setTab(t.id)}>
-                            {t.icon} {t.label}
-                        </button>
-                    ))}
+                    <div className="ci-tabs">
+                        {TABS.map(t => {
+                            const Icon = t.icon;
+                            return (
+                                <button key={t.id} className={`ci-tab ${tab === t.id ? 'active' : ''}`} onClick={() => setTab(t.id)}>
+                                    <Icon size={15} strokeWidth={2.2} /> {t.label}
+                                </button>
+                            );
+                        })}
+                    </div>
                 </div>
             </div>
 

@@ -1,10 +1,12 @@
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap');
 
 /* ── Base ─────────────────────────────────────────────────────────────────── */
+/* 100% y no 100vh: el contenedor de la app ya descuenta la barra superior — con
+   100vh la página sobraba de alto y aparecía un scroll extra. */
 .ci-root {
   display: flex;
   flex-direction: column;
-  height: 100vh;
+  height: 100%;
   background: #f4f5f7;
   font-family: 'Inter', sans-serif;
   color: #1a1a2e;
@@ -20,11 +22,14 @@
   flex-shrink: 0;
 }
 
+/* Una sola fila: icono + título a la izquierda, pestañas pegadas a la derecha.
+   Sin padding abajo, así el subrayado de la pestaña activa apoya en el borde
+   inferior del header en vez de quedar flotando. */
 .ci-header-top {
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 16px 0 12px;
+  padding: 14px 0 0;
 }
 
 .ci-title {
@@ -33,11 +38,14 @@
   color: #1e1b4b;
   letter-spacing: -.4px;
 }
+.ci-title-icon { color: #006E97; flex-shrink: 0; }   /* brand-cyan */
 
 .ci-tabs {
   display: flex;
   gap: 2px;
-  border-top: 1px solid #f0f0f5;
+  margin-left: auto;      /* al extremo derecho de la fila del título */
+  align-self: stretch;    /* alto completo: el subrayado activo queda abajo */
+  align-items: flex-end;
 }
 
 .ci-tab {
@@ -54,8 +62,10 @@
   align-items: center;
   gap: 7px;
 }
-.ci-tab:hover { color: #4f46e5; background: #f5f3ff; border-radius: 6px 6px 0 0; }
-.ci-tab.active { color: #4f46e5; border-bottom-color: #4f46e5; font-weight: 700; }
+.ci-tab:hover { color: #006E97; background: #eff8fb; border-radius: 6px 6px 0 0; }
+.ci-tab.active { color: #006E97; border-bottom-color: #006E97; font-weight: 700; }
+.ci-tab svg { flex-shrink: 0; color: #b0b6c6; transition: color .18s ease; }
+.ci-tab:hover svg, .ci-tab.active svg { color: #006E97; }
 
 /* ── Stats bar ────────────────────────────────────────────────────────────── */
 .ci-stats {
@@ -115,21 +125,48 @@
   transition: all .18s;
   background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' fill='%23888' viewBox='0 0 16 16'%3E%3Cpath d='M11.742 10.344a6.5 6.5 0 1 0-1.397 1.398h-.001c.03.04.062.078.098.115l3.85 3.85a1 1 0 0 0 1.415-1.414l-3.85-3.85a1.007 1.007 0 0 0-.115-.099zm-5.44 1.399a5.5 5.5 0 1 1 0-11 5.5 5.5 0 0 1 0 11z'/%3E%3C/svg%3E") no-repeat 11px center;
 }
-.ci-search:focus { border-color: #4f46e5; box-shadow: 0 0 0 3px rgba(79,70,229,.12); }
+.ci-search:focus { border-color: #006E97; box-shadow: 0 0 0 3px rgba(0,110,151,.13); }
 
-.ci-select {
-  padding: 8px 12px;
+/* Filtros: el <select> nativo lo dibuja el sistema operativo — no se podía
+   alinear con el resto de la barra ni marcar cuál filtro está aplicado.
+   Ahora es el mismo Listbox de HeadlessUI del modal, en versión compacta. */
+.ci-filter { flex-shrink: 0; }
+.ci-filter-btn {
+  padding: 8px 11px;
   border: 1.5px solid #e2e8f0;
   border-radius: 8px;
+  background: #fff;
   font-size: 13px;
   font-family: 'Inter', sans-serif;
-  color: #444;
-  background: #fff;
-  outline: none;
+  font-weight: 500;
+  color: #475569;
   cursor: pointer;
-  transition: border-color .18s;
+  white-space: nowrap;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  transition: border-color .16s, color .16s, box-shadow .16s;
 }
-.ci-select:focus { border-color: #4f46e5; }
+.ci-filter-btn:hover { border-color: #cbd5e1; }
+.ci-filter-btn[data-open], .ci-filter-btn:focus-visible {
+  border-color: #006E97; outline: none;
+  box-shadow: 0 0 0 3px rgba(0,110,151,.13);
+}
+.ci-filter-btn svg { color: #94a3b8; flex-shrink: 0; }
+/* Filtro aplicado: se nota sin tener que leerlo */
+.ci-filter-btn.activo { border-color: #006E97; color: #006E97; font-weight: 700; }
+.ci-filter-btn.activo svg { color: #006E97; }
+.ci-filter-btn.rojo.activo { border-color: #dc2626; color: #dc2626; }
+.ci-filter-btn.rojo.activo svg { color: #dc2626; }
+
+/* El panel se ajusta al texto: "Dup por TelefonoTrabajo" no entra en el ancho
+   del botón ("Duplicados: Todos"). */
+/* Doble clase: .ci-lb-panel fija el ancho al del botón y está más abajo en el archivo */
+.ci-lb-panel.ci-filter-panel { width: max-content; min-width: var(--button-width); max-width: 280px; }
+.ci-lb-dot {
+  display: inline-block; width: 7px; height: 7px;
+  border-radius: 50%; margin-right: 7px; vertical-align: middle;
+}
 
 .ci-view-toggle {
   display: flex;
@@ -149,11 +186,13 @@
   color: #888;
   background: none;
 }
-.ci-view-btn.active { background: #fff; color: #4f46e5; box-shadow: 0 1px 3px rgba(0,0,0,.12); }
+.ci-view-btn.active { background: #fff; color: #006E97; box-shadow: 0 1px 3px rgba(0,0,0,.12); }
 
+/* Único botón en magenta de la pantalla: es la acción principal y así no compite
+   con el cyan del resto (pestañas, filtros, vista activa). */
 .ci-btn-primary {
   padding: 8px 18px;
-  background: #4f46e5;
+  background: #BD0C7E;
   color: #fff;
   border: none;
   border-radius: 8px;
@@ -165,25 +204,30 @@
   align-items: center;
   gap: 6px;
   margin-left: auto;
-  box-shadow: 0 2px 8px rgba(79,70,229,.25);
+  box-shadow: 0 2px 8px rgba(189,12,126,.25);
 }
-.ci-btn-primary:hover { background: #4338ca; transform: translateY(-1px); box-shadow: 0 4px 12px rgba(79,70,229,.35); }
+.ci-btn-primary:hover { background: #9d0a69; transform: translateY(-1px); box-shadow: 0 4px 12px rgba(189,12,126,.35); }
 
 /* ── Duplicados ───────────────────────────────────────────────────────────────
    Antes era una banda amarilla fija con la leyenda de los 6 colores, siempre
    presente y robando una franja de la pantalla. Ahora es un chip en la toolbar
    con el conteo, y la leyenda aparece solo al pasar el mouse. */
+/* Va al lado de "N clientes" y se lee igual que él (número grande, palabra chica).
+   Queda apagado hasta que se pasa el mouse: es un dato, no un botón que grite. */
 .ci-dup-chip {
-  display: inline-flex; align-items: center; gap: 6px;
-  padding: 6px 11px; border-radius: 8px;
-  background: #fffbeb; border: 1px solid #fde68a;
-  font-size: 11.5px; font-weight: 700; color: #b45309;
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 5px 9px; border-radius: 7px;
+  background: transparent; border: 1px solid transparent;
+  font-size: 11px; font-weight: 500; color: #b45309;
   cursor: pointer; white-space: nowrap;
   transition: background .15s, border-color .15s;
   position: relative;
 }
-.ci-dup-chip:hover { background: #fef3c7; border-color: #fcd34d; }
+.ci-dup-chip strong { font-size: 14px; font-weight: 800; font-variant-numeric: tabular-nums; margin-right: 1px; }
+.ci-dup-chip svg { color: #f59e0b; flex-shrink: 0; }
+.ci-dup-chip:hover { background: #fffbeb; border-color: #fde68a; }
 .ci-dup-chip.activo { background: #fef3c7; border-color: #f59e0b; color: #92400e; }
+.ci-dup-chip.activo svg { color: #b45309; }
 
 /* Leyenda flotante (hover del chip) */
 .ci-dup-pop {
@@ -322,7 +366,9 @@
 .ci-card-row.vacia { color: #d7dbe3; }
 .ci-card-row.vacia .ci-card-row-icon { color: #e4e8ef; }
 
-.ci-card-meta { display: flex; align-items: center; gap: 5px; font-size: 10px; color: #94a3b8; min-width: 0; padding: 0 2px; }
+/* min-height fijo: la fila la comparte con el botón de duplicados, que es más
+   alto que el texto — sin esto las tarjetas con duplicado quedaban más altas. */
+.ci-card-meta { display: flex; align-items: center; gap: 5px; font-size: 10px; color: #94a3b8; min-width: 0; padding: 0 2px; min-height: 20px; }
 .ci-card-meta .sep { color: #dde1e9; }
 .ci-card-meta span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
@@ -380,12 +426,18 @@
 /* ── Punto de duplicado (dentro de la tarjeta) ───────────────────────────────
    UNO por tarjeta: al pulsarlo trae todos los hermanitos del cliente. Por qué
    campo duplica lo dice la barra de color del borde izquierdo. */
+/* Botón de duplicados de la tarjeta: va al final de la línea de contexto, no en
+   la cabecera — ahí chocaba con el botón de eliminar. Los colores salen de las
+   variables que ya pone la tarjeta (--dup-color = campo por el que duplica). */
 .ci-dup-tag {
-  width: 8px; height: 8px; border-radius: 50%;
-  cursor: pointer; flex-shrink: 0;
-  transition: transform .12s, box-shadow .12s;
+  display: flex; align-items: center; justify-content: center;
+  width: 20px; height: 20px; margin-left: auto; flex-shrink: 0;
+  border: none; padding: 0; border-radius: 6px; cursor: pointer;
+  color: var(--dup-color, #dc2626);
+  background: var(--dup-tint, rgba(220,38,38,.1));
+  transition: background .14s, color .14s, transform .14s;
 }
-.ci-dup-tag:hover { transform: scale(1.6); box-shadow: 0 0 0 3px rgba(15,23,42,.07); }
+.ci-dup-tag:hover { background: var(--dup-color, #dc2626); color: #fff; transform: translateY(-1px); }
 
 /* ── Banner "hermanitos" ─────────────────────────────────────────────────── */
 .ci-hermanos {
