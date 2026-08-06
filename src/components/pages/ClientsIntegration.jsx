@@ -4,7 +4,7 @@ import { toast } from 'sonner';
 import Swal from 'sweetalert2';
 import Lottie from 'lottie-react';
 import api from '../../services/apiClient';
-import { Phone, Mail, Trash2, IdCard, MapPin, Tags, X, Check, Link2, ChevronsUpDown, Users, List, Network, Copy } from 'lucide-react';
+import { Phone, Mail, Trash2, IdCard, MapPin, Tags, X, Check, Link2, ChevronsUpDown, Users, List, Network, Copy, Ban } from 'lucide-react';
 import { Listbox, ListboxButton, ListboxOptions, ListboxOption } from '@headlessui/react';
 import animationData from '../../assets/animations/Loading.json';
 
@@ -21,6 +21,12 @@ const getInitials = (name) => { const s = String(name ?? '').trim(); return s.sp
 const DUP_COLORS = { Email: '#dc2626', TelefonoTrabajo: '#d97706', Nombre: '#7c3aed', IDCliente: '#0891b2', IDReact: '#059669', CodCliente: '#db2777' };
 
 const statusColor = (s) => s === 'ACTIVO' ? 'green' : s === 'INACTIVO' ? 'red' : s === 'BLOQUEADO' ? 'amber' : 'slate';
+
+// Estado de la tarjeta: reemplaza al avatar de iniciales, que pintaba un color
+// sacado de la primera letra del nombre — o sea, nada. Acá el color sí informa.
+// Bloqueado va con icono en vez de punto: es el caso que hay que frenar a mirar.
+const ESTADO_DOT = { ACTIVO: '#10b981', INACTIVO: '#ef4444', BLOQUEADO: '#ef4444' };
+const estadoTitulo = (s) => `Cliente ${String(s || 'sin estado').toLowerCase()}`;
 
 function Badge({ children, color = 'slate' }) {
     return <span className={`ci-badge ${color}`}>{children}</span>;
@@ -511,14 +517,35 @@ const TabTablaList = React.memo(function TabTablaList({ catalogs, onEdit, client
     const [visibleCount, setVisibleCount] = useState(LAZY_PAGE);
     const sentinelRef = useRef(null);
 
-    const dupSets = useMemo(() => {
+    // dupSets: por cliente, en qué campos duplica. dupHermanas: cuántos clientes
+    // entran en su grupo — es el MISMO criterio que usa el clic (comparte al menos
+    // uno de esos campos), si no la tarjeta diría 2 y al abrir aparecerían 5.
+    // El grupo más grande de la base tiene 91 clientes, así que unir listas por
+    // cliente no cuesta nada.
+    const { dupSets, dupHermanas } = useMemo(() => {
         const fields = ['Email', 'TelefonoTrabajo', 'Nombre', 'IDCliente', 'IDReact'];
-        const counts = {};
-        fields.forEach(f => { counts[f] = {}; });
-        clients.forEach(c => { fields.forEach(f => { const v = String(c[f] ?? '').trim().toLowerCase(); if (v) counts[f][v] = (counts[f][v] || 0) + 1; }); });
-        const dup = {};
-        clients.forEach(c => { fields.forEach(f => { const v = String(c[f] ?? '').trim().toLowerCase(); if (v && counts[f][v] > 1) { if (!dup[c.CodCliente]) dup[c.CodCliente] = new Set(); dup[c.CodCliente].add(f); } }); });
-        return dup;
+        const val = (c, f) => String(c[f] ?? '').trim().toLowerCase();
+        const idx = {};                       // campo → Map(valor → [CodCliente])
+        fields.forEach(f => { idx[f] = new Map(); });
+        clients.forEach(c => fields.forEach(f => {
+            const v = val(c, f);
+            if (!v) return;
+            if (!idx[f].has(v)) idx[f].set(v, []);
+            idx[f].get(v).push(c.CodCliente);
+        }));
+        const dup = {}, hermanas = {};
+        clients.forEach(c => {
+            let campos = null, grupo = null;
+            fields.forEach(f => {
+                const lista = idx[f].get(val(c, f));
+                if (!lista || lista.length < 2) return;
+                if (!campos) { campos = new Set(); grupo = new Set([c.CodCliente]); }
+                campos.add(f);
+                lista.forEach(cod => grupo.add(cod));
+            });
+            if (campos) { dup[c.CodCliente] = campos; hermanas[c.CodCliente] = grupo.size; }
+        });
+        return { dupSets: dup, dupHermanas: hermanas };
     }, [clients]);
 
     // Un solo punto por tarjeta: al pulsarlo trae TODOS los hermanos del cliente,
@@ -595,6 +622,12 @@ const TabTablaList = React.memo(function TabTablaList({ catalogs, onEdit, client
 
     const dupCount = Object.keys(dupSets).length;
 
+    // Firma de los FILTROS (no del texto buscado): cuando cambia, la grilla se
+    // remonta y las tarjetas vuelven a entrar animadas. Tipear queda afuera a
+    // propósito — si no, la lista entera parpadea con cada letra; ahí solo animan
+    // las tarjetas nuevas, que es lo que se quiere ver.
+    const animKey = `${filterEstado}|${filterTipo}|${filterDup}|${focusDup?.cod ?? ''}|${sortCol}|${sortDir}|${viewMode}`;
+
     // Reset visible count cuando cambian los filtros
     useEffect(() => { setVisibleCount(LAZY_PAGE); }, [sorted]);
 
@@ -612,7 +645,10 @@ const TabTablaList = React.memo(function TabTablaList({ catalogs, onEdit, client
             obs.observe(el);
         }, 100);
         return () => { clearTimeout(tid); obs?.disconnect(); };
-    }, [sorted.length, viewMode, visibleCount]);
+        // animKey: al remontarse la grilla el sentinel es un nodo nuevo — sin esto,
+        // un cambio de filtro que deje la misma cantidad de resultados dejaba el
+        // observer mirando el nodo viejo y no cargaba más al hacer scroll.
+    }, [sorted.length, viewMode, visibleCount, animKey]);
 
     const visibleSorted = sorted.slice(0, visibleCount);
 
@@ -640,7 +676,7 @@ const TabTablaList = React.memo(function TabTablaList({ catalogs, onEdit, client
                                     <span className="ci-dup-dot" style={{ background: col }} />{f}
                                 </div>
                             ))}
-                            <div className="ci-dup-pop-title" style={{ marginTop: 3 }}>Clic en un punto de la tarjeta para ver sus hermanitos</div>
+                            <div className="ci-dup-pop-title" style={{ marginTop: 3 }}>En las tarjetas se pinta el dato repetido; clic en el contador para ver sus hermanitos</div>
                         </div>
                     </div>
                 )}
@@ -696,35 +732,40 @@ const TabTablaList = React.memo(function TabTablaList({ catalogs, onEdit, client
 
                 {/* KANBAN */}
                 {!loading && viewMode === 'kanban' && (
-                    <div className="ci-kanban">
+                    <div className="ci-kanban" key={animKey}>
                         {sorted.length === 0 && <p style={{ gridColumn: '1/-1', textAlign: 'center', padding: 40, color: '#aaa' }}>Sin resultados</p>}
-                        {visibleSorted.map(c => {
+                        {visibleSorted.map((c, i) => {
                             const dups = dupSets[c.CodCliente];
-                            const firstDupField = dups ? [...dups][0] : null;
+                            // El campo repetido se marca en su propio renglón, así no hace falta
+                            // leyenda: si el mail está pintado, el mail es el que está repetido.
+                            const dupEn = (f) => (dups && dups.has(f) ? 'dup-dato' : '');
                             return (
-                                <div key={c.CodCliente} className={`ci-card ${dups ? 'dup-card' : ''}`}
-                                    style={dups ? {
-                                        '--dup-color': DUP_COLORS[firstDupField],
-                                        '--dup-tint': `${DUP_COLORS[firstDupField]}1a`
-                                    } : {}}
+                                <div key={c.CodCliente} className="ci-card"
+                                    // Escalonado corto y con tope: con 50 tarjetas por página, sin el
+                                    // tope las últimas entrarían casi un segundo después de las primeras.
+                                    style={{ animationDelay: `${Math.min(i, 14) * 16}ms` }}
                                     onClick={() => onEdit(c)}>
                                     {/* Cabecera: el ID DEL CLIENTE es el dato principal (es con lo
                                         que se lo busca y se lo nombra); el nombre va debajo. */}
                                     <div className="ci-card-header">
-                                        <div className="ci-avatar-wrap">
-                                            <div className="ci-avatar" style={{ background: getAvatarGradient(nombreVisible(c)) }}>
-                                                {getInitials(nombreVisible(c))}
-                                            </div>
-                                        </div>
                                         {/* Caja normalizada SOLO al mostrar (el dato guardado no se toca):
                                             el ID y el mail son identificadores → minúscula; el nombre es
                                             un nombre propio → Capital Case. */}
                                         <div className="ci-card-info">
                                             <div className="ci-card-id">
-                                                {c.IDCliente ? String(c.IDCliente).trim().toLowerCase() : `#${c.CodCliente}`}
+                                                <span className="ci-estado" title={estadoTitulo(c.ESTADO)}>
+                                                    {c.ESTADO === 'BLOQUEADO'
+                                                        ? <Ban size={13} strokeWidth={2.6} style={{ color: ESTADO_DOT.BLOQUEADO }} />
+                                                        : <span className="ci-estado-dot" style={{ background: ESTADO_DOT[c.ESTADO] || '#cbd5e1' }} />}
+                                                </span>
+                                                <span className={`ci-card-id-txt ${dupEn('IDCliente')}`}>
+                                                    {c.IDCliente ? String(c.IDCliente).trim().toLowerCase() : `#${c.CodCliente}`}
+                                                </span>
                                             </div>
                                             <div className={`ci-card-name ${nombreVisible(c) ? '' : 'sin-nombre'}`}>
-                                                {capitalCase(nombreVisible(c)) || 'Sin nombre'}
+                                                <span className={dupEn('Nombre')}>
+                                                    {capitalCase(nombreVisible(c)) || 'Sin nombre'}
+                                                </span>
                                             </div>
                                         </div>
                                         {c.ESTADO && c.ESTADO !== 'ACTIVO' && <Badge color={statusColor(c.ESTADO)}>{c.ESTADO}</Badge>}
@@ -735,11 +776,11 @@ const TabTablaList = React.memo(function TabTablaList({ catalogs, onEdit, client
                                     <div className="ci-card-body">
                                         <div className={`ci-card-row ${c.TelefonoTrabajo ? '' : 'vacia'}`}>
                                             <Phone size={12} strokeWidth={2.2} className="ci-card-row-icon" />
-                                            <span>{c.TelefonoTrabajo || '—'}</span>
+                                            <span className={dupEn('TelefonoTrabajo')}>{c.TelefonoTrabajo || '—'}</span>
                                         </div>
                                         <div className={`ci-card-row ${c.Email ? '' : 'vacia'}`}>
                                             <Mail size={12} strokeWidth={2.2} className="ci-card-row-icon" />
-                                            <span>{c.Email ? String(c.Email).trim().toLowerCase() : '—'}</span>
+                                            <span className={dupEn('Email')}>{c.Email ? String(c.Email).trim().toLowerCase() : '—'}</span>
                                         </div>
                                     </div>
 
@@ -752,14 +793,13 @@ const TabTablaList = React.memo(function TabTablaList({ catalogs, onEdit, client
                                             {c.TipoClienteNombre && <span>{c.TipoClienteNombre}</span>}
                                             {c.TipoClienteNombre && c.VendedorNombre && <span className="sep">·</span>}
                                             {c.VendedorNombre && <span>{c.VendedorNombre}</span>}
-                                            {/* Mismo icono que el contador de la barra: si allá es
-                                                "duplicados", acá también. El color dice por qué campo,
-                                                igual que la barra lateral de la tarjeta. */}
+                                            {/* Cuántos son, no solo que los hay: con el número decidís
+                                                si vale la pena abrirlo sin tener que hacer clic. */}
                                             {dups && (
                                                 <button className="ci-dup-tag"
                                                     onClick={e => handleDupTagClick(e, c, dups)}
-                                                    title={`Duplicado por ${[...dups].join(', ')} — clic para ver sus hermanitos`}>
-                                                    <Copy size={11} strokeWidth={2.6} />
+                                                    title={`${dupHermanas[c.CodCliente]} clientes comparten ${[...dups].join(', ')} — clic para verlos`}>
+                                                    <Copy size={11} strokeWidth={2.6} />{dupHermanas[c.CodCliente]}
                                                 </button>
                                             )}
                                         </div>
@@ -786,7 +826,7 @@ const TabTablaList = React.memo(function TabTablaList({ catalogs, onEdit, client
 
                 {/* TABLE */}
                 {!loading && viewMode === 'table' && (
-                    <div className="ci-table-wrap">
+                    <div className="ci-table-wrap" key={animKey}>
                         <table className="ci-table">
                             <thead>
                                 <tr>

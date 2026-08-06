@@ -279,23 +279,10 @@
   flex-shrink: 0; letter-spacing: -.3px;
 }
 
-/* Avatar de la tarjeta: gradiente + brillo diagonal, y una sombra del propio
-   color. Un cuadrado de color plano repetido 5.000 veces es lo que hacía que la
-   grilla se viera muerta. */
-.ci-avatar-wrap { flex-shrink: 0; }
-.ci-card .ci-avatar {
-  width: 36px; height: 36px; border-radius: 11px;
-  font-size: 12.5px; letter-spacing: -.4px;
-  position: relative; overflow: hidden;
-  box-shadow: 0 3px 8px -2px rgba(15,23,42,.28);
-  transition: transform .18s ease, box-shadow .18s ease;
-}
-.ci-card .ci-avatar::after {
-  content: '';
-  position: absolute; inset: 0;
-  background: linear-gradient(135deg, rgba(255,255,255,.30) 0%, rgba(255,255,255,0) 48%);
-}
-.ci-card:hover .ci-avatar { transform: scale(1.06) rotate(-2deg); box-shadow: 0 5px 14px -3px rgba(15,23,42,.34); }
+/* La tarjeta ya no lleva avatar: el color salía de la primera letra del nombre,
+   así que no significaba nada, y el cuadrado se comía 46px de ancho (los mails
+   largos se cortaban). Sigue vivo en la tabla, el árbol y el modal, donde ayuda
+   a ubicar una fila. En su lugar va el estado, que sí es información. */
 
 /* ── KANBAN GRID ──────────────────────────────────────────────────────────────
    Tarjetas COMPACTAS y de altura PAREJA: son 5.000+ clientes, así que lo que
@@ -304,6 +291,23 @@
    y la grilla parecía rota. Ahora las filas de datos tienen alto fijo y el
    footer va anclado abajo, así todas miden igual. */
 .ci-kanban { display: grid; grid-template-columns: repeat(auto-fill, minmax(232px, 1fr)); gap: 10px; padding-bottom: 12px; align-content: start; }
+
+/* Entrada de las tarjetas. Se dispara al montarse: al cambiar un filtro o el
+   orden entra toda la grilla escalonada; mientras tipeás en el buscador solo
+   animan las que aparecen, así la lista no parpadea con cada letra.
+   `backwards` mantiene la tarjeta invisible durante su delay. */
+@keyframes ciCardIn {
+  from { opacity: 0; transform: translateY(7px) scale(.985); }
+  to   { opacity: 1; transform: none; }
+}
+@keyframes ciFadeIn { from { opacity: 0; } to { opacity: 1; } }
+
+.ci-card { animation: ciCardIn .26s cubic-bezier(.22,.61,.36,1) backwards; }
+.ci-kanban, .ci-table-wrap { animation: ciFadeIn .22s ease-out; }
+
+@media (prefers-reduced-motion: reduce) {
+  .ci-card, .ci-kanban, .ci-table-wrap { animation: none; }
+}
 
 .ci-card {
   background: #fff;
@@ -334,7 +338,13 @@
   box-shadow: 0 8px 22px -6px rgba(79,70,229,.22), 0 2px 6px rgba(15,23,42,.05);
   transform: translateY(-1px);
 }
-.ci-card.dup-card { border-left: 3px solid var(--dup-color, #ef4444); padding-left: 12px; }
+/* Sin barra lateral de color: 1 de cada 4 clientes está duplicado, así que con
+   seis colores distintos la grilla era una ensalada y la leyenda vivía escondida
+   en un hover. Ahora se pinta el DATO repetido y el pie dice cuántos son. */
+.dup-dato {
+  background: #fef3c7; color: #92400e; font-weight: 700;
+  border-radius: 5px; padding: 0 5px; margin: 0 -3px;
+}
 
 .ci-card-header { display: flex; align-items: center; gap: 10px; }
 .ci-card-info { flex: 1; min-width: 0; }
@@ -342,12 +352,23 @@
 /* El ID es el dato con el que se busca al cliente: va primero y en mono, que es
    como se lee un código. El nombre queda abajo, en tono humano. */
 .ci-card-id {
-  font-size: 12.5px; font-weight: 800; color: #1e1b4b;
-  letter-spacing: -.2px; line-height: 1.2;
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  display: flex; align-items: center; gap: 6px; min-width: 0;
+  font-size: 14px; font-weight: 800; color: #1e1b4b;
+  letter-spacing: -.3px; line-height: 1.2;
   font-variant-numeric: tabular-nums;
 }
-.ci-card-name { font-size: 11px; font-weight: 500; color: #8b93a7; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; line-height: 1.2; }
+/* El recorte va en el texto, no en el contenedor: en un flex, el text-overflow
+   del padre no aplica al nodo de texto suelto. */
+.ci-card-id-txt { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* Ancho fijo: el punto mide 7px y el icono de bloqueado 13px — sin esta caja,
+   el nombre de abajo quedaba desalineado según el estado del cliente. */
+.ci-estado { width: 13px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+.ci-estado-dot { width: 7px; height: 7px; border-radius: 50%; }
+.ci-card-name {
+  font-size: 11.5px; font-weight: 500; color: #8b93a7;
+  margin-top: 3px; padding-left: 19px;   /* alinea con el ID, no con el punto */
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; line-height: 1.2;
+}
 .ci-card-name.sin-nombre { color: #d7dbe3; font-style: italic; }
 
 /* Cuerpo: alto FIJO (2 filas) para que todas las tarjetas midan lo mismo aunque
@@ -426,18 +447,17 @@
 /* ── Punto de duplicado (dentro de la tarjeta) ───────────────────────────────
    UNO por tarjeta: al pulsarlo trae todos los hermanitos del cliente. Por qué
    campo duplica lo dice la barra de color del borde izquierdo. */
-/* Botón de duplicados de la tarjeta: va al final de la línea de contexto, no en
-   la cabecera — ahí chocaba con el botón de eliminar. Los colores salen de las
-   variables que ya pone la tarjeta (--dup-color = campo por el que duplica). */
+/* Pastilla de duplicados: icono + cuántos clientes hay en el grupo. Va al final
+   de la línea de contexto, no en la cabecera — ahí chocaba con el de eliminar. */
 .ci-dup-tag {
-  display: flex; align-items: center; justify-content: center;
-  width: 20px; height: 20px; margin-left: auto; flex-shrink: 0;
-  border: none; padding: 0; border-radius: 6px; cursor: pointer;
-  color: var(--dup-color, #dc2626);
-  background: var(--dup-tint, rgba(220,38,38,.1));
+  display: flex; align-items: center; gap: 4px;
+  height: 20px; padding: 0 8px 0 6px; margin-left: auto; flex-shrink: 0;
+  border: none; border-radius: 20px; cursor: pointer;
+  font-size: 11px; font-weight: 800; font-variant-numeric: tabular-nums;
+  background: #fef3c7; color: #b45309;
   transition: background .14s, color .14s, transform .14s;
 }
-.ci-dup-tag:hover { background: var(--dup-color, #dc2626); color: #fff; transform: translateY(-1px); }
+.ci-dup-tag:hover { background: #f59e0b; color: #fff; transform: translateY(-1px); }
 
 /* ── Banner "hermanitos" ─────────────────────────────────────────────────── */
 .ci-hermanos {
