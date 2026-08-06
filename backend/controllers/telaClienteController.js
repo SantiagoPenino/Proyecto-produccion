@@ -37,7 +37,10 @@ exports.getSaldo = async (req, res) => {
                     )                                                                 AS TipoTela,
                     COUNT(DISTINCT ib.BobinaID)                                       AS CantidadBultos,
                     SUM(ib.MetrosIniciales)                                           AS MetrosIngresados,
-                    SUM(ib.MetrosRestantes)                                           AS MetrosDisponibles,
+                    -- Disponible real: solo bobinas activas (una Agotada puede tener un
+                    -- remanente físico de merma que no es usable)
+                    SUM(CASE WHEN ib.Estado IN ('Disponible', 'En Uso')
+                            THEN ib.MetrosRestantes ELSE 0 END)                      AS MetrosDisponibles,
                     SUM(ib.MetrosIniciales - ib.MetrosRestantes)                      AS MetrosConsumidos,
                     CAST(
                         100.0 * SUM(ib.MetrosIniciales - ib.MetrosRestantes)
@@ -62,8 +65,10 @@ exports.getSaldo = async (req, res) => {
                 LEFT JOIN Recepciones r
                     ON r.Codigo = ib.Referencia
                     OR r.Codigo = LEFT(ib.Referencia, LEN(ib.Referencia) - 2)  -- PRE-5 <- PRE-5-1
+                -- Incluye Agotado/Cerrado: la tela consumida sigue siendo historia del
+                -- cliente (antes desaparecía del saldo al agotarse, como si nunca hubiera
+                -- entrado — los metros ingresados/consumidos quedaban invisibles).
                 WHERE ib.ClienteID = @ClienteID
-                  AND ib.Estado IN ('Disponible', 'En Uso')
                 GROUP BY
                     ib.InsumoID,
                     ins.Nombre,
@@ -196,9 +201,11 @@ exports.getBultos = async (req, res) => {
                 JOIN Insumos ins     ON ib.InsumoID = ins.InsumoID
                 LEFT JOIN Areas a    ON ib.AreaID   = a.AreaID
                 LEFT JOIN Ordenes o  ON ib.OrdenID  = o.OrdenID
+                -- Incluye Agotado/Cerrado con su Estado visible: el bulto consumido sigue
+                -- siendo parte del historial del cliente (antes se esfumaba al agotarse).
                 WHERE ib.ClienteID = @ClienteID
-                  AND ib.Estado IN ('Disponible', 'En Uso')
-                ORDER BY ib.FechaIngreso DESC
+                ORDER BY CASE WHEN ib.Estado IN ('Disponible', 'En Uso') THEN 0 ELSE 1 END,
+                         ib.FechaIngreso DESC
             `);
 
         res.json({ success: true, data: result.recordset });

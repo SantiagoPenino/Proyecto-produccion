@@ -17,4 +17,9 @@ router.put('/variants/:wms_variante_id/price', verifyToken, controller.updateVar
 
 router.get('/exchange-rate', verifyToken, controller.getExchangeRate);
 
+// [WMS] Vista de impresión A4 del pedido (formato remito) — sin verifyToken porque la
+// carga el iframe de la Print Station (/wms-remito-station), que no puede mandar el JWT;
+// mismo criterio que /orden/:id/etiquetas/print en productionFileRoutes.
+router.get('/pedido/:pedidoId/remito-print', controller.printPedidoRemito);
+
 module.exports = router;

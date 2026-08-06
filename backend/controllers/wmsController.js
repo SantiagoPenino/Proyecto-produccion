@@ -294,7 +294,9 @@ exports.createOrder = async (req, res) => {
                     .input('CliId', sql.Int, clienteId || 2089)
                     .input('Desc', sql.NVarChar(300), item.nombre || 'Producto WMS')
                     .input('Mat', sql.VarChar(255), item.nombre || 'Producto WMS')
-                    .input('Cod', sql.VarChar(50), `PRO-${codigoVenta}`)
+                    // CodigoOrden = el código de venta tal cual (es lo que se imprime en
+                    // grande en la etiqueta) — sin prefijo PRO-, que solo confundía.
+                    .input('Cod', sql.VarChar(50), codigoVenta)
                     .input('Doc', sql.VarChar(50), codigoVenta)
                     .input('Mag', sql.VarChar(50), String(item.cantidad))
                     .input('Prod', sql.Int, item.ProIdProducto || null)
@@ -316,6 +318,22 @@ exports.createOrder = async (req, res) => {
             }
 
             await transaction.commit();
+
+            // [WMS] Trazabilidad: primer evento del pedido (creado por el vendedor)
+            try {
+                const { logEvento } = require('./logisticaWmsController');
+                await logEvento(pool, pedidoId, { estado: 'PENDIENTE', usuario: req.user?.usuario });
+            } catch (eEv) { /* sin trazabilidad no se corta la venta */ }
+
+            // [WMS] Notificar a la Print Station de pedidos WMS (misma mecánica que el
+            // 'retiros:update' de los retiros web): la estación imprime sola la hoja A4
+            // del pedido (formato remito, con productos y cantidades).
+            const ioInst = req.app?.get('socketio');
+            if (ioInst) {
+                ioInst.emit('wms:pedido', { type: 'nuevo_pedido', pedidoId, codigoVenta });
+                logger.info(`[WMS] 📡 Socket wms:pedido emitido para ${codigoVenta}`);
+            }
+
             res.json({ success: true, pedidoId, codigoVenta });
         } catch (err) {
             await transaction.rollback();
@@ -324,6 +342,155 @@ exports.createOrder = async (req, res) => {
     } catch (err) {
         logger.error('Error en createOrder:', err);
         res.status(500).json({ error: err.message });
+    }
+};
+
+// [WMS] Hoja A4 del pedido de venta, formato calcado del remito de despacho
+// (CreateDispatchModal): título REMITO + fecha, banda ORIGEN→DESTINO, QR con el
+// código VEN y tabla de productos/cantidades (+ ubicación para el picking).
+// Sin verifyToken en la ruta: la carga el iframe de la Print Station
+// (/wms-remito-station), igual que el print de etiquetas de producción.
+exports.printPedidoRemito = async (req, res) => {
+    try {
+        const { pedidoId } = req.params;
+        const pool = await getPool();
+        const result = await pool.request()
+            .input('PedidoID', sql.Int, parseInt(pedidoId))
+            .query(`
+                SELECT
+                    p.ID, p.NoDocERP, p.MontoTotal, p.Moneda, p.FechaGeneracion,
+                    c.Nombre AS ClienteNombre,
+                    ISNULL(NULLIF(LTRIM(RTRIM(c.IDCliente)), ''), c.Nombre) AS IDCliente,
+                    d.Cantidad,
+                    a.Descripcion AS nombre_producto,
+                    awv.nombre_variante, awv.sku,
+                    loc.pasillo, loc.estante
+                FROM PedidosCobranza p
+                LEFT JOIN Clientes c ON p.ClienteID = c.CliIdCliente
+                INNER JOIN PedidosCobranzaDetalle d ON p.ID = d.PedidoCobranzaID
+                LEFT JOIN Articulos a ON d.ProIdProducto = a.ProIdProducto
+                LEFT JOIN Articulos_WMS_Variantes awv ON CAST(awv.wms_variante_id AS VARCHAR(100)) = CAST(d.CodArticulo AS VARCHAR(100))
+                LEFT JOIN Articulos_UbicacionLocal loc ON a.ProIdProducto = loc.Idproid
+                WHERE p.ID = @PedidoID AND p.NoDocERP LIKE 'VEN-%'
+                ORDER BY d.OrdenID ASC
+            `);
+
+        if (result.recordset.length === 0) {
+            return res.send('<h1>Pedido no encontrado</h1>');
+        }
+
+        const cab = result.recordset[0];
+        const codigo = (cab.NoDocERP || '').trim();
+        const cliente = cab.ClienteNombre || 'Consumidor Final';
+        const fecha = new Date(cab.FechaGeneracion).toLocaleDateString('es-UY');
+        const items = result.recordset.map(r => ({
+            nombre: r.nombre_variante
+                ? `${(r.nombre_producto || '').trim()} - ${r.nombre_variante}`
+                : ((r.nombre_producto || '').trim() || 'Artículo'),
+            sku: r.sku || '',
+            cantidad: Number(r.Cantidad) || 0,
+            ubicacion: [r.pasillo, r.estante].filter(Boolean).join(' / ')
+        }));
+        const totalUnidades = items.reduce((s, it) => s + it.cantidad, 0);
+
+        const html = `
+            <!DOCTYPE html>
+            <html>
+            <head>
+                <title>Remito ${codigo}</title>
+                <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+                <style>
+                    @page { size: A4; margin: 15mm; }
+                    body { font-family: 'Arial', sans-serif; margin: 0; padding: 0; background: #fff; color: #111; }
+                    .sheet { max-width: 180mm; margin: 0 auto; border: 3px dashed #222; border-radius: 12px; padding: 24px; box-sizing: border-box; }
+                    .head { display: flex; justify-content: space-between; align-items: flex-end; border-bottom: 3px solid #111; padding-bottom: 14px; margin-bottom: 20px; }
+                    .head h1 { margin: 0; font-size: 42px; font-weight: 900; text-transform: uppercase; letter-spacing: -1px; }
+                    .head .sub { font-size: 13px; font-weight: 800; color: #555; text-transform: uppercase; letter-spacing: 2px; }
+                    .fecha-label { font-size: 11px; font-weight: 800; color: #888; text-align: right; }
+                    .fecha-val { font-family: monospace; font-size: 16px; font-weight: 800; text-align: right; }
+                    .band { display: flex; justify-content: space-between; align-items: center; background: #f0f0f0; padding: 12px 18px; border-radius: 8px; margin-bottom: 20px; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+                    .band .lbl { font-size: 10px; font-weight: 800; color: #999; text-transform: uppercase; letter-spacing: 1px; }
+                    .band .val { font-size: 20px; font-weight: 900; }
+                    .band .arrow { font-size: 24px; color: #bbb; }
+                    .qr-zone { text-align: center; margin-bottom: 10px; }
+                    #qr { display: inline-block; }
+                    .codigo { text-align: center; font-family: monospace; font-size: 30px; font-weight: 900; letter-spacing: 6px; border-top: 1px solid #ddd; border-bottom: 1px solid #ddd; padding: 12px 0; margin: 14px 0 22px; }
+                    table { width: 100%; border-collapse: collapse; margin-bottom: 20px; }
+                    th { text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: #666; border-bottom: 2px solid #111; padding: 6px 8px; }
+                    th.center, td.center { text-align: center; }
+                    td { font-size: 15px; font-weight: 700; border-bottom: 1px solid #ddd; padding: 8px; }
+                    td.cant { font-size: 20px; font-weight: 900; }
+                    td.sku { font-family: monospace; font-size: 12px; color: #555; }
+                    .resumen { text-align: right; font-size: 14px; font-weight: 800; color: #555; }
+                    @media print { .no-print { display: none !important; } .sheet { border: 3px solid #000; } }
+                </style>
+            </head>
+            <body>
+                <div class="no-print" style="position: sticky; top: 0; z-index: 100; padding: 12px; text-align: center; background: #333; color: white; display: flex; justify-content: center; align-items: center; gap: 20px; margin-bottom: 16px;">
+                    <strong>Remito de Pedido WMS ${codigo}</strong>
+                    <button onclick="window.print()" style="padding: 8px 22px; font-size: 15px; cursor: pointer; background: #4f46e5; color: white; border: none; border-radius: 6px; font-weight: bold;">🖨️ IMPRIMIR</button>
+                </div>
+
+                <div class="sheet">
+                    <div class="head">
+                        <div>
+                            <h1>REMITO</h1>
+                            <div class="sub">Pedido de venta WMS</div>
+                        </div>
+                        <div>
+                            <div class="fecha-label">FECHA</div>
+                            <div class="fecha-val">${fecha}</div>
+                        </div>
+                    </div>
+
+                    <div class="band">
+                        <div>
+                            <div class="lbl">ORIGEN</div>
+                            <div class="val">DEPÓSITO WMS</div>
+                        </div>
+                        <div class="arrow">&#10132;</div>
+                        <div style="text-align: right;">
+                            <div class="lbl">CLIENTE</div>
+                            <div class="val">${cliente}</div>
+                        </div>
+                    </div>
+
+                    <div class="qr-zone"><div id="qr"></div></div>
+                    <div class="codigo">${codigo}</div>
+
+                    <table>
+                        <tr>
+                            <th class="center" style="width: 12%;">CANT</th>
+                            <th>PRODUCTO</th>
+                            <th style="width: 18%;">SKU</th>
+                            <th style="width: 18%;">UBICACIÓN</th>
+                        </tr>
+                        ${items.map(it => `
+                        <tr>
+                            <td class="cant center">${it.cantidad}</td>
+                            <td>${it.nombre}</td>
+                            <td class="sku">${it.sku}</td>
+                            <td class="center">${it.ubicacion || '-'}</td>
+                        </tr>`).join('')}
+                    </table>
+
+                    <div class="resumen">${items.length} artículo(s) &nbsp;|&nbsp; ${totalUnidades} unidad(es) en total</div>
+                </div>
+
+                <script>
+                    new QRCode(document.getElementById("qr"), {
+                        text: "${codigo}",
+                        width: 150, height: 150, correctLevel: QRCode.CorrectLevel.M
+                    });
+                </script>
+            </body>
+            </html>
+        `;
+
+        res.send(html);
+    } catch (err) {
+        logger.error('Error en printPedidoRemito:', err);
+        res.status(500).send('Error generando el remito del pedido');
     }
 };
 

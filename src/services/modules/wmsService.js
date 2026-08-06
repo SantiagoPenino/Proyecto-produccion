@@ -55,6 +55,20 @@ export const wmsService = {
         const response = await api.put(`/wms-logistica/deliver/${pedidoId}`);
         return response.data;
     },
+    // [WMS] Trazabilidad y notas del pedido (PedidosCobranzaEventos)
+    getEventos: async (pedidoId) => {
+        const response = await api.get(`/wms-logistica/eventos/${pedidoId}`);
+        return response.data;
+    },
+    // [WMS] Pestaña Historial: pedidos terminados/cancelados, con búsqueda
+    getHistorialPedidos: async (search = '') => {
+        const response = await api.get('/wms-logistica/historial', { params: { search } });
+        return response.data;
+    },
+    addNota: async (pedidoId, nota) => {
+        const response = await api.post(`/wms-logistica/nota/${pedidoId}`, { nota });
+        return response.data;
+    },
 
     // [PRENDAS] "Comprar y personalizar" — la prenda es una Orden real (no PedidosCobranza),
     // así que su retiro de depósito WMS pasa por prendas-orders, no por wms-logistica.

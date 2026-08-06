@@ -9,6 +9,7 @@ import ResetPasswordPage from './components/pages/ResetPasswordPage';
 import PaymentResult from './components/pages/PaymentResult';
 import PrintStationPage from './components/logistics/PrintStationPage';
 import EncomiendaPrintStation from './components/logistics/EncomiendaPrintStation';
+import WmsRemitoPrintStation from './components/logistics/WmsRemitoPrintStation';
 import { FloatingDownloadPanel } from './components/common/FloatingDownloadPanel';
 import { FallbackSpinner } from './components/common/ChunkErrorBoundary';
 
@@ -138,6 +139,7 @@ function App() {
           <Route path="/totem/*" element={<TotemApp />} />
           <Route path="/print-station" element={<PrintStationPage />} />
           <Route path="/encomienda-station" element={<EncomiendaPrintStation />} />
+          <Route path="/wms-remito-station" element={<WmsRemitoPrintStation />} />
           {/* /portal pertenece al portal cliente — si un admin llega aquí, redirigir al dashboard */}
           <Route path="/portal/*" element={<Navigate to="/" replace />} />
           <Route path="*" element={<MainAppContent menuItems={menuItems} />} />

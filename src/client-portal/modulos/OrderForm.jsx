@@ -31,6 +31,7 @@ import {
     SOLDADURA_CM, profundidadBolsilloCm, margenOjalCm, pasoMaxCm
 } from '../../utils/terminacionesGeo';
 import { rasterizarPdf, liberarPdfPreviews } from '../api/pdfPreview';
+import { medirTizada } from './order-form/utils/medirTizada';
 import ErrorModal from './order-form/components/ErrorModal';
 import UploadProgressModal from './order-form/components/UploadProgressModal';
 import FileUploadZone from './order-form/components/FileUploadZone';
@@ -183,7 +184,7 @@ const OrderForm = ({ serviceId: propServiceId }) => {
         tpuForma,
         loading, showSuccessModal, createdOrderIds, uploading, uploadProgress, uploadError, uploadErrorMsg,
         errorModalOpen, errorModalMessage,
-        uniqueVariants, variantsInfo, dynamicMaterials, visibleConfig, prioritiesList, areasConUrgencia,
+        uniqueVariants, variantsInfo, dynamicMaterials, visibleConfig, prioritiesList, areasConUrgencia, portalConfig,
         activeSubOrders, embroideryVariants, embroideryMaterials
     } = state;
 
@@ -617,12 +618,16 @@ const OrderForm = ({ serviceId: propServiceId }) => {
     }, [urgenciaBloqueadaEcouv, urgency]);
 
     // Initial Config for Specific Services
+    // Corte standalone (de cara al cliente): molde y origen van FIJOS — el form no
+    // muestra los selectores, así que se re-asegura el valor si algún reset lo pisa.
     useEffect(() => {
-        if (serviceId === 'corte') {
-            // Default to 'MOLDES CLIENTES' so file upload is visible immediately
+        if (serviceId === 'corte' && moldType !== 'MOLDES CLIENTES') {
             actions.setMoldType('MOLDES CLIENTES');
         }
-    }, [serviceId]);
+        if (serviceId === 'corte' && fabricOrigin !== 'TELA CLIENTE') {
+            actions.setFabricOrigin('TELA CLIENTE');
+        }
+    }, [serviceId, moldType, fabricOrigin]);
 
     // TPU: garantizar SIEMPRE 1 item que lleve la cantidad (el submit agrupa por item; un item
     // sin archivo produce un pedido válido). SIN array de deps a propósito: la carga de config
@@ -760,6 +765,67 @@ const OrderForm = ({ serviceId: propServiceId }) => {
         if (validFiles.length > 0) {
             addFilesAction(validFiles);
             addToast(`${validFiles.length} archivos adjuntos (Pendientes de envío)`);
+        }
+    };
+
+    // CORTE standalone: cada tizada se MIDE al subirla (piezas + metros de corte del láser
+    // + largo de tela). Si el archivo no se puede leer/medir, NO se deja adjuntar —
+    // regla del negocio: sin medición no hay forma de cotizar el corte.
+    const handleTizadaUploadCorte = async (filesInput) => {
+        if (!filesInput) return;
+        const files = (filesInput instanceof FileList ? Array.from(filesInput)
+            : Array.isArray(filesInput) ? filesInput : [filesInput])
+            .filter(f => f instanceof Blob || f instanceof File);
+        if (files.length === 0) return;
+
+        const aceptados = [];
+        // Cada tizada elige SU bobina en la tarjeta (multi-tela); el control tizada-vs-bobina
+        // (largo acumulado y ancho) se hace por bobina en Confirmar Pedido.
+        for (const f of files) {
+            try {
+                f.medicion = await medirTizada(f);
+                f.copias = 1;
+                // Con una sola bobina disponible se preselecciona sola
+                if ((bobinasDisponibles || []).length === 1) f.bobinaId = bobinasDisponibles[0].BobinaID;
+                aceptados.push(f);
+            } catch (e) {
+                Swal.fire({
+                    icon: 'error',
+                    title: 'No se pudo medir la tizada',
+                    html: `<b>${f.name}</b><br>${e.message}<br><br>` +
+                        'El archivo debe ser el <b>archivo de corte vectorial</b> (PDF, AI o DXF) ' +
+                        'para calcular las piezas y los metros de corte del láser. ' +
+                        '<b>No se adjuntó</b> — exportá la tizada desde el programa de corte y volvé a subirla.',
+                    confirmButtonText: 'Entendido',
+                    confirmButtonColor: '#06b6d4',
+                });
+            }
+        }
+        if (aceptados.length > 0) {
+            handleMultipleSpecializedFileUpload(actions.addTizadaFiles, aceptados);
+        }
+    };
+
+    // CORTE: cambiar el archivo de una tarjeta ya cargada (se vuelve a medir y
+    // conserva la tela y las veces a cortar que ya había elegido).
+    const handleReemplazarTizadaCorte = async (index, file) => {
+        if (!file) return;
+        const anterior = tizadaFiles[index] || {};
+        try {
+            file.medicion = await medirTizada(file);
+            file.copias = anterior.copias || 1;
+            file.bobinaId = anterior.bobinaId ?? null;
+            actions.setTizadaFiles(tizadaFiles.map((f, i) => (i === index ? file : f)));
+            addToast('Tizada reemplazada y medida');
+        } catch (e) {
+            Swal.fire({
+                icon: 'error',
+                title: 'No se pudo medir la tizada',
+                html: `<b>${file.name}</b><br>${e.message}<br><br>` +
+                    'Se mantiene el archivo anterior. Subí el <b>archivo de corte vectorial</b> (PDF, AI o DXF).',
+                confirmButtonText: 'Entendido',
+                confirmButtonColor: '#06b6d4',
+            });
         }
     };
 
@@ -1080,9 +1146,85 @@ const OrderForm = ({ serviceId: propServiceId }) => {
             return addToast('Cada archivo de Tela Doble Cara (Twinface) necesita su boceto Frente/Dorso.', 'error');
         }
 
-        // TELA CLIENTE: la bobina es obligatoria (de ahí se descuentan los metros del pedido)
-        if (((config.hasCuttingWorkflow && fabricOrigin === 'TELA CLIENTE' && moldType !== 'SUBLIMACION') || isSubliTelaCliente) && !selectedBobinaId) {
+        // IMPRESIÓN DIRECTA: mínimo de metros a subir (configurable en ConfiguracionGlobal.DIRECTA_MINIMO_METROS).
+        // Se valida contra el Largo Total (suma de alto × copias; raport no multiplica). 0/vacío = sin validación.
+        if (serviceId === 'directa_320') {
+            const minMetros = parseFloat(portalConfig?.directaMinimoMetros) || 0;
+            if (minMetros > 0) {
+                const largoTotal = items.reduce((acc, it) => {
+                    const h = it.printSettings?.finalHeightM || (it.file?.unit === 'meters' ? it.file?.height : (it.file?.height ? (it.file.height / 300) * 0.0254 : 0)) || 0;
+                    return acc + (it.printSettings?.mode === 'raport' ? h : h * (it.copies || 1));
+                }, 0);
+                if (largoTotal < minMetros - 1e-9) {
+                    return addToast(`El pedido mínimo de Impresión Directa es de ${minMetros}m. Tu pedido suma ${largoTotal.toFixed(2)}m. Agregá más archivos o copias.`, 'error');
+                }
+            }
+        }
+
+        // TELA CLIENTE: la bobina es obligatoria (de ahí se descuentan los metros del pedido).
+        // En corte standalone la bobina se elige POR TIZADA (más abajo), no hay una sola.
+        if (serviceId !== 'corte'
+            && ((config.hasCuttingWorkflow && fabricOrigin === 'TELA CLIENTE' && moldType !== 'SUBLIMACION') || isSubliTelaCliente)
+            && !selectedBobinaId) {
             return addToast('Seleccioná la bobina de tela del cliente antes de confirmar el pedido.', 'error');
+        }
+
+        // CORTE standalone: toda tizada debe estar MEDIDA y tener SU bobina elegida; el
+        // consumo se valida POR BOBINA (varias tizadas pueden compartir la misma tela).
+        if (serviceId === 'corte') {
+            if ((tizadaFiles || []).some(f => !f.medicion)) {
+                return addToast('Hay tizadas sin medir. Quitalas y volvé a subirlas para que se calculen piezas y metros de corte.', 'error');
+            }
+            if ((tizadaFiles || []).some(f => !f.bobinaId)) {
+                return addToast('Elegí la bobina de tela de cada tizada antes de confirmar el pedido.', 'error');
+            }
+
+            // Agrupar por bobina: una ORDEN por tela (así producción controla por bobina)
+            const porBobina = new Map();
+            for (const f of tizadaFiles) {
+                const bob = (bobinasDisponibles || []).find(b => b.BobinaID === f.bobinaId);
+                if (!porBobina.has(f.bobinaId)) porBobina.set(f.bobinaId, { bobina: bob, archivos: [] });
+                porBobina.get(f.bobinaId).archivos.push(f);
+            }
+
+            for (const [, grupo] of porBobina) {
+                const b = grupo.bobina;
+                if (!b) return addToast('Una de las bobinas elegidas ya no está disponible. Actualizá la página.', 'error');
+                const anchoBob = parseFloat(b.AnchoReal ?? b.Ancho) || 0;
+                const anchoMax = Math.max(...grupo.archivos.map(f => f.medicion.anchoTelaM));
+                if (anchoBob && anchoMax > anchoBob + 0.02) {
+                    return addToast(`Una tizada mide ${anchoMax.toFixed(2)}m de ancho y la tela "${b.DescripcionTela || b.CodigoEtiqueta}" tiene ${anchoBob.toFixed(2)}m. Elegí otra tela o rehacé la tizada.`, 'error');
+                }
+                const telaNecesaria = grupo.archivos.reduce((s, f) => s + f.medicion.largoTelaM * (f.copias || 1), 0);
+                const disponible = parseFloat(b.MetrosRestantes) || 0;
+                if (telaNecesaria > disponible + 1e-9) {
+                    return addToast(`La tela "${b.DescripcionTela || b.CodigoEtiqueta}" necesita ${telaNecesaria.toFixed(2)}m y solo tiene ${disponible.toFixed(2)}m. Reducí los cortes o elegí otra tela.`, 'error');
+                }
+            }
+
+            // El cliente CONFIRMA los datos que el sistema leyó de las tizadas antes de
+            // enviar (regla 06/08): con esas piezas se controla el pedido en producción.
+            const filasHtml = [...porBobina.values()].map(g => {
+                const pz = g.archivos.reduce((s, f) => s + f.medicion.piezas * (f.copias || 1), 0);
+                const mc = g.archivos.reduce((s, f) => s + f.medicion.metrosCorte * (f.copias || 1), 0);
+                const mt = g.archivos.reduce((s, f) => s + f.medicion.largoTelaM * (f.copias || 1), 0);
+                return `<div style="margin:6px 0;text-align:left">` +
+                    `<b>${g.bobina.DescripcionTela || 'Tela'}</b> <small>(${g.bobina.CodigoEtiqueta})</small><br>` +
+                    `<b>${pz} piezas</b> · ${mc.toFixed(2)} m de corte · ${mt.toFixed(2)} m de tela` +
+                    `</div>`;
+            }).join('');
+            const confirmacion = await Swal.fire({
+                icon: 'question',
+                title: 'Confirmá tu pedido de corte',
+                html: `El sistema leyó de tus tizadas (${porBobina.size} ${porBobina.size === 1 ? 'orden' : 'órdenes'}, una por tela):<br>` +
+                    filasHtml +
+                    '<br>¿Confirmás que el pedido es correcto?',
+                showCancelButton: true,
+                confirmButtonText: 'Sí, enviar pedido',
+                cancelButtonText: 'Volver a revisar',
+                confirmButtonColor: '#06b6d4',
+            });
+            if (!confirmacion.isConfirmed) return;
         }
 
         if (serviceId === 'tpu') {
@@ -1491,6 +1633,79 @@ const OrderForm = ({ serviceId: propServiceId }) => {
                 });
             });
 
+            // A.bis) CORTE STANDALONE: el servicio principal TWC se arma desde las tizadas
+            // medidas. OJO: el form arranca con un item vacío por defecto que mete un principal
+            // fantasma por la vía de grupos (Material 'Estándar', cantidad 1) — se descarta y
+            // se reemplaza SIEMPRE por este. Cada archivo viaja con su medición
+            // (piezas + metros de corte) para que el backend la guarde.
+            if (serviceId === 'corte') {
+                for (let i = listaServicios.length - 1; i >= 0; i--) {
+                    if (listaServicios[i].esPrincipal) listaServicios.splice(i, 1);
+                }
+            }
+            if (serviceId === 'corte') {
+                // UNA ORDEN POR BOBINA (como sublimación agrupa por material): así producción
+                // controla las cantidades tela por tela y cada orden descuenta SU bobina.
+                // Las tizadas viajan como ARCHIVOS DE PRODUCCIÓN (items con fileName), no como
+                // referencias: el área los descarga y maneja igual que los de impresión.
+                const grupos = new Map();
+                (tizadaFiles || []).forEach(f => {
+                    if (!grupos.has(f.bobinaId)) grupos.set(f.bobinaId, []);
+                    grupos.get(f.bobinaId).push(f);
+                });
+
+                const r2 = (n) => Math.round(n * 100) / 100;
+                let excelAdjuntado = false; // la planilla va UNA sola vez (a la primera orden)
+                for (const [bobinaId, archivos] of grupos) {
+                    const bob = (bobinasDisponibles || []).find(b => b.BobinaID === bobinaId);
+                    const piezasTotal = archivos.reduce((s, f) => s + f.medicion.piezas * (f.copias || 1), 0);
+                    const metrosCorteTotal = r2(archivos.reduce((s, f) => s + f.medicion.metrosCorte * (f.copias || 1), 0));
+                    const largoTelaTotal = r2(archivos.reduce((s, f) => s + f.medicion.largoTelaM * (f.copias || 1), 0));
+
+                    listaServicios.push({
+                        esPrincipal: true,
+                        areaId: 'TWC',
+                        cabecera: {
+                            variante: 'Corte Laser',
+                            // El "material" de la orden ES la tela elegida (como en sublimación),
+                            // pero el artículo a cotizar sigue siendo el de corte (1375).
+                            material: {
+                                name: bob?.DescripcionTela || 'Corte Laser por prenda',
+                                id: 90, codArt: '1375', codStock: '1.1.6.1'
+                            }
+                        },
+                        // Marca de producción: el backend filtra estos de las referencias y los
+                        // vincula a los items por nombre de archivo. La planilla Excel del pedido
+                        // NO es producción: va como referencia (INFO_PEDIDO) a la primera orden.
+                        archivos: [
+                            ...archivos.map(f => ({ name: f.name, tipo: 'PRODUCCION' })),
+                            ...((pedidoExcelFile && !excelAdjuntado)
+                                ? [{ name: pedidoExcelFile.name, tipo: 'INFO_PEDIDO' }]
+                                : [])
+                        ],
+                        items: archivos.map(f => ({
+                            fileName: f.name,
+                            cantidad: f.copias || 1,       // cuántas veces se corta esa tizada
+                            width: f.medicion.anchoTelaM,  // ancho de tela que ocupa
+                            height: f.medicion.largoTelaM, // largo de tela (los "metros" del archivo)
+                            piezas: f.medicion.piezas,
+                            metrosCorte: f.medicion.metrosCorte,
+                            nota: `${f.medicion.piezas} piezas · ${f.medicion.metrosCorte.toFixed(2)}m de corte`
+                        })),
+                        // Bobina y metros de tela de ESTA orden (el backend descuenta por orden)
+                        bobinaTelaId: bobinaId,
+                        magnitudTela: largoTelaTotal,
+                        metadata: {
+                            moldType, fabricOrigin, clientFabricName,
+                            piezasTotal, metrosCorteTotal, largoTelaTotal,
+                            tela: bob ? `${bob.DescripcionTela || 'Tela'} (${bob.CodigoEtiqueta})` : null
+                        },
+                        notas: ''
+                    });
+                    if (pedidoExcelFile) excelAdjuntado = true;
+                }
+            }
+
             // B) SERVICIOS COMPLEMENTARIOS (Corte, Costura, etc.)
             // Normalizamos 'enrichedComplementary' que ya calculamos arriba
             if (enrichedComplementary) {
@@ -1610,13 +1825,16 @@ const OrderForm = ({ serviceId: propServiceId }) => {
 
             // TELA CLIENTE: metros del pedido = largo total de los archivos (misma fórmula que el footer).
             // El backend descuenta este valor de la bobina al crear la orden.
-            const usaTelaCliente = selectedBobinaId && ((fabricOrigin === 'TELA CLIENTE' && moldType !== 'SUBLIMACION') || isSubliTelaCliente);
+            // CORTE standalone queda FUERA: cada orden lleva su propia bobina y sus metros
+            // (bobinaTelaId/magnitudTela por servicio), así que no hay bobina top-level.
+            const usaTelaCliente = serviceId !== 'corte' && selectedBobinaId
+                && ((fabricOrigin === 'TELA CLIENTE' && moldType !== 'SUBLIMACION') || isSubliTelaCliente);
             const largoTotalM = Math.round(items.reduce((acc, it) => {
-                const h = it.printSettings?.finalHeightM || (it.file?.unit === 'meters' ? it.file?.height : (it.file?.height ? (it.file.height / 300) * 0.0254 : 0)) || 0;
-                // Raport no multiplica por copias (su largo total ya es el resultado); escala/normal sí.
-                const factorCopias = (it.printSettings?.mode === 'raport') ? 1 : (it.copies || 1);
-                return acc + (h * factorCopias);
-            }, 0) * 100) / 100;
+                    const h = it.printSettings?.finalHeightM || (it.file?.unit === 'meters' ? it.file?.height : (it.file?.height ? (it.file.height / 300) * 0.0254 : 0)) || 0;
+                    // Raport no multiplica por copias (su largo total ya es el resultado); escala/normal sí.
+                    const factorCopias = (it.printSettings?.mode === 'raport') ? 1 : (it.copies || 1);
+                    return acc + (h * factorCopias);
+                }, 0) * 100) / 100;
 
             const payload = {
                 idServicioBase: serviceId,
@@ -1928,15 +2146,16 @@ const OrderForm = ({ serviceId: propServiceId }) => {
                                         <div>
                                             <p className="block text-xs font-bold uppercase text-zinc-400 mb-2">Tinta <span className="text-zinc-600 normal-case font-normal">(definida por el producto)</span></p>
                                             <div className="w-full px-4 py-3 bg-zinc-900/40 border border-zinc-700/40 rounded-[10px] text-sm font-medium text-zinc-400 cursor-not-allowed select-none">
-                                                {fichaPT.tinta || '— A definir en producción —'}
+                                                {fichaPT.tinta || (tintaSeleccionada ? `${tintaSeleccionada} (la elegiste vos)` : '— La elegís vos en Tinta —')}
                                             </div>
                                         </div>
                                     </>
                                 )}
 
                                 {/* Tinta de impresión (ECOUV: rutea el lote a la máquina Ecosolvente/UV).
-                                    Oculta en Productos Terminados: la tinta viene predefinida en la ficha. */}
-                                {Array.isArray(config.tintaOptions) && config.tintaOptions.length > 0 && !isEcouvPT && (
+                                    En Productos Terminados solo se muestra si la FICHA no la fija:
+                                    ahí la elige el cliente y el recargo % aplica solo (perfil tinta). */}
+                                {Array.isArray(config.tintaOptions) && config.tintaOptions.length > 0 && (!isEcouvPT || (fichaPT != null && !fichaPT.tinta)) && (
                                     <div>
                                         <p className="block text-xs font-bold uppercase text-zinc-400 mb-2">Tinta</p>
                                         <CustomSelect
@@ -2015,20 +2234,44 @@ const OrderForm = ({ serviceId: propServiceId }) => {
                                         clientFabricName={clientFabricName} setClientFabricName={actions.setClientFabricName}
                                         selectedSubOrderId={selectedSubOrderId} setSelectedSubOrderId={actions.setSelectedSubOrderId}
                                         activeSubOrders={activeSubOrders} tizadaFiles={tizadaFiles} setTizadaFiles={actions.setTizadaFiles}
-                                        handleMultipleSpecializedFileUpload={(files) => handleMultipleSpecializedFileUpload(actions.addTizadaFiles, files)}
+                                        handleMultipleSpecializedFileUpload={handleTizadaUploadCorte}
+                                        onReemplazarTizada={handleReemplazarTizadaCorte}
                                         compact={false}
                                         bobinasDisponibles={bobinasDisponibles} selectedBobinaId={selectedBobinaId} setSelectedBobina={actions.setSelectedBobina}
                                     />
-                                    {/* Documentation for Main Corte (Always visible for Main Service) */}
-                                    <div className="pt-6 border-t border-zinc-100">
-                                        <h4 className="text-xs font-black uppercase text-zinc-400 mb-4">Documentación de Corte/Confección</h4>
-                                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                    {/* PLANILLA DE PEDIDO: descarga de las plantillas Excel + subida de
+                                        la planilla completada (el mockup/croquis sigue oculto). */}
+                                    <div className="bg-zinc-900/60 border border-zinc-700/50 rounded-[2rem] p-6 md:p-8">
+                                        <h4 className="text-sm font-black uppercase text-zinc-100 tracking-widest mb-1">Planilla de Pedido</h4>
+                                        <p className="text-[11px] text-zinc-500 mb-5">Descargá la plantilla, completala con el detalle de tu pedido y subila acá.</p>
+
+                                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-5">
                                             {config.templateButtons?.map(btn => (
-                                                <a key={btn.label} href={btn.url} download className="flex items-center justify-between bg-zinc-50 p-3 rounded-xl border border-zinc-100 hover:border-black transition-colors"><span className="text-[10px] font-black uppercase">{btn.label}</span><Download size={16} /></a>
+                                                <a
+                                                    key={btn.label}
+                                                    href={btn.url}
+                                                    download
+                                                    className="flex items-center justify-between gap-3 bg-zinc-800/60 p-3.5 rounded-xl border-2 border-zinc-700/50 hover:border-brand-cyan hover:bg-brand-cyan/5 transition-colors"
+                                                >
+                                                    <span className="text-[10px] font-black uppercase text-zinc-300">{btn.label}</span>
+                                                    <Download size={16} className="text-brand-cyan shrink-0" />
+                                                </a>
                                             ))}
-                                            <FileUploadZone id="pedido-upload-corte-main" label="EXCEL DETALLE" selectedFile={pedidoExcelFile} onFileSelected={(f) => handleSpecializedFileUpload(actions.setPedidoExcelFile, f)} color="emerald" compact={true} />
-                                            <FileUploadZone id="boceto-upload-main" label="MOCKUP / CROQUIS" selectedFile={bocetoFile} onFileSelected={(f) => handleSpecializedFileUpload(actions.setBocetoFile, f)} color="blue" compact={true} />
                                         </div>
+
+                                        <label className="block text-[10px] uppercase font-black text-zinc-500 mb-2 tracking-widest">Planilla completada (Excel)</label>
+                                        <FileUploadZone
+                                            id="pedido-upload-corte-main"
+                                            label="SUBIR PLANILLA (XLS / XLSX / CSV)"
+                                            selectedFile={pedidoExcelFile}
+                                            onFileSelected={(f) => handleSpecializedFileUpload(actions.setPedidoExcelFile, f)}
+                                            color="emerald"
+                                        />
+                                        {pedidoExcelFile && (
+                                            <div className="mt-2 text-[10px] font-bold text-zinc-400 bg-zinc-900/60 py-1 px-2 rounded border border-zinc-700/50 w-fit flex items-center gap-1">
+                                                <FileCode size={12} className="text-emerald-400/70" /> {pedidoExcelFile.name}
+                                            </div>
+                                        )}
                                     </div>
                                 </div>
                             )}
@@ -2397,7 +2640,7 @@ const OrderForm = ({ serviceId: propServiceId }) => {
                                                                         </div>
                                                                         <div>
                                                                             <span className="block text-[9px] font-bold uppercase text-zinc-500">Tinta</span>
-                                                                            <span className="text-zinc-200 font-bold">{fichaPT.tinta || '— a definir en producción —'}</span>
+                                                                            <span className="text-zinc-200 font-bold">{fichaPT.tinta || (tintaSeleccionada ? `${tintaSeleccionada} (la elegiste vos)` : '— la elegís vos —')}</span>
                                                                         </div>
                                                                     </div>
                                                                     {incluidas.length > 0 && (
@@ -3050,11 +3293,21 @@ const OrderForm = ({ serviceId: propServiceId }) => {
                             <div><p className="text-[11px] uppercase font-bold text-zinc-500">Servicio</p><p className="text-xl font-bold text-zinc-100">{serviceInfo?.label}</p></div>
                             <div><p className="text-[11px] uppercase font-bold text-zinc-500">Prioridad</p><p className={`text-xl font-bold ${urgency?.toLowerCase() === 'urgente' ? 'text-custom-magenta' : 'text-cyan-400'}`}>{urgency}</p></div>
                             {/* TPU se pide por UNIDADES: el total es la cantidad (copies del único
-                                item), y el largo en metros no existe — el boceto no tiene medida. */}
+                                item), y el largo en metros no existe — el boceto no tiene medida.
+                                CORTE: el total son las PIEZAS de las tizadas (lo que se controla en
+                                producción) + los metros de corte del láser (lo que se cotiza). */}
+                            {serviceId === 'corte' ? (
+                                <>
+                                    <div><p className="text-[11px] uppercase font-bold text-zinc-500">Piezas</p><p className="text-2xl font-black text-zinc-100">{(tizadaFiles || []).reduce((a, f) => a + ((f.medicion?.piezas || 0) * (f.copias || 1)), 0)}</p></div>
+                                    <div><p className="text-[11px] uppercase font-bold text-zinc-500">Corte Láser</p><p className="text-2xl font-black text-cyan-400">{(tizadaFiles || []).reduce((a, f) => a + ((f.medicion?.metrosCorte || 0) * (f.copias || 1)), 0).toFixed(2)}m</p></div>
+                                    <div><p className="text-[11px] uppercase font-bold text-zinc-500">Tela</p><p className="text-2xl font-black text-amber-400">{(tizadaFiles || []).reduce((a, f) => a + ((f.medicion?.largoTelaM || 0) * (f.copias || 1)), 0).toFixed(2)}m</p></div>
+                                </>
+                            ) : (
                             <div><p className="text-[11px] uppercase font-bold text-zinc-500">{serviceId === 'tpu' ? 'Cantidad' : 'Items (Total)'}</p><p className="text-2xl font-black text-zinc-100">{serviceId === 'tpu' ? items.reduce((acc, it) => acc + (parseInt(it.copies) || 0), 0) : items.length}</p></div>
+                            )}
                             {/* Total del pedido: superficie en gran formato (EcoUV cotiza por m²),
                                 metros lineales de rollo en el resto. */}
-                            {serviceId !== 'tpu' && (
+                            {serviceId !== 'tpu' && serviceId !== 'corte' && (
                             <div><p className="text-[11px] uppercase font-bold text-zinc-500">{config.unidadTotal === 'm2' ? 'Área Total' : 'Largo Total'}</p><p className="text-2xl font-black text-cyan-400">{items.reduce((acc, it) => {
                                 const h = it.printSettings?.finalHeightM || (it.file?.unit === 'meters' ? it.file?.height : (it.file?.height ? (it.file.height / 300) * 0.0254 : 0)) || 0;
                                 const w = it.printSettings?.finalWidthM || (it.file?.unit === 'meters' ? it.file?.width : (it.file?.width ? (it.file.width / 300) * 0.0254 : 0)) || 0;

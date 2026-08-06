@@ -312,8 +312,10 @@ export default function NuevoProductoTerminadoModal({ isOpen, onClose, onCreated
                                 </div>
                                 <div>
                                     <label className="text-[10px] font-black text-slate-400 uppercase block mb-1">Tinta</label>
+                                    {/* Sin tinta fija = el cliente la elige al pedir, y si elige UV/Latex
+                                        se le aplica solo el recargo % del perfil de tinta */}
                                     <select value={f.tinta} onChange={e => setF('tinta', e.target.value)} className={inputCls}>
-                                        <option value="">— Sin definir —</option>
+                                        <option value="">— El cliente la elige (aplica recargo % si corresponde) —</option>
                                         <option value="Ecosolvente">Ecosolvente</option>
                                         <option value="UV">UV</option>
                                     </select>

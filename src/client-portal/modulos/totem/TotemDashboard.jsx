@@ -9,7 +9,7 @@ import { totemHeaders } from './totemAuth';
 
 const API_BASE = import.meta.env.VITE_API_URL || '/api';
 
-const BASE_PREFIXES = ['SB', 'SUB', 'DF', 'DTF', 'UVDF', 'ECOUV', 'EUV', 'TWC', 'EMB', 'TP', 'IMD', 'DIR', 'PRO', 'VEN'];
+const BASE_PREFIXES = ['SB', 'SUB', 'DF', 'DTF', 'UVDF', 'ECOUV', 'EUV', 'TWC', 'COR', 'EMB', 'TP', 'IMD', 'DIR', 'PRO', 'VEN'];
 
 // Print ticket (80mm thermal - same technique as PrintStationPage)
 const printTotemTicket = ({ ordenRetiro, client, orders, title = 'COMPROBANTE DE RETIRO' }) => {

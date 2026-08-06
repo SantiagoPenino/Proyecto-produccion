@@ -6,7 +6,7 @@ const LogisticsLayout = ({ children, activeTab, setActiveTab, globalArea, setGlo
         { id: 'quotation', label: 'Cotización', icon: 'fa-file-invoice-dollar' },
         { id: 'canastos', label: 'Canastos', icon: 'fa-basket-shopping' },
         { id: 'labels', label: 'Etiquetas', icon: 'fa-tags' },
-        { id: 'receive_sales', label: 'Recibir órdenes de venta', icon: 'fa-boxes-packing' },
+        { id: 'receive_sales', label: 'Órdenes de Venta', icon: 'fa-boxes-packing' },
         { id: 'dispatch', label: 'Crear Remito', icon: 'fa-file-invoice' },
         { id: 'history', label: 'Historial', icon: 'fa-clock-rotate-left' },
         { id: 'transport', label: 'En Viaje', icon: 'fa-truck-arrow-right' },
@@ -22,6 +22,14 @@ const LogisticsLayout = ({ children, activeTab, setActiveTab, globalArea, setGlo
 
     if (globalArea === 'DEPOSITO') {
         tabs = tabs.filter(t => !['import', 'quotation', 'canastos', 'labels'].includes(t.id));
+    }
+
+    // Pedido 06/08: en las áreas de producción estas pestañas no se usan — las
+    // etiquetas se imprimen desde la planilla/control del área, y Recibir órdenes
+    // de venta / Esperando Bultos / Extraviados son operaciones del DEPÓSITO.
+    // Se mantienen en DEPOSITO y en la vista global TODOS (consola central).
+    if (globalArea && globalArea !== 'DEPOSITO' && globalArea !== 'TODOS') {
+        tabs = tabs.filter(t => !['labels', 'receive_sales', 'esperando', 'lost'].includes(t.id));
     }
 
 

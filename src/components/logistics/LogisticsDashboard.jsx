@@ -42,6 +42,17 @@ const LogisticsDashboard = ({ areaCode }) => {
     const [globalArea, setGlobalArea] = useState(areaCode || 'TODOS');
     const [areasList, setAreasList] = useState(areaCode ? [areaCode] : ['TODOS']);
 
+    // En áreas de producción (≠ DEPOSITO/TODOS) las pestañas Etiquetas / Órdenes de
+    // Venta / Esperando Bultos / Extraviados están ocultas (ver LogisticsLayout):
+    // si la activa es una de esas al cambiar de área, saltar a Crear Remito para
+    // no dejar contenido huérfano sin botón.
+    useEffect(() => {
+        const ocultasEnArea = ['labels', 'receive_sales', 'esperando', 'lost'];
+        if (globalArea && globalArea !== 'DEPOSITO' && globalArea !== 'TODOS' && ocultasEnArea.includes(activeTab)) {
+            setActiveTab('dispatch');
+        }
+    }, [globalArea, activeTab]);
+
     // Selección de "Crear Remito" persistida en sessionStorage: sobrevive aunque salgas de
     // Logística (a Planilla/Planeación/etc.) y vuelvas. Se limpia al generar el remito.
     const dispatchStorageKey = `wms_dispatch_selection_${areaCode || 'all'}`;
