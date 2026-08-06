@@ -26,6 +26,9 @@ const FileItem = ({ file, readOnly = false, onAction, extraInfo, actions, editin
     const metrosTotal = (metrosUnit * copias).toFixed(2);
     const anchoRaw = parseFloat(file.Ancho || file.ancho || 0);
     const altoRaw = parseFloat(file.Alto || file.alto || 0);
+    // [CORTE] Medición de la tizada calculada por el portal al subirla (solo esos archivos).
+    const piezasTizada = parseInt(file.Piezas || file.piezas || 0) || 0;
+    const metrosCorteTizada = parseFloat(file.MetrosCorte || file.metrosCorte || 0) || 0;
 
     // Estilos dinámicos según estado
     const getStatusStyles = () => {
@@ -285,6 +288,22 @@ const FileItem = ({ file, readOnly = false, onAction, extraInfo, actions, editin
                         <span className="bg-zinc-100 px-1.5 py-0.5 rounded border border-zinc-200 text-xs font-bold text-zinc-700">
                             {copias} copias
                         </span>
+
+                        {/* CORTE: la tizada trae su medición (piezas y recorrido del láser).
+                            Solo aparece en archivos medidos por el portal de corte. */}
+                        {piezasTizada > 0 && (
+                            <div className="flex items-center gap-1 bg-cyan-50 px-1.5 py-0.5 rounded border border-cyan-200">
+                                <span className="text-[9px] font-bold text-cyan-500/80 uppercase">Piezas:</span>
+                                <span className="font-black text-cyan-700">{piezasTizada * copias}</span>
+                                {copias > 1 && <span className="text-[9px] text-cyan-500/70">({piezasTizada} x {copias})</span>}
+                            </div>
+                        )}
+                        {metrosCorteTizada > 0 && (
+                            <div className="flex items-center gap-1 bg-cyan-50 px-1.5 py-0.5 rounded border border-cyan-200">
+                                <span className="text-[9px] font-bold text-cyan-500/80 uppercase">Corte láser:</span>
+                                <span className="font-black text-cyan-700">{(metrosCorteTizada * copias).toFixed(2)} m</span>
+                            </div>
+                        )}
 
                         {/* Medidas o Cantidad Unitaria */}
                         {(anchoRaw > 0 && altoRaw > 0) ? (
