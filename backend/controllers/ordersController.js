@@ -3480,16 +3480,11 @@ exports.reactivateFile = async (req, res) => {
 
             const { OrdenID, EstadoOrden, Nota, Observaciones, NoDocERP } = infoRes.recordset[0];
 
-            // 2. Determinar estado a restaurar para ESTE archivo
-            const histRes = await new sql.Request(transaction)
-                .input('OID', sql.Int, OrdenID)
-                .query(`
-                    SELECT TOP 1 Estado FROM HistorialOrdenes
-                    WHERE OrdenID = @OID
-                      AND Estado NOT IN ('Cancelado','CANCELADO','Archivo Cancelado')
-                    ORDER BY FechaInicio DESC
-                `);
-            const estadoRestaurar = histRes.recordset[0]?.Estado || 'Pendiente';
+            // 2. Reactivar SIEMPRE en Pendiente (misma regla que reactivateOrder):
+            // el último estado del historial podía ser "En Maquina", pero el lote
+            // ya puede no existir — el archivo volvía a un estado de máquina sin
+            // máquina y quedaba en el limbo.
+            const estadoRestaurar = 'Pendiente';
 
             // 3. Restaurar el archivo
             await new sql.Request(transaction)
@@ -3620,25 +3615,14 @@ exports.reactivateOrder = async (req, res) => {
 
             const { Nota, Observaciones, NoDocERP } = orderRes.recordset[0];
 
-            // 2. Leer snapshot de estado guardado antes de la cancelación
-            const snapRes = await new sql.Request(transaction)
-                .input('OID', sql.Int, orderId)
-                .query(`
-                    SELECT TOP 1 Detalle FROM HistorialOrdenes
-                    WHERE OrdenID = @OID AND Estado = 'SNAPSHOT_PRE_CANCEL'
-                    ORDER BY FechaInicio DESC
-                `);
-            let estadoRestaurar = 'Pendiente';
-            let estadoAreaRestaurar = 'Pendiente';
-            if (snapRes.recordset.length) {
-                try {
-                    const snap = JSON.parse(snapRes.recordset[0].Detalle);
-                    if (snap.__snapshot__) {
-                        estadoRestaurar = snap.Estado || 'Pendiente';
-                        estadoAreaRestaurar = snap.EstadoenArea || 'Pendiente';
-                    }
-                } catch (_) {}
-            }
+            // 2. Reactivar SIEMPRE en Pendiente. Antes se restauraba el estado del
+            // snapshot pre-cancelación ("En Maquina", etc.), pero cancelar ya sacó
+            // la orden del lote (RolloID = NULL, y el lote vacío se borra) — al
+            // volver con un estado de máquina sin máquina quedaba en el limbo.
+            // Pendiente la devuelve al principio de la cola del área, que es donde
+            // alguien la va a ver y re-planificar.
+            const estadoRestaurar = 'Pendiente';
+            const estadoAreaRestaurar = 'Pendiente';
 
             // 3. Restaurar archivos cancelados
             await new sql.Request(transaction)
@@ -3771,25 +3755,11 @@ exports.reactivateRequest = async (req, res) => {
             const ordenes = ordenesRes.recordset;
 
             for (const orden of ordenes) {
-                // 3a. Leer snapshot de estado guardado antes de la cancelación
-                const snapRes = await new sql.Request(transaction)
-                    .input('OID', sql.Int, orden.OrdenID)
-                    .query(`
-                        SELECT TOP 1 Detalle FROM HistorialOrdenes
-                        WHERE OrdenID = @OID AND Estado = 'SNAPSHOT_PRE_CANCEL'
-                        ORDER BY FechaInicio DESC
-                    `);
-                let estadoRestaurar = 'Pendiente';
-                let estadoAreaRestaurar = 'Pendiente';
-                if (snapRes.recordset.length) {
-                    try {
-                        const snap = JSON.parse(snapRes.recordset[0].Detalle);
-                        if (snap.__snapshot__) {
-                            estadoRestaurar = snap.Estado || 'Pendiente';
-                            estadoAreaRestaurar = snap.EstadoenArea || 'Pendiente';
-                        }
-                    } catch (_) {}
-                }
+                // 3a. Reactivar SIEMPRE en Pendiente (misma regla que reactivateOrder):
+                // cancelar ya la sacó del lote, restaurar "En Maquina" del snapshot
+                // la dejaba en el limbo.
+                const estadoRestaurar = 'Pendiente';
+                const estadoAreaRestaurar = 'Pendiente';
 
                 // 3b. Restaurar archivos de esta orden
                 await new sql.Request(transaction)
