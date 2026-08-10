@@ -53,6 +53,21 @@ const initialState = {
     bordadoMaterial: '',
     bordadoVariant: '',
 
+    // [BORDADO] Prendas que el cliente ya entregó en recepción, con su saldo libre
+    // (vw_PrendasClienteDisponibles). Equivalente a bobinasDisponibles pero para
+    // prendas: el cliente elige la LÍNEA (12 gorros negros), no el remito.
+    prendasDisponibles: [],
+    // [BORDADO] Un diseño por logo a bordar. Cada uno lleva SU archivo, SUS medidas
+    // en cm, DE QUÉ prendas sale y cuántas — mismo criterio que las tizadas de Corte,
+    // donde cada archivo elige su bobina.
+    //   { id, file, boceto, ancho, alto, cantidad, prendaClienteId, relieve3D,
+    //     paleta: [], arteDisenado }
+    //   · file    = el arte original (logo) que sube el cliente
+    //   · boceto  = dónde va ubicado el bordado en la prenda
+    //   · paleta / arteDisenado = lo que deja el editor de prediseño (opcional,
+    //     informativo: la matriz la hace igual un diseñador)
+    disenosBordado: [],
+
     // Estampado Data
     estampadoFile: null,
     estampadoQuantity: '',
@@ -302,6 +317,25 @@ export const useOrderForm = (serviceId, overrides = {}) => {
     const setCosturaNote = (v) => setField('costuraNote', v);
     const setBordadoMaterial = (v) => setField('bordadoMaterial', v);
     const setBordadoVariant = (v) => setField('bordadoVariant', v);
+
+    // [BORDADO] Diseños a bordar (uno por logo)
+    const setDisenosBordado = (v) => setField('disenosBordado', v);
+    const addDisenoBordado = () => dispatch({
+        type: actionTypes.SET_FIELD, field: 'disenosBordado',
+        value: [...state.disenosBordado, {
+            id: `d${Date.now()}${state.disenosBordado.length}`,
+            file: null, boceto: null, ancho: '', alto: '', cantidad: '',
+            prendaClienteId: null, relieve3D: false, paleta: [], arteDisenado: null
+        }]
+    });
+    const updateDisenoBordado = (id, cambios) => dispatch({
+        type: actionTypes.SET_FIELD, field: 'disenosBordado',
+        value: state.disenosBordado.map(d => (d.id === id ? { ...d, ...cambios } : d))
+    });
+    const removeDisenoBordado = (id) => dispatch({
+        type: actionTypes.SET_FIELD, field: 'disenosBordado',
+        value: state.disenosBordado.filter(d => d.id !== id)
+    });
 
     const setEstampadoFile = (v) => setField('estampadoFile', v);
     const setEstampadoQuantity = (v) => setField('estampadoQuantity', v);
@@ -596,6 +630,28 @@ export const useOrderForm = (serviceId, overrides = {}) => {
         }
     }, [state.fabricOrigin, state.moldType]);
 
+    // 3b-bis. [BORDADO] Prendas del cliente disponibles. Mismo mecanismo que las
+    // bobinas: el backend resuelve el cliente por el token del portal. Solo aplica
+    // al bordado SOBRE LA PRENDA — el parche se fabrica de cero y no consume nada
+    // de lo que el cliente haya entregado.
+    const esBordadoHook = (serviceId || '').toLowerCase() === 'bordado';
+    const esParcheHook = /parche/i.test(state.serviceSubType || '');
+    useEffect(() => {
+        if (esBordadoHook && !esParcheHook) {
+            apiClient.get('/inventory/prendas-cliente/disponible').then(res => {
+                dispatch({ type: actionTypes.SET_DATA, data: { prendasDisponibles: res?.data || [] } });
+            }).catch(e => {
+                console.warn('Error cargando prendas del cliente', e);
+                dispatch({ type: actionTypes.SET_DATA, data: { prendasDisponibles: [] } });
+            });
+        } else {
+            // Al pasar a parche se limpia todo lo que apunte a prendas entregadas,
+            // para no mandar una línea colgada que el backend intentaría descontar.
+            dispatch({ type: actionTypes.SET_DATA, data: { prendasDisponibles: [] } });
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [esBordadoHook, esParcheHook]);
+
     // 3c. Sublimación Tela de Cliente: cargar las bobinas del cliente al elegir esa variante.
     // Mismo endpoint que Corte; el backend resuelve el cliente por el token del portal.
     // OJO: comparar case-insensitive — la URL puede venir /order/SUBLIMACION (bookmark).
@@ -863,6 +919,10 @@ export const useOrderForm = (serviceId, overrides = {}) => {
             setCosturaNote,
             setBordadoMaterial,
             setBordadoVariant,
+            setDisenosBordado,
+            addDisenoBordado,
+            updateDisenoBordado,
+            removeDisenoBordado,
             setEstampadoFile,
             setEstampadoQuantity,
             setEstampadoPrints,

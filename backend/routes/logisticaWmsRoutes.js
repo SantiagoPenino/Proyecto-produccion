@@ -22,6 +22,8 @@ router.get('/historial', verifyToken, controller.getHistorialPedidos);
 // Impresión de etiquetas por pedido — sin verifyToken: se abre con window.open (iframe/
 // pestaña sin JWT), mismo criterio que /orden/:id/etiquetas/print
 router.get('/etiquetas-print/:pedidoId', controller.printEtiquetasPedido);
+// Agregar un bulto extra al pedido (etiquetas 1/2, 2/2...)
+router.post('/bulto-extra/:pedidoId', verifyToken, controller.addBultoPedido);
 
 // ── Diagnóstico público — abrí en el navegador
 // http://localhost:5000/api/wms-logistica/wms-test

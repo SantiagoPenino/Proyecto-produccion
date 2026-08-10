@@ -44,6 +44,52 @@ async function attachNotasCount(pool, orders) {
     return orders;
 }
 
+// [WMS] Marca a qué ÁREA(s) de producción va el pedido además del depósito — caso
+// "comprar y personalizar": órdenes hermanas (EMB/DF/TPU/EST...) con el mismo VEN en
+// NoDocERP. El ancla de etiqueta (VENTA_DIRECTA) no cuenta: no es trabajo.
+async function attachAreasDestino(pool, orders) {
+    if (!orders.length) return orders;
+    try {
+        const docs = orders.map(o => (o.codigo || '').trim()).filter(Boolean);
+        if (!docs.length) return orders;
+        const docsIn = docs.map(d => `'${d.replace(/'/g, "''")}'`).join(',');
+        const r = await pool.request().query(`
+            SELECT DISTINCT LTRIM(RTRIM(o.NoDocERP)) AS Doc, LTRIM(RTRIM(o.AreaID)) AS AreaID
+            FROM Ordenes o
+            WHERE LTRIM(RTRIM(o.NoDocERP)) IN (${docsIn})
+              AND ISNULL(o.EstadoDependencia, '') <> 'VENTA_DIRECTA'
+              AND o.Estado NOT IN ('Cancelado')
+        `);
+        const map = {};
+        r.recordset.forEach(x => { (map[x.Doc] ||= []).push(x.AreaID); });
+        orders.forEach(o => { o.areasDestino = map[(o.codigo || '').trim()] || []; });
+    } catch (e) { /* sin dato no se rompe la lista */ }
+    return orders;
+}
+
+// [WMS] Cantidad de bultos/etiquetas actuales del pedido (badge 📦 N de la tarjeta):
+// etiquetas de sus órdenes ancla VENTA_DIRECTA.
+async function attachBultosCount(pool, orders) {
+    if (!orders.length) return orders;
+    try {
+        const docs = orders.map(o => (o.codigo || '').trim()).filter(Boolean);
+        if (!docs.length) return orders;
+        const docsIn = docs.map(d => `'${d.replace(/'/g, "''")}'`).join(',');
+        const r = await pool.request().query(`
+            SELECT LTRIM(RTRIM(O.NoDocERP)) AS Doc, COUNT(E.EtiquetaID) AS n
+            FROM Ordenes O
+            JOIN Etiquetas E ON E.OrdenID = O.OrdenID
+            WHERE LTRIM(RTRIM(O.NoDocERP)) IN (${docsIn})
+              AND O.EstadoDependencia = 'VENTA_DIRECTA' AND O.AreaID = 'PRO'
+            GROUP BY LTRIM(RTRIM(O.NoDocERP))
+        `);
+        const map = {};
+        r.recordset.forEach(x => { map[x.Doc] = x.n; });
+        orders.forEach(o => { o.bultosCount = map[(o.codigo || '').trim()] || 0; });
+    } catch (e) { /* sin dato no se rompe la lista */ }
+    return orders;
+}
+
 exports.getPendingOrders = async (req, res) => {
     try {
         const pool = await getPool();
@@ -95,7 +141,7 @@ exports.getPendingOrders = async (req, res) => {
             });
         });
 
-        res.json(await attachNotasCount(pool, Object.values(ordersMap)));
+        res.json(await attachBultosCount(pool, await attachAreasDestino(pool, await attachNotasCount(pool, Object.values(ordersMap)))));
     } catch (err) {
         logger.error('Error en getPendingOrders (Logistica):', err);
         res.status(500).json({ error: err.message });
@@ -307,7 +353,7 @@ exports.getPreparedOrders = async (req, res) => {
             const fullName = row.nombre_variante ? `${row.nombre_producto} - ${row.nombre_variante}` : (row.nombre_producto || 'Artículo Desconocido');
             ordersMap[row.PedidoID].items.push({ wms_variante_id: row.wms_variante_id, sku: row.sku, nombre_variante: fullName, cantidad: row.Cantidad, ubicacion: { pasillo: row.pasillo, estante: row.estante } });
         });
-        res.json(await attachNotasCount(pool, Object.values(ordersMap)));
+        res.json(await attachBultosCount(pool, await attachAreasDestino(pool, await attachNotasCount(pool, Object.values(ordersMap)))));
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
@@ -392,90 +438,88 @@ exports.getHistorialPedidos = async (req, res) => {
             const fullName = row.nombre_variante ? `${row.nombre_producto} - ${row.nombre_variante}` : (row.nombre_producto || 'Artículo Desconocido');
             ordersMap[row.PedidoID].items.push({ wms_variante_id: row.wms_variante_id, sku: row.sku, nombre_variante: fullName, cantidad: row.Cantidad, ubicacion: { pasillo: row.pasillo, estante: row.estante } });
         });
-        res.json(await attachNotasCount(pool, Object.values(ordersMap)));
+        res.json(await attachBultosCount(pool, await attachAreasDestino(pool, await attachNotasCount(pool, Object.values(ordersMap)))));
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
 };
 
-// [WMS] Imprimir la(s) etiqueta(s) del pedido: resuelve las órdenes ancla (VENTA_DIRECTA)
-// del VEN y redirige a la vista de impresión de etiquetas existente. Si el pedido todavía
-// no tiene etiqueta (no se finalizó), la GENERA acá a demanda — confirmPreparation tiene
-// un NOT EXISTS que evita duplicar el bulto después. Sin verifyToken en la ruta: se abre
-// con window.open (mismo criterio que los otros prints).
+// [WMS] Devuelve las órdenes ancla (VENTA_DIRECTA) del pedido; si no existen (pedido
+// anterior al mecanismo), crea UNA sola ancla resumen desde las líneas — el pedido
+// viaja como un bulto único (los bultos extra se agregan con addBultoPedido).
+async function ensureAnclasPedido(pool, pedidoId) {
+    const ANCHORS_QUERY = `
+            SELECT O.OrdenID,
+                   (SELECT COUNT(*) FROM Etiquetas E WHERE E.OrdenID = O.OrdenID) AS CantEtiquetas
+            FROM Ordenes O
+            JOIN PedidosCobranza P ON LTRIM(RTRIM(P.NoDocERP)) = LTRIM(RTRIM(O.NoDocERP))
+            WHERE P.ID = @PID AND O.AreaID = 'PRO' AND O.EstadoDependencia = 'VENTA_DIRECTA'
+            ORDER BY O.OrdenID ASC
+        `;
+    let r = await pool.request().input('PID', sql.Int, parseInt(pedidoId)).query(ANCHORS_QUERY);
+    if (r.recordset.length > 0) return r.recordset;
+
+    const pedRes = await pool.request()
+        .input('PID', sql.Int, parseInt(pedidoId))
+        .query(`
+            SELECT LTRIM(RTRIM(p.NoDocERP)) AS NoDocERP, p.ClienteID,
+                   ISNULL(NULLIF(LTRIM(RTRIM(c.IDCliente)), ''), ISNULL(LTRIM(RTRIM(c.Nombre)), 'Consumidor Final')) AS ClienteNombre,
+                   d.Cantidad, d.ProIdProducto, d.CodArticulo
+            FROM PedidosCobranza p
+            LEFT JOIN Clientes c ON p.ClienteID = c.CliIdCliente
+            INNER JOIN PedidosCobranzaDetalle d ON p.ID = d.PedidoCobranzaID
+            WHERE p.ID = @PID AND p.NoDocERP LIKE 'VEN-%'
+        `);
+    if (pedRes.recordset.length === 0) return [];
+
+    const lineas = pedRes.recordset;
+    const cab = lineas[0];
+    const totalUnidades = lineas.reduce((s, l) => s + (Number(l.Cantidad) || 0), 0);
+    await pool.request()
+        .input('Cliente', sql.NVarChar(200), cab.ClienteNombre)
+        .input('CliId', sql.Int, cab.ClienteID || 2089)
+        .input('Desc', sql.NVarChar(300), `VENTA WMS (${lineas.length} artículo(s), ${totalUnidades} unidad(es))`)
+        .input('Mat', sql.VarChar(255), 'VENTA WMS')
+        .input('Cod', sql.VarChar(50), cab.NoDocERP)
+        .input('Doc', sql.VarChar(50), cab.NoDocERP)
+        .input('Mag', sql.VarChar(50), String(totalUnidades))
+        .input('Prod', sql.Int, lineas.length === 1 ? (cab.ProIdProducto || null) : null)
+        .input('Wms', sql.Int, lineas.length === 1 ? (parseInt(cab.CodArticulo) || null) : null)
+        .query(`
+            INSERT INTO Ordenes (
+                AreaID, Cliente, CliIdCliente, DescripcionTrabajo, Prioridad,
+                FechaIngreso, FechaEstimadaEntrega, Material, CodigoOrden, NoDocERP,
+                Magnitud, ProximoServicio, UM, Estado, EstadoenArea,
+                ProIdProducto, WmsVarianteId, EstadoDependencia
+            )
+            VALUES (
+                'PRO', @Cliente, @CliId, @Desc, 'Normal',
+                GETDATE(), DATEADD(day, 3, GETDATE()), @Mat, @Cod, @Doc,
+                @Mag, 'DEPOSITO', 'u', 'Pendiente', 'Pendiente',
+                @Prod, @Wms, 'VENTA_DIRECTA'
+            )
+        `);
+
+    r = await pool.request().input('PID', sql.Int, parseInt(pedidoId)).query(ANCHORS_QUERY);
+    return r.recordset;
+}
+
+// [WMS] Imprimir la(s) etiqueta(s) del pedido: resuelve/crea el ancla y redirige a la
+// vista de impresión. Si el pedido todavía no tiene etiqueta, la GENERA acá a demanda —
+// confirmPreparation tiene un NOT EXISTS que evita duplicar el bulto después. Sin
+// verifyToken en la ruta: se abre con window.open (mismo criterio que los otros prints).
 exports.printEtiquetasPedido = async (req, res) => {
     try {
         const { pedidoId } = req.params;
         const pool = await getPool();
-        const ANCHORS_QUERY = `
-                SELECT O.OrdenID,
-                       (SELECT COUNT(*) FROM Etiquetas E WHERE E.OrdenID = O.OrdenID) AS CantEtiquetas
-                FROM Ordenes O
-                JOIN PedidosCobranza P ON LTRIM(RTRIM(P.NoDocERP)) = LTRIM(RTRIM(O.NoDocERP))
-                WHERE P.ID = @PID AND O.AreaID = 'PRO' AND O.EstadoDependencia = 'VENTA_DIRECTA'
-            `;
-        let r = await pool.request()
-            .input('PID', sql.Int, parseInt(pedidoId))
-            .query(ANCHORS_QUERY);
-
-        // [WMS] Pedido creado ANTES de que existieran las órdenes ancla: crearlas acá al
-        // vuelo desde las líneas del pedido — mismos campos que wmsController.createOrder,
-        // así el botón 🖨 funciona para cualquier VEN, viejo o nuevo.
-        if (r.recordset.length === 0) {
-            const pedRes = await pool.request()
-                .input('PID', sql.Int, parseInt(pedidoId))
-                .query(`
-                    SELECT LTRIM(RTRIM(p.NoDocERP)) AS NoDocERP, p.ClienteID,
-                           ISNULL(NULLIF(LTRIM(RTRIM(c.IDCliente)), ''), ISNULL(LTRIM(RTRIM(c.Nombre)), 'Consumidor Final')) AS ClienteNombre,
-                           d.Cantidad, d.ProIdProducto, d.CodArticulo,
-                           a.Descripcion AS nombre_producto, awv.nombre_variante
-                    FROM PedidosCobranza p
-                    LEFT JOIN Clientes c ON p.ClienteID = c.CliIdCliente
-                    INNER JOIN PedidosCobranzaDetalle d ON p.ID = d.PedidoCobranzaID
-                    LEFT JOIN Articulos a ON d.ProIdProducto = a.ProIdProducto
-                    LEFT JOIN Articulos_WMS_Variantes awv ON CAST(awv.wms_variante_id AS VARCHAR(100)) = CAST(d.CodArticulo AS VARCHAR(100))
-                    WHERE p.ID = @PID AND p.NoDocERP LIKE 'VEN-%'
-                `);
-            if (pedRes.recordset.length === 0) {
-                return res.send('<div style="font-family: Arial; padding: 40px; text-align: center;"><h2>Pedido no encontrado</h2><p>No es un pedido de venta WMS (VEN) o no tiene líneas.</p></div>');
-            }
-            for (const it of pedRes.recordset) {
-                const nombre = it.nombre_variante
-                    ? `${(it.nombre_producto || '').trim()} - ${it.nombre_variante}`
-                    : ((it.nombre_producto || '').trim() || 'Producto WMS');
-                await pool.request()
-                    .input('Cliente', sql.NVarChar(200), it.ClienteNombre)
-                    .input('CliId', sql.Int, it.ClienteID || 2089)
-                    .input('Desc', sql.NVarChar(300), nombre)
-                    .input('Mat', sql.VarChar(255), nombre)
-                    .input('Cod', sql.VarChar(50), it.NoDocERP)
-                    .input('Doc', sql.VarChar(50), it.NoDocERP)
-                    .input('Mag', sql.VarChar(50), String(it.Cantidad))
-                    .input('Prod', sql.Int, it.ProIdProducto || null)
-                    .input('Wms', sql.Int, parseInt(it.CodArticulo) || null)
-                    .query(`
-                        INSERT INTO Ordenes (
-                            AreaID, Cliente, CliIdCliente, DescripcionTrabajo, Prioridad,
-                            FechaIngreso, FechaEstimadaEntrega, Material, CodigoOrden, NoDocERP,
-                            Magnitud, ProximoServicio, UM, Estado, EstadoenArea,
-                            ProIdProducto, WmsVarianteId, EstadoDependencia
-                        )
-                        VALUES (
-                            'PRO', @Cliente, @CliId, @Desc, 'Normal',
-                            GETDATE(), DATEADD(day, 3, GETDATE()), @Mat, @Cod, @Doc,
-                            @Mag, 'DEPOSITO', 'u', 'Pendiente', 'Pendiente',
-                            @Prod, @Wms, 'VENTA_DIRECTA'
-                        )
-                    `);
-            }
-            r = await pool.request()
-                .input('PID', sql.Int, parseInt(pedidoId))
-                .query(ANCHORS_QUERY);
+        const anclas = await ensureAnclasPedido(pool, pedidoId);
+        if (anclas.length === 0) {
+            return res.send('<div style="font-family: Arial; padding: 40px; text-align: center;"><h2>Pedido no encontrado</h2><p>No es un pedido de venta WMS (VEN) o no tiene líneas.</p></div>');
         }
 
         // Generar el bulto/etiqueta de las anclas que aún no lo tengan (impresión a demanda)
         const LabelGenerationService = require('../services/LabelGenerationService');
-        for (const a of r.recordset) {
+        for (const a of anclas) {
             if (a.CantEtiquetas === 0) {
                 try {
                     await LabelGenerationService.addOneBulto(a.OrdenID, 1, 'Impresión WMS', {});
@@ -485,12 +529,37 @@ exports.printEtiquetasPedido = async (req, res) => {
             }
         }
 
-        const ids = r.recordset.map(x => x.OrdenID);
+        const ids = anclas.map(x => x.OrdenID);
         return res.redirect(ids.length === 1
             ? `/api/production-file-control/orden/${ids[0]}/etiquetas/print`
             : `/api/production-file-control/orden/batch/etiquetas/print?ids=${ids.join(',')}`);
     } catch (err) {
         res.status(500).send('Error buscando las etiquetas del pedido');
+    }
+};
+
+// [WMS] Agregar UN bulto más al pedido (va en más de un paquete): suma el bulto al
+// ancla principal — las etiquetas quedan BULTO 1/2, 2/2... y se reimprimen todas
+// con el botón 🖨 (o con la ventana que abre el front al agregar).
+exports.addBultoPedido = async (req, res) => {
+    try {
+        const { pedidoId } = req.params;
+        const pool = await getPool();
+        const anclas = await ensureAnclasPedido(pool, pedidoId);
+        if (anclas.length === 0) {
+            return res.status(404).json({ error: 'No es un pedido de venta WMS (VEN) o no tiene líneas.' });
+        }
+        const LabelGenerationService = require('../services/LabelGenerationService');
+        const lr = await LabelGenerationService.addOneBulto(anclas[0].OrdenID, req.user?.id || 1, req.user?.usuario || 'Sistema', {});
+        if (!lr.success) return res.status(400).json({ error: lr.error });
+        res.json({
+            success: true,
+            ordenId: anclas[0].OrdenID,
+            totalBultos: lr.totalBultos,
+            message: `Bulto agregado: el pedido ahora tiene ${lr.totalBultos} bulto(s).`
+        });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
     }
 };
 

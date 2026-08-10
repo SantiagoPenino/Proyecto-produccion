@@ -293,6 +293,11 @@ Reporte Generado Automáticamente por USER.
     { id: 'desconocidas', label: 'Desconocidos', count: results?.desconocido.length ?? '…', icon: HelpCircle, color: 'text-slate-600', bg: 'bg-slate-50', border: 'border-slate-200' },
   ];
 
+  // Extraviadas ordenadas por código (orden natural: SUB-9 antes que SUB-12)
+  const faltantesOrdenadas = results
+    ? [...results.faltaEnDeposito].sort((a, b) => String(a.codigo).localeCompare(String(b.codigo), 'es', { numeric: true }))
+    : [];
+
   return (
     <div className="px-0 lg:px-6 py-4 lg:py-6 max-w-7xl mx-auto font-sans text-slate-800">
       <Toaster position="top-right" />
@@ -555,20 +560,21 @@ Reporte Generado Automáticamente por USER.
                   >
                     Marcar como Entregado ({selectedFaltan.size})
                   </button>
-                  <button onClick={() => exportToExcel(results.faltaEnDeposito, 'Faltantes_Deposito')} className="flex items-center gap-2 px-3 py-1.5 bg-green-600 text-white text-sm font-bold rounded shadow-sm hover:bg-green-700">
+                  <button onClick={() => exportToExcel(faltantesOrdenadas, 'Faltantes_Deposito')} className="flex items-center gap-2 px-3 py-1.5 bg-green-600 text-white text-sm font-bold rounded shadow-sm hover:bg-green-700">
                     <Download size={16} /> Excel
                   </button>
                 </div>
               </div>
-              {results.faltaEnDeposito.length > 0 ? (
+              {faltantesOrdenadas.length > 0 ? (
                 <TableRender
-                  data={results.faltaEnDeposito}
+                  data={faltantesOrdenadas}
                   hasSelection={true}
                   selectedSet={selectedFaltan}
                   onToggle={(codigo) => handleToggleSet(codigo, setSelectedFaltan, selectedFaltan)}
-                  columns={['Código', 'Cliente', 'Situación Pago', 'Forma/Retiro']}
+                  columns={['Código', 'Días', 'Cliente', 'Situación Pago', 'Forma/Retiro']}
                   rowMap={(o) => [
                     <span className="font-mono font-bold text-red-900">{o.codigo}</span>,
+                    <span className="font-bold text-red-700">{o.diasEnDeposito} d</span>,
                     o.cliente,
                     o.pagoEstado,
                     <span className="text-xs font-mono">{o.ordenRetiro}</span>

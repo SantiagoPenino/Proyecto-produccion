@@ -9,6 +9,8 @@ import {
 } from '../../utils/terminacionesGeo';
 import PlanoPieza, { COLOR_CAPA } from '../shared/PlanoPieza';
 import OrdenProntaModal from '../production/components/OrdenProntaModal';
+import * as pdfjsLib from 'pdfjs-dist';
+import pdfjsWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 
 // fase 'trabajo' (Bandeja): órdenes con Material Recibido / En Terminaciones — marcar la
 //   primera terminación pasa la orden a 'En Terminaciones'; "Finalizar Tarea" la manda a
@@ -193,18 +195,60 @@ const EcoUvFinishing = ({ fase = 'trabajo' }) => {
         }
     };
 
-    // URL del arte para dibujarlo dentro del boceto. Solo imágenes: un PDF no se
-    // puede pintar dentro del SVG, ahí queda el recuadro vacío con las terminaciones.
+    // URL absoluta hacia el backend (los /api/... y /thumbnails/... relativos)
+    const resolverUrl = (url) => {
+        if (!url) return null;
+        if (url.startsWith('/api/') || url.startsWith('/thumbnails/')) {
+            const base = API_URL.endsWith('/api') ? API_URL.replace('/api', '') : API_URL;
+            return `${base}${url}`;
+        }
+        return url;
+    };
+
+    // Arte para dibujar dentro del boceto. Se decide por la URL (no por el nombre:
+    // la miniatura del backend es un .jpg aunque el archivo se llame .pdf). Si la
+    // URL no es imagen (PDF sin miniatura), se usa la 1ª página rasterizada acá
+    // con pdfjs (cache pdfPreviews por archivo).
+    const [pdfPreviews, setPdfPreviews] = useState({});
+    const esUrlImagen = (url) => /\.(png|jpe?g|webp|gif|bmp)(\?|$)/i.test(url || '') || (url || '').startsWith('/thumbnails/');
     const arteDeArchivo = (grupo) => {
         if (!grupo?.arteUrl) return null;
+        if (esUrlImagen(grupo.arteUrl)) return resolverUrl(grupo.arteUrl);
         const nombre = (grupo.nombre || '').toLowerCase();
-        if (!/\.(png|jpe?g|webp|gif|bmp)$/.test(nombre)) return null;
-        if (grupo.arteUrl.startsWith('/api/')) {
-            const base = API_URL.endsWith('/api') ? API_URL.replace('/api', '') : API_URL;
-            return `${base}${grupo.arteUrl}`;
-        }
-        return grupo.arteUrl;
+        if (/\.(png|jpe?g|webp|gif|bmp)$/.test(nombre)) return resolverUrl(grupo.arteUrl);
+        return pdfPreviews[grupo.archivoId] || null;
     };
+
+    // Rasterizar la 1ª página de los PDF sin miniatura (una sola vez por archivo)
+    useEffect(() => {
+        Object.values(ordersDetails).forEach(det => {
+            (det?.terminaciones || []).forEach(t => {
+                if (!t.ArchivoID || !t.arteUrl || esUrlImagen(t.arteUrl)) return;
+                if (!/\.pdf$/i.test((t.NombreArchivo || '').trim())) return;
+                if (pdfPreviews[t.ArchivoID] !== undefined) return;
+                setPdfPreviews(prev => ({ ...prev, [t.ArchivoID]: null }));   // en curso
+                (async () => {
+                    try {
+                        pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker;
+                        const resp = await fetch(resolverUrl(t.arteUrl));
+                        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+                        const pdf = await pdfjsLib.getDocument({ data: await resp.arrayBuffer() }).promise;
+                        const page = await pdf.getPage(1);
+                        const vp = page.getViewport({ scale: 1 });
+                        const escala = Math.min(2, 600 / Math.max(vp.width, vp.height));
+                        const v2 = page.getViewport({ scale: escala });
+                        const canvas = document.createElement('canvas');
+                        canvas.width = Math.ceil(v2.width);
+                        canvas.height = Math.ceil(v2.height);
+                        await page.render({ canvasContext: canvas.getContext('2d'), viewport: v2 }).promise;
+                        setPdfPreviews(prev => ({ ...prev, [t.ArchivoID]: canvas.toDataURL('image/jpeg', 0.8) }));
+                    } catch (e) {
+                        console.warn('Sin preview del PDF', t.NombreArchivo, e.message);
+                    }
+                })();
+            });
+        });
+    }, [ordersDetails]);
 
     // Confirmar las magnitudes REALES del trabajo: actualiza lo que se cobra y
     // recotiza el pedido (el cliente pidió una estimación, el taller confirma lo hecho).
@@ -285,40 +329,78 @@ const EcoUvFinishing = ({ fase = 'trabajo' }) => {
                     {documents.map(doc => {
                         const isSelected = selectedDocId === doc.docId;
                         const isUrgent = doc.prioridad === 'Urgente';
+                        // Card estilo "Corte": código de orden arriba, cliente, trabajo,
+                        // material/variante y abajo los datos operativos (magnitud, estado,
+                        // forma de envío, fecha). Los saca de la primera orden del pedido.
+                        const o1 = doc.ordenes?.[0] || {};
+                        const codOrden = String(o1.CodigoOrden || '').trim();
+                        const masOrdenes = (doc.ordenes?.length || 0) - 1;
+                        const material = String(o1.Material || '').trim();
+                        const variante = String(o1.Variante || '').trim();
+                        const magnitud = `${parseFloat(o1.Magnitud) || 1} ${String(o1.UM || 'u').trim()}`;
+                        // Producto terminado: viaja en la nota "[PRODUCTO: Cuadro canvas 70 x 50 | ...]"
+                        const producto = (String(o1.Nota || '').match(/\[PRODUCTO:\s*([^\]|]+)/i)?.[1] || '').trim();
+                        const modoRetiro = String(o1.ModoRetiro || '').trim();
+                        const estadoArea = String(o1.EstadoenArea || '').trim();
+                        const estiloEstado = estadoArea === 'En Terminaciones'
+                            ? 'bg-amber-50 text-amber-700 border-amber-200'
+                            : estadoArea === 'Control y Calidad'
+                                ? 'bg-purple-50 text-purple-700 border-purple-200'
+                                : 'bg-cyan-50 text-cyan-700 border-cyan-200'; // Material Recibido
 
                         return (
                             <div
                                 key={doc.docId}
                                 onClick={() => setSelectedDocId(doc.docId)}
                                 className={`
-                                    group p-4 rounded-xl border cursor-pointer transition-all duration-200 relative overflow-hidden
+                                    group p-3 rounded-xl border border-l-4 cursor-pointer transition-all duration-200 relative overflow-hidden
                                     ${isSelected
-                                        ? 'bg-blue-50 border-blue-500 shadow-md ring-1 ring-blue-500'
-                                        : 'bg-white border-slate-200 hover:border-blue-300 hover:shadow-sm'
+                                        ? 'bg-blue-50 border-blue-500 border-l-blue-600 shadow-md ring-1 ring-blue-500'
+                                        : isUrgent
+                                            ? 'bg-white border-slate-200 border-l-red-500 hover:border-blue-300 hover:shadow-sm'
+                                            : 'bg-white border-slate-200 border-l-blue-400 hover:border-blue-300 hover:shadow-sm'
                                     }
                                 `}
                             >
-                                {isUrgent && <div className="absolute left-0 top-0 bottom-0 w-1 bg-red-500"></div>}
-
-                                <div className="flex justify-between items-start mb-1 pl-2">
-                                    <span className="font-mono text-xs font-bold text-slate-500">
-                                        #{doc.docId}
+                                <div className="flex justify-between items-center mb-1">
+                                    <span className="font-mono text-xs font-black text-blue-700">
+                                        {codOrden || `#${doc.docId}`}
+                                        {masOrdenes > 0 && <span className="text-slate-400 font-bold"> +{masOrdenes}</span>}
                                     </span>
-                                    {isUrgent && <i className="fa-solid fa-fire text-amber-500 text-xs animate-pulse"></i>}
+                                    <span className="flex items-center gap-1.5">
+                                        {isUrgent && <i className="fa-solid fa-fire text-red-500 text-xs animate-pulse"></i>}
+                                        <span className="font-mono text-[10px] text-slate-400">#{doc.docId}</span>
+                                    </span>
                                 </div>
 
-                                <h3 className="font-bold text-slate-800 text-sm leading-tight mb-1 pl-2 line-clamp-2">
+                                <h3 className="font-bold text-slate-800 text-sm leading-tight line-clamp-1">
                                     {doc.cliente}
                                 </h3>
 
-                                <p className="text-xs text-slate-500 pl-2 line-clamp-1 italic">
+                                <p className="text-xs text-slate-600 line-clamp-1">
                                     {doc.trabajo || 'Sin descripción'}
                                 </p>
+                                {/* Producto terminado si lo hay; si no, el material de impresión */}
+                                <p className="text-[11px] text-slate-400 italic line-clamp-1">
+                                    {producto || [material, variante].filter(Boolean).join(' · ') || '—'}
+                                </p>
 
-                                <div className="mt-3 flex items-center gap-2 pl-2">
+                                <div className="mt-2 flex items-center gap-1.5 flex-wrap">
                                     <span className="bg-slate-100 text-slate-600 px-2 py-0.5 rounded text-[10px] font-bold border border-slate-200">
-                                        {doc.ordenes.length} Ítems
+                                        {magnitud}
                                     </span>
+                                    {estadoArea && (
+                                        <span className={`px-2 py-0.5 rounded text-[10px] font-bold border ${estiloEstado}`}>
+                                            {estadoArea}
+                                        </span>
+                                    )}
+                                    {modoRetiro && (
+                                        <span className="text-[10px] font-bold text-slate-500 flex items-center gap-1"
+                                            title={`Forma de envío: ${modoRetiro}`}>
+                                            <i className={`fa-solid ${/encomienda/i.test(modoRetiro) ? 'fa-truck-fast' : /domicilio|cadeter/i.test(modoRetiro) ? 'fa-motorcycle' : 'fa-store'} text-slate-400`}></i>
+                                            {modoRetiro.length > 18 ? modoRetiro.slice(0, 18) + '…' : modoRetiro}
+                                        </span>
+                                    )}
                                     <span className="text-[10px] text-slate-400 ml-auto">
                                         {new Date(doc.fecha).toLocaleDateString()}
                                     </span>
@@ -459,7 +541,7 @@ const EcoUvFinishing = ({ fase = 'trabajo' }) => {
                                                     {/* Un bloque por archivo: boceto + sus terminaciones */}
                                                     {Object.values(terminaciones.reduce((acc, t) => {
                                                         const k = t.ArchivoID || 'sin-archivo';
-                                                        (acc[k] ||= { archivoId: t.ArchivoID, nombre: t.NombreArchivo, ancho: t.Ancho, alto: t.Alto, copias: t.Copias, arteUrl: t.arteUrl, items: [] }).items.push(t);
+                                                        (acc[k] ||= { archivoId: t.ArchivoID, nombre: t.NombreArchivo, ancho: t.Ancho, alto: t.Alto, copias: t.Copias, arteUrl: t.arteUrl, archivoUrl: t.archivoUrl, items: [] }).items.push(t);
                                                         return acc;
                                                     }, {})).map(grupo => {
                                                         // Capas del boceto con las medidas del taller a la vista:
@@ -500,7 +582,16 @@ const EcoUvFinishing = ({ fase = 'trabajo' }) => {
                                                             <div key={grupo.archivoId} className="bg-white border border-amber-200 rounded-lg mb-2 overflow-hidden">
                                                                 <div className="px-4 py-2 bg-amber-50/60 border-b border-amber-100 flex items-center gap-2 flex-wrap">
                                                                     <i className="fa-regular fa-file text-amber-500"></i>
-                                                                    <span className="text-[11px] font-bold text-slate-600 truncate">{grupo.nombre || 'Archivo'}</span>
+                                                                    {/* El nombre abre el ARCHIVO ORIGINAL (no la miniatura) en otra pestaña */}
+                                                                    {grupo.archivoUrl ? (
+                                                                        <a href={resolverUrl(grupo.archivoUrl)} target="_blank" rel="noreferrer"
+                                                                            title="Abrir el archivo original"
+                                                                            className="text-[11px] font-bold text-blue-600 hover:text-blue-800 hover:underline truncate">
+                                                                            {grupo.nombre || 'Archivo'}
+                                                                        </a>
+                                                                    ) : (
+                                                                        <span className="text-[11px] font-bold text-slate-600 truncate">{grupo.nombre || 'Archivo'}</span>
+                                                                    )}
                                                                     {w > 0 && h > 0 && (
                                                                         <span className="text-[10px] font-black text-slate-400">{w.toFixed(2)} × {h.toFixed(2)} m</span>
                                                                     )}

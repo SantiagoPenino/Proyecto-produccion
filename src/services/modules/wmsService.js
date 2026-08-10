@@ -65,6 +65,11 @@ export const wmsService = {
         const response = await api.get('/wms-logistica/historial', { params: { search } });
         return response.data;
     },
+    // [WMS] Bulto extra del pedido (etiquetas 1/2, 2/2...)
+    addBultoPedido: async (pedidoId) => {
+        const response = await api.post(`/wms-logistica/bulto-extra/${pedidoId}`);
+        return response.data;
+    },
     addNota: async (pedidoId, nota) => {
         const response = await api.post(`/wms-logistica/nota/${pedidoId}`, { nota });
         return response.data;

@@ -212,6 +212,44 @@ const desglosarIVA = (totalMonto, tasaIVA = 22) => {
   };
 };
 
+/**
+ * ¿Existe ya DocumentosContables.DocCotizacion? (script add_DocCotizacion.sql)
+ * Se consulta UNA vez por proceso: si el SQL todavía no se corrió en el servidor,
+ * la facturación sigue funcionando igual que antes — simplemente no guarda el tipo
+ * de cambio — en vez de romperse entera por una columna que falta.
+ */
+let _colDocCotizacion = null;
+const existeColDocCotizacion = async (nuevoReq) => {
+  if (_colDocCotizacion !== null) return _colDocCotizacion;
+  try {
+    const r = await nuevoReq().query(`SELECT COL_LENGTH('dbo.DocumentosContables', 'DocCotizacion') AS L`);
+    _colDocCotizacion = r.recordset[0]?.L != null;
+  } catch {
+    _colDocCotizacion = false;
+  }
+  if (!_colDocCotizacion) {
+    logger.warn('[CONTABILIDAD] Falta la columna DocumentosContables.DocCotizacion (correr backend/scripts/add_DocCotizacion.sql): los documentos se emiten sin guardar el tipo de cambio.');
+  }
+  return _colDocCotizacion;
+};
+
+/**
+ * Tipo de cambio a estampar en el documento:
+ *   · el que informó quien emite (el realmente aplicado en la conversión), o
+ *   · si no informó, la última cotización registrada (referencia del día).
+ */
+const resolverCotizacionDoc = async (nuevoReq, valor) => {
+  const informada = Number(valor);
+  if (informada > 0) return informada;
+  try {
+    const r = await nuevoReq().query('SELECT TOP 1 CotDolar FROM dbo.Cotizaciones WITH(NOLOCK) ORDER BY CotFecha DESC');
+    const c = Number(r.recordset[0]?.CotDolar);
+    return c > 0 ? c : null;
+  } catch {
+    return null;
+  }
+};
+
 const crearDocumentoContable = async ({ header, lineas }, transaction = null) => {
   const requiredFields = { cueIdCuenta: header.cueIdCuenta, clienteId: header.clienteId, monedaId: header.monedaId, tipo: header.tipo, numero: header.numero, serie: header.serie, usuarioId: header.usuarioId };
   const missing = Object.entries(requiredFields).filter(([,v]) => !v).map(([k]) => k);
@@ -220,8 +258,15 @@ const crearDocumentoContable = async ({ header, lineas }, transaction = null) =>
   }
 
   const pool = transaction ? null : await getPool();
-  const request = transaction ? new sql.Request(transaction) : pool.request();
-  
+  const nuevoReq = () => (transaction ? new sql.Request(transaction) : pool.request());
+  const request = nuevoReq();
+
+  // Tipo de cambio con el que se emite este documento (columna opcional DocCotizacion).
+  const guardaCotizacion = await existeColDocCotizacion(nuevoReq);
+  const docCotizacion = guardaCotizacion
+    ? await resolverCotizacionDoc(nuevoReq, header.docCotizacion)
+    : null;
+
   const totalDescuentos = header.totalDescuentos !== undefined ? header.totalDescuentos : 0;
   const totalRecargos = header.totalRecargos !== undefined ? header.totalRecargos : 0;
   let estado = header.estado !== undefined ? String(header.estado).toUpperCase().trim() : 'PAGADO';
@@ -285,20 +330,21 @@ const crearDocumentoContable = async ({ header, lineas }, transaction = null) =>
     .input('CliDir', sql.NVarChar(255), docCliDireccion != null ? String(docCliDireccion).substring(0, 255) : null)
     .input('CliCiu', sql.NVarChar(100), docCliCiudad != null ? String(docCliCiudad).substring(0, 100) : null)
     .input('Emp', sql.Int, empresaId || null)
+    .input('Cotiz', sql.Decimal(18, 4), docCotizacion)
     .query(`
       INSERT INTO dbo.DocumentosContables
         (CueIdCuenta, CliIdCliente, MonIdMoneda, DocTipo, DocNumero, DocSerie,
          DocSubtotal, DocImpuestos, DocTotalDescuentos, DocTotalRecargos, DocTotal,
          DocEstado, CfeEstado, DocFechaEmision, DocUsuarioAlta, TcaIdTransaccion, AsiIdAsiento,
          DocObservaciones, DocPagado, DocIdDocumentoRef, DocMotivoRef, CicIdCiclo, DocFechaDesde, DocFechaHasta,
-         DocCliNombre, DocCliDocumento, DocCliDireccion, DocCliCiudad, DocCliNombreFantasia, EmpIdEmpresa)
+         DocCliNombre, DocCliDocumento, DocCliDireccion, DocCliCiudad, DocCliNombreFantasia, EmpIdEmpresa${guardaCotizacion ? ', DocCotizacion' : ''})
       OUTPUT INSERTED.DocIdDocumento
       VALUES
         (@Cue, @Cli, @MonId, @Tipo, @Num, @Serie,
          @Sub, @Imp, @TotalDesc, @TotalRec, @Tot,
          @Estado, @CfeEstado, ISNULL(@FEmis, GETDATE()), @Usr, @TcaId, @AsiId,
          @Obs, @Pagado, @DocRef, @MotRef, @CicId, @FDesde, @FHasta,
-         @CliNombre, @CliDoc, @CliDir, @CliCiu, @CliFant, ISNULL(@Emp, (SELECT TOP 1 EmpIdEmpresa FROM dbo.Empresas WHERE EmpPorDefecto=1)))
+         @CliNombre, @CliDoc, @CliDir, @CliCiu, @CliFant, ISNULL(@Emp, (SELECT TOP 1 EmpIdEmpresa FROM dbo.Empresas WHERE EmpPorDefecto=1))${guardaCotizacion ? ', @Cotiz' : ''})
     `);
 
   const docId = resCab.recordset[0].DocIdDocumento;
@@ -563,18 +609,28 @@ const resolverLineasDetalle = async ({ tcaIdTransaccion, orderIds, monedaFactura
 const actualizarFirmaCFE = async (docId, { cae, numeroOficial, urlQR }, transaction = null) => {
   const pool = transaction ? null : await getPool();
   const request = transaction ? new sql.Request(transaction) : pool.request();
-  
+
+  // Fecha con la que el CFE quedó emitido ante DGI: viene dentro de la URL del QR
+  // (campo 6: ...cfe?RUC,tipo,serie,numero,monto,AAAAMMDD,hash). Si no se puede
+  // parsear, se usa la fecha de hoy (la emisión y la aceptación son el mismo momento).
+  const mFecha = String(urlQR || '').match(/cfe\?[^,]*,[^,]*,[^,]*,[^,]*,[^,]*,(\d{8}),/);
+  const fechaDgi = mFecha
+    ? `${mFecha[1].slice(0, 4)}-${mFecha[1].slice(4, 6)}-${mFecha[1].slice(6, 8)}`
+    : null;
+
   await request
     .input('Id', sql.Int, docId)
     .input('CAE', sql.VarChar(255), cae)
     .input('Oficial', sql.VarChar(100), numeroOficial)
     .input('Url', sql.NVarChar(sql.MAX), urlQR)
+    .input('FechaDgi', sql.Date, fechaDgi)
     .query(`
-      UPDATE dbo.DocumentosContables 
-      SET CfeEstado = 'ACEPTADO_DGI', 
-          CfeCAE = @CAE, 
-          CfeNumeroOficial = @Oficial, 
-          CfeUrlImpresion = @Url
+      UPDATE dbo.DocumentosContables
+      SET CfeEstado = 'ACEPTADO_DGI',
+          CfeCAE = @CAE,
+          CfeNumeroOficial = @Oficial,
+          CfeUrlImpresion = @Url,
+          CfeFechaDgi = ISNULL(@FechaDgi, CAST(GETDATE() AS DATE))
       WHERE DocIdDocumento = @Id
     `);
 };

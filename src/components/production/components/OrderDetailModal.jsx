@@ -395,6 +395,15 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
     // órdenes hermanas del pedido (mismo NoDocERP, incluidas otras hermanas de bultos tipo 1/2, 2/2).
     // Acá solo debe verse el arte de ESTA orden puntual; la excepción es la reposición, que sí debe
     // mostrar también el archivo de la orden madre (readonly) junto al propio.
+    // [TERMINAC] La hermana XEUV no tiene arte propio: se muestran (readonly) los
+    // archivos de su orden MADRE, cuyo código viene en la nota "[TERMINACIONES DE EUV-x]".
+    // SOLO Terminaciones — en Sublimación las hermanas (1/2, 2/2) NO deben ver los
+    // artes de las otras, por eso no se abre el filtro por área ni por pedido entero.
+    const isTERMINAC = String(order?.area || order?.AreaID || currentOrder?.area || currentOrder?.AreaID || '').toUpperCase() === 'TERMINAC';
+    const madreTerminac = isTERMINAC
+        ? (String(currentOrder?.Nota || currentOrder?.nota || order?.Nota || order?.nota || '').match(/\[TERMINACIONES DE ([^\]]+)\]/i)?.[1] || '').trim()
+        : '';
+
     const productionFiles = files.filter(f => {
         const esProduccion = f.Categoria === 'produccion' || (!f.Categoria && !servTypes.includes(normalizeType(f.tipo)));
         if (!esProduccion) return false;
@@ -402,6 +411,7 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
         // [PRO] La orden madre administra el pedido: se ven los archivos de TODAS las
         // hermanas (cada uno etiquetado con su área/orden en la lista).
         if (isPRO) return true;
+        if (isTERMINAC && madreTerminac && String(f._codigoOrden || '').trim() === madreTerminac) return true;
         return String(f.OrdenID) === String(currentOrder?.id);
     });
 

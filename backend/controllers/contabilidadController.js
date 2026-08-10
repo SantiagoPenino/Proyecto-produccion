@@ -2860,15 +2860,19 @@ exports.getOrdenesAnticipo = async (req, res) => {
                    JOIN dbo.PedidosCobranzaDetalle d WITH(NOLOCK) ON pc.ID = d.PedidoCobranzaID
                    LEFT JOIN dbo.Articulos a WITH(NOLOCK) ON a.ProIdProducto = d.ProIdProducto
                    LEFT JOIN dbo.StockArt sa WITH(NOLOCK) ON a.CodStock = sa.CodStock
-                   LEFT JOIN dbo.OrdenesDeposito odj WITH(NOLOCK) ON LTRIM(RTRIM(odj.OrdCodigoOrden)) = LTRIM(RTRIM(pc.NoDocERP))
+                   LEFT JOIN dbo.OrdenesDeposito odj WITH(NOLOCK) ON odj.OrdCodigoOrden = LTRIM(RTRIM(pc.NoDocERP))
                    LEFT JOIN dbo.Articulos aod WITH(NOLOCK) ON aod.ProIdProducto = odj.ProIdProducto
                    LEFT JOIN dbo.StockArt saod WITH(NOLOCK) ON aod.CodStock = saod.CodStock
                    WHERE pc.ID = (
-                       SELECT TOP 1 pc_inner.ID
-                       FROM dbo.PedidosCobranza pc_inner WITH(NOLOCK)
-                       LEFT JOIN dbo.PedidosCobranzaDetalle d_inner WITH(NOLOCK) ON pc_inner.ID = d_inner.PedidoCobranzaID
-                       WHERE d_inner.OrdenID = m.OrdIdOrden OR LTRIM(RTRIM(pc_inner.NoDocERP)) = oa.CodigoOrdenStr
-                       ORDER BY pc_inner.ID DESC
+                       -- Mismo criterio de siempre (el pedido más NUEVO que matchee por OrdenID o por código),
+                       -- pero en 2 sondas indexables. El OR con LTRIM(RTRIM(NoDocERP)) no podía usar índice y
+                       -- escaneaba PedidosCobranza(+Detalle) POR CADA movimiento (4,3s del endpoint con 115 movs).
+                       -- La igualdad de SQL Server ya ignora espacios a la DERECHA, y no existen códigos con
+                       -- espacios a la izquierda (verificado), así que el resultado es idéntico.
+                       SELECT MAX(cand.candidato) FROM (VALUES
+                           ((SELECT MAX(d_inner.PedidoCobranzaID) FROM dbo.PedidosCobranzaDetalle d_inner WITH(NOLOCK) WHERE d_inner.OrdenID = m.OrdIdOrden)),
+                           ((SELECT MAX(pc_inner.ID) FROM dbo.PedidosCobranza pc_inner WITH(NOLOCK) WHERE pc_inner.NoDocERP = oa.CodigoOrdenStr))
+                       ) AS cand(candidato)
                    )
                    FOR JSON PATH
                 ) AS DetallesJSON
@@ -2914,18 +2918,19 @@ exports.emitirFacturaAnticipo = async (req, res) => {
     const UsuarioAlta = req.user?.id || 1;
     const pool = await getPool();
 
-    const { 
+    const {
       ordenesIds, excluidos,
       monedaFactura, cotDolar, descuentoTipo, descuentoValorBase, montoDescuentoCalculado,
       detallesEditados, detallesParaPDF, tipoDocumento, observaciones,
-      cliDgiNombre, cliDgiDocumento, cliDgiDireccion, cliDgiCiudad, actualizarCliente 
+      cliDgiNombre, cliDgiDocumento, cliDgiDireccion, cliDgiCiudad, actualizarCliente,
+      cueIdCuentaFactura   // cuenta base elegida por la pre-factura (opcional)
     } = req.body;
 
     if (!ordenesIds || !ordenesIds.length) {
       return res.status(400).json({ success: false, error: "No se seleccionaron órdenes." });
     }
 
-    // Detectar la cuenta real de los movimientos seleccionados.
+    // Detectar la(s) cuenta(s) real(es) de los movimientos seleccionados.
     // getOrdenesAnticipo devuelve movimientos de CUALQUIER cuenta del cliente,
     // por eso no se puede buscar la cuenta por monedaFactura — los movimientos
     // pueden estar en una cuenta USD aunque el usuario quiera facturar en UYU.
@@ -2934,21 +2939,30 @@ exports.emitirFacturaAnticipo = async (req, res) => {
     const movCueRes = await pool.request()
       .input('Cli', sql.Int, CliIdCliente)
       .query(`
-        SELECT TOP 1 m.CueIdCuenta
+        SELECT m.CueIdCuenta, COUNT(*) AS Movs, MAX(m.MovIdMovimiento) AS UltimoMov,
+               MAX(ISNULL(cc.MonIdMoneda, 1)) AS MonIdMoneda
         FROM dbo.MovimientosCuenta m
+        JOIN dbo.CuentasCliente cc ON cc.CueIdCuenta = m.CueIdCuenta
         WHERE m.OrdIdOrden IN (${inClause})
-          AND m.CueIdCuenta IN (SELECT CueIdCuenta FROM dbo.CuentasCliente WHERE CliIdCliente = @Cli)
+          AND cc.CliIdCliente = @Cli
           AND m.MovTipo IN ('ORDEN', 'ORDEN_ANTICIPO')
           AND m.DocIdDocumento IS NULL
           AND (m.MovAnulado IS NULL OR m.MovAnulado = 0)
-        ORDER BY m.MovIdMovimiento DESC
+        GROUP BY m.CueIdCuenta
+        ORDER BY Movs DESC, UltimoMov DESC
       `);
 
     if (!movCueRes.recordset.length) {
       return res.status(400).json({ success: false, error: 'No se encontraron movimientos pendientes para las órdenes seleccionadas.' });
     }
 
-    const CueIdCuenta = movCueRes.recordset[0].CueIdCuenta;
+    const cuentasInvolucradas = movCueRes.recordset;
+    // Cuenta base del cierre: la que eligió la pre-factura si está entre las involucradas,
+    // si no la que aporta más órdenes (con una sola cuenta el resultado es el de siempre).
+    const CueIdCuenta = (cueIdCuentaFactura && cuentasInvolucradas.some(c => c.CueIdCuenta === Number(cueIdCuentaFactura)))
+      ? Number(cueIdCuentaFactura)
+      : cuentasInvolucradas[0].CueIdCuenta;
+    const cuentasOrigen = cuentasInvolucradas.map(c => c.CueIdCuenta);
 
     let cicRes = await pool.request()
       .input('Cue', sql.Int, CueIdCuenta)
@@ -2971,6 +2985,61 @@ exports.emitirFacturaAnticipo = async (req, res) => {
       .query('SELECT MonIdMoneda FROM dbo.CuentasCliente WHERE CueIdCuenta = @CueId');
     const accMon = (accCurRes.recordset[0]?.MonIdMoneda || 1) === 2 ? 'USD' : 'UYU';
     const cotRate = parseFloat(cotDolar) || 40;
+
+    // ── Pre-factura multimoneda (Panel 360) ────────────────────────────────
+    // Si las órdenes seleccionadas viven en cuentas de distinta moneda, se traen TODAS
+    // a la cuenta base convirtiendo el importe con la cotización del comprobante.
+    // Sin esto, el cierre solo estampaba el documento en los movimientos de la cuenta base
+    // y las órdenes de la otra moneda quedaban "pendientes de facturar" después de haberlas
+    // cobrado en la factura → doble cobro. El movimiento ORDEN no entra en el saldo de la
+    // cuenta (la fórmula de saldo excluye ORDEN/ORDEN_ANTICIPO), por eso el traslado no
+    // mueve plata: solo reubica la orden en el ciclo que la factura.
+    const cuentasAjenas = cuentasInvolucradas.filter(c => c.CueIdCuenta !== CueIdCuenta);
+    for (const ajena of cuentasAjenas) {
+      const monAjena = Number(ajena.MonIdMoneda) === 2 ? 'USD' : 'UYU';
+      // Factor para pasar de la moneda de la cuenta ajena a la de la cuenta base
+      const factor = monAjena === accMon ? 1 : (monAjena === 'USD' ? cotRate : 1 / cotRate);
+      const nota = `[MULTIMONEDA] Trasladado de la cuenta ${ajena.CueIdCuenta} (${monAjena}) a la cuenta ${CueIdCuenta} (${accMon}) para facturarse junto con el resto de las órdenes @ cot. ${cotRate}`;
+      const upd = await pool.request()
+        .input('CueDestino', sql.Int, CueIdCuenta)
+        .input('CueOrigen', sql.Int, ajena.CueIdCuenta)
+        .input('Factor', sql.Decimal(18, 6), factor)
+        .input('Nota', sql.NVarChar(sql.MAX), nota)
+        .query(`
+          UPDATE dbo.MovimientosCuenta
+          SET CueIdCuenta      = @CueDestino,
+              MovImporte       = ROUND(MovImporte * @Factor, 2),
+              -- La nota va al FINAL: hay chequeos que leen el PREFIJO de MovObservaciones
+              -- (CUBIERTO%, MATERIAL_CUBIERTO_PLAN_%) y no se pueden pisar.
+              -- nvarchar(500): LEFT evita el error de truncamiento si ya venía con texto largo
+              MovObservaciones = LEFT(LTRIM(ISNULL(MovObservaciones, '') + ' ' + @Nota), 500)
+          OUTPUT deleted.MovImporte AS Antes, inserted.MovImporte AS Despues
+          WHERE OrdIdOrden IN (${inClause})
+            AND CueIdCuenta = @CueOrigen
+            AND MovTipo IN ('ORDEN', 'ORDEN_ANTICIPO')
+            AND DocIdDocumento IS NULL
+            AND (MovAnulado IS NULL OR MovAnulado = 0)
+        `);
+
+      // CueSaldoActual (columna denormalizada que lee la billetera del cliente) acumula
+      // también las ORDEN abiertas. Si la orden cambia de cuenta, hay que mover ese arrastre
+      // con ella: si no, la cuenta de origen queda mostrando una deuda que ya se facturó.
+      const movidos = upd.recordset || [];
+      if (movidos.length) {
+        const sumAntes   = movidos.reduce((s, r) => s + Number(r.Antes || 0), 0);
+        const sumDespues = movidos.reduce((s, r) => s + Number(r.Despues || 0), 0);
+        await pool.request()
+          .input('CueOrigen', sql.Int, ajena.CueIdCuenta)
+          .input('Antes', sql.Decimal(18, 2), sumAntes)
+          .query(`UPDATE dbo.CuentasCliente SET CueSaldoActual = ISNULL(CueSaldoActual, 0) - @Antes WHERE CueIdCuenta = @CueOrigen`);
+        await pool.request()
+          .input('CueDestino', sql.Int, CueIdCuenta)
+          .input('Despues', sql.Decimal(18, 2), sumDespues)
+          .query(`UPDATE dbo.CuentasCliente SET CueSaldoActual = ISNULL(CueSaldoActual, 0) + @Despues WHERE CueIdCuenta = @CueDestino`);
+      }
+
+      logger.info(`[FACT-ANTICIPO] Multimoneda: ${movidos.length} orden(es) de la cuenta ${ajena.CueIdCuenta} (${monAjena}) trasladadas a la cuenta ${CueIdCuenta} (${accMon}) @ ${cotRate}`);
+    }
 
     for (const rawId of ordenesIds) {
       const ordId = parseInt(rawId, 10);
@@ -3043,7 +3112,10 @@ exports.emitirFacturaAnticipo = async (req, res) => {
       excluidos: Array.isArray(excluidos) ? excluidos : [],
       monedaFactura, cotDolar, descuentoTipo, descuentoValorBase, montoDescuentoCalculado,
       detallesEditados, detallesParaPDF, tipoDocumento, observaciones,
-      cliDgiNombre, cliDgiDocumento, cliDgiDireccion, cliDgiCiudad, actualizarCliente
+      cliDgiNombre, cliDgiDocumento, cliDgiDireccion, cliDgiCiudad, actualizarCliente,
+      // Cuentas de las que salieron las órdenes (pre-factura multimoneda): sus deudas
+      // individuales también tienen que quedar absorbidas por esta factura.
+      cuentasOrigen
     });
     
     res.json({ success: true, data: result });

@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import api from '../../services/apiClient';
 import {
     Landmark, ChevronRight, Search, RefreshCw, Download,
-    PieChart as PieChartIcon, FileCheck2, CheckCircle2, XCircle, Wallet,
+    PieChart as PieChartIcon, FileCheck2, CheckCircle2, XCircle, Wallet, BookText, Eye,
 } from 'lucide-react';
 
 // ─── Reportes disponibles ────────────────────────────────────────────────────
@@ -20,6 +20,13 @@ const REPORTS = [
         icon: FileCheck2,
         desc: 'Documentos enviados vs no enviados a DGI, cantidad e importe por moneda',
         color: 'text-emerald-500',
+    },
+    {
+        id: 'libro-contador',
+        label: 'Libro Contador (CSV)',
+        icon: BookText,
+        desc: 'CSV de ventas y cobros para importar en el sistema del contador — solo CFE aceptados por DGI',
+        color: 'text-amber-500',
     },
 ];
 
@@ -233,6 +240,222 @@ function TablaAgrupadaPorMoneda({ rows, cols, groupBy, sumKeys = [] }) {
     );
 }
 
+// ─── Libro Contador (CSV de importación para el estudio contable) ────────────
+// Formato: Dia,Debe,Haber,Concepto,RUC,Moneda,Total,CodigoIVA,IVA,Cotizacion,Libro
+// Solo documentos ACEPTADO_DGI. La lógica vive en backend/services/libroContadorService.js.
+function LibroContadorSection() {
+    const hoy = new Date();
+    const mesAnterior = new Date(hoy.getFullYear(), hoy.getMonth() - 1, 1);
+    const defMes = `${mesAnterior.getFullYear()}-${String(mesAnterior.getMonth() + 1).padStart(2, '0')}`;
+
+    const [mes, setMes] = useState(defMes);
+    const [fechaBase, setFechaBase] = useState('dgi');
+    const [busy, setBusy] = useState(null);      // 'ventas' | 'cobros' | null
+    const [result, setResult] = useState({});    // { ventas: {stats, archivos}, cobros: {...} }
+    const [preview, setPreview] = useState(null); // { tipo, mes, archivos: [{filename, lineas, rows}] }
+    const [error, setError] = useState(null);
+
+    const COLUMNAS = ['Dia', 'Debe', 'Haber', 'Concepto', 'RUC', 'Moneda', 'Total', 'CodigoIVA', 'IVA', 'Cotizacion', 'Libro'];
+    const PREVIEW_MAX_FILAS = 500;
+
+    const fetchLibro = async (tipo) => {
+        const url = tipo === 'ventas'
+            ? '/contabilidad/reportes/libro-contador-ventas'
+            : '/contabilidad/reportes/libro-contador-cobros';
+        const params = tipo === 'ventas' ? { mes, fechaBase } : { mes };
+        const r = await api.get(url, { params });
+        const archivos = r.data.archivos || [];
+        setResult(p => ({ ...p, [tipo]: { stats: r.data.stats, archivos } }));
+        return archivos;
+    };
+
+    const descargar = async (tipo) => {
+        setBusy(tipo);
+        setError(null);
+        try {
+            const archivos = await fetchLibro(tipo);
+            for (const a of archivos) {
+                const blob = new Blob([a.csv], { type: 'text/csv;charset=utf-8;' });
+                const u = URL.createObjectURL(blob);
+                const el = document.createElement('a');
+                el.href = u; el.download = a.filename; el.click();
+                URL.revokeObjectURL(u);
+            }
+        } catch (e) {
+            setError(e.response?.data?.error || e.message || 'Error al generar el libro');
+        } finally {
+            setBusy(null);
+        }
+    };
+
+    const verEnPantalla = async (tipo) => {
+        setBusy(tipo);
+        setError(null);
+        try {
+            const archivos = await fetchLibro(tipo);
+            setPreview({
+                tipo,
+                mes,
+                archivos: archivos.map(a => ({
+                    filename: a.filename,
+                    lineas: a.lineas,
+                    // filas del CSV tal cual se exportan (sin el encabezado)
+                    rows: a.csv.split(/\r?\n/).slice(1).filter(Boolean).map(l => l.split(',')),
+                })),
+            });
+        } catch (e) {
+            setError(e.response?.data?.error || e.message || 'Error al generar el libro');
+        } finally {
+            setBusy(null);
+        }
+    };
+
+    const CardLibro = ({ tipo, titulo, descripcion, detalle }) => {
+        const res = result[tipo];
+        return (
+            <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-4 space-y-3">
+                <div className="flex items-center gap-2">
+                    <BookText size={16} className="text-amber-500" />
+                    <span className="font-bold text-slate-700 text-sm">{titulo}</span>
+                </div>
+                <p className="text-xs text-slate-500">{descripcion}</p>
+                <p className="text-[11px] text-slate-400">{detalle}</p>
+                <div className="flex items-center gap-2 flex-wrap">
+                    <button onClick={() => verEnPantalla(tipo)} disabled={busy !== null}
+                        className="flex items-center gap-2 px-4 py-2 bg-brand-cyan hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed text-white text-xs font-semibold rounded-lg transition-all shadow-sm">
+                        {busy === tipo ? <RefreshCw size={13} className="animate-spin" /> : <Eye size={13} />}
+                        {busy === tipo ? 'Generando...' : 'Ver en pantalla'}
+                    </button>
+                    <button onClick={() => descargar(tipo)} disabled={busy !== null}
+                        className="flex items-center gap-2 px-4 py-2 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-40 disabled:cursor-not-allowed text-white text-xs font-semibold rounded-lg transition-all shadow-sm">
+                        {busy === tipo ? <RefreshCw size={13} className="animate-spin" /> : <Download size={13} />}
+                        {busy === tipo ? 'Generando...' : `Descargar CSV ${mes}`}
+                    </button>
+                </div>
+                {res && (
+                    res.archivos.length === 0
+                        ? <p className="text-[11px] text-amber-600 font-medium">Sin registros para {mes}: no se descargó ningún archivo.</p>
+                        : <div className="text-[11px] text-slate-500 space-y-0.5">
+                            {res.archivos.map(a => (
+                                <p key={a.filename}>✔ <span className="font-mono">{a.filename}</span> — {a.lineas.toLocaleString()} líneas</p>
+                            ))}
+                            {tipo === 'ventas' && res.stats && (
+                                <p>{res.stats.total} documentos · {res.stats.usd} en USD · {res.stats.sinRuc} sin RUC/CI (e-tickets sin identificar)</p>
+                            )}
+                            {tipo === 'cobros' && res.stats && (
+                                <p>{res.stats.movs} cobros · {res.stats.usd} en USD · {res.stats.sinMetodo} sin método de pago registrado</p>
+                            )}
+                        </div>
+                )}
+            </div>
+        );
+    };
+
+    return (
+        <div className="max-w-5xl space-y-4">
+            {/* Selector de mes + fecha base */}
+            <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-4 space-y-3">
+                <div className="flex items-center gap-3 flex-wrap">
+                    <span className="text-[11px] font-bold text-slate-500 tracking-wide">MES</span>
+                    <input type="month" value={mes} onChange={e => { setMes(e.target.value); setPreview(null); }}
+                        className="text-xs border border-slate-300 rounded-lg px-2 py-1.5 focus:ring-2 focus:ring-brand-cyan/30 outline-none" />
+                    <div className="h-4 w-px bg-slate-200 hidden sm:block" />
+                    <span className="text-[11px] font-bold text-slate-500 tracking-wide">FECHA DEL LIBRO DE VENTAS</span>
+                    {[{ v: 'dgi', l: 'Fecha DGI (la del CFE emitido)' }, { v: 'contable', l: 'Fecha contable (emisión interna)' }].map(o => (
+                        <button key={o.v} onClick={() => { setFechaBase(o.v); setPreview(null); }}
+                            className={`px-3 py-1 rounded-full text-xs font-medium transition-all ${
+                                fechaBase === o.v ? 'bg-brand-cyan text-white shadow-sm' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                            }`}>
+                            {o.l}
+                        </button>
+                    ))}
+                </div>
+                <p className="text-[11px] text-slate-400">
+                    {fechaBase === 'dgi'
+                        ? 'La columna Dia y el mes se toman de la fecha con la que el CFE quedó emitido ante DGI (coincide con lo que el contador ve en DGI).'
+                        : 'La columna Dia y el mes se toman de la fecha de emisión interna del documento (puede no coincidir con la fecha declarada en DGI).'}
+                </p>
+            </div>
+
+            {error && (
+                <div className="bg-red-50 border border-red-200 text-red-600 text-xs rounded-xl px-4 py-3">{error}</div>
+            )}
+
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                <CardLibro tipo="ventas" titulo="Libro de Ventas"
+                    descripcion="Todos los CFE aceptados por DGI del mes. Un asiento por documento: Debe 1121001 (deudores) por el total, Haber 5130 (ventas) por el neto y Haber 21332 (IVA) por el impuesto. Las notas de crédito van invertidas. Libro = V."
+                    detalle="Formato: Dia,Debe,Haber,Concepto,RUC,Moneda,Total,CodigoIVA,IVA,Cotizacion,Libro. USD: Moneda=1, importe en dólares y cotización del día. Si hay más de una empresa, baja un archivo por empresa." />
+                <CardLibro tipo="cobros" titulo="Libro de Cobros (facturas crédito)"
+                    descripcion="Pagos del mes aplicados a facturas crédito aceptadas por DGI (pagos anulados excluidos). Por cada cobro: Debe caja/banco/cheques según el método de pago, Haber 1121001 (deudores). Libro = D."
+                    detalle="La fecha es siempre la del cobro. Un pago que cubre varias facturas genera una línea por factura, con la serie y número oficial DGI en el concepto." />
+            </div>
+
+            {/* ── Vista previa en pantalla: las filas del CSV tal cual se exportan ── */}
+            {preview && (
+                <div className="space-y-3">
+                    <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                            <Eye size={15} className="text-brand-cyan" />
+                            <span className="font-bold text-slate-700 text-sm">
+                                Vista previa — {preview.tipo === 'ventas' ? 'Libro de Ventas' : 'Libro de Cobros'} {preview.mes}
+                            </span>
+                        </div>
+                        <button onClick={() => setPreview(null)}
+                            className="text-xs text-slate-400 hover:text-red-500 font-bold px-2 py-1" title="Cerrar vista previa">
+                            ✕ Cerrar
+                        </button>
+                    </div>
+
+                    {preview.archivos.length === 0 ? (
+                        <div className="bg-white rounded-xl border border-slate-200 shadow-sm px-4 py-6 text-center text-xs text-slate-400">
+                            Sin registros para {preview.mes}.
+                        </div>
+                    ) : preview.archivos.map(a => (
+                        <div key={a.filename} className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+                            <div className="px-4 py-2.5 bg-slate-50 border-b border-slate-200 flex items-center justify-between">
+                                <span className="font-mono text-xs text-slate-700">{a.filename}</span>
+                                <span className="text-[11px] text-slate-400">{a.lineas.toLocaleString()} líneas</span>
+                            </div>
+                            <div className="overflow-x-auto max-h-[28rem] overflow-y-auto">
+                                <table className="w-full text-xs">
+                                    <thead className="bg-slate-50 border-b border-slate-200 sticky top-0">
+                                        <tr>
+                                            <th className="px-2 py-2 text-left text-slate-400 font-semibold w-8">#</th>
+                                            {COLUMNAS.map(c => (
+                                                <th key={c} className="px-2 py-2 text-left text-slate-500 font-semibold whitespace-nowrap">{c}</th>
+                                            ))}
+                                        </tr>
+                                    </thead>
+                                    <tbody className="divide-y divide-slate-50">
+                                        {a.rows.slice(0, PREVIEW_MAX_FILAS).map((row, i) => (
+                                            <tr key={i} className="hover:bg-slate-50/70 transition-colors">
+                                                <td className="px-2 py-1.5 text-slate-300 whitespace-nowrap">{i + 1}</td>
+                                                {COLUMNAS.map((c, j) => (
+                                                    <td key={c} className={`px-2 py-1.5 whitespace-nowrap ${
+                                                        ['Total', 'IVA', 'Cotizacion'].includes(c) ? 'font-mono tabular-nums text-right' : ''
+                                                    } ${c === 'Debe' && row[j] ? 'text-sky-700 font-semibold' : ''} ${
+                                                        c === 'Haber' && row[j] ? 'text-emerald-700 font-semibold' : ''}`}>
+                                                        {row[j] || ''}
+                                                    </td>
+                                                ))}
+                                            </tr>
+                                        ))}
+                                    </tbody>
+                                </table>
+                            </div>
+                            <div className="px-4 py-2 bg-slate-50 border-t border-slate-100 text-[11px] text-slate-400">
+                                {a.rows.length > PREVIEW_MAX_FILAS
+                                    ? `Mostrando las primeras ${PREVIEW_MAX_FILAS} de ${a.rows.length.toLocaleString()} filas — el archivo completo baja con "Descargar CSV".`
+                                    : `${a.rows.length.toLocaleString()} filas — idénticas al CSV que baja con "Descargar CSV".`}
+                            </div>
+                        </div>
+                    ))}
+                </div>
+            )}
+        </div>
+    );
+}
+
 // ─── Componente principal ─────────────────────────────────────────────────────
 export default function ContabilidadReportesPage() {
     const [activeReport, setActiveReport] = useState('ventas-area');
@@ -281,6 +504,7 @@ export default function ContabilidadReportesPage() {
     }, []);
 
     const fetchReport = useCallback(async () => {
+        if (activeReport === 'libro-contador') return; // esa sección genera bajo demanda, con sus propios botones
         setLoading(true);
         setError(null);
         try {
@@ -443,7 +667,7 @@ export default function ContabilidadReportesPage() {
                             {activeRep && (() => { const I = activeRep.icon; return <I size={15} className={activeRep.color} />; })()}
                             <span className="font-bold text-slate-700 text-sm">{activeRep?.label}</span>
                         </div>
-                        <div className="flex items-center gap-2 shrink-0">
+                        {activeReport !== 'libro-contador' && <div className="flex items-center gap-2 shrink-0">
                             <button onClick={fetchReport} disabled={loading}
                                 className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-600 text-xs font-medium rounded-lg transition-all"
                                 title="Actualizar">
@@ -454,9 +678,10 @@ export default function ContabilidadReportesPage() {
                                 <Download size={13} />
                                 Exportar CSV
                             </button>
-                        </div>
+                        </div>}
                     </div>
 
+                    {activeReport !== 'libro-contador' && <>
                     {/* Fila 2: FECHA */}
                     <div className="flex items-center gap-2 flex-wrap">
                         <span className="text-[11px] font-bold text-slate-500 w-11 shrink-0 tracking-wide">FECHA</span>
@@ -533,6 +758,7 @@ export default function ContabilidadReportesPage() {
                             )}
                         </div>
                     </div>
+                    </>}
                 </div>
 
                 {/* ── Contenido del reporte ──────────────────────────────── */}
@@ -550,6 +776,8 @@ export default function ContabilidadReportesPage() {
                                 Reintentar
                             </button>
                         </div>
+                    ) : activeReport === 'libro-contador' ? (
+                        <LibroContadorSection />
                     ) : activeReport === 'ventas-area' ? (
                         <>
                             {monedasArea.length === 0 ? (

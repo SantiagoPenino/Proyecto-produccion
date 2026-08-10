@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { toast } from 'sonner';
-import { Package, CheckCircle, ChevronDown, ChevronUp, RefreshCw, XCircle, Save, Edit2, PlayCircle, Clock, History, StickyNote, Send, Printer, Search, Truck } from 'lucide-react';
+import { Package, CheckCircle, ChevronDown, ChevronUp, RefreshCw, XCircle, Save, Edit2, PlayCircle, Clock, History, StickyNote, Send, Printer, Search, Truck, PackagePlus } from 'lucide-react';
 import { wmsService } from '../../services/modules/wmsService';
 
 // [WMS] Vista unificada de la pestaña "Recibir órdenes de venta" (Inventario):
@@ -76,6 +76,20 @@ const WmsReceiveSalesView = () => {
     const handlePrintEtiquetas = (order, e) => {
         if (e) e.stopPropagation();
         window.open(`/api/wms-logistica/etiquetas-print/${order.id}`, '_blank');
+    };
+
+    // Agregar un bulto más al pedido (va en más de un paquete). SOLO agrega y actualiza
+    // el contador — la impresión es acción aparte (botón 🖨, saca todas las etiquetas
+    // ya renumeradas 1/N ... N/N).
+    const handleAddBulto = async (order, e) => {
+        if (e) e.stopPropagation();
+        try {
+            const res = await wmsService.addBultoPedido(order.id);
+            toast.success(res.message || 'Bulto agregado');
+            if (vista === 'historial') loadHistorial(); else loadOrders();
+        } catch (error) {
+            toast.error(error.response?.data?.error || 'Error al agregar el bulto');
+        }
     };
 
     // ── Historial y notas ────────────────────────────────────────────────────
@@ -250,6 +264,14 @@ const WmsReceiveSalesView = () => {
         'RECIBIDO_DEPOSITO': 'Ingresado a Depósito + aviso al cliente',
         'CANCELADO': 'Pedido cancelado',
         'ENTREGADO': 'Entregado al cliente',
+    };
+
+    // Nombres legibles de las áreas de producción (para el badge "→ Bordado" de los
+    // pedidos comprar+personalizar, cuyas órdenes hermanas comparten el VEN)
+    const AREA_LABELS = {
+        'EMB': 'Bordado', 'DF': 'DTF', 'TPU': 'TPU', 'EST': 'Estampado',
+        'TWC': 'Corte', 'TWT': 'Costura', 'SB': 'Sublimación',
+        'ECOUV': 'Eco UV', 'DIRECTA': 'Directa', 'PRO': 'Producción',
     };
 
     const ESTADO_BADGE = {
@@ -485,6 +507,35 @@ const WmsReceiveSalesView = () => {
                                                             {order.notasCount}
                                                         </span>
                                                     )}
+                                                    {order.bultosCount > 0 && (
+                                                        <span
+                                                            className="flex items-center gap-1 px-2 py-1 rounded-full text-xs font-bold bg-slate-100 text-slate-600"
+                                                            title={`El pedido tiene ${order.bultosCount} bulto(s) con etiqueta — se imprimen con el botón 🖨`}
+                                                        >
+                                                            <Package size={13} />
+                                                            {order.bultosCount} {order.bultosCount === 1 ? 'bulto' : 'bultos'}
+                                                        </span>
+                                                    )}
+                                                    {/* Próxima área: siempre visible — Depósito discreto (venta pura),
+                                                        área de producción RESALTADA (comprar y personalizar) */}
+                                                    {(order.areasDestino || []).length > 0 ? (
+                                                        (order.areasDestino || []).map(a => (
+                                                            <span
+                                                                key={a}
+                                                                className="flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-black bg-violet-600 text-white shadow-sm shadow-violet-300"
+                                                                title={`¡OJO! Este pedido también tiene trabajo en ${AREA_LABELS[a] || a} (órdenes del mismo documento ${order.codigo}) — no es venta directa a depósito`}
+                                                            >
+                                                                → {AREA_LABELS[a] || a}
+                                                            </span>
+                                                        ))
+                                                    ) : (
+                                                        <span
+                                                            className="flex items-center gap-1 px-2 py-1 rounded-full text-xs font-bold bg-slate-50 text-slate-400 border border-slate-200"
+                                                            title="Venta directa: el pedido va solo a Depósito"
+                                                        >
+                                                            → Depósito
+                                                        </span>
+                                                    )}
                                                 </div>
                                                 <p className="text-sm text-slate-500 font-medium truncate">
                                                     {order.cliente} • {new Date(order.fecha).toLocaleDateString('es-UY', { hour: '2-digit', minute: '2-digit' })}
@@ -504,6 +555,15 @@ const WmsReceiveSalesView = () => {
                                                 <p className="text-xs text-slate-400 font-bold uppercase mb-0.5">Total</p>
                                                 <p className="font-bold text-slate-800">{order.moneda} ${order.total}</p>
                                             </div>
+                                            {!readOnly && (
+                                                <button
+                                                    onClick={(e) => handleAddBulto(order, e)}
+                                                    className="bg-slate-50 hover:bg-amber-50 p-2.5 rounded-full text-slate-400 hover:text-amber-600 transition-colors"
+                                                    title="Agregar un bulto más al pedido (va en más de un paquete) — las etiquetas quedan 1/2, 2/2... y se abren para imprimir"
+                                                >
+                                                    <PackagePlus size={18} />
+                                                </button>
+                                            )}
                                             <button
                                                 onClick={(e) => handlePrintEtiquetas(order, e)}
                                                 className="bg-slate-50 hover:bg-indigo-50 p-2.5 rounded-full text-slate-400 hover:text-indigo-600 transition-colors"

@@ -986,6 +986,7 @@ export default function ClienteVista360() {
   const [showFacturaManual, setShowFacturaManual] = useState(false);
   const [showSaldoInicial, setShowSaldoInicial]   = useState(false);
   const [showAjusteSaldo, setShowAjusteSaldo]     = useState(false);
+  const [showElegirMonedaFact, setShowElegirMonedaFact] = useState(false); // elegir en qué moneda facturar las órdenes pendientes
 
   const [globalDesde, setGlobalDesde] = useState(() => { const d = new Date(); d.setMonth(d.getMonth() - 1); return d.toISOString().split('T')[0]; });
   const [globalHasta, setGlobalHasta] = useState(() => new Date().toISOString().split('T')[0]);
@@ -1024,28 +1025,43 @@ export default function ClienteVista360() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const handleFacturarOrdenes = () => {
-    // Preferir las órdenes de la cuenta activa; si no hay en esta moneda, tomar la cuenta que sí tenga órdenes.
-    let ordenes = ordenesFiltradas;
-    let cuentaFact = cuentaActiva;
-    if (!ordenes.length && ordenesAnticipo.length) {
-      const primera = ordenesAnticipo[0];
-      cuentaFact = cuentas.find(c => c.CueIdCuenta === primera.CueIdCuenta) || cuentas[0];
-      ordenes = ordenesAnticipo.filter(o => o.CueIdCuenta === cuentaFact?.CueIdCuenta);
-    }
-    if (!ordenes.length) {
-      toast('No hay órdenes pendientes de facturar para este cliente.');
-      return;
-    }
+  // Abre la pre-factura con un conjunto de órdenes. `cuentaBase` es la cuenta sobre la que
+  // se cierra el ciclo; cada orden viaja etiquetada con SU moneda (MovMonIdMoneda) para que
+  // la pre-factura convierta bien aunque vengan de cuentas distintas (pesos + dólares).
+  const irAPrefactura = (cuentaBase, ordenes) => {
+    setShowElegirMonedaFact(false);
     navigate('/contabilidad/prefactura', {
       state: {
-        ciclo: { CicIdCiclo: (cuentaFact && Number(cuentaFact.CueSaldoActual || 0) > 0) ? 'ANTICIPO' : 'CREDITO', CicFechaInicio: new Date().toISOString(), CicFechaCierre: new Date().toISOString() },
+        ciclo: { CicIdCiclo: Number(cuentaBase?.CueSaldoActual || 0) > 0 ? 'ANTICIPO' : 'CREDITO', CicFechaInicio: new Date().toISOString(), CicFechaCierre: new Date().toISOString() },
         cliente: clienteSel,
-        cuenta: cuentaFact || cuentas[0],
-        movsOriginales: ordenes.map(m => ({ ...m, MovImporte: m.MovImporte < 0 ? m.MovImporte : -Math.abs(m.MovImporte) })),
+        cuenta: cuentaBase,
+        movsOriginales: ordenes.map(m => ({
+          ...m,
+          MovImporte: m.MovImporte < 0 ? m.MovImporte : -Math.abs(m.MovImporte),
+        })),
         returnTo: '/contabilidad/cliente-360',
       },
     });
+  };
+
+  // TODAS las órdenes pendientes, sin importar la moneda, en un solo comprobante.
+  // La cuenta base es la de DÓLARES: el comprobante mixto se emite siempre en US$, así la
+  // cuenta del cierre y la moneda de la factura coinciden y las pesos son las únicas que
+  // se convierten. Si no hubiera cuenta en dólares, se usa la que aporta más órdenes.
+  const facturarTodasJuntas = () => {
+    const base = gruposFacturables.find(g => g.monId === 2)
+      || gruposFacturables.reduce((a, b) => (b.ordenes.length > a.ordenes.length ? b : a), gruposFacturables[0]);
+    irAPrefactura(base.cuenta, gruposFacturables.flatMap(g => g.ordenes));
+  };
+
+  const handleFacturarOrdenes = () => {
+    if (!gruposFacturables.length) {
+      toast('No hay órdenes pendientes de facturar para este cliente.');
+      return;
+    }
+    // Una sola moneda → directo. Varias → elegir: todas juntas o una moneda por vez.
+    if (gruposFacturables.length === 1) { irAPrefactura(gruposFacturables[0].cuenta, gruposFacturables[0].ordenes); return; }
+    setShowElegirMonedaFact(true);
   };
 
   /* ── Datos: mismos endpoints que la vista de cuentas ────────────────── */
@@ -1128,6 +1144,32 @@ export default function ClienteVista360() {
     if (!cuentaActiva) return [];
     return ordenesAnticipo.filter(o => o.CueIdCuenta === cuentaActiva.CueIdCuenta);
   }, [ordenesAnticipo, cuentaActiva]);
+
+  // Órdenes pendientes de facturar agrupadas por cuenta de dinero (una cuenta = una moneda).
+  // El botón "Facturar semanales" ya NO depende de la cuenta activa: ve las de TODAS las monedas.
+  const gruposFacturables = useMemo(() => {
+    const map = new Map();
+    ordenesAnticipo.forEach(o => {
+      if (!map.has(o.CueIdCuenta)) {
+        const cta = cuentas.find(c => c.CueIdCuenta === o.CueIdCuenta);
+        const esUSD = Number(cta?.MonIdMoneda) === 2 || cta?.MonSimbolo === 'US$' || cta?.CueTipo === 'DINERO_USD';
+        map.set(o.CueIdCuenta, {
+          cuenta: cta || { CueIdCuenta: o.CueIdCuenta },
+          monId: esUSD ? 2 : 1,
+          simbolo: cta?.MonSimbolo || (esUSD ? 'US$' : '$'),
+          moneda: esUSD ? 'Dólares' : 'Pesos',
+          ordenes: [],
+          total: 0,
+        });
+      }
+      const g = map.get(o.CueIdCuenta);
+      // MovMonIdMoneda: moneda propia del movimiento (1=UYU, 2=USD). La pre-factura la usa
+      // para convertir cada orden desde SU moneda, no desde la de la cuenta base del cierre.
+      g.ordenes.push({ ...o, MovMonIdMoneda: g.monId });
+      g.total += Math.abs(Number(o.MovImporte || 0));
+    });
+    return Array.from(map.values());
+  }, [ordenesAnticipo, cuentas]);
 
   const recursoCuentas = useMemo(() => cuentas.filter(esRecurso), [cuentas]);
 
@@ -1610,6 +1652,55 @@ export default function ClienteVista360() {
             setGlobalFiltroTrigger(v => v + 1); // refresca el Estado de Cuenta (ResumenDocumentosPanel)
           }}
         />
+      )}
+
+      {/* Facturar semanales — el cliente tiene órdenes pendientes en más de una moneda:
+          todas juntas en un comprobante (convertidas) o una moneda por vez. */}
+      {showElegirMonedaFact && (
+        <div className="fixed inset-0 z-[70] bg-black/50 flex items-center justify-center p-4" onClick={() => setShowElegirMonedaFact(false)}>
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between px-5 py-3 bg-slate-800 text-white">
+              <div className="flex items-center gap-2">
+                <Calendar size={16} />
+                <span className="text-sm font-bold">¿Qué órdenes vas a facturar?</span>
+              </div>
+              <button onClick={() => setShowElegirMonedaFact(false)} className="text-white/70 hover:text-white"><X size={16} /></button>
+            </div>
+            <div className="px-5 py-4">
+              <p className="text-xs text-slate-500 mb-3">
+                Este cliente tiene órdenes pendientes en <strong>más de una moneda</strong>. Podés llevarlas
+                todas juntas a un solo comprobante (se convierten con la cotización del día) o facturar una moneda por vez.
+              </p>
+              <div className="flex flex-col gap-2">
+                <button onClick={facturarTodasJuntas}
+                  className="flex items-center justify-between px-4 py-3 rounded-xl border-2 border-emerald-500 bg-emerald-50 hover:bg-emerald-100 transition-colors text-left">
+                  <div className="flex flex-col">
+                    <span className="text-sm font-black text-emerald-800">TODAS las órdenes juntas (pesos + dólares)</span>
+                    <span className="text-[11px] text-emerald-700">
+                      {gruposFacturables.reduce((s, g) => s + g.ordenes.length, 0)} órdenes en un único comprobante — se convierten a la moneda que elijas en la pre-factura
+                    </span>
+                  </div>
+                  <span className="text-xs font-black text-emerald-700 font-mono whitespace-nowrap">
+                    {gruposFacturables.map(g => fmt(g.total, g.simbolo)).join(' + ')}
+                  </span>
+                </button>
+
+                <div className="text-[10px] font-black uppercase tracking-widest text-slate-400 mt-2 mb-0.5">O facturar por separado</div>
+
+                {gruposFacturables.map(g => (
+                  <button key={g.cuenta.CueIdCuenta} onClick={() => irAPrefactura(g.cuenta, g.ordenes)}
+                    className="flex items-center justify-between px-4 py-3 rounded-xl border border-slate-200 hover:border-indigo-300 hover:bg-indigo-50 transition-colors text-left">
+                    <div className="flex flex-col">
+                      <span className="text-sm font-bold text-slate-700">Órdenes en {g.moneda} ({g.simbolo})</span>
+                      <span className="text-[11px] text-slate-500">{g.ordenes.length} orden{g.ordenes.length > 1 ? 'es' : ''} pendiente{g.ordenes.length > 1 ? 's' : ''} de facturar</span>
+                    </div>
+                    <span className="text-sm font-black text-emerald-700 font-mono">{fmt(g.total, g.simbolo)}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* Menú "Más" → Nueva Factura Manual (prellenada con el cliente) */}

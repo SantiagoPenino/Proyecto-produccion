@@ -71,6 +71,46 @@ const SQL_EMAIL_CLIENTE = `
                     AND cr.CliMail LIKE '%_@_%._%'
                   ORDER BY cr.CliIdCliente DESC) AS CliEmailPortal`;
 
+/**
+ * CliEmailPortal POR LOTE, para listados. La subconsulta de arriba escanea Clientesreact
+ * POR FILA devuelta (el CAST+OR no puede usar índice): en la bandeja con rango amplio eran
+ * 6.000+ escaneos = 13s de query. Acá se resuelve UNA sola vez por cliente distinto, con las
+ * MISMAS reglas de matching y la misma prioridad (cr.CliIdCliente más alto gana).
+ * Solo cambia DÓNDE se calcula: CliEmail (ficha) y CliEmailPortal (alta web) siguen separados.
+ * Devuelve Map<CliIdCliente, email>; clientes sin email del portal no aparecen en el Map.
+ */
+async function resolverEmailsPortalLote(pool, clienteIds) {
+    const ids = [...new Set(clienteIds.filter(id => Number.isInteger(id) && id > 0))];
+    const map = new Map();
+    if (!ids.length) return map;
+
+    const res = await pool.request().query(`
+        WITH cli AS (
+            SELECT c.CliIdCliente, c.IDCliente, c.IDReact
+            FROM dbo.Clientes c WITH(NOLOCK)
+            WHERE c.CliIdCliente IN (${ids.join(',')})
+        ),
+        cand AS (
+            SELECT cli.CliIdCliente, cr.CliIdCliente AS CrId, LTRIM(RTRIM(cr.CliMail)) AS Mail
+            FROM cli
+            JOIN dbo.Clientesreact cr WITH(NOLOCK) ON cr.CliCodigoCliente = cli.IDCliente
+            WHERE cr.CliMail LIKE '%_@_%._%'
+            UNION ALL
+            SELECT cli.CliIdCliente, cr.CliIdCliente, LTRIM(RTRIM(cr.CliMail))
+            FROM cli
+            JOIN dbo.Clientesreact cr WITH(NOLOCK)
+              ON CAST(cr.CliIdCliente AS VARCHAR(50)) = CAST(cli.IDReact AS VARCHAR(50))
+            WHERE cli.IDReact IS NOT NULL AND cli.IDReact <> ''
+              AND cr.CliMail LIKE '%_@_%._%'
+        )
+        SELECT CliIdCliente, Mail
+        FROM (SELECT c2.*, ROW_NUMBER() OVER (PARTITION BY CliIdCliente ORDER BY CrId DESC) AS rn FROM cand c2) x
+        WHERE rn = 1
+    `);
+    res.recordset.forEach(r => map.set(r.CliIdCliente, r.Mail));
+    return map;
+}
+
 exports.getDocumentosCFE = async (req, res) => {
     try {
         const { fechaDesde, fechaHasta, tipo, estado, clienteId, empresaId, metodoPagoId } = req.query;
@@ -92,7 +132,7 @@ exports.getDocumentosCFE = async (req, res) => {
                 c.CioRuc AS CliRUT,
                 c.CioRuc AS CliDocumento,
                 c.IDCliente AS StringIDCliente,
-                ${SQL_EMAIL_CLIENTE},
+                NULLIF(LTRIM(RTRIM(CASE WHEN c.Email LIKE '%_@_%._%' THEN c.Email END)), '') AS CliEmail,
                 (SELECT TOP 1 mp.MPaDescripcionMetodo
                  FROM dbo.Pagos p WITH(NOLOCK)
                  JOIN dbo.MetodosPagos mp WITH(NOLOCK) ON p.MPaIdMetodoPago = mp.MPaIdMetodoPago
@@ -154,6 +194,11 @@ exports.getDocumentosCFE = async (req, res) => {
         baseQuery += ` ORDER BY d.DocFechaEmision DESC`;
 
         const result = await request.query(baseQuery);
+
+        // CliEmailPortal por lote: una pasada por cliente distinto en vez de la subconsulta
+        // por documento que hacía escanear Clientesreact 6.000+ veces (13s con rango amplio).
+        const emailsPortal = await resolverEmailsPortalLote(pool, result.recordset.map(d => d.CliIdCliente));
+        for (const d of result.recordset) d.CliEmailPortal = emailsPortal.get(d.CliIdCliente) || null;
 
         // Tipo de CFE según el nomenclador de DGI (101/111 venta, 102/112 NC, 103/113 ND).
         // Se devuelven DOS datos distintos, porque no son lo mismo:
@@ -1379,6 +1424,7 @@ exports.editarFactura = async (req, res) => {
                     : null;
                 await transaction.request()
                     .input('docId', sql.Int, id)
+                    .input('ordCod', sql.VarChar(100), String(linea.OrdCodigoOrden || '').trim().substring(0, 100) || null)
                     // DcdNomItem en la base es nvarchar(80): un concepto más largo hacía
                     // fallar el INSERT por truncamiento. Se acota a 80 (el detalle largo va en
                     // DcdDscItem, que es nvarchar(1000)).
@@ -1394,8 +1440,8 @@ exports.editarFactura = async (req, res) => {
                     .input('descPct', sql.Decimal(9, 4), descPct)
                     .query(`
                         INSERT INTO DocumentosContablesDetalle
-                            (DocIdDocumento, DcdNomItem, DcdDscItem, DcdCantidad, DcdPrecioUnitario, DcdSubtotal, DcdImpuestos, DcdTotal, DcdTotalDescuentos, DcdDescuentoStr, DcdDescuentoPct)
-                        VALUES (@docId, @nom, @dsc, @cant, @precio, @sub, @imp, @tot, @desc, @descStr, @descPct)
+                            (DocIdDocumento, OrdCodigoOrden, DcdNomItem, DcdDscItem, DcdCantidad, DcdPrecioUnitario, DcdSubtotal, DcdImpuestos, DcdTotal, DcdTotalDescuentos, DcdDescuentoStr, DcdDescuentoPct)
+                        VALUES (@docId, @ordCod, @nom, @dsc, @cant, @precio, @sub, @imp, @tot, @desc, @descStr, @descPct)
                     `);
             }
         }
