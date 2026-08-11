@@ -274,11 +274,13 @@ exports.createOrder = async (req, res) => {
                 ordenIndex++;
             }
 
-            // 3. [WMS] Orden acompañante por ítem, área PRO — mismo mecanismo que la prenda
+            // 3. [WMS] Orden ancla del pedido, área PRO — mismo mecanismo que la prenda
             // personalizada: existe SOLO para poder generar su bulto/etiqueta con destino
-            // Depósito en confirmPreparation. EstadoDependencia='VENTA_DIRECTA' la excluye
-            // de cualquier grilla de producción (no es trabajo, es un ancla de etiqueta) —
-            // aditivo, no toca en nada el resto del flujo VEN/PedidosCobranza de arriba.
+            // Depósito. EstadoDependencia='VENTA_DIRECTA' la excluye de cualquier grilla
+            // de producción (no es trabajo, es un ancla de etiqueta). Es UNA sola por
+            // pedido (antes era una por ítem y salía una etiqueta por línea): el pedido
+            // viaja como UN bulto rotulado — si va en más paquetes, se agregan bultos
+            // extra desde Órdenes de Venta (addBultoPedido) y salen 1/2, 2/2...
             let clienteNombre = 'Consumidor Final';
             try {
                 const cliRes = await transaction.request()
@@ -288,34 +290,33 @@ exports.createOrder = async (req, res) => {
                 if (c) clienteNombre = (c.IDCliente && c.IDCliente.trim()) ? c.IDCliente.trim() : (c.Nombre || clienteNombre);
             } catch (eCli) { /* fallback al nombre por defecto */ }
 
-            for (const item of items) {
-                await transaction.request()
-                    .input('Cliente', sql.NVarChar(200), clienteNombre)
-                    .input('CliId', sql.Int, clienteId || 2089)
-                    .input('Desc', sql.NVarChar(300), item.nombre || 'Producto WMS')
-                    .input('Mat', sql.VarChar(255), item.nombre || 'Producto WMS')
-                    // CodigoOrden = el código de venta tal cual (es lo que se imprime en
-                    // grande en la etiqueta) — sin prefijo PRO-, que solo confundía.
-                    .input('Cod', sql.VarChar(50), codigoVenta)
-                    .input('Doc', sql.VarChar(50), codigoVenta)
-                    .input('Mag', sql.VarChar(50), String(item.cantidad))
-                    .input('Prod', sql.Int, item.ProIdProducto || null)
-                    .input('Wms', sql.Int, parseInt(item.wms_variante_id) || null)
-                    .query(`
-                        INSERT INTO Ordenes (
-                            AreaID, Cliente, CliIdCliente, DescripcionTrabajo, Prioridad,
-                            FechaIngreso, FechaEstimadaEntrega, Material, CodigoOrden, NoDocERP,
-                            Magnitud, ProximoServicio, UM, Estado, EstadoenArea,
-                            ProIdProducto, WmsVarianteId, EstadoDependencia
-                        )
-                        VALUES (
-                            'PRO', @Cliente, @CliId, @Desc, 'Normal',
-                            GETDATE(), DATEADD(day, 3, GETDATE()), @Mat, @Cod, @Doc,
-                            @Mag, 'DEPOSITO', 'u', 'Pendiente', 'Pendiente',
-                            @Prod, @Wms, 'VENTA_DIRECTA'
-                        )
-                    `);
-            }
+            const totalUnidades = items.reduce((s, it) => s + (Number(it.cantidad) || 0), 0);
+            await transaction.request()
+                .input('Cliente', sql.NVarChar(200), clienteNombre)
+                .input('CliId', sql.Int, clienteId || 2089)
+                .input('Desc', sql.NVarChar(300), `VENTA WMS (${items.length} artículo(s), ${totalUnidades} unidad(es))`)
+                .input('Mat', sql.VarChar(255), 'VENTA WMS')
+                // CodigoOrden = el código de venta tal cual (es lo que se imprime en
+                // grande en la etiqueta) — sin prefijo PRO-, que solo confundía.
+                .input('Cod', sql.VarChar(50), codigoVenta)
+                .input('Doc', sql.VarChar(50), codigoVenta)
+                .input('Mag', sql.VarChar(50), String(totalUnidades))
+                .input('Prod', sql.Int, items.length === 1 ? (items[0].ProIdProducto || null) : null)
+                .input('Wms', sql.Int, items.length === 1 ? (parseInt(items[0].wms_variante_id) || null) : null)
+                .query(`
+                    INSERT INTO Ordenes (
+                        AreaID, Cliente, CliIdCliente, DescripcionTrabajo, Prioridad,
+                        FechaIngreso, FechaEstimadaEntrega, Material, CodigoOrden, NoDocERP,
+                        Magnitud, ProximoServicio, UM, Estado, EstadoenArea,
+                        ProIdProducto, WmsVarianteId, EstadoDependencia
+                    )
+                    VALUES (
+                        'PRO', @Cliente, @CliId, @Desc, 'Normal',
+                        GETDATE(), DATEADD(day, 3, GETDATE()), @Mat, @Cod, @Doc,
+                        @Mag, 'DEPOSITO', 'u', 'Pendiente', 'Pendiente',
+                        @Prod, @Wms, 'VENTA_DIRECTA'
+                    )
+                `);
 
             await transaction.commit();
 

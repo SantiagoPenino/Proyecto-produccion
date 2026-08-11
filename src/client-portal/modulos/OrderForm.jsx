@@ -178,6 +178,8 @@ const OrderForm = ({ serviceId: propServiceId }) => {
         pedidoExcelFile, enableCorte, enableCostura, garmentQuantity,
         ponchadoFiles, bocetoFile, bordadoBocetoFile, costuraNote,
         bordadoMaterial, bordadoVariant,
+        // [BORDADO] diseños (uno por logo) y prendas del cliente con saldo
+        disenosBordado, prendasDisponibles,
         // Estampado
         estampadoFile, estampadoQuantity, estampadoPrints, estampadoOrigin,
         // TPU
@@ -1301,6 +1303,51 @@ const OrderForm = ({ serviceId: propServiceId }) => {
             }
         }
 
+        // [BORDADO] Cada diseño tiene que estar completo antes de mandar el pedido.
+        // Lo más importante: sobre QUÉ prendas va. Sin eso el backend no sabe de qué
+        // línea descontar y la orden nacería sin origen (salvo parche, que se
+        // fabrica de cero y no consume prendas del cliente).
+        if (serviceId === 'bordado' && Array.isArray(disenosBordado)) {
+            const esParcheBordado = /parche/i.test(serviceSubType || '');
+
+            if (disenosBordado.length === 0) {
+                return addToast('Agregá al menos un diseño a bordar antes de confirmar el pedido.', 'error');
+            }
+            for (let i = 0; i < disenosBordado.length; i++) {
+                const d = disenosBordado[i];
+                const n = i + 1;
+                if (!esParcheBordado && !d.prendaClienteId) {
+                    return addToast(`Diseño ${n}: elegí sobre qué prendas va antes de confirmar el pedido.`, 'error');
+                }
+                if (!d.file) {
+                    return addToast(`Diseño ${n}: falta subir el logo a bordar.`, 'error');
+                }
+                if (!(parseFloat(d.ancho) > 0) || !(parseFloat(d.alto) > 0)) {
+                    return addToast(`Diseño ${n}: cargá el ancho y el largo del bordado en cm.`, 'error');
+                }
+                if (!(parseInt(d.cantidad) > 0)) {
+                    return addToast(`Diseño ${n}: indicá cuántas ${esParcheBordado ? 'parches querés' : 'prendas llevan este logo'}.`, 'error');
+                }
+            }
+            // El saldo se valida sumando TODOS los diseños que usan la misma línea:
+            // uno por uno puede entrar y entre todos pasarse.
+            const porLinea = {};
+            disenosBordado.forEach(d => {
+                if (!d.prendaClienteId) return;
+                porLinea[d.prendaClienteId] = (porLinea[d.prendaClienteId] || 0) + (parseInt(d.cantidad) || 0);
+            });
+            for (const [lineaId, pedido] of Object.entries(porLinea)) {
+                const linea = (prendasDisponibles || []).find(p => String(p.PrendaClienteID) === String(lineaId));
+                const libre = linea ? (parseInt(linea.CantidadDisponible) || 0) : 0;
+                if (pedido > libre) {
+                    return addToast(
+                        `Estás pidiendo ${pedido} prendas de "${linea?.Descripcion || 'una línea'}" y solo tenés ${libre} disponibles.`,
+                        'error'
+                    );
+                }
+            }
+        }
+
         actions.setLoading(true);
 
         try {
@@ -2240,6 +2287,11 @@ const OrderForm = ({ serviceId: propServiceId }) => {
                                     handleMultipleSpecializedFileUpload={(files) => handleMultipleSpecializedFileUpload(actions.addPonchadoFiles, files)}
                                     uniqueVariants={uniqueVariants} dynamicMaterials={dynamicMaterials}
                                     serviceSubType={serviceSubType} handleSubTypeChange={actions.handleSubTypeChange}
+                                    disenosBordado={disenosBordado}
+                                    addDiseno={actions.addDisenoBordado}
+                                    updateDiseno={actions.updateDisenoBordado}
+                                    removeDiseno={actions.removeDisenoBordado}
+                                    prendasDisponibles={prendasDisponibles}
                                 />
                             )}
 

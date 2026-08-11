@@ -25,6 +25,65 @@ const clavesDeCodigo = (raw) => {
 };
 
 /**
+ * Cobro "vía documento" (semanales / cuenta corriente): esas órdenes no estampan
+ * OrdenesDeposito.PagIdPago nunca — el cargo va como mov ORDEN a la cuenta, el cierre de ciclo
+ * lo liga a un PC/factura (DocIdDocumento) y el cobro salda ese DOCUMENTO (DocPagado=1 /
+ * DeudaDocumento saldada). Sin este join, toda orden así figuraba "Pendiente" eternamente.
+ *
+ * OJO: MovimientosCuenta.OrdIdOrden NO sirve para unir con OrdenesDeposito (la vía logística
+ * graba el ID de Ordenes, otra tabla). El único match confiable es el código de orden, que es
+ * el primer token del MovConcepto (`${CodigoOrden} ${NombreTrabajo}`).
+ */
+const SQL_COLS_PAGO_DOC = `,
+        doc.DocIdDocumento AS DocIdVinculado,
+        doc.DocSerie       AS DocSerieVinculada,
+        doc.DocNumero      AS DocNumeroVinculado,
+        doc.DocPagado      AS DocPagadoVinculado,
+        dd.DeudasTotales, dd.DeudasVivas,
+        CASE WHEN mv.Cod IS NOT NULL THEN 1 ELSE 0 END AS TieneMovOrden`;
+
+const SQL_JOIN_PAGO_DOC = `
+      LEFT JOIN (
+        SELECT UPPER(LTRIM(RTRIM(CASE WHEN CHARINDEX(' ', mc.MovConcepto) > 0
+                     THEN LEFT(mc.MovConcepto, CHARINDEX(' ', mc.MovConcepto) - 1)
+                     ELSE mc.MovConcepto END))) AS Cod,
+               MAX(mc.DocIdDocumento) AS DocId
+        FROM dbo.MovimientosCuenta mc WITH(NOLOCK)
+        WHERE mc.MovTipo = 'ORDEN' AND ISNULL(mc.MovAnulado, 0) = 0
+        GROUP BY UPPER(LTRIM(RTRIM(CASE WHEN CHARINDEX(' ', mc.MovConcepto) > 0
+                     THEN LEFT(mc.MovConcepto, CHARINDEX(' ', mc.MovConcepto) - 1)
+                     ELSE mc.MovConcepto END)))
+      ) mv ON mv.Cod = UPPER(LTRIM(RTRIM(o.OrdCodigoOrden)))
+      LEFT JOIN dbo.DocumentosContables doc WITH(NOLOCK)
+             ON doc.DocIdDocumento = mv.DocId AND doc.DocEstado <> 'ANULADO'
+      LEFT JOIN (
+        SELECT DocIdDocumento,
+               COUNT(*) AS DeudasTotales,
+               SUM(CASE WHEN DDeEstado IN ('PENDIENTE','PARCIAL','VENCIDO') AND DDeImportePendiente > 0.01
+                        THEN 1 ELSE 0 END) AS DeudasVivas
+        FROM dbo.DeudaDocumento WITH(NOLOCK)
+        GROUP BY DocIdDocumento
+      ) dd ON dd.DocIdDocumento = doc.DocIdDocumento`;
+
+// Devuelve la situación de pago para mostrar + si la orden ya está saldada vía documento
+// (en cuyo caso NO va a "Entregadas Sin Pago"). Documento saldado = DocPagado=1 o todas sus
+// deudas saldadas (DocPagado puede quedar rezagado en docs cobrados por cuenta corriente).
+const resolverSituacionPago = (row) => {
+  if (row.PagIdPago) return { pagoEstado: 'Pagado', saldadaPorDoc: false };
+  if (row.DocIdVinculado) {
+    const serie = String(row.DocSerieVinculada || '').trim();
+    const numero = String(row.DocNumeroVinculado || '').trim();
+    const docRef = [serie, numero].filter(Boolean).join('-') || `Doc ${row.DocIdVinculado}`;
+    const saldada = row.DocPagadoVinculado === true || row.DocPagadoVinculado === 1
+      || ((row.DeudasTotales || 0) > 0 && (row.DeudasVivas || 0) === 0);
+    if (saldada) return { pagoEstado: `Pagado (${docRef})`, saldadaPorDoc: true };
+    return { pagoEstado: `Facturado - impago (${docRef})`, saldadaPorDoc: false };
+  }
+  if (row.TieneMovOrden) return { pagoEstado: 'En cta. cte. (sin facturar)', saldadaPorDoc: false };
+  return { pagoEstado: 'Pendiente', saldadaPorDoc: false };
+};
+
+/**
  * POST /api/audit-deposito/check
  * Recibe un array de strings `scannedCodes` escaneados físicamente en el depósito.
  * Compara con la base de datos y categoriza.
@@ -51,11 +110,11 @@ exports.checkAudit = async (req, res) => {
         c.TelefonoTrabajo AS ClienteTelefono,
         c.Email AS ClienteEmail,
         tc.TClDescripcion AS ClienteTipo,
-        r.FormaRetiro AS FormaRetiro
+        r.FormaRetiro AS FormaRetiro${SQL_COLS_PAGO_DOC}
       FROM dbo.OrdenesDeposito o WITH(NOLOCK)
       LEFT JOIN dbo.Clientes c WITH(NOLOCK) ON o.CliIdCliente = c.CliIdCliente
       LEFT JOIN dbo.TiposClientes tc WITH(NOLOCK) ON tc.TClIdTipoCliente = c.TClIdTipoCliente
-      LEFT JOIN dbo.OrdenesRetiro r WITH(NOLOCK) ON o.OReIdOrdenRetiro = r.OReIdOrdenRetiro
+      LEFT JOIN dbo.OrdenesRetiro r WITH(NOLOCK) ON o.OReIdOrdenRetiro = r.OReIdOrdenRetiro${SQL_JOIN_PAGO_DOC}
       WHERE o.OrdEstadoActual < 9 OR o.OrdEstadoActual IS NULL
          OR (o.OrdEstadoActual >= 9 AND o.PagIdPago IS NULL)
     `;
@@ -118,6 +177,7 @@ exports.checkAudit = async (req, res) => {
         diasEnDeposito = Math.floor(diffTime / (1000 * 60 * 60 * 24));
       }
 
+      const { pagoEstado, saldadaPorDoc } = resolverSituacionPago(row);
       const item = {
         codigo: row.OrdCodigoOrden,
         trabajo: row.OrdNombreTrabajo,
@@ -125,7 +185,7 @@ exports.checkAudit = async (req, res) => {
         clienteTelefono: row.ClienteTelefono,
         clienteEmail: row.ClienteEmail,
         clienteTipo: row.ClienteTipo || 'Desconocido',
-        pagoEstado: row.PagIdPago ? 'Pagado' : 'Pendiente',
+        pagoEstado,
         ordenRetiro: row.OReIdOrdenRetiro ? `ID: ${row.OReIdOrdenRetiro} - ${row.FormaRetiro || 'S/D'}` : 'Sin Asignar',
         estadoActualId: row.OrdEstadoActual,
         diasEnDeposito,
@@ -149,8 +209,9 @@ exports.checkAudit = async (req, res) => {
         resultado.sobraEnDeposito.push(item);
       }
 
-      // Clasificacin Entregadas Sin Pago (que estn efectivamente entregadas)
-      if (row.OrdEstadoActual >= 9 && !row.PagIdPago) {
+      // Clasificacin Entregadas Sin Pago (que estn efectivamente entregadas).
+      // Las saldadas vía documento (PC/factura del cierre ya cobrado) NO son "sin pago".
+      if (row.OrdEstadoActual >= 9 && !row.PagIdPago && !saldadaPorDoc) {
         resultado.entregadasSinPago.push(item);
       }
     }
@@ -507,11 +568,11 @@ exports.initAudit = async (req, res) => {
           SELECT o.OrdCodigoOrden, o.OrdNombreTrabajo, o.OrdEstadoActual, o.OrdFechaIngresoOrden,
                  o.PagIdPago, o.OReIdOrdenRetiro,
                  c.Nombre AS ClienteNombre, c.TelefonoTrabajo AS ClienteTelefono, c.Email AS ClienteEmail,
-                 tc.TClDescripcion AS ClienteTipo, r.FormaRetiro
+                 tc.TClDescripcion AS ClienteTipo, r.FormaRetiro${SQL_COLS_PAGO_DOC}
           FROM dbo.OrdenesDeposito o WITH(NOLOCK)
           LEFT JOIN dbo.Clientes c WITH(NOLOCK) ON o.CliIdCliente = c.CliIdCliente
           LEFT JOIN dbo.TiposClientes tc WITH(NOLOCK) ON tc.TClIdTipoCliente = c.TClIdTipoCliente
-          LEFT JOIN dbo.OrdenesRetiro r WITH(NOLOCK) ON o.OReIdOrdenRetiro = r.OReIdOrdenRetiro
+          LEFT JOIN dbo.OrdenesRetiro r WITH(NOLOCK) ON o.OReIdOrdenRetiro = r.OReIdOrdenRetiro${SQL_JOIN_PAGO_DOC}
           WHERE o.OrdEstadoActual < 9 OR o.OrdEstadoActual IS NULL
              OR (o.OrdEstadoActual >= 9 AND o.PagIdPago IS NULL)
         `);
@@ -542,11 +603,12 @@ exports.initAudit = async (req, res) => {
       const activa = row.OrdEstadoActual !== null && row.OrdEstadoActual < 9;
       const escaneado = [...clavesDeCodigo(code)].some(k => setScanned.has(k));
       const dias = row.OrdFechaIngresoOrden ? Math.floor(Math.abs(hoy - new Date(row.OrdFechaIngresoOrden)) / 86400000) : 0;
+      const { pagoEstado, saldadaPorDoc } = resolverSituacionPago(row);
       const item = {
         codigo: row.OrdCodigoOrden, trabajo: row.OrdNombreTrabajo, cliente: row.ClienteNombre,
         clienteTelefono: row.ClienteTelefono, clienteEmail: row.ClienteEmail,
         clienteTipo: row.ClienteTipo || 'Desconocido',
-        pagoEstado: row.PagIdPago ? 'Pagado' : 'Pendiente',
+        pagoEstado,
         ordenRetiro: row.OReIdOrdenRetiro ? `ID: ${row.OReIdOrdenRetiro} - ${row.FormaRetiro || 'S/D'}` : 'Sin Asignar',
         estadoActualId: row.OrdEstadoActual, diasEnDeposito: dias, maxDiasDeposito: maxDias
       };
@@ -555,7 +617,8 @@ exports.initAudit = async (req, res) => {
       if (activa && escaneado) auditData.ok.push(item);
       else if (activa && !escaneado) auditData.faltaEnDeposito.push(item);
       else if (!activa && escaneado) auditData.sobraEnDeposito.push(item);
-      if (row.OrdEstadoActual >= 9 && !row.PagIdPago) auditData.entregadasSinPago.push(item);
+      // Saldadas vía documento (PC/factura cobrado) NO van a "Entregadas Sin Pago"
+      if (row.OrdEstadoActual >= 9 && !row.PagIdPago && !saldadaPorDoc) auditData.entregadasSinPago.push(item);
     }
     // Sobre los códigos ORIGINALES (no las claves normalizadas): si no, el mismo escaneo se
     // reportaría dos veces y con un texto que el operario nunca vio en la etiqueta.

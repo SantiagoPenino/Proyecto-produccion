@@ -151,10 +151,14 @@ exports.getOrderDetails = async (req, res) => {
                        T.ReglaCantidad, T.Nombre, T.UnidadCobro,
                        A.Ancho, A.Alto, A.Copias,
                        A.RutaAlmacenamiento,
-                       A.NombreArchivo
+                       A.NombreArchivo,
+                       -- Dueña del archivo (la EUV madre): con su código se ubica la
+                       -- miniatura JPG generada al subir el PDF (/thumbnails/{cod}/{id}.jpg)
+                       LTRIM(RTRIM(OA.CodigoOrden)) AS CodigoOrdenArchivo
                 FROM OrdenTerminaciones OT
                 INNER JOIN Terminaciones T ON T.TerminacionID = OT.TerminacionID
                 LEFT JOIN ArchivosOrden A ON A.ArchivoID = OT.ArchivoID
+                LEFT JOIN Ordenes OA ON OA.OrdenID = A.OrdenID
                 -- La orden puede ser la hermana TERMINAC (dueña de las filas) o la ECOUV
                 -- (dueña de los archivos): ambas ven el mismo checklist.
                 WHERE OT.OrdenID = @OID
@@ -186,17 +190,22 @@ exports.getOrderDetails = async (req, res) => {
             logger.warn('[Finishing] Conteo por archivo no disponible:', eArch.message);
         }
 
-        // URL del arte para dibujarlo dentro del boceto. Los archivos de Drive se
-        // sirven por el proxy del backend (mismo que usa el control de impresión).
+        // arteUrl: qué dibujar dentro del boceto — primero la MINIATURA JPG generada
+        // al subir el archivo (1ª página del PDF); si no hay, la URL del archivo
+        // (el front la rasteriza con pdfjs si es PDF, o la pinta directo si es imagen).
+        // archivoUrl: SIEMPRE el archivo original (para abrirlo desde el nombre).
+        const { getThumbnailUrl } = require('../utils/thumbnailGenerator');
         const conArte = terminaciones.recordset.map(t => {
             const ruta = (t.RutaAlmacenamiento || '').trim();
-            if (!ruta) return t;
-            return {
-                ...t,
-                arteUrl: ruta.includes('drive.google.com')
+            const archivoUrl = ruta
+                ? (ruta.includes('drive.google.com')
                     ? `/api/production-file-control/view-drive-file?url=${encodeURIComponent(ruta)}`
-                    : ruta
-            };
+                    : ruta)
+                : null;
+            const thumb = (t.ArchivoID && t.CodigoOrdenArchivo)
+                ? getThumbnailUrl(t.CodigoOrdenArchivo, t.ArchivoID)
+                : null;
+            return { ...t, archivoUrl, arteUrl: thumb || archivoUrl };
         });
 
         res.json({ extras: extras.recordset, terminaciones: conArte, archivos });

@@ -476,6 +476,11 @@ class ERPSyncService {
                         .input('OID', sql.Int, sib.OrdenID)
                         .query("SELECT * FROM ServiciosExtraOrden WHERE OrdenID = @OID");
 
+                // El recargo por TINTA es del material IMPRESO (la tinta UV encarece la
+                // impresión en m²): a los servicios/terminaciones (ojales, soldadura,
+                // bolsillo — trabajo manual) NO les corresponde ese %. Se les pasan los
+                // demás perfiles (urgencia, reposición) pero se filtra el de tinta.
+                const extraProfilesServicios = extraProfiles.filter(pid => Number(pid) !== 3);
                 for (const srv of srvRes.recordset) {
                     const srvVars = { puntadas: srv.Puntadas || 0, bajadas: srv.Bajadas || 0, bajadasAdicionales: srv.BajadasAdicionales || 0, skipPrepago: true };
                     let srvQty = srv.Cantidad || 1;
@@ -483,7 +488,7 @@ class ERPSyncService {
                         srvQty = (srv.Cantidad || 1) * (srv.Bajadas || 1) + (srv.BajadasAdicionales || 0);
                     }
 
-                    const srvPriceRes = await PricingService.calculatePrice(srv.CodArt || '', srvQty, internalClientId, extraProfiles, srvVars, targetCurrency, null, sib.AreaID);
+                    const srvPriceRes = await PricingService.calculatePrice(srv.CodArt || '', srvQty, internalClientId, extraProfilesServicios, srvVars, targetCurrency, null, sib.AreaID);
                     // Servicios de una reposición/falla sin cargo: tampoco se cobran
                     if (esSinCargo) {
                         srvPriceRes.precioTotal = 0;

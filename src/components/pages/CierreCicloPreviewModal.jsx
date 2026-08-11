@@ -57,6 +57,7 @@ export default function CierreCicloPreviewModal({
   // Moneda
   const [monedaFactura, setMonedaFactura] = useState(cuenta.MonIdMoneda === 2 ? 'USD' : 'UYU');
   const [cotDolar, setCotDolar] = useState(40);
+  const [cotFecha, setCotFecha] = useState(null);   // fecha de la cotización usada (para mostrarla)
   
   // Descuento Global
   const [descTipo, setDescTipo] = useState('%'); // '%' o '$'
@@ -128,15 +129,39 @@ export default function CierreCicloPreviewModal({
     });
     setMovs(list);
 
-    if (primeraMoneda) {
+    // Moneda del comprobante:
+    //   · Órdenes de UNA sola moneda → la que traen las líneas (comportamiento de siempre).
+    //   · Órdenes MEZCLADAS (pesos + dólares en el mismo comprobante) → SIEMPRE dólares.
+    //     Es la moneda en la que se cotiza el trabajo; el botón USD/UYU queda igual por si
+    //     en algún caso se quiere emitir en pesos.
+    const monedasMovs = new Set(
+      list.map(m => (Number(m.MovMonIdMoneda ?? cuenta?.MonIdMoneda) === 1 ? 'UYU' : 'USD'))
+    );
+    if (monedasMovs.size > 1) {
+      setMonedaFactura('USD');
+    } else if (primeraMoneda) {
       setMonedaFactura(primeraMoneda);
     }
 
-    // Obtener cotización
+    // Cotización del día. OJO con las claves: el endpoint devuelve
+    // { fecha, compra, venta, promedio } — NO CotDolar. Al pedir res.data.data.CotDolar
+    // salía undefined y caía siempre en el 40 fijo, así que ningún cierre cross-moneda
+    // usaba el tipo de cambio real (hoy 40,85).
     api.get('/contabilidad/cotizacion-hoy').then(res => {
-      if (res.data && res.data.success && res.data.data) setCotDolar(res.data.data.CotDolar || 40);
+      const d = res.data?.data;
+      const tc = Number(d?.promedio ?? d?.venta ?? d?.compra ?? d?.CotDolar);
+      if (tc > 0) { setCotDolar(tc); setCotFecha(d?.fecha || null); }
     }).catch(() => {});
   }, [movsOriginales]);
+
+  // Moneda BASE de cada movimiento (1=UYU, 2=USD).
+  // Por defecto es la de la cuenta del ciclo — comportamiento histórico, una cuenta = una moneda.
+  // Si el llamador manda MovMonIdMoneda en el movimiento (pre-factura multimoneda del Panel 360,
+  // que junta órdenes en pesos y en dólares en un solo comprobante), manda la del movimiento.
+  const monIdBaseMov = (m) => Number(m?.MovMonIdMoneda ?? cuenta?.MonIdMoneda);
+  // ¿Hay órdenes de más de una moneda en esta pre-factura? (para avisarlo en pantalla)
+  const monedasBase = Array.from(new Set(movs.map(m => (monIdBaseMov(m) === 1 ? 'UYU' : 'USD'))));
+  const esMultimoneda = monedasBase.length > 1;
 
   const toggleExcluido = (movId) => {
     setExcluidos(prev => {
@@ -185,15 +210,15 @@ export default function CierreCicloPreviewModal({
         const ed = detallesEditados[d.DetalleID];
         const sub = ed ? ed.Subtotal : d.Subtotal;
         
-        const monBase = Number(cuenta?.MonIdMoneda) === 1 ? 'UYU' : 'USD';
+        const monBase = monIdBaseMov(m) === 1 ? 'UYU' : 'USD';
         const rate = (monedaFactura === 'UYU' && monBase === 'USD') ? cotDolar : (monedaFactura === 'USD' && monBase === 'UYU' ? (1/cotDolar) : 1);
-        
+
         granTotalBase += (sub * rate);
       });
     } else {
       // Si no hay detalle, usamos el movimiento total
       let imp = Math.abs(m.MovImporte);
-      const monBase = Number(cuenta?.MonIdMoneda) === 1 ? 'UYU' : 'USD';
+      const monBase = monIdBaseMov(m) === 1 ? 'UYU' : 'USD';
       const rate = (monedaFactura === 'UYU' && monBase === 'USD') ? cotDolar : (monedaFactura === 'USD' && monBase === 'UYU' ? (1/cotDolar) : 1);
       granTotalBase += (imp * rate);
     }
@@ -362,6 +387,10 @@ export default function CierreCicloPreviewModal({
         excluidos: Array.from(excluidos),
         monedaFactura: monedaFactura,
         cotDolar: cotDolar,
+        // Cuenta base del cierre. Con órdenes de varias monedas en la misma pre-factura,
+        // el backend arrastra las de las otras cuentas a ésta (convertidas con cotDolar)
+        // para que TODAS queden facturadas por este documento y ninguna se cobre dos veces.
+        cueIdCuentaFactura: cuenta?.CueIdCuenta ?? null,
         descuentoTipo: descTipo,
         descuentoValorBase: Number(descValor),
         montoDescuentoCalculado: baseMontoDescuento,
@@ -453,9 +482,9 @@ export default function CierreCicloPreviewModal({
 
         if (agruparFactura) {
           let orderSubtotal = 0;
-          // cuentaEsUSD: si la cuenta NO es explícitamente UYU (=1), asumimos USD.
+          // cuentaEsUSD: si la moneda base del movimiento NO es explícitamente UYU (=1), asumimos USD.
           // Igual que granTotalBase. Aplica solo como fallback cuando OrdMonIdMoneda es null.
-          const cuentaEsUSD = Number(cuenta?.MonIdMoneda) !== 1;
+          const cuentaEsUSD = monIdBaseMov(m) !== 1;
           detallesFiltrados.forEach(d => {
             const ed = detallesEditados[d.DetalleID];
             const sub = ed ? ed.Subtotal : d.Subtotal;
@@ -471,6 +500,7 @@ export default function CierreCicloPreviewModal({
           });
           const urgenciaOrden = esOrdenUrgente(m) || detallesFiltrados.some(d => tieneRecargoUrgencia(d.LogPrecioAplicado));
           detallesParaPDF.push({
+            OrdCodigoOrden: m.OrdCodigoOrden || null,
             DcdNomItem: `${m.OrdCodigoOrden || m.MovConcepto}`,
             DcdDscItem: `${m.OrdNombreTrabajo ? m.OrdNombreTrabajo : ''}${urgenciaOrden ? ' (Urgencia)' : ''}`,
             DcdCantidad: 1,
@@ -478,7 +508,7 @@ export default function CierreCicloPreviewModal({
           });
         } else {
           let orderSubtotal = 0;
-          const cuentaEsUSD = Number(cuenta?.MonIdMoneda) !== 1;
+          const cuentaEsUSD = monIdBaseMov(m) !== 1;
 
           detallesFiltrados.forEach(d => {
             const ed = detallesEditados[d.DetalleID];
@@ -502,6 +532,7 @@ export default function CierreCicloPreviewModal({
             const descOrden = `${m.OrdCodigoOrden || m.MovConcepto}${m.OrdNombreTrabajo ? ` - ${m.OrdNombreTrabajo}` : ''}${(esOrdenUrgente(m) || tieneRecargoUrgencia(d.LogPrecioAplicado)) ? ' (Urgencia)' : ''}`;
 
             detallesParaPDF.push({
+              OrdCodigoOrden: m.OrdCodigoOrden || null,
               DcdNomItem: descArticulo,
               DcdDscItem: descOrden,
               // Cantidad editada (no la original): el importe y el descuento ya se calculan
@@ -519,7 +550,7 @@ export default function CierreCicloPreviewModal({
       } else {
         // Sin detalles de orden: usar MovImporte. Misma lógica de moneda que granTotalBase.
         const importe = Math.abs(Number(m.MovImporte));
-        const cuentaEsUSD2 = Number(cuenta?.MonIdMoneda) !== 1;
+        const cuentaEsUSD2 = monIdBaseMov(m) !== 1;
         const esMovUSD = Number(m.OrdMonIdMoneda) === 2 || (m.OrdMonIdMoneda == null && cuentaEsUSD2);
         const monBase = esMovUSD ? 'USD' : 'UYU';
         const rate = (monedaFactura === 'UYU' && monBase === 'USD') ? cotDolar : (monedaFactura === 'USD' && monBase === 'UYU' ? (1/cotDolar) : 1);
@@ -527,6 +558,7 @@ export default function CierreCicloPreviewModal({
         
         const sufijoUrgencia = esOrdenUrgente(m) ? ' (Urgencia)' : '';
         detallesParaPDF.push({
+          OrdCodigoOrden: m.OrdCodigoOrden || null,
           DcdNomItem: agruparFactura ? `${m.OrdCodigoOrden || m.MovConcepto}` : (m.OrdNombreTrabajo || m.MovConcepto || 'Servicio'),
           DcdDscItem: agruparFactura ? `${m.OrdNombreTrabajo || ''}${sufijoUrgencia}` : `${m.OrdCodigoOrden || m.MovConcepto}${sufijoUrgencia}`,
           DcdCantidad: 1,
@@ -807,6 +839,21 @@ export default function CierreCicloPreviewModal({
             </div>
           )}
 
+          {/* Aviso multimoneda: la pre-factura junta órdenes en pesos y en dólares */}
+          {esMultimoneda && (
+            <div className="bg-amber-50 border border-amber-200 text-amber-800 px-4 py-3 rounded-xl shadow-sm text-[13px] font-medium flex items-start gap-2">
+              <i className="fa-solid fa-money-bill-transfer mt-0.5"></i>
+              <span>
+                Esta pre-factura junta órdenes en <strong>pesos y en dólares</strong> en un solo comprobante.
+                Todo se convierte a <strong>{monedaFactura === 'USD' ? 'dólares (US$)' : 'pesos ($U)'}</strong> con la
+                cotización <strong>{cotDolar}</strong>
+                {cotFecha ? ` (del ${new Date(cotFecha).toLocaleDateString('es-UY', { timeZone: 'UTC' })})` : ' (valor por defecto: no se pudo leer la cotización del día)'}
+                {' '}— cambiá el botón USD/UYU de arriba si querés emitirlo en la otra moneda.
+                Al facturar, las órdenes de las dos monedas quedan saldadas por este documento.
+              </span>
+            </div>
+          )}
+
           {/* Requerimientos DGI */}
           <div className={`rounded-xl border p-4 shadow-sm transition-colors ${requiereDatosDGI ? 'bg-rose-50 border-rose-200' : 'bg-white border-slate-200'}`}>
             <div className="flex justify-between items-center mb-3">
@@ -913,7 +960,7 @@ export default function CierreCicloPreviewModal({
                           <td className="px-4 py-2.5 text-right font-mono text-[11px]">
                             {(() => {
                                const importe = Math.abs(Number(m.MovImporte));
-                               const monBase = Number(cuenta?.MonIdMoneda) === 1 ? 'UYU' : 'USD';
+                               const monBase = monIdBaseMov(m) === 1 ? 'UYU' : 'USD';
                                const rate = (monedaFactura === 'UYU' && monBase === 'USD') ? cotDolar : (monedaFactura === 'USD' && monBase === 'UYU' ? (1/cotDolar) : 1);
                                const finalSub = importe * rate;
                                return (monedaFactura === 'USD' ? 'US$ ' : '$U ') + finalSub.toFixed(2);
@@ -923,7 +970,7 @@ export default function CierreCicloPreviewModal({
                           <td className="px-4 py-2.5 text-right font-mono font-bold text-slate-700">
                             {(() => {
                                const importe = Math.abs(Number(m.MovImporte));
-                               const monBase = Number(cuenta?.MonIdMoneda) === 1 ? 'UYU' : 'USD';
+                               const monBase = monIdBaseMov(m) === 1 ? 'UYU' : 'USD';
                                const rate = (monedaFactura === 'UYU' && monBase === 'USD') ? cotDolar : (monedaFactura === 'USD' && monBase === 'UYU' ? (1/cotDolar) : 1);
                                const finalSub = importe * rate;
                                return (monedaFactura === 'USD' ? 'US$ ' : '$U ') + finalSub.toFixed(2);
@@ -941,7 +988,7 @@ export default function CierreCicloPreviewModal({
                         const subt  = ed ? ed.Subtotal : d.Subtotal;
 
                         // Conversión visual si se pide en UYU
-                        const monBase = Number(cuenta?.MonIdMoneda) === 1 ? 'UYU' : 'USD';
+                        const monBase = monIdBaseMov(m) === 1 ? 'UYU' : 'USD';
                         const rate = (monedaFactura === 'UYU' && monBase === 'USD') ? cotDolar : (monedaFactura === 'USD' && monBase === 'UYU' ? (1/cotDolar) : 1);
                         const vPunit  = punit * rate;
                         const vSubt   = subt  * rate;

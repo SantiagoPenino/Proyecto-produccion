@@ -425,3 +425,35 @@ exports.getIngresos = async (req, res) => {
         res.status(500).json({ success: false, error: err.message });
     }
 };
+
+// ─────────────────────────────────────────────────────────────────────────────
+// LIBRO CONTADOR (CSV de importación para el estudio contable)
+// Formato: Dia,Debe,Haber,Concepto,RUC,Moneda,Total,CodigoIVA,IVA,Cotizacion,Libro
+// Solo documentos CfeEstado='ACEPTADO_DGI'. Lógica en services/libroContadorService.js
+// (la misma que los scripts export_libro_*_contador.js).
+// ─────────────────────────────────────────────────────────────────────────────
+const libroContador = require('../services/libroContadorService');
+
+/** GET /api/contabilidad/reportes/libro-contador-ventas?mes=YYYY-MM&fechaBase=contable|dgi */
+exports.getLibroContadorVentas = async (req, res) => {
+    try {
+        const { mes, fechaBase } = req.query;
+        const data = await libroContador.generarLibroVentas({ mes, fechaBase: fechaBase || 'contable' });
+        res.json({ success: true, ...data });
+    } catch (err) {
+        logger.error('[CONTABILIDAD-REPORTES] getLibroContadorVentas:', err.message);
+        res.status(500).json({ success: false, error: err.message });
+    }
+};
+
+/** GET /api/contabilidad/reportes/libro-contador-cobros?mes=YYYY-MM */
+exports.getLibroContadorCobros = async (req, res) => {
+    try {
+        const { mes } = req.query;
+        const data = await libroContador.generarLibroCobros({ mes });
+        res.json({ success: true, ...data });
+    } catch (err) {
+        logger.error('[CONTABILIDAD-REPORTES] getLibroContadorCobros:', err.message);
+        res.status(500).json({ success: false, error: err.message });
+    }
+};

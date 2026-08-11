@@ -1155,3 +1155,65 @@ exports.getBovinasDisponibles = async (req, res) => {
         res.status(500).json({ error: err.message });
     }
 };
+
+// ==========================================
+// PRENDAS DEL CLIENTE DISPONIBLES (BORDADO)
+// GET /inventory/prendas-cliente/disponible?clienteId=2930
+// ==========================================
+// Hermano de getBovinasDisponibles, para el form de Bordado: en vez de bobinas
+// de tela, lista las PRENDAS que el cliente ya entregó en recepción y que
+// todavía no comprometió en otro pedido. El cliente elige la LÍNEA (12 gorros
+// negros), no el remito entero — un mismo PRE puede traer prendas distintas.
+//
+// El saldo NO está guardado: sale de vw_PrendasClienteDisponibles, que resta
+// lo tomado por las órdenes vivas. Ver docs/migrations/bordado_origen_prendas.sql.
+exports.getPrendasClienteDisponibles = async (req, res) => {
+    let { clienteId } = req.query;
+    try {
+        const pool = await getPool();
+
+        // Mismo criterio que las bobinas: el portal solo conoce codCliente y la
+        // tabla guarda CliIdCliente; las recepciones viejas pudieron guardar el
+        // IDCliente como string.
+        let idClienteStr = null;
+        if (!clienteId && req.user?.codCliente) {
+            const cliRes = await pool.request()
+                .input('Cod', sql.Int, parseInt(req.user.codCliente))
+                .query('SELECT TOP 1 CliIdCliente, IDCliente FROM Clientes WHERE CodCliente = @Cod');
+            if (cliRes.recordset.length) {
+                clienteId = cliRes.recordset[0].CliIdCliente;
+                idClienteStr = String(cliRes.recordset[0].IDCliente || '').trim() || null;
+            }
+        }
+        if (!clienteId) return res.status(400).json({ error: 'clienteId requerido' });
+
+        const result = await pool.request()
+            .input('CID', sql.VarChar(50), String(clienteId))
+            .input('CliStr', sql.NVarChar(255), idClienteStr)
+            .query(`
+                SELECT
+                    v.PrendaClienteID,
+                    v.RecepcionID,
+                    v.CodigoRecepcion,
+                    v.Descripcion,
+                    v.Talle,
+                    v.Color,
+                    v.Cantidad,
+                    v.CantidadUsada,
+                    v.CantidadDisponible,
+                    v.FechaIngreso
+                FROM vw_PrendasClienteDisponibles v
+                WHERE (
+                        TRY_CAST(v.ClienteID AS INT) = TRY_CAST(@CID AS INT)
+                        OR (@CliStr IS NOT NULL AND LTRIM(RTRIM(v.ClienteID)) = @CliStr)
+                      )
+                  AND v.Estado = 'Disponible'
+                  AND v.CantidadDisponible > 0
+                ORDER BY v.FechaIngreso ASC
+            `);
+        res.json({ data: result.recordset });
+    } catch (err) {
+        logger.error('[PRENDAS-CLIENTE-DISPONIBLES] Error:', err.message);
+        res.status(500).json({ error: err.message });
+    }
+};

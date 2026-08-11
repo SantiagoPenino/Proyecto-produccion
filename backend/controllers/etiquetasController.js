@@ -242,11 +242,14 @@ const printEtiquetas = async (req, res) => {
                 O.Material,
                 O.Prioridad,
                 LB.Tipocontenido as TipoBulto,
-                ISNULL(NULLIF(LTRIM(RTRIM(C.IDCliente)), ''), O.Cliente) AS IDClienteMacrosoft,
-                ISNULL(NULLIF(LTRIM(RTRIM(C.Nombre)), ''), O.Cliente) AS NombreClienteReal
+                COALESCE(NULLIF(LTRIM(RTRIM(C.IDCliente)), ''), NULLIF(LTRIM(RTRIM(C2.IDCliente)), ''), O.Cliente) AS IDClienteMacrosoft,
+                COALESCE(NULLIF(LTRIM(RTRIM(C.Nombre)), ''), NULLIF(LTRIM(RTRIM(C2.Nombre)), ''), O.Cliente) AS NombreClienteReal
             FROM Etiquetas E
             JOIN Ordenes O ON E.OrdenID = O.OrdenID
             LEFT JOIN Clientes C ON O.CodCliente = C.CodCliente
+            -- [WMS] Las órdenes ancla de venta directa no llevan CodCliente: la ficha se
+            -- resuelve por CliIdCliente, así la etiqueta muestra IDCLIENTE y NOMBRE reales.
+            LEFT JOIN Clientes C2 ON O.CliIdCliente = C2.CliIdCliente
             LEFT JOIN Logistica_Bultos LB ON E.CodigoEtiqueta = LB.CodigoEtiqueta
             WHERE E.OrdenID IN (${idsStr})
               -- Un bulto CONSUMIDO ya no existe físicamente: su contenido se incorporó a
@@ -437,7 +440,9 @@ const printEtiquetas = async (req, res) => {
                         <div class="header-left">
                             <div class="label-bold">CLIENTE</div>
                             <div class="value-text" style="font-size: 18px;">${label.IDClienteMacrosoft}</div>
-                            <div class="value-text" style="font-size: 14px; white-space: normal;">${label.NombreClienteReal}</div>
+                            ${label.NombreClienteReal && label.NombreClienteReal !== label.IDClienteMacrosoft
+                                ? `<div class="value-text" style="font-size: 14px; white-space: normal;">${label.NombreClienteReal}</div>`
+                                : ''}
                             <div class="label-bold" style="margin-top: 5px;">TRABAJO</div>
                             <div class="value-text" style="font-size: 14px; white-space: normal;">${label.DescripcionTrabajo || '-'}</div>
                             <div class="value-text" style="font-size: 14px; white-space: normal; margin-top: 2px;">${label.Material || '-'}</div>

@@ -205,6 +205,9 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
             id: Date.now() + idx,
             concepto: (l.DcdNomItem || '').trim(),
             DcdDscItem: (l.DcdDscItem || '').trim(),
+            // Se preserva para que "Editar Factura" no borre el vínculo con la orden al
+            // reinsertar el detalle (si no, la línea vuelve sin área en los reportes).
+            OrdCodigoOrden: (l.OrdCodigoOrden || '').trim() || null,
             cantidad: qty,
             precioUnitario: parseFloat(unitPrice.toFixed(4)),
             descPct: descPct || '',
@@ -1120,6 +1123,7 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
             return {
               DcdNomItem: l.concepto,
               DcdDscItem: l.DcdDscItem || '',
+              OrdCodigoOrden: l.OrdCodigoOrden || null,
               DcdCantidad: qty,
               DcdPrecioUnitario: price,
               DcdSubtotal: parseFloat(lineNeto.toFixed(2)),

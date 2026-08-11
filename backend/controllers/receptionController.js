@@ -13,7 +13,11 @@ exports.createReception = async (req, res) => {
     const { clienteId, tipo, servicios, telaCliente, bultos, referencias, observaciones,
         insumoId, metros, loteProv, areaDestino, sumaTelaExistente,
         // Para TELA DE CLIENTE: array de bobinas con medidas individuales
-        bobinas } = req.body;
+        bobinas,
+        // [BORDADO] Para PAQUETE DE PRENDAS: array de líneas de prendas
+        // ({descripcion, talle, color, cantidad}) — el cliente después elige una
+        // línea concreta en el form de bordado, no el remito entero.
+        prendas } = req.body;
 
     // Para TELA DE CLIENTE usamos el array; para otros tipos el campo metros/bultos clásico
     const esTela = tipo === 'TELA DE CLIENTE';
@@ -169,6 +173,43 @@ exports.createReception = async (req, res) => {
             }
 
             // ... (Loop Bultos Logic) ...
+
+            // ── [BORDADO] Inventario de prendas del cliente ────────────────
+            // Mismo espíritu que las bobinas de arriba, pero las prendas NO van
+            // por bulto: un mismo paquete puede traer 12 gorros y 20 remeras, y
+            // el cliente después elige la LÍNEA que quiere bordar (no el remito).
+            // Por eso se cargan aparte del loop, desde el array `prendas`.
+            // Fallback para el alta clásica de una sola clase de prenda: una
+            // línea con el detalle del paquete y la cantidad total declarada.
+            if (tipo === 'PAQUETE DE PRENDAS') {
+                const prendasList = Array.isArray(prendas) && prendas.length > 0
+                    ? prendas
+                    : (parseInt(req.body.cantidadPrendas) > 0
+                        ? [{ descripcion: detalle || 'Prendas del cliente', cantidad: parseInt(req.body.cantidadPrendas) }]
+                        : []);
+
+                for (const p of prendasList) {
+                    const pCant = parseInt(p.cantidad) || 0;
+                    if (pCant <= 0) continue;   // sin cantidad no hay saldo posible: no se carga
+                    await new sql.Request(transaction)
+                        .input('RID',   sql.Int,            newId)
+                        .input('Cli',   sql.VarChar(50),    clienteId ? String(clienteId) : null)
+                        .input('Desc',  sql.NVarChar(200),  p.descripcion || detalle || 'Prendas del cliente')
+                        .input('Talle', sql.NVarChar(50),   p.talle || null)
+                        .input('Color', sql.NVarChar(50),   p.color || null)
+                        .input('Cant',  sql.Int,            pCant)
+                        .input('Ref',   sql.NVarChar(100),  codigoBase)
+                        .input('Obs',   sql.NVarChar(sql.MAX), p.observaciones || null)
+                        .input('UID',   sql.Int,            operarioId)
+                        .query(`
+                            INSERT INTO InventarioPrendasCliente
+                                (RecepcionID, ClienteID, Descripcion, Talle, Color, Cantidad,
+                                 Estado, Referencia, Observaciones, UsuarioID)
+                            VALUES (@RID, @Cli, @Desc, @Talle, @Color, @Cant,
+                                    'Disponible', @Ref, @Obs, @UID)
+                        `);
+                }
+            }
 
             // ===============================================
             // AUTO-FULFILL REQUIREMENTS IF ORDER LINKED

@@ -704,7 +704,7 @@ class PricingService {
                     USING (SELECT @ProId AS ProIdProducto, @MonIdMoneda AS MonIdMoneda) AS source
                     ON (target.ProIdProducto = source.ProIdProducto AND target.MonIdMoneda = source.MonIdMoneda)
                     WHEN MATCHED THEN UPDATE SET Precio = @Pre, UltimaActualizacion = GETDATE()
-                    WHEN NOT MATCHED THEN INSERT (ProIdProducto, CodArticulo, Precio, MonIdMoneda, UltimaActualizacion) VALUES (@ProId, @Cod, @Pre, @MonIdMoneda, GETDATE());
+                    WHEN NOT MATCHED THEN INSERT (ProIdProducto, CodArticulo, Precio, MonIdMoneda, Moneda, UltimaActualizacion) VALUES (@ProId, @Cod, @Pre, @MonIdMoneda, CASE WHEN @MonIdMoneda = 2 THEN 'USD' ELSE 'UYU' END, GETDATE());
                 `);
         } else {
             // Fallback legacy por si se llama sin proIdProducto
@@ -717,7 +717,7 @@ class PricingService {
                     USING (SELECT @Cod AS CodArticulo, @MonIdMoneda AS MonIdMoneda) AS source
                     ON (target.CodArticulo = source.CodArticulo AND target.MonIdMoneda = source.MonIdMoneda)
                     WHEN MATCHED THEN UPDATE SET Precio = @Pre, UltimaActualizacion = GETDATE()
-                    WHEN NOT MATCHED THEN INSERT (CodArticulo, Precio, MonIdMoneda, UltimaActualizacion) VALUES (@Cod, @Pre, @MonIdMoneda, GETDATE());
+                    WHEN NOT MATCHED THEN INSERT (CodArticulo, Precio, MonIdMoneda, Moneda, UltimaActualizacion) VALUES (@Cod, @Pre, @MonIdMoneda, CASE WHEN @MonIdMoneda = 2 THEN 'USD' ELSE 'UYU' END, GETDATE());
                 `);
         }
     }

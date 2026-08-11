@@ -60,6 +60,8 @@ router.get('/reportes/ventas-filtros',       reportesVentasCtrl.getFiltrosVentas
 router.get('/reportes/ventas-por-area',      reportesVentasCtrl.getVentasPorArea);
 router.get('/reportes/ventas-por-documento', reportesVentasCtrl.getVentasPorDocumento);
 router.get('/reportes/ingresos',             reportesVentasCtrl.getIngresos);
+router.get('/reportes/libro-contador-ventas', reportesVentasCtrl.getLibroContadorVentas);
+router.get('/reportes/libro-contador-cobros', reportesVentasCtrl.getLibroContadorCobros);
 
 // ────────────────────────────────────────────────────────────────────────────
 // RUTAS: COLA DE ESTADOS DE CUENTA

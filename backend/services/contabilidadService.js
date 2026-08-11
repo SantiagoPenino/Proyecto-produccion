@@ -1611,7 +1611,11 @@ async function getDeudasPorCliente(CliIdCliente, modo = 'TODO') {
          LEFT JOIN dbo.Ordenes erp WITH(NOLOCK) ON erp.OrdenID = m.OrdIdOrden
          LEFT JOIN dbo.OrdenesDeposito od WITH(NOLOCK) ON od.OrdCodigoOrden = erp.CodigoOrden
          WHERE (
-            (d.DocIdDocumento IS NOT NULL AND m.CicIdCiclo = (SELECT CicIdCiclo FROM dbo.DocumentosContables dc WITH(NOLOCK) WHERE dc.DocIdDocumento = d.DocIdDocumento))
+            -- docPrincipal ya ES el documento de la deuda (mismo DocIdDocumento): usar su CicIdCiclo
+            -- directo en vez de la subconsulta escalar deja el OR como dos igualdades por columna,
+            -- seekeables con los índices de MovimientosCuenta (CicIdCiclo / OrdIdOrden). Con la
+            -- subconsulta adentro del predicado esto escaneaba la tabla POR CADA deuda (6s con 115).
+            (d.DocIdDocumento IS NOT NULL AND m.CicIdCiclo = docPrincipal.CicIdCiclo)
             OR
             (d.DocIdDocumento IS NULL AND m.OrdIdOrden = d.OrdIdOrden)
          )
@@ -2208,7 +2212,9 @@ async function getTodasLasDeudasVivas() {
          LEFT JOIN dbo.OrdenesDeposito od WITH(NOLOCK) ON od.OrdIdOrden = m.OrdIdOrden
          LEFT JOIN dbo.Ordenes erp WITH(NOLOCK) ON erp.OrdenID = m.OrdIdOrden
          WHERE (
-            (d.DocIdDocumento IS NOT NULL AND m.CicIdCiclo = (SELECT CicIdCiclo FROM dbo.DocumentosContables dc WITH(NOLOCK) WHERE dc.DocIdDocumento = d.DocIdDocumento))
+            -- Igual que en getDeudasPorCliente: docPrincipal.CicIdCiclo directo (misma fila por PK)
+            -- en vez de la subconsulta escalar, para que el OR quede seekeable por índice.
+            (d.DocIdDocumento IS NOT NULL AND m.CicIdCiclo = docPrincipal.CicIdCiclo)
             OR
             (d.DocIdDocumento IS NULL AND m.OrdIdOrden = d.OrdIdOrden)
          )
@@ -2497,7 +2503,11 @@ async function cerrarCicloCompleto({
   cliDgiDocumento = null,
   cliDgiDireccion = null,
   cliDgiCiudad = null,
-  actualizarCliente = false
+  actualizarCliente = false,
+  // Cuentas de las que provienen las órdenes del ciclo. Normalmente una sola (la del ciclo);
+  // en la pre-factura multimoneda del Panel 360 las órdenes llegan de la cuenta en pesos Y de
+  // la de dólares, y las deudas individuales de ambas tienen que absorberse en este cierre.
+  cuentasOrigen = []
 }) {
   const pool = await getPool();
   const contabilidadCore = require('./contabilidadCore');
@@ -2822,6 +2832,7 @@ async function cerrarCicloCompleto({
           dcdTotal     = Math.round(dcdTotal     * 10000) / 10000;
 
           mappedLineas.push({
+            ordCodigoOrden: d.OrdCodigoOrden || null,
             nomItem: (d.DcdNomItem || '').substring(0, 255),
             dscItem: (d.DcdDscItem || '').substring(0, 1000),
             cantidad: d.DcdCantidad != null ? Number(d.DcdCantidad) : 1,
@@ -2880,7 +2891,10 @@ async function cerrarCicloCompleto({
           docCliNombre: cliDgiNombre,
           docCliDocumento: cliDgiDocumento,
           docCliDireccion: cliDgiDireccion,
-          docCliCiudad: cliDgiCiudad
+          docCliCiudad: cliDgiCiudad,
+          // Tipo de cambio con el que se armó ESTE comprobante: el de la pre-factura.
+          // Es el que hay que poder mostrar después (factura mixta / cross-moneda).
+          docCotizacion: Number(cotDolar) || null
         },
         lineas: mappedLineas
       });
@@ -2966,9 +2980,22 @@ async function cerrarCicloCompleto({
   // Las órdenes del ciclo ya están consolidadas en la factura A-X.
   // Cualquier DeudaDocumento individual que haya quedado de esas órdenes
   // se marca como PAGADO para evitar doble contabilización en Antigüedad.
+  // Cuentas cuyas deudas individuales absorbe este cierre: la del ciclo + las de origen
+  // (pre-factura multimoneda). Las órdenes ya se trasladaron a la cuenta del ciclo, pero
+  // su DeudaDocumento individual quedó en la cuenta donde nació la orden.
+  const cuentasAbsorber = Array.from(new Set([
+    ciclo.CueIdCuenta,
+    ...(Array.isArray(cuentasOrigen) ? cuentasOrigen.map(Number).filter(Boolean) : []),
+  ]));
+  const bindCuentas = (req, prefix) => cuentasAbsorber.map((cid, i) => {
+    req.input(`${prefix}${i}`, sql.Int, cid);
+    return `@${prefix}${i}`;
+  }).join(',');
+
   const absReq = pool.request()
     .input('CicIdCiclo',    sql.Int, CicIdCiclo)
     .input('CueIdCuenta',   sql.Int, ciclo.CueIdCuenta);
+  const absCuentasIn = bindCuentas(absReq, 'absCue');
 
   let absQueryAdd = '';
   if (excluidos && excluidos.length > 0) {
@@ -2984,7 +3011,7 @@ async function cerrarCicloCompleto({
     SET    dd.DDeEstado          = 'PAGADO',
            dd.DDeImportePendiente = 0
     FROM   dbo.DeudaDocumento dd
-    WHERE  dd.CueIdCuenta = @CueIdCuenta
+    WHERE  dd.CueIdCuenta IN (${absCuentasIn})
       AND  dd.DDeEstado IN ('PENDIENTE', 'PARCIAL', 'VENCIDO')
       AND  dd.OrdIdOrden IS NOT NULL          -- solo deudas individuales de órdenes
       AND  dd.DocIdDocumento IS NULL          -- sin documento propio (son las generadas por hookOrdenCreada)
@@ -3001,6 +3028,7 @@ async function cerrarCicloCompleto({
   const absCountReq = pool.request()
     .input('CicIdCiclo', sql.Int, CicIdCiclo)
     .input('CueIdCuenta', sql.Int, ciclo.CueIdCuenta);
+  const absCountCuentasIn = bindCuentas(absCountReq, 'absCntCue');
 
   let absCountQueryAdd = '';
   if (excluidos && excluidos.length > 0) {
@@ -3013,7 +3041,7 @@ async function cerrarCicloCompleto({
 
   const absorbidas = await absCountReq.query(`
     SELECT COUNT(*) AS total FROM dbo.DeudaDocumento dd
-    WHERE  dd.CueIdCuenta = @CueIdCuenta AND dd.DDeEstado = 'PAGADO'
+    WHERE  dd.CueIdCuenta IN (${absCountCuentasIn}) AND dd.DDeEstado = 'PAGADO'
       AND  dd.OrdIdOrden IN (
              SELECT DISTINCT m.OrdIdOrden FROM dbo.MovimientosCuenta m
              WHERE m.CicIdCiclo = @CicIdCiclo AND m.OrdIdOrden IS NOT NULL AND (m.MovAnulado IS NULL OR m.MovAnulado = 0)
