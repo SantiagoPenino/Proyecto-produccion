@@ -122,6 +122,7 @@ function DropdownRecursosDesktop({ navigate, sessionType }) {
 const PORTAL_ITEMS = [
   { label: 'Mi Perfil', path: '/portal/profile' },
   { label: 'Realizar Pedido', path: '/portal' },
+  { label: 'Tienda', path: '/portal/tienda' },
   { label: 'Retiro de Pedidos', path: '/portal/pickup' },
   { label: 'Pagos Pendientes', path: '/portal/payments' },
   { label: 'Historial', path: '/portal/history' },

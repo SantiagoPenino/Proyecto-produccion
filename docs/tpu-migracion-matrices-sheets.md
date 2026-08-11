@@ -64,9 +64,17 @@ Estados: **394 PRONTO**, 79 CANCELADO, 5 vacío, 2 PARA CORTAR, 2 PARA IMPRIMIR,
 | …que resuelven a `CodCliente` | **79** |
 | …sin match | **1** (`leopalla`) |
 
-Las 201 sin arte no se migran: `reuseMatrizTPU` las rechaza con *"La matriz no tiene arte para reusar"*, así que **aparecerían en la grilla solo para fallar al usarlas**.
+**Segunda pasada (07/08): las sin arte se migran con el DISEÑO ORIGEN.** Las órdenes sin fila en `MATRIZ` no se descartan más: usan la columna **G "Carga logo"** —el arte que subió el cliente al pedir— como único archivo, insertado como `BOCETO-<tp>`. Alcanza para que `reuseMatrizTPU` las acepte y para la vista previa. **Las 110 tienen al menos un link**, así que se rescatan todas.
 
-⚠️ **17 matrices que sí se usaron no tienen arte en la hoja MATRIZ** (`TP-15`, `TP-20`, `TP-21`, `TP-33`, `TP-164`, `TP-165`, `TP-277`, `TP-310`…). Hay órdenes PRONTO que las reusan, o sea que la matriz existe y se fabricó, pero los archivos no están en la planilla. Esos clientes se quedan sin poder reusar salvo que aparezcan en otro lado (¿carpeta de Drive? ¿col G "Carga logo"?).
+⚠️ **No son matrices listas para fabricar.** Traen el diseño del cliente, no las capas de impresión: cuando alguien reuse una, producción tiene que hacer el arte desde cero. Se migran igual porque el cliente reconoce su diseño y puede pedirlo; la alternativa era no tenerlas.
+
+**Total tras las dos pasadas: 298 matrices** (188 con arte completo + 110 con diseño origen).
+
+Tres tablas de override en el script, con los casos resueltos a mano:
+
+- **`DISENO_ORIGEN_INDICE`** — cuál de los links usar cuando hay varios (101 traen uno solo). `TP-256`, `TP-361`, `TP-417`, `TP-467` → el 2º; `TP-307` → el 5º. El resto usa el primero, y un índice fuera de rango cae al primero en vez de dejar la orden sin archivo.
+- **`CANTIDAD_FIJA`** — `TP-409` = 15. El cliente escribió *"15 parches URUGUAY 2025 me imagino que ya tienen la matriz actual…"* en el campo de cantidad y el parser leía **152025 unidades**. Importa porque la Magnitud de la matriz decide si un reuso regenera el arte.
+- **`ALIAS_CLIENTE`** — los 3 IDs que cambiaron entre la planilla y la base, verificados contra `Clientes.IDCliente`: `leopalla`→`leo.palla` (Palla y Palla), `voidnexus`→`Voidnexus.uy` (Fabiana Limpias), `germanlf34`→`GERMANLF` (German Lalinde). Cubren 5 órdenes.
 
 ---
 

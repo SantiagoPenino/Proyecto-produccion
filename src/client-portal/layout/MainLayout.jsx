@@ -16,7 +16,8 @@ import {
     ChevronDown,
     CreditCard,
     History,
-    MessageSquare
+    MessageSquare,
+    ShoppingBag
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { SERVICES_LIST } from '../constants/services';
@@ -254,6 +255,9 @@ export const MainLayout = ({ children }) => {
 
                     {/* 2. Realizar Pedido (link directo al catálogo de servicios) */}
                     <NavItem to="/portal" icon={Package} label="Realizar Pedido" />
+
+                    {/* 2.5 Tienda (e-commerce — docs/ecommerce-portal-plan.md) */}
+                    <NavItem to="/portal/tienda" icon={ShoppingBag} label="Tienda" />
 
                     {/* --- Servicios Collapsible (comentado temporalmente) ---
                     <div className="space-y-1">

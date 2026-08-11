@@ -2569,6 +2569,10 @@ exports.getMisMatrices = async (req, res) => {
     }
 };
 
+// Espeja CAPAS_ARTE_TPU de ordersController: el arte de un TPU son exactamente estas capas. Acá se
+// usa para saber si la matriz tiene arte fabricable o solo el boceto.
+const CAPAS_ARTE_TPU = 5;
+
 // TPU — Reusar una matriz: crea una orden TPU nueva copiando el arte de una matriz finalizada del
 // cliente, entra DIRECTO a producción (sin aprobación) y NO cobra la matriz (156), solo la producción.
 exports.reuseMatrizTPU = async (req, res) => {
@@ -2592,7 +2596,9 @@ exports.reuseMatrizTPU = async (req, res) => {
             .query(`
                 SELECT o.OrdenID, o.CodigoOrden, o.Material, o.Variante, o.CodArticulo, o.ProIdProducto,
                        o.CliIdCliente, o.IdClienteReact, o.Cliente, o.UM, o.Magnitud AS MatMag,
-                       (SELECT COUNT(*) FROM ArchivosOrden ao WHERE ao.OrdenID = o.OrdenID AND ISNULL(ao.EstadoArchivo,'')<>'Cancelado') AS nArch
+                       (SELECT COUNT(*) FROM ArchivosOrden ao WHERE ao.OrdenID = o.OrdenID AND ISNULL(ao.EstadoArchivo,'')<>'Cancelado') AS nArch,
+                       (SELECT COUNT(*) FROM ArchivosOrden ao WHERE ao.OrdenID = o.OrdenID AND ISNULL(ao.EstadoArchivo,'')<>'Cancelado'
+                                                                AND LOWER(ao.NombreArchivo) NOT LIKE '%boceto%') AS nCapas
                 FROM Ordenes o WITH(NOLOCK)
                 WHERE o.OrdenID = @OID AND o.CodCliente = @cod AND UPPER(LTRIM(RTRIM(o.AreaID)))='TPU'`);
         if (!matRes.recordset.length) return res.status(404).json({ error: 'Matriz no encontrada.' });
@@ -2603,8 +2609,12 @@ exports.reuseMatrizTPU = async (req, res) => {
         // el layout), así que el arte de la matriz solo sirve para fabricar si la cantidad coincide.
         // Si difiere (o la matriz no tiene magnitud confiable), producción debe REGENERAR las 5 capas
         // — sin aprobación del cliente (el diseño ya está aprobado, solo cambia la cantidad).
+        // Segunda condición: las matrices migradas de la planilla vieja sin arte traen SOLO el boceto.
+        // Copiarlo como arte dejaría la orden en Diseñado con 1 archivo en vez de 5 — el operario la
+        // ve pronta y recién se entera al asignarla a un lote, y encima el boceto le ocupa una de las
+        // 5 ranuras al subir. Sin las capas completas, siempre se regenera.
         const matMag = parseInt(String(mat.MatMag || '').trim()) || 0;
-        const regenerar = !(matMag > 0 && matMag === cantidad);
+        const regenerar = !(matMag > 0 && matMag === cantidad) || (mat.nCapas || 0) < CAPAS_ARTE_TPU;
 
         // 2. Reservar número de pedido
         const reserveRes = await pool.request().query(`
@@ -2630,8 +2640,13 @@ exports.reuseMatrizTPU = async (req, res) => {
         //    la matriz, falta que producción suba el arte (con la 5ª capa pasa sola a Diseñado).
         const estadoGenNueva  = regenerar ? 'Pendiente' : 'Produccion';
         const estadoAreaNueva = regenerar ? 'Aprobado'  : 'Diseñado';
+        // Sin las capas el motivo NO es la cantidad, y decir "regenerar ... (matriz: 100 u)" cuando el
+        // cliente pidió 100 u le queda incoherente al operario. Se nombra el motivo real.
+        const sinCapas = (mat.nCapas || 0) < CAPAS_ARTE_TPU;
         const notaNueva = (regenerar
-            ? `Reuso de matriz ${matCod} [REUSO-REGEN] · regenerar 5 capas para ${cantidad} u (matriz: ${matMag || '?'} u)`
+            ? `Reuso de matriz ${matCod} [REUSO-REGEN] · ` + (sinCapas
+                ? `la matriz no tiene el arte cargado (solo boceto) — hacer las ${CAPAS_ARTE_TPU} capas para ${cantidad} u`
+                : `regenerar ${CAPAS_ARTE_TPU} capas para ${cantidad} u (matriz: ${matMag || '?'} u)`)
             : `Reuso de matriz ${matCod}`)
             + (medidaTpu ? ` [Medida: ${medidaTpu}]` : '');
         const insOrd = await new sql.Request(transaction)

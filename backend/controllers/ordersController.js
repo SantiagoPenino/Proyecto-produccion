@@ -1520,6 +1520,17 @@ exports.assignRoll = async (req, res) => {
                 rollId = insertRollRes.recordset[0].RolloID;
                 logger.info(`[assignRoll] Nuevo Rollo Creado: ID=${rollId} (${finalName})`);
 
+            } else if (rollId) {
+                // Candado del lote EXISTENTE: se creó en un request anterior, así que el
+                // auto-cleanup de moveOrder pudo borrarlo en el medio (así se perdió el lote 1224);
+                // sin este check las órdenes quedaban con RolloID huérfano. UPDLOCK+HOLDLOCK
+                // retiene la fila hasta el commit para que nadie lo borre durante la carga.
+                const lockRes = await new sql.Request(transaction)
+                    .input('RID_LOCK', typeof rollId === 'number' ? sql.Int : sql.VarChar(20), rollId)
+                    .query('SELECT RolloID FROM dbo.Rollos WITH (UPDLOCK, HOLDLOCK) WHERE RolloID = @RID_LOCK');
+                if (lockRes.recordset.length === 0) {
+                    throw new Error('⛔ El lote seleccionado ya no existe (pudo ser eliminado). Refrescá y volvé a intentar.');
+                }
             }
 
             // Unify inputs ya se hizo arriba
@@ -2625,10 +2636,18 @@ exports.unassignOrder = async (req, res) => {
         await transaction.begin();
 
         try {
-            // 1. Obtener RolloID actual antes de quitarlo
+            // 1. Obtener RolloID actual antes de quitarlo.
+            // Las capas se cuentan con la MISMA regla que el gate de asignación a lote: sin
+            // canceladas y sin el boceto, que es lo que aprobó el cliente y no se fabrica.
             const current = await new sql.Request(transaction)
                 .input('OID', sql.Int, orderId)
-                .query("SELECT RolloID, CodigoOrden, Estado, EstadoenArea FROM Ordenes WHERE OrdenID = @OID");
+                .query(`SELECT o.RolloID, o.CodigoOrden, o.Estado, o.EstadoenArea, o.AreaID, o.Nota,
+                               o.FechaAprobacionCliente,
+                               (SELECT COUNT(*) FROM dbo.ArchivosOrden ao
+                                 WHERE ao.OrdenID = o.OrdenID
+                                   AND ISNULL(ao.EstadoArchivo, '') <> 'Cancelado'
+                                   AND LOWER(ao.NombreArchivo) NOT LIKE '%boceto%') AS Capas
+                        FROM dbo.Ordenes o WHERE o.OrdenID = @OID`);
 
             const rollId = current.recordset[0]?.RolloID;
             const codOrden = current.recordset[0]?.CodigoOrden;
@@ -2642,8 +2661,20 @@ exports.unassignOrder = async (req, res) => {
             const TERMINALES = ['CANCELADO', 'ANULADO', 'RECHAZADO', 'TERMINADO', 'FINALIZADO', 'ENTREGADO'];
             const normEstado = (s) => (s || '').toUpperCase().trim();
             const isProtectedState = TERMINALES.includes(normEstado(estadoActual)) || TERMINALES.includes(normEstado(estadoAreaActual));
-            const nuevoEstado = isProtectedState ? estadoActual : 'Pendiente';
-            const nuevoEstadoArea = isProtectedState ? estadoAreaActual : 'Pendiente';
+
+            // TPU: el estado previo no se recuerda, se DEDUCE. Una orden con las CAPAS_ARTE_TPU capas
+            // subidas y el diseño aprobado (o un reuso, que nunca tiene aprobación) ya está diseñada:
+            // aplastarla a 'Pendiente' al sacarla del lote borraba ese hecho y el operario la veía
+            // como si le faltara el arte. Misma condición que usa uploadProductionFile para pasarla
+            // a 'Diseñado', así no hay dos definiciones de "arte completo" que se desincronicen.
+            const ord = current.recordset[0] || {};
+            const arteCompletoTPU = String(ord.AreaID || '').trim().toUpperCase() === 'TPU'
+                && (ord.Capas || 0) === CAPAS_ARTE_TPU
+                && (!!ord.FechaAprobacionCliente || /\[REUSO-REGEN\]/i.test(ord.Nota || ''));
+            const estadoDestino = arteCompletoTPU ? 'Diseñado' : 'Pendiente';
+
+            const nuevoEstado = isProtectedState ? estadoActual : estadoDestino;
+            const nuevoEstadoArea = isProtectedState ? estadoAreaActual : estadoDestino;
             const estadoLog = isProtectedState ? estadoActual : 'PREPARACION';
 
             // 2. Desasignar Orden (Volver a pendiente solo si corresponde)
@@ -2662,7 +2693,7 @@ exports.unassignOrder = async (req, res) => {
                 target: { type: 'ORDER', id: orderId },
                 estado: nuevoEstadoArea,
                 userObj: req.user || req.body.usuario,
-                detalle: `Retirado del Lote ${rollId || '?'}`,
+                detalle: `Retirado del Lote ${rollId || '?'}` + (arteCompletoTPU ? ' — vuelve a Diseñado (arte completo)' : ''),
                 io       : req.app.get('socketio')
             });
 
@@ -2671,7 +2702,7 @@ exports.unassignOrder = async (req, res) => {
             if (rollId) {
                 const countRes = await new sql.Request(transaction)
                     .input('RID', sql.VarChar(50), String(rollId))
-                    .query("SELECT COUNT(*) as Cnt FROM Ordenes WHERE RolloID = @RID");
+                    .query("SELECT COUNT(*) as Cnt FROM Ordenes WITH (READCOMMITTEDLOCK) WHERE RolloID = @RID");
 
                 if (countRes.recordset[0].Cnt === 0) {
                     // Cancelar Rollo vacio (Limpieza Automática)
@@ -2773,7 +2804,7 @@ exports.cancelOrder = async (req, res) => {
             if (rollId) {
                 const countRes = await new sql.Request(transaction)
                     .input('RID', sql.VarChar(50), String(rollId))
-                    .query("SELECT COUNT(*) as Cnt FROM Ordenes WHERE RolloID = @RID");
+                    .query("SELECT COUNT(*) as Cnt FROM Ordenes WITH (READCOMMITTEDLOCK) WHERE RolloID = @RID");
                 
                 if (countRes.recordset[0].Cnt === 0) {
                     logger.info(`[AutoCleanup] Rollo ${rollId} quedó vacío tras cancelar orden. Eliminando...`);

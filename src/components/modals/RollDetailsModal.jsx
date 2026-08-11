@@ -543,8 +543,12 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { }, lo
     // lote está en MIMAKI (ahí el avance se carga por copias del arte).
     const usaContador = (o) => esOrdenParcial(o) || avancePorCopias;
     // El avance va por COPIAS cuando el lote está en MIMAKI y la orden no es de las que ya llevan
-    // su propio contador (TPU/DIRECTA, que van por unidades o metros).
-    const cuentaCopias = (o) => avancePorCopias && !esOrdenParcial(o);
+    // su propio contador (TPU, que va por unidades).
+    // DIRECTA también cuenta COPIAS (pedido 07/08): al operario "0,24/0,24 m" no le dice nada, lo
+    // que marca es cuántas copias del arte imprimió. El total sale de o.totalCopias, el mismo
+    // SUM(ArchivosOrden.Copias) que usa MIMAKI — y el backend cuenta contra ese mismo total.
+    const esOrdenDirecta = (o) => /^DIR-/i.test(o?.code || '');
+    const cuentaCopias = (o) => esOrdenDirecta(o) || (avancePorCopias && !esOrdenParcial(o));
     const [cantidadesLocal, setCantidadesLocal] = useState({});
     const [editandoCantidad, setEditandoCantidad] = useState(null); // orderId en edición
     // En la segunda estación el avance es el de CORTE (CantidadCortada); en la impresora, el de
@@ -1236,7 +1240,16 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { }, lo
                         const blob = await rollsService.downloadSingleFile(arch.archivoId, (loaded, total) => {
                             downloadManager.updateDownloadProgress(loaded, total);
                         });
-                        const fileHandle = await rollHandle.getFileHandle(nombre, { create: true });
+                        // TPU: cada orden va en su propia subcarpeta (`arch.carpeta` = tpu-<NoDocERP>),
+                        // porque son 5 capas por orden y sueltas en la raíz del lote no se distinguen.
+                        // Si el navegador no deja crearla, cae a la carpeta del lote en vez de fallar.
+                        let destino = rollHandle;
+                        if (arch.carpeta) {
+                            const safeSub = arch.carpeta.replace(/[<>:"/\\|?*]/g, '_').trim();
+                            try { destino = await rollHandle.getDirectoryHandle(safeSub, { create: true }); }
+                            catch (e) { destino = rollHandle; }
+                        }
+                        const fileHandle = await destino.getFileHandle(nombre, { create: true });
                         const writable = await fileHandle.createWritable();
                         await writable.write(blob);
                         await writable.close();

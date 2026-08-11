@@ -1254,6 +1254,23 @@ const OrderForm = ({ serviceId: propServiceId }) => {
             }
         }
 
+        // Variante y material obligatorios también en modo 'single' — mismas condiciones con las
+        // que se MUESTRAN esos selectores (si el selector está a la vista, elegir es obligatorio).
+        // Sin esto, si la carga async del nomenclador falla o el cliente confirma antes de que
+        // termine, el pedido viaja con los combos vacíos y la orden nace 'Estándar'/'N/A'
+        // (caso DTF-13084).
+        if ((config.variantMode === 'select' || config.variantMode === 'virtual')
+            && serviceId !== 'bordado' && serviceId !== 'EMB'
+            && !String(serviceSubType || '').trim()) {
+            return addToast(config.variantMode === 'virtual'
+                ? 'Seleccioná la categoría antes de confirmar el pedido.'
+                : 'Seleccioná la variante antes de confirmar el pedido.', 'error');
+        }
+        if (config.materialMode === 'single' && svcId !== 'bordado' && svcId !== 'emb' && svcId !== 'sublimacion'
+            && !String(globalMaterial || '').trim()) {
+            return addToast('Seleccioná el material antes de confirmar el pedido.', 'error');
+        }
+
         // Material obligatorio: en modo "multiple" (material por archivo) cada archivo debe tener
         // su material elegido — no se autocompleta, así que validamos antes de confirmar.
         if (config.materialMode === 'multiple' && items.some(it => !it.material || !String(it.material).trim())) {

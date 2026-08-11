@@ -531,9 +531,9 @@ exports.downloadOrdersZip = async (req, res) => {
 
         // 1. Obtener Metadatos de Archivos
         const filesQuery = await pool.request().query(`
-            SELECT 
+            SELECT
                 AO.ArchivoID, AO.RutaAlmacenamiento, AO.RutaLocal, AO.NombreArchivo, AO.Copias,
-                O.OrdenID, O.CodigoOrden, O.Cliente, O.DescripcionTrabajo, O.AreaID, O.Material,
+                O.OrdenID, O.CodigoOrden, O.Cliente, O.DescripcionTrabajo, O.AreaID, O.Material, O.NoDocERP,
                 ibt.Referencia AS PreTelaCliente,
                 ISNULL(R.Nombre, 'Lote ' + CAST(O.RolloID as VARCHAR)) as RollName
             FROM dbo.ArchivosOrden AO
@@ -623,6 +623,11 @@ exports.downloadOrdersZip = async (req, res) => {
                 }
                 if (!finalName.toLowerCase().endsWith(ext)) finalName += ext;
 
+                // TPU: cada orden en su propia carpeta dentro del ZIP (`tpu-<NoDocERP>/archivo.pdf`).
+                // El sanitize de arriba ya sacó las barras del nombre, así que este es el único '/'.
+                const carpeta = carpetaDeOrden(file);
+                if (carpeta) finalName = `${carpeta}/${finalName}`;
+
                 // Helper function to append a stream and wait for it to finish
                 const appendStreamAndWait = (stream, name) => {
                     return new Promise((resolve, reject) => {
@@ -684,6 +689,19 @@ exports.downloadOrdersZip = async (req, res) => {
 const sanitizeFileName = (str) => (str || '').replace(/\//g, '-').replace(/[<>:"\\|?*]/g, ' ').trim();
 
 /**
+ * Subcarpeta destino del archivo dentro de la descarga (ZIP o escritura en disco).
+ * Solo TPU: una orden son 5 capas (CMYK + spots + corte) y sueltas en la raíz del lote no se
+ * sabe cuál es de cuál, así que cada orden va en su propia carpeta `tpu-<NoDocERP>`.
+ * El resto de las áreas sigue plano (null = sin carpeta).
+ * Fallback al CodigoOrden: las matrices migradas de la planilla vieja no tienen NoDocERP.
+ */
+const carpetaDeOrden = (f) => {
+    if (String(f.AreaID || '').trim().toUpperCase() !== 'TPU') return null;
+    const nro = String(f.NoDocERP || '').trim();
+    return sanitizeFileName(nro ? `tpu-${nro}` : (f.CodigoOrden || `orden-${f.OrdenID}`));
+};
+
+/**
  * Devuelve los archivos de las órdenes con su nombre final ya resuelto.
  * El índice "Archivo N de M" se calcula por orden, ordenando por ArchivoID.
  */
@@ -695,7 +713,7 @@ async function buildFilesManifest(orderIds) {
     const filesQuery = await pool.request().query(`
         SELECT
             AO.ArchivoID, AO.RutaAlmacenamiento, AO.NombreArchivo, AO.Copias,
-            O.OrdenID, O.CodigoOrden, O.Cliente, O.DescripcionTrabajo, O.Material, O.AreaID,
+            O.OrdenID, O.CodigoOrden, O.Cliente, O.DescripcionTrabajo, O.Material, O.AreaID, O.NoDocERP,
             ibt.Referencia AS PreTelaCliente,
             ISNULL(R.Nombre, 'Lote ' + CAST(O.RolloID as VARCHAR)) as RollName
         FROM dbo.ArchivosOrden AO
@@ -738,7 +756,7 @@ async function buildFilesManifest(orderIds) {
             }
             if (!finalName.toLowerCase().endsWith(ext)) finalName += ext;
 
-            out.push({ ...f, finalName });
+            out.push({ ...f, finalName, carpeta: carpetaDeOrden(f) });
         }
     }
     return out;
@@ -753,7 +771,8 @@ exports.getOrdersFilesManifest = async (req, res) => {
         if (!files.length) return res.status(404).json({ error: 'No se encontraron archivos para las órdenes seleccionadas' });
         res.json({
             rollName: files[0].RollName || null,
-            files: files.map(f => ({ archivoId: f.ArchivoID, fileName: f.finalName, codigoOrden: f.CodigoOrden })),
+            // `carpeta` = subcarpeta destino (solo TPU); el front la crea antes de escribir el archivo.
+            files: files.map(f => ({ archivoId: f.ArchivoID, fileName: f.finalName, codigoOrden: f.CodigoOrden, carpeta: f.carpeta })),
         });
     } catch (err) {
         logger.error('[files-manifest] Error:', err);

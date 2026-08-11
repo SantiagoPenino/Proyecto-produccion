@@ -886,9 +886,11 @@ const FilePrintControl = ({ areaCode }) => {
   };
 
 
-  // ¿La falla de este archivo va POR COPIAS? (multi-copia, no servicio, no TPU)
+  // ¿La falla de este archivo va POR COPIAS? (multi-copia, no servicio)
+  // TPU entra también: su línea colapsada trae Copias = cantidad de parches pedida, así que
+  // "copias a reponer" son parches a rehacer. Con una sola copia sigue siendo whole-file.
   const fallaPorCopiasAplica = (file) =>
-    !!file && !file.isService && !esControlTPU && (parseInt(file.Copias) || 1) > 1;
+    !!file && !file.isService && (parseInt(file.Copias) || 1) > 1;
   // Copias que quedan sin resolver (sin contar ni fallar): el máximo reportable
   const copiasRestantesDe = (file) => Math.max(1,
     (parseInt(file?.Copias) || 1) - (parseInt(file?.Controlcopias) || 0) - (parseInt(file?.CopiasFalladas) || 0));
@@ -1052,7 +1054,7 @@ const FilePrintControl = ({ areaCode }) => {
       estado: controlAction,
       motivo: actionReason,
       tipoFalla: failureType,
-      metrosReponer: isSB ? '' : metersToReprint,
+      metrosReponer: (isSB || esControlTPU) ? '' : metersToReprint,
       // Falla por copias: la -F repone SOLO estas (el backend igual la topea a las restantes)
       copiasFalladas: (controlAction === 'FALLA' && fallaPorCopiasAplica(selectedFileForAction))
         ? Math.min(parseInt(copiasFalladas) || 1, copiasRestantesDe(selectedFileForAction))
@@ -1582,7 +1584,8 @@ const FilePrintControl = ({ areaCode }) => {
                 </div>
               )}
 
-              {controlAction === 'FALLA' && selectedFileForAction && !selectedFileForAction.isService && (
+              {/* En TPU no se marca zona: la unidad es el parche entero, no una región del pliego. */}
+              {controlAction === 'FALLA' && selectedFileForAction && !selectedFileForAction.isService && !esControlTPU && (
                 <div>
                   <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Zona de la falla</label>
                   <FallaAnnotator
@@ -1600,7 +1603,7 @@ const FilePrintControl = ({ areaCode }) => {
                 return (
                   <div>
                     <label className="block text-xs font-bold text-slate-500 uppercase mb-2">
-                      ¿Cuántas copias fallaron?
+                      {esControlTPU ? 'Copias a Reponer' : '¿Cuántas copias fallaron?'}
                     </label>
                     <div className="flex items-center gap-3">
                       <input
@@ -1629,7 +1632,9 @@ const FilePrintControl = ({ areaCode }) => {
                 );
               })()}
 
-              {controlAction === 'FALLA' && !isSB && (() => {
+              {/* TPU no lleva metros: la reposición se pide en copias (parches) arriba, y con eso
+                  el check "Completo" tampoco tiene sentido — se ocultan los dos. */}
+              {controlAction === 'FALLA' && !isSB && !esControlTPU && (() => {
                 const fileAlto = parseFloat(selectedFileForAction?.Alto || 0);
                 const fPorCopias = fallaPorCopiasAplica(selectedFileForAction) ? (parseInt(copiasFalladas) || 1) : 1;
                 // Con falla por copias el tope de metros escala con f (f copias = f alturas)

@@ -354,7 +354,30 @@ const uploadArticleImage = async (req, res) => {
     if (!req.file) return res.status(400).json({ error: 'No se subió ninguna imagen' });
     try {
         const pool = await getPool();
-        const imageUrl = `/uploads/${req.file.filename}`;
+        // BUG histórico: multer guarda en uploads/articulos/ pero la URL se registraba sin el
+        // subdirectorio (/uploads/<archivo>) → 404 en todas las pantallas. Además, normalizamos
+        // a un CUADRADO 512×512 (fit contain, fondo transparente): es lo que consumen la tienda
+        // del portal y el catálogo interno, y evita subir fotos de 4000px que pesan de más.
+        // multer es diskStorage: se lee de req.file.path (no hay buffer), y sharp no puede
+        // escribir sobre el mismo archivo que lee → se escribe uno nuevo y se borra el original.
+        const fs = require('fs');
+        const path = require('path');
+        let finalFilename = req.file.filename;
+        try {
+            const sharp = require('sharp');
+            const nombre512 = req.file.filename.replace(/\.[^.]*$/, '') + '-512.png';
+            const destino = path.join(path.dirname(req.file.path), nombre512);
+            await sharp(req.file.path)
+                .resize(512, 512, { fit: 'contain', background: { r: 0, g: 0, b: 0, alpha: 0 } })
+                .png()
+                .toFile(destino);
+            fs.unlink(req.file.path, () => {});
+            finalFilename = nombre512;
+        } catch (eImg) {
+            // Archivo que sharp no entiende (o sharp ausente): se guarda tal cual, como siempre.
+            logger.warn(`[uploadArticleImage] sin resize 512: ${eImg.message}`);
+        }
+        const imageUrl = `/uploads/articulos/${finalFilename}`;
         await pool.request()
             .input('Idproid', sql.Int, parseInt(id))
             .input('UrlImagen', sql.VarChar(500), imageUrl)

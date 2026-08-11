@@ -14,6 +14,7 @@ import OrderForm from './modulos/OrderForm';
 // [PRENDAS] PrendaOrderForm se movió a la app interna (/ventas/pedido-prenda).
 
 import { FactoryView } from './modulos/FactoryView';
+import { TiendaView } from './modulos/TiendaView';
 import { PickupView } from './modulos/PickupView';
 import { UnpaidPickupsView } from './modulos/UnpaidPickupsView';
 import { HistorialView } from './modulos/HistorialView';
@@ -69,6 +70,15 @@ export const ClientPortalApp = () => {
                     {/* [PRENDAS] El form de prendas se MOVIÓ a la app interna:
                         ruta /ventas/pedido-prenda (de cara a producción, no al cliente).
                         Ver src/components/pages/ventas/PedidoPrendaPage.jsx */}
+
+                    {/* [TIENDA] E-commerce del portal — ver docs/ecommerce-portal-plan.md */}
+                    <Route path="/tienda" element={
+                        <ProtectedRoute>
+                            <MainLayout>
+                                <TiendaView />
+                            </MainLayout>
+                        </ProtectedRoute>
+                    } />
 
                     <Route path="/factory" element={
                         <ProtectedRoute>

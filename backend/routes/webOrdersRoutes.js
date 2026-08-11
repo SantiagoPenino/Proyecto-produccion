@@ -194,6 +194,13 @@ router.post('/upload-stream', verifyToken, impersonarCliente, upload.single('fil
 // unas líneas más arriba.
 router.post('/orden/:ordenId/boceto-aprobado', verifyToken, impersonarCliente, upload.single('file'), webOrdersController.subirBocetoAprobado);
 
+// ── TIENDA (e-commerce del portal — ver docs/ecommerce-portal-plan.md) ───────
+// Catálogo de la vitrina: solo productos publicados en TiendaProductos, precio base y stock
+// WMS informativo. Read-only con token del portal — el picking, el sync y la edición de
+// precios quedan en las rutas internas (/api/wms), que un cliente no alcanza.
+const tiendaController = require('../controllers/tiendaController');
+router.get('/tienda/catalogo', verifyToken, impersonarCliente, tiendaController.getTiendaCatalogo);
+
 // TPU: "Mis matrices" — pedidos TPU finalizados del cliente con arte, para reusar.
 router.get('/mis-matrices', verifyToken, impersonarCliente, webOrdersController.getMisMatrices);
 // TPU: reusar una matriz — crea el pedido copiando el arte, directo a producción, sin cobrar la matriz.

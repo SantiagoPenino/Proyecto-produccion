@@ -63,6 +63,31 @@ const CAPAS = [
 ];
 const NOMBRE_CORTE = 'Corte.plt';
 
+// Órdenes sin arte en la hoja MATRIZ: se migran igual usando el DISEÑO ORIGEN (col G de BASE,
+// "Carga logo") — lo que el cliente subió al hacer el pedido. Son 110 y TODAS tienen al menos un
+// link. La mayoría trae uno solo; para las que traen varios, el número lo eligió el usuario
+// revisando los archivos uno por uno. Las que no figuran acá usan el primero.
+const DISENO_ORIGEN_INDICE = {
+    'TP-256': 2, 'TP-361': 2, 'TP-417': 2, 'TP-467': 2,
+    'TP-307': 5,   // la única con 5 links
+};
+
+// Cantidades corregidas a mano: el cliente escribió texto libre en el campo de cantidad y el
+// parser saca los dígitos, así que "15 parches URUGUAY 2025 …" daba 152025 unidades. Importa
+// porque la Magnitud de la matriz es lo que decide si un reuso tiene que regenerar el arte.
+const CANTIDAD_FIJA = {
+    'TP-409': 15,
+};
+
+// El ID del cliente cambió entre la planilla vieja y la base. Son los únicos 3 sin match exacto
+// (5 órdenes), confirmados uno por uno contra Clientes.IDCliente. La clave va en minúsculas
+// porque el cruce normaliza así.
+const ALIAS_CLIENTE = {
+    'leopalla':   'leo.palla',      // Palla y Palla
+    'voidnexus':  'Voidnexus.uy',   // Fabiana Limpias
+    'germanlf34': 'GERMANLF',       // German Lalinde
+};
+
 const norm = s => String(s || '').trim().toLowerCase().replace(/\s+/g, ' ');
 const cod = s => (String(s || '').match(/TP-\d+/i) || [])[0]?.toUpperCase() || null;
 const links = s => (String(s || '').match(/https?:\/\/[^\s,]+/g) || []);
@@ -109,15 +134,22 @@ async function leerPlanilla(auth) {
         const estado = String(r[9] || '').trim().toUpperCase();
         const trabajo = String(r[3] || '').trim();
         const tipo = String(r[4] || '').trim();
+        // Diseño origen: se toma el link que eligió el usuario (1-based); si esa posición no
+        // existe se cae al primero, así un índice mal puesto nunca deja la orden sin archivo.
+        const logos = links(r[6]);
+        const logo = logos[(DISENO_ORIGEN_INDICE[c] || 1) - 1] || logos[0] || null;
         const fila = {
             tp: c, fechaIngreso: fecha(r[1]), idCliente: String(r[2] || '').trim(),
-            trabajo, tipo, cantidad: parseInt(String(r[5] || '0').replace(/\D/g, ''), 10) || 0,
-            estado, logo: links(r[6])[0] || null, arte: arte[c] || null,
+            trabajo, tipo,
+            cantidad: CANTIDAD_FIJA[c] ?? (parseInt(String(r[5] || '0').replace(/\D/g, ''), 10) || 0),
+            estado, logo, arte: arte[c] || null,
         };
         // Mismo orden de descarte que el Excel de revisión.
         if (estado === 'CANCELADO') { descartes.push({ ...fila, motivo: 'Cancelada' }); continue; }
         if (/^TP-\d+/i.test(trabajo)) { descartes.push({ ...fila, motivo: `Es un REUSO de ${cod(trabajo)}` }); continue; }
-        if (!fila.arte) { descartes.push({ ...fila, motivo: 'Sin arte en la hoja MATRIZ' }); continue; }
+        // Sin arte NI diseño origen no hay nada que migrar. Con diseño origen sí se migra: entra
+        // como boceto (ver más abajo) y alcanza para que la matriz sea reusable.
+        if (!fila.arte && !fila.logo) { descartes.push({ ...fila, motivo: 'Sin arte ni diseño origen' }); continue; }
         if (!ARTICULOS[norm(tipo)]) { descartes.push({ ...fila, motivo: `Tipo de parche sin artículo: ${tipo}` }); continue; }
         candidatas.push(fila);
     }
@@ -159,7 +191,8 @@ async function thumbDesdeDrive(auth, url, codigoOrden, archivoId) {
     if (LIMITE > 0) lote = lote.slice(0, LIMITE);
 
     for (const m of lote) {
-        const c = mapaCli.get(m.idCliente.toLowerCase());
+        const idCli = m.idCliente.toLowerCase();
+        const c = mapaCli.get(idCli) || mapaCli.get((ALIAS_CLIENTE[idCli] || '').toLowerCase());
         if (!c) { sinCliente.push(`${m.tp} (${m.idCliente})`); continue; }
 
         const yaEsta = await pool.request()
@@ -168,15 +201,18 @@ async function thumbDesdeDrive(auth, url, codigoOrden, archivoId) {
         if (yaEsta.recordset.length) { salteadas++; continue; }
 
         const articulo = mapaArt.get(ARTICULOS[norm(m.tipo)]);
+        // Con arte en MATRIZ van las capas de impresión. Sin arte, el array queda vacío y la
+        // orden se migra solo con el boceto (el diseño origen) — suficiente para que aparezca
+        // como matriz reusable, pero producción va a tener que hacer el arte.
         // Las 18 matrices con un link de más en SPOT caen en el nombre genérico: la planilla no
         // dice qué es esa capa extra, así que no se inventa.
-        const archivos = [
+        const archivos = m.arte ? [
             ...m.arte.spot.map((u, i) => ({ url: u, nombre: CAPAS[i] || `Spot ${i} (extra).pdf` })),
             ...m.arte.corte.map(u => ({ url: u, nombre: NOMBRE_CORTE })),
-        ];
+        ] : [];
 
         if (!COMMIT) {
-            console.log(`[dry] ${m.tp.padEnd(8)} ${String(m.cantidad).padStart(4)}u  ${articulo.Descripcion.slice(0, 34).padEnd(36)} ${c.Nombre?.slice(0, 22) || ''}  (${archivos.length} capas + boceto)`);
+            console.log(`[dry] ${m.tp.padEnd(8)} ${String(m.cantidad).padStart(6)}u  ${articulo.Descripcion.slice(0, 30).padEnd(32)} ${(c.Nombre || '').slice(0, 20).padEnd(22)} ${archivos.length ? `${archivos.length} capas + boceto` : 'SOLO DISEÑO ORIGEN'}`);
             migradas++;
             continue;
         }

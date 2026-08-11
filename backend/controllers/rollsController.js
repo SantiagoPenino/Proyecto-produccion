@@ -404,11 +404,20 @@ exports.moveOrder = async (req, res) => {
             // Principio: si el LOTE destino está en una máquina (tiene MaquinaID, sea impresora o
             // calandra) sus órdenes van 'En Maquina'; si no está en ninguna máquina → 'En Lote'. La
             // orden que se agrega hereda el estado según el MaquinaID del lote (fuente de verdad).
+            // UPDLOCK+HOLDLOCK: retiene la fila del lote destino hasta el commit — sin esto, el
+            // auto-cleanup de otro moveOrder concurrente podía borrarlo mientras se le colgaban
+            // órdenes (con RCSI su chequeo de "vacío" no ve asignaciones sin commitear) y quedaban
+            // con RolloID huérfano: la planilla las muestra "En Lote" pero el kanban no ve el lote.
             let loteEstado = 'En Lote';
             if (targetRollId) {
                 const loteSt = await new sql.Request(transaction)
                     .input('RID', sql.VarChar(50), String(targetRollId))
-                    .query(`SELECT MaquinaID FROM dbo.Rollos WHERE CAST(RolloID AS VARCHAR(50)) = @RID`);
+                    .query(`SELECT MaquinaID FROM dbo.Rollos WITH (UPDLOCK, HOLDLOCK) WHERE CAST(RolloID AS VARCHAR(50)) = @RID`);
+                if (loteSt.recordset.length === 0) {
+                    const notFound = new Error('⛔ El lote destino ya no existe (pudo ser eliminado). Refrescá el tablero e intentá de nuevo.');
+                    notFound.status = 409;
+                    throw notFound;
+                }
                 if (loteSt.recordset[0]?.MaquinaID != null) loteEstado = 'En Maquina';
             }
 
@@ -437,14 +446,21 @@ exports.moveOrder = async (req, res) => {
             }
 
 
-            // 3. AUTO-CLEANUP: Verificar si quedamos rollos vacíos y cancelarlos
-            // Obtenemos los IDs de los rollos afectados por el movimiento (los "orígenes" que ahora podrían estar vacíos)
-            // Ojo: No tenemos el origen explícito en el body, así que hacemos un barrido rápido de rollos abiertos sin órdenes.
-
-            // Estrategia más segura: Buscar rollos que tengan 0 órdenes asociadas y eliminarlos físicamente de la base de datos.
+            // 3. AUTO-CLEANUP: barrido de rollos vacíos (no tenemos el origen explícito en el body).
+            // Dos guardas contra el "lote perdido" (se llevó puesto al 1224 el 10/08/26 con 7
+            // órdenes recién asignadas):
+            //  - FechaCreacion > 10 min: un lote se crea vacío en un request y las órdenes le
+            //    llegan en requests aparte; en esa ventana este barrido (disparado por mover
+            //    CUALQUIER orden de CUALQUIER área) lo veía con 0 órdenes y lo borraba.
+            //  - READCOMMITTEDLOCK: con RCSI el subquery lee un snapshot y no ve asignaciones sin
+            //    commitear; el hint lo hace esperar el commit y contarlas.
             await new sql.Request(transaction).query(`
                 DELETE FROM dbo.Rollos
-                WHERE (SELECT COUNT(*) FROM dbo.Ordenes WHERE RolloID = CAST(dbo.Rollos.RolloID AS VARCHAR(50))) = 0
+                WHERE FechaCreacion < DATEADD(MINUTE, -10, GETDATE())
+                  AND NOT EXISTS (
+                      SELECT 1 FROM dbo.Ordenes o WITH (READCOMMITTEDLOCK)
+                      WHERE o.RolloID = CAST(dbo.Rollos.RolloID AS VARCHAR(50))
+                  )
             `);
 
             await transaction.commit();
@@ -463,7 +479,7 @@ exports.moveOrder = async (req, res) => {
 
     } catch (err) {
         logger.error("Error moviendo orden:", err);
-        res.status(500).json({ error: err.message });
+        res.status(err.status || 500).json({ error: err.message });
     }
 };
 
@@ -1346,19 +1362,21 @@ exports.setOrderPrinted = async (req, res) => {
             .input('P', sql.Bit, printed ? 1 : 0)
             .query(`
                 -- Total del contador parcial, según el caso:
+                --   · AreaID='DIRECTA'  → copias del arte (SUM de ArchivosOrden.Copias)
+                --   · lote en MIMAKI    → ídem, copias del arte
                 --   · UM='U' (TPU)      → unidades pedidas (Magnitud)
-                --   · AreaID='DIRECTA'  → piezas o metros según el artículo (Magnitud, con decimales)
-                --   · lote en MIMAKI    → copias del arte (SUM de ArchivosOrden.Copias)
                 -- NULL si la orden no usa contador: ahí NO se toca CantidadImpresa.
-                -- DECIMAL(10,2) para conservar los metros de DIRECTA (unidades y copias son enteros).
+                -- DECIMAL(10,2) porque la columna la comparten metros y enteros (unidades/copias).
+                -- DIRECTA va PRIMERO: sus órdenes pueden tener UM='U' y aun así se cuentan en copias,
+                -- que es lo que muestra el lote (mismo total que usa setOrderCantidadImpresa).
                 DECLARE @TotalParcial DECIMAL(10,2) = (
                     SELECT CASE
-                        WHEN UPPER(LTRIM(RTRIM(ISNULL(o.UM,'')))) = 'U'
-                          OR UPPER(LTRIM(RTRIM(ISNULL(o.AreaID,'')))) = 'DIRECTA'
-                            THEN ISNULL(TRY_CONVERT(DECIMAL(10,2), TRY_CONVERT(FLOAT, o.Magnitud)), 0)
-                        WHEN LOWER(LTRIM(ISNULL(ce.Nombre,''))) LIKE 'mimaki%'
+                        WHEN UPPER(LTRIM(RTRIM(ISNULL(o.AreaID,'')))) = 'DIRECTA'
+                          OR LOWER(LTRIM(ISNULL(ce.Nombre,''))) LIKE 'mimaki%'
                             THEN (SELECT ISNULL(SUM(ISNULL(Copias,1)),0) FROM dbo.ArchivosOrden WITH(NOLOCK)
                                    WHERE OrdenID = o.OrdenID AND ISNULL(EstadoArchivo,'') <> 'CANCELADO')
+                        WHEN UPPER(LTRIM(RTRIM(ISNULL(o.UM,'')))) = 'U'
+                            THEN ISNULL(TRY_CONVERT(DECIMAL(10,2), TRY_CONVERT(FLOAT, o.Magnitud)), 0)
                         ELSE NULL END
                     FROM dbo.Ordenes o WITH(NOLOCK)
                     LEFT JOIN dbo.Rollos r WITH(NOLOCK) ON r.RolloID = o.RolloID
@@ -1426,15 +1444,16 @@ exports.setOrderCantidadImpresa = async (req, res) => {
 
         // Tres modos de impresión parcial:
         //  · UM='U' (TPU)     → el total son las UNIDADES pedidas (Ordenes.Magnitud).
-        //  · AreaID='DIRECTA' → piezas o metros según el artículo (Magnitud, con decimales).
+        //  · AreaID='DIRECTA' → el total son las COPIAS del arte (pedido 07/08): lo que el operario
+        //    marca es "imprimí N copias", no metros — "0,24/0,24 m" no le dice nada en el lote.
         //  · Lote en MIMAKI   → el total son las COPIAS del arte (SUM de ArchivosOrden.Copias): ahí la
         //    orden va por metros (UM='m') y los metros salen de copias × alto, así que el avance real
         //    se cuenta en copias impresas.
         const um   = String(ordRes.recordset[0].UM || '').trim().toUpperCase();
         const area = String(ordRes.recordset[0].AreaID || '').trim().toUpperCase();
         const AREAS_PARCIAL = ['TPU', 'DIRECTA'];
-        let porCopias = false;
-        if (!AREAS_PARCIAL.includes(area) && um !== 'U') {
+        let porCopias = area === 'DIRECTA';
+        if (!porCopias && !AREAS_PARCIAL.includes(area) && um !== 'U') {
             // Última vía: que el lote esté en MIMAKI (contador por copias).
             const maqRes = await pool.request()
                 .input('OID', sql.Int, Number(orderId))
@@ -1449,9 +1468,10 @@ exports.setOrderCantidadImpresa = async (req, res) => {
             }
         }
 
-        // Unidades → entero; metros (u otra UM) → 2 decimales. La columna es DECIMAL(10,2), sirve a ambos.
+        // Unidades y copias → entero; metros (u otra UM) → 2 decimales. La columna es DECIMAL(10,2),
+        // sirve a ambos. OJO: en DIRECTA/MIMAKI la orden puede ir en metros pero se cuenta en copias.
         const esUnidades = um === 'U';
-        const cantNum = esUnidades ? Math.round(Number(cantidad)) : Math.round(Number(cantidad) * 100) / 100;
+        const cantNum = (esUnidades || porCopias) ? Math.round(Number(cantidad)) : Math.round(Number(cantidad) * 100) / 100;
 
         const result = await pool.request()
             .input('OID', sql.Int, Number(orderId))
