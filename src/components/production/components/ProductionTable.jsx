@@ -427,7 +427,7 @@ export default function ProductionTable({ rowData = [], onRowSelected, selectedR
                             width: '100%'
                         }}
                     >
-                        <thead className="bg-zinc-100/90 backdrop-blur-md sticky top-0 z-20 border-b-2 border-zinc-200 shadow-sm">
+                        <thead className="bg-zinc-100 sticky top-0 z-20 border-b-2 border-zinc-200 shadow-sm">
                             {table.getHeaderGroups().map(headerGroup => (
                                 <tr key={headerGroup.id}>
                                     {headerGroup.headers.map((header, index) => (

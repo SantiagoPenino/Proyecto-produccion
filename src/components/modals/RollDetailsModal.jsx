@@ -1087,16 +1087,17 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { }, lo
 
         if (!window.confirm(`¿Descargar y medir ${selectedOrderIds.length} órdenes seleccionadas?\nEsto descargará sus archivos en tu PC (creando una subcarpeta para el Rollo) y luego actualizará sus medidas.`)) return;
 
+        const abortCtrl = new AbortController(); // botón "Cancelar" del panel flotante
         try {
             setLoading(true);
 
-            downloadManager.start(`Medición de Lote ${freshRoll?.id || 'Nuevo'}`);
+            downloadManager.start(`Medición de Lote ${freshRoll?.id || 'Nuevo'}`, abortCtrl);
 
             const measureTask = async () => {
                 // 1. DESCARGA ZIP
                 const blob = await rollsService.downloadZip(selectedOrderIds, (loaded, total) => {
                     downloadManager.updateDownloadProgress(loaded, total);
-                });
+                }, abortCtrl.signal);
 
                 if (supportsFileSystem && dirHandle) {
                     const JSZip = (await import("jszip")).default;
@@ -1161,6 +1162,12 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { }, lo
             await measureTask();
 
         } catch (error) {
+            if (abortCtrl.signal.aborted) {
+                // Cancelado por el usuario desde el panel: sin cartel de error.
+                downloadManager.close();
+                toast.info('Descarga cancelada.');
+                return;
+            }
             console.error("Error process server:", error);
             downloadManager.error(error.response?.data?.error || error.message);
             toast.error("Error: " + (error.response?.data?.error || error.message));
@@ -1189,10 +1196,11 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { }, lo
             if (!window.confirm(message)) return;
         }
 
+        const abortCtrl = new AbortController(); // botón "Cancelar" del panel flotante
         try {
             setLoading(true);
 
-            downloadManager.start(`Descarga Lote ${freshRoll?.id || 'Nuevo'}`);
+            downloadManager.start(`Descarga Lote ${freshRoll?.id || 'Nuevo'}`, abortCtrl);
 
             const downloadTask = async () => {
                 // Sin File System API (HTTP inseguro / Firefox / Safari) no se puede escribir en una
@@ -1200,7 +1208,7 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { }, lo
                 if (!supportsFileSystem || !dirHandle) {
                     const blob = await rollsService.downloadZip(selectedOrderIds, (loaded, total) => {
                         downloadManager.updateDownloadProgress(loaded, total);
-                    });
+                    }, abortCtrl.signal);
                     saveAsZip(blob);
                     downloadManager.finish();
                     toast.success("ZIP descargado");
@@ -1234,12 +1242,13 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { }, lo
                 let fileCount = 0;
                 const writeErrors = [];
                 for (const [idx, arch] of archivos.entries()) {
+                    if (abortCtrl.signal.aborted) break; // "Cancelar" del panel: no arrancar más archivos
                     const nombre = (arch.fileName || `archivo_${arch.archivoId}`).replace(/[<>:"/\\|?*]/g, '_');
                     downloadManager.updateSubTask(`${idx + 1}/${archivos.length} · ${nombre}`);
                     try {
                         const blob = await rollsService.downloadSingleFile(arch.archivoId, (loaded, total) => {
                             downloadManager.updateDownloadProgress(loaded, total);
-                        });
+                        }, abortCtrl.signal);
                         // TPU: cada orden va en su propia subcarpeta (`arch.carpeta` = tpu-<NoDocERP>),
                         // porque son 5 capas por orden y sueltas en la raíz del lote no se distinguen.
                         // Si el navegador no deja crearla, cae a la carpeta del lote en vez de fallar.
@@ -1256,10 +1265,18 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { }, lo
                         fileCount++;
                         downloadManager.updateProcessingProgress(fileCount);
                     } catch (fileErr) {
+                        // Cancelación: el abort corta el fetch en curso — no es un error del archivo.
+                        if (abortCtrl.signal.aborted) break;
                         // Un archivo caído no corta la descarga del resto.
                         console.error("❌ Error con archivo:", nombre, fileErr);
                         writeErrors.push(`${nombre}: ${fileErr.message}`);
                     }
+                }
+
+                if (abortCtrl.signal.aborted) {
+                    downloadManager.close();
+                    toast.info(`Descarga cancelada — ${fileCount} de ${archivos.length} archivos guardados.`);
+                    return;
                 }
 
                 if (fileCount === 0) {
@@ -1277,6 +1294,12 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { }, lo
             await downloadTask();
 
         } catch (error) {
+            if (abortCtrl.signal.aborted) {
+                // Cancelado por el usuario (el abort revienta el await en curso): sin cartel de error.
+                downloadManager.close();
+                toast.info('Descarga cancelada.');
+                return;
+            }
             console.error("Download Error:", error);
             let errorMsg;
             if (error.response && error.response.data instanceof Blob) {

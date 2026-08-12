@@ -20,6 +20,8 @@ const fmtDate = (d) => d ? new Date(d).toLocaleDateString('es-UY') : '—';
 const TIPO_CONFIG = {
     INGRESO:             { label: 'Ingreso',        icon: ArrowDownCircle, color: 'text-emerald-700 bg-emerald-50 border-emerald-200', sign: '+', textColor: 'text-emerald-600' },
     CONSUMO_PRODUCCION:  { label: 'Consumo',         icon: ArrowUpCircle,   color: 'text-rose-700 bg-rose-50 border-rose-200',         sign: '-', textColor: 'text-rose-600'     },
+    CONSUMO_ORDEN:       { label: 'Consumo Orden',   icon: ArrowUpCircle,   color: 'text-rose-700 bg-rose-50 border-rose-200',         sign: '-', textColor: 'text-rose-600'     },
+    DEVOLUCION_CANCELACION: { label: 'Devolución',   icon: ArrowDownCircle, color: 'text-teal-700 bg-teal-50 border-teal-200',         sign: '+', textColor: 'text-teal-600'     },
     AJUSTE_DESECHO:      { label: 'Merma',           icon: MinusCircle,     color: 'text-amber-700 bg-amber-50 border-amber-200',       sign: '±', textColor: 'text-amber-600'    },
     AJUSTE_MANUAL:       { label: 'Ajuste Manual',   icon: MinusCircle,     color: 'text-amber-700 bg-amber-50 border-amber-200',       sign: '±', textColor: 'text-amber-600'    },
     CONFIRMACION_MEDIDA: { label: 'Confirm. Medida', icon: CheckCircle2,    color: 'text-sky-700 bg-sky-50 border-sky-200',             sign: '✓', textColor: 'text-sky-600'      },
@@ -279,8 +281,10 @@ function BobinaCard({ data, checked, onCheck, clienteNombre, clienteId }) {
                         <table className="w-full text-xs">
                             <thead>
                                 <tr className="bg-slate-50 border-b border-slate-200">
+                                    {/* Cantidad y Saldo van alineados a la derecha como sus celdas — con todo
+                                        a la izquierda los títulos quedaban "corridos" respecto de los números */}
                                     {['Fecha', 'Tipo', 'Cantidad', 'Saldo Acum.', 'Referencia', 'Operario'].map(h => (
-                                        <th key={h} className="px-4 py-2 text-left text-[9px] font-black uppercase tracking-widest text-slate-500">{h}</th>
+                                        <th key={h} className={`px-4 py-2 text-[9px] font-black uppercase tracking-widest text-slate-500 ${h === 'Cantidad' || h === 'Saldo Acum.' ? 'text-right' : 'text-left'}`}>{h}</th>
                                     ))}
                                 </tr>
                             </thead>
@@ -453,7 +457,9 @@ export default function TelaClienteEstadoCuenta() {
 
     // Totales globales
     const totalIngresado  = movimientos.filter(m => m.TipoMovimiento === 'INGRESO').reduce((s,m) => s + Math.abs(parseFloat(m.Cantidad||0)), 0);
-    const totalConsumido  = movimientos.filter(m => ['CONSUMO_PRODUCCION','MERMA_REIMPRESION','AJUSTE_DESECHO'].includes(m.TipoMovimiento)).reduce((s,m) => s + Math.abs(parseFloat(m.Cantidad||0)), 0);
+    // Mismo criterio que la card por bobina: consumo bruto = todo movimiento negativo que no
+    // sea ingreso/confirmación/liberación (la lista por tipo dejaba afuera CONSUMO_ORDEN).
+    const totalConsumido  = movimientos.filter(m => !['INGRESO','CONFIRMACION_MEDIDA','LIBERACION_RESERVA'].includes(m.TipoMovimiento) && parseFloat(m.Cantidad) < 0).reduce((s,m) => s + Math.abs(parseFloat(m.Cantidad||0)), 0);
     const totalDisponible = saldos.reduce((s, x) => s + parseFloat(x.MetrosLibres||0), 0);
     const totalEnProceso  = saldos.reduce((s, x) => s + parseFloat(x.MetrosEnProceso||0), 0);
 

@@ -450,7 +450,7 @@ const SysAdminPage = () => {
                         <Gauge label="RAM" value={parseFloat(status.memory.percentUsed)} icon={HardDrive} color="#00B4D8" />
                         <Gauge label="CPU" value={parseFloat(status.cpu.percentUsed)} icon={Cpu} color="#BD0C7E" />
                         <Gauge label="Disco" value={status.disk && status.disk.total > 0 ? ((status.disk.total - status.disk.free) / status.disk.total * 100) : 0} max={100} unit="%" icon={HardDrive} color="#eab308" />
-                        <Gauge label="Sockets" value={status.sockets} max={500} unit="conn" icon={Wifi} color="#DCB308" />
+                        <Gauge label="Sockets" value={status.sockets} max={1000} unit="conn" icon={Wifi} color="#DCB308" />
                         <div className="bg-zinc-900 rounded-2xl p-5 border border-zinc-800 flex flex-col items-center justify-center gap-2">
                             <Database size={20} className={status.db.ok ? 'text-emerald-400' : 'text-red-400'} />
                             <span className="text-xs font-bold text-zinc-400 uppercase">Base de Datos</span>

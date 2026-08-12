@@ -122,7 +122,8 @@ function DropdownRecursosDesktop({ navigate, sessionType }) {
 const PORTAL_ITEMS = [
   { label: 'Mi Perfil', path: '/portal/profile' },
   { label: 'Realizar Pedido', path: '/portal' },
-  { label: 'Tienda', path: '/portal/tienda' },
+  // Tienda OCULTA hasta el lanzamiento (10/08) — la ruta /portal/tienda sigue viva por URL.
+  // { label: 'Tienda', path: '/portal/tienda' },
   { label: 'Retiro de Pedidos', path: '/portal/pickup' },
   { label: 'Pagos Pendientes', path: '/portal/payments' },
   { label: 'Historial', path: '/portal/history' },

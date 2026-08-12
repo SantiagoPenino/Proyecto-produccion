@@ -256,8 +256,11 @@ export const MainLayout = ({ children }) => {
                     {/* 2. Realizar Pedido (link directo al catálogo de servicios) */}
                     <NavItem to="/portal" icon={Package} label="Realizar Pedido" />
 
-                    {/* 2.5 Tienda (e-commerce — docs/ecommerce-portal-plan.md) */}
-                    <NavItem to="/portal/tienda" icon={ShoppingBag} label="Tienda" />
+                    {/* 2.5 Tienda (e-commerce — docs/ecommerce-portal-plan.md). OCULTA hasta el
+                        lanzamiento (pedido 10/08): la ruta /portal/tienda sigue viva para probarla
+                        entrando por URL; para mostrarla, descomentar acá y en PORTAL_ITEMS del
+                        LandingNavbar.
+                    <NavItem to="/portal/tienda" icon={ShoppingBag} label="Tienda" /> */}
 
                     {/* --- Servicios Collapsible (comentado temporalmente) ---
                     <div className="space-y-1">

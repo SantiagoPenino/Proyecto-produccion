@@ -3,6 +3,7 @@
 class DownloadManager {
     constructor() {
         this.listeners = [];
+        this.abortController = null; // AbortController de la descarga en curso (botón "Cancelar" del panel)
         this.state = {
             isActive: false,
             phase: 'idle', // 'idle' | 'downloading' | 'processing' | 'done' | 'error'
@@ -12,7 +13,8 @@ class DownloadManager {
             currentFile: 0,
             totalFiles: 0,
             errorMsg: '',
-            subTaskName: ''
+            subTaskName: '',
+            cancellable: false
         };
     }
 
@@ -30,7 +32,8 @@ class DownloadManager {
         }
     }
 
-    start(taskName) {
+    start(taskName, abortController = null) {
+        this.abortController = abortController;
         this.state = {
             isActive: true,
             phase: 'downloading',
@@ -40,9 +43,16 @@ class DownloadManager {
             currentFile: 0,
             totalFiles: 0,
             errorMsg: '',
-            subTaskName: ''
+            subTaskName: '',
+            cancellable: !!abortController
         };
         this.notify();
+    }
+
+    // Aborta la descarga en curso (el dueño del loop maneja el corte y su toast) y cierra el panel.
+    cancel() {
+        this.abortController?.abort();
+        this.close();
     }
 
     updateDownloadProgress(bytesDownloaded, totalBytes) {
@@ -69,7 +79,9 @@ class DownloadManager {
     }
 
     finish() {
+        this.abortController = null;
         this.state.phase = 'done';
+        this.state.cancellable = false;
         this.notify();
         
         // Auto hide after 3 seconds
@@ -82,8 +94,10 @@ class DownloadManager {
     }
 
     error(msg) {
+        this.abortController = null;
         this.state.phase = 'error';
         this.state.errorMsg = msg;
+        this.state.cancellable = false;
         this.notify();
 
         // Auto hide after 5 seconds
@@ -96,7 +110,9 @@ class DownloadManager {
     }
 
     close() {
+        this.abortController = null;
         this.state.isActive = false;
+        this.state.cancellable = false;
         this.notify();
     }
 }

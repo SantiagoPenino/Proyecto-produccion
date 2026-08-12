@@ -397,7 +397,7 @@ const WmsOrderPage = forwardRef(({ embedded = false, initialClient = null, onCar
 
             {/* Modal Variantes */}
             {variantModalItem && (
-                <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[100] flex items-center justify-center p-4">
+                <div className="fixed inset-0 bg-slate-900/70 z-[100] flex items-center justify-center p-4">
                     <div className="bg-white rounded-3xl w-full max-w-md shadow-2xl overflow-hidden flex flex-col">
                         
                         {/* Modal Header */}
@@ -639,7 +639,7 @@ const WmsOrderPage = forwardRef(({ embedded = false, initialClient = null, onCar
 
             {/* Success Modal */}
             {orderState.successCode && (
-                <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+                <div className="fixed inset-0 bg-slate-900/60 z-50 flex items-center justify-center p-4">
                     <div className="bg-white rounded-3xl p-8 max-w-sm w-full shadow-2xl transform transition-all text-center">
                         <div className="mx-auto flex items-center justify-center h-20 w-20 rounded-full bg-emerald-100 mb-6">
                             <CheckCircle className="h-10 w-10 text-emerald-600" />

@@ -377,12 +377,18 @@ export default function AreaView({ areaKey: rawAreaKey, areaConfig, onSwitchTab 
                     
                     const isDFPath = window.location.pathname.toLowerCase().startsWith('/area/df');
 
-                    if (isSameArea && isDFPath) {
+                    // Avisar solo si la pestaña se está viendo: con la pestaña sin foco,
+                    // react-toastify pausa el autoClose (pauseOnFocusLoss) y los avisos quedaban
+                    // congelados acumulándose hasta el limit del container — al volver aparecía
+                    // una pila de órdenes viejas. El que no vio el aviso ya ve la orden en la
+                    // tabla, que se refresca sola.
+                    if (isSameArea && isDFPath && document.visibilityState === 'visible') {
                         const isUrgent = ['Urgente', 'Reposición', 'Falla'].includes(o.prioridad);
-                        
+
                         toast(`Se ha creado la orden ${o.codigo || 'ORD-' + o.id}.`, {
                             position: "top-right",
                             autoClose: 1500,
+                            pauseOnFocusLoss: false,
                             style: {
                                 background: isUrgent ? '#BD0C7E' : '#006E97', // brand-magenta / brand-cyan
                                 color: '#fff',

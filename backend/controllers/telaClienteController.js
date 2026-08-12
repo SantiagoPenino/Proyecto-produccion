@@ -152,12 +152,19 @@ exports.getEstadoCuenta = async (req, res) => {
         // (ej: BOB-97 mostraba 67.55 en vez de 67.45 por los 0.10 de BOB-93).
         const rows = result.recordset;
         const saldoAcum = {};
-        // Recorremos de más antiguo a más reciente para acumular
+        // Recorremos de más antiguo a más reciente para acumular.
+        // La Cantidad ya se guarda con signo (consumos en negativo, devoluciones e ingresos
+        // en positivo) — se suma tal cual. El "todo lo no-INGRESO resta en valor absoluto"
+        // de antes daba vuelta las DEVOLUCION_CANCELACION y el acumulado terminaba en
+        // negativo (-37.86 con saldo real 0.70). La lista EGRESOS queda solo como guarda
+        // para movimientos viejos de consumo/merma que hayan quedado guardados sin signo.
+        const EGRESOS = ['CONSUMO_PRODUCCION', 'CONSUMO_ORDEN', 'MERMA_REIMPRESION', 'AJUSTE_DESECHO'];
         [...rows].reverse().forEach(r => {
             const key = r.BobinaID;
             if (!saldoAcum[key]) saldoAcum[key] = 0;
-            if (r.TipoMovimiento === 'INGRESO') saldoAcum[key] += parseFloat(r.Cantidad || 0);
-            else saldoAcum[key] -= Math.abs(parseFloat(r.Cantidad || 0));
+            const qty = parseFloat(r.Cantidad || 0);
+            if (EGRESOS.includes(r.TipoMovimiento)) saldoAcum[key] -= Math.abs(qty);
+            else saldoAcum[key] += qty;
             r.SaldoAcumulado = parseFloat(saldoAcum[key].toFixed(2));
         });
 

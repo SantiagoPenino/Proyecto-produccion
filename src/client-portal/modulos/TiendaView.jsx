@@ -205,25 +205,30 @@ export const TiendaView = () => {
                     {productos.map(p => {
                         const chip = CHIP_TIPO[p.tipo] || CHIP_TIPO.TERMINADO;
                         return (
+                            // Card "blanca con zona gris" (opción 6 elegida 10/08): card blanca sobre
+                            // el portal oscuro, foto en panel gris suave con margen, datos abajo en
+                            // una fila título/precio.
                             <button
                                 key={p.proIdProducto}
                                 onClick={() => setFicha(p)}
-                                className="text-left rounded-2xl border border-zinc-800 bg-custom-dark overflow-hidden hover:border-brand-cyan/40 hover:shadow-xl hover:shadow-black/30 transition-all group"
+                                className="text-left rounded-2xl bg-white overflow-hidden hover:shadow-xl hover:shadow-black/40 hover:-translate-y-0.5 transition-all group"
                             >
-                                <div className="relative aspect-square bg-white flex items-center justify-center overflow-hidden">
-                                    <span className={`absolute top-2 left-2 z-10 px-2 py-0.5 rounded-full text-[9px] font-black uppercase tracking-wide ${chip.cls}`}>{chip.texto}</span>
-                                    {p.fotos?.length ? (
-                                        <img src={p.fotos[0]} alt={p.titulo} className="w-full h-full object-contain group-hover:scale-105 transition-transform duration-500" />
-                                    ) : (
-                                        <ImageOff size={36} className="text-zinc-300" />
-                                    )}
+                                <div className="p-2.5 pb-0">
+                                    <div className="relative aspect-square bg-zinc-100 rounded-xl flex items-center justify-center overflow-hidden">
+                                        <span className={`absolute top-2 left-2 z-10 px-2 py-0.5 rounded-full text-[9px] font-black uppercase tracking-wide ${chip.cls}`}>{chip.texto}</span>
+                                        {p.fotos?.length ? (
+                                            <img src={p.fotos[0]} alt={p.titulo} className="w-full h-full object-contain p-2 group-hover:scale-105 transition-transform duration-500" />
+                                        ) : (
+                                            <ImageOff size={36} className="text-zinc-300" />
+                                        )}
+                                    </div>
                                 </div>
-                                <div className="p-3 space-y-1">
-                                    <p className="text-sm font-bold text-zinc-200 leading-snug line-clamp-2">{p.titulo}</p>
+                                <div className="px-3.5 py-3 flex justify-between items-baseline gap-2">
+                                    <p className="flex-1 min-w-0 text-[13px] font-semibold text-zinc-600 leading-snug line-clamp-2">{p.titulo}</p>
                                     {p.tipo === 'TERMINADO' ? (
-                                        <p className="text-base font-black text-zinc-100">{p.precio != null ? fmt(p.precio, p.moneda) : 'Consultar'}</p>
+                                        <p className="text-base font-black text-zinc-900 whitespace-nowrap">{p.precio != null ? fmt(p.precio, p.moneda) : 'Consultar'}</p>
                                     ) : (
-                                        <p className="text-[11px] font-bold text-zinc-500 uppercase tracking-wide">Precio a cotizar</p>
+                                        <p className="text-[10px] font-black text-zinc-400 uppercase tracking-wide whitespace-nowrap">A cotizar</p>
                                     )}
                                 </div>
                             </button>

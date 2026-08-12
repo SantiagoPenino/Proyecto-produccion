@@ -100,22 +100,24 @@ export const rollsService = {
         const { data } = await api.post('/measurements/files-manifest', { orderIds });
         return data; // { rollName, files: [{ archivoId, fileName, codigoOrden }] }
     },
-    downloadSingleFile: async (archivoId, onProgress) => {
+    downloadSingleFile: async (archivoId, onProgress, signal) => {
         const response = await api.get(`/measurements/file/${archivoId}`, {
             responseType: 'blob',
             onDownloadProgress: (e) => { if (onProgress) onProgress(e.loaded, e.total); },
+            signal,
         });
         return response.data;
     },
-    downloadZip: async (orderIds, onProgress) => {
-        const response = await api.post('/measurements/download-zip', { 
+    downloadZip: async (orderIds, onProgress, signal) => {
+        const response = await api.post('/measurements/download-zip', {
             orderIds,
             clientId: socket?.id
-        }, { 
+        }, {
             responseType: 'blob',
             onDownloadProgress: (progressEvent) => {
                 if (onProgress) onProgress(progressEvent.loaded, progressEvent.total);
-            }
+            },
+            signal
         });
         return response.data;
     },
