@@ -180,7 +180,8 @@ const ContabilidadBandejaCFE = ({ initialCliente = null, embedded = false, autoN
         tipo: '',
         clienteId: cliFijoId,
         empresaId: '',
-        metodoPagoId: ''
+        metodoPagoId: '',
+        buscar: ''
     });
 
     const [clienteSearch, setClienteSearch] = useState('');
@@ -288,6 +289,7 @@ const ContabilidadBandejaCFE = ({ initialCliente = null, embedded = false, autoN
             if (filtros.clienteId) queryParams.append('clienteId', filtros.clienteId);
             if (filtros.empresaId) queryParams.append('empresaId', filtros.empresaId);
             if (filtros.metodoPagoId) queryParams.append('metodoPagoId', filtros.metodoPagoId);
+            if (filtros.buscar.trim()) queryParams.append('buscar', filtros.buscar.trim());
             const { data } = await api.get(`/contabilidad/cfe/documentos?${queryParams.toString()}`);
             setDocs(data);
         } catch (err) {
@@ -764,8 +766,38 @@ const ContabilidadBandejaCFE = ({ initialCliente = null, embedded = false, autoN
                             )}
                         </div>
                         <div>
-                            <button 
-                                onClick={fetchDocumentos} 
+                            <label className="block text-sm font-medium text-gray-700 mb-1">Nro / Retiro / Orden</label>
+                            <div className="relative">
+                                <input
+                                    type="text"
+                                    name="buscar"
+                                    value={filtros.buscar}
+                                    onChange={handleFilterChange}
+                                    onKeyDown={(e) => { if (e.key === 'Enter') fetchDocumentos(); }}
+                                    placeholder="ET-4049 · RW-21510 · SUB-11554"
+                                    title="Busca por Nro interno (ET-4049), Nº de retiro (RW-21510) o Nº de orden (SUB-11554). Ignora el rango de fechas: encuentra el documento esté donde esté."
+                                    className="w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 p-2 border text-sm pr-8 bg-white"
+                                />
+                                {filtros.buscar && (
+                                    <button
+                                        type="button"
+                                        onClick={() => setFiltros(prev => ({ ...prev, buscar: '' }))}
+                                        className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 focus:outline-none"
+                                        title="Limpiar búsqueda"
+                                    >
+                                        <XCircle size={16} />
+                                    </button>
+                                )}
+                            </div>
+                            {filtros.buscar.trim() && (
+                                <p className="text-[10px] text-amber-600 font-medium mt-0.5">
+                                    Busca en TODAS las fechas (ignora Desde/Hasta)
+                                </p>
+                            )}
+                        </div>
+                        <div>
+                            <button
+                                onClick={fetchDocumentos}
                                 disabled={loading}
                                 className="w-full flex justify-center items-center px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 disabled:bg-blue-400 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
                             >
@@ -878,6 +910,11 @@ const ContabilidadBandejaCFE = ({ initialCliente = null, embedded = false, autoN
                                         </td>
                                         <td className="px-6 py-4 whitespace-nowrap text-sm font-semibold text-gray-900">
                                             {doc.DocSerie}-{parseInt(doc.DocNumero, 10) || doc.DocNumero}
+                                            {doc.RetiroCodigos && (
+                                                <div className="mt-0.5" title="Nº de retiro que originó este documento">
+                                                    {doc.RetiroCodigos}
+                                                </div>
+                                            )}
                                         </td>
                                         <td className="px-6 py-4 text-sm text-gray-500">
                                             <div className="text-gray-900 font-medium">

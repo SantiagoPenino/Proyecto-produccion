@@ -359,6 +359,34 @@ exports.prepararCFE = async (doc, lineas, cotDolar = 40.0, empresa = null) => {
     // Calculamos el Total estrictamente a partir de lo acumulado para no fallar la regla de DGI
     const mntTotal = fixD(mntNetoIvaTasaBasica + mntIVATasaBas + mntNoGrv);
 
+    // 4.b CUADRE LÍNEAS vs TOTAL DEL DOCUMENTO — lo que viaja a DGI (mntTotal) se calcula
+    // EXCLUSIVAMENTE desde las líneas: si están descuadradas (moneda equivocada, duplicadas,
+    // faltantes), el CFE saldría por un importe distinto al que registra el documento
+    // (DocTotal = lo que el cliente pagó/debe) sin que nadie lo note. Tolerancia de 1,00 en
+    // la moneda del documento por redondeos legítimos de IVA por línea; un descuadre real
+    // (los incidentes cross-moneda son 2×/40×) queda lejísimos de eso. Como bloqueo, la
+    // vista previa lo muestra y emitirCFE corta ANTES de tocar SISNET.
+    const TOLERANCIA_CUADRE = 1.00;
+    const docTotalDeclarado = Number(doc.DocTotal || 0);
+    const sumaLineas = fixD(lineas.reduce((a, l) => a + Number(l.DcdTotal || 0), 0));
+    const monTxt = doc.MonIdMoneda === 2 ? 'USD' : '$';
+    if (!lineas.length) {
+        bloqueos.push(
+            `El documento no tiene líneas de detalle: a DGI viajaría un CFE de ${monTxt} 0,00 en vez de ` +
+            `${monTxt} ${docTotalDeclarado.toFixed(2)}. No se envió nada a DGI. ` +
+            `Solución: abrí "Editar" en la bandeja, cargá las líneas de la factura y reenviá.`
+        );
+    } else if (Math.abs(mntTotal - docTotalDeclarado) > TOLERANCIA_CUADRE) {
+        const dif = Math.abs(mntTotal - docTotalDeclarado);
+        bloqueos.push(
+            `La factura no cuadra: las líneas suman ${monTxt} ${sumaLineas.toFixed(2)} ` +
+            `(a DGI viajaría ${monTxt} ${mntTotal.toFixed(2)}) pero el total del documento es ` +
+            `${monTxt} ${docTotalDeclarado.toFixed(2)} — diferencia de ${monTxt} ${dif.toFixed(2)}. ` +
+            `No se envió nada a DGI. Solución: abrí "Editar" en la bandeja y corregí el importe o la ` +
+            `moneda de las líneas hasta que sumen igual al total, y reenviá.`
+        );
+    }
+
     // Receptor: e-Facturas SIEMPRE lo llevan; e-Tickets lo llevan solo cuando hay
     // CI/RUT VÁLIDO (dígito verificador OK) — DGI exige identificar al comprador
     // en tickets sobre el umbral de UI, y así el dato realmente llega a DGI.

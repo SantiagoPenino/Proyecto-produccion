@@ -2829,6 +2829,9 @@ exports.getOrdenesAnticipo = async (req, res) => {
                m.OrdIdOrden, m.OReIdOrdenRetiro, m.PagIdPago, m.MovObservaciones, m.DocIdDocumento,
                oa.CodigoOrdenStr AS OrdCodigoOrden,
                oa.NombreTrabajo AS OrdNombreTrabajo,
+               -- Fecha de ingreso de la orden (Ordenes o, si vino por depósito, OrdenesDeposito).
+               -- Fallback MovFecha: movimientos sin orden asociada igual tienen fecha para ordenar.
+               COALESCE(erp.FechaIngreso, od.OrdFechaIngresoOrden, m.MovFecha) AS OrdFechaIngreso,
                erp.Prioridad AS OrdPrioridad,
                ISNULL(od.OrdCantidad, 1) AS OrdCantidad,
                ISNULL(od.OrdDescuentoAplicado, 0) AS OrdDescuentoAplicado,

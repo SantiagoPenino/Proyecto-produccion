@@ -56,6 +56,17 @@ export default function CajaPagoDeudaTab({ sesion, metodosPago = [], cotizacion 
   const simboloDeuda = monedaDeuda === 'USD' ? 'US$' : '$U';
   // Tope en la moneda de la deuda: 1 USD, o su equivalente en pesos al TC del día.
   const limiteDifCambio = LIMITE_DIF_CAMBIO_USD * (monedaDeuda === 'USD' ? 1 : (cotizacion || 1));
+
+  // ─── TC pactado ────────────────────────────────────────────────────────────
+  // El cajero puede pisar la cotización del cobro cuando el pago se acordó a otro
+  // tipo de cambio (deuda USD cobrada en $ a TC convenido, o un pago de días
+  // anteriores asentado hoy). Vacío = se usa la del día (comportamiento de siempre).
+  // tcCobro se aplica a TODO el cobro: normalización de pagos, payload y panel.
+  const [tcPactado, setTcPactado] = useState('');
+  const tcCobro = parseFloat(tcPactado) > 0 ? parseFloat(tcPactado) : (cotizacion || 1);
+  const esTcPactado = parseFloat(tcPactado) > 0 && Math.abs(parseFloat(tcPactado) - (cotizacion || 1)) > 0.0001;
+  // Al volver a la selección se descarta: cada cobro decide su TC.
+  useEffect(() => { if (paso === 'seleccion') setTcPactado(''); }, [paso]);
   // Una diferencia dentro del tope se puede resolver como fluctuación del tipo de cambio.
   const esDifDeCambio = (dif) => Math.abs(dif) <= limiteDifCambio + 0.005;
 
@@ -207,6 +218,40 @@ export default function CajaPagoDeudaTab({ sesion, metodosPago = [], cotizacion 
   // ─── Totales ─────────────────────────────────────────────────────────────
   const deudasSeleccionadas = deudas.filter(d => seleccionadas.includes(d.DDeIdDocumento));
   const totalAPagar        = deudasSeleccionadas.reduce((s, d) => s + Number(d.DDeImportePendiente), 0);
+
+  // TC IMPLÍCITO del pago: la cotización a la que lo ingresado cancela EXACTO la deuda
+  // (solo cobros cross-moneda). Se ofrece en los banners de parcial/exceso para resolver
+  // de un click el caso "fue TC pactado" (ej.: deuda US$ 2.320 pagada con $ 93.960 →
+  // implícito 40,50). Fuera de ±25% del TC del día NO se ofrece: eso no es un TC
+  // razonable, es un pago corto/largo de verdad y sigue el camino de siempre.
+  const tcImplicito = useMemo(() => {
+    if (!(totalAPagar > 0)) return null;
+    const dia = cotizacion || 1;
+    if (dia <= 1) return null; // sin cotización cargada no hay conversión que ajustar
+    const pv = pagos.filter(p => parseFloat(p.monto) > 0 && p.metodoPagoId);
+    if (!pv.length) return null;
+    const sumUSD = pv.reduce((a, p) => a + (p.moneda === 'USD' ? (parseFloat(p.monto) || 0) : 0), 0);
+    const sumUYU = pv.reduce((a, p) => a + (p.moneda !== 'USD' ? (parseFloat(p.monto) || 0) : 0), 0);
+    let tc = null;
+    if (monedaDeuda === 'USD') {
+      const restoUSD = totalAPagar - sumUSD;   // parte de la deuda que deben cubrir los pesos
+      if (sumUYU > 0 && restoUSD > 0.005) tc = sumUYU / restoUSD;
+    } else {
+      const restoUYU = totalAPagar - sumUYU;   // parte de la deuda que deben cubrir los dólares
+      if (sumUSD > 0 && restoUYU > 0.005) tc = restoUYU / sumUSD;
+    }
+    if (!tc || !isFinite(tc) || tc < dia * 0.75 || tc > dia * 1.25) return null;
+    if (Math.abs(tc - tcCobro) < 0.0001) return null; // ya está aplicado
+    return tc;
+  }, [pagos, totalAPagar, monedaDeuda, cotizacion, tcCobro]);
+
+  const aplicarTcImplicito = () => {
+    if (!tcImplicito) return;
+    setTcPactado(tcImplicito.toFixed(4));
+    setPendienteParcial(null);
+    setExcedentePago(null);
+    toast.info(`Tipo de cambio del cobro fijado en $${fmt(tcImplicito)} (pactado): con lo pagado, la deuda se cancela completa. Tocá "Registrar pago" para confirmar.`);
+  };
   // Comprobante a crédito (solo "Órdenes a facturar"): condición del panel (Contado/Crédito) o
   // tipoDoc de crédito (08 e-Ticket / 02 e-Factura). Pedido Caja crédito NO cambia el tipoDoc (40) → se detecta por condicion.
   const esCreditoCobro     = subTab === 'ordenes' && (condicion === 'CREDITO' || ['02', '08', 'FACT_CREDITO'].includes(tipoDoc));
@@ -271,10 +316,10 @@ export default function CajaPagoDeudaTab({ sesion, metodosPago = [], cotizacion 
       const m = parseFloat(p.monto) || 0;
       if (monedaDeuda === 'USD') {
         // Deuda en USD → normalizar pago a USD (si pago es UYU, dividir por cotización)
-        return a + (p.moneda === 'USD' ? m : m / (cotizacion || 1));
+        return a + (p.moneda === 'USD' ? m : m / tcCobro);
       } else {
         // Deuda en UYU → normalizar pago a UYU (si pago es USD, multiplicar por cotización)
-        return a + (p.moneda === 'USD' ? m * (cotizacion || 1) : m);
+        return a + (p.moneda === 'USD' ? m * tcCobro : m);
       }
     }, 0);
 
@@ -304,7 +349,7 @@ export default function CajaPagoDeudaTab({ sesion, metodosPago = [], cotizacion 
           serieDoc,
           moneda: monedaDeuda,          // ← moneda real de la deuda (USD o UYU)
           monedaId: monedaDeuda === 'USD' ? 2 : 1,
-          cotizacionTC: cotizacion,     // TC global, para normalizar pagos en otra moneda
+          cotizacionTC: tcCobro,        // TC del cobro (del día, o pactado si el cajero lo pisó)
           fecha: fechaCobro,            // fecha elegida del cobro; el backend usa hoy si es la de hoy
           permitirExcedente: true,      // el excedente se guarda como saldo a favor
           observaciones: observaciones || `Pago de deudas combinadas`,
@@ -339,7 +384,7 @@ export default function CajaPagoDeudaTab({ sesion, metodosPago = [], cotizacion 
             metodoPagoId:  parseInt(p.metodoPagoId, 10),
             monedaId:      monId,
             montoOriginal: parseFloat(p.monto),
-            cotizacion:    monId === 2 ? cotizacion : 1,
+            cotizacion:    monId === 2 ? tcCobro : 1,
             // Cheque dado de alta desde el panel: sin esto el cheque queda huérfano y
             // el 360 no puede mostrar su número junto al cobro.
             idCheque:      p.idCheque || null,
@@ -397,6 +442,14 @@ export default function CajaPagoDeudaTab({ sesion, metodosPago = [], cotizacion 
     const cli = initialCliente || {};
     const inicial = (cli.Nombre || '?').slice(0, 2).toUpperCase();
     const docLabel = ({ '05': 'Recibo', '40': 'Pedido Caja', '07': 'e-Ticket', '08': 'e-Ticket', '01': 'e-Factura', '02': 'e-Factura' })[tipoDoc] || 'Documento';
+    // Totales por moneda de lo listado (deuda original y pendiente), para el pie de la tabla
+    const totLista = lista.reduce((a, d) => {
+      const esUSD = (d.MonSimbolo || '').includes('US') || d.CueTipo === 'DINERO_USD' || d.MonIdMoneda === 2;
+      const orig = Number(d.DDeImporteOriginal ?? d.DDeImportePendiente) || 0;
+      const pend = Number(d.DDeImportePendiente) || 0;
+      if (esUSD) { a.origUSD += orig; a.pendUSD += pend; } else { a.origUYU += orig; a.pendUYU += pend; }
+      return a;
+    }, { origUSD: 0, origUYU: 0, pendUSD: 0, pendUYU: 0 });
     return (
       <div className="flex flex-col h-full min-h-0 bg-slate-100 w-full">
         {/* Cliente — en el paso de PAGO se agregan fecha / TC / documento a generar */}
@@ -422,9 +475,21 @@ export default function CajaPagoDeudaTab({ sesion, metodosPago = [], cotizacion 
             {paso === 'pago' && (<>
             {/* Tipo de cambio */}
             {cotizacion && cotizacion > 1 && (
-              <div className="flex items-center gap-1 bg-amber-50 border border-amber-200 rounded-lg px-2 py-1.5">
-                <span className="text-[8px] font-black text-amber-600 uppercase tracking-widest">TC</span>
-                <span className="text-[11px] font-black text-amber-800 font-mono">${fmt(cotizacion)}</span>
+              <div className={`flex items-center gap-1 border rounded-lg px-2 py-1.5 ${esTcPactado ? 'bg-violet-50 border-violet-300' : 'bg-amber-50 border-amber-200'}`}
+                title={esTcPactado
+                  ? `Tipo de cambio PACTADO para este cobro (el del día es $${fmt(cotizacion)}). Con este TC se convierten los pagos en otra moneda. El botón ↺ vuelve al del día.`
+                  : 'Tipo de cambio del día. Editalo SOLO si este cobro se acordó a otro TC (pactado con el cliente o pago de días anteriores): se usa para convertir los pagos en otra moneda y queda registrado en el cobro.'}>
+                <span className={`text-[8px] font-black uppercase tracking-widest ${esTcPactado ? 'text-violet-600' : 'text-amber-600'}`}>
+                  TC {esTcPactado ? 'pactado' : 'del día'}
+                </span>
+                <span className={`text-[11px] font-black font-mono ${esTcPactado ? 'text-violet-800' : 'text-amber-800'}`}>$</span>
+                <input type="number" step="0.01" min="0" value={tcPactado} placeholder={fmt(cotizacion)}
+                  onChange={e => setTcPactado(e.target.value)}
+                  className={`w-16 bg-transparent border-none outline-none text-[11px] font-black font-mono p-0 focus:ring-0 ${esTcPactado ? 'text-violet-800' : 'text-amber-800 placeholder-amber-800'}`} />
+                {esTcPactado && (
+                  <button type="button" onClick={() => setTcPactado('')} title="Volver al TC del día"
+                    className="text-violet-500 hover:text-violet-700 font-black text-sm leading-none px-0.5">↺</button>
+                )}
               </div>
             )}
             {/* Documento a generar + serie/número */}
@@ -506,6 +571,24 @@ export default function CajaPagoDeudaTab({ sesion, metodosPago = [], cotizacion 
                   );
                 })}
               </tbody>
+              <tfoot>
+                <tr className="bg-slate-50 border-t-2 border-slate-300">
+                  <td className="py-2.5" />
+                  <td colSpan={4} className="py-2.5 text-[10px] font-black text-slate-500 uppercase tracking-widest">
+                    Total · {lista.length} deuda{lista.length !== 1 ? 's' : ''}
+                  </td>
+                  <td className="py-2.5 pr-2 text-right font-black whitespace-nowrap align-middle">
+                    {totLista.origUSD > 0 && <div className="text-blue-700">US$ {fmt(totLista.origUSD)}</div>}
+                    {totLista.origUYU > 0 && <div className="text-emerald-700">$ {fmt(totLista.origUYU)}</div>}
+                  </td>
+                  <td className="py-2.5 pl-2 text-right font-black whitespace-nowrap align-middle text-blue-700">
+                    {totLista.pendUSD > 0 ? `US$ ${fmt(totLista.pendUSD)}` : <span className="text-slate-300">—</span>}
+                  </td>
+                  <td className="py-2.5 pl-2 text-right font-black whitespace-nowrap align-middle text-emerald-700">
+                    {totLista.pendUYU > 0 ? `$ ${fmt(totLista.pendUYU)}` : <span className="text-slate-300">—</span>}
+                  </td>
+                </tr>
+              </tfoot>
             </table>
           )}
         </div>
@@ -557,7 +640,7 @@ export default function CajaPagoDeudaTab({ sesion, metodosPago = [], cotizacion 
             onPagosChange={setPagos}
             totalACubrir={totalAPagar}
             moneda={monedaDeuda}
-            cotizacion={cotizacion}
+            cotizacion={tcCobro}
             procesando={procesando}
             tipoDoc={tipoDoc}
             onTipoDoc={setTipoDoc}
@@ -590,6 +673,12 @@ export default function CajaPagoDeudaTab({ sesion, metodosPago = [], cotizacion 
                   Es diferencia de cambio → cancelar la deuda entera
                 </button>
               )}
+              {tcImplicito && (
+                <button onClick={aplicarTcImplicito}
+                  className="w-full bg-white border border-emerald-300 text-emerald-700 hover:bg-emerald-50 font-black py-1.5 rounded-lg">
+                  ⇄ Fue TC pactado → usar el implícito del pago (${fmt(tcImplicito)}) y cancelar la deuda entera
+                </button>
+              )}
             </div>
           )}
           {excedentePago && (
@@ -603,6 +692,12 @@ export default function CajaPagoDeudaTab({ sesion, metodosPago = [], cotizacion 
                 <button onClick={() => handleProcesar({ aCambioMonetario: true })}
                   className="w-full bg-white border border-violet-300 text-violet-700 hover:bg-violet-50 font-black py-1.5 rounded-lg">
                   Es diferencia de cambio → no dejar saldo a favor
+                </button>
+              )}
+              {tcImplicito && (
+                <button onClick={aplicarTcImplicito}
+                  className="w-full bg-white border border-emerald-300 text-emerald-700 hover:bg-emerald-50 font-black py-1.5 rounded-lg">
+                  ⇄ Fue TC pactado → usar el implícito del pago (${fmt(tcImplicito)}) y no dejar saldo a favor
                 </button>
               )}
             </div>
@@ -685,6 +780,14 @@ export default function CajaPagoDeudaTab({ sesion, metodosPago = [], cotizacion 
             if (lista.length === 0) {
               return <div className="text-center py-10 text-slate-400 text-xs font-bold">{subTab === 'ordenes' ? 'Sin órdenes pendientes de facturar.' : 'Sin documentos con deuda.'}</div>;
             }
+            // Totales por moneda de lo listado, para el pie de la tabla
+            const totLista = lista.reduce((a, d) => {
+              const esUSD = (d.MonSimbolo || '').includes('US') || d.CueTipo === 'DINERO_USD' || d.MonIdMoneda === 2;
+              const orig = Number(d.DDeImporteOriginal ?? d.DDeImportePendiente) || 0;
+              const pend = Number(d.DDeImportePendiente) || 0;
+              if (esUSD) { a.origUSD += orig; a.pendUSD += pend; } else { a.origUYU += orig; a.pendUYU += pend; }
+              return a;
+            }, { origUSD: 0, origUYU: 0, pendUSD: 0, pendUYU: 0 });
             return (
             <table className="w-full text-xs border-collapse">
               <thead>
@@ -727,6 +830,24 @@ export default function CajaPagoDeudaTab({ sesion, metodosPago = [], cotizacion 
                   );
                 })}
               </tbody>
+              <tfoot>
+                <tr className="bg-slate-50 border-t-2 border-slate-300">
+                  <td className="py-2.5" />
+                  <td colSpan={4} className="py-2.5 text-[10px] font-black text-slate-500 uppercase tracking-widest">
+                    Total · {lista.length} deuda{lista.length !== 1 ? 's' : ''}
+                  </td>
+                  <td className="py-2.5 pr-2 text-right font-black whitespace-nowrap align-middle">
+                    {totLista.origUSD > 0 && <div className="text-blue-700">US$ {fmt(totLista.origUSD)}</div>}
+                    {totLista.origUYU > 0 && <div className="text-emerald-700">$ {fmt(totLista.origUYU)}</div>}
+                  </td>
+                  <td className="py-2.5 pl-2 text-right font-black whitespace-nowrap align-middle text-blue-700">
+                    {totLista.pendUSD > 0 ? `US$ ${fmt(totLista.pendUSD)}` : <span className="text-slate-300">—</span>}
+                  </td>
+                  <td className="py-2.5 pl-2 text-right font-black whitespace-nowrap align-middle text-emerald-700">
+                    {totLista.pendUYU > 0 ? `$ ${fmt(totLista.pendUYU)}` : <span className="text-slate-300">—</span>}
+                  </td>
+                </tr>
+              </tfoot>
             </table>
             );
           })() : (
@@ -832,7 +953,7 @@ export default function CajaPagoDeudaTab({ sesion, metodosPago = [], cotizacion 
           onPagosChange={setPagos}
           totalACubrir={totalAPagar}
           moneda={monedaDeuda}
-          cotizacion={cotizacion}
+          cotizacion={tcCobro}
           procesando={procesando}
           onConfirmar={handleProcesar}
           notes={observaciones}
@@ -909,6 +1030,20 @@ export default function CajaPagoDeudaTab({ sesion, metodosPago = [], cotizacion 
                     </button>
                   </div>
                 )}
+                {tcImplicito && (
+                  <div className="border-t border-amber-200 pt-3 flex flex-col gap-2">
+                    <p className="text-xs font-medium text-amber-700">
+                      Si el pago se acordó a OTRO tipo de cambio, lo ingresado equivale a la deuda completa
+                      al TC <strong>${fmt(tcImplicito)}</strong> (el del día es ${fmt(cotizacion)}): la deuda se
+                      cancela <strong>entera</strong> y ese TC queda registrado en el cobro.
+                    </p>
+                    <button
+                      onClick={aplicarTcImplicito}
+                      className="w-full bg-white border-2 border-emerald-400 text-emerald-700 font-black py-2 px-4 rounded-xl text-sm hover:bg-emerald-50 transition-colors">
+                      ⇄ Fue TC pactado — usar ${fmt(tcImplicito)} y cancelar la deuda entera
+                    </button>
+                  </div>
+                )}
               </div>
             )}
 
@@ -946,6 +1081,20 @@ export default function CajaPagoDeudaTab({ sesion, metodosPago = [], cotizacion 
                       onClick={() => { handleProcesar({ aCambioMonetario: true }); }}
                       className="w-full bg-white border-2 border-violet-400 text-violet-700 font-black py-2 px-4 rounded-xl text-sm hover:bg-violet-50 transition-colors">
                       ⇄ Es diferencia de cambio — no dejar saldo a favor
+                    </button>
+                  </div>
+                )}
+                {tcImplicito && (
+                  <div className="border-t border-sky-200 pt-3 flex flex-col gap-2">
+                    <p className="text-xs font-medium text-sky-700">
+                      Si el pago se acordó a OTRO tipo de cambio, lo ingresado equivale a la deuda completa
+                      al TC <strong>${fmt(tcImplicito)}</strong> (el del día es ${fmt(cotizacion)}): la deuda se
+                      cancela justa, sin saldo a favor, y ese TC queda registrado en el cobro.
+                    </p>
+                    <button
+                      onClick={aplicarTcImplicito}
+                      className="w-full bg-white border-2 border-emerald-400 text-emerald-700 font-black py-2 px-4 rounded-xl text-sm hover:bg-emerald-50 transition-colors">
+                      ⇄ Fue TC pactado — usar ${fmt(tcImplicito)} y no dejar saldo a favor
                     </button>
                   </div>
                 )}

@@ -151,8 +151,10 @@ const TransportControlPage = () => {
                 remitoCode: remitoData.CodigoRemito,
                 scannedCodes: Array.from(scannedCodes),
                 driverName: authUser.username,
-                driverDetails: `Firmado digitalmente por ID: ${authUser.id}`,
-                userId: authUser.id
+                // El login interno devuelve userId (no id) — con .id quedaba "ID: undefined"
+                // y el backend caía al usuario 1 como firmante
+                driverDetails: `Firmado digitalmente por ID: ${authUser.userId}`,
+                userId: authUser.userId
             });
 
             toast.success(`Salida firmada por ${authUser.username}`);

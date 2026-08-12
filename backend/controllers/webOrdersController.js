@@ -786,10 +786,17 @@ exports.createWebOrder = async (req, res) => {
         // archivo de arte; sin él nacen con Magnitud 0 y hay que cancelarlas a mano. Última línea de
         // defensa (por si el form deja pasar o llega un payload directo). Misma regla que la retención del
         // sync ERP. Los servicios por unidad (costura, corte, TPU-boceto) miden en 'u' → quedan exentos.
+        // [BORDADO] 'punt' (puntadas) queda exento igual que 'u': el bordado no
+        // imprime nada, no mide por metros y su arte no viaja como item de
+        // producción sino como archivo de referencia por diseño (LOGO_BORDADO).
+        // Sin esta excepción el guard rechazaba TODO pedido de bordado, porque su
+        // UM no es 'u' pero tampoco tiene items con arte. Que cada diseño traiga
+        // su logo ya lo valida el form antes de enviar.
+        const UM_SIN_ARTE = ['u', 'punt'];
         const ordenSinArte = pendingOrderExecutions.find(exec => {
             if (exec.isExtra) return false;
-            const um = (mapaAreasUM[exec.areaID] || 'u').toLowerCase();
-            if (um === 'u') return false; // por unidad → no requiere arte del cliente
+            const um = (mapaAreasUM[exec.areaID] || 'u').toLowerCase().trim();
+            if (UM_SIN_ARTE.includes(um)) return false; // por unidad o por puntadas → no requiere arte del cliente
             return !(exec.items || []).some(it => it.fileName || it.fileBackName);
         });
         if (ordenSinArte) {
@@ -1190,7 +1197,7 @@ exports.createWebOrder = async (req, res) => {
                             .input('OID', sql.Int, newOID)
                             .input('Mts', sql.Decimal(10, 2), mag)
                             .input('UID', sql.Int, req.user?.id || 1)
-                            .input('Ref', sql.NVarChar(300), `Consumo Orden ${newOID} - ${jobName}`)
+                            .input('Ref', sql.NVarChar(300), `Consumo Orden ${exec.codigoOrden || newOID} - ${jobName}`)
                             .query(`
                                 INSERT INTO MovimientosInsumos
                                     (InsumoID, BobinaID, TipoMovimiento, Cantidad, Referencia, UsuarioID, OrdenID, FechaMovimiento)
@@ -1596,8 +1603,13 @@ exports.createWebOrder = async (req, res) => {
                 // El usuario pidió explícitamente replicar lógica de Sync para "que me sirva para la facturacion".
                 // EXCEPTO el corte standalone PRINCIPAL: esa orden ya carga el artículo 1375 con la
                 // magnitud medida y se cotiza por su propia línea — la fila acá la duplicaba.
-                const esCortePrincipal = (serviceId === 'corte' && !exec.isExtra);
-                if (!esCortePrincipal && (exec.isExtra || ['EST', 'EMB', 'TWT', 'TWC'].includes(exec.areaID))) {
+                // [BORDADO] Mismo caso que el corte: la orden principal de bordado YA
+                // lleva su artículo (107/108/109/1630 según tipo y relleno) y se cotiza
+                // por su propia línea. La fila de acá le agregaba una SEGUNDA línea con
+                // el mismo artículo, así que el pedido salía cobrado dos veces.
+                const esPrincipalConArticuloPropio =
+                    (serviceId === 'corte' || serviceId === 'bordado') && !exec.isExtra;
+                if (!esPrincipalConArticuloPropio && (exec.isExtra || ['EST', 'EMB', 'TWT', 'TWC'].includes(exec.areaID))) {
                     // Calcular cantidad total (suma de copias o magnitud inicial)
                     let qtyFact = exec.magnitudInicial || 0;
                     if (qtyFact === 0 && exec.items && exec.items.length > 0) {

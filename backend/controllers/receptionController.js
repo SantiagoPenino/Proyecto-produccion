@@ -182,10 +182,15 @@ exports.createReception = async (req, res) => {
             // Fallback para el alta clásica de una sola clase de prenda: una
             // línea con el detalle del paquete y la cantidad total declarada.
             if (tipo === 'PAQUETE DE PRENDAS') {
+                // OJO con el fallback: `detalle` acá son los SERVICIOS pedidos
+                // ('Bordado'), no la prenda. Usarlo como descripción hacía que al
+                // cliente le apareciera una línea que dice "Bordado" en vez de
+                // "12 gorros negros". Hasta que recepción cargue las líneas de
+                // verdad, es más honesto decir "prendas" a secas.
                 const prendasList = Array.isArray(prendas) && prendas.length > 0
                     ? prendas
                     : (parseInt(req.body.cantidadPrendas) > 0
-                        ? [{ descripcion: detalle || 'Prendas del cliente', cantidad: parseInt(req.body.cantidadPrendas) }]
+                        ? [{ descripcion: 'prendas', cantidad: parseInt(req.body.cantidadPrendas) }]
                         : []);
 
                 for (const p of prendasList) {
@@ -194,7 +199,7 @@ exports.createReception = async (req, res) => {
                     await new sql.Request(transaction)
                         .input('RID',   sql.Int,            newId)
                         .input('Cli',   sql.VarChar(50),    clienteId ? String(clienteId) : null)
-                        .input('Desc',  sql.NVarChar(200),  p.descripcion || detalle || 'Prendas del cliente')
+                        .input('Desc',  sql.NVarChar(200),  p.descripcion || 'prendas')
                         .input('Talle', sql.NVarChar(50),   p.talle || null)
                         .input('Color', sql.NVarChar(50),   p.color || null)
                         .input('Cant',  sql.Int,            pCant)

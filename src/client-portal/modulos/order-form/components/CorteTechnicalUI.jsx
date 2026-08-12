@@ -2,6 +2,12 @@ import React, { useState, useEffect } from 'react';
 import { Zap, Trash2, AlertTriangle, CheckCircle2, CheckCircle, FileCode, Plus, Scissors } from 'lucide-react';
 import { FileUploadZone } from './FileUploadZone';
 import { CustomSelect } from '../../../pautas/CustomSelect';
+import { MARGEN_TELA_M } from '../utils/medirTizada';
+
+// Únicos formatos que lee la máquina de corte (regla 06/08). El .ai moderno es un
+// PDF por dentro: hay que guardarlo como "Illustrator 3". La validación real la
+// hace medirTizada leyendo el contenido; esto solo filtra el explorador de archivos.
+const FORMATOS_TIZADA = '.dxf,.plt,.hpgl,.ai';
 
 // =====================================================================
 // CORTE STANDALONE (/portal/order/corte) — bloque a ancho completo.
@@ -18,7 +24,11 @@ const CorteStandalone = ({ tizadaFiles, setTizadaFiles, handleMultipleSpecialize
     const [mismaTela, setMismaTela] = useState(true);
 
     const bobinaDe = (id) => bobinasDisponibles.find(b => b.BobinaID === id) || null;
-    const anchoDe = (b) => parseFloat(b?.AnchoReal ?? b?.Ancho) || 0;
+    // Ancho ÚTIL de la tela: el del rollo menos los 3 cm de margen (igual que sublimación)
+    const anchoDe = (b) => {
+        const rollo = parseFloat(b?.AnchoReal ?? b?.Ancho) || 0;
+        return rollo > 0 ? Math.round((rollo - MARGEN_TELA_M) * 100) / 100 : 0;
+    };
     const bobinaGlobal = tizadaFiles.find(f => f.bobinaId)?.bobinaId ?? null;
 
     const asignarATodas = (bobinaId) => setTizadaFiles(tizadaFiles.map(f => Object.assign(f, { bobinaId })));
@@ -78,21 +88,27 @@ const CorteStandalone = ({ tizadaFiles, setTizadaFiles, handleMultipleSpecialize
 
                 {/* Sin tizadas todavía: zona grande para arrastrar/elegir (acepta varias) */}
                 {tizadaFiles.length === 0 && (
-                    <FileUploadZone
-                        id="tizada-upload-tree"
-                        label="Subir Tizadas"
-                        onFileSelected={(files) => handleMultipleSpecializedFileUpload(files)}
-                        selectedFile={false}
-                        multiple={true}
-                        color="amber"
-                    />
+                    <>
+                        <FileUploadZone
+                            id="tizada-upload-tree"
+                            label="Subir Tizadas"
+                            onFileSelected={(files) => handleMultipleSpecializedFileUpload(files)}
+                            selectedFile={false}
+                            multiple={true}
+                            color="amber"
+                            accept={FORMATOS_TIZADA}
+                        />
+                        <p className="mt-2 text-[11px] text-zinc-500">
+                            Solo <b className="text-zinc-400">DXF</b>, <b className="text-zinc-400">PLT</b> o <b className="text-zinc-400">AI guardado como Illustrator 3</b> — son los archivos que lee la máquina de corte.
+                        </p>
+                    </>
                 )}
 
                 <div className="space-y-4">
                     {tizadaFiles.map((tf, i) => {
                         const bob = bobinaDe(tf.bobinaId);
-                        const anchoBob = anchoDe(bob);
-                        const noEntraAncho = tf.medicion && anchoBob > 0 && tf.medicion.anchoTelaM > anchoBob + 0.02;
+                        const anchoBob = anchoDe(bob); // ancho ÚTIL (rollo − 3 cm)
+                        const noEntraAncho = tf.medicion && anchoBob > 0 && tf.medicion.anchoTelaM > anchoBob + 1e-9;
                         return (
                             <div key={i} className={`bg-brand-dark p-4 md:rounded-2xl rounded-none border-y border-x-0 md:border-x shadow-sm -mx-4 md:mx-0 ${noEntraAncho ? 'border-red-500/60' : 'border-zinc-700/50'}`}>
                                 <div className="flex justify-between items-center mb-4 pb-2 border-b border-zinc-700/30">
@@ -145,6 +161,7 @@ const CorteStandalone = ({ tizadaFiles, setTizadaFiles, handleMultipleSpecialize
                                             selectedFile={tf}
                                             onFileSelected={(f) => onReemplazarTizada(i, f)}
                                             color="amber"
+                                            accept={FORMATOS_TIZADA}
                                         />
                                         <div className="mt-2 flex flex-wrap items-center gap-1.5">
                                             <div className="text-[10px] font-bold text-zinc-400 bg-zinc-900/60 p-1 px-2 rounded border border-zinc-700/50 w-fit flex items-center gap-1"><FileCode size={12} className="text-cyan-400/60" /> {tf.name}</div>
@@ -185,7 +202,7 @@ const CorteStandalone = ({ tizadaFiles, setTizadaFiles, handleMultipleSpecialize
                                             {noEntraAncho && (
                                                 <p className="mt-3 text-[10px] font-bold text-red-400 flex items-center gap-1.5">
                                                     <AlertTriangle size={13} className="shrink-0" />
-                                                    La tizada mide {tf.medicion.anchoTelaM.toFixed(2)} m de ancho y esta tela tiene {anchoBob.toFixed(2)} m: no entra.
+                                                    La tizada mide {tf.medicion.anchoTelaM.toFixed(2)} m de ancho y en esta tela entran {anchoBob.toFixed(2)} m (rollo de {parseFloat(bob?.AnchoReal ?? bob?.Ancho).toFixed(2)} m menos 3 cm de margen): no entra.
                                                 </p>
                                             )}
                                         </div>
@@ -203,7 +220,7 @@ const CorteStandalone = ({ tizadaFiles, setTizadaFiles, handleMultipleSpecialize
                                 id="add-tizada-file-input"
                                 className="hidden"
                                 multiple
-                                accept=".pdf,.ai,.dxf,application/pdf,application/postscript"
+                                accept={FORMATOS_TIZADA}
                                 onChange={(e) => {
                                     const files = Array.from(e.target.files || []);
                                     e.target.value = '';

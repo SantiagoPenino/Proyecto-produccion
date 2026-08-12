@@ -457,12 +457,15 @@ export default function PredisenoBordadoModal({
             relieve3D: piezasRelieve > 0,
         };
         if (!c) { onGuardar({ ...datos, arteDisenado: null }); return; }
+        // Conserva el nombre con el que el cliente subió su logo y le suma
+        // PREDISENO: así el taller ve de un vistazo que ese archivo es el mismo
+        // arte pero prediseñado, y no otro logo distinto.
         const base = (file?.name || 'logo').replace(/\.[^.]+$/, '');
         // Se guarda la SIMULACIÓN, no el original: es lo que el cliente aprobó ver.
         const guardarBlob = () => c.toBlob((blob) => {
             onGuardar({
                 ...datos,
-                arteDisenado: blob ? new File([blob], `${base} - diseñado.png`, { type: 'image/png' }) : null,
+                arteDisenado: blob ? new File([blob], `${base} PREDISENO.png`, { type: 'image/png' }) : null,
             });
         }, 'image/png');
         if (vista === 'ORIGINAL') {

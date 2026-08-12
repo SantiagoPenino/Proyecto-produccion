@@ -1382,7 +1382,7 @@ exports.createWebOrder = async (req, res) => {
                             .input('OID', sql.Int, newOID)
                             .input('Mts', sql.Decimal(10, 2), mag)
                             .input('UID', sql.Int, req.user?.id || 1)
-                            .input('Ref', sql.NVarChar(300), `Consumo Orden ${newOID} - ${jobName}`)
+                            .input('Ref', sql.NVarChar(300), `Consumo Orden ${exec.codigoOrden || newOID} - ${jobName}`)
                             .query(`
                                 INSERT INTO MovimientosInsumos
                                     (InsumoID, BobinaID, TipoMovimiento, Cantidad, Referencia, UsuarioID, OrdenID, FechaMovimiento)
