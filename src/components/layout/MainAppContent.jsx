@@ -48,6 +48,7 @@ const ActiveStockPage = lazyWithRetry(() => import('../pages/customer-service/Ac
 const TransportControlPage = lazyWithRetry(() => import('../pages/TransportControlPage'));
 const EcoUvFinishing = lazyWithRetry(() => import('../pages/EcoUvFinishing'));
 const EcouvConfigPage = lazyWithRetry(() => import('../pages/EcouvConfigPage'));
+const ConfigurarProductosPage = lazyWithRetry(() => import('../pages/ConfigurarProductosPage')); // Configurador de productos (prendas/combos + EcoUV embebido)
 const WebRetirosPage = lazyWithRetry(() => import('../logistics/WebRetirosPage'));
 const ClientsIntegration = lazyWithRetry(() => import('../pages/ClientsIntegration'));
 import ChatWidget from '../common/ChatWidget';
@@ -914,6 +915,9 @@ const DynamicRouter = ({ menuItems }) => {
     // Configuración ECOUV: vive DEBAJO de /area/ecouv — sin ítem de menú propio, el
     // matcher longest-match la mandaría a AreaView. Match directo por path.
     if (normalizedPath === '/area/ecouv/config') return <EcouvConfigPage />;
+    // Configurador de Productos (11-ago): match directo por path hasta que exista el ítem
+    // de menú (backend/scripts/menu_configurar_productos.sql, cuelga de Configuración).
+    if (normalizedPath === '/configurar-productos') return <ConfigurarProductosPage />;
     // Área TERMINAC (hermanas XEUV de terminaciones): todavía sin ítem de menú propio.
     // Match directo para que planilla/control/logística funcionen sin depender del menú.
     if (normalizedPath === '/area/terminac' || normalizedPath.startsWith('/area/terminac/')) {
@@ -957,6 +961,7 @@ const DynamicRouter = ({ menuItems }) => {
     // planilla; la bandeja (checklist) es la pestaña Control del área.
     if (menuItem.Ruta === '/produccion/terminaciones' || menuItem.Ruta === '/area/ecouv/terminaciones') return <Navigate to="/area/terminac" replace />;
     if (menuItem.Ruta === '/area/ecouv/config') return <EcouvConfigPage />;
+    if (menuItem.Ruta === '/configurar-productos') return <ConfigurarProductosPage />;
     if (menuItem.Ruta === '/logistica' || menuItem.Ruta.toLowerCase() === '/logistica/') return <LogisticsDashboard />;
     if (menuItem.Ruta === '/ops/inventory') return <LogisticsDashboard />;
     if (menuItem.Ruta === '/inventario') return <InventoryPage />;

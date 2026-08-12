@@ -5,6 +5,7 @@ import toast from 'react-hot-toast';
 import { generarPdfFacturaDGI } from '../../utils/pdfGenerator';
 import { useEmpresas } from '../../hooks/useEmpresas';
 import { validarDocumentoUY } from '../../utils/documentoUY';
+import { fmtFecha, porFechaDesc } from '../../utils/fechas';
 
 // Input simple para precios — sin flechas, sin formateo automático
 const SimpleInput = ({ value, onChange, placeholder = '0' }) => {
@@ -127,6 +128,8 @@ export default function CierreCicloPreviewModal({
       }
       return { ...m, detalles };
     });
+    // Órdenes de más nueva a más vieja (fecha de ingreso de la orden; sin fecha → al fondo)
+    list.sort(porFechaDesc(m => m.OrdFechaIngreso || m.MovFecha));
     setMovs(list);
 
     // Moneda del comprobante:
@@ -293,6 +296,7 @@ export default function CierreCicloPreviewModal({
             }
             return { ...m, detalles };
           });
+          listFresca.sort(porFechaDesc(m => m.OrdFechaIngreso || m.MovFecha));
           setMovs(listFresca);
           setDetallesEditados({}); // limpiar ediciones ya persistidas
         } catch (_) { /* silencioso — los datos locales siguen siendo válidos */ }
@@ -933,7 +937,8 @@ export default function CierreCicloPreviewModal({
               <tbody className="divide-y divide-slate-100 text-slate-700">
                 {movs.map(m => {
                   const isExcluido = excluidos.has(m.MovIdMovimiento);
-                  
+                  const fechaOrdenStr = fmtFecha(m.OrdFechaIngreso || m.MovFecha, '');
+
                   return (
                     <React.Fragment key={m.MovIdMovimiento}>
                       {/* Fila principal (Orden) */}
@@ -943,8 +948,12 @@ export default function CierreCicloPreviewModal({
                             className="w-4 h-4 rounded border-slate-300 text-indigo-500 focus:ring-indigo-500 cursor-pointer" />
                         </td>
                         <td colSpan={5} className="px-4 py-3 pb-2">
-                          <span className="font-black text-indigo-600 block text-[13px]">{m.OrdCodigoOrden || m.MovConcepto}</span>
-                          <span className="text-[11px] text-slate-500 font-medium">{m.OrdNombreTrabajo || 'Sin descripción'}</span>
+                          <span className="font-black text-slate-800 block text-[13px]">{m.OrdNombreTrabajo || 'Sin descripción'}</span>
+                          <span className="text-[11px] font-medium text-slate-500">
+                            {fechaOrdenStr && <span className="font-bold">{fechaOrdenStr}</span>}
+                            {fechaOrdenStr ? ' — ' : ''}
+                            <span className="font-black text-indigo-600">{m.OrdCodigoOrden || m.MovConcepto}</span>
+                          </span>
                         </td>
                       </tr>
                       

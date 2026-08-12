@@ -54,18 +54,60 @@ export default function PrendaClienteSelector({
                                     : 'border-zinc-700/50 bg-zinc-900/40 hover:border-zinc-500'
                         }`}
                     >
-                        <div className="font-black text-xs text-zinc-100">
-                            {p.Descripcion || 'Prenda sin descripción'}
-                            {p.Color ? ` · ${p.Color}` : ''}
-                            {p.Talle ? ` · Talle ${p.Talle}` : ''}
-                        </div>
-                        <div className="flex gap-3 mt-1 text-[10px] font-bold text-zinc-500 flex-wrap">
-                            {p.FechaIngreso && <span>📅 {new Date(p.FechaIngreso).toLocaleDateString()}</span>}
-                            {p.CodigoRecepcion && <span className="font-mono">{p.CodigoRecepcion}</span>}
-                            <span>Entregaste {p.Cantidad}</span>
-                            <span className={libre > 0 ? 'text-emerald-400' : 'text-red-400'}>
-                                ▸ {libre > 0 ? `${libre} disponibles` : 'sin saldo'}
+                        <div className="flex items-baseline gap-2 flex-wrap">
+                            <span className="font-black text-sm text-zinc-100">
+                                {p.Cantidad} {p.Descripcion || 'prendas'}
                             </span>
+                            {p.Color && (
+                                <span className="text-[10px] font-black uppercase tracking-wide px-1.5 py-0.5 rounded bg-zinc-800 border border-zinc-700 text-zinc-300">
+                                    {p.Color}
+                                </span>
+                            )}
+                            {p.Talle && (
+                                <span className="text-[10px] font-black uppercase tracking-wide px-1.5 py-0.5 rounded bg-zinc-800 border border-zinc-700 text-zinc-300">
+                                    Talle {p.Talle}
+                                </span>
+                            )}
+                        </div>
+
+                        <div className="flex gap-x-3 gap-y-1 mt-1.5 text-[10px] font-bold text-zinc-400 flex-wrap">
+                            <span>
+                                Entregadas el{' '}
+                                <span className="text-zinc-200">
+                                    {new Date(p.FechaRecepcion || p.FechaIngreso).toLocaleDateString('es-UY')}
+                                </span>
+                            </span>
+                            {p.CodigoRecepcion && (
+                                <span className="font-mono text-zinc-500" title="Número del remito de recepción">
+                                    {p.CodigoRecepcion}
+                                </span>
+                            )}
+                            {p.CantidadBultos > 0 && (
+                                <span>{p.CantidadBultos} {p.CantidadBultos === 1 ? 'bulto' : 'bultos'}</span>
+                            )}
+                        </div>
+
+                        {/* Lo que anotó recepción al recibirlas: muchas veces es el único
+                            dato que le permite al cliente distinguir una entrega de otra. */}
+                        {p.ObservacionesRecepcion && (
+                            <p className="mt-1.5 text-[10px] text-zinc-500 italic line-clamp-2">
+                                “{p.ObservacionesRecepcion}”
+                            </p>
+                        )}
+
+                        <div className="mt-2 flex items-center gap-2 flex-wrap">
+                            <span className={`text-xs font-black px-2 py-1 rounded ${
+                                libre > 0
+                                    ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30'
+                                    : 'bg-red-500/15 text-red-400 border border-red-500/30'
+                            }`}>
+                                {libre > 0 ? `${libre} sin usar` : 'Sin saldo'}
+                            </span>
+                            {p.CantidadUsada > 0 && (
+                                <span className="text-[10px] font-bold text-zinc-500">
+                                    {p.CantidadUsada} ya comprometidas en otros pedidos
+                                </span>
+                            )}
                         </div>
                     </button>
                 );

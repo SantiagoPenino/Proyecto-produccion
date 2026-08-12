@@ -330,8 +330,13 @@ const TIPOS_REFERENCIA_FALLBACK = [
     { Codigo: 'BOCETO_BORDADO', Nombre: 'Boceto de Bordado' },
     { Codigo: 'BOCETO_CORTE',   Nombre: 'Boceto de Corte' },
     { Codigo: 'INFO_CORTE',     Nombre: 'Información de Corte' },
-    { Codigo: 'MATRIZ_LOGOS',   Nombre: 'Matriz de Logos' },
-    { Codigo: 'REFERENCIA',     Nombre: 'Referencia General' },
+    // [BORDADO] El cliente sube su LOGO, no una matriz: la matriz (el ponchado)
+    // la hace después un diseñador y es otro archivo. Antes esto se llamaba
+    // MATRIZ_LOGOS y se prestaba a que el bordador tomara el arte del cliente
+    // como si fuera el ponchado.
+    { Codigo: 'LOGO_BORDADO',      Nombre: 'Logo a Bordar' },
+    { Codigo: 'PREDISENO_BORDADO', Nombre: 'Prediseño del Cliente (referencia)' },
+    { Codigo: 'REFERENCIA',        Nombre: 'Referencia General' },
 ];
 exports.getTiposArchivoReferencia = async (req, res) => {
     try {

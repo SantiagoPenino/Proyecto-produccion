@@ -121,7 +121,15 @@ exports.getEstadoCuenta = async (req, res) => {
                 mi.FechaMovimiento,
                 mi.TipoMovimiento,
                 mi.Cantidad,
-                mi.Referencia,
+                -- Mostrar el CodigoOrden (SUB-13625) y no el OrdenID interno (14598):
+                -- las refs viejas quedaron guardadas con el ID interno, se traduce al leer.
+                CASE WHEN o.CodigoOrden IS NOT NULL
+                          AND mi.Referencia LIKE 'Consumo Orden ' + CAST(mi.OrdenID AS VARCHAR(20)) + ' %'
+                     THEN REPLACE(mi.Referencia,
+                                  'Consumo Orden ' + CAST(mi.OrdenID AS VARCHAR(20)),
+                                  'Consumo Orden ' + LTRIM(RTRIM(o.CodigoOrden)))
+                     ELSE mi.Referencia
+                END                                                         AS Referencia,
                 ib.BobinaID,
                 ib.CodigoEtiqueta                                           AS Bulto,
                 ib.MetrosIniciales                                          AS MetrosIniciales,
@@ -140,6 +148,7 @@ exports.getEstadoCuenta = async (req, res) => {
             JOIN Insumos ins            ON mi.InsumoID  = ins.InsumoID
             LEFT JOIN Recepciones r     ON ib.Referencia LIKE r.Codigo + '%'
             LEFT JOIN Usuarios u        ON mi.UsuarioID = u.IdUsuario
+            LEFT JOIN Ordenes o         ON mi.OrdenID   = o.OrdenID
             WHERE ib.ClienteID = @ClienteID
             ${filtros}
             ORDER BY mi.FechaMovimiento DESC

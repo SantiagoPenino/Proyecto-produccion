@@ -190,7 +190,7 @@ const VistaBandera = ({ src, fx, fy, utilW, utilH, flamear }) => {
 // `modoBandera`: EXCLUSIVO de materiales de medida fija (Bandera Confeccionada). Solo ahí tiene
 // sentido la miniatura con la guía de 2,5 cm y el modal con la vista de la bandera terminada.
 // En el resto de los servicios/archivos la zona se comporta como siempre (ícono + nombre).
-export const FileUploadZone = ({ id, onFileSelected, selectedFile, label, icon: Icon = UploadCloud, color = "blue", multiple = false, modoBandera = false, quitarFondoPdf = false }) => {
+export const FileUploadZone = ({ id, onFileSelected, selectedFile, label, icon: Icon = UploadCloud, color = "blue", multiple = false, modoBandera = false, quitarFondoPdf = false, accept = null }) => {
     const [isOver, setIsOver] = useState(false);
     const [modalAbierto, setModalAbierto] = useState(false);
     const [flamear, setFlamear] = useState(false);
@@ -336,6 +336,9 @@ export const FileUploadZone = ({ id, onFileSelected, selectedFile, label, icon: 
                 id={uniqueId}
                 type="file"
                 multiple={multiple}
+                // Filtro del explorador de archivos (opcional): las áreas que aceptan
+                // solo ciertos formatos lo pasan — ej. Corte: DXF / PLT / AI 3.
+                {...(accept ? { accept } : {})}
                 className="hidden"
                 onChange={(e) => {
                     if (multiple) {

@@ -776,3 +776,6 @@ exports.moverArticulo = async (req, res) => {
         res.status(500).json({ error: e.message });
     }
 };
+
+// Reusado por configuradorController (precio base / de paquete del configurador)
+exports.upsertPrecioBase = upsertPrecioBase;

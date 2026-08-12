@@ -419,25 +419,46 @@ const resolverLineasDetalle = async ({ tcaIdTransaccion, orderIds, monedaFactura
   const pool = transaction ? null : await getPool();
   const makeReq = () => transaction ? new sql.Request(transaction) : pool.request();
 
-  // Convierte cada línea a la moneda del documento usando la cotización del día.
-  // Documento UYU: líneas USD → ×cot (USD→UYU). Documento USD: líneas UYU → ÷cot (UYU→USD).
-  const aplicarCotizacion = async (recordset) => {
+  // Convierte cada línea a la moneda del documento.
+  // PRIORIDAD: la cotización IMPLÍCITA del cobro (totalCobrado ÷ suma de las líneas en la
+  // otra moneda) — la tasa a la que la plata entró DE VERDAD. Motivo: MercadoPago cobra
+  // los pedidos USD en pesos con SU cotización (verificado: 40,41 fija jun–ago mientras
+  // la nuestra iba 40,7–40,9); convertir con la cotización del día dejaba las líneas ~1%
+  // arriba de lo cobrado y el documento descuadrado contra DGI. Con la implícita, las
+  // líneas suman exactamente lo cobrado, venga de MP, Handy o cajero con cotización BCU.
+  // FALLBACK a la cotización del día (comportamiento histórico): sin transacción (MODO 2,
+  // todavía no hay cobro), sin líneas en otra moneda, o implícita fuera de ±25% de la del
+  // día — dato roto: mejor la línea "de mercado" y que el cuadre pre-DGI frene el envío,
+  // a fabricar una línea absurda que lo disimule.
+  const aplicarCotizacion = async (recordset, totalCobrado = null) => {
     const docMon = (monedaFactura || 'UYU').toUpperCase().trim();
-    const hayDistintas = recordset.some(r => {
+    const esForanea = (r) => {
       const lineMon = (r.MonedaPC || 'UYU').toUpperCase().trim();
       return lineMon !== docMon && (lineMon === 'USD' || lineMon === 'UYU');
-    });
-    if (!hayDistintas) return recordset;
+    };
+    if (!recordset.some(esForanea)) return recordset;
     const cotRes = await makeReq()
       .query("SELECT TOP 1 CotDolar FROM dbo.Cotizaciones WITH(NOLOCK) ORDER BY CotFecha DESC");
     const cot = parseFloat(cotRes.recordset[0]?.CotDolar) || 40;
-    return recordset.map(r => {
-      const lineMon = (r.MonedaPC || 'UYU').toUpperCase().trim();
-      if (lineMon === docMon) return r;
-      if (docMon === 'UYU' && lineMon === 'USD') return { ...r, _factor: cot };       // USD → UYU
-      if (docMon === 'USD' && lineMon === 'UYU') return { ...r, _factor: 1 / cot };    // UYU → USD
-      return r;
-    });
+    const factorDia = docMon === 'USD' ? 1 / cot : cot;
+
+    let factor = factorDia;
+    if (Number.isFinite(totalCobrado) && totalCobrado > 0) {
+      const sumaPropia  = recordset.filter(r => !esForanea(r)).reduce((a, r) => a + (parseFloat(r.Total) || 0), 0);
+      const sumaForanea = recordset.filter(esForanea).reduce((a, r) => a + (parseFloat(r.Total) || 0), 0);
+      const restante = totalCobrado - sumaPropia;
+      if (sumaForanea > 0 && restante > 0) {
+        const factorImplicito = restante / sumaForanea;
+        if (factorImplicito >= factorDia * 0.75 && factorImplicito <= factorDia * 1.25) {
+          factor = factorImplicito;
+        } else {
+          logger.warn(`[resolverLineasDetalle] Cotización implícita del cobro fuera de rango ` +
+            `(implícita ${factorImplicito.toFixed(4)} vs día ${factorDia.toFixed(4)}): se usa la del día. ` +
+            `El cuadre pre-DGI va a frenar este documento si no cierra.`);
+        }
+      }
+    }
+    return recordset.map(r => (esForanea(r) ? { ...r, _factor: factor } : r));
   };
 
   const mapLinea = (r) => {
@@ -472,6 +493,13 @@ const resolverLineasDetalle = async ({ tcaIdTransaccion, orderIds, monedaFactura
           LEFT(
               'Orden: ' + ISNULL(od.OrdCodigoOrden, td.TdeCodigoReferencia)
               + ISNULL(' (' + od.OrdNombreTrabajo + ')', '')
+              -- Nº de retiro SIEMPRE en la línea: los webhooks (Handy/MP) lo mandan en
+              -- TdeDescripcion ("Retiro diferido RW-x") pero caja manda otro texto y el
+              -- RW se perdía. Solo se agrega si ningún texto de la línea ya trae "RW-".
+              + CASE WHEN td.TdeTipoReferencia = 'ORDEN_RETIRO'
+                          AND ISNULL(od.OrdCodigoOrden, td.TdeCodigoReferencia) NOT LIKE '%RW-%'
+                          AND COALESCE(CAST(pcd.LogPrecioAplicado AS VARCHAR(1000)), CAST(td.TdeDescripcion AS VARCHAR(1000)), '') NOT LIKE '%RW-%'
+                     THEN ' - Retiro RW-' + CAST(td.TdeReferenciaId AS VARCHAR(20)) ELSE '' END
               + CHAR(13)+CHAR(10)
               + ISNULL('Tecnico: ' + CAST(pcd.DatoTecnico AS VARCHAR(1000)) + CHAR(13)+CHAR(10), '')
               + ISNULL(CAST(pcd.LogPrecioAplicado AS VARCHAR(1000)), ISNULL(CAST(td.TdeDescripcion AS VARCHAR(1000)), '')),
@@ -536,7 +564,16 @@ const resolverLineasDetalle = async ({ tcaIdTransaccion, orderIds, monedaFactura
           )
       `);
 
-    const withCot = await aplicarCotizacion(res.recordset);
+    // Lo COBRADO por estas referencias, en la moneda del documento: es la base de la
+    // cotización implícita de aplicarCotizacion (las líneas deben sumar esta plata).
+    const totRes = await makeReq()
+      .input('tcaId', sql.Int, tcaIdTransaccion)
+      .query(`SELECT SUM(TdeImporteFinal) AS Total FROM dbo.TransaccionDetalle WITH(NOLOCK)
+              WHERE TcaIdTransaccion = @tcaId
+                AND TdeTipoReferencia IN ('ORDEN_RETIRO', 'ORDEN_DEPOSITO')`);
+    const totalCobrado = parseFloat(totRes.recordset[0]?.Total);
+
+    const withCot = await aplicarCotizacion(res.recordset, totalCobrado);
     return withCot.map(mapLinea);
   }
 

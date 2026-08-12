@@ -118,7 +118,7 @@ async function getMagnitudEfectiva(pool, ordenId) {
 
 // Arma la URL de preview de cada referencia (miniatura pública de Drive si hay ID, si no
 // el thumbnail local que ya genera el sistema al subir — thumbnailGenerator.js). Distingue
-// boceto de logo/matriz por TipoArchivo (BOCETO_BORDADO / MATRIZ_LOGOS, ver
+// boceto de logo/matriz por TipoArchivo (BOCETO_BORDADO / LOGO_BORDADO, ver
 // PrendaOrderForm.jsx) para poder mostrar los dos por separado en el detalle.
 function enriquecerPreview(row) {
     let refs = [];

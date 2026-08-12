@@ -1201,8 +1201,17 @@ exports.getPrendasClienteDisponibles = async (req, res) => {
                     v.Cantidad,
                     v.CantidadUsada,
                     v.CantidadDisponible,
-                    v.FechaIngreso
+                    v.FechaIngreso,
+                    -- Contexto del remito: sin esto el cliente ve una línea que dice
+                    -- "Bordado" y no sabe cuál de sus entregas es. Con los bultos, la
+                    -- fecha y lo que anotó recepción, la reconoce.
+                    r.CantidadBultos,
+                    r.FechaRecepcion,
+                    r.Detalle       AS DetalleRecepcion,
+                    r.Observaciones AS ObservacionesRecepcion,
+                    r.Referencias   AS ReferenciasRecepcion
                 FROM vw_PrendasClienteDisponibles v
+                LEFT JOIN Recepciones r ON r.RecepcionID = v.RecepcionID
                 WHERE (
                         TRY_CAST(v.ClienteID AS INT) = TRY_CAST(@CID AS INT)
                         OR (@CliStr IS NOT NULL AND LTRIM(RTRIM(v.ClienteID)) = @CliStr)

@@ -42,7 +42,9 @@ router.get('/dashboard', logisticsController.getDashboard);
 router.get('/history', logisticsController.getHistory);
 router.get('/stock', logisticsController.getAreaStock); // NEW
 router.get('/lost', logisticsController.getLostItems);
-router.post('/recover', logisticsController.recoverItem);
+// verifyToken: la recuperación cambia estados de órdenes (gancho TERMINAC) y el
+// historial debe firmarse con el operario logueado, no con "Sistema".
+router.post('/recover', require('../middleware/authMiddleware').verifyToken, logisticsController.recoverItem);
 
 // Stock Deposito & Sync
 router.get('/deposit-stock', logisticsController.getDepositStock);

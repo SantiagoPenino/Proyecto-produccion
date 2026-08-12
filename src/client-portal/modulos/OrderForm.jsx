@@ -31,7 +31,7 @@ import {
     SOLDADURA_CM, profundidadBolsilloCm, margenOjalCm, pasoMaxCm
 } from '../../utils/terminacionesGeo';
 import { rasterizarPdf, liberarPdfPreviews } from '../api/pdfPreview';
-import { medirTizada } from './order-form/utils/medirTizada';
+import { medirTizada, MESA_CORTE_ANCHO_M, MESA_CORTE_LARGO_M, MARGEN_TELA_M } from './order-form/utils/medirTizada';
 import ErrorModal from './order-form/components/ErrorModal';
 import UploadProgressModal from './order-form/components/UploadProgressModal';
 import FileUploadZone from './order-form/components/FileUploadZone';
@@ -720,6 +720,14 @@ const OrderForm = ({ serviceId: propServiceId }) => {
     const [twinfaceSame, setTwinfaceSame] = useState(false);
     const [applyMaterialToAll, setApplyMaterialToAll] = useState(true); // check por defecto: el material elegido aplica a todo el pedido
 
+    // ECOUV material impreso: UN solo material para todo el pedido (todos los archivos
+    // se imprimen en el mismo rollo) — el check queda fijo en "aplicar a todo".
+    // Productos Terminados NO: ahí sí se pueden mezclar cuadros distintos por archivo.
+    const materialUnicoEcouv = isEcouvMaterial && !isEcouvPT;
+    useEffect(() => {
+        if (materialUnicoEcouv && !applyMaterialToAll) handleApplyMaterialToAll(true);
+    }, [materialUnicoEcouv, applyMaterialToAll]);
+
     const handleApplyMaterialToAll = (checked) => {
         setApplyMaterialToAll(checked);
         if (checked && items.length > 0) {
@@ -792,6 +800,23 @@ const OrderForm = ({ serviceId: propServiceId }) => {
         for (const f of files) {
             try {
                 f.medicion = await medirTizada(f);
+
+                // MESA DE CORTE: la tizada no puede ser más grande que el equipo,
+                // sin importar qué tela se elija después.
+                const { anchoTelaM: aT, largoTelaM: lT } = f.medicion;
+                if (aT > MESA_CORTE_ANCHO_M + 1e-9 || lT > MESA_CORTE_LARGO_M + 1e-9) {
+                    Swal.fire({
+                        icon: 'error',
+                        title: 'La tizada no entra en la mesa de corte',
+                        html: `<b>${f.name}</b> mide <b>${aT.toFixed(2)} × ${lT.toFixed(2)} m</b> ` +
+                            `y la mesa de corte es de <b>${MESA_CORTE_ANCHO_M.toFixed(3)} × ${MESA_CORTE_LARGO_M.toFixed(2)} m</b>.<br><br>` +
+                            '<b>No se adjuntó</b> — dividí la tizada en partes que entren en la mesa.',
+                        confirmButtonText: 'Entendido',
+                        confirmButtonColor: '#06b6d4',
+                    });
+                    continue;
+                }
+
                 f.copias = 1;
                 // Con una sola bobina disponible se preselecciona sola
                 if ((bobinasDisponibles || []).length === 1) f.bobinaId = bobinasDisponibles[0].BobinaID;
@@ -1198,10 +1223,13 @@ const OrderForm = ({ serviceId: propServiceId }) => {
             for (const [, grupo] of porBobina) {
                 const b = grupo.bobina;
                 if (!b) return addToast('Una de las bobinas elegidas ya no está disponible. Actualizá la página.', 'error');
+                // Ancho ÚTIL de la tela = ancho del rollo − 3 cm de margen (misma regla
+                // que sublimación contra el ancho imprimible del material).
                 const anchoBob = parseFloat(b.AnchoReal ?? b.Ancho) || 0;
+                const anchoUtil = anchoBob > 0 ? Math.round((anchoBob - MARGEN_TELA_M) * 100) / 100 : 0;
                 const anchoMax = Math.max(...grupo.archivos.map(f => f.medicion.anchoTelaM));
-                if (anchoBob && anchoMax > anchoBob + 0.02) {
-                    return addToast(`Una tizada mide ${anchoMax.toFixed(2)}m de ancho y la tela "${b.DescripcionTela || b.CodigoEtiqueta}" tiene ${anchoBob.toFixed(2)}m. Elegí otra tela o rehacé la tizada.`, 'error');
+                if (anchoUtil && anchoMax > anchoUtil + 1e-9) {
+                    return addToast(`Una tizada mide ${anchoMax.toFixed(2)}m de ancho y en la tela "${b.DescripcionTela || b.CodigoEtiqueta}" entran ${anchoUtil.toFixed(2)}m (rollo de ${anchoBob.toFixed(2)}m menos 3 cm de margen). Elegí otra tela o rehacé la tizada.`, 'error');
                 }
                 const telaNecesaria = grupo.archivos.reduce((s, f) => s + f.medicion.largoTelaM * (f.copias || 1), 0);
                 const disponible = parseFloat(b.MetrosRestantes) || 0;
@@ -1371,6 +1399,16 @@ const OrderForm = ({ serviceId: propServiceId }) => {
             if (Array.isArray(tizadaFiles)) tizadaFiles.forEach(addToMap);
             if (pedidoExcelFile) addToMap(pedidoExcelFile);
             if (Array.isArray(ponchadoFiles)) ponchadoFiles.forEach(addToMap);
+            // [BORDADO] Los tres archivos de cada diseño. Antes solo se juntaban
+            // ponchadoFiles/bordadoBocetoFile, que quedaron vacíos cuando el form
+            // pasó a trabajar por diseño — por eso no subía ningún archivo.
+            if (Array.isArray(disenosBordado)) {
+                disenosBordado.forEach(d => {
+                    if (d.file) addToMap(d.file);
+                    if (d.boceto) addToMap(d.boceto);
+                    if (d.arteDisenado) addToMap(d.arteDisenado);
+                });
+            }
             if (estampadoFile) addToMap(estampadoFile);
             if (referenceFiles) referenceFiles.forEach(addToMap);
             items.forEach(it => {
@@ -1433,7 +1471,7 @@ const OrderForm = ({ serviceId: propServiceId }) => {
                                 archivosComp.push({ name: bordadoBocetoFile.name, tipo: 'BOCETO_BORDADO' });
                             }
                             if (ponchadoFiles && ponchadoFiles.length > 0) {
-                                ponchadoFiles.forEach(f => archivosComp.push({ name: f.name, tipo: 'MATRIZ_LOGOS' }));
+                                ponchadoFiles.forEach(f => archivosComp.push({ name: f.name, tipo: 'LOGO_BORDADO' }));
                             }
                         }
 
@@ -1659,8 +1697,23 @@ const OrderForm = ({ serviceId: propServiceId }) => {
                     if ((serviceId === 'bordado' || serviceId === 'EMB') && ponchadoFiles) {
                         ponchadoFiles.forEach(f => {
                             if (!archivosServicio.some(existing => existing.name === f.name)) {
-                                archivosServicio.push({ name: f.name, tipo: 'MATRIZ_LOGOS' });
+                                archivosServicio.push({ name: f.name, tipo: 'LOGO_BORDADO' });
                             }
+                        });
+                    }
+
+                    // [BORDADO] Los archivos de cada diseño, con su tipo. El logo y el
+                    // boceto son del cliente; el prediseño lo genera el editor y va
+                    // aparte para que nadie lo confunda con la matriz.
+                    if ((serviceId === 'bordado' || serviceId === 'EMB') && Array.isArray(disenosBordado)) {
+                        const sumar = (f, tipo) => {
+                            if (!f || archivosServicio.some(x => x.name === f.name)) return;
+                            archivosServicio.push({ name: f.name, tipo });
+                        };
+                        disenosBordado.forEach(d => {
+                            sumar(d.file, 'LOGO_BORDADO');
+                            sumar(d.boceto, 'BOCETO_BORDADO');
+                            sumar(d.arteDisenado, 'PREDISENO_BORDADO');
                         });
                     }
                 }
@@ -1672,7 +1725,26 @@ const OrderForm = ({ serviceId: propServiceId }) => {
                 if (serviceId === 'estampado' || serviceId === 'EST') {
                     metadata = { prendas: estampadoQuantity, estampadosPorPrenda: estampadoPrints, origen: estampadoOrigin };
                 } else if (serviceId === 'bordado' || serviceId === 'EMB') {
-                    metadata = { prendas: garmentQuantity };
+                    // La cantidad total ya no es un campo suelto: es la suma de lo que
+                    // pide cada diseño. `disenos` viaja para que el backend pueda
+                    // guardar medidas, prenda de origen, paleta y relieve por diseño.
+                    const totalPrendas = (disenosBordado || [])
+                        .reduce((acc, d) => acc + (parseInt(d.cantidad) || 0), 0);
+                    metadata = {
+                        prendas: totalPrendas || garmentQuantity,
+                        disenos: (disenosBordado || []).map(d => ({
+                            logo: d.file?.name || null,
+                            boceto: d.boceto?.name || null,
+                            prediseno: d.arteDisenado?.name || null,
+                            anchoCm: parseFloat(d.ancho) || null,
+                            altoCm: parseFloat(d.alto) || null,
+                            cantidad: parseInt(d.cantidad) || 0,
+                            prendaClienteId: d.prendaClienteId || null,
+                            relieve3D: !!d.relieve3D,
+                            puntadasEstimadas: d.puntadasEstimadas || null,
+                            paleta: d.paleta || [],
+                        })),
+                    };
                 }
 
                 listaServicios.push({
@@ -1813,7 +1885,7 @@ const OrderForm = ({ serviceId: propServiceId }) => {
                             if (ponchadoFiles && ponchadoFiles.length > 0) {
                                 ponchadoFiles.forEach(f => {
                                     if (!archivosExtra.some(existing => existing.name === f.name)) {
-                                        archivosExtra.push({ name: f.name, tipo: 'MATRIZ_LOGOS' });
+                                        archivosExtra.push({ name: f.name, tipo: 'LOGO_BORDADO' });
                                     }
                                 });
                             }
@@ -2486,14 +2558,18 @@ const OrderForm = ({ serviceId: propServiceId }) => {
                                                         <div className="flex items-center justify-between mb-1">
                                                             <span className="block text-[9px] uppercase font-black text-zinc-400">Material (Específico)</span>
                                                             {index === 0 && (
-                                                                <label className="flex items-center gap-1.5 cursor-pointer select-none">
+                                                                <label className={`flex items-center gap-1.5 select-none ${materialUnicoEcouv ? 'cursor-not-allowed opacity-80' : 'cursor-pointer'}`}
+                                                                    title={materialUnicoEcouv ? 'En material impreso todos los archivos del pedido llevan el mismo material' : undefined}>
                                                                     <input
                                                                         type="checkbox"
-                                                                        checked={applyMaterialToAll}
-                                                                        onChange={(e) => handleApplyMaterialToAll(e.target.checked)}
-                                                                        className="w-3 h-3 rounded border-zinc-600 accent-cyan-400 cursor-pointer"
+                                                                        checked={materialUnicoEcouv ? true : applyMaterialToAll}
+                                                                        disabled={materialUnicoEcouv}
+                                                                        onChange={(e) => !materialUnicoEcouv && handleApplyMaterialToAll(e.target.checked)}
+                                                                        className={`w-3 h-3 rounded border-zinc-600 accent-cyan-400 ${materialUnicoEcouv ? 'cursor-not-allowed' : 'cursor-pointer'}`}
                                                                     />
-                                                                    <span className="text-[9px] font-bold uppercase text-zinc-500">Aplicar a todo el pedido</span>
+                                                                    <span className="text-[9px] font-bold uppercase text-zinc-500">
+                                                                        Aplicar a todo el pedido{materialUnicoEcouv ? ' (fijo en material impreso)' : ''}
+                                                                    </span>
                                                                 </label>
                                                             )}
                                                         </div>

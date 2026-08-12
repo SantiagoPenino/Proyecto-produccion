@@ -2161,6 +2161,16 @@ exports.confirmTransport = async (req, res) => {
         }
         const envio = remitoRes.recordset[0];
 
+        // GUARD: si el destino ya recibió el remito, firmar la salida lo pisaba a
+        // EN_TRANSITO y el remito "resucitaba" en la bandeja de check-in con todos
+        // los bultos en verde (caso REM-333997 / REM-113666). RECIBIDO_PARCIAL sí
+        // se permite: puede haber un segundo viaje con los bultos que faltaron.
+        if (envio.Estado === 'RECIBIDO_TOTAL' || envio.Estado === 'ENTREGADO') {
+            return res.status(409).json({
+                error: `El remito ${remitoCode} ya fue recibido completo en ${envio.AreaDestinoID}. No se puede firmar una salida de un remito ya recibido.`
+            });
+        }
+
         // 3. Check Total Items vs Scanned
         const totalItemsReq = await pool.request()
             .input('EID', sql.Int, envio.EnvioID)
@@ -2510,6 +2520,42 @@ exports.getAreaStock = async (req, res) => {
 
 // --- LOST & FOUND ---
 
+// CHECK-IN TERMINAC DIFERIDO: recuperar de extraviados un bulto hacia Terminaciones
+// equivale a recibir el material — la hermana XEUV 'Pendiente' del mismo pedido pasa
+// a 'Material Recibido'. Sin esto, el gancho solo corría en el check-in de remitos y
+// las órdenes recuperadas quedaban clavadas en Pendiente (no aparecían en la bandeja).
+// Nunca con encomiendas: su OrdenID es el N° de OrdenesRetiro, no de Ordenes.
+async function hookTerminacRecuperado(transaction, bultoId, req, location) {
+    if ((location || '').trim().toUpperCase() !== 'TERMINAC') return;
+    try {
+        const bInfo = await new sql.Request(transaction)
+            .input('BID', sql.Int, bultoId)
+            .query("SELECT OrdenID, Tipocontenido, CodigoEtiqueta FROM Logistica_Bultos WHERE BultoID = @BID");
+        const b = bInfo.recordset[0];
+        if (!b?.OrdenID || (b.Tipocontenido || '').toUpperCase() === 'ENCOMIENDA') return;
+        const herRes = await new sql.Request(transaction)
+            .input('OID', sql.Int, b.OrdenID)
+            .query(`
+                SELECT H.OrdenID FROM Ordenes H
+                WHERE H.AreaID = 'TERMINAC' AND H.Estado NOT IN ('Cancelado')
+                  AND ISNULL(H.EstadoenArea, 'Pendiente') = 'Pendiente'
+                  AND H.NoDocERP = (SELECT NoDocERP FROM Ordenes WHERE OrdenID = @OID)
+            `);
+        for (const her of herRes.recordset) {
+            await changeOrderState(transaction, {
+                target : { type: 'ORDER', id: her.OrdenID },
+                estado : 'Material Recibido',
+                userObj: req.user || 'Sistema',
+                detalle: `Material impreso recuperado de extraviados en Terminaciones (bulto ${b.CodigoEtiqueta || bultoId})`,
+                io     : req.app.get('socketio')
+            });
+            logger.info(`[Recuperar TERMINAC] Orden ${her.OrdenID} -> Material Recibido (bulto ${b.CodigoEtiqueta})`);
+        }
+    } catch (eTer) {
+        logger.warn('[Recuperar TERMINAC] No se pudo actualizar la hermana de terminaciones:', eTer.message);
+    }
+}
+
 exports.getLostItems = async (req, res) => {
     try {
         const pool = await getPool();
@@ -2541,6 +2587,8 @@ exports.recoverItem = async (req, res) => {
                     SELECT CodigoEtiqueta, 'RECUPERACION', @Loc, 1, 'Recuperado de Extraviados'
                     FROM Logistica_Bultos WHERE BultoID = @BID
                 `);
+
+            await hookTerminacRecuperado(transaction, bultoId, req, location);
 
             await transaction.commit();
             res.json({ success: true, message: 'Item recuperado existosamente' });
@@ -2861,6 +2909,9 @@ exports.recoverItem = async (req, res) => {
                     SELECT CodigoEtiqueta, 'RECUPERACION', @Loc, 1, 'Recuperado de Extraviados'
                     FROM Logistica_Bultos WHERE BultoID = @BID
             `);
+
+            // 3. Destino TERMINAC: habilitar la hermana XEUV (check-in diferido)
+            await hookTerminacRecuperado(transaction, bultoId, req, location);
 
             await transaction.commit();
             res.json({ success: true, message: 'Item recuperado existosamente' });

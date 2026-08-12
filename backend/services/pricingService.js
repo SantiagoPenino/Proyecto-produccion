@@ -277,6 +277,31 @@ class PricingService {
                 logger.warn('[PricingService] No se pudo leer la Tinta de la orden ' + variables.ordenId + ': ' + eTinta.message);
             }
         }
+        // El recargo por TINTA es del material IMPRESO: si el artículo que se está
+        // cotizando es un SERVICIO/terminación de la orden (ojales, soldadura, bolsillo
+        // — figura en ServiciosExtraOrden), NO se inyecta el perfil. El % de UV
+        // encarece la impresión en m², no el trabajo manual. (Espeja el filtro que
+        // hace erpSyncService al cotizar los servicios del sync.)
+        if (tintaOrden && variables.ordenId && cleanCod) {
+            try {
+                const svcReq = pool.request().input('cart', sql.VarChar(50), cleanCod);
+                const ordenIdNum2 = parseInt(variables.ordenId);
+                let svcQuery;
+                if (!isNaN(ordenIdNum2) && String(ordenIdNum2) === String(variables.ordenId).trim()) {
+                    svcReq.input('oid', sql.Int, ordenIdNum2);
+                    svcQuery = "SELECT COUNT(*) AS n FROM ServiciosExtraOrden WITH(NOLOCK) WHERE OrdenID = @oid AND LTRIM(RTRIM(CodArt)) = @cart";
+                } else {
+                    svcReq.input('cod', sql.VarChar(50), String(variables.ordenId).trim());
+                    svcQuery = "SELECT COUNT(*) AS n FROM ServiciosExtraOrden WITH(NOLOCK) WHERE OrdenID = (SELECT TOP 1 OrdenID FROM Ordenes WITH(NOLOCK) WHERE LTRIM(RTRIM(CodigoOrden)) = @cod) AND LTRIM(RTRIM(CodArt)) = @cart";
+                }
+                const svcRes = await svcReq.query(svcQuery);
+                if ((svcRes.recordset[0]?.n || 0) > 0) {
+                    tintaOrden = null;   // es un servicio de la orden: sin recargo de tinta
+                }
+            } catch (eSvc) {
+                logger.warn('[PricingService] No se pudo verificar si ' + cleanCod + ' es servicio de la orden ' + variables.ordenId + ': ' + eSvc.message);
+            }
+        }
         if (tintaOrden && (String(tintaOrden).toUpperCase().includes('UV') || String(tintaOrden).toUpperCase().includes('LATEX'))) {
             if (!extraProfileIds.includes(idTinta)) {
                 extraProfileIds.push(idTinta);

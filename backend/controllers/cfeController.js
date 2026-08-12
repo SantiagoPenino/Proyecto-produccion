@@ -111,9 +111,37 @@ async function resolverEmailsPortalLote(pool, clienteIds) {
     return map;
 }
 
+/**
+ * Nº de retiro POR LOTE, para el listado. El vínculo documento→retiro es
+ * TcaIdTransaccion → TransaccionDetalle (TdeTipoReferencia='ORDEN_RETIRO',
+ * TdeReferenciaId = OReIdOrdenRetiro; el "RW-x" que se muestra en toda la app es ese id).
+ * Mismo patrón que resolverEmailsPortalLote: UNA pasada por transacción distinta en vez
+ * de una subconsulta por fila. Devuelve Map<TcaIdTransaccion, 'RW-123, RW-456'>.
+ */
+async function resolverRetirosLote(pool, tcaIds) {
+    const ids = [...new Set(tcaIds.filter(id => Number.isInteger(id) && id > 0))];
+    const map = new Map();
+    if (!ids.length) return map;
+
+    const res = await pool.request().query(`
+        SELECT TcaIdTransaccion,
+               STRING_AGG('RW-' + CAST(TdeReferenciaId AS VARCHAR(20)), ', ')
+                   WITHIN GROUP (ORDER BY TdeReferenciaId) AS Retiros
+        FROM (SELECT DISTINCT TcaIdTransaccion, TdeReferenciaId
+              FROM dbo.TransaccionDetalle WITH(NOLOCK)
+              WHERE TcaIdTransaccion IN (${ids.join(',')})
+                AND TdeTipoReferencia = 'ORDEN_RETIRO'
+                AND TdeReferenciaId IS NOT NULL) t
+        GROUP BY TcaIdTransaccion
+    `);
+    res.recordset.forEach(r => map.set(r.TcaIdTransaccion, r.Retiros));
+    return map;
+}
+
 exports.getDocumentosCFE = async (req, res) => {
     try {
-        const { fechaDesde, fechaHasta, tipo, estado, clienteId, empresaId, metodoPagoId } = req.query;
+        const { fechaDesde, fechaHasta, tipo, estado, clienteId, empresaId, metodoPagoId, buscar } = req.query;
+        const textoBuscar = String(buscar || '').trim();
         const pool = await getPool();
         const request = pool.request();
 
@@ -148,13 +176,41 @@ exports.getDocumentosCFE = async (req, res) => {
             WHERE d.CfeEstado IS NOT NULL
         `;
 
-        if (fechaDesde) {
+        // El buscador puntual (nro interno, retiro u orden) busca en TODAS las fechas:
+        // quien busca una orden concreta no sabe de qué fecha es el documento.
+        if (fechaDesde && !textoBuscar) {
             baseQuery += ` AND d.DocFechaEmision >= @fechaDesde`;
             request.input('fechaDesde', sql.Date, fechaDesde);
         }
-        if (fechaHasta) {
+        if (fechaHasta && !textoBuscar) {
             baseQuery += ` AND d.DocFechaEmision < DATEADD(day, 1, CAST(@fechaHasta AS DATE))`;
             request.input('fechaHasta', sql.Date, fechaHasta);
+        }
+        if (textoBuscar) {
+            // 'RW-21510' (o RT-21510, el prefijo viejo de caja) → retiro exacto por id.
+            // Cualquier otro texto → nro interno (ET-4049 / 4049) u orden: en las líneas
+            // guardadas (OrdCodigoOrden / DcdDscItem) y en TransaccionDetalle para los
+            // docs legacy sin líneas (ahí la orden está en TdeCodigoReferencia).
+            const mRw = textoBuscar.match(/^R[WT]-?(\d+)$/i);
+            if (mRw) {
+                baseQuery += ` AND d.TcaIdTransaccion IN (
+                    SELECT TcaIdTransaccion FROM dbo.TransaccionDetalle WITH(NOLOCK)
+                    WHERE TdeTipoReferencia = 'ORDEN_RETIRO' AND TdeReferenciaId = @retiroId)`;
+                request.input('retiroId', sql.Int, parseInt(mRw[1], 10));
+            } else {
+                baseQuery += ` AND (
+                    LTRIM(RTRIM(d.DocSerie)) + '-' + LTRIM(RTRIM(d.DocNumero)) LIKE @buscar
+                    OR LTRIM(RTRIM(d.DocNumero)) LIKE @buscar
+                    OR EXISTS (SELECT 1 FROM dbo.DocumentosContablesDetalle dd WITH(NOLOCK)
+                               WHERE dd.DocIdDocumento = d.DocIdDocumento
+                                 AND (dd.OrdCodigoOrden LIKE @buscar OR dd.DcdDscItem LIKE @buscar))
+                    OR (d.TcaIdTransaccion IS NOT NULL AND EXISTS (
+                               SELECT 1 FROM dbo.TransaccionDetalle tdq WITH(NOLOCK)
+                               WHERE tdq.TcaIdTransaccion = d.TcaIdTransaccion
+                                 AND tdq.TdeCodigoReferencia LIKE @buscar))
+                )`;
+                request.input('buscar', sql.VarChar(120), `%${textoBuscar}%`);
+            }
         }
         if (tipo) {
             if (tipo === 'FACTURA') {
@@ -199,6 +255,10 @@ exports.getDocumentosCFE = async (req, res) => {
         // por documento que hacía escanear Clientesreact 6.000+ veces (13s con rango amplio).
         const emailsPortal = await resolverEmailsPortalLote(pool, result.recordset.map(d => d.CliIdCliente));
         for (const d of result.recordset) d.CliEmailPortal = emailsPortal.get(d.CliIdCliente) || null;
+
+        // Nº de retiro (RW-x) por lote, para mostrarlo en el listado
+        const retirosPorTca = await resolverRetirosLote(pool, result.recordset.map(d => d.TcaIdTransaccion));
+        for (const d of result.recordset) d.RetiroCodigos = retirosPorTca.get(d.TcaIdTransaccion) || null;
 
         // Tipo de CFE según el nomenclador de DGI (101/111 venta, 102/112 NC, 103/113 ND).
         // Se devuelven DOS datos distintos, porque no son lo mismo:

@@ -1057,7 +1057,7 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
                                 archivosComp.push({ name: bordadoBocetoFile.name, tipo: 'BOCETO_BORDADO' });
                             }
                             if (ponchadoFiles && ponchadoFiles.length > 0) {
-                                ponchadoFiles.forEach(f => archivosComp.push({ name: f.name, tipo: 'MATRIZ_LOGOS' }));
+                                ponchadoFiles.forEach(f => archivosComp.push({ name: f.name, tipo: 'LOGO_BORDADO' }));
                             }
                         }
 
@@ -1292,7 +1292,7 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
                     if ((serviceId === 'bordado' || serviceId === 'EMB') && ponchadoFiles) {
                         ponchadoFiles.forEach(f => {
                             if (!archivosServicio.some(existing => existing.name === f.name)) {
-                                archivosServicio.push({ name: f.name, tipo: 'MATRIZ_LOGOS' });
+                                archivosServicio.push({ name: f.name, tipo: 'LOGO_BORDADO' });
                             }
                         });
                     }
@@ -1398,7 +1398,7 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
                             if (ponchadoFiles && ponchadoFiles.length > 0) {
                                 ponchadoFiles.forEach(f => {
                                     if (!archivosExtra.some(existing => existing.name === f.name)) {
-                                        archivosExtra.push({ name: f.name, tipo: 'MATRIZ_LOGOS' });
+                                        archivosExtra.push({ name: f.name, tipo: 'LOGO_BORDADO' });
                                     }
                                 });
                             }
