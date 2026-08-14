@@ -23,11 +23,19 @@ import NuevoProductoTerminadoModal from '../modals/config/NuevoProductoTerminado
 const API = '/configurador';
 const GRUPO_ECOUV = '1.3';
 
-const AREAS = [
+// Construcción (SB/TWC/TWT): lo que arma la prenda — casi siempre obligatorio.
+// Decoración (EMB/TPU/DF): personalización que el cliente elige agregar o no.
+const AREAS_CONSTRUCCION = [
+    { id: 'SB', label: 'Sublimación', desc: 'Estampado full print de la tela · área SB', grad: 'from-amber-500 to-orange-600', chip: 'bg-amber-100 text-amber-700', icon: 'fa-fill-drip' },
+    { id: 'TWC', label: 'Corte', desc: 'Corte láser y tizada · área TWC', grad: 'from-slate-500 to-slate-700', chip: 'bg-slate-100 text-slate-700', icon: 'fa-scissors' },
+    { id: 'TWT', label: 'Costura', desc: 'Confección de la prenda · área TWT', grad: 'from-teal-500 to-emerald-600', chip: 'bg-teal-100 text-teal-700', icon: 'fa-shirt' },
+];
+const AREAS_DECORACION = [
     { id: 'EMB', label: 'Bordado', desc: 'Hilado sobre la prenda · área EMB', grad: 'from-violet-500 to-purple-600', chip: 'bg-violet-100 text-violet-700', icon: 'fa-compact-disc' },
     { id: 'TPU', label: 'Estampado TPU', desc: 'Aplique termoadhesivo en relieve · área TPU', grad: 'from-sky-500 to-blue-600', chip: 'bg-sky-100 text-sky-700', icon: 'fa-square' },
     { id: 'DF', label: 'Estampado DTF', desc: 'Transfer film full color · área DTF', grad: 'from-pink-500 to-rose-600', chip: 'bg-pink-100 text-pink-700', icon: 'fa-palette' },
 ];
+const AREAS = [...AREAS_CONSTRUCCION, ...AREAS_DECORACION];
 const AREA_APLIQUE_EXTRA = { id: 'ETIQUETA', label: 'Etiqueta (grifa)', chip: 'bg-slate-100 text-slate-600' };
 const areaMeta = (id) => AREAS.find(a => a.id === id) || AREA_APLIQUE_EXTRA;
 
@@ -51,26 +59,22 @@ const MODOS = [
 
 const fmtPrecio = (p, m) => (p == null ? '—' : `$ ${Number(p).toLocaleString('es-UY', { maximumFractionDigits: 2 })} ${(m || '').trim() || ''}`.trim());
 
-// Agrupación de la lista por tipo de prenda (derivada del nombre + categoría)
-const ORDEN_FAMILIAS = ['Gorros', 'Camisetas', 'Remeras', 'Shorts', 'Canguros y buzos', 'Banderas', 'Medias', 'Combos y promos', 'Otros'];
+// Familia = variante real de StockArt (Grupo '2.1'), igual que EcoUV con sus
+// materiales — Categoria ya viene de ahí (join con StockArt.Articulo en el
+// backend). Se administra con los mismos endpoints del Editor StockArt:
+// GET /stockart?grupo=2.1 (listar), POST /stockart (crear variante nueva),
+// PUT /stockart/articulos/:cod/mover (mover un producto a otra variante).
+const GRUPO_PRENDAS = '2.1';
+const CODSTOCK_COMBOS = '2.2.1.4'; // variante fija de combos, no aparece como opción de familia
 const familiaDeProducto = (p) => {
-    if ((p.Categoria || '').toLowerCase().includes('combo') || p.EsCombo || p.CantidadFija || p.ComboItems > 0) return 'Combos y promos';
-    const d = (p.Descripcion || '').toLowerCase();
-    if (d.includes('gorro')) return 'Gorros';
-    if (d.includes('camiseta')) return 'Camisetas';
-    if (d.includes('remera') || d.includes('polo')) return 'Remeras';
-    if (d.includes('short')) return 'Shorts';
-    if (d.includes('canguro') || d.includes('buzo')) return 'Canguros y buzos';
-    if (d.includes('bandera')) return 'Banderas';
-    if (d.includes('media')) return 'Medias';
-    if (d.includes('sublimacion') || d.includes('bordado')) return 'Combos y promos';
-    return 'Otros';
+    if (p.EsCombo || p.CantidadFija || p.ComboItems > 0) return 'Combos y promos';
+    return p.Categoria || 'Sin clasificar';
 };
 
 // ── UI mínimos ───────────────────────────────────────────────────────────
-const Pill = ({ on, children, onClick, className = '' }) => (
-    <button type="button" onClick={onClick}
-        className={`px-3 py-1.5 rounded-full text-xs font-bold border transition-all ${on ? 'bg-slate-800 text-white border-slate-800' : 'bg-white text-slate-500 border-slate-200 hover:border-slate-400'} ${className}`}>
+const Pill = ({ on, children, onClick, className = '', disabled = false }) => (
+    <button type="button" onClick={onClick} disabled={disabled}
+        className={`px-3 py-1.5 rounded-full text-xs font-bold border transition-all disabled:opacity-50 ${on ? 'bg-slate-800 text-white border-slate-800' : 'bg-white text-slate-500 border-slate-200 hover:border-slate-400'} ${className}`}>
         {children}
     </button>
 );
@@ -169,14 +173,20 @@ const ToolCard = ({ icon, iconBg, title, subtitle, onClick, footer }) => (
 const fichaToForm = (d) => ({
     proId: d.ProIdProducto,
     codArticulo: d.CodArticulo,
+    codStock: d.CodStock,
     descripcion: d.Descripcion,
     categoria: d.Categoria,
     imagen: d.Imagen || null,
     precio: d.Precio ?? '',
     moneda: (d.Moneda || 'UYU').trim() || 'UYU',
-    origenTipo: d.config?.OrigenTipo || 'LOCAL',
+    // Confeccionado, no Local: este catálogo se fabrica a pedido salvo que se
+    // diga lo contrario (12-ago, "todos los productos son confeccionados en
+    // USER y no admiten otro origen"). "Local" queda para lo que de verdad
+    // sale del stock del local.
+    origenTipo: d.config?.OrigenTipo || 'CONFECCIONADO',
     origenProIdProducto: d.config?.OrigenProIdProducto || null,
     origenNombre: d.origen?.Descripcion || null,
+    codigoCorto: d.config?.CodigoCorto || '',
     validarStock: d.config ? !!d.config.ValidarStock : true,
     estado: d.config?.Estado || 'BORRADOR',
     esCombo: !!d.config?.EsCombo,
@@ -204,9 +214,24 @@ const fichaToForm = (d) => ({
             areaId: s.AreaID, tecnicaOpcionId: s.TecnicaOpcionID || '', incluido: !!s.Incluido
         }))
     })),
+    fichaDiseno: {
+        ref: d.fichaDiseno?.Ref || '',
+        marca: d.fichaDiseno?.Marca || 'USER',
+        material: d.fichaDiseno?.Material || '',
+        tallas: d.fichaDiseno?.Tallas || '',
+        marcacion: d.fichaDiseno?.Marcacion || '',
+        colores: d.fichaDiseno?.Colores || '',
+        proveedor: d.fichaDiseno?.Proveedor || '',
+        dibujoUrl: d.fichaDiseno?.DibujoUrl || null,
+    },
+    fichaDisenoAnotaciones: (d.fichaDisenoAnotaciones || []).map(a => ({ x: Number(a.PosX), y: Number(a.PosY), texto: a.Texto })),
+    fichaDisenoExtra: (d.fichaDisenoExtra || []).map(c => ({ label: c.Etiqueta, valor: c.Valor || '' })),
+    fichaDisenoCosturas: (d.fichaDisenoCosturas || []).map(c => ({ union: c.UnionNombre, iso: c.CodigoISO })),
+    costurasSugeridas: d.costurasSugeridas || [],
 });
 
 const formToPayload = (f) => ({
+    ...(f.esCombo ? {} : { codigoCorto: f.codigoCorto || null }),
     origenTipo: f.origenTipo,
     origenProIdProducto: (f.origenTipo === 'LOCAL' || f.origenTipo === 'AMBOS') ? (f.origenProIdProducto || null) : null,
     cantidadMinima: f.politica === 'MINIMA' && f.cantidadMinima ? Number(f.cantidadMinima) : null,
@@ -237,24 +262,41 @@ const formToPayload = (f) => ({
             areaId: s.areaId, tecnicaOpcionId: s.tecnicaOpcionId || null, incluido: s.incluido !== false
         })),
     })),
+    ...(f.esCombo ? {} : {
+        fichaDiseno: {
+            ref: f.fichaDiseno.ref?.trim() || null,
+            marca: f.fichaDiseno.marca?.trim() || null,
+            material: f.fichaDiseno.material?.trim() || null,
+            tallas: f.fichaDiseno.tallas?.trim() || null,
+            marcacion: f.fichaDiseno.marcacion?.trim() || null,
+            colores: f.fichaDiseno.colores?.trim() || null,
+            proveedor: f.fichaDiseno.proveedor?.trim() || null,
+        },
+        fichaDisenoAnotaciones: f.fichaDisenoAnotaciones.map(a => ({ x: a.x, y: a.y, texto: a.texto })),
+        fichaDisenoExtra: f.fichaDisenoExtra.filter(c => (c.label || '').trim()).map(c => ({ label: c.label.trim(), valor: c.valor || '' })),
+        fichaDisenoCosturas: f.fichaDisenoCosturas.filter(c => c.union && c.iso).map(c => ({ union: c.union, iso: c.iso })),
+    }),
 });
 
 // ═════════════════════════════════════════════════════════════════════════
 export default function ConfigurarProductosPage() {
     const [familia, setFamilia] = useState('prendas');       // 'prendas' | 'ecouv'
-    const [vista, setVista] = useState('productos');          // 'productos' | 'tecnicas' | 'componentes'
+    const [vista, setVista] = useState('confeccionados');     // 'confeccionados' | 'combos' | 'tecnicas' | 'componentes'
 
     // Datos compartidos
     const [productos, setProductos] = useState([]);
     const [tecnicasCat, setTecnicasCat] = useState([]);       // TecnicaOpciones (all)
     const [componentesCat, setComponentesCat] = useState([]); // ComponenteOpciones (all)
+    const [costurasIsoCat, setCosturasIsoCat] = useState([]); // CosturasISO (catálogo chico, ficha de diseño)
     const [locales, setLocales] = useState([]);               // productos del local
     const [stockDisponible, setStockDisponible] = useState(true);
+    const [familiasCat, setFamiliasCat] = useState([]);        // variantes StockArt del grupo 2.1 (familias reales)
     const [loading, setLoading] = useState(false);
 
     // Editor
     const [form, setForm] = useState(null);
     const [paso, setPaso] = useState('origen');
+    const [origenAbierto, setOrigenAbierto] = useState(false); // false = origen fijo, muestra barra compacta con "Cambiar"
     const [saving, setSaving] = useState(false);
     const [fichaLoading, setFichaLoading] = useState(false);
 
@@ -264,6 +306,20 @@ export default function ConfigurarProductosPage() {
     const [nuevoNombre, setNuevoNombre] = useState('');
     const [creando, setCreando] = useState(false);
     const [showNuevo, setShowNuevo] = useState(false);
+    const [moviendoFamilia, setMoviendoFamilia] = useState(false);
+    const [showNuevaFamilia, setShowNuevaFamilia] = useState(false);
+    const [nuevaFamiliaNombre, setNuevaFamiliaNombre] = useState('');
+    const [creandoFamilia, setCreandoFamilia] = useState(false);
+
+    // Variantes (paso 5 del confeccionado — motor cartesiano de Componentes)
+    const [variantes, setVariantes] = useState([]);
+    const [variantesLoading, setVariantesLoading] = useState(false);
+    const [generandoVariantes, setGenerandoVariantes] = useState(false);
+    const [variantesObsoletas, setVariantesObsoletas] = useState(0);
+
+    // Ficha de diseño (paso 6 del confeccionado)
+    const [subiendoDibujo, setSubiendoDibujo] = useState(false);
+    const [fichaPreview, setFichaPreview] = useState(false); // modal "Ver ficha técnica"
 
     // EcoUV embebido
     const [ecouvModal, setEcouvModal] = useState(null);
@@ -281,12 +337,14 @@ export default function ConfigurarProductosPage() {
 
     const loadCatalogos = useCallback(async () => {
         try {
-            const [t, c] = await Promise.all([
+            const [t, c, iso] = await Promise.all([
                 api.get(`${API}/tecnicas?all=1`),
                 api.get(`${API}/componentes?all=1`),
+                api.get(`${API}/costuras-iso`),
             ]);
             setTecnicasCat(t.data?.data || []);
             setComponentesCat(c.data?.data || []);
+            setCosturasIsoCat(iso.data?.data || []);
         } catch (e) {
             toast.error('Error cargando catálogos: ' + (e.response?.data?.error || e.message));
         }
@@ -302,7 +360,35 @@ export default function ConfigurarProductosPage() {
         }
     }, []);
 
-    useEffect(() => { loadProductos(); loadCatalogos(); loadLocales(); }, [loadProductos, loadCatalogos, loadLocales]);
+    // Familias = variantes de StockArt (Editor StockArt las administra igual que EcoUV)
+    const loadFamilias = useCallback(async () => {
+        try {
+            // Por SupFlia (no por un Grupo fijo): las familias de "Prendas" ya viven en
+            // grupos distintos (2.1 tipos de prenda, 2.2 Combos, 2.3 Productos del Local...).
+            const { data } = await api.get('/stockart?supflia=2');
+            setFamiliasCat((data.data || []).filter(v => v.CodStock !== CODSTOCK_COMBOS));
+        } catch (e) {
+            toast.error('Error cargando familias: ' + (e.response?.data?.error || e.message));
+        }
+    }, []);
+
+    useEffect(() => { loadProductos(); loadCatalogos(); loadLocales(); loadFamilias(); }, [loadProductos, loadCatalogos, loadLocales, loadFamilias]);
+
+    const loadVariantes = useCallback(async (proId) => {
+        if (!proId) return;
+        setVariantesLoading(true);
+        try {
+            const { data } = await api.get(`${API}/productos/${proId}/variantes`);
+            setVariantes(data.data || []);
+        } catch (e) {
+            toast.error('Error cargando variantes: ' + (e.response?.data?.error || e.message));
+        } finally { setVariantesLoading(false); }
+    }, []);
+
+    // Al entrar al paso Variantes, traer lo que ya esté generado para este producto
+    useEffect(() => {
+        if (paso === 'variantes' && form?.proId) loadVariantes(form.proId);
+    }, [paso, form?.proId, loadVariantes]);
 
     const loadEcouvStats = useCallback(async () => {
         try {
@@ -320,6 +406,48 @@ export default function ConfigurarProductosPage() {
     }, []);
     useEffect(() => { if (familia === 'ecouv' && !ecouvStats) loadEcouvStats(); }, [familia, ecouvStats, loadEcouvStats]);
 
+    // Mover el producto a otra familia = mover el artículo a otra variante de
+    // StockArt (mismo endpoint que usa el Editor StockArt de EcoUV).
+    const moverAFamilia = async (codStockDestino) => {
+        if (!form) return;
+        setMoviendoFamilia(true);
+        try {
+            await api.put(`/stockart/articulos/${form.codArticulo}/mover`, { codStockDestino });
+            toast.success('✅ Movido de familia');
+            await Promise.all([loadProductos(), abrirProducto(form.proId)]);
+        } catch (e) {
+            toast.error('Error moviendo: ' + (e.response?.data?.error || e.message));
+        } finally { setMoviendoFamilia(false); }
+    };
+
+    // Nueva familia = nueva variante de StockArt bajo el grupo de Prendas,
+    // con el mismo criterio de código sugerido que usa el Editor StockArt.
+    const sugerirCodStockFamilia = () => {
+        // Escala solo dentro de Grupo 2.1: "+ Nueva familia" siempre nace ahí
+        // (mismo grupo que Camisetas/Shorts/...), aunque familiasCat ahora mezcle
+        // varios grupos (Combos en 2.2, Productos del Local en 2.3).
+        const codes = familiasCat.filter(v => v.Grupo === GRUPO_PRENDAS).map(v => v.CodStock);
+        if (!codes.length) return '2.2.1.5';
+        const base = codes[0].split('.').slice(0, -1).join('.');
+        const maxN = Math.max(...codes.map(c => parseInt(c.split('.').pop()) || 0));
+        return `${base}.${maxN + 1}`;
+    };
+    const crearFamiliaNueva = async () => {
+        if (!nuevaFamiliaNombre.trim()) return toast.error('Poné el nombre de la familia.');
+        setCreandoFamilia(true);
+        try {
+            await api.post('/stockart', {
+                grupo: GRUPO_PRENDAS, codStock: sugerirCodStockFamilia(),
+                articulo: nuevaFamiliaNombre.trim(), um: 'U', tipoStock: 'PRODUCTO_TERMINADO'
+            });
+            toast.success(`✅ Familia "${nuevaFamiliaNombre.trim()}" creada`);
+            setNuevaFamiliaNombre(''); setShowNuevaFamilia(false);
+            loadFamilias();
+        } catch (e) {
+            toast.error('Error creando familia: ' + (e.response?.data?.error || e.message));
+        } finally { setCreandoFamilia(false); }
+    };
+
     const abrirProducto = async (proId) => {
         setFichaLoading(true);
         try {
@@ -327,9 +455,88 @@ export default function ConfigurarProductosPage() {
             const f = fichaToForm(data.data);
             setForm(f);
             setPaso(f.esCombo ? 'combo' : 'origen');
+            setOrigenAbierto(false); // cada producto arranca mostrando el origen fijo, no las 4 tarjetas
         } catch (e) {
             toast.error('Error abriendo la ficha: ' + (e.response?.data?.error || e.message));
         } finally { setFichaLoading(false); }
+    };
+
+    const generarVariantes = async () => {
+        if (!form?.proId) return;
+        setGenerandoVariantes(true);
+        try {
+            const { data } = await api.post(`${API}/productos/${form.proId}/variantes/generar`);
+            setVariantesObsoletas(data.obsoletas || 0);
+            toast.success(`✅ ${data.creadas} nueva(s) · ${data.actualizadas} actualizada(s)${data.obsoletas ? ` — ⚠ ${data.obsoletas} obsoleta(s)` : ''}`);
+            await loadVariantes(form.proId);
+        } catch (e) {
+            toast.error('Error generando variantes: ' + (e.response?.data?.error || e.message));
+        } finally { setGenerandoVariantes(false); }
+    };
+
+    const toggleVarianteActiva = async (v) => {
+        const next = !v.Activa;
+        setVariantes(prev => prev.map(x => x.VarianteID === v.VarianteID ? { ...x, Activa: next } : x));
+        try {
+            await api.put(`${API}/variantes/${v.VarianteID}`, { activa: next });
+        } catch (e) {
+            setVariantes(prev => prev.map(x => x.VarianteID === v.VarianteID ? { ...x, Activa: !next } : x));
+            toast.error('Error: ' + (e.response?.data?.error || e.message));
+        }
+    };
+
+    const guardarPrecioManualVariante = async (v, valorStr) => {
+        const valor = valorStr === '' ? null : Number(valorStr);
+        if (valorStr !== '' && !Number.isFinite(valor)) return;
+        try {
+            await api.put(`${API}/variantes/${v.VarianteID}`, { precioManual: valor });
+            setVariantes(prev => prev.map(x => x.VarianteID === v.VarianteID ? { ...x, PrecioManual: valor } : x));
+        } catch (e) {
+            toast.error('Error: ' + (e.response?.data?.error || e.message));
+        }
+    };
+
+    // El dibujo se sube al toque (como el resto de las imágenes de la app) — no
+    // espera al "Guardar cambios" del producto, así el usuario ve el resultado ya.
+    const subirDibujoFicha = async (file) => {
+        if (!form?.proId || !file) return;
+        setSubiendoDibujo(true);
+        try {
+            const fd = new FormData();
+            fd.append('dibujo', file);
+            const { data } = await api.post(`${API}/productos/${form.proId}/ficha-diseno/dibujo`, fd);
+            setF({ fichaDiseno: { ...form.fichaDiseno, dibujoUrl: data.dibujoUrl } });
+            toast.success('✅ Dibujo cargado');
+        } catch (e) {
+            toast.error('Error subiendo el dibujo: ' + (e.response?.data?.error || e.message));
+        } finally { setSubiendoDibujo(false); }
+    };
+
+    // Arrastrar una anotación sobre el dibujo — mueve el DOM directo durante el
+    // drag (sin re-render por cada mousemove) y recién confirma en el estado al soltar.
+    // elDot = el punto que se arrastra (evDown.currentTarget); elCanvas = su contenedor.
+    const arrastrarAnotacion = (i) => (evDown) => {
+        evDown.preventDefault();
+        evDown.stopPropagation(); // no disparar el onClick del canvas (agregaría una anotación nueva)
+        const elDot = evDown.currentTarget;
+        const elCanvas = elDot.parentElement;
+        const rect = elCanvas.getBoundingClientRect();
+        const mover = (ev) => {
+            const x = Math.max(0, Math.min(100, (ev.clientX - rect.left) / rect.width * 100));
+            const y = Math.max(0, Math.min(100, (ev.clientY - rect.top) / rect.height * 100));
+            elDot.style.left = x + '%'; elDot.style.top = y + '%';
+            elDot.dataset.x = x; elDot.dataset.y = y;
+        };
+        const soltar = () => {
+            document.removeEventListener('mousemove', mover);
+            document.removeEventListener('mouseup', soltar);
+            const x = Number(elDot.dataset.x), y = Number(elDot.dataset.y);
+            if (Number.isFinite(x) && Number.isFinite(y)) {
+                setF({ fichaDisenoAnotaciones: form.fichaDisenoAnotaciones.map((a, j) => j === i ? { ...a, x, y } : a) });
+            }
+        };
+        document.addEventListener('mousemove', mover);
+        document.addEventListener('mouseup', soltar);
     };
 
     const guardar = async () => {
@@ -351,13 +558,14 @@ export default function ConfigurarProductosPage() {
         } finally { setSaving(false); }
     };
 
-    const [nuevoTipo, setNuevoTipo] = useState('PRODUCTO'); // 'PRODUCTO' | 'COMBO'
+    // La pestaña activa decide qué se crea — Confeccionados o Combos y Promos.
     const crearProducto = async () => {
-        if (!nuevoNombre.trim()) return toast.error('Poné el nombre del producto o combo.');
+        if (!nuevoNombre.trim()) return toast.error(vista === 'combos' ? 'Poné el nombre del combo.' : 'Poné el nombre del producto.');
+        const esComboNuevo = vista === 'combos';
         setCreando(true);
         try {
-            const { data } = await api.post(`${API}/productos`, { descripcion: nuevoNombre.trim(), esCombo: nuevoTipo === 'COMBO' });
-            toast.success(`✅ ${nuevoTipo === 'COMBO' ? 'Combo creado' : 'Creado'} con código ${data.codArticulo}`);
+            const { data } = await api.post(`${API}/productos`, { descripcion: nuevoNombre.trim(), esCombo: esComboNuevo });
+            toast.success(`✅ ${esComboNuevo ? 'Combo creado' : 'Creado'} con código ${data.codArticulo}`);
             setNuevoNombre(''); setShowNuevo(false);
             await loadProductos();
             abrirProducto(data.proIdProducto);
@@ -366,13 +574,16 @@ export default function ConfigurarProductosPage() {
         } finally { setCreando(false); }
     };
 
+    // Combo = EsCombo (creado como combo) o tiene señales de combo (cantidad fija / ítems armados)
+    const esCombo = (p) => !!(p.EsCombo || p.CantidadFija || p.ComboItems > 0);
+
     // Resumen de chips del header
     const chips = useMemo(() => {
         const conConfig = productos.filter(p => p.Estado);
         return {
             publicados: conConfig.filter(p => p.Estado === 'PUBLICADO').length,
             borradores: conConfig.filter(p => p.Estado === 'BORRADOR').length,
-            paquetes: productos.filter(p => p.CantidadFija).length,
+            paquetes: productos.filter(esCombo).length,
             sinConfig: productos.length - conConfig.length,
         };
     }, [productos]);
@@ -384,16 +595,21 @@ export default function ConfigurarProductosPage() {
         return true;
     }), [productos, busca, filtroEstado]);
 
+    // Dos pestañas separadas: confeccionados (agrupados por familia) y combos (lista simple)
+    const confeccionadosFiltrados = useMemo(() => productosFiltrados.filter(p => !esCombo(p)), [productosFiltrados]);
+    const combosFiltrados = useMemo(() => productosFiltrados.filter(esCombo), [productosFiltrados]);
+
     // Lista agrupada por tipo de prenda; los grupos se pueden plegar (la búsqueda los ignora)
     const [gruposCerrados, setGruposCerrados] = useState(() => new Set());
     const gruposLista = useMemo(() => {
         const g = {};
-        productosFiltrados.forEach(p => {
+        confeccionadosFiltrados.forEach(p => {
             const f = familiaDeProducto(p);
             (g[f] = g[f] || []).push(p);
         });
-        return ORDEN_FAMILIAS.filter(f => g[f]?.length).map(f => ({ nombre: f, items: g[f] }));
-    }, [productosFiltrados]);
+        const orden = [...familiasCat.map(v => v.Articulo).sort((a, b) => a.localeCompare(b)), 'Sin clasificar'];
+        return orden.filter(f => g[f]?.length).map(f => ({ nombre: f, items: g[f] }));
+    }, [confeccionadosFiltrados, familiasCat]);
     const toggleGrupo = (nombre) => setGruposCerrados(prev => {
         const next = new Set(prev);
         next.has(nombre) ? next.delete(nombre) : next.add(nombre);
@@ -414,7 +630,9 @@ export default function ConfigurarProductosPage() {
             { id: 'tecnicas', n: 2, label: 'Técnicas' },
             { id: 'precio', n: 3, label: 'Precio y cantidades' },
             ...(form.origenTipo === 'CONFECCIONADO' ? [{ id: 'confeccion', n: 4, label: 'Componentes y apliques' }] : []),
-            { id: 'resumen', n: form.origenTipo === 'CONFECCIONADO' ? 5 : 4, label: 'Revisar y publicar' },
+            ...(form.origenTipo === 'CONFECCIONADO' ? [{ id: 'variantes', n: 5, label: 'Variantes' }] : []),
+            ...(form.origenTipo === 'CONFECCIONADO' ? [{ id: 'ficha', n: 6, label: 'Ficha de diseño' }] : []),
+            { id: 'resumen', n: form.origenTipo === 'CONFECCIONADO' ? 7 : 4, label: 'Revisar y publicar' },
         ];
     }, [form]);
 
@@ -483,24 +701,31 @@ export default function ConfigurarProductosPage() {
             {familia === 'prendas' && (
                 <div>
                     {/* Sub-vistas */}
-                    <div className="flex gap-2 mb-4 border-b border-slate-200 pb-3">
-                        {[['productos', 'Productos'], ['tecnicas', 'Catálogo de técnicas'], ['componentes', 'Componentes (confección)']].map(([id, label]) => (
+                    <div className="flex gap-2 mb-4 border-b border-slate-200 pb-3 flex-wrap">
+                        {[
+                            ['confeccionados', '👕 Productos Confeccionados', confeccionadosFiltrados.length],
+                            ['combos', '📦 Combos y Promos', combosFiltrados.length],
+                            ['tecnicas', 'Catálogo de técnicas', null],
+                            ['componentes', 'Componentes (confección)', null],
+                        ].map(([id, label, count]) => (
                             <button key={id} onClick={() => setVista(id)}
-                                className={`px-4 py-2 rounded-lg text-sm font-bold transition-colors ${vista === id ? 'bg-slate-800 text-white' : 'text-slate-500 hover:bg-slate-100'}`}>
+                                className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-bold transition-colors ${vista === id ? 'bg-slate-800 text-white' : 'text-slate-500 hover:bg-slate-100'}`}>
                                 {label}
+                                {count != null && <span className={`text-[10px] font-black rounded-full px-1.5 ${vista === id ? 'bg-white/20' : 'bg-slate-200 text-slate-500'}`}>{count}</span>}
                             </button>
                         ))}
                     </div>
 
-                    {vista === 'productos' && (
+                    {(vista === 'confeccionados' || vista === 'combos') && (
                         <div className="grid grid-cols-1 lg:grid-cols-[340px_1fr] gap-5 items-start">
                             {/* ── Lista ── */}
                             <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
                                 <div className="p-3 border-b border-slate-100 space-y-2">
                                     <div className="flex gap-2">
-                                        <input value={busca} onChange={e => setBusca(e.target.value)} placeholder="🔍 Buscar producto…"
+                                        <input value={busca} onChange={e => setBusca(e.target.value)}
+                                            placeholder={vista === 'combos' ? '🔍 Buscar combo…' : '🔍 Buscar producto…'}
                                             className="flex-1 border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-300" />
-                                        <button onClick={() => setShowNuevo(v => !v)} title="Nuevo producto o combo"
+                                        <button onClick={() => setShowNuevo(v => !v)} title={vista === 'combos' ? 'Nuevo combo' : 'Nuevo producto'}
                                             className="bg-slate-800 text-white rounded-lg px-3 text-sm font-bold hover:bg-slate-700">+</button>
                                     </div>
                                     <div className="flex gap-1.5 flex-wrap">
@@ -513,68 +738,96 @@ export default function ConfigurarProductosPage() {
                                     </div>
                                     {showNuevo && (
                                         <div className="space-y-2 pt-1">
-                                            <div className="flex gap-1.5">
-                                                <Pill on={nuevoTipo === 'PRODUCTO'} onClick={() => setNuevoTipo('PRODUCTO')}>👕 Producto</Pill>
-                                                <Pill on={nuevoTipo === 'COMBO'} onClick={() => setNuevoTipo('COMBO')}>📦 Combo (varios productos)</Pill>
-                                            </div>
                                             <div className="flex gap-2">
                                                 <input value={nuevoNombre} onChange={e => setNuevoNombre(e.target.value)}
                                                     onKeyDown={e => e.key === 'Enter' && crearProducto()}
-                                                    placeholder={nuevoTipo === 'COMBO' ? 'Nombre (ej. Combo Short + Medias)' : 'Nombre (ej. Gorro de lana con TPU)'}
+                                                    placeholder={vista === 'combos' ? 'Nombre (ej. Combo Short + Medias)' : 'Nombre (ej. Gorro de lana con TPU)'}
                                                     className="flex-1 border border-indigo-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-300" autoFocus />
                                                 <button onClick={crearProducto} disabled={creando}
                                                     className="bg-indigo-600 text-white rounded-lg px-3 text-xs font-bold hover:bg-indigo-500 disabled:opacity-50">
                                                     {creando ? '…' : 'Crear'}
                                                 </button>
                                             </div>
-                                            {nuevoTipo === 'COMBO' && <p className="text-[10px] text-slate-400">El combo es su propia categoría de artículos: le agregás productos y a cada uno sus servicios, con precio cerrado del paquete.</p>}
+                                            {vista === 'combos' && <p className="text-[10px] text-slate-400">El combo es su propia categoría de artículos: le agregás productos y a cada uno sus servicios, con precio cerrado del paquete.</p>}
                                         </div>
                                     )}
                                 </div>
                                 <div className="max-h-[62vh] overflow-y-auto">
                                     {loading && <div className="p-6 text-center text-slate-400 text-sm">Cargando…</div>}
-                                    {!loading && productosFiltrados.length === 0 && (
-                                        <div className="p-6 text-center text-slate-400 text-sm">Sin resultados</div>
-                                    )}
-                                    {gruposLista.map(g => {
-                                        const cerrado = !busca && gruposCerrados.has(g.nombre);
-                                        const publicados = g.items.filter(p => p.Estado === 'PUBLICADO').length;
-                                        return (
-                                            <div key={g.nombre}>
-                                                <button onClick={() => toggleGrupo(g.nombre)}
-                                                    className="w-full sticky top-0 z-10 flex items-center gap-2 px-3.5 py-2 bg-slate-50/95 backdrop-blur border-y border-slate-100 text-left">
-                                                    <i className={`fa-solid fa-chevron-${cerrado ? 'right' : 'down'} text-[9px] text-slate-400`}></i>
-                                                    <span className="text-[11px] font-black uppercase tracking-wider text-slate-500">{g.nombre}</span>
-                                                    <span className="text-[10px] font-bold text-slate-400">{g.items.length}</span>
-                                                    {publicados > 0 && <span className="ml-auto text-[9px] font-black text-emerald-600">{publicados} pub.</span>}
-                                                </button>
-                                                {!cerrado && <div className="divide-y divide-slate-50">
-                                                    {g.items.map(p => (
-                                                        <button key={p.ProIdProducto} onClick={() => abrirProducto(p.ProIdProducto)}
-                                                            className={`w-full text-left px-3 py-2.5 hover:bg-slate-50 transition-colors flex items-center gap-2.5 ${form?.proId === p.ProIdProducto ? 'bg-indigo-50/60 border-l-4 border-indigo-500' : 'border-l-4 border-transparent'}`}>
-                                                            <Thumb src={p.Imagen} size={36} icon={p.CantidadFija ? 'fa-boxes-stacked' : 'fa-shirt'} />
-                                                            <div className="flex-1 min-w-0">
-                                                                <div className="flex items-center justify-between gap-2">
-                                                                    <span className="font-bold text-[13px] text-slate-700 truncate">{p.Descripcion}</span>
-                                                                    {!!p.EsCombo && <span className="text-[9px] font-black bg-amber-100 text-amber-700 rounded px-1 flex-shrink-0">COMBO</span>}
-                                                                    {p.Estado === 'PUBLICADO' && <span className="text-[10px] font-black text-emerald-600 flex-shrink-0">● PUB</span>}
-                                                                    {p.Estado === 'BORRADOR' && <span className="text-[10px] font-black text-slate-400 flex-shrink-0">○ BORR</span>}
+
+                                    {/* ── Pestaña Productos Confeccionados: agrupada por familia ── */}
+                                    {vista === 'confeccionados' && <>
+                                        {!loading && confeccionadosFiltrados.length === 0 && (
+                                            <div className="p-6 text-center text-slate-400 text-sm">Sin resultados</div>
+                                        )}
+                                        {gruposLista.map(g => {
+                                            const cerrado = !busca && gruposCerrados.has(g.nombre);
+                                            const publicados = g.items.filter(p => p.Estado === 'PUBLICADO').length;
+                                            return (
+                                                <div key={g.nombre}>
+                                                    <button onClick={() => toggleGrupo(g.nombre)}
+                                                        className={`w-full sticky top-0 z-10 flex items-center gap-2 px-3.5 py-2 backdrop-blur border-y text-left ${g.nombre === 'Sin clasificar' ? 'bg-amber-50/95 border-amber-100' : 'bg-slate-50/95 border-slate-100'}`}>
+                                                        <i className={`fa-solid fa-chevron-${cerrado ? 'right' : 'down'} text-[9px] ${g.nombre === 'Sin clasificar' ? 'text-amber-500' : 'text-slate-400'}`}></i>
+                                                        {g.nombre === 'Sin clasificar' && <i className="fa-solid fa-triangle-exclamation text-[9px] text-amber-500"></i>}
+                                                        <span className={`text-[11px] font-black uppercase tracking-wider ${g.nombre === 'Sin clasificar' ? 'text-amber-700' : 'text-slate-500'}`}>{g.nombre}</span>
+                                                        <span className="text-[10px] font-bold text-slate-400">{g.items.length}</span>
+                                                        {publicados > 0 && <span className="ml-auto text-[9px] font-black text-emerald-600">{publicados} pub.</span>}
+                                                    </button>
+                                                    {!cerrado && <div className="divide-y divide-slate-50">
+                                                        {g.items.map(p => (
+                                                            <button key={p.ProIdProducto} onClick={() => abrirProducto(p.ProIdProducto)}
+                                                                className={`w-full text-left px-3 py-2.5 hover:bg-slate-50 transition-colors flex items-center gap-2.5 ${form?.proId === p.ProIdProducto ? 'bg-indigo-50/60 border-l-4 border-indigo-500' : 'border-l-4 border-transparent'}`}>
+                                                                <Thumb src={p.Imagen} size={36} icon="fa-shirt" />
+                                                                <div className="flex-1 min-w-0">
+                                                                    <div className="flex items-center justify-between gap-2">
+                                                                        <span className="font-bold text-[13px] text-slate-700 truncate">{p.Descripcion}</span>
+                                                                        {p.Estado === 'PUBLICADO' && <span className="text-[10px] font-black text-emerald-600 flex-shrink-0">● PUB</span>}
+                                                                        {p.Estado === 'BORRADOR' && <span className="text-[10px] font-black text-slate-400 flex-shrink-0">○ BORR</span>}
+                                                                    </div>
+                                                                    <div className="flex items-center gap-2 mt-0.5 text-[11px] text-slate-400">
+                                                                        <span className="font-mono">{p.CodArticulo}</span>
+                                                                        <span>{fmtPrecio(p.Precio, p.Moneda)}</span>
+                                                                        {p.CantidadMinima && <span>mín. {p.CantidadMinima}</span>}
+                                                                        {p.Tecnicas && <span className="truncate">{p.Tecnicas}</span>}
+                                                                    </div>
                                                                 </div>
-                                                                <div className="flex items-center gap-2 mt-0.5 text-[11px] text-slate-400">
-                                                                    <span className="font-mono">{p.CodArticulo}</span>
-                                                                    <span>{fmtPrecio(p.Precio, p.Moneda)}</span>
-                                                                    {p.CantidadFija && <span className="text-amber-600 font-bold">📦 ×{p.CantidadFija}</span>}
-                                                                    {p.ComboItems > 0 && <span className="text-amber-600 font-bold">📦 {p.ComboItems} productos</span>}
-                                                                    {p.CantidadMinima && <span>mín. {p.CantidadMinima}</span>}
-                                                                    {p.Tecnicas && <span className="truncate">{p.Tecnicas}</span>}
-                                                                </div>
-                                                            </div>
-                                                        </button>
-                                                    ))}
-                                                </div>}
+                                                            </button>
+                                                        ))}
+                                                    </div>}
+                                                </div>
+                                            );
+                                        })}
+                                    </>}
+
+                                    {/* ── Pestaña Combos y Promos: lista simple, sin agrupar (ya son todos "combo") ── */}
+                                    {vista === 'combos' && <>
+                                        {!loading && combosFiltrados.length === 0 && (
+                                            <div className="p-6 text-center text-slate-400 text-sm">
+                                                Sin combos todavía — creá el primero con “+”.
                                             </div>
-                                        );
-                                    })}
+                                        )}
+                                        <div className="divide-y divide-slate-50">
+                                            {combosFiltrados.map(p => (
+                                                <button key={p.ProIdProducto} onClick={() => abrirProducto(p.ProIdProducto)}
+                                                    className={`w-full text-left px-3 py-2.5 hover:bg-slate-50 transition-colors flex items-center gap-2.5 ${form?.proId === p.ProIdProducto ? 'bg-indigo-50/60 border-l-4 border-indigo-500' : 'border-l-4 border-transparent'}`}>
+                                                    <Thumb src={p.Imagen} size={36} icon="fa-boxes-stacked" />
+                                                    <div className="flex-1 min-w-0">
+                                                        <div className="flex items-center justify-between gap-2">
+                                                            <span className="font-bold text-[13px] text-slate-700 truncate">{p.Descripcion}</span>
+                                                            {p.Estado === 'PUBLICADO' && <span className="text-[10px] font-black text-emerald-600 flex-shrink-0">● PUB</span>}
+                                                            {p.Estado === 'BORRADOR' && <span className="text-[10px] font-black text-slate-400 flex-shrink-0">○ BORR</span>}
+                                                        </div>
+                                                        <div className="flex items-center gap-2 mt-0.5 text-[11px] text-slate-400">
+                                                            <span className="font-mono">{p.CodArticulo}</span>
+                                                            <span>{fmtPrecio(p.Precio, p.Moneda)}</span>
+                                                            {p.CantidadFija && <span className="text-amber-600 font-bold">📦 ×{p.CantidadFija}</span>}
+                                                            {p.ComboItems > 0 && <span className="text-amber-600 font-bold">📦 {p.ComboItems} productos</span>}
+                                                        </div>
+                                                    </div>
+                                                </button>
+                                            ))}
+                                        </div>
+                                    </>}
                                 </div>
                             </div>
 
@@ -584,7 +837,7 @@ export default function ConfigurarProductosPage() {
                                 {!fichaLoading && !form && (
                                     <div className="p-10 text-center text-slate-400">
                                         <i className="fa-solid fa-hand-pointer text-2xl mb-3 block"></i>
-                                        Elegí un producto de la lista (o creá uno con “+”) para configurarlo.
+                                        Elegí {vista === 'combos' ? 'un combo' : 'un producto'} de la lista (o creá uno con “+”) para configurarlo.
                                     </div>
                                 )}
                                 {!fichaLoading && form && (
@@ -606,6 +859,40 @@ export default function ConfigurarProductosPage() {
                                             </button>
                                         </div>
 
+                                        {/* Familia = variante de StockArt (Grupo 2.1) — mover acá mueve el artículo de verdad */}
+                                        {!form.esCombo && (
+                                            <div className="flex items-center gap-2.5 px-5 py-2.5 border-b border-slate-100 bg-slate-50/50 flex-wrap">
+                                                <span className="text-[11px] font-black uppercase tracking-wider text-slate-400">Familia</span>
+                                                <div className="flex gap-1.5 flex-wrap">
+                                                    {familiasCat.map(fam => (
+                                                        <Pill key={fam.CodStock} on={form.codStock === fam.CodStock} disabled={moviendoFamilia}
+                                                            onClick={() => fam.CodStock !== form.codStock && moverAFamilia(fam.CodStock)}>
+                                                            {fam.Articulo}
+                                                        </Pill>
+                                                    ))}
+                                                    {!showNuevaFamilia ? (
+                                                        <button type="button" onClick={() => setShowNuevaFamilia(true)}
+                                                            className="px-3 py-1.5 rounded-full text-xs font-bold border border-dashed border-slate-300 text-slate-400 hover:border-slate-400 hover:text-slate-600">
+                                                            + Nueva familia
+                                                        </button>
+                                                    ) : (
+                                                        <span className="inline-flex gap-1.5 items-center">
+                                                            <input value={nuevaFamiliaNombre} onChange={e => setNuevaFamiliaNombre(e.target.value)}
+                                                                onKeyDown={e => e.key === 'Enter' && crearFamiliaNueva()}
+                                                                placeholder="Ej. Medias" autoFocus
+                                                                className="border border-indigo-300 rounded-full px-3 py-1.5 text-xs w-32" />
+                                                            <button onClick={crearFamiliaNueva} disabled={creandoFamilia}
+                                                                className="bg-indigo-600 text-white rounded-full px-3 py-1.5 text-xs font-bold disabled:opacity-50">
+                                                                {creandoFamilia ? '…' : 'Crear'}
+                                                            </button>
+                                                            <button onClick={() => { setShowNuevaFamilia(false); setNuevaFamiliaNombre(''); }} className="text-slate-400 text-xs px-1">×</button>
+                                                        </span>
+                                                    )}
+                                                </div>
+                                                {form.categoria === 'Prendas' && <span className="text-[11px] font-bold text-amber-600 ml-1">⚠ sin clasificar — elegí una</span>}
+                                            </div>
+                                        )}
+
                                         {/* Pasos */}
                                         <div className="flex gap-1.5 px-5 pt-4 flex-wrap">
                                             {pasos.map(s => (
@@ -619,63 +906,94 @@ export default function ConfigurarProductosPage() {
 
                                         <div className="p-5">
                                             {/* ── PASO ORIGEN ── */}
-                                            {paso === 'origen' && (
+                                            {paso === 'origen' && (() => {
+                                                const actual = ORIGENES.find(o => o.id === form.origenTipo) || ORIGENES[0];
+                                                return (
                                                 <div className="space-y-3">
                                                     <p className="text-[11px] font-black uppercase tracking-wider text-slate-400">¿De dónde sale la prenda?</p>
-                                                    {ORIGENES.map(o => (
-                                                        <div key={o.id}
-                                                            className={`border-2 rounded-xl p-3.5 cursor-pointer transition-all ${form.origenTipo === o.id ? 'border-emerald-500 bg-emerald-50/40' : 'border-slate-200 hover:border-slate-300'}`}
-                                                            onClick={() => setF({ origenTipo: o.id })}>
-                                                            <div className="flex items-center gap-3">
-                                                                <i className={`fa-solid ${o.icon} ${form.origenTipo === o.id ? 'text-emerald-600' : 'text-slate-400'}`}></i>
-                                                                <div className="flex-1">
-                                                                    <div className="font-bold text-sm text-slate-700">{o.t}</div>
-                                                                    <div className="text-xs text-slate-400">{o.d}</div>
-                                                                </div>
-                                                                <span className={`w-4 h-4 rounded-full border-2 ${form.origenTipo === o.id ? 'border-emerald-500 bg-emerald-500 shadow-[inset_0_0_0_3px_white]' : 'border-slate-300'}`}></span>
-                                                            </div>
 
-                                                            {/* Selector de producto del local */}
-                                                            {(o.id === 'LOCAL' || o.id === 'AMBOS') && form.origenTipo === o.id && (
-                                                                <div className="mt-3 pl-7" onClick={e => e.stopPropagation()}>
-                                                                    <p className="text-[11px] font-bold text-slate-400 mb-2">
-                                                                        Elegí de qué producto del local sale
-                                                                        {!stockDisponible && <span className="text-amber-600 ml-2">⚠ stock del local sin conexión — se muestra la lista igual</span>}
-                                                                    </p>
-                                                                    <div className="max-h-52 overflow-y-auto space-y-1.5 pr-1">
-                                                                        {locales.map(l => (
-                                                                            <div key={l.ProIdProducto} onClick={() => setF({ origenProIdProducto: l.ProIdProducto })}
-                                                                                className={`flex items-center gap-2.5 border rounded-lg px-3 py-2 cursor-pointer text-sm ${form.origenProIdProducto === l.ProIdProducto ? 'border-emerald-500 bg-white shadow-sm' : 'border-slate-200 bg-white hover:border-slate-300'}`}>
-                                                                                <Thumb src={l.Imagen} size={34} />
-                                                                                <div className="flex-1 min-w-0">
-                                                                                    <span className="font-bold text-slate-700">{l.Descripcion}</span>
-                                                                                    <span className="text-[11px] text-slate-400 ml-2">{l.variantes.length} variantes{l.ubicacion?.pasillo ? ` · pasillo ${l.ubicacion.pasillo}` : ''}</span>
-                                                                                </div>
-                                                                                <span className={`text-[11px] font-bold px-2 py-0.5 rounded flex-shrink-0 ${l.totalStock == null ? 'bg-slate-100 text-slate-400' : l.totalStock > 5 ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}`}>
-                                                                                    {l.totalStock == null ? 's/d' : `${l.totalStock} en el local`}
-                                                                                </span>
-                                                                            </div>
-                                                                        ))}
-                                                                        {locales.length === 0 && <div className="text-xs text-slate-400 py-3">No hay productos del local con variantes cargadas.</div>}
+                                                    {!origenAbierto ? (
+                                                        /* Origen fijo: la mayoría de los productos no admite otra opción — se
+                                                           muestra como dato, no como pregunta. "Cambiar" revela las 4 tarjetas
+                                                           para los casos puntuales que sí necesitan otro origen. */
+                                                        <div className="flex items-center gap-3 border-2 border-emerald-500 bg-emerald-50/40 rounded-xl p-3.5">
+                                                            <i className={`fa-solid ${actual.icon} text-emerald-600`}></i>
+                                                            <div className="flex-1">
+                                                                <div className="font-bold text-sm text-slate-700">{actual.t}</div>
+                                                                <div className="text-xs text-slate-400">{actual.d}</div>
+                                                            </div>
+                                                            <button type="button" onClick={() => setOrigenAbierto(true)}
+                                                                className="text-xs font-bold text-emerald-700 hover:text-emerald-800 underline underline-offset-2 flex-shrink-0">
+                                                                Cambiar
+                                                            </button>
+                                                        </div>
+                                                    ) : (
+                                                        <div className="space-y-2">
+                                                            {ORIGENES.map(o => (
+                                                                <div key={o.id}
+                                                                    className={`border-2 rounded-xl p-3.5 cursor-pointer transition-all ${form.origenTipo === o.id ? 'border-emerald-500 bg-emerald-50/40' : 'border-slate-200 hover:border-slate-300'}`}
+                                                                    onClick={() => { setF({ origenTipo: o.id }); setOrigenAbierto(false); }}>
+                                                                    <div className="flex items-center gap-3">
+                                                                        <i className={`fa-solid ${o.icon} ${form.origenTipo === o.id ? 'text-emerald-600' : 'text-slate-400'}`}></i>
+                                                                        <div className="flex-1">
+                                                                            <div className="font-bold text-sm text-slate-700">{o.t}</div>
+                                                                            <div className="text-xs text-slate-400">{o.d}</div>
+                                                                        </div>
+                                                                        <span className={`w-4 h-4 rounded-full border-2 ${form.origenTipo === o.id ? 'border-emerald-500 bg-emerald-500 shadow-[inset_0_0_0_3px_white]' : 'border-slate-300'}`}></span>
                                                                     </div>
                                                                 </div>
-                                                            )}
+                                                            ))}
+                                                            <button type="button" onClick={() => setOrigenAbierto(false)}
+                                                                className="text-xs font-bold text-slate-400 hover:text-slate-600">
+                                                                Cancelar
+                                                            </button>
                                                         </div>
-                                                    ))}
-                                                    <div className="flex items-center gap-3 border border-slate-200 rounded-xl p-3.5 bg-slate-50/50">
-                                                        <Toggle on={form.validarStock} onChange={v => setF({ validarStock: v })} />
-                                                        <div>
-                                                            <div className="font-bold text-sm text-slate-700">Validar stock del local al pedir</div>
-                                                            <div className="text-xs text-slate-400">Apagalo solo como contingencia: si se cae el sistema de stock, la venta sigue funcionando.</div>
+                                                    )}
+
+                                                    {/* Sub-selector de producto del local — siempre visible si el origen lo
+                                                        necesita, esté la barra de arriba abierta o cerrada */}
+                                                    {(form.origenTipo === 'LOCAL' || form.origenTipo === 'AMBOS') && (
+                                                        <div className="border border-slate-200 rounded-xl p-3.5">
+                                                            <p className="text-[11px] font-bold text-slate-400 mb-2">
+                                                                Elegí de qué producto del local sale
+                                                                {!stockDisponible && <span className="text-amber-600 ml-2">⚠ stock del local sin conexión — se muestra la lista igual</span>}
+                                                            </p>
+                                                            <div className="max-h-52 overflow-y-auto space-y-1.5 pr-1">
+                                                                {locales.map(l => (
+                                                                    <div key={l.ProIdProducto} onClick={() => setF({ origenProIdProducto: l.ProIdProducto })}
+                                                                        className={`flex items-center gap-2.5 border rounded-lg px-3 py-2 cursor-pointer text-sm ${form.origenProIdProducto === l.ProIdProducto ? 'border-emerald-500 bg-white shadow-sm' : 'border-slate-200 bg-white hover:border-slate-300'}`}>
+                                                                        <Thumb src={l.Imagen} size={34} />
+                                                                        <div className="flex-1 min-w-0">
+                                                                            <span className="font-bold text-slate-700">{l.Descripcion}</span>
+                                                                            <span className="text-[11px] text-slate-400 ml-2">{l.variantes.length} variantes{l.ubicacion?.pasillo ? ` · pasillo ${l.ubicacion.pasillo}` : ''}</span>
+                                                                        </div>
+                                                                        <span className={`text-[11px] font-bold px-2 py-0.5 rounded flex-shrink-0 ${l.totalStock == null ? 'bg-slate-100 text-slate-400' : l.totalStock > 5 ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}`}>
+                                                                            {l.totalStock == null ? 's/d' : `${l.totalStock} en el local`}
+                                                                        </span>
+                                                                    </div>
+                                                                ))}
+                                                                {locales.length === 0 && <div className="text-xs text-slate-400 py-3">No hay productos del local con variantes cargadas.</div>}
+                                                            </div>
                                                         </div>
-                                                    </div>
+                                                    )}
+
+                                                    {/* Validar stock — solo tiene sentido si el origen toca stock del local */}
+                                                    {(form.origenTipo === 'LOCAL' || form.origenTipo === 'AMBOS') && (
+                                                        <div className="flex items-center gap-3 border border-slate-200 rounded-xl p-3.5 bg-slate-50/50">
+                                                            <Toggle on={form.validarStock} onChange={v => setF({ validarStock: v })} />
+                                                            <div>
+                                                                <div className="font-bold text-sm text-slate-700">Validar stock del local al pedir</div>
+                                                                <div className="text-xs text-slate-400">Apagalo solo como contingencia: si se cae el sistema de stock, la venta sigue funcionando.</div>
+                                                            </div>
+                                                        </div>
+                                                    )}
                                                 </div>
-                                            )}
+                                                );
+                                            })()}
 
                                             {/* ── PASO TÉCNICAS ── */}
-                                            {paso === 'tecnicas' && (
-                                                <div className="space-y-3">
-                                                    {AREAS.map(a => {
+                                            {paso === 'tecnicas' && (() => {
+                                                const renderTecnicaCard = (a) => {
                                                         const t = form.tecnicas[a.id];
                                                         const opcionesArea = tecnicasCat.filter(o => o.AreaID === a.id && o.Activo);
                                                         return (
@@ -757,15 +1075,26 @@ export default function ConfigurarProductosPage() {
                                                                             {t.cobro === 'INCLUIDA'
                                                                                 ? ' y ya está incluido en el precio: no genera línea de cobro aparte.'
                                                                                 : '; al cotizar se suma como línea propia, con el precio del catálogo, además del precio del producto.'}
-                                                                            {a.id !== 'DF' && ` La matriz ${a.id === 'EMB' ? 'de bordado' : 'TPU'} se cobra la primera vez (trabajo nuevo); el reuso no.`}
+                                                                            {(a.id === 'EMB' || a.id === 'TPU') && ` La matriz ${a.id === 'EMB' ? 'de bordado' : 'TPU'} se cobra la primera vez (trabajo nuevo); el reuso no.`}
                                                                         </p>
                                                                     </div>
                                                                 )}
                                                             </div>
                                                         );
-                                                    })}
-                                                </div>
-                                            )}
+                                                };
+                                                return (
+                                                    <div className="space-y-5">
+                                                        <div>
+                                                            <p className="text-[11px] font-black uppercase tracking-wider text-slate-400 mb-2">🔧 Construcción — arma la prenda, casi siempre obligatoria</p>
+                                                            <div className="space-y-3">{AREAS_CONSTRUCCION.map(renderTecnicaCard)}</div>
+                                                        </div>
+                                                        <div>
+                                                            <p className="text-[11px] font-black uppercase tracking-wider text-slate-400 mb-2">🎨 Decoración — el cliente elige si la agrega</p>
+                                                            <div className="space-y-3">{AREAS_DECORACION.map(renderTecnicaCard)}</div>
+                                                        </div>
+                                                    </div>
+                                                );
+                                            })()}
 
                                             {/* ── PASO COMPOSICIÓN DEL COMBO (agregar productos + servicios por producto) ── */}
                                             {paso === 'combo' && form.esCombo && (
@@ -993,7 +1322,10 @@ export default function ConfigurarProductosPage() {
                                                                                     <CompIcon codigo={o.Codigo} />
                                                                                     <span className="font-mono text-[9px] font-black text-slate-400 bg-slate-100 rounded px-1">{o.Codigo}</span>
                                                                                     <span className="text-[10.5px] font-bold text-slate-600 leading-tight text-center">{o.Nombre}</span>
-                                                                                    <span className="text-[9px] font-black h-3 text-amber-600">{def ? 'DEFAULT' : ''}</span>
+                                                                                    <span className="text-[9px] font-black h-3">
+                                                                                        {def && <span className="text-amber-600">DEFAULT </span>}
+                                                                                        {o.PrecioExtra != null && <span className="text-emerald-600">+${Number(o.PrecioExtra).toLocaleString('es-UY')}</span>}
+                                                                                    </span>
                                                                                 </button>
                                                                             );
                                                                         })}
@@ -1048,6 +1380,325 @@ export default function ConfigurarProductosPage() {
                                                 </div>
                                             )}
 
+                                            {/* ── PASO VARIANTES ── */}
+                                            {paso === 'variantes' && (
+                                                <div className="space-y-4 max-w-3xl">
+                                                    <div className="border border-slate-200 rounded-xl p-4">
+                                                        <p className="text-[11px] font-black uppercase tracking-wider text-slate-400 mb-1">Código corto — prefijo de las variantes</p>
+                                                        <p className="text-xs text-slate-500 mb-2">
+                                                            Cada variante se arma como <span className="font-mono font-bold">PREFIJO + número</span>, ej. <span className="font-mono font-bold text-indigo-600">{(form.codigoCorto || String(form.proId)).toUpperCase().slice(0, 3)}000001</span>.
+                                                        </p>
+                                                        <input value={form.codigoCorto} maxLength={3}
+                                                            onChange={e => setF({ codigoCorto: e.target.value.toUpperCase().slice(0, 3) })}
+                                                            placeholder={String(form.proId)}
+                                                            className="w-24 border border-slate-200 rounded-lg px-2.5 py-1.5 text-sm font-mono font-bold uppercase text-center" />
+                                                        <span className="text-[11px] text-slate-400 ml-2">Se guarda con "Guardar cambios", abajo.</span>
+                                                    </div>
+
+                                                    <div className="border border-slate-200 rounded-xl p-4">
+                                                        <div className="flex items-center justify-between flex-wrap gap-2 mb-3">
+                                                            <div>
+                                                                <p className="text-[11px] font-black uppercase tracking-wider text-slate-400">Variantes generadas</p>
+                                                                <p className="text-xs text-slate-500">Una fila por cada combinación de las opciones marcadas en "Componentes y apliques".</p>
+                                                            </div>
+                                                            <button type="button" onClick={generarVariantes} disabled={generandoVariantes}
+                                                                className="bg-indigo-600 text-white rounded-lg px-4 py-2 text-xs font-bold disabled:opacity-50">
+                                                                {generandoVariantes ? 'Generando…' : (variantes.length ? '🔄 Actualizar variantes' : '⚙️ Generar variantes')}
+                                                            </button>
+                                                        </div>
+
+                                                        {variantesObsoletas > 0 && (
+                                                            <div className="mb-3 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 text-[11px] font-bold text-amber-700">
+                                                                ⚠ {variantesObsoletas} variante(s) vieja(s) quedaron con una combinación que ya no es alcanzable (se sacó o agregó un componente). No se borran solas — revisalas antes de publicar.
+                                                            </div>
+                                                        )}
+
+                                                        {variantesLoading ? (
+                                                            <div className="text-xs text-slate-400 py-6 text-center">Cargando variantes…</div>
+                                                        ) : variantes.length === 0 ? (
+                                                            <div className="text-xs text-slate-400 py-6 text-center">
+                                                                Todavía no hay variantes generadas. Elegí los Componentes en el paso anterior y tocá "Generar variantes".
+                                                            </div>
+                                                        ) : (
+                                                            <div className="overflow-x-auto -mx-1">
+                                                                <table className="w-full text-xs">
+                                                                    <thead>
+                                                                        <tr className="text-left text-[10px] font-black uppercase tracking-wider text-slate-400 border-b border-slate-100">
+                                                                            <th className="px-1 py-2">Código</th>
+                                                                            <th className="px-1 py-2">Combinación</th>
+                                                                            <th className="px-1 py-2">Precio calculado</th>
+                                                                            <th className="px-1 py-2">Precio manual (override)</th>
+                                                                            <th className="px-1 py-2 text-center">Activa</th>
+                                                                        </tr>
+                                                                    </thead>
+                                                                    <tbody>
+                                                                        {variantes.map(v => (
+                                                                            <tr key={v.VarianteID} className={`border-b border-slate-50 ${v.Activa ? '' : 'opacity-40'}`}>
+                                                                                <td className="px-1 py-2 font-mono font-bold text-slate-700">{v.Codigo}</td>
+                                                                                <td className="px-1 py-2 text-slate-500">{v.CodigoLegible}</td>
+                                                                                <td className="px-1 py-2 text-slate-600">{fmtPrecio(v.PrecioCalculado, form.moneda)}</td>
+                                                                                <td className="px-1 py-2">
+                                                                                    <input type="number" defaultValue={v.PrecioManual ?? ''} placeholder="—"
+                                                                                        onBlur={e => { if (e.target.value !== String(v.PrecioManual ?? '')) guardarPrecioManualVariante(v, e.target.value); }}
+                                                                                        className="w-24 border border-slate-200 rounded-lg px-2 py-1 text-xs" />
+                                                                                </td>
+                                                                                <td className="px-1 py-2 text-center">
+                                                                                    <Toggle on={v.Activa} onChange={() => toggleVarianteActiva(v)} />
+                                                                                </td>
+                                                                            </tr>
+                                                                        ))}
+                                                                    </tbody>
+                                                                </table>
+                                                                <p className="text-[11px] text-slate-400 mt-2">{variantes.length} variante(s) · {variantes.filter(v => v.Activa).length} activa(s)</p>
+                                                            </div>
+                                                        )}
+                                                    </div>
+                                                </div>
+                                            )}
+
+                                            {/* ── PASO FICHA DE DISEÑO ── */}
+                                            {paso === 'ficha' && (
+                                                <div className="space-y-4 max-w-3xl">
+                                                    <div className="border border-slate-200 rounded-xl p-4">
+                                                        <p className="text-[11px] font-black uppercase tracking-wider text-slate-400 mb-3">Encabezado de la ficha</p>
+                                                        <div className="grid grid-cols-2 gap-3">
+                                                            <div>
+                                                                <label className="text-[11px] font-bold text-slate-500 block mb-1">Referencia (REF)</label>
+                                                                <input value={form.fichaDiseno.ref} placeholder={form.codArticulo}
+                                                                    onChange={e => setF({ fichaDiseno: { ...form.fichaDiseno, ref: e.target.value } })}
+                                                                    className="w-full border border-slate-200 rounded-lg px-2.5 py-1.5 text-sm" />
+                                                            </div>
+                                                            <div>
+                                                                <label className="text-[11px] font-bold text-slate-500 block mb-1">Marca</label>
+                                                                <input value={form.fichaDiseno.marca}
+                                                                    onChange={e => setF({ fichaDiseno: { ...form.fichaDiseno, marca: e.target.value } })}
+                                                                    className="w-full border border-slate-200 rounded-lg px-2.5 py-1.5 text-sm" />
+                                                            </div>
+                                                        </div>
+                                                    </div>
+
+                                                    <div className="border border-slate-200 rounded-xl p-4">
+                                                        <p className="text-[11px] font-black uppercase tracking-wider text-slate-400 mb-3">Dibujo del producto</p>
+                                                        <div className="flex items-center gap-3 mb-3 flex-wrap">
+                                                            <label className={`px-3 py-1.5 rounded-full text-xs font-bold border border-dashed border-slate-300 text-slate-500 hover:border-slate-400 cursor-pointer ${subiendoDibujo ? 'opacity-50 pointer-events-none' : ''}`}>
+                                                                {subiendoDibujo ? 'Subiendo…' : (form.fichaDiseno.dibujoUrl ? '🔄 Cambiar dibujo' : '📤 Subir dibujo/imagen')}
+                                                                <input type="file" accept="image/*" className="hidden"
+                                                                    onChange={e => { const f = e.target.files?.[0]; e.target.value = ''; if (f) subirDibujoFicha(f); }} />
+                                                            </label>
+                                                            <span className="text-[11px] text-slate-400">o hacé clic sobre el dibujo para agregar una anotación con flecha</span>
+                                                        </div>
+                                                        {form.fichaDiseno.dibujoUrl ? (
+                                                            <div className="relative w-full bg-slate-50 border border-slate-200 rounded-lg overflow-hidden cursor-crosshair select-none"
+                                                                style={{ minHeight: 280 }}
+                                                                onClick={e => {
+                                                                    if (e.target !== e.currentTarget && !e.target.classList.contains('dz-fd-img-bg')) return;
+                                                                    const rect = e.currentTarget.getBoundingClientRect();
+                                                                    const x = Math.max(0, Math.min(100, (e.clientX - rect.left) / rect.width * 100));
+                                                                    const y = Math.max(0, Math.min(100, (e.clientY - rect.top) / rect.height * 100));
+                                                                    setF({ fichaDisenoAnotaciones: [...form.fichaDisenoAnotaciones, { x, y, texto: 'Detalle' }] });
+                                                                }}>
+                                                                <img src={form.fichaDiseno.dibujoUrl} className="dz-fd-img-bg w-full h-full object-contain pointer-events-none" alt="" style={{ maxHeight: 420 }} />
+                                                                {form.fichaDisenoAnotaciones.map((a, i) => (
+                                                                    <div key={i} onMouseDown={arrastrarAnotacion(i)}
+                                                                        className="absolute flex items-center gap-1 cursor-move" style={{ left: `${a.x}%`, top: `${a.y}%`, transform: 'translate(-50%,-50%)' }}>
+                                                                        <span className="w-2.5 h-2.5 rounded-full bg-indigo-600 border-2 border-white shadow flex-shrink-0"></span>
+                                                                        <span className="bg-slate-900/85 text-white text-[10px] font-bold px-1.5 py-0.5 rounded whitespace-nowrap">{a.texto}</span>
+                                                                    </div>
+                                                                ))}
+                                                            </div>
+                                                        ) : (
+                                                            <div className="border-2 border-dashed border-slate-200 rounded-lg py-10 text-center text-xs text-slate-400">
+                                                                Subí un dibujo y hacé clic sobre él para agregar anotaciones con flecha
+                                                            </div>
+                                                        )}
+                                                        <div className="mt-3 space-y-1.5">
+                                                            {form.fichaDisenoAnotaciones.map((a, i) => (
+                                                                <div key={i} className="flex items-center gap-2">
+                                                                    <input value={a.texto}
+                                                                        onChange={e => setF({ fichaDisenoAnotaciones: form.fichaDisenoAnotaciones.map((x, j) => j === i ? { ...x, texto: e.target.value } : x) })}
+                                                                        className="flex-1 border border-slate-200 rounded-lg px-2.5 py-1.5 text-sm" />
+                                                                    <button type="button" onClick={() => setF({ fichaDisenoAnotaciones: form.fichaDisenoAnotaciones.filter((_, j) => j !== i) })}
+                                                                        className="text-red-400 hover:text-red-600 font-black px-1">×</button>
+                                                                </div>
+                                                            ))}
+                                                        </div>
+                                                        <button type="button"
+                                                            onClick={() => setF({ fichaDisenoAnotaciones: [...form.fichaDisenoAnotaciones, { x: 50, y: 30, texto: 'Nuevo detalle' }] })}
+                                                            className="mt-2 border border-dashed border-slate-300 rounded-lg px-3 py-1.5 text-xs font-bold text-slate-500 hover:border-slate-400">
+                                                            + Agregar anotación
+                                                        </button>
+                                                    </div>
+
+                                                    <div className="border border-slate-200 rounded-xl p-4">
+                                                        <p className="text-[11px] font-black uppercase tracking-wider text-slate-400 mb-3">Campos del pie</p>
+                                                        <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+                                                            {[['material', 'Material'], ['tallas', 'Tallas'], ['marcacion', 'Marcación'], ['colores', 'Colores'], ['proveedor', 'Proveedor']].map(([k, label]) => (
+                                                                <div key={k}>
+                                                                    <label className="text-[11px] font-bold text-slate-500 block mb-1">{label}</label>
+                                                                    <input value={form.fichaDiseno[k]}
+                                                                        onChange={e => setF({ fichaDiseno: { ...form.fichaDiseno, [k]: e.target.value } })}
+                                                                        className="w-full border border-slate-200 rounded-lg px-2.5 py-1.5 text-sm" />
+                                                                </div>
+                                                            ))}
+                                                        </div>
+                                                    </div>
+
+                                                    <div className="border border-slate-200 rounded-xl p-4">
+                                                        <p className="text-[11px] font-black uppercase tracking-wider text-slate-400 mb-3">Campos extra</p>
+                                                        <div className="space-y-2">
+                                                            {form.fichaDisenoExtra.map((c, i) => (
+                                                                <div key={i} className="flex items-center gap-2">
+                                                                    <input value={c.label} placeholder="Nombre del campo"
+                                                                        onChange={e => setF({ fichaDisenoExtra: form.fichaDisenoExtra.map((x, j) => j === i ? { ...x, label: e.target.value } : x) })}
+                                                                        className="w-40 border border-slate-200 rounded-lg px-2.5 py-1.5 text-sm" />
+                                                                    <input value={c.valor} placeholder="Valor"
+                                                                        onChange={e => setF({ fichaDisenoExtra: form.fichaDisenoExtra.map((x, j) => j === i ? { ...x, valor: e.target.value } : x) })}
+                                                                        className="flex-1 border border-slate-200 rounded-lg px-2.5 py-1.5 text-sm" />
+                                                                    <button type="button" onClick={() => setF({ fichaDisenoExtra: form.fichaDisenoExtra.filter((_, j) => j !== i) })}
+                                                                        className="text-red-400 hover:text-red-600 font-black px-1">×</button>
+                                                                </div>
+                                                            ))}
+                                                        </div>
+                                                        <button type="button" onClick={() => setF({ fichaDisenoExtra: [...form.fichaDisenoExtra, { label: '', valor: '' }] })}
+                                                            className="mt-2 border border-dashed border-slate-300 rounded-lg px-3 py-1.5 text-xs font-bold text-slate-500 hover:border-slate-400">
+                                                            + Agregar campo
+                                                        </button>
+                                                    </div>
+
+                                                    <div className="border border-slate-200 rounded-xl p-4">
+                                                        <p className="text-[11px] font-black uppercase tracking-wider text-slate-400 mb-1">Costuras (ISO)</p>
+                                                        <p className="text-xs text-slate-500 mb-3">Elegí las costuras de la lista ISO 4915. Abajo, las que sugiere el despiece de la combinación ⭐ default.</p>
+                                                        <div className="space-y-2 mb-2">
+                                                            {form.fichaDisenoCosturas.map((c, i) => (
+                                                                <div key={i} className="flex items-center gap-2">
+                                                                    <input value={c.union} placeholder="Unión (ej. Hombros)"
+                                                                        onChange={e => setF({ fichaDisenoCosturas: form.fichaDisenoCosturas.map((x, j) => j === i ? { ...x, union: e.target.value } : x) })}
+                                                                        className="w-40 border border-slate-200 rounded-lg px-2.5 py-1.5 text-sm" />
+                                                                    <select value={c.iso}
+                                                                        onChange={e => setF({ fichaDisenoCosturas: form.fichaDisenoCosturas.map((x, j) => j === i ? { ...x, iso: e.target.value } : x) })}
+                                                                        className="flex-1 border border-slate-200 rounded-lg px-2.5 py-1.5 text-sm">
+                                                                        {costurasIsoCat.map(o => <option key={o.CosturaISOID} value={o.CodigoISO}>{o.CodigoISO} — {o.Nombre}</option>)}
+                                                                    </select>
+                                                                    <button type="button" onClick={() => setF({ fichaDisenoCosturas: form.fichaDisenoCosturas.filter((_, j) => j !== i) })}
+                                                                        className="text-red-400 hover:text-red-600 font-black px-1">×</button>
+                                                                </div>
+                                                            ))}
+                                                        </div>
+                                                        <button type="button"
+                                                            onClick={() => setF({ fichaDisenoCosturas: [...form.fichaDisenoCosturas, { union: '', iso: costurasIsoCat[0]?.CodigoISO || '' }] })}
+                                                            className="border border-dashed border-slate-300 rounded-lg px-3 py-1.5 text-xs font-bold text-slate-500 hover:border-slate-400">
+                                                            + Agregar costura
+                                                        </button>
+
+                                                        <p className="text-[11px] font-black uppercase tracking-wider text-slate-400 mt-4 mb-2">Costuras del despiece <span className="normal-case font-bold">(automáticas)</span></p>
+                                                        {form.costurasSugeridas.length === 0 ? (
+                                                            <p className="text-xs text-slate-400">Marcá una opción ⭐ default en "Componentes y apliques" con piezas cargadas para ver costuras sugeridas acá.</p>
+                                                        ) : (
+                                                            <div className="space-y-1.5">
+                                                                {form.costurasSugeridas.map((s, i) => (
+                                                                    <div key={i} className="flex items-center gap-2 text-xs">
+                                                                        <span className="font-bold text-slate-600 w-32 truncate">{s.pieza}</span>
+                                                                        <span className="font-mono text-slate-500">{s.iso}</span>
+                                                                        <span className="text-slate-400 flex-1">{s.nombre}</span>
+                                                                        <button type="button"
+                                                                            onClick={() => setF({ fichaDisenoCosturas: [...form.fichaDisenoCosturas, { union: s.pieza, iso: s.iso }] })}
+                                                                            className="text-indigo-600 hover:text-indigo-800 font-bold">+ usar</button>
+                                                                    </div>
+                                                                ))}
+                                                            </div>
+                                                        )}
+                                                    </div>
+
+                                                    <div className="flex items-center gap-3">
+                                                        <button type="button" onClick={() => setFichaPreview(true)}
+                                                            className="bg-slate-800 text-white rounded-lg px-4 py-2 text-xs font-bold">
+                                                            🖨 Ver ficha técnica
+                                                        </button>
+                                                        <span className="text-[11px] text-slate-400">Genera la vista imprimible con dibujo, campos y costuras.</span>
+                                                    </div>
+
+                                                    {fichaPreview && (
+                                                        <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4">
+                                                            <style>{`
+                                                                @media print {
+                                                                    body * { visibility: hidden; }
+                                                                    .fdp-print-root, .fdp-print-root * { visibility: visible; }
+                                                                    .fdp-print-root { position: fixed; inset: 0; padding: 12mm; box-shadow: none !important; max-height: none !important; border-radius: 0 !important; }
+                                                                    .fdp-noprint { display: none !important; }
+                                                                }
+                                                            `}</style>
+                                                            <div className="fdp-print-root bg-white rounded-2xl shadow-xl max-w-2xl w-full max-h-[90vh] overflow-auto p-6">
+                                                                <div className="fdp-noprint flex items-center justify-between mb-4">
+                                                                    <span className="font-black text-slate-800">Vista de ficha técnica</span>
+                                                                    <button onClick={() => setFichaPreview(false)} className="text-slate-400 hover:text-slate-700 text-xl leading-none">×</button>
+                                                                </div>
+
+                                                                <div className="border-2 border-slate-800 rounded-lg p-4">
+                                                                    <div className="flex items-center justify-between border-b-2 border-slate-800 pb-2 mb-2">
+                                                                        <span className="font-black text-lg">FICHA TÉCNICA DE DISEÑO</span>
+                                                                        <span className="text-sm font-bold">MARCA: {form.fichaDiseno.marca || ''}</span>
+                                                                    </div>
+                                                                    <div className="text-sm font-bold mb-3">REF. {form.fichaDiseno.ref || form.codArticulo} — {form.descripcion}</div>
+
+                                                                    {form.fichaDiseno.dibujoUrl ? (
+                                                                        <div className="relative bg-slate-50 border border-slate-200 rounded-lg mb-3" style={{ minHeight: 220 }}>
+                                                                            <img src={form.fichaDiseno.dibujoUrl} className="w-full object-contain" style={{ maxHeight: 300 }} alt="" />
+                                                                            {form.fichaDisenoAnotaciones.map((a, i) => (
+                                                                                <div key={i} className="absolute flex items-center gap-1" style={{ left: `${a.x}%`, top: `${a.y}%`, transform: 'translate(-50%,-50%)' }}>
+                                                                                    <span className="w-2 h-2 rounded-full bg-red-600 border border-white flex-shrink-0"></span>
+                                                                                    <span className="bg-white border border-slate-300 text-[10px] font-bold px-1 rounded whitespace-nowrap">{a.texto}</span>
+                                                                                </div>
+                                                                            ))}
+                                                                        </div>
+                                                                    ) : (
+                                                                        <div className="text-center text-xs text-slate-400 py-8 border border-dashed border-slate-200 rounded-lg mb-3">Sin dibujo</div>
+                                                                    )}
+
+                                                                    {form.fichaDisenoCosturas.length > 0 && (
+                                                                        <div className="text-xs mb-3"><b>Costuras:</b> {form.fichaDisenoCosturas.map((c, i) => (
+                                                                            <span key={i} className="mr-2">{c.union}: <b>{c.iso}</b></span>
+                                                                        ))}</div>
+                                                                    )}
+
+                                                                    {form.fichaDisenoExtra.length > 0 && (
+                                                                        <table className="w-full text-xs mb-3">
+                                                                            <tbody>
+                                                                                {form.fichaDisenoExtra.map((c, i) => (
+                                                                                    <tr key={i} className="border-b border-slate-100">
+                                                                                        <td className="font-bold py-1 pr-2 w-32">{c.label}</td><td className="py-1">{c.valor}</td>
+                                                                                    </tr>
+                                                                                ))}
+                                                                            </tbody>
+                                                                        </table>
+                                                                    )}
+
+                                                                    <table className="w-full text-xs border-t-2 border-slate-800 pt-2">
+                                                                        <tbody>
+                                                                            <tr>
+                                                                                <td className="font-bold py-1 pr-2 w-20">Material</td><td className="py-1">{form.fichaDiseno.material}</td>
+                                                                                <td className="font-bold py-1 pr-2 pl-4 w-20">Colores</td><td className="py-1">{form.fichaDiseno.colores}</td>
+                                                                            </tr>
+                                                                            <tr>
+                                                                                <td className="font-bold py-1 pr-2">Tallas</td><td className="py-1">{form.fichaDiseno.tallas}</td>
+                                                                                <td className="font-bold py-1 pr-2 pl-4">Proveedor</td><td className="py-1">{form.fichaDiseno.proveedor}</td>
+                                                                            </tr>
+                                                                            <tr>
+                                                                                <td className="font-bold py-1 pr-2">Marcación</td><td className="py-1" colSpan={3}>{form.fichaDiseno.marcacion}</td>
+                                                                            </tr>
+                                                                        </tbody>
+                                                                    </table>
+                                                                </div>
+
+                                                                <div className="fdp-noprint flex items-center gap-2 mt-4">
+                                                                    <button onClick={() => window.print()} className="bg-slate-800 text-white rounded-lg px-4 py-2 text-xs font-bold">⎙ Imprimir / PDF</button>
+                                                                    <button onClick={() => setFichaPreview(false)} className="border border-slate-200 rounded-lg px-4 py-2 text-xs font-bold text-slate-600">Cerrar</button>
+                                                                </div>
+                                                            </div>
+                                                        </div>
+                                                    )}
+                                                </div>
+                                            )}
+
                                             {/* ── PASO RESUMEN / PUBLICAR ── */}
                                             {paso === 'resumen' && (
                                                 <div className="space-y-4 max-w-2xl">
@@ -1093,6 +1744,9 @@ export default function ConfigurarProductosPage() {
                                                         </div>
                                                     </div>
                                                     <div className="border border-slate-200 rounded-xl divide-y divide-slate-100 text-sm">
+                                                        {!form.esCombo && (
+                                                            <div className="flex justify-between px-4 py-2.5"><span className="text-slate-400 font-bold">Familia</span><span className={`font-bold ${form.categoria !== 'Prendas' ? 'text-slate-700' : 'text-amber-600'}`}>{form.categoria !== 'Prendas' ? form.categoria : '⚠ sin clasificar'}</span></div>
+                                                        )}
                                                         <div className="flex justify-between px-4 py-2.5"><span className="text-slate-400 font-bold">Origen</span><span className="font-bold text-slate-700">{form.esCombo ? `Combo de ${form.comboItems.length} productos del local` : `${ORIGENES.find(o => o.id === form.origenTipo)?.t}${origenSel ? ` — ${origenSel.Descripcion}` : ''}`}</span></div>
                                                         <div className="flex justify-between px-4 py-2.5"><span className="text-slate-400 font-bold">Técnicas</span><span className="font-bold text-slate-700">{form.esCombo ? 'por producto (ver composición)' : (AREAS.filter(a => form.tecnicas[a.id].on).map(a => `${a.label} (${form.tecnicas[a.id].modo.toLowerCase()}${form.tecnicas[a.id].cobro === 'INCLUIDA' ? ', incluida' : ''})`).join(' · ') || 'ninguna')}</span></div>
                                                         <div className="flex justify-between px-4 py-2.5"><span className="text-slate-400 font-bold">Precio</span><span className="font-bold text-slate-700">{fmtPrecio(form.precio === '' ? null : form.precio, form.moneda)}{form.politica === 'PAQUETE' ? ' el paquete' : ' /u sin servicios'}</span></div>
@@ -1100,9 +1754,18 @@ export default function ConfigurarProductosPage() {
                                                             : form.politica === 'MINIMA' ? `mínimo ${form.cantidadMinima || '—'} u`
                                                             : form.comboItems.length > 0 ? `paquete armado: ${form.comboItems.map(it => `${it.cantidad}× ${it.itemNombre || `#${it.itemProIdProducto}`}${it.wmsVarianteId ? ` (${it.varianteNombre})` : ''}`).join(' + ')}`
                                                             : `paquete fijo de ${form.cantidadFija || '—'} u${form.surtido.size ? ` · surtido: ${form.surtido.size} variantes` : ' · surtido: todas'}`}</span></div>
-                                                        {form.origenTipo === 'CONFECCIONADO' && (
-                                                            <div className="flex justify-between px-4 py-2.5"><span className="text-slate-400 font-bold">Confección</span><span className="font-bold text-slate-700">{form.componentes.size} opciones de componente · {form.apliques.length} apliques</span></div>
-                                                        )}
+                                                        {form.origenTipo === 'CONFECCIONADO' && (() => {
+                                                            const extraDefault = [...form.componentes.entries()]
+                                                                .filter(([, esDefault]) => esDefault)
+                                                                .reduce((sum, [opcionId]) => sum + (Number(componentesCat.find(c => c.OpcionID === opcionId)?.PrecioExtra) || 0), 0);
+                                                            const base = form.precio === '' ? 0 : Number(form.precio) || 0;
+                                                            return (<>
+                                                                <div className="flex justify-between px-4 py-2.5"><span className="text-slate-400 font-bold">Confección</span><span className="font-bold text-slate-700">{form.componentes.size} opciones de componente · {form.apliques.length} apliques</span></div>
+                                                                {extraDefault > 0 && (
+                                                                    <div className="flex justify-between px-4 py-2.5"><span className="text-slate-400 font-bold">Precio con componentes por default</span><span className="font-bold text-slate-700">{fmtPrecio(base, form.moneda)} + {fmtPrecio(extraDefault, form.moneda)} = <b className="text-emerald-700">{fmtPrecio(base + extraDefault, form.moneda)}</b></span></div>
+                                                                )}
+                                                            </>);
+                                                        })()}
                                                         <div className="flex justify-between px-4 py-2.5"><span className="text-slate-400 font-bold">Validar stock</span><span className="font-bold text-slate-700">{form.validarStock ? 'Sí' : 'No (contingencia)'}</span></div>
                                                     </div>
                                                     <div className={`flex items-center gap-3 border-2 rounded-xl p-4 ${form.estado === 'PUBLICADO' ? 'border-emerald-300 bg-emerald-50/50' : 'border-slate-200'}`}>
@@ -1278,19 +1941,25 @@ function CatalogoComponentes({ componentes, onReload }) {
 
     const SUBTIPOS_CUELLO = ['REDONDO', 'EN V', 'POLO', 'CAMISA', 'MAO'];
 
+    const [piezas, setPiezas] = useState([]); // piezas de la opción en edición (despiece)
     const abrirEdicion = (c) => {
         setEditId(c.OpcionID);
         setDraft({
             nombre: c.Nombre || '', notaMolde: c.NotaMolde || '',
             notaTallesFemeninos: c.NotaTallesFemeninos || '', anchoRefMm: c.AnchoRefMm ?? '',
+            precioExtra: c.PrecioExtra ?? '',
         });
+        setPiezas((c.piezas || []).map(p => ({ nombrePieza: p.NombrePieza, cantidad: p.Cantidad, zona: p.Zona || '', forma: p.Forma || '' })));
     };
 
     const guardarEdicion = async (c) => {
         if (!draft.nombre.trim()) return toast.error('El nombre es obligatorio.');
         setSaving(true);
         try {
-            await api.put(`${API}/componentes/${c.OpcionID}`, draft);
+            await Promise.all([
+                api.put(`${API}/componentes/${c.OpcionID}`, draft),
+                api.put(`${API}/componentes/${c.OpcionID}/piezas`, { piezas: piezas.filter(p => p.nombrePieza.trim()) }),
+            ]);
             toast.success(`✅ ${c.Codigo} guardado`);
             setEditId(null);
             onReload();
@@ -1337,6 +2006,10 @@ function CatalogoComponentes({ componentes, onReload }) {
                         .filter(Boolean).join(' · ')}
                 </span>
             )}
+            <span className="flex gap-1">
+                {c.PrecioExtra != null && <span className="text-[9px] font-black bg-emerald-100 text-emerald-700 rounded px-1">+${Number(c.PrecioExtra).toLocaleString('es-UY')}</span>}
+                {c.piezas?.length > 0 && <span className="text-[9px] font-black bg-slate-100 text-slate-500 rounded px-1">{c.piezas.length} pza{c.piezas.length > 1 ? 's' : ''}</span>}
+            </span>
         </button>
     );
 
@@ -1371,7 +2044,47 @@ function CatalogoComponentes({ componentes, onReload }) {
                     <input value={draft.notaTallesFemeninos} onChange={e => setDraft({ ...draft, notaTallesFemeninos: e.target.value })}
                         placeholder="Ej. Cruce invertido" className="block w-full mt-1 border border-slate-200 rounded-lg px-3 py-2 text-sm bg-white" />
                 </label>
+                <label className="text-[11px] font-bold text-slate-500">Precio extra <span className="font-normal text-slate-400">— constructiva por ahora, se guarda para cuando se cotice</span>
+                    <div className="flex items-center gap-1.5 mt-1">
+                        <input type="number" step="0.01" value={draft.precioExtra} onChange={e => setDraft({ ...draft, precioExtra: e.target.value })}
+                            placeholder="0.00 (sin extra)" className="block w-32 border border-slate-200 rounded-lg px-3 py-2 text-sm bg-white" />
+                    </div>
+                </label>
             </div>
+
+            {/* Piezas del despiece que aporta esta opción */}
+            <div className="mt-4 pt-3 border-t border-indigo-200">
+                <p className="text-[11px] font-bold text-slate-500 mb-2">Piezas que aporta al despiece</p>
+                <div className="space-y-1.5">
+                    {piezas.map((p, i) => (
+                        <div key={i} className="flex flex-wrap items-center gap-1.5 bg-white border border-slate-200 rounded-lg px-2.5 py-1.5">
+                            <input value={p.nombrePieza} placeholder="Nombre de la pieza (ej. Cuello redondo)"
+                                onChange={e => { const next = [...piezas]; next[i] = { ...p, nombrePieza: e.target.value }; setPiezas(next); }}
+                                className="flex-1 min-w-[140px] border border-slate-200 rounded px-2 py-1 text-xs" />
+                            <input type="number" min="1" value={p.cantidad} title="Cantidad"
+                                onChange={e => { const next = [...piezas]; next[i] = { ...p, cantidad: e.target.value }; setPiezas(next); }}
+                                className="w-14 border border-slate-200 rounded px-2 py-1 text-xs text-center" />
+                            <select value={p.zona} onChange={e => { const next = [...piezas]; next[i] = { ...p, zona: e.target.value }; setPiezas(next); }}
+                                className="border border-slate-200 rounded px-1.5 py-1 text-xs">
+                                <option value="">zona…</option>
+                                <option value="base">base</option>
+                                <option value="contraste">contraste</option>
+                            </select>
+                            <input value={p.forma} placeholder="forma (hoja de corte)"
+                                onChange={e => { const next = [...piezas]; next[i] = { ...p, forma: e.target.value }; setPiezas(next); }}
+                                className="w-28 border border-slate-200 rounded px-2 py-1 text-xs" />
+                            <button type="button" onClick={() => setPiezas(piezas.filter((_, j) => j !== i))}
+                                className="text-red-400 hover:text-red-600 font-black px-1">×</button>
+                        </div>
+                    ))}
+                    {piezas.length === 0 && <p className="text-[11px] text-slate-400">Sin piezas — puede ser correcto (ej. costadillo "sin", cartera "sin").</p>}
+                </div>
+                <button type="button" onClick={() => setPiezas([...piezas, { nombrePieza: '', cantidad: 1, zona: '', forma: '' }])}
+                    className="mt-2 border border-dashed border-slate-300 rounded-lg px-3 py-1.5 text-xs font-bold text-slate-500 hover:border-slate-400">
+                    + Agregar pieza
+                </button>
+            </div>
+
             <div className="flex justify-end mt-3">
                 <button onClick={() => guardarEdicion(c)} disabled={saving}
                     className="bg-slate-800 text-white rounded-lg px-5 py-2 text-sm font-bold hover:bg-slate-700 disabled:opacity-50">

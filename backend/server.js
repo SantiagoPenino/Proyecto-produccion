@@ -120,6 +120,7 @@ app.use('/api/web-designer', require('./routes/webDesignerRoutes')); // DISEÑAD
 app.use('/api/web-orders', webOrdersRoutes); // RUTAS PEDIDOS CLIENTE WEB (DTF, Etc)
 app.use('/api/prendas-orders', require('./routes/prendasOrdersRoutes')); // ALTA INTERNA PRENDAS / PRODUCTOS TERMINADOS (fork aislado, no afecta a web-orders)
 app.use('/api/web-retiros', webRetirosRoutes);
+app.use('/api/web-recursos', require('./routes/webRecursosRoutes')); // "MIS RECURSOS" DEL PORTAL (planes de metros, solo lectura)
 app.use('/api/web-content', require('./routes/webContentRoutes')); // RUTAS CONTENIDO WEB (Sidebar/Popup)
 app.use('/api/tickets', require('./routes/ticketsRoutes'));        // MÓDULO HELPDESK TICKETING
 app.use('/api/tareas', require('./routes/tareasRoutes'));          // TO-DO COMPARTIDO (interno)
@@ -127,6 +128,9 @@ app.use('/api/push', require('./routes/pushRoutes'));              // PUSH NOTIF
 app.use('/api/nomenclators', nomenclatorsRoutes);
 app.use('/api/routes-config', require('./routes/routesConfigRoutes'));
 app.use('/api/delivery-times', require('./routes/deliveryTimesRoutes'));
+app.use('/api/horario-laboral', require('./routes/horarioLaboralRoutes'));
+app.use('/api/planificacion', require('./routes/planificacionRoutes'));
+app.use('/api/feriados', require('./routes/feriadosRoutes'));
 app.get('/api/debug/reprocess/:id', require('./controllers/debugController').reprocessOrder);
 app.use('/api/insumos', require('./routes/insumosRoutes'));
 app.use('/api/reception', require('./routes/receptionRoutes'));

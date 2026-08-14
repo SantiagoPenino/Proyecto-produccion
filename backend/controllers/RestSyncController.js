@@ -537,7 +537,11 @@ const syncOrdersLogic = async (io) => {
                         await new sql.Request(transaction).input('O', sql.Int, newID).input('C', sql.Int, matGroup.itemsProductivos.length).query("UPDATE Ordenes SET ArchivosCount = @C WHERE OrdenID = @O");
                     }
 
-                    try { await new sql.Request(transaction).input('OrdenID', sql.Int, newID).execute('sp_CalcularFechaEntrega'); } catch (e) { }
+                    try {
+                        await new sql.Request(transaction).input('OrdenID', sql.Int, newID).execute('sp_CalcularFechaEntrega');
+                    } catch (fechaErr) {
+                        logger.error(`⚠️ sp_CalcularFechaEntrega falló para OrdenID ${newID} (sync): ${fechaErr.message}`);
+                    }
                 }
             }
 

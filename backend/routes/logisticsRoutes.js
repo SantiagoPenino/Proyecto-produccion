@@ -27,6 +27,11 @@ router.get('/remitos/:code', logisticsController.getRemitoByCode);
 router.post('/receive', logisticsController.receiveDispatch);
 router.get('/esperando-bultos', logisticsController.getEsperandoBultos);
 
+// Control PRO (FASE 6): pedidos con orden madre PRO ya reunidos físicamente en PRO,
+// esperando aprobación manual antes de generar la etiqueta final y salir a Depósito.
+router.get('/pro/pedidos-completos', logisticsController.getPedidosCompletosPRO);
+router.post('/pro/pedidos/:noDocERP/aprobar-control', logisticsController.aprobarControlPRO);
+
 // Transport
 const uploadEncomiendas = require('../middleware/multerEncomiendasConfig');
 router.post('/remitos/:code/confirm-delivery', uploadEncomiendas.single('comprobante'), logisticsController.confirmRemitoDelivery);

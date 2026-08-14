@@ -32,6 +32,13 @@ const initialState = {
     items: [],
     referenceFiles: [],
     selectedComplementary: {},
+    // [COMBOS] Servicios de decoración POR COMPONENTE de un combo (ej. el Gorro borda, el
+    // Short estampa) — paralelo a selectedComplementary, que sigue siendo la única fuente
+    // para producto simple. Se puebla entero (setComboServicios) al elegir un producto que
+    // resulta combo; vacío = no hay combo, ningún efecto sobre el flujo de siempre.
+    // Shape: { [comboItemId]: { itemProIdProducto, descripcion, wmsVarianteId, cantidad,
+    //                            servicios: { [areaId]: { active, archivos: [], boceto } } } }
+    comboServicios: {},
 
     // Specialized Data
     moldType: 'SUBLIMACION',
@@ -277,6 +284,9 @@ export const usePrendaOrderForm = (serviceId, overrides = {}) => {
     const setFabricType = (v) => setField('fabricType', v);
     const setRequiresSample = (v) => setField('requiresSample', v);
     const setSelectedComplementary = (v) => setField('selectedComplementary', v); // Full overwrite or merge? Existing code overwrites usually or updates keys.
+    // [COMBOS] Overwrite completo — se usa para poblar TODOS los componentes de una vez al
+    // resolver que el producto elegido es un combo (mismo criterio que setSelectedComplementary).
+    const setComboServicios = (v) => setField('comboServicios', v);
     const setReferenceFiles = (v) => setField('referenceFiles', v);
 
     // Specialized
@@ -434,6 +444,7 @@ export const usePrendaOrderForm = (serviceId, overrides = {}) => {
             fabricType: 'lisa',
             requiresSample: false,
             selectedComplementary: {},
+            comboServicios: {},
             referenceFiles: [],
             // Reset specialized
             moldType: 'SUBLIMACION',
@@ -806,6 +817,44 @@ export const usePrendaOrderForm = (serviceId, overrides = {}) => {
         setField('selectedComplementary', newComp);
     };
 
+    // [COMBOS] Servicios por componente — mismo patrón que toggleComplementary/
+    // updateComplementaryFile, namespaced por comboItemId además de por areaId.
+    const toggleComboServicio = (comboItemId, areaId) => {
+        const comp = state.comboServicios[comboItemId];
+        if (!comp) return;
+        const current = comp.servicios[areaId];
+        const newServicios = { ...comp.servicios, [areaId]: { ...current, active: !current?.active } };
+        setField('comboServicios', { ...state.comboServicios, [comboItemId]: { ...comp, servicios: newServicios } });
+    };
+
+    const updateComboServicioArchivos = (comboItemId, areaId, archivos) => {
+        const comp = state.comboServicios[comboItemId];
+        if (!comp) return;
+        const current = comp.servicios[areaId] || { active: true };
+        const newServicios = { ...comp.servicios, [areaId]: { ...current, archivos } };
+        setField('comboServicios', { ...state.comboServicios, [comboItemId]: { ...comp, servicios: newServicios } });
+    };
+
+    const updateComboServicioBoceto = (comboItemId, areaId, boceto) => {
+        const comp = state.comboServicios[comboItemId];
+        if (!comp) return;
+        const current = comp.servicios[areaId] || { active: true };
+        const newServicios = { ...comp.servicios, [areaId]: { ...current, boceto } };
+        setField('comboServicios', { ...state.comboServicios, [comboItemId]: { ...comp, servicios: newServicios } });
+    };
+
+    // [COMBOS] Patcher genérico para campos sueltos del servicio de un componente
+    // (variant/material/variantOptions/materialOptions cuando la técnica quedó en
+    // "opción libre" — cada componente tiene SU PROPIO nomenclador, a diferencia
+    // del servicio simple que usa un solo bordadoVariant/tpuVariant global).
+    const updateComboServicioCampo = (comboItemId, areaId, patch) => {
+        const comp = state.comboServicios[comboItemId];
+        if (!comp) return;
+        const current = comp.servicios[areaId] || { active: true };
+        const newServicios = { ...comp.servicios, [areaId]: { ...current, ...patch } };
+        setField('comboServicios', { ...state.comboServicios, [comboItemId]: { ...comp, servicios: newServicios } });
+    };
+
     const addTizadaFiles = (files) => {
         const newFiles = Array.isArray(files) ? files : [files];
         dispatch({ type: actionTypes.SET_FIELD, field: 'tizadaFiles', value: [...state.tizadaFiles, ...newFiles] });
@@ -981,6 +1030,11 @@ export const usePrendaOrderForm = (serviceId, overrides = {}) => {
             updateComplementaryFile,
             updateComplementaryText,
             updateComplementaryField,
+            setComboServicios,
+            toggleComboServicio,
+            updateComboServicioArchivos,
+            updateComboServicioBoceto,
+            updateComboServicioCampo,
             addTizadaFiles,
             removeTizadaFile,
             addPonchadoFiles,

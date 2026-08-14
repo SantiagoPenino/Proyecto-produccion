@@ -138,27 +138,58 @@ const OrderRouteTracker = ({ steps = [], title = "Hoja de Ruta (Flujo de Áreas)
     const graph = useMemo(() => {
         const idsUpper = rawSteps.map(s => (s.id || getAreaName(s) || '').toString().trim().toUpperCase());
         const indexByUpperId = new Map(idsUpper.map((u, i) => [u, i]));
-
-        // Aristas "reales": ProximoServicio de cada paso, solo si el destino también es
-        // un paso visible acá. Las de PRO se descartan — sus hijos se derivan más abajo.
         const proIdx = idsUpper.indexOf('PRO');
+
+        // [PRENDAS] FASE 5/6: con combos, PRO puede ser TANTO origen (de donde nacen los
+        // componentes sueltos, ej. Bordado/DTF) COMO destino (donde convergen antes de
+        // Depósito, porque cada componente "muere" en PRO) — antes de esto PRO solo podía
+        // ser origen. Si detectamos una arista real que apunta a PRO, el nodo se DUPLICA
+        // visualmente: una copia "origen" (misma posición/rol de siempre) y una copia
+        // "destino" al final del array de trabajo, con los MISMOS datos de la orden (es
+        // la misma orden real, solo se dibuja 2 veces). Sin ninguna arista real entrante a
+        // PRO (el caso de siempre, sin combos), no hay duplicación — comportamiento
+        // IDÉNTICO al de antes, fallback exacto.
+        const proTieneEntradaReal = proIdx !== -1 && rawSteps.some((s, i) => {
+            if (i === proIdx) return false;
+            const nexts = Array.isArray(s.nextAreas) ? s.nextAreas : (s.nextArea ? [s.nextArea] : []);
+            return nexts.some(n => (n || '').toString().trim().toUpperCase() === 'PRO');
+        });
+        const workingSteps = proTieneEntradaReal ? [...rawSteps, rawSteps[proIdx]] : rawSteps;
+        const proOrigenIdx = proIdx;
+        const proDestinoIdx = proTieneEntradaReal ? workingSteps.length - 1 : -1;
+
+        // Aristas "reales": ProximoServicio de cada paso, solo si el destino también es un
+        // paso visible acá. Las que apuntan a PRO van al nodo "destino" (si existe), no al
+        // de "origen" — así la flecha entra a la convergencia, no al punto de partida.
         const realEdges = []; // [fromIdx, toIdx]
-        rawSteps.forEach((s, i) => {
-            if (i === proIdx) return; // PRO: sin arista propia, se resuelve aparte
+        workingSteps.forEach((s, i) => {
+            if (i === proOrigenIdx || i === proDestinoIdx) return; // PRO: sus aristas se resuelven aparte
             const nexts = Array.isArray(s.nextAreas) ? s.nextAreas : (s.nextArea ? [s.nextArea] : []);
             nexts.forEach(n => {
-                const j = indexByUpperId.get((n || '').toString().trim().toUpperCase());
+                const target = (n || '').toString().trim().toUpperCase();
+                const j = target === 'PRO' && proDestinoIdx !== -1 ? proDestinoIdx : indexByUpperId.get(target);
                 if (j !== undefined && j !== i) realEdges.push([i, j]);
             });
         });
+        // PRO-destino sale hacia el ProximoServicio real de la orden PRO (ej. DEPOSITO),
+        // si ese paso también es visible acá.
+        if (proDestinoIdx !== -1) {
+            const proStep = rawSteps[proIdx];
+            const nexts = Array.isArray(proStep.nextAreas) ? proStep.nextAreas : (proStep.nextArea ? [proStep.nextArea] : []);
+            nexts.forEach(n => {
+                const j = indexByUpperId.get((n || '').toString().trim().toUpperCase());
+                if (j !== undefined && j !== proDestinoIdx) realEdges.push([proDestinoIdx, j]);
+            });
+        }
 
-        // Raíces derivadas: todo paso (que no sea PRO) sin ninguna arista real entrante.
-        const inDegree = new Array(rawSteps.length).fill(0);
+        // Raíces derivadas: todo paso (que no sea PRO-origen ni PRO-destino) sin ninguna
+        // arista real entrante nace de PRO-origen.
+        const inDegree = new Array(workingSteps.length).fill(0);
         realEdges.forEach(([, j]) => { inDegree[j]++; });
         const edges = [...realEdges];
-        if (proIdx !== -1) {
-            rawSteps.forEach((s, i) => {
-                if (i !== proIdx && inDegree[i] === 0) edges.push([proIdx, i]);
+        if (proOrigenIdx !== -1) {
+            workingSteps.forEach((s, i) => {
+                if (i !== proOrigenIdx && i !== proDestinoIdx && inDegree[i] === 0) edges.push([proOrigenIdx, i]);
             });
         }
 
@@ -167,19 +198,20 @@ const OrderRouteTracker = ({ steps = [], title = "Hoja de Ruta (Flujo de Áreas)
         if (edges.length === 0) return { hasBranching: false };
 
         // Capas por camino más largo desde cualquier raíz (0 aristas entrantes en el set
-        // final `edges`, PRO incluido) — así un nodo con 2 padres (ej. Estampado, que
-        // depende de DTF Y de la prenda armada) queda DESPUÉS de ambos, nunca antes.
-        const inDegreeFinal = new Array(rawSteps.length).fill(0);
+        // final `edges`) — así un nodo con 2 padres (ej. Estampado, que depende de DTF Y
+        // de la prenda armada; o PRO-destino, que depende de TODOS los componentes) queda
+        // DESPUÉS de todos ellos, nunca antes.
+        const inDegreeFinal = new Array(workingSteps.length).fill(0);
         edges.forEach(([, j]) => { inDegreeFinal[j]++; });
-        const depth = new Array(rawSteps.length).fill(-1);
-        const roots = rawSteps.map((_, i) => i).filter(i => inDegreeFinal[i] === 0);
+        const depth = new Array(workingSteps.length).fill(-1);
+        const roots = workingSteps.map((_, i) => i).filter(i => inDegreeFinal[i] === 0);
         if (roots.length === 0) return { hasBranching: false }; // ciclo raro / datos inconsistentes — no arriesgar
 
         // BFS por niveles, relajando profundidad como "camino más largo conocido hasta ahora".
         const queue = [...roots];
         roots.forEach(r => { depth[r] = 0; });
         let iterations = 0;
-        const maxIterations = rawSteps.length * rawSteps.length + 10; // guard anti-loop
+        const maxIterations = workingSteps.length * workingSteps.length + 10; // guard anti-loop
         while (queue.length > 0 && iterations < maxIterations) {
             iterations++;
             const cur = queue.shift();
@@ -193,17 +225,17 @@ const OrderRouteTracker = ({ steps = [], title = "Hoja de Ruta (Flujo de Áreas)
         }
         // Nodos nunca alcanzados (aislados, sin arista alguna): quedan en su propia capa al final.
         let maxDepth = Math.max(0, ...depth.filter(d => d >= 0));
-        rawSteps.forEach((_, i) => { if (depth[i] === -1) { maxDepth += 1; depth[i] = maxDepth; } });
+        workingSteps.forEach((_, i) => { if (depth[i] === -1) { maxDepth += 1; depth[i] = maxDepth; } });
 
         const numLayers = Math.max(...depth) + 1;
-        const hasBranching = numLayers < rawSteps.length; // menos capas que pasos = alguna capa tiene 2+
+        const hasBranching = numLayers < workingSteps.length; // menos capas que pasos = alguna capa tiene 2+
 
         if (!hasBranching) return { hasBranching: false };
 
         const columns = Array.from({ length: numLayers }, () => []);
-        rawSteps.forEach((s, i) => columns[depth[i]].push(i));
+        workingSteps.forEach((s, i) => columns[depth[i]].push(i));
 
-        return { hasBranching: true, columns, edges, depth };
+        return { hasBranching: true, columns, edges, depth, workingSteps };
     }, [rawSteps]);
 
     // --- Grafo: medimos posiciones reales en el DOM para trazar las líneas, en vez de
@@ -275,7 +307,7 @@ const OrderRouteTracker = ({ steps = [], title = "Hoja de Ruta (Flujo de Áreas)
                         {graph.columns.map((colIndices, colIdx) => (
                             <div key={colIdx} className="flex flex-col gap-12 justify-center">
                                 {colIndices.map(i => (
-                                    <StepCircle key={i} step={rawSteps[i]} ref={el => {
+                                    <StepCircle key={i} step={(graph.workingSteps || rawSteps)[i]} ref={el => {
                                         if (el) nodeRefs.current.set(i, el);
                                         else nodeRefs.current.delete(i);
                                     }} />

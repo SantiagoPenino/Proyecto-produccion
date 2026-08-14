@@ -1,9 +1,10 @@
-import React, { useEffect, useState } from 'react';
-import { Scissors, Trash2, Plus, Layers, Palette } from 'lucide-react';
+import React, { useEffect, useState, useRef } from 'react';
+import { Scissors, Trash2, Plus, Layers, Palette, Lock } from 'lucide-react';
 import { FileUploadZone } from './FileUploadZone';
 import { CustomSelect } from '../../../pautas/CustomSelect';
 import PrendaClienteSelector from './PrendaClienteSelector';
 import PredisenoBordadoModal from './PredisenoBordadoModal';
+import { analizarArteAutomatico, puntadasDePaleta, estimarMinutos } from '../utils/bordadoHilos';
 
 // [BORDADO] Form de ingreso.
 //
@@ -46,6 +47,14 @@ export const BordadoTechnicalUI = ({
     // [BORDADO] Diseños y prendas del cliente (solo standalone)
     disenosBordado = [], addDiseno = null, updateDiseno = null, removeDiseno = null,
     prendasDisponibles = [],
+    // [COMBOS] Técnica FIJADA por el Configurador (ej. "Bordado sobre prenda 100% hilo") —
+    // reemplaza los selectores Tipo/Variante + Prenda(Soporte) por un dato fijo, no editable.
+    lockedSpec = '',
+    // [COMBOS] Cantidad derivada (combo × cantidad por combo) — el input numérico con
+    // flechas de +/- se veía editable aunque setGarmentQuantity fuera un no-op (el vendedor
+    // podía tocarlo sin que pasara nada, sin ningún aviso de por qué). Mismo candado visual
+    // que lockedSpec.
+    lockedQuantity = false,
 }) => {
     // Determinamos qué datos mostrar según si es standalone o complemento
     const isStandalone = serviceId === 'bordado';
@@ -67,6 +76,57 @@ export const BordadoTechnicalUI = ({
     const [disenandoId, setDisenandoId] = useState(null);
     const disenando = disenosBordado.find(d => d.id === disenandoId) || null;
 
+    // ── Prediseño automático ──────────────────────────────────────────────
+    // Apenas sube el logo se corre el mismo análisis del editor sin abrir nada:
+    // fondo, colores, piezas, hilos y puntada de cada una. Así el pedido llega
+    // con los datos para cotizar y para el taller aunque el cliente no toque el
+    // diseñador — que es lo normal. Si después lo abre, arranca desde acá.
+    const [analizando, setAnalizando] = useState([]);
+    const analizadosRef = useRef(new Set());
+    // "Con tafeta" sale del artículo elegido (107 / 109): la pieza más grande se
+    // resuelve con tela aplicada en vez de hilo.
+    const usaTafeta = /tafeta/i.test(currentMaterial || '');
+
+    useEffect(() => {
+        if (!usaDisenos) return;
+        const pendientes = disenosBordado.filter(d =>
+            d.file && !analizadosRef.current.has(d.id + d.file.name)
+        );
+        if (!pendientes.length) return;
+
+        pendientes.forEach(async (d) => {
+            const clave = d.id + d.file.name;
+            analizadosRef.current.add(clave);
+            setAnalizando(prev => [...prev, d.id]);
+            try {
+                const r = await analizarArteAutomatico(d.file, { usaTafeta });
+                if (r) {
+                    // La imagen analizada se guarda como prediseño: es lo que va a
+                    // ver el taller y lo que el cliente puede retocar después.
+                    const base = d.file.name.replace(/\.[^.]+$/, '');
+                    r.canvas.toBlob((blob) => {
+                        updateDiseno(d.id, {
+                            paleta: r.paleta,
+                            arteDisenado: blob
+                                ? new File([blob], `${base} PREDISENO.png`, { type: 'image/png' })
+                                : null,
+                            analisisAutomatico: true,
+                        });
+                        setAnalizando(prev => prev.filter(x => x !== d.id));
+                    }, 'image/png');
+                } else {
+                    // Formato que el navegador no puede abrir (PDF, AI, DST): queda
+                    // sin prediseño y se avisa, en vez de fallar en silencio.
+                    updateDiseno(d.id, { analisisImposible: true });
+                    setAnalizando(prev => prev.filter(x => x !== d.id));
+                }
+            } catch {
+                setAnalizando(prev => prev.filter(x => x !== d.id));
+            }
+        });
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [disenosBordado, usaDisenos, usaTafeta]);
+
     // Diseños donde el cliente pidió VER el arte original teniendo un prediseño
     // guardado. Es solo un cambio de vista: no borra nada.
     const [verOriginal, setVerOriginal] = useState([]);
@@ -87,6 +147,21 @@ export const BordadoTechnicalUI = ({
     };
 
     const prendaDe = (id) => prendasDisponibles.find(p => p.PrendaClienteID === id) || null;
+
+    // Las puntadas NO se guardan en el diseño: se derivan de la paleta y las
+    // medidas. Así se recalculan solas cuando el cliente corrige el tamaño, sin
+    // quedar pegadas a un número viejo.
+    const puntadasDelDiseno = (d) => puntadasDePaleta(d.paleta, d.ancho, d.alto);
+    const minutosDelDiseno = (d) => {
+        const punt = puntadasDelDiseno(d);
+        if (!punt) return '—';
+        const porPrenda = estimarMinutos(punt, (d.paleta || []).length);
+        const total = porPrenda * (parseInt(d.cantidad) || 1);
+        const m = Math.max(1, Math.round(total));
+        if (m < 60) return `${m} min`;
+        const h = Math.floor(m / 60), r = m % 60;
+        return r ? `${h} h ${r} min` : `${h} h`;
+    };
 
     const botonAgregar = (
         <button
@@ -115,6 +190,19 @@ export const BordadoTechnicalUI = ({
                 <div className="grid grid-cols-1 md:grid-cols-12 gap-8 relative z-10">
                     <div className="md:col-span-12 space-y-6">
                         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                            {lockedSpec ? (
+                                <div className="md:col-span-2">
+                                    <label className="block text-[10px] uppercase font-black text-zinc-500 mb-2 tracking-widest">Técnica</label>
+                                    <div className="w-full h-[55px] px-4 flex items-center gap-2 bg-zinc-800/30 border border-zinc-700/50 rounded-2xl font-bold text-zinc-300">
+                                        <Lock size={14} className="text-brand-gold shrink-0" />
+                                        <span className="truncate">{lockedSpec}</span>
+                                    </div>
+                                    <p className="mt-2 text-[10px] font-bold text-zinc-500 leading-relaxed">
+                                        Fijada por el combo — no se puede cambiar acá.
+                                    </p>
+                                </div>
+                            ) : (
+                            <>
                             <div>
                                 <label className="block text-[10px] uppercase font-black text-zinc-500 mb-2 tracking-widest">
                                     {usaDisenos ? 'Tipo de Bordado *' : 'Tipo / Variante *'}
@@ -156,20 +244,34 @@ export const BordadoTechnicalUI = ({
                                     </p>
                                 )}
                             </div>
+                            </>
+                            )}
 
                             {/* La cantidad total deja de ser un campo suelto: sale de la suma
                                 de lo que pide cada diseño. En modo complemento se mantiene. */}
                             {!usaDisenos && (
                                 <div className="md:col-span-2 lg:col-span-1">
                                     <label className="block text-[10px] uppercase font-black text-zinc-500 mb-2 tracking-widest">Cantidad Total *</label>
-                                    <input
-                                        type="number"
-                                        min="1"
-                                        placeholder="Cant."
-                                        className="w-full h-[55px] px-4 bg-zinc-800/50 border border-zinc-700/50 rounded-2xl font-black text-lg text-zinc-100 outline-none focus:border-brand-gold transition-all"
-                                        value={garmentQuantity}
-                                        onChange={(e) => setGarmentQuantity(e.target.value)}
-                                    />
+                                    {lockedQuantity ? (
+                                        <>
+                                            <div className="w-full h-[55px] px-4 flex items-center gap-2 bg-zinc-800/30 border border-zinc-700/50 rounded-2xl font-black text-lg text-zinc-300">
+                                                <Lock size={14} className="text-brand-gold shrink-0" />
+                                                <span>{garmentQuantity}</span>
+                                            </div>
+                                            <p className="mt-2 text-[10px] font-bold text-zinc-500 leading-relaxed">
+                                                Cantidad de combos × lo que lleva este componente — no se edita acá.
+                                            </p>
+                                        </>
+                                    ) : (
+                                        <input
+                                            type="number"
+                                            min="1"
+                                            placeholder="Cant."
+                                            className="w-full h-[55px] px-4 bg-zinc-800/50 border border-zinc-700/50 rounded-2xl font-black text-lg text-zinc-100 outline-none focus:border-brand-gold transition-all"
+                                            value={garmentQuantity}
+                                            onChange={(e) => setGarmentQuantity(e.target.value)}
+                                        />
+                                    )}
                                 </div>
                             )}
                         </div>
@@ -383,16 +485,37 @@ export const BordadoTechnicalUI = ({
                                                                         <Palette size={13} />
                                                                         {d.arteDisenado ? 'Editar los hilos' : 'Elegir hilos y puntadas'}
                                                                     </button>
-                                                                    {d.puntadasEstimadas > 0 ? (
-                                                                        <p className="text-[9px] text-zinc-500 text-center leading-relaxed">
-                                                                            <span className="font-black text-zinc-300">
-                                                                                ≈ {Number(d.puntadasEstimadas).toLocaleString('es-UY')} puntadas
-                                                                            </span>{' '}
-                                                                            · {(d.paleta || []).length} hilos. Estimado: el número real sale del ponchado.
+                                                                    {/* Lo que calculó el análisis automático (o el editor, si lo abrió).
+                                                                        Las puntadas se recalculan solas al cambiar las medidas. */}
+                                                                    {analizando.includes(d.id) ? (
+                                                                        <p className="text-[10px] font-bold text-brand-gold text-center animate-pulse">
+                                                                            Analizando el arte…
+                                                                        </p>
+                                                                    ) : d.analisisImposible ? (
+                                                                        <p className="text-[10px] font-bold text-amber-500/90 text-center leading-relaxed">
+                                                                            No se puede analizar este formato. El taller lo va a ver igual, pero sin
+                                                                            estimación de hilos ni puntadas. Subilo en PNG o JPG si querés el detalle.
+                                                                        </p>
+                                                                    ) : puntadasDelDiseno(d) > 0 ? (
+                                                                        <p className="text-[10px] text-zinc-400 text-center leading-relaxed">
+                                                                            <span className="font-black text-white">
+                                                                                ≈ {puntadasDelDiseno(d).toLocaleString('es-UY')} puntadas
+                                                                            </span>
+                                                                            {' · '}{(d.paleta || []).length} hilos
+                                                                            {' · '}<span className="font-black text-white">{minutosDelDiseno(d)}</span>
+                                                                            <br />
+                                                                            <span className="text-zinc-600">
+                                                                                Estimado: el número real sale del ponchado.
+                                                                            </span>
+                                                                        </p>
+                                                                    ) : (d.paleta || []).length > 0 ? (
+                                                                        <p className="text-[10px] text-zinc-500 text-center leading-relaxed">
+                                                                            {(d.paleta || []).length} hilos detectados. Cargá el ancho y el largo
+                                                                            para estimar las puntadas.
                                                                         </p>
                                                                     ) : (
                                                                         <p className="text-[9px] text-zinc-600 text-center leading-relaxed">
-                                                                            Opcional. Es una referencia para el taller: la matriz la hace igual un diseñador.
+                                                                            Es una referencia para el taller: la matriz la hace igual un diseñador.
                                                                         </p>
                                                                     )}
                                                                 </div>

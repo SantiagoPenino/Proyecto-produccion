@@ -21,6 +21,63 @@ const AREA_META = {
 // [CORTE] Tarjeta de UNA TIZADA: el avance se lleva por archivo (cada tizada es un corte
 // distinto, con sus propias piezas), no de a una bolsa de piezas sueltas de la orden.
 // Sirve para las dos fases: `campo` decide si cuenta lo trabajado o lo controlado.
+/**
+ * Miniatura del arte del cliente (boceto, logo, prediseño) con link al archivo.
+ *
+ * La miniatura de Drive solo carga si el archivo quedó compartido; si no, devuelve
+ * error y ANTES el recuadro quedaba en blanco, sin ícono ni nombre — el bordador
+ * no sabía si no había arte o si no se veía. Ahora intenta en orden:
+ *   1. la miniatura de Drive
+ *   2. la miniatura local que genera el sistema al subir (thumbnailGenerator)
+ *   3. un recuadro con el nombre del archivo, igual clickeable
+ *
+ * Y el link va SIEMPRE al archivo real (UbicacionStorage), no a la miniatura:
+ * antes se abría la misma imagen chica y no servía para mirar el detalle.
+ */
+const MiniaturaRef = ({ archivo, codigoOrden }) => {
+    const localUrl = archivo.RefID && codigoOrden
+        ? `/thumbnails/${encodeURIComponent(codigoOrden)}/${archivo.RefID}.jpg`
+        : null;
+    const fuentes = [archivo.previewUrl, localUrl].filter(Boolean);
+    const [intento, setIntento] = useState(0);
+
+    const src = fuentes[intento] || null;
+    const destino = archivo.UbicacionStorage || archivo.previewUrl;
+    const nombre = archivo.NombreOriginal || archivo.label;
+
+    return (
+        <a
+            href={destino}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="shrink-0 text-center group"
+            title={`Abrir "${nombre}" en tamaño completo`}
+        >
+            <div className="relative w-20 h-20 rounded-xl bg-white border border-zinc-200 flex items-center justify-center overflow-hidden group-hover:border-brand-cyan transition-colors">
+                {src ? (
+                    <img
+                        src={src}
+                        alt={archivo.label}
+                        className="w-full h-full object-cover"
+                        onError={() => setIntento(n => n + 1)}
+                    />
+                ) : (
+                    <div className="px-1 text-center">
+                        <ImageIcon size={18} className="text-zinc-300 mx-auto" />
+                        <span className="block text-[8px] font-bold text-zinc-400 leading-tight mt-0.5 line-clamp-2 break-all">
+                            {String(nombre).replace(/^REF-\d+-/, '')}
+                        </span>
+                    </div>
+                )}
+                <span className="absolute inset-x-0 bottom-0 bg-zinc-900/75 text-white text-[8px] font-black uppercase tracking-wide py-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                    Ver grande
+                </span>
+            </div>
+            <span className="text-[9px] font-bold text-zinc-400 uppercase mt-1 block">{archivo.label}</span>
+        </a>
+    );
+};
+
 const TizadaAvanceCard = ({ tizada, ordenId, service, campo, onChanged, bloqueado = false }) => {
     const total = parseInt(tizada.PiezasTotal) || 0;
     const valorInicial = parseInt(campo === 'control' ? tizada.PiezasControladas : tizada.PiezasTrabajadas) || 0;
@@ -87,7 +144,42 @@ const TizadaAvanceCard = ({ tizada, ordenId, service, campo, onChanged, bloquead
                                 {tizada.MetrosTelaTotal.toFixed(2)} m de tela
                             </span>
                         )}
+                        {/* [BORDADO] Medidas y puntadas del diseño */}
+                        {(tizada.Ancho > 0 && tizada.Alto > 0) && (
+                            <span className="text-[10px] font-bold text-zinc-600 bg-zinc-100 border border-zinc-200 rounded px-1.5 py-0.5">
+                                {tizada.Ancho} × {tizada.Alto} cm
+                            </span>
+                        )}
+                        {tizada.PuntadasEstimadas > 0 && (
+                            <span className="text-[10px] font-bold text-indigo-700 bg-indigo-50 border border-indigo-200 rounded px-1.5 py-0.5"
+                                title="Estimación por área y densidad. El número real sale del ponchado.">
+                                ≈ {Number(tizada.PuntadasEstimadas).toLocaleString('es-UY')} puntadas
+                            </span>
+                        )}
                     </div>
+
+                    {/* [BORDADO] Secuencia de hilos: en qué orden borda la máquina, con qué
+                        color y con qué puntada. Es lo primero que mira el bordador antes de
+                        enhebrar — antes tenía que deducirlo de una imagen. */}
+                    {(tizada.Paleta || []).length > 0 && (
+                        <div className="mt-2 flex flex-wrap gap-1.5">
+                            {tizada.Paleta.map((p, i) => (
+                                <span
+                                    key={p.id || i}
+                                    className="flex items-center gap-1 text-[10px] font-bold text-zinc-600 bg-white border border-zinc-200 rounded px-1.5 py-0.5"
+                                    title={`Parada ${i + 1}: ${p.hilo || ''} · ${p.puntada || ''}${p.relieve ? ' · EN RELIEVE 3D' : ''}`}
+                                >
+                                    <span className="text-zinc-400">{i + 1}</span>
+                                    <span
+                                        className="w-3 h-3 rounded-full border border-zinc-300 shrink-0"
+                                        style={{ backgroundColor: p.colorOriginal || '#ccc' }}
+                                    />
+                                    <span>{p.puntada === 'TAFETA' ? 'Tafeta' : (p.puntada || '').toLowerCase()}</span>
+                                    {p.relieve && <span className="text-amber-600 font-black">3D</span>}
+                                </span>
+                            ))}
+                        </div>
+                    )}
                 </div>
 
                 <div className="text-right shrink-0">
@@ -633,11 +725,16 @@ export default function EmbBandeja({ area = 'EMB', fase = 'trabajo', onSelectOrd
                                 const refs = selected.Referencias || [];
                                 const boceto = refs.find(f => f.esBoceto);
                                 const logo = refs.find(f => f.esLogo);
-                                const otras = refs.filter(f => f !== boceto && f !== logo);
+                                // [BORDADO] El prediseño del cliente: cómo quiere que quede.
+                                // Va rotulado aparte para que nadie lo confunda con el arte
+                                // original ni con la matriz.
+                                const prediseno = refs.find(f => f.esPrediseno);
+                                const otras = refs.filter(f => f !== boceto && f !== logo && f !== prediseno);
                                 const items = [
                                     boceto && { ...boceto, label: 'Boceto' },
                                     logo && { ...logo, label: 'Logo' },
-                                    ...(!boceto && !logo ? otras.slice(0, 2).map(f => ({ ...f, label: 'Referencia' })) : []),
+                                    prediseno && { ...prediseno, label: 'Prediseño' },
+                                    ...(!boceto && !logo && !prediseno ? otras.slice(0, 2).map(f => ({ ...f, label: 'Referencia' })) : []),
                                 ].filter(Boolean);
                                 if (items.length === 0) {
                                     return (
@@ -647,13 +744,7 @@ export default function EmbBandeja({ area = 'EMB', fase = 'trabajo', onSelectOrd
                                     );
                                 }
                                 return items.map((f, i) => (
-                                    <a key={i} href={f.previewUrl} target="_blank" rel="noopener noreferrer" className="shrink-0 text-center">
-                                        <div className="w-20 h-20 rounded-xl bg-white border border-zinc-200 flex items-center justify-center overflow-hidden hover:border-brand-cyan/40 transition-colors">
-                                            <img src={f.previewUrl} alt={f.label} className="w-full h-full object-cover"
-                                                onError={(e) => { e.target.style.display = 'none'; }} />
-                                        </div>
-                                        <span className="text-[9px] font-bold text-zinc-400 uppercase mt-1 block">{f.label}</span>
-                                    </a>
+                                    <MiniaturaRef key={i} archivo={f} codigoOrden={selected.CodigoOrden} />
                                 ));
                             })()}
                             <div className="min-w-0 flex-1">

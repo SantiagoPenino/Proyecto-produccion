@@ -476,7 +476,7 @@ exports.createWebOrder = async (req, res) => {
                     }
                 }
 
-                pendingOrderExecutions.push({
+                const execBase = {
                     areaID: areaID,
                     material: cabecera.material?.name || cabecera.material || 'Estándar',
                     variante: cabecera.variante || 'N/A',
@@ -510,7 +510,56 @@ exports.createWebOrder = async (req, res) => {
                     magnitudTela: parseFloat(srv.magnitudTela) || 0,
                     notaAdicional: serviceNote, // Nota completa para la Orden
                     techInfo: techInfo // Info técnica limpia para ServiciosExtraOrden
-                });
+                };
+
+                // [BORDADO] UNA ORDEN POR DISEÑO.
+                // Cada logo es un trabajo distinto: va sobre SUS prendas (una línea de
+                // InventarioPrendasCliente), en SU cantidad, con SUS medidas y SU
+                // secuencia de hilos. Mismo criterio que Corte multi-tela, donde cada
+                // tizada genera su orden con su bobina.
+                // Sin esto todo el pedido caía en una sola orden con Magnitud 0 y se
+                // perdían medidas, prenda de origen y paleta.
+                const disenosEmb = (serviceId === 'bordado' && srv.esPrincipal && Array.isArray(srv.metadata?.disenos))
+                    ? srv.metadata.disenos.filter(d => d && d.logo)
+                    : null;
+
+                if (disenosEmb && disenosEmb.length > 0) {
+                    disenosEmb.forEach((d, iDis) => {
+                        // Los archivos de ESTE diseño, no los del pedido entero: si no,
+                        // cada orden se llevaría los logos de todas las demás.
+                        const nombresDelDiseno = [d.logo, d.boceto, d.prediseno].filter(Boolean);
+
+                        // Nota para el taller: todo lo que necesita saber de este bordado
+                        // sin abrir nada. El detalle fino (qué hilo con qué puntada) va
+                        // aparte, estructurado, en ArchivosOrden.PaletaBordado.
+                        const datos = [`Diseño ${iDis + 1} de ${disenosEmb.length}`];
+                        if (d.anchoCm && d.altoCm) datos.push(`Tamaño: ${d.anchoCm} x ${d.altoCm} cm`);
+                        if (d.cantidad) datos.push(`Prendas: ${d.cantidad}`);
+                        if (d.puntadasEstimadas) datos.push(`Puntadas estimadas: ${Number(d.puntadasEstimadas).toLocaleString('es-UY')} c/u`);
+                        if (d.hilos) datos.push(`Hilos: ${d.hilos}`);
+                        if (d.minutosEstimados) {
+                            const m = parseInt(d.minutosEstimados);
+                            const txt = m < 60 ? `${m} min` : `${Math.floor(m / 60)} h ${m % 60} min`;
+                            datos.push(`Tiempo de máquina estimado: ${txt}`);
+                        }
+                        const tafeta = (d.paleta || []).filter(p => p.puntada === 'TAFETA').length;
+                        if (tafeta) datos.push(`${tafeta} pieza(s) con TAFETA`);
+                        if (d.relieve3D) datos.push('LLEVA RELIEVE 3D');
+                        const infoDiseno = datos.join(', ');
+
+                        pendingOrderExecutions.push({
+                            ...execBase,
+                            magnitudInicial: parseInt(d.cantidad) || 0,
+                            referencias: ordenReferencias.filter(f => nombresDelDiseno.includes(f.name)),
+                            prendaClienteId: d.prendaClienteId || null,
+                            disenoBordado: d,
+                            notaAdicional: (execBase.notaAdicional ? execBase.notaAdicional + '\n' : '') + `[BORDADO] ${infoDiseno}`,
+                            techInfo: infoDiseno,
+                        });
+                    });
+                } else {
+                    pendingOrderExecutions.push(execBase);
+                }
             });
 
             // CASO 2: ESTRUCTURA VIEJA (Lineas / Items Planos)
@@ -916,9 +965,10 @@ exports.createWebOrder = async (req, res) => {
                             .query("SELECT TOP 1 ISNULL(TipoStock, 'MATERIAL') AS TipoStock, LTRIM(RTRIM(Articulo)) AS VarianteStock FROM StockArt WHERE LTRIM(RTRIM(CodStock)) = LTRIM(RTRIM(@Stk))");
                         const st = stUm.recordset[0];
                         if (st) {
-                            // PRODUCTO TERMINADO: se cuenta y precia por UNIDAD aunque el área
-                            // trabaje en m2 (precio cerrado del artículo).
-                            if (st.TipoStock === 'PRODUCTO_TERMINADO') { areaUM = 'u'; esProductoTerminado = true; }
+                            // PRODUCTO TERMINADO o PRODUCTO_LOCAL (12-ago: sale del stock del
+                            // local, mismo tratamiento de precio): se cuenta y precia por UNIDAD
+                            // aunque el área trabaje en m2 (precio cerrado del artículo).
+                            if (st.TipoStock === 'PRODUCTO_TERMINADO' || st.TipoStock === 'PRODUCTO_LOCAL') { areaUM = 'u'; esProductoTerminado = true; }
 
                             // ECOUV: la Variante de la ORDEN es SIEMPRE la clasificación física
                             // del material QUE SE IMPRIME (Lonas/Canvas/Vinilos...), para que
@@ -1116,13 +1166,16 @@ exports.createWebOrder = async (req, res) => {
                     .input('DisenadorID', sql.Int, req.disenadorId || null) // pedido creado por un DISEÑADOR en nombre del cliente
                     .input('Tinta', sql.VarChar(50), tintaFinal) // ECOUV: rutea lote (magic sort agrupa por Tinta); producto terminado la toma de su ficha
                     .input('ModoRet', sql.VarChar(100), modoRetiroNombre) // forma de envío elegida en el ingreso
+                    // [BORDADO] Línea de prendas del cliente que consume esta orden.
+                    // Análogo exacto de BobinaTelaID en tela de cliente.
+                    .input('PrendaCliID', sql.Int, exec.prendaClienteId || null)
                     .query(`
                         INSERT INTO Ordenes (
                             AreaID, Cliente, CodCliente, IdClienteReact, DescripcionTrabajo, Prioridad,
                             FechaIngreso, FechaEstimadaEntrega, Material, Variante,
                             CodigoOrden, NoDocERP, Nota, Magnitud, ProximoServicio, UM, Estado, EstadoenArea,
                             CodArticulo, IdProductoReact, ProIdProducto, CliIdCliente, FechaEntradaSector,
-                            BobinaTelaID, DisenadorID, Tinta, ModoRetiro
+                            BobinaTelaID, DisenadorID, Tinta, ModoRetiro, PrendaClienteID
                         )
                         OUTPUT INSERTED.OrdenID
                         VALUES (
@@ -1130,13 +1183,68 @@ exports.createWebOrder = async (req, res) => {
                             GETDATE(), DATEADD(day, 3, GETDATE()), @Mat, @Var,
                             @Cod, @ERP, @Nota, @Mag, @Prox, @UM, @Estado, @Estado,
                             @CodArt, @IdProdReact, @ProIdProducto, @CliIdCliente, @F_EntSec,
-                            @BobID, @DisenadorID, @Tinta, @ModoRet
+                            @BobID, @DisenadorID, @Tinta, @ModoRet, @PrendaCliID
                         )
                     `);
 
                 const newOID = resOrder.recordset[0].OrdenID;
                 generatedOrders.push(exec.codigoOrden);
                 generatedIDs.push(newOID);
+
+                // Fecha de entrega real (área/prioridad/horario/feriados). Si el SP falla,
+                // queda el DATEADD(day,3,GETDATE()) del INSERT como respaldo.
+                try {
+                    await new sql.Request(transaction).input('OrdenID', sql.Int, newOID).execute('sp_CalcularFechaEntrega');
+                } catch (fechaErr) {
+                    logger.error(`⚠️ sp_CalcularFechaEntrega falló para OrdenID ${newOID}: ${fechaErr.message}`);
+                }
+
+                // [BORDADO] El diseño de esta orden: medidas del bordado, prendas que
+                // lleva y la secuencia de hilos elegida en el prediseño.
+                // Va en ArchivosOrden porque es el mismo lugar donde Corte guarda sus
+                // tizadas (Ancho/Alto/Piezas ya existían) y la bandeja de EMB ya lo lee.
+                if (exec.disenoBordado) {
+                    const d = exec.disenoBordado;
+                    await new sql.Request(transaction)
+                        .input('OID', sql.Int, newOID)
+                        .input('Nom', sql.VarChar(200), d.logo || 'Diseño')
+                        .input('Ancho', sql.Decimal(10, 2), d.anchoCm || null)
+                        .input('Alto', sql.Decimal(10, 2), d.altoCm || null)
+                        .input('Piezas', sql.Int, parseInt(d.cantidad) || null)
+                        .input('Paleta', sql.NVarChar(sql.MAX),
+                            (d.paleta && d.paleta.length) ? JSON.stringify(d.paleta) : null)
+                        // Las puntadas son lo que COTIZA el bordado: sin esto el precio
+                        // cae al mínimo con "(0 p.)".
+                        .input('Punt', sql.Int, parseInt(d.puntadasEstimadas) || null)
+                        .query(`
+                            INSERT INTO ArchivosOrden
+                                (OrdenID, NombreArchivo, Copias, Ancho, Alto, Piezas, PaletaBordado, PuntadasEstimadas, TipoArchivo, FechaSubida)
+                            VALUES (@OID, @Nom, 1, @Ancho, @Alto, @Piezas, @Paleta, @Punt, 'BORDADO', GETDATE())
+                        `);
+
+                    // Cargos que se cobran aparte del bordado en sí (ver
+                    // docs/migrations/bordado_articulos_y_variantes.sql):
+                    //   1568 Matriz de bordado  → una por diseño nuevo
+                    //   1631 Recargo 3D relieve → solo si alguna pieza va en relieve
+                    const cargos = [
+                        { cod: '1568', desc: 'Matriz de bordado', cant: 1 },
+                    ];
+                    if (d.relieve3D) {
+                        cargos.push({ cod: '1631', desc: 'Recargo bordado 3D en relieve', cant: parseInt(d.cantidad) || 1 });
+                    }
+                    for (const c of cargos) {
+                        await new sql.Request(transaction)
+                            .input('OID', sql.Int, newOID)
+                            .input('Cod', sql.VarChar(50), c.cod)
+                            .input('Des', sql.NVarChar(255), c.desc)
+                            .input('Cnt', sql.Decimal(18, 2), c.cant)
+                            .query(`
+                                INSERT INTO ServiciosExtraOrden
+                                    (OrdenID, CodArt, CodStock, Descripcion, Cantidad, PrecioUnitario, TotalLinea, Observacion, FechaRegistro)
+                                VALUES (@OID, @Cod, '1.1.4.9', @Des, @Cnt, 0, 0, 'Cargo de bordado (portal)', GETDATE())
+                            `);
+                    }
+                }
 
                 // TPU trabajo nuevo: cobrar la matriz (artículo 156 = US$15) como línea de facturación.
                 // El reuso de matriz va por /reuse-matriz y NO pasa por acá, así que ahí no se cobra.
@@ -2040,12 +2148,31 @@ exports.uploadOrderFile = async (req, res) => {
                 .input('ID', sql.Int, dbId)
                 .input('Url', sql.VarChar(500), driveUrl)
                 .query(`
-                    UPDATE ArchivosReferencia 
+                    UPDATE ArchivosReferencia
                     SET UbicacionStorage = @Url
-                    OUTPUT INSERTED.OrdenID
+                    OUTPUT INSERTED.OrdenID, INSERTED.TipoArchivo
                     WHERE RefID = @ID
                 `);
-            if (resUpd.recordset.length > 0) orderID = resUpd.recordset[0].OrdenID;
+            if (resUpd.recordset.length > 0) {
+                orderID = resUpd.recordset[0].OrdenID;
+
+                // [BORDADO] La fila del diseño en ArchivosOrden guarda las medidas, las
+                // puntadas y la paleta, pero el archivo en sí se sube como referencia.
+                // Sin esta copia de la URL, el área abría el diseño desde "Archivos de
+                // Impresión" y le salía "no hay archivo válido asociado".
+                // Se sube UNA sola vez: acá solo se apunta a lo ya subido.
+                if ((resUpd.recordset[0].TipoArchivo || '').toUpperCase() === 'LOGO_BORDADO') {
+                    await pool.request()
+                        .input('OID', sql.Int, orderID)
+                        .input('Url', sql.VarChar(500), driveUrl)
+                        .query(`
+                            UPDATE ArchivosOrden
+                            SET RutaAlmacenamiento = @Url, EstadoArchivo = 'Pendiente'
+                            WHERE OrdenID = @OID AND TipoArchivo = 'BORDADO'
+                              AND RutaAlmacenamiento IS NULL
+                        `);
+                }
+            }
         }
 
         // 3. Verificar si el PEDIDO COMPLETO está listo
@@ -2698,6 +2825,14 @@ exports.reuseMatrizTPU = async (req, res) => {
                     GETDATE(), DATEADD(day,3,GETDATE()), @Mat, @Var, @Cod, @ERP, @Nota, @Mag,
                     'DEPOSITO', @UM, @EstadoGen, @EstadoArea, @CodArt, @ProId, @CliId, GETDATE())`);
         const newOID = insOrd.recordset[0].OrdenID;
+
+        // Fecha de entrega real (área/prioridad/horario/feriados). Si el SP falla,
+        // queda el DATEADD(day,3,GETDATE()) del INSERT como respaldo.
+        try {
+            await new sql.Request(transaction).input('OrdenID', sql.Int, newOID).execute('sp_CalcularFechaEntrega');
+        } catch (fechaErr) {
+            logger.error(`⚠️ sp_CalcularFechaEntrega falló para OrdenID ${newOID}: ${fechaErr.message}`);
+        }
 
         // 4. Traer el arte de la matriz.
         const arte = await new sql.Request(transaction)

@@ -20,6 +20,7 @@ import { UnpaidPickupsView } from './modulos/UnpaidPickupsView';
 import { HistorialView } from './modulos/HistorialView';
 import { ClubView } from './modulos/ClubView';
 import { PricesView } from './modulos/PricesView';
+import { RecursosView } from './modulos/RecursosView';
 import PaymentResult from '../components/pages/PaymentResult';
 import MaintenanceBanner from '../components/common/MaintenanceBanner';
 import { TicketsClienteView } from './modulos/tickets/TicketsClienteView';
@@ -130,6 +131,15 @@ export const ClientPortalApp = () => {
                         <ProtectedRoute>
                             <MainLayout>
                                 <PricesView />
+                            </MainLayout>
+                        </ProtectedRoute>
+                    } />
+
+                    {/* Mis Recursos: planes de metros del cliente (solo lectura) */}
+                    <Route path="/recursos" element={
+                        <ProtectedRoute>
+                            <MainLayout>
+                                <RecursosView />
                             </MainLayout>
                         </ProtectedRoute>
                     } />

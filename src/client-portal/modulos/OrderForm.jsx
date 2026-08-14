@@ -39,6 +39,7 @@ import CorteTechnicalUI from './order-form/components/CorteTechnicalUI';
 import BobinaSelector from './order-form/components/BobinaSelector';
 import CosturaTechnicalUI from './order-form/components/CosturaTechnicalUI';
 import BordadoTechnicalUI from './order-form/components/BordadoTechnicalUI';
+import { puntadasDePaleta, estimarMinutos } from './order-form/utils/bordadoHilos';
 import { EstampadoTechnicalUI } from './order-form/components/EstampadoTechnicalUI';
 import EcouvTerminacionesUI from './EcouvTerminacionesUI';
 
@@ -476,6 +477,8 @@ const OrderForm = ({ serviceId: propServiceId }) => {
     // (primera página, vía pdfjs) a una imagen; mientras se genera, el plano
     // sale sin arte y aparece solo cuando termina.
     const artesRef = React.useRef({});
+    // Ver el candado del envío en handleSubmit
+    const enviandoRef = React.useRef(false);
     const [artesPdf, setArtesPdf] = useState({});
     const esPdf = (f) => (f?.type || '') === 'application/pdf' || /\.pdf$/i.test(f?.name || '');
     const arteDeItem = (item) => {
@@ -1089,6 +1092,28 @@ const OrderForm = ({ serviceId: propServiceId }) => {
                 return false;
             }
 
+            // TWINFACE (Tela Doble Cara): el frente y el dorso son la MISMA bandera impresa de los dos
+            // lados, así que deben medir EXACTAMENTE lo mismo. Se compara el archivo que se está subiendo
+            // contra el que ya esté cargado del otro lado (±2mm, la misma tolerancia del resto del form).
+            if (isDirectaTwinface && result.width && !result.measurementError) {
+                const otherField = field === 'fileBack' ? 'file' : 'fileBack';
+                const other = items.find(it => it.id === itemId)?.[otherField];
+                const toM = (v, unit) => unit === 'meters' ? (v || 0) : (v ? (v / 300) * 0.0254 : 0);
+                if (other && other.width && !other.measurementError) {
+                    const nw = toM(result.width, result.unit), nh = toM(result.height, result.unit);
+                    const ow = toM(other.width, other.unit), oh = toM(other.height, other.unit);
+                    if (Math.abs(nw - ow) > TOLERANCIA_ANCHO_M + 1e-9 || Math.abs(nh - oh) > TOLERANCIA_ANCHO_M + 1e-9) {
+                        const nombreLado = field === 'fileBack' ? 'dorso' : 'frente';
+                        const nombreOtro = field === 'fileBack' ? 'frente' : 'dorso';
+                        actions.setErrorModalMessage(
+                            `En Tela Doble Cara (Twinface) el frente y el dorso deben tener la MISMA medida. El ${nombreLado} mide ${nw.toFixed(2)} x ${nh.toFixed(2)} m, pero el ${nombreOtro} mide ${ow.toFixed(2)} x ${oh.toFixed(2)} m. Ajustá el archivo a la misma medida y volvé a subirlo.`
+                        );
+                        actions.setErrorModalOpen(true);
+                        return false;
+                    }
+                }
+            }
+
             if (result.measurementError) {
                 addToast(`ALERTA TÉCNICA: El archivo se cargó pero no pudo ser medido automáticamente. (${result.measurementError})`, 'warning');
 
@@ -1119,8 +1144,28 @@ const OrderForm = ({ serviceId: propServiceId }) => {
     };
 
     // --- Submit Logic ---
+    // CANDADO CONTRA EL DOBLE ENVÍO.
+    // El `loading` del botón no alcanza: es estado de React y tarda un render en
+    // aplicarse, así que dos clicks seguidos entran los dos y crean DOS pedidos
+    // completos (pasó: BOR-12291 y BOR-12292, con 8 segundos de diferencia).
+    // Un ref se marca en el acto, en el mismo tick.
+    //
+    // Va como envoltorio y no adentro del cuerpo porque el envío tiene dificil
+    // decenas de `return` de validación: soltar el candado en cada uno sería
+    // olvidarse de alguno y dejar el botón muerto para siempre. El `finally` lo
+    // suelta pase lo que pase.
     const handleSubmit = async (e) => {
         e.preventDefault();
+        if (enviandoRef.current) return;
+        enviandoRef.current = true;
+        try {
+            await enviarPedido(e);
+        } finally {
+            enviandoRef.current = false;
+        }
+    };
+
+    const enviarPedido = async (e) => {
         setReusoRegen(false); // se activa solo en reuso de matriz con cantidad distinta
         if (!jobName.trim()) return addToast('Nombre del proyecto requerido', 'error');
 
@@ -1184,6 +1229,18 @@ const OrderForm = ({ serviceId: propServiceId }) => {
         // TWINFACE (Tela Doble Cara): boceto obligatorio POR CADA archivo (juego frente/dorso)
         if (isDirectaTwinface && items.some(it => it.file && !it.boceto)) {
             return addToast('Cada archivo de Tela Doble Cara (Twinface) necesita su boceto Frente/Dorso.', 'error');
+        }
+
+        // TWINFACE: frente y dorso deben medir lo mismo (candado final por si se reemplazó un archivo
+        // después de la validación del upload). No aplica con "misma imagen frente y dorso": ahí no hay dorso.
+        if (isDirectaTwinface && !twinfaceSame) {
+            const toM = (v, unit) => unit === 'meters' ? (v || 0) : (v ? (v / 300) * 0.0254 : 0);
+            const desigual = items.some(it => it.file && it.fileBack &&
+                (Math.abs(toM(it.file.width, it.file.unit) - toM(it.fileBack.width, it.fileBack.unit)) > TOLERANCIA_ANCHO_M + 1e-9 ||
+                 Math.abs(toM(it.file.height, it.file.unit) - toM(it.fileBack.height, it.fileBack.unit)) > TOLERANCIA_ANCHO_M + 1e-9));
+            if (desigual) {
+                return addToast('En Tela Doble Cara (Twinface) el frente y el dorso deben tener la misma medida. Revisá los archivos marcados.', 'error');
+            }
         }
 
         // IMPRESIÓN DIRECTA: mínimo de metros a subir (configurable en ConfiguracionGlobal.DIRECTA_MINIMO_METROS).
@@ -1739,18 +1796,31 @@ const OrderForm = ({ serviceId: propServiceId }) => {
                         .reduce((acc, d) => acc + (parseInt(d.cantidad) || 0), 0);
                     metadata = {
                         prendas: totalPrendas || garmentQuantity,
-                        disenos: (disenosBordado || []).map(d => ({
-                            logo: d.file?.name || null,
-                            boceto: d.boceto?.name || null,
-                            prediseno: d.arteDisenado?.name || null,
-                            anchoCm: parseFloat(d.ancho) || null,
-                            altoCm: parseFloat(d.alto) || null,
-                            cantidad: parseInt(d.cantidad) || 0,
-                            prendaClienteId: d.prendaClienteId || null,
-                            relieve3D: !!d.relieve3D,
-                            puntadasEstimadas: d.puntadasEstimadas || null,
-                            paleta: d.paleta || [],
-                        })),
+                        disenos: (disenosBordado || []).map(d => {
+                            // Las puntadas se derivan de la paleta y las medidas (no se
+                            // guardan en el diseño, así se recalculan al corregir el tamaño).
+                            const punt = puntadasDePaleta(d.paleta, d.ancho, d.alto);
+                            const hilos = (d.paleta || []).length;
+                            const cant = parseInt(d.cantidad) || 0;
+                            return {
+                                logo: d.file?.name || null,
+                                boceto: d.boceto?.name || null,
+                                prediseno: d.arteDisenado?.name || null,
+                                anchoCm: parseFloat(d.ancho) || null,
+                                altoCm: parseFloat(d.alto) || null,
+                                cantidad: cant,
+                                prendaClienteId: d.prendaClienteId || null,
+                                relieve3D: !!d.relieve3D || (d.paleta || []).some(p => p.relieve),
+                                puntadasEstimadas: punt || null,
+                                hilos,
+                                // Minutos de máquina de TODO el trabajo de este diseño:
+                                // es el dato que después alimenta la agenda del taller.
+                                minutosEstimados: punt
+                                    ? Math.round(estimarMinutos(punt, hilos) * (cant || 1))
+                                    : null,
+                                paleta: d.paleta || [],
+                            };
+                        }),
                     };
                 }
 
@@ -2022,37 +2092,14 @@ const OrderForm = ({ serviceId: propServiceId }) => {
             if (response.success) {
                 actions.setCreatedOrderIds(response.orderIds || []);
                 if (response.requiresUpload && response.uploadManifest) {
+                    // La subida termina en UPLOAD_SUCCESS, que ya abre el modal.
                     await actions.handleUploadProcess(response.uploadManifest, filesToUploadMap);
                 } else {
-                    actions.setErrorModalOpen(false); // Reuse this or add explicit success modal setter in hook if handled differently
-                    // Ah, hook's showSuccessModal should be true.
-                    // The hook sets showSuccessModal in UPLOAD_SUCCESS.
-                    // But if no upload, we need to set it manually.
-                    // The hook does NOT expose setShowSuccessModal directly in the generic implementation?
-                    // Wait, I can dispatch SET_FIELD via generic setter.
-                    // actions.setField('showSuccessModal', true); // But I exposed specific setters.
-                    // I didn't expose setShowSuccessModal setter in the hook explicitly! I checked and I missed it.
-                    // I only exposed actions.setErrorModalOpen...
-                    // Wait, `setCreatedOrderIds` is there.
-                    // I'll check if I can use generic `dispatch`. No.
-                    // I will just display the Toast and maybe Navigate?
-                    // Or I'll use `actions.setErrorModalOpen` (no).
-                    // Ideally I should update the hook.
-                    // But for now, if no upload, I can just rely on Toast? User expects modal.
-
-                    // ACTUALLY, I missed `setShowSuccessModal` in the hook setters.
-                    // I will use `actions.setField` if I exposed it? No.
-                    // I exposed `setLoading`.
-                    // I will assume for now I can't open success modal without upload.
-                    // But I can fix the hook later.
-                    // I will check if hook has `setShowSuccessModal` exposed?
-                    // In Step 36 output, I see `setCreatedOrderIds`.
-                    // I DO NOT SEE `setShowSuccessModal`.
-
-                    // WORKAROUND: I will edit the hook again quickly to add `setShowSuccessModal`.
-                    // It is better to be correct.
-                    addToast('Pedido enviado con éxito', 'success');
-                    // Since I can't open the modal easily, I'll just let it be or rely on upload completion.
+                    // Pedido sin archivos que subir. Antes acá solo salía un toast y el
+                    // modal con las órdenes generadas nunca aparecía: el cliente no veía
+                    // confirmación, el botón volvía a quedar activo y era natural darle
+                    // de nuevo — así se creaban pedidos duplicados.
+                    actions.setShowSuccessModal(true);
                 }
             } else {
                 addToast(response.message || 'Error al enviar', 'error');

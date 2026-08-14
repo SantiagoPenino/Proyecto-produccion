@@ -124,6 +124,7 @@ const PORTAL_ITEMS = [
   { label: 'Realizar Pedido', path: '/portal' },
   // Tienda OCULTA hasta el lanzamiento (10/08) — la ruta /portal/tienda sigue viva por URL.
   // { label: 'Tienda', path: '/portal/tienda' },
+  { label: 'Mis Recursos', path: '/portal/recursos' },
   { label: 'Retiro de Pedidos', path: '/portal/pickup' },
   { label: 'Pagos Pendientes', path: '/portal/payments' },
   { label: 'Historial', path: '/portal/history' },

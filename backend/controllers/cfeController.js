@@ -1,5 +1,6 @@
 const { getPool, sql } = require('../config/db');
 const logger = require('../utils/logger');
+const { estamparAreaLineas } = require('../services/areaLineaService');
 
 // ID del cliente genérico "Consumidor Final" — no tiene cuenta corriente propia
 const CONSUMIDOR_FINAL_ID = 2089;
@@ -2018,6 +2019,10 @@ exports.editarFactura = async (req, res) => {
                         (@asiId, @cuentaVen, 0, @totalUYU, @totalOriginal, @cotizacion, @monedaId, @clienteId, 'CLIENTE')
                 `);
         }
+
+        // Las líneas se borran y reinsertan enteras al editar, así que hay que
+        // volver a estampar el área (queda NULL en la reinserción).
+        await estamparAreaLineas(parseInt(id), transaction);
 
         await transaction.commit();
         res.json({ success: true, message: 'Documento y líneas actualizados correctamente' });

@@ -280,7 +280,7 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
     // Destructure state for easier access in render
     const {
         jobName, serviceSubType, urgency, generalNote, globalMaterial, fabricType,
-        items, referenceFiles, selectedComplementary,
+        items, referenceFiles, selectedComplementary, comboServicios,
         moldType, fabricOrigin, clientFabricName, selectedSubOrderId, tizadaFiles,
         selectedBobinaId, selectedBobinaAncho, selectedBobinaMetros, bobinasDisponibles,
         pedidoExcelFile, enableCorte, enableCostura, garmentQuantity,
@@ -300,6 +300,25 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
         activeSubOrders, embroideryVariants, embroideryMaterials
     } = state;
 
+    // [COMBOS] Con un combo elegido, el "servicio principal" de la URL (Sublimación,
+    // Bordado...) no aplica — el combo no imprime un archivo genérico ni necesita su
+    // material/variante/tinta: ya viene armado con sus propios componentes y servicios
+    // (los bloques de comboServicios). Se usa para ocultar esos campos y mostrar SOLO lo
+    // necesario para el producto elegido.
+    const comboActivo = Object.keys(comboServicios).length > 0;
+
+    // [COMBOS] Cambiar el Tipo/Variante de un componente en "opción libre" — trae los
+    // materiales de la nueva variante, mismo criterio que handleEmbroideryVariantChange/
+    // handleTpuVariantChange del hook pero namespaced por comboItemId (cada componente
+    // tiene su propio nomenclador, no uno global compartido).
+    const handleComboVarianteChange = (comboItemId, areaId, newVariant) => {
+        actions.updateComboServicioCampo(comboItemId, areaId, { variant: newVariant });
+        apiClient.get(`/nomenclators/materials/${areaId}/${encodeURIComponent(newVariant)}`).then(mRes => {
+            const materials = (mRes.success && mRes.data) ? mRes.data : [];
+            actions.updateComboServicioCampo(comboItemId, areaId, { materialOptions: materials, material: materials[0]?.Material || '' });
+        }).catch(e => console.warn('Error cargando materiales del combo', e));
+    };
+
     // [PRENDAS] Al abrir "Personalizar esta compra", precargar Cantidad Total con lo que
     // ya se compró en el carrito — sin pisar un valor que el vendedor haya tocado a mano.
     useEffect(() => {
@@ -317,21 +336,106 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
     const [productosTerminadosConf, setProductosTerminadosConf] = useState([]);
     const [productoTerminadoSel, setProductoTerminadoSel] = useState('');
     const [serviciosObligatorios, setServiciosObligatorios] = useState(new Set());
+    // [COMBOS] Separa el picker de "Fabricar a Medida" del de "Combos y Promos" — mismo
+    // queDesea='FABRICAR_A_MEDIDA' y misma lista productosTerminadosConf de siempre, filtrada
+    // por esCombo (ver botón "Qué desea" más abajo).
+    const [soloCombos, setSoloCombos] = useState(false);
 
     useEffect(() => {
         if (queDesea !== 'FABRICAR_A_MEDIDA') return;
-        // Solo prendas confeccionadas — los producto-terminado de ECOUV (Cuadros Canvas,
-        // Roll Up, etc.) no aplican a este flujo.
-        apiClient.get(`/prendas-orders/productos-terminados?categoria=${encodeURIComponent('Prendas Confeccionadas')}`).then(res => {
-            setProductosTerminadosConf(res.data || []);
+        // Prendas confeccionadas + Combos (ej. "Gorro y short") — los producto-terminado de
+        // ECOUV (Cuadros Canvas, Roll Up, etc.) no aplican a este flujo. Dos llamadas y fusión
+        // en el front: no se toca el contrato del endpoint (un solo `categoria` por llamada).
+        Promise.all([
+            apiClient.get(`/prendas-orders/productos-terminados?categoria=${encodeURIComponent('Prendas Confeccionadas')}`),
+            apiClient.get(`/prendas-orders/productos-terminados?categoria=${encodeURIComponent('Combos y Promos')}`),
+        ]).then(([conf, combos]) => {
+            // esCombo: se pierde la categoría al fusionar los dos arrays — se marca acá para
+            // poder separar el picker por botón (Fabricar a Medida vs Combos y Promos).
+            setProductosTerminadosConf([
+                ...(conf.data || []).map(p => ({ ...p, esCombo: false })),
+                ...(combos.data || []).map(p => ({ ...p, esCombo: true })),
+            ]);
         }).catch(e => console.error('Error cargando productos terminados', e));
     }, [queDesea]);
 
     useEffect(() => {
-        if (!productoTerminadoSel) { setServiciosObligatorios(new Set()); return; }
+        if (!productoTerminadoSel) { setServiciosObligatorios(new Set()); actions.setComboServicios({}); return; }
         apiClient.get(`/prendas-orders/productos-terminados/${productoTerminadoSel}/servicios`).then(res => {
             const servicios = res.data || [];
             setServiciosObligatorios(new Set(servicios.filter(s => s.Obligatorio).map(s => s.AreaID)));
+
+            // [COMBOS] Cada componente lleva SUS PROPIOS servicios (ej. el Gorro borda, el
+            // Short estampa) — van a comboServicios, namespaced por comboItemId, NO a
+            // selectedComplementary (que se limpia: el combo no usa el set global de
+            // servicios, así el bloque de abajo por-componente es el único que se muestra).
+            if (res.esCombo && Array.isArray(res.componentes)) {
+                const nuevo = {};
+                res.componentes.forEach(c => {
+                    const servs = {};
+                    (c.servicios || []).forEach(s => {
+                        servs[s.areaId] = {
+                            active: true, archivos: [], boceto: null,
+                            // tecnicaOpcionId = técnica FIJA elegida en el Configurador (se
+                            // muestra como dato, no como selector); NULL = "opción libre",
+                            // el vendedor la elige acá — ver variant/material más abajo.
+                            tecnicaOpcionId: s.tecnicaOpcionId || null,
+                            tecnicaOpcionNombre: s.tecnicaOpcionNombre || null,
+                            tecnicaOpcionCodArticulo: s.tecnicaOpcionCodArticulo || null,
+                            variant: '', material: '', variantOptions: [], materialOptions: [],
+                        };
+                        // Mismo criterio que el caso simple: DTF/TPU llevan Estampado de la mano.
+                        if (s.areaId === 'DF' || s.areaId === 'TPU') servs['EST'] = { active: true, archivos: [], boceto: null };
+                    });
+                    nuevo[c.comboItemId] = {
+                        itemProIdProducto: c.itemProIdProducto,
+                        descripcion: c.descripcion,
+                        wmsVarianteId: c.wmsVarianteId,
+                        cantidad: c.cantidad,
+                        servicios: servs,
+                    };
+                });
+                actions.setComboServicios(nuevo);
+                actions.setSelectedComplementary({});
+                if (res.componentes.some(c => (c.servicios || []).some(s => s.areaId === 'DF'))) {
+                    actions.setDtfVariant('DTF Textil');
+                    actions.setEstampadoOrigin('Stock User');
+                }
+                if (res.componentes.some(c => (c.servicios || []).some(s => s.areaId === 'TWC'))) actions.setEnableCorte(true);
+                if (res.componentes.some(c => (c.servicios || []).some(s => s.areaId === 'TWT'))) actions.setEnableCostura(true);
+
+                // [COMBOS] Para cada componente×EMB/DF/TPU que quedó en "opción libre" (sin
+                // tecnicaOpcionId), traer SU PROPIO nomenclador — antes se compartía un solo
+                // bordadoVariant/dtfMaterial/tpuVariant GLOBAL entre todos los componentes del
+                // combo, así que un 2º componente con la misma técnica libre pisaba al primero.
+                // DF no tiene eje "variante" seleccionable (es fija, "DTF Textil", ya seteada
+                // arriba): solo material.
+                res.componentes.forEach(c => {
+                    (c.servicios || []).forEach(s => {
+                        if (s.tecnicaOpcionId) return; // fija: no hace falta nomenclador
+                        if (s.areaId === 'DF') {
+                            apiClient.get(`/nomenclators/materials/DF/${encodeURIComponent('DTF Textil')}`).then(mRes => {
+                                if (!mRes.success || !mRes.data?.length) return;
+                                actions.updateComboServicioCampo(c.comboItemId, 'DF', { materialOptions: mRes.data, material: mRes.data[0].Material });
+                            }).catch(e => console.warn('Error cargando materiales DTF del combo', e));
+                            return;
+                        }
+                        if (s.areaId !== 'EMB' && s.areaId !== 'TPU') return;
+                        apiClient.get(`/nomenclators/variants/${s.areaId}`).then(vRes => {
+                            if (!vRes.success || !vRes.data?.length) return;
+                            const variants = vRes.data.map(item => item.Variante);
+                            const firstVariant = variants[0];
+                            actions.updateComboServicioCampo(c.comboItemId, s.areaId, { variantOptions: variants, variant: firstVariant });
+                            apiClient.get(`/nomenclators/materials/${s.areaId}/${encodeURIComponent(firstVariant)}`).then(mRes => {
+                                if (!mRes.success || !mRes.data?.length) return;
+                                actions.updateComboServicioCampo(c.comboItemId, s.areaId, { materialOptions: mRes.data, material: mRes.data[0].Material });
+                            });
+                        }).catch(e => console.warn('Error cargando nomenclador del combo', e));
+                    });
+                });
+                return;
+            }
+            actions.setComboServicios({}); // producto simple: por si antes había un combo elegido
 
             // EMB/DF/TPU (Bordado/Estampado) viven en la barra "Servicios de Decoración"
             // (selectedComplementary). Corte/Costura NO: tienen su propio interruptor
@@ -882,7 +986,10 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
         // [PRENDAS] Todo lo que sigue valida la grilla de materiales/archivos de sublimación
         // (items) — solo existe en "Fabricar a medida". "Comprar" (con o sin personalizar)
         // no imprime nada: la prenda sale del catálogo WMS, no de esta grilla.
-        if (queDesea === 'FABRICAR_A_MEDIDA') {
+        // [COMBOS] Con un combo elegido no hay grilla de sublimación que validar (el bloque
+        // entero está oculto en el render, items queda vacío a propósito) — sus propias
+        // validaciones (arte por componente×servicio) corren más abajo, fuera de este if.
+        if (queDesea === 'FABRICAR_A_MEDIDA' && !comboActivo) {
             const invalidPrintSettings = items.some(it => it.printSettings?.isValid === false);
             if (invalidPrintSettings) {
                 return addToast('Hay errores en la configuración de impresión. Revise los items.', 'error');
@@ -966,8 +1073,38 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
         if (selectedComplementary['TPU']?.active && tpuArchivos.length === 0) {
             return addToast('Subí al menos un archivo a imprimir para TPU antes de confirmar.', 'error');
         }
+        // [PRENDAS] Bordado no tenía este chequeo (a diferencia de DTF/TPU) — se podía
+        // confirmar el pedido con EMB activo sin logo ni boceto.
+        if (selectedComplementary['EMB']?.active && !bordadoBocetoFile && ponchadoFiles.length === 0) {
+            return addToast('Subí el logo o el boceto de Bordado antes de confirmar.', 'error');
+        }
         if ((selectedComplementary['DF']?.active || selectedComplementary['TPU']?.active) && (!estampadoPrints || !estampadoOrigin)) {
             return addToast('Completá "Estampados por Prenda" y "Origen de las Prendas" antes de confirmar.', 'error');
+        }
+
+        // [COMBOS] Sin wmsVarianteId no se puede generar la venta de retiro de este componente
+        // (ver combosRetiro más abajo, en handleSubmit) — el servicio de decoración nacería
+        // esperando un retiro que nunca llega y quedaría trabado para siempre. El backend
+        // también bloquea esto (defensa de fondo), pero acá se avisa ANTES de intentar
+        // enviar, no después de que el pedido ya se rechazó.
+        for (const [comboItemId, comp] of Object.entries(comboServicios)) {
+            if (!comp.wmsVarianteId) {
+                return addToast(`"${comp.descripcion}" no tiene una variante de WMS vinculada en el Configurador — avisá antes de confirmar este combo.`, 'error');
+            }
+        }
+
+        // [COMBOS] Cada servicio por componente necesita su propio arte — mismo criterio que
+        // arriba (DTF/TPU exigen archivo; Bordado exige logo o boceto), pero recorriendo
+        // comboServicios en vez del set global.
+        for (const [comboItemId, comp] of Object.entries(comboServicios)) {
+            for (const [areaId, srv] of Object.entries(comp.servicios || {})) {
+                if (!srv.active || areaId === 'EST') continue; // EST hereda el arte de su DF/TPU
+                const tieneArchivo = (srv.archivos || []).length > 0 || !!srv.boceto;
+                if (!tieneArchivo) {
+                    const nombreServicio = { EMB: 'Bordado', DF: 'DTF', TPU: 'TPU' }[areaId] || areaId;
+                    return addToast(`Subí el arte de ${nombreServicio} para "${comp.descripcion}" antes de confirmar.`, 'error');
+                }
+            }
         }
 
         actions.setLoading(true);
@@ -1010,11 +1147,20 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
                     if (comp.active && comp.file) addToMap(comp.file);
                 });
             }
+            // [COMBOS] Archivos/boceto por componente×servicio.
+            Object.values(comboServicios).forEach(comp => {
+                Object.values(comp.servicios || {}).forEach(srv => {
+                    if (srv.boceto) addToMap(srv.boceto);
+                    (srv.archivos || []).forEach(addToMap);
+                });
+            });
 
-            // Helper to map material codes
-            const mapMaterial = (matName, areaId = null) => {
-                const searchList = areaId === 'EMB' ? embroideryMaterials : (areaId === 'DF' ? dtfMaterials : (areaId === 'TPU' ? tpuMaterials : dynamicMaterials));
-                const found = searchList.find(m => m.Material === matName);
+            // Helper to map material codes. customList = catálogo de UN componente del combo
+            // (cada uno tiene el suyo, ver comboServicios) — sin esto buscaría en el catálogo
+            // GLOBAL del servicio simple, que para un combo puede estar vacío o ser de otra área.
+            const mapMaterial = (matName, areaId = null, customList = null) => {
+                const searchList = customList || (areaId === 'EMB' ? embroideryMaterials : (areaId === 'DF' ? dtfMaterials : (areaId === 'TPU' ? tpuMaterials : dynamicMaterials)));
+                const found = (searchList || []).find(m => m.Material === matName);
                 if (found) return { name: found.Material, codArt: found.CodArticulo, codStock: found.CodStock };
                 return { name: matName };
             };
@@ -1247,6 +1393,10 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
 
             // 1. Construir Lista Unificada de Servicios
             const listaServicios = [];
+            // [COMBOS] Retiros de stock por componente — el backend arma, por cada uno, su
+            // propia venta VEN- (invisible a producción, visible en Logística). Ver más abajo,
+            // donde se puebla, y el armado del payload final.
+            const combosRetiro = [];
 
             // A) SERVICIO PRINCIPAL (Convertir grupos a objetos de servicio)
             Object.values(grupos).forEach((grp, idx) => {
@@ -1356,16 +1506,114 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
             // NO se marque "PROD-" — el precio sale de PreciosBase por ProIdProducto.
             if (queDesea === 'FABRICAR_A_MEDIDA' && productoTerminadoSel) {
                 const productoSel = productosTerminadosConf.find(p => String(p.ProIdProducto) === String(productoTerminadoSel));
-                listaServicios.push({
-                    esPrincipal: true,
-                    areaId: 'PRO',
-                    esProductoFabricado: true,
-                    cabecera: { material: productoSel?.Descripcion || 'Prenda a Medida', proIdProducto: productoSel ? Number(productoSel.ProIdProducto) : null },
-                    archivos: [],
-                    items: [{ cantidad: parseFloat(garmentQuantity) || 1 }],
-                    metadata: {},
-                    notas: '[PRODUCTO FABRICADO A MEDIDA]',
-                });
+                const comboEntries = Object.entries(comboServicios);
+
+                if (comboEntries.length > 0) {
+                    // [COMBOS] UNA sola orden PRO "de precio" (factura el combo completo, no
+                    // la suma de sus partes). El retiro de stock de cada componente YA NO nace
+                    // acá adentro (Fase 2, esProductoComprado) — ahora es una venta VEN-
+                    // independiente por componente (ver combosRetiro, más abajo, y el plan
+                    // "FASE 3" en docs): invisible a producción (VENTA_DIRECTA), visible en
+                    // Logística para despachar, con su propio bulto y destino. Los servicios
+                    // (EMB/DF/TPU/EST) siguen llevando comboItemId para que el backend no
+                    // cruce el ruteo entre componentes.
+                    listaServicios.push({
+                        esPrincipal: true,
+                        areaId: 'PRO',
+                        esProductoFabricado: true,
+                        cabecera: { material: productoSel?.Descripcion || 'Combo', proIdProducto: productoSel ? Number(productoSel.ProIdProducto) : null },
+                        archivos: [],
+                        items: [{ cantidad: parseFloat(garmentQuantity) || 1 }],
+                        metadata: {},
+                        notas: `[COMBO: ${productoSel?.Descripcion || 'Combo'}]`,
+                    });
+
+                    comboEntries.forEach(([comboItemId, comp]) => {
+                        const cantidadComponente = (parseFloat(garmentQuantity) || 0) * (comp.cantidad || 1);
+                        // [COMBOS] Datos del retiro de ESTE componente — el backend arma su VEN-
+                        // + ancla a partir de esto, calculando el destino real (EMB/DF/EST) desde
+                        // los servicios que ya creó para el mismo comboItemId más abajo.
+                        combosRetiro.push({
+                            comboItemId,
+                            wmsVarianteId: comp.wmsVarianteId || null,
+                            // [COMBOS] El nombre del artículo en la tarjeta de la venta (Logística)
+                            // sale de resolver este ID contra Articulos — sin él queda "null - ...".
+                            itemProIdProducto: comp.itemProIdProducto || null,
+                            descripcion: comp.descripcion,
+                            cantidad: cantidadComponente || 1,
+                        });
+
+                        Object.entries(comp.servicios || {}).forEach(([areaId, srv]) => {
+                            if (!srv.active) return;
+
+                            const archivosSrv = [];
+                            if (areaId === 'EMB') {
+                                if (srv.boceto) archivosSrv.push({ name: srv.boceto.name, tipo: 'BOCETO_BORDADO' });
+                                (srv.archivos || []).forEach(f => archivosSrv.push({ name: f.name, tipo: 'LOGO_BORDADO' }));
+                            } else if (areaId === 'DF' || areaId === 'TPU') {
+                                (srv.archivos || []).forEach(f => archivosSrv.push({ name: f.name, tipo: 'PRODUCCION' }));
+                                if (srv.boceto) archivosSrv.push({ name: srv.boceto.name, tipo: 'REFERENCIA' });
+                            } else if (areaId === 'EST') {
+                                // El Estampado hereda el arte de SU DF/TPU (mismo componente) —
+                                // no tiene arte propio, igual que en el flujo simple.
+                                const origenId = comp.servicios['DF'] ? 'DF' : (comp.servicios['TPU'] ? 'TPU' : null);
+                                const origen = origenId ? comp.servicios[origenId] : null;
+                                if (origen?.boceto) archivosSrv.push({ name: origen.boceto.name, tipo: 'BOCETO_ESTAMPADO' });
+                            }
+
+                            // [COMBOS] Técnica FIJADA por el Configurador: se manda el CodArticulo
+                            // directo (mismo patrón que "Corte Laser"/"Estampado por bajada" acá
+                            // abajo — el backend resuelve todo desde cabecera.material.codArt, ver
+                            // prendasOrdersController ~630). Libre: variant/material PROPIOS del
+                            // componente (comp.servicios[areaId]), no el global del servicio simple
+                            // — si dos componentes tienen la misma técnica libre, cada uno guardó
+                            // su propia elección por separado (ver updateComboServicioCampo).
+                            let cabecera = { variante: comp.descripcion, material: mapMaterial(globalMaterial) };
+                            if (srv.tecnicaOpcionId) {
+                                cabecera = { variante: srv.tecnicaOpcionNombre || comp.descripcion, material: { name: srv.tecnicaOpcionNombre, codArt: srv.tecnicaOpcionCodArticulo } };
+                            } else if (areaId === 'EMB') {
+                                cabecera = { variante: srv.variant || comp.descripcion, material: mapMaterial(srv.material, 'EMB', srv.materialOptions) };
+                            } else if (areaId === 'DF') {
+                                cabecera = { variante: 'DTF Textil', material: mapMaterial(srv.material, 'DF', srv.materialOptions) };
+                            } else if (areaId === 'TPU') {
+                                cabecera = { variante: srv.variant || 'TPU', material: mapMaterial(srv.material, 'TPU', srv.materialOptions) };
+                            } else if (areaId === 'EST') {
+                                cabecera = { variante: 'Estampado', material: { name: 'Estampado (Servicio)', codArt: '110', codStock: '1.1.5.1' } };
+                            }
+
+                            const itemsProduccion = (areaId === 'DF' || areaId === 'TPU')
+                                ? (srv.archivos || []).map(f => ({ fileName: f.name, cantidad: cantidadComponente || 1 }))
+                                : [];
+
+                            listaServicios.push({
+                                esPrincipal: false,
+                                areaId,
+                                comboItemId,
+                                cabecera,
+                                archivos: archivosSrv,
+                                items: itemsProduccion,
+                                // [COMBOS] Sin esto la nota de producción solo decía "Prendas: N"
+                                // (el dato técnico que agrega el backend) sin indicar de qué
+                                // prenda del combo se trata — el operario no podía saber si el
+                                // bordado que tenía delante era del Gorro o de otro componente.
+                                notas: `[COMBO: ${comp.descripcion}]`,
+                                metadata: { prendas: cantidadComponente },
+                                chainedAfterAreaId: areaId === 'EST' ? (comp.servicios['DF'] ? 'DF' : (comp.servicios['TPU'] ? 'TPU' : null)) : null,
+                            });
+                        });
+                    });
+                } else {
+                    listaServicios.push({
+                        esPrincipal: true,
+                        areaId: 'PRO',
+                        esProductoFabricado: true,
+                        cabecera: { material: productoSel?.Descripcion || 'Prenda a Medida', proIdProducto: productoSel ? Number(productoSel.ProIdProducto) : null },
+                        archivos: [],
+                        items: [{ cantidad: parseFloat(garmentQuantity) || 1 }],
+                        metadata: {},
+                        notas: '[PRODUCTO FABRICADO A MEDIDA]',
+                    });
+                }
             }
 
             // B) SERVICIOS COMPLEMENTARIOS (Corte, Costura, etc.)
@@ -1584,6 +1832,10 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
 
                 // Nueva Estructura Unificada
                 servicios: listaServicios,
+
+                // [COMBOS] Retiros de stock por componente — el backend crea, por cada uno,
+                // su propia venta VEN- (ver FASE 3 del plan de combos).
+                combosRetiro: combosRetiro.length > 0 ? combosRetiro : undefined,
 
                 // Mantenemos cliente y fechas arriba
                 clienteInfo: {
@@ -1805,12 +2057,13 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
                             <p className="block text-sm font-medium text-zinc-400 mb-2">Qué desea *</p>
                             <div className="flex flex-col sm:flex-row bg-brand-dark p-1 rounded-lg gap-1 border border-zinc-700">
                                 {[
-                                    { id: 'COMPRAR',           label: 'Comprar prendas' },
-                                    { id: 'FABRICAR_A_MEDIDA', label: 'Fabricar prendas a la medida' },
-                                ].map(t => {
-                                    const isSelected = queDesea === t.id;
+                                    { id: 'COMPRAR',           combos: false, label: 'Comprar prendas' },
+                                    { id: 'FABRICAR_A_MEDIDA', combos: false, label: 'Fabricar prendas a la medida' },
+                                    { id: 'FABRICAR_A_MEDIDA', combos: true,  label: 'Combos y Promos' },
+                                ].map((t, i) => {
+                                    const isSelected = queDesea === t.id && soloCombos === t.combos;
                                     return (
-                                        <button key={t.id} type="button" onClick={() => setQueDesea(t.id)}
+                                        <button key={i} type="button" onClick={() => { setQueDesea(t.id); setSoloCombos(t.combos); setProductoTerminadoSel(''); }}
                                             className={`flex-1 py-1.5 px-3 rounded-md text-sm font-medium transition-all ${isSelected ? 'shadow-sm bg-cyan-400/20 text-cyan-300 border border-cyan-500/30' : 'text-zinc-400 hover:bg-zinc-700 hover:text-zinc-200'}`}
                                         >
                                             {t.label}
@@ -1862,7 +2115,7 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
                         personalizar) no imprime nada, la prenda sale del catálogo WMS. */}
                     {queDesea === 'FABRICAR_A_MEDIDA' && (
                     <ServiceAccordion
-                        title={`Producción Principal: ${serviceInfo?.label || 'Servicio'}`}
+                        title={comboActivo ? 'Producto a Fabricar' : `Producción Principal: ${serviceInfo?.label || 'Servicio'}`}
                         isActive={true} // Always active
                         onToggle={() => { }} // No toggle for main
                         icon={Layers}
@@ -1877,25 +2130,36 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
                                     hasta ahora (servicios sueltos, activados a mano). */}
                                 {queDesea === 'FABRICAR_A_MEDIDA' && (
                                     <div className="md:col-span-2">
-                                        <p className="block text-xs font-bold uppercase text-zinc-400 mb-2">Producto a Fabricar (opcional)</p>
+                                        <p className="block text-xs font-bold uppercase text-zinc-400 mb-2">
+                                            {soloCombos ? 'Combo a Pedir *' : 'Producto a Fabricar (opcional)'}
+                                        </p>
                                         <CustomSelect
                                             name="productoTerminadoConf"
-                                            aria-label="Producto a Fabricar"
+                                            aria-label={soloCombos ? 'Combo a Pedir' : 'Producto a Fabricar'}
                                             value={productoTerminadoSel}
                                             onChange={(val) => setProductoTerminadoSel(val)}
                                             options={[
-                                                { value: '', label: '— Prenda sin producto de catálogo —' },
-                                                ...productosTerminadosConf.map(p => ({
+                                                // Un combo ES su composición: no existe "combo sin producto de
+                                                // catálogo" — acá no se ofrece la opción vacía.
+                                                ...(soloCombos ? [] : [{ value: '', label: '— Prenda sin producto de catálogo —' }]),
+                                                ...productosTerminadosConf.filter(p => !!p.esCombo === soloCombos).map(p => ({
                                                     value: String(p.ProIdProducto),
                                                     label: `${p.Descripcion}${p.Precio != null ? ` · ${p.MonIdMoneda === 2 ? 'US$' : '$'} ${p.Precio}` : ''}`,
                                                 })),
                                             ]}
-                                            placeholder="Elegí el producto…"
+                                            placeholder={soloCombos ? 'Elegí el combo…' : 'Elegí el producto…'}
                                             variant="black"
                                         />
                                         {serviciosObligatorios.size > 0 && (
                                             <p className="mt-1.5 text-[11px] text-brand-cyan">
                                                 Este producto incluye: {[...serviciosObligatorios].map(a => ({ EMB: 'Bordado', DF: 'Estampados DTF', TPU: 'Estampados TPU', TWC: 'Corte', TWT: 'Costura' }[a] || a)).join(', ')} — se activan solos y no se pueden apagar.
+                                            </p>
+                                        )}
+                                        {/* [COMBOS] Reemplaza el aviso de arriba (que lee ProductoTerminadoServicios,
+                                            vacío para un combo) — acá el detalle vive por componente, más abajo. */}
+                                        {comboActivo && (
+                                            <p className="mt-1.5 text-[11px] text-brand-cyan">
+                                                Es un combo — los servicios de cada componente (con su propio archivo/boceto) se cargan más abajo, en "Servicios y Procesos".
                                             </p>
                                         )}
                                     </div>
@@ -1911,23 +2175,25 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
                                     completa a ellos, y viceversa. */}
                                 {queDesea === 'FABRICAR_A_MEDIDA' && productoTerminadoSel && (
                                     <div className="md:col-span-2">
-                                        <p className="block text-xs font-bold uppercase text-zinc-400 mb-2">Cantidad de Prendas *</p>
+                                        <p className="block text-xs font-bold uppercase text-zinc-400 mb-2">{comboActivo ? 'Cantidad de Combos *' : 'Cantidad de Prendas *'}</p>
                                         <input
                                             type="number"
                                             min="1"
                                             step="1"
                                             value={garmentQuantity}
                                             onChange={(e) => actions.setGarmentQuantity(e.target.value)}
-                                            placeholder="¿Cuántas prendas se fabrican en este pedido?"
+                                            placeholder={comboActivo ? '¿Cuántos combos se fabrican en este pedido?' : '¿Cuántas prendas se fabrican en este pedido?'}
                                             className="w-full bg-custom-dark border border-zinc-700 rounded-lg px-3 py-2.5 text-white placeholder-zinc-500 focus:outline-none focus:border-brand-cyan"
                                         />
                                         <p className="mt-1.5 text-[11px] text-zinc-500">
-                                            Define la cantidad que se factura y fabrica — es la misma para todo el pedido, no por servicio.
+                                            {comboActivo
+                                                ? 'Define cuántos combos se facturan y fabrican — cada componente multiplica esta cantidad por lo que lleva del combo.'
+                                                : 'Define la cantidad que se factura y fabrica — es la misma para todo el pedido, no por servicio.'}
                                         </p>
                                     </div>
                                 )}
 
-                                {(config.variantMode === 'select' || config.variantMode === 'virtual') && serviceId !== 'bordado' && serviceId !== 'EMB' && (
+                                {!comboActivo && (config.variantMode === 'select' || config.variantMode === 'virtual') && serviceId !== 'bordado' && serviceId !== 'EMB' && (
                                     <div>
                                         <p className="block text-xs font-bold uppercase text-zinc-400 mb-2">{config.variantMode === 'virtual' ? 'Categoría *' : 'Variante / Sub-Categoría *'}</p>
                                         <CustomSelect
@@ -1943,7 +2209,7 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
                                 )}
 
                                 {/* Variante física (StockArt: Lonas/Canvas/Vinilos/Cuadros...) — filtra materiales */}
-                                {config.variantMode === 'virtual' && categoriasFisicas.length > 0 && (
+                                {!comboActivo && config.variantMode === 'virtual' && categoriasFisicas.length > 0 && (
                                     <div>
                                         <p className="block text-xs font-bold uppercase text-zinc-400 mb-2">Variante *</p>
                                         <CustomSelect
@@ -1959,7 +2225,7 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
                                 )}
 
                                 {/* Global Material Selector - Hidden for Bordado and Sublimacion */}
-                                {config.materialMode === 'single' && svcId !== 'bordado' && svcId !== 'emb' && svcId !== 'sublimacion' && (
+                                {!comboActivo && config.materialMode === 'single' && svcId !== 'bordado' && svcId !== 'emb' && svcId !== 'sublimacion' && (
                                     <div>
                                         <p className="block text-xs font-bold uppercase text-zinc-400 mb-2">{isEcouvPT ? 'Producto' : (serviceInfo?.config?.materialLabel || 'Material / Soporte')} *</p>
                                         <CustomSelect
@@ -1979,7 +2245,7 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
 
                                 {/* Tinta de impresión (ECOUV: rutea el lote a la máquina Ecosolvente/UV).
                                     Oculta en Productos Terminados: la tinta viene predefinida en la ficha. */}
-                                {Array.isArray(config.tintaOptions) && config.tintaOptions.length > 0 && !isEcouvPT && (
+                                {!comboActivo && Array.isArray(config.tintaOptions) && config.tintaOptions.length > 0 && !isEcouvPT && (
                                     <div>
                                         <p className="block text-xs font-bold uppercase text-zinc-400 mb-2">Tinta</p>
                                         <CustomSelect
@@ -1994,7 +2260,7 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
                                     </div>
                                 )}
 
-                                {isTpuEtiquetaOficial && (
+                                {!comboActivo && isTpuEtiquetaOficial && (
                                     <div className="md:col-span-2 mt-2 animate-in slide-in-from-top-2 p-3 bg-amber-50 rounded-xl border border-amber-200">
                                         <p className="block text-xs font-bold uppercase text-amber-800 mb-2">Forma de Etiqueta *</p>
                                         <CustomSelect
@@ -2012,7 +2278,7 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
                             </div>
 
                             {/* ECOUV Producto Terminado: ficha con dimensiones, material y terminaciones incluidas */}
-                            {isEcouvPT && fichaPT && (
+                            {!comboActivo && isEcouvPT && fichaPT && (
                                 <div className="p-4 bg-purple-500/10 border border-purple-500/30 rounded-2xl space-y-2">
                                     <p className="text-[10px] font-black uppercase tracking-wider text-purple-300">Producto terminado — precio cerrado</p>
                                     <div className="flex flex-wrap gap-x-6 gap-y-1 text-xs text-zinc-300">
@@ -2041,7 +2307,7 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
                             )}
 
                             {/* Sublimación Tela de Cliente: elegí tu bobina (valida ancho/largo y descuenta metros) */}
-                            {isSubliTelaCliente && (
+                            {!comboActivo && isSubliTelaCliente && (
                                 <BobinaSelector
                                     bobinasDisponibles={bobinasDisponibles}
                                     selectedBobinaId={selectedBobinaId}
@@ -2050,7 +2316,7 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
                             )}
 
                             {/* Bordado Specific UI if Main Service is Bordado */}
-                            {serviceId === 'bordado' && (
+                            {!comboActivo && serviceId === 'bordado' && (
                                 <BordadoTechnicalUI
                                     serviceId={serviceId} garmentQuantity={garmentQuantity} setGarmentQuantity={actions.setGarmentQuantity}
                                     bocetoFile={bordadoBocetoFile} setBocetoFile={actions.setBordadoBocetoFile}
@@ -2065,7 +2331,7 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
                             )}
 
                             {/* Estampado UI */}
-                            {(serviceId === 'estampado' || serviceId === 'EST') && (
+                            {!comboActivo && (serviceId === 'estampado' || serviceId === 'EST') && (
                                 <EstampadoTechnicalUI
                                     file={estampadoFile} setFile={actions.setEstampadoFile}
                                     quantity={estampadoQuantity} setQuantity={actions.setEstampadoQuantity}
@@ -2076,7 +2342,7 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
                             )}
 
                             {/* Corte UI only if Main Service */}
-                            {serviceId === 'corte' && (
+                            {!comboActivo && serviceId === 'corte' && (
                                 <div className="space-y-6">
                                     <CorteTechnicalUI
                                         serviceId={serviceId} moldType={moldType} setMoldType={actions.setMoldType}
@@ -2104,7 +2370,7 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
 
 
                             {/* Standard Production Files (Items) */}
-                            {serviceId === 'tpu' && (
+                            {!comboActivo && serviceId === 'tpu' && (
                                 <div className="space-y-4">
                                     {/* Selector: trabajo nuevo vs reusar una matriz */}
                                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -2211,7 +2477,7 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
                                 </div>
                             )}
 
-                            {config.requiresProductionFiles && (
+                            {!comboActivo && config.requiresProductionFiles && (
                                 <div>
                                     <div className="flex justify-between items-center mb-4">
                                         <p className="text-sm font-bold uppercase text-zinc-400">Archivos para Producción ({items.length}/15)</p>
@@ -2434,8 +2700,10 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
                     )}
 
                     {/* Corte (Complementario) - Ocultar si es Principal o si está OCULTO en Servicios Web,
-                        y solo tiene sentido fabricando a medida. */}
-                    {queDesea === 'FABRICAR_A_MEDIDA' && config.hasCuttingWorkflow && serviceId !== 'corte' && corteServicioVisible && (
+                        y solo tiene sentido fabricando a medida. Con combo: solo si ESE combo lo
+                        trae (enableCorte ya se auto-activa solo si algún componente declara TWC) —
+                        si no, es un servicio del "Sublimación" base que no aplica al combo. */}
+                    {queDesea === 'FABRICAR_A_MEDIDA' && config.hasCuttingWorkflow && serviceId !== 'corte' && corteServicioVisible && (!comboActivo || enableCorte) && (
                         <ServiceAccordion
                             title={serviciosObligatorios.has('TWC') ? 'Servicio de Corte (incluido en el producto)' : 'Servicio de Corte'}
                             isActive={enableCorte}
@@ -2478,8 +2746,9 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
                         </ServiceAccordion>
                     )}
 
-                    {/* Costura - Ocultar si está OCULTO en Servicios Web, y solo Fabricar a Medida. */}
-                    {queDesea === 'FABRICAR_A_MEDIDA' && config.hasCuttingWorkflow && costuraServicioVisible && (
+                    {/* Costura - Ocultar si está OCULTO en Servicios Web, y solo Fabricar a Medida.
+                        Con combo: solo si ESE combo la trae (mismo criterio que Corte arriba). */}
+                    {queDesea === 'FABRICAR_A_MEDIDA' && config.hasCuttingWorkflow && costuraServicioVisible && (!comboActivo || enableCostura) && (
                         <ServiceAccordion
                             title={serviciosObligatorios.has('TWT') ? 'Servicio de Costura (incluido en el producto)' : 'Servicio de Costura'}
                             isActive={enableCostura}
@@ -2501,7 +2770,11 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
                         botones, no tarjetas apiladas — igual patrón que Qué desea/Prioridad.
                         Al tocar uno se despliega su pestaña debajo. DTF y TPU prenden Estampado
                         junto con ellos (son formas de aplicar estampado, no algo aparte). */}
-                    {visibleComplementaryOptions.length > 0 && (
+                    {/* [COMBOS] Con un combo elegido, los servicios salen del bloque "por
+                        componente" de más abajo (comboServicios) — esta fila global no aplica,
+                        queda vacía por diseño (el useEffect que puebla comboServicios limpia
+                        selectedComplementary). */}
+                    {visibleComplementaryOptions.length > 0 && Object.keys(comboServicios).length === 0 && (
                     <div className="md:!rounded-3xl !rounded-none border-y !border-x-0 md:!border border-zinc-700/50 bg-custom-dark/60 -mx-4 md:mx-0 p-4 md:p-6">
                         <p className="text-xs font-bold text-zinc-500 uppercase tracking-widest mb-3">Servicios de Decoración</p>
                         <div className="flex flex-wrap gap-2">
@@ -2563,7 +2836,7 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
                     </div>
                     )}
 
-                    {visibleComplementaryOptions
+                    {Object.keys(comboServicios).length === 0 && visibleComplementaryOptions
                         .filter(opt => !!selectedComplementary[opt.id])
                         // [PRENDAS] EST fusionado en DTF/TPU: si alguno de los dos está activo,
                         // el panel de Estampado no se muestra aparte (queda vacío si no).
@@ -2684,6 +2957,82 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
                             </div>
                         </div>
                     ))}
+
+                    {/* [COMBOS] Un combo trae, POR COMPONENTE, sus propios servicios de
+                        decoración (ej. el Gorro borda, el Short estampa) — ver
+                        docs/ecommerce-portal-plan.md. Cada componente es su propio bloque:
+                        fila de servicios (todos bloqueados, vienen del Configurador) + panel
+                        con SU archivo/boceto. Reusa BordadoTechnicalUI/DtfTechnicalUI/
+                        TpuTechnicalUI tal cual — son controlados por props, así que solo
+                        cambian los callbacks (escriben en comboServicios[comboItemId] en vez
+                        de en los campos globales). Cantidad no editable acá: se deriva de
+                        garmentQuantity (cantidad de combos) × comboItem.cantidad. */}
+                    {Object.entries(comboServicios).map(([comboItemId, comp]) => {
+                        const AREA_LABELS = { EMB: 'Bordado', DF: 'DTF', TPU: 'TPU', EST: 'Estampado' };
+                        const cantidadComponente = String((parseFloat(garmentQuantity) || 0) * (comp.cantidad || 1));
+                        const areasDelComponente = Object.keys(comp.servicios || {});
+                        return (
+                        <div key={comboItemId} className="md:!rounded-3xl !rounded-none border-y !border-x-0 md:!border border-zinc-700/50 bg-custom-dark/60 -mx-4 md:mx-0 p-4 md:p-6 space-y-4">
+                            <div>
+                                <p className="text-xs font-bold text-zinc-500 uppercase tracking-widest mb-1">Servicios de {comp.descripcion}</p>
+                                <p className="text-[10px] text-zinc-600">Cantidad: {cantidadComponente} (combo × {comp.cantidad})</p>
+                            </div>
+                            <div className="flex flex-wrap gap-2">
+                                {areasDelComponente.map(areaId => (
+                                    <span key={areaId} className="px-4 py-2.5 rounded-lg text-sm font-bold bg-cyan-400/20 text-cyan-300 border border-cyan-500/30 flex items-center gap-1.5">
+                                        {AREA_LABELS[areaId] || areaId}
+                                        <Lock size={12} className="opacity-70" title="Incluido en el producto elegido" />
+                                    </span>
+                                ))}
+                            </div>
+
+                            {areasDelComponente.includes('EMB') && (
+                                <BordadoTechnicalUI
+                                    garmentQuantity={cantidadComponente} setGarmentQuantity={() => {}} lockedQuantity={true}
+                                    bocetoFile={comp.servicios.EMB.boceto} setBocetoFile={(f) => actions.updateComboServicioBoceto(comboItemId, 'EMB', f)}
+                                    ponchadoFiles={comp.servicios.EMB.archivos} setPonchadoFiles={(arr) => actions.updateComboServicioArchivos(comboItemId, 'EMB', arr)}
+                                    globalMaterial={globalMaterial} handleGlobalMaterialChange={actions.setGlobalMaterial}
+                                    serviceInfo={serviceInfo} userStock={userStock}
+                                    handleSpecializedFileUpload={(f) => handleSpecializedFileUpload((file) => actions.updateComboServicioBoceto(comboItemId, 'EMB', file), f)}
+                                    handleMultipleSpecializedFileUpload={(fs) => handleMultipleSpecializedFileUpload((nuevos) => actions.updateComboServicioArchivos(comboItemId, 'EMB', [...(comp.servicios.EMB.archivos || []), ...nuevos]), fs)}
+                                    compact={true} isComplement={true}
+                                    lockedSpec={comp.servicios.EMB.tecnicaOpcionNombre || ''}
+                                    compMaterial={comp.servicios.EMB.material} setCompMaterial={(m) => actions.updateComboServicioCampo(comboItemId, 'EMB', { material: m })}
+                                    compVariant={comp.servicios.EMB.variant} setCompVariant={(v) => handleComboVarianteChange(comboItemId, 'EMB', v)}
+                                    compVariants={comp.servicios.EMB.variantOptions} compMaterials={comp.servicios.EMB.materialOptions}
+                                />
+                            )}
+                            {areasDelComponente.includes('DF') && (
+                                <DtfTechnicalUI
+                                    garmentQuantity={cantidadComponente} setGarmentQuantity={() => {}} lockedQuantity={true}
+                                    dtfArchivos={comp.servicios.DF.archivos} removeDtfArchivo={(idx) => actions.updateComboServicioArchivos(comboItemId, 'DF', comp.servicios.DF.archivos.filter((_, i) => i !== idx))}
+                                    dtfBocetoFile={comp.servicios.DF.boceto} setDtfBocetoFile={(f) => actions.updateComboServicioBoceto(comboItemId, 'DF', f)}
+                                    lockedSpec={comp.servicios.DF.tecnicaOpcionNombre || ''}
+                                    dtfMaterial={comp.servicios.DF.material} dtfMaterials={comp.servicios.DF.materialOptions} setDtfMaterial={(m) => actions.updateComboServicioCampo(comboItemId, 'DF', { material: m })}
+                                    handleSpecializedFileUpload={(f) => handleSpecializedFileUpload((file) => actions.updateComboServicioBoceto(comboItemId, 'DF', file), f)}
+                                    handleMultipleSpecializedFileUpload={(fs) => handleMultipleSpecializedFileUpload((nuevos) => actions.updateComboServicioArchivos(comboItemId, 'DF', [...(comp.servicios.DF.archivos || []), ...nuevos]), fs)}
+                                    printsPerGarment={estampadoPrints} setPrintsPerGarment={actions.setEstampadoPrints}
+                                    compact={true}
+                                />
+                            )}
+                            {areasDelComponente.includes('TPU') && (
+                                <TpuTechnicalUI
+                                    garmentQuantity={cantidadComponente} setGarmentQuantity={() => {}} lockedQuantity={true}
+                                    tpuArchivos={comp.servicios.TPU.archivos} removeTpuArchivo={(idx) => actions.updateComboServicioArchivos(comboItemId, 'TPU', comp.servicios.TPU.archivos.filter((_, i) => i !== idx))}
+                                    tpuBocetoFile={comp.servicios.TPU.boceto} setTpuBocetoFile={(f) => actions.updateComboServicioBoceto(comboItemId, 'TPU', f)}
+                                    lockedSpec={comp.servicios.TPU.tecnicaOpcionNombre || ''}
+                                    tpuVariant={comp.servicios.TPU.variant} tpuVariants={comp.servicios.TPU.variantOptions} handleTpuVariantChange={(v) => handleComboVarianteChange(comboItemId, 'TPU', v)}
+                                    tpuMaterial={comp.servicios.TPU.material} tpuMaterials={comp.servicios.TPU.materialOptions} setTpuMaterial={(m) => actions.updateComboServicioCampo(comboItemId, 'TPU', { material: m })}
+                                    handleSpecializedFileUpload={(f) => handleSpecializedFileUpload((file) => actions.updateComboServicioBoceto(comboItemId, 'TPU', file), f)}
+                                    handleMultipleSpecializedFileUpload={(fs) => handleMultipleSpecializedFileUpload((nuevos) => actions.updateComboServicioArchivos(comboItemId, 'TPU', [...(comp.servicios.TPU.archivos || []), ...nuevos]), fs)}
+                                    printsPerGarment={estampadoPrints} setPrintsPerGarment={actions.setEstampadoPrints}
+                                    origin={estampadoOrigin} setOrigin={actions.setEstampadoOrigin}
+                                    compact={true}
+                                />
+                            )}
+                        </div>
+                        );
+                    })}
                 </div>
 
                 </PersonalizacionWrapper>

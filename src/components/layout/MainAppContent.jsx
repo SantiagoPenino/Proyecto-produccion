@@ -49,6 +49,7 @@ const TransportControlPage = lazyWithRetry(() => import('../pages/TransportContr
 const EcoUvFinishing = lazyWithRetry(() => import('../pages/EcoUvFinishing'));
 const EcouvConfigPage = lazyWithRetry(() => import('../pages/EcouvConfigPage'));
 const ConfigurarProductosPage = lazyWithRetry(() => import('../pages/ConfigurarProductosPage')); // Configurador de productos (prendas/combos + EcoUV embebido)
+const PlanificacionPage = lazyWithRetry(() => import('../pages/PlanificacionPage')); // Agenda/calendario de capacidad por área
 const WebRetirosPage = lazyWithRetry(() => import('../logistics/WebRetirosPage'));
 const ClientsIntegration = lazyWithRetry(() => import('../pages/ClientsIntegration'));
 import ChatWidget from '../common/ChatWidget';
@@ -675,7 +676,7 @@ const MainAppContent = ({ menuItems = [] }) => {
                 <Route path="/atencion-cliente/helpdesk" element={<HelpDeskAdminView />} />
                 <Route path="/admin/products-integration" element={<ProductsIntegration />} />
                 <Route path="/admin/special-prices" element={<SpecialPrices />} />
-                <Route path="/admin/base-prices" element={<BasePrices />} />
+                <Route path="/admin/base-prices" element={<BasePrices hideGeneralRow hideAddCurrency />} />
                 <Route path="/admin/price-profiles" element={<PriceProfiles />} />
                 <Route path="/admin/price-catalog" element={<CustomerPriceCatalogPage />} />
                 <Route path="/admin/nomencladores" element={<NomenclatorsABM />} />
@@ -918,6 +919,9 @@ const DynamicRouter = ({ menuItems }) => {
     // Configurador de Productos (11-ago): match directo por path hasta que exista el ítem
     // de menú (backend/scripts/menu_configurar_productos.sql, cuelga de Configuración).
     if (normalizedPath === '/configurar-productos') return <ConfigurarProductosPage />;
+    // Planificación (13-ago): match directo por path hasta que exista el ítem de menú
+    // (backend/scripts/menu_planificacion.sql, cuelga de Producción).
+    if (normalizedPath === '/produccion/planificacion') return <PlanificacionPage />;
     // Área TERMINAC (hermanas XEUV de terminaciones): todavía sin ítem de menú propio.
     // Match directo para que planilla/control/logística funcionen sin depender del menú.
     if (normalizedPath === '/area/terminac' || normalizedPath.startsWith('/area/terminac/')) {
@@ -962,6 +966,7 @@ const DynamicRouter = ({ menuItems }) => {
     if (menuItem.Ruta === '/produccion/terminaciones' || menuItem.Ruta === '/area/ecouv/terminaciones') return <Navigate to="/area/terminac" replace />;
     if (menuItem.Ruta === '/area/ecouv/config') return <EcouvConfigPage />;
     if (menuItem.Ruta === '/configurar-productos') return <ConfigurarProductosPage />;
+    if (menuItem.Ruta === '/produccion/planificacion') return <PlanificacionPage />;
     if (menuItem.Ruta === '/logistica' || menuItem.Ruta.toLowerCase() === '/logistica/') return <LogisticsDashboard />;
     if (menuItem.Ruta === '/ops/inventory') return <LogisticsDashboard />;
     if (menuItem.Ruta === '/inventario') return <InventoryPage />;

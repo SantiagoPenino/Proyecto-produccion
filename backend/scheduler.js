@@ -23,6 +23,12 @@ reg.registrar('estados-cuenta', {
     schedule:    'Viernes a las 00:00 hs',
 });
 
+reg.registrar('capacidad-diaria', {
+    nombre:      'Snapshot Diario de Capacidad',
+    descripcion: 'Guarda la foto de capacidad/backlog (total y urgente) de cada área en HistoricoCapacidadDiaria.',
+    schedule:    '06:00 hs diarios',
+});
+
 // ─── Función helper para correr con registro ─────────────────────────────────
 async function runJob(id, fn) {
     reg.marcarInicio(id);
@@ -101,6 +107,28 @@ async function startAutoSync(io) {
             }, msHasta);
         }
         programarEstadosCuenta();
+
+        // ── 4. SNAPSHOT DIARIO DE CAPACIDAD — 06:00 hs ─────────────────────
+        const capacidadDiariaJob = require('./jobs/capacidadDiaria.job');
+        const capacidadFn = () => capacidadDiariaJob.capturarSnapshotDiario();
+        reg.setFn('capacidad-diaria', capacidadFn);
+
+        function programarCapacidadDiaria() {
+            const ahora = new Date();
+            const proxima = new Date(ahora);
+            proxima.setHours(6, 0, 0, 0);
+            if (proxima <= ahora) proxima.setDate(proxima.getDate() + 1);
+
+            const msHasta = proxima - ahora;
+            reg.setProximaEjecucion('capacidad-diaria', proxima);
+            logger.info(`⏱️ [capacidad-diaria] Próxima captura: ${proxima.toLocaleString('es-UY')} (en ${Math.round(msHasta / 60000)} min).`);
+
+            setTimeout(async () => {
+                await runJob('capacidad-diaria', capacidadFn);
+                programarCapacidadDiaria();
+            }, msHasta);
+        }
+        programarCapacidadDiaria();
 
     } catch (error) {
         logger.error('❌ Error en startAutoSync:', error.message);

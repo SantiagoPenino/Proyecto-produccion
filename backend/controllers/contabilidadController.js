@@ -2832,6 +2832,9 @@ exports.getOrdenesAnticipo = async (req, res) => {
                -- Fecha de ingreso de la orden (Ordenes o, si vino por depósito, OrdenesDeposito).
                -- Fallback MovFecha: movimientos sin orden asociada igual tienen fecha para ordenar.
                COALESCE(erp.FechaIngreso, od.OrdFechaIngresoOrden, m.MovFecha) AS OrdFechaIngreso,
+               -- Fecha de entrega real: estado 9 = 'Entregado' en depósito. NULL si nunca se
+               -- marcó la entrega (la pre-factura muestra "Sin entrega" y ordena por ingreso).
+               CASE WHEN od.OrdEstadoActual = 9 THEN od.OrdFechaEstadoActual END AS OrdFechaEntrega,
                erp.Prioridad AS OrdPrioridad,
                ISNULL(od.OrdCantidad, 1) AS OrdCantidad,
                ISNULL(od.OrdDescuentoAplicado, 0) AS OrdDescuentoAplicado,

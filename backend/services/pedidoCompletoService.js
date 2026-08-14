@@ -116,6 +116,60 @@ function isPedidoCompletoGlobal(db, noDocERP, opts = {}) {
 }
 
 /**
+ * Pedido completo FÍSICAMENTE en un área: a diferencia de isPedidoCompletoEnArea/Global
+ * (que miran el ESTADO de la orden, donde "En Tránsito" ya cuenta como pronta), esta mira
+ * la UBICACIÓN REAL del bulto — solo cuenta como listo si el bulto de la orden ya está
+ * EN_STOCK en esa área. Hace falta cuando una orden puede estar "En Tránsito HACIA" un
+ * área intermedia (ej. de vuelta a PRO, ver FASE 5/6 de combos) sin haber llegado
+ * todavía: con el criterio de estado, "en tránsito" ya cuenta como pronta y se dispara el
+ * siguiente paso antes de tiempo (bug real visto en producción: 2 remitos parciales
+ * armados de a uno en vez de esperar a que ambos componentes estuvieran físicamente
+ * juntos en PRO).
+ *
+ * Solo cuenta órdenes cuyo ProximoServicio real ES esta área — no "cualquier orden que
+ * no sea PRO". Sin ese filtro, un paso intermedio que legítimamente NUNCA vuelve a PRO
+ * (ej. DF/TPU: imprimen el transfer y se consumen en Estampado, jamás viajan a PRO)
+ * quedaría contado como "falta" para siempre y el pedido nunca se vería completo (2do
+ * bug real, encontrado apenas se probó esta función contra un combo real). Sin órdenes
+ * que de verdad deban llegar a esta área, nunca "completo" — evita falsos positivos.
+ */
+async function isPedidoCompletoFisicamenteEnArea(db, noDocERP, areaId) {
+    if (!noDocERP || !areaId) return { completo: false, faltantes: [], totalOrdenes: 0 };
+
+    const totalRes = await makeRequest(db)
+        .input('NoDoc', sql.VarChar, String(noDocERP))
+        .input('Area', sql.VarChar, areaId)
+        .query(`
+            SELECT COUNT(*) AS Total FROM Ordenes O
+            WHERE O.NoDocERP = @NoDoc AND ${sqlOrdenNoCancelada('O')}
+              AND UPPER(LTRIM(RTRIM(ISNULL(O.AreaID,'')))) <> 'PRO'
+              AND UPPER(LTRIM(RTRIM(ISNULL(O.ProximoServicio,'')))) = UPPER(@Area)
+        `);
+    const totalOrdenes = totalRes.recordset[0]?.Total || 0;
+    if (totalOrdenes === 0) return { completo: false, faltantes: [], totalOrdenes: 0 };
+
+    const r = await makeRequest(db)
+        .input('NoDoc', sql.VarChar, String(noDocERP))
+        .input('Area', sql.VarChar, areaId)
+        .query(`
+            SELECT O.OrdenID, O.CodigoOrden, O.AreaID, O.Estado, O.EstadoenArea
+            FROM Ordenes O
+            WHERE O.NoDocERP = @NoDoc AND ${sqlOrdenNoCancelada('O')}
+              AND UPPER(LTRIM(RTRIM(ISNULL(O.AreaID,'')))) <> 'PRO'
+              AND UPPER(LTRIM(RTRIM(ISNULL(O.ProximoServicio,'')))) = UPPER(@Area)
+              AND NOT EXISTS (
+                  SELECT 1 FROM Logistica_Bultos B
+                  WHERE B.OrdenID = O.OrdenID
+                    AND B.UbicacionActual = @Area
+                    AND B.Estado = 'EN_STOCK'
+                    AND ISNULL(B.Tipocontenido, '') <> 'ENCOMIENDA'
+              )
+            ORDER BY O.OrdenID
+        `);
+    return { completo: r.recordset.length === 0, faltantes: r.recordset, totalOrdenes };
+}
+
+/**
  * Fragmento SQL para filtros inline (ej. getAreaStock): existe alguna hermana
  * de la orden con alias `ordenAlias` (misma área) que aún no está pronta.
  * Devuelve una condición EXISTS(...) lista para usar en un WHERE.
@@ -136,6 +190,7 @@ module.exports = {
     getOrdenesPedido,
     isPedidoCompletoEnArea,
     isPedidoCompletoGlobal,
+    isPedidoCompletoFisicamenteEnArea,
     sqlExistsHermanaNoPronta,
     sqlOrdenPronta,
     sqlOrdenNoCancelada,

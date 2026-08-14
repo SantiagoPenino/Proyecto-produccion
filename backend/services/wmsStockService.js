@@ -94,4 +94,49 @@ async function descontarStockWmsExterno(items) {
     return { wmsDisponible, wmsErrors };
 }
 
-module.exports = { descontarStockWmsExterno };
+// [COMBOS] Explosión de combos del configurador: una línea de venta cuyo artículo tiene
+// composición en ProductoComboItems no se descuenta a sí misma (el combo no existe en el
+// WMS) sino como sus componentes — variante WMS del componente × (cantidad por combo ×
+// cantidad vendida). Ej.: 3 × "Combo gorro y short" → 3 gorros + 3 shorts. Los artículos
+// sin composición pasan tal cual. Best-effort: si ProductoComboItems no existe todavía
+// (prod sin el configurador migrado), devuelve los items originales y no rompe la venta.
+// items: [{ ProIdProducto, wms_variante_id, Cantidad }]
+async function explotarCombos(pool, items) {
+    try {
+        const ids = [...new Set(items.map(i => parseInt(i.ProIdProducto)).filter(n => !isNaN(n)))];
+        if (!ids.length) return items;
+        const r = await pool.request().query(`
+            SELECT ProIdProducto, WmsVarianteId, Cantidad
+            FROM dbo.ProductoComboItems
+            WHERE ProIdProducto IN (${ids.join(',')})
+        `);
+        if (!r.recordset.length) return items;
+        const compPorCombo = {};
+        r.recordset.forEach(c => { (compPorCombo[c.ProIdProducto] = compPorCombo[c.ProIdProducto] || []).push(c); });
+
+        const out = [];
+        for (const it of items) {
+            const comps = compPorCombo[parseInt(it.ProIdProducto)];
+            if (!comps) { out.push(it); continue; }
+            for (const c of comps) {
+                if (!c.WmsVarianteId) {
+                    // Componente sin variante WMS mapeada: no hay qué descontar en el WMS.
+                    logger.warn(`[COMBOS] Componente sin variante WMS en combo ${it.ProIdProducto} — no se descuenta`);
+                    continue;
+                }
+                out.push({
+                    ProIdProducto: it.ProIdProducto,
+                    wms_variante_id: c.WmsVarianteId,
+                    Cantidad: (parseFloat(it.Cantidad) || 0) * (parseInt(c.Cantidad, 10) || 1)
+                });
+            }
+            logger.info(`[COMBOS] Combo ${it.ProIdProducto} x${it.Cantidad} explotado en ${comps.length} componente(s) para el descuento`);
+        }
+        return out;
+    } catch (e) {
+        logger.warn('[COMBOS] No se pudo explotar la composición (¿falta ProductoComboItems?): ' + e.message);
+        return items;
+    }
+}
+
+module.exports = { descontarStockWmsExterno, explotarCombos };

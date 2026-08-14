@@ -102,10 +102,13 @@ const saveBasePricesBulk = async (req, res) => {
 
 // Endpoint de prueba para CALCULAR precio (Simulador)
 const calculatePriceEndpoint = async (req, res) => {
-    const { codArticulo, cantidad, clienteId, variables, targetCurrency, extraProfileIds, areaId, datoTecnicoValue } = req.body;
+    const { codArticulo, proIdProducto, cantidad, clienteId, variables, targetCurrency, extraProfileIds, areaId, datoTecnicoValue } = req.body;
     try {
         const fallbackCurrency = targetCurrency || 'AUTO';
-        const result = await PricingService.calculatePrice(codArticulo, parseFloat(cantidad) || 1, clienteId, extraProfileIds || [], variables || {}, fallbackCurrency, null, areaId, datoTecnicoValue);
+        // CodArticulo puede repetirse entre áreas (ej. '28' = Back pet ECOUV y Rib 1,70 SB):
+        // si el caller ya sabe el ProIdProducto exacto se prioriza vía descriptor objeto.
+        const prodDescriptor = proIdProducto ? { proIdProducto: parseInt(proIdProducto, 10), codArticulo } : codArticulo;
+        const result = await PricingService.calculatePrice(prodDescriptor, parseFloat(cantidad) || 1, clienteId, extraProfileIds || [], variables || {}, fallbackCurrency, null, areaId, datoTecnicoValue);
         res.json(result);
     } catch (e) {
         res.status(500).json({ error: e.message });
@@ -170,10 +173,14 @@ const saveTieredPricesBulk = async (req, res) => {
                     // INSERT (o MERGE para evitar duplicados)
                     let finalProId = (item.proIdProducto !== undefined && item.proIdProducto !== null) ? item.proIdProducto : null;
                     let finalCodGrupo = item.codGrupo || null;
+                    // CodArticulo es NOT NULL en PerfilesItems: para la fila general (TOTAL,
+                    // ProIdProducto 0/NULL) no hay artículo real, así que cae a 'TOTAL'.
+                    let finalCodArticulo = item.codArticulo || finalCodGrupo || 'TOTAL';
 
                     await request
                         .input('PerfilID', sql.Int, item.perfilId)
                         .input('ProId', sql.Int, finalProId)
+                        .input('CodArticulo', sql.NVarChar, finalCodArticulo)
                         .input('CodGrupo', sql.VarChar, finalCodGrupo)
                         .input('TipoRegla', sql.NVarChar, item.tipoRegla)
                         .input('Valor', sql.Decimal(18, 4), item.valor)
@@ -186,8 +193,8 @@ const saveTieredPricesBulk = async (req, res) => {
                             WHEN MATCHED THEN
                                 UPDATE SET TipoRegla = @TipoRegla, Valor = @Valor, MonIdMoneda = @MonIdMoneda
                             WHEN NOT MATCHED THEN
-                                INSERT (PerfilID, ProIdProducto, CodGrupo, TipoRegla, Valor, MonIdMoneda, CantidadMinima)
-                                VALUES (@PerfilID, @ProId, @CodGrupo, @TipoRegla, @Valor, @MonIdMoneda, @CantidadMinima);
+                                INSERT (PerfilID, ProIdProducto, CodArticulo, CodGrupo, TipoRegla, Valor, MonIdMoneda, CantidadMinima)
+                                VALUES (@PerfilID, @ProId, @CodArticulo, @CodGrupo, @TipoRegla, @Valor, @MonIdMoneda, @CantidadMinima);
                         `);
                 }
             }

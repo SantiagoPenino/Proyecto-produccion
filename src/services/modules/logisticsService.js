@@ -83,6 +83,17 @@ const logisticsService = {
         return response.data;
     },
 
+    // --- CONTROL PRO (FASE 6) ---
+    getPedidosCompletosPRO: async () => {
+        const response = await api.get('/logistics/pro/pedidos-completos');
+        return response.data;
+    },
+
+    aprobarControlPRO: async (noDocERP) => {
+        const response = await api.post(`/logistics/pro/pedidos/${encodeURIComponent(noDocERP)}/aprobar-control`);
+        return response.data;
+    },
+
     // --- DASHBOARD ---
     getDashboard: async (areaId) => {
         const response = await api.get('/logistics/dashboard', { params: { areaId } });

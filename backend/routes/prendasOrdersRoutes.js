@@ -91,13 +91,61 @@ router.get('/productos-terminados', verifyToken, async (req, res) => {
 // [PRENDAS] Servicios de decoración (Bordado/DTF/TPU) incluidos por defecto en el producto —
 // ver ProductoTerminadoServicios. Al elegir el producto en "Fabricar a Medida", el front
 // activa estos solos y los bloquea (Obligatorio=1 = no se pueden apagar).
+//
+// [COMBOS] Si el producto es un combo (tiene filas en ProductoComboItems, las carga el
+// Configurador), la respuesta suma esCombo:true + componentes[]: cada componente lleva sus
+// PROPIOS servicios (ProductoComboItemServicios) — ej. el Gorro borda, el Short estampa.
+// Toda fila de ProductoComboItemServicios se pide igual que un Obligatorio=1 (el bit
+// "Incluido" es de PRECIO — si se cobra aparte o no — no decide si hace falta pedirlo).
+// Mismas queries que usa configuradorController.getProductoFicha para armar comboItems +
+// servicios. Sin combo, "data" sale exactamente como antes — no cambia nada para el caso simple.
 router.get('/productos-terminados/:proIdProducto/servicios', verifyToken, async (req, res) => {
     try {
         const pool = await getPool();
+        const proId = parseInt(req.params.proIdProducto, 10);
         const r = await pool.request()
-            .input('PID', sql.Int, parseInt(req.params.proIdProducto, 10))
+            .input('PID', sql.Int, proId)
             .query(`SELECT AreaID, Obligatorio FROM dbo.ProductoTerminadoServicios WHERE ProIdProducto = @PID`);
-        res.json({ success: true, data: r.recordset });
+
+        const comboItems = await pool.request()
+            .input('PID', sql.Int, proId)
+            .query(`
+                SELECT ci.ID, ci.ItemProIdProducto, ci.WmsVarianteId, ci.Cantidad,
+                       LTRIM(RTRIM(a.Descripcion)) AS ItemDescripcion
+                FROM dbo.ProductoComboItems ci
+                LEFT JOIN dbo.Articulos a ON a.ProIdProducto = ci.ItemProIdProducto
+                WHERE ci.ProIdProducto = @PID ORDER BY ISNULL(ci.Orden, 999), ci.ID
+            `);
+        if (!comboItems.recordset.length) {
+            return res.json({ success: true, data: r.recordset });
+        }
+
+        const comboSrv = await pool.request()
+            .input('PID', sql.Int, proId)
+            .query(`
+                SELECT s.ComboItemID, s.AreaID, s.TecnicaOpcionID, s.Incluido,
+                       LTRIM(RTRIM(t.Nombre)) AS TecnicaOpcionNombre,
+                       LTRIM(RTRIM(t.CodArticulo)) AS TecnicaOpcionCodArticulo
+                FROM dbo.ProductoComboItemServicios s
+                INNER JOIN dbo.ProductoComboItems ci ON ci.ID = s.ComboItemID
+                LEFT JOIN dbo.TecnicaOpciones t ON t.TecnicaOpcionID = s.TecnicaOpcionID
+                WHERE ci.ProIdProducto = @PID
+            `);
+
+        const componentes = comboItems.recordset.map(ci => ({
+            comboItemId: ci.ID,
+            itemProIdProducto: ci.ItemProIdProducto,
+            descripcion: ci.ItemDescripcion || `Producto ${ci.ItemProIdProducto}`,
+            wmsVarianteId: ci.WmsVarianteId,
+            cantidad: ci.Cantidad,
+            // tecnicaOpcionId NULL = "opción libre" (el cliente/vendedor elige en el pedido);
+            // con valor = técnica FIJA por el combo (se muestra como dato, no como selector).
+            servicios: comboSrv.recordset
+                .filter(s => s.ComboItemID === ci.ID)
+                .map(s => ({ areaId: s.AreaID, tecnicaOpcionId: s.TecnicaOpcionID, tecnicaOpcionNombre: s.TecnicaOpcionNombre, tecnicaOpcionCodArticulo: s.TecnicaOpcionCodArticulo, incluido: !!s.Incluido }))
+        }));
+
+        res.json({ success: true, data: r.recordset, esCombo: true, componentes });
     } catch (e) {
         logger.warn(`[Prendas] productos-terminados/servicios: ${e.message}`);
         res.json({ success: true, data: [], warning: e.message });
