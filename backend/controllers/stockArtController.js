@@ -1,18 +1,28 @@
 const { getPool, sql } = require('../config/db');
 const logger = require('../utils/logger');
 
-const TIPOS_VALIDOS = ['MATERIAL', 'PRODUCTO_TERMINADO', 'TERMINACION'];
+// PRODUCTO_LOCAL (12-ago): mismo tratamiento que PRODUCTO_TERMINADO en precio
+// (unidad, cerrado) y en el freno de retiro WMS antes de decorar — ver los
+// switches ampliados en webOrdersController/prendasOrdersController. Distingue
+// "sale del stock del local" de "se confecciona a pedido" sin duplicar familias.
+const TIPOS_VALIDOS = ['MATERIAL', 'PRODUCTO_TERMINADO', 'TERMINACION', 'PRODUCTO_LOCAL'];
 
 // Listar StockArt (todas las variantes) con conteo de artículos por CodStock
 exports.getStockArt = async (req, res) => {
     try {
-        const { grupo } = req.query;
+        const { grupo, supflia } = req.query;
         const pool = await getPool();
         const request = pool.request();
         let where = '';
         if (grupo) {
             request.input('Grupo', sql.VarChar, grupo);
             where = "WHERE LTRIM(RTRIM(S.Grupo)) = LTRIM(RTRIM(@Grupo))";
+        } else if (supflia) {
+            // 12-ago: filtro por SupFlia (más amplio que Grupo) — el configurador lee
+            // así todas las variantes de "Prendas" aunque vivan en Grupos distintos
+            // (2.1 familias por tipo, 2.2 Combos, 2.3 Productos del Local...).
+            request.input('SupFlia', sql.VarChar, supflia);
+            where = "WHERE LTRIM(RTRIM(S.SupFlia)) = LTRIM(RTRIM(@SupFlia))";
         }
         const r = await request.query(`
             SELECT

@@ -13,6 +13,7 @@ import {
     X,
     Truck,
     Crown,
+    Layers,
     ChevronDown,
     CreditCard,
     History,
@@ -326,6 +327,9 @@ export const MainLayout = ({ children }) => {
                     --- Fin Servicios Collapsible --- */}
 
                     {/* <NavItem to="/portal/factory" icon={Factory} label="Fábrica / Estado" /> */}
+                    {/* Mis Recursos: planes de metros del cliente (comprado / usado / restante) */}
+                    <NavItem to="/portal/recursos" icon={Layers} label="Mis Recursos" />
+
                     <NavItem to="/portal/pickup" icon={Package} label="Retiro de Pedidos" />
                     <NavItem to="/portal/payments" icon={CreditCard} label="Pagos Pendientes" />
                     <NavItem to="/portal/history" icon={History} label="Historial" />

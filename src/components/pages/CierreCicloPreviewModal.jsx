@@ -128,8 +128,9 @@ export default function CierreCicloPreviewModal({
       }
       return { ...m, detalles };
     });
-    // Órdenes de más nueva a más vieja (fecha de ingreso de la orden; sin fecha → al fondo)
-    list.sort(porFechaDesc(m => m.OrdFechaIngreso || m.MovFecha));
+    // Órdenes de más nueva a más vieja. Manda la fecha de ENTREGA (depósito); si la orden
+    // no se marcó entregada cae a la de ingreso, así ninguna queda huérfana al fondo.
+    list.sort(porFechaDesc(m => m.OrdFechaEntrega || m.OrdFechaIngreso || m.MovFecha));
     setMovs(list);
 
     // Moneda del comprobante:
@@ -296,7 +297,7 @@ export default function CierreCicloPreviewModal({
             }
             return { ...m, detalles };
           });
-          listFresca.sort(porFechaDesc(m => m.OrdFechaIngreso || m.MovFecha));
+          listFresca.sort(porFechaDesc(m => m.OrdFechaEntrega || m.OrdFechaIngreso || m.MovFecha));
           setMovs(listFresca);
           setDetallesEditados({}); // limpiar ediciones ya persistidas
         } catch (_) { /* silencioso — los datos locales siguen siendo válidos */ }
@@ -937,7 +938,8 @@ export default function CierreCicloPreviewModal({
               <tbody className="divide-y divide-slate-100 text-slate-700">
                 {movs.map(m => {
                   const isExcluido = excluidos.has(m.MovIdMovimiento);
-                  const fechaOrdenStr = fmtFecha(m.OrdFechaIngreso || m.MovFecha, '');
+                  const fechaIngresoStr = fmtFecha(m.OrdFechaIngreso || m.MovFecha, '');
+                  const fechaEntregaStr = fmtFecha(m.OrdFechaEntrega, '');
 
                   return (
                     <React.Fragment key={m.MovIdMovimiento}>
@@ -948,11 +950,18 @@ export default function CierreCicloPreviewModal({
                             className="w-4 h-4 rounded border-slate-300 text-indigo-500 focus:ring-indigo-500 cursor-pointer" />
                         </td>
                         <td colSpan={5} className="px-4 py-3 pb-2">
-                          <span className="font-black text-slate-800 block text-[13px]">{m.OrdNombreTrabajo || 'Sin descripción'}</span>
+                          <span className="font-black text-slate-800 text-[13px]">{m.OrdNombreTrabajo || 'Sin descripción'}</span>
+                          <span className="font-black text-indigo-600 text-[13px]"> — {m.OrdCodigoOrden || m.MovConcepto}</span>
                           <span className="text-[11px] font-medium text-slate-500">
-                            {fechaOrdenStr && <span className="font-bold">{fechaOrdenStr}</span>}
-                            {fechaOrdenStr ? ' — ' : ''}
-                            <span className="font-black text-indigo-600">{m.OrdCodigoOrden || m.MovConcepto}</span>
+                            {m.OrdCodigoOrden ? (
+                              <>
+                                {fechaIngresoStr && <> · Ingreso <span className="font-bold">{fechaIngresoStr}</span></>}
+                                {' · '}
+                                {fechaEntregaStr
+                                  ? <>Entregada <span className="font-bold">{fechaEntregaStr}</span></>
+                                  : <span className="font-bold text-amber-600" title="No está marcada como Entregado en depósito — se ordena por la fecha de ingreso">Sin entrega</span>}
+                              </>
+                            ) : (fechaIngresoStr ? <> · <span className="font-bold">{fechaIngresoStr}</span></> : null)}
                           </span>
                         </td>
                       </tr>

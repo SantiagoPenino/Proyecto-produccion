@@ -13,6 +13,8 @@ import ConfigFlowsModal from '../modals/config/ConfigFlowsModal';
 import ConfigStatusesModal from '../modals/config/ConfigStatusesModal';
 import ConfigRouteRulesModal from '../modals/config/ConfigRouteRulesModal';
 import ConfigDeliveryTimesModal from '../modals/config/ConfigDeliveryTimesModal';
+import ConfigHorarioLaboralModal from '../modals/config/ConfigHorarioLaboralModal';
+import ConfigFeriadosModal from '../modals/config/ConfigFeriadosModal';
 import ConfigWebServicesModal from '../modals/config/ConfigWebServicesModal';
 import ConfigSyncModal from '../modals/config/ConfigSyncModal';
 import ConfigSincroArticulosModal from '../modals/config/ConfigSincroArticulosModal';
@@ -356,6 +358,8 @@ export default function ConfigPage({ onBack }) {
                         <ConfigCard title="Insumos" subtitle={`${details.insumos.length} materiales`} icon="fa-boxes-stacked" colorClass="from-amber-400 to-orange-500" onClick={() => setActiveModal('insumos')} />
                         <ConfigCard title="Rutas" subtitle="Origen - Destino - Prioridad" icon="fa-route" colorClass="from-violet-400 to-fuchsia-600" onClick={() => setActiveModal('rules')} />
                         <ConfigCard title="Tiempos" subtitle="Entrega (Horas/Días)" icon="fa-hourglass-half" colorClass="from-amber-400 to-orange-600" onClick={() => setActiveModal('times')} />
+                        <ConfigCard title="Horario Laboral" subtitle="Días y horas de trabajo" icon="fa-calendar-days" colorClass="from-teal-400 to-cyan-600" onClick={() => setActiveModal('horario')} />
+                        <ConfigCard title="Feriados" subtitle="Días no laborables" icon="fa-umbrella-beach" colorClass="from-rose-400 to-red-600" onClick={() => setActiveModal('feriados')} />
                         <ConfigCard title="Estados" subtitle="Estatus visuales" icon="fa-list-check" colorClass="from-slate-500 to-slate-700" onClick={() => setActiveModal('statuses')} />
                     </div>
                 </div>
@@ -378,6 +382,8 @@ export default function ConfigPage({ onBack }) {
             {activeModal === 'flows' && <ConfigFlowsModal isOpen={true} onClose={() => setActiveModal(null)} />}
             {activeModal === 'rules' && <ConfigRouteRulesModal isOpen={true} onClose={() => setActiveModal(null)} />}
             {activeModal === 'times' && <ConfigDeliveryTimesModal isOpen={true} onClose={() => setActiveModal(null)} />}
+            {activeModal === 'horario' && <ConfigHorarioLaboralModal isOpen={true} onClose={() => setActiveModal(null)} />}
+            {activeModal === 'feriados' && <ConfigFeriadosModal isOpen={true} onClose={() => setActiveModal(null)} />}
             {activeModal === 'statuses' && <ConfigStatusesModal isOpen={true} onClose={() => { setActiveModal(null); loadAreaDetails(selectedAreaId); }} areaCode={selectedAreaId} initialStatuses={details.estados} areas={areas} />}
             {activeModal === 'webservices' && <ConfigWebServicesModal isOpen={true} onClose={() => setActiveModal(null)} />}
             {activeModal === 'syncs' && <ConfigSyncModal isOpen={true} onClose={() => setActiveModal(null)} />}

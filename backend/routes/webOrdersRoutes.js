@@ -200,6 +200,9 @@ router.post('/orden/:ordenId/boceto-aprobado', verifyToken, impersonarCliente, u
 // precios quedan en las rutas internas (/api/wms), que un cliente no alcanza.
 const tiendaController = require('../controllers/tiendaController');
 router.get('/tienda/catalogo', verifyToken, impersonarCliente, tiendaController.getTiendaCatalogo);
+// Checkout F2: compra de TERMINADOS — cliente del token, precios recalculados en el server
+// (el body solo dice qué y cuánto), VEN- + ancla + remito automático. Se paga al retirar.
+router.post('/tienda/checkout', verifyToken, impersonarCliente, tiendaController.checkoutTienda);
 
 // TPU: "Mis matrices" — pedidos TPU finalizados del cliente con arte, para reusar.
 router.get('/mis-matrices', verifyToken, impersonarCliente, webOrdersController.getMisMatrices);

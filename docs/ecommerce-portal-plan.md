@@ -1,6 +1,6 @@
 # E-commerce del portal de clientes — investigación y plan
 
-**Fecha:** 10/08/2026 · **Estado:** DEFINIDO — decisiones de negocio tomadas (ver §4), esperando OK para implementar.
+**Fecha:** 10/08/2026 · **Estado:** EN IMPLEMENTACIÓN — F0/F1 hechas el 10/08, F2 (checkout) el 12/08; siguen F3 (precarga personalizados/confeccionados), F4 (admin) y F5 (post-venta).
 
 Objetivo: una tienda en el portal de clientes que liste **productos terminados**, **productos
 personalizados** y **productos confeccionados**, apoyada en lo que ya existe detrás de
@@ -103,14 +103,42 @@ en la app interna (vendedor/atención al cliente); el portal del cliente no ve n
     que lleva al flujo de pedido correspondiente con el producto precargado
     (`location.state`); el precio lo pone la cotización de siempre (auto-cotización
     ERP/vendedor), igual que cualquier pedido de producción de hoy.
-- **F2 — Checkout de terminados**: `POST /web-orders/tienda/checkout` — solo stock:
+- **F2 — Checkout de terminados** ✅ **IMPLEMENTADA 12/08/2026**
+  (`tiendaController.checkoutTienda` + ruta `POST /web-orders/tienda/checkout` con
+  `verifyToken + impersonarCliente`; front: selector de envío + botón activo + pantalla
+  de éxito con el código VEN en el carrito de `TiendaView.jsx`. Validación local
+  read-only: re-precio sobre artículos WMS reales OK, columnas del INSERT presentes,
+  FormasEnvio 1=Retiro/2=Encomienda, cotización viva. Pendiente: reinicio backend +
+  prueba E2E con login + deploy — sin SQL nuevo, la tabla se auto-crea): `POST
+  /web-orders/tienda/checkout` — solo stock:
   - lógica VEN- de `wmsController.createOrder` (PedidosCobranza + detalle + ancla PRO
-    `VENTA_DIRECTA` + remito Print Station), con cliente del token;
+    `VENTA_DIRECTA` + remito Print Station), con cliente del token; el ancla lleva
+    además `ModoRetiro` = forma de envío elegida;
+  - **precios recalculados en el server** desde `PreciosBase`/`precio_excepcion` (el body
+    solo dice qué y cuánto) y solo para publicados `TERMINADO` — un cliente no puede
+    mandarse su propio precio ni comprar no-publicados;
+  - moneda: regla del carrito interno WMS (algún ítem USD → pedido entero USD, pesos
+    convertidos con la cotización vigente);
   - forma de envío Retiro en el Local / Encomienda (patrón ECOUV);
   - cobro: **pagar al retirar** — `EstadoCobro='PENDIENTE'` → cae solo en Pagos
     Pendientes/caja como cualquier retiro. MP queda para después vía flag `PagoOnline`.
   - **Sin gate de stock**: se vende también sin stock (el número del WMS es informativo,
-    con leyenda "a pedido" si está en 0).
+    con leyenda "a pedido" si está en 0). **Excepción: los COMBOS** (ver abajo).
+- **F2b — Combos del configurador** ✅ **IMPLEMENTADA 12/08/2026**. Un combo
+  (`ProductoComboItems`, lo carga el configurador de productos) no existe en el WMS: se
+  vende como uno y se mueve como sus componentes.
+  - **Descuento**: `wmsStockService.explotarCombos` — antes de descontar, la línea del
+    combo se reemplaza por sus componentes (variante WMS × cantidad por combo ×
+    cantidad vendida). Vender 3 combos rebaja 3 gorros + 3 shorts. Enganchado en
+    `logisticaWmsController.confirmPreparation` (el paso "Stock descontado"), así que
+    vale también para las ventas de la pantalla interna, no solo para la tienda.
+  - **Visibilidad**: el stock del combo es el **armable** = `min(stock componente ÷
+    cantidad por combo)`. Si **algún** componente está en 0, el combo **no aparece** en
+    el catálogo del portal (única excepción a "se vende sin stock": no se puede prometer
+    un combo que no se puede armar). Si el WMS no contesta, no hay dato para afirmar que
+    falte stock → el combo se muestra con stock "sin dato".
+  - Sin SQL nuevo: `ProductoComboItems` ya la crea el configurador; en una base sin esa
+    tabla el catálogo y el descuento siguen funcionando como antes.
 - **F3 — Flujos de personalizados/confeccionados**: la precarga desde la ficha.
   Personalizados → deep-link al form del servicio (`/portal/order/:serviceId`) con el
   producto/cantidad precargados. Confeccionados → definir la variante cliente del flujo

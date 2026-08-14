@@ -42,7 +42,12 @@ const CAMPOS_ENRIQUECIDOS = `
     (
         SELECT ao.ArchivoID, ao.NombreArchivo, ao.Copias, ao.Piezas, ao.MetrosCorte,
                ao.Metros, ao.Ancho, ao.Alto, ao.PiezasTrabajadas, ao.PiezasControladas,
-               ao.RutaAlmacenamiento
+               ao.RutaAlmacenamiento,
+               -- [BORDADO] El diseño: cuántas puntadas lleva y con qué hilos y
+               -- puntadas se borda cada parte. Es lo que el bordador necesita ver
+               -- antes de enhebrar; sin esto tenía que sacarle los colores a ojo
+               -- a una imagen.
+               ao.PuntadasEstimadas, ao.PaletaBordado
         FROM ArchivosOrden ao
         WHERE ao.OrdenID = o.OrdenID AND ao.Piezas IS NOT NULL
         ORDER BY ao.ArchivoID
@@ -129,9 +134,14 @@ function enriquecerPreview(row) {
             ? `https://drive.google.com/thumbnail?id=${driveId}&sz=w300`
             : `/thumbnails/${encodeURIComponent(row.CodigoOrden)}/${f.RefID}.jpg`;
         const tipo = (f.TipoArchivo || '').toUpperCase();
-        const esBoceto = tipo.includes('BOCETO');
-        const esLogo = tipo.includes('LOGO') || tipo.includes('MATRIZ');
-        return { ...f, previewUrl, esBoceto, esLogo };
+        // [BORDADO] El prediseño se chequea PRIMERO y se excluye de las otras dos
+        // categorías: es el arte que coloreó el cliente y es solo REFERENCIA — la
+        // matriz la hace igual un diseñador. Si cayera como "logo", el bordador
+        // podría ponchar sobre él creyendo que es el arte original.
+        const esPrediseno = tipo.includes('PREDISENO');
+        const esBoceto = !esPrediseno && tipo.includes('BOCETO');
+        const esLogo = !esPrediseno && (tipo.includes('LOGO') || tipo.includes('MATRIZ'));
+        return { ...f, previewUrl, esBoceto, esLogo, esPrediseno };
     });
     // Compat con lo que ya pintaba la tarjeta chica de la bandeja (primer archivo, cualquiera).
     row.PreviewUrl = row.Referencias[0]?.previewUrl || null;
@@ -140,13 +150,20 @@ function enriquecerPreview(row) {
     // [CORTE] Tizadas con su avance propio (trabajo/control por archivo).
     let tizadas = [];
     try { tizadas = row.TizadasJson ? JSON.parse(row.TizadasJson) : []; } catch (e) { tizadas = []; }
-    row.Tizadas = tizadas.map(t => ({
-        ...t,
-        // Total de piezas de ESE archivo = piezas de la tizada × veces que se corta
-        PiezasTotal: (parseInt(t.Piezas) || 0) * (parseInt(t.Copias) || 1),
-        MetrosCorteTotal: (parseFloat(t.MetrosCorte) || 0) * (parseInt(t.Copias) || 1),
-        MetrosTelaTotal: (parseFloat(t.Metros) || 0) * (parseInt(t.Copias) || 1),
-    }));
+    row.Tizadas = tizadas.map(t => {
+        // [BORDADO] La paleta viaja como JSON en la columna: se entrega ya parseada
+        // para que la pantalla no tenga que saber que era texto.
+        let paleta = [];
+        try { paleta = t.PaletaBordado ? JSON.parse(t.PaletaBordado) : []; } catch (e) { paleta = []; }
+        return {
+            ...t,
+            Paleta: paleta,
+            // Total de piezas de ESE archivo = piezas de la tizada × veces que se corta
+            PiezasTotal: (parseInt(t.Piezas) || 0) * (parseInt(t.Copias) || 1),
+            MetrosCorteTotal: (parseFloat(t.MetrosCorte) || 0) * (parseInt(t.Copias) || 1),
+            MetrosTelaTotal: (parseFloat(t.Metros) || 0) * (parseInt(t.Copias) || 1),
+        };
+    });
     delete row.TizadasJson;
     return row;
 }

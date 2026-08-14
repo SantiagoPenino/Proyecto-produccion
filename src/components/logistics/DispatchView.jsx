@@ -345,8 +345,12 @@ const DispatchView = ({ selectedOrders: initialOrders = [], areaFilter, originAr
             setSelectedStockItems([]); // limpiar selección tras generar el remito (también la elevada al padre)
 
         } catch (error) {
-            toast.error("Error: " + error.message);
-            setLogs(prev => [...prev, `❌ Error: ${error.message}`]);
+            // El backend manda el motivo real (ej. candado de "pedido debe salir completo
+            // del área") en response.data.error — sin esto se veía el genérico de axios
+            // ("Request failed with status code 400"), que no dice qué falta ni por qué.
+            const detalle = error.response?.data?.error || error.message;
+            toast.error("Error: " + detalle);
+            setLogs(prev => [...prev, `❌ Error: ${detalle}`]);
         } finally {
             setLoading(false);
         }

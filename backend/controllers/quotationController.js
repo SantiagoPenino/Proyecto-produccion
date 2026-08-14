@@ -124,7 +124,11 @@ exports.getQuotation = async (req, res) => {
                     O.AreaID,
                     O.Prioridad,
                     ISNULL(CME.AreaID_Interno, O.AreaID) as AreaIDInterna,
-                    ISNULL(A.Descripcion, A.CodArticulo) as NombreArticulo
+                    ISNULL(A.Descripcion, A.CodArticulo) as NombreArticulo,
+                    -- [COMBOS] Distingue la PRO "de precio" (NULL) de las PRO "de retiro" por
+                    -- componente (con ComboItemID) — ver QuotationEditModal.jsx, que antes
+                    -- tomaba "la primera línea de área PRO" sin saber que puede haber varias.
+                    O.ComboItemID
                 FROM PedidosCobranzaDetalle PCD
                 LEFT JOIN Ordenes O WITH(NOLOCK) ON PCD.OrdenID = O.OrdenID
                 LEFT JOIN Articulos A WITH(NOLOCK) ON A.ProIdProducto = PCD.ProIdProducto

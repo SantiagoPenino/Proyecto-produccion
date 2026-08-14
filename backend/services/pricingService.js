@@ -447,11 +447,18 @@ class PricingService {
             grouped[r.PerfilID].push(r);
         });
         Object.values(grouped).forEach(rules => {
+            // Gana el escalón de cantidad más alto que corresponde (CantidadMinima <= Qty ya
+            // filtrado en el WHERE); "es la regla propia del producto" solo desempata cuando
+            // DOS reglas caen en el MISMO escalón (una general y una específica a la vez).
+            // Antes se ordenaba al revés: una regla propia en un escalón bajo (ej. Min 15) le
+            // ganaba a la regla General de un escalón más alto que sí correspondía (ej. Min 100
+            // para un pedido de 101 u.), y el pedido terminaba cobrando el precio equivocado.
             rules.sort((a, b) => {
+                const cantDiff = (b.CantidadMinima || 0) - (a.CantidadMinima || 0);
+                if (cantDiff !== 0) return cantDiff;
                 const aExact = (a.CodArticulo || '').toString().trim() === cleanCod ? 1 : 0;
                 const bExact = (b.CodArticulo || '').toString().trim() === cleanCod ? 1 : 0;
-                if (aExact !== bExact) return bExact - aExact;
-                return (b.CantidadMinima || 0) - (a.CantidadMinima || 0);
+                return bExact - aExact;
             });
             reglasFinales.push(rules[0]);
             traceDecision += `  > GANADORA para Perfil ${rules[0].NombrePerfil}: Art=${rules[0].CodArticulo} [Min=${rules[0].CantidadMinima}] (Se descartan las demás del mismo perfil si las hubiera)\n`;

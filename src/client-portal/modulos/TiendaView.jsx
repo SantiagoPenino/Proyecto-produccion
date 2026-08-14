@@ -2,7 +2,8 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
     ShoppingCart, Search, Package, Plus, Minus, Trash2, X,
-    Store, ArrowRight, ImageOff, Sparkles, Scissors
+    Store, ArrowRight, ImageOff, Sparkles, Scissors,
+    CheckCircle2, Loader2, MapPin, Truck
 } from 'lucide-react';
 import { apiClient } from '../api/apiClient';
 import { useToast } from '../pautas/Toast';
@@ -16,7 +17,9 @@ import { useToast } from '../pautas/Toast';
  * cotizar al momento: su ficha muestra "precio a cotizar" e inicia un pedido normal
  * (F3 les va a precargar el producto en el form; por ahora llevan al catálogo de servicios).
  *
- * El checkout real es F2 — el botón del carrito queda deshabilitado con el aviso.
+ * Checkout (F2): forma de envío Retiro/Encomienda + POST /web-orders/tienda/checkout.
+ * El server recalcula precios (acá solo viaja qué y cuánto) y devuelve el código VEN-;
+ * sin pago online: se paga al retirar (o al coordinar la encomienda).
  * Carrito persistido en localStorage ('tienda_carrito'), fusionando por producto+variante.
  */
 
@@ -57,6 +60,49 @@ export const TiendaView = () => {
     });
     useEffect(() => { localStorage.setItem('tienda_carrito', JSON.stringify(carrito)); }, [carrito]);
 
+    // ── Checkout (F2) ────────────────────────────────────────────────────────
+    // Forma de envío: mismo nomenclador FormasEnvio del resto del portal, y como en
+    // ECOUV solo se ofrecen Retiro en el Local y Encomienda. Default: Retiro.
+    const [formasEnvio, setFormasEnvio] = useState([]);
+    const [formaEnvioId, setFormaEnvioId] = useState(null);
+    const [comprando, setComprando] = useState(false);
+    const [compraOk, setCompraOk] = useState(null);       // respuesta del checkout (código VEN...)
+    useEffect(() => {
+        apiClient.get('/nomenclators/shipping-methods')
+            .then(res => {
+                const lista = res.success ? (res.data || []) : [];
+                const permitidas = lista.filter(f => /retiro|encomienda/i.test(f.Nombre || ''));
+                setFormasEnvio(permitidas);
+                setFormaEnvioId(prev => prev ?? (
+                    permitidas.find(f => /retiro/i.test(f.Nombre || ''))?.ID ?? permitidas[0]?.ID ?? null
+                ));
+            })
+            .catch(() => setFormasEnvio([]));
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
+
+    const confirmarCompra = async () => {
+        if (comprando || carrito.length === 0) return;
+        setComprando(true);
+        try {
+            // El server recalcula precios y moneda desde PreciosBase (acá solo va qué y cuánto).
+            const res = await apiClient.post('/web-orders/tienda/checkout', {
+                items: carrito.map(it => ({
+                    proIdProducto: it.proIdProducto,
+                    wmsVarianteId: it.wmsVarianteId,
+                    cantidad: it.cantidad,
+                })),
+                formaEnvioId: formaEnvioId || null,
+            });
+            setCompraOk(res);
+            setCarrito([]);   // el carrito ya es pedido: se vacía también en localStorage
+        } catch (e) {
+            addToast(e.message || 'No pudimos confirmar la compra. Probá de nuevo.', 'error');
+        } finally {
+            setComprando(false);
+        }
+    };
+
     useEffect(() => {
         apiClient.get('/web-orders/tienda/catalogo')
             .then(res => {
@@ -90,8 +136,10 @@ export const TiendaView = () => {
         carrito.forEach(it => { t[it.moneda] = (t[it.moneda] || 0) + (it.precio * it.cantidad); });
         return t;
     }, [carrito]);
-    // Aproximado en pesos cuando conviven monedas (informativo; el cobro real es F2/caja).
-    const totalAproxUYU = (totales.UYU || 0) + (cotizacionDolar ? (totales.USD || 0) * cotizacionDolar : 0);
+    // Con monedas mezcladas el pedido se registra TODO en dólares (misma regla que el
+    // carrito interno del WMS y que aplica el checkout en el server): se muestra el
+    // equivalente para que el total confirmado no sorprenda.
+    const totalAproxUSD = (totales.USD || 0) + (cotizacionDolar ? (totales.UYU || 0) / cotizacionDolar : 0);
     const monedasMezcladas = Object.keys(totales).length > 1;
 
     const agregarAlCarrito = (producto, variante, cantidad) => {
@@ -250,13 +298,46 @@ export const TiendaView = () => {
             {/* Carrito */}
             {carritoAbierto && (
                 <div className="fixed inset-0 z-[9000]">
-                    <div className="absolute inset-0 bg-black/70" onClick={() => setCarritoAbierto(false)} />
+                    <div className="absolute inset-0 bg-black/70" onClick={() => { setCarritoAbierto(false); setCompraOk(null); }} />
                     <aside className="absolute right-0 top-0 h-full w-full max-w-md bg-custom-dark border-l border-zinc-800 flex flex-col">
                         <div className="p-5 border-b border-zinc-800 flex items-center justify-between">
                             <h2 className="font-black text-zinc-100 flex items-center gap-2"><ShoppingCart size={18} /> Tu carrito</h2>
-                            <button onClick={() => setCarritoAbierto(false)} className="w-8 h-8 rounded-lg border border-zinc-800 text-zinc-500 hover:text-zinc-200 flex items-center justify-center"><X size={16} /></button>
+                            <button onClick={() => { setCarritoAbierto(false); setCompraOk(null); }} className="w-8 h-8 rounded-lg border border-zinc-800 text-zinc-500 hover:text-zinc-200 flex items-center justify-center"><X size={16} /></button>
                         </div>
 
+                        {compraOk ? (
+                            /* Compra confirmada: el pedido ya existe (código VEN), el carrito quedó vacío. */
+                            <div className="flex-1 overflow-y-auto p-6 flex flex-col items-center justify-center text-center space-y-4">
+                                <CheckCircle2 size={52} className="text-emerald-400" />
+                                <div>
+                                    <p className="text-lg font-black text-zinc-100">¡Compra confirmada!</p>
+                                    <p className="text-sm text-zinc-500 mt-1">Tu pedido quedó registrado como</p>
+                                    <p className="text-2xl font-black text-brand-cyan tracking-wide mt-1">{compraOk.codigoVenta}</p>
+                                </div>
+                                {compraOk.total != null && (
+                                    <p className="text-sm text-zinc-300 font-bold">Total a pagar: {fmt(compraOk.total, compraOk.moneda)}</p>
+                                )}
+                                <div className="p-4 rounded-xl border border-zinc-800 bg-zinc-900/60 text-left space-y-1.5 w-full">
+                                    {compraOk.modoRetiro && (
+                                        <p className="text-xs text-zinc-400 flex items-center gap-2">
+                                            {/encomienda/i.test(compraOk.modoRetiro) ? <Truck size={14} className="shrink-0 text-zinc-500" /> : <MapPin size={14} className="shrink-0 text-zinc-500" />}
+                                            Envío: <span className="font-bold text-zinc-300">{compraOk.modoRetiro}</span>
+                                        </p>
+                                    )}
+                                    <p className="text-xs text-zinc-500 leading-relaxed">
+                                        {/encomienda/i.test(compraOk.modoRetiro || '')
+                                            ? 'Preparamos tu pedido y te contactamos para coordinar la encomienda y el pago. No se te cobró nada todavía.'
+                                            : 'Preparamos tu pedido y pagás al retirarlo en el local, mostrando este código. No se te cobró nada todavía.'}
+                                    </p>
+                                </div>
+                                <button
+                                    onClick={() => setCompraOk(null)}
+                                    className="w-full py-3 rounded-xl bg-brand-cyan text-zinc-900 text-sm font-black uppercase tracking-wide hover:bg-brand-cyan/90 transition-colors"
+                                >
+                                    Seguir comprando
+                                </button>
+                            </div>
+                        ) : (<>
                         <div className="flex-1 overflow-y-auto p-5 space-y-3">
                             {carrito.length === 0 ? (
                                 <div className="py-16 text-center text-zinc-600">
@@ -299,22 +380,53 @@ export const TiendaView = () => {
                                     ))}
                                     {monedasMezcladas && cotizacionDolar && (
                                         <div className="flex justify-between text-[11px] text-zinc-500">
-                                            <span>≈ Total en pesos (cotiz. {cotizacionDolar})</span>
-                                            <span className="font-bold">{fmt(totalAproxUYU, 'UYU')}</span>
+                                            <span>Se registra todo en dólares (cotiz. {cotizacionDolar})</span>
+                                            <span className="font-bold">≈ {fmt(totalAproxUSD, 'USD')}</span>
                                         </div>
                                     )}
                                 </div>
-                                {/* F2: acá se enchufa el checkout (VEN- con el cliente del token). */}
+
+                                {/* Forma de envío (Retiro en el Local / Encomienda, patrón ECOUV) */}
+                                {formasEnvio.length > 0 && (
+                                    <div className="grid grid-cols-2 gap-2">
+                                        {formasEnvio.map(f => {
+                                            const esEnc = /encomienda/i.test(f.Nombre || '');
+                                            const activa = formaEnvioId === f.ID;
+                                            return (
+                                                <button
+                                                    key={f.ID}
+                                                    onClick={() => setFormaEnvioId(f.ID)}
+                                                    className={`px-3 py-2.5 rounded-xl text-[11px] font-black uppercase tracking-wide border transition-colors flex items-center justify-center gap-1.5 ${activa
+                                                        ? 'border-brand-cyan/60 bg-brand-cyan/10 text-brand-cyan'
+                                                        : 'border-zinc-700 text-zinc-500 hover:text-zinc-300'}`}
+                                                >
+                                                    {esEnc ? <Truck size={14} /> : <MapPin size={14} />}
+                                                    {f.Nombre}
+                                                </button>
+                                            );
+                                        })}
+                                    </div>
+                                )}
+
                                 <button
-                                    disabled
-                                    className="w-full py-3 rounded-xl bg-zinc-800 text-zinc-500 text-sm font-black uppercase tracking-wide cursor-not-allowed"
-                                    title="El checkout se habilita en la próxima actualización"
+                                    onClick={confirmarCompra}
+                                    disabled={comprando}
+                                    className={`w-full py-3 rounded-xl text-sm font-black uppercase tracking-wide transition-colors ${comprando
+                                        ? 'bg-zinc-800 text-zinc-500 cursor-wait'
+                                        : 'bg-brand-cyan text-zinc-900 hover:bg-brand-cyan/90'}`}
                                 >
-                                    Confirmar compra
+                                    {comprando
+                                        ? <span className="inline-flex items-center gap-2"><Loader2 size={16} className="animate-spin" /> Confirmando...</span>
+                                        : 'Confirmar compra'}
                                 </button>
-                                <p className="text-[11px] text-center text-zinc-600">Muy pronto: confirmá y retirá en el local. Pagás al retirar.</p>
+                                <p className="text-[11px] text-center text-zinc-600">
+                                    {/encomienda/i.test(formasEnvio.find(f => f.ID === formaEnvioId)?.Nombre || '')
+                                        ? 'Sin pago online: te contactamos para coordinar la encomienda y el pago.'
+                                        : 'Sin pago online: pagás al retirar en el local.'}
+                                </p>
                             </div>
                         )}
+                        </>)}
                     </aside>
                 </div>
             )}
@@ -326,9 +438,12 @@ export const TiendaView = () => {
 const FichaProducto = ({ producto, onCerrar, onAgregar, onIniciarPedido }) => {
     // Sin mapeo WMS no hay variantes: se ofrece una "Única" apoyada en el precio base —
     // mismo fallback que usa el catálogo interno (wms_variante_id = ProIdProducto).
+    // Combos: el stock que se muestra es el ARMABLE (min de componentes, viene en
+    // stockTotal); además el catálogo ya los oculta si algún componente está en 0.
     const variantes = producto.variantes?.length ? producto.variantes : [{
         wmsVarianteId: producto.proIdProducto, sku: '', nombre: 'Única',
-        precio: producto.precio, moneda: producto.moneda, stock: null,
+        precio: producto.precio, moneda: producto.moneda,
+        stock: producto.esCombo ? producto.stockTotal : null,
     }];
     const [varSel, setVarSel] = useState(variantes[0]);
     const [cantidad, setCantidad] = useState(1);
@@ -391,13 +506,6 @@ const FichaProducto = ({ producto, onCerrar, onAgregar, onIniciarPedido }) => {
                                             ))}
                                         </div>
                                     </div>
-                                )}
-
-                                {/* Stock informativo: nunca bloquea (se vende también sin stock) */}
-                                {varSel?.stock != null && (
-                                    varSel.stock > 0
-                                        ? <p className="text-xs font-bold text-emerald-400">En stock: {varSel.stock}</p>
-                                        : <p className="text-xs font-bold text-amber-400">Sin stock — se prepara a pedido</p>
                                 )}
 
                                 <div className="flex items-center gap-3">

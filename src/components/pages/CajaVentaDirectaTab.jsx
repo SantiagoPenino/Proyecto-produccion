@@ -75,12 +75,15 @@ export default function CajaVentaDirectaTab({
   const [preciosCargando, setPreciosCargando] = useState({}); // { [itemId]: true }
   const precioDebounceRefs = useRef({}); // timers de debounce por itemId
 
-  const fetchPrecioMotor = async (itemId, codArticulo, cantidad, clienteId) => {
+  const fetchPrecioMotor = async (itemId, codArticulo, cantidad, clienteId, proIdProducto = null) => {
     if (!codArticulo || !cantidad || Number(cantidad) <= 0) return;
     setPreciosCargando(p => ({ ...p, [itemId]: true }));
     try {
       const res = await api.post('/prices/calculate', {
         codArticulo: String(codArticulo),
+        // CodArticulo puede repetirse entre áreas (ej. '28'): el ProId del producto
+        // seleccionado desambigua el precio en el backend.
+        proIdProducto: proIdProducto || undefined,
         cantidad: Number(cantidad),
         clienteId: clienteId || null,
         targetCurrency: monedaExhibicion === 'USD' ? 'USD' : 'UYU',
@@ -164,6 +167,14 @@ export default function CajaVentaDirectaTab({
     });
     return map;
   }, [productosBase]);
+
+  // ECOUV como rollo por adelantado: se vende SOLO el material impreso
+  // (TipoStock='MATERIAL' en StockArt: lonas, canvas, vinilos, papel/PET).
+  // Cuadros, roll ups, pasacalles y terminaciones quedan afuera. DTF/Sublimación no cambian.
+  const productosVendiblesDeGrupo = (grupo) => {
+    const lista = productosAgrupados[grupo] || [];
+    return /ecouv/i.test(grupo || '') ? lista.filter(p => p.TipoStock === 'MATERIAL') : lista;
+  };
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -459,6 +470,9 @@ export default function CajaVentaDirectaTab({
                                 {Object.keys(productosAgrupados).filter(g => {
                                    if (it.tipo === 'VENTA_INSUMOS') return g === 'Insumos';
                                    if (it.tipo === 'VENTA_PRODUCTOS') return g === 'Productos en el local';
+                                   // ECOUV solo se ofrece si tiene material impreso para vender
+                                   // (sin la migración StockArt.TipoStock el grupo queda oculto)
+                                   if (/ecouv/i.test(g)) return productosVendiblesDeGrupo(g).length > 0;
                                    return /dtf|sublimaci/i.test(g);
                                 }).map(g => (
                                   <Listbox.Option key={g} className={({ active }) => `relative cursor-pointer select-none py-2 pl-8 pr-4 transition-colors text-sm ${active ? 'bg-zinc-100 text-zinc-900' : 'text-zinc-700'}`} value={g}>
@@ -480,7 +494,7 @@ export default function CajaVentaDirectaTab({
                       <label className="text-[10px] font-archivo uppercase font-black text-zinc-400 tracking-widest px-2">{['RECURSO', 'VENTA_INSUMOS', 'VENTA_PRODUCTOS', 'VENTA_GENERICA'].includes(it.tipo) ? 'Producto' : 'Referencia'}</label>
                       {['RECURSO', 'VENTA_INSUMOS', 'VENTA_PRODUCTOS', 'VENTA_GENERICA'].includes(it.tipo) ? (
                         <Listbox value={it.codigo} onChange={val => {
-                          const prod = (productosAgrupados[it.grupo] || []).find(x => String(x.CodArticulo) === String(val));
+                          const prod = productosVendiblesDeGrupo(it.grupo).find(x => String(x.CodArticulo) === String(val));
                           
                           let currentMoneda = monedaExhibicion;
                           if (prod && it.codigo === '' && items.length === 1) {
@@ -521,7 +535,7 @@ export default function CajaVentaDirectaTab({
                             </Listbox.Button>
                             <Transition as={Fragment} leave="transition ease-in duration-100" leaveFrom="opacity-100" leaveTo="opacity-0">
                               <Listbox.Options className="absolute z-50 mt-1 max-h-60 w-full overflow-auto rounded-xl bg-white py-1 text-base shadow-lg ring-1 ring-black/5 focus:outline-none sm:text-sm">
-                                {(productosAgrupados[it.grupo] || []).map((p, idx) => (
+                                {productosVendiblesDeGrupo(it.grupo).map((p, idx) => (
                                   <Listbox.Option key={p.ProIdProducto || `${p.CodArticulo}-${idx}`} className={({ active }) => `relative cursor-pointer select-none py-2 pl-8 pr-4 transition-colors text-sm ${active ? 'bg-zinc-100 text-zinc-900' : 'text-zinc-700'}`} value={p.CodArticulo}>
                                     {({ selected }) => (
                                       <>
@@ -559,11 +573,11 @@ export default function CajaVentaDirectaTab({
                         onBlur={e=>{
                           const val = e.target.value;
                           if (it.codigo && Number(val) > 0)
-                            fetchPrecioMotor(it.id, it.codigo, val, clienteSel?.IdCliente || clienteSel?.id || null);
+                            fetchPrecioMotor(it.id, it.codigo, val, clienteSel?.IdCliente || clienteSel?.id || null, it.proId);
                         }}
                         onKeyDown={e=>{
                           if (e.key === 'Enter' && it.codigo && Number(e.target.value) > 0)
-                            fetchPrecioMotor(it.id, it.codigo, e.target.value, clienteSel?.IdCliente || clienteSel?.id || null);
+                            fetchPrecioMotor(it.id, it.codigo, e.target.value, clienteSel?.IdCliente || clienteSel?.id || null, it.proId);
                         }}
                         className={`bg-zinc-100 border-2 rounded-xl px-4 py-2 text-sm font-black text-emerald-600 text-center outline-none focus:border-emerald-500 shadow-inner transition-colors ${preciosCargando[it.id] ? 'border-amber-300 animate-pulse' : 'border-zinc-200'}`} />
                     </div>

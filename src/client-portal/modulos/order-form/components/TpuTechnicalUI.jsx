@@ -1,5 +1,5 @@
 import React from 'react';
-import { Box, Trash2 } from 'lucide-react';
+import { Box, Trash2, Lock } from 'lucide-react';
 import { FileUploadZone } from './FileUploadZone';
 import { CustomSelect } from '../../../pautas/CustomSelect';
 
@@ -18,6 +18,11 @@ export const TpuTechnicalUI = ({
     printsPerGarment, setPrintsPerGarment,
     origin, setOrigin,
     compact = true,
+    // [COMBOS] Técnica FIJADA por el Configurador — reemplaza Tipo/Variante + Tipo de TPU.
+    lockedSpec = '',
+    // [COMBOS] Cantidad derivada (combo × cantidad por combo) — mismo candado visual que
+    // lockedSpec, en vez de un input que parece editable pero no hace nada al tocarlo.
+    lockedQuantity = false,
 }) => {
     return (
         <div className={`animate-in slide-in-from-top duration-500 ${compact ? 'mb-0' : 'mb-8'}`}>
@@ -35,6 +40,16 @@ export const TpuTechnicalUI = ({
                 <div className="grid grid-cols-1 md:grid-cols-12 gap-8 relative z-10">
                     <div className="md:col-span-12 space-y-6">
                         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                            {lockedSpec ? (
+                                <div className="md:col-span-2">
+                                    <label className="block text-[10px] uppercase font-black text-zinc-500 mb-2 tracking-widest">Técnica</label>
+                                    <div className="w-full h-[55px] px-4 flex items-center gap-2 bg-zinc-800/30 border border-zinc-700/50 rounded-2xl font-bold text-zinc-300">
+                                        <Lock size={14} className="text-brand-gold shrink-0" />
+                                        <span className="truncate">{lockedSpec}</span>
+                                    </div>
+                                </div>
+                            ) : (
+                            <>
                             <div>
                                 <label className="block text-[10px] uppercase font-black text-zinc-500 mb-2 tracking-widest">Tipo / Variante *</label>
                                 <CustomSelect
@@ -62,17 +77,26 @@ export const TpuTechnicalUI = ({
                                     className="h-[55px]"
                                 />
                             </div>
+                            </>
+                            )}
 
                             <div>
                                 <label className="block text-[10px] uppercase font-black text-zinc-500 mb-2 tracking-widest">Cantidad Total *</label>
-                                <input
-                                    type="number"
-                                    min="1"
-                                    placeholder="Cant."
-                                    className="w-full h-[55px] px-4 bg-zinc-800/50 border border-zinc-700/50 rounded-2xl font-black text-lg text-zinc-100 outline-none focus:border-brand-gold transition-all"
-                                    value={garmentQuantity}
-                                    onChange={(e) => setGarmentQuantity(e.target.value)}
-                                />
+                                {lockedQuantity ? (
+                                    <div className="w-full h-[55px] px-4 flex items-center gap-2 bg-zinc-800/30 border border-zinc-700/50 rounded-2xl font-black text-lg text-zinc-300">
+                                        <Lock size={14} className="text-brand-gold shrink-0" />
+                                        <span>{garmentQuantity}</span>
+                                    </div>
+                                ) : (
+                                    <input
+                                        type="number"
+                                        min="1"
+                                        placeholder="Cant."
+                                        className="w-full h-[55px] px-4 bg-zinc-800/50 border border-zinc-700/50 rounded-2xl font-black text-lg text-zinc-100 outline-none focus:border-brand-gold transition-all"
+                                        value={garmentQuantity}
+                                        onChange={(e) => setGarmentQuantity(e.target.value)}
+                                    />
+                                )}
                             </div>
 
                             {/* [PRENDAS] Estampado fusionado: cuánto estampa por prenda y de dónde

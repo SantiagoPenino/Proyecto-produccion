@@ -326,7 +326,7 @@ exports.confirmarRetiroWms = async (req, res) => {
         const pool = await getPool();
         const ordenRes = await pool.request()
             .input('OID', sql.Int, ordenId)
-            .query(`SELECT OrdenID, NoDocERP, WmsVarianteId, Magnitud, EstadoDependencia FROM Ordenes WHERE OrdenID = @OID`);
+            .query(`SELECT OrdenID, NoDocERP, WmsVarianteId, Magnitud, EstadoDependencia, ComboItemID FROM Ordenes WHERE OrdenID = @OID`);
         const orden = ordenRes.recordset[0];
         if (!orden) return res.status(404).json({ error: 'Orden no encontrada' });
         if (!ESTADOS_RETIRO_WMS.includes(orden.EstadoDependencia)) {
@@ -351,13 +351,23 @@ exports.confirmarRetiroWms = async (req, res) => {
 
         // Libera esta Orden + todas sus hermanas del mismo pedido que estén en el
         // mismo gate (Bordado/DTF/TPU esperando este mismo retiro).
+        // [COMBOS] Un pedido puede tener MÁS DE UN retiro pendiente a la vez (un combo con
+        // 2 componentes = 2 retiros independientes, ej. Gorro y Short). Sin escopar por
+        // ComboItemID, confirmar el retiro del Gorro liberaría TAMBIÉN las hermanas del
+        // Short (que todavía no se retiró). Sin combo (ComboItemID NULL en ambos lados),
+        // el filtro es el de siempre: mismo comportamiento de hoy.
         const transaction = new sql.Transaction(pool);
         await transaction.begin();
         try {
             const { changeOrderState } = require('../services/stateManagerService');
             const hermanas = await new sql.Request(transaction)
                 .input('NoDoc', sql.VarChar, String(orden.NoDocERP))
-                .query(`SELECT OrdenID, AreaID FROM Ordenes WHERE NoDocERP = @NoDoc AND EstadoDependencia IN ('${ESTADOS_RETIRO_WMS.join("','")}')`);
+                .input('ComboItemID', sql.Int, orden.ComboItemID || null)
+                .query(`
+                    SELECT OrdenID, AreaID FROM Ordenes
+                    WHERE NoDocERP = @NoDoc AND EstadoDependencia IN ('${ESTADOS_RETIRO_WMS.join("','")}')
+                      AND (ComboItemID = @ComboItemID OR (@ComboItemID IS NULL AND ComboItemID IS NULL))
+                `);
             for (const h of hermanas.recordset) {
                 await new sql.Request(transaction)
                     .input('OID', sql.Int, h.OrdenID)
@@ -457,6 +467,22 @@ exports.createWebOrder = async (req, res) => {
 
     if ((!items || items.length === 0) && (!req.body.servicios || req.body.servicios.length === 0)) {
         return res.status(400).json({ error: "El pedido no contiene ítems." });
+    }
+
+    // [COMBOS] Validar ANTES de crear nada: un componente sin wmsVarianteId no puede generar
+    // su venta de retiro (ver bloque combosRetiro más abajo) — si el pedido se creara igual,
+    // el servicio de decoración de ESE componente (Bordado/DTF) nacería en
+    // ESPERANDO_RETIRO_WMS y quedaría trabado para siempre, sin ninguna venta que lo libere
+    // (caso real: combo con el Gorro sin variante WMS vinculada en el Configurador — el
+    // Bordado del Gorro nació y nunca se pudo confirmar). Mejor fallar acá, claro y antes de
+    // gastar el correlativo del pedido, que dejar una orden fantasma.
+    const combosRetiroBody = Array.isArray(req.body.combosRetiro) ? req.body.combosRetiro : [];
+    const combosSinWms = combosRetiroBody.filter(c => !c.wmsVarianteId);
+    if (combosSinWms.length > 0) {
+        const nombres = combosSinWms.map(c => c.descripcion || `componente ${c.comboItemId}`).join(', ');
+        return res.status(400).json({
+            error: `No se puede confirmar: "${nombres}" no tiene una variante de WMS vinculada en el Configurador — avisá antes de reintentar, si se crea igual el servicio de decoración de ese componente queda esperando un retiro que nunca va a llegar.`
+        });
     }
 
     const pool = await getPool();
@@ -713,6 +739,10 @@ exports.createWebOrder = async (req, res) => {
                     // WMS; en cambio, esta orden PRO queda encadenada a Costura (o Corte si no
                     // hay Costura) y nace recién cuando esa termina.
                     esProductoFabricado: !!srv.esProductoFabricado,
+                    // [COMBOS] Componente del combo al que pertenece esta orden (Gorro/Short...).
+                    // null = producto simple, comportamiento idéntico al de siempre en todo lo
+                    // que sigue (sufijo de CodigoOrden, ruteo de ProximoServicio, encadenado).
+                    comboItemId: srv.comboItemId || null,
                 });
             });
 
@@ -1023,7 +1053,9 @@ exports.createWebOrder = async (req, res) => {
                         req2.input(`cs${i}`, sql.VarChar, cs);
                         return `LTRIM(RTRIM(CodStock)) = @cs${i}`;
                     });
-                    const tipoStockRes = await req2.query(`SELECT TipoStock FROM StockArt WHERE ${clauses2.join(' OR ')} AND TipoStock = 'PRODUCTO_TERMINADO'`);
+                    // PRODUCTO_LOCAL (12-ago) frena igual que PRODUCTO_TERMINADO: también
+                    // hay que esperar el retiro físico del depósito WMS antes de decorar.
+                    const tipoStockRes = await req2.query(`SELECT TipoStock FROM StockArt WHERE (${clauses2.join(' OR ')}) AND TipoStock IN ('PRODUCTO_TERMINADO', 'PRODUCTO_LOCAL')`);
                     hayProductoTerminadoEnLote = tipoStockRes.recordset.length > 0;
                 } catch (e) {
                     logger.warn('[Prendas] No se pudo chequear PRODUCTO_TERMINADO del lote:', e.message);
@@ -1045,26 +1077,26 @@ exports.createWebOrder = async (req, res) => {
             // Orden encadenada (ej. Estampado) guarde el OrdenID real de aquella de la que
             // depende (ej. su DTF/TPU), aunque esta última se haya creado unos pasos antes.
             const insertedOrdenIdByAreaId = {};
+            // [COMBOS] Clave compuesta cuando la orden pertenece a un componente de combo —
+            // sin esto, dos componentes con la MISMA área (ej. dos Bordados) se pisarían el
+            // OrdenID entre sí y un Estampado encadenaría con el DTF/TPU del OTRO componente.
+            // Sin comboItemId (caso de siempre), la clave es igual a la de hoy (solo areaId).
+            const claveOrdenArea = (comboItemId, areaId) => comboItemId ? `${comboItemId}|${areaId}` : areaId;
 
 
             for (let idx = 0; idx < pendingOrderExecutions.length; idx++) {
                 const exec = pendingOrderExecutions[idx];
-                const fisicasSB = pendingOrderExecutions.filter(e => e.areaID === 'SB');
                 let docNumber = erpDocNumber;
 
-                if (exec.areaID === 'SB' && fisicasSB.length > 1) {
-                    const indexSB = fisicasSB.findIndex(e => e === exec) + 1;
-                    docNumber = `${erpDocNumber} (${indexSB}/${fisicasSB.length})`;
-                }
-
-                // [PRENDAS] Ídem para Estampado: si DTF y TPU están activos a la vez se crean
-                // 2 órdenes de EST (una por cada una, ver chainedAfterAreaId) — sin esto las dos
-                // saldrían con el MISMO CodigoOrden (EST-10994), indistinguibles en cualquier
-                // pantalla/listado.
-                const fisicasEST = pendingOrderExecutions.filter(e => e.areaID === 'EST');
-                if (exec.areaID === 'EST' && fisicasEST.length > 1) {
-                    const indexEST = fisicasEST.findIndex(e => e === exec) + 1;
-                    docNumber = `${erpDocNumber} (${indexEST}/${fisicasEST.length})`;
+                // [PRENDAS] Si el mismo ÁREA aparece más de una vez en el lote (ej. DTF y TPU
+                // activos a la vez generan 2 EST; un COMBO con dos componentes bordados genera
+                // 2 EMB), sin esto compartirían el MISMO CodigoOrden (EST-10994),
+                // indistinguibles en cualquier pantalla/listado. Generalizado a cualquier área
+                // (antes solo cubría SB y EST) para que los combos no repitan código tampoco.
+                const fisicasMismaArea = pendingOrderExecutions.filter(e => e.areaID === exec.areaID);
+                if (fisicasMismaArea.length > 1) {
+                    const indexArea = fisicasMismaArea.findIndex(e => e === exec) + 1;
+                    docNumber = `${erpDocNumber} (${indexArea}/${fisicasMismaArea.length})`;
                 }
 
                 const areaPrefix = areaPrefixMap[exec.areaID.toUpperCase()] || 'ORD';
@@ -1098,10 +1130,21 @@ exports.createWebOrder = async (req, res) => {
                 //   - DTF y TPU NO dependen entre sí — cada uno imprime SU PROPIO transfer
                 //     (no toca la prenda) y va directo a SU Estampado encadenado, nunca al otro.
                 //   - Estampado siempre termina en Depósito.
+                // [COMBOS] areasActivas se escopa por comboItemId — el Bordado del Gorro no
+                // debe ver el DTF/Estampado del Short (y viceversa) al decidir su propio
+                // próximo paso. esProductoFabricadoEnLote/hayOrdenMadrePro, en cambio, son
+                // GLOBALES a todo el lote (FASE 3): dentro del NoDocERP del pedido de un combo
+                // ya no conviven líneas "esProductoComprado" (el retiro de stock ahora vive en
+                // su propia venta VEN-, aparte) — solo la PRO de precio (esProductoFabricado) y
+                // los servicios de decoración, igual que un producto simple. Sin comboItemId
+                // (caso de siempre), el filtro de areasActivas es un no-op.
+                const loteDelComponente = exec.comboItemId
+                    ? pendingOrderExecutions.filter(e => e.comboItemId === exec.comboItemId)
+                    : pendingOrderExecutions;
                 const esProductoFabricadoEnLote = pendingOrderExecutions.some(e => e.esProductoFabricado);
                 const hayOrdenMadrePro = pendingOrderExecutions.some(e => e.esProductoComprado || e.esProductoFabricado);
                 if (hayOrdenMadrePro) {
-                    const areasActivas = new Set(pendingOrderExecutions.map(e => e.areaID));
+                    const areasActivas = new Set(loteDelComponente.map(e => e.areaID));
                     const hayEstampado = areasActivas.has('EST'); // implica DTF y/o TPU activos
                     if (esProductoFabricadoEnLote) {
                         // [PRENDAS] "Fabricar a Medida" con Producto Terminado: PRO NO es un
@@ -1172,6 +1215,19 @@ exports.createWebOrder = async (req, res) => {
                     }
                 }
 
+                // [PRENDAS] FASE 5 (generalizado): TODO pedido con orden madre PRO (Fabricar a
+                // Medida o Comprar y Personalizar, con o sin combo) "muere" en PRO antes de ir a
+                // Depósito — PRO es el único punto de salida hacia Depósito, así cada
+                // área/componente se reúne ahí sin bloquear su propia salida ni esperar
+                // "atascado" en producción. El remito final PRO→DEPOSITO se arma solo cuando el
+                // pedido está completo en PRO (ver receiveDispatch en logisticsController.js).
+                // El guard areaID!=='PRO' evita que la propia orden madre (cuando no tiene
+                // ningún servicio de decoración activo) se apunte a sí misma. Sin orden madre
+                // PRO, no-op.
+                if (hayOrdenMadrePro && exec.areaID !== 'PRO' && proximoServicio === 'DEPOSITO') {
+                    proximoServicio = 'PRO';
+                }
+
                 // Determinar UM + variante física (desde StockArt del CodStock elegido)
                 let areaUM = mapaAreasUM[exec.areaID] || 'u';
                 let varianteFinal = exec.variante;
@@ -1186,9 +1242,10 @@ exports.createWebOrder = async (req, res) => {
                             .query("SELECT TOP 1 ISNULL(TipoStock, 'MATERIAL') AS TipoStock, LTRIM(RTRIM(Articulo)) AS VarianteStock FROM StockArt WHERE LTRIM(RTRIM(CodStock)) = LTRIM(RTRIM(@Stk))");
                         const st = stUm.recordset[0];
                         if (st) {
-                            // PRODUCTO TERMINADO: se cuenta y precia por UNIDAD aunque el área
-                            // trabaje en m2 (precio cerrado del artículo).
-                            if (st.TipoStock === 'PRODUCTO_TERMINADO') { areaUM = 'u'; esProductoTerminado = true; }
+                            // PRODUCTO TERMINADO o PRODUCTO_LOCAL (12-ago: sale del stock del
+                            // local, mismo tratamiento de precio): se cuenta y precia por UNIDAD
+                            // aunque el área trabaje en m2 (precio cerrado del artículo).
+                            if (st.TipoStock === 'PRODUCTO_TERMINADO' || st.TipoStock === 'PRODUCTO_LOCAL') { areaUM = 'u'; esProductoTerminado = true; }
 
                             // ECOUV: la Variante de la ORDEN es SIEMPRE la clasificación física
                             // del material QUE SE IMPRIME (Lonas/Canvas/Vinilos...), para que
@@ -1246,11 +1303,21 @@ exports.createWebOrder = async (req, res) => {
                 let liberaCuandoOrdenIDExec = null;
                 if (exec.chainedAfterAreaId) {
                     estadoDependenciaExec = 'ESPERANDO_IMPRESION';
-                    liberaCuandoOrdenIDExec = insertedOrdenIdByAreaId[exec.chainedAfterAreaId.toUpperCase()] || null;
+                    liberaCuandoOrdenIDExec = insertedOrdenIdByAreaId[claveOrdenArea(exec.comboItemId, exec.chainedAfterAreaId.toUpperCase())] || null;
                     if (!liberaCuandoOrdenIDExec) {
                         logger.warn(`[Prendas] Estampado sin OrdenID de ${exec.chainedAfterAreaId} para encadenar (¿no se creó esa Orden?) — queda sin gate.`);
                         estadoDependenciaExec = null;
                     }
+                } else if (exec.comboItemId && ['EMB', 'DF', 'TPU'].includes(exec.areaID.toUpperCase())) {
+                    // [COMBOS] Servicio de decoración de un componente de combo: SIEMPRE espera
+                    // a que se confirme el retiro — la venta VEN- de ESE componente, creada
+                    // aparte (ver combosRetiro más abajo) — antes de arrancar. Independiente de
+                    // esProductoFabricadoEnLote (la PRO de precio del combo SÍ es
+                    // esProductoFabricado, pero sus componentes físicos igual se retiran del
+                    // WMS). Se libera desde logisticaWmsController.confirmPreparation cuando se
+                    // confirma esa VEN-, no desde confirmarRetiroWms (que es para "Comprar y
+                    // Personalizar", donde el retiro vive en este mismo NoDocERP).
+                    estadoDependenciaExec = 'ESPERANDO_RETIRO_WMS';
                 } else if (hayProductoTerminadoEnLote && !esProductoFabricadoEnLote && (exec.esProductoComprado || esProductoTerminado || ['EMB', 'DF', 'TPU'].includes(exec.areaID.toUpperCase()))) {
                     estadoDependenciaExec = 'ESPERANDO_RETIRO_WMS';
                 }
@@ -1300,13 +1367,17 @@ exports.createWebOrder = async (req, res) => {
                     .input('EstadoDep', sql.VarChar(50), estadoDependenciaExec)
                     .input('LiberaCuando', sql.Int, liberaCuandoOrdenIDExec)
                     .input('WmsVarianteId', sql.Int, exec.wmsVarianteId ? parseInt(exec.wmsVarianteId) : null)
+                    // [COMBOS] Qué componente del combo es esta orden (Gorro/Short...). NULL =
+                    // producto simple o "Comprar y Personalizar" — comportamiento de siempre.
+                    .input('ComboItemID', sql.Int, exec.comboItemId ? parseInt(exec.comboItemId) : null)
                     .query(`
                         INSERT INTO Ordenes (
                             AreaID, Cliente, CodCliente, IdClienteReact, DescripcionTrabajo, Prioridad,
                             FechaIngreso, FechaEstimadaEntrega, Material, Variante,
                             CodigoOrden, NoDocERP, Nota, Magnitud, ProximoServicio, UM, Estado, EstadoenArea,
                             CodArticulo, IdProductoReact, ProIdProducto, CliIdCliente, FechaEntradaSector,
-                            BobinaTelaID, DisenadorID, Tinta, EstadoDependencia, LiberaCuandoOrdenID, WmsVarianteId
+                            BobinaTelaID, DisenadorID, Tinta, EstadoDependencia, LiberaCuandoOrdenID, WmsVarianteId,
+                            ComboItemID
                         )
                         OUTPUT INSERTED.OrdenID
                         VALUES (
@@ -1314,17 +1385,20 @@ exports.createWebOrder = async (req, res) => {
                             GETDATE(), DATEADD(day, 3, GETDATE()), @Mat, @Var,
                             @Cod, @ERP, @Nota, @Mag, @Prox, @UM, @Estado, @Estado,
                             @CodArt, @IdProdReact, @ProIdProducto, @CliIdCliente, @F_EntSec,
-                            @BobID, @DisenadorID, @Tinta, @EstadoDep, @LiberaCuando, @WmsVarianteId
+                            @BobID, @DisenadorID, @Tinta, @EstadoDep, @LiberaCuando, @WmsVarianteId,
+                            @ComboItemID
                         )
                     `);
 
                 const newOID = resOrder.recordset[0].OrdenID;
                 generatedOrders.push(exec.codigoOrden);
                 generatedIDs.push(newOID);
-                // [PRENDAS] Guarda el primer OrdenID insertado para esta área — es lo que
-                // usa una Orden encadenada más adelante en el loop (ej. Estampado → su DTF/TPU).
-                if (!insertedOrdenIdByAreaId[exec.areaID.toUpperCase()]) {
-                    insertedOrdenIdByAreaId[exec.areaID.toUpperCase()] = newOID;
+                // [PRENDAS] Guarda el primer OrdenID insertado para esta área (o para esta
+                // área DE ESTE COMPONENTE, si es un combo) — es lo que usa una Orden
+                // encadenada más adelante en el loop (ej. Estampado → su DTF/TPU).
+                const claveArea = claveOrdenArea(exec.comboItemId, exec.areaID.toUpperCase());
+                if (!insertedOrdenIdByAreaId[claveArea]) {
+                    insertedOrdenIdByAreaId[claveArea] = newOID;
                 }
 
                 // TPU trabajo nuevo: cobrar la matriz (artículo 156 = US$15) como línea de facturación.
@@ -1921,7 +1995,113 @@ exports.createWebOrder = async (req, res) => {
                 }
             }
 
+            // [COMBOS] FASE 3: por cada componente del combo, su propia venta VEN- de retiro
+            // — invisible a producción (EstadoDependencia='VENTA_DIRECTA', mismo criterio que
+            // el checkout de la Tienda: "no es trabajo, es un ancla de etiqueta"), visible en
+            // Logística/Inventory para despachar. Precio en 0 (el cobro real ya está en la PRO
+            // de arriba) — calco de wmsController.createOrder, con dos diferencias: el
+            // ProximoServicio se CALCULA desde las áreas reales que este mismo loop ya creó
+            // para ese comboItemId (no fijo a DEPOSITO, porque acá SÍ hay decoración que
+            // esperar), y ComboPedidoNoDocERP guarda el NoDocERP real del pedido — es lo que
+            // usa confirmPreparation para encontrar y liberar el Bordado/DTF real al confirmar
+            // esta venta. Misma transacción que el resto del pedido: todo o nada.
+            const combosRetiro = Array.isArray(req.body.combosRetiro) ? req.body.combosRetiro : [];
+            const ventasCombo = []; // {codigoVenta, pedidoVentaId} — para notificar después del commit
+            for (const item of combosRetiro) {
+                if (!item.wmsVarianteId) {
+                    logger.warn(`[Prendas] Combo: componente "${item.descripcion}" sin wmsVarianteId — no se genera venta de retiro.`);
+                    continue;
+                }
+                const areasComponente = new Set(
+                    pendingOrderExecutions.filter(e => String(e.comboItemId) === String(item.comboItemId)).map(e => e.areaID)
+                );
+                // Mismo criterio que el switch de ProximoServicio de arriba: Bordado trabaja
+                // sobre la prenda (va primero); si no hay Bordado pero sí DTF/TPU, la prenda va
+                // directo a Estampado (ahí se prensa el transfer, no antes).
+                const proximoAncla = areasComponente.has('EMB') ? 'EMB' : (areasComponente.has('EST') ? 'EST' : 'DEPOSITO');
+
+                const maxVenRes = await new sql.Request(transaction).query(`
+                    SELECT ISNULL(MAX(CAST(SUBSTRING(NoDocERP, 5, LEN(NoDocERP)) AS INT)), 0) + 1 as NextID
+                    FROM PedidosCobranza WHERE NoDocERP LIKE 'VEN-%'
+                `);
+                const codigoVenta = `VEN-${maxVenRes.recordset[0].NextID.toString().padStart(4, '0')}`;
+
+                const insertPC = await new sql.Request(transaction)
+                    .input('NoDocERP', sql.NVarChar, codigoVenta)
+                    .input('ClienteID', sql.Int, cliIdCliente || null)
+                    .query(`
+                        INSERT INTO PedidosCobranza (NoDocERP, ClienteID, MontoTotal, Moneda, FechaGeneracion, EstadoCobro)
+                        OUTPUT INSERTED.ID
+                        VALUES (@NoDocERP, @ClienteID, 0, 'UYU', GETDATE(), 'PENDIENTE')
+                    `);
+                const pedidoVentaId = insertPC.recordset[0].ID;
+
+                const insertAncla = await new sql.Request(transaction)
+                    .input('Cliente', sql.NVarChar(200), nombreCliente)
+                    .input('CliId', sql.Int, cliIdCliente || null)
+                    .input('Desc', sql.NVarChar(300), `RETIRO COMBO — ${item.descripcion}`)
+                    .input('Mat', sql.VarChar(255), item.descripcion || 'Combo')
+                    .input('Cod', sql.VarChar(50), codigoVenta)
+                    .input('Doc', sql.VarChar(50), codigoVenta)
+                    .input('Mag', sql.VarChar(50), String(item.cantidad || 1))
+                    .input('Prox', sql.VarChar(50), proximoAncla)
+                    .input('Wms', sql.Int, parseInt(item.wmsVarianteId))
+                    .input('CI', sql.Int, parseInt(item.comboItemId))
+                    .input('PedidoOrigen', sql.NVarChar(50), erpDocNumber)
+                    .query(`
+                        INSERT INTO Ordenes (
+                            AreaID, Cliente, CliIdCliente, DescripcionTrabajo, Prioridad,
+                            FechaIngreso, FechaEstimadaEntrega, Material, CodigoOrden, NoDocERP,
+                            Magnitud, ProximoServicio, UM, Estado, EstadoenArea,
+                            WmsVarianteId, EstadoDependencia, ComboItemID, ComboPedidoNoDocERP
+                        )
+                        OUTPUT INSERTED.OrdenID
+                        VALUES (
+                            'PRO', @Cliente, @CliId, @Desc, 'Normal',
+                            GETDATE(), DATEADD(day, 3, GETDATE()), @Mat, @Cod, @Doc,
+                            @Mag, @Prox, 'u', 'Pendiente', 'Pendiente',
+                            @Wms, 'VENTA_DIRECTA', @CI, @PedidoOrigen
+                        )
+                    `);
+                const anclaOrdenId = insertAncla.recordset[0].OrdenID;
+
+                await new sql.Request(transaction)
+                    .input('PID', sql.Int, pedidoVentaId)
+                    .input('OID', sql.Int, anclaOrdenId)
+                    .input('CodArt', sql.NVarChar, String(item.wmsVarianteId))
+                    // [COMBOS] Sin ProIdProducto, la vista de Logística (getPendingOrders,
+                    // JOIN a Articulos por ProIdProducto) no resuelve el nombre del artículo y
+                    // muestra "null - <variante>" en la tarjeta.
+                    .input('ProId', sql.Int, item.itemProIdProducto ? parseInt(item.itemProIdProducto) : null)
+                    .input('Cant', sql.Decimal(18, 2), parseFloat(item.cantidad) || 1)
+                    .query(`
+                        INSERT INTO PedidosCobranzaDetalle
+                        (PedidoCobranzaID, OrdenID, CodArticulo, ProIdProducto, Cantidad, PrecioUnitario, Subtotal, Moneda, DatoTecnico)
+                        VALUES (@PID, @OID, @CodArt, @ProId, @Cant, 0, 0, 'UYU', 0)
+                    `);
+
+                ventasCombo.push({ codigoVenta, pedidoVentaId });
+            }
+
             await transaction.commit();
+
+            // [COMBOS] Trazabilidad + aviso a la Print Station por cada venta de retiro —
+            // best-effort, fuera de la transacción: la venta ya quedó confirmada arriba.
+            for (const v of ventasCombo) {
+                try {
+                    const { logEvento } = require('./logisticaWmsController');
+                    await logEvento(pool, v.pedidoVentaId, { estado: 'PENDIENTE', usuario: nombreCliente });
+                } catch (eEv) { /* sin trazabilidad no se corta la venta */ }
+            }
+            if (ventasCombo.length > 0) {
+                const ioInst = req.app?.get('socketio');
+                if (ioInst) {
+                    ventasCombo.forEach(v => {
+                        ioInst.emit('wms:pedido', { type: 'nuevo_pedido', pedidoId: v.pedidoVentaId, codigoVenta: v.codigoVenta });
+                    });
+                    logger.info(`[Prendas] 📡 ${ventasCombo.length} venta(s) de retiro de combo notificada(s) a la Print Station.`);
+                }
+            }
 
             // RESPUESTA AL FRONTEND: "Orden Creada, Ahora Sube los Archivos"
             res.json({

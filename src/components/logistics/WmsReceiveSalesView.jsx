@@ -167,9 +167,28 @@ const WmsReceiveSalesView = () => {
                 } else if (res1.bultoOrdenIds && res1.bultoOrdenIds.length > 1) {
                     window.open(`/api/production-file-control/orden/batch/etiquetas/print?ids=${res1.bultoOrdenIds.join(',')}`, '_blank');
                 }
+
+                // [COMBOS] Si esto liberó la hermana real de un combo, la VEN- ya cumplió su
+                // función (retiro confirmado + remito enviado) — el backend ya la movió a un
+                // estado terminal propio (ENVIADO_PRODUCCION) porque nunca va a poder
+                // completar "Depósito + Aviso" (el ProximoServicio de la ancla es fijo, no se
+                // desbloquea solo). No seguir con receivePreparedOrder: siempre fallaría con
+                // el guard y el mensaje sería confuso.
+                if (res1.hermanasLiberadas > 0) {
+                    const destinoCombo = destinoPendiente(order);
+                    toast.success(destinoCombo
+                        ? `Retiro confirmado — enviado a ${AREA_LABELS[destinoCombo] || destinoCombo}.`
+                        : 'Retiro confirmado — enviado a producción.');
+                    loadOrders();
+                    if (expandedOrder === order.id) loadEventos(order.id);
+                    return;
+                }
             }
 
-            const receiveToast = toast.loading('Ingresando a Depósito y programando aviso...');
+            const destino = destinoPendiente(order);
+            const receiveToast = toast.loading(destino
+                ? `Verificando si ya puede ingresar a Depósito (pasa primero por ${AREA_LABELS[destino] || destino})...`
+                : 'Ingresando a Depósito y programando aviso...');
             const res2 = await wmsService.receivePreparedOrder(order.id);
             if (res2.success === false) {
                 toast.error(res2.message || 'No se pudo ingresar el pedido a Depósito', { id: receiveToast });
@@ -215,17 +234,23 @@ const WmsReceiveSalesView = () => {
     };
 
     // ── Stepper ──────────────────────────────────────────────────────────────
-    const STEP_LABELS = ['Preparación', 'Stock descontado', 'Depósito + Aviso'];
+    // El retiro de un combo (ENVIADO_PRODUCCION) nunca pasa por "Depósito + Aviso" —
+    // el 3er paso cambia de nombre para ese caso puntual, no queda mostrando algo que
+    // en realidad no pasó.
+    const stepLabelsFor = (estado) => estado === 'ENVIADO_PRODUCCION'
+        ? ['Preparación', 'Stock descontado', 'Enviado a Producción']
+        : ['Preparación', 'Stock descontado', 'Depósito + Aviso'];
     // Paso "actual" según el estado del pedido (los anteriores se muestran hechos)
     const stepIndexOf = (estado) => {
         if (estado === 'PENDIENTE') return 0;
         if (estado === 'EN_PREPARACION') return 1;
-        if (estado === 'RECIBIDO_DEPOSITO' || estado === 'ENTREGADO') return 3; // todo hecho
+        if (estado === 'RECIBIDO_DEPOSITO' || estado === 'ENTREGADO' || estado === 'ENVIADO_PRODUCCION') return 3; // todo hecho
         return 2; // PREPARADO: falta solo el ingreso a depósito + aviso
     };
 
     const Stepper = ({ estado }) => {
         const current = stepIndexOf(estado);
+        const STEP_LABELS = stepLabelsFor(estado);
         return (
             <div className="flex items-center gap-0">
                 {STEP_LABELS.map((label, i) => {
@@ -264,6 +289,7 @@ const WmsReceiveSalesView = () => {
         'RECIBIDO_DEPOSITO': 'Ingresado a Depósito + aviso al cliente',
         'CANCELADO': 'Pedido cancelado',
         'ENTREGADO': 'Entregado al cliente',
+        'ENVIADO_PRODUCCION': 'Retiro de combo confirmado — enviado a producción',
     };
 
     // Nombres legibles de las áreas de producción (para el badge "→ Bordado" de los
@@ -274,6 +300,18 @@ const WmsReceiveSalesView = () => {
         'ECOUV': 'Eco UV', 'DIRECTA': 'Directa', 'PRO': 'Producción',
     };
 
+    // Área real que falta antes de Depósito (hermana de comprar+personalizar, o
+    // ancla de combo con ProximoServicio propio) — null si el pedido va derecho a
+    // Depósito. Se usa para que los botones/diálogo/toast digan el área real en vez
+    // de prometer "Depósito y Aviso" cuando eso todavía no puede pasar.
+    const destinoPendiente = (order) => {
+        if ((order.areasDestino || []).length > 0) return order.areasDestino[0];
+        if (order.proximoServicioAncla && order.proximoServicioAncla.toUpperCase() !== 'DEPOSITO') {
+            return order.proximoServicioAncla;
+        }
+        return null;
+    };
+
     const ESTADO_BADGE = {
         'PENDIENTE': { cls: 'bg-amber-50 text-amber-700', icon: <Clock size={14} />, label: 'Pendiente' },
         'EN_PREPARACION': { cls: 'bg-blue-50 text-blue-700', icon: <PlayCircle size={14} />, label: 'En Preparación' },
@@ -281,6 +319,7 @@ const WmsReceiveSalesView = () => {
         'RECIBIDO_DEPOSITO': { cls: 'bg-emerald-50 text-emerald-700', icon: <Truck size={14} />, label: 'En Depósito' },
         'ENTREGADO': { cls: 'bg-slate-100 text-slate-600', icon: <CheckCircle size={14} />, label: 'Entregado' },
         'CANCELADO': { cls: 'bg-red-50 text-red-600', icon: <XCircle size={14} />, label: 'Cancelado' },
+        'ENVIADO_PRODUCCION': { cls: 'bg-violet-50 text-violet-700', icon: <Send size={14} />, label: 'Enviado a Producción' },
     };
 
     const activeCount = orders.length;
@@ -292,6 +331,8 @@ const WmsReceiveSalesView = () => {
             || (o.codigo || '').toLowerCase().includes(filtroProceso)
             || (o.cliente || '').toLowerCase().includes(filtroProceso))
         : historial;
+
+    const destinoDialog = confirmDialog ? destinoPendiente(confirmDialog) : null;
 
     return (
         <div className="p-6 bg-slate-50 min-h-screen relative">
@@ -312,8 +353,14 @@ const WmsReceiveSalesView = () => {
                                 {confirmDialog.estado !== 'PREPARADO' && (
                                     <li>Se descuenta el stock del WMS (rebaje de inventario) y se genera la etiqueta del bulto.</li>
                                 )}
-                                <li>El pedido ingresa a <strong>Depósito</strong> (queda registrado y en cuenta del cliente).</li>
-                                <li>Se programa el <strong>aviso automático (WhatsApp)</strong> al cliente de que su pedido está pronto.</li>
+                                {destinoDialog ? (
+                                    <li>El pedido se envía a <strong>{AREA_LABELS[destinoDialog] || destinoDialog}</strong> — todavía NO ingresa a Depósito ni se avisa al cliente.</li>
+                                ) : (
+                                    <>
+                                        <li>El pedido ingresa a <strong>Depósito</strong> (queda registrado y en cuenta del cliente).</li>
+                                        <li>Se programa el <strong>aviso automático (WhatsApp)</strong> al cliente de que su pedido está pronto.</li>
+                                    </>
+                                )}
                             </ul>
                         </div>
                         <div className="flex gap-3 justify-end">
@@ -479,6 +526,7 @@ const WmsReceiveSalesView = () => {
                             const isProcessing = processingId === order.id;
                             const readOnly = vista === 'historial';
                             const badge = ESTADO_BADGE[order.estado] || ESTADO_BADGE['PENDIENTE'];
+                            const destinoOrder = destinoPendiente(order);
 
                             return (
                                 <div key={order.id} className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden hover:shadow-md transition-shadow">
@@ -517,7 +565,8 @@ const WmsReceiveSalesView = () => {
                                                         </span>
                                                     )}
                                                     {/* Próxima área: siempre visible — Depósito discreto (venta pura),
-                                                        área de producción RESALTADA (comprar y personalizar) */}
+                                                        área de producción RESALTADA (comprar y personalizar, o
+                                                        combo cuyo componente todavía tiene que pasar por Bordado/Estampado) */}
                                                     {(order.areasDestino || []).length > 0 ? (
                                                         (order.areasDestino || []).map(a => (
                                                             <span
@@ -528,6 +577,13 @@ const WmsReceiveSalesView = () => {
                                                                 → {AREA_LABELS[a] || a}
                                                             </span>
                                                         ))
+                                                    ) : order.proximoServicioAncla && order.proximoServicioAncla.toUpperCase() !== 'DEPOSITO' ? (
+                                                        <span
+                                                            className="flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-black bg-violet-600 text-white shadow-sm shadow-violet-300"
+                                                            title={`Este pedido todavía tiene que pasar por ${AREA_LABELS[order.proximoServicioAncla] || order.proximoServicioAncla} antes de Depósito — no ingresa directo`}
+                                                        >
+                                                            → {AREA_LABELS[order.proximoServicioAncla] || order.proximoServicioAncla}
+                                                        </span>
                                                     ) : (
                                                         <span
                                                             className="flex items-center gap-1 px-2 py-1 rounded-full text-xs font-bold bg-slate-50 text-slate-400 border border-slate-200"
@@ -755,10 +811,14 @@ const WmsReceiveSalesView = () => {
                                                         onClick={() => setConfirmDialog(order)}
                                                         disabled={isProcessing}
                                                         className="bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white font-bold py-3 px-6 rounded-xl shadow-lg shadow-emerald-600/30 transition-all flex items-center gap-2"
-                                                        title="Descuenta el stock del WMS, ingresa el pedido a Depósito y programa el aviso al cliente"
+                                                        title={destinoOrder
+                                                            ? `Descuenta el stock del WMS y envía el pedido a ${AREA_LABELS[destinoOrder] || destinoOrder} — todavía no ingresa a Depósito ni se avisa al cliente`
+                                                            : "Descuenta el stock del WMS, ingresa el pedido a Depósito y programa el aviso al cliente"}
                                                     >
                                                         <CheckCircle size={20} />
-                                                        Finalizar: Rebajar Inventario, Ingresar a Depósito y Avisar
+                                                        {destinoOrder
+                                                            ? `Finalizar: Rebajar Inventario y Enviar a ${AREA_LABELS[destinoOrder] || destinoOrder}`
+                                                            : 'Finalizar: Rebajar Inventario, Ingresar a Depósito y Avisar'}
                                                     </button>
                                                 )}
                                                 {order.estado === 'PREPARADO' && (
@@ -766,10 +826,14 @@ const WmsReceiveSalesView = () => {
                                                         onClick={() => setConfirmDialog(order)}
                                                         disabled={isProcessing}
                                                         className="bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white font-bold py-3 px-6 rounded-xl shadow-lg shadow-indigo-600/30 transition-all flex items-center gap-2"
-                                                        title="El stock ya fue descontado — solo ingresa a Depósito y programa el aviso"
+                                                        title={destinoOrder
+                                                            ? `Este pedido todavía tiene que pasar por ${AREA_LABELS[destinoOrder] || destinoOrder} — no ingresa a Depósito hasta que ese paso termine`
+                                                            : "El stock ya fue descontado — solo ingresa a Depósito y programa el aviso"}
                                                     >
                                                         <CheckCircle size={20} />
-                                                        Confirmar Ingreso a Depósito y Avisar
+                                                        {destinoOrder
+                                                            ? `Pendiente: falta pasar por ${AREA_LABELS[destinoOrder] || destinoOrder}`
+                                                            : 'Confirmar Ingreso a Depósito y Avisar'}
                                                     </button>
                                                 )}
                                             </div>

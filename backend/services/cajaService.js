@@ -61,6 +61,7 @@ const { marcarCobranzaPagada, marcarCobranzaPendiente } = require('./cobranzaSer
 const contabilidadSvc  = require('./contabilidadService');
 const contabilidadCore = require('./contabilidadCore'); // ERP + resolverLineasDesdeMotor
 const motorContable    = require('./motorContable');     // Motor de Eventos: fuente de verdad
+const { estamparAreaLineas } = require('./areaLineaService');
 
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -186,7 +187,13 @@ async function procesarVentaDirecta(payload) {
         if (item.tipo === 'RECURSO') {
             // Resolvemos el ID interno a partir del código, si no existe usamos 110 por defecto
             const rProd = await reqItem.input('Cod', sql.VarChar, item.codigo.trim()).query(`SELECT ProIdProducto FROM dbo.Articulos WHERE LTRIM(RTRIM(CodArticulo)) = LTRIM(RTRIM(@Cod))`);
-            const proId = rProd.recordset.length > 0 ? rProd.recordset[0].ProIdProducto : 110;
+            let proId = rProd.recordset.length > 0 ? rProd.recordset[0].ProIdProducto : 110;
+            // CodArticulo puede repetirse entre áreas (ej. '28' = Back pet ECOUV y Rib 1,70 SB):
+            // con más de una fila gana la que el cajero seleccionó (llega en articulosPermitidos).
+            if (rProd.recordset.length > 1 && Array.isArray(item.articulosPermitidos)) {
+                const elegido = rProd.recordset.find(r => item.articulosPermitidos.includes(r.ProIdProducto));
+                if (elegido) proId = elegido.ProIdProducto;
+            }
 
             // Normalizar artículos permitidos para esta compra
             const artsPermitidos = Array.isArray(item.articulosPermitidos) && item.articulosPermitidos.length > 0
@@ -687,16 +694,22 @@ async function procesarVentaDirecta(payload) {
 
 async function getProductosVenta() {
   const pool = await getPool();
-  const res = await pool.request().query(`
+  // TipoStock (StockArt de la familia CodStock: MATERIAL | PRODUCTO_TERMINADO | TERMINACION)
+  // lo usa la caja para ofrecer como rollo por adelantado SOLO el material impreso de ECOUV.
+  const buildQuery = (conTipoStock) => `
       SELECT p.ProIdProducto as ProIdProducto,
-             LTRIM(RTRIM(p.CodArticulo)) as CodArticulo, 
-             LTRIM(RTRIM(p.Descripcion)) as Descripcion, 
-             ISNULL(c.NombreReferencia, 
-                CASE WHEN LTRIM(RTRIM(p.CodStock)) = '2.2.1.1' THEN 'Insumos' 
-                     WHEN LTRIM(RTRIM(p.CodStock)) = '2.2.1.2' THEN 'Productos en el local' 
+             LTRIM(RTRIM(p.CodArticulo)) as CodArticulo,
+             LTRIM(RTRIM(p.Descripcion)) as Descripcion,
+             ISNULL(c.NombreReferencia,
+                CASE WHEN LTRIM(RTRIM(p.CodStock)) = '2.2.1.1' THEN 'Insumos'
+                     WHEN LTRIM(RTRIM(p.CodStock)) = '2.2.1.2' THEN 'Productos en el local'
                      ELSE 'Otros' END
              ) as GrupoNombre,
              LTRIM(RTRIM(p.CodStock)) as CodStock,
+             ${conTipoStock
+               ? `(SELECT TOP 1 LTRIM(RTRIM(s.TipoStock)) FROM dbo.StockArt s WITH(NOLOCK)
+                   WHERE LTRIM(RTRIM(s.CodStock)) = LTRIM(RTRIM(p.CodStock))) as TipoStock,`
+               : `CAST(NULL AS VARCHAR(20)) as TipoStock,`}
              ISNULL(pl.Precio, pb.Precio) as PrecioBase,
              -- La moneda autoritativa de PreciosBase es MonIdMoneda (2=USD, 1=UYU).
              -- La columna de texto pb.Moneda puede quedar desactualizada al editar precios,
@@ -713,7 +726,15 @@ async function getProductosVenta() {
       LEFT JOIN dbo.PreciosBase pb WITH(NOLOCK) ON p.ProIdProducto = pb.ProIdProducto
       WHERE p.Mostrar = 1 AND (p.IDProdReact IS NOT NULL OR p.Grupo = '2.1')
       ORDER BY GrupoNombre, p.Descripcion
-  `);
+  `;
+  let res;
+  try {
+    res = await pool.request().query(buildQuery(true));
+  } catch (e) {
+    // Base sin la migración ECOUV (StockArt.TipoStock inexistente): fallback con
+    // TipoStock NULL -> el front no ofrece el grupo ECOUV (comportamiento previo).
+    res = await pool.request().query(buildQuery(false));
+  }
   return res.recordset;
 }
 
@@ -1705,6 +1726,11 @@ async function procesarTransaccion(payload) {
       logger.error(`[CAJA-ERP] ❌ Error Contable, abortando cobro: ${errContabilidad.message}`);
       throw errContabilidad;
     }
+
+    // Área/variante/artículo de las líneas generadas por la venta. Sin docId: el
+    // id del documento está declarado dentro del bloque que lo crea y no llega
+    // hasta acá, y además este flujo puede generar documento + recibo.
+    await estamparAreaLineas(null, transaction);
 
     // ── COMMIT ────────────────────────────────────────────────────────
     await transaction.commit();

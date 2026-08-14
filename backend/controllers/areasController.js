@@ -112,7 +112,8 @@ exports.getAreaDetails = async (req, res) => {
 // 3. GESTIÓN DE EQUIPOS
 // =====================================================================
 exports.addPrinter = async (req, res) => {
-    const { areaId, nombre, capacidad, velocidad, estado, estadoProceso, separacionImpresion } = req.body;
+    const { areaId, nombre, capacidad, velocidad, estado, estadoProceso, separacionImpresion,
+        cabezales, velocidadValor, velocidadUnidad, minutosPreparacion } = req.body;
     if (!areaId || !nombre) return res.status(400).json({ error: "Faltan datos" });
 
     try {
@@ -125,7 +126,13 @@ exports.addPrinter = async (req, res) => {
             .input('Estado', sql.NVarChar(50), estado || 'DISPONIBLE')
             .input('EstadoProceso', sql.NVarChar(50), estadoProceso || 'DETENIDO')
             .input('SepImp', sql.Bit, separacionImpresion ? 1 : 0)
-            .query("INSERT INTO dbo.ConfigEquipos (AreaID, Nombre, Activo, Capacidad, Velocidad, Estado, EstadoProceso, SeparacionImpresion) VALUES (@AreaID, @Nombre, 1, @Capacidad, @Velocidad, @Estado, @EstadoProceso, @SepImp)");
+            .input('Cabezales', sql.Int, cabezales === '' || cabezales === undefined ? null : cabezales)
+            .input('VelocidadValor', sql.Decimal(10, 2), velocidadValor === '' || velocidadValor === undefined ? null : velocidadValor)
+            .input('VelocidadUnidad', sql.VarChar(30), velocidadUnidad || null)
+            .input('MinutosPreparacion', sql.Int, minutosPreparacion === '' || minutosPreparacion === undefined ? null : minutosPreparacion)
+            .query(`INSERT INTO dbo.ConfigEquipos
+                (AreaID, Nombre, Activo, Capacidad, Velocidad, Estado, EstadoProceso, SeparacionImpresion, Cabezales, VelocidadValor, VelocidadUnidad, MinutosPreparacion)
+                VALUES (@AreaID, @Nombre, 1, @Capacidad, @Velocidad, @Estado, @EstadoProceso, @SepImp, @Cabezales, @VelocidadValor, @VelocidadUnidad, @MinutosPreparacion)`);
         res.json({ success: true, message: 'Equipo agregado' });
     } catch (err) {
         logger.error("❌ ERROR CRÍTICO AL AGREGAR EQUIPO:");
@@ -337,7 +344,8 @@ exports.deletePrinter = async (req, res) => {
 // EDITAR EQUIPO EXISTENTE (Nombre, Capacidad, Velocidad, Estado, EstadoProceso, Activo)
 exports.updatePrinter = async (req, res) => {
     const { id } = req.params; // EquipoID
-    const { nombre, capacidad, velocidad, estado, estadoProceso, activo, separacionImpresion } = req.body;
+    const { nombre, capacidad, velocidad, estado, estadoProceso, activo, separacionImpresion,
+        cabezales, velocidadValor, velocidadUnidad, minutosPreparacion } = req.body;
 
     try {
         const pool = await getPool();
@@ -348,7 +356,11 @@ exports.updatePrinter = async (req, res) => {
             .input('Velocidad', sql.Int, velocidad === '' ? 0 : (velocidad || 0))
             .input('Estado', sql.NVarChar(50), estado || null)
             .input('EstadoProceso', sql.NVarChar(50), estadoProceso || null)
-            .input('SepImp', sql.Bit, separacionImpresion === undefined ? null : (separacionImpresion ? 1 : 0));
+            .input('SepImp', sql.Bit, separacionImpresion === undefined ? null : (separacionImpresion ? 1 : 0))
+            .input('Cabezales', sql.Int, cabezales === '' || cabezales === undefined ? null : cabezales)
+            .input('VelocidadValor', sql.Decimal(10, 2), velocidadValor === '' || velocidadValor === undefined ? null : velocidadValor)
+            .input('VelocidadUnidad', sql.VarChar(30), velocidadUnidad === undefined ? null : (velocidadUnidad || null))
+            .input('MinutosPreparacion', sql.Int, minutosPreparacion === '' || minutosPreparacion === undefined ? null : minutosPreparacion);
 
         // Solo actualizar Activo si viene en el body explicitly (puede ser boolean o bit)
         let query = `
@@ -356,7 +368,11 @@ exports.updatePrinter = async (req, res) => {
             SET Nombre = @Nombre, Capacidad = @Capacidad, Velocidad = @Velocidad,
                 Estado = ISNULL(@Estado, Estado),
                 EstadoProceso = ISNULL(@EstadoProceso, EstadoProceso),
-                SeparacionImpresion = ISNULL(@SepImp, SeparacionImpresion)
+                SeparacionImpresion = ISNULL(@SepImp, SeparacionImpresion),
+                Cabezales = @Cabezales,
+                VelocidadValor = @VelocidadValor,
+                VelocidadUnidad = @VelocidadUnidad,
+                MinutosPreparacion = @MinutosPreparacion
         `;
 
         if (activo !== undefined) {

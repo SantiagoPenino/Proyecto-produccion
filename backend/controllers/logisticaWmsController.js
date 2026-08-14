@@ -1,6 +1,6 @@
 const { getPool, sql } = require('../config/db');
 const logger = require('../utils/logger');
-const { descontarStockWmsExterno } = require('../services/wmsStockService');
+const { descontarStockWmsExterno, explotarCombos } = require('../services/wmsStockService');
 
 // [WMS] Trazabilidad: registra el cambio de estado (o nota) del pedido VEN en
 // PedidosCobranzaEventos. Con try/catch: si la tabla no existe todavía (prod sin
@@ -63,6 +63,30 @@ async function attachAreasDestino(pool, orders) {
         const map = {};
         r.recordset.forEach(x => { (map[x.Doc] ||= []).push(x.AreaID); });
         orders.forEach(o => { o.areasDestino = map[(o.codigo || '').trim()] || []; });
+    } catch (e) { /* sin dato no se rompe la lista */ }
+    return orders;
+}
+
+// [COMBOS] Destino real de la ancla VENTA_DIRECTA de este pedido — hasta la FASE 3 del
+// plan de combos, toda venta directa iba SIEMPRE a Depósito (por eso nunca hizo falta
+// mostrarlo). Con el retiro de un componente de combo, la ancla puede tener que pasar
+// primero por un área (EMB/EST) — esto es lo que arma el badge "→ Bordado"/"→ Estampado"
+// en vez del fallback fijo "→ Depósito" de la tarjeta.
+async function attachProximoServicioAncla(pool, orders) {
+    if (!orders.length) return orders;
+    try {
+        const docs = orders.map(o => (o.codigo || '').trim()).filter(Boolean);
+        if (!docs.length) return orders;
+        const docsIn = docs.map(d => `'${d.replace(/'/g, "''")}'`).join(',');
+        const r = await pool.request().query(`
+            SELECT LTRIM(RTRIM(NoDocERP)) AS Doc, LTRIM(RTRIM(ProximoServicio)) AS ProximoServicio
+            FROM Ordenes
+            WHERE LTRIM(RTRIM(NoDocERP)) IN (${docsIn})
+              AND AreaID = 'PRO' AND EstadoDependencia = 'VENTA_DIRECTA'
+        `);
+        const map = {};
+        r.recordset.forEach(x => { map[x.Doc] = x.ProximoServicio; });
+        orders.forEach(o => { o.proximoServicioAncla = map[(o.codigo || '').trim()] || null; });
     } catch (e) { /* sin dato no se rompe la lista */ }
     return orders;
 }
@@ -141,7 +165,7 @@ exports.getPendingOrders = async (req, res) => {
             });
         });
 
-        res.json(await attachBultosCount(pool, await attachAreasDestino(pool, await attachNotasCount(pool, Object.values(ordersMap)))));
+        res.json(await attachProximoServicioAncla(pool, await attachBultosCount(pool, await attachAreasDestino(pool, await attachNotasCount(pool, Object.values(ordersMap))))));
     } catch (err) {
         logger.error('Error en getPendingOrders (Logistica):', err);
         res.status(500).json({ error: err.message });
@@ -171,11 +195,11 @@ exports.confirmPreparation = async (req, res) => {
         const { pedidoId } = req.params;
         const pool = await getPool();
 
-        // 1. Get items to discount
+        // 1. Get items to discount (ProIdProducto viaja para poder explotar combos)
         const itemsRes = await pool.request()
             .input('PedidoID', sql.Int, pedidoId)
-            .query(`SELECT CodArticulo as wms_variante_id, Cantidad FROM PedidosCobranzaDetalle WHERE PedidoCobranzaID = @PedidoID`);
-        
+            .query(`SELECT ProIdProducto, CodArticulo as wms_variante_id, Cantidad FROM PedidosCobranzaDetalle WHERE PedidoCobranzaID = @PedidoID`);
+
         const items = itemsRes.recordset;
         if (items.length === 0) throw new Error('El pedido no tiene items');
 
@@ -191,8 +215,11 @@ exports.confirmPreparation = async (req, res) => {
 
         // 2. Descontar stock via POST /sql — mismo endpoint que importa productos
         // (lógica compartida con prendasOrdersController.confirmarRetiroWms, ver
-        // backend/services/wmsStockService.js)
-        const { wmsDisponible, wmsErrors } = await descontarStockWmsExterno(items);
+        // backend/services/wmsStockService.js). Los COMBOS del configurador se explotan
+        // antes: la línea del combo no existe en el WMS — se descuentan sus componentes
+        // (ProductoComboItems), p.ej. 3 combos → 3 gorros + 3 shorts.
+        const itemsDescuento = await explotarCombos(pool, items);
+        const { wmsDisponible, wmsErrors } = await descontarStockWmsExterno(itemsDescuento);
 
         // Bloquear solo si el WMS está completamente offline
         if (!wmsDisponible) {
@@ -237,11 +264,129 @@ exports.confirmPreparation = async (req, res) => {
             logger.warn('[WMS] confirmPreparation: no se pudieron generar los bultos de venta directa:', eLab.message);
         }
 
+        // [COMBOS] FASE 3: si esta venta es el retiro de un componente de combo (Fabricar a
+        // Medida), confirmar su preparación es lo que libera el Bordado/DTF REAL de ese
+        // componente en el pedido de origen — hasta acá esas órdenes estaban en
+        // ESPERANDO_RETIRO_WMS, esperando justo esto. Cruza de esta venta (NoDocERP=VEN-xxx)
+        // al pedido real vía Ordenes.ComboPedidoNoDocERP, guardado en la ancla al crear el
+        // combo (ver prendasOrdersController.createWebOrder). Sin ninguna ancla de combo
+        // (cualquier venta normal de la Tienda/WMS), esta consulta no encuentra nada — cero
+        // impacto en el flujo existente. Try/catch propio: si falla, la venta ya está
+        // confirmada y no hay que abortarla por esto.
+        let hermanasLiberadas = 0;
+        try {
+            if (noDocErpVen) {
+                const anclasCombo = await pool.request()
+                    .input('Doc', sql.VarChar, noDocErpVen)
+                    .query(`
+                        SELECT OrdenID, ComboPedidoNoDocERP, ComboItemID, ProximoServicio FROM Ordenes
+                        WHERE NoDocERP = @Doc AND AreaID = 'PRO' AND EstadoDependencia = 'VENTA_DIRECTA'
+                          AND ComboPedidoNoDocERP IS NOT NULL AND ComboItemID IS NOT NULL
+                    `);
+                if (anclasCombo.recordset.length > 0) {
+                    const { changeOrderState } = require('../services/stateManagerService');
+                    for (const a of anclasCombo.recordset) {
+                        const hermanas = await pool.request()
+                            .input('NoDoc', sql.NVarChar, a.ComboPedidoNoDocERP)
+                            .input('CI', sql.Int, a.ComboItemID)
+                            .query(`
+                                SELECT OrdenID FROM Ordenes
+                                WHERE NoDocERP = @NoDoc AND ComboItemID = @CI AND EstadoDependencia = 'ESPERANDO_RETIRO_WMS'
+                            `);
+                        let liberadasEnEstaAncla = 0;
+                        for (const h of hermanas.recordset) {
+                            await pool.request()
+                                .input('OID', sql.Int, h.OrdenID)
+                                .query(`UPDATE Ordenes SET EstadoDependencia = 'OK' WHERE OrdenID = @OID`);
+                            await changeOrderState(pool, {
+                                target : { type: 'ORDER', id: h.OrdenID },
+                                estado : 'Pendiente',
+                                userObj: req.user || 'Sistema',
+                                detalle: 'Retiro del combo confirmado',
+                                guard  : "Estado = 'Cargando...'",
+                                io     : req.app.get('socketio'),
+                            });
+                            hermanasLiberadas++;
+                            liberadasEnEstaAncla++;
+                        }
+
+                        // [COMBOS] FASE 4: la hermana real quedó liberada en la BD, pero para que
+                        // aparezca en la bandeja de trabajo del área todavía falta que la prenda
+                        // llegue FÍSICAMENTE — eso lo exige el requisito bloqueante "PRENDA" de
+                        // EMB/EST (ConfigRequisitosProduccion), que solo se auto-cumple al RECIBIR
+                        // un remito real (ver receiveDispatch, AUTO-FULFILL). Acá armamos el remito
+                        // de SALIDA (PRO→área real) con el bulto de la ancla que ya se generó arriba
+                        // — reusa createRemitoFromOrders tal cual (mismo mecanismo que usa Despacho
+                        // manual), con un req/res simulados igual que esa función ya hace para
+                        // llamar a createRemito internamente. La RECEPCIÓN queda manual a propósito
+                        // (es la prueba física real de que la prenda llegó). Try/catch propio: si el
+                        // remito falla, la confirmación principal ya se hizo y no se revierte — queda
+                        // pendiente de armar a mano, igual que hoy.
+                        //
+                        // FIX (bug real visto en vivo, VEN-2340): el destino del remito NO sale del
+                        // AreaID de la hermana liberada (esa era la orden DF — la que IMPRIME el
+                        // transfer, no la que lleva la PRENDA) — sale del ProximoServicio YA
+                        // calculado en la ANCLA al crearla (createWebOrder), que sabe saltar pasos
+                        // "no físicos" (DF/TPU) e ir directo al paso donde la prenda de verdad pasa
+                        // (EST). Usar AreaID de la hermana mandaba el bulto real a DF por error.
+                        const areaDestinoRemito = (a.ProximoServicio || '').trim().toUpperCase();
+                        if (liberadasEnEstaAncla > 0 && areaDestinoRemito && areaDestinoRemito !== 'DEPOSITO') {
+                            try {
+                                const logisticsController = require('./logisticsController');
+                                let remitoResult = null;
+                                const fakeRes = {
+                                    json: (data) => { remitoResult = data; },
+                                    status: (code) => ({ json: (data) => { remitoResult = { ...data, _statusCode: code }; } }),
+                                };
+                                await logisticsController.createRemitoFromOrders({
+                                    body: {
+                                        areaOrigen: 'PRO',
+                                        areaDestino: areaDestinoRemito,
+                                        usuarioId: req.user?.id || 1,
+                                        orderIds: [a.OrdenID],
+                                        observations: `Remito automático — retiro de combo confirmado (${noDocErpVen})`,
+                                    },
+                                    user: req.user || 'Sistema',
+                                    app: req.app,
+                                }, fakeRes);
+                                if (remitoResult?.success) {
+                                    logger.info(`[WMS] Combo: remito ${remitoResult.dispatchCode} creado PRO→${areaDestinoRemito} (orden ancla ${a.OrdenID}).`);
+                                } else {
+                                    logger.warn(`[WMS] Combo: no se pudo crear el remito PRO→${areaDestinoRemito} (orden ancla ${a.OrdenID}):`, remitoResult);
+                                }
+                            } catch (eRemito) {
+                                logger.warn(`[WMS] confirmPreparation: fallo creando remito automático PRO→${areaDestinoRemito}:`, eRemito.message);
+                            }
+                        }
+                    }
+                    if (hermanasLiberadas > 0) {
+                        logger.info(`[WMS] Combo: ${hermanasLiberadas} orden(es) de decoración liberada(s) tras confirmar ${noDocErpVen}.`);
+
+                        // [COMBOS] Esta VEN- ya cumplió su función (retirar el componente del
+                        // depósito y mandarlo a producción) — nunca va a "entrar a Depósito" ella
+                        // misma: el producto se transforma en el área y termina saliendo como parte
+                        // del pedido real, que tiene su propio ciclo de depósito+aviso
+                        // (pedidoCompletoService). Sin esto, el guard de receivePreparedOrder la
+                        // dejaría eternamente "Preparado" en la bandeja activa — su ProximoServicio
+                        // nunca se actualiza solo, así que jamás dejaría de estar bloqueada. La
+                        // sacamos a un estado terminal propio (va al Historial, no más a "En
+                        // Proceso") en cuanto el retiro se confirmó, haya salido el remito o no.
+                        await pool.request()
+                            .input('PedidoID', sql.Int, pedidoId)
+                            .query(`UPDATE PedidosCobranza SET EstadoCobro = 'ENVIADO_PRODUCCION' WHERE ID = @PedidoID AND NoDocERP LIKE 'VEN-%'`);
+                        await logEvento(pool, pedidoId, { estado: 'ENVIADO_PRODUCCION', usuario: req.user?.usuario });
+                    }
+                }
+            }
+        } catch (eCombo) {
+            logger.warn('[WMS] confirmPreparation: no se pudieron liberar hermanas de combo:', eCombo.message);
+        }
+
         const msg = wmsErrors.length > 0
             ? `Pedido PREPARADO con advertencias: ${wmsErrors.join('; ')}`
             : 'Pedido confirmado, stock descontado y marcado como PREPARADO';
 
-        res.json({ success: true, message: msg, wmsErrors, bultoOrdenIds });
+        res.json({ success: true, message: msg, wmsErrors, bultoOrdenIds, hermanasLiberadas });
 
     } catch (err) {
         logger.error('Error en confirmPreparation (Logistica):', err);
@@ -281,6 +426,28 @@ exports.receivePreparedOrder = async (req, res) => {
         // y el ingreso directo de pedidos sin stock descontado.
         if (order.EstadoCobro !== 'PREPARADO') {
             return res.json({ success: false, message: `El pedido no está PREPARADO (estado: ${order.EstadoCobro}). No se ingresa a Depósito.` });
+        }
+
+        // [COMBOS] Guard nuevo: si la ancla de esta venta tiene que pasar primero por un
+        // área de decoración (ProximoServicio distinto de DEPOSITO — retiro de un
+        // componente de combo, ver FASE 3 del plan de servicios de combo por componente),
+        // todavía NO puede ingresar a Depósito ni avisarse al cliente. Hasta este cambio
+        // toda venta VENTA_DIRECTA iba siempre directo a depósito, así que este chequeo
+        // nunca hizo falta — el botón "Finalizar" del frontend encadena
+        // confirmPreparation + receivePreparedOrder automáticamente, sin preguntar.
+        const anclaPendiente = await pool.request()
+            .input('Doc', sql.VarChar, order.NoDocERP)
+            .query(`
+                SELECT TOP 1 ProximoServicio FROM Ordenes
+                WHERE NoDocERP = @Doc AND AreaID = 'PRO' AND EstadoDependencia = 'VENTA_DIRECTA'
+                  AND ISNULL(LTRIM(RTRIM(ProximoServicio)), 'DEPOSITO') NOT LIKE 'DEPOSITO%'
+            `);
+        if (anclaPendiente.recordset.length > 0) {
+            const destino = (anclaPendiente.recordset[0].ProximoServicio || '').trim();
+            return res.json({
+                success: false,
+                message: `Este pedido todavía tiene que pasar por ${destino} — no se puede ingresar a Depósito ni avisar al cliente todavía.`
+            });
         }
 
         // Nombre del trabajo FIJO — el detalle de los productos va solo en la hoja A4
@@ -353,7 +520,7 @@ exports.getPreparedOrders = async (req, res) => {
             const fullName = row.nombre_variante ? `${row.nombre_producto} - ${row.nombre_variante}` : (row.nombre_producto || 'Artículo Desconocido');
             ordersMap[row.PedidoID].items.push({ wms_variante_id: row.wms_variante_id, sku: row.sku, nombre_variante: fullName, cantidad: row.Cantidad, ubicacion: { pasillo: row.pasillo, estante: row.estante } });
         });
-        res.json(await attachBultosCount(pool, await attachAreasDestino(pool, await attachNotasCount(pool, Object.values(ordersMap)))));
+        res.json(await attachProximoServicioAncla(pool, await attachBultosCount(pool, await attachAreasDestino(pool, await attachNotasCount(pool, Object.values(ordersMap))))));
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
@@ -423,7 +590,7 @@ exports.getHistorialPedidos = async (req, res) => {
                     SELECT TOP 50 p2.ID FROM PedidosCobranza p2
                     LEFT JOIN Clientes c2 ON p2.ClienteID = c2.CliIdCliente
                     WHERE p2.NoDocERP LIKE 'VEN-%'
-                      AND p2.EstadoCobro IN ('RECIBIDO_DEPOSITO', 'ENTREGADO', 'CANCELADO')
+                      AND p2.EstadoCobro IN ('RECIBIDO_DEPOSITO', 'ENTREGADO', 'CANCELADO', 'ENVIADO_PRODUCCION')
                       AND (@Search IS NULL OR p2.NoDocERP LIKE @Search OR c2.Nombre LIKE @Search)
                     ORDER BY p2.FechaGeneracion DESC
                 )
@@ -438,7 +605,7 @@ exports.getHistorialPedidos = async (req, res) => {
             const fullName = row.nombre_variante ? `${row.nombre_producto} - ${row.nombre_variante}` : (row.nombre_producto || 'Artículo Desconocido');
             ordersMap[row.PedidoID].items.push({ wms_variante_id: row.wms_variante_id, sku: row.sku, nombre_variante: fullName, cantidad: row.Cantidad, ubicacion: { pasillo: row.pasillo, estante: row.estante } });
         });
-        res.json(await attachBultosCount(pool, await attachAreasDestino(pool, await attachNotasCount(pool, Object.values(ordersMap)))));
+        res.json(await attachProximoServicioAncla(pool, await attachBultosCount(pool, await attachAreasDestino(pool, await attachNotasCount(pool, Object.values(ordersMap))))));
     } catch (err) {
         res.status(500).json({ error: err.message });
     }

@@ -248,6 +248,103 @@ export function quitarFondo(ctx, w, h, tolerancia = 42) {
 }
 
 // =====================================================================
+// ANÁLISIS AUTOMÁTICO (sin abrir el editor)
+// =====================================================================
+
+/** Puntadas de una paleta completa, para un bordado de ese tamaño. */
+export function puntadasDePaleta(paleta, anchoCm, altoCm) {
+    return (paleta || []).reduce((s, p) => s + estimarPuntadas({
+        anchoCm, altoCm, cobertura: p.cobertura, tipoPuntada: p.puntada, relieve: p.relieve,
+    }), 0);
+}
+
+/**
+ * Corre el mismo análisis que hace el editor, pero sin pantalla: el cliente
+ * sube su logo y el sistema ya sabe con qué hilos y qué puntadas se borda.
+ *
+ * Hace exactamente los mismos pasos y en el mismo orden:
+ *   1. quita el fondo (si lo tiene)
+ *   2. reduce el arte a sus colores dominantes
+ *   3. vectoriza cada color en una pieza con su área real
+ *   4. le asigna a cada una el hilo más parecido de la carta
+ *   5. elige la puntada: relleno para lo que ocupa mucho, satén para el detalle
+ *
+ * `usaTafeta` viene del artículo elegido en el pedido ("con tafeta"): en ese caso
+ * la pieza de MAYOR superficie se resuelve con tela aplicada en vez de hilo, que
+ * es justamente lo que hace que ese artículo salga más barato.
+ *
+ * Devuelve null si el archivo no es una imagen que el navegador pueda abrir
+ * (un ponchado en PDF, AI o DST no se puede analizar acá).
+ */
+export function analizarArteAutomatico(file, { usaTafeta = false, maxLado = 420 } = {}) {
+    return new Promise((resolve) => {
+        if (!file || !/^image\//.test(file.type || '')) return resolve(null);
+
+        const url = URL.createObjectURL(file);
+        const img = new Image();
+
+        img.onerror = () => { URL.revokeObjectURL(url); resolve(null); };
+        img.onload = () => {
+            URL.revokeObjectURL(url);
+            try {
+                const ratio = img.naturalWidth / img.naturalHeight;
+                const w = ratio >= 1 ? Math.min(maxLado, img.naturalWidth)
+                                     : Math.round(Math.min(maxLado, img.naturalHeight) * ratio);
+                const h = ratio >= 1 ? Math.round(w / ratio) : Math.min(maxLado, img.naturalHeight);
+
+                const c = document.createElement('canvas');
+                c.width = w; c.height = h;
+                const ctx = c.getContext('2d', { willReadFrequently: true });
+                ctx.drawImage(img, 0, 0, w, h);
+
+                // 1. Fondo. Si se come casi todo, el arte no tenía fondo plano:
+                //    se deshace en vez de dejar el lienzo vacío.
+                const borrados = quitarFondo(ctx, w, h);
+                if (borrados / (w * h) > 0.92) {
+                    ctx.clearRect(0, 0, w, h);
+                    ctx.drawImage(img, 0, 0, w, h);
+                }
+
+                // 2 y 3. Colores dominantes y sus piezas.
+                const colores = detectarColores(ctx, w, h, 6);
+                if (!colores.length) return resolve(null);
+                const vector = vectorizarPiezas(ctx, w, h, colores.map(e => e.hex));
+
+                // La pieza más grande es la candidata a tafeta.
+                let idxMayor = 0;
+                colores.forEach((e, i) => {
+                    const cob = vector[i] ? vector[i].cobertura : e.cobertura;
+                    const cobMayor = vector[idxMayor] ? vector[idxMayor].cobertura : colores[idxMayor].cobertura;
+                    if (cob > cobMayor) idxMayor = i;
+                });
+
+                const paleta = colores.map((e, i) => {
+                    const pieza = vector[i];
+                    const cobertura = pieza ? pieza.cobertura : e.cobertura;
+                    let puntada = cobertura > 0.35 ? 'TATAMI' : 'SATEN';
+                    if (usaTafeta && i === idxMayor) puntada = 'TAFETA';
+                    return {
+                        id: `auto${i}_${e.hex.slice(1)}`,
+                        colorOriginal: e.hex,
+                        hilo: hiloMasCercano(e.hex).codigo,
+                        cobertura,
+                        anillos: pieza ? pieza.anillos : [],
+                        puntada,
+                        relieve: false,
+                    };
+                });
+
+                resolve({ paleta, canvas: c });
+            } catch (e) {
+                console.warn('[BORDADO] No se pudo analizar el arte automáticamente:', e?.message);
+                resolve(null);
+            }
+        };
+        img.src = url;
+    });
+}
+
+// =====================================================================
 // GOMA Y BALDE (retoque manual)
 // =====================================================================
 

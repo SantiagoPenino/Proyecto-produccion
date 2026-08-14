@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Zap, Trash2, AlertTriangle, CheckCircle2, CheckCircle, FileCode, Plus, Scissors } from 'lucide-react';
+import { Zap, Trash2, AlertTriangle, CheckCircle2, CheckCircle, FileCode, Plus, Scissors, Info } from 'lucide-react';
 import { FileUploadZone } from './FileUploadZone';
 import { CustomSelect } from '../../../pautas/CustomSelect';
 import { MARGEN_TELA_M } from '../utils/medirTizada';
@@ -71,6 +71,17 @@ const CorteStandalone = ({ tizadaFiles, setTizadaFiles, handleMultipleSpecialize
                     <span className="w-1.5 h-1.5 rounded-full bg-cyan-400/60 flex-shrink-0"></span>
                     <span className="text-sm font-medium text-zinc-100">Tela del Cliente</span>
                     <span className="ml-auto text-[9px] font-black uppercase text-cyan-500/60">Se corta sobre tu tela</span>
+                </div>
+
+                {/* Aviso informativo (no bloquea nada): el descanso de la tela es
+                    responsabilidad del cliente y afecta el resultado del corte. */}
+                <div className="mt-3 flex items-start gap-2 bg-amber-500/10 border border-amber-500/30 rounded-xl px-3 py-2.5">
+                    <Info size={14} className="text-amber-400 shrink-0 mt-0.5" />
+                    <p className="text-[11px] text-amber-200/90 leading-relaxed">
+                        <b className="text-amber-300">Si tu tela necesita descanso, entregala ya descansada.</b>{' '}
+                        Cortamos sobre la tela tal como la recibimos: una tela sin descansar se encoge o se
+                        deforma después del corte y el resultado no es el óptimo.
+                    </p>
                 </div>
             </div>
 

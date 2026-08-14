@@ -20,7 +20,11 @@ const convertirMoneda = (monto, monedaOrigen, monedaDestino, cotizacion) => {
 // pedido no tiene línea de PRO (nada que rehornear). Compartido por el total en vivo
 // (nuevoTotalConHermanas) y el guardado (handleSave), para que nunca queden desalineados.
 function rehornearLineaPro(lineas, cotizacion, sumaHermanasAlCargar) {
-    const proLinea = lineas.find(l => (l.AreaIDInterna || l.AreaID) === 'PRO');
+    // [COMBOS] Un combo puede tener VARIAS líneas de área PRO: la "de precio" (factura el
+    // combo completo) y una "de retiro" por cada componente (ComboItemID seteado, precio
+    // consolidado en 0 — ver esRetiroCombo en erpSyncService.js). Sin excluirlas acá, se
+    // "rehornea" cualquiera de las de retiro en vez de la de precio real.
+    const proLinea = lineas.find(l => (l.AreaIDInterna || l.AreaID) === 'PRO' && !l.ComboItemID);
     if (!proLinea) return null;
     const monedaPro = proLinea.Moneda || 'UYU';
     const proSubtotalActual = (parseFloat(proLinea.Cantidad) || 0) * (parseFloat(proLinea.PrecioUnitario) || 0);
@@ -407,8 +411,9 @@ export default function QuotationEditModal({ noDocERP, onClose, onSaved, current
                 setLineas(detalle);
 
                 // Foto de "cuánto de PRO son las hermanas" al momento de cargar — ver
-                // declaración del ref para el porqué.
-                const proLinea = detalle.find(l => (l.AreaIDInterna || l.AreaID) === 'PRO');
+                // declaración del ref para el porqué. [COMBOS] Mismo criterio que
+                // rehornearLineaPro: excluir las PRO de retiro (ComboItemID seteado).
+                const proLinea = detalle.find(l => (l.AreaIDInterna || l.AreaID) === 'PRO' && !l.ComboItemID);
                 const monedaPro = proLinea?.Moneda || 'UYU';
                 sumaHermanasAlCargarRef.current = detalle
                     .filter(l => l.EsHermanaConsolidada)

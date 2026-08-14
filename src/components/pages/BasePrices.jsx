@@ -159,16 +159,17 @@ const PriceGroup = ({
 };
 
 // Componente Fila Editable con Escalas e Incorporación
-const PriceRow = ({ 
-    item, 
-    changes, 
-    onChange, 
+const PriceRow = ({
+    item,
+    changes,
+    onChange,
     onAdd,
     qtyColumns = [],
     profileRules = [],
     pendingTieredChanges = {},
     onTieredChange,
-    profile
+    profile,
+    hideAddCurrency = false
 }) => {
     const isTotalRow = item._isVirtualTotal || item.CodArticulo === 'TOTAL';
     const displayVal = changes?.precio !== undefined ? changes.precio : (item.Precio || 0);
@@ -341,17 +342,16 @@ const PriceRow = ({
                                     type="text"
                                     className={`
                                         w-24 text-center border rounded-lg px-2 py-1.5 outline-none transition-all font-mono font-bold text-xs
-                                        ${isDeleted 
-                                            ? 'border-red-200 bg-red-50 text-red-400 line-through' 
-                                            : isRuleDirty 
-                                                ? 'border-indigo-400 bg-indigo-50/50 text-indigo-900 ring-2 ring-indigo-100' 
-                                                : isInherited
-                                                    ? 'border-slate-100 bg-slate-100/30 text-slate-400 italic font-normal'
-                                                    : 'border-slate-200 bg-slate-50/30 text-slate-700 hover:bg-slate-50 focus:bg-white focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100'
+                                        ${isDeleted
+                                            ? 'border-red-200 bg-red-50 text-red-400 line-through'
+                                            : isRuleDirty
+                                                ? 'border-indigo-400 bg-indigo-50/50 text-indigo-900 ring-2 ring-indigo-100'
+                                                : 'border-slate-200 bg-slate-50/30 text-slate-700 hover:bg-slate-50 focus:bg-white focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100'
                                         }
                                     `}
-                                    placeholder={isInherited ? `${totalRule.Valor}` : '-'}
-                                    value={isDeleted ? '' : ruleVal}
+                                    title={isInherited ? `Valor general (${totalRule.Valor}) heredado — escribí acá para fijar un valor propio de este producto` : undefined}
+                                    placeholder="-"
+                                    value={isDeleted ? '' : effectiveVal}
                                     onChange={(e) => {
                                         if (!profile) return;
                                         const inputVal = e.target.value;
@@ -413,13 +413,15 @@ const PriceRow = ({
                 {!isTotalRow && (
                     <div className="flex justify-end items-center gap-2">
                         {isDirty && <span className="text-amber-500 animate-pulse text-[10px]">●</span>}
-                        <button
-                            onClick={() => onAdd(item)}
-                            className="opacity-0 group-hover:opacity-100 transition-opacity text-slate-400 hover:text-indigo-600 p-1.5 rounded-lg hover:bg-indigo-50"
-                            title="Agregar precio en otra moneda"
-                        >
-                            <i className="fa-solid fa-plus text-xs"></i>
-                        </button>
+                        {!hideAddCurrency && (
+                            <button
+                                onClick={() => onAdd(item)}
+                                className="opacity-0 group-hover:opacity-100 transition-opacity text-slate-400 hover:text-indigo-600 p-1.5 rounded-lg hover:bg-indigo-50"
+                                title="Agregar precio en otra moneda"
+                            >
+                                <i className="fa-solid fa-plus text-xs"></i>
+                            </button>
+                        )}
                     </div>
                 )}
             </td>
@@ -427,7 +429,7 @@ const PriceRow = ({
     );
 };
 
-const BasePrices = () => {
+const BasePrices = ({ hideGeneralRow = false, hideAddCurrency = false }) => {
     // --- ESTADO ---
     const [prices, setPrices] = useState([]);
     const [profiles, setProfiles] = useState([]);
@@ -436,10 +438,13 @@ const BasePrices = () => {
     const [filter, setFilter] = useState('');
 
     // Filtro por estado del artículo (Mostrar): ALL | ACTIVE | INACTIVE
-    const [activeFilter, setActiveFilter] = useState('ALL');
+    const [activeFilter, setActiveFilter] = useState('ACTIVE');
 
     // Categoría seleccionada (por defecto 'ALL' o la primera que cargue)
     const [selectedGroupKey, setSelectedGroupKey] = useState('ALL');
+
+    // Fila "Aplica a TODOS (General)": colapsada por defecto, se abre a pedido
+    const [showGeneralRow, setShowGeneralRow] = useState(false);
 
     // Cambios Pendientes Base
     const [pendingChanges, setPendingChanges] = useState({});
@@ -568,6 +573,7 @@ const BasePrices = () => {
                 id: change.id,
                 perfilId: change.perfilId,
                 proIdProducto: change.proIdProducto,
+                codArticulo: change.codArticulo,
                 codGrupo: change.codGrupo,
                 tipoRegla: change.tipoRegla,
                 valor: change.valor !== undefined && change.valor !== '' && change.valor !== null ? parseFloat(change.valor) : null,
@@ -611,10 +617,15 @@ const BasePrices = () => {
     const handleRemoveQtyColumn = (profileId, q) => {
         if (!window.confirm(`¿Quitar escala Min ${q}? Se borrarán las reglas correspondientes al guardar.`)) return;
 
-        // Buscar reglas activas en DB para marcar de borrado
+        // Buscar reglas activas en DB para marcar de borrado.
+        // Clave por rule.ID (no por CodArticulo): el mismo CodArticulo puede pertenecer a
+        // más de un producto (ver comentario en pricesController.js sobre el código '28'
+        // duplicado); con la clave vieja, dos reglas de productos distintos con igual
+        // CodArticulo se pisaban entre sí y solo una llegaba a borrarse -> la columna
+        // "reaparecía" después de guardar porque la otra regla seguía viva en la BD.
         const activeRules = tieredRules.filter(r => r.PerfilID === profileId && r.CantidadMinima === q);
         activeRules.forEach(rule => {
-            const ruleKey = `${profileId}-${rule.CodArticulo}-${q}`;
+            const ruleKey = `del-${rule.ID}`;
             setPendingTieredChanges(prev => ({
                 ...prev,
                 [ruleKey]: {
@@ -1053,8 +1064,9 @@ const BasePrices = () => {
                             const qtyColumns = profile ? getQtyColumnsForProfile(profile.ID) : [];
                             const metricUnit = profile ? getMetricUnit(profile.Categoria) : 'u.';
 
-                            // Prepend TOTAL virtual row
-                            const groupItems = (profile && items.length > 0) ? [
+                            // Prepend TOTAL virtual row: nunca si se pide ocultarla (vista Marketing),
+                            // y en el resto de los casos solo si el usuario la abrió (colapsada por defecto)
+                            const groupItems = (profile && items.length > 0 && !hideGeneralRow && showGeneralRow) ? [
                                 {
                                     ID: null,
                                     _tempID: `total-${profile.ID}`,
@@ -1086,15 +1098,28 @@ const BasePrices = () => {
                                             )}
                                         </div>
                                         
-                                        {/* Botón para añadir escala de cantidad */}
-                                        {profile && items.length > 0 && (
-                                            <button
-                                                onClick={() => handleAddQtyColumn(profile.ID)}
-                                                className="bg-indigo-600 hover:bg-indigo-700 text-white px-3.5 py-2 rounded-xl text-xs font-bold transition-all shadow-md shadow-indigo-100 flex items-center gap-1.5"
-                                            >
-                                                <i className="fa-solid fa-plus"></i> Agregar Escala
-                                            </button>
-                                        )}
+                                        <div className="flex items-center gap-2">
+                                            {/* Toggle para mostrar/ocultar la fila "Aplica a TODOS (General)" */}
+                                            {profile && items.length > 0 && !hideGeneralRow && (
+                                                <button
+                                                    onClick={() => setShowGeneralRow(v => !v)}
+                                                    className="bg-white hover:bg-slate-50 text-slate-600 border border-slate-200 px-3.5 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5"
+                                                    title={showGeneralRow ? 'Ocultar la fila General' : 'Mostrar la fila "Aplica a TODOS (General)"'}
+                                                >
+                                                    <i className={`fa-solid fa-chevron-${showGeneralRow ? 'up' : 'down'} text-[10px]`}></i>
+                                                    {showGeneralRow ? 'Ocultar General' : 'Ver General'}
+                                                </button>
+                                            )}
+                                            {/* Botón para añadir escala de cantidad */}
+                                            {profile && items.length > 0 && (
+                                                <button
+                                                    onClick={() => handleAddQtyColumn(profile.ID)}
+                                                    className="bg-indigo-600 hover:bg-indigo-700 text-white px-3.5 py-2 rounded-xl text-xs font-bold transition-all shadow-md shadow-indigo-100 flex items-center gap-1.5"
+                                                >
+                                                    <i className="fa-solid fa-plus"></i> Agregar Escala
+                                                </button>
+                                            )}
+                                        </div>
                                     </div>
 
                                     {/* Table Grid container */}
@@ -1129,7 +1154,7 @@ const BasePrices = () => {
                                                                 {profile && (
                                                                     <button
                                                                         onClick={() => handleRemoveQtyColumn(profile.ID, q)}
-                                                                        className="absolute top-1/2 -translate-y-1/2 right-2 bg-red-50 text-red-500 hover:bg-red-500 hover:text-white rounded w-5 h-5 flex items-center justify-center opacity-0 group-hover/hdr:opacity-100 transition-all shadow-sm"
+                                                                        className="absolute top-1/2 -translate-y-1/2 right-2 bg-red-50 text-red-500 hover:bg-red-500 hover:text-white rounded w-5 h-5 flex items-center justify-center opacity-60 group-hover/hdr:opacity-100 transition-all shadow-sm"
                                                                         title={`Eliminar rango Min ${q}`}
                                                                     >
                                                                         ✕
@@ -1153,6 +1178,7 @@ const BasePrices = () => {
                                                             pendingTieredChanges={pendingTieredChanges}
                                                             onTieredChange={handleTieredChange}
                                                             profile={profile}
+                                                            hideAddCurrency={hideAddCurrency}
                                                         />
                                                     ))}
                                                 </tbody>

@@ -27,9 +27,15 @@ const MODOS = ['LIBRE', 'RESTRINGIDO', 'FIJA'];
 const COBROS = ['APARTE', 'INCLUIDA'];
 const ORIGENES = ['LOCAL', 'CLIENTE', 'CONFECCIONADO', 'AMBOS'];
 const ESTADOS = ['BORRADOR', 'PUBLICADO'];
-const AREAS_TECNICA = ['EMB', 'DF', 'TPU'];
+// EMB/DF/TPU = decoración (el cliente elige agregar); SB/TWC/TWT = construcción
+// (sublimación/corte/costura — casi siempre obligatoria, 12-ago).
+const AREAS_TECNICA = ['EMB', 'DF', 'TPU', 'SB', 'TWC', 'TWT'];
 const AREAS_APLIQUE = ['EMB', 'DF', 'TPU', 'ETIQUETA'];
 const TIPOS_COMPONENTE = ['CUELLO', 'MANGA', 'PUNO', 'COSTADO'];
+// La familia/categoría del producto vive en StockArt (Grupo 2.1) desde el
+// 12-ago — se administra con GET /stockart?grupo=2.1, POST /stockart y
+// PUT /stockart/articulos/:cod/mover (mismo mecanismo que EcoUV). La
+// columna ProductoVentaConfig.Familia queda como dato histórico sin uso.
 
 // ─────────────────────────────────────────────────────────────────────────
 // Stock vivo del local (WMS externo). Falla blanda: si el WMS no contesta,
@@ -107,7 +113,7 @@ exports.getProductos = async (req, res) => {
                    ON ci.ProIdProducto = a.ProIdProducto
             WHERE ISNULL(a.borrar, 0) = 0
               AND (
-                    (ISNULL(sa.TipoStock,'MATERIAL') = 'PRODUCTO_TERMINADO'
+                    (ISNULL(sa.TipoStock,'MATERIAL') IN ('PRODUCTO_TERMINADO', 'PRODUCTO_LOCAL')
                      AND (LTRIM(RTRIM(sa.SupFlia)) = '2' OR LTRIM(RTRIM(sa.CodStock)) = '1.1.4.10'))
                     OR vc.ProIdProducto IS NOT NULL
                   )
@@ -143,9 +149,9 @@ exports.getProductoFicha = async (req, res) => {
             WHERE a.ProIdProducto = @PID AND ISNULL(a.borrar, 0) = 0`);
         if (!datos.recordset.length) return res.status(404).json({ error: 'Producto no encontrado.' });
 
-        const [config, tecnicas, opciones, surtido, componentes, apliques, comboItems, comboSrv] = await Promise.all([
+        const [config, tecnicas, opciones, surtido, componentes, apliques, comboItems, comboSrv, fichaDiseno, fdAnot, fdExtra, fdCost, fdPiezas] = await Promise.all([
             rq().query(`SELECT OrigenTipo, OrigenProIdProducto, CantidadMinima, CantidadFija,
-                               ValidarStock, Estado, EsCombo, FechaRegistro, FechaModif
+                               ValidarStock, Estado, EsCombo, CodigoCorto, FechaRegistro, FechaModif
                         FROM dbo.ProductoVentaConfig WHERE ProIdProducto = @PID`),
             rq().query(`SELECT AreaID, Obligatorio, Modo, Cobro
                         FROM dbo.ProductoTerminadoServicios WHERE ProIdProducto = @PID`),
@@ -174,7 +180,21 @@ exports.getProductoFicha = async (req, res) => {
                         FROM dbo.ProductoComboItemServicios s
                         INNER JOIN dbo.ProductoComboItems ci ON ci.ID = s.ComboItemID
                         LEFT JOIN dbo.TecnicaOpciones t ON t.TecnicaOpcionID = s.TecnicaOpcionID
-                        WHERE ci.ProIdProducto = @PID`)
+                        WHERE ci.ProIdProducto = @PID`),
+            rq().query(`SELECT Ref, Marca, Material, Tallas, Marcacion, Colores, Proveedor, DibujoUrl
+                        FROM dbo.ProductoFichaDiseno WHERE ProIdProducto = @PID`),
+            rq().query(`SELECT AnotacionID, PosX, PosY, Texto FROM dbo.ProductoFichaDisenoAnotaciones
+                        WHERE ProIdProducto = @PID ORDER BY ISNULL(Orden, 999), AnotacionID`),
+            rq().query(`SELECT ExtraID, Etiqueta, Valor FROM dbo.ProductoFichaDisenoExtra
+                        WHERE ProIdProducto = @PID ORDER BY ISNULL(Orden, 999), ExtraID`),
+            rq().query(`SELECT ID, UnionNombre, CodigoISO FROM dbo.ProductoFichaDisenoCosturas
+                        WHERE ProIdProducto = @PID ORDER BY ISNULL(Orden, 999), ID`),
+            // Piezas del despiece de la combinación DEFAULT (⭐) — para sugerir costuras
+            // automáticas, igual que dzFdRenderCosturasAuto del HTML.
+            rq().query(`SELECT DISTINCT p.NombrePieza, p.Zona
+                        FROM dbo.ProductoComponentes pc
+                        INNER JOIN dbo.ComponenteOpcionPiezas p ON p.OpcionID = pc.OpcionID
+                        WHERE pc.ProIdProducto = @PID AND pc.EsDefault = 1`)
         ]);
 
         // Nombre del producto de origen (si hay)
@@ -186,6 +206,25 @@ exports.getProductoFicha = async (req, res) => {
                 WHERE ProIdProducto = @OID`);
             origen = o.recordset[0] || null;
         }
+
+        // Costuras sugeridas por pieza (heurística por nombre, portada del HTML del
+        // jefe — ahí decía "ISO 512" para manga, código que no existe en el resto
+        // del mismo archivo; se usa 504/Overlock como el resto de las piezas de
+        // manga en su propio catálogo de operaciones, para no dejar un ISO huérfano).
+        const sugerirCosturaPorPieza = (nombre) => {
+            const n = (nombre || '').toLowerCase();
+            if (/cuello|rib|puno|puño/.test(n)) return { iso: 'ISO 406', nombre: 'recubierta' };
+            if (/manga|sisa/.test(n)) return { iso: 'ISO 504', nombre: 'armado de manga' };
+            if (/delantero|espalda/.test(n)) return { iso: 'ISO 504', nombre: 'hombros/costados' };
+            return { iso: 'ISO 504', nombre: 'unión general (overlock)' };
+        };
+        const costurasSugeridas = [];
+        const vistasPz = new Set();
+        fdPiezas.recordset.forEach(pz => {
+            const s = sugerirCosturaPorPieza(pz.NombrePieza);
+            const key = pz.NombrePieza + s.iso;
+            if (!vistasPz.has(key)) { vistasPz.add(key); costurasSugeridas.push({ pieza: pz.NombrePieza, iso: s.iso, nombre: s.nombre }); }
+        });
 
         res.json({
             success: true,
@@ -201,7 +240,12 @@ exports.getProductoFicha = async (req, res) => {
                 comboItems: comboItems.recordset.map(ci => ({
                     ...ci,
                     servicios: comboSrv.recordset.filter(s => s.ComboItemID === ci.ID)
-                }))
+                })),
+                fichaDiseno: fichaDiseno.recordset[0] || null,
+                fichaDisenoAnotaciones: fdAnot.recordset,
+                fichaDisenoExtra: fdExtra.recordset,
+                fichaDisenoCosturas: fdCost.recordset,
+                costurasSugeridas
             }
         });
     } catch (e) {
@@ -232,6 +276,14 @@ function validarVenta(body) {
     for (const ap of (Array.isArray(body.apliques) ? body.apliques : [])) {
         if (!ap.posicion || !String(ap.posicion).trim()) errores.push('Cada aplique necesita una Posición.');
         if (!AREAS_APLIQUE.includes(ap.areaId)) errores.push(`Aplique con AreaID inválido: '${ap.areaId}' (${AREAS_APLIQUE.join(' | ')}).`);
+    }
+    for (const a of (Array.isArray(body.fichaDisenoAnotaciones) ? body.fichaDisenoAnotaciones : [])) {
+        if (a.x == null || a.y == null || !Number.isFinite(Number(a.x)) || !Number.isFinite(Number(a.y)))
+            errores.push('Cada anotación de la ficha de diseño necesita posición X e Y.');
+    }
+    for (const c of (Array.isArray(body.fichaDisenoCosturas) ? body.fichaDisenoCosturas : [])) {
+        if (!c.union || !String(c.union).trim()) errores.push('Cada costura de la ficha de diseño necesita un nombre de unión.');
+        if (!c.iso || !String(c.iso).trim()) errores.push('Cada costura de la ficha de diseño necesita un código ISO.');
     }
     return errores;
 }
@@ -337,6 +389,51 @@ async function aplicarSetsHijos(transaction, proId, body) {
             orden++;
         }
     }
+    if (body.fichaDisenoAnotaciones !== undefined) {
+        await del('ProductoFichaDisenoAnotaciones');
+        let orden = 1;
+        for (const a of (body.fichaDisenoAnotaciones || [])) {
+            await new sql.Request(transaction)
+                .input('PID', sql.Int, proId)
+                .input('X', sql.Decimal(5, 2), Number(a.x) || 0)
+                .input('Y', sql.Decimal(5, 2), Number(a.y) || 0)
+                .input('Texto', sql.VarChar(300), String(a.texto || '').trim() || 'Detalle')
+                .input('Ord', sql.Int, orden)
+                .query(`INSERT INTO dbo.ProductoFichaDisenoAnotaciones (ProIdProducto, PosX, PosY, Texto, Orden)
+                        VALUES (@PID, @X, @Y, @Texto, @Ord)`);
+            orden++;
+        }
+    }
+    if (body.fichaDisenoExtra !== undefined) {
+        await del('ProductoFichaDisenoExtra');
+        let orden = 1;
+        for (const c of (body.fichaDisenoExtra || [])) {
+            if (!c.label || !String(c.label).trim()) continue;
+            await new sql.Request(transaction)
+                .input('PID', sql.Int, proId)
+                .input('Et', sql.VarChar(100), String(c.label).trim())
+                .input('Val', sql.VarChar(300), c.valor != null && c.valor !== '' ? String(c.valor) : null)
+                .input('Ord', sql.Int, orden)
+                .query(`INSERT INTO dbo.ProductoFichaDisenoExtra (ProIdProducto, Etiqueta, Valor, Orden)
+                        VALUES (@PID, @Et, @Val, @Ord)`);
+            orden++;
+        }
+    }
+    if (body.fichaDisenoCosturas !== undefined) {
+        await del('ProductoFichaDisenoCosturas');
+        let orden = 1;
+        for (const c of (body.fichaDisenoCosturas || [])) {
+            if (!c.union || !String(c.union).trim() || !c.iso) continue;
+            await new sql.Request(transaction)
+                .input('PID', sql.Int, proId)
+                .input('Un', sql.VarChar(100), String(c.union).trim())
+                .input('Iso', sql.VarChar(20), String(c.iso).trim())
+                .input('Ord', sql.Int, orden)
+                .query(`INSERT INTO dbo.ProductoFichaDisenoCosturas (ProIdProducto, UnionNombre, CodigoISO, Orden)
+                        VALUES (@PID, @Un, @Iso, @Ord)`);
+            orden++;
+        }
+    }
 }
 
 // PUT /api/configurador/productos/:proId — guarda config + sets (transaccional)
@@ -374,6 +471,8 @@ exports.guardarProductoConfig = async (req, res) => {
                 .input('FijaSet', sql.Bit, body.cantidadFija !== undefined ? 1 : 0)
                 .input('VStock', sql.Bit, body.validarStock !== undefined ? (body.validarStock ? 1 : 0) : null)
                 .input('Est', sql.VarChar(12), body.estado !== undefined ? body.estado : null)
+                .input('CC', sql.VarChar(3), body.codigoCorto !== undefined ? (body.codigoCorto ? String(body.codigoCorto).toUpperCase().slice(0, 3) : null) : null)
+                .input('CCSet', sql.Bit, body.codigoCorto !== undefined ? 1 : 0)
                 .query(`
                     IF EXISTS (SELECT 1 FROM dbo.ProductoVentaConfig WHERE ProIdProducto = @PID)
                         UPDATE dbo.ProductoVentaConfig SET
@@ -383,13 +482,41 @@ exports.guardarProductoConfig = async (req, res) => {
                             CantidadFija        = CASE WHEN @FijaSet = 1 THEN @Fija ELSE CantidadFija END,
                             ValidarStock        = ISNULL(@VStock, ValidarStock),
                             Estado              = ISNULL(@Est, Estado),
+                            CodigoCorto         = CASE WHEN @CCSet = 1 THEN @CC ELSE CodigoCorto END,
                             FechaModif          = GETDATE()
                         WHERE ProIdProducto = @PID
                     ELSE
                         INSERT INTO dbo.ProductoVentaConfig
-                            (ProIdProducto, OrigenTipo, OrigenProIdProducto, CantidadMinima, CantidadFija, ValidarStock, Estado)
-                        VALUES (@PID, ISNULL(@Ori,'LOCAL'), @OriPID, @Min, @Fija, ISNULL(@VStock,1), ISNULL(@Est,'BORRADOR'))
+                            (ProIdProducto, OrigenTipo, OrigenProIdProducto, CantidadMinima, CantidadFija, ValidarStock, Estado, CodigoCorto)
+                        VALUES (@PID, ISNULL(@Ori,'CONFECCIONADO'), @OriPID, @Min, @Fija, ISNULL(@VStock,1), ISNULL(@Est,'BORRADOR'), @CC)
                 `);
+
+            // Upsert de ProductoFichaDiseno (encabezado + campos del pie) — todo o nada,
+            // el form de la ficha se guarda como una unidad, no campo por campo.
+            if (body.fichaDiseno !== undefined) {
+                const fd = body.fichaDiseno || {};
+                await new sql.Request(transaction)
+                    .input('PID', sql.Int, proId)
+                    .input('Ref', sql.VarChar(50), fd.ref ? String(fd.ref).trim() : null)
+                    .input('Marca', sql.VarChar(50), fd.marca ? String(fd.marca).trim() : 'USER')
+                    .input('Material', sql.VarChar(200), fd.material ? String(fd.material).trim() : null)
+                    .input('Tallas', sql.VarChar(200), fd.tallas ? String(fd.tallas).trim() : null)
+                    .input('Marcacion', sql.VarChar(500), fd.marcacion ? String(fd.marcacion).trim() : null)
+                    .input('Colores', sql.VarChar(200), fd.colores ? String(fd.colores).trim() : null)
+                    .input('Proveedor', sql.VarChar(200), fd.proveedor ? String(fd.proveedor).trim() : null)
+                    .query(`
+                        IF EXISTS (SELECT 1 FROM dbo.ProductoFichaDiseno WHERE ProIdProducto = @PID)
+                            UPDATE dbo.ProductoFichaDiseno SET
+                                Ref = @Ref, Marca = @Marca, Material = @Material, Tallas = @Tallas,
+                                Marcacion = @Marcacion, Colores = @Colores, Proveedor = @Proveedor,
+                                FechaModif = GETDATE()
+                            WHERE ProIdProducto = @PID
+                        ELSE
+                            INSERT INTO dbo.ProductoFichaDiseno
+                                (ProIdProducto, Ref, Marca, Material, Tallas, Marcacion, Colores, Proveedor)
+                            VALUES (@PID, @Ref, @Marca, @Material, @Tallas, @Marcacion, @Colores, @Proveedor)
+                    `);
+            }
 
             await aplicarSetsHijos(transaction, proId, body);
             await transaction.commit();
@@ -457,7 +584,9 @@ exports.crearProducto = async (req, res) => {
             // Config inicial (BORRADOR salvo que venga otra cosa)
             await new sql.Request(transaction)
                 .input('PID', sql.Int, proId)
-                .input('Ori', sql.VarChar(15), ORIGENES.includes(req.body.origenTipo) ? req.body.origenTipo : 'LOCAL')
+                // Confeccionado por default: este catálogo se fabrica a pedido salvo que
+                // se pida explícitamente Local/Cliente/Ambos (12-ago, decisión del usuario).
+                .input('Ori', sql.VarChar(15), ORIGENES.includes(req.body.origenTipo) ? req.body.origenTipo : 'CONFECCIONADO')
                 .input('OriPID', sql.Int, req.body.origenProIdProducto != null ? Number(req.body.origenProIdProducto) : null)
                 .input('Min', sql.Int, req.body.cantidadMinima != null ? Number(req.body.cantidadMinima) : null)
                 .input('Fija', sql.Int, req.body.cantidadFija != null ? Number(req.body.cantidadFija) : null)
@@ -588,20 +717,68 @@ exports.updateTecnicaOpcion = async (req, res) => {
 // ═════════════════════════════════════════════════════════════════════════
 
 // GET /api/configurador/componentes (?all=1 incluye inactivos)
+// Trae las Piezas de cada opción anidadas (despiece: nombre, cantidad, zona, forma).
 exports.getComponentes = async (req, res) => {
     try {
         const pool = await getPool();
         const all = req.query.all === '1';
-        const r = await pool.request().query(`
-            SELECT OpcionID, Tipo, SubTipo, Codigo, Nombre, NotaMolde, NotaTallesFemeninos,
-                   AnchoRefMm, PrecioExtra, Activo, Orden
-            FROM dbo.ComponenteOpciones
-            ${all ? '' : 'WHERE Activo = 1'}
-            ORDER BY Tipo, ISNULL(Orden, 999), Codigo
-        `);
-        res.json({ success: true, data: r.recordset });
+        const [opciones, piezas] = await Promise.all([
+            pool.request().query(`
+                SELECT OpcionID, Tipo, SubTipo, Codigo, Nombre, NotaMolde, NotaTallesFemeninos,
+                       AnchoRefMm, PrecioExtra, Activo, Orden
+                FROM dbo.ComponenteOpciones
+                ${all ? '' : 'WHERE Activo = 1'}
+                ORDER BY Tipo, ISNULL(Orden, 999), Codigo
+            `),
+            pool.request().query(`SELECT ID, OpcionID, NombrePieza, Cantidad, Zona, Forma FROM dbo.ComponenteOpcionPiezas ORDER BY ID`)
+        ]);
+        const data = opciones.recordset.map(o => ({
+            ...o,
+            piezas: piezas.recordset.filter(p => p.OpcionID === o.OpcionID)
+        }));
+        res.json({ success: true, data });
     } catch (e) {
         logger.error('[Configurador] getComponentes:', e);
+        res.status(500).json({ error: e.message });
+    }
+};
+
+// PUT /api/configurador/componentes/:id/piezas — reemplaza el set completo (patrón
+// transaccional de siempre: borra e inserta de nuevo, body = { piezas: [...] }).
+exports.setPiezasComponente = async (req, res) => {
+    const id = parseInt(req.params.id, 10);
+    if (!Number.isInteger(id)) return res.status(400).json({ error: 'ID inválido.' });
+    const piezas = Array.isArray(req.body?.piezas) ? req.body.piezas : [];
+    try {
+        const pool = await getPool();
+        const existe = await pool.request().input('ID', sql.Int, id)
+            .query(`SELECT 1 FROM dbo.ComponenteOpciones WHERE OpcionID = @ID`);
+        if (!existe.recordset.length) return res.status(404).json({ error: 'Componente no encontrado.' });
+
+        const transaction = new sql.Transaction(pool);
+        await transaction.begin();
+        try {
+            await new sql.Request(transaction).input('ID', sql.Int, id)
+                .query(`DELETE FROM dbo.ComponenteOpcionPiezas WHERE OpcionID = @ID`);
+            for (const p of piezas) {
+                if (!p.nombrePieza || !String(p.nombrePieza).trim()) continue;
+                await new sql.Request(transaction)
+                    .input('OID', sql.Int, id)
+                    .input('Nom', sql.NVarChar(100), String(p.nombrePieza).trim())
+                    .input('Cnt', sql.Int, Number.isInteger(Number(p.cantidad)) && Number(p.cantidad) > 0 ? Number(p.cantidad) : 1)
+                    .input('Zona', sql.VarChar(20), p.zona ? String(p.zona).trim() : null)
+                    .input('Forma', sql.VarChar(30), p.forma ? String(p.forma).trim() : null)
+                    .query(`INSERT INTO dbo.ComponenteOpcionPiezas (OpcionID, NombrePieza, Cantidad, Zona, Forma)
+                            VALUES (@OID, @Nom, @Cnt, @Zona, @Forma)`);
+            }
+            await transaction.commit();
+        } catch (txErr) {
+            await transaction.rollback();
+            throw txErr;
+        }
+        res.json({ success: true });
+    } catch (e) {
+        logger.error('[Configurador] setPiezasComponente:', e);
         res.status(500).json({ error: e.message });
     }
 };
@@ -737,6 +914,212 @@ exports.getProductosLocal = async (req, res) => {
         res.json({ success: true, stockDisponible: !!stockMap, data: Object.values(productos) });
     } catch (e) {
         logger.error('[Configurador] getProductosLocal:', e);
+        res.status(500).json({ error: e.message });
+    }
+};
+
+// ═════════════════════════════════════════════════════════════════════════
+//  VARIANTES (confeccionados — motor cartesiano, pedido 12-ago: "las
+//  variantes pudieran ser [lo siguiente]"). Combina las opciones elegidas
+//  en ProductoComponentes por tipo (CUELLO×MANGA×PUÑO×COSTADO...); un tipo
+//  sin ninguna opción marcada queda afuera de la combinación. Código =
+//  CodigoCorto (3 letras) + correlativo de 6 dígitos, igual que el motor.py
+//  del USER Studio. Consumo de tela y Estadísticas quedaron afuera de la
+//  Etapa B: son dato real de producción/ventas, no configuración.
+// ═════════════════════════════════════════════════════════════════════════
+
+function cartesianoComponentes(porTipo) {
+    const tipos = Object.keys(porTipo).filter(t => porTipo[t].length > 0);
+    let combos = [{}];
+    for (const tipo of tipos) {
+        const next = [];
+        for (const combo of combos) {
+            for (const op of porTipo[tipo]) next.push({ ...combo, [tipo]: op });
+        }
+        combos = next;
+    }
+    return combos;
+}
+
+const claveNaturalVariante = (combo) => Object.entries(combo)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([tipo, o]) => `${tipo}:${o.OpcionID}`)
+    .join('|');
+
+// POST /api/configurador/productos/:proId/variantes/generar — genera o
+// actualiza todas las combinaciones. Upsert por ClaveNatural: las que ya
+// existían conservan Activa/PrecioManual (solo se recalcula el precio
+// automático); las nuevas nacen Activa=1.
+exports.generarVariantes = async (req, res) => {
+    const proId = parseInt(req.params.proId, 10);
+    if (!Number.isInteger(proId)) return res.status(400).json({ error: 'ProIdProducto inválido.' });
+    try {
+        const pool = await getPool();
+
+        const [prod, comp] = await Promise.all([
+            pool.request().input('PID', sql.Int, proId).query(`
+                SELECT TOP 1 a.ProIdProducto, LTRIM(RTRIM(a.Descripcion)) AS Descripcion,
+                       vc.CodigoCorto, pb.Precio
+                FROM dbo.Articulos a
+                LEFT JOIN dbo.ProductoVentaConfig vc ON vc.ProIdProducto = a.ProIdProducto
+                OUTER APPLY (SELECT TOP 1 Precio FROM dbo.PreciosBase p
+                             WHERE p.ProIdProducto = a.ProIdProducto ORDER BY p.UltimaActualizacion DESC) pb
+                WHERE a.ProIdProducto = @PID AND ISNULL(a.borrar, 0) = 0`),
+            pool.request().input('PID', sql.Int, proId).query(`
+                SELECT pc.OpcionID, c.Tipo, c.Codigo, c.Nombre, ISNULL(c.PrecioExtra, 0) AS PrecioExtra
+                FROM dbo.ProductoComponentes pc
+                INNER JOIN dbo.ComponenteOpciones c ON c.OpcionID = pc.OpcionID
+                WHERE pc.ProIdProducto = @PID AND c.Activo = 1`)
+        ]);
+        if (!prod.recordset.length) return res.status(404).json({ error: 'Producto no encontrado.' });
+        const p = prod.recordset[0];
+        if (!comp.recordset.length) return res.status(400).json({ error: 'El producto todavía no tiene componentes elegidos (paso Componentes y apliques).' });
+
+        const porTipo = {};
+        comp.recordset.forEach(c => { (porTipo[c.Tipo] = porTipo[c.Tipo] || []).push(c); });
+        const combos = cartesianoComponentes(porTipo);
+        if (combos.length > 2000) return res.status(400).json({ error: `Demasiadas combinaciones (${combos.length}) — revisá cuántas opciones tiene marcadas cada componente.` });
+
+        const prefijo = (p.CodigoCorto || String(p.ProIdProducto)).toUpperCase().slice(0, 3);
+        const precioBase = Number(p.Precio) || 0;
+
+        const existentes = await pool.request().input('PID', sql.Int, proId).query(`
+            SELECT ClaveNatural, MAX(TRY_CAST(RIGHT(Codigo, 6) AS INT)) OVER () AS MaxNum
+            FROM dbo.ProductoVariantes WHERE ProIdProducto = @PID`);
+        let siguienteNum = (existentes.recordset[0]?.MaxNum || 0) + 1;
+        const clavesExistentes = new Set(existentes.recordset.map(r => r.ClaveNatural));
+
+        let creadas = 0, actualizadas = 0;
+        const transaction = new sql.Transaction(pool);
+        await transaction.begin();
+        try {
+            for (const combo of combos) {
+                const clave = claveNaturalVariante(combo);
+                const legible = [prefijo, ...Object.values(combo).map(o => o.Codigo)].join('-').slice(0, 150);
+                const precioCalc = precioBase + Object.values(combo).reduce((s, o) => s + (Number(o.PrecioExtra) || 0), 0);
+                const seleccionesJson = JSON.stringify(Object.fromEntries(Object.entries(combo).map(([t, o]) => [t, o.OpcionID])));
+
+                if (clavesExistentes.has(clave)) {
+                    await new sql.Request(transaction)
+                        .input('PID', sql.Int, proId).input('Clave', sql.VarChar(400), clave)
+                        .input('Legible', sql.VarChar(150), legible)
+                        .input('Precio', sql.Decimal(18, 2), precioCalc)
+                        .query(`UPDATE dbo.ProductoVariantes SET CodigoLegible = @Legible, PrecioCalculado = @Precio
+                                WHERE ProIdProducto = @PID AND ClaveNatural = @Clave`);
+                    actualizadas++;
+                } else {
+                    const codigo = `${prefijo}${String(siguienteNum).padStart(6, '0')}`;
+                    siguienteNum++;
+                    await new sql.Request(transaction)
+                        .input('PID', sql.Int, proId).input('Cod', sql.VarChar(20), codigo)
+                        .input('Legible', sql.VarChar(150), legible)
+                        .input('Sel', sql.NVarChar(sql.MAX), seleccionesJson)
+                        .input('Clave', sql.VarChar(400), clave)
+                        .input('Precio', sql.Decimal(18, 2), precioCalc)
+                        .query(`INSERT INTO dbo.ProductoVariantes
+                                    (ProIdProducto, Codigo, CodigoLegible, Selecciones, ClaveNatural, PrecioCalculado, Activa)
+                                VALUES (@PID, @Cod, @Legible, @Sel, @Clave, @Precio, 1)`);
+                    creadas++;
+                }
+            }
+            await transaction.commit();
+        } catch (txErr) {
+            await transaction.rollback();
+            throw txErr;
+        }
+
+        // Variantes que ya existían pero su combinación ya no es alcanzable con las
+        // opciones actuales (se sacó/agregó un tipo de componente) — quedan en la
+        // tabla (no se borran solas, podrían tener referencias) pero se avisan.
+        const clavesValidas = new Set(combos.map(claveNaturalVariante));
+        const obsoletas = [...clavesExistentes].filter(c => !clavesValidas.has(c)).length;
+
+        logger.info(`[Configurador] Variantes generadas para ProIdProducto ${proId}: ${creadas} nuevas, ${actualizadas} actualizadas, ${obsoletas} obsoletas por ${req.user?.username || 'N/A'}`);
+        res.json({ success: true, total: combos.length, creadas, actualizadas, obsoletas });
+    } catch (e) {
+        logger.error('[Configurador] generarVariantes:', e);
+        res.status(500).json({ error: e.message });
+    }
+};
+
+// GET /api/configurador/productos/:proId/variantes
+exports.getVariantes = async (req, res) => {
+    const proId = parseInt(req.params.proId, 10);
+    if (!Number.isInteger(proId)) return res.status(400).json({ error: 'ProIdProducto inválido.' });
+    try {
+        const pool = await getPool();
+        const r = await pool.request().input('PID', sql.Int, proId).query(`
+            SELECT VarianteID, Codigo, CodigoLegible, Selecciones, PrecioCalculado, PrecioManual, Activa, FechaCreacion
+            FROM dbo.ProductoVariantes WHERE ProIdProducto = @PID ORDER BY Codigo`);
+        res.json({ success: true, data: r.recordset.map(v => ({ ...v, Selecciones: JSON.parse(v.Selecciones) })) });
+    } catch (e) {
+        logger.error('[Configurador] getVariantes:', e);
+        res.status(500).json({ error: e.message });
+    }
+};
+
+// PUT /api/configurador/variantes/:id — togglear Activa y/o fijar PrecioManual (override)
+exports.updateVariante = async (req, res) => {
+    const id = parseInt(req.params.id, 10);
+    if (!Number.isInteger(id)) return res.status(400).json({ error: 'ID inválido.' });
+    const { activa, precioManual } = req.body || {};
+    try {
+        const pool = await getPool();
+        const r = await pool.request()
+            .input('ID', sql.Int, id)
+            .input('Act', sql.Bit, activa !== undefined ? (activa ? 1 : 0) : null)
+            .input('PM', sql.Decimal(18, 2), precioManual !== undefined ? (precioManual === '' || precioManual == null ? null : precioManual) : null)
+            .input('PMSet', sql.Bit, precioManual !== undefined ? 1 : 0)
+            .query(`UPDATE dbo.ProductoVariantes SET
+                        Activa = ISNULL(@Act, Activa),
+                        PrecioManual = CASE WHEN @PMSet = 1 THEN @PM ELSE PrecioManual END
+                    WHERE VarianteID = @ID`);
+        if (!r.rowsAffected[0]) return res.status(404).json({ error: 'Variante no encontrada.' });
+        res.json({ success: true });
+    } catch (e) {
+        logger.error('[Configurador] updateVariante:', e);
+        res.status(500).json({ error: e.message });
+    }
+};
+
+// GET /api/configurador/costuras-iso — catálogo chico para el selector de la
+// ficha de diseño (clasificación ISO 4915, no el catálogo de operaciones/SAM)
+exports.getCosturasIso = async (req, res) => {
+    try {
+        const pool = await getPool();
+        const r = await pool.request().query(`
+            SELECT CosturaISOID, CodigoISO, Nombre FROM dbo.CosturasISO
+            WHERE Activo = 1 ORDER BY CodigoISO`);
+        res.json({ success: true, data: r.recordset });
+    } catch (e) {
+        logger.error('[Configurador] getCosturasIso:', e);
+        res.status(500).json({ error: e.message });
+    }
+};
+
+// POST /api/configurador/productos/:proId/ficha-diseno/dibujo — dibujo técnico
+// anotable de la ficha (multipart). NO es la foto de catálogo (Articulos_Imagenes,
+// esa la maneja products-integration/upload-image) — es un archivo aparte.
+exports.subirDibujoFicha = async (req, res) => {
+    const proId = parseInt(req.params.proId, 10);
+    if (!Number.isInteger(proId)) return res.status(400).json({ error: 'ProIdProducto inválido.' });
+    if (!req.file) return res.status(400).json({ error: 'No se subió ninguna imagen.' });
+    try {
+        const pool = await getPool();
+        const dibujoUrl = `/uploads/fichas-diseno/${req.file.filename}`;
+        await pool.request()
+            .input('PID', sql.Int, proId)
+            .input('Url', sql.VarChar(500), dibujoUrl)
+            .query(`
+                IF EXISTS (SELECT 1 FROM dbo.ProductoFichaDiseno WHERE ProIdProducto = @PID)
+                    UPDATE dbo.ProductoFichaDiseno SET DibujoUrl = @Url, FechaModif = GETDATE() WHERE ProIdProducto = @PID
+                ELSE
+                    INSERT INTO dbo.ProductoFichaDiseno (ProIdProducto, DibujoUrl) VALUES (@PID, @Url)
+            `);
+        logger.info(`[Configurador] Dibujo de ficha subido para ProIdProducto ${proId} por ${req.user?.username || 'N/A'}`);
+        res.json({ success: true, dibujoUrl });
+    } catch (e) {
+        logger.error('[Configurador] subirDibujoFicha:', e);
         res.status(500).json({ error: e.message });
     }
 };

@@ -62,6 +62,17 @@ router.get('/reportes/ventas-por-documento', reportesVentasCtrl.getVentasPorDocu
 router.get('/reportes/ingresos',             reportesVentasCtrl.getIngresos);
 router.get('/reportes/libro-contador-ventas', reportesVentasCtrl.getLibroContadorVentas);
 router.get('/reportes/libro-contador-cobros', reportesVentasCtrl.getLibroContadorCobros);
+router.get('/reportes/top-clientes',          reportesVentasCtrl.getTopClientes);
+router.get('/reportes/top-clientes-detalle',  reportesVentasCtrl.getTopClientesDetalle);
+router.get('/reportes/top-productos',         reportesVentasCtrl.getTopProductos);
+router.get('/reportes/top-productos-detalle', reportesVentasCtrl.getTopProductosDetalle);
+router.get('/reportes/arbol-ventas',          reportesVentasCtrl.getArbolVentas);
+// Configuración de sectores comerciales y clasificación del catálogo de artículos
+router.get('/reportes/sectores',              reportesVentasCtrl.getSectores);
+router.post('/reportes/sectores',             reportesVentasCtrl.guardarSector);
+router.put('/reportes/sectores/mapeo',        reportesVentasCtrl.guardarMapeoSector);
+router.get('/reportes/catalogo',              reportesVentasCtrl.getCatalogoArbol);
+router.put('/reportes/catalogo/articulo',     reportesVentasCtrl.clasificarArticulos);
 
 // ────────────────────────────────────────────────────────────────────────────
 // RUTAS: COLA DE ESTADOS DE CUENTA

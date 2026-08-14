@@ -6,6 +6,7 @@ const contabilidadSvc = require('../services/contabilidadService');
 const contabilidadCore = require('../services/contabilidadCore'); // ERP Core
 const { getPool, sql } = require('../config/db');
 const pdfService  = require('../services/pdfService');
+const { estamparAreaLineas } = require('../services/areaLineaService');
 
 // ─────────────────────────────────────────────
 const io = (req) => req.app.get('socketio');
@@ -2236,6 +2237,10 @@ const procesarPagoDeudaInterno = async (req, res) => {
 
       }
 
+      // Área/variante/artículo de las líneas recién creadas. Sin docId porque este
+      // flujo factura pedido por pedido y puede haber generado varios documentos.
+      await estamparAreaLineas(null, transaction);
+
       await transaction.commit();
       logger.info(`[PAGO-DEUDA] Cli=${header.clienteId} -> ${aplicaciones.length} deuda(s) -> Total: ${totalImputado.toFixed(2)} ${monedaBaseStr}`);
 
@@ -2566,6 +2571,8 @@ const generarNotaCredito = async (req, res) => {
         avisoContable = `La Nota de Crédito se generó, pero NO quedó asentada en la contabilidad: ${eAsiento.message}`;
         logger.error(`[NOTA-CREDITO] Asiento contable NO generado para ${fullNcNumero}: ${eAsiento.message}`);
       }
+
+      await estamparAreaLineas(ncId, transaction);
 
       await transaction.commit();
       logger.info(`[NOTA-CREDITO] Doc #${docIdOrigen} -> NC #${ncId} (${fullNcNumero}) Monto:${montoNum}`);
@@ -2935,6 +2942,8 @@ const generarNotaDebito = async (req, res) => {
       } catch (eAsiento) {
         logger.error(`[NOTA-DEBITO] Asiento contable NO generado para ${fullNdNumero}: ${eAsiento.message}`);
       }
+
+      await estamparAreaLineas(ndId, transaction);
 
       await transaction.commit();
       logger.info(`[NOTA-DEBITO] Doc #${docIdOrigen} -> ND #${ndId} (${fullNdNumero}) Monto:${montoNum}`);

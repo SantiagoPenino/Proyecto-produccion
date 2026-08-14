@@ -1003,12 +1003,17 @@ exports.receiveDispatch = async (req, res) => {
                         // This logic handles both internal Orders (linked in Logistica_Bultos) and Client Fabrics (Linked to Recepciones via Code)
                         const extData = await new sql.Request(transaction).input('BID', sql.Int, item.bultoId).input('Code', sql.VarChar, code)
                             .query(`
-                            SELECT 
-                                b.CodigoEtiqueta, 
-                                b.OrdenID, 
+                            SELECT
+                                b.CodigoEtiqueta,
+                                b.OrdenID,
                                 b.Descripcion,
                                 b.Tipocontenido,
-                                o.NoDocERP,
+                                -- [COMBOS] Si el bulto es la ancla de retiro de un combo, su NoDocERP es
+                                -- el de la venta VEN- (no el del pedido real) — el auto-fulfill de más
+                                -- abajo (busca la orden a desbloquear por NoDocERP+AreaID) nunca
+                                -- encontraría la hermana real sin este COALESCE. Sin combo,
+                                -- ComboPedidoNoDocERP es siempre NULL — no-op.
+                                COALESCE(o.ComboPedidoNoDocERP, o.NoDocERP) AS NoDocERP,
                                 r.Referencias, -- Fetch raw references
                                 COALESCE(o.Cliente, r.Cliente) as Cliente
                             FROM Logistica_Bultos b
@@ -1925,6 +1930,15 @@ if (triggerReversal || triggerForward) {
             }
 
             await transaction.commit();
+
+            // [PRENDAS] FASE 6: el remito final PRO→DEPOSITO YA NO se arma solo acá al recibir
+            // en PRO (eso vivía en la Fase 5 — se sacó por un bug real: "En Tránsito" contaba
+            // como "pronto" en isPedidoCompletoGlobal, así que un componente que todavía viajaba
+            // HACIA PRO ya se contaba como listo, y el sistema armaba remitos parciales de a
+            // uno). Ahora es una acción manual desde la pantalla de Control de PRO — ver
+            // getPedidosCompletosPRO / aprobarControlPRO más abajo, que usan
+            // isPedidoCompletoFisicamenteEnArea (mira la UBICACIÓN real del bulto, no el estado
+            // de la orden).
             res.json({ success: true, status: newStatus });
 
         }         catch (inner) {
@@ -1934,6 +1948,184 @@ if (triggerReversal || triggerForward) {
     } catch (err) {
         logger.error("Error receiveDispatch:", err);
         res.status(err.statusCode || 500).json({ error: err.message });
+    }
+};
+
+// [PRENDAS] FASE 6 — Control manual en PRO: en vez de armar el remito final PRO→DEPOSITO
+// solo (Fase 5, sacado por el bug de "En Tránsito" ya visto arriba), el dueño revisa el
+// pedido reunido en PRO y lo aprueba a mano. isPedidoCompletoFisicamenteEnArea (mira la
+// UBICACIÓN real del bulto, no el estado de la orden) es la fuente de verdad de ambos
+// endpoints — mismo criterio, sin duplicar lógica.
+exports.getPedidosCompletosPRO = async (req, res) => {
+    try {
+        const pool = await getPool();
+        const { isPedidoCompletoFisicamenteEnArea } = require('../services/pedidoCompletoService');
+
+        // Candidatos: pedidos con orden madre PRO real que ya tienen algún componente
+        // físicamente en PRO — evita recorrer TODA la tabla Ordenes.
+        const candidatosRes = await pool.request().query(`
+            SELECT DISTINCT LTRIM(RTRIM(O.NoDocERP)) AS NoDocERP
+            FROM Ordenes O
+            JOIN Logistica_Bultos B ON B.OrdenID = O.OrdenID
+            WHERE O.AreaID <> 'PRO'
+              AND B.UbicacionActual = 'PRO' AND B.Estado = 'EN_STOCK'
+              AND ISNULL(B.Tipocontenido, '') <> 'ENCOMIENDA'
+              AND EXISTS (
+                  SELECT 1 FROM Ordenes P
+                  WHERE P.NoDocERP = O.NoDocERP AND P.AreaID = 'PRO'
+                    AND ISNULL(P.EstadoDependencia, '') <> 'VENTA_DIRECTA'
+              )
+        `);
+
+        const pedidos = [];
+        for (const row of candidatosRes.recordset) {
+            const chk = await isPedidoCompletoFisicamenteEnArea(pool, row.NoDocERP, 'PRO');
+            if (!chk.completo) continue;
+
+            const ordenProRes = await pool.request()
+                .input('Doc', sql.VarChar, row.NoDocERP)
+                .query(`
+                    SELECT TOP 1 O.OrdenID, O.Cliente, O.DescripcionTrabajo, O.CodigoOrden,
+                           A.Descripcion AS NombreProducto
+                    FROM Ordenes O
+                    LEFT JOIN Articulos A ON A.ProIdProducto = O.ProIdProducto
+                    WHERE O.NoDocERP = @Doc AND O.AreaID = 'PRO'
+                      AND ISNULL(O.EstadoDependencia, '') <> 'VENTA_DIRECTA'
+                `);
+            const ordenPro = ordenProRes.recordset[0];
+            if (!ordenPro) continue; // no debería pasar — por seguridad
+
+            const componentesRes = await pool.request()
+                .input('Doc', sql.VarChar, row.NoDocERP)
+                .query(`
+                    SELECT O.OrdenID, O.CodigoOrden, O.AreaID, O.Magnitud,
+                           B.BultoID, B.CodigoEtiqueta,
+                           A.Descripcion AS NombreArticulo
+                    FROM Ordenes O
+                    JOIN Logistica_Bultos B ON B.OrdenID = O.OrdenID
+                        AND B.UbicacionActual = 'PRO' AND B.Estado = 'EN_STOCK'
+                        AND ISNULL(B.Tipocontenido, '') <> 'ENCOMIENDA'
+                    LEFT JOIN Articulos A ON A.ProIdProducto = O.ProIdProducto
+                    WHERE O.NoDocERP = @Doc AND O.AreaID <> 'PRO'
+                    ORDER BY O.OrdenID
+                `);
+
+            pedidos.push({
+                noDocERP: row.NoDocERP,
+                ordenProId: ordenPro.OrdenID,
+                codigoOrden: ordenPro.CodigoOrden,
+                cliente: ordenPro.Cliente,
+                trabajo: ordenPro.DescripcionTrabajo,
+                producto: ordenPro.NombreProducto,
+                componentes: componentesRes.recordset.map(c => ({
+                    ordenId: c.OrdenID,
+                    codigoOrden: c.CodigoOrden,
+                    areaId: c.AreaID,
+                    nombreArticulo: c.NombreArticulo,
+                    magnitud: c.Magnitud,
+                    bultoId: c.BultoID,
+                    codigoEtiqueta: c.CodigoEtiqueta,
+                })),
+            });
+        }
+
+        res.json({ success: true, pedidos });
+    } catch (err) {
+        logger.error('[PRENDAS] getPedidosCompletosPRO:', err);
+        res.status(500).json({ error: err.message });
+    }
+};
+
+exports.aprobarControlPRO = async (req, res) => {
+    const noDocERP = (req.params.noDocERP || '').trim();
+    if (!noDocERP) return res.status(400).json({ error: 'noDocERP inválido.' });
+    try {
+        const pool = await getPool();
+        const { isPedidoCompletoFisicamenteEnArea } = require('../services/pedidoCompletoService');
+
+        // Re-verificación: evita doble-click o que 2 operadores aprueben el mismo pedido a
+        // la vez / que llegue un componente nuevo entre que se abrió la pantalla y se aprobó.
+        const chk = await isPedidoCompletoFisicamenteEnArea(pool, noDocERP, 'PRO');
+        if (!chk.completo) {
+            return res.status(400).json({ error: `Todavía falta${chk.faltantes.length === 1 ? '' : 'n'} ${chk.faltantes.length} componente(s) por llegar a PRO.` });
+        }
+
+        const ordenProRes = await pool.request()
+            .input('Doc', sql.VarChar, noDocERP)
+            .query(`
+                SELECT TOP 1 OrdenID FROM Ordenes
+                WHERE NoDocERP = @Doc AND AreaID = 'PRO' AND ISNULL(EstadoDependencia, '') <> 'VENTA_DIRECTA'
+            `);
+        const ordenProId = ordenProRes.recordset[0]?.OrdenID;
+        if (!ordenProId) return res.status(404).json({ error: 'No se encontró la orden madre PRO de este pedido.' });
+
+        // Bultos de los componentes que se van a consumir (cerrar) tras generar el bulto final.
+        const bultosComponentes = await pool.request()
+            .input('Doc', sql.VarChar, noDocERP)
+            .query(`
+                SELECT B.BultoID
+                FROM Ordenes O
+                JOIN Logistica_Bultos B ON B.OrdenID = O.OrdenID
+                WHERE O.NoDocERP = @Doc AND O.AreaID <> 'PRO'
+                  AND B.UbicacionActual = 'PRO' AND B.Estado = 'EN_STOCK'
+                  AND ISNULL(B.Tipocontenido, '') <> 'ENCOMIENDA'
+            `);
+
+        // Bulto FINAL (producto terminado consolidado) sobre la orden madre — su
+        // ProximoServicio ya es 'DEPOSITO', sale PROD_TERMINADO sin overrides.
+        const LabelGenerationService = require('../services/LabelGenerationService');
+        const lr = await LabelGenerationService.addOneBulto(ordenProId, req.user?.id || 1, req.user?.usuario || 'Sistema', {});
+        if (!lr.success) {
+            return res.status(500).json({ error: `No se pudo generar la etiqueta final: ${lr.error}` });
+        }
+
+        // Consumir (cerrar) los bultos de los componentes — ya cumplieron su función, mismo
+        // patrón que el AUTO-CONSUME de createRemito (líneas ~536-583 de este archivo).
+        for (const b of bultosComponentes.recordset) {
+            await pool.request()
+                .input('BID', sql.Int, b.BultoID)
+                .query(`UPDATE Logistica_Bultos SET Estado = 'PROCESADO', UbicacionActual = 'PROCESADO' WHERE BultoID = @BID`);
+        }
+
+        // Remito final PRO→DEPOSITO con el bulto nuevo — reusa createRemitoFromOrders tal
+        // cual (mismo patrón de req/res simulados que el remito automático de la Fase 4).
+        let remitoResult = null;
+        const fakeRes = {
+            json: (data) => { remitoResult = data; },
+            status: (code) => ({ json: (data) => { remitoResult = { ...data, _statusCode: code }; } }),
+        };
+        await exports.createRemitoFromOrders({
+            body: {
+                areaOrigen: 'PRO',
+                areaDestino: 'DEPOSITO',
+                usuarioId: req.user?.id || 1,
+                orderIds: [ordenProId],
+                observations: `Control aprobado — pedido completo (${noDocERP})`,
+            },
+            user: req.user || 'Sistema',
+            app: req.app,
+        }, fakeRes);
+
+        if (!remitoResult?.success) {
+            logger.warn(`[PRENDAS] aprobarControlPRO: etiqueta generada pero el remito falló para ${noDocERP}:`, remitoResult);
+            return res.json({
+                success: true,
+                totalBultos: lr.totalBultos,
+                remitoCreado: false,
+                message: 'Etiqueta generada, pero el remito no se pudo armar automáticamente — armalo a mano desde Despacho de PRO.',
+            });
+        }
+
+        res.json({
+            success: true,
+            totalBultos: lr.totalBultos,
+            remitoCreado: true,
+            dispatchCode: remitoResult.dispatchCode,
+            componentesConsumidos: bultosComponentes.recordset.length,
+        });
+    } catch (err) {
+        logger.error('[PRENDAS] aprobarControlPRO:', err);
+        res.status(500).json({ error: err.message });
     }
 };
 

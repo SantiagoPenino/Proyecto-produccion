@@ -340,6 +340,24 @@ exports.adjustBobina = async (req, res) => {
                 .input('BID', sql.Int, bobinaId)
                 .input('Nuevo', sql.Decimal(10, 2), nuevoMetraje);
             let setClause = 'MetrosRestantes = @Nuevo';
+            if (tieneMetros) {
+                // El ajuste de metros recalcula el Estado igual que la devolución por
+                // cancelación (telaClienteDevolucion.js): devolver metros a una bobina
+                // Agotada la reabre, y una rebaja que la deja en ≤ 0.5m la agota.
+                // 'Cerrado' y 'Pendiente' no se tocan (caso BOB-143: quedó Agotada con
+                // 14.80m porque el ajuste manual no reabría).
+                setClause += `,
+                    Estado = CASE
+                        WHEN Estado = 'Agotado' AND @Nuevo > 0.5 THEN 'Disponible'
+                        WHEN Estado IN ('Disponible', 'En Uso') AND @Nuevo <= 0.5 THEN 'Agotado'
+                        ELSE Estado
+                    END,
+                    FechaAgotado = CASE
+                        WHEN Estado = 'Agotado' AND @Nuevo > 0.5 THEN NULL
+                        WHEN Estado IN ('Disponible', 'En Uso') AND @Nuevo <= 0.5 THEN GETDATE()
+                        ELSE FechaAgotado
+                    END`;
+            }
             if (tieneAncho) {
                 upd.input('AnchoR', sql.Decimal(10, 2), anchoNum);
                 setClause += ', AnchoReal = @AnchoR';

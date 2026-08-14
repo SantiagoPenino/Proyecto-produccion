@@ -20,6 +20,7 @@ import LogisticsDashboard from "../../logistics/LogisticsDashboard";
 import PlaneacionTrabajo from "../../pages/PlaneacionTrabajo";
 import ImportadorManualView from "../ImportadorManualView";
 import EmbBandeja from "../EmbBandeja";
+import ControlPedidosPRO from "../ControlPedidosPRO";
 
 // Modales y Sidebars
 import NewOrderModal from "../../modals/NewOrderModal";
@@ -1142,6 +1143,8 @@ export default function AreaView({ areaKey: rawAreaKey, areaConfig, onSwitchTab 
                                 >
                                     <i className="fa-solid fa-cube"></i> <span className="tablet:hidden">Configurar Productos</span><span className="hidden tablet:inline">Productos</span>
                                 </button>
+                                <button className={`${btnBaseClass} px-3 h-8 text-xs tablet:px-2 tablet:h-7 tablet:text-[11px] ${isActive('logistica') ? btnPrimaryClass : btnSecondaryClass}`} onClick={() => goTo('logistica')}><Truck size={14} /> Logística</button>
+                                <button className={`${btnBaseClass} px-3 h-8 text-xs tablet:px-2 tablet:h-7 tablet:text-[11px] ${isActive('control') ? btnPrimaryClass : btnSecondaryClass}`} onClick={() => goTo('control')}><ScanLine size={14} /> Control</button>
                             </>
                         ) : (
                             <>
@@ -1214,7 +1217,8 @@ export default function AreaView({ areaKey: rawAreaKey, areaConfig, onSwitchTab 
                             AREAS_BANDEJA_SIN_LOTES.includes(areaKey) ? <EmbBandeja area={areaKey} fase="trabajo" onSelectOrder={setSelectedOrder} /> : <EcoUvFinishing />
                         } />
                         <Route path="control" element={
-                            areaKey === 'TERMINAC' ? <EcoUvFinishing fase="control" />
+                            areaKey === 'PRO' ? <ControlPedidosPRO />
+                                : areaKey === 'TERMINAC' ? <EcoUvFinishing fase="control" />
                                 : AREAS_BANDEJA_SIN_LOTES.includes(areaKey) ? <EmbBandeja area={areaKey} fase="control" onSelectOrder={setSelectedOrder} />
                                 : <FilePrintControl areaCode={areaKey} />
                         } />

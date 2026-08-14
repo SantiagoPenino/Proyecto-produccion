@@ -17,6 +17,7 @@
 
 const { sql, getPool } = require('../config/db');
 const logger = require('../utils/logger');
+const { estamparAreaLineas } = require('./areaLineaService');
 
 // ─── Fallback: cuentas por defecto si el Motor no tiene reglas configuradas ─
 // Estos valores son el "último recurso". Lo ideal es que estén en el Motor.
@@ -388,6 +389,11 @@ const crearDocumentoContable = async ({ header, lineas }, transaction = null) =>
             (@DocId, @OrdCod, @Nom, @Dsc, @Cant, @Precio, @Sub, @Imp, @Tot, @TotalDesc, @DescStr, @DescPct)
         `);
     }
+
+    // Área/variante/artículo de cada línea, para que la venta sepa a qué área y
+    // sector pertenece sin adivinarlo después al leer (ver areaLineaService).
+    // No corta el alta si falla: el área es un dato de reporte, recuperable.
+    await estamparAreaLineas(docId, transaction);
   }
 
   return docId;

@@ -57,6 +57,13 @@ class ERPSyncService {
                        -- de servicios no infle el cobro.
                        (SELECT ISNULL(SUM(ISNULL(Metros, 0) * ISNULL(Copias, 1)), 0) FROM ArchivosOrden
                          WHERE OrdenID = O.OrdenID AND ISNULL(EstadoArchivo, '') <> 'CANCELADO') as MetrosArchivos,
+                       -- [BORDADO] Puntadas estimadas del diseño de la orden. El bordado se
+                       -- cobra por puntadas y hasta ahora ese dato solo existía en
+                       -- ServiciosExtraOrden (que se llena cuando el bordado es complemento
+                       -- de otro pedido): en un pedido propio llegaba vacío y el precio caía
+                       -- al mínimo. COL_LENGTH evita romper si la migración no corrió todavía.
+                       (SELECT ISNULL(SUM(ISNULL(PuntadasEstimadas, 0)), 0) FROM ArchivosOrden
+                         WHERE OrdenID = O.OrdenID AND ISNULL(EstadoArchivo, '') <> 'CANCELADO') as PuntadasBordado,
                        C.CliIdCliente as Cli_CliIdCliente,
                        C.IDReact as Cli_IDReact
                 FROM Ordenes O
@@ -161,6 +168,13 @@ class ERPSyncService {
                 const codigoOrdenCheck = (sib.CodigoOrden || sib.NoDocERP || '').trim().toUpperCase();
                 const esSinCargo = codigoOrdenCheck.startsWith('R') || /-R\d+|-F\d+/.test(codigoOrdenCheck);
 
+                // [COMBOS] Orden PRO de RETIRO de un componente del combo (Gorro, Short...) —
+                // no factura aparte: el precio del combo completo ya lo cobra la ÚNICA orden
+                // PRO sin ComboItemID (ver consolidación de "+ Personalizaciones" más abajo).
+                // Esta línea existe solo para disparar el descuento real de stock WMS y el
+                // bulto con su destino — no para cobrar el artículo suelto.
+                const esRetiroCombo = !!sib.ComboItemID && (sib.AreaID || '').toString().trim().toUpperCase() === 'PRO';
+
                 // Perfiles Extra (Urgencia, Tinta, Reposición)
                 const extraProfiles = profileOverride ? [parseInt(profileOverride)] : [];
                 if (extraProfiles.length === 0) {
@@ -174,7 +188,9 @@ class ERPSyncService {
 
                 // Variables Técnicas
                 const vars = {
-                    puntadas: sib.Puntadas || 0,
+                    // ServiciosExtraOrden.Puntadas manda si existe (el área ya corrigió el
+                    // número con el ponchado real); si no, la estimación del prediseño.
+                    puntadas: sib.Puntadas || sib.PuntadasBordado || 0,
                     bajadas: sib.Bajadas || 0,
                     bajadasAdicionales: sib.BajadasAdicionales || 0,
                     skipPrepago: true
@@ -227,6 +243,17 @@ class ERPSyncService {
                     SubtotalOriginal = 0;
                     MonedaOriginal = targetCurrency;
                     logger.info(`[ERPSync] 🔄 ${codigoOrdenCheck}: reposición/falla — se cotiza en 0 (sin cargo)`);
+                } else if (esRetiroCombo) {
+                    // [COMBOS] Retiro de stock de un componente — precio consolidado en la
+                    // orden PRO del combo (precio único), no se factura aparte.
+                    costoCalculado = 0;
+                    precioUnitario = 0;
+                    textLog = "Retiro de componente de combo — precio consolidado en la orden PRO del combo";
+                    perfilAplicado = "Retiro de combo sin cargo propio";
+                    PUOriginal = 0;
+                    SubtotalOriginal = 0;
+                    MonedaOriginal = targetCurrency;
+                    logger.info(`[ERPSync] 🔄 ${codigoOrdenCheck}: retiro de combo (ComboItemID=${sib.ComboItemID}) — se cotiza en 0`);
                 } else {
                     const priceResult = await PricingService.calculatePrice(
                         { codArticulo: sib.CodArticulo || '', proIdProducto: sib.ProIdProducto || null },
@@ -418,7 +445,12 @@ class ERPSyncService {
                         Moneda: targetCurrency,
                         MonedaOriginal: MonedaOriginal,
                         LogPrecioAplicado: textLog,
-                        Perfiles: perfilAplicado
+                        Perfiles: perfilAplicado,
+                        // El número técnico sobre el que se cotizó esta línea. En bordado son
+                        // las puntadas (lo que mueve el precio unitario); en estampado, las
+                        // bajadas. Se guarda para que el área vea de dónde salió el precio y
+                        // pueda corregirlo si el ponchado real dio otra cosa.
+                        datoTecnico: vars.puntadas || vars.bajadas || null
                     });
                 }
 
@@ -541,9 +573,18 @@ class ERPSyncService {
         // construido con el costo real de cada personalización, no un monto fijo a mano.
         if (hayOrdenMadrePro) {
             const areaByOrdenId = {};
-            siblings.forEach(s => { areaByOrdenId[s.OrdenID] = (s.AreaID || '').toString().trim().toUpperCase(); });
+            const comboItemByOrdenId = {};
+            siblings.forEach(s => {
+                areaByOrdenId[s.OrdenID] = (s.AreaID || '').toString().trim().toUpperCase();
+                comboItemByOrdenId[s.OrdenID] = s.ComboItemID || null;
+            });
             const esHermana = (ordenId) => ['EMB', 'DF', 'TPU', 'EST', 'TWC', 'TWT', 'SB'].includes(areaByOrdenId[ordenId]);
-            const lineaProIdx = detallesCobranza.findIndex(d => areaByOrdenId[d.OrdenID] === 'PRO');
+            // [COMBOS] La orden PRO "de precio" es la ÚNICA sin ComboItemID — las PRO de
+            // retiro de stock por componente (WmsVarianteId propio, ComboItemID seteado) NO
+            // son candidatas: ya cotizan en 0 (ver esRetiroCombo) y no deben absorber la suma
+            // de personalizaciones de otro componente. Sin combo (ComboItemID siempre NULL,
+            // incluido "Comprar y Personalizar"), el filtro es un no-op — misma PRO de hoy.
+            const lineaProIdx = detallesCobranza.findIndex(d => areaByOrdenId[d.OrdenID] === 'PRO' && !comboItemByOrdenId[d.OrdenID]);
             const lineasHermanas = detallesCobranza.filter(d => esHermana(d.OrdenID));
 
             if (lineaProIdx !== -1 && lineasHermanas.length > 0) {
@@ -948,7 +989,12 @@ class ERPSyncService {
                     .input('PUOrig', sql.Decimal(18, 4),    puOrig)
                     .input('STOrig', sql.Decimal(18, 4),    stOrig)
                     .input('EsHnaCons', sql.Bit,            d.esHermanaConsolidada ? 1 : 0)
-                    .query("INSERT INTO PedidosCobranzaDetalle (PedidoCobranzaID, OrdenID, CodArticulo, ProIdProducto, Cantidad, PrecioUnitario, Subtotal, LogPrecioAplicado, Moneda, PerfilAplicado, PricingTrace, MonedaOriginal, PrecioUnitarioOriginal, SubtotalOriginal, EsHermanaConsolidada) VALUES (@Pid, @OID, @CodArt, @ProdID, @Cant, @PU, @ST, @Log, @Mon, @Perfil, @Trace, @MonOrig, @PUOrig, @STOrig, @EsHnaCons)");
+                    // Dato técnico que explica el precio unitario: las PUNTADAS en bordado,
+                    // las bajadas en estampado. La columna existe y la pantalla de cotización
+                    // la muestra, pero nadie la escribía: quedaba siempre vacía y el área no
+                    // veía sobre qué número se había cotizado.
+                    .input('DTec',   sql.NVarChar(100),     d.datoTecnico != null ? String(d.datoTecnico) : null)
+                    .query("INSERT INTO PedidosCobranzaDetalle (PedidoCobranzaID, OrdenID, CodArticulo, ProIdProducto, Cantidad, PrecioUnitario, Subtotal, LogPrecioAplicado, Moneda, PerfilAplicado, PricingTrace, MonedaOriginal, PrecioUnitarioOriginal, SubtotalOriginal, EsHermanaConsolidada, DatoTecnico) VALUES (@Pid, @OID, @CodArt, @ProdID, @Cant, @PU, @ST, @Log, @Mon, @Perfil, @Trace, @MonOrig, @PUOrig, @STOrig, @EsHnaCons, @DTec)");
             } catch (eRow) {
                 logger.error(`[ERPSync] ❌ Error insertando detalle cobranza para OrdenID=${d.OrdenID}: ${eRow?.message || eRow}`);
             }
