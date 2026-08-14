@@ -517,7 +517,9 @@ const PlaneacionTrabajo = ({ AreaID }) => {
             // (mismo problema que ya se corrigió en el gate del backend). Parse explícito.
             const sepImp = machDelLote?.separacionImpresion;
             const esImpresora = sepImp === true || Number(String(sepImp ?? '0').trim()) === 1;
-            if (action === 'finish' && destination !== 'production' && imprimeEtiquetaAlFinalizar && esImpresora) {
+            // ECOUV imprime la etiqueta en cualquiera de sus máquinas, sin depender del flag.
+            const imprimeSiempre = areaUp === 'ECOUV';
+            if (action === 'finish' && destination !== 'production' && imprimeEtiquetaAlFinalizar && (imprimeSiempre || esImpresora)) {
                 printEtiquetaLote(rollId);
             }
             refreshBoard();

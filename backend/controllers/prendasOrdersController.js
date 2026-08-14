@@ -2001,18 +2001,13 @@ exports.uploadOrderFile = async (req, res) => {
             }
         }
 
-        // Generar thumbnail en background si es PDF o PNG y tenemos el buffer
+        // Generar thumbnail en background si tenemos el buffer. Quién puede tener miniatura lo
+        // decide el generador mirando los primeros bytes: filtrar acá por nombre dejaba sin
+        // miniatura a los archivos cuya extensión no delata el tipo (o no la tienen).
         if (procBuffer && wantThumb) {
-            const mimeType = (file.mimetype || '').toLowerCase();
-            const ext = (finalName || '').toLowerCase();
-            const isSupported = mimeType.includes('pdf') || ext.endsWith('.pdf')
-                             || mimeType.includes('png') || ext.endsWith('.png')
-                             || mimeType.includes('jpeg') || ext.endsWith('.jpg');
-            if (isSupported) {
-                generateThumbnail(procBuffer, codigoOrden, dbId, finalName).catch(e =>
-                    logger.warn('[Thumbnail] Error async generando thumbnail:', e.message)
-                );
-            }
+            generateThumbnail(procBuffer, codigoOrden, dbId, finalName).catch(e =>
+                logger.warn('[Thumbnail] Error async generando thumbnail:', e.message)
+            );
         }
 
         // Leer y guardar el perfil de color ICC incrustado (solo archivos de producción).

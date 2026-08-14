@@ -308,7 +308,7 @@ exports.moveOrder = async (req, res) => {
             // VALIDACION DTF (DF)
             if (targetRollId) {
                 const orderData = await pool.request()
-                    .query(`SELECT AreaID, Variante, Material FROM dbo.Ordenes WHERE OrdenID IN (${idsToMove.join(',')})`);
+                    .query(`SELECT AreaID, Variante, Material, Tinta FROM dbo.Ordenes WHERE OrdenID IN (${idsToMove.join(',')})`);
                 
                 // DTF e Impresión Directa comparten la regla: un lote por material (sin mezclar variantes)
                 const isDTF = orderData.recordset.some(o => o.AreaID === 'DF' || o.AreaID === 'DTF' || o.AreaID === 'DIRECTA');
@@ -349,6 +349,46 @@ exports.moveOrder = async (req, res) => {
                         }
                     }
                 } // fin if (isDTF)
+
+                // VALIDACION ECOUV — espeja la misma regla que assignRoll (ordersController):
+                // un lote por MATERIAL y por TINTA. La variante SÍ puede convivir (a propósito);
+                // lo que no puede mezclarse es la tinta, porque es lo que rutea el lote a la
+                // máquina: un lote mitad Ecosolvente y mitad UV no se imprime de una pasada.
+                // Faltaba acá: al arrastrar entre lotes en Planeación no se validaba nada de ECOUV,
+                // así que por ese camino se armaban lotes que "Asignar a Lote" rechazaba.
+                const isECOUV = orderData.recordset.some(o => String(o.AreaID || '').toUpperCase() === 'ECOUV');
+
+                if (isECOUV) {
+                    const norm = (v) => (v || '').trim().toLowerCase();
+                    const materialSetE = new Set(orderData.recordset.map(o => norm(o.Material)));
+                    const tintaSetE    = new Set(orderData.recordset.map(o => norm(o.Tinta)));
+
+                    if (materialSetE.size > 1) {
+                        return res.status(400).json({ error: '⛔ En EcoUV no se pueden mover juntas órdenes con distinto Material.' });
+                    }
+                    if (tintaSetE.size > 1) {
+                        return res.status(400).json({ error: '⛔ En EcoUV no se pueden mover juntas órdenes con distinta Tinta.' });
+                    }
+
+                    const existingE = await pool.request()
+                        .input('RID_EUV', sql.VarChar(50), String(targetRollId))
+                        .query(`SELECT TOP 1 Material, Tinta FROM dbo.Ordenes WHERE CAST(RolloID AS VARCHAR(50)) = @RID_EUV`);
+
+                    if (existingE.recordset.length > 0) {
+                        const ex = existingE.recordset[0];
+                        const exMaterial = norm(ex.Material);
+                        const exTinta    = norm(ex.Tinta);
+                        const newMaterial = Array.from(materialSetE)[0];
+                        const newTinta    = Array.from(tintaSetE)[0];
+
+                        if (exMaterial && exMaterial !== newMaterial) {
+                            return res.status(400).json({ error: `⛔ El lote de destino ya contiene órdenes con material '${ex.Material}'. No se pueden mezclar materiales en EcoUV.` });
+                        }
+                        if (exTinta && exTinta !== newTinta) {
+                            return res.status(400).json({ error: `⛔ El lote de destino ya contiene órdenes con tinta '${ex.Tinta}'. No se pueden mezclar tintas en EcoUV.` });
+                        }
+                    }
+                }
 
                 // VALIDACION SB
                 const isSB = orderData.recordset.some(o => o.AreaID === 'SB');

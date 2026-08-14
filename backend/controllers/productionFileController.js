@@ -32,6 +32,46 @@ async function ensureFallaColumn(pool) {
 const { isPedidoCompletoEnArea } = require('../services/pedidoCompletoService');
 const { cancelarLoteSiVacio } = require('../services/loteCleanupService');
 
+/**
+ * CIERRA EL CIRCUITO DE IMPRESIÓN al quedar la orden Pronta.
+ *
+ * Si Control aprobó todos los archivos de la orden, el material existe y está impreso: no puede
+ * quedar "lista para despachar" y "pendiente de imprimir" a la vez. Sin esto, Control y Planeación
+ * sostenían dos verdades distintas sobre lo mismo y el lote rebotaba al finalizar con "faltan N
+ * orden(es) sin marcar como impreso", obligando a ir a tildarla a mano en el detalle del lote.
+ *
+ * El contador parcial se sincroniza con el MISMO criterio que el tick manual
+ * (rollsController.setOrderPrinted): solo aplica a DIRECTA, lotes en MIMAKI y UM='U' (TPU); en el
+ * resto de las áreas CantidadImpresa no se usa y se deja como está.
+ *
+ * Idempotente (`ISNULL(Impreso,0) = 0`): no pisa lo ya marcado ni el avance parcial de quien
+ * venía contando copias a mano.
+ */
+async function marcarImpresaAlCompletar(transaction, ordenId) {
+    await new sql.Request(transaction)
+        .input('OID', sql.Int, ordenId)
+        .query(`
+            DECLARE @TotalParcial DECIMAL(10,2) = (
+                SELECT CASE
+                    WHEN UPPER(LTRIM(RTRIM(ISNULL(o.AreaID,'')))) = 'DIRECTA'
+                      OR LOWER(LTRIM(ISNULL(ce.Nombre,''))) LIKE 'mimaki%'
+                        THEN (SELECT ISNULL(SUM(ISNULL(Copias,1)),0) FROM dbo.ArchivosOrden WITH(NOLOCK)
+                               WHERE OrdenID = o.OrdenID AND ISNULL(EstadoArchivo,'') <> 'CANCELADO')
+                    WHEN UPPER(LTRIM(RTRIM(ISNULL(o.UM,'')))) = 'U'
+                        THEN ISNULL(TRY_CONVERT(DECIMAL(10,2), TRY_CONVERT(FLOAT, o.Magnitud)), 0)
+                    ELSE NULL END
+                FROM dbo.Ordenes o WITH(NOLOCK)
+                LEFT JOIN dbo.Rollos r WITH(NOLOCK) ON r.RolloID = o.RolloID
+                LEFT JOIN dbo.ConfigEquipos ce WITH(NOLOCK) ON ce.EquipoID = ISNULL(o.MaquinaID, r.MaquinaID)
+                WHERE o.OrdenID = @OID
+            );
+            UPDATE dbo.Ordenes
+            SET Impreso = 1,
+                CantidadImpresa = CASE WHEN @TotalParcial IS NOT NULL THEN @TotalParcial ELSE CantidadImpresa END
+            WHERE OrdenID = @OID AND ISNULL(Impreso, 0) = 0
+        `);
+}
+
 // Todas las fallas registradas de un ítem (archivo o servicio), para la etiqueta.
 // La etiqueta de falla sale UNA vez por archivo — cuando queda resuelto (contadas +
 // falladas = total) — y lista todo lo acumulado; antes salía una por cada reporte.
@@ -1159,6 +1199,7 @@ const postControlArchivo = async (req, res) => {
                     await new sql.Request(transaction)
                         .input('OID', sql.Int, ordenId)
                         .query(`UPDATE Ordenes SET EstadoLogistica = '${destinoLogistica}' WHERE OrdenID = @OID`);
+                    if (nuevoEstadoArea === 'Pronto') await marcarImpresaAlCompletar(transaction, ordenId);
                     await changeOrderState(transaction, { target: { type: 'ORDER', id: ordenId }, estado: nuevoEstadoArea, userObj: req.user || 'Sistema', detalle: 'Control finalizado (Reposición)',
                 guard    : "Estado NOT IN ('Finalizado', 'Ingresado', 'Avisado', 'Entregado', 'Cancelado')",
                 io       : req.app.get('socketio')
@@ -1226,6 +1267,7 @@ const postControlArchivo = async (req, res) => {
                             await new sql.Request(transaction)
                                 .input('OID', sql.Int, o.OrdenID)
                                 .query(`UPDATE Ordenes SET EstadoLogistica = '${destinoLogistica}' WHERE OrdenID = @OID`);
+                            if (nuevoEstadoArea === 'Pronto') await marcarImpresaAlCompletar(transaction, o.OrdenID);
                             await changeOrderState(transaction, { target: { type: 'ORDER', id: o.OrdenID }, estado: nuevoEstadoArea, userObj: req.user || 'Sistema', detalle: detalleDe(o.OrdenID),
                 guard    : "Estado NOT IN ('Finalizado', 'Ingresado', 'Avisado', 'Entregado', 'Cancelado')",
                 io       : req.app.get('socketio')
@@ -1237,6 +1279,7 @@ const postControlArchivo = async (req, res) => {
                     } else {
                         await new sql.Request(transaction).input('OID', sql.Int, ordenId)
                             .query(`UPDATE Ordenes SET EstadoLogistica = '${destinoLogistica}' WHERE OrdenID = @OID`);
+                        if (nuevoEstadoArea === 'Pronto') await marcarImpresaAlCompletar(transaction, ordenId);
                         await changeOrderState(transaction, { target: { type: 'ORDER', id: ordenId }, estado: nuevoEstadoArea, userObj: req.user || 'Sistema', detalle: detalleDe(ordenId),
                 guard    : "Estado NOT IN ('Finalizado', 'Ingresado', 'Avisado', 'Entregado', 'Cancelado')",
                 io       : req.app.get('socketio')
@@ -1974,6 +2017,9 @@ const createCustomerReplacementOrder = async (req, res) => {
         const newOrderId = insertOrderResult.recordset[0].NewID;
 
         let totalFiles = 0;
+        // Miniaturas a copiar del archivo original al clon (se hace DESPUÉS del commit: es I/O de
+        // disco, no debe alargar ni poder tumbar la transacción).
+        const thumbsAcopiar = [];
 
         // 3. Insertar Archivos Seleccionados
         for (const file of files) {
@@ -1996,7 +2042,7 @@ const createCustomerReplacementOrder = async (req, res) => {
             // ──────────────────────────────────────────────────
 
             // Insertar archivo en la nueva orden
-            await new sql.Request(transaction)
+            const insFileRes = await new sql.Request(transaction)
                 .input('NewOrderID', sql.Int,             newOrderId)
                 .input('OldFileID',  sql.Int,             oldFileId)
                 .input('Metros',     sql.Decimal(10,2),   metersToReprint)
@@ -2007,11 +2053,21 @@ const createCustomerReplacementOrder = async (req, res) => {
                         OrdenID, NombreArchivo, RutaAlmacenamiento, Metros, Copias, Ancho, Alto, Observaciones,
                         FechaSubida, EstadoArchivo, TipoArchivo
                     )
+                    OUTPUT INSERTED.ArchivoID
                     SELECT
                         @NewOrderID, NombreArchivo, RutaAlmacenamiento, @Metros, @Copias, Ancho, Alto, @Obs,
                         GETDATE(), 'Pendiente', TipoArchivo
                     FROM dbo.ArchivosOrden WHERE ArchivoID = @OldFileID
                 `);
+
+            // El archivo es EL MISMO de Drive, solo cambia el ArchivoID → se copia la miniatura
+            // en vez de regenerarla. Sin esto la reposición nace sin miniatura (nadie sube nada,
+            // así que no se dispara la generación) y en Control se ve el ícono genérico y el
+            // modal de falla dice "sin vista previa".
+            const newFileId = insFileRes.recordset?.[0]?.ArchivoID;
+            if (newFileId) {
+                thumbsAcopiar.push({ origId: oldFileId, newId: newFileId });
+            }
 
             totalFiles++;
 
@@ -2111,6 +2167,20 @@ const createCustomerReplacementOrder = async (req, res) => {
         }
 
         await transaction.commit();
+
+        // Miniaturas del clon (best-effort, fuera de la transacción): mismo archivo de Drive,
+        // así que se copia el JPG ya rasterizado en vez de volver a bajar y rasterizar.
+        if (thumbsAcopiar.length > 0) {
+            try {
+                const { copyThumbnail } = require('../utils/thumbnailGenerator');
+                let copiadas = 0;
+                for (const t of thumbsAcopiar) {
+                    if (copyThumbnail(originalOrder.CodigoOrden, t.origId, newCode, t.newId)) copiadas++;
+                }
+                if (copiadas > 0) logger.info(`🖼️  [Reposición] ${copiadas} miniatura(s) copiadas de ${originalOrder.CodigoOrden} a ${newCode}.`);
+            } catch (e) { logger.warn('[Reposición] copia de miniaturas: ' + e.message); }
+        }
+
         res.json({ success: true, newOrderId, newCode });
 
     } catch (error) {
@@ -2348,6 +2418,10 @@ async function completarOrden(req, res) {
         await new sql.Request(transaction)
             .input('OID', sql.Int, ordenId)
             .query(`UPDATE Ordenes SET EstadoLogistica = '${estadoLogistica}' WHERE OrdenID = @OID`);
+
+        // Control aprobó todo → la orden queda impresa (ver marcarImpresaAlCompletar).
+        if (nuevoEstadoArea === 'Pronto') await marcarImpresaAlCompletar(transaction, ordenId);
+
         await changeOrderState(transaction, { target: { type: 'ORDER', id: ordenId }, estado: nuevoEstadoArea, userObj: req.user || 'Sistema', detalle: 'Completada manualmente',
                 io       : req.app.get('socketio')
             });

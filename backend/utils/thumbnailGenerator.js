@@ -90,18 +90,71 @@ exports.generateImageThumbnail = async (buffer, codigoOrden, archivoId) => {
 };
 
 /**
- * Dispatcher: elige el método según el tipo de archivo.
- * PDF  → Puppeteer + Sharp
- * PNG/JPG → Sharp directo
+ * Detecta el formato REAL por los primeros bytes (magic numbers), no por el nombre.
+ * Devuelve 'pdf' | 'image' | null (null = formato sin miniatura posible).
+ *
+ * El nombre miente en los dos sentidos: las matrices TPU migradas entran como
+ * "BOCETO-TP-101" (sin extensión) siendo PDFs, y los cortes de plotter ".plt" no son
+ * imágenes de ninguna clase. Con el dispatcher por nombre, los primeros caían en sharp
+ * ("Input buffer contains unsupported image format") y se quedaban sin miniatura, y los
+ * segundos ensuciaban el log intentando algo imposible.
+ */
+const detectarFormato = (buffer) => {
+    if (!Buffer.isBuffer(buffer) || buffer.length < 4) return null;
+    // %PDF — puede venir precedido de basura (PDFs con preámbulo), se busca en el arranque
+    if (buffer.subarray(0, 1024).includes('%PDF')) return 'pdf';
+    const b = buffer;
+    if (b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4E && b[3] === 0x47) return 'image'; // PNG
+    if (b[0] === 0xFF && b[1] === 0xD8 && b[2] === 0xFF)                   return 'image'; // JPEG
+    if (b[0] === 0x47 && b[1] === 0x49 && b[2] === 0x46)                   return 'image'; // GIF
+    if (b[0] === 0x42 && b[1] === 0x4D)                                    return 'image'; // BMP
+    if ((b[0] === 0x49 && b[1] === 0x49 && b[2] === 0x2A) ||
+        (b[0] === 0x4D && b[1] === 0x4D && b[2] === 0x00))                 return 'image'; // TIFF
+    if (b.subarray(0, 4).toString('ascii') === 'RIFF' &&
+        b.subarray(8, 12).toString('ascii') === 'WEBP')                    return 'image'; // WEBP
+    return null;
+};
+
+/**
+ * Dispatcher: elige el método según el CONTENIDO del archivo.
+ * PDF → pdftoppm + Sharp · PNG/JPG/… → Sharp directo · resto → no se intenta.
  */
 exports.generateThumbnail = async (buffer, codigoOrden, archivoId, mimeOrExt = '') => {
     // Las -F (fallas internas) no se muestran al cliente → no se genera su thumbnail.
     if (String(codigoOrden || '').toUpperCase().includes('-F')) return null;
-    const hint = String(mimeOrExt).toLowerCase();
-    if (hint.includes('pdf')) {
-        return exports.generatePdfThumbnail(buffer, codigoOrden, archivoId);
+
+    const formato = detectarFormato(buffer);
+    if (formato === 'pdf')   return exports.generatePdfThumbnail(buffer, codigoOrden, archivoId);
+    if (formato === 'image') return exports.generateImageThumbnail(buffer, codigoOrden, archivoId);
+
+    // Formato sin miniatura posible (.plt de corte, vectoriales, etc.): no es un error.
+    logger.info(`🖼️  [Thumbnail] ArchivoID=${archivoId} sin miniatura: formato no rasterizable (${mimeOrExt || 's/nombre'}).`);
+    return null;
+};
+
+/**
+ * Copia la miniatura de un archivo a otro ArchivoID, sin bajar nada ni rasterizar de nuevo.
+ *
+ * Para cuando una fila de ArchivosOrden se CLONA apuntando al MISMO archivo de Drive: la
+ * reposición al cliente (-R#) y el reuso de matriz TPU. Sin esto, el ArchivoID nuevo nunca
+ * tiene miniatura (nadie sube nada, así que no se dispara la generación) y la orden queda
+ * con el ícono genérico en Control y sin vista previa en el modal de falla.
+ *
+ * Best-effort: si el origen no existe (nunca tuvo miniatura), no hace nada y no rompe el flujo.
+ * @returns {boolean} true si copió
+ */
+exports.copyThumbnail = (codigoOrigen, archivoIdOrigen, codigoDestino, archivoIdDestino) => {
+    try {
+        const src = path.join(THUMBNAILS_DIR, String(codigoOrigen), `${archivoIdOrigen}.jpg`);
+        if (!fs.existsSync(src)) return false;
+        const destDir = path.join(THUMBNAILS_DIR, String(codigoDestino));
+        fs.mkdirSync(destDir, { recursive: true });
+        fs.copyFileSync(src, path.join(destDir, `${archivoIdDestino}.jpg`));
+        return true;
+    } catch (err) {
+        logger.warn(`⚠️  [Thumbnail] No se pudo copiar ${codigoOrigen}/${archivoIdOrigen} → ${codigoDestino}/${archivoIdDestino}: ${err.message}`);
+        return false;
     }
-    return exports.generateImageThumbnail(buffer, codigoOrden, archivoId);
 };
 
 /**

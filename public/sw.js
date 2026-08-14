@@ -1,6 +1,8 @@
 // Service Worker — PWA + Web Push Notifications
-const CACHE_NAME = 'user-pwa-v6';          // shell precacheado (offline.html, iconos, manifest)
-const RUNTIME_CACHE = 'user-runtime-v6';   // assets hasheados de Vite (js/css/fonts/img), con TOPE
+// v7: purga miniaturas envenenadas — el fallback SPA devolvía index.html con 200 para
+// /thumbnails/*.jpg inexistentes y quedaban cacheadas como "imagen" para siempre.
+const CACHE_NAME = 'user-pwa-v7';          // shell precacheado (offline.html, iconos, manifest)
+const RUNTIME_CACHE = 'user-runtime-v7';   // assets hasheados de Vite (js/css/fonts/img), con TOPE
 const OFFLINE_URL = '/offline.html';
 
 // Vite hashea el nombre de cada chunk (main-a1b2c3.js), así que cada deploy genera
@@ -59,6 +61,10 @@ self.addEventListener('fetch', (event) => {
     // Skip non-GET and API/socket requests
     if (request.method !== 'GET') return;
     if (request.url.includes('/api/') || request.url.includes('/socket.io')) return;
+    // Miniaturas e imágenes de falla: SIEMPRE red directa, sin pasar por el cache del SW.
+    // Se generan después de la subida (pueden no existir aún al primer intento) y cachearlas
+    // acá dejaba pegado el resultado viejo; el cache HTTP normal del navegador ya las cubre.
+    if (request.url.includes('/thumbnails/') || request.url.includes('/fallas/')) return;
 
     // Navigation requests → network-first SIEMPRE. Nunca servir un index.html
     // cacheado (apuntaría a chunks muertos tras un deploy). Solo si no hay red

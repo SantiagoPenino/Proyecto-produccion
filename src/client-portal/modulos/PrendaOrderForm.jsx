@@ -768,6 +768,13 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
                         actions.setErrorModalOpen(true);
                         return false;
                     }
+                    if (fileHeightM < 0.10) {
+                        actions.setErrorModalMessage(
+                            `El largo del archivo (${fileHeightM.toFixed(2)}m) es menor al mínimo permitido para DTF (0.10m). Por favor, ajuste el archivo.`
+                        );
+                        actions.setErrorModalOpen(true);
+                        return false;
+                    }
                 }
             }
 

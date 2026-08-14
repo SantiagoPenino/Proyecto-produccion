@@ -7,6 +7,21 @@ Historial de cambios del sistema de producción. Formato basado en [Keep a Chang
 
 ---
 
+## [2026-08-13] — Sin deployar
+
+### Arreglado
+- **Reasignar un lote a una máquina revivía órdenes ya despachadas** (incidente del 12/08 con 7 órdenes de DTF): asignar o desmontar un lote estampaba el estado sobre **todas** sus órdenes, incluidas las que ya estaban controladas, en un remito y viajando a Depósito. Esas órdenes volvían a "En Maquina", y cuando el camión llegaba, Depósito no las podía recibir: el candado de pedido completo las veía en producción y rechazaba el escaneo con un mensaje que nombraba justo la orden que el operario tenía en la mano. El sistema ya tenía la protección para esto (se aplica al iniciar, finalizar y pausar un lote), pero **faltaba en las dos operaciones de asignar/desmontar lote-máquina**, que son las que se usan desde el tablero. Ahora una orden que ya salió del área se queda quieta aunque su lote vuelva a una impresora.
+- **Una orden podía quedar lista para despachar y "pendiente de imprimir" al mismo tiempo**: Control y Planeación llevaban cuentas separadas, y finalizar en Control no tocaba la marca de impresión. Después el lote rebotaba al finalizarlo con "faltan N órdenes sin marcar como impreso" por órdenes que ya estaban controladas y listas, y había que ir a tildarlas a mano. Ahora, cuando Control aprueba todos los archivos de una orden, la impresión queda marcada sola — por los cuatro caminos que la dejan pronta (Finalizar Orden, Finalizar Lote Completo, el control archivo por archivo y el cierre de reposición).
+- **En EcoUV se podían mezclar materiales y tintas arrastrando órdenes entre lotes**: "Asignar a Lote" validaba que el lote fuera de un solo material y una sola tinta, pero **arrastrar entre lotes en Planeación no validaba nada** — por ese camino se armaba un lote mitad Ecosolvente y mitad UV, que no se puede imprimir de una pasada. Ahora las dos vías aplican la misma regla (la variante sigue pudiendo convivir, como estaba definido).
+- **Miniaturas que no se veían nunca más, aunque el archivo estuviera bien**: una miniatura que fallaba la primera vez quedaba envenenada en el navegador. Pedir una inexistente devolvía la aplicación entera en lugar de un 404, el service worker guardaba esa respuesta como si fuera la imagen, y ya no había forma de recuperarla ni regenerándola en el servidor. Ahora `/thumbnails` responde 404 de verdad cuando no existe, y el service worker deja pasar esas peticiones directo a la red sin cachearlas.
+- **Miniaturas que nunca se generaban por culpa del nombre del archivo**: el sistema decidía cómo procesar cada archivo mirando su extensión, así que un PDF sin extensión en el nombre (las matrices TPU migradas del sistema viejo) se intentaba abrir como imagen y fallaba, y los archivos de corte `.plt` llenaban el log de errores intentando algo imposible. Ahora se mira el **contenido real** del archivo: los PDF se rasterizan aunque el nombre mienta, y lo que no puede tener miniatura se saltea sin ensuciar el log.
+- **Las reposiciones al cliente (`-R1`, `-R2`…) nacían sin miniatura**: la reposición reusa el mismo archivo del original, pero como no hay una subida nueva nadie generaba su miniatura — en Control se veía el ícono genérico y el modal de falla decía "sin vista previa". Ahora se copia la miniatura del archivo original, sin volver a descargar ni procesar nada.
+
+### Agregado
+- **TPU — la columna Fecha muestra el veredicto del cliente**: si el cliente aprobó el boceto, la fecha de aprobación aparece en verde; si lo rechazó, la del rechazo en rojo; y hasta que se expide, la fecha de ingreso como siempre. Es la última acción tomada — un rechazo nuevo pisa al anterior y aprobar borra el rechazo.
+
+---
+
 ## [2026-08-10] — Sin deployar
 
 ### Arreglado

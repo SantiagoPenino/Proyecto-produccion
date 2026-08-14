@@ -402,6 +402,12 @@ if (require('fs').existsSync(publicPath)) {
     // Cualquier ruta que no sea API, devuelve el index.html (SPA)
     app.get('*', (req, res) => {
         if (req.url.startsWith('/api')) return res.status(404).json({ error: 'API route not found' });
+        // Archivos estáticos inexistentes → 404 de verdad, NUNCA el index.html: el service
+        // worker cachea por URL, y un thumbnail que aún no existía quedaba cacheado como
+        // HTML-con-status-200 — la imagen no se veía nunca más, ni después de generarse.
+        if (req.url.startsWith('/thumbnails/') || req.url.startsWith('/fallas/')) {
+            return res.status(404).send('Not found');
+        }
         res.sendFile(path.join(publicPath, 'index.html'));
     });
 } else {

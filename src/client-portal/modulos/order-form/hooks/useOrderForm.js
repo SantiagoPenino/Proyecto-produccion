@@ -675,6 +675,8 @@ export const useOrderForm = (serviceId, overrides = {}) => {
     // 4. Fetch Sublimation Active Orders
     useEffect(() => {
         if (state.moldType === 'SUBLIMACION') {
+            // Endpoint del portal (exige codCliente): un usuario sin cliente asociado
+            // recibe 401 y sin catch quedaba como Unhandled Promise en el log de errores.
             apiClient.get('/web-orders/active-sublimation').then(res => {
                 if (res.success) {
                     dispatch({
@@ -685,6 +687,9 @@ export const useOrderForm = (serviceId, overrides = {}) => {
                         }
                     });
                 }
+            }).catch(e => {
+                console.warn('No se pudieron cargar las órdenes de sublimación activas:', e?.message || e);
+                dispatch({ type: actionTypes.SET_DATA, data: { activeSubOrders: [], selectedSubOrderId: '' } });
             });
             setFabricOrigin('TELA SUBLIMADA EN USER');
         }

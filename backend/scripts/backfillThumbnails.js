@@ -28,10 +28,22 @@ const FORCE       = !!args.force;   // --force = regenerar aunque ya exista el t
 // ── Helpers ───────────────────────────────────────────────
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
+// Los links de Drive están guardados en DOS formatos según de dónde vino el archivo:
+//   · https://drive.google.com/file/d/<ID>/view   (subidas por el sistema)
+//   · https://drive.google.com/open?id=<ID>       (sistema viejo — matrices TPU migradas)
+// Antes solo se reconocía el primero y, al no matchear, se devolvía la URL CRUDA como fileId:
+// Drive respondía 404 "File not found: https://..." y quedaban 748 archivos figurando como
+// perdidos cuando en realidad existen y son accesibles. El proxy de archivos del backend usa
+// la heurística de abajo (corrida larga de caracteres de ID) y por eso sí los encontraba.
 function extractDriveId(raw) {
     if (!raw) return null;
-    const m = String(raw).match(/\/file\/d\/([^/?&]+)/);
-    return m ? m[1] : raw;
+    const s = String(raw);
+    const m = s.match(/\/file\/d\/([^/?&]+)/);      // /file/d/<ID>
+    if (m) return m[1];
+    const q = s.match(/[?&]id=([^&]+)/);            // ?id=<ID> / &id=<ID>
+    if (q) return q[1];
+    const g = s.match(/[-\w]{25,}/);                // último recurso: el ID suelto
+    return g ? g[0] : null;                         // null → el script lo reporta como "Sin Drive ID"
 }
 
 const THUMBNAILS_DIR = process.env.THUMBNAILS_PATH || path.join(__dirname, '..', 'thumbnails');
@@ -93,6 +105,16 @@ async function main() {
             // Saltar si ya existe (salvo --force, que regenera)
             if (!FORCE && thumbnailExists(CodigoOrden, ArchivoID)) {
                 console.log(`  ⏭️  Ya existe: ${label}`);
+                skip++;
+                return;
+            }
+
+            // Las -F (fallas internas) no llevan miniatura: no se le muestran al cliente y el
+            // generador las descarta. Se saltean ACÁ, antes de bajarlas — así no se gastan ~440
+            // descargas de Drive por corrida para tirar el resultado, y dejan de contarse como
+            // "fallo" (que era lo que inflaba el resumen final).
+            if (String(CodigoOrden || '').toUpperCase().includes('-F')) {
+                console.log(`  ⏭️  Falla interna (sin miniatura): ${label}`);
                 skip++;
                 return;
             }

@@ -540,8 +540,10 @@ const ReceptionView = ({ onClose, areaContext, areaFilter }) => {
                                 <span className="text-xs bg-slate-100 text-slate-600 px-2 py-1 rounded font-bold">
                                     {rem.TotalItems} Bultos
                                 </span>
-                                <span className="text-[10px] text-slate-400">
+                                <span className="text-[10px] text-slate-400 text-right leading-tight">
                                     {new Date(rem.FechaSalida).toLocaleDateString()}
+                                    <br />
+                                    {new Date(rem.FechaSalida).toLocaleTimeString('es-UY', { hour: '2-digit', minute: '2-digit', hour12: false })}
                                 </span>
                             </div>
                         </div>

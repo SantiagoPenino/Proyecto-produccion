@@ -1127,6 +1127,12 @@ exports.getOrdersByArea = async (req, res) => {
             // un solo lado (CAPAS_ARTE_TPU) y no haya una copia más que se pueda desincronizar.
             clienteAprobo: !!o.FechaAprobacionCliente,
             clienteRechazo: !!o.FechaRechazoCliente,
+            // Última acción del cliente sobre el boceto — la planilla la muestra en la columna
+            // Fecha. Nunca hay dos a la vez: aprobar limpia el rechazo, reenviar el boceto
+            // corregido también, y una orden ya aprobada no se puede volver a enviar a aprobación.
+            veredictoCliente     : o.FechaAprobacionCliente ? 'APROBADO'
+                                 : (o.FechaRechazoCliente ? 'RECHAZADO' : null),
+            fechaVeredictoCliente: o.FechaAprobacionCliente || o.FechaRechazoCliente || null,
             arteCompleto: (o.CapasArte || 0) >= CAPAS_ARTE_TPU,
             priority: o.Prioridad,
             entryDate: o.FechaIngreso,

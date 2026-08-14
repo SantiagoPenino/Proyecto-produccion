@@ -1,5 +1,5 @@
 const { getPool, sql } = require('../config/db');
-const { changeOrderState } = require('../services/stateManagerService');
+const { changeOrderState, GUARD_ORDENES_RESUELTAS } = require('../services/stateManagerService');
 const { registrarAuditoria } = require('../services/trackingService');
 const { validarMetrosFalla } = require('../services/fallaValidationService');
 const logger = require('../utils/logger');
@@ -173,6 +173,27 @@ exports.assignRoll = async (req, res) => {
                 .input('MID', sql.Int, mid)
                 .query("SELECT Nombre FROM dbo.ConfigEquipos WHERE EquipoID = @MID");
             const nombreMaq = (mRes.recordset[0]?.Nombre || '').trim().toLowerCase();
+
+            // TINTA UV: una orden con tinta UV solo puede ir a una máquina que tenga "UV" en el
+            // nombre. La tinta define en qué equipo se imprime; mandarla a una Ecosolvente sale mal.
+            if (!nombreMaq.includes('uv')) {
+                for (const currentRollId of targets) {
+                    const uvRes = await new sql.Request(transaction)
+                        .input('RID_UV', sql.VarChar(50), String(currentRollId))
+                        .query(`SELECT COUNT(*) AS ConUV FROM dbo.Ordenes
+                                WHERE CAST(RolloID AS VARCHAR(50)) = @RID_UV
+                                  AND UPPER(LTRIM(RTRIM(ISNULL(Tinta,'')))) = 'UV'
+                                  AND Estado NOT IN ('Cancelado','Cancelada')`);
+                    const conUV = uvRes.recordset[0]?.ConUV || 0;
+                    if (conUV > 0) {
+                        await transaction.rollback();
+                        return res.status(400).json({
+                            error: `El lote tiene ${conUV} orden(es) con tinta UV: solo puede asignarse a una máquina UV.`
+                        });
+                    }
+                }
+            }
+
             if (nombreMaq.startsWith('calandra')) {
                 for (const currentRollId of targets) {
                     const chk = await validarMetrosFalla(transaction, currentRollId);
@@ -210,11 +231,13 @@ exports.assignRoll = async (req, res) => {
                 .input('MID', sql.Int, mid)
                 .query("UPDATE dbo.Rollos SET MaquinaID = @MID, Estado = 'En cola' WHERE RolloID = @RID");
 
-            // Actualizar solo MaquinaID en Ordenes (Estado/EstadoenArea via stateManager)
+            // Actualizar solo MaquinaID en Ordenes (Estado/EstadoenArea via stateManager).
+            // El guard evita tocar las órdenes ya resueltas del lote: una orden controlada y
+            // despachada (En transito) no vuelve a producción porque se reasigne el lote.
             await new sql.Request(transaction)
                 .input('MID', sql.Int, mid)
                 .input('RID', sql.Int, currentRollId)
-                .query('UPDATE dbo.Ordenes SET MaquinaID = @MID WHERE RolloID = @RID');
+                .query(`UPDATE dbo.Ordenes SET MaquinaID = @MID WHERE RolloID = @RID AND ${GUARD_ORDENES_RESUELTAS}`);
 
             // Estado + historial via servicio central
             await changeOrderState(transaction, {
@@ -224,8 +247,7 @@ exports.assignRoll = async (req, res) => {
                 detalle  : 'Asignado a Maquina {maquina}',
                 maquinaId: mid,
                 rolloId  : currentRollId,
-                io       : req.app.get('socketio'),
-                io       : req.app.get('socketio'),
+                guard    : GUARD_ORDENES_RESUELTAS,
                 io       : req.app.get('socketio')
             });
         }
@@ -260,21 +282,23 @@ exports.unassignRoll = async (req, res) => {
             .input('RID', sql.Int, rollId)
             .query("UPDATE dbo.Rollos SET MaquinaID = NULL, Estado = 'Abierto' WHERE RolloID = @RID");
 
-        // 2. Limpiar MaquinaID en Ordenes (gestión de equipo)
+        // 2. Limpiar MaquinaID en Ordenes (gestión de equipo) — sin tocar las ya resueltas
         await new sql.Request(transaction)
             .input('RID', sql.Int, rollId)
-            .query('UPDATE dbo.Ordenes SET MaquinaID = NULL WHERE RolloID = @RID');
+            .query(`UPDATE dbo.Ordenes SET MaquinaID = NULL WHERE RolloID = @RID AND ${GUARD_ORDENES_RESUELTAS}`);
 
-        // 3. Estado + historial via servicio central
+        // 3. Estado + historial via servicio central. Con guard, igual que el desmontaje de
+        // productionController: desmontar el lote no devuelve a 'En Lote' una orden que ya se
+        // controló y salió despachada.
         await changeOrderState(transaction, {
             target  : { type: 'ROLL', id: rollId },
             estado  : 'En Lote',
             userObj : userObj,
             detalle : 'Desmontado de Maquina - Lote {rollo}',
             rolloId : rollId,
-                io       : req.app.get('socketio'),
-                io       : req.app.get('socketio')
-            });
+            guard   : GUARD_ORDENES_RESUELTAS,
+            io      : req.app.get('socketio')
+        });
 
         const { userIdNum } = require('../services/stateManagerService').extractUser(userObj);
         await registrarAuditoria(transaction, userIdNum, 'DESMONTAJE_ROLLO', `Rollo ${rollId} desmontado`, ip);

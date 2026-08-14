@@ -1,5 +1,5 @@
 const { getPool, sql } = require('../config/db');
-const { changeOrderState } = require('../services/stateManagerService');
+const { changeOrderState, GUARD_ORDENES_RESUELTAS } = require('../services/stateManagerService');
 const { validarMetrosFalla } = require('../services/fallaValidationService');
 const fs = require('fs');
 const path = require('path');
@@ -50,17 +50,9 @@ exports.getProductionBoard = async (req, res) => {
 // ==========================================
 const { registrarAuditoria, registrarHistorialOrden } = require('../services/trackingService');
 
-// Guarda para los cambios de estado a nivel LOTE (iniciar/pausar/finalizar/mover):
-// las órdenes ya resueltas dentro del lote (controladas Pronto, con falla esperando
-// reposición, finalizadas, canceladas, entregadas) conservan su estado — p. ej.
-// finalizar la máquina NO debe sacarle el 'Pronto' a una orden ya controlada.
-// OJO: incluir también los estados logísticos post-Pronto ('En transito','Ingresado',...). Una orden
-// que ya se controló (Pronto) y siguió avanzando (se despachó a un remito → 'En transito', o entró a
-// depósito → 'Ingresado') NO debe volver a "Control y Calidad" porque finalicen su máquina. Sin estos,
-// una orden despachada antes de finalizar el rollo quedaba desprotegida y se pisaba hacia atrás.
-const GUARD_ORDENES_RESUELTAS =
-    "ISNULL(EstadoenArea,'') NOT IN ('Pronto','En transito','En Transito','En Tránsito','Recibido en Destino','Ingresado','Pronto para entregar','Con Falla','Retenido','Finalizado','Entregado','Avisado','Para Avisar','Cancelado') " +
-    "AND Estado NOT IN ('Finalizado','Cancelado','Entregado')";
+// GUARD_ORDENES_RESUELTAS (guarda para los cambios de estado a nivel LOTE) vive ahora en
+// stateManagerService: lo necesitan también los endpoints que asignan un lote a una máquina,
+// que están en otros controllers. Se importa arriba.
 
 // Áreas con IMPRESIÓN PARCIAL (por unidades o metros): al finalizar un lote, las órdenes incompletas
 // NO bloquean — vuelven a la Mesa de Armado conservando su avance (Ordenes.CantidadImpresa) para
@@ -777,11 +769,11 @@ exports.magicSort = async (req, res) => {
             await new sql.Request(transaction).input('RID', sql.Int, rollId).input('MID', sql.Int, machine.EquipoID).input('St', sql.VarChar, machineStatus)
                 .query("UPDATE dbo.Rollos SET MaquinaID = @MID WHERE RolloID = @RID"); // Nota: Estado del rollo suele mantenerse 'Abierto' hasta que entra a produccion real o se pausa, o segun logica manual.
 
-            // Actualizar solo MaquinaID (gestion de equipo)
+            // Actualizar solo MaquinaID (gestion de equipo) — sin tocar las ya resueltas
             await new sql.Request(transaction)
                 .input('RID', sql.Int, rollId)
                 .input('MID', sql.Int, machine.EquipoID)
-                .query('UPDATE dbo.Ordenes SET MaquinaID = @MID WHERE RolloID = @RID');
+                .query(`UPDATE dbo.Ordenes SET MaquinaID = @MID WHERE RolloID = @RID AND ${GUARD_ORDENES_RESUELTAS}`);
 
             // Estado + historial via servicio central
             await changeOrderState(transaction, {
@@ -791,7 +783,7 @@ exports.magicSort = async (req, res) => {
                 detalle  : 'Asignado a Maquina {maquina} / Lote {rollo}',
                 maquinaId: machine.EquipoID,
                 rolloId  : rollId,
-                io       : req.app.get('socketio'),
+                guard    : GUARD_ORDENES_RESUELTAS,
                 io       : req.app.get('socketio')
             });
 

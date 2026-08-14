@@ -1951,17 +1951,25 @@ exports.uploadOrderFile = async (req, res) => {
             }
         }
 
-        // Generar thumbnail en background si es PDF o PNG y tenemos el buffer
+        // Generar thumbnail en background si tenemos el buffer. Quién puede tener miniatura lo
+        // decide el generador mirando los primeros bytes: filtrar acá por nombre dejaba sin
+        // miniatura a los archivos cuya extensión no delata el tipo (o no la tienen).
         if (procBuffer && wantThumb) {
-            const mimeType = (file.mimetype || '').toLowerCase();
-            const ext = (finalName || '').toLowerCase();
-            const isSupported = mimeType.includes('pdf') || ext.endsWith('.pdf')
-                             || mimeType.includes('png') || ext.endsWith('.png')
-                             || mimeType.includes('jpeg') || ext.endsWith('.jpg');
-            if (isSupported) {
-                generateThumbnail(procBuffer, codigoOrden, dbId, finalName).catch(e =>
-                    logger.warn('[Thumbnail] Error async generando thumbnail:', e.message)
-                );
+            generateThumbnail(procBuffer, codigoOrden, dbId, finalName).catch(e =>
+                logger.warn('[Thumbnail] Error async generando thumbnail:', e.message)
+            );
+        }
+
+        // [DTF] Capa de tinta blanca automática (solo arte del área DF — el filtro fino lo hace
+        // el propio servicio mirando la orden). Se llama ACÁ, antes del finally que borra el
+        // temporal: el servicio copia el archivo de forma sincrónica y procesa en su cola de a
+        // uno, sin bloquear la respuesta. Best-effort: jamás afecta la subida.
+        if (type === 'ORDEN' && tmpPath) {
+            try {
+                const { encolarSiCorresponde } = require('../services/dtfBlancoService');
+                encolarSiCorresponde({ archivoId: parseInt(dbId, 10), tmpPath, nombreArchivo: finalName, codigoOrden });
+            } catch (eDtf) {
+                logger.warn('[DTF-Blanco] no se pudo encolar: ' + eDtf.message);
             }
         }
 

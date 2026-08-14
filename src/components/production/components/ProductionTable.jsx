@@ -131,12 +131,23 @@ export default function ProductionTable({ rowData = [], onRowSelected, selectedR
     };
 
     const DateRenderer = (params) => {
-        if (!params.value) return null;
-        const date = new Date(params.value);
+        // TPU: si el cliente ya se expidió sobre el boceto, la fecha que importa es la de su
+        // ÚLTIMA acción, no la de ingreso — verde si aprobó, roja si rechazó. El backend resuelve
+        // cuál es (nunca hay dos: aprobar limpia el rechazo) y manda una sola fecha.
+        const veredicto = params.data?.veredictoCliente;
+        const value = veredicto ? params.data.fechaVeredictoCliente : params.value;
+        if (!value) return null;
+        const date = new Date(value);
+        const aprobado = veredicto === 'APROBADO';
+        const colorFecha = veredicto ? (aprobado ? 'text-emerald-600' : 'text-red-600') : 'text-zinc-700';
+        const colorHora  = veredicto ? (aprobado ? 'text-emerald-500' : 'text-red-400')  : 'text-zinc-400';
+        const titulo = veredicto
+            ? `${aprobado ? 'Boceto APROBADO' : 'Boceto RECHAZADO'} por el cliente el ${date.toLocaleString('es-ES')}`
+            : undefined;
         return (
-            <div className="flex flex-col leading-tight">
-                <span className="text-xs tablet:text-[11px] font-bold text-zinc-700">{date.toLocaleDateString('es-ES', { day: '2-digit', month: '2-digit', year: '2-digit' })}</span>
-                <span className="text-[10px] tablet:text-[9px] text-zinc-400 font-medium">{date.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' })}</span>
+            <div className="flex flex-col leading-tight" title={titulo}>
+                <span className={`text-xs tablet:text-[11px] font-bold ${colorFecha}`}>{date.toLocaleDateString('es-ES', { day: '2-digit', month: '2-digit', year: '2-digit' })}</span>
+                <span className={`text-[10px] tablet:text-[9px] font-medium ${colorHora}`}>{date.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' })}</span>
             </div>
         );
     };

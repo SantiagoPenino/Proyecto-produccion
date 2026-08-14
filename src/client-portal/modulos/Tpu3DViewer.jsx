@@ -244,6 +244,19 @@ const mascaraAlfa = (canvas) => {
     return { m, w, h };
 };
 
+// Máscara para la SILUETA del parche. Por defecto vale el alfa —el blanco del diseño ES parche:
+// un boceto con franjas blancas (caso FEBIU) quedaba agujereado porque mascaraTinta descarta
+// todo lo casi-blanco—. La protección contra planchas con FONDO DE PÁGINA blanco opaco se
+// conserva con una guarda: si el alfa cubre casi todo el lienzo, es que hay un rectángulo de
+// fondo tapando la hoja y ahí sí manda la tinta.
+const COBERTURA_FONDO = 0.95;
+const mascaraSilueta = (canvas) => {
+    const alfa = mascaraAlfa(canvas);
+    let n = 0;
+    for (let i = 0; i < alfa.m.length; i++) if (alfa.m[i]) n++;
+    return (n / alfa.m.length) >= COBERTURA_FONDO ? mascaraTinta(canvas) : alfa;
+};
+
 // Un diseño puede tener piezas SUELTAS además del cuerpo principal (las estrellas flotando
 // arriba de un escudo): manchas chicas respecto de la principal y cercanas a ella. El corte
 // físico las une con TPU transparente, pero en la fase de boceto no hay capa de corte, así que
@@ -965,7 +978,7 @@ export const Tpu3DViewer = ({ ordenId, codigo, onClose, onAprobado, modo = 'clie
                 if (!vivo) return;
                 // Silueta: interior del corte; sin corte, interior de la tinta del arte
                 // (no sirve el alpha pelado: la plancha puede traer fondo blanco OPACO).
-                const silPlancha = interiorDeCorte(mascaraTinta(cvGuia));
+                const silPlancha = interiorDeCorte(mascaraSilueta(cvGuia));
                 const fr = bboxUnaCopia(silPlancha);
                 if (!fr) throw new Error('No se pudo detectar el diseño en la plancha.');
 
@@ -1023,7 +1036,7 @@ export const Tpu3DViewer = ({ ordenId, codigo, onClose, onAprobado, modo = 'clie
                 // Silueta del recorte (a resolución completa). La limpieza saca lo que entra por
                 // el margen (la puntita de la copia vecina) pero CONSERVA las piezas sueltas del
                 // diseño — las estrellas sobre el escudo son parte del parche.
-                const silCrop = interiorDeCorte(mascaraTinta(cvCorteCrop || cvArteCrop));
+                const silCrop = interiorDeCorte(mascaraSilueta(cvCorteCrop || cvArteCrop));
                 limpiarSiluetaRecorte(silCrop);
                 const cvSilCrop = mascaraACanvas(silCrop);
 

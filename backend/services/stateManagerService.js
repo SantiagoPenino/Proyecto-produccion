@@ -208,9 +208,25 @@ async function changeOrderState(transaction, opts) {
     return { userName, userIdNum, estadoGeneral, ordenesAfectadas };
 }
 
+/**
+ * Órdenes YA RESUELTAS que una operación de LOTE no debe pisar hacia atrás: las que ya se
+ * controlaron ('Pronto') y las que siguieron avanzando por logística ('En transito',
+ * 'Ingresado', …), más las finalizadas/canceladas/entregadas y las retenidas por falla.
+ *
+ * Vive acá (y no en un controller) porque lo necesitan TODAS las operaciones de lote:
+ * iniciar/finalizar máquina, pasar a calandra, volver a la cola y asignar el lote a una
+ * máquina. Faltaba justo en las de asignación (12/08/2026): re-asignar un lote a una
+ * impresora estampaba 'En Maquina' sobre órdenes ya despachadas y en tránsito, y Depósito
+ * después no las podía recibir (el candado de pedido completo las veía "en producción").
+ */
+const GUARD_ORDENES_RESUELTAS =
+    "ISNULL(EstadoenArea,'') NOT IN ('Pronto','En transito','En Transito','En Tránsito','Recibido en Destino','Ingresado','Pronto para entregar','Con Falla','Retenido','Finalizado','Entregado','Avisado','Para Avisar','Cancelado') " +
+    "AND Estado NOT IN ('Finalizado','Cancelado','Entregado')";
+
 module.exports = {
     changeOrderState,
     extractUser,
     fetchNombreRollo,
     fetchNombreMaquina,
+    GUARD_ORDENES_RESUELTAS,
 };
