@@ -3,6 +3,7 @@ const { getPool, sql } = require('../config/db');
 const logger = require('../utils/logger');
 const { changeOrderState } = require('../services/stateManagerService');
 const { isPedidoCompletoEnArea, isPedidoCompletoGlobal, sqlExistsHermanaNoPronta } = require('../services/pedidoCompletoService');
+const { totalesCobranzaDeOrden } = require('../utils/montoTotalPedido');
 
 // [PRENDAS] "Comprar y personalizar": Bordado/DTF/TPU/Estampado/Corte/Costura que cuelgan
 // de una orden madre PRO (prenda comprada + personalizaciones, un solo precio) son trabajo
@@ -1402,6 +1403,11 @@ exports.receiveDispatch = async (req, res) => {
                             LEFT JOIN Logistica_Bultos b ON b.OrdenID = o.OrdenID
                                  AND b.Tipocontenido = 'PROD_TERMINADO'
                                  AND b.Estado <> 'PROCESADO'
+                                 -- Fallas internas (-F): sus bultos NO viajan a depósito por diseño —
+                                 -- Crear Remito los oculta y el candado de "salir completo" los exime
+                                 -- (23-24/07). Contarlos acá dejaba al pedido esperando un bulto que no
+                                 -- puede llegar (casos DTF-15676/DTF-15734, 18/08: clavados en 1/2).
+                                 AND o.CodigoOrden NOT LIKE '%-F%'
                             WHERE LTRIM(RTRIM(CAST(o.NoDocERP AS VARCHAR(50)))) = @NoDoc
                               AND (o.Estado IS NULL OR UPPER(LTRIM(RTRIM(o.Estado))) <> 'CANCELADO')
                             GROUP BY o.OrdenID
@@ -1556,9 +1562,30 @@ if (triggerReversal || triggerForward) {
                                                // fallback a la 1ª línea del pedido les copiaba el costo de la MADRE (el retiro les
                                                // mostraba importe). Son re-trabajo sin cargo: siempre costo 0 y su propia cantidad.
                                                const esRepoCliente = /-R\d+$/i.test(oRow.CodigoOrden || '');
-                                               const dOrden = esRepoCliente ? null : (details.recordset.find(d => Number(d.OrdenID) === Number(ordenDeposito.ordenId)) || details.recordset[0]);
-                                               const cantOrden  = (dOrden && dOrden.Cantidad   != null) ? parseFloat(dOrden.Cantidad)   : (parseFloat(ordenDeposito.magnitud ?? oRow.Magnitud) || totalMetros || 0);
-                                               const costoOrden = esRepoCliente ? 0 : ((dOrden && dOrden.TotalLinea != null) ? parseFloat(dOrden.TotalLinea) : currentMonto);
+                                               // TODAS las líneas de esta orden, no la primera: un pedido ECOUV trae la
+                                               // impresión y cada terminación en su propia línea. Quedarse con una sola
+                                               // perdía las terminaciones (EUV-14157: 18.00 en vez de 39.98).
+                                               const propiasDeLaOrden = esRepoCliente ? [] : details.recordset.filter(d => Number(d.OrdenID) === Number(ordenDeposito.ordenId));
+                                               // Pedidos legacy sin OrdenID desglosado: se mantiene el fallback a la 1ª línea.
+                                               const lineasDeLaOrden = esRepoCliente
+                                                   ? []
+                                                   : (propiasDeLaOrden.length > 0 ? propiasDeLaOrden : (details.recordset[0] ? [details.recordset[0]] : []));
+                                               // Cada línea puede venir en otra moneda que la cabecera (impresión USD +
+                                               // terminaciones UYU): sumar en crudo cobraba los pesos como dólares.
+                                               const aMonedaFinal = (linea) => {
+                                                   const sub = parseFloat(linea.TotalLinea) || 0;
+                                                   const monLinea = (linea.Moneda || pc.Moneda || '').toUpperCase();
+                                                   if (finalMonId === 2 && monLinea === 'UYU') return sub / cotizacionVal;
+                                                   if (finalMonId === 1 && monLinea === 'USD') return sub * cotizacionVal;
+                                                   return sub;
+                                               };
+                                               const dOrden     = lineasDeLaOrden[0] || null;
+                                               const cantOrden  = lineasDeLaOrden.some(d => d.Cantidad   != null)
+                                                   ? lineasDeLaOrden.reduce((s, d) => s + (parseFloat(d.Cantidad) || 0), 0)
+                                                   : (parseFloat(ordenDeposito.magnitud ?? oRow.Magnitud) || totalMetros || 0);
+                                               const costoOrden = esRepoCliente ? 0 : (lineasDeLaOrden.some(d => d.TotalLinea != null)
+                                                   ? Math.round(lineasDeLaOrden.reduce((s, d) => s + aMonedaFinal(d), 0) * 100) / 100
+                                                   : currentMonto);
                                                const prodOrden  = (dOrden && dOrden.IDProdReact)        ? dOrden.IDProdReact           : (ordenDeposito.proIdProducto ?? oRow.ProIdProducto ?? null);
                                                const cliPKForDep = ordenDeposito.cliIdCliente || ordenDeposito.codCliente || oRow.CliIdCliente || oRow.CodCliente;
                                                const lugarReq = await poolLocal.request().input('CID', require('mssql').Int, cliPKForDep).query("SELECT FormaEnvioID FROM Clientes WITH(NOLOCK) WHERE CliIdCliente = @CID");
@@ -1762,14 +1789,12 @@ if (triggerReversal || triggerForward) {
                                          // Importe/cantidad/producto de la línea de ESTA orden (o de la madre, si
                                          // se redirigió) — no 0 fijo: cubre hermanas cuyo pedido ya quedó
                                          // contabilizado (marca) en esta misma pasada.
-                                         const linFb = await poolLocal.request()
-                                             .input('OID', require('mssql').Int, ordenDepositoFb.ordenId)
-                                             .query(`SELECT SUM(Cantidad) AS Cant, SUM(Subtotal) AS Imp, MIN(ProIdProducto) AS Prod
-                                                     FROM PedidosCobranzaDetalle WITH(NOLOCK) WHERE OrdenID=@OID`);
-                                         const fbCant  = parseFloat(linFb.recordset[0]?.Cant) || ordenDepositoFb.magnitud || oRow.Magnitud || 0;
-                                         const fbCosto = parseFloat(linFb.recordset[0]?.Imp) || 0;
-                                         const fbProd  = linFb.recordset[0]?.Prod || ordenDepositoFb.proIdProducto || oRow.ProIdProducto || null;
-                                         const fbMon   = (pcReq.recordset[0]?.Moneda === 'USD') ? 2 : 1;
+                                         const fbMoneda = (pcReq.recordset[0]?.Moneda === 'USD') ? 'USD' : 'UYU';
+                                         const linFb = await totalesCobranzaDeOrden(poolLocal, ordenDepositoFb.ordenId, fbMoneda);
+                                         const fbCant  = parseFloat(linFb.Cant) || ordenDepositoFb.magnitud || oRow.Magnitud || 0;
+                                         const fbCosto = Math.round((parseFloat(linFb.Imp) || 0) * 100) / 100;
+                                         const fbProd  = linFb.Prod || ordenDepositoFb.proIdProducto || oRow.ProIdProducto || null;
+                                         const fbMon   = (fbMoneda === 'USD') ? 2 : 1;
 
                                          const fbInsert = await poolLocal.request()
                                              .input('Cod', require('mssql').VarChar, ordenDepositoFb.codigoOrden)
@@ -1860,25 +1885,25 @@ if (triggerReversal || triggerForward) {
                                     .input('Cod', require('mssql').VarChar, ordenDepositoUp.codigoOrden)
                                     .query(`SELECT TOP 1 OrdIdOrden FROM OrdenesDeposito WITH(NOLOCK) WHERE OrdCodigoOrden = @Cod`);
                                 if (existe.recordset.length === 0) {
-                                    const lin = await poolCnt.request()
-                                        .input('OID', require('mssql').Int, ordenDepositoUp.ordenId)
-                                        .query(`SELECT SUM(Cantidad) AS Cant, SUM(Subtotal) AS Imp, MIN(ProIdProducto) AS Prod
-                                                FROM PedidosCobranzaDetalle WITH(NOLOCK) WHERE OrdenID=@OID`);
+                                    // La moneda del pedido va PRIMERO: es la que decide a qué moneda
+                                    // convertir cada línea antes de sumarlas.
                                     const monR = await poolCnt.request()
                                         .input('ND', require('mssql').VarChar, oi.NoDoc || '')
                                         .query(`SELECT TOP 1 Moneda FROM PedidosCobranza WITH(NOLOCK) WHERE LTRIM(RTRIM(CAST(NoDocERP AS VARCHAR(50)))) = @ND`);
+                                    const upMoneda = (monR.recordset[0]?.Moneda === 'USD') ? 'USD' : 'UYU';
+                                    const lin = await totalesCobranzaDeOrden(poolCnt, ordenDepositoUp.ordenId, upMoneda);
                                     const cliPkUp = ordenDepositoUp.cliIdCliente || ordenDepositoUp.codCliente || oi.CliIdCliente || oi.CodCliente;
                                     const lugR = await poolCnt.request()
                                         .input('CID', require('mssql').Int, cliPkUp)
                                         .query("SELECT FormaEnvioID FROM Clientes WITH(NOLOCK) WHERE CliIdCliente=@CID");
                                     const insUp = await poolCnt.request()
                                         .input('Cod', require('mssql').VarChar, ordenDepositoUp.codigoOrden)
-                                        .input('Cant', require('mssql').Float, parseFloat(lin.recordset[0]?.Cant) || ordenDepositoUp.magnitud || oi.Magnitud || 0)
+                                        .input('Cant', require('mssql').Float, parseFloat(lin.Cant) || ordenDepositoUp.magnitud || oi.Magnitud || 0)
                                         .input('Cli', require('mssql').Int, cliPkUp)
                                         .input('Trab', require('mssql').VarChar, ordenDepositoUp.descripcionTrabajo || oi.DescripcionTrabajo)
-                                        .input('Prod', require('mssql').Int, lin.recordset[0]?.Prod || ordenDepositoUp.proIdProducto || oi.ProIdProducto || null)
-                                        .input('Mon', require('mssql').Int, (monR.recordset[0]?.Moneda === 'USD') ? 2 : 1)
-                                        .input('Costo', require('mssql').Float, parseFloat(lin.recordset[0]?.Imp) || 0)
+                                        .input('Prod', require('mssql').Int, lin.Prod || ordenDepositoUp.proIdProducto || oi.ProIdProducto || null)
+                                        .input('Mon', require('mssql').Int, (upMoneda === 'USD') ? 2 : 1)
+                                        .input('Costo', require('mssql').Float, Math.round((parseFloat(lin.Imp) || 0) * 100) / 100)
                                         .input('Usr', require('mssql').Int, usuarioId || 1)
                                         .input('Lugar', require('mssql').Int, lugR.recordset[0]?.FormaEnvioID ? parseInt(lugR.recordset[0].FormaEnvioID) : null)
                                         .input('Esp', require('mssql').Int, bInfo.esperados)

@@ -41,9 +41,16 @@ exports.getSaldo = async (req, res) => {
                     -- remanente físico de merma que no es usable)
                     SUM(CASE WHEN ib.Estado IN ('Disponible', 'En Uso')
                             THEN ib.MetrosRestantes ELSE 0 END)                      AS MetrosDisponibles,
-                    SUM(ib.MetrosIniciales - ib.MetrosRestantes)                      AS MetrosConsumidos,
+                    -- Consumo: una bobina AGOTADA se cuenta entera. Su remanente es merma no
+                    -- usable y MetrosDisponibles ya la excluye (ver arriba); si el consumo
+                    -- descontara ese resto, al cliente le quedaban metros sin explicación
+                    -- (ingresados 10,00 − consumidos 9,90 = 0,10, pero disponibles 0,00).
+                    -- Solo aplica a 'Agotado': 'Pendiente' no está consumida, está por recibirse.
+                    SUM(CASE WHEN ib.Estado = 'Agotado' THEN ib.MetrosIniciales
+                             ELSE ib.MetrosIniciales - ib.MetrosRestantes END)        AS MetrosConsumidos,
                     CAST(
-                        100.0 * SUM(ib.MetrosIniciales - ib.MetrosRestantes)
+                        100.0 * SUM(CASE WHEN ib.Estado = 'Agotado' THEN ib.MetrosIniciales
+                                         ELSE ib.MetrosIniciales - ib.MetrosRestantes END)
                         / NULLIF(SUM(ib.MetrosIniciales), 0)
                     AS DECIMAL(5,2))                                                  AS PorcentajeConsumido,
                     SUM(CASE WHEN ib.Estado = 'En Uso'

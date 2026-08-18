@@ -1173,8 +1173,9 @@ const OrderForm = ({ serviceId: propServiceId }) => {
         if (serviceId === 'tpu' && tpuMode === 'matriz') {
             if (!matrizSel) return addToast('Elegí una matriz de "Mis matrices".', 'error');
             const cant = items[0]?.copies || 0;
-            const minTpu = config.minCopies || 15;
-            if (cant < minTpu) return addToast(`El pedido mínimo para TPU es de ${minTpu} unidades.`, 'error');
+            // El reuso tiene su propio mínimo (más bajo que un trabajo nuevo): la matriz ya existe.
+            const minTpu = config.minCopiesReuso || config.minCopies || 15;
+            if (cant < minTpu) return addToast(`El mínimo para reusar una matriz es de ${minTpu} unidades.`, 'error');
             // La medida se exige igual que en trabajo nuevo: los selectores están a la vista y
             // marcados con *, pero esta rama sale antes de la validación de abajo y los ignoraba.
             if (medidaMaximaTPU(globalMaterial) && (!tpuAlto || !tpuAncho)) {
@@ -1274,6 +1275,14 @@ const OrderForm = ({ serviceId: propServiceId }) => {
             }
             if ((tizadaFiles || []).some(f => !f.bobinaId)) {
                 return addToast('Elegí la bobina de tela de cada tizada antes de confirmar el pedido.', 'error');
+            }
+            // Pieza o prenda: obligatorio por tizada, y con talle si es prenda. Producción
+            // necesita saber qué está cortando — 20 piezas no es lo mismo que 20 prendas.
+            if ((tizadaFiles || []).some(f => !f.tipoCorte)) {
+                return addToast('Indicá si cada tizada es una pieza o una prenda.', 'error');
+            }
+            if ((tizadaFiles || []).some(f => f.tipoCorte === 'PRENDA' && !f.talle)) {
+                return addToast('Elegí el talle de cada tizada marcada como prenda.', 'error');
             }
 
             // Agrupar por bobina: una ORDEN por tela (así producción controla por bobina)
@@ -1909,7 +1918,13 @@ const OrderForm = ({ serviceId: propServiceId }) => {
                             height: f.medicion.largoTelaM, // largo de tela (los "metros" del archivo)
                             piezas: f.medicion.piezas,
                             metrosCorte: f.medicion.metrosCorte,
-                            nota: `${f.medicion.piezas} piezas · ${f.medicion.metrosCorte.toFixed(2)}m de corte`
+                            // Pieza o prenda (+ talle): va DENTRO de la nota del archivo porque
+                            // ArchivosOrden no tiene columna para esto y producción lee la nota
+                            // en el control de corte. Si algún día se necesita filtrar por talle,
+                            // ahí sí habría que agregar la columna.
+                            tipoCorte: f.tipoCorte || null,
+                            talle: f.talle || null,
+                            nota: `${f.tipoCorte === 'PRENDA' ? `PRENDA talle ${f.talle}` : 'PIEZA'} · ${f.medicion.piezas} piezas · ${f.medicion.metrosCorte.toFixed(2)}m de corte`
                         })),
                         // Bobina y metros de tela de ESTA orden (el backend descuenta por orden)
                         bobinaTelaId: bobinaId,
@@ -2578,14 +2593,15 @@ const OrderForm = ({ serviceId: propServiceId }) => {
                                             )}
                                             {matrizSel && (
                                                 <div className="mt-4">
-                                                    <label className="block text-[10px] uppercase font-black text-zinc-400 mb-1">Cantidad (mínimo {config.minCopies || 15})</label>
+                                                    {/* Reuso: mínimo propio (5), más bajo que el trabajo nuevo (15). */}
+                                                    <label className="block text-[10px] uppercase font-black text-zinc-400 mb-1">Cantidad (mínimo {config.minCopiesReuso || config.minCopies || 15})</label>
                                                     <input
                                                         type="number"
-                                                        min={config.minCopies || 15}
+                                                        min={config.minCopiesReuso || config.minCopies || 15}
                                                         value={items[0]?.copies ?? ''}
                                                         onChange={(e) => items[0] && actions.updateItem(items[0].id, 'copies', parseInt(e.target.value) || 0)}
                                                         className="w-full bg-zinc-900/60 border border-zinc-700 rounded-lg p-2.5 text-white text-sm focus:border-cyan-500 outline-none"
-                                                        placeholder={String(config.minCopies || 15)}
+                                                        placeholder={String(config.minCopiesReuso || config.minCopies || 15)}
                                                     />
                                                 </div>
                                             )}

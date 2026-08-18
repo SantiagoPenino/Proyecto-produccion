@@ -37,8 +37,12 @@ router.post('/wms/import/:id', controller.importWmsMaster);
 // 7.2 Obtener Variantes de un Master Product del WMS
 router.get('/wms/variants/:id', controller.getWmsVariants);
 
-// 8. Cargar Imagen Articulo
+// 8. Cargar Imagen Articulo (campo opcional 'color' en el multipart → imagen de ese color)
 router.post('/upload-image/:id', uploadArticulo.single('image'), controller.uploadArticleImage);
+
+// 8b. Imágenes del artículo (principal + por color) / borrar la de un color (?color=ROJO)
+router.get('/article-images/:id', controller.getArticleImages);
+router.delete('/article-image/:id', controller.deleteArticleImageColor);
 
 // 9. Variantes locales de un artículo y precios
 router.get('/article-variants/:id', controller.getArticleVariants);

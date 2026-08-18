@@ -1,6 +1,7 @@
 const { getPool, sql } = require('../config/db');
 const logger = require('../utils/logger');
 const { descontarStockWmsExterno, explotarCombos } = require('../services/wmsStockService');
+const { SQL_RECALC_MONTO_TOTAL } = require('../utils/montoTotalPedido');
 
 // [WMS] Trazabilidad: registra el cambio de estado (o nota) del pedido VEN en
 // PedidosCobranzaEventos. Con try/catch: si la tabla no existe todavía (prod sin
@@ -539,7 +540,7 @@ exports.updateItemQuantity = async (req, res) => {
             // "Comprar y personalizar": no sumar las líneas hermanas EMB/DF/TPU/EST, ya
             // incluidas en el subtotal de PRO (este endpoint es de pedidos VEN-xxx puros,
             // que nunca tienen hermanas, pero el filtro no cuesta nada y evita sorpresas).
-            await transaction.request().input('PedidoID', sql.Int, pedidoId).query(`UPDATE PedidosCobranza SET MontoTotal = (SELECT ISNULL(SUM(Subtotal), 0) FROM PedidosCobranzaDetalle WHERE PedidoCobranzaID = @PedidoID AND ISNULL(EsHermanaConsolidada,0) = 0) WHERE ID = @PedidoID`);
+            await transaction.request().input('PID', sql.Int, pedidoId).query(SQL_RECALC_MONTO_TOTAL);
             await transaction.commit();
             res.json({ success: true, message: 'Cantidad actualizada' });
         } catch (err) {
@@ -803,7 +804,7 @@ exports.deleteItem = async (req, res) => {
         await transaction.begin();
         try {
             await transaction.request().input('PedidoID', sql.Int, pedidoId).input('VarID', sql.NVarChar(50), wms_variante_id).query(`DELETE FROM PedidosCobranzaDetalle WHERE PedidoCobranzaID = @PedidoID AND CodArticulo = @VarID`);
-            await transaction.request().input('PedidoID', sql.Int, pedidoId).query(`UPDATE PedidosCobranza SET MontoTotal = (SELECT ISNULL(SUM(Subtotal), 0) FROM PedidosCobranzaDetalle WHERE PedidoCobranzaID = @PedidoID AND ISNULL(EsHermanaConsolidada,0) = 0) WHERE ID = @PedidoID`);
+            await transaction.request().input('PID', sql.Int, pedidoId).query(SQL_RECALC_MONTO_TOTAL);
             await transaction.commit();
             res.json({ success: true, message: 'Artículo eliminado del pedido' });
         } catch (err) {

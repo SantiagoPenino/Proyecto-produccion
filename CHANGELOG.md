@@ -7,6 +7,17 @@ Historial de cambios del sistema de producción. Formato basado en [Keep a Chang
 
 ---
 
+## [2026-08-18] — Sin deployar
+
+### Arreglado
+- **Pedidos con falla quedaban clavados en "Esperando Bultos" sin forma de completarse** (casos DTF-15676 y DTF-15734, 1/2 bultos): desde el 23-24/07 el despacho trata a los bultos de las reposiciones internas (`-F`) como material que **no viaja solo** — Crear Remito los oculta y el candado de "salir completo" los exime, porque su mercadería se incorpora al bulto del pedido madre — pero el **conteo de bultos esperados en depósito los seguía sumando**: el pedido esperaba un bulto que por diseño no puede llegar, y quedaba retenido para siempre (solo salía con Forzar). Ahora el conteo excluye las `-F`, igual que el resto del circuito. La contradicción vivía commiteada desde julio y se activó recién con el deploy del 17/08, que subió la versión nueva del controller de logística — por eso las fallas de todos los días nunca habían mostrado este síntoma.
+
+### Arreglado
+- **Martillar "Finalizar Lote" re-corría la finalización entera por cada click** (caso lote 1467: cuatro "finalizar" en 49 segundos porque la pantalla no respondía — cada tanda volvió a mandar a Control órdenes que la operaria ya había completado a mano). Ahora el backend es idempotente: si el lote ya está finalizado (o ya arrancado, o ya pausado), el click repetido no hace nada y responde éxito sin error; dos clicks simultáneos además se serializan a nivel base, así que no pueden correr el flujo dos veces ni con la pantalla colgada. Del lado del navegador, clicks idénticos mientras el request viaja se cuelgan del mismo pedido en vez de disparar otro.
+- **Órdenes de EcoUV llegaban a Depósito con el costo disparatado cuando el pedido mezclaba monedas** (caso EUV-13767: US$ 859,75 por una lona de US$ 40,30; el peor fue EUV-14116, US$ 1.006,20 por US$ 40,38): la impresión se cotiza en dólares pero las terminaciones (ojales, soldadura) salen de la lista en pesos, y dos de los tres caminos que crean el registro de Depósito sumaban las líneas del pedido **en crudo, como si todo fuera dólares** — los $ 840 de terminaciones entraban como 840 dólares. El tercer camino tenía el error espejo: se quedaba **solo con la primera línea** y el resto no se cobraba — y ese no necesitaba monedas mezcladas: también dejó afuera líneas en dólares puros (EUV-14157: US$ 18,00 en vez de 39,98; la matriz de US$ 15,00 de TPU-11167; segundas líneas de DTF/SUB que dejaron el costo directamente en 0). La cotización del pedido y la cuenta corriente siempre estuvieron bien — el número malo vivía en el registro de Depósito, que es el que ve la cajera al cobrar, viaja en el aviso de WhatsApp y va en el QR de la etiqueta. Ahora los tres caminos suman **todas** las líneas de la orden convirtiendo cada una a la moneda del pedido (la misma conversión que ya hacía la pantalla de cotización), la etiqueta usa ese mismo cálculo, y los seis recálculos del total del pedido repartidos por contabilidad, retiros y WMS — que arrastraban la misma suma cruda en forma latente — pasaron a una consulta compartida con conversión. Datos corregidos a mano: **10 órdenes** (2 sobrecobradas, 8 subcobradas; ninguna estaba paga — la cuenta corriente y las facturas ya emitidas siempre tuvieron el importe bien) y los **7 retiros** que tenían cacheado el total viejo. Las órdenes cubiertas por plan de metros quedan a propósito en 0 en depósito (el plan ya las pagó) — no son casos de esto.
+
+---
+
 ## [2026-08-13] — Sin deployar
 
 ### Arreglado

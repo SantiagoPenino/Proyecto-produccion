@@ -960,8 +960,9 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
         if (serviceId === 'tpu' && tpuMode === 'matriz') {
             if (!matrizSel) return addToast('Elegí una matriz de "Mis matrices".', 'error');
             const cant = items[0]?.copies || 0;
-            const minTpu = config.minCopies || 15;
-            if (cant < minTpu) return addToast(`El pedido mínimo para TPU es de ${minTpu} unidades.`, 'error');
+            // El reuso tiene su propio mínimo (más bajo que un trabajo nuevo): la matriz ya existe.
+            const minTpu = config.minCopiesReuso || config.minCopies || 15;
+            if (cant < minTpu) return addToast(`El mínimo para reusar una matriz es de ${minTpu} unidades.`, 'error');
             actions.setLoading(true);
             try {
                 const resp = await apiClient.post('/web-orders/reuse-matriz', {

@@ -10,6 +10,7 @@
 
 const svc    = require('../services/contabilidadService');
 const logger = require('../utils/logger');
+const { SQL_RECALC_MONTO_TOTAL } = require('../utils/montoTotalPedido');
 const { getPool, sql } = require('../config/db');
 const { crearDocumentoContable } = require('../services/contabilidadCore');
 const { aplicarRecargoUrgenciaRollo } = require('../services/urgenciaDescuentoRolloService');
@@ -1366,11 +1367,7 @@ exports.guardarPrecios = async (req, res) => {
       // están incluidas dentro del subtotal de la línea de PRO.
       await mk()
         .input('PID', sql.Int, PedidoCobranzaID)
-        .query(`
-          UPDATE dbo.PedidosCobranza
-          SET MontoTotal = (SELECT ISNULL(SUM(Subtotal),0) FROM dbo.PedidosCobranzaDetalle WHERE PedidoCobranzaID = @PID AND ISNULL(EsHermanaConsolidada,0) = 0)
-          WHERE ID = @PID
-        `);
+        .query(SQL_RECALC_MONTO_TOTAL);
 
       // Actualizar MovimientosCuenta ORDEN (ERP o WMS/depósito)
       const cicloFilter = (cicloNum != null)
@@ -1701,7 +1698,7 @@ exports.guardarPreciosCiclo = async (req, res) => {
       // sumar las líneas hermanas EMB/DF/TPU/EST, ya incluidas en el subtotal de PRO).
       await mk()
         .input('PID', sql.Int, PedidoCobranzaID)
-        .query(`UPDATE dbo.PedidosCobranza SET MontoTotal = (SELECT ISNULL(SUM(Subtotal),0) FROM dbo.PedidosCobranzaDetalle WHERE PedidoCobranzaID=@PID AND ISNULL(EsHermanaConsolidada,0) = 0) WHERE ID=@PID`);
+        .query(SQL_RECALC_MONTO_TOTAL);
 
       // Actualizar la ORDEN del ciclo (ERP o depósito/WMS) al nuevo total del pedido
       await mk()

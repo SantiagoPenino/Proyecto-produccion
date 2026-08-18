@@ -28,6 +28,10 @@ async function ensureTiendaSchema(pool) {
             PagoOnline       BIT           NOT NULL CONSTRAINT DF_Tienda_PagoOnline DEFAULT 0,
             FechaAlta        DATETIME      NOT NULL CONSTRAINT DF_Tienda_FechaAlta DEFAULT GETDATE()
         );
+        -- [IMÁGENES POR COLOR] NULL = principal/galería; con valor ("ROJO"), la ficha de la
+        -- tienda muestra esa foto cuando el nombre de la variante elegida contiene ese texto.
+        IF COL_LENGTH('dbo.Articulos_Imagenes', 'color') IS NULL
+            ALTER TABLE dbo.Articulos_Imagenes ADD color VARCHAR(50) NULL;
     `);
     schemaListo = true;
 }
@@ -99,9 +103,10 @@ exports.getTiendaCatalogo = async (req, res) => {
                 INNER JOIN dbo.TiendaProductos tp ON tp.ProIdProducto = v.Idproid AND tp.Publicado = 1
             `),
             // Todas las imágenes ordenadas: orden=1 (la miniatura interna) sirve de portada,
-            // orden>1 es la galería que carga el admin de la tienda (F4).
+            // orden>1 es la galería que carga el admin de la tienda (F4), y las de color
+            // (color NOT NULL, orden>=101) van aparte en fotosColor.
             pool.request().query(`
-                SELECT img.Idproid, img.url_imagen, img.orden
+                SELECT img.Idproid, img.url_imagen, img.orden, img.color
                 FROM dbo.Articulos_Imagenes img
                 INNER JOIN dbo.TiendaProductos tp ON tp.ProIdProducto = img.Idproid AND tp.Publicado = 1
                 ORDER BY img.Idproid, img.orden
@@ -121,7 +126,15 @@ exports.getTiendaCatalogo = async (req, res) => {
         const varsPorProd = {};
         vars.recordset.forEach(v => { (varsPorProd[v.Idproid] = varsPorProd[v.Idproid] || []).push(v); });
         const fotosPorProd = {};
-        fotos.recordset.forEach(f => { (fotosPorProd[f.Idproid] = fotosPorProd[f.Idproid] || []).push(f.url_imagen); });
+        const fotosColorPorProd = {};
+        fotos.recordset.forEach(f => {
+            if (f.color) {
+                (fotosColorPorProd[f.Idproid] = fotosColorPorProd[f.Idproid] || [])
+                    .push({ color: String(f.color).trim().toUpperCase(), url: f.url_imagen });
+            } else {
+                (fotosPorProd[f.Idproid] = fotosPorProd[f.Idproid] || []).push(f.url_imagen);
+            }
+        });
         const combosPorProd = {};
         combos.recordset.forEach(c => { (combosPorProd[c.ProIdProducto] = combosPorProd[c.ProIdProducto] || []).push(c); });
 
@@ -165,6 +178,7 @@ exports.getTiendaCatalogo = async (req, res) => {
                 precio: precioBase,
                 moneda: monedaBase,
                 fotos: fotosPorProd[p.ProIdProducto] || [],
+                fotosColor: fotosColorPorProd[p.ProIdProducto] || [],
                 variantes,
                 esCombo: !!comps,
                 // Combos: stock armable (min de componentes); comunes: suma de variantes.

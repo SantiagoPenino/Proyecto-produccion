@@ -393,8 +393,8 @@ const TIPO_MOV_TELA = {
 };
 const getTipoTela = (t) => TIPO_MOV_TELA[t] || { label: t || '—', color: 'text-slate-500 bg-slate-50 border-slate-200', sign: '' };
 
-// Movimientos que NO son consumo real del cliente (no se cuentan como metros gastados)
-const NO_CONSUMO = ['INGRESO', 'CONFIRMACION_MEDIDA', 'LIBERACION_RESERVA'];
+// (Existía una lista NO_CONSUMO para excluir tipos de movimiento del consumo. Se eliminó:
+// clasificar por tipo era el origen del error — el consumo ahora se deriva del saldo.)
 
 function ModalConsumoTela({ CliIdCliente, tela, onClose }) {
   const [movs, setMovs]       = useState([]);
@@ -436,8 +436,18 @@ function ModalConsumoTela({ CliIdCliente, tela, onClose }) {
       ...b,
       ingresado: b.movimientos.filter(m => m.TipoMovimiento === 'INGRESO')
         .reduce((s, m) => s + Math.abs(Number(m.Cantidad || 0)), 0),
-      consumido: b.movimientos.filter(m => !NO_CONSUMO.includes(m.TipoMovimiento) && Number(m.Cantidad) < 0)
-        .reduce((s, m) => s + Math.abs(Number(m.Cantidad || 0)), 0),
+      // Consumo NETO = ingresado − saldo. Sumar solo los movimientos negativos daba números
+      // imposibles (BOB-73: −14 m de una bobina de 10): contaba devoluciones al cliente y
+      // ajustes de saneo como consumo, e ignoraba los créditos (devolución por cancelación),
+      // así que los mismos metros se descontaban dos veces.
+      // Un bulto AGOTADO se cuenta entero: su remanente es merma no usable y no figura como
+      // disponible (misma regla que MetrosConsumidos en telaClienteController).
+      consumido: (() => {
+        const ing = b.movimientos.filter(m => m.TipoMovimiento === 'INGRESO')
+          .reduce((s, m) => s + Math.abs(Number(m.Cantidad || 0)), 0);
+        if (String(b.estado || '').toLowerCase() === 'agotado') return ing;
+        return Math.max(0, ing - Number(b.saldo || 0));
+      })(),
     }));
   }, [movs, tela.TipoTela]);
 

@@ -9,6 +9,15 @@ import { MARGEN_TELA_M } from '../utils/medirTizada';
 // hace medirTizada leyendo el contenido; esto solo filtra el explorador de archivos.
 const FORMATOS_TIZADA = '.dxf,.plt,.hpgl,.ai';
 
+// Cada tizada es una PIEZA suelta o una PRENDA completa; si es prenda, hay que decir el talle.
+// Producción lo necesita para saber qué está cortando: 20 piezas no es lo mismo que 20 prendas.
+const TIPOS_CORTE = [
+    { id: 'PIEZA', label: 'Pieza' },
+    { id: 'PRENDA', label: 'Prenda' },
+];
+const TALLES_PRENDA = ['0', '1', '2', '3', '4', '5', '6', '8', '10', '12', '14', '16',
+    'XS', 'S', 'M', 'L', 'XL', 'XXL', '3XL', '4XL', '5XL', '6XL'];
+
 // =====================================================================
 // CORTE STANDALONE (/portal/order/corte) — bloque a ancho completo.
 // Cada tizada es una tarjeta (como los archivos de sublimación) donde el
@@ -187,27 +196,86 @@ const CorteStandalone = ({ tizadaFiles, setTizadaFiles, handleMultipleSpecialize
                                             <p className="text-[10px] font-black uppercase text-zinc-400 tracking-widest mb-3 flex items-center gap-1.5">
                                                 <Scissors size={12} className="text-brand-gold" /> Configuración de Corte
                                             </p>
-                                            <div className="flex gap-5 items-start">
-                                                <div>
-                                                    <label className="block text-[9px] uppercase font-black text-zinc-500 mb-1 tracking-widest">Veces a cortar</label>
+                                            {/* En mobile va APILADO: con el input al costado, la columna de
+                                                datos quedaba de ~180px y los cuatro chips caían uno por
+                                                línea. Desde `sm` vuelve a la fila de siempre. */}
+                                            <div className="flex flex-col sm:flex-row sm:gap-5 sm:items-start gap-3">
+                                                <div className="flex items-center gap-3 sm:block">
+                                                    <label className="text-[9px] uppercase font-black text-zinc-500 tracking-widest sm:block sm:mb-1 shrink-0">Veces a cortar</label>
                                                     <input
                                                         type="number" min="1"
                                                         value={tf.copias || 1}
                                                         onChange={(e) => setTizadaFiles(tizadaFiles.map((f, idx) => idx === i ? Object.assign(f, { copias: Math.max(1, parseInt(e.target.value) || 1) }) : f))}
                                                         className="w-20 bg-zinc-800 border-2 border-zinc-700/50 rounded-xl p-2.5 text-sm text-zinc-100 font-bold focus:border-brand-cyan outline-none"
                                                     />
+                                                    <span className="text-[11px] font-bold text-zinc-300 sm:hidden">
+                                                        {(tf.copias || 1) === 1 ? 'vez' : 'veces'}
+                                                    </span>
                                                 </div>
                                                 <div className="flex-1 min-w-0">
-                                                    <p className="text-[11px] font-bold text-zinc-300">Se corta la misma tizada {tf.copias || 1} {(tf.copias || 1) === 1 ? 'vez' : 'veces'}</p>
+                                                    <p className="hidden sm:block text-[11px] font-bold text-zinc-300">Se corta la misma tizada {tf.copias || 1} {(tf.copias || 1) === 1 ? 'vez' : 'veces'}</p>
                                                     {tf.medicion && (
-                                                        <div className="mt-2 flex flex-wrap gap-1.5">
-                                                            <span className="text-[10px] font-mono bg-zinc-800/80 border border-zinc-700/50 rounded px-2 py-1 text-zinc-300">{tf.medicion.piezas * (tf.copias || 1)} piezas</span>
-                                                            <span className="text-[10px] font-mono bg-zinc-800/80 border border-zinc-700/50 rounded px-2 py-1 text-zinc-300">{(tf.medicion.metrosCorte * (tf.copias || 1)).toFixed(2)}m de corte</span>
-                                                            <span className="text-[10px] font-mono bg-zinc-800/80 border border-zinc-700/50 rounded px-2 py-1 text-amber-300/90">{(tf.medicion.largoTelaM * (tf.copias || 1)).toFixed(2)}m de tela</span>
-                                                            <span className="text-[10px] font-mono bg-zinc-800/80 border border-zinc-700/50 rounded px-2 py-1 text-zinc-400">ancho {tf.medicion.anchoTelaM.toFixed(2)}m</span>
+                                                        <div className="sm:mt-2 grid grid-cols-2 sm:flex sm:flex-wrap gap-1.5">
+                                                            <span className="text-[10px] font-mono bg-zinc-800/80 border border-zinc-700/50 rounded px-2 py-1 text-zinc-300 text-center sm:text-left">{tf.medicion.piezas * (tf.copias || 1)} piezas</span>
+                                                            <span className="text-[10px] font-mono bg-zinc-800/80 border border-zinc-700/50 rounded px-2 py-1 text-zinc-300 text-center sm:text-left">{(tf.medicion.metrosCorte * (tf.copias || 1)).toFixed(2)}m de corte</span>
+                                                            <span className="text-[10px] font-mono bg-zinc-800/80 border border-zinc-700/50 rounded px-2 py-1 text-amber-300/90 text-center sm:text-left">{(tf.medicion.largoTelaM * (tf.copias || 1)).toFixed(2)}m de tela</span>
+                                                            <span className="text-[10px] font-mono bg-zinc-800/80 border border-zinc-700/50 rounded px-2 py-1 text-zinc-400 text-center sm:text-left">ancho {tf.medicion.anchoTelaM.toFixed(2)}m</span>
                                                         </div>
                                                     )}
                                                 </div>
+                                            </div>
+
+                                            {/* Pieza o prenda (obligatorio). Sin default a propósito: si la
+                                                tarjeta naciera en "Pieza", el cliente lo dejaría así sin mirar
+                                                y producción recibiría prendas contadas como piezas sueltas. */}
+                                            <div className="mt-4 pt-3 border-t border-zinc-700/40">
+                                                <label className="block text-[9px] uppercase font-black text-zinc-500 mb-1.5 tracking-widest">
+                                                    ¿Qué se corta? <span className="text-red-400">*</span>
+                                                </label>
+                                                <div className="grid grid-cols-2 sm:flex gap-2">
+                                                    {TIPOS_CORTE.map(t => (
+                                                        <button
+                                                            key={t.id}
+                                                            type="button"
+                                                            onClick={() => setTizadaFiles(tizadaFiles.map((f, idx) => idx === i
+                                                                ? Object.assign(f, { tipoCorte: t.id, ...(t.id === 'PIEZA' ? { talle: null } : {}) })
+                                                                : f))}
+                                                            className={`px-4 py-2.5 sm:py-2 rounded-xl text-[11px] font-black uppercase tracking-wide border-2 transition-colors ${tf.tipoCorte === t.id
+                                                                ? 'border-brand-cyan bg-brand-cyan/10 text-brand-cyan'
+                                                                : 'border-zinc-700/50 bg-zinc-800 text-zinc-400 hover:border-zinc-600'}`}
+                                                        >
+                                                            {t.label}
+                                                        </button>
+                                                    ))}
+                                                </div>
+
+                                                {tf.tipoCorte === 'PRENDA' && (
+                                                    <div className="mt-3">
+                                                        <label className="block text-[9px] uppercase font-black text-zinc-500 mb-1.5 tracking-widest">
+                                                            Talle <span className="text-red-400">*</span>
+                                                        </label>
+                                                        <CustomSelect
+                                                            name={`talle-${i}`}
+                                                            aria-label="Talle de la prenda"
+                                                            value={tf.talle || ''}
+                                                            onChange={(v) => setTizadaFiles(tizadaFiles.map((f, idx) => idx === i ? Object.assign(f, { talle: v }) : f))}
+                                                            options={TALLES_PRENDA.map(t => ({ value: t, label: t }))}
+                                                            placeholder="Elegí el talle..."
+                                                            variant="black"
+                                                        />
+                                                    </div>
+                                                )}
+
+                                                {!tf.tipoCorte && (
+                                                    <p className="mt-2 text-[10px] font-bold text-amber-400/90 flex items-center gap-1.5">
+                                                        <AlertTriangle size={12} className="shrink-0" /> Elegí si esta tizada es una pieza o una prenda.
+                                                    </p>
+                                                )}
+                                                {tf.tipoCorte === 'PRENDA' && !tf.talle && (
+                                                    <p className="mt-2 text-[10px] font-bold text-amber-400/90 flex items-center gap-1.5">
+                                                        <AlertTriangle size={12} className="shrink-0" /> Falta el talle de la prenda.
+                                                    </p>
+                                                )}
                                             </div>
 
                                             {noEntraAncho && (

@@ -2720,6 +2720,10 @@ exports.getMisMatrices = async (req, res) => {
 // usa para saber si la matriz tiene arte fabricable o solo el boceto.
 const CAPAS_ARTE_TPU = 5;
 
+// Cantidad mínima para REUSAR una matriz (el trabajo nuevo pide 15, ver services.js minCopies).
+// Espeja `minCopiesReuso` del portal; acá es la validación que de verdad manda.
+const MIN_REUSO_MATRIZ_TPU = 5;
+
 // TPU — Reusar una matriz: crea una orden TPU nueva copiando el arte de una matriz finalizada del
 // cliente, entra DIRECTO a producción (sin aprobación) y NO cobra la matriz (156), solo la producción.
 exports.reuseMatrizTPU = async (req, res) => {
@@ -2732,6 +2736,12 @@ exports.reuseMatrizTPU = async (req, res) => {
     const medidaTpu = String(req.body?.medida || '').trim();
     if (!codCliente) return res.status(401).json({ error: 'No autenticado.' });
     if (!matrizOrdenId || cantidad < 1) return res.status(400).json({ error: 'Faltan datos (matriz y cantidad).' });
+    // Mínimo del REUSO: 5 unidades (el trabajo nuevo pide 15 — acá la matriz ya está hecha).
+    // Se valida también acá y no solo en el form: la regla vivía únicamente en el navegador,
+    // así que un pedido armado a mano entraba con 1 unidad. Mismo agujero que material/variante.
+    if (cantidad < MIN_REUSO_MATRIZ_TPU) {
+        return res.status(400).json({ error: `El mínimo para reusar una matriz es de ${MIN_REUSO_MATRIZ_TPU} unidades.` });
+    }
 
     const pool = await getPool();
     let transaction;

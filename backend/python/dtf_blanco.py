@@ -5,7 +5,7 @@
 "DTF Photoprint V5_25.3" que hoy corre el operario.
 
 Toma el arte del cliente (PDF de 1 pagina o PNG, fondo transparente) y devuelve
-UN PDF: el arte original intacto + un canal de tinta plana (Separation "Spot_1")
+UN PDF: el arte original intacto + un canal de tinta plana (Separation "Spot 1")
 con la plancha de blanco, en sobreimpresion, listo para PhotoPrint.
 
 Reglas (decodificadas del .atn + spec del usuario, 14/08/2026):
@@ -13,7 +13,7 @@ Reglas (decodificadas del .atn + spec del usuario, 14/08/2026):
   - Blancos del disenio (RGB >= tol, default 245): blanco al 100% SIN choke.
   - Semitransparencias: rampa desde 25% de opacidad (debajo no hay tinta;
     de 25% a 100% escala lineal 0->100). MEJORA sobre la accion (que era lineal desde 0).
-  - Spot "Spot_1" con alternate CMYK (0,0,0,0) — fix PhotoPrint: un alternate de
+  - Spot "Spot 1" con alternate CMYK (0,0,0,0) — fix PhotoPrint: un alternate de
     preview distinto de 0 lo aplicaba como valor real de tinta.
 
 Motor adaptado de suite_user/dtf_white.py + pdf_merge_white.py (misma logica,
@@ -22,7 +22,7 @@ parametros pisados con los valores confirmados).
 Uso:
     python dtf_blanco.py entrada.pdf salida.pdf [--preview salida.png]
         [--dpi 300] [--choke-px 2] [--white-pct 100] [--ramp 25] [--tol 245]
-        [--spot Spot_1]
+        [--spot "Spot 1"]
 
 Salida (ultima linea, para el caller de Node): JSON {"ok":true,...} o {"ok":false,"error":...}
 """
@@ -166,7 +166,7 @@ def plancha_blanco(rgba, dpi, choke_px300=2.0, white_pct=100.0, tol=245, ramp_pc
 
 # ── Incrustado del spot (fiel a suite_user/pdf_merge_white.py) ───────────────
 
-def incrustar_spot(pdf_bytes, plancha_L, spot="Spot_1"):
+def incrustar_spot(pdf_bytes, plancha_L, spot="Spot 1"):
     import pikepdf
     from pikepdf import Name, Dictionary, Array
 
@@ -187,7 +187,9 @@ def incrustar_spot(pdf_bytes, plancha_L, spot="Spot_1"):
     fn[Name.C1] = Array([0, 0, 0, 0])
     fn[Name.N] = 1
     fn[Name.Range] = Array([0, 1, 0, 1, 0, 1, 0, 1])
-    sep = Array([Name.Separation, Name("/" + spot), Name.DeviceCMYK, fn])
+    # Indirecto: el MISMO objeto Separation se referencia desde la imagen y desde los
+    # recursos de pagina (ver abajo) — una sola definicion de la tinta, dos usos.
+    sep = pdf.make_indirect(Array([Name.Separation, Name("/" + spot), Name.DeviceCMYK, fn]))
 
     img = pdf.make_stream(data)
     img[Name.Type] = Name.XObject
@@ -230,11 +232,31 @@ def incrustar_spot(pdf_bytes, plancha_L, spot="Spot_1"):
         gname = f"GSWhiteOP{j}"
     gss[Name("/" + gname)] = gs
 
+    # La tinta tambien como COLORSPACE DE PAGINA + un objeto VECTORIAL que la usa.
+    # Motivo (14/08): PhotoPrint no listaba el canal cuando la Separation vivia solo dentro
+    # de la imagen — su escaner de tintas enumera las usadas por objetos del contenido
+    # (como hace Illustrator al repintar con tintas planas). El marcador es un rectangulo
+    # de 0.05 pt (17 micrones) en la esquina de la hoja: invisible e inimprimible, pero
+    # suficiente para que la tinta figure en la lista de canales.
+    cspaces = res.get(Name.ColorSpace, None)
+    if cspaces is None:
+        cspaces = Dictionary()
+        res[Name.ColorSpace] = cspaces
+    csname = "CSWhite"
+    k = 0
+    while Name("/" + csname) in cspaces.keys():
+        k += 1
+        csname = f"CSWhite{k}"
+    cspaces[Name("/" + csname)] = sep
+
     mb = page.mediabox
     x0, y0 = float(mb[0]), float(mb[1])
     W = float(mb[2]) - x0
     H = float(mb[3]) - y0
-    dibujo = f"q /{gname} gs {W:.4f} 0 0 {H:.4f} {x0:.4f} {y0:.4f} cm /{xname} Do Q\n".encode()
+    dibujo = (
+        f"q /{gname} gs /{csname} cs 1 scn {x0:.4f} {y0:.4f} 0.05 0.05 re f Q\n"
+        f"q /{gname} gs {W:.4f} 0 0 {H:.4f} {x0:.4f} {y0:.4f} cm /{xname} Do Q\n"
+    ).encode()
 
     nuevo = pdf.make_stream(dibujo)
     import pikepdf as _pk
@@ -253,7 +275,7 @@ def incrustar_spot(pdf_bytes, plancha_L, spot="Spot_1"):
 # ── CLI ──────────────────────────────────────────────────────────────────────
 
 def main():
-    ap = argparse.ArgumentParser(description="Capa de tinta blanca DTF (PDF con Spot_1)")
+    ap = argparse.ArgumentParser(description="Capa de tinta blanca DTF (PDF con tinta 'Spot 1')")
     ap.add_argument("entrada", help="arte del cliente: PDF de 1 pagina o PNG (fondo transparente)")
     ap.add_argument("salida", help="PDF resultante (arte + spot de blanco)")
     ap.add_argument("--preview", help="PNG opcional con la plancha de blanco (para revision)")
@@ -262,7 +284,7 @@ def main():
     ap.add_argument("--white-pct", type=float, default=100.0, help="blanco bajo el color (default 100)")
     ap.add_argument("--ramp", type=float, default=25.0, help="opacidad donde arranca la tinta (default 25)")
     ap.add_argument("--tol", type=int, default=245, help="umbral RGB de blanco del disenio (default 245)")
-    ap.add_argument("--spot", default="Spot_1")
+    ap.add_argument("--spot", default="Spot 1")
     args = ap.parse_args()
 
     try:

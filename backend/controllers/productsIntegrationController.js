@@ -348,16 +348,35 @@ const updateWmsMasterId = async (req, res) => {
 };
 
 // 8. Upload Article Image
+// [IMÁGENES POR COLOR] Articulos_Imagenes.color: NULL = imagen principal/galería (lo de
+// siempre); con valor ("ROJO") es la foto de ese color y la ficha de la tienda la muestra
+// cuando el nombre de la variante elegida contiene ese texto ("Short 14 ROJO" ⊃ "ROJO").
+// La columna se auto-crea acá y en ensureTiendaSchema porque prod no corre migraciones.
+let imagenesColorListo = false;
+async function ensureImagenesColor(pool) {
+    if (imagenesColorListo) return;
+    await pool.request().query(`
+        IF COL_LENGTH('dbo.Articulos_Imagenes', 'color') IS NULL
+            ALTER TABLE dbo.Articulos_Imagenes ADD color VARCHAR(50) NULL;
+    `);
+    imagenesColorListo = true;
+}
+
 const uploadArticleImage = async (req, res) => {
     const { id } = req.params;
     if (!id) return res.status(400).json({ error: 'Falta ID de articulo' });
     if (!req.file) return res.status(400).json({ error: 'No se subió ninguna imagen' });
     try {
         const pool = await getPool();
+        await ensureImagenesColor(pool);
+        // Campo de texto opcional del mismo multipart (multer lo deja en req.body).
+        const color = String(req.body?.color || '').trim().toUpperCase() || null;
         // BUG histórico: multer guarda en uploads/articulos/ pero la URL se registraba sin el
         // subdirectorio (/uploads/<archivo>) → 404 en todas las pantallas. Además, normalizamos
-        // a un CUADRADO 512×512 (fit contain, fondo transparente): es lo que consumen la tienda
-        // del portal y el catálogo interno, y evita subir fotos de 4000px que pesan de más.
+        // a un CUADRADO 512×512 WEBP quality 80 con FONDO BLANCO (flatten: también detrás de
+        // pngs con transparencia, no solo el letterbox): es lo que consumen la tienda del portal
+        // y el catálogo interno; webp pesa una fracción del png con el que se venía guardando
+        // (240KB → 8KB medido con fotos reales) y evita subir fotos de 4000px que pesan de más.
         // multer es diskStorage: se lee de req.file.path (no hay buffer), y sharp no puede
         // escribir sobre el mismo archivo que lee → se escribe uno nuevo y se borra el original.
         const fs = require('fs');
@@ -365,11 +384,12 @@ const uploadArticleImage = async (req, res) => {
         let finalFilename = req.file.filename;
         try {
             const sharp = require('sharp');
-            const nombre512 = req.file.filename.replace(/\.[^.]*$/, '') + '-512.png';
+            const nombre512 = req.file.filename.replace(/\.[^.]*$/, '') + '-512.webp';
             const destino = path.join(path.dirname(req.file.path), nombre512);
             await sharp(req.file.path)
-                .resize(512, 512, { fit: 'contain', background: { r: 0, g: 0, b: 0, alpha: 0 } })
-                .png()
+                .resize(512, 512, { fit: 'contain', background: '#ffffff' })
+                .flatten({ background: '#ffffff' })
+                .webp({ quality: 80 })
                 .toFile(destino);
             fs.unlink(req.file.path, () => {});
             finalFilename = nombre512;
@@ -378,23 +398,76 @@ const uploadArticleImage = async (req, res) => {
             logger.warn(`[uploadArticleImage] sin resize 512: ${eImg.message}`);
         }
         const imageUrl = `/uploads/articulos/${finalFilename}`;
+        // Upsert por (artículo, color) con color null-safe: subir la foto de un color no pisa
+        // la principal ni la de otro color. Las de color van con orden >= 101 para no mezclarse
+        // con la galería (orden 1..N) que ordena la portada de la tienda.
         await pool.request()
             .input('Idproid', sql.Int, parseInt(id))
             .input('UrlImagen', sql.VarChar(500), imageUrl)
+            .input('Color', sql.VarChar(50), color)
             .query(`
-                IF EXISTS (SELECT 1 FROM Articulos_Imagenes WHERE Idproid = @Idproid)
+                IF EXISTS (SELECT 1 FROM Articulos_Imagenes
+                           WHERE Idproid = @Idproid AND ((@Color IS NULL AND color IS NULL) OR color = @Color))
                 BEGIN
-                    UPDATE Articulos_Imagenes SET url_imagen = @UrlImagen WHERE Idproid = @Idproid
+                    UPDATE Articulos_Imagenes SET url_imagen = @UrlImagen
+                    WHERE Idproid = @Idproid AND ((@Color IS NULL AND color IS NULL) OR color = @Color)
                 END
                 ELSE
                 BEGIN
-                    INSERT INTO Articulos_Imagenes (Idproid, url_imagen, es_generica, orden)
-                    VALUES (@Idproid, @UrlImagen, 0, 1)
+                    INSERT INTO Articulos_Imagenes (Idproid, url_imagen, es_generica, orden, color)
+                    VALUES (@Idproid, @UrlImagen, 0,
+                            CASE WHEN @Color IS NULL THEN 1
+                                 ELSE ISNULL((SELECT MAX(orden) FROM Articulos_Imagenes
+                                              WHERE Idproid = @Idproid AND orden >= 101), 100) + 1 END,
+                            @Color)
                 END
             `);
         res.json({ success: true, imageUrl, message: 'Imagen guardada correctamente' });
     } catch (e) {
         logger.error("Error uploadArticleImage:", e);
+        res.status(500).json({ error: e.message });
+    }
+};
+
+// 8b. Imágenes de un artículo (principal + por color) — las usa el modal Editar Artículo.
+const getArticleImages = async (req, res) => {
+    const { id } = req.params;
+    if (!id) return res.status(400).json({ error: 'Falta ID de articulo' });
+    try {
+        const pool = await getPool();
+        await ensureImagenesColor(pool);
+        const result = await pool.request()
+            .input('Idproid', sql.Int, parseInt(id))
+            .query(`
+                SELECT Idproid, url_imagen, orden, color
+                FROM Articulos_Imagenes
+                WHERE Idproid = @Idproid
+                ORDER BY orden
+            `);
+        res.json({ success: true, data: result.recordset });
+    } catch (e) {
+        logger.error('Error getArticleImages:', e);
+        res.status(500).json({ error: e.message });
+    }
+};
+
+// 8c. Borrar la imagen de UN color (la principal no se borra por acá: se reemplaza subiendo
+// otra, igual que siempre). Borra solo la fila; el archivo físico queda huérfano en uploads,
+// mismo comportamiento que el reemplazo de la principal.
+const deleteArticleImageColor = async (req, res) => {
+    const { id } = req.params;
+    const color = String(req.query.color || '').trim().toUpperCase();
+    if (!id || !color) return res.status(400).json({ error: 'Falta ID de articulo o color' });
+    try {
+        const pool = await getPool();
+        await ensureImagenesColor(pool);
+        await pool.request()
+            .input('Idproid', sql.Int, parseInt(id))
+            .input('Color', sql.VarChar(50), color)
+            .query('DELETE FROM Articulos_Imagenes WHERE Idproid = @Idproid AND color = @Color');
+        res.json({ success: true });
+    } catch (e) {
+        logger.error('Error deleteArticleImageColor:', e);
         res.status(500).json({ error: e.message });
     }
 };
@@ -552,6 +625,8 @@ module.exports = {
     deleteLocalProduct,
     updateWmsMasterId,
     uploadArticleImage,
+    getArticleImages,
+    deleteArticleImageColor,
     getWmsMasters,
     getWmsVariants,
     importWmsMaster,

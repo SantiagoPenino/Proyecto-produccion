@@ -1,6 +1,7 @@
 const { sql, getPool } = require('../config/db');
 const logger = require('../utils/logger');
 const ERPSyncService = require('./erpSyncService');
+const { totalesCobranzaDeOrden } = require('../utils/montoTotalPedido');
 
 class LabelGenerationService {
 
@@ -26,14 +27,15 @@ class LabelGenerationService {
 
             // --- VALIDACIÓN DE MAGNITUD DESDE PEDIDOSCOBRANZADETALLE ---
             // A solicitud del usuario, la validación estricta debe basarse en la cotización guardada en el ERP Sync.
-            const pcdRes = await pool.request()
-                .input('OID', sql.Int, ordenId)
-                .query(`SELECT SUM(Cantidad) as TotalCantidad, SUM(Subtotal) as TotalSubtotal, MIN(ProIdProducto) as ProIdProducto FROM PedidosCobranzaDetalle WHERE OrdenID = @OID`);
+            // Las líneas se suman CONVERTIDAS a la moneda del pedido: con impresión en USD y
+            // terminaciones en UYU, sumar en crudo mandaba a la etiqueta el importe inflado
+            // ~40x (EUV-13767: 859.75 en vez de 40.30).
+            const pcd = await totalesCobranzaDeOrden(pool, ordenId);
 
-            const magnitudValor = parseFloat(pcdRes.recordset[0]?.TotalCantidad) || 0;
-            // Importe y producto de ESTA orden (su línea de detalle), para armar el QR por orden
-            const subtotalOrden = parseFloat(pcdRes.recordset[0]?.TotalSubtotal) || 0;
-            const prodOrdenId   = pcdRes.recordset[0]?.ProIdProducto || null;
+            const magnitudValor = parseFloat(pcd.Cant) || 0;
+            // Importe y producto de ESTA orden (sus líneas de detalle), para armar el QR por orden
+            const subtotalOrden = parseFloat(pcd.Imp) || 0;
+            const prodOrdenId   = pcd.Prod || null;
             
             const codOrdLocal = (o.CodigoOrden || '').trim().toUpperCase();
             const prioridadLocal = (o.Prioridad || '').trim().toUpperCase();

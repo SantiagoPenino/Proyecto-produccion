@@ -20,6 +20,7 @@
 const { getPool, sql } = require('../config/db');
 const logger           = require('../utils/logger');
 const { aplicarRecargoUrgenciaRollo } = require('./urgenciaDescuentoRolloService');
+const { SQL_RECALC_MONTO_TOTAL } = require('../utils/montoTotalPedido');
 
 // ============================================================
 // SECCIÓN 1: GESTIÓN DE CUENTAS
@@ -2544,11 +2545,7 @@ async function cerrarCicloCompleto({
           
         // 3. Recalcular MontoTotal de PedidosCobranza ("Comprar y personalizar": no sumar
         // las líneas hermanas EMB/DF/TPU/EST, ya incluidas en el subtotal de PRO).
-        await pool.request().input('PID', sql.Int, PedidoCobranzaID).query(`
-          UPDATE dbo.PedidosCobranza
-          SET MontoTotal = (SELECT ISNULL(SUM(Subtotal),0) FROM dbo.PedidosCobranzaDetalle WHERE PedidoCobranzaID = @PID AND ISNULL(EsHermanaConsolidada,0) = 0)
-          WHERE ID = @PID
-        `);
+        await pool.request().input('PID', sql.Int, PedidoCobranzaID).query(SQL_RECALC_MONTO_TOTAL);
         
         // 4. Actualizar el MovImporte en MovimientosCuenta asociado a esta Orden.
         // OJO: PedidosCobranza.NoDocERP guarda el número SIN prefijo ('9669') y

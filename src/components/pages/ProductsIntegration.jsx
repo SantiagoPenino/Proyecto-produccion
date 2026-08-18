@@ -24,6 +24,47 @@ const EditModal = ({ article, allArticles, onClose, onSaved }) => {
     const [wmsVariants, setWmsVariants] = useState([]);
     const fileInputRef = useRef(null);
 
+    // [IMÁGENES POR COLOR] Fotos extra etiquetadas con un color: la ficha de la tienda muestra
+    // la del color contenido en el nombre de la variante elegida ("Short 14 ROJO" ⊃ "ROJO").
+    // Se suben/borran al momento, sin esperar el Guardar del form (el endpoint es el mismo
+    // upload-image con el campo 'color'; convierte a 512×512 webp igual que la principal).
+    const [colorImages, setColorImages] = useState([]);
+    const [colorNuevo, setColorNuevo] = useState('');
+    const colorFileRef = useRef(null);
+    const cargarColorImages = () => {
+        if (!article?.ProIdProducto) return;
+        api.get(`/products-integration/article-images/${article.ProIdProducto}`)
+            .then(res => setColorImages((res.data?.data || []).filter(i => i.color)))
+            .catch(() => {});
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    useEffect(cargarColorImages, []);
+    const subirImagenColor = async (file) => {
+        const color = colorNuevo.trim().toUpperCase();
+        if (!color) return toast.error('Escribí el color primero (ej: ROJO)');
+        const fd = new FormData();
+        fd.append('color', color);
+        fd.append('image', file);
+        try {
+            await api.post(`/products-integration/upload-image/${article.ProIdProducto}`, fd, {
+                headers: { 'Content-Type': 'multipart/form-data' }
+            });
+            toast.success(`Imagen de ${color} subida`);
+            setColorNuevo('');
+            cargarColorImages();
+        } catch (err) {
+            toast.error('Error: ' + (err.response?.data?.error || err.message));
+        }
+    };
+    const borrarImagenColor = async (color) => {
+        try {
+            await api.delete(`/products-integration/article-image/${article.ProIdProducto}?color=${encodeURIComponent(color)}`);
+            cargarColorImages();
+        } catch (err) {
+            toast.error('Error: ' + (err.response?.data?.error || err.message));
+        }
+    };
+
     // Producto terminado (según StockArt.TipoStock del CodStock del artículo).
     // Las terminaciones POR MATERIAL ya no se editan acá: única puerta en
     // Configuración ECOUV → Terminaciones (pedido del usuario, vista simple).
@@ -577,6 +618,41 @@ const EditModal = ({ article, allArticles, onClose, onSaved }) => {
                                 </div>
                                 <input type="file" ref={fileInputRef} onChange={handleImageChange} accept="image/*" className="hidden" />
                             </div>
+
+                            {/* Imágenes por color (solo edición: necesita el ProIdProducto) */}
+                            {!isNew && (
+                                <div className="mt-4">
+                                    <label className={labelCls}>Imágenes por color</label>
+                                    <p className="text-[10px] text-slate-400 mb-2 leading-tight">
+                                        La tienda muestra la foto del color que aparezca en el nombre de la variante elegida
+                                        (ej: la variante "Short 14 ROJO" usa la foto ROJO).
+                                    </p>
+                                    {colorImages.length > 0 && (
+                                        <div className="flex flex-wrap gap-2 mb-2">
+                                            {colorImages.map(ci => (
+                                                <div key={ci.color} className="flex items-center gap-2 border border-slate-200 rounded-xl p-1.5 pr-2 bg-white">
+                                                    <img src={ci.url_imagen} alt={ci.color} className="w-10 h-10 rounded-lg object-cover bg-slate-100" />
+                                                    <span className="text-[11px] font-bold text-slate-600 uppercase">{ci.color}</span>
+                                                    <button type="button" onClick={() => borrarImagenColor(ci.color)} title="Quitar"
+                                                        className="w-5 h-5 rounded-full bg-slate-100 hover:bg-red-100 hover:text-red-600 text-slate-400 flex items-center justify-center">
+                                                        <i className="fa-solid fa-times text-[10px]"></i>
+                                                    </button>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    )}
+                                    <div className="flex gap-2">
+                                        <input value={colorNuevo} onChange={e => setColorNuevo(e.target.value)} placeholder="Color (ej: ROJO)" className={inputCls} />
+                                        <button type="button"
+                                            onClick={() => colorNuevo.trim() ? colorFileRef.current?.click() : toast.error('Escribí el color primero (ej: ROJO)')}
+                                            className="px-4 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-white text-xs font-bold whitespace-nowrap transition-colors">
+                                            <i className="fa-solid fa-upload mr-1.5"></i>Subir foto
+                                        </button>
+                                        <input type="file" ref={colorFileRef} accept="image/*" className="hidden"
+                                            onChange={e => { const f = e.target.files[0]; if (f) subirImagenColor(f); e.target.value = ''; }} />
+                                    </div>
+                                </div>
+                            )}
                         </div>
                     </div>
                 </form>

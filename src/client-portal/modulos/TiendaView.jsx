@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
+import { createPortal } from 'react-dom';
 import { useNavigate } from 'react-router-dom';
 import {
     ShoppingCart, Search, Package, Plus, Minus, Trash2, X,
@@ -33,13 +34,53 @@ const SOLAPAS = [
 const fmt = (n, moneda) =>
     (moneda === 'USD' ? 'US$ ' : '$ ') + (Number(n) || 0).toLocaleString('es-UY', { maximumFractionDigits: 2 });
 
+// [PRECIO — estilo C 18/08] Tipográfico: símbolo chico gris + número grande blanco.
+// Se usa en la ficha (fila mobile junto al nombre y precio grande de desktop).
+const PrecioFicha = ({ precio, moneda, grande }) => (
+    precio == null
+        ? <span className={`${grande ? 'text-3xl' : 'text-2xl'} font-black text-zinc-100`}>Consultar</span>
+        : <span className="inline-flex items-baseline gap-1 whitespace-nowrap font-gsanscode">
+            <span className={`${grande ? 'text-sm' : 'text-[13px]'} font-bold text-zinc-500`}>{moneda === 'USD' ? 'US$' : '$'}</span>
+            <span className={`${grande ? 'text-3xl' : 'text-2xl'} font-black text-zinc-100`}>{(Number(precio) || 0).toLocaleString('es-UY', { maximumFractionDigits: 2 })}</span>
+        </span>
+);
+
 // Los 3 tipos comparten ficha; el chip identifica al producto cuando la solapa es "Todo".
 // Va SOBRE la foto (esquina) y no en el bloque de texto: en mobile la grilla es de 2 columnas
-// y el chip en línea ocupaba un renglón entero. Colores sólidos porque el fondo es blanco.
+// y el chip en línea ocupaba un renglón entero. Estilo 2 "carbón mono" (18/08): pill carbón
+// con el color del tipo en un puntito; el precio va igual en carbón con el número celeste.
 const CHIP_TIPO = {
-    TERMINADO: { texto: 'En stock', cls: 'bg-emerald-500 text-white' },
-    PERSONALIZADO: { texto: 'Personalizado', cls: 'bg-brand-cyan text-zinc-900' },
-    CONFECCIONADO: { texto: 'A medida', cls: 'bg-purple-500 text-white' },
+    TERMINADO: { texto: 'En stock', dot: 'bg-emerald-400' },
+    PERSONALIZADO: { texto: 'Personalizado', dot: 'bg-custom-cyan' },
+    CONFECCIONADO: { texto: 'A medida', dot: 'bg-purple-400' },
+};
+
+// [SELECTOR TALLE/COLOR — opción B 18/08] Las variantes del WMS vienen como una lista plana
+// "<producto> <TALLE> <COLOR...>" ("Short 2XL AZUL FRANCIA"). Para no mostrar 30+ chips, la
+// ficha las parte en dos ejes: el talle es el primer token del conjunto conocido (o numérico,
+// talles de niño tipo 14/16) y el color es todo lo que sigue. Si ALGUNA variante del producto
+// no parsea, se cae a la lista plana de siempre — nunca se esconde una variante.
+const TALLES_CONOCIDOS = new Set(['XS', 'S', 'M', 'L', 'XL', 'XXL', 'XXXL', '2XL', '3XL', '4XL', '5XL', '6XL']);
+const ORDEN_TALLES = ['XS', 'S', 'M', 'L', 'XL', 'XXL', '2XL', 'XXXL', '3XL', '4XL', '5XL', '6XL'];
+const parseVariante = (nombre) => {
+    const tokens = String(nombre || '').trim().toUpperCase().split(/\s+/);
+    const i = tokens.findIndex(t => TALLES_CONOCIDOS.has(t) || /^\d{1,3}$/.test(t));
+    if (i < 0) return null;
+    return { talle: tokens[i], color: tokens.slice(i + 1).join(' ') };
+};
+// [STOCK] Placeholder fijo mientras no exista el sistema de stock de la tienda: se muestra
+// como "disponibles" en la ficha y hace de tope del contador de cantidad. Sin conexión real.
+const DISPONIBLES_PLACEHOLDER = 12;
+
+// Numéricos primero (14 < 16), después letras en orden lógico S→3XL, desconocidos al final.
+const cmpTalles = (a, b) => {
+    const na = /^\d+$/.test(a), nb = /^\d+$/.test(b);
+    if (na && nb) return parseInt(a, 10) - parseInt(b, 10);
+    if (na !== nb) return na ? -1 : 1;
+    const ia = ORDEN_TALLES.indexOf(a), ib = ORDEN_TALLES.indexOf(b);
+    if (ia >= 0 && ib >= 0) return ia - ib;
+    if ((ia >= 0) !== (ib >= 0)) return ia >= 0 ? -1 : 1;
+    return a.localeCompare(b);
 };
 
 export const TiendaView = () => {
@@ -159,7 +200,10 @@ export const TiendaView = () => {
                 sku: variante.sku || '',
                 precio: variante.precio,
                 moneda: variante.moneda,
-                foto: producto.fotos?.[0] || null,
+                // Si hay foto del color de la variante ("Short 14 ROJO" ⊃ "ROJO"), esa; si no, la portada.
+                foto: (producto.fotosColor || []).find(fc =>
+                    fc.color && String(variante.nombre || '').toUpperCase().includes(fc.color)
+                )?.url || producto.fotos?.[0] || null,
                 cantidad,
             }];
         });
@@ -200,14 +244,16 @@ export const TiendaView = () => {
 
             {/* Solapas + búsqueda */}
             <div className="flex flex-col md:flex-row md:items-center gap-3">
-                {/* `no-scrollbar` (src/index.css) — "scrollbar-hide" no existe en este proyecto y
-                    dejaba la barra visible abajo de las solapas en mobile. */}
-                <div className="flex gap-1.5 md:gap-2 overflow-x-auto no-scrollbar -mx-4 px-4 md:mx-0 md:px-0">
+                {/* GRILLA, no fila deslizable: en un teléfono angosto las cuatro solapas no entran
+                    a lo ancho y "Confeccionados" quedaba cortada contra el borde — deslizar no
+                    alcanza porque nada indica que haya más. Con 2 columnas en mobile las cuatro
+                    se ven completas, y desde `sm` vuelven a una sola fila. */}
+                <div className="grid grid-cols-2 sm:flex gap-1.5 md:gap-2">
                     {SOLAPAS.map(s => (
                         <button
                             key={s.id}
                             onClick={() => setSolapa(s.id)}
-                            className={`px-3 md:px-4 py-2 rounded-xl text-[10px] md:text-xs font-black uppercase tracking-wide whitespace-nowrap border transition-colors shrink-0 ${solapa === s.id
+                            className={`px-3 md:px-4 py-2 rounded-xl text-[10px] md:text-xs font-black uppercase tracking-wide text-center border transition-colors ${solapa === s.id
                                 ? 'bg-brand-cyan/10 border-brand-cyan/50 text-brand-cyan'
                                 : 'border-zinc-800 text-zinc-500 hover:text-zinc-300 hover:border-zinc-600'}`}
                         >
@@ -253,31 +299,41 @@ export const TiendaView = () => {
                     {productos.map(p => {
                         const chip = CHIP_TIPO[p.tipo] || CHIP_TIPO.TERMINADO;
                         return (
-                            // Card "blanca con zona gris" (opción 6 elegida 10/08): card blanca sobre
-                            // el portal oscuro, foto en panel gris suave con margen, datos abajo en
-                            // una fila título/precio.
+                            // Card "C" (18/08, elegida tras probar también la D): superficie oscura un
+                            // paso más clara que el fondo (#202024 — zinc-900 se fundía con la página),
+                            // la foto en panel blanco adentro (mismo lenguaje que la ficha) y el precio
+                            // en pill cyan translúcida, familia del botón AGREGAR.
                             <button
                                 key={p.proIdProducto}
                                 onClick={() => setFicha(p)}
-                                className="text-left rounded-2xl bg-white overflow-hidden hover:shadow-xl hover:shadow-black/40 hover:-translate-y-0.5 transition-all group"
+                                className="text-left rounded-2xl bg-[#202024] border border-zinc-700/60 p-2 hover:-translate-y-0.5 transition-transform group"
                             >
-                                <div className="p-2.5 pb-0">
-                                    <div className="relative aspect-square bg-zinc-100 rounded-xl flex items-center justify-center overflow-hidden">
-                                        <span className={`absolute top-2 left-2 z-10 px-2 py-0.5 rounded-full text-[9px] font-black uppercase tracking-wide ${chip.cls}`}>{chip.texto}</span>
-                                        {p.fotos?.length ? (
-                                            <img src={p.fotos[0]} alt={p.titulo} className="w-full h-full object-contain p-2 group-hover:scale-105 transition-transform duration-500" />
-                                        ) : (
-                                            <ImageOff size={36} className="text-zinc-300" />
-                                        )}
-                                    </div>
-                                </div>
-                                <div className="px-3.5 py-3 flex justify-between items-baseline gap-2">
-                                    <p className="flex-1 min-w-0 text-[13px] font-semibold text-zinc-600 leading-snug line-clamp-2">{p.titulo}</p>
-                                    {p.tipo === 'TERMINADO' ? (
-                                        <p className="text-base font-black text-zinc-900 whitespace-nowrap">{p.precio != null ? fmt(p.precio, p.moneda) : 'Consultar'}</p>
+                                <div className="relative aspect-square bg-white rounded-xl flex items-center justify-center overflow-hidden">
+                                    {/* Estilo 7 "sin pills" (18/08): punto de color + texto para el tipo,
+                                        y el precio tipográfico directo sobre el blanco de la foto. */}
+                                    <span className="absolute top-2 left-2.5 z-10 inline-flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wide text-zinc-600">
+                                        <span className={`w-1.5 h-1.5 rounded-full ${chip.dot}`}></span>{chip.texto}
+                                    </span>
+                                    {p.fotos?.length ? (
+                                        <img src={p.fotos[0]} alt={p.titulo} className="w-full h-full object-contain p-1.5 group-hover:scale-105 transition-transform duration-500" />
                                     ) : (
-                                        <p className="text-[10px] font-black text-zinc-400 uppercase tracking-wide whitespace-nowrap">A cotizar</p>
+                                        <ImageOff size={36} className="text-zinc-300" />
                                     )}
+                                    {p.tipo === 'TERMINADO' ? (
+                                        p.precio != null ? (
+                                            <span className="absolute bottom-2 right-2.5 z-10 whitespace-nowrap inline-flex items-baseline gap-1 font-gsanscode font-bold">
+                                                <span className="text-[11px] text-zinc-500">{p.moneda === 'USD' ? 'US$' : '$'}</span>
+                                                <span className="text-[16px] tracking-tight text-zinc-900 tabular-nums">{(Number(p.precio) || 0).toLocaleString('es-UY', { maximumFractionDigits: 2 })}</span>
+                                            </span>
+                                        ) : (
+                                            <span className="absolute bottom-2 right-2.5 z-10 text-[10px] font-bold uppercase tracking-wide text-zinc-500">Consultar</span>
+                                        )
+                                    ) : (
+                                        <span className="absolute bottom-2 right-2.5 z-10 text-[10px] font-bold uppercase tracking-wide text-zinc-500">A cotizar</span>
+                                    )}
+                                </div>
+                                <div className="px-1.5 pt-2.5 pb-1">
+                                    <p className="text-[13px] font-semibold text-zinc-300 leading-snug line-clamp-2 uppercase">{p.titulo}</p>
                                 </div>
                             </button>
                         );
@@ -297,7 +353,7 @@ export const TiendaView = () => {
 
             {/* Carrito */}
             {carritoAbierto && (
-                <div className="fixed inset-0 z-[9000]">
+                <div className="fixed inset-0 z-[10000]">
                     <div className="absolute inset-0 bg-black/70" onClick={() => { setCarritoAbierto(false); setCompraOk(null); }} />
                     <aside className="absolute right-0 top-0 h-full w-full max-w-md bg-custom-dark border-l border-zinc-800 flex flex-col">
                         <div className="p-5 border-b border-zinc-800 flex items-center justify-between">
@@ -451,22 +507,95 @@ const FichaProducto = ({ producto, onCerrar, onAgregar, onIniciarPedido }) => {
     const esTerminado = producto.tipo === 'TERMINADO';
     const sinPrecio = varSel?.precio == null;
 
-    return (
-        <div className="fixed inset-0 z-[9000] flex items-center justify-center p-4">
+    // [IMÁGENES POR COLOR] La galería junta las fotos comunes + las de color. Al elegir una
+    // variante cuyo nombre contiene el color de una foto ("Short 14 ROJO" ⊃ "ROJO") se salta
+    // solo a esa foto; el cliente puede seguir navegando las miniaturas igual.
+    const fotosColor = producto.fotosColor || [];
+    const fotosTodas = [...(producto.fotos || []), ...fotosColor.map(fc => fc.url)];
+    useEffect(() => {
+        if (!fotosColor.length || !varSel?.nombre) return;
+        const nom = String(varSel.nombre).toUpperCase();
+        const idx = fotosColor.findIndex(fc => fc.color && nom.includes(fc.color));
+        if (idx >= 0) setFotoIdx((producto.fotos?.length || 0) + idx);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [varSel]);
+
+    // Ejes talle/color (ver parseVariante). Solo si TODAS las variantes parsean; si el
+    // producto no distingue color (color vacío en todas), queda solo el eje de talles.
+    const ejes = useMemo(() => {
+        if (variantes.length <= 1) return null;
+        const parsed = variantes.map(v => ({ v, p: parseVariante(v.nombre) }));
+        if (parsed.some(x => !x.p)) return null;
+        const colores = [...new Set(parsed.map(x => x.p.color).filter(Boolean))];
+        const talles = [...new Set(parsed.map(x => x.p.talle))].sort(cmpTalles);
+        return { parsed, colores, talles };
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [producto]);
+    const p0 = parseVariante(variantes[0]?.nombre);
+    const [talleSel, setTalleSel] = useState(p0?.talle || null);
+    const [colorSel, setColorSel] = useState(p0?.color || null);
+    const elegirColor = (c) => {
+        const m = ejes.parsed.find(x => x.p.color === c && x.p.talle === talleSel)
+            || ejes.parsed.find(x => x.p.color === c);
+        if (!m) return;
+        setColorSel(c); setTalleSel(m.p.talle); setVarSel(m.v);
+    };
+    const elegirTalle = (t) => {
+        const m = ejes.parsed.find(x => x.p.talle === t && (!ejes.colores.length || x.p.color === colorSel))
+            || ejes.parsed.find(x => x.p.talle === t);
+        if (!m) return;
+        setTalleSel(t); setColorSel(m.p.color || null); setVarSel(m.v);
+    };
+
+    // [FADE] Al cambiar la foto (otro color o miniatura), la nueva entra con fade sobre la
+    // anterior, que queda 250ms debajo como base del crossfade y después se retira.
+    const [imgActual, setImgActual] = useState(fotosTodas[0] || null);
+    const [imgPrev, setImgPrev] = useState(null);
+    useEffect(() => {
+        const src = fotosTodas[fotoIdx] || fotosTodas[0] || null;
+        if (!src || src === imgActual) return;
+        setImgPrev(imgActual);
+        setImgActual(src);
+        const t = setTimeout(() => setImgPrev(null), 250);
+        return () => clearTimeout(t);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [fotoIdx]);
+
+    // Portal al body: dentro del árbol del layout el fixed se anclaba a un ancestro (con
+    // transform, fixed deja de referir al viewport) y el modal quedaba con un hueco arriba
+    // en mobile. Colgado del body, inset-0 es el viewport de verdad.
+    return createPortal(
+        // Mobile: la ficha ocupa TODO el viewport (sin borde ni redondeo); de md: para
+        // arriba vuelve a ser la card centrada de siempre. z-[10000] porque la navbar del
+        // portal (LandingNavbar) es fixed con zIndex 9999 y tapaba el modal.
+        <div className="fixed inset-0 z-[10000] flex items-center justify-center p-0 md:p-4">
             <div className="absolute inset-0 bg-black/70" onClick={onCerrar} />
-            <div className="relative bg-custom-dark border border-zinc-700/60 rounded-2xl w-full max-w-3xl max-h-[90vh] overflow-y-auto">
-                <button onClick={onCerrar} className="absolute top-3 right-3 z-10 w-8 h-8 rounded-lg bg-zinc-900 border border-zinc-700 text-zinc-400 hover:text-zinc-100 flex items-center justify-center"><X size={16} /></button>
+            {/* Tipografía de la ficha (18/08): texto en DM Sans, números en Google Sans Code */}
+            <div className="relative bg-custom-dark w-full h-full overflow-y-auto font-dmsans md:h-auto md:max-h-[90vh] md:max-w-3xl md:rounded-2xl md:border md:border-zinc-700/60">
+                {/* Cerrar (desktop): arriba a la derecha del modal, mismo ghost adaptado al fondo oscuro. */}
+                <button onClick={onCerrar} className="hidden md:flex absolute top-3 right-3 z-10 w-8 h-8 rounded-lg border border-zinc-500/60 bg-zinc-500/10 text-zinc-300 hover:bg-zinc-500/20 items-center justify-center transition-colors"><X size={16} /></button>
 
                 <div className="grid md:grid-cols-2 gap-0">
-                    {/* Fotos */}
-                    <div className="p-4 space-y-2">
-                        <div className="aspect-square rounded-xl bg-white flex items-center justify-center overflow-hidden">
-                            {producto.fotos?.length ? (
-                                <img src={producto.fotos[fotoIdx] || producto.fotos[0]} alt={producto.titulo} className="w-full h-full object-contain" />
+                    {/* Fotos — centradas verticalmente en su columna (desktop: la columna de
+                        datos suele ser más alta y la foto quedaba arriba) */}
+                    <div className="p-4 space-y-2 flex flex-col justify-center">
+                        <div className="relative aspect-square rounded-xl bg-white flex items-center justify-center overflow-hidden">
+                            {/* Cerrar (solo mobile, donde la foto es el tope del modal): estilo ghost
+                                carbón dentro del panel blanco. En desktop va arriba a la derecha DEL
+                                MODAL (ver más abajo), que es donde se espera el cerrar. */}
+                            <button onClick={onCerrar} className="md:hidden absolute top-2 right-2 z-10 w-8 h-8 rounded-lg border border-brand-dark/60 bg-brand-dark/10 text-brand-dark hover:bg-brand-dark/20 flex items-center justify-center transition-colors"><X size={16} /></button>
+                            {fotosTodas.length ? (
+                                <>
+                                    {imgPrev && <img src={imgPrev} alt="" className="absolute inset-0 w-full h-full object-contain" />}
+                                    <img key={imgActual} src={imgActual} alt={producto.titulo} className="relative w-full h-full object-contain" style={{ animation: 'tienda-fade-img 0.25s ease' }} />
+                                </>
                             ) : (
                                 <ImageOff size={48} className="text-zinc-300" />
                             )}
+                            <style>{`@keyframes tienda-fade-img { from { opacity: 0 } to { opacity: 1 } }`}</style>
                         </div>
+                        {/* Miniaturas: solo la galería común — las fotos de color ya se eligen
+                            con el selector de COLOR y acá abajo quedaban duplicadas. */}
                         {producto.fotos?.length > 1 && (
                             <div className="flex gap-2 overflow-x-auto">
                                 {producto.fotos.map((f, i) => (
@@ -481,14 +610,68 @@ const FichaProducto = ({ producto, onCerrar, onAgregar, onIniciarPedido }) => {
                     {/* Datos */}
                     <div className="p-5 md:pr-8 space-y-4">
                         {producto.categoria && <p className="text-[11px] font-black uppercase tracking-widest text-zinc-500">{producto.categoria}</p>}
-                        <h2 className="text-xl font-black text-zinc-100 leading-tight">{producto.titulo}</h2>
+                        <div className="flex items-start justify-between gap-3">
+                            <h2 className="text-lg font-black text-zinc-100 leading-tight">{producto.titulo}</h2>
+                            {/* Mobile: el precio va a la derecha del nombre; en md+ abajo, como siempre */}
+                            {esTerminado && (
+                                <span className="md:hidden mr-2"><PrecioFicha precio={varSel.precio} moneda={varSel.moneda} grande /></span>
+                            )}
+                        </div>
                         {producto.descripcion && <p className="text-sm text-zinc-400 whitespace-pre-line">{producto.descripcion}</p>}
 
                         {esTerminado ? (
                             <>
-                                <p className="text-2xl font-black text-zinc-100">{sinPrecio ? 'Consultar' : fmt(varSel.precio, varSel.moneda)}</p>
+                                <p className="hidden md:block text-center"><PrecioFicha precio={varSel.precio} moneda={varSel.moneda} /></p>
 
-                                {variantes.length > 1 && (
+                                {variantes.length > 1 && (ejes ? (
+                                    <div className="space-y-3">
+                                        {ejes.colores.length > 0 && (
+                                            <div>
+                                                <p className="text-xs font-bold uppercase text-zinc-500 mb-2">Color — <span className="text-zinc-300">{colorSel}</span></p>
+                                                <div className="flex gap-2 flex-wrap">
+                                                    {ejes.colores.map(c => {
+                                                        const foto = fotosColor.find(fc => fc.color && c.includes(fc.color))?.url || null;
+                                                        const on = colorSel === c;
+                                                        return foto ? (
+                                                            <button key={c} onClick={() => elegirColor(c)} title={c}
+                                                                className={`w-11 h-11 rounded-xl bg-white overflow-hidden border-2 transition-colors ${on ? 'border-brand-cyan' : 'border-zinc-700 hover:border-zinc-500'}`}>
+                                                                <img src={foto} alt={c} className="w-full h-full object-contain" />
+                                                            </button>
+                                                        ) : (
+                                                            <button key={c} onClick={() => elegirColor(c)}
+                                                                className={`px-3 py-2 rounded-xl text-xs font-bold border transition-colors ${on
+                                                                    ? 'border-brand-cyan/60 bg-brand-cyan/10 text-brand-cyan'
+                                                                    : 'border-zinc-700 text-zinc-400 hover:text-zinc-200'}`}>
+                                                                {c}
+                                                            </button>
+                                                        );
+                                                    })}
+                                                </div>
+                                            </div>
+                                        )}
+                                        <div>
+                                            <p className="text-xs font-bold uppercase text-zinc-500 mb-2">Talle</p>
+                                            <div className="flex gap-2 flex-wrap">
+                                                {ejes.talles.map(t => {
+                                                    const on = talleSel === t;
+                                                    // Sin esa combinación con el color elegido: atenuado, pero clickeable
+                                                    // (al clickear se ajusta el color al primero que exista en ese talle).
+                                                    const hay = !ejes.colores.length || ejes.parsed.some(x => x.p.talle === t && x.p.color === colorSel);
+                                                    return (
+                                                        <button key={t} onClick={() => elegirTalle(t)}
+                                                            className={`px-3.5 py-2 rounded-xl text-xs font-bold border transition-colors ${on
+                                                                ? 'border-brand-cyan/60 bg-brand-cyan/10 text-brand-cyan'
+                                                                : hay
+                                                                    ? 'border-zinc-700 text-zinc-400 hover:text-zinc-200'
+                                                                    : 'border-zinc-800 text-zinc-600 hover:text-zinc-400'}`}>
+                                                            {t}
+                                                        </button>
+                                                    );
+                                                })}
+                                            </div>
+                                        </div>
+                                    </div>
+                                ) : (
                                     <div>
                                         <p className="text-xs font-bold uppercase text-zinc-500 mb-2">Variante</p>
                                         <div className="flex gap-2 flex-wrap">
@@ -506,22 +689,42 @@ const FichaProducto = ({ producto, onCerrar, onAgregar, onIniciarPedido }) => {
                                             ))}
                                         </div>
                                     </div>
-                                )}
+                                ))}
 
-                                <div className="flex items-center gap-3">
-                                    <div className="flex items-center gap-1 border border-zinc-700 rounded-xl px-2 py-1.5">
-                                        <button onClick={() => setCantidad(c => Math.max(1, c - 1))} className="w-7 h-7 rounded-lg text-zinc-400 hover:text-zinc-100 flex items-center justify-center"><Minus size={14} /></button>
-                                        <span className="w-10 text-center font-black text-zinc-100">{cantidad}</span>
-                                        <button onClick={() => setCantidad(c => c + 1)} className="w-7 h-7 rounded-lg text-zinc-400 hover:text-zinc-100 flex items-center justify-center"><Plus size={14} /></button>
+                                {/* Cantidad + agregar (opción C, 18/08): fila de cantidad con botones
+                                    redondos discretos y botón ancho completo con el total vivo. */}
+                                <div className="space-y-2.5">
+                                    <div className="flex items-center justify-between">
+                                        <span className="text-[11px] font-bold uppercase tracking-widest text-zinc-500">Cantidad</span>
+                                        <div className="flex items-center gap-1.5">
+                                            <button onClick={() => setCantidad(c => Math.max(1, c - 1))} disabled={cantidad <= 1}
+                                                className={`w-8 h-8 rounded-full border flex items-center justify-center transition-colors ${cantidad <= 1
+                                                    ? 'border-zinc-800 text-zinc-600 cursor-not-allowed'
+                                                    : 'border-brand-cyan/60 bg-brand-cyan/10 text-brand-cyan hover:bg-brand-cyan/20'}`}><Minus size={13} /></button>
+                                            <span className="w-9 text-center font-black text-zinc-100 font-gsanscode">{cantidad}</span>
+                                            <button onClick={() => setCantidad(c => Math.min(DISPONIBLES_PLACEHOLDER, c + 1))} disabled={cantidad >= DISPONIBLES_PLACEHOLDER}
+                                                className={`w-8 h-8 rounded-full border flex items-center justify-center transition-colors ${cantidad >= DISPONIBLES_PLACEHOLDER
+                                                    ? 'border-zinc-800 text-zinc-600 cursor-not-allowed'
+                                                    : 'border-brand-cyan/60 bg-brand-cyan/10 text-brand-cyan hover:bg-brand-cyan/20'}`}><Plus size={13} /></button>
+                                        </div>
                                     </div>
+                                    {/* [STOCK] Placeholder visual con número FIJO, sin conectar a nada:
+                                        el sistema de stock de la tienda no existe todavía. Cuando esté,
+                                        acá va el disponible real de la variante elegida (y el tope del +). */}
+                                    <p className="text-[11px] font-bold text-zinc-500 text-right -mt-1"><span className="font-gsanscode">{DISPONIBLES_PLACEHOLDER}</span> disponibles</p>
                                     <button
                                         onClick={() => onAgregar(producto, varSel, cantidad)}
                                         disabled={sinPrecio}
-                                        className={`flex-1 py-3 rounded-xl text-sm font-black uppercase tracking-wide transition-colors ${sinPrecio
-                                            ? 'bg-zinc-800 text-zinc-600 cursor-not-allowed'
-                                            : 'bg-brand-cyan text-zinc-900 hover:bg-brand-cyan/90'}`}
+                                        className={`w-full py-3.5 rounded-xl text-sm font-black uppercase tracking-wide border transition-colors ${sinPrecio
+                                            ? 'bg-zinc-800 border-transparent text-zinc-600 cursor-not-allowed'
+                                            : 'border-brand-cyan/60 bg-brand-cyan/10 text-brand-cyan hover:bg-brand-cyan/20'}`}
                                     >
-                                        <span className="inline-flex items-center gap-2"><ShoppingCart size={16} /> Agregar</span>
+                                        {/* Dos zonas fijas 55/45, cada una con su contenido centrado —
+                                            al variar la cantidad nada se corre. */}
+                                        <span className="flex items-center w-full">
+                                            <span className={`${sinPrecio ? 'w-full' : 'w-[55%]'} inline-flex items-center justify-center gap-2`}><ShoppingCart size={16} /> Agregar</span>
+                                            {!sinPrecio && <span className="w-[45%] text-white text-center text-base font-gsanscode">{fmt(varSel.precio * cantidad, varSel.moneda)}</span>}
+                                        </span>
                                     </button>
                                 </div>
                                 {sinPrecio && <p className="text-[11px] text-zinc-500">Este producto no tiene precio cargado — consultanos por soporte.</p>}
@@ -551,7 +754,7 @@ const FichaProducto = ({ producto, onCerrar, onAgregar, onIniciarPedido }) => {
                 </div>
             </div>
         </div>
-    );
+    , document.body);
 };
 
 export default TiendaView;

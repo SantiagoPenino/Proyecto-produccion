@@ -89,11 +89,14 @@ exports.toggleRollStatus = async (req, res) => {
             // 1. Obtener informacin actual del Rollo y su Maquina
             // Use logic to handle potential string/int IDs based on usage (Schema usually VarChar or Int, sticking to DB.js usage)
             // Adjust query to handle flexible ID types.
+            // UPDLOCK: serializa requests concurrentes sobre el MISMO rollo — el segundo click
+            // espera acá a que el primero commitee, y al leer ya ve el estado nuevo (sin esto,
+            // dos "finalizar" simultáneos leían ambos 'En maquina' y corrían el flujo entero dos veces).
             const rollInfo = await request
                 .input('RID_GET', sql.VarChar(50), String(rollId))
-                .query(`SELECT r.RolloID, r.MaquinaID, r.BobinaID, r.AreaID, c.EstadoProceso, c.Nombre as NombreEquipo,
+                .query(`SELECT r.RolloID, r.Estado AS EstadoRollo, r.MaquinaID, r.BobinaID, r.AreaID, c.EstadoProceso, c.Nombre as NombreEquipo,
                     ISNULL(c.SeparacionImpresion, 0) AS EsImpresora
-                    FROM dbo.Rollos r
+                    FROM dbo.Rollos r WITH (UPDLOCK, ROWLOCK)
                     LEFT JOIN dbo.ConfigEquipos c ON r.MaquinaID = c.EquipoID
                     WHERE CAST(r.RolloID AS VARCHAR(50)) = @RID_GET OR r.Nombre = @RID_GET`);
 
@@ -103,6 +106,21 @@ exports.toggleRollStatus = async (req, res) => {
             }
 
             const currentRoll = rollInfo.recordset[0];
+
+            // Idempotencia ante el martilleo del botón (caso lote 1467, 17/08: cuatro "finalizar"
+            // en 49s porque la pantalla no respondía — cada uno re-corrió el flujo entero y pisó
+            // los estados que el operario ya había avanzado a mano). Si la acción pedida ya está
+            // aplicada, no-op con éxito: el operario no ve un error por el click de más.
+            const estadoRollo = String(currentRoll.EstadoRollo || '').trim();
+            const accionYaAplicada =
+                (action === 'finish' && estadoRollo === 'Finalizado') ||
+                (action === 'start'  && estadoRollo === 'En maquina') ||
+                (action === 'pause'  && estadoRollo === 'Pausado');
+            if (accionYaAplicada) {
+                await transaction.rollback();
+                logger.info(`[toggleRollStatus] No-op: rollo ${rollId} ya está '${estadoRollo}' (action '${action}' repetida).`);
+                return res.json({ success: true, alreadyDone: true, message: `El lote ya estaba ${estadoRollo.toLowerCase()}.` });
+            }
             // "ponme a tomar de la base" - Usamos estrictamente lo que diga la configuración del equipo
             // Si en la base dice 'Detenido' por error, usará 'Detenido' hasta que se corrija el dato maestro.
             let machineStatus = currentRoll.EstadoProceso || 'Produccion';
@@ -537,6 +555,7 @@ exports.printEtiquetaLote = async (req, res) => {
             .input('RID', sql.VarChar(50), rollId)
             .query(`
                 SELECT
+                    COUNT(*) AS TotalOrdenes,
                     ISNULL(SUM(TRY_CAST(REPLACE(REPLACE(ISNULL(Magnitud,'0'),' ',''),',','.') AS FLOAT)), 0) AS MetrosTotales,
                     SUM(CASE WHEN UPPER(LTRIM(RTRIM(ISNULL(Prioridad,'')))) = 'URGENTE' THEN 1 ELSE 0 END) AS Urgentes,
                     SUM(CASE WHEN CodigoOrden LIKE '%-F%' THEN 1 ELSE 0 END) AS Fallas
@@ -544,6 +563,7 @@ exports.printEtiquetaLote = async (req, res) => {
                 WHERE CAST(RolloID AS VARCHAR(50)) = @RID
             `);
         const agg = aggRes.recordset[0] || {};
+        const totalOrdenes = Number(agg.TotalOrdenes || 0);
         const metros = Number(agg.MetrosTotales || 0);
         const urgentes = Number(agg.Urgentes || 0);
         const fallas = Number(agg.Fallas || 0);
@@ -582,6 +602,7 @@ exports.printEtiquetaLote = async (req, res) => {
     <div class="lote">${esc(nombreLote)}</div>
     <div class="row"><div class="lbl">Finalizado</div><div class="val">${fechaStr}</div></div>
     <div class="row"><div class="lbl">${totalRotulo}</div><div class="metros">${totalValor}</div></div>
+    <div class="row"><div class="lbl">&Oacute;rdenes</div><div class="metros">${totalOrdenes}</div></div>
     ${urgentes > 0 ? `<div class="banner">${urgentes} URGENTE${urgentes > 1 ? 'S' : ''}</div>` : ''}
     ${fallas > 0 ? `<div class="banner">${fallas} FALLA${fallas > 1 ? 'S' : ''}</div>` : ''}
   </div>

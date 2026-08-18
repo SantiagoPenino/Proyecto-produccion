@@ -241,6 +241,9 @@ export const SERVICES_LIST = [
             bocetoMode: true,               // TPU: 1 boceto obligatorio + cantidad
             disableItemNote: true,
             minCopies: 15,
+            // Reuso de matriz: mínimo más bajo que un trabajo nuevo — la matriz ya está hecha
+            // y no hay costo de diseño que amortizar, así que se acepta una tirada más corta.
+            minCopiesReuso: 5,
         },
         materials: [
             { Material: 'ETIQUETAS OFICIALES HASTA 4X4' },

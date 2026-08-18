@@ -1,4 +1,6 @@
 /* @import "tailwindcss"; Removed for unification compatibility */
+/* Google Sans Code (precios de la tienda) — de Google Fonts, como Inter en ClientsIntegration */
+@import url('https://fonts.googleapis.com/css2?family=Google+Sans+Code:wght@400;500;600;700&display=swap');
 
 :root {
   --color-zinc-50: #fafafa;
@@ -20,7 +22,7 @@
   --color-amber-600: #d97706;
 
   --font-family: 'Archivo', system-ui, -apple-system, sans-serif;
-  --font-heading: 'Barlow', sans-serif;
+  --font-heading: 'DM Sans', sans-serif;
 
   --glass-bg: #19181B;
   --glass-border: rgba(63, 63, 70, 0.7);

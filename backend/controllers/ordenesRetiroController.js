@@ -2,6 +2,7 @@ const { getPool, sql } = require('../config/db');
 const moment = require('moment-timezone');
 const { crearRetiro, marcarEntregado } = require('../services/retiroService');
 const logger = require('../utils/logger');
+const { SQL_RECALC_MONTO_TOTAL } = require('../utils/montoTotalPedido');
 
 const createOrdenRetiro = async (req, res) => {
   const { orders, totalCost, lugarRetiro, direccion, departamento, localidad, agenciaId } = req.body;
@@ -1193,11 +1194,7 @@ const editarCostoOrden = async (req, res) => {
         // hermanas EMB/DF/TPU/EST, ya incluidas en el subtotal de PRO).
         await transaction.request()
           .input('PID', sql.Int, pcId)
-          .query(`
-            UPDATE dbo.PedidosCobranza
-            SET MontoTotal = (SELECT ISNULL(SUM(Subtotal),0) FROM dbo.PedidosCobranzaDetalle WHERE PedidoCobranzaID = @PID AND ISNULL(EsHermanaConsolidada,0) = 0)
-            WHERE ID = @PID
-          `);
+          .query(SQL_RECALC_MONTO_TOTAL);
       }
     }
 
