@@ -124,7 +124,40 @@ const getOrdenesRetiroQueryBase = `
     r.LReIdLugarRetiro,
     (SELECT TOP 1 b.ComprobantePath FROM Logistica_Bultos b WITH(NOLOCK) WHERE b.OrdenID = r.OReIdOrdenRetiro AND b.ComprobantePath IS NOT NULL ORDER BY b.BultoID DESC) AS comprobanteEntrega,
     art.Descripcion AS articuloDescripcion,
-    o.OrdNombreTrabajo AS orderNombreTrabajo
+    o.OrdNombreTrabajo AS orderNombreTrabajo,
+    -- BILLETERA: cubierta ENTERA (consumo CUBIERTO_CUENTA_, no parcial) ⇒ no hay nada que cobrar
+    CASE WHEN EXISTS (
+        SELECT 1 FROM MovimientosCuenta cx WITH(NOLOCK)
+        JOIN CuentasCliente ccx WITH(NOLOCK) ON ccx.CueIdCuenta = cx.CueIdCuenta
+        WHERE ccx.CliIdCliente = o.CliIdCliente
+          AND cx.MovTipo = 'CONSUMO_CUENTA'
+          AND (cx.MovAnulado IS NULL OR cx.MovAnulado = 0)
+          AND cx.MovObservaciones LIKE 'CUBIERTO[_]CUENTA[_]%'
+          AND (cx.OrdIdOrden = o.OrdIdOrden
+               OR cx.OrdIdOrden IN (SELECT erpB.OrdenID FROM Ordenes erpB WITH(NOLOCK) WHERE erpB.CodigoOrden = o.OrdCodigoOrden))
+    ) THEN 1 ELSE 0 END AS CubiertaBilletera,
+    -- BILLETERA: cubierta PARCIAL ⇒ a cobrar queda solo el resto de cuenta corriente
+    CASE WHEN EXISTS (
+        SELECT 1 FROM MovimientosCuenta cp WITH(NOLOCK)
+        JOIN CuentasCliente ccp WITH(NOLOCK) ON ccp.CueIdCuenta = cp.CueIdCuenta
+        WHERE ccp.CliIdCliente = o.CliIdCliente
+          AND cp.MovTipo = 'CONSUMO_CUENTA'
+          AND (cp.MovAnulado IS NULL OR cp.MovAnulado = 0)
+          AND cp.MovObservaciones LIKE 'CUBIERTO[_]PARCIAL[_]CUENTA%'
+          AND (cp.OrdIdOrden = o.OrdIdOrden
+               OR cp.OrdIdOrden IN (SELECT erpC.OrdenID FROM Ordenes erpC WITH(NOLOCK) WHERE erpC.CodigoOrden = o.OrdCodigoOrden))
+    ) THEN 1 ELSE 0 END AS ParcialBilletera,
+    (SELECT TOP 1 ABS(mr.MovImporte)
+     FROM MovimientosCuenta mr WITH(NOLOCK)
+     JOIN CuentasCliente ccr WITH(NOLOCK) ON ccr.CueIdCuenta = mr.CueIdCuenta
+     WHERE ccr.CliIdCliente = o.CliIdCliente
+       AND mr.MovTipo IN ('ORDEN','ORDEN_ANTICIPO')
+       AND (mr.MovAnulado IS NULL OR mr.MovAnulado = 0)
+       AND mr.DocIdDocumento IS NULL
+       AND (mr.MovObservaciones IS NULL OR mr.MovObservaciones NOT LIKE 'CUBIERTO%')
+       AND (mr.OrdIdOrden = o.OrdIdOrden
+            OR mr.OrdIdOrden IN (SELECT erpD.OrdenID FROM Ordenes erpD WITH(NOLOCK) WHERE erpD.CodigoOrden = o.OrdCodigoOrden))
+     ORDER BY mr.MovIdMovimiento DESC) AS RestoCtaCte
   FROM OrdenesRetiro r WITH(NOLOCK)
   LEFT JOIN FormasEnvio fe WITH(NOLOCK) ON fe.ID = r.LReIdLugarRetiro
   LEFT JOIN EstadosOrdenesRetiro er WITH(NOLOCK) ON er.EORIdEstadoOrden = r.OReEstadoActual
@@ -180,6 +213,15 @@ const processRetirosRows = (rows) => {
     }
 
     if (row.orderId) {
+      // BILLETERA: el costo que ve/cobra caja es lo REALMENTE pendiente —
+      // cubierta entera ⇒ 0 (ya está paga con saldo prepago), parcial ⇒ solo el resto.
+      // El valor original de la orden queda aparte en orderCostoOriginal.
+      const cubiertaBilletera = row.CubiertaBilletera === 1;
+      const parcialBilletera = !cubiertaBilletera && row.ParcialBilletera === 1 && row.RestoCtaCte != null;
+      let costoCobrable = row.costoFinal != null ? parseFloat(row.costoFinal) : null;
+      if (cubiertaBilletera) costoCobrable = 0;
+      else if (parcialBilletera) costoCobrable = parseFloat(row.RestoCtaCte);
+      const simMon = row.orderMonedaId === 2 ? 'US$' : '$';
       map[row.OReIdOrdenRetiro].orders.push({
         orderNumber: row.orderNumber,
         orderId: row.orderId,
@@ -187,7 +229,10 @@ const processRetirosRows = (rows) => {
         orderNombreTrabajo: row.orderNombreTrabajo || null,
         orderMaterial: row.articuloDescripcion ? row.articuloDescripcion.trim() : null,
         orderEstado: row.orderEstadoNombre || row.orderEstado,
-        orderCosto: row.costoFinal != null ? `${row.orderMonedaId === 2 ? 'US$' : '$'} ${parseFloat(row.costoFinal).toFixed(2)}` : null,
+        orderCosto: costoCobrable != null ? `${simMon} ${costoCobrable.toFixed(2)}` : null,
+        orderCostoOriginal: row.costoFinal != null ? `${simMon} ${parseFloat(row.costoFinal).toFixed(2)}` : null,
+        orderCubiertaBilletera: cubiertaBilletera,
+        orderParcialBilletera: parcialBilletera,
         orderCantidad: row.orderCantidad != null ? parseFloat(row.orderCantidad) : null,
         simbolo: row.orderMonedaId === 2 ? 'US$' : '$',
         monedaId: row.orderMonedaId || 1,
@@ -1088,8 +1133,16 @@ const editarCostoOrden = async (req, res) => {
     if (nuevaMonedaId   !== null) { req1.input('Moneda',   sql.Int,            nuevaMonedaId);   setClause += ', MonIdMoneda = @Moneda'; }
     await req1.query(`UPDATE dbo.OrdenesDeposito SET ${setClause} WHERE OrdIdOrden = @OrderId`);
 
+    // BILLETERA (F3): si la orden ya fue descontada de una cuenta de la billetera
+    // (CONSUMO_CUENTA del motor, del cierre o manual), la diferencia de precio vuelve
+    // o sale de esa cuenta; lo que no alcanza sigue el camino normal a la principal.
+    // Si el helper actúa, el ajuste legacy de ORDEN/deuda/ciclo NO debe correr (lo hace él).
+    const resyncBilletera = await require('../services/contabilidadService').resincronizarConsumosBilletera(
+      { OrdIdOrden: orderId, UsuarioAlta: UsuarioModif, motivo: 'edición de precio en caja' }, transaction);
+    if (resyncBilletera?.mensaje) logger.info(`[CAJA] ${codigoOrden}: ${resyncBilletera.mensaje}`);
+
     // Ajuste contable: MovimientosCuenta, CuentasCliente, DeudaDocumento, CiclosCredito
-    const mov = await buscarMovContable(transaction, orderId);
+    const mov = resyncBilletera ? null : await buscarMovContable(transaction, orderId);
     if (mov) {
       const delta = nuevoCostoNum - costoAnterior;
 
@@ -1207,6 +1260,7 @@ const editarCostoOrden = async (req, res) => {
           `Importe: $${costoAnterior.toFixed(2)} → $${nuevoCostoNum.toFixed(2)}`,
           nuevaCantidadNum !== null ? `Cantidad: ${nuevaCantidadNum}` : null,
           nuevaMonedaId   !== null ? `Moneda ID: ${nuevaMonedaId}` : null,
+          resyncBilletera?.mensaje || null,
         ].filter(Boolean).join(' | ');
         await registrarHistorialOrden(pool, erpId, 'Ajuste Administrativo', UsuarioModif, detalleLog);
       }
@@ -1214,7 +1268,11 @@ const editarCostoOrden = async (req, res) => {
       logger.warn('[CAJA] No se pudo registrar HistorialOrdenes para editar orden:', hErr.message);
     }
 
-    res.status(200).json({ success: true, message: 'Orden actualizada correctamente.' });
+    res.status(200).json({
+      success: true,
+      message: `Orden actualizada correctamente.${resyncBilletera?.mensaje ? ' ' + resyncBilletera.mensaje : ''}`,
+      billetera: resyncBilletera || undefined,
+    });
   } catch (err) {
     if (transaction) try { await transaction.rollback(); } catch (e) {}
     logger.error('[EDITAR COSTO ORDEN ERROR]', err);

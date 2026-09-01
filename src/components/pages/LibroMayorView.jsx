@@ -1,33 +1,95 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import api from '../../services/apiClient';
 import { BookOpen, Calendar, DollarSign, Search, Loader2, X, Filter, ChevronDown, ChevronUp } from 'lucide-react';
 
 const fmt = (n) => Number(n || 0).toLocaleString('es-UY', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
+const PAGE_SIZE = 50;
+
 export default function LibroMayorView() {
   const [asientos, setAsientos] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [cargandoMas, setCargandoMas] = useState(false);
   const [selectedOP, setSelectedOP] = useState(null);
+
+  // Resumen de TODO el filtro (lo calcula el servidor; no es lo que hay en pantalla)
+  const [total, setTotal] = useState(0);
+  const [hayMas, setHayMas] = useState(false);
+  const [pagina, setPagina] = useState(1);
+  const [totalDebeFiltro, setTotalDebeFiltro] = useState(0);
+  const [totalHaberFiltro, setTotalHaberFiltro] = useState(0);
 
   // Filtros
   const [searchTerm, setSearchTerm] = useState('');
   const [fechaDesde, setFechaDesde] = useState('');
   const [fechaHasta, setFechaHasta] = useState('');
   const [filtroConcepto, setFiltroConcepto] = useState('');
-  const [expandedIds, setExpandedIds] = useState(new Set());
+  const [origenes, setOrigenes] = useState([]);
 
-  const fetchAsientos = (desde, hasta) => {
-    setLoading(true);
+  // Filtros ya aplicados contra el servidor. Las fechas se aplican con el botón
+  // FILTRAR; la búsqueda y el origen se aplican solos.
+  const [aplicado, setAplicado] = useState({ desde: '', hasta: '', origen: '', q: '' });
+
+  const [expandedIds, setExpandedIds] = useState(new Set());
+  const [lineasPorAsiento, setLineasPorAsiento] = useState({});
+  const [cargandoLineas, setCargandoLineas] = useState(null);
+
+  // Candado: si el usuario cambia de filtro mientras una página viene en camino,
+  // esa respuesta vieja se descarta en vez de mezclarse con la lista nueva.
+  const pedidoVigente = useRef(0);
+
+  const cargarPagina = (f, page) => {
+    const esPrimera = page === 1;
+    const miPedido = ++pedidoVigente.current;
+    esPrimera ? setLoading(true) : setCargandoMas(true);
+
     const params = new URLSearchParams();
-    if (desde) params.append('desde', desde);
-    if (hasta) params.append('hasta', hasta);
+    if (f.desde)  params.append('desde',  f.desde);
+    if (f.hasta)  params.append('hasta',  f.hasta);
+    if (f.origen) params.append('origen', f.origen);
+    if (f.q)      params.append('q',      f.q);
+    params.append('page', page);
+    params.append('pageSize', PAGE_SIZE);
+
     api.get(`/contabilidad/erp/libro-mayor?${params}`).then(res => {
-      if (res.data.success) setAsientos(res.data.data);
-      setLoading(false);
-    }).catch(() => setLoading(false));
+      if (miPedido !== pedidoVigente.current) return; // llegó tarde: ya hay otro filtro
+      if (res.data.success) {
+        setAsientos(prev => esPrimera ? res.data.data : [...prev, ...res.data.data]);
+        setTotal(res.data.total || 0);
+        setHayMas(!!res.data.hayMas);
+        setTotalDebeFiltro(res.data.totalDebeFiltro || 0);
+        setTotalHaberFiltro(res.data.totalHaberFiltro || 0);
+        setPagina(page);
+      }
+      setLoading(false); setCargandoMas(false);
+    }).catch(() => { setLoading(false); setCargandoMas(false); });
   };
 
-  useEffect(() => { fetchAsientos('', ''); }, []);
+  // Búsqueda: 400 ms de respiro para no pegarle al servidor en cada tecla
+  useEffect(() => {
+    const t = setTimeout(() => {
+      setAplicado(a => a.q === searchTerm.trim() ? a : { ...a, q: searchTerm.trim() });
+    }, 400);
+    return () => clearTimeout(t);
+  }, [searchTerm]);
+
+  // El origen se aplica solo, sin apretar FILTRAR
+  useEffect(() => {
+    setAplicado(a => a.origen === filtroConcepto ? a : { ...a, origen: filtroConcepto });
+  }, [filtroConcepto]);
+
+  // Cualquier cambio de filtro vuelve a la primera página
+  useEffect(() => {
+    setExpandedIds(new Set());
+    cargarPagina(aplicado, 1);
+  }, [aplicado]);
+
+  // Combo de orígenes: sale de la base, no de recorrer los asientos cargados
+  useEffect(() => {
+    api.get('/contabilidad/erp/libro-mayor/origenes')
+      .then(res => { if (res.data?.success) setOrigenes(res.data.data.map(o => o.Origen)); })
+      .catch(() => {});
+  }, []);
 
   const handleViewOP = async (tcaId) => {
     try {
@@ -36,46 +98,34 @@ export default function LibroMayorView() {
     } catch (err) { console.error(err); }
   };
 
+  // El detalle del asiento se pide recién al expandirlo, y queda cacheado
   const toggleExpand = (id) => {
     setExpandedIds(prev => {
       const next = new Set(prev);
       next.has(id) ? next.delete(id) : next.add(id);
       return next;
     });
+
+    if (!lineasPorAsiento[id]) {
+      setCargandoLineas(id);
+      api.get(`/contabilidad/erp/libro-mayor/${id}/lineas`)
+        .then(res => {
+          if (res.data?.success) setLineasPorAsiento(prev => ({ ...prev, [id]: res.data.data }));
+        })
+        .catch(() => {})
+        .finally(() => setCargandoLineas(c => (c === id ? null : c)));
+    }
   };
-
-  // Tipos de asiento únicos para el filtro
-  const tiposUnicos = useMemo(() => {
-    const tipos = new Set(asientos.map(a => a.AsiOrigen || 'OTROS'));
-    return ['', ...Array.from(tipos)];
-  }, [asientos]);
-
-  const asientosFiltrados = useMemo(() => {
-    const term = searchTerm.toLowerCase().trim();
-    return asientos.filter(a => {
-      if (filtroConcepto && a.AsiOrigen !== filtroConcepto) return false;
-      if (!term) return true;
-      return (
-        String(a.AsiId).includes(term) ||
-        String(a.TcaIdTransaccion || '').includes(term) ||
-        (a.AsiConcepto || '').toLowerCase().includes(term) ||
-        (a.lineas || []).some(l =>
-          (l.CueNombre || '').toLowerCase().includes(term) ||
-          (l.CueCodigo || '').toLowerCase().includes(term)
-        )
-      );
-    });
-  }, [asientos, searchTerm, filtroConcepto]);
 
   const limpiarFiltros = () => {
     setSearchTerm('');
     setFechaDesde('');
     setFechaHasta('');
     setFiltroConcepto('');
-    fetchAsientos('', '');
+    setAplicado({ desde: '', hasta: '', origen: '', q: '' });
   };
 
-  const aplicarFiltroFechas = () => fetchAsientos(fechaDesde, fechaHasta);
+  const aplicarFiltroFechas = () => setAplicado(a => ({ ...a, desde: fechaDesde, hasta: fechaHasta }));
 
   const hayFiltros = searchTerm || fechaDesde || fechaHasta || filtroConcepto;
 
@@ -89,14 +139,14 @@ export default function LibroMayorView() {
             <h1 className="text-3xl font-black text-slate-800 flex items-center gap-4 tracking-tight">
               <BookOpen className="text-amber-500" size={36} /> Libro Diario / Mayor
             </h1>
-            <p className="text-slate-500 font-bold uppercase tracking-widest text-[10px] mt-2">Auditoría contable bimonetaria · <span className="text-indigo-600">{asientosFiltrados.length}</span> de {asientos.length} asientos</p>
+            <p className="text-slate-500 font-bold uppercase tracking-widest text-[10px] mt-2">Auditoría contable bimonetaria · Mostrando <span className="text-indigo-600">{asientos.length}</span> de {total} asientos</p>
           </div>
-          {/* Total cuadre global */}
-          {asientosFiltrados.length > 0 && (
+          {/* Total cuadre — de TODOS los asientos del filtro, no sólo de los mostrados */}
+          {total > 0 && (
             <div className="text-right bg-slate-50 border border-slate-100 rounded-2xl px-6 py-4 shadow-inner">
-              <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Total Debe / Haber (UYU)</p>
+              <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Total Debe / Haber (UYU) · los {total} asientos del filtro</p>
               <p className="text-2xl font-black text-emerald-600 font-mono tracking-tighter">
-                $ {fmt(asientosFiltrados.reduce((s, a) => s + (a.lineas || []).reduce((ss, l) => ss + l.DebeUYU, 0), 0))}
+                $ {fmt(totalDebeFiltro)} / $ {fmt(totalHaberFiltro)}
               </p>
             </div>
           )}
@@ -155,16 +205,18 @@ export default function LibroMayorView() {
               onChange={e => setFiltroConcepto(e.target.value)}
               className="bg-slate-50/50 border-2 border-slate-100 rounded-2xl px-4 py-3 font-bold text-sm text-slate-800 outline-none focus:border-amber-500 focus:bg-white shadow-inner transition-all cursor-pointer"
             >
-              {tiposUnicos.map(t => <option key={t} value={t}>{t || 'Todos los orígenes'}</option>)}
+              <option value="">Todos los orígenes</option>
+              {origenes.map(t => <option key={t} value={t}>{t}</option>)}
             </select>
           </div>
 
-          {/* Botón Filtrar — siempre visible */}
+          {/* Botón Filtrar — aplica SOLO el rango de fechas; la búsqueda y el origen se aplican solos */}
           <button
             onClick={aplicarFiltroFechas}
+            title="Aplica el rango de fechas. La búsqueda y el origen se aplican solos, sin apretar este botón."
             className="flex items-center gap-2 px-8 py-3 rounded-2xl bg-amber-500 hover:bg-black text-white text-sm font-black transition-all self-end shadow-xl hover:shadow-2xl hover:-translate-y-0.5 active:scale-95"
           >
-            <Search size={18}/> FILTRAR
+            <Search size={18}/> FILTRAR POR FECHA
           </button>
 
           {/* Limpiar */}
@@ -181,19 +233,22 @@ export default function LibroMayorView() {
             <Loader2 className="animate-spin text-amber-500" size={48}/>
             <p className="font-black text-slate-400 uppercase tracking-widest text-sm">Cargando libro mayor...</p>
           </div>
-        ) : asientosFiltrados.length === 0 ? (
+        ) : asientos.length === 0 ? (
           <div className="py-20 bg-white border border-slate-200 rounded-[2.5rem] text-center flex flex-col items-center gap-4">
             <BookOpen size={48} className="text-slate-300"/>
             <p className="font-black text-slate-400 uppercase tracking-widest text-sm">Sin resultados para los filtros aplicados</p>
           </div>
         ) : (
           <div className="flex flex-col gap-4">
-            {asientosFiltrados.map(asi => {
+            {asientos.map(asi => {
               const isOpen = expandedIds.has(asi.AsiId);
               const dateObj = new Date(asi.AsiFecha);
-              const totalDebe = (asi.lineas || []).reduce((s, l) => s + l.DebeUYU, 0);
-              const totalHaber = (asi.lineas || []).reduce((s, l) => s + l.HaberUYU, 0);
+              // Los totales vienen sumados del servidor: la tarjeta cerrada no
+              // necesita las líneas, y así no hay que traerlas para todo el libro.
+              const totalDebe = Number(asi.TotalDebe || 0);
+              const totalHaber = Number(asi.TotalHaber || 0);
               const cuadra = Math.abs(totalDebe - totalHaber) < 0.01;
+              const lineas = lineasPorAsiento[asi.AsiId];
               return (
                 <div key={asi.AsiId} className={`bg-white border-2 hover:border-amber-300 rounded-[1.5rem] shadow-sm hover:shadow-xl transition-all overflow-hidden ${isOpen ? 'border-amber-300 shadow-md ring-4 ring-amber-50' : 'border-slate-100'}`}>
 
@@ -236,7 +291,16 @@ export default function LibroMayorView() {
                   </div>
 
                   {/* DETALLE — sólo visible cuando está expandido */}
-                  {isOpen && (
+                  {isOpen && !lineas && (
+                    <div className="border-t border-slate-100 bg-slate-50/50 px-8 py-8 flex items-center justify-center gap-3">
+                      {cargandoLineas === asi.AsiId && <Loader2 className="animate-spin text-amber-500" size={20}/>}
+                      <span className="font-black text-slate-400 uppercase tracking-widest text-[11px]">
+                        {cargandoLineas === asi.AsiId ? 'Cargando el detalle del asiento...' : 'No se pudo traer el detalle de este asiento'}
+                      </span>
+                    </div>
+                  )}
+
+                  {isOpen && lineas && (
                     <div className="border-t border-slate-100 bg-slate-50/50 px-8 pb-6 pt-5">
                       <div className="grid grid-cols-[1fr_auto_auto_auto] gap-x-8 gap-y-3 text-sm">
                         <div className="font-black text-[10px] tracking-widest uppercase text-slate-400 mb-2 border-b border-slate-200 pb-2">Cuenta Contable</div>
@@ -244,7 +308,7 @@ export default function LibroMayorView() {
                         <div className="font-black text-[10px] tracking-widest uppercase text-slate-400 mb-2 border-b border-slate-200 pb-2 text-right w-36">Debe (UYU)</div>
                         <div className="font-black text-[10px] tracking-widest uppercase text-slate-400 mb-2 border-b border-slate-200 pb-2 text-right w-36">Haber (UYU)</div>
 
-                        {(asi.lineas || []).map((l, i) => (
+                        {lineas.map((l, i) => (
                           <React.Fragment key={i}>
                             <div className="flex items-center gap-3 py-1">
                               <span className="text-indigo-700 font-black font-mono text-xs bg-indigo-100 border border-indigo-200 px-2 py-0.5 rounded-lg shadow-sm">{l.CueCodigo}</span>
@@ -275,6 +339,23 @@ export default function LibroMayorView() {
                 </div>
               );
             })}
+
+            {/* PAGINADO — la pantalla arranca con los 50 asientos más nuevos */}
+            {hayMas ? (
+              <button
+                onClick={() => cargarPagina(aplicado, pagina + 1)}
+                disabled={cargandoMas}
+                className="self-center mt-2 mb-4 flex items-center gap-3 px-10 py-4 rounded-2xl bg-white border-2 border-slate-200 hover:border-amber-400 text-slate-700 text-sm font-black uppercase tracking-widest shadow-sm hover:shadow-lg transition-all disabled:opacity-50"
+              >
+                {cargandoMas
+                  ? <><Loader2 className="animate-spin text-amber-500" size={18}/> Cargando...</>
+                  : <>Cargar {Math.min(PAGE_SIZE, total - asientos.length)} asientos más (quedan {total - asientos.length})</>}
+              </button>
+            ) : (
+              <p className="self-center mt-2 mb-4 font-black text-slate-400 uppercase tracking-widest text-[10px]">
+                Fin del listado · {total} asientos
+              </p>
+            )}
           </div>
         )}
       </div>

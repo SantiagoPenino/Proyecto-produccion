@@ -1,15 +1,18 @@
 import React, { useState, useEffect } from 'react';
 import api from '../../services/apiClient';
-import { Wallet, Coins, Layers, Loader2, Zap, Activity, FileText } from 'lucide-react';
+import { Wallet, Coins, Layers, Loader2, Zap, Activity, FileText, ChevronDown } from 'lucide-react';
+import { codigoCuenta } from '../../utils/cuentaCodigo';
 
 const fmt = (n) => Number(n || 0).toLocaleString('es-UY', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
-const ClienteBilletera = ({ clienteId, clienteNombre, agrupado = false }) => {
+const ClienteBilletera = ({ clienteId, clienteNombre, agrupado = false, onElegirCuenta = null }) => {
   const [loading, setLoading] = useState(false);
   const [cuentas, setCuentas] = useState([]);
   const [planes, setPlanes] = useState([]);
   const [deudas, setDeudas] = useState([]);
   const [ordenes, setOrdenes] = useState([]);
+  // Layout agrupado: qué grupo está desplegado ('UYU' | 'USD' | 'REC' | null)
+  const [expandido, setExpandido] = useState(null);
 
   useEffect(() => {
     if (!clienteId) return;
@@ -38,8 +41,13 @@ const ClienteBilletera = ({ clienteId, clienteNombre, agrupado = false }) => {
   if (!clienteId) return null;
 
   const mCuentas = cuentas.filter(c => ['USD', 'UYU', 'DINERO_USD', 'DINERO_UYU', 'CORRIENTE', 'CREDITO'].includes(c.CueTipo?.toUpperCase()));
-  const ctaUYU = mCuentas.find(c => c.CueTipo?.includes('UYU') || c.MonIdMoneda === 1);
-  const ctaUSD = mCuentas.find(c => c.CueTipo?.includes('USD') || c.MonIdMoneda === 2);
+  // Billetera: puede haber varias cuentas por moneda — el chip grande muestra la PRINCIPAL;
+  // las secundarias (con nombre / restringidas) van en chips propios más abajo.
+  const dineroUYU = mCuentas.filter(c => c.CueTipo?.includes('UYU') || c.MonIdMoneda === 1);
+  const dineroUSD = mCuentas.filter(c => c.CueTipo?.includes('USD') || c.MonIdMoneda === 2);
+  const ctaUYU = dineroUYU.find(c => c.CueEsPrincipal) || dineroUYU[0];
+  const ctaUSD = dineroUSD.find(c => c.CueEsPrincipal) || dineroUSD[0];
+  const cuentasSecundarias = mCuentas.filter(c => c !== ctaUYU && c !== ctaUSD && (c.CueNombre || c.CueRestringida || !c.CueEsPrincipal));
 
   // Conteos por moneda (US$ vs $): órdenes pendientes por cuenta; deudas por símbolo
   const esUSD = (sym) => /US\$|USD/i.test(sym || '');
@@ -118,6 +126,22 @@ const ClienteBilletera = ({ clienteId, clienteNombre, agrupado = false }) => {
         </div>
       </div>
     ),
+    /* Cuentas secundarias de la billetera (con nombre propio / restringidas) */
+    ...cuentasSecundarias.map(c => (
+      <div key={`sec-${c.CueIdCuenta}`}
+        title={c.CueRestringida ? 'Cuenta restringida: su dinero solo paga los artículos permitidos' : 'Cuenta secundaria: solo se usa eligiéndola al pagar'}
+        className={`flex items-center gap-2 px-4 py-2 rounded-2xl border shadow-sm ${c.CueRestringida ? 'bg-violet-50 border-violet-200 text-violet-700' : 'bg-sky-50 border-sky-200 text-sky-700'}`}>
+        <Wallet size={14} className="opacity-80" />
+        <div className="flex flex-col leading-tight">
+          <span className="text-[9px] font-black uppercase tracking-tighter opacity-70 truncate max-w-[130px]">
+            {c.CueNombre || `Cuenta #${c.CueIdCuenta}`}{c.CueRestringida ? ' 🔒' : ''}
+          </span>
+          <span className="text-sm font-black text-slate-900 font-mono italic">
+            {c.CueTipo?.includes('USD') ? 'U$' : '$'} {fmt(c.CueSaldoActual)}
+          </span>
+        </div>
+      </div>
+    )),
   ].filter(Boolean);
 
   // ── Chips de recursos (bolsas de material) — saldo NETO real de la cuenta ───
@@ -157,22 +181,100 @@ const ClienteBilletera = ({ clienteId, clienteNombre, agrupado = false }) => {
   const vacio = !loading && cuentas.length === 0 && planes.length === 0;
   const emptyMsg = <span className="text-[11px] font-black text-slate-300 uppercase tracking-widest italic px-4">— Sin saldos activos —</span>;
 
-  // ── Layout AGRUPADO: Saldos y Recursos en secciones separadas y prolijas ───
+  // ── Layout AGRUPADO (Panel 360): 4 indicadores fijos + desplegables ────────
+  // Ya no se apila un chip por cuenta ni por recurso: Billetera $ / Billetera US$
+  // muestran el TOTAL de su moneda y despliegan la lista al clic; los recursos van
+  // en su propio desplegable. Clic en una fila desplegada la abre en el estado de
+  // cuenta de abajo (onElegirCuenta).
   if (agrupado) {
-    const Eyebrow = ({ children }) => (
-      <span className="text-[9px] font-black uppercase tracking-[0.15em] text-slate-400 shrink-0 w-16">{children}</span>
-    );
-    return (
-      <div className="flex flex-col gap-2.5 py-1 animate-in fade-in slide-in-from-top-2 duration-300">
-        <div className="flex items-center gap-3 flex-wrap">
-          <Eyebrow>Saldos</Eyebrow>
-          {loading && <Loader2 className="animate-spin text-indigo-500 shrink-0" size={14} />}
-          {saldoChips}
+    const totalUYU = dineroUYU.reduce((s, c) => s + Number(c.CueSaldoActual || 0), 0);
+    const totalUSD = dineroUSD.reduce((s, c) => s + Number(c.CueSaldoActual || 0), 0);
+    const recursosList = Array.from(materialesMap.entries()).map(([cueId, mat]) => ({
+      cueId, ...mat,
+      disponible: saldoRealPorCuenta.has(cueId) ? saldoRealPorCuenta.get(cueId) : mat.totalCap,
+    }));
+    const toggle = (k) => setExpandido(p => (p === k ? null : k));
+    const elegir = (tipo, id) => { setExpandido(null); onElegirCuenta?.({ tipo, id }); };
+    const nombreCta = (c) => c.CueNombre || (c.CueEsPrincipal ? `Principal ${c.CueTipo?.includes('USD') ? 'US$' : '$'}` : `Cuenta #${c.CueIdCuenta}`);
+
+    const chipBilletera = (key, cts, total, sym, colorCls) => cts.length > 0 && (
+      <button key={key} type="button" onClick={() => toggle(key)}
+        title={`Total de las ${cts.length} cuenta${cts.length !== 1 ? 's' : ''} en ${sym} (principal + secundarias). Clic para ver cada cuenta.`}
+        className={`flex items-center gap-2 px-4 py-2 rounded-2xl border transition-all shadow-sm ${total < 0 ? 'bg-rose-50 border-rose-200 text-rose-600' : colorCls} ${expandido === key ? 'ring-2 ring-cyan-400/40' : ''}`}>
+        <Wallet size={14} className="opacity-80" />
+        <div className="flex flex-col items-start leading-tight">
+          <span className="text-[9px] font-black uppercase tracking-tighter opacity-70">
+            Billetera {sym} · {cts.length} cuenta{cts.length !== 1 ? 's' : ''}
+          </span>
+          <span className="text-sm font-black text-slate-900 font-mono italic">{sym} {fmt(total)}</span>
         </div>
-        {recursoChips.length > 0 && (
-          <div className="flex items-start gap-3 flex-wrap pt-2.5 border-t border-slate-100">
-            <Eyebrow>Recursos</Eyebrow>
-            {recursoChips}
+        <ChevronDown size={13} className={`opacity-60 transition-transform ${expandido === key ? 'rotate-180' : ''}`} />
+      </button>
+    );
+
+    const filaCuenta = (c) => (
+      <button key={c.CueIdCuenta} type="button" onClick={() => elegir('D', c.CueIdCuenta)}
+        title="Ver esta cuenta en el estado de cuenta de abajo"
+        className="w-full flex items-center justify-between gap-3 px-3 py-1.5 rounded-lg hover:bg-cyan-50 transition-colors text-left">
+        <span className="text-xs font-bold text-slate-700 truncate">
+          <span className="font-mono text-[9px] text-violet-500 mr-1.5">{codigoCuenta(c)}</span>
+          {nombreCta(c)}
+          {c.CueRestringida ? ' 🔒' : ''}{!c.CueEsPrincipal && c.CueAutoConsumo ? ' ⚡' : ''}
+          {c.CueModalidadFiscal === 'PREPAGO_FACTURADO' && <span className="ml-1 text-[9px] font-black text-emerald-600 uppercase">prepago</span>}
+        </span>
+        <span className={`text-xs font-black font-mono tabular-nums ${Number(c.CueSaldoActual || 0) < 0 ? 'text-rose-600' : 'text-slate-800'}`}>
+          {c.CueTipo?.includes('USD') ? 'US$' : '$'} {fmt(c.CueSaldoActual)}
+        </span>
+      </button>
+    );
+
+    return (
+      <div className="flex flex-col gap-2 py-1 animate-in fade-in slide-in-from-top-2 duration-300">
+        <div className="flex items-center gap-3 flex-wrap">
+          {loading && <Loader2 className="animate-spin text-indigo-500 shrink-0" size={14} />}
+          {chipBilletera('UYU', dineroUYU, totalUYU, '$', 'bg-brand-cyan/10 border-brand-cyan/20 text-brand-cyan')}
+          {chipBilletera('USD', dineroUSD, totalUSD, 'US$', 'bg-emerald-50 border-emerald-100 text-emerald-700')}
+          {saldoChips.find(ch => ch?.key === 'pend')}
+          {saldoChips.find(ch => ch?.key === 'deudas')}
+          {recursosList.length > 0 && (
+            <button type="button" onClick={() => toggle('REC')}
+              title="Planes de metros del cliente. Clic para ver cada recurso."
+              className={`flex items-center gap-2 px-4 py-2 rounded-2xl border border-blue-100 bg-blue-50 text-blue-700 shadow-sm transition-all ${expandido === 'REC' ? 'ring-2 ring-cyan-400/40' : ''}`}>
+              <Zap size={14} className="opacity-70" />
+              <span className="text-[10px] font-black uppercase tracking-tighter">Recursos · {recursosList.length}</span>
+              {recursosList.some(r => r.disponible < 0) && <span className="text-[9px] font-black text-rose-600">¡negativo!</span>}
+              <ChevronDown size={13} className={`opacity-60 transition-transform ${expandido === 'REC' ? 'rotate-180' : ''}`} />
+            </button>
+          )}
+        </div>
+
+        {/* Desplegable: cuentas de la moneda elegida / recursos en metros */}
+        {(expandido === 'UYU' || expandido === 'USD') && (
+          <div className="max-w-md bg-white border border-slate-200 rounded-xl shadow-sm p-1.5 flex flex-col gap-0.5">
+            <span className="px-3 pt-1 pb-0.5 text-[9px] font-black uppercase tracking-widest text-slate-400">
+              Cuentas en {expandido === 'USD' ? 'dólares' : 'pesos'} — clic para verla abajo
+            </span>
+            {(expandido === 'USD' ? dineroUSD : dineroUYU)
+              .slice()
+              .sort((a, b) => Number(b.CueEsPrincipal || 0) - Number(a.CueEsPrincipal || 0) || a.CueIdCuenta - b.CueIdCuenta)
+              .map(filaCuenta)}
+          </div>
+        )}
+        {expandido === 'REC' && (
+          <div className="max-w-md bg-white border border-slate-200 rounded-xl shadow-sm p-1.5 flex flex-col gap-0.5">
+            <span className="px-3 pt-1 pb-0.5 text-[9px] font-black uppercase tracking-widest text-slate-400">
+              Recursos en metros — clic para ver su libro abajo
+            </span>
+            {recursosList.map(r => (
+              <button key={r.cueId} type="button" onClick={() => elegir('R', r.cueId)}
+                title="Ver el libro de este recurso en el estado de cuenta de abajo"
+                className="w-full flex items-center justify-between gap-3 px-3 py-1.5 rounded-lg hover:bg-cyan-50 transition-colors text-left">
+                <span className="text-xs font-bold text-slate-700 truncate"><span className="font-mono text-[9px] text-violet-500 mr-1.5">REC-{r.cueId}</span>{r.nombre}</span>
+                <span className={`text-xs font-black font-mono tabular-nums ${r.disponible < 0 ? 'text-rose-600' : 'text-slate-800'}`}>
+                  {fmt(r.disponible)} <span className="text-[9px] opacity-60 uppercase">{r.simbolo}</span>
+                </span>
+              </button>
+            ))}
           </div>
         )}
         {vacio && emptyMsg}

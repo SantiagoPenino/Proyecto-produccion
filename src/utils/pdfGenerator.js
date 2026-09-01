@@ -4,6 +4,7 @@ import QRCode from 'qrcode';
 // Nombre del tipo de documento: misma fuente que usa la bandeja CFE, para que el papel
 // diga exactamente lo mismo que la pantalla.
 import { getTipoDocName } from './tiposDocumento';
+import { codigoCuenta } from './cuentaCodigo';
 
 /** Escribe un texto centrado achicando la fuente si no entra en el ancho dado. */
 function textoAjustado(pdf, texto, x, y, anchoMax, tamBase = 10) {
@@ -16,6 +17,10 @@ function textoAjustado(pdf, texto, x, y, anchoMax, tamBase = 10) {
     pdf.text(texto, x, y, { align: 'center' });
     pdf.setFontSize(tamBase);
 }
+
+// Tasa básica de IVA. Es la que declara el CFE a DGI: backend/services/sisnetService.js
+// manda indFact = 3 (tasa básica) y calcula el impuesto como neto × 0,22 exacto.
+const IVA_TASA_BASICA = 22;
 
 // Configuración visual compartida
 const COLOR_PRIMARY = [30, 58, 138]; // blue-900
@@ -328,21 +333,27 @@ export const generarPdfFacturaDGI = async (doc, detalles, opciones = {}) => {
                 lineTotal = rawTotal;
                 lineNeto = rawSubtotal;
                 lineIva = rawImpuestos != null ? rawImpuestos : (lineTotal - lineNeto);
-                lineRate = (lineNeto > 0) ? Math.round((lineIva / lineNeto) * 100) : 22;
             } else if (rawImpuestos != null) {
                 // Subtotal and Impuestos populated, but Total is null
                 lineNeto = rawSubtotal;
                 lineIva = rawImpuestos;
                 lineTotal = lineNeto + lineIva;
-                lineRate = (lineNeto > 0) ? Math.round((lineIva / lineNeto) * 100) : 22;
             } else {
                 // UI preview / draft: DcdSubtotal holds the gross total of the line, or we don't have DcdTotal/DcdImpuestos.
                 // We assume a 22% IVA rate to compute net and taxes.
                 lineTotal = rawSubtotal;
                 lineNeto = lineTotal / 1.22;
                 lineIva = lineTotal - lineNeto;
-                lineRate = 22;
             }
+
+            // La tasa de la columna IVA es la MISMA que se declara a DGI, no una deducida de
+            // los importes: backend/services/sisnetService.js arma indFact = 1 (exento) cuando
+            // la línea no tiene impuestos y 3 (tasa básica, 22%) en cualquier otro caso.
+            // Deducirla con Math.round(lineIva / lineNeto * 100) imprimía tasas que no existen
+            // cuando los importes son de centavos: la línea de 1,28 m a 0,10 (PC-3321, 18-ago-2026)
+            // tiene neto 0,11 e IVA 0,02 —el 22% de 0,11 es 0,0242, que redondeado guarda 0,02—
+            // y esa división daba 18%, con el pie del mismo PDF diciendo 22%.
+            lineRate = Math.abs(lineIva) < 0.005 ? 0 : IVA_TASA_BASICA;
 
             const lineCantidad = Number(d.DcdCantidad) || 1;
             const descBruto = Number(d.DcdTotalDescuentos || 0);
@@ -393,7 +404,7 @@ export const generarPdfFacturaDGI = async (doc, detalles, opciones = {}) => {
         });
     } else {
         const servSub = doc.DocTotal || doc.DocSubtotal;
-        tableBody = [['1', 'Servicios', '22%', fmtNum(servSub), '1', '', '', fmtNum(servSub), fmtNum(servSub)]];
+        tableBody = [['1', 'Servicios', `${IVA_TASA_BASICA}%`, fmtNum(servSub), '1', '', '', fmtNum(servSub), fmtNum(servSub)]];
     }
 
     autoTable(pdf, {
@@ -452,10 +463,10 @@ export const generarPdfFacturaDGI = async (doc, detalles, opciones = {}) => {
     const finalY = tableEndY + 10;
 
     pdf.setFontSize(9);
-    pdf.text("Gravado 22%", 150, finalY);
+    pdf.text(`Gravado ${IVA_TASA_BASICA}%`, 150, finalY);
     pdf.text(fmtNum(doc.DocSubtotal), 195, finalY, { align: 'right' });
 
-    pdf.text("IVA 22%", 150, finalY + 5);
+    pdf.text(`IVA ${IVA_TASA_BASICA}%`, 150, finalY + 5);
     pdf.text(fmtNum(doc.DocImpuestos), 195, finalY + 5, { align: 'right' });
 
     pdf.text("Total", 150, finalY + 10);
@@ -770,9 +781,15 @@ export const generarPdfEstadoCuenta = (cliente, cuentas, secciones, planes, desd
         pdf.setFontSize(12);
         pdf.setTextColor(0, 0, 0);
         const suffix = saldo > 0 ? ' (Saldo a favor)' : (saldo < 0 ? ' (Deuda)' : '');
+        // Billetera: las cuentas de dinero llevan su NOMBRE ("milan saldo", "Principal US$"…),
+        // no solo el tipo técnico DINERO_USD.
+        const nombreBilletera = c.CueNombre
+            ? `"${c.CueNombre}"${c.CueRestringida ? ' (restringida)' : ''}`
+            : (c.CueEsPrincipal ? `Principal ${c.CueTipo?.includes('USD') ? 'US$' : '$'}` : null);
+        // Código único de la cuenta (mismo que las pantallas): CTA-USD-x / CTA-UYU-x plata, REC-x recursos
         const cuentaLabel = c.NombreArticulo
-            ? `${c.UnidadLabel || c.CueTipo} — ${c.NombreArticulo}`
-            : (c.UnidadLabel || c.CueTipo);
+            ? `${codigoCuenta(c)} · ${c.UnidadLabel || c.CueTipo} — ${c.NombreArticulo}`
+            : `${codigoCuenta(c)} · ${c.UnidadLabel || c.CueTipo}${nombreBilletera ? ` — ${nombreBilletera}` : ''}`;
         pdf.text(`Cuenta: ${cuentaLabel} - Saldo Actual: ${saldoStr}${suffix}`, 14, currentY);
         currentY += 6;
 
@@ -849,9 +866,17 @@ export const generarPdfEstadoCuenta = (cliente, cuentas, secciones, planes, desd
                 ? `${fmtNum(saldoDespuesNum)} ${unidadLabel}`
                 : `${fmtNum(saldoDespuesNum)}`;
 
+            // Tipo LEGIBLE: los códigos internos con guión bajo (PAGO_SALDO) se cortaban
+            // feo en la celda ("PAGO_S ALDO"); el papel dice lo mismo que la pantalla.
+            const TIPO_PDF = {
+                PAGO_SALDO: 'PAGO CON SALDO', TRANSFERENCIA_SALIDA: 'TRANSF. SALIDA', TRANSFERENCIA_ENTRADA: 'TRANSF. ENTRADA',
+                CONSUMO_CUENTA: 'CONSUMO', CARGA_PREPAGO: 'CARGA FACTURADA', ORDEN_ANTICIPO: 'ORDEN',
+                SALDO_A_FAVOR: 'A FAVOR', PAGO_CRUZADO: 'CRUCE MONEDA', CIERRE_CICLO: 'CIERRE', VTA_CAJA: 'VENTA',
+                AJUSTE_POS: 'AJUSTE +', AJUSTE_NEG: 'AJUSTE −', NOTA_CREDITO: 'NOTA CRÉDITO',
+            };
             return [
                 fmtFecha(m.MovFecha),
-                m.MovTipo,
+                TIPO_PDF[m.MovTipo] || m.MovTipo,
                 docFull,
                 m.MovConcepto || '—',
                 saldoIniStr,
@@ -1240,9 +1265,12 @@ export const generarPdfPrefactura = (ciclo, movs, excluidos, cuenta, cliente, es
     if (cliente.CioRuc) {
         pdf.text(`RUT/CI: ${cliente.CioRuc}`, 14, 58);
     }
+    const nombreBilleteraPF = cuenta.CueNombre
+        ? `"${cuenta.CueNombre}"`
+        : (cuenta.CueEsPrincipal ? `Principal ${cuenta.CueTipo?.includes('USD') ? 'US$' : '$'}` : null);
     const cuentaLabelPF = cuenta.NombreArticulo
-        ? `${cuenta.UnidadLabel || cuenta.CueTipo} — ${cuenta.NombreArticulo}`
-        : (cuenta.UnidadLabel || cuenta.CueTipo);
+        ? `${codigoCuenta(cuenta)} · ${cuenta.UnidadLabel || cuenta.CueTipo} — ${cuenta.NombreArticulo}`
+        : `${codigoCuenta(cuenta)} · ${cuenta.UnidadLabel || cuenta.CueTipo}${nombreBilleteraPF ? ` — ${nombreBilleteraPF}` : ''}`;
     pdf.text(`Cuenta: ${cuentaLabelPF}`, 120, 52);
 
     // Tabla de Detalles

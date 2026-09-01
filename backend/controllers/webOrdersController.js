@@ -9,6 +9,7 @@ const contabilidadService = require('../services/contabilidadService');
 const ERPSyncService = require('../services/erpSyncService');
 const { generateThumbnail } = require('../utils/thumbnailGenerator');
 const { construirNombreArchivo, materialParaNombre, usaNombreNuevo } = require('../utils/nombreArchivoOrden');
+const { marcarRequisitoNoAplica } = require('../utils/requisitosAutoCumplimiento');
 
 // Ubicación de una terminación en texto legible para la NOTA que lee producción.
 // Acepta las canónicas ('PERIMETRO') y las combinaciones libres ('ARRIBA,IZQUIERDA').
@@ -508,6 +509,15 @@ exports.createWebOrder = async (req, res) => {
                     // los metros de TELA a descontarle — no usa el bobinaId top-level del pedido.
                     bobinaTelaId: srv.bobinaTelaId ? parseInt(srv.bobinaTelaId) : null,
                     magnitudTela: parseFloat(srv.magnitudTela) || 0,
+                    // [REQUISITOS] Origen del material de Corte cuando viaja como extra
+                    // (enrichedComplementary['TWC']): 'TELA SUBLIMADA EN USER' → viene de una
+                    // orden de Sublimación existente (selectedSubOrderId); 'TELA CLIENTE' →
+                    // bobina propia elegida en el picker (selectedBobinaId, comparte el estado
+                    // top-level del formulario); 'TELA STOCK USER' → material propio, no
+                    // requiere ningún traspaso. Ver bloque de bobina y bloque EST más abajo.
+                    fabricOrigin: srv.metadata?.fabricOrigin || null,
+                    selectedSubOrderId: srv.metadata?.selectedSubOrderId || null,
+                    selectedBobinaIdExtra: srv.metadata?.selectedBobinaId ? parseInt(srv.metadata.selectedBobinaId) : null,
                     notaAdicional: serviceNote, // Nota completa para la Orden
                     techInfo: techInfo // Info técnica limpia para ServiciosExtraOrden
                 };
@@ -550,6 +560,11 @@ exports.createWebOrder = async (req, res) => {
                         pendingOrderExecutions.push({
                             ...execBase,
                             magnitudInicial: parseInt(d.cantidad) || 0,
+                            // [CAPACIDAD] Puntadas TOTALES del diseño = puntadas de 1 pieza (lo
+                            // que ya cotiza el bordado, d.puntadasEstimadas) x cantidad de piezas.
+                            // NO reemplaza magnitudInicial/Magnitud (esa sigue siendo piezas, la
+                            // usa el pricing) — es un dato aparte, solo para el motor de capacidad.
+                            magnitudCapacidadInicial: (parseInt(d.puntadasEstimadas) || 0) * (parseInt(d.cantidad) || 0) || null,
                             referencias: ordenReferencias.filter(f => nombresDelDiseno.includes(f.name)),
                             prendaClienteId: d.prendaClienteId || null,
                             disenoBordado: d,
@@ -700,7 +715,12 @@ exports.createWebOrder = async (req, res) => {
                     items: [],
                     referencias: [],
                     notaAdicional: finalExtraNote,
-                    techInfo: serviceSpec
+                    techInfo: serviceSpec,
+                    // [REQUISITOS] Paridad con execBase (CASO 1) — este bloque legacy lo siguen
+                    // usando integraciones externas (integrationOrdersController.js, etc.).
+                    fabricOrigin: val.metadata?.fabricOrigin || null,
+                    selectedSubOrderId: val.metadata?.selectedSubOrderId || null,
+                    selectedBobinaIdExtra: val.metadata?.selectedBobinaId ? parseInt(val.metadata.selectedBobinaId) : null
                 });
             });
         }
@@ -863,6 +883,7 @@ exports.createWebOrder = async (req, res) => {
             const filesToUpload = [];
             const generatedOrders = [];
             const generatedIDs = [];
+            let fechaCompromisoEmb = null; // [CAPACIDAD] fecha real de Bordado, si el pedido lleva diseños EMB
             const timestamp = Date.now();
             let telaDescontada = false; // TELA CLIENTE: garantiza UN solo descuento por pedido
 
@@ -1136,6 +1157,29 @@ exports.createWebOrder = async (req, res) => {
                 const isPrinting = (exec.areaID || "").toUpperCase().match(/IMPRESION|GIG|SUBLIMACION|SB|DF|ECO|UV|DIRECTA/);
                 const fechaEntradaSector = isPrinting ? new Date() : null;
 
+                // [REQUISITOS] Corte con material que viene de una Sublimación existente del
+                // cliente (selectedSubOrderId, elegido en el portal entre sus órdenes SB
+                // activas — mismo universo que getActiveSublimationOrders). Se resuelve a
+                // OrdenID acá para encadenar LiberaCuandoOrdenID: el check-in del remito
+                // SB→TWC de esa orden puntual es lo que va a cumplir el requisito TELA de
+                // esta orden de Corte (ver bloque AUTO-FULFILL en logisticsController.js).
+                let liberaCuandoOrdenIdExec = null;
+                if (exec.areaID === 'TWC' && exec.selectedSubOrderId) {
+                    const subRes = await new sql.Request(transaction)
+                        .input('Cod', sql.VarChar(50), String(exec.selectedSubOrderId).trim())
+                        .input('CodCliente', sql.Int, codCliente)
+                        .query(`
+                            SELECT TOP 1 OrdenID FROM Ordenes
+                            WHERE CodigoOrden = @Cod AND AreaID IN ('SB', 'SUB') AND CodCliente = @CodCliente
+                              AND Estado NOT IN ('Finalizado', 'Cancelado', 'Entregado')
+                        `);
+                    if (subRes.recordset.length) {
+                        liberaCuandoOrdenIdExec = subRes.recordset[0].OrdenID;
+                    } else {
+                        logger.warn(`[CORTE] selectedSubOrderId '${exec.selectedSubOrderId}' no resolvió a una orden SB activa del cliente ${codCliente} — queda sin encadenar.`);
+                    }
+                }
+
                 // INSERCIÓN DE ORDEN CON ESTADO 'Cargando...'
                 const resOrder = await new sql.Request(transaction)
                     .input('AreaID', sql.VarChar(20), exec.areaID)
@@ -1150,6 +1194,9 @@ exports.createWebOrder = async (req, res) => {
                     .input('ERP', sql.VarChar(50), erpDocNumber)
                     .input('Nota', sql.NVarChar(sql.MAX), notaOrden)
                     .input('Mag', sql.VarChar(50), String(exec.magnitudInicial || '0')) // Magnitud inicial (cero si no hay dato)
+                    // [CAPACIDAD] Puntadas totales del diseño (solo EMB) — ver
+                    // magnitudCapacidadInicial más arriba. NULL en cualquier otra área.
+                    .input('MagCap', sql.Decimal(18, 2), exec.magnitudCapacidadInicial ?? null)
                     .input('Prox', sql.VarChar(50), proximoServicio)
                     .input('Estado', sql.VarChar(50), 'Cargando...')
                     .input('UM', sql.VarChar(20), areaUM)
@@ -1169,25 +1216,32 @@ exports.createWebOrder = async (req, res) => {
                     // [BORDADO] Línea de prendas del cliente que consume esta orden.
                     // Análogo exacto de BobinaTelaID en tela de cliente.
                     .input('PrendaCliID', sql.Int, exec.prendaClienteId || null)
+                    // [REQUISITOS] Corte cuyo material sale de una Sublimación existente del
+                    // cliente — ver resolución de liberaCuandoOrdenIdExec más arriba. Mismo
+                    // campo que ya usa prendasOrdersController.js para encadenar Estampado a
+                    // su transfer específico; acá lo consume el check-in extendido en
+                    // logisticsController.js (bloque AUTO-FULFILL, match por LiberaCuandoOrdenID).
+                    .input('LiberaCuando', sql.Int, liberaCuandoOrdenIdExec)
                     .query(`
                         INSERT INTO Ordenes (
                             AreaID, Cliente, CodCliente, IdClienteReact, DescripcionTrabajo, Prioridad,
                             FechaIngreso, FechaEstimadaEntrega, Material, Variante,
-                            CodigoOrden, NoDocERP, Nota, Magnitud, ProximoServicio, UM, Estado, EstadoenArea,
+                            CodigoOrden, NoDocERP, Nota, Magnitud, MagnitudCapacidad, ProximoServicio, UM, Estado, EstadoenArea,
                             CodArticulo, IdProductoReact, ProIdProducto, CliIdCliente, FechaEntradaSector,
-                            BobinaTelaID, DisenadorID, Tinta, ModoRetiro, PrendaClienteID
+                            BobinaTelaID, DisenadorID, Tinta, ModoRetiro, PrendaClienteID, LiberaCuandoOrdenID
                         )
                         OUTPUT INSERTED.OrdenID
                         VALUES (
                             @AreaID, @Cliente, @CodCliente, @IdClienteReact, @Desc, @Prio,
                             GETDATE(), DATEADD(day, 3, GETDATE()), @Mat, @Var,
-                            @Cod, @ERP, @Nota, @Mag, @Prox, @UM, @Estado, @Estado,
+                            @Cod, @ERP, @Nota, @Mag, @MagCap, @Prox, @UM, @Estado, @Estado,
                             @CodArt, @IdProdReact, @ProIdProducto, @CliIdCliente, @F_EntSec,
-                            @BobID, @DisenadorID, @Tinta, @ModoRet, @PrendaCliID
+                            @BobID, @DisenadorID, @Tinta, @ModoRet, @PrendaCliID, @LiberaCuando
                         )
                     `);
 
                 const newOID = resOrder.recordset[0].OrdenID;
+                exec.newOrdenID = newOID; // [CAPACIDAD] para poder actualizar FechaCompromiso después del loop
                 generatedOrders.push(exec.codigoOrden);
                 generatedIDs.push(newOID);
 
@@ -1243,6 +1297,84 @@ exports.createWebOrder = async (req, res) => {
                                     (OrdenID, CodArt, CodStock, Descripcion, Cantidad, PrecioUnitario, TotalLinea, Observacion, FechaRegistro)
                                 VALUES (@OID, @Cod, '1.1.4.9', @Des, @Cnt, 0, 0, 'Cargo de bordado (portal)', GETDATE())
                             `);
+                    }
+
+                    // [PRENDA] Un parche adhesivo se fabrica de cero — no consume ninguna prenda
+                    // que el cliente haya entregado, así que el requisito bloqueante PRENDA nunca
+                    // se cumpliría por el camino normal (recibir un remito con la prenda del
+                    // cliente) y la orden quedaría esperando para siempre. Nace CUMPLIDO desde el
+                    // ingreso. "Bordado sobre la prenda" (el otro tipo) sí la necesita — no se
+                    // toca ese caso. Mismo criterio robusto que ya usa el frontend
+                    // (BordadoTechnicalUI.jsx) para distinguir un parche: /parche/i sobre la
+                    // variante, más tolerante que comparar el string exacto.
+                    if (/parche/i.test(varianteFinal || '')) {
+                        try {
+                            const reqPrenda = await new sql.Request(transaction)
+                                .input('Area', sql.VarChar(20), exec.areaID)
+                                .query(`SELECT RequisitoID FROM ConfigRequisitosProduccion WHERE AreaID = @Area AND CodigoRequisito = 'PRENDA'`);
+                            if (reqPrenda.recordset.length) {
+                                await new sql.Request(transaction)
+                                    .input('OID', sql.Int, newOID)
+                                    .input('Area', sql.VarChar(20), exec.areaID)
+                                    .input('RID', sql.Int, reqPrenda.recordset[0].RequisitoID)
+                                    .query(`
+                                        IF NOT EXISTS (SELECT 1 FROM OrdenCumplimientoRequisitos WHERE OrdenID = @OID AND RequisitoID = @RID)
+                                            INSERT INTO OrdenCumplimientoRequisitos (OrdenID, AreaID, RequisitoID, Estado, FechaCumplimiento, Observaciones)
+                                            VALUES (@OID, @Area, @RID, 'CUMPLIDO', GETDATE(), 'Parche adhesivo: no consume prenda del cliente')
+                                    `);
+                            }
+                        } catch (reqErr) {
+                            logger.warn(`[BORDADO] Orden ${newOID}: no se pudo auto-cumplir el requisito PRENDA (parche): ${reqErr.message}`);
+                        }
+                    }
+
+                    // [PRENDA] El cliente ya eligió, al cargar el pedido, la línea de
+                    // InventarioPrendasCliente que esta orden va a bordar (PrendaClienteID,
+                    // guardado arriba en el INSERT de Ordenes) — esa prenda solo existe ahí
+                    // porque ya se recibió en mostrador (Recepciones/PRE-xxx). Si el bulto de
+                    // esa recepción YA está físicamente en esta área (llegó por remito interno
+                    // ANTES de que se creara este pedido), el requisito nace CUMPLIDO con el
+                    // detalle — mismo formato "Asignado: ..." que TELA CLIENTE más abajo. Si
+                    // todavía no llegó (sigue en Recepción o en tránsito), no hace nada acá: se
+                    // cumple más adelante al recibirse el remito (ver AUTO-FULFILL PRENDA DE
+                    // CLIENTE en logisticsController.receiveDispatch, caso simétrico a este).
+                    if (exec.prendaClienteId) {
+                        try {
+                            const prendaRes = await new sql.Request(transaction)
+                                .input('PID', sql.Int, exec.prendaClienteId)
+                                .input('Area', sql.VarChar(20), exec.areaID)
+                                .query(`
+                                    SELECT p.Descripcion, p.Talle, p.Color, r.Codigo AS CodigoRecepcion
+                                    FROM InventarioPrendasCliente p
+                                    LEFT JOIN Recepciones r ON r.RecepcionID = p.RecepcionID
+                                    LEFT JOIN Logistica_Bultos b ON (b.CodigoEtiqueta = r.Codigo OR b.CodigoEtiqueta LIKE r.Codigo + '-%')
+                                    WHERE p.PrendaClienteID = @PID AND b.UbicacionActual = @Area
+                                `);
+                            if (prendaRes.recordset.length) {
+                                const { Descripcion, Talle, Color, CodigoRecepcion } = prendaRes.recordset[0];
+                                const reqPrenda2 = await new sql.Request(transaction)
+                                    .input('Area', sql.VarChar(20), exec.areaID)
+                                    .query(`SELECT RequisitoID FROM ConfigRequisitosProduccion WHERE AreaID = @Area AND CodigoRequisito = 'PRENDA'`);
+                                if (reqPrenda2.recordset.length) {
+                                    const partes = [Descripcion || 'prenda del cliente'];
+                                    if (Talle) partes.push(`talle ${Talle}`);
+                                    if (Color) partes.push(Color);
+                                    const obsPrenda = `Asignado: ${partes.join(' — ')}${CodigoRecepcion ? ` [${CodigoRecepcion.trim()}]` : ''}`;
+                                    await new sql.Request(transaction)
+                                        .input('OID', sql.Int, newOID)
+                                        .input('Area', sql.VarChar(20), exec.areaID)
+                                        .input('RID', sql.Int, reqPrenda2.recordset[0].RequisitoID)
+                                        .input('Obs', sql.NVarChar(500), obsPrenda)
+                                        .query(`
+                                            IF NOT EXISTS (SELECT 1 FROM OrdenCumplimientoRequisitos WHERE OrdenID = @OID AND RequisitoID = @RID)
+                                                INSERT INTO OrdenCumplimientoRequisitos (OrdenID, AreaID, RequisitoID, Estado, FechaCumplimiento, Observaciones)
+                                                VALUES (@OID, @Area, @RID, 'CUMPLIDO', GETDATE(), @Obs)
+                                        `);
+                                }
+                            }
+                        } catch (reqErr) {
+                            logger.warn(`[BORDADO] Orden ${newOID}: no se pudo auto-cumplir el requisito PRENDA (prenda de cliente ya recibida): ${reqErr.message}`);
+                        }
                     }
                 }
 
@@ -1350,8 +1482,73 @@ exports.createWebOrder = async (req, res) => {
                         if (!usaBobinaPropia) telaDescontada = true;
                         logger.info(`[TELA-CLIENTE] Orden ${newOID}: descontados ${mag}m de bobina ${bid}. Restantes: ${MetrosRestantes - mag}m`);
                     }
+                } else if (!exec.isExtra && exec.areaID === 'SB') {
+                    // [REQUISITOS] Sublimación sin bobina de cliente: material propio de la
+                    // empresa. El requisito TELA nunca se va a cumplir por esta vía — nace
+                    // CUMPLIDO ("no aplica") en vez de quedar bloqueado para siempre.
+                    await marcarRequisitoNoAplica(transaction, {
+                        ordenId: newOID, areaId: exec.areaID, codigoRequisito: 'TELA', exact: false,
+                        observaciones: 'No aplica — material propio de la empresa'
+                    });
                 }
 
+                // [REQUISITOS] Corte (TWC) como EXTRA de otro pedido: el bloque de arriba es
+                // solo para el servicio principal (!exec.isExtra), así que acá se resuelve el
+                // requisito TELA aparte según lo que el cliente indicó en el portal.
+                if (exec.areaID === 'TWC' && exec.isExtra) {
+                    if (exec.selectedBobinaIdExtra) {
+                        // Bobina propia elegida directamente. No se toca InventarioBobinas acá
+                        // (este flujo de extra no mide tizada, no hay magnitud de tela
+                        // calculable todavía) — el descuento de metros queda pendiente, igual
+                        // que hoy, pero el requisito ya no bloquea la orden indefinidamente.
+                        const bobRes = await new sql.Request(transaction)
+                            .input('BID', sql.Int, exec.selectedBobinaIdExtra)
+                            .query(`SELECT DescripcionTela, CodigoEtiqueta FROM InventarioBobinas WHERE BobinaID = @BID`);
+                        const bob = bobRes.recordset[0];
+                        const obsBobina = bob
+                            ? `Asignado: ${bob.DescripcionTela || 'Tela'} [${(bob.CodigoEtiqueta || `Bobina ${exec.selectedBobinaIdExtra}`).trim()}] — metros pendientes de descuento manual`
+                            : `Bobina ${exec.selectedBobinaIdExtra} indicada por el cliente`;
+                        await marcarRequisitoNoAplica(transaction, {
+                            ordenId: newOID, areaId: exec.areaID, codigoRequisito: 'TELA', exact: false, observaciones: obsBobina
+                        });
+                    } else if (!exec.selectedSubOrderId) {
+                        // Ni bobina propia ni traspaso de una Sublimación existente: material
+                        // propio de la empresa, igual que el caso SB de arriba.
+                        await marcarRequisitoNoAplica(transaction, {
+                            ordenId: newOID, areaId: exec.areaID, codigoRequisito: 'TELA', exact: false,
+                            observaciones: 'No aplica — material propio de la empresa'
+                        });
+                    }
+                    // else: selectedSubOrderId sin bobina propia → el requisito TELA queda
+                    // genuinamente pendiente. Ya quedó encadenado a la orden SB de origen vía
+                    // LiberaCuandoOrdenID (ver resolución antes del INSERT) — lo resuelve el
+                    // check-in extendido en logisticsController.js cuando llegue el bulto real.
+                }
+
+                // [REQUISITOS] Estampado (EST) exige simultáneamente PRENDA+DTF+TPU en
+                // ConfigRequisitosProduccion, pero cada orden real solo sale de UN canal — el
+                // que corresponda según qué otras áreas están activas en este mismo pedido
+                // (mismo NoDocERP). Los códigos que no correspondan nacen CUMPLIDOS ("no
+                // aplica"); el que sí corresponde queda pendiente, resuelto por el auto-cumplido
+                // de check-in ya existente (matchea por NoDocERP + Areas.Entrega del origen).
+                if (exec.areaID === 'EST') {
+                    let canalReal = null;
+                    if (allActiveAreas.has('DF') && !allActiveAreas.has('TPU')) canalReal = 'DTF';
+                    else if (allActiveAreas.has('TPU') && !allActiveAreas.has('DF')) canalReal = 'TPU';
+                    else if (!allActiveAreas.has('DF') && !allActiveAreas.has('TPU') && allActiveAreas.has('EMB')) canalReal = 'PRENDA';
+
+                    if (canalReal) {
+                        for (const cod of ['PRENDA', 'DTF', 'TPU']) {
+                            if (cod === canalReal) continue;
+                            await marcarRequisitoNoAplica(transaction, {
+                                ordenId: newOID, areaId: exec.areaID, codigoRequisito: cod,
+                                observaciones: `No aplica — el canal real de este Estampado es ${canalReal}`
+                            });
+                        }
+                    } else {
+                        logger.warn(`[ESTAMPADO] Orden ${newOID}: canal ambiguo o sin origen reconocido (DF=${allActiveAreas.has('DF')}, TPU=${allActiveAreas.has('TPU')}, EMB=${allActiveAreas.has('EMB')}) — quedan los 3 requisitos pendientes.`);
+                    }
+                }
 
                 // --- NOMBRE DE LOS ARCHIVOS: MATERIAL AL PRINCIPIO (SOLO SUBLIMACIÓN) ---
                 // El resto de las áreas mantiene el nombre de siempre (ORDEN_CLIENTE_TRABAJO_Archivo...).
@@ -1864,6 +2061,40 @@ exports.createWebOrder = async (req, res) => {
                 }
             }
 
+            // [CAPACIDAD] Fecha Compromiso de Bordado: se calcula con la cola real + capacidad
+            // real del área (no el fijo de sp_CalcularFechaEntrega) y queda CONGELADA — no se
+            // recalcula después aunque cambie la cola. Un pedido con varios diseños EMB recibe
+            // UNA sola fecha: la más tardía entre todos. No bloqueante: si falla, el pedido se
+            // crea igual, sin FechaCompromiso (el motor cae a FechaEstimadaEntrega fija).
+            try {
+                const disenosEmbCreados = pendingOrderExecutions.filter(e => e.areaID === 'EMB' && e.magnitudCapacidadInicial > 0 && e.newOrdenID);
+                if (disenosEmbCreados.length > 0) {
+                    const { calcularFechaCompromiso } = require('./planificacionController');
+                    const confRes = await pool.request().query("SELECT Valor FROM dbo.ConfiguracionGlobal WHERE Clave = 'EMB_DIAS_PREPARACION_MATRIZ'");
+                    const diasColchon = confRes.recordset.length > 0 ? (parseInt(confRes.recordset[0].Valor, 10) || 0) : 0;
+
+                    // pool.request() (NO la transacción en curso): tiene que ver la cola SIN las
+                    // filas que se acaban de insertar en este mismo pedido (todavía sin commit).
+                    const fechas = await calcularFechaCompromiso(
+                        pool, 'EMB',
+                        disenosEmbCreados.map(e => ({ magnitud: e.magnitudCapacidadInicial, prioridad: finalUrgency })),
+                        diasColchon
+                    );
+                    const fechaMasTardia = fechas.filter(Boolean).sort().pop();
+
+                    if (fechaMasTardia) {
+                        const idsCsv = disenosEmbCreados.map(e => e.newOrdenID).join(',');
+                        await new sql.Request(transaction)
+                            .input('Fecha', sql.Date, fechaMasTardia)
+                            .query(`UPDATE Ordenes SET FechaCompromiso = @Fecha WHERE OrdenID IN (${idsCsv})`);
+                        // Para devolverla en la respuesta — el cliente ve la fecha real apenas confirma.
+                        fechaCompromisoEmb = fechaMasTardia;
+                    }
+                }
+            } catch (fechaCompromisoErr) {
+                logger.error(`⚠️ calcularFechaCompromiso falló para el pedido: ${fechaCompromisoErr.message}`);
+            }
+
             await transaction.commit();
 
             // RESPUESTA AL FRONTEND: "Orden Creada, Ahora Sube los Archivos"
@@ -1871,7 +2102,8 @@ exports.createWebOrder = async (req, res) => {
                 success: true,
                 orderIds: generatedOrders,
                 requiresUpload: filesToUpload.length > 0,
-                uploadManifest: filesToUpload
+                uploadManifest: filesToUpload,
+                fechaCompromisoEmb // 'YYYY-MM-DD' o null si el pedido no llevaba Bordado (o no se pudo calcular)
             });
 
             // --- AUTO-COTIZACIÓN ASÍNCRONA ---
@@ -3740,7 +3972,43 @@ exports.getPickupOrders = async (req, res) => {
                     c.TelefonoTrabajo AS Celular,
                     tc.TClDescripcion AS TipoCliente,
                     m.MonSimbolo,
-                    LTRIM(RTRIM(art.Descripcion)) AS Producto
+                    LTRIM(RTRIM(art.Descripcion)) AS Producto,
+                    -- BILLETERA: orden ya descontada ENTERA del saldo prepago (consumo con marca
+                    -- CUBIERTO_CUENTA_, no parcial) → está PAGA: el retiro no debe cobrarla de nuevo.
+                    CASE WHEN EXISTS (
+                        SELECT 1 FROM MovimientosCuenta cx WITH(NOLOCK)
+                        JOIN CuentasCliente ccx WITH(NOLOCK) ON ccx.CueIdCuenta = cx.CueIdCuenta
+                        WHERE ccx.CliIdCliente = o.CliIdCliente
+                          AND cx.MovTipo = 'CONSUMO_CUENTA'
+                          AND (cx.MovAnulado IS NULL OR cx.MovAnulado = 0)
+                          AND cx.MovObservaciones LIKE 'CUBIERTO[_]CUENTA[_]%'
+                          AND (cx.OrdIdOrden = o.OrdIdOrden
+                               OR cx.OrdIdOrden IN (SELECT erp.OrdenID FROM Ordenes erp WITH(NOLOCK) WHERE erp.CodigoOrden = o.OrdCodigoOrden))
+                    ) THEN 1 ELSE 0 END AS CubiertaBilletera,
+                    -- PARCIAL: la billetera cubrió una parte (consumo CUBIERTO_PARCIAL_CUENTA)
+                    CASE WHEN EXISTS (
+                        SELECT 1 FROM MovimientosCuenta cp WITH(NOLOCK)
+                        JOIN CuentasCliente ccp WITH(NOLOCK) ON ccp.CueIdCuenta = cp.CueIdCuenta
+                        WHERE ccp.CliIdCliente = o.CliIdCliente
+                          AND cp.MovTipo = 'CONSUMO_CUENTA'
+                          AND (cp.MovAnulado IS NULL OR cp.MovAnulado = 0)
+                          AND cp.MovObservaciones LIKE 'CUBIERTO[_]PARCIAL[_]CUENTA%'
+                          AND (cp.OrdIdOrden = o.OrdIdOrden
+                               OR cp.OrdIdOrden IN (SELECT erp3.OrdenID FROM Ordenes erp3 WITH(NOLOCK) WHERE erp3.CodigoOrden = o.OrdCodigoOrden))
+                    ) THEN 1 ELSE 0 END AS ParcialBilletera,
+                    -- Resto REAL a cobrar según cuenta corriente: la ORDEN viva sin marca ni factura
+                    -- (tras una cobertura parcial vale SOLO el resto; F3 la mantiene sincronizada)
+                    (SELECT TOP 1 ABS(mr.MovImporte)
+                     FROM MovimientosCuenta mr WITH(NOLOCK)
+                     JOIN CuentasCliente ccr WITH(NOLOCK) ON ccr.CueIdCuenta = mr.CueIdCuenta
+                     WHERE ccr.CliIdCliente = o.CliIdCliente
+                       AND mr.MovTipo IN ('ORDEN','ORDEN_ANTICIPO')
+                       AND (mr.MovAnulado IS NULL OR mr.MovAnulado = 0)
+                       AND mr.DocIdDocumento IS NULL
+                       AND (mr.MovObservaciones IS NULL OR mr.MovObservaciones NOT LIKE 'CUBIERTO%')
+                       AND (mr.OrdIdOrden = o.OrdIdOrden
+                            OR mr.OrdIdOrden IN (SELECT erp4.OrdenID FROM Ordenes erp4 WITH(NOLOCK) WHERE erp4.CodigoOrden = o.OrdCodigoOrden))
+                     ORDER BY mr.MovIdMovimiento DESC) AS RestoCtaCte
                 FROM OrdenesDeposito o WITH(NOLOCK)
                 LEFT JOIN EstadosOrdenes e WITH(NOLOCK) ON e.EOrIdEstadoOrden = o.OrdEstadoActual
                 LEFT JOIN Clientes c WITH(NOLOCK) ON c.CliIdCliente = o.CliIdCliente
@@ -3791,6 +4059,14 @@ exports.getPickupOrders = async (req, res) => {
 
             let finalAmount = cob ? parseFloat(cob.MontoTotal) : (parseFloat(o.CostoFinal) || 0);
             let isPaid = cob ? cob.EstadoCobro === 'Pagado' : false;
+            // Cubierta entera por la billetera ⇒ PAGA: no entra en el total a cobrar y el
+            // retiro se confirma sin pasar por la pasarela (nace Abonado por cobertura).
+            if (o.CubiertaBilletera === 1) isPaid = true;
+            // Cubierta PARCIAL ⇒ a cobrar queda SOLO el resto que vive en la cuenta corriente
+            // (cobrar el total original duplicaría la parte que la billetera ya pagó).
+            else if (o.ParcialBilletera === 1 && o.RestoCtaCte != null) {
+                finalAmount = Math.round(Number(o.RestoCtaCte) * 100) / 100;
+            }
 
             return {
                 id: docId,
@@ -3806,6 +4082,9 @@ exports.getPickupOrders = async (req, res) => {
                 status: isPaid ? 'PAGADO' : 'LISTO',
                 originalStatus: o.Estado,
                 isPaid: isPaid,
+                cubiertaBilletera: o.CubiertaBilletera === 1,
+                // Parcial: la billetera cubrió parte y `amount` ya es SOLO el resto a cobrar
+                parcialBilletera: o.ParcialBilletera === 1 && o.RestoCtaCte != null,
                 currency: cob ? cob.Moneda : (o.MonSimbolo && o.MonSimbolo.toUpperCase().includes('U') ? 'USD' : '$'),
                 quantity: parseQuantity(o.Cantidad),
                 quantityStr: o.Cantidad ? String(o.Cantidad) : '1',
@@ -3849,7 +4128,40 @@ async function getClientePickupOrders(pool, cliIdCliente) {
                 o.OrdCostoFinal AS CostoFinal,
                 o.OrdFechaEstadoActual AS FechaEstado,
                 e.EOrNombreEstado AS Estado,
-                m.MonSimbolo
+                m.MonSimbolo,
+                -- BILLETERA: cubierta entera por el saldo prepago ⇒ está PAGA (ver getPickupOrders)
+                CASE WHEN EXISTS (
+                    SELECT 1 FROM MovimientosCuenta cx WITH(NOLOCK)
+                    JOIN CuentasCliente ccx WITH(NOLOCK) ON ccx.CueIdCuenta = cx.CueIdCuenta
+                    WHERE ccx.CliIdCliente = o.CliIdCliente
+                      AND cx.MovTipo = 'CONSUMO_CUENTA'
+                      AND (cx.MovAnulado IS NULL OR cx.MovAnulado = 0)
+                      AND cx.MovObservaciones LIKE 'CUBIERTO[_]CUENTA[_]%'
+                      AND (cx.OrdIdOrden = o.OrdIdOrden
+                           OR cx.OrdIdOrden IN (SELECT erp.OrdenID FROM Ordenes erp WITH(NOLOCK) WHERE erp.CodigoOrden = o.OrdCodigoOrden))
+                ) THEN 1 ELSE 0 END AS CubiertaBilletera,
+                -- PARCIAL + resto real a cobrar (misma lógica que getPickupOrders)
+                CASE WHEN EXISTS (
+                    SELECT 1 FROM MovimientosCuenta cp WITH(NOLOCK)
+                    JOIN CuentasCliente ccp WITH(NOLOCK) ON ccp.CueIdCuenta = cp.CueIdCuenta
+                    WHERE ccp.CliIdCliente = o.CliIdCliente
+                      AND cp.MovTipo = 'CONSUMO_CUENTA'
+                      AND (cp.MovAnulado IS NULL OR cp.MovAnulado = 0)
+                      AND cp.MovObservaciones LIKE 'CUBIERTO[_]PARCIAL[_]CUENTA%'
+                      AND (cp.OrdIdOrden = o.OrdIdOrden
+                           OR cp.OrdIdOrden IN (SELECT erp3.OrdenID FROM Ordenes erp3 WITH(NOLOCK) WHERE erp3.CodigoOrden = o.OrdCodigoOrden))
+                ) THEN 1 ELSE 0 END AS ParcialBilletera,
+                (SELECT TOP 1 ABS(mr.MovImporte)
+                 FROM MovimientosCuenta mr WITH(NOLOCK)
+                 JOIN CuentasCliente ccr WITH(NOLOCK) ON ccr.CueIdCuenta = mr.CueIdCuenta
+                 WHERE ccr.CliIdCliente = o.CliIdCliente
+                   AND mr.MovTipo IN ('ORDEN','ORDEN_ANTICIPO')
+                   AND (mr.MovAnulado IS NULL OR mr.MovAnulado = 0)
+                   AND mr.DocIdDocumento IS NULL
+                   AND (mr.MovObservaciones IS NULL OR mr.MovObservaciones NOT LIKE 'CUBIERTO%')
+                   AND (mr.OrdIdOrden = o.OrdIdOrden
+                        OR mr.OrdIdOrden IN (SELECT erp4.OrdenID FROM Ordenes erp4 WITH(NOLOCK) WHERE erp4.CodigoOrden = o.OrdCodigoOrden))
+                 ORDER BY mr.MovIdMovimiento DESC) AS RestoCtaCte
             FROM OrdenesDeposito o WITH(NOLOCK)
             LEFT JOIN EstadosOrdenes e WITH(NOLOCK) ON e.EOrIdEstadoOrden = o.OrdEstadoActual
             LEFT JOIN Monedas m WITH(NOLOCK) ON m.MonIdMoneda = o.MonIdMoneda
@@ -3877,16 +4189,24 @@ async function getClientePickupOrders(pool, cliIdCliente) {
     return allOrdersRes.recordset.map(o => {
         const docId = o.CodigoOrden || `#${o.IdOrden}`;
         const cob = cobranzasMap[docId];
+        let amount = cob ? parseFloat(cob.MontoTotal) : (parseFloat(o.CostoFinal) || 0);
+        // Cobertura parcial de la billetera: a cobrar queda SOLO el resto de cuenta corriente
+        if (o.CubiertaBilletera !== 1 && o.ParcialBilletera === 1 && o.RestoCtaCte != null) {
+            amount = Math.round(Number(o.RestoCtaCte) * 100) / 100;
+        }
         return {
             id: docId,
             rawId: o.IdOrden,
             desc: o.NombreTrabajo || 'Pedido',
             quantity: o.Cantidad || '',
-            amount: cob ? parseFloat(cob.MontoTotal) : (parseFloat(o.CostoFinal) || 0),
+            amount,
             date: o.FechaEstado ? new Date(o.FechaEstado).toLocaleDateString('es-UY') : 'N/A',
-            status: cob?.EstadoCobro === 'Pagado' ? 'PAGADO' : 'LISTO',
+            status: (cob?.EstadoCobro === 'Pagado' || o.CubiertaBilletera === 1) ? 'PAGADO' : 'LISTO',
             originalStatus: o.Estado,
-            isPaid: cob?.EstadoCobro === 'Pagado' || false,
+            // Paga en cobranza O cubierta entera por la billetera (el retiro no la cobra de nuevo)
+            isPaid: cob?.EstadoCobro === 'Pagado' || o.CubiertaBilletera === 1,
+            cubiertaBilletera: o.CubiertaBilletera === 1,
+            parcialBilletera: o.CubiertaBilletera !== 1 && o.ParcialBilletera === 1 && o.RestoCtaCte != null,
             currency: cob ? cob.Moneda : (o.MonSimbolo || '$'),
         };
     });
@@ -4496,6 +4816,893 @@ exports.initHandyPayment = async (req, res) => {
     }
 };
 
+// ── BILLETERA EN EL PORTAL ───────────────────────────────────────────────────
+// GET /web-orders/mi-billetera — cuentas con las que el cliente puede pagar desde
+// el portal: SECUNDARIAS LIBRES de ANTICIPO (la principal va por sus flujos
+// automáticos; las restringidas/prepago pagan consumiendo órdenes). Saldo REAL.
+// ── Candado de VISIBILIDAD de la billetera en el portal ─────────────────────
+// Clientes.CliBilleteraPortal (0 default): la sección "Mi billetera" y todas sus
+// acciones (recargar, movimientos, PDF, cubrir/pagar con saldo) solo existen para
+// los clientes que administración habilitó desde el 360 (gestor "Cuentas").
+// Es SOLO visibilidad web: el descuento automático del motor no se toca.
+const MSG_BILLETERA_PORTAL_OFF = 'Tu billetera no está habilitada en el portal. Hablá con administración para activarla.';
+const _billeteraPortalHabilitada = async (pool, codCliente) => {
+    const r = await pool.request().input('Cod', sql.Int, codCliente)
+        .query('SELECT ISNULL(CliBilleteraPortal, 0) AS H FROM dbo.Clientes WITH(NOLOCK) WHERE CodCliente = @Cod');
+    return !!(r.recordset[0] && r.recordset[0].H);
+};
+
+exports.getMiBilletera = async (req, res) => {
+    try {
+        const pool = await getPool();
+        const codCliente = req.user?.codCliente;
+        if (!codCliente) return res.status(401).json({ error: 'Sesión inválida.' });
+        if (!(await _billeteraPortalHabilitada(pool, codCliente)))
+            return res.json({ success: true, habilitada: false, data: [], prepago: [] });
+        const cli = (await pool.request().input('Cod', sql.Int, codCliente)
+            .query('SELECT CliIdCliente FROM dbo.Clientes WITH(NOLOCK) WHERE CodCliente = @Cod')).recordset[0];
+        if (!cli) return res.json({ success: true, data: [] });
+        const r = await pool.request().input('Cli', sql.Int, cli.CliIdCliente).query(`
+            SELECT cc.CueIdCuenta, cc.CueNombre, cc.CueTipo,
+                   ISNULL((SELECT SUM(m.MovImporte) FROM dbo.MovimientosCuenta m WITH(NOLOCK)
+                           WHERE m.CueIdCuenta = cc.CueIdCuenta AND (m.MovAnulado IS NULL OR m.MovAnulado = 0)
+                             AND m.MovTipo NOT IN ('ORDEN','ORDEN_ANTICIPO')), 0) AS Saldo
+            FROM dbo.CuentasCliente cc WITH(NOLOCK)
+            WHERE cc.CliIdCliente = @Cli AND cc.CueActiva = 1 AND cc.CueTipo LIKE 'DINERO%'
+              AND cc.CueEsPrincipal = 0 AND cc.CueRestringida = 0
+              AND ISNULL(cc.CueModalidadFiscal, 'ANTICIPO_A_FACTURAR') <> 'PREPAGO_FACTURADO'`);
+        // Cotización del día: el portal la usa para saber si el saldo cross-moneda alcanza
+        const cot = parseFloat((await pool.request()
+            .query('SELECT TOP 1 CotDolar FROM dbo.Cotizaciones WITH(NOLOCK) ORDER BY CotFecha DESC')).recordset[0]?.CotDolar) || 40;
+        // F5: cuentas PREPAGO libres — no son medio de pago (su plata ya tiene factura):
+        // cubren pedidos pendientes por CONSUMO, sin documento ("Cubrir con mi billetera").
+        const rp = await pool.request().input('Cli', sql.Int, cli.CliIdCliente).query(`
+            SELECT cc.CueIdCuenta, cc.CueNombre, cc.CueTipo,
+                   ISNULL((SELECT SUM(m.MovImporte) FROM dbo.MovimientosCuenta m WITH(NOLOCK)
+                           WHERE m.CueIdCuenta = cc.CueIdCuenta AND (m.MovAnulado IS NULL OR m.MovAnulado = 0)
+                             AND m.MovTipo NOT IN ('ORDEN','ORDEN_ANTICIPO')), 0) AS Saldo
+            FROM dbo.CuentasCliente cc WITH(NOLOCK)
+            WHERE cc.CliIdCliente = @Cli AND cc.CueActiva = 1 AND cc.CueTipo LIKE 'DINERO%'
+              AND cc.CueEsPrincipal = 0 AND cc.CueRestringida = 0
+              AND ISNULL(cc.CueModalidadFiscal, 'ANTICIPO_A_FACTURAR') = 'PREPAGO_FACTURADO'`);
+        res.json({ success: true, cotizacion: cot, data: r.recordset.map(c => ({
+            CueIdCuenta: c.CueIdCuenta,
+            nombre: c.CueNombre || `Cuenta #${c.CueIdCuenta}`,
+            moneda: c.CueTipo === 'DINERO_USD' ? 'USD' : 'UYU',
+            saldo: Math.round(Number(c.Saldo) * 100) / 100,
+        })), prepago: rp.recordset.map(c => ({
+            CueIdCuenta: c.CueIdCuenta,
+            nombre: c.CueNombre || `Cuenta #${c.CueIdCuenta}`,
+            moneda: c.CueTipo === 'DINERO_USD' ? 'USD' : 'UYU',
+            saldo: Math.round(Number(c.Saldo) * 100) / 100,
+        })) });
+    } catch (err) {
+        logger.error('[BILLETERA PORTAL] mi-billetera:', err.message);
+        res.status(500).json({ error: 'Error al leer la billetera.' });
+    }
+};
+
+// ── AUTOSERVICIO DE CUENTAS (Mis Recursos) ───────────────────────────────────
+// El cliente crea su cuenta de saldo, la recarga SOLO por medios electrónicos
+// (Handy / MercadoPago) y ve su estado de cuenta. Reglas de nacimiento desde el
+// portal: modalidad ANTICIPO (se factura después), LIBRE, NUNCA acepta negativo
+// (eso lo decide solo la administración desde el 360).
+
+// GET /web-orders/mis-cuentas — todas las cuentas de saldo NO principales del cliente
+exports.getMisCuentas = async (req, res) => {
+    try {
+        const pool = await getPool();
+        const codCliente = req.user?.codCliente;
+        if (!codCliente) return res.status(401).json({ error: 'Sesión inválida.' });
+        // Billetera no habilitada en el portal → el front oculta la sección entera
+        if (!(await _billeteraPortalHabilitada(pool, codCliente)))
+            return res.json({ success: true, habilitada: false, data: [] });
+        const cli = (await pool.request().input('Cod', sql.Int, codCliente)
+            .query('SELECT CliIdCliente FROM dbo.Clientes WITH(NOLOCK) WHERE CodCliente = @Cod')).recordset[0];
+        if (!cli) return res.json({ success: true, data: [] });
+        // ?incluirCerradas=1 → también las cuentas cerradas (van al final, solo lectura)
+        const incluirCerradas = req.query?.incluirCerradas === '1';
+        const r = await pool.request().input('Cli', sql.Int, cli.CliIdCliente).input('Inc', sql.Bit, incluirCerradas ? 1 : 0).query(`
+            SELECT cc.CueIdCuenta, cc.CueNombre, cc.CueTipo, cc.CueAutoConsumo, cc.CueRestringida, cc.CueActiva, cc.CueUsuarioAlta,
+                   ISNULL(cc.CueModalidadFiscal,'ANTICIPO_A_FACTURAR') AS Modalidad, cc.CueFechaAlta,
+                   ISNULL((SELECT SUM(m.MovImporte) FROM dbo.MovimientosCuenta m WITH(NOLOCK)
+                           WHERE m.CueIdCuenta = cc.CueIdCuenta AND (m.MovAnulado IS NULL OR m.MovAnulado = 0)
+                             AND m.MovTipo NOT IN ('ORDEN','ORDEN_ANTICIPO')), 0) AS Saldo
+            FROM dbo.CuentasCliente cc WITH(NOLOCK)
+            WHERE cc.CliIdCliente = @Cli AND (cc.CueActiva = 1 OR @Inc = 1) AND cc.CueTipo LIKE 'DINERO%' AND cc.CueEsPrincipal = 0
+            ORDER BY cc.CueActiva DESC, cc.CueIdCuenta`);
+        // Umbral DGI del e-Ticket (10.000 UI): por encima hay que identificar al receptor.
+        // El valor de la UI se puede pisar desde ConfiguracionGlobal (clave VALOR_UI).
+        const umbral = await _umbralEticketUI(pool);
+        res.json({ success: true, umbralCedula: umbral.porMoneda, valorUI: umbral.valorUI, data: r.recordset.map(c => ({
+            CueIdCuenta: c.CueIdCuenta,
+            nombre: c.CueNombre || `Cuenta #${c.CueIdCuenta}`,
+            moneda: c.CueTipo === 'DINERO_USD' ? 'USD' : 'UYU',
+            saldo: Math.round(Number(c.Saldo) * 100) / 100,
+            automatico: !!c.CueAutoConsumo,
+            restringida: !!c.CueRestringida,
+            activa: !!c.CueActiva,
+            // F4: las prepago también se recargan desde el portal — la recarga emite
+            // su factura automática (e-Ticket / e-Factura) al acreditarse el pago.
+            permiteRecarga: !!c.CueActiva,
+            modalidad: c.Modalidad,
+            // Creada desde el portal (usuario 999): solo esas se pueden reabrir desde acá
+            creadaPortal: Number(c.CueUsuarioAlta) === 999,
+            fechaAlta: c.CueFechaAlta,
+        })) });
+    } catch (err) {
+        logger.error('[BILLETERA PORTAL] mis-cuentas:', err.message);
+        res.status(500).json({ error: 'Error al leer tus cuentas.' });
+    }
+};
+
+// GET /web-orders/mis-cuentas/:CueIdCuenta/movimientos — estado de cuenta (candado pertenencia)
+exports.getMisCuentaMovs = async (req, res) => {
+    try {
+        const pool = await getPool();
+        const codCliente = req.user?.codCliente;
+        const cueId = parseInt(req.params.CueIdCuenta);
+        if (!codCliente) return res.status(401).json({ error: 'Sesión inválida.' });
+        if (!(await _billeteraPortalHabilitada(pool, codCliente))) return res.status(403).json({ error: MSG_BILLETERA_PORTAL_OFF });
+        const ok = (await pool.request().input('C', sql.Int, cueId).input('Cod', sql.Int, codCliente).query(`
+            SELECT 1 AS ok FROM dbo.CuentasCliente cc JOIN dbo.Clientes c ON c.CliIdCliente = cc.CliIdCliente
+            WHERE cc.CueIdCuenta = @C AND c.CodCliente = @Cod AND cc.CueEsPrincipal = 0`)).recordset.length;
+        if (!ok) return res.status(403).json({ error: 'Esa cuenta no es tuya.' });
+        // Cronológico ASC para calcular el saldo corrido (como el libro del rollo);
+        // documento = DocSerie-DocNumero del comprobante o el código de la orden consumida.
+        const r = await pool.request().input('C', sql.Int, cueId).query(`
+            SELECT m.MovIdMovimiento, m.MovTipo, m.MovConcepto, m.MovImporte, m.MovFecha, m.MovAnulado, m.DocIdDocumento,
+                   LTRIM(RTRIM(COALESCE(dc.DocSerie, dcPago.DocSerie, ''))) AS DocSerie,
+                   COALESCE(CAST(dc.DocNumero AS VARCHAR(50)), CAST(dcPago.DocNumero AS VARCHAR(50)), '') AS DocNumero,
+                   oa.CodigoOrdenStr
+            FROM dbo.MovimientosCuenta m WITH(NOLOCK)
+            LEFT JOIN dbo.DocumentosContables dc WITH(NOLOCK) ON dc.DocIdDocumento = m.DocIdDocumento
+            LEFT JOIN dbo.Pagos p WITH(NOLOCK) ON p.PagIdPago = m.PagIdPago
+            -- Fallback (mismo criterio que el libro de gestión): si el movimiento no tiene
+            -- documento propio, se toma el del cobro al que pertenece (Pagos → Transacción).
+            -- Así un "Pago con saldo" del retiro web muestra su ET-x en la columna Documento.
+            OUTER APPLY (
+              SELECT TOP 1 dcp.DocSerie, dcp.DocNumero
+              FROM dbo.DocumentosContables dcp WITH(NOLOCK)
+              WHERE dcp.TcaIdTransaccion = p.PagTcaIdTransaccion AND m.DocIdDocumento IS NULL
+              ORDER BY dcp.DocIdDocumento
+            ) dcPago
+            OUTER APPLY (
+              SELECT COALESCE(
+                (SELECT TOP 1 OrdCodigoOrden FROM dbo.OrdenesDeposito WITH(NOLOCK) WHERE OrdIdOrden = m.OrdIdOrden),
+                (SELECT TOP 1 CodigoOrden FROM dbo.Ordenes WITH(NOLOCK) WHERE OrdenID = m.OrdIdOrden)
+              ) AS CodigoOrdenStr
+            ) oa
+            WHERE m.CueIdCuenta = @C AND m.MovTipo NOT IN ('ORDEN','ORDEN_ANTICIPO')
+            ORDER BY m.MovFecha ASC, m.MovIdMovimiento ASC`);
+        const LBL = { ANTICIPO: 'Recarga / Anticipo', CONSUMO_CUENTA: 'Consumo de orden', TRANSFERENCIA_ENTRADA: 'Transferencia recibida',
+                      TRANSFERENCIA_SALIDA: 'Pago / Transferencia enviada', PAGO_SALDO: 'Pago con saldo', CARGA_PREPAGO: 'Carga facturada', PAGO: 'Pago', AJUSTE_POS: 'Ajuste', AJUSTE_NEG: 'Ajuste' };
+        // Una transferencia cuyo concepto empieza con "Pago" ES un pago con el saldo de la cuenta
+        const lblDe = (m) => (/^pago\b/i.test(m.MovConcepto || '') && m.MovTipo === 'TRANSFERENCIA_SALIDA') ? 'Pago con saldo'
+            : (/^pago\b/i.test(m.MovConcepto || '') && m.MovTipo === 'TRANSFERENCIA_ENTRADA') ? 'Pago recibido de otra cuenta'
+            : (LBL[m.MovTipo] || m.MovTipo);
+        // Saldo corrido: los anulados se muestran pero no mueven el saldo.
+        let saldo = 0;
+        const data = r.recordset.map(m => {
+            const importe = Number(m.MovImporte);
+            const saldoIn = saldo;
+            if (!m.MovAnulado) saldo = Math.round((saldo + importe) * 10000) / 10000;
+            return {
+                id: m.MovIdMovimiento, fecha: m.MovFecha, tipo: lblDe(m), tipoRaw: m.MovTipo,
+                concepto: m.MovConcepto, importe, anulado: !!m.MovAnulado,
+                documento: m.DocSerie ? `${m.DocSerie}-${m.DocNumero}` : (m.CodigoOrdenStr || null),
+                // F4: comprobante descargable — solo cargas facturadas con doc propio
+                docId: (m.MovTipo === 'CARGA_PREPAGO' && m.DocIdDocumento) ? m.DocIdDocumento : null,
+                saldoIn, saldoFn: saldo,
+                debe: (!m.MovAnulado && importe < 0) ? Math.abs(importe) : 0,
+                haber: (!m.MovAnulado && importe > 0) ? importe : 0,
+            };
+        });
+        // Más reciente arriba; tope 300 filas para el portal
+        res.json({ success: true, data: data.reverse().slice(0, 300), saldoFinal: saldo });
+    } catch (err) {
+        logger.error('[BILLETERA PORTAL] movimientos:', err.message);
+        res.status(500).json({ error: 'Error al leer los movimientos.' });
+    }
+};
+
+// POST /web-orders/mis-cuentas — crear cuenta desde el portal
+// { nombre, moneda: 'UYU'|'USD', automatico: bool }
+exports.crearMiCuenta = async (req, res) => {
+    try {
+        const pool = await getPool();
+        const codCliente = req.user?.codCliente;
+        if (!codCliente) return res.status(401).json({ error: 'Sesión inválida.' });
+        if (!(await _billeteraPortalHabilitada(pool, codCliente))) return res.status(403).json({ error: MSG_BILLETERA_PORTAL_OFF });
+        const nombre = String(req.body?.nombre || '').trim();
+        const moneda = req.body?.moneda === 'USD' ? 'USD' : 'UYU';
+        const automatico = !!req.body?.automatico;
+        if (nombre.length < 3 || nombre.length > 80) return res.status(400).json({ error: 'Poné un nombre de 3 a 80 caracteres (ej: "Mi saldo adelantado").' });
+        const cli = (await pool.request().input('Cod', sql.Int, codCliente)
+            .query('SELECT CliIdCliente FROM dbo.Clientes WITH(NOLOCK) WHERE CodCliente = @Cod')).recordset[0];
+        if (!cli) return res.status(400).json({ error: 'Cliente no encontrado.' });
+        const cant = (await pool.request().input('Cli', sql.Int, cli.CliIdCliente)
+            .query(`SELECT COUNT(*) n FROM dbo.CuentasCliente WHERE CliIdCliente = @Cli AND CueActiva = 1 AND CueEsPrincipal = 0 AND CueTipo LIKE 'DINERO%'`)).recordset[0].n;
+        if (cant >= 5) return res.status(400).json({ error: 'Ya tenés 5 cuentas de saldo. Si necesitás otra, hablá con administración.' });
+        const ins = await pool.request()
+            .input('Cli', sql.Int, cli.CliIdCliente)
+            .input('Tipo', sql.VarChar(20), moneda === 'USD' ? 'DINERO_USD' : 'DINERO_UYU')
+            .input('Mon', sql.Int, moneda === 'USD' ? 2 : 1)
+            .input('Nombre', sql.NVarChar(100), nombre)
+            .input('Auto', sql.Bit, automatico ? 1 : 0)
+            .query(`
+                INSERT INTO dbo.CuentasCliente
+                  (CliIdCliente, CueTipo, ProIdProducto, MonIdMoneda, CPaIdCondicion,
+                   CueSaldoActual, CueLimiteCredito, CuePuedeNegativo, CueCicloActivo,
+                   CueActiva, CueFechaAlta, CueUsuarioAlta,
+                   CueNombre, CueEsPrincipal, CueRestringida, CueAutoConsumo, CueModalidadFiscal)
+                OUTPUT INSERTED.CueIdCuenta
+                VALUES (@Cli, @Tipo, NULL, @Mon, 1,
+                        0, 0, 0, 0,             -- NUNCA nace aceptando negativo (decisión de administración)
+                        1, GETDATE(), 999,
+                        @Nombre, 0, 0, @Auto, 'ANTICIPO_A_FACTURAR')`);
+        const CueIdCuenta = ins.recordset[0].CueIdCuenta;
+        logger.info(`[BILLETERA PORTAL] Cliente ${cli.CliIdCliente} creó su cuenta "${nombre}" (${moneda}, auto=${automatico}) #${CueIdCuenta}`);
+        res.status(201).json({ success: true, data: { CueIdCuenta } });
+    } catch (err) {
+        logger.error('[BILLETERA PORTAL] crear cuenta:', err.message);
+        res.status(500).json({ error: 'No se pudo crear la cuenta.' });
+    }
+};
+
+// POST /web-orders/mis-cuentas/:CueIdCuenta/cerrar — el cliente cierra SU cuenta,
+// solo si está en cero (mismo criterio que el cierre de administración). Los
+// movimientos quedan visibles con el switch "Solo activas" apagado; reabrirla
+// es cosa de administración.
+exports.cerrarMiCuenta = async (req, res) => {
+    try {
+        const pool = await getPool();
+        const codCliente = req.user?.codCliente;
+        const cueId = parseInt(req.params.CueIdCuenta);
+        if (!codCliente) return res.status(401).json({ error: 'Sesión inválida.' });
+        if (!(await _billeteraPortalHabilitada(pool, codCliente))) return res.status(403).json({ error: MSG_BILLETERA_PORTAL_OFF });
+        const cta = (await pool.request().input('C', sql.Int, cueId).input('Cod', sql.Int, codCliente).query(`
+            SELECT cc.CueIdCuenta, cc.CueNombre, cc.CueActiva, cc.CueEsPrincipal,
+                   ISNULL((SELECT SUM(m.MovImporte) FROM dbo.MovimientosCuenta m WITH(NOLOCK)
+                           WHERE m.CueIdCuenta = cc.CueIdCuenta AND (m.MovAnulado IS NULL OR m.MovAnulado = 0)
+                             AND m.MovTipo NOT IN ('ORDEN','ORDEN_ANTICIPO')), 0) AS Saldo
+            FROM dbo.CuentasCliente cc WITH(NOLOCK)
+            JOIN dbo.Clientes c ON c.CliIdCliente = cc.CliIdCliente
+            WHERE cc.CueIdCuenta = @C AND c.CodCliente = @Cod AND cc.CueTipo LIKE 'DINERO%'`)).recordset[0];
+        if (!cta) return res.status(403).json({ error: 'Esa cuenta no es tuya.' });
+        if (cta.CueEsPrincipal) return res.status(400).json({ error: 'La cuenta principal no se puede cerrar.' });
+        if (!cta.CueActiva) return res.status(400).json({ error: 'Esa cuenta ya está cerrada.' });
+        if (Math.abs(Number(cta.Saldo)) > 0.009) {
+            return res.status(400).json({ error: `Para cerrarla la cuenta tiene que estar en cero (hoy tiene ${Number(cta.Saldo).toFixed(2)} de saldo). Usá el saldo o pedile a administración que lo transfiera.` });
+        }
+        await pool.request().input('C', sql.Int, cueId)
+            .query('UPDATE dbo.CuentasCliente SET CueActiva = 0, CueAutoConsumo = 0 WHERE CueIdCuenta = @C');
+        logger.info(`[BILLETERA PORTAL] Cliente ${codCliente} cerró su cuenta "${cta.CueNombre || cueId}" #${cueId}`);
+        res.json({ success: true, message: `Cuenta "${cta.CueNombre || `#${cueId}`}" cerrada.` });
+    } catch (err) {
+        logger.error('[BILLETERA PORTAL] cerrar cuenta:', err.message);
+        res.status(500).json({ error: 'No se pudo cerrar la cuenta.' });
+    }
+};
+
+// POST /web-orders/mis-cuentas/:CueIdCuenta/reabrir — el cliente reabre una cuenta
+// cerrada SOLO si la creó él desde el portal (CueUsuarioAlta = 999). Las creadas o
+// gestionadas por administración se reabren solo desde el gestor de Cuentas.
+// Reabre sin descuento automático (el cierre lo apaga y acá no se re-enciende solo).
+exports.reabrirMiCuenta = async (req, res) => {
+    try {
+        const pool = await getPool();
+        const codCliente = req.user?.codCliente;
+        const cueId = parseInt(req.params.CueIdCuenta);
+        if (!codCliente) return res.status(401).json({ error: 'Sesión inválida.' });
+        if (!(await _billeteraPortalHabilitada(pool, codCliente))) return res.status(403).json({ error: MSG_BILLETERA_PORTAL_OFF });
+        const cta = (await pool.request().input('C', sql.Int, cueId).input('Cod', sql.Int, codCliente).query(`
+            SELECT cc.CueIdCuenta, cc.CueNombre, cc.CueActiva, cc.CueEsPrincipal, cc.CueUsuarioAlta, cc.CliIdCliente
+            FROM dbo.CuentasCliente cc WITH(NOLOCK)
+            JOIN dbo.Clientes c ON c.CliIdCliente = cc.CliIdCliente
+            WHERE cc.CueIdCuenta = @C AND c.CodCliente = @Cod AND cc.CueTipo LIKE 'DINERO%'`)).recordset[0];
+        if (!cta) return res.status(403).json({ error: 'Esa cuenta no es tuya.' });
+        if (cta.CueActiva) return res.status(400).json({ error: 'Esa cuenta ya está abierta.' });
+        if (Number(cta.CueUsuarioAlta) !== 999) {
+            return res.status(400).json({ error: 'Esa cuenta la creó administración: solo ellos pueden reabrirla.' });
+        }
+        // Mismo tope que al crear: máximo 5 cuentas de saldo abiertas
+        const cant = (await pool.request().input('Cli', sql.Int, cta.CliIdCliente)
+            .query(`SELECT COUNT(*) n FROM dbo.CuentasCliente WHERE CliIdCliente = @Cli AND CueActiva = 1 AND CueEsPrincipal = 0 AND CueTipo LIKE 'DINERO%'`)).recordset[0].n;
+        if (cant >= 5) return res.status(400).json({ error: 'Ya tenés 5 cuentas de saldo abiertas: cerrá una antes de reabrir esta.' });
+        await pool.request().input('C', sql.Int, cueId)
+            .query('UPDATE dbo.CuentasCliente SET CueActiva = 1 WHERE CueIdCuenta = @C');
+        logger.info(`[BILLETERA PORTAL] Cliente ${codCliente} reabrió su cuenta "${cta.CueNombre || cueId}" #${cueId}`);
+        res.json({ success: true, message: `Cuenta "${cta.CueNombre || `#${cueId}`}" reabierta (sin descuento automático).` });
+    } catch (err) {
+        logger.error('[BILLETERA PORTAL] reabrir cuenta:', err.message);
+        res.status(500).json({ error: 'No se pudo reabrir la cuenta.' });
+    }
+};
+
+// Umbral DGI del e-Ticket: sobre 10.000 UI el receptor debe identificarse (CI).
+// UI configurable en ConfiguracionGlobal clave 'VALOR_UI'; fallback 6.5 pesos.
+const _umbralEticketUI = async (pool) => {
+    let valorUI = 6.5;
+    try {
+        const r = await pool.request().query("SELECT Valor FROM dbo.ConfiguracionGlobal WITH(NOLOCK) WHERE Clave = 'VALOR_UI'");
+        const v = parseFloat(String(r.recordset[0]?.Valor || '').replace(',', '.'));
+        if (v > 0) valorUI = v;
+    } catch (_) { /* tabla o clave ausente: se usa el default */ }
+    const umbralUYU = Math.round(10000 * valorUI);
+    let cot = 40;
+    try {
+        const c = await pool.request().query('SELECT TOP 1 CotDolar FROM dbo.Cotizaciones WITH(NOLOCK) ORDER BY CotFecha DESC');
+        cot = parseFloat(c.recordset[0]?.CotDolar) || 40;
+    } catch (_) { /* sin cotización: default */ }
+    return { valorUI, porMoneda: { UYU: umbralUYU, USD: Math.round((umbralUYU / cot) * 100) / 100 } };
+};
+
+// POST /web-orders/mis-cuentas/:CueIdCuenta/recargar — inicia la recarga electrónica
+// { importe, gateway: 'handy' | 'mercadopago',
+//   comprobante?: 'e-ticket'|'e-factura', documentoFiscal?, nombreFiscal? }  → { url, transactionId }
+// Cuentas PREPAGO (F4): la recarga emite su factura automática al acreditarse el pago,
+// por eso acá se pide y valida el comprobante (e-Factura exige RUT válido; e-Ticket
+// exige cédula si el importe supera el umbral DGI de 10.000 UI).
+exports.iniciarRecargaCuenta = async (req, res) => {
+    try {
+        const pool = await getPool();
+        const codCliente = req.user?.codCliente;
+        const cueId = parseInt(req.params.CueIdCuenta);
+        const importe = Math.round(Number(req.body?.importe) * 100) / 100;
+        const gateway = req.body?.gateway === 'mercadopago' ? 'mercadopago' : 'handy';
+        if (!codCliente) return res.status(401).json({ error: 'Sesión inválida.' });
+        if (!(await _billeteraPortalHabilitada(pool, codCliente))) return res.status(403).json({ error: MSG_BILLETERA_PORTAL_OFF });
+        if (!(importe > 0)) return res.status(400).json({ error: 'El importe debe ser mayor a 0.' });
+        const cta = (await pool.request().input('C', sql.Int, cueId).input('Cod', sql.Int, codCliente).query(`
+            SELECT cc.CueIdCuenta, cc.CueNombre, cc.CueTipo, cc.CueActiva, cc.CueEsPrincipal,
+                   ISNULL(cc.CueModalidadFiscal,'ANTICIPO_A_FACTURAR') AS Modalidad
+            FROM dbo.CuentasCliente cc JOIN dbo.Clientes c ON c.CliIdCliente = cc.CliIdCliente
+            WHERE cc.CueIdCuenta = @C AND c.CodCliente = @Cod`)).recordset[0];
+        if (!cta || !cta.CueActiva || cta.CueEsPrincipal) return res.status(400).json({ error: 'Esa cuenta no admite recargas desde el portal.' });
+        const moneda = cta.CueTipo === 'DINERO_USD' ? 'USD' : 'UYU';
+        const nombreCuenta = cta.CueNombre || `Cuenta #${cueId}`;
+        const ordersData = { type: 'wallet-topup', cueIdCuenta: cueId, importe, moneda, nombreCuenta };
+
+        if (cta.Modalidad === 'PREPAGO_FACTURADO') {
+            const { validarDocumentoUY, normalizarDocumento } = require('../utils/documentoUY');
+            const comprobante = req.body?.comprobante === 'e-factura' ? 'e-factura'
+                : (req.body?.comprobante === 'e-ticket' ? 'e-ticket' : null);
+            if (!comprobante) return res.status(400).json({ error: 'Elegí qué comprobante querés para esta recarga: e-Ticket o e-Factura.' });
+            const docFiscal = normalizarDocumento(req.body?.documentoFiscal);
+            const nombreFiscal = String(req.body?.nombreFiscal || '').trim();
+            if (comprobante === 'e-factura') {
+                const v = validarDocumentoUY(docFiscal);
+                if (!v.valido || v.tipo !== 'RUT') {
+                    return res.status(400).json({ error: v.tipo === 'RUT' ? v.motivo : 'La e-Factura necesita un RUT válido de 12 dígitos (sin puntos ni guiones).' });
+                }
+                if (nombreFiscal.length < 3) return res.status(400).json({ error: 'Poné la razón social que va en la e-Factura.' });
+            } else {
+                const umbral = await _umbralEticketUI(pool);
+                const tope = umbral.porMoneda[moneda] || umbral.porMoneda.UYU;
+                if (importe >= tope && !docFiscal) {
+                    return res.status(400).json({ error: `Para recargas de ${moneda === 'USD' ? 'US$' : '$'} ${tope} o más, DGI exige identificar al receptor del e-Ticket: poné tu cédula (o elegí e-Factura con RUT).` });
+                }
+                if (docFiscal) {
+                    const v = validarDocumentoUY(docFiscal);
+                    if (!v.valido) return res.status(400).json({ error: v.motivo });
+                }
+            }
+            // La factura la emite el webhook al confirmarse el pago (F4)
+            ordersData.prepago = true;
+            ordersData.docTipo = comprobante === 'e-factura' ? '01' : '07';
+            ordersData.docReceptor = { documento: docFiscal || '', nombre: nombreFiscal || '' };
+        }
+        const itemDesc = `Recarga de saldo — ${nombreCuenta}`;
+        if (gateway === 'handy') {
+            const { createPaymentLink } = require('../services/handyService');
+            const result = await createPaymentLink({
+                products: [{ Name: itemDesc.substring(0, 50), Quantity: 1, Amount: importe, TaxedAmount: Number((importe / 1.22).toFixed(2)) }],
+                totalAmount: importe,
+                currencyCode: moneda === 'USD' ? 840 : 858,
+                commerceName: 'USER',
+                ordersData,
+                codCliente,
+                logPrefix: '[HANDY TOPUP]'
+            });
+            if (!result.success) return res.status(500).json({ error: result.error });
+            return res.json({ success: true, url: result.url, transactionId: result.transactionId });
+        }
+        const { createPreference } = require('../services/mercadoPagoService');
+        const result = await createPreference({
+            items: [{ id: String(cueId), title: itemDesc.substring(0, 256), quantity: 1, unit_price: importe, currency_id: moneda }],
+            totalAmount: importe,
+            currency: moneda,
+            commerceName: 'USER',
+            ordersData,
+            codCliente,
+            logPrefix: '[MP TOPUP]'
+        });
+        if (!result.success) return res.status(500).json({ error: result.error });
+        return res.json({ success: true, url: result.url || result.initPoint, transactionId: result.transactionId });
+    } catch (err) {
+        logger.error('[BILLETERA PORTAL] recargar:', err.message);
+        res.status(500).json({ error: 'No se pudo iniciar la recarga.' });
+    }
+};
+
+// GET /web-orders/mis-cuentas/:CueIdCuenta/comprobantes/:DocIdDocumento — F4
+// Datos completos de la factura de una recarga (para dibujar el MISMO PDF que la
+// bandeja con generarPdfFacturaDGI). Candado: la cuenta es del cliente del token,
+// el documento es suyo y está atado a esa cuenta por un movimiento (CARGA_PREPAGO).
+exports.getMiComprobante = async (req, res) => {
+    try {
+        const pool = await getPool();
+        const codCliente = req.user?.codCliente;
+        const cueId = parseInt(req.params.CueIdCuenta);
+        const docId = parseInt(req.params.DocIdDocumento);
+        if (!codCliente) return res.status(401).json({ error: 'Sesión inválida.' });
+        if (!(await _billeteraPortalHabilitada(pool, codCliente))) return res.status(403).json({ error: MSG_BILLETERA_PORTAL_OFF });
+        if (!cueId || !docId) return res.status(400).json({ error: 'Faltan datos del comprobante.' });
+        const ok = (await pool.request().input('C', sql.Int, cueId).input('Cod', sql.Int, codCliente).input('D', sql.Int, docId).query(`
+            SELECT TOP 1 1 AS ok
+            FROM dbo.CuentasCliente cc
+            JOIN dbo.Clientes c  ON c.CliIdCliente = cc.CliIdCliente
+            JOIN dbo.DocumentosContables dc ON dc.DocIdDocumento = @D AND dc.CliIdCliente = cc.CliIdCliente
+            WHERE cc.CueIdCuenta = @C AND c.CodCliente = @Cod AND cc.CueEsPrincipal = 0
+              AND EXISTS (SELECT 1 FROM dbo.MovimientosCuenta m WITH(NOLOCK)
+                          WHERE m.CueIdCuenta = @C AND m.DocIdDocumento = @D
+                            AND (m.MovAnulado IS NULL OR m.MovAnulado = 0))`)).recordset.length;
+        if (!ok) return res.status(403).json({ error: 'Ese comprobante no es de tu cuenta.' });
+        // Mismo payload { doc, detalles } que usa la bandeja para dibujar el PDF
+        return require('./cfeController').getDetalleFactura({ params: { id: docId } }, res);
+    } catch (err) {
+        logger.error('[BILLETERA PORTAL] comprobante:', err.message);
+        res.status(500).json({ error: 'No se pudo leer el comprobante.' });
+    }
+};
+
+// Acreditar una recarga confirmada por el gateway (llamado desde los webhooks).
+// · Cuenta ANTICIPO (legacy): reusa registrarPagoAnticipo de caja — TCA ANTICIPO admin
+//   + Pago (método del gateway) + recibo RA + movimiento ANTICIPO + asiento Caja/2.3.1.
+// · Cuenta PREPAGO (F4): la recarga ES una Venta de saldo automática — se emite la
+//   factura (e-Ticket '07' / e-Factura '01' según eligió el cliente, línea "Crédito
+//   prepago de servicios", IVA 22 incluido, paga con el medio del gateway; el CFE
+//   queda PENDIENTE en la bandeja y el asiento Ventas+IVA+Caja lo hace el motor de
+//   crearFacturaManual) y después se registra la CARGA_PREPAGO atada a esa factura.
+const _acreditarRecargaBilletera = async (pool, { storedData, codCliente, txId, metodoPagoId, monedaId, monto, req }) => {
+    const cli = (await pool.request().input('Cod', sql.Int, codCliente)
+        .query('SELECT CliIdCliente FROM dbo.Clientes WITH(NOLOCK) WHERE CodCliente = @Cod')).recordset[0];
+    if (!cli) throw new Error(`Cliente CodCliente=${codCliente} no encontrado para la recarga`);
+
+    // Modalidad REAL de la cuenta al momento de acreditar (no la del momento del link)
+    const ctaAcred = (await pool.request().input('C', sql.Int, parseInt(storedData.cueIdCuenta)).query(`
+        SELECT CueIdCuenta, CliIdCliente, CueNombre, MonIdMoneda, CueActiva,
+               ISNULL(CueModalidadFiscal,'ANTICIPO_A_FACTURAR') AS Modalidad
+        FROM dbo.CuentasCliente WITH(NOLOCK) WHERE CueIdCuenta = @C`)).recordset[0];
+    if (!ctaAcred) throw new Error(`Cuenta #${storedData.cueIdCuenta} inexistente para la recarga Tx ${txId}`);
+    if (ctaAcred.CliIdCliente !== cli.CliIdCliente) throw new Error(`La cuenta #${storedData.cueIdCuenta} no es del cliente ${codCliente} (Tx ${txId})`);
+
+    if (ctaAcred.Modalidad === 'PREPAGO_FACTURADO') {
+        // ── PREPAGO: factura automática + CARGA_PREPAGO ─────────────────────────
+        const nombreCta = ctaAcred.CueNombre || storedData.nombreCuenta || `cuenta #${storedData.cueIdCuenta}`;
+        // Guard anti-duplicado: la carga de esta Tx ya existe
+        const dupP = await pool.request().input('T', sql.NVarChar(200), `%(Tx: ${txId})%`)
+            .query(`SELECT TOP 1 MovIdMovimiento FROM dbo.MovimientosCuenta WITH(NOLOCK) WHERE MovTipo = 'CARGA_PREPAGO' AND MovObservaciones LIKE @T`);
+        if (dupP.recordset.length) { logger.info(`[BILLETERA PORTAL] Recarga prepago Tx ${txId} ya acreditada — webhook duplicado ignorado.`); return { duplicated: true }; }
+        const monCta = Number(ctaAcred.MonIdMoneda) === 2 ? 2 : 1;
+        if (monCta !== monedaId) throw new Error(`La recarga Tx ${txId} llegó en ${monedaId === 2 ? 'US$' : '$'} pero la cuenta #${storedData.cueIdCuenta} es en ${monCta === 2 ? 'US$' : '$'}: acreditar a mano.`);
+        const r2 = (n) => Math.round(n * 100) / 100;
+        const neto = r2(monto / 1.22);
+
+        // 1. Emitir la factura con el motor interno (misma semántica que "Venta de saldo")
+        const cfeCtrl = require('./cfeController');
+        const outFact = await new Promise((resolve) => {
+            const fakeRes = { code: 200, status(c) { this.code = c; return this; }, json(o) { resolve({ code: this.code, ...o }); } };
+            cfeCtrl.crearFacturaManual({ user: { id: 999 }, body: {
+                DocTipo: storedData.docTipo === '01' ? '01' : '07',
+                MonIdMoneda: monedaId,
+                CliIdCliente: cli.CliIdCliente,
+                Lineas: [{ concepto: `Crédito prepago de servicios — carga de saldo "${nombreCta}"`, cantidad: 1, precioUnitario: monto, iva: 22 }],
+                Totales: { subtotal: neto, iva: r2(monto - neto), total: monto },
+                DocPagado: true,
+                Pagos: [{ metodoPagoId, monedaId, monto }],
+                DocCliNombre: storedData.docReceptor?.nombre || '',
+                DocCliDocumento: storedData.docReceptor?.documento || '',
+            } }, fakeRes);
+        });
+        if (outFact.code >= 400 || !outFact.docId) throw new Error(`No se pudo emitir la factura de la recarga Tx ${txId}: ${outFact.error || 'sin docId'}`);
+
+        // 2. Cargar el saldo atado a esa factura (mismo movimiento que carga-prepago origen CAJA)
+        try {
+            const docRow = (await pool.request().input('D', sql.Int, outFact.docId)
+                .query('SELECT DocSerie, DocNumero FROM dbo.DocumentosContables WITH(NOLOCK) WHERE DocIdDocumento = @D')).recordset[0] || {};
+            const refDoc = `${String(docRow.DocSerie || 'M').trim()}-${docRow.DocNumero || outFact.docId}`;
+            await contabilidadService.registrarMovimiento({
+                CueIdCuenta: parseInt(storedData.cueIdCuenta),
+                MovTipo: 'CARGA_PREPAGO',
+                MovConcepto: `Recarga web — Venta de saldo ${refDoc}`,
+                MovImporte: monto,
+                MovUsuarioAlta: 999,
+                DocIdDocumento: outFact.docId,
+                MovRefExterna: `VS-${outFact.docId}`,
+                MovObservaciones: `Recarga de billetera desde el portal — "${nombreCta}" (Tx: ${txId})`,
+            });
+            logger.info(`[BILLETERA PORTAL] ✅ Recarga PREPAGO acreditada: ${monedaId === 2 ? 'US$' : '$'} ${monto} en "${nombreCta}" (#${storedData.cueIdCuenta}) con factura ${refDoc} (doc ${outFact.docId}, Tx ${txId})`);
+        } catch (eCarga) {
+            // La factura YA existe: NO reintentar la emisión. Recuperación manual:
+            // libro de la cuenta prepago → "Vincular factura emitida".
+            logger.error(`[BILLETERA PORTAL] 🚨 CRÍTICO Tx ${txId}: la factura doc ${outFact.docId} se emitió pero la CARGA_PREPAGO falló (${eCarga.message}). Cargar a mano con "Vincular factura emitida" en el libro de la cuenta #${storedData.cueIdCuenta}.`);
+            throw eCarga;
+        }
+        const ioP = req?.app?.get ? req.app.get('socketio') : null;
+        if (ioP) ioP.emit('actualizado', { type: 'actualizacion' });
+        return { code: 200, docId: outFact.docId };
+    }
+
+    // ── ANTICIPO (legacy): recibo interno, se factura después ───────────────────
+    const dup = await pool.request().input('T', sql.NVarChar(200), `%${txId}%`)
+        .query(`SELECT TOP 1 TcaIdTransaccion FROM dbo.TransaccionesCaja WITH(NOLOCK) WHERE TcaTipoDocumento = 'ANTICIPO' AND TcaObservaciones LIKE @T`);
+    if (dup.recordset.length) { logger.info(`[BILLETERA PORTAL] Recarga Tx ${txId} ya acreditada — webhook duplicado ignorado.`); return { duplicated: true }; }
+    let cot = 1;
+    if (monedaId === 2) {
+        const c = await pool.request().query('SELECT TOP 1 CotDolar FROM dbo.Cotizaciones WITH(NOLOCK) ORDER BY CotFecha DESC');
+        cot = parseFloat(c.recordset[0]?.CotDolar) || 1;
+    }
+    const cajaCtrl = require('./cajaController');
+    const out = await new Promise((resolve) => {
+        const fakeRes = { code: 200, status(c) { this.code = c; return this; }, json(o) { resolve({ code: this.code, ...o }); } };
+        cajaCtrl.registrarPagoAnticipo({ user: { id: 999 }, body: {
+            admin: true,
+            clienteId: cli.CliIdCliente,
+            cuentaId: storedData.cueIdCuenta,
+            importe: monto,
+            metodoPagoId,
+            monedaId,
+            cotizacion: cot,
+            concepto: `Recarga de billetera desde el portal — ${storedData.nombreCuenta || ('cuenta #' + storedData.cueIdCuenta)} (Tx: ${txId})`,
+        } }, fakeRes);
+    });
+    if (out.code >= 400 || out.error) throw new Error(out.error || `Recarga rechazada (HTTP ${out.code})`);
+    logger.info(`[BILLETERA PORTAL] ✅ Recarga acreditada: ${monto} (${monedaId === 2 ? 'US$' : '$'}) en cuenta #${storedData.cueIdCuenta} vía Tx ${txId}`);
+    const ioT = req?.app?.get ? req.app.get('socketio') : null;
+    if (ioT) ioT.emit('actualizado', { type: 'actualizacion' });
+    return out;
+};
+
+// Exportado para poder probarlo/recuperarlo sin pasar por el webhook real
+exports._acreditarRecargaBilletera = _acreditarRecargaBilletera;
+
+// POST /web-orders/pickup-orders/cubrir-con-billetera — F5
+// "Cubrir con mi billetera": el cliente cubre sus pedidos pendientes con el saldo
+// PREPAGO (semántica CONSUMO, igual que el descuento automático del motor: sin
+// documento — la factura de esa plata existió al cargarla). Reglas:
+//   · Solo cuentas PREPAGO_FACTURADO activas; NUNCA quedan en negativo.
+//   · Órdenes ENTERAS: cada orden sale entera de UNA cuenta (no se parte).
+//   · Prioridad del motor por orden: restringida que permita el artículo →
+//     libre de la misma moneda → libre de la otra moneda (a cotización del día).
+//   · Se cubren TODAS las órdenes elegidas o no se hace nada (claridad).
+// Ejecuta cada cobertura con el MISMO motor que usa administración
+// (consumirDesdeSaldo: consumo + marca CUBIERTO + deuda cancelada + contra-asiento
+// + orden pronta) y recién después crea el retiro, que nace Abonado por cobertura.
+// Body: { orders: [{OrdIdOrden}], lugarRetiro, direccion, departamento, localidad,
+//         agenciaId, customAgencia, receptorNombre, preview }
+exports.cubrirConBilletera = async (req, res) => {
+    try {
+        const pool = await getPool();
+        const { orders, lugarRetiro, direccion, departamento, localidad,
+                agenciaId, customAgencia, receptorNombre, preview } = req.body;
+        const codCliente = req.user?.codCliente;
+        if (!codCliente) return res.status(401).json({ error: 'Sesión inválida.' });
+        if (!(await _billeteraPortalHabilitada(pool, codCliente))) return res.status(403).json({ error: MSG_BILLETERA_PORTAL_OFF });
+        if (!orders?.length) return res.status(400).json({ error: 'No hay pedidos para cubrir.' });
+        const cli = (await pool.request().input('Cod', sql.Int, codCliente)
+            .query('SELECT CliIdCliente FROM dbo.Clientes WITH(NOLOCK) WHERE CodCliente = @Cod')).recordset[0];
+        if (!cli) return res.status(400).json({ error: 'Cliente no encontrado.' });
+
+        const r2 = (n) => Math.round(n * 100) / 100;
+        const cot = parseFloat((await pool.request()
+            .query('SELECT TOP 1 CotDolar FROM dbo.Cotizaciones WITH(NOLOCK) ORDER BY CotFecha DESC')).recordset[0]?.CotDolar) || 40;
+
+        // 1) Las órdenes elegidas, con su movimiento ORDEN pendiente de facturar
+        const ordIds = orders.map(o => parseInt(o.OrdIdOrden)).filter(Boolean);
+        if (!ordIds.length) return res.status(400).json({ error: 'No hay pedidos válidos para cubrir.' });
+        const reqOrd = pool.request().input('Cli', sql.Int, cli.CliIdCliente);
+        ordIds.forEach((id, i) => reqOrd.input(`o${i}`, sql.Int, id));
+        const filas = (await reqOrd.query(`
+            SELECT od.OrdIdOrden, od.OrdCodigoOrden, od.OrdNombreTrabajo, od.MonIdMoneda, od.ProIdProducto, od.PagIdPago,
+                   od.OrdCostoFinal, od.OReIdOrdenRetiro,
+                   mv.MovIdMovimiento, mv.MovImporte, mv.MovObservaciones, mv.DocIdDocumento,
+                   -- Solo cobertura ENTERA cuenta como "ya cubierta": un consumo PARCIAL dejó
+                   -- un resto vivo en la principal que ESTA acción debe poder cubrir.
+                   CASE WHEN EXISTS (SELECT 1 FROM dbo.MovimientosCuenta cx WITH(NOLOCK)
+                                     JOIN dbo.CuentasCliente ccx WITH(NOLOCK) ON ccx.CueIdCuenta = cx.CueIdCuenta
+                                     WHERE ccx.CliIdCliente = od.CliIdCliente AND cx.MovTipo = 'CONSUMO_CUENTA'
+                                       AND (cx.MovAnulado IS NULL OR cx.MovAnulado = 0)
+                                       AND cx.MovObservaciones LIKE 'CUBIERTO[_]CUENTA[_]%'
+                                       AND (cx.OrdIdOrden = od.OrdIdOrden OR cx.OrdIdOrden = erp.OrdenID)) THEN 1 ELSE 0 END AS YaConsumida
+            FROM dbo.OrdenesDeposito od WITH(NOLOCK)
+            OUTER APPLY (SELECT TOP 1 o.OrdenID FROM dbo.Ordenes o WITH(NOLOCK) WHERE o.CodigoOrden = od.OrdCodigoOrden) erp
+            OUTER APPLY (
+                SELECT TOP 1 m.MovIdMovimiento, m.MovImporte, m.MovObservaciones, m.DocIdDocumento
+                FROM dbo.MovimientosCuenta m WITH(NOLOCK)
+                JOIN dbo.CuentasCliente cc WITH(NOLOCK) ON cc.CueIdCuenta = m.CueIdCuenta
+                WHERE cc.CliIdCliente = od.CliIdCliente AND m.MovTipo IN ('ORDEN','ORDEN_ANTICIPO')
+                  AND (m.MovAnulado IS NULL OR m.MovAnulado = 0) AND m.DocIdDocumento IS NULL
+                  AND (m.MovObservaciones IS NULL OR (m.MovObservaciones NOT LIKE 'CUBIERTO%' AND m.MovObservaciones NOT LIKE 'MATERIAL_CUBIERTO%'))
+                  AND (m.OrdIdOrden = od.OrdIdOrden OR m.OrdIdOrden = erp.OrdenID)
+                ORDER BY m.MovIdMovimiento DESC
+            ) mv
+            WHERE od.CliIdCliente = @Cli AND od.OrdIdOrden IN (${ordIds.map((_, i) => `@o${i}`).join(',')})`)).recordset;
+        if (filas.length !== ordIds.length) return res.status(400).json({ error: 'Alguno de los pedidos no es tuyo o no existe.' });
+        // Nunca crear un SEGUNDO retiro para una orden que ya tiene el suyo
+        const conRetiro = filas.filter(f => f.OReIdOrdenRetiro);
+        if (conRetiro.length) {
+            return res.status(400).json({ error: `${conRetiro.map(f => (f.OrdCodigoOrden || '').trim()).join(', ')} ya ${conRetiro.length > 1 ? 'tienen' : 'tiene'} un retiro creado (RW-${conRetiro[0].OReIdOrdenRetiro}). Actualizá la página.` });
+        }
+
+        // 2) Cuentas PREPAGO del cliente (con saldo real y artículos permitidos)
+        const ctas = (await pool.request().input('Cli', sql.Int, cli.CliIdCliente).query(`
+            SELECT cc.CueIdCuenta, cc.CueNombre, cc.MonIdMoneda, cc.CueRestringida,
+                   ISNULL((SELECT SUM(m.MovImporte) FROM dbo.MovimientosCuenta m WITH(NOLOCK)
+                           WHERE m.CueIdCuenta = cc.CueIdCuenta AND (m.MovAnulado IS NULL OR m.MovAnulado = 0)
+                             AND m.MovTipo NOT IN ('ORDEN','ORDEN_ANTICIPO')), 0) AS Saldo
+            FROM dbo.CuentasCliente cc WITH(NOLOCK)
+            WHERE cc.CliIdCliente = @Cli AND cc.CueActiva = 1 AND cc.CueTipo LIKE 'DINERO%'
+              AND cc.CueEsPrincipal = 0
+              AND ISNULL(cc.CueModalidadFiscal,'ANTICIPO_A_FACTURAR') = 'PREPAGO_FACTURADO'
+            ORDER BY cc.CueIdCuenta`)).recordset
+            .map(c => ({ id: c.CueIdCuenta, nombre: (c.CueNombre || `cuenta #${c.CueIdCuenta}`).trim(),
+                         mon: Number(c.MonIdMoneda) === 2 ? 2 : 1, restringida: !!c.CueRestringida,
+                         disp: r2(Number(c.Saldo)) }))
+            .filter(c => c.disp > 0.009);
+        const permitidos = new Map();
+        const restr = ctas.filter(c => c.restringida);
+        if (restr.length) {
+            const ap = await pool.request().query(`
+                SELECT CueIdCuenta, ProIdProducto FROM dbo.CuentasClienteArticulosPermitidos WITH(NOLOCK)
+                WHERE CueIdCuenta IN (${restr.map(c => c.id).join(',')})`);
+            for (const row of ap.recordset) {
+                if (!permitidos.has(row.CueIdCuenta)) permitidos.set(row.CueIdCuenta, new Set());
+                permitidos.get(row.CueIdCuenta).add(row.ProIdProducto);
+            }
+        }
+
+        // 3) Plan: cada orden ENTERA en una cuenta, prioridad del motor, sin negativo
+        const plan = [], yaCubiertas = [], sinCubrir = [];
+        for (const f of filas) {
+            const codigo = (f.OrdCodigoOrden || `#${f.OrdIdOrden}`).trim();
+            if (f.PagIdPago || f.YaConsumida || (!f.MovIdMovimiento && f.YaConsumida)) { yaCubiertas.push(codigo); continue; }
+            if (!f.MovIdMovimiento) { sinCubrir.push(`${codigo} (no está pendiente de facturar: cubrila por caja)`); continue; }
+            const monOrden = Number(f.MonIdMoneda) === 2 ? 2 : 1;
+            const importe = r2(Math.abs(Number(f.MovImporte)));
+            const candidatas = [
+                ...ctas.filter(c => c.restringida && f.ProIdProducto != null && permitidos.get(c.id)?.has(f.ProIdProducto)),
+                ...ctas.filter(c => !c.restringida && c.mon === monOrden),
+                ...ctas.filter(c => !c.restringida && c.mon !== monOrden),
+            ];
+            let elegida = null, importeCta = 0, cruzada = false;
+            for (const c of candidatas) {
+                cruzada = c.mon !== monOrden;
+                importeCta = cruzada ? (monOrden === 2 ? r2(importe * cot) : r2(importe / cot)) : importe;
+                if (c.disp + 0.001 >= importeCta) { elegida = c; break; }
+            }
+            if (!elegida) { sinCubrir.push(`${codigo} (${monOrden === 2 ? 'US$' : '$'} ${importe.toFixed(2)}: no alcanza en ninguna cuenta)`); continue; }
+            elegida.disp = r2(elegida.disp - importeCta);
+            plan.push({ ordId: f.OrdIdOrden, movId: f.MovIdMovimiento, codigo, importe,
+                        moneda: monOrden === 2 ? 'USD' : 'UYU', cueIdCuenta: elegida.id, cuenta: elegida.nombre,
+                        monedaCuenta: elegida.mon === 2 ? 'USD' : 'UYU', importeCta, cruzada });
+        }
+        if (sinCubrir.length) {
+            const disp = ctas.map(c => `${c.nombre}: ${c.mon === 2 ? 'US$' : '$'} ${c.disp.toFixed(2)}`).join(' · ') || 'sin saldo en la billetera';
+            return res.status(400).json({ error: `Tu billetera no puede cubrir: ${sinCubrir.join('; ')}. Disponible: ${disp}. Recargá la billetera o pagá con tarjeta.` });
+        }
+        if (!plan.length && !yaCubiertas.length) return res.status(400).json({ error: 'No hay pedidos para cubrir.' });
+
+        if (preview) return res.json({ success: true, preview: true, plan, yaCubiertas, cotizacion: cot });
+
+        // 4) Cubrir cada orden con el motor de administración (consumo + marca + deuda + asiento)
+        const ctrlConta = require('./contabilidadController');
+        const cubiertas = [];
+        for (const p of plan) {
+            const out = await new Promise((resolve) => {
+                const fakeRes = { code: 200, status(c) { this.code = c; return this; }, json(o) { resolve({ code: this.code, ...o }); } };
+                ctrlConta.consumirDesdeSaldo({ params: { MovIdMovimiento: String(p.movId) },
+                    body: { CueIdCuenta: p.cueIdCuenta }, query: {}, user: { id: 999 } }, fakeRes);
+            });
+            if (out.code >= 400 || out.success === false) {
+                const hechas = cubiertas.map(c => c.codigo).join(', ');
+                logger.error(`[BILLETERA PORTAL] Cubrir con billetera: falló ${p.codigo} (${out.error}). Cubiertas antes de fallar: ${hechas || 'ninguna'}.`);
+                return res.status(500).json({ error: `${p.codigo} no se pudo cubrir: ${out.error || 'error interno'}.${hechas ? ` Estas SÍ quedaron cubiertas: ${hechas} — volvé a intentar para terminar y crear el retiro.` : ''}` });
+            }
+            cubiertas.push(p);
+            logger.info(`[BILLETERA PORTAL] 🔋 ${p.codigo} cubierta con "${p.cuenta}" (−${p.monedaCuenta === 'USD' ? 'US$' : '$'} ${p.importeCta.toFixed(2)}${p.cruzada ? ` @ ${cot}` : ''}) por el portal.`);
+        }
+
+        // 5) Crear el retiro: nace Abonado porque todas las órdenes están cubiertas
+        const { crearRetiro } = require('../services/retiroService');
+        const retiroTransaction = new sql.Transaction(pool);
+        await retiroTransaction.begin();
+        let OReIdOrdenRetiro;
+        try {
+            OReIdOrdenRetiro = await crearRetiro(retiroTransaction, {
+                ordIds:       ordIds,
+                // Total del RETIRO = valor de las órdenes (no solo lo consumido ahora:
+                // con órdenes ya cubiertas el plan puede ser menor y el retiro quedaba en 0)
+                totalCost:    r2(filas.reduce((s, f) => s + (parseFloat(f.OrdCostoFinal) || 0), 0)),
+                lugarRetiro:  lugarRetiro || 1,
+                usuarioAlta:  70,
+                formaRetiro:  'RW',
+                codCliente:   codCliente,
+                moneda:       (filas[0] && Number(filas[0].MonIdMoneda) === 2) ? 'USD' : 'UYU',
+                direccion:    direccion || null,
+                departamento: departamento || null,
+                localidad:    localidad || null,
+                agenciaId:    agenciaId || null,
+            });
+            await retiroTransaction.commit();
+        } catch (eRet) {
+            await retiroTransaction.rollback().catch(() => {});
+            logger.error(`[BILLETERA PORTAL] Órdenes cubiertas pero el retiro no se creó: ${eRet.message}. El cliente puede reintentar (las cubiertas se saltean).`);
+            return res.status(500).json({ error: `Tus pedidos quedaron cubiertos con la billetera, pero el retiro no se pudo crear: ${eRet.message}. Volvé a intentar.` });
+        }
+        if (customAgencia) await pool.request().input('OReId', sql.Int, OReIdOrdenRetiro).input('A', sql.NVarChar(200), customAgencia)
+            .query('UPDATE OrdenesRetiro SET AgenciaOtra = @A WHERE OReIdOrdenRetiro = @OReId');
+        if (receptorNombre) await pool.request().input('OReId', sql.Int, OReIdOrdenRetiro).input('R', sql.NVarChar(200), receptorNombre)
+            .query('UPDATE OrdenesRetiro SET ReceptorNombre = @R WHERE OReIdOrdenRetiro = @OReId');
+
+        const io5 = req?.app?.get ? req.app.get('socketio') : null;
+        if (io5) io5.emit('actualizado', { type: 'actualizacion' });
+        logger.info(`[BILLETERA PORTAL] 🔋 Retiro RW-${OReIdOrdenRetiro} creado con ${plan.length} orden(es) cubiertas por billetera${yaCubiertas.length ? ` (+${yaCubiertas.length} ya cubiertas)` : ''}.`);
+        return res.json({ success: true, retiro: `RW-${OReIdOrdenRetiro}`, OReIdOrdenRetiro, plan, yaCubiertas });
+    } catch (err) {
+        logger.error('[BILLETERA PORTAL] cubrir-con-billetera:', err.message);
+        res.status(500).json({ error: 'No se pudo cubrir con la billetera.' });
+    }
+};
+
+// POST /web-orders/pickup-orders/pagar-con-saldo — el cliente paga su retiro con el
+// saldo de su cuenta (sin pasarela): crea el retiro (flujo diferido, igual que el
+// webhook de Handy) y registra el cobro por el motor de caja con el medio "Saldo de
+// cuenta", que debita la cuenta. En el portal NO se admite quedar en negativo.
+exports.pagarConSaldoBilletera = async (req, res) => {
+    try {
+        const pool = await getPool();
+        const { orders, totalAmount, activeCurrency, lugarRetiro, direccion, departamento,
+                localidad, agenciaId, customAgencia, receptorNombre, cueIdCuenta, preview } = req.body;
+        const codCliente = req.user?.codCliente;
+        if (!codCliente) return res.status(401).json({ error: 'Sesión inválida.' });
+        if (!(await _billeteraPortalHabilitada(pool, codCliente))) return res.status(403).json({ error: MSG_BILLETERA_PORTAL_OFF });
+        if (!orders?.length) return res.status(400).json({ error: 'No hay órdenes para pagar.' });
+        const total = Math.round(Number(totalAmount) * 100) / 100;
+        if (!(total > 0)) return res.status(400).json({ error: 'Importe inválido.' });
+        const moneda = activeCurrency === 'USD' ? 'USD' : 'UYU';
+
+        const cli = (await pool.request().input('Cod', sql.Int, codCliente)
+            .query('SELECT CliIdCliente FROM dbo.Clientes WITH(NOLOCK) WHERE CodCliente = @Cod')).recordset[0];
+        if (!cli) return res.status(400).json({ error: 'Cliente no encontrado.' });
+
+        // ── Asignación automática sobre las cuentas de la billetera ─────────────
+        // Elegibles: anticipo-libres activas con saldo (sin principal/restringida/prepago,
+        // NUNCA en negativo). Prioridad: misma moneda del retiro (mayor saldo primero),
+        // después la otra moneda convertida a la COTIZACIÓN DEL DÍA (el cliente no elige
+        // TC). En cross, los centavos se redondean HACIA ARRIBA (los cubre el cliente y
+        // el detalle se le muestra antes de confirmar).
+        const r2 = (n) => Math.round(n * 100) / 100;
+        const cot = parseFloat((await pool.request()
+            .query('SELECT TOP 1 CotDolar FROM dbo.Cotizaciones WITH(NOLOCK) ORDER BY CotFecha DESC')).recordset[0]?.CotDolar) || 40;
+        let elegibles = (await pool.request().input('Cli', sql.Int, cli.CliIdCliente).query(`
+            SELECT cc.CueIdCuenta, cc.CueNombre, cc.CueTipo,
+                   ISNULL((SELECT SUM(m.MovImporte) FROM dbo.MovimientosCuenta m WITH(NOLOCK)
+                           WHERE m.CueIdCuenta = cc.CueIdCuenta AND (m.MovAnulado IS NULL OR m.MovAnulado = 0)
+                             AND m.MovTipo NOT IN ('ORDEN','ORDEN_ANTICIPO')), 0) AS Saldo
+            FROM dbo.CuentasCliente cc WITH(NOLOCK)
+            WHERE cc.CliIdCliente = @Cli AND cc.CueActiva = 1 AND cc.CueTipo LIKE 'DINERO%'
+              AND cc.CueEsPrincipal = 0 AND cc.CueRestringida = 0
+              AND ISNULL(cc.CueModalidadFiscal,'ANTICIPO_A_FACTURAR') <> 'PREPAGO_FACTURADO'`)).recordset
+            .map(c => ({ CueIdCuenta: c.CueIdCuenta, nombre: c.CueNombre || `Cuenta #${c.CueIdCuenta}`,
+                         moneda: c.CueTipo === 'DINERO_USD' ? 'USD' : 'UYU', saldo: r2(Number(c.Saldo)) }))
+            .filter(c => c.saldo > 0.009);
+        // Compatibilidad: si el llamador fija una cuenta, la asignación usa SOLO esa
+        if (cueIdCuenta) elegibles = elegibles.filter(c => c.CueIdCuenta === parseInt(cueIdCuenta));
+        elegibles.sort((a, b) => (a.moneda === moneda ? 0 : 1) - (b.moneda === moneda ? 0 : 1) || b.saldo - a.saldo);
+
+        let falta = total;
+        const plan = [];
+        for (const c of elegibles) {
+            if (falta <= 0.009) break;
+            let montoCta;
+            if (c.moneda === moneda) {
+                montoCta = Math.min(c.saldo, r2(falta));
+            } else {
+                const necesario = c.moneda === 'USD' ? falta / cot : falta * cot;
+                montoCta = Math.min(c.saldo, Math.ceil(necesario * 100) / 100);
+            }
+            if (montoCta <= 0.009) continue;
+            const aporte = c.moneda === moneda ? montoCta : (c.moneda === 'USD' ? r2(montoCta * cot) : r2(montoCta / cot));
+            plan.push({ cueIdCuenta: c.CueIdCuenta, nombre: c.nombre, moneda: c.moneda, monto: montoCta, aporte, cruzada: c.moneda !== moneda });
+            falta = r2(falta - aporte);
+        }
+        if (falta > 0.009) {
+            const disp = elegibles.map(c => `${c.nombre}: ${c.moneda === 'USD' ? 'US$' : '$'} ${c.saldo.toFixed(2)}`).join(' · ') || 'sin cuentas con saldo';
+            return res.status(400).json({ error: `El saldo de tu billetera no alcanza: faltan ${moneda === 'USD' ? 'US$' : '$'} ${falta.toFixed(2)} (${disp}).` });
+        }
+
+        // Vista previa: devolver el plan sin tocar nada (el portal lo muestra antes de confirmar)
+        if (preview) return res.json({ success: true, preview: true, plan, cotizacion: cot, total, moneda });
+
+        const metodoSaldo = (await pool.request()
+            .query(`SELECT TOP 1 MPaIdMetodoPago FROM dbo.MetodosPagos WHERE MPaDescripcionMetodo = 'Saldo de cuenta'`)).recordset[0]?.MPaIdMetodoPago;
+        if (!metodoSaldo) return res.status(500).json({ error: 'Falta el medio de pago "Saldo de cuenta" (configuración).' });
+
+        // 1. Crear el retiro (mismos parámetros que el flujo diferido de Handy)
+        const { crearRetiro } = require('../services/retiroService');
+        const retiroTransaction = new sql.Transaction(pool);
+        await retiroTransaction.begin();
+        let OReIdOrdenRetiro;
+        try {
+            OReIdOrdenRetiro = await crearRetiro(retiroTransaction, {
+                ordIds:       orders.map(o => o.OrdIdOrden).filter(Boolean),
+                totalCost:    total,
+                lugarRetiro:  lugarRetiro || 1,
+                usuarioAlta:  70,
+                formaRetiro:  'RW',
+                codCliente:   codCliente,
+                moneda,
+                direccion:    direccion || null,
+                departamento: departamento || null,
+                localidad:    localidad || null,
+                agenciaId:    agenciaId || null,
+            });
+            await retiroTransaction.commit();
+        } catch (eRet) {
+            await retiroTransaction.rollback().catch(() => {});
+            throw eRet;
+        }
+        if (customAgencia) await pool.request().input('OReId', sql.Int, OReIdOrdenRetiro).input('A', sql.NVarChar(200), customAgencia)
+            .query('UPDATE OrdenesRetiro SET AgenciaOtra = @A WHERE OReIdOrdenRetiro = @OReId');
+        if (receptorNombre) await pool.request().input('OReId', sql.Int, OReIdOrdenRetiro).input('R', sql.NVarChar(200), receptorNombre)
+            .query('UPDATE OrdenesRetiro SET ReceptorNombre = @R WHERE OReIdOrdenRetiro = @OReId');
+
+        // 2. Cobro por el motor de caja (Caja Administrativa online) con "Saldo de cuenta":
+        //    el motor valida de nuevo la cuenta y registra el débito atado al pago.
+        const { procesarTransaccion } = require('../services/cajaService');
+        const nombresUsados = plan.map(p => `${p.nombre} (${p.moneda === 'USD' ? 'US$' : '$'} ${p.monto.toFixed(2)}${p.cruzada ? ` @ ${cot}` : ''})`).join(' + ');
+        const result = await procesarTransaccion({
+            usuarioId: 999,
+            header: {
+                clienteId:        cli.CliIdCliente,
+                esAdministrativa: true,
+                tipoDocumento:    '07',   // E-Ticket Contado
+                moneda,
+                cotizacion:       cot,
+                observaciones:    `Pago con saldo de billetera (portal) — ${nombresUsados}`.slice(0, 480),
+            },
+            aplicaciones: [{
+                tipo:          'ORDEN_RETIRO',
+                referenciaId:  OReIdOrdenRetiro,
+                montoOriginal: total,
+                descripcion:   `Retiro RW-${OReIdOrdenRetiro}`,
+            }],
+            // Una línea de pago por cuenta usada, cada una EN LA MONEDA DE SU CUENTA
+            // (el débito PAGO_SALDO valida moneda línea = moneda cuenta); cross lleva
+            // la cotización del día para las conversiones del motor.
+            pagos: plan.map(p => ({
+                metodoPagoId: metodoSaldo,
+                monedaId: p.moneda === 'USD' ? 2 : 1,
+                moneda: p.moneda,
+                montoOriginal: p.monto,
+                cotizacion: p.cruzada ? cot : 1,
+                cueIdCuenta: p.cueIdCuenta,
+            })),
+        });
+
+        logger.info(`[BILLETERA PORTAL] Cliente ${cli.CliIdCliente} pagó RW-${OReIdOrdenRetiro} (${moneda} ${total}) con ${nombresUsados}.`);
+        // Notificar impresión como el pago online
+        const ioInst = req.app?.get('socketio');
+        if (ioInst) ioInst.emit('actualizado', { type: 'actualizacion' });
+        res.json({ success: true, retiro: `RW-${OReIdOrdenRetiro}`, plan, cotizacion: cot, cuenta: plan.map(p => p.nombre).join(' + ') });
+    } catch (err) {
+        logger.error('[BILLETERA PORTAL] pagar-con-saldo:', err.message);
+        res.status(500).json({ error: err.message || 'No se pudo pagar con el saldo.' });
+    }
+};
+
 // --- HANDY PAYMENT ---
 exports.createHandyPaymentLink = async (req, res) => {
     try {
@@ -4727,6 +5934,19 @@ exports.handyWebhook = async (req, res) => {
                 if (txData.recordset.length > 0) {
                     const tx = txData.recordset[0];
                     const storedData = JSON.parse(tx.OrdersJson || '{}');
+
+                    // ── RECARGA DE BILLETERA (portal): acreditar la cuenta y terminar ──
+                    if (storedData.type === 'wallet-topup') {
+                        try {
+                            await _acreditarRecargaBilletera(pool, {
+                                storedData, codCliente: tx.CodCliente, txId: transactionId,
+                                metodoPagoId: 9, monedaId: tx.Currency === 840 ? 2 : 1, monto: tx.TotalAmount, req,
+                            });
+                        } catch (eTopup) {
+                            logger.error(`[HANDY WEBHOOK] Recarga de billetera falló (Tx ${transactionId}): ${eTopup.message}`);
+                        }
+                        return res.status(200).json({ received: true });
+                    }
 
                     // Extraer datos: formato nuevo (con ordenRetiro) o legacy (array plano)
                     const storedOrdenRetiro = storedData.ordenRetiro;
@@ -5429,6 +6649,20 @@ exports.mpWebhook = async (req, res) => {
 
         const tx = txData.recordset[0];
         const storedData = JSON.parse(tx.OrdersJson || '{}');
+
+        // ── RECARGA DE BILLETERA (portal): acreditar la cuenta y terminar ──
+        if (storedData.type === 'wallet-topup') {
+            try {
+                await _acreditarRecargaBilletera(pool, {
+                    storedData, codCliente: tx.CodCliente, txId: String(externalRef),
+                    metodoPagoId: 10, monedaId: (paymentData.currency_id === 'USD') ? 2 : 1,
+                    monto: paymentData.transaction_amount, req,
+                });
+            } catch (eTopup) {
+                logger.error(`[MP WEBHOOK] Recarga de billetera falló (Tx ${externalRef}): ${eTopup.message}`);
+            }
+            return;
+        }
 
         const totalAmountPaid = paymentData.transaction_amount;
         // Moneda: UYU=1, USD=2

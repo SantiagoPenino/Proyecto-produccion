@@ -39,6 +39,7 @@ const ERPSyncService = require('../services/erpSyncService');
 const { generateThumbnail } = require('../utils/thumbnailGenerator');
 const { construirNombreArchivo, materialParaNombre, usaNombreNuevo } = require('../utils/nombreArchivoOrden');
 const { descontarStockWmsExterno } = require('../services/wmsStockService');
+const { marcarRequisitoNoAplica } = require('../utils/requisitosAutoCumplimiento');
 
 
 // ──────────────────────────────────────────────────
@@ -911,6 +912,30 @@ exports.createWebOrder = async (req, res) => {
             return pA - pB;
         });
 
+        // [REQUISITOS] Encadenar Corte/Costura a su predecesor real en la cadena "Fabricar a
+        // Medida" (Sublimación→Corte→Costura→...) — mismo campo chainedAfterAreaId que ya arma
+        // el frontend para Estampado (PrendaOrderForm.jsx, srv.chainedAfterAreaId), pero acá no
+        // llega armado: se calcula server-side, ANTES del sort de abajo (que necesita conocer
+        // chainedAfterAreaId para insertar cada orden después de la que la libera). El
+        // requisito bloqueante de cada una (TELA en TWC, CORTES en TWT) queda pendiente hasta
+        // que la anterior de la cadena llegue físicamente — lo resuelve el check-in extendido
+        // en logisticsController.js (match por LiberaCuandoOrdenID).
+        pendingOrderExecutions.forEach(exec => {
+            if (exec.chainedAfterAreaId) return; // ya viene armado del frontend (Estampado)
+            const areaId = (exec.areaID || '').toUpperCase();
+            if (areaId !== 'TWC' && areaId !== 'TWT') return;
+            const lote = exec.comboItemId
+                ? pendingOrderExecutions.filter(e => e.comboItemId === exec.comboItemId)
+                : pendingOrderExecutions;
+            const activas = new Set(lote.map(e => (e.areaID || '').toUpperCase()));
+            if (areaId === 'TWC' && activas.has('SB')) {
+                exec.chainedAfterAreaId = 'SB';
+            } else if (areaId === 'TWT') {
+                if (activas.has('TWC')) exec.chainedAfterAreaId = 'TWC';
+                else if (activas.has('SB')) exec.chainedAfterAreaId = 'SB';
+            }
+        });
+
         // [PRENDAS] Las Ordenes encadenadas (ej. Estampado esperando a su DTF/TPU) tienen que
         // insertarse DESPUÉS de la Orden de la que dependen, para poder guardar su OrdenID real
         // (ver más abajo, "insertedOrdenIdByAreaId"). Sort estable: no reordena nada más.
@@ -1302,10 +1327,19 @@ exports.createWebOrder = async (req, res) => {
                 let estadoDependenciaExec = null;
                 let liberaCuandoOrdenIDExec = null;
                 if (exec.chainedAfterAreaId) {
-                    estadoDependenciaExec = 'ESPERANDO_IMPRESION';
                     liberaCuandoOrdenIDExec = insertedOrdenIdByAreaId[claveOrdenArea(exec.comboItemId, exec.chainedAfterAreaId.toUpperCase())] || null;
+                    // [REQUISITOS] 'ESPERANDO_IMPRESION' solo tiene sentido (y solo se libera)
+                    // para Estampado esperando su DTF/TPU — el evento de release está
+                    // hardcodeado a esas dos áreas en productionFileController.js. Para el
+                    // encadenamiento nuevo (TWC←SB, TWT←TWC/SB) no hay ningún evento que saque
+                    // este estado, así que queda en null (sin restricción extra) y el gate real
+                    // lo da SQL_TRANSFER_LLEGO/LiberaCuandoOrdenID en embBoardController.js —
+                    // genérico por área, no depende de un evento de "impresión terminada".
+                    if (exec.areaID.toUpperCase() === 'EST') {
+                        estadoDependenciaExec = 'ESPERANDO_IMPRESION';
+                    }
                     if (!liberaCuandoOrdenIDExec) {
-                        logger.warn(`[Prendas] Estampado sin OrdenID de ${exec.chainedAfterAreaId} para encadenar (¿no se creó esa Orden?) — queda sin gate.`);
+                        logger.warn(`[Prendas] ${exec.areaID} sin OrdenID de ${exec.chainedAfterAreaId} para encadenar (¿no se creó esa Orden?) — queda sin gate.`);
                         estadoDependenciaExec = null;
                     }
                 } else if (exec.comboItemId && ['EMB', 'DF', 'TPU'].includes(exec.areaID.toUpperCase())) {
@@ -1466,8 +1500,44 @@ exports.createWebOrder = async (req, res) => {
                         telaDescontada = true;
                         logger.info(`[TELA-CLIENTE] Orden ${newOID}: descontados ${mag}m de bobina ${bid}. Restantes: ${MetrosRestantes - mag}m`);
                     }
+                } else if (!exec.isExtra && exec.areaID === 'SB') {
+                    // [REQUISITOS] Sublimación sin bobina de cliente: material propio de la
+                    // empresa (el caso normal en "Fabricar a Medida" — acá no hay noción de
+                    // "el cliente trajo su tela", la prenda se arma de cero). El requisito TELA
+                    // nunca se va a cumplir por esta vía — nace CUMPLIDO ("no aplica") en vez
+                    // de quedar bloqueado para siempre. Mismo criterio que webOrdersController.js.
+                    await marcarRequisitoNoAplica(transaction, {
+                        ordenId: newOID, areaId: exec.areaID, codigoRequisito: 'TELA', exact: false,
+                        observaciones: 'No aplica — material propio de la empresa'
+                    });
                 }
 
+                // [REQUISITOS] Estampado (EST): mismo criterio "1 de 3" que webOrdersController.js
+                // — PRENDA/DTF/TPU se exigen los 3 en ConfigRequisitosProduccion pero cada orden
+                // real sale de UN solo canal. Acá el canal ya viene resuelto en
+                // chainedAfterAreaId (armado por el frontend para EST) o, si no hay transfer
+                // encadenado, por la presencia de Bordado en el mismo lote.
+                if (exec.areaID.toUpperCase() === 'EST') {
+                    const cadena = exec.chainedAfterAreaId ? String(exec.chainedAfterAreaId).toUpperCase() : null;
+                    let canalReal = cadena === 'DF' ? 'DTF' : (cadena === 'TPU' ? 'TPU' : null);
+                    if (!canalReal && !cadena) {
+                        const loteEst = exec.comboItemId
+                            ? pendingOrderExecutions.filter(e => e.comboItemId === exec.comboItemId)
+                            : pendingOrderExecutions;
+                        if (loteEst.some(e => (e.areaID || '').toUpperCase() === 'EMB')) canalReal = 'PRENDA';
+                    }
+                    if (canalReal) {
+                        for (const cod of ['PRENDA', 'DTF', 'TPU']) {
+                            if (cod === canalReal) continue;
+                            await marcarRequisitoNoAplica(transaction, {
+                                ordenId: newOID, areaId: exec.areaID, codigoRequisito: cod,
+                                observaciones: `No aplica — el canal real de este Estampado es ${canalReal}`
+                            });
+                        }
+                    } else {
+                        logger.warn(`[ESTAMPADO] Orden ${newOID}: canal ambiguo (chainedAfterAreaId=${exec.chainedAfterAreaId || 'null'}) — quedan los 3 requisitos pendientes.`);
+                    }
+                }
 
                 // --- NOMBRE DE LOS ARCHIVOS: MATERIAL AL PRINCIPIO (SOLO SUBLIMACIÓN) ---
                 // El resto de las áreas mantiene el nombre de siempre (ORDEN_CLIENTE_TRABAJO_Archivo...).

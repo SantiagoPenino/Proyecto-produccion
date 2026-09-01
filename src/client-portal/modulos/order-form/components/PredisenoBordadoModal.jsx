@@ -1,14 +1,16 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import {
-    X, Trash2, Check, Wand2, ChevronUp, ChevronDown, Clock, Layers3,
+    X, Trash2, Check, Wand2, ChevronUp, ChevronDown, CalendarCheck, Layers3,
     Mountain, ZoomIn, ZoomOut, Maximize2, Ruler, Scissors, Eraser, Spline, PaintBucket, Undo2,
 } from 'lucide-react';
 import {
     CARTA_HILOS, TIPOS_PUNTADA, puntadaPorId,
     detectarColores, hiloMasCercano, hexARgb,
-    estimarPuntadas, estimarMinutos, PUNTADA_RELIEVE,
+    estimarPuntadas, PUNTADA_RELIEVE,
     quitarFondo, vectorizarPiezas, borrarPincel, pintarRegion,
 } from '../utils/bordadoHilos';
+import { apiClient } from '../../../api/apiClient';
+import { fmtFechaCorta } from '../../../../utils/fechas';
 
 /**
  * [BORDADO] Editor de prediseño — OPCIONAL.
@@ -67,6 +69,11 @@ export default function PredisenoBordadoModal({
     const [sinFondo, setSinFondo] = useState(false);
     const [verContornos, setVerContornos] = useState(false);
     const [aviso, setAviso] = useState('');
+    const [avisoResolucionCerrado, setAvisoResolucionCerrado] = useState(false);
+    // Estimado de entrega — informativo mientras se diseña, no la promesa final: esa se calcula
+    // recién al confirmar el pedido, con la prioridad real (acá siempre se pide como Normal).
+    const [fechaEstimada, setFechaEstimada] = useState(null);
+    const [cargandoFecha, setCargandoFecha] = useState(false);
 
     // ── Deshacer ──────────────────────────────────────────────────────────
     // Cada acción que toca el dibujo guarda antes una foto del lienzo de trabajo
@@ -151,6 +158,7 @@ export default function PredisenoBordadoModal({
             base.getContext('2d', { willReadFrequently: true }).drawImage(img, 0, 0, w, h);
             baseRef.current = base;
 
+            setAvisoResolucionCerrado(false);
             setListo(true);
         };
         img.onerror = () => {
@@ -426,10 +434,36 @@ export default function PredisenoBordadoModal({
         }),
     }));
     const totalPuntadas = conPuntadas.reduce((s, p) => s + p.puntadas, 0);
-    const minutos = estimarMinutos(totalPuntadas, paleta.length);
     const hayMedidas = parseFloat(anchoCm) > 0 && parseFloat(altoCm) > 0;
     const piezasRelieve = conPuntadas.filter(p => p.relieve).length;
     const piezasTafeta = conPuntadas.filter(p => !p.relieve && p.puntada === 'TAFETA').length;
+
+    // Calidad del arte de referencia: puntadas por pulgada al tamaño real del bordado. Con poca
+    // resolución, tanto la detección automática de colores/contornos como lo que ve a ojo el
+    // diseñador pierden nitidez. No es DPI de impresión (esto no se imprime, es solo referencia).
+    const UMBRAL_DPI_REFERENCIA = 75;
+    const dpiEfectivo = (hayMedidas && originalRef.current)
+        ? Math.round(originalRef.current.naturalWidth / (parseFloat(anchoCm) / 2.54))
+        : null;
+    const resolucionBaja = dpiEfectivo != null && dpiEfectivo < UMBRAL_DPI_REFERENCIA;
+
+    // Estimado de entrega: puntadas totales del diseño (todas las prendas) con la capacidad y
+    // la cola REAL de Bordado — mismo motor que usa el pedido al confirmarse. Debounced: no hace
+    // falta recalcular en cada click mientras se retoca el diseño.
+    useEffect(() => {
+        const magnitudTotal = totalPuntadas * (parseInt(cantidad) || 0);
+        if (!hayMedidas || magnitudTotal <= 0) { setFechaEstimada(null); return; }
+
+        setCargandoFecha(true);
+        const timer = setTimeout(() => {
+            apiClient.get(`/planificacion/estimar-fecha-bordado?magnitud=${magnitudTotal}`)
+                .then(res => setFechaEstimada(res?.fecha || null))
+                .catch(() => setFechaEstimada(null))
+                .finally(() => setCargandoFecha(false));
+        }, 600);
+        return () => clearTimeout(timer);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [totalPuntadas, cantidad, hayMedidas]);
 
     // Ancho de dibujo del lienzo en píxeles de pantalla.
     //   AJUSTAR → lo maneja el CSS (null), solo se aplica el zoom sobre el tamaño natural.
@@ -507,6 +541,22 @@ export default function PredisenoBordadoModal({
                     </div>
                 ) : (
                     <>
+                        {resolucionBaja && !avisoResolucionCerrado && (
+                            <div className="mx-5 mt-4 px-4 py-3 rounded-xl bg-amber-500/10 border border-amber-500/30 flex items-start justify-between gap-3">
+                                <p className="text-[11px] font-bold text-amber-400 leading-relaxed">
+                                    La resolución de la imagen es baja para el tamaño del bordado ({anchoCm} × {altoCm} cm).
+                                    Se va a ver con menos definición para identificar los detalles finos — si podés, subí una
+                                    versión más grande del arte.
+                                </p>
+                                <button
+                                    type="button"
+                                    onClick={() => setAvisoResolucionCerrado(true)}
+                                    className="text-amber-400/70 hover:text-amber-300 transition-colors shrink-0"
+                                >
+                                    <X size={16} />
+                                </button>
+                            </div>
+                        )}
                         <div className="flex-1 overflow-y-auto grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_380px]">
 
                             {/* ── Lienzo ── */}
@@ -655,7 +705,7 @@ export default function PredisenoBordadoModal({
                                     </div>
                                 )}
 
-                                <div className="rounded-2xl bg-zinc-950/60 border border-zinc-800 p-4 flex justify-center items-center min-h-[240px] max-h-[46vh] overflow-auto">
+                                <div className="rounded-2xl bg-zinc-950/60 border border-zinc-800 p-1.5 flex justify-center items-center max-h-[66vh] overflow-auto">
                                     <canvas
                                         ref={canvasRef}
                                         onMouseDown={(e) => { pintandoRef.current = true; usarHerramienta(e); }}
@@ -668,7 +718,7 @@ export default function PredisenoBordadoModal({
                                             // vea qué quedó vacío y qué es hilo blanco.
                                             ...(sinFondo ? DAMERO : {}),
                                         }}
-                                        className={`rounded shrink-0 ${anchoPx ? '' : 'max-w-full max-h-[42vh]'} ${herramienta ? 'cursor-crosshair' : 'cursor-default'}`}
+                                        className={`rounded shrink-0 ${anchoPx ? '' : 'max-w-full max-h-[64vh]'} ${herramienta ? 'cursor-crosshair' : 'cursor-default'}`}
                                     />
                                 </div>
 
@@ -861,30 +911,19 @@ export default function PredisenoBordadoModal({
                         <div className="border-t border-zinc-800 p-5">
                             {!hayMedidas ? (
                                 <p className="mb-4 text-xs font-bold text-amber-400">
-                                    Cargá el ancho y el largo del bordado para poder estimar las puntadas y el tiempo.
+                                    Cargá el ancho y el largo del bordado para poder estimar las puntadas y la fecha de entrega.
                                 </p>
                             ) : (
                                 <>
-                                    {/* LO QUE MÁS IMPORTA, GRANDE: cuántas puntadas y cuánto tarda.
-                                        Primero por prenda; abajo, el trabajo entero. */}
+                                    {/* LO QUE MÁS IMPORTA, GRANDE: cuántas puntadas y cuándo estaría listo. */}
                                     <div className="mb-4 rounded-2xl bg-zinc-800/60 border border-zinc-700 overflow-hidden">
-                                        <div className="grid grid-cols-2 divide-x divide-zinc-700">
-                                            <div className="p-4">
-                                                <p className="text-[10px] font-black text-zinc-400 uppercase tracking-widest flex items-center gap-1.5 mb-1">
-                                                    <Layers3 size={12} /> Puntadas por prenda
-                                                </p>
-                                                <p className="text-3xl font-black text-white leading-none">
-                                                    {totalPuntadas.toLocaleString('es-UY')}
-                                                </p>
-                                            </div>
-                                            <div className="p-4">
-                                                <p className="text-[10px] font-black text-zinc-400 uppercase tracking-widest flex items-center gap-1.5 mb-1">
-                                                    <Clock size={12} /> Tiempo por prenda
-                                                </p>
-                                                <p className="text-3xl font-black text-white leading-none">
-                                                    {formatearDuracion(minutos)}
-                                                </p>
-                                            </div>
+                                        <div className="p-4">
+                                            <p className="text-[10px] font-black text-zinc-400 uppercase tracking-widest flex items-center gap-1.5 mb-1">
+                                                <Layers3 size={12} /> Puntadas por prenda
+                                            </p>
+                                            <p className="text-3xl font-black text-white leading-none">
+                                                {totalPuntadas.toLocaleString('es-UY')}
+                                            </p>
                                         </div>
 
                                         {cantidad > 0 && (
@@ -895,10 +934,22 @@ export default function PredisenoBordadoModal({
                                                 <span className="text-lg font-black text-white">
                                                     {(totalPuntadas * cantidad).toLocaleString('es-UY')} puntadas
                                                 </span>
-                                                <span className="text-zinc-500">·</span>
-                                                <span className="text-lg font-black text-brand-gold">
-                                                    {formatearDuracion(minutos * cantidad)} de máquina
-                                                </span>
+                                            </div>
+                                        )}
+
+                                        {cantidad > 0 && (
+                                            <div className="px-4 py-3 border-t border-zinc-700 flex items-center gap-2">
+                                                <CalendarCheck size={14} className="text-emerald-400 shrink-0" />
+                                                {cargandoFecha ? (
+                                                    <span className="text-xs text-zinc-500">Calculando estimado de entrega…</span>
+                                                ) : fechaEstimada ? (
+                                                    <span className="text-xs font-bold text-zinc-300">
+                                                        Estimado de entrega: <span className="text-emerald-400 font-black">{fmtFechaCorta(fechaEstimada)}</span>
+                                                        <span className="text-zinc-500 font-normal"> — según la carga actual del taller, puede variar con la prioridad final del pedido</span>
+                                                    </span>
+                                                ) : (
+                                                    <span className="text-xs text-zinc-500">No se pudo estimar la fecha de entrega todavía.</span>
+                                                )}
                                             </div>
                                         )}
 
@@ -935,10 +986,10 @@ export default function PredisenoBordadoModal({
 
                             <p className="text-[11px] text-zinc-400 mb-4 leading-relaxed">
                                 <span className="font-black text-zinc-200">Es una estimación.</span>{' '}
-                                Se calcula por área y densidad — relleno ≈ 1.400 puntadas por pulgada², satén ≈ 1.000,
-                                pespunte ≈ 300, tafeta ≈ 250, y el relieve suma 50%. El tiempo es a 600 puntadas por
-                                minuto más el cambio de hilo, sin contar el bastidor. El número definitivo sale del
-                                ponchado que hace el diseñador.
+                                Las puntadas se calculan por área y densidad — relleno ≈ 1.400 puntadas por pulgada²,
+                                satén ≈ 1.000, pespunte ≈ 300, tafeta ≈ 250, y el relieve suma 50%. El número
+                                definitivo sale del ponchado que hace el diseñador. El estimado de entrega se recalcula
+                                con la carga real del taller al confirmar el pedido.
                             </p>
 
                             <div className="flex gap-3">
@@ -958,13 +1009,4 @@ export default function PredisenoBordadoModal({
         </div>
     );
 }
-
-// Minutos → "45 min" / "2 h 10 min". Los trabajos largos en minutos sueltos
-// (ej. "310 min") no se leen.
-const formatearDuracion = (minutos) => {
-    const m = Math.max(1, Math.round(minutos));
-    if (m < 60) return `${m} min`;
-    const h = Math.floor(m / 60), r = m % 60;
-    return r ? `${h} h ${r} min` : `${h} h`;
-};
 

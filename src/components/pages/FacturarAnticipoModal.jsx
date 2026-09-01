@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { X, CheckCircle2, RefreshCw } from 'lucide-react';
 import api from '../../services/api';
-import toast from 'react-hot-toast';
+// sonner es el Toaster global (MainAppContent); con react-hot-toast estos avisos no se veían
+import { toast } from 'sonner';
 import { validarDocumentoUY } from '../../utils/documentoUY';
 
 export default function FacturarAnticipoModal({

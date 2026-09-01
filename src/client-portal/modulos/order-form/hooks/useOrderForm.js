@@ -81,6 +81,7 @@ const initialState = {
     loading: false,
     showSuccessModal: false,
     createdOrderIds: [],
+    fechaCompromisoEmb: null, // [CAPACIDAD] fecha real de entrega de Bordado, si el pedido llevaba EMB
     uploading: false,
     uploadProgress: { current: 0, total: 0, filename: '' },
     uploadError: false,
@@ -374,6 +375,7 @@ export const useOrderForm = (serviceId, overrides = {}) => {
     const setLoading = (v) => setField('loading', v);
     const setCreatedOrderIds = (v) => setField('createdOrderIds', v);
     const setShowSuccessModal = (v) => setField('showSuccessModal', v);
+    const setFechaCompromisoEmb = (v) => setField('fechaCompromisoEmb', v);
 
     // --- Effects ---
 
@@ -952,7 +954,8 @@ export const useOrderForm = (serviceId, overrides = {}) => {
             setErrorModalMessage,
             setLoading,
             setCreatedOrderIds,
-            setShowSuccessModal
+            setShowSuccessModal,
+            setFechaCompromisoEmb
         }
     };
 };

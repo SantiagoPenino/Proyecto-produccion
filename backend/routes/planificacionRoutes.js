@@ -6,5 +6,6 @@ router.get('/agenda', controller.getAgenda);
 router.get('/capacidad', controller.getCapacidad);
 router.get('/capacidad/detalle', controller.getDetalleGrupo);
 router.get('/historico', controller.getHistorico);
+router.get('/estimar-fecha-bordado', controller.estimarFechaBordado);
 
 module.exports = router;

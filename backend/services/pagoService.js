@@ -123,7 +123,7 @@ async function registrarPagoCompleto(opts) {
       const cueFallback = await transaction.request()
         .input('Cli', sql.Int,         clienteId)
         .input('T',   sql.VarChar(20), cueTipo)
-        .query('SELECT CueIdCuenta FROM dbo.CuentasCliente WHERE CliIdCliente=@Cli AND CueTipo=@T AND CueActiva=1');
+        .query('SELECT TOP 1 CueIdCuenta FROM dbo.CuentasCliente WHERE CliIdCliente=@Cli AND CueTipo=@T AND CueActiva=1 ORDER BY CueEsPrincipal DESC, CueIdCuenta ASC');
 
       if (cueFallback.recordset.length) {
         const cueIdFb = cueFallback.recordset[0].CueIdCuenta;
@@ -305,7 +305,7 @@ async function registrarPagoCompleto(opts) {
     const cueRes = await transaction.request()
       .input('Cli', sql.Int,      clienteId)
       .input('T',   sql.VarChar(20), monedaId === 2 ? 'DINERO_USD' : 'DINERO_UYU')
-      .query('SELECT CueIdCuenta FROM dbo.CuentasCliente WHERE CliIdCliente=@Cli AND CueTipo=@T AND CueActiva=1');
+      .query('SELECT TOP 1 CueIdCuenta FROM dbo.CuentasCliente WHERE CliIdCliente=@Cli AND CueTipo=@T AND CueActiva=1 ORDER BY CueEsPrincipal DESC, CueIdCuenta ASC');
 
     if (cueRes.recordset.length) {
       const cueId = cueRes.recordset[0].CueIdCuenta;

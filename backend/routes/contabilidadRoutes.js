@@ -22,6 +22,12 @@ router.get('/clientes/:CliIdCliente/resumen-documentos', ctrl.getResumenDocument
 router.get('/clientes/:CliIdCliente/movimientos-ordenes', ctrl.getMovimientosOrdenesCliente);
 router.get('/cuentas/:CliIdCliente', ctrl.getCuentasCliente);
 router.post('/cuentas', ctrl.crearCuenta);
+// Billetera: transferencias entre cuentas del mismo cliente + lista blanca de cuentas restringidas
+router.post('/cuentas/transferir', ctrl.transferirEntreCuentas);
+router.post('/cuentas/transferencias/vincular-doc', ctrl.vincularTransferenciaDoc);
+router.post('/clientes/:CliIdCliente/preview-consumo-prepago', ctrl.previewConsumoPrepago);
+router.get('/cuentas/:CueIdCuenta/articulos-permitidos', ctrl.getArticulosPermitidosCuenta);
+router.put('/cuentas/:CueIdCuenta/articulos-permitidos', ctrl.setArticulosPermitidosCuenta);
 router.patch('/cuentas/:CueIdCuenta/configuracion', ctrl.actualizarConfigCuenta);
 router.patch('/clientes/:CliIdCliente/dgi', ctrl.actualizarClienteDGI);
 router.get('/cuentas/:CueIdCuenta/movimientos', ctrl.getMovimientos);
@@ -32,6 +38,22 @@ router.post('/movimientos/pago-cruzado', ctrl.registrarPagoCruzado);
 router.get('/movimientos/:MovIdMovimiento/recibo/pdf', ctrl.generarReciboPdf);
 router.post('/movimientos/:MovIdMovimiento/anular-orden', ctrl.anularOrdenPendiente);
 router.post('/movimientos/:MovIdMovimiento/consumir-recurso-adelantado', ctrl.consumirRecursoAdelantado);
+// Billetera: pagar una ORDEN pendiente con el saldo de una cuenta de dinero (elección explícita) + reversa
+router.post('/movimientos/:MovIdMovimiento/consumir-desde-saldo', ctrl.consumirDesdeSaldo);
+router.post('/movimientos/:MovIdMovimiento/devolver-consumo-saldo', ctrl.devolverConsumoSaldo);
+// Billetera: libro de una cuenta de dinero — editar / revertir / eliminar un consumo (espejo del rollo)
+router.post('/cuentas/consumos/:MovIdMovimiento/editar',   ctrl.editarConsumoCuenta);
+router.post('/cuentas/consumos/:MovIdMovimiento/revertir', ctrl.revertirConsumoCuenta);
+router.post('/cuentas/:CueIdCuenta/consumo-manual', ctrl.consumoManualCuenta);   // "+ Nueva orden" del libro
+// Billetera: facturar lo consumido de una cuenta de anticipo (la factura se emite por /cfe/manual y acá se vincula)
+router.get('/cuentas/:CueIdCuenta/consumos-pendientes-facturar', ctrl.getConsumosPendientesFacturar);
+router.post('/cuentas/:CueIdCuenta/vincular-factura-consumos',   ctrl.vincularFacturaConsumos);
+// Billetera: Venta de saldo → carga una cuenta PREPAGO con la factura general ya emitida
+router.post('/cuentas/:CueIdCuenta/carga-prepago',               ctrl.cargaPrepago);
+router.get('/cuentas/:CueIdCuenta/facturas-para-cargar',         ctrl.getFacturasParaCargar); // recuperación: vincular factura ya emitida
+// Billetera visible en el portal (flag por cliente, switch del gestor "Cuentas")
+router.get('/clientes/:CliIdCliente/billetera-portal',           ctrl.getBilleteraPortal);
+router.post('/clientes/:CliIdCliente/billetera-portal',          ctrl.setBilleteraPortal);
 
 router.get('/cuentas/:CueIdCuenta/deudas', ctrl.getDeudas);
 router.get('/ciclos/:CliIdCliente', ctrl.getCiclosCliente);
@@ -109,7 +131,9 @@ router.get('/erp/cuentas',        erp.getPlanCuentas);
 router.post('/erp/cuentas',       erp.crearCuenta);
 router.put('/erp/cuentas/:id',    erp.actualizarCuenta);
 router.get('/erp/cuentas/gastos', erp.getCuentasGastos);
-router.get('/erp/libro-mayor',    erp.getLibroMayor);
+router.get('/erp/libro-mayor',               erp.getLibroMayor);         // paginado: cabeceras + totales
+router.get('/erp/libro-mayor/origenes',      erp.getLibroMayorOrigenes); // combo Origen
+router.get('/erp/libro-mayor/:asiId/lineas', erp.getLibroMayorLineas);   // detalle, al expandir el asiento
 
 // Transacciones
 router.post('/caja/transaccion',              caja.procesarTransaccion);
@@ -371,6 +395,25 @@ router.post('/ordenes/eliminar-metros', async (req, res) => {
       return res.status(400).json({
         error: `Este movimiento es de la cuenta de dinero (${tipoMov}), no un consumo de metros. ` +
                `Eliminarlo haría desaparecer plata del estado de cuenta. Si hay que deshacerlo, anulá la transacción de caja que lo generó.`
+      });
+    }
+
+    // CANDADO 2: este endpoint deshace CONSUMOS (movimientos negativos: ENTREGA,
+    // RECARGO_URGENCIA). Sobre una ENTRADA (la COMPRA del rollo por adelantado, siempre
+    // positiva) hace justo lo contrario de lo que haría falta: borra la compra sin rastro,
+    // le SUMA los metros al saldo en vez de restarlos, deja PlaCantidadTotal intacto y
+    // encima reactiva el plan. Caso real 18-ago-2026 (Florencia Amorín, planes #135/#136):
+    // el saldo quedó en 2,56 y 3,84 metros contra planes de 1,28 y 2,56, con la venta
+    // #7991 ya anulada y el plan igual vivo.
+    // Para deshacer una compra el camino es anular la venta / emitir la NC: ahí corre
+    // contabilidadService.revertirRecursosPorTransaccion, que sí toca PlanesMetros.
+    const importeRaw = Number(movRes.recordset[0].MovImporte);
+    if (tipoMov === 'ENTRADA' || importeRaw > 0) {
+      logger.warn(`[REVERTIR] BLOQUEADO Mov=${MovIdMovimiento}: tipo=${tipoMov} importe=${importeRaw} — es una COMPRA de recurso, no un consumo`);
+      return res.status(400).json({
+        error: `Este movimiento es la COMPRA del recurso (${tipoMov} de ${importeRaw}), no un consumo. ` +
+               `Borrarlo desde acá no da de baja el plan: le sumaría los metros al saldo y el plan quedaría vivo igual. ` +
+               `Para deshacer la compra anulá la venta de caja que la generó (o emitile una Nota de Crédito).`
       });
     }
 

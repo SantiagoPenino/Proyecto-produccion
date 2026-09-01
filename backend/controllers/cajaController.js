@@ -60,6 +60,14 @@ function resolverFechaCobro(fechaStr) {
   const ahora = new Date();
   const esHoy = y === ahora.getFullYear() && mo === (ahora.getMonth() + 1) && d === ahora.getDate();
   if (esHoy) return null; // hoy → GETDATE() en cada INSERT (no requiere el SP con @MovFecha)
+  // Fecha FUTURA (típico: el front armó "hoy" con toISOString en UTC-3 después de las 21:00
+  // y mandó mañana) → se trata como hoy. Un cobro/anticipo nunca se registra a futuro.
+  const elegida = new Date(y, mo - 1, d, 0, 0, 0);
+  const hoy0 = new Date(ahora.getFullYear(), ahora.getMonth(), ahora.getDate(), 0, 0, 0);
+  if (elegida > hoy0) {
+    logger.warn(`[FECHA] Fecha futura '${fechaStr}' recibida como fecha de registro → se usa hoy.`);
+    return null;
+  }
   return new Date(y, mo - 1, d, ahora.getHours(), ahora.getMinutes(), ahora.getSeconds());
 }
 
@@ -1312,15 +1320,15 @@ const registrarOperacionManual = async (req, res) => {
       const cRes = await new sql.Request(transaction)
         .input('Cli', sql.Int, clienteId)
         .input('T', sql.VarChar(20), tipoCuenta)
-        .query('SELECT CueIdCuenta FROM dbo.CuentasCliente WHERE CliIdCliente=@Cli AND CueTipo=@T AND CueActiva=1');
+        .query('SELECT TOP 1 CueIdCuenta FROM dbo.CuentasCliente WHERE CliIdCliente=@Cli AND CueTipo=@T AND CueActiva=1 ORDER BY CueEsPrincipal DESC, CueIdCuenta ASC');
       
       let cuentaId = cRes.recordset[0]?.CueIdCuenta;
       if (!cuentaId) {
         const nCta = await new sql.Request(transaction)
           .input('Cli', sql.Int, clienteId).input('T', sql.VarChar(20), tipoCuenta)
           .input('Mon', sql.Int, monedaId).input('Usr', sql.Int, usuarioId)
-          .query(`INSERT INTO dbo.CuentasCliente (CliIdCliente,CueTipo,MonIdMoneda,CPaIdCondicion,CueSaldoActual,CueLimiteCredito,CuePuedeNegativo,CueCicloActivo,CueActiva,CueFechaAlta,CueUsuarioAlta)
-                  OUTPUT INSERTED.CueIdCuenta VALUES (@Cli,@T,@Mon,1,0,0,0,0,1,GETDATE(),@Usr)`);
+          .query(`INSERT INTO dbo.CuentasCliente (CliIdCliente,CueTipo,MonIdMoneda,CPaIdCondicion,CueSaldoActual,CueLimiteCredito,CuePuedeNegativo,CueCicloActivo,CueActiva,CueFechaAlta,CueUsuarioAlta,CueEsPrincipal)
+                  OUTPUT INSERTED.CueIdCuenta VALUES (@Cli,@T,@Mon,1,0,0,0,0,1,GETDATE(),@Usr,1)`);
         cuentaId = nCta.recordset[0].CueIdCuenta;
       }
 
@@ -1488,6 +1496,9 @@ const procesarPagoDeudaInterno = async (req, res) => {
 
     let totalImputado = 0;
     const movIdsPago = []; // movimientos 'PAGO' de este cobro → se les estampa el PagIdPago al final
+    // Imputación completa (trazabilidad, reporte 26-ago-2026): lo aplicado a cada deuda
+    // se anota acá y, cuando existan los Pagos, se escribe en dbo.ImputacionPago.
+    const imputacionesPend = []; // [{ ddeId, cueIdCuenta, monto }] en moneda de la deuda
 
     try {
       // ─────────────────────────────────────────────
@@ -1526,6 +1537,7 @@ const procesarPagoDeudaInterno = async (req, res) => {
 
         // Centralizado: reduce pendiente y ajusta estado automáticamente
         await contabilidadSvc.reducirDeuda({ ddeId, monto: montoAplicar }, transaction);
+        if (montoAplicar > 0.005) imputacionesPend.push({ ddeId, cueIdCuenta: dde.CueIdCuenta, monto: montoAplicar });
 
         // ─────────────────────────────────────────────
         // DocIdDocumento = el comprobante que este cobro está cancelando (PC-1034, ET-1489…).
@@ -1756,6 +1768,7 @@ const procesarPagoDeudaInterno = async (req, res) => {
 
       // ─────────────────────────────────────────────
       let docId = null;
+      let reciboGeneradoId = null;   // RECIBO RC- del cobro (para estampar en la salida de billetera)
       if (generaDocumentoContable && docNumero) {
         try {
           const rCaja = await new sql.Request(transaction)
@@ -1836,6 +1849,7 @@ const procesarPagoDeudaInterno = async (req, res) => {
                     total:          totalImputado
                   }]
                 }, transaction);
+                reciboGeneradoId = reciboId;
                 logger.info(`[PAGO-DEUDA] Recibo RC-${String(numRecibo).padStart(6,'0')} (ID=${reciboId}) generado para Doc #${docId}`);
               }
             } catch (eRecibo) {
@@ -2033,8 +2047,16 @@ const procesarPagoDeudaInterno = async (req, res) => {
       }
 
       let primerPagIdPago = null;
+      const pagosInsertados = []; // [{ pagId, dispBase }] para la imputación completa
+      // Billetera: el medio "Saldo de cuenta" EXIGE una cuenta elegida — sin cuenta el cobro
+      // quedaba registrado sin que la plata saliera de ningún lado (caso RC-400, 24-ago-2026).
+      const metodoSaldoRes = await new sql.Request(transaction)
+        .query(`SELECT TOP 1 MPaIdMetodoPago FROM dbo.MetodosPagos WHERE MPaDescripcionMetodo = 'Saldo de cuenta'`);
+      const metodoSaldoId = metodoSaldoRes.recordset[0]?.MPaIdMetodoPago || null;
       for (const p of pagos) {
         if (!p.metodoPagoId || !p.montoOriginal) continue;
+        if (metodoSaldoId && parseInt(p.metodoPagoId, 10) === metodoSaldoId && !p.cueIdCuenta)
+          throw new Error('El medio "Saldo de cuenta" necesita que elijas DE QUÉ CUENTA sale la plata (el cliente debe tener una cuenta secundaria libre). No se registró nada.');
         const pagoRes = await new sql.Request(transaction)
           .input('tcaId',   sql.Int,          tcaIdPago)
           .input('metodo',  sql.Int,          parseInt(p.metodoPagoId, 10))
@@ -2055,7 +2077,54 @@ const procesarPagoDeudaInterno = async (req, res) => {
                @monto, ISNULL(@FEmis, GETDATE()), @usuario, @cot,
                @monto, 'COBRO', @cheque)
           `);
-        if (!primerPagIdPago) primerPagIdPago = pagoRes.recordset[0]?.PagIdPago || null;
+        const pagIdPagoDeuda = pagoRes.recordset[0]?.PagIdPago || null;
+        if (!primerPagIdPago) primerPagIdPago = pagIdPagoDeuda;
+        if (pagIdPagoDeuda) pagosInsertados.push({ pagId: pagIdPagoDeuda, dispBase: pagoABase(p) });
+
+        // ── BILLETERA: medio "Saldo de cuenta" → la plata sale de la cuenta elegida ──
+        // Solo cuentas SECUNDARIAS LIBRES (la principal va por "Imputar anticipo"; las
+        // restringidas pagan sus artículos por su circuito). Un throw aborta TODO el cobro.
+        if (p.cueIdCuenta) {
+          const cueBilletera = parseInt(p.cueIdCuenta, 10);
+          const cbRes = await new sql.Request(transaction)
+            .input('C', sql.Int, cueBilletera)
+            .query(`SELECT CliIdCliente, CueTipo, MonIdMoneda, CueNombre, CueActiva, CueEsPrincipal, CueRestringida, CuePuedeNegativo, CueModalidadFiscal
+                    FROM dbo.CuentasCliente WHERE CueIdCuenta = @C`);
+          const cb = cbRes.recordset[0];
+          const nomCta = cb?.CueNombre || `cuenta #${cueBilletera}`;
+          if (!cb || !cb.CueActiva || cb.CliIdCliente !== parseInt(header.clienteId) || !String(cb.CueTipo).startsWith('DINERO'))
+            throw new Error(`El pago con saldo apunta a la cuenta #${cueBilletera}, que no es una cuenta de dinero activa de este cliente.`);
+          if (cb.CueEsPrincipal)
+            throw new Error('Para pagar con el saldo a favor de la cuenta PRINCIPAL usá "Imputar anticipo", no el medio "Saldo de cuenta".');
+          if (cb.CueRestringida)
+            throw new Error(`"${nomCta}" es una cuenta restringida: paga solo sus artículos, no sirve como medio de pago general.`);
+          if (cb.CueModalidadFiscal === 'PREPAGO_FACTURADO')
+            throw new Error(`"${nomCta}" es prepago FACTURADA: su plata ya tiene factura propia — usarla para pagar otro documento duplicaría la venta y el IVA. Ese saldo se gasta consumiendo órdenes.`);
+          const monCta   = Number(cb.MonIdMoneda) === 2 ? 'USD' : 'UYU';
+          const monLinea = (parseInt(p.monedaId, 10) === 2) ? 'USD' : 'UYU';
+          if (monCta !== monLinea)
+            throw new Error(`La línea de pago está en ${monLinea} pero "${nomCta}" es en ${monCta}: poné la línea en la moneda de la cuenta.`);
+          const dispBilletera = await contabilidadSvc.getSaldoRealCuenta(cueBilletera, transaction);
+          // Como MEDIO DE PAGO el saldo nunca deja la cuenta en negativo (el negativo
+          // es SOLO para los descuentos automáticos del motor, regla 31-ago-2026).
+          if (dispBilletera + 0.001 < Number(p.montoOriginal))
+            throw new Error(`Saldo insuficiente en "${nomCta}": disponible ${monCta === 'USD' ? 'US$' : '$'} ${dispBilletera.toFixed(2)} y se intentó pagar ${Number(p.montoOriginal).toFixed(2)}. El saldo como medio de pago nunca deja la cuenta en negativo.`);
+          await contabilidadSvc.registrarMovimiento({
+            CueIdCuenta:      cueBilletera,
+            MovTipo:          'PAGO_SALDO',
+            MovConcepto:      `Pago de deudas con saldo de ${nomCta}`,
+            MovImporte:       -Math.abs(Number(p.montoOriginal)),
+            MovUsuarioAlta:   usuarioId,
+            PagIdPago:        pagIdPagoDeuda,
+            // Documento del cobro (el RECIBO si se generó; si no, el comprobante del pago):
+            // así el libro de la cuenta muestra "RC-400" en la columna Documento.
+            DocIdDocumento:   reciboGeneradoId || docId || null,
+            MovRefExterna:    `PAGO-SALDO-${pagIdPagoDeuda}`,
+            MovFecha:         fechaCobro,
+            MovObservaciones: (header.observaciones || '').toString().slice(0, 200) || null,
+          }, transaction);
+          logger.info(`[BILLETERA] Pago-deuda #${pagIdPagoDeuda}: ${monLinea} ${p.montoOriginal} salieron de "${nomCta}" (#${cueBilletera}), saldo previo ${dispBilletera.toFixed(2)}.`);
+        }
       }
 
       // ─────────────────────────────────────────────
@@ -2075,6 +2144,36 @@ const procesarPagoDeudaInterno = async (req, res) => {
       }
 
       // ─────────────────────────────────────────────
+      // IMPUTACIÓN COMPLETA (trazabilidad, reporte 26-ago-2026): cada peso de cada pago
+      // queda vinculado en dbo.ImputacionPago a la deuda que canceló. Waterfall en la
+      // moneda de la deuda: los pagos (convertidos a esa moneda) se agotan contra cada
+      // deuda en el mismo orden en que se aplicaron. El excedente y la parte que fue a
+      // diferencia de cambio NO se imputan (van a saldo a favor / resultado, como siempre).
+      if (pagosInsertados.length && imputacionesPend.length) {
+        let pi = 0;
+        for (const imp of imputacionesPend) {
+          let falta = imp.monto;
+          while (falta > 0.005 && pi < pagosInsertados.length) {
+            const pg = pagosInsertados[pi];
+            const usar = Math.round(Math.min(pg.dispBase, falta) * 10000) / 10000;
+            if (usar > 0.005) {
+              await new sql.Request(transaction)
+                .input('Pag', sql.Int, pg.pagId)
+                .input('DDe', sql.Int, imp.ddeId)
+                .input('Cue', sql.Int, imp.cueIdCuenta)
+                .input('Imp', sql.Decimal(18, 4), usar)
+                .input('Usr', sql.Int, usuarioId)
+                .query(`INSERT INTO dbo.ImputacionPago (PagIdPago, DDeIdDocumento, CueIdCuenta, ImpImporte, ImpFecha, ImpUsuarioAlta)
+                        VALUES (@Pag, @DDe, @Cue, @Imp, GETDATE(), @Usr)`);
+              pg.dispBase -= usar;
+              falta -= usar;
+            }
+            if (pg.dispBase <= 0.005) pi++;
+          }
+        }
+      }
+
+      // ─────────────────────────────────────────────
       // EXCEDENTE → saldo a favor (anticipo) del cliente
       // El cliente pagó más que sus deudas: la diferencia queda como crédito a favor
       // en su cuenta corriente de la moneda de la deuda (mismo mecanismo que un anticipo).
@@ -2085,7 +2184,7 @@ const procesarPagoDeudaInterno = async (req, res) => {
           const cueR = await new sql.Request(transaction)
             .input('Cli',  sql.Int,         header.clienteId)
             .input('Tipo', sql.VarChar(20), tipoCuenta)
-            .query(`SELECT TOP 1 CueIdCuenta FROM dbo.CuentasCliente WHERE CliIdCliente=@Cli AND CueTipo=@Tipo AND CueActiva=1`);
+            .query(`SELECT TOP 1 CueIdCuenta FROM dbo.CuentasCliente WHERE CliIdCliente=@Cli AND CueTipo=@Tipo AND CueActiva=1 ORDER BY CueEsPrincipal DESC, CueIdCuenta ASC`);
           if (cueR.recordset.length) {
             cueSaldoFavor = cueR.recordset[0].CueIdCuenta;
           } else {
@@ -2096,9 +2195,9 @@ const procesarPagoDeudaInterno = async (req, res) => {
               .input('Usr',   sql.Int,         usuarioId)
               .query(`INSERT INTO dbo.CuentasCliente
                         (CliIdCliente, CPaIdCondicion, CueTipo, MonIdMoneda, CueSaldoActual,
-                         CueLimiteCredito, CuePuedeNegativo, CueCicloActivo, CueActiva, CueFechaAlta, CueUsuarioAlta)
+                         CueLimiteCredito, CuePuedeNegativo, CueCicloActivo, CueActiva, CueFechaAlta, CueUsuarioAlta, CueEsPrincipal)
                       OUTPUT INSERTED.CueIdCuenta
-                      VALUES(@Cli, 1, @Tipo, @MonId, 0, 0, 0, 0, 1, GETDATE(), @Usr)`);
+                      VALUES(@Cli, 1, @Tipo, @MonId, 0, 0, 0, 0, 1, GETDATE(), @Usr, 1)`);
             cueSaldoFavor = newCue.recordset[0].CueIdCuenta;
           }
         }
@@ -2132,7 +2231,10 @@ const procesarPagoDeudaInterno = async (req, res) => {
             if (!p.montoOriginal) continue;
             const pMon  = parseInt(p.monedaId, 10) === 2 ? 'USD' : 'UYU';
             const esChq = idsCheque.has(parseInt(p.metodoPagoId, 10));
-            const clave = `${pMon}|${esChq ? 'CHEQUE' : 'CAJA'}`;
+            // Billetera (criterio contador 24/8): lo pagado con "Saldo de cuenta" NO entró a
+            // caja — sale del pasivo 2.3.1 Anticipos de Clientes (el anticipo ya cobrado).
+            const esSaldoCta = !!p.cueIdCuenta;
+            const clave = `${pMon}|${esSaldoCta ? 'SALDO' : (esChq ? 'CHEQUE' : 'CAJA')}`;
             cashPorMoneda[clave] = (cashPorMoneda[clave] || 0) + (Number(p.montoOriginal) || 0);
           }
           const cotizBase = monedaBaseStr === 'USD' ? cotizTC : 1;
@@ -2144,11 +2246,14 @@ const procesarPagoDeudaInterno = async (req, res) => {
             lineasAsiento.push({
               codigoCuenta: destino === 'CHEQUE'
                 ? contabilidadCore.CUENTAS.VALORES_DEPOSITAR
-                : (mon === 'USD' ? contabilidadCore.CUENTAS.CAJA_USD : contabilidadCore.CUENTAS.CAJA_UYU),
+                : destino === 'SALDO'
+                  ? contabilidadCore.CUENTAS.ANTICIPOS   // pago con saldo de cuenta: baja el pasivo, no toca Caja
+                  : (mon === 'USD' ? contabilidadCore.CUENTAS.CAJA_USD : contabilidadCore.CUENTAS.CAJA_UYU),
               debeBase:  monto,
               haberBase: 0,
               monedaId:   mon === 'USD' ? 2 : 1,
               cotizacion: mon === 'USD' ? cotizTC : 1,
+              ...(destino === 'SALDO' ? { entidadId: header.clienteId, entidadTipo: 'CLIENTE' } : {}),
             });
           }
           // HABER: Deudores por Ventas — cancela la deuda del cliente
@@ -3076,12 +3181,30 @@ const registrarPagoAnticipo = async (req, res) => {
 
       // ─────────────────────────────────────────────
       let cueId = cuentaId ? parseInt(cuentaId) : null;
+      // Billetera: si el front eligió una cuenta destino, verificar que sea del
+      // cliente y de la moneda del anticipo (evita depositar en cuenta ajena).
+      if (cueId) {
+        const tipoEsperado = monStr === 'USD' ? 'DINERO_USD' : 'DINERO_UYU';
+        const chk = await new sql.Request(transaction)
+          .input('Cue', sql.Int, cueId)
+          .query(`SELECT CliIdCliente, CueTipo, CueActiva, CueNombre, CueModalidadFiscal FROM dbo.CuentasCliente WHERE CueIdCuenta=@Cue`);
+        const c = chk.recordset[0];
+        if (!c || c.CliIdCliente !== cliId || !c.CueActiva || c.CueTipo !== tipoEsperado) {
+          await transaction.rollback();
+          return res.status(400).json({ error: `La cuenta destino #${cueId} no es una cuenta ${tipoEsperado} activa de este cliente.` });
+        }
+        // Una cuenta PREPAGO FACTURADA se carga con "Venta de saldo" (factura), nunca con anticipo (recibo)
+        if (c.CueModalidadFiscal === 'PREPAGO_FACTURADO') {
+          await transaction.rollback();
+          return res.status(400).json({ error: `"${c.CueNombre || '#' + cueId}" es una cuenta prepago FACTURADA: se carga con "Venta de saldo" (genera factura), no con un anticipo.` });
+        }
+      }
       if (!cueId) {
         const tipoCuenta = monStr === 'USD' ? 'DINERO_USD' : 'DINERO_UYU';
         const cueR = await new sql.Request(transaction)
           .input('Cli', sql.Int, cliId)
           .input('Tipo', sql.VarChar(20), tipoCuenta)
-          .query(`SELECT TOP 1 CueIdCuenta FROM dbo.CuentasCliente WHERE CliIdCliente=@Cli AND CueTipo=@Tipo AND CueActiva=1`);
+          .query(`SELECT TOP 1 CueIdCuenta FROM dbo.CuentasCliente WHERE CliIdCliente=@Cli AND CueTipo=@Tipo AND CueActiva=1 ORDER BY CueEsPrincipal DESC, CueIdCuenta ASC`);
         if (cueR.recordset.length) {
           cueId = cueR.recordset[0].CueIdCuenta;
         } else {
@@ -3094,9 +3217,9 @@ const registrarPagoAnticipo = async (req, res) => {
             .query(`INSERT INTO dbo.CuentasCliente
                       (CliIdCliente, CPaIdCondicion, CueTipo, MonIdMoneda,
                        CueSaldoActual, CueLimiteCredito, CuePuedeNegativo,
-                       CueCicloActivo, CueActiva, CueFechaAlta, CueUsuarioAlta)
+                       CueCicloActivo, CueActiva, CueFechaAlta, CueUsuarioAlta, CueEsPrincipal)
                     OUTPUT INSERTED.CueIdCuenta
-                    VALUES(@Cli, 1, @Tipo, @MonId, 0, 0, 0, 0, 1, GETDATE(), @Usr)`);
+                    VALUES(@Cli, 1, @Tipo, @MonId, 0, 0, 0, 0, 1, GETDATE(), @Usr, 1)`);
           cueId = newCue.recordset[0].CueIdCuenta;
           logger.info(`[ANTICIPO] Cuenta ${tipoCuenta} creada automáticamente (CueId=${cueId}) para Cli=${cliId}`);
         }

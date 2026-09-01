@@ -3,7 +3,7 @@ import { Routes, Route, useNavigate, useLocation, Navigate } from "react-router-
 import { io } from "socket.io-client";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { CirclePile, AlertTriangle } from "lucide-react";
-import { LayoutGrid, CalendarCheck, ScanLine, Truck, ListChecks } from "lucide-react";
+import { LayoutGrid, CalendarCheck, ScanLine, Truck, ListChecks, CalendarClock } from "lucide-react";
 import Tippy from '@tippyjs/react';
 import 'tippy.js/dist/tippy.css';
 import Swal from 'sweetalert2';
@@ -1120,6 +1120,20 @@ export default function AreaView({ areaKey: rawAreaKey, areaConfig, onSwitchTab 
                             </button>
                         )}
                         <button className={`${btnBaseClass} px-3 h-8 text-xs tablet:px-2 tablet:h-7 tablet:text-[11px] ${isActive('') ? btnPrimaryClass : btnSecondaryClass}`} onClick={() => goTo('')}><LayoutGrid size={14} /> Planilla</button>
+                        {/* Pantalla general de capacidad/agenda (/produccion/planificacion, fuera
+                            de AreaView) — ruta ABSOLUTA a propósito, no goTo(subPath) (que arma
+                            rutas relativas al área actual, basePath/subPath). Se le pasa el área
+                            actual por query param para que cargue directo ahí (en vez de que el
+                            usuario tenga que volver a elegirla adentro) — PlanificacionPage la
+                            usa como selección inicial si es válida, y sigue funcionando igual
+                            entrando por cualquier otro lado sin el parámetro. */}
+                        <button
+                            className={`${btnBaseClass} px-3 h-8 text-xs tablet:px-2 tablet:h-7 tablet:text-[11px] ${btnSecondaryClass}`}
+                            onClick={() => navigate(`/produccion/planificacion?area=${areaKey}`)}
+                            title="Ver la capacidad de planta y la agenda de trabajo por día"
+                        >
+                            <CalendarClock size={14} /> <span className="tablet:hidden">Agenda de Trabajo</span><span className="hidden tablet:inline">Agenda</span>
+                        </button>
                         {isPro ? (
                             <>
                                 <button

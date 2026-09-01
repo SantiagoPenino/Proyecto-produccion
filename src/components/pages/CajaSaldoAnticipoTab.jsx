@@ -4,6 +4,8 @@ import api from '../../services/apiClient';
 import { toast } from 'sonner';
 import ClienteBilletera from '../common/ClienteBilletera';
 import CajaPanelPago from './CajaPanelPago';
+import { hoyInput } from '../../utils/fechas';
+import { codigoCuenta } from '../../utils/cuentaCodigo';
 
 /* ── Pill switch de moneda ────────────────────────────────────────────────── */
 function MonedaSwitch({ value, onChange }) {
@@ -51,6 +53,9 @@ export default function CajaSaldoAnticipoTab({ sesion, metodosPago, cotizacion, 
   const [clienteSel, setClienteSel]         = useState(initialCliente || null);
   const [cuentaId, setCuentaId]             = useState(null);
   const [buscandoCuenta, setBuscandoCuenta] = useState(false);
+  // Billetera: todas las cuentas de dinero del cliente en la moneda elegida
+  // (principal + secundarias) para poder elegir A CUÁL entra el anticipo.
+  const [cuentasMoneda, setCuentasMoneda]   = useState([]);
 
   const getClienteDisplayName = (c) => {
     if (!c) return '';
@@ -75,7 +80,7 @@ export default function CajaSaldoAnticipoTab({ sesion, metodosPago, cotizacion, 
   const [moneda, setMoneda]         = useState('UYU');
   const [concepto, setConcepto]     = useState('');
   const [numDocFmt, setNumDocFmt]   = useState(''); // número del recibo (cabecera del 360)
-  const [fechaRegistro, setFechaRegistro] = useState(() => new Date().toISOString().split('T')[0]);
+  const [fechaRegistro, setFechaRegistro] = useState(() => hoyInput()); // fecha LOCAL (toISOString daba mañana después de las 21:00)
   // Panel 360: flujo en 2 pasos ('operacion' → 'pago'); controlable desde el modal
   const [pasoLocalAnt, setPasoLocalAnt] = useState('operacion');
   const paso = pasoExterno !== undefined ? pasoExterno : pasoLocalAnt;
@@ -130,12 +135,18 @@ export default function CajaSaldoAnticipoTab({ sesion, metodosPago, cotizacion, 
   const buscarCuenta = useCallback(async (cliId, monStr) => {
     setBuscandoCuenta(true);
     setCuentaId(null);
+    setCuentasMoneda([]);
     try {
       const tipo = monStr === 'USD' ? 'DINERO_USD' : 'DINERO_UYU';
       const res = await api.get(`/contabilidad/cuentas/${cliId}`);
       const cuentas = Array.isArray(res.data?.data) ? res.data.data : (res.data || []);
-      const cuenta = cuentas.find(c => c.CueTipo === tipo);
-      if (cuenta) setCuentaId(cuenta.CueIdCuenta);
+      // Billetera: puede haber varias cuentas de la moneda — principal primero, default la principal
+      const deMoneda = cuentas
+        // Las cuentas PREPAGO FACTURADAS no reciben anticipos (se cargan con "Venta de saldo", con factura)
+        .filter(c => c.CueTipo === tipo && c.CueModalidadFiscal !== 'PREPAGO_FACTURADO')
+        .sort((a, b) => Number(b.CueEsPrincipal || 0) - Number(a.CueEsPrincipal || 0) || a.CueIdCuenta - b.CueIdCuenta);
+      setCuentasMoneda(deMoneda);
+      if (deMoneda.length) setCuentaId(deMoneda[0].CueIdCuenta);
     } catch { /* el backend crea la cuenta si no existe */ }
     finally { setBuscandoCuenta(false); }
   }, []);
@@ -227,12 +238,52 @@ export default function CajaSaldoAnticipoTab({ sesion, metodosPago, cotizacion, 
 
   const importeNum = parseFloat(importe) || 0;
 
+  /* ── Billetera: A QUÉ CUENTA entra el anticipo (visible en ambos layouts) ─── */
+  const nombreCuenta = (c) => `${codigoCuenta(c)} · ` + (c.CueNombre || (c.CueEsPrincipal ? 'Cuenta principal' : `Cuenta #${c.CueIdCuenta}`)) + (c.CueRestringida ? ' 🔒 (restringida)' : '');
+  const cuentaDestinoSel = cuentasMoneda.find(c => c.CueIdCuenta === cuentaId);
+  const selectorCuentaDestino = clienteSel ? (
+    <div className={`rounded-2xl border px-5 py-3 ${cuentasMoneda.length > 1 ? 'border-violet-200 bg-violet-50/40' : 'border-zinc-200 bg-zinc-50'}`}>
+      <label className="text-[10px] font-black tracking-widest uppercase text-zinc-400 mb-1.5 block font-archivo">
+        El anticipo entra en ({moneda})
+      </label>
+      {buscandoCuenta ? (
+        <p className="text-xs text-blue-500 flex items-center gap-1"><Loader2 size={12} className="animate-spin" /> Buscando cuentas…</p>
+      ) : cuentasMoneda.length > 1 ? (
+        <>
+          <select
+            value={cuentaId || ''}
+            onChange={e => setCuentaId(parseInt(e.target.value))}
+            className="w-full text-sm font-bold border-2 border-violet-200 rounded-xl px-4 py-2.5 bg-white focus:outline-none focus:border-violet-400 text-zinc-800"
+          >
+            {cuentasMoneda.map(c => (
+              <option key={c.CueIdCuenta} value={c.CueIdCuenta}>
+                {nombreCuenta(c)} — saldo {Number(c.CueSaldoActual || 0).toLocaleString('es-UY', { minimumFractionDigits: 2 })}
+              </option>
+            ))}
+          </select>
+          <p className="mt-1.5 text-[11px] text-zinc-500">
+            {cuentaDestinoSel?.CueRestringida
+              ? 'Cuenta restringida: este dinero SOLO podrá pagar los artículos permitidos de esa cuenta.'
+              : cuentaDestinoSel?.CueEsPrincipal
+                ? 'Cuenta principal: es la que usa el sistema para cubrir deudas y retiros.'
+                : 'Cuenta secundaria: este dinero solo se usa si el cajero la elige al cobrar.'}
+          </p>
+        </>
+      ) : cuentaDestinoSel ? (
+        <p className="text-xs font-bold text-zinc-700 flex items-center gap-1.5"><CheckCircle2 size={13} className="text-emerald-500" /> {nombreCuenta(cuentaDestinoSel)}
+          <span className="font-normal text-zinc-400">· el cliente no tiene otras cuentas en {moneda}</span></p>
+      ) : (
+        <p className="text-xs text-amber-600 font-semibold">⚠ Se creará la cuenta principal {moneda} automáticamente</p>
+      )}
+    </div>
+  ) : null;
+
   // ─── Panel 360 (cliente fijo): flujo en 2 pasos, homogéneo con el cobro ───
   if (hideClienteSelector) {
     const cli = clienteSel || initialCliente || {};
     const inicial = (cli.Nombre || '?').slice(0, 2).toUpperCase();
     const simb = moneda === 'USD' ? 'US$' : '$';
-    const hoy = new Date().toISOString().split('T')[0];
+    const hoy = hoyInput();
     const fmtImp = importeNum.toLocaleString('es-UY', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
     return (
       <div className="flex flex-col h-full min-h-0 bg-slate-100 w-full">
@@ -297,6 +348,7 @@ export default function CajaSaldoAnticipoTab({ sesion, metodosPago, cotizacion, 
                 <input type="number" value={importe} onChange={e => setImporte(e.target.value)} placeholder="0.00" min="0.01" step="0.01"
                   className="w-full border-2 border-zinc-200 bg-white rounded-2xl px-5 py-4 focus:border-blue-400 focus:ring-4 focus:ring-blue-400/5 outline-none font-black text-2xl text-zinc-800 transition-all placeholder-zinc-300" />
               </div>
+              {selectorCuentaDestino}
             </div>
           </div>
           <div className="shrink-0 border-t border-slate-200 bg-white px-4 py-3 flex flex-col gap-2.5">
@@ -426,7 +478,7 @@ export default function CajaSaldoAnticipoTab({ sesion, metodosPago, cotizacion, 
                 </div>
               </div>
               <button 
-                onClick={() => { setClienteSel(null); setCuentaId(null); }} 
+                onClick={() => { setClienteSel(null); setCuentaId(null); setCuentasMoneda([]); }}
                 className="bg-white hover:bg-rose-50 text-zinc-400 hover:text-rose-600 p-1.5 rounded-lg transition-all border border-zinc-200 hover:border-rose-200 shadow-sm"
                 title="Quitar cliente"
               >
@@ -442,6 +494,22 @@ export default function CajaSaldoAnticipoTab({ sesion, metodosPago, cotizacion, 
               <div className="mt-1 pt-1.5 border-t border-zinc-100">
                 {buscandoCuenta ? (
                   <p className="text-[11px] text-blue-500 flex items-center gap-1"><Loader2 size={11} className="animate-spin" /> Buscando cuenta...</p>
+                ) : cuentasMoneda.length > 1 ? (
+                  <div>
+                    <p className="text-[10px] text-slate-500 font-black uppercase tracking-widest mb-1">El anticipo entra en:</p>
+                    <select
+                      value={cuentaId || ''}
+                      onChange={e => setCuentaId(parseInt(e.target.value))}
+                      className="w-full text-[11px] font-semibold border border-zinc-200 rounded-lg px-2 py-1.5 bg-white focus:outline-none focus:ring-2 focus:ring-emerald-400/30"
+                    >
+                      {cuentasMoneda.map(c => (
+                        <option key={c.CueIdCuenta} value={c.CueIdCuenta}>
+                          {codigoCuenta(c)} · {(c.CueNombre || (c.CueEsPrincipal ? 'Cuenta principal' : `Cuenta #${c.CueIdCuenta}`))}
+                          {c.CueRestringida ? ' 🔒 (restringida)' : ''}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
                 ) : cuentaId ? (
                   <p className="text-[11px] text-emerald-600 flex items-center gap-1 font-semibold"><CheckCircle2 size={11} /> Cuenta {moneda} #{cuentaId}</p>
                 ) : (
@@ -539,6 +607,7 @@ export default function CajaSaldoAnticipoTab({ sesion, metodosPago, cotizacion, 
               />
             </div>
           </div>
+          {selectorCuentaDestino}
         </div>
       </div>
     </div>

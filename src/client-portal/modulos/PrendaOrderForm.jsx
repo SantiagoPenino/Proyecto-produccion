@@ -1260,7 +1260,10 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
                             material: { name: 'Corte Laser por prenda', id: 90, codArt: '1375', codStock: '1.1.6.1' }
                         },
                         // Pass specific technical data if needed in a custom field
-                        metadata: { moldType, fabricOrigin, clientFabricName, selectedSubOrderId }
+                        // selectedBobinaId: mismo estado top-level del picker de bobina que usa
+                        // CorteTechnicalUI en modo extra (fabricOrigin==='TELA CLIENTE') — sin
+                        // esto el backend no puede resolver el requisito TELA de esta orden.
+                        metadata: { moldType, fabricOrigin, clientFabricName, selectedSubOrderId, selectedBobinaId }
                     };
                 }
                 if (enableCostura) {

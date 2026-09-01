@@ -1016,7 +1016,8 @@ exports.receiveDispatch = async (req, res) => {
                                 -- ComboPedidoNoDocERP es siempre NULL — no-op.
                                 COALESCE(o.ComboPedidoNoDocERP, o.NoDocERP) AS NoDocERP,
                                 r.Referencias, -- Fetch raw references
-                                COALESCE(o.Cliente, r.Cliente) as Cliente
+                                COALESCE(o.Cliente, r.Cliente) as Cliente,
+                                r.RecepcionID
                             FROM Logistica_Bultos b
                             -- Encomiendas: OrdenID = N° de OrdenesRetiro → sin el filtro, el
                             -- check-in tomaba Cliente/NoDocERP de una orden NUEVA ajena.
@@ -1158,16 +1159,24 @@ exports.receiveDispatch = async (req, res) => {
                                             SELECT DISTINCT req.RequisitoID, req.AreaID, dest.OrdenID
                                             FROM ConfigRequisitosProduccion req
                                             CROSS JOIN (
-                                                SELECT OrdenID FROM Ordenes 
-                                                WHERE 
+                                                SELECT OrdenID FROM Ordenes
+                                                WHERE
                                                    (
                                                        (@Doc != '' AND NoDocERP = @Doc)
-                                                       OR 
+                                                       OR
                                                        (@Doc = '' AND NoDocERP = (SELECT TOP 1 NoDocERP FROM Ordenes WHERE OrdenID = @OID))
                                                        OR
                                                        (@Doc = '' AND OrdenID = @OID)
+                                                       OR
+                                                       -- [REQUISITOS] Encadenamiento explícito (TWC<-SB vía
+                                                       -- selectedSubOrderId, TWT<-TWC/SB en "Fabricar a
+                                                       -- Medida"): la orden destino puede depender de ESTA
+                                                       -- orden origen puntual aunque sean pedidos distintos
+                                                       -- (NoDocERP distinto) — mismo campo que ya resuelve
+                                                       -- Estampado->su DTF/TPU encadenado.
+                                                       LiberaCuandoOrdenID = @OID
                                                    )
-                                                   AND AreaID = @Area 
+                                                   AND AreaID = @Area
                                                    AND Estado != 'CANCELADO'
                                             ) dest
                                             WHERE (
@@ -1184,6 +1193,48 @@ exports.receiveDispatch = async (req, res) => {
                                             INSERT (OrdenID, AreaID, RequisitoID, Estado, FechaCumplimiento, Observaciones)
                                             VALUES (source.OrdenID, source.AreaID, source.RequisitoID, 'CUMPLIDO', GETDATE(), @Obs);
                                     `);
+                            }
+                        }
+
+                        // --- AUTO-FULFILL PRENDA DE CLIENTE (Recepción de mostrador sin OrdenID propia) ---
+                        // Caso simétrico al de webOrdersController: ahí se cubre "la prenda ya
+                        // había llegado cuando se creó el pedido"; acá, "el pedido ya existía y
+                        // la prenda (Recepciones/PRE-xxx, sin bulto propio de ninguna orden —
+                        // OrdenID NULL) llega recién ahora". El bloque de arriba no la alcanza:
+                        // exige `OrdenID` en el bulto, y un "PAQUETE DE PRENDAS" de mostrador no
+                        // tiene ninguna hasta que se reciba. Se vincula por
+                        // Ordenes.PrendaClienteID -> InventarioPrendasCliente.RecepcionID (el
+                        // cliente ya eligió esa línea al cargar el pedido), no por NoDocERP.
+                        // Sin Recepción detrás del bulto (bultos normales de producción), no-op.
+                        if (bultoInfo.RecepcionID && areaReceptora) {
+                            try {
+                                const reqPrenda3 = await new sql.Request(transaction)
+                                    .input('Area', sql.VarChar(20), areaReceptora)
+                                    .query(`SELECT RequisitoID FROM ConfigRequisitosProduccion WHERE AreaID = @Area AND CodigoRequisito = 'PRENDA'`);
+                                if (reqPrenda3.recordset.length) {
+                                    await new sql.Request(transaction)
+                                        .input('RID', sql.Int, reqPrenda3.recordset[0].RequisitoID)
+                                        .input('Area', sql.VarChar(20), areaReceptora)
+                                        .input('RecID', sql.Int, bultoInfo.RecepcionID)
+                                        .input('Obs', sql.NVarChar(300), `Recibida en ${areaReceptora} (Recepción ${CodigoEtiqueta || bultoInfo.RecepcionID})`)
+                                        .query(`
+                                            MERGE OrdenCumplimientoRequisitos AS target
+                                            USING (
+                                                SELECT DISTINCT o.OrdenID
+                                                FROM Ordenes o
+                                                JOIN InventarioPrendasCliente p ON p.PrendaClienteID = o.PrendaClienteID
+                                                WHERE p.RecepcionID = @RecID AND o.AreaID = @Area AND ISNULL(o.Estado, '') <> 'Cancelado'
+                                            ) AS source
+                                            ON (target.OrdenID = source.OrdenID AND target.RequisitoID = @RID)
+                                            WHEN MATCHED THEN
+                                                UPDATE SET Estado = 'CUMPLIDO', FechaCumplimiento = GETDATE(), Observaciones = @Obs
+                                            WHEN NOT MATCHED THEN
+                                                INSERT (OrdenID, AreaID, RequisitoID, Estado, FechaCumplimiento, Observaciones)
+                                                VALUES (source.OrdenID, @Area, @RID, 'CUMPLIDO', GETDATE(), @Obs);
+                                        `);
+                                }
+                            } catch (reqErr) {
+                                logger.warn(`[Check-in ${areaReceptora}] No se pudo auto-cumplir PRENDA por Recepción ${bultoInfo.RecepcionID}: ${reqErr.message}`);
                             }
                         }
 

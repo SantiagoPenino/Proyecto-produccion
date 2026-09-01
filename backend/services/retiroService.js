@@ -70,6 +70,60 @@ async function verificarRecursoCliente(transaction, { CliIdCliente, ProIdProduct
 }
 
 /**
+ * verificarCuentaRestringida
+ * Billetera: ¿la orden la cubre una cuenta RESTRINGIDA de dinero ("rollo en plata")?
+ * Señal fuerte: ya existe el movimiento CONSUMO_CUENTA de esa orden (el motor la
+ * descontó al ingreso). Señal de respaldo (espeja verificarRecursoCliente): hay una
+ * cuenta restringida activa cuya lista blanca incluye el artículo.
+ *
+ * @returns {Promise<{cubierta:boolean, cueId?:number, motivo?:string}>}
+ */
+async function verificarCuentaRestringida(transaction, { CliIdCliente, OrdIdOrden, ProIdProducto }) {
+    if (!CliIdCliente) return { cubierta: false };
+    try {
+        if (OrdIdOrden) {
+            const mov = await transaction.request()
+                .input('Ord', sql.Int, OrdIdOrden)
+                .input('Cli', sql.Int, CliIdCliente)
+                .query(`
+                    SELECT TOP 1 m.CueIdCuenta
+                    FROM   dbo.MovimientosCuenta m WITH(NOLOCK)
+                    JOIN   dbo.CuentasCliente cc WITH(NOLOCK) ON cc.CueIdCuenta = m.CueIdCuenta
+                    WHERE  m.OrdIdOrden = @Ord
+                      AND  cc.CliIdCliente = @Cli
+                      AND  m.MovTipo = 'CONSUMO_CUENTA'
+                      AND  (m.MovAnulado IS NULL OR m.MovAnulado = 0)
+                      -- Solo cobertura ENTERA: un CUBIERTO_PARCIAL_CUENTA dejó resto en la principal
+                      AND  m.MovObservaciones LIKE 'CUBIERTO_CUENTA_%'
+                `);
+            if (mov.recordset.length) return { cubierta: true, cueId: mov.recordset[0].CueIdCuenta, motivo: 'consumo registrado' };
+        }
+        // Respaldo (espeja el plan activo): cuenta con descuento automático Y que acepta negativo
+        // → siempre cubre entera, aunque el movimiento todavía no exista. Sin negativo no se
+        // puede asegurar la cobertura por adelantado.
+        const cta = await transaction.request()
+            .input('Cli', sql.Int, CliIdCliente)
+            .input('Pro', sql.Int, ProIdProducto || null)
+            .query(`
+                SELECT TOP 1 cc.CueIdCuenta
+                FROM   dbo.CuentasCliente cc WITH(NOLOCK)
+                WHERE  cc.CliIdCliente = @Cli AND cc.CueActiva = 1 AND cc.CueEsPrincipal = 0
+                  AND  cc.CueAutoConsumo = 1 AND cc.CuePuedeNegativo = 1
+                  AND  cc.CueTipo LIKE 'DINERO%'
+                  AND  (cc.CueRestringida = 0
+                        OR (@Pro IS NOT NULL AND EXISTS (SELECT 1 FROM dbo.CuentasClienteArticulosPermitidos ap WITH(NOLOCK)
+                                                         WHERE ap.CueIdCuenta = cc.CueIdCuenta AND ap.ProIdProducto = @Pro)))
+                ORDER BY cc.CueRestringida DESC, cc.CueIdCuenta ASC
+            `);
+        if (cta.recordset.length) return { cubierta: true, cueId: cta.recordset[0].CueIdCuenta, motivo: 'cuenta con descuento automático y negativo permitido' };
+        return { cubierta: false };
+    } catch (err) {
+        logger.warn(`[RETIRO] Error verificando cuenta restringida CliId=${CliIdCliente}: ${err.message}. Sin cobertura.`);
+        return { cubierta: false };
+    }
+}
+
+/**
  * verificarCicloSemanal
  * Solo para clientes tipo 2 (Semanal): verifica ciclo de crédito abierto.
  */
@@ -121,6 +175,9 @@ async function calcularAdelantoLimpio(transaction, CliIdCliente, moneda) {
             JOIN   dbo.CuentasCliente    cc WITH(NOLOCK) ON cc.CueIdCuenta = m.CueIdCuenta
             WHERE  cc.CliIdCliente = @Cli
               AND  cc.CueTipo      = @Tipo
+              -- Billetera: solo la cuenta PRINCIPAL cubre retiros automáticamente;
+              -- las cuentas secundarias/restringidas se usan solo por elección explícita.
+              AND  cc.CueEsPrincipal = 1
               AND  (m.MovAnulado IS NULL OR m.MovAnulado = 0)
               AND  m.MovTipo NOT IN ('VTA_CAJA', 'CIERRE_CICLO')
         `);
@@ -301,6 +358,13 @@ async function crearRetiro(transaction, { ordIds, totalCost, lugarRetiro, usuari
                 logger.info(`[RETIRO] Orden ${orden.OrdIdOrden} cubierta por plan activo #${recurso.planId}`);
                 continue;
             }
+        }
+
+        // Billetera: cuenta RESTRINGIDA de dinero ("rollo en plata") → misma cobertura que el plan
+        const ctaRestr = await verificarCuentaRestringida(transaction, { CliIdCliente, OrdIdOrden: orden.OrdIdOrden, ProIdProducto: orden.ProIdProducto });
+        if (ctaRestr.cubierta) {
+            logger.info(`[RETIRO] Orden ${orden.OrdIdOrden} cubierta por cuenta restringida #${ctaRestr.cueId} (${ctaRestr.motivo})`);
+            continue;
         }
 
         ordenesQueNecesitanCredito.push(orden);

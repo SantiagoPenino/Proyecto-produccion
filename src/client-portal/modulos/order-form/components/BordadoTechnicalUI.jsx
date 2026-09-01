@@ -4,7 +4,7 @@ import { FileUploadZone } from './FileUploadZone';
 import { CustomSelect } from '../../../pautas/CustomSelect';
 import PrendaClienteSelector from './PrendaClienteSelector';
 import PredisenoBordadoModal from './PredisenoBordadoModal';
-import { analizarArteAutomatico, puntadasDePaleta, estimarMinutos } from '../utils/bordadoHilos';
+import { analizarArteAutomatico, puntadasDePaleta } from '../utils/bordadoHilos';
 
 // [BORDADO] Form de ingreso.
 //
@@ -152,16 +152,6 @@ export const BordadoTechnicalUI = ({
     // medidas. Así se recalculan solas cuando el cliente corrige el tamaño, sin
     // quedar pegadas a un número viejo.
     const puntadasDelDiseno = (d) => puntadasDePaleta(d.paleta, d.ancho, d.alto);
-    const minutosDelDiseno = (d) => {
-        const punt = puntadasDelDiseno(d);
-        if (!punt) return '—';
-        const porPrenda = estimarMinutos(punt, (d.paleta || []).length);
-        const total = porPrenda * (parseInt(d.cantidad) || 1);
-        const m = Math.max(1, Math.round(total));
-        if (m < 60) return `${m} min`;
-        const h = Math.floor(m / 60), r = m % 60;
-        return r ? `${h} h ${r} min` : `${h} h`;
-    };
 
     const botonAgregar = (
         <button
@@ -502,7 +492,6 @@ export const BordadoTechnicalUI = ({
                                                                                 ≈ {puntadasDelDiseno(d).toLocaleString('es-UY')} puntadas
                                                                             </span>
                                                                             {' · '}{(d.paleta || []).length} hilos
-                                                                            {' · '}<span className="font-black text-white">{minutosDelDiseno(d)}</span>
                                                                             <br />
                                                                             <span className="text-zinc-600">
                                                                                 Estimado: el número real sale del ponchado.

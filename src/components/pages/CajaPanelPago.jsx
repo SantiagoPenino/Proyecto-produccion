@@ -3,6 +3,7 @@ import { Plus, X, CheckCircle, Loader2, FileText, Landmark, CreditCard, DollarSi
 import ChequeRecibirModal from './tesoreria/ChequeRecibirModal';
 import { Listbox } from '@headlessui/react';
 import api from '../../services/apiClient';
+import { codigoCuenta } from '../../utils/cuentaCodigo';
 
 // Select ligero construido con Headless UI
 function LightSelect({ value, onChange, options = [], placeholder = 'Seleccionar...' }) {
@@ -78,6 +79,12 @@ export default function CajaPanelPago({
   compactNotas = false, // Panel 360: observaciones compactas (no estiran toda la columna)
   seccion = 'ambos',    // Venta 360 (layout horizontal): 'documento' (comprobante + notas) | 'pago' (solo medios/vuelto) | 'ambos' (default = todo)
   comprobanteFile = null,   // Archivo de comprobante (cuando locked=true, se muestra inline)
+  // Billetera: cuentas SECUNDARIAS LIBRES del cliente para el medio "Saldo de cuenta"
+  // [{CueIdCuenta, CueNombre, CueTipo, CueSaldoActual, CuePuedeNegativo}]
+  cuentasBilletera = [],
+  // Billetera: el medio de pago viene FIJO (Facturar consumos / Venta de saldo desde saldo
+  // a favor): la plata ya salió de la cuenta al consumir — cambiar el medio cobraría dos veces.
+  lockMedioPago = false,
   onComprobanteFile,        // Setter del archivo
   comprobanteError = false, // Borde rojo si no hay comprobante al intentar procesar
   comprobanteRef = null,    // Ref del input file
@@ -579,16 +586,19 @@ export default function CajaPanelPago({
             <div className="flex flex-col gap-2 max-h-48 overflow-y-auto pr-1">
               {pagos.map((p) => {
                 const isCheque = metodosPago.find(m => m.MPaIdMetodoPago === parseInt(p.metodoPagoId))?.MPaDescripcionMetodo?.toLowerCase()?.includes('cheque');
+                const esSaldoCuenta = /saldo de cuenta/i.test(metodosPago.find(m => m.MPaIdMetodoPago === parseInt(p.metodoPagoId))?.MPaDescripcionMetodo || '');
                 return (
-                  <div key={p.id} className="flex gap-2 items-center bg-zinc-50 border border-zinc-200 p-2.5 rounded-2xl shadow-sm transition-all hover:border-zinc-300">
+                  <div key={p.id} className="flex flex-col gap-1.5 bg-zinc-50 border border-zinc-200 p-2.5 rounded-2xl shadow-sm transition-all hover:border-zinc-300">
+                  <div className="flex gap-2 items-center">
                     
                     {/* Medio select */}
                     <div className="w-36 shrink-0">
                       <select
                         value={p.metodoPagoId}
-                        disabled={locked}
+                        disabled={locked || lockMedioPago}
+                        title={lockMedioPago ? 'Medio fijo: esta factura se paga con el saldo de la cuenta (la plata ya salió al consumir). Cambiarlo cobraría dos veces.' : ''}
                         onChange={(e) => {
-                          if (locked) return;
+                          if (locked || lockMedioPago) return;
                           const val = e.target.value;
                           updatePago(p.id, 'metodoPagoId', val);
                           const isNowCheque = metodosPago.find(m => m.MPaIdMetodoPago === parseInt(val))?.MPaDescripcionMetodo?.toLowerCase()?.includes('cheque');
@@ -720,13 +730,65 @@ export default function CajaPanelPago({
                       </button>
                     )}
                   </div>
+
+                  {/* BILLETERA: medio "Saldo de cuenta" → elegir de qué cuenta del cliente sale la plata */}
+                  {esSaldoCuenta && (
+                    <div className="flex items-center gap-2 pl-1">
+                      {cuentasBilletera.length === 0 ? (
+                        <span className="text-[10px] font-bold text-amber-600 leading-snug">
+                          El cliente no tiene cuentas de anticipo libres para pagar con saldo. (La principal se usa con "Imputar anticipo"; las restringidas pagan solas sus artículos; las prepago facturadas no pagan otras facturas — su plata ya está facturada.)
+                        </span>
+                      ) : (
+                        <>
+                          <span className="text-[9px] font-black uppercase tracking-widest text-violet-600 shrink-0">Desde la cuenta:</span>
+                          <select
+                            value={p.cueIdCuenta || ''}
+                            onChange={(e) => {
+                              const id = parseInt(e.target.value) || null;
+                              const cta = cuentasBilletera.find(c => c.CueIdCuenta === id);
+                              // La línea toma la moneda de la cuenta elegida (el backend lo exige)
+                              onPagosChange(pagos.map(x => x.id === p.id
+                                ? { ...x, cueIdCuenta: id, moneda: cta ? (cta.CueTipo === 'DINERO_USD' ? 'USD' : 'UYU') : x.moneda }
+                                : x));
+                            }}
+                            className="flex-1 bg-white border border-violet-200 rounded-xl px-2 py-1.5 text-[11px] font-bold text-zinc-800 outline-none focus:border-violet-400"
+                          >
+                            <option value="">— Elegir cuenta —</option>
+                            {cuentasBilletera.map(c => (
+                              <option key={c.CueIdCuenta} value={c.CueIdCuenta}>
+                                {codigoCuenta(c)} · {c.CueNombre || `Cuenta #${c.CueIdCuenta}`} — {c.CueTipo === 'DINERO_USD' ? 'US$' : '$'} {Number(c.CueSaldoActual || 0).toLocaleString('es-UY', { minimumFractionDigits: 2 })}
+                              </option>
+                            ))}
+                          </select>
+                        </>
+                      )}
+                    </div>
+                  )}
+                  {/* Candado visual: el monto no puede superar el saldo de la cuenta elegida.
+                      Como MEDIO DE PAGO el saldo NUNCA deja la cuenta en negativo — aunque la
+                      cuenta "acepte negativo" (eso es solo para los descuentos automáticos). */}
+                  {(() => {
+                    if (!p.cueIdCuenta) return null;
+                    const ctaSel = cuentasBilletera.find(c => c.CueIdCuenta === parseInt(p.cueIdCuenta));
+                    if (!ctaSel) return null;
+                    const saldoCta = Number(ctaSel.CueSaldoActual || 0);
+                    const montoLinea = parseFloat(p.monto) || 0;
+                    if (montoLinea <= saldoCta + 0.001) return null;
+                    const simCta = ctaSel.CueTipo === 'DINERO_USD' ? 'US$' : '$';
+                    return (
+                      <p className="mt-1 text-[11px] font-bold text-rose-600 bg-rose-50 border border-rose-200 rounded-lg px-2.5 py-1.5">
+                        ⚠ La cuenta solo tiene {simCta} {saldoCta.toLocaleString('es-UY', { minimumFractionDigits: 2 })} — no se puede pagar {simCta} {montoLinea.toLocaleString('es-UY', { minimumFractionDigits: 2 })}. Bajá el monto o cubrí el resto con otro medio (el saldo como medio de pago nunca deja la cuenta en negativo).
+                      </p>
+                    );
+                  })()}
+                  </div>
                 );
               })}
             </div>
 
             {/* Agregar medio / Completar saldo */}
             <div className="flex gap-2 items-center flex-wrap">
-              {!locked && (
+              {!locked && !lockMedioPago && (
               <button
                 type="button"
                 onClick={addPago}

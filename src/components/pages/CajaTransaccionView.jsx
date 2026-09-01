@@ -138,6 +138,22 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
   const [ajustes, setAjustes] = useState({});
   const [importeACobrarRaw, setImporteACobrar] = useState(''); // '' = cobrar el total real
   const [carritosPago, setCarritosPago] = useState([{ id: Date.now(), metodoPagoId: 1, moneda: 'UYU', monedaId: 1, monto: '' }]);
+  // Billetera: cuentas de ANTICIPO libres del cliente del retiro, para el medio "Saldo de cuenta"
+  const [cuentasBilletera, setCuentasBilletera] = useState([]);
+  const clienteRetiroId = seleccionados[0]?.retiro?.CliIdCliente || null;
+  useEffect(() => {
+    if (!clienteRetiroId) { setCuentasBilletera([]); return; }
+    let alive = true;
+    api.get(`/contabilidad/cuentas/${clienteRetiroId}`)
+      .then(r => {
+        if (!alive) return;
+        setCuentasBilletera((r.data?.data || []).filter(c =>
+          String(c.CueTipo || '').startsWith('DINERO') && !c.CueEsPrincipal && !c.CueRestringida
+          && c.CueModalidadFiscal !== 'PREPAGO_FACTURADO'));
+      })
+      .catch(() => { if (alive) setCuentasBilletera([]); });
+    return () => { alive = false; };
+  }, [clienteRetiroId]);
   const [condicionCobro, setCondicionCobro] = useState('CONTADO');
   const [tipoDocCobro, setTipoDocCobro] = useState('40');
   const [serieDocCobro, setSerieDocCobro] = useState('A');
@@ -1400,7 +1416,7 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
       });
       // idCheque: lo devuelve ChequeRecibirModal al dar de alta el cheque. Sin enviarlo,
       // el cheque queda sin vínculo con el cobro y no se puede mostrar su número después.
-      const pags = carritosPago.map(p => ({ metodoPagoId: parseInt(p.metodoPagoId), moneda: p.moneda, monedaId: p.moneda === 'USD' ? 2 : 1, montoOriginal: parseFloat(p.monto), cotizacion: p.moneda === 'USD' ? cotizacion : null, idCheque: p.idCheque || null }));
+      const pags = carritosPago.map(p => ({ metodoPagoId: parseInt(p.metodoPagoId), moneda: p.moneda, monedaId: p.moneda === 'USD' ? 2 : 1, montoOriginal: parseFloat(p.monto), cotizacion: p.moneda === 'USD' ? cotizacion : null, idCheque: p.idCheque || null, cueIdCuenta: p.cueIdCuenta || null }));
       const res = await api.post('/contabilidad/caja/transaccion', {
         header: { clienteId: seleccionados[0]?.retiro?.CliIdCliente, tipoDocumento: tipoDocCobro, serieDoc: serieDocCobro, numeroDoc: numDocCobro || null, observaciones: obsCobro, deudaPuraUSD, deudaPuraUYU, admin: isAdminCaja, moneda: monedaExhibicion, cotizacion: cotizacion, esCredito: esCobroCredito, importeACobrar: (esCobroCredito || Math.abs(ajusteCobroUI) < 0.005) ? null : montoACobrar },
         aplicaciones: apps, pagos: esCobroCredito ? [] : pags
@@ -1734,6 +1750,7 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
                   {subTabIngreso === 'COBRO' && (
                     <div className="flex-1 flex flex-col bg-slate-100 p-4 gap-4">
                       <CajaPanelPago
+                        cuentasBilletera={cuentasBilletera}
                         layout="horizontal"
                         mode="COBRO"
                         totalACubrir={montoACobrar}
