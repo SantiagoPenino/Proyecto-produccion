@@ -672,6 +672,13 @@ exports.createPlanillaOrder = async (req, res) => {
                         }
                     }
 
+                    // Regla 01/09/2026: el metraje POR COPIA se redondea a 2 decimales ANTES de
+                    // guardarse y de acumular la magnitud. Así la planilla (Magnitud), el detalle
+                    // (Metros × copias) y la cotización dicen EXACTAMENTE lo mismo. Antes el total
+                    // se acumulaba con el valor crudo y el archivo se guardaba redondeado: caso
+                    // SUB-12312, alto 0,1666 → Magnitud "1.00" pero detalle 0,17 × 6 = 1,02.
+                    valMetros = Math.round(valMetros * 100) / 100;
+
                     let ext = '.dat';
                     if (item.fileName && item.fileName.includes('.')) {
                         const parts = item.fileName.split('.');

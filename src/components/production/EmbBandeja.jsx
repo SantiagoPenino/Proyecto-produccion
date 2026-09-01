@@ -7,7 +7,13 @@ import { useAuth } from '../../context/AuthContext';
 import { ordersService } from '../../services/modules/ordersService';
 import OrderRequirementsList from '../logistics/OrderRequirementsList';
 import { printLabelsHelper } from '../../utils/printHelper';
+import { fmtFechaCorta } from '../../utils/fechas';
 import OrdenProntaModal from './components/OrdenProntaModal';
+
+// Mismos 3 colores que usa el semáforo de PlanificacionPage.jsx (duplicado acá a propósito:
+// son 2 líneas, no vale la pena acoplar este archivo a otro solo para reusarlas).
+const SEMAFORO_DOT = { rojo: 'bg-red-500', amarillo: 'bg-amber-400', verde: 'bg-emerald-500' };
+const SEMAFORO_TEXTO = { rojo: 'text-red-600', amarillo: 'text-amber-600', verde: 'text-emerald-600' };
 
 // Nombre a mostrar por área — Bordado (EMB), Estampado (EST), Corte Láser (TWC) y Taller
 // Costura (TWT) comparten toda la lógica de bandeja/control, solo cambia el rótulo visible.
@@ -648,7 +654,23 @@ export default function EmbBandeja({ area = 'EMB', fase = 'trabajo', onSelectOrd
                                         : `${o.MagnitudEfectiva || o.Magnitud} u.`}
                                 </span>
                             )}
-                            <span className="text-[10px] text-zinc-400 ml-auto">
+                            {/* Señalética minimalista: punto + fecha proyectada, contra la fecha
+                                comprometida (o la fija si esta orden todavía no tiene una real
+                                calculada) — mismo motor que la pantalla de Planificación. Sin
+                                capacidad cargada para el área, o.semaforo no viene y no se muestra
+                                nada acá (no-op). */}
+                            {o.semaforo && (
+                                <span
+                                    className="flex items-center gap-1 ml-auto"
+                                    title={`Se proyecta terminar: ${fmtFechaCorta(o.diaProyectado)} · Comprometido: ${fmtFechaCorta(o.FechaPrometidaEfectiva)}`}
+                                >
+                                    <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${SEMAFORO_DOT[o.semaforo]}`} />
+                                    <span className={`text-[10px] font-bold ${SEMAFORO_TEXTO[o.semaforo]}`}>
+                                        {fmtFechaCorta(o.diaProyectado)}
+                                    </span>
+                                </span>
+                            )}
+                            <span className={`text-[10px] text-zinc-400 ${o.semaforo ? '' : 'ml-auto'}`}>
                                 {o.FechaIngreso ? new Date(o.FechaIngreso).toLocaleDateString('es-UY') : ''}
                             </span>
                         </div>

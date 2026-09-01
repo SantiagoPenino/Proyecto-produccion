@@ -16,6 +16,7 @@ import { fileService } from '../api/fileService';
 import { apiClient } from '../api/apiClient';
 import Swal from 'sweetalert2';
 import { toast } from 'react-toastify';
+import { fmtFechaCorta } from '../../utils/fechas';
 
 // UI Components
 import { GlassCard } from '../pautas/GlassCard';
@@ -185,7 +186,7 @@ const OrderForm = ({ serviceId: propServiceId }) => {
         estampadoFile, estampadoQuantity, estampadoPrints, estampadoOrigin,
         // TPU
         tpuForma,
-        loading, showSuccessModal, createdOrderIds, uploading, uploadProgress, uploadError, uploadErrorMsg,
+        loading, showSuccessModal, createdOrderIds, fechaCompromisoEmb, uploading, uploadProgress, uploadError, uploadErrorMsg,
         errorModalOpen, errorModalMessage,
         uniqueVariants, variantsInfo, dynamicMaterials, visibleConfig, prioritiesList, areasConUrgencia, portalConfig,
         activeSubOrders, embroideryVariants, embroideryMaterials
@@ -1587,7 +1588,10 @@ const OrderForm = ({ serviceId: propServiceId }) => {
                             material: { name: 'Corte Laser por prenda', id: 90, codArt: '1375', codStock: '1.1.6.1' }
                         },
                         // Pass specific technical data if needed in a custom field
-                        metadata: { moldType, fabricOrigin, clientFabricName, selectedSubOrderId }
+                        // selectedBobinaId: mismo estado top-level del picker de bobina que usa
+                        // CorteTechnicalUI en modo extra (fabricOrigin==='TELA CLIENTE') — sin
+                        // esto el backend no puede resolver el requisito TELA de esta orden.
+                        metadata: { moldType, fabricOrigin, clientFabricName, selectedSubOrderId, selectedBobinaId }
                     };
                 }
                 if (enableCostura) {
@@ -2118,6 +2122,7 @@ const OrderForm = ({ serviceId: propServiceId }) => {
 
             if (response.success) {
                 actions.setCreatedOrderIds(response.orderIds || []);
+                actions.setFechaCompromisoEmb(response.fechaCompromisoEmb || null);
                 if (response.requiresUpload && response.uploadManifest) {
                     // La subida termina en UPLOAD_SUCCESS, que ya abre el modal.
                     await actions.handleUploadProcess(response.uploadManifest, filesToUploadMap);
@@ -3604,6 +3609,13 @@ const OrderForm = ({ serviceId: propServiceId }) => {
                                     ))}
                                 </div>
                             </div>
+
+                            {fechaCompromisoEmb && (
+                                <div className="w-full bg-emerald-500/10 border border-emerald-500/30 rounded-2xl p-4 -mt-2 mb-2">
+                                    <p className="text-[10px] uppercase tracking-[0.25em] text-emerald-400/80 font-black mb-1">Bordado — fecha comprometida</p>
+                                    <p className="text-lg font-black text-emerald-300">{fmtFechaCorta(fechaCompromisoEmb)}</p>
+                                </div>
+                            )}
 
                             {reusoRegen && (
                                 <div className="w-full bg-amber-500/10 border border-amber-500/30 rounded-2xl p-4 -mt-2 mb-2">

@@ -265,7 +265,9 @@ exports.getEmbOrders = async (req, res) => {
             : `
                 SELECT o.OrdenID, o.CodigoOrden, o.Cliente, o.DescripcionTrabajo, o.Material, o.Variante, o.Nota,
                        o.Magnitud, o.Prioridad, o.FechaIngreso, o.Estado, o.EstadoenArea, o.NoDocERP,
-                       o.MaquinaID, o.OperarioAsignadoID, o.EstadoTrabajoEmb, o.CantidadTerminada, ${CAMPOS_ENRIQUECIDOS}
+                       o.MaquinaID, o.OperarioAsignadoID, o.EstadoTrabajoEmb, o.CantidadTerminada,
+                       CONVERT(VARCHAR(10), ISNULL(o.FechaCompromiso, o.FechaEstimadaEntrega), 23) AS FechaPrometidaEfectiva,
+                       ${CAMPOS_ENRIQUECIDOS}
                 FROM Ordenes o
                 ${JOINS_ENRIQUECIDOS}
                 WHERE o.AreaID = @Area
@@ -282,10 +284,37 @@ exports.getEmbOrders = async (req, res) => {
                               AND cum.Estado = 'CUMPLIDO'
                         )
                   )
-                ORDER BY o.FechaIngreso ASC
+                ORDER BY
+                    CASE WHEN o.Prioridad = 'Urgente' THEN 0 ELSE 1 END,
+                    ISNULL(o.FechaCompromiso, o.FechaEstimadaEntrega) ASC,
+                    o.FechaIngreso ASC
             `;
         const r = await pool.request().input('Area', sql.VarChar(20), area).query(query);
-        res.json({ success: true, data: r.recordset.map(enriquecerPreview) });
+        let data = r.recordset.map(enriquecerPreview);
+
+        // [CAPACIDAD] Semáforo por orden (fase='trabajo' solamente): cruza con el mismo motor
+        // que ya usa la pantalla de Planificación (planificacionController.calcularSituacion) —
+        // reusado, no reimplementado. No bloqueante: si falla o el área no tiene capacidad
+        // cargada, las filas quedan sin diaProyectado/semaforo y el front simplemente no los
+        // muestra (mismo criterio que el resto de los campos opcionales de esta bandeja).
+        if (fase !== 'control') {
+            try {
+                const { calcularSituacion } = require('./planificacionController');
+                const hoyStr = new Date().toISOString().slice(0, 10);
+                const situacion = await calcularSituacion(pool, area, { desde: hoyStr, dias: 90 });
+                if (situacion.tieneCapacidad) {
+                    const porOrden = new Map(situacion.ordenes.map(o => [o.OrdenID, o]));
+                    data = data.map(o => {
+                        const proy = porOrden.get(o.OrdenID);
+                        return proy ? { ...o, diaProyectado: proy.diaProyectado, semaforo: proy.semaforo } : o;
+                    });
+                }
+            } catch (semErr) {
+                logger.error('[Bandeja] semáforo de capacidad falló (no bloqueante): ' + semErr.message);
+            }
+        }
+
+        res.json({ success: true, data });
     } catch (err) {
         logger.error('[Bandeja] getEmbOrders: ' + err.message);
         res.status(500).json({ error: err.message });

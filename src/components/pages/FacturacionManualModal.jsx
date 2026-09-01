@@ -140,7 +140,12 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
   const [facturarModo, setFacturarModo] = useState(() =>
     (mode === 'editar' || editDocId) ? 'cargando' : detectarFacturarModo(initialData));
   const [notas, setNotas] = useState('');
-  const [monedaOp, setMonedaOp] = useState('UYU'); // moneda de la operación
+  // Moneda de la operación. Arranca con la que viene en initialData (si no, pesos): antes era
+  // 'UYU' fijo y el efecto de sincronización pisaba la moneda recibida (una Venta de saldo en
+  // US$ terminaba emitida en pesos).
+  const [monedaOp, setMonedaOp] = useState(() => (initialData && Number(initialData.MonIdMoneda) === 2) ? 'USD' : 'UYU');
+  // Con lockMoneda el cambio de moneda queda bloqueado (la factura debe ir en la moneda de la cuenta)
+  const monedaBloqueada = !!initialData?.lockMoneda;
   const [articuloSearch, setArticuloSearch] = useState({}); // { [lineId]: string } búsqueda por línea
   const [articuloOpen, setArticuloOpen] = useState({}); // { [lineId]: bool }
 
@@ -1144,7 +1149,7 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
         });
         toast.success('Documento actualizado exitosamente');
       } else {
-        await api.post('/contabilidad/cfe/manual', {
+        const respNuevo = await api.post('/contabilidad/cfe/manual', {
           DocTipo: formData.DocTipo,
           MonIdMoneda: formData.MonIdMoneda,
           CliIdCliente: formData.CliIdCliente ? parseInt(formData.CliIdCliente) : CONSUMIDOR_FINAL_ID,
@@ -1173,6 +1178,9 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
           DocFechaEmision: formData.DocFechaEmision || null
         });
         toast.success('Documento generado exitosamente');
+        // Quien abre el modal puede necesitar el docId (ej. vincular la factura a consumos de una cuenta)
+        onSuccess(respNuevo?.data || null);
+        return;
       }
       onSuccess();
     } catch (error) {
@@ -1324,6 +1332,7 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
 
         {/* PANEL SUPERIOR: CajaPanelPago idéntico a Caja */}
         <CajaPanelPago
+          lockMedioPago={!!initialData?.lockMedioPago}
           layout="horizontal"
           mode="COBRO"
           totalACubrir={pagosUntouched && formData.DocPagado ? totalPagado : totales.total}
@@ -1690,15 +1699,17 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
                     {/* Selector moneda del documento */}
                     <div className="flex items-center gap-1.5">
                       <span className="text-[9px] font-black text-zinc-400 uppercase tracking-widest">Moneda:</span>
-                      <div className="flex bg-zinc-100 border border-zinc-200 rounded-lg p-0.5 gap-0.5">
-                        <button type="button" onClick={() => cambiarMonedaDocumento('UYU')}
-                          className={`px-2.5 py-1 text-[9px] font-black rounded-md transition-all ${ monedaOp === 'UYU' ? 'bg-blue-600 text-white shadow-sm' : 'text-zinc-500 hover:text-zinc-700' }`}>
+                      <div className={`flex bg-zinc-100 border border-zinc-200 rounded-lg p-0.5 gap-0.5 ${monedaBloqueada ? 'opacity-70' : ''}`}
+                        title={monedaBloqueada ? 'Moneda fija: la factura va en la moneda de la cuenta que se está cargando/facturando' : ''}>
+                        <button type="button" disabled={monedaBloqueada} onClick={() => cambiarMonedaDocumento('UYU')}
+                          className={`px-2.5 py-1 text-[9px] font-black rounded-md transition-all disabled:cursor-not-allowed ${ monedaOp === 'UYU' ? 'bg-blue-600 text-white shadow-sm' : 'text-zinc-500 hover:text-zinc-700' }`}>
                           $ UYU
                         </button>
-                        <button type="button" onClick={() => cambiarMonedaDocumento('USD')}
-                          className={`px-2.5 py-1 text-[9px] font-black rounded-md transition-all ${ monedaOp === 'USD' ? 'bg-amber-500 text-white shadow-sm' : 'text-zinc-500 hover:text-zinc-700' }`}>
+                        <button type="button" disabled={monedaBloqueada} onClick={() => cambiarMonedaDocumento('USD')}
+                          className={`px-2.5 py-1 text-[9px] font-black rounded-md transition-all disabled:cursor-not-allowed ${ monedaOp === 'USD' ? 'bg-amber-500 text-white shadow-sm' : 'text-zinc-500 hover:text-zinc-700' }`}>
                           U$S USD
                         </button>
+                        {monedaBloqueada && <span className="text-[9px] font-bold text-zinc-500 px-1.5 self-center">🔒</span>}
                       </div>
                     </div>
                   </div>

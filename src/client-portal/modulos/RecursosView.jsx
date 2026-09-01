@@ -1,7 +1,10 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { apiClient } from '../api/apiClient';
-import { Layers, History, X, Loader2, Package, ChevronDown, ChevronRight } from 'lucide-react';
+import { Layers, History, X, Loader2, Package, ChevronDown, ChevronRight, Wallet, Plus, Zap, CreditCard, FileText } from 'lucide-react';
 import { fmtFechaCorta } from '../../utils/fechas';
+import { codigoCuenta } from '../../utils/cuentaCodigo';
+import { validarDocumentoUY, normalizarDocumento } from '../../utils/documentoUY';
+import { generarPdfFacturaDGI } from '../../utils/pdfGenerator';
 
 /**
  * RecursosView — "Mis Recursos" del portal del cliente. Ruta: /portal/recursos
@@ -59,6 +62,18 @@ const TituloSeccion = ({ icon: Icon, children }) => (
     </div>
 );
 
+// Switch "Solo …": mismo interruptor en las 3 secciones (cuentas / planes / telas)
+const SwitchSolo = ({ checked, onChange, label, title }) => (
+    <label title={title} className="flex items-center gap-2 text-[11px] font-bold text-zinc-400 cursor-pointer select-none shrink-0">
+        <span className="relative inline-flex items-center">
+            <input type="checkbox" checked={checked} onChange={e => onChange(e.target.checked)} className="peer sr-only" />
+            <span className="w-8 h-4 rounded-full bg-zinc-700 peer-checked:bg-custom-cyan transition-colors" />
+            <span className="absolute left-0.5 w-3 h-3 bg-white rounded-full shadow transition-transform peer-checked:translate-x-4" />
+        </span>
+        {label}
+    </label>
+);
+
 /* ══════════════════════════════════════════════════════════════════════
    MODAL — "Ver consumo" de un PLAN: estado de cuenta del recurso.
    Misma lógica que ModalConsumoPlan de VendedorCliente360.jsx: los
@@ -70,6 +85,10 @@ function ModalConsumoPlan({ plan, planes, onClose }) {
     const [movs, setMovs] = useState([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
+    // Saldo de los movimientos que el tope de la consulta dejó afuera: sin esto el
+    // saldo corrido arrancaba en 0 y las columnas de saldo quedaban desplazadas.
+    const [arrastre, setArrastre] = useState(0);
+    const [recorte, setRecorte]   = useState(null); // { mostrados, total }
 
     const unidad = plan.UniSimbolo || plan.PlaUnidad || plan.UnidadLabel || '';
 
@@ -88,8 +107,13 @@ function ModalConsumoPlan({ plan, planes, onClose }) {
         setLoading(true);
         setError(null);
         apiClient.get(`/web-recursos/mis-recursos/cuentas/${plan.CueIdCuenta}/movimientos?top=500`)
-            .then(r => { if (alive) setMovs(r.data || []); })
-            .catch(e => { if (alive) { setError(e.message); setMovs([]); } })
+            .then(r => {
+                if (!alive) return;
+                setMovs(r.data || []);
+                setArrastre(Number(r.saldoArrastre || 0));
+                setRecorte(r.recortado ? { mostrados: (r.data || []).length, total: r.totalMovimientos } : null);
+            })
+            .catch(e => { if (alive) { setError(e.message); setMovs([]); setArrastre(0); setRecorte(null); } })
             .finally(() => { if (alive) setLoading(false); });
         return () => { alive = false; };
     }, [plan.CueIdCuenta]);
@@ -107,9 +131,11 @@ function ModalConsumoPlan({ plan, planes, onClose }) {
             return planesDelMat.some(p => p.PlaActivo) || soloUno;
         });
 
-        // Saldo corrido: se acumula del más viejo al más nuevo.
+        // Saldo corrido: se acumula del más viejo al más nuevo, arrancando del
+        // arrastre. Si el filtro por plan dejó movimientos afuera, arranca en 0
+        // (es el saldo de estos movimientos, no el de la cuenta).
         const ordenados = [...propios].sort((a, b) => new Date(a.MovFecha) - new Date(b.MovFecha));
-        let saldo = 0;
+        let saldo = propios.length === movs.length ? arrastre : 0;
         return ordenados.map(m => {
             const importe = Number(m.MovImporte);
             const saldoIn = saldo;
@@ -130,9 +156,17 @@ function ModalConsumoPlan({ plan, planes, onClose }) {
                 _tipo: m.MovTipo === 'RECARGO_URGENCIA' ? 'RECARGO_URGENCIA' : (importe >= 0 ? 'ENTRADA' : 'ENTREGA'),
             };
         });
-    }, [movs, planesDelMat, planes, plan]);
+    }, [movs, planesDelMat, planes, plan, arrastre]);
 
-    const saldoFinal = movsConSaldo.length ? movsConSaldo[movsConSaldo.length - 1]._saldoFn : 0;
+    // Lo que el cliente tiene realmente disponible del material: arrastre + TODOS
+    // los movimientos de la cuenta. Puede ser menor que el "restante del plan"
+    // cuando hubo trabajos que consumieron más metros de los que quedaban.
+    const saldoCuenta = useMemo(() => (
+        Math.round((movs.reduce((acc, m) => acc + Number(m.MovImporte || 0), 0) + arrastre) * 10000) / 10000
+    ), [movs, arrastre]);
+
+    const restantePlan = Number(plan.PlaCantidadRestante ?? (plan.PlaCantidadTotal - plan.PlaCantidadUsada));
+    const hayDesfasaje = !loading && movs.length > 0 && Math.abs(restantePlan - saldoCuenta) > 0.01;
 
     return (
         <div className="fixed inset-0 z-[100] bg-black/60 backdrop-blur-sm flex items-start justify-center px-2 sm:px-4 pt-10 pb-4"
@@ -175,11 +209,29 @@ function ModalConsumoPlan({ plan, planes, onClose }) {
                         <span className="text-sm font-black text-emerald-400">{fmtNum(plan.PlaCantidadRestante)} {unidad}</span>
                     </div>
                     <div className="flex items-baseline gap-2 sm:ml-auto">
-                        <span className="text-[10px] font-black uppercase tracking-widest text-zinc-500">Saldo del estado de cuenta</span>
-                        <span className="text-sm font-black text-custom-cyan">{fmtNum(saldoFinal)} {unidad}</span>
+                        <span className="text-[10px] font-black uppercase tracking-widest text-zinc-500">Saldo disponible</span>
+                        <span className={`text-sm font-black ${saldoCuenta < 0 ? 'text-rose-400' : 'text-custom-cyan'}`}>{fmtNum(saldoCuenta)} {unidad}</span>
                         <span className="text-[11px] text-zinc-500">{movsConSaldo.length} mov.</span>
                     </div>
                 </div>
+
+                {/* El restante del plan puede ser mayor que el saldo real cuando hubo
+                    trabajos que consumieron más metros de los que quedaban en el plan
+                    anterior. Lo que el cliente puede usar es el saldo disponible. */}
+                {hayDesfasaje && (
+                    <div className="px-5 py-2 bg-amber-500/10 border-b border-amber-500/30 text-[11px] text-amber-200 shrink-0">
+                        Este plan figura con <strong>{fmtNum(restantePlan)} {unidad}</strong>, pero tu saldo disponible
+                        del material es <strong>{fmtNum(saldoCuenta)} {unidad}</strong>: incluye los consumos de planes
+                        anteriores. Para lo que podés usar, vale el saldo disponible.
+                    </div>
+                )}
+
+                {recorte && (
+                    <div className="px-5 py-2 bg-zinc-800/50 border-b border-zinc-700/50 text-[11px] text-zinc-400 shrink-0">
+                        Se muestran los <strong>{recorte.mostrados}</strong> movimientos más recientes de{' '}
+                        <strong>{recorte.total}</strong>. Los saldos ya incluyen el arrastre de los anteriores.
+                    </div>
+                )}
 
                 {/* Movimientos */}
                 <div className="flex-1 min-h-0 overflow-auto">
@@ -477,9 +529,388 @@ function ModalConsumoTela({ tela, onClose }) {
 /* ══════════════════════════════════════════════════════════════════════
    SECCIÓN 1 — PLANES DE METROS
    ══════════════════════════════════════════════════════════════════════ */
+/* ─────────────────────────────────────────────────────────────────────────────
+ * SECCIÓN: Mis cuentas de saldo (billetera)
+ * El cliente crea su cuenta (elige si descuenta en automático; NUNCA nace
+ * aceptando negativo — eso lo decide administración), la recarga por Handy /
+ * MercadoPago y ve su estado de cuenta. Todo por token, con candado de pertenencia.
+ * ──────────────────────────────────────────────────────────────────────────── */
+function SeccionCuentasSaldo() {
+    const [cuentas, setCuentas] = useState([]);
+    const [cargando, setCargando] = useState(true);
+    const [recarga, setRecarga] = useState(null);   // { cuenta, importe }
+    const [movsDe, setMovsDe] = useState(null);     // cuenta cuyo estado de cuenta se muestra
+    const [movs, setMovs] = useState([]);
+    const [busy, setBusy] = useState(false);
+    const [msg, setMsg] = useState(null);           // aviso inline { tipo:'ok'|'err', texto }
+    // Umbral DGI del e-Ticket por moneda (10.000 UI): sobre ese importe pide la cédula
+    const [umbralCedula, setUmbralCedula] = useState({ UYU: 65000, USD: 1600 });
+    // La billetera solo se muestra a los clientes que administración habilitó
+    // (Clientes.CliBilleteraPortal, switch del gestor "Cuentas" del 360).
+    const [habilitada, setHabilitada] = useState(true);
+
+    // Las cuentas de la billetera las crea la administración (BILLETERA USD / BILLETERA UY
+    // para todos los clientes): el portal solo las muestra, recarga y consulta.
+    const cargar = useCallback(() => apiClient.get('/web-orders/mis-cuentas')
+        .then(r => { setCuentas(r?.data || []); setHabilitada(r?.habilitada !== false); if (r?.umbralCedula) setUmbralCedula(r.umbralCedula); })
+        .catch(() => setCuentas([]))
+        .finally(() => setCargando(false)), []);
+    useEffect(() => { cargar(); }, [cargar]);
+
+    const abrirMovs = (c) => {
+        setMovsDe(c); setMovs([]);
+        apiClient.get(`/web-orders/mis-cuentas/${c.CueIdCuenta}/movimientos`).then(r => setMovs(r?.data || [])).catch(() => setMovs([]));
+    };
+
+    const reabrirCuenta = async (c) => {
+        if (!window.confirm(`Vas a reabrir la cuenta "${c.nombre}".\n\n• Se puede porque la creaste vos desde el portal.\n• Vuelve sin descuento automático (eso lo activa administración).\n\n¿Confirmás?`)) return;
+        setBusy(true); setMsg(null);
+        try {
+            const r = await apiClient.post(`/web-orders/mis-cuentas/${c.CueIdCuenta}/reabrir`, {});
+            setMsg({ tipo: 'ok', texto: r?.message || `Cuenta "${c.nombre}" reabierta.` });
+            await cargar();
+        } catch (e) { setMsg({ tipo: 'err', texto: e?.response?.data?.error || e.message || 'No se pudo reabrir la cuenta.' }); }
+        finally { setBusy(false); }
+    };
+
+    const cerrarCuenta = async (c) => {
+        if (!window.confirm(`Vas a cerrar la cuenta "${c.nombre}".\n\n• Solo se puede porque está en $ 0.\n• Sus movimientos quedan visibles (switch "Solo activas" apagado).\n• Para reabrirla tenés que hablar con administración.\n\n¿Confirmás?`)) return;
+        setBusy(true); setMsg(null);
+        try {
+            const r = await apiClient.post(`/web-orders/mis-cuentas/${c.CueIdCuenta}/cerrar`, {});
+            setMsg({ tipo: 'ok', texto: r?.message || `Cuenta "${c.nombre}" cerrada.` });
+            await cargar();
+        } catch (e) { setMsg({ tipo: 'err', texto: e?.response?.data?.error || e.message || 'No se pudo cerrar la cuenta.' }); }
+        finally { setBusy(false); }
+    };
+
+    // ¿La recarga de esta cuenta emite factura automática? (cuentas prepago, F4)
+    const esPrepago = (c) => c?.modalidad === 'PREPAGO_FACTURADO';
+    const topeCedula = (c) => Number(umbralCedula[c?.moneda] || umbralCedula.UYU) || 65000;
+
+    // Descargar la factura de una recarga (mismo PDF que emite administración)
+    const descargarComprobante = async (cuenta, docId) => {
+        setMsg(null);
+        try {
+            const data = await apiClient.get(`/web-orders/mis-cuentas/${cuenta.CueIdCuenta}/comprobantes/${docId}`);
+            if (!data?.doc) throw new Error('No se pudo leer el comprobante.');
+            await generarPdfFacturaDGI(data.doc, data.detalles || []);
+        } catch (e) {
+            setMsg({ tipo: 'err', texto: e?.response?.data?.error || e.message || 'No se pudo descargar el comprobante.' });
+        }
+    };
+
+    const iniciarRecarga = async (gateway) => {
+        const imp = parseFloat(recarga?.importe);
+        if (!(imp > 0)) { setMsg({ tipo: 'err', texto: 'Poné el importe a recargar.' }); return; }
+        // Validación fiscal ANTES de abrir la pasarela (cuentas prepago: la recarga se factura)
+        const payload = { importe: imp, gateway };
+        if (esPrepago(recarga?.cuenta)) {
+            const comprobante = recarga.comprobante === 'e-factura' ? 'e-factura' : 'e-ticket';
+            const docFiscal = normalizarDocumento(recarga.documentoFiscal);
+            if (comprobante === 'e-factura') {
+                const v = validarDocumentoUY(docFiscal);
+                if (!v.valido || v.tipo !== 'RUT') { setMsg({ tipo: 'err', texto: v.tipo === 'RUT' ? v.motivo : 'La e-Factura necesita un RUT válido de 12 dígitos (sin puntos ni guiones).' }); return; }
+                if (String(recarga.nombreFiscal || '').trim().length < 3) { setMsg({ tipo: 'err', texto: 'Poné la razón social que va en la e-Factura.' }); return; }
+            } else {
+                if (imp >= topeCedula(recarga.cuenta) && !docFiscal) {
+                    setMsg({ tipo: 'err', texto: `Para recargas de ${recarga.cuenta.moneda === 'USD' ? 'US$' : '$'} ${fmtNum(topeCedula(recarga.cuenta), 0)} o más, DGI exige identificar al receptor: poné tu cédula (o elegí e-Factura con RUT).` }); return;
+                }
+                if (docFiscal) {
+                    const v = validarDocumentoUY(docFiscal);
+                    if (!v.valido) { setMsg({ tipo: 'err', texto: v.motivo }); return; }
+                }
+            }
+            payload.comprobante = comprobante;
+            payload.documentoFiscal = docFiscal;
+            payload.nombreFiscal = String(recarga.nombreFiscal || '').trim();
+        }
+        const payWindow = window.open('about:blank', '_blank');
+        setBusy(true); setMsg(null);
+        try {
+            const r = await apiClient.post(`/web-orders/mis-cuentas/${recarga.cuenta.CueIdCuenta}/recargar`, payload);
+            if (r?.success && r.url) {
+                if (payWindow) payWindow.location.href = r.url;
+                setRecarga(null);
+                setMsg({ tipo: 'ok', texto: 'Completá el pago en la pestaña que se abrió. Cuando termine, el saldo se acredita solo — actualizá esta página para verlo.' });
+            } else {
+                if (payWindow) payWindow.close();
+                setMsg({ tipo: 'err', texto: r?.error || 'No se pudo generar el link de pago.' });
+            }
+        } catch (e) {
+            if (payWindow) payWindow.close();
+            setMsg({ tipo: 'err', texto: e?.response?.data?.error || e.message || 'No se pudo iniciar la recarga.' });
+        } finally { setBusy(false); }
+    };
+
+    const inputCls = "w-full bg-custom-dark border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-100 outline-none focus:border-custom-cyan";
+
+    // Billetera no habilitada para este cliente → la sección entera no existe
+    if (!habilitada) return null;
+
+    return (
+        <div className="space-y-2">
+            <TituloSeccion icon={Wallet}>Mi billetera</TituloSeccion>
+            <div className="overflow-hidden rounded-xl border border-zinc-800 bg-brand-dark">
+                <div className="px-4 py-3 bg-custom-dark border-b border-zinc-800 flex flex-wrap items-center justify-between gap-2">
+                    <span className="text-[11px] text-zinc-500">Dinero tuyo por adelantado: lo cargás con tarjeta y se va usando en tus pedidos.</span>
+                </div>
+
+                {msg && (
+                    <div className={`px-4 py-2 text-xs font-semibold border-b border-zinc-800 ${msg.tipo === 'ok' ? 'text-emerald-400 bg-emerald-500/5' : 'text-rose-400 bg-rose-500/5'}`}>{msg.texto}</div>
+                )}
+
+                {cargando ? (
+                    <div className="py-8 text-center"><Loader2 className="animate-spin text-custom-cyan mx-auto" size={22} /></div>
+                ) : cuentas.length === 0 ? (
+                    <div className="py-8 text-center text-zinc-500 text-sm">
+                        Tu billetera todavía no está habilitada.<br />
+                        <span className="text-xs">Consultá con la administración para activarla.</span>
+                    </div>
+                ) : (
+                    <div className="divide-y divide-zinc-800/60">
+                        {cuentas.map(c => (
+                            <div key={c.CueIdCuenta} className={`px-4 py-3 flex flex-wrap items-center gap-3 ${c.activa === false ? 'opacity-50' : ''}`}>
+                                <div className="flex-1 min-w-[180px]">
+                                    <div className="flex items-center gap-2 flex-wrap">
+                                        <span className="text-[10px] font-mono font-black text-custom-cyan bg-brand-cyan/10 border border-brand-cyan/30 rounded px-1.5 py-0.5" title="Código único de tu cuenta (tipo + moneda + número)">{codigoCuenta(c)}</span>
+                                        <span className="font-black text-zinc-100">{c.nombre}</span>
+                                        {c.activa === false && <span className="text-[10px] font-bold text-zinc-500 bg-zinc-800 border border-zinc-700 rounded px-1.5 py-0.5">cerrada</span>}
+                                        <span className="text-[10px] font-bold text-zinc-500">{c.moneda === 'USD' ? 'US$' : '$'}</span>
+                                        {c.automatico
+                                            ? <span className="inline-flex items-center gap-1 text-[10px] font-bold text-amber-400 bg-amber-500/10 border border-amber-500/20 rounded px-1.5 py-0.5"><Zap size={10} /> descuenta tus pedidos en automático</span>
+                                            : <span className="text-[10px] font-bold text-zinc-500 bg-zinc-800 border border-zinc-700 rounded px-1.5 py-0.5">se usa cuando vos lo elegís</span>}
+                                        {c.restringida && <span className="text-[10px] font-bold text-violet-400 bg-violet-500/10 border border-violet-500/20 rounded px-1.5 py-0.5">🔒 solo ciertos artículos</span>}
+                                    </div>
+                                    <span className="text-[10px] text-zinc-600">Creada {fmtFechaCorta(c.fechaAlta)}</span>
+                                </div>
+                                <span className={`font-black tabular-nums ${Number(c.saldo) < 0 ? 'text-rose-400' : 'text-emerald-400'}`}>
+                                    {c.moneda === 'USD' ? 'US$' : '$'} {fmtNum(c.saldo)}
+                                </span>
+                                <div className="flex items-center gap-1.5">
+                                    {c.permiteRecarga && (
+                                        <button onClick={() => { setRecarga({ cuenta: c, importe: '', comprobante: 'e-ticket', documentoFiscal: '', nombreFiscal: '' }); setMsg(null); }}
+                                            className="flex items-center gap-1 px-2.5 py-1.5 text-[11px] font-bold text-white bg-emerald-600/90 hover:bg-emerald-600 rounded-lg transition-colors">
+                                            <CreditCard size={12} /> Recargar
+                                        </button>
+                                    )}
+                                    <button onClick={() => abrirMovs(c)}
+                                        className="flex items-center gap-1 px-2.5 py-1.5 text-[11px] font-bold text-zinc-300 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 rounded-lg transition-colors">
+                                        <History size={12} /> Movimientos
+                                    </button>
+                                    {/* Reabrir: solo cuentas cerradas que el cliente creó desde el portal */}
+                                    {c.activa === false && c.creadaPortal && (
+                                        <button onClick={() => reabrirCuenta(c)} disabled={busy}
+                                            title="Reabrir esta cuenta (la creaste vos desde el portal). Vuelve sin descuento automático."
+                                            className="flex items-center gap-1 px-2.5 py-1.5 text-[11px] font-bold text-emerald-400 bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/30 rounded-lg transition-colors disabled:opacity-50">
+                                            <Plus size={12} /> Reabrir
+                                        </button>
+                                    )}
+                                    {/* Cerrar: solo cuentas abiertas y en $ 0 (mismo criterio que administración) */}
+                                    {c.activa !== false && Math.abs(Number(c.saldo || 0)) < 0.01 && (
+                                        <button onClick={() => cerrarCuenta(c)} disabled={busy}
+                                            title="Cerrar esta cuenta (se puede porque está en $ 0). Sus movimientos quedan visibles; reabrirla es cosa de administración."
+                                            className="flex items-center gap-1 px-2.5 py-1.5 text-[11px] font-bold text-rose-400 bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/30 rounded-lg transition-colors disabled:opacity-50">
+                                            <X size={12} /> Cerrar
+                                        </button>
+                                    )}
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+                )}
+            </div>
+
+            {/* Modal recargar */}
+            {recarga && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" onClick={e => e.target === e.currentTarget && setRecarga(null)}>
+                    <div className="bg-brand-dark border border-zinc-700 rounded-2xl w-full max-w-md p-5 space-y-4">
+                        <div className="flex items-center justify-between">
+                            <h3 className="text-zinc-100 font-black">Recargar "{recarga.cuenta.nombre}"</h3>
+                            <button onClick={() => setRecarga(null)} className="text-zinc-500 hover:text-zinc-200"><X size={18} /></button>
+                        </div>
+                        <div>
+                            <label className="block text-[11px] font-bold text-zinc-400 mb-1">Importe a recargar ({recarga.cuenta.moneda === 'USD' ? 'US$' : '$'})</label>
+                            <input type="number" min="1" step="0.01" value={recarga.importe} onChange={e => setRecarga(x => ({ ...x, importe: e.target.value }))} placeholder="0.00" className={inputCls} />
+                        </div>
+
+                        {/* Cuentas prepago (F4): la recarga emite su factura automática → elegir comprobante */}
+                        {esPrepago(recarga.cuenta) && (
+                            <div className="space-y-3 border border-zinc-800 rounded-xl p-3 bg-custom-dark/50">
+                                <p className="text-[11px] font-bold text-zinc-300">Tu comprobante (se emite solo al acreditarse el pago):</p>
+                                <div className="grid grid-cols-2 gap-2">
+                                    <button type="button" onClick={() => setRecarga(x => ({ ...x, comprobante: 'e-ticket' }))}
+                                        className={`px-2 py-2 rounded-lg text-[11px] font-bold border transition-colors ${recarga.comprobante !== 'e-factura'
+                                            ? 'text-custom-cyan bg-brand-cyan/10 border-brand-cyan/40' : 'text-zinc-400 bg-zinc-800/60 border-zinc-700'}`}>
+                                        e-Ticket<span className="block font-normal text-[10px] text-zinc-500">consumidor final</span>
+                                    </button>
+                                    <button type="button" onClick={() => setRecarga(x => ({ ...x, comprobante: 'e-factura' }))}
+                                        className={`px-2 py-2 rounded-lg text-[11px] font-bold border transition-colors ${recarga.comprobante === 'e-factura'
+                                            ? 'text-custom-cyan bg-brand-cyan/10 border-brand-cyan/40' : 'text-zinc-400 bg-zinc-800/60 border-zinc-700'}`}>
+                                        e-Factura<span className="block font-normal text-[10px] text-zinc-500">con RUT de empresa</span>
+                                    </button>
+                                </div>
+                                {recarga.comprobante === 'e-factura' ? (
+                                    <>
+                                        <div>
+                                            <label className="block text-[11px] font-bold text-zinc-400 mb-1">RUT (12 dígitos, sin puntos ni guiones)</label>
+                                            <input type="text" inputMode="numeric" maxLength={12} value={recarga.documentoFiscal}
+                                                onChange={e => setRecarga(x => ({ ...x, documentoFiscal: e.target.value.replace(/\D/g, '') }))}
+                                                placeholder="21XXXXXXXXXX" className={inputCls} />
+                                        </div>
+                                        <div>
+                                            <label className="block text-[11px] font-bold text-zinc-400 mb-1">Razón social (como va en la e-Factura)</label>
+                                            <input type="text" maxLength={100} value={recarga.nombreFiscal}
+                                                onChange={e => setRecarga(x => ({ ...x, nombreFiscal: e.target.value }))}
+                                                placeholder="Mi Empresa S.A." className={inputCls} />
+                                        </div>
+                                    </>
+                                ) : (
+                                    <div>
+                                        <label className="block text-[11px] font-bold text-zinc-400 mb-1">
+                                            Cédula {parseFloat(recarga.importe) >= topeCedula(recarga.cuenta)
+                                                ? <span className="text-amber-400">(obligatoria: DGI la exige para este importe)</span>
+                                                : <span className="text-zinc-500">(opcional para recargas menores a {recarga.cuenta.moneda === 'USD' ? 'US$' : '$'} {fmtNum(topeCedula(recarga.cuenta), 0)})</span>}
+                                        </label>
+                                        <input type="text" inputMode="numeric" maxLength={8} value={recarga.documentoFiscal}
+                                            onChange={e => setRecarga(x => ({ ...x, documentoFiscal: e.target.value.replace(/\D/g, '') }))}
+                                            placeholder="Sin puntos ni guion" className={inputCls} />
+                                    </div>
+                                )}
+                                <p className="text-[11px] text-zinc-500">Cuando la pasarela confirme el pago, el saldo se acredita y tu {recarga.comprobante === 'e-factura' ? 'e-Factura' : 'e-Ticket'} se emite en automático. Lo descargás desde "Movimientos" (botón 📄 en la fila de la carga).</p>
+                            </div>
+                        )}
+                        {!esPrepago(recarga.cuenta) && (
+                            <p className="text-[11px] text-zinc-500">El pago es siempre electrónico. Cuando la pasarela confirme, el saldo se acredita solo en tu cuenta (con su recibo).</p>
+                        )}
+                        <div className="grid grid-cols-2 gap-2">
+                            <button onClick={() => iniciarRecarga('handy')} disabled={busy}
+                                className="px-3 py-3 rounded-xl text-sm font-black text-white bg-[#722efa] hover:opacity-90 disabled:opacity-50 transition-opacity">Pagar con Handy</button>
+                            <button onClick={() => iniciarRecarga('mercadopago')} disabled={busy}
+                                className="px-3 py-3 rounded-xl text-sm font-black text-zinc-900 bg-[#ffe600] hover:opacity-90 disabled:opacity-50 transition-opacity">MercadoPago</button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* Modal movimientos — mismo formato de libro que el consumo del rollo por adelantado */}
+            {movsDe && (() => {
+                const sym = movsDe.moneda === 'USD' ? 'US$' : '$';
+                const saldoFinal = movs.length ? movs[0].saldoFn : Number(movsDe.saldo || 0);
+                return (
+                    <div className="fixed inset-0 z-[100] bg-black/60 backdrop-blur-sm flex items-start justify-center px-2 sm:px-4 pt-10 pb-4"
+                        onClick={() => setMovsDe(null)}>
+                        <div className="bg-custom-dark border border-zinc-700/50 rounded-xl shadow-2xl w-[97vw] max-w-5xl max-h-[calc(100vh-4rem)] flex flex-col overflow-hidden"
+                            onClick={e => e.stopPropagation()}>
+
+                            {/* Cabecera */}
+                            <div className="flex items-center justify-between px-5 py-3 border-b border-zinc-800 shrink-0">
+                                <div className="flex items-center gap-2.5 min-w-0">
+                                    <Wallet size={16} className="text-custom-cyan shrink-0" />
+                                    <div className="min-w-0">
+                                        <h3 className="text-sm font-black leading-tight truncate text-zinc-100">
+                                            Estado de cuenta · {codigoCuenta(movsDe)} "{movsDe.nombre}"
+                                        </h3>
+                                        <p className="text-[11px] text-zinc-500">Cuenta de saldo en {movsDe.moneda === 'USD' ? 'dólares' : 'pesos'} · creada {fmtFechaCorta(movsDe.fechaAlta)}</p>
+                                    </div>
+                                </div>
+                                <button onClick={() => setMovsDe(null)} title="Cerrar el estado de cuenta"
+                                    className="p-2 rounded-lg text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200 transition-colors shrink-0">
+                                    <X size={18} />
+                                </button>
+                            </div>
+
+                            {/* Resumen */}
+                            <div className="px-5 py-3 bg-brand-dark border-b border-zinc-800 flex flex-wrap items-center gap-x-6 gap-y-2 shrink-0">
+                                <div className="flex items-baseline gap-2">
+                                    <span className="text-[10px] font-black uppercase tracking-widest text-zinc-500">Saldo actual</span>
+                                    <span className={`text-sm font-black ${saldoFinal < 0 ? 'text-rose-400' : 'text-custom-cyan'}`}>{sym} {fmtNum(saldoFinal)}</span>
+                                </div>
+                                <div className="flex items-baseline gap-2 sm:ml-auto">
+                                    <span className="text-[11px] text-zinc-500">{movs.length} movimientos</span>
+                                </div>
+                            </div>
+
+                            {/* Movimientos */}
+                            <div className="flex-1 min-h-0 overflow-auto">
+                                {movs.length === 0 ? (
+                                    <p className="text-center text-zinc-500 text-sm py-12">Esta cuenta todavía no tiene movimientos.</p>
+                                ) : (
+                                    <table className="w-full text-xs">
+                                        <thead className="sticky top-0 z-10">
+                                            <tr className="text-[10px] text-zinc-500 uppercase bg-custom-dark border-b border-zinc-800">
+                                                <th className="px-3 py-2 text-left font-semibold">Fecha</th>
+                                                <th className="px-3 py-2 text-left font-semibold">Tipo</th>
+                                                <th className="px-3 py-2 text-left font-semibold">Documento</th>
+                                                <th className="px-3 py-2 text-left font-semibold">Concepto</th>
+                                                <th className="px-3 py-2 text-right font-semibold">Saldo Ini.</th>
+                                                <th className="px-3 py-2 text-right font-semibold">Debe</th>
+                                                <th className="px-3 py-2 text-right font-semibold">Haber</th>
+                                                <th className="px-3 py-2 text-right font-semibold">Saldo Fn.</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody className="divide-y divide-zinc-800/60">
+                                            {movs.map(m => (
+                                                <tr key={m.id} className={`hover:bg-zinc-800/20 transition-colors ${m.anulado ? 'opacity-40' : ''}`}>
+                                                    <td className="px-3 py-2 text-zinc-500 whitespace-nowrap">{fmtFechaCorta(m.fecha)}</td>
+                                                    <td className="px-3 py-2 whitespace-nowrap">
+                                                        <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded ${
+                                                            m.anulado ? 'bg-zinc-700/30 text-zinc-500'
+                                                                : m.importe >= 0 ? 'bg-emerald-500/10 text-emerald-400'
+                                                                    : 'bg-brand-cyan/10 text-custom-cyan'
+                                                        }`}>
+                                                            {m.anulado ? `${m.tipo} (anulado)` : m.tipo}
+                                                        </span>
+                                                    </td>
+                                                    <td className="px-3 py-2 font-bold text-zinc-200 whitespace-nowrap">
+                                                        {m.documento || '—'}
+                                                        {m.docId && !m.anulado && (
+                                                            <button onClick={() => descargarComprobante(movsDe, m.docId)}
+                                                                title={`Descargar el comprobante ${m.documento || ''} en PDF`}
+                                                                className="ml-1.5 inline-flex items-center gap-0.5 px-1.5 py-0.5 text-[10px] font-bold text-custom-cyan bg-brand-cyan/10 hover:bg-brand-cyan/20 border border-brand-cyan/30 rounded transition-colors align-middle">
+                                                                <FileText size={10} /> PDF
+                                                            </button>
+                                                        )}
+                                                    </td>
+                                                    <td className="px-3 py-2 text-zinc-400 max-w-[240px] truncate" title={m.concepto}>{m.concepto || '—'}</td>
+                                                    <td className="px-3 py-2 text-right text-zinc-500 whitespace-nowrap">{sym} {fmtNum(m.saldoIn)}</td>
+                                                    <td className={`px-3 py-2 text-right whitespace-nowrap font-semibold ${m.debe > 0 ? 'text-rose-400' : 'text-zinc-700'}`}>
+                                                        {m.debe > 0 ? `${sym} ${fmtNum(m.debe)}` : '—'}
+                                                    </td>
+                                                    <td className={`px-3 py-2 text-right whitespace-nowrap font-semibold ${m.haber > 0 ? 'text-emerald-400' : 'text-zinc-700'}`}>
+                                                        {m.haber > 0 ? `${sym} ${fmtNum(m.haber)}` : '—'}
+                                                    </td>
+                                                    <td className={`px-3 py-2 text-right font-bold whitespace-nowrap ${m.saldoFn < 0 ? 'text-rose-400' : 'text-custom-cyan'}`}>
+                                                        {sym} {fmtNum(m.saldoFn)}
+                                                    </td>
+                                                </tr>
+                                            ))}
+                                        </tbody>
+                                    </table>
+                                )}
+                            </div>
+
+                            <div className="px-5 py-2.5 border-t border-zinc-800 bg-brand-dark flex items-center justify-between gap-3 shrink-0">
+                                <span className="text-[11px] text-zinc-500">Vista de consulta: acá no se puede editar ni revertir ningún movimiento.</span>
+                                <button onClick={() => setMovsDe(null)}
+                                    className="px-4 py-2 text-xs font-bold text-zinc-300 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 rounded-lg transition-colors">
+                                    Cerrar
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                );
+            })()}
+        </div>
+    );
+}
+
 function SeccionPlanes({ planes, error, onVerConsumo }) {
     const activos = planes.filter(p => p.PlaActivo);
     const restanteActivo = activos.reduce((s, p) => s + Number(p.PlaCantidadRestante || 0), 0);
+    // Solo activos por defecto: los planes agotados/cerrados se ven apagando el switch
+    const [soloActivos, setSoloActivos] = useState(true);
+    const visibles = soloActivos ? activos : planes;
 
     return (
         <div className="space-y-2">
@@ -496,7 +927,16 @@ function SeccionPlanes({ planes, error, onVerConsumo }) {
                             <span className="text-base font-black tracking-tight text-emerald-400">{fmtNum(restanteActivo)}</span>
                         </div>
                         <span className="text-[11px] text-zinc-500">{activos.length} activo{activos.length !== 1 ? 's' : ''} de {planes.length}</span>
+                        <span className="ml-auto">
+                            <SwitchSolo checked={soloActivos} onChange={setSoloActivos} label="Solo activos"
+                                title="Prendido: solo los planes con saldo vigente. Apagado: también los agotados y cerrados." />
+                        </span>
                     </div>
+                    {visibles.length === 0 && (
+                        <p className="py-6 text-center text-zinc-500 text-sm">
+                            No hay planes activos. Apagá "Solo activos" para ver los anteriores.
+                        </p>
+                    )}
 
                     {/* Tabla (desktop) */}
                     <div className="hidden md:block overflow-x-auto">
@@ -515,7 +955,7 @@ function SeccionPlanes({ planes, error, onVerConsumo }) {
                                 </tr>
                             </thead>
                             <tbody>
-                                {planes.map(p => (
+                                {visibles.map(p => (
                                     <tr key={p.PlaIdPlan} className={`border-b border-zinc-800/60 last:border-0 hover:bg-zinc-800/20 ${p.PlaActivo ? '' : 'opacity-50'}`}>
                                         {/* Sin el nombre interno del plan ("Plan desde Venta Directa Caja"): al cliente solo le dice algo la fecha de alta */}
                                         <td className="px-4 py-3 align-top">
@@ -554,7 +994,7 @@ function SeccionPlanes({ planes, error, onVerConsumo }) {
 
                     {/* Tarjetas (celular) */}
                     <div className="md:hidden divide-y divide-zinc-800/60">
-                        {planes.map(p => (
+                        {visibles.map(p => (
                             <div key={p.PlaIdPlan} className={`p-4 space-y-3 ${p.PlaActivo ? '' : 'opacity-50'}`}>
                                 <div className="flex items-start justify-between gap-3">
                                     <div className="min-w-0">
@@ -609,6 +1049,10 @@ function SeccionPlanes({ planes, error, onVerConsumo }) {
 function SeccionTelas({ telas, error, onVerConsumo }) {
     const totalDisp = telas.reduce((s, t) => s + Number(t.MetrosDisponibles || 0), 0);
     const totalBultos = telas.reduce((s, t) => s + Number(t.CantidadBultos || 0), 0);
+    // Solo telas con saldo por defecto: las agotadas se ven apagando el switch
+    const [soloConSaldo, setSoloConSaldo] = useState(true);
+    const conSaldo = telas.filter(t => Number(t.MetrosDisponibles || 0) > 0.009);
+    const visibles = soloConSaldo ? conSaldo : telas;
 
     return (
         <div className="space-y-2">
@@ -625,7 +1069,16 @@ function SeccionTelas({ telas, error, onVerConsumo }) {
                             <span className="text-base font-black tracking-tight text-custom-cyan">{fmtNum(totalDisp)} m</span>
                         </div>
                         <span className="text-[11px] text-zinc-500">{totalBultos} bulto{totalBultos !== 1 ? 's' : ''} · {telas.length} tipo{telas.length !== 1 ? 's' : ''} de tela</span>
+                        <span className="ml-auto">
+                            <SwitchSolo checked={soloConSaldo} onChange={setSoloConSaldo} label="Solo con saldo"
+                                title="Prendido: solo las telas con metros disponibles. Apagado: también las agotadas." />
+                        </span>
                     </div>
+                    {visibles.length === 0 && (
+                        <p className="py-6 text-center text-zinc-500 text-sm">
+                            No hay telas con saldo. Apagá "Solo con saldo" para ver las agotadas.
+                        </p>
+                    )}
 
                     {/* Tabla (desktop) */}
                     <div className="hidden md:block overflow-x-auto">
@@ -645,7 +1098,7 @@ function SeccionTelas({ telas, error, onVerConsumo }) {
                                 </tr>
                             </thead>
                             <tbody>
-                                {telas.map((t, i) => (
+                                {visibles.map((t, i) => (
                                     <tr key={`${t.InsumoID}_${i}`} className="border-b border-zinc-800/60 last:border-0 hover:bg-zinc-800/20">
                                         <td className="px-4 py-3 align-top">
                                             <span className="font-bold text-zinc-100">{t.TipoTela || t.InsumoNombre}</span>
@@ -679,7 +1132,7 @@ function SeccionTelas({ telas, error, onVerConsumo }) {
 
                     {/* Tarjetas (celular) */}
                     <div className="md:hidden divide-y divide-zinc-800/60">
-                        {telas.map((t, i) => (
+                        {visibles.map((t, i) => (
                             <div key={`${t.InsumoID}_${i}`} className="p-4 space-y-3">
                                 <div className="min-w-0">
                                     <p className="font-bold text-zinc-100 text-sm truncate">{t.TipoTela || t.InsumoNombre}</p>
@@ -772,19 +1225,25 @@ export const RecursosView = () => {
                 <div className="flex items-center justify-center min-h-[400px]">
                     <Loader2 className="animate-spin text-custom-cyan" size={36} />
                 </div>
-            ) : sinNada ? (
-                <div className="text-center py-16 text-zinc-500">
-                    <Layers size={40} strokeWidth={1} className="mx-auto mb-3 text-zinc-600" />
-                    <p className="text-sm font-medium">Todavía no tenés recursos cargados.</p>
-                    <p className="text-xs mt-1">Cuando compres un plan de metros o dejes tela tuya en el depósito, los vas a ver acá.</p>
-                </div>
             ) : (
                 <>
-                    {(planes.length > 0 || errorPlanes) && (
-                        <SeccionPlanes planes={planes} error={errorPlanes} onVerConsumo={setPlanConsumo} />
-                    )}
-                    {(telas.length > 0 || errorTelas) && (
-                        <SeccionTelas telas={telas} error={errorTelas} onVerConsumo={setTelaConsumo} />
+                    {/* Billetera: cuentas de saldo del cliente (crear / recargar / movimientos) */}
+                    <SeccionCuentasSaldo />
+                    {sinNada ? (
+                        <div className="text-center py-16 text-zinc-500">
+                            <Layers size={40} strokeWidth={1} className="mx-auto mb-3 text-zinc-600" />
+                            <p className="text-sm font-medium">Todavía no tenés recursos cargados.</p>
+                            <p className="text-xs mt-1">Cuando compres un plan de metros o dejes tela tuya en el depósito, los vas a ver acá.</p>
+                        </div>
+                    ) : (
+                        <>
+                            {(planes.length > 0 || errorPlanes) && (
+                                <SeccionPlanes planes={planes} error={errorPlanes} onVerConsumo={setPlanConsumo} />
+                            )}
+                            {(telas.length > 0 || errorTelas) && (
+                                <SeccionTelas telas={telas} error={errorTelas} onVerConsumo={setTelaConsumo} />
+                            )}
+                        </>
                     )}
                 </>
             )}

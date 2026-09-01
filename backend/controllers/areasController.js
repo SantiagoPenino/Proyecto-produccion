@@ -1,5 +1,6 @@
 const { getPool, sql } = require('../config/db');
 const logger = require('../utils/logger');
+const { esAdminOServicioTecnico } = require('../middleware/authMiddleware');
 
 // =====================================================================
 // 1. OBTENER LISTA DE ÁREAS (Para el Sidebar)
@@ -112,9 +113,16 @@ exports.getAreaDetails = async (req, res) => {
 // 3. GESTIÓN DE EQUIPOS
 // =====================================================================
 exports.addPrinter = async (req, res) => {
-    const { areaId, nombre, capacidad, velocidad, estado, estadoProceso, separacionImpresion,
-        cabezales, velocidadValor, velocidadUnidad, minutosPreparacion } = req.body;
+    let { areaId, nombre, capacidad, velocidad, estado, estadoProceso, separacionImpresion,
+        cabezales, velocidadValor, velocidadUnidad, minutosPreparacion,
+        cabezalesReal, velocidadValorReal, minutosPreparacionReal } = req.body;
     if (!areaId || !nombre) return res.status(400).json({ error: "Faltan datos" });
+
+    // Capacidad "de fábrica" (ficha técnica): solo Admin o Servicio Técnico. Sin permiso,
+    // la máquina se crea sin esos datos — alguien con permiso los completa después.
+    if (!esAdminOServicioTecnico(req.user)) {
+        cabezales = undefined; velocidadValor = undefined; velocidadUnidad = undefined; minutosPreparacion = undefined;
+    }
 
     try {
         const pool = await getPool();
@@ -130,9 +138,15 @@ exports.addPrinter = async (req, res) => {
             .input('VelocidadValor', sql.Decimal(10, 2), velocidadValor === '' || velocidadValor === undefined ? null : velocidadValor)
             .input('VelocidadUnidad', sql.VarChar(30), velocidadUnidad || null)
             .input('MinutosPreparacion', sql.Int, minutosPreparacion === '' || minutosPreparacion === undefined ? null : minutosPreparacion)
+            // [PLANTA] Capacidad REAL medida en planta, distinta de la estándar de fábrica de
+            // arriba — ver project_capacidad_planta.md. NULL = todavía sin medir, el motor de
+            // capacidad cae al valor estándar (fallback exacto).
+            .input('CabezalesReal', sql.Int, cabezalesReal === '' || cabezalesReal === undefined ? null : cabezalesReal)
+            .input('VelocidadValorReal', sql.Decimal(18, 2), velocidadValorReal === '' || velocidadValorReal === undefined ? null : velocidadValorReal)
+            .input('MinutosPreparacionReal', sql.Int, minutosPreparacionReal === '' || minutosPreparacionReal === undefined ? null : minutosPreparacionReal)
             .query(`INSERT INTO dbo.ConfigEquipos
-                (AreaID, Nombre, Activo, Capacidad, Velocidad, Estado, EstadoProceso, SeparacionImpresion, Cabezales, VelocidadValor, VelocidadUnidad, MinutosPreparacion)
-                VALUES (@AreaID, @Nombre, 1, @Capacidad, @Velocidad, @Estado, @EstadoProceso, @SepImp, @Cabezales, @VelocidadValor, @VelocidadUnidad, @MinutosPreparacion)`);
+                (AreaID, Nombre, Activo, Capacidad, Velocidad, Estado, EstadoProceso, SeparacionImpresion, Cabezales, VelocidadValor, VelocidadUnidad, MinutosPreparacion, CabezalesReal, VelocidadValorReal, MinutosPreparacionReal)
+                VALUES (@AreaID, @Nombre, 1, @Capacidad, @Velocidad, @Estado, @EstadoProceso, @SepImp, @Cabezales, @VelocidadValor, @VelocidadUnidad, @MinutosPreparacion, @CabezalesReal, @VelocidadValorReal, @MinutosPreparacionReal)`);
         res.json({ success: true, message: 'Equipo agregado' });
     } catch (err) {
         logger.error("❌ ERROR CRÍTICO AL AGREGAR EQUIPO:");
@@ -344,11 +358,25 @@ exports.deletePrinter = async (req, res) => {
 // EDITAR EQUIPO EXISTENTE (Nombre, Capacidad, Velocidad, Estado, EstadoProceso, Activo)
 exports.updatePrinter = async (req, res) => {
     const { id } = req.params; // EquipoID
-    const { nombre, capacidad, velocidad, estado, estadoProceso, activo, separacionImpresion,
-        cabezales, velocidadValor, velocidadUnidad, minutosPreparacion } = req.body;
+    let { nombre, capacidad, velocidad, estado, estadoProceso, activo, separacionImpresion,
+        cabezales, velocidadValor, velocidadUnidad, minutosPreparacion,
+        cabezalesReal, velocidadValorReal, minutosPreparacionReal } = req.body;
 
     try {
         const pool = await getPool();
+
+        // Capacidad "de fábrica" (ficha técnica): solo Admin o Servicio Técnico. Sin permiso,
+        // se preserva el valor que ya tenía en vez de pisarlo con lo que venga en el body.
+        if (!esAdminOServicioTecnico(req.user)) {
+            const actual = await pool.request().input('ID', sql.Int, id)
+                .query('SELECT Cabezales, VelocidadValor, VelocidadUnidad, MinutosPreparacion FROM dbo.ConfigEquipos WHERE EquipoID = @ID');
+            const row = actual.recordset[0] || {};
+            cabezales = row.Cabezales;
+            velocidadValor = row.VelocidadValor;
+            velocidadUnidad = row.VelocidadUnidad;
+            minutosPreparacion = row.MinutosPreparacion;
+        }
+
         const request = pool.request()
             .input('ID', sql.Int, id)
             .input('Nombre', sql.NVarChar(100), nombre)
@@ -360,7 +388,11 @@ exports.updatePrinter = async (req, res) => {
             .input('Cabezales', sql.Int, cabezales === '' || cabezales === undefined ? null : cabezales)
             .input('VelocidadValor', sql.Decimal(10, 2), velocidadValor === '' || velocidadValor === undefined ? null : velocidadValor)
             .input('VelocidadUnidad', sql.VarChar(30), velocidadUnidad === undefined ? null : (velocidadUnidad || null))
-            .input('MinutosPreparacion', sql.Int, minutosPreparacion === '' || minutosPreparacion === undefined ? null : minutosPreparacion);
+            .input('MinutosPreparacion', sql.Int, minutosPreparacion === '' || minutosPreparacion === undefined ? null : minutosPreparacion)
+            // [PLANTA] Capacidad REAL medida en planta — ver project_capacidad_planta.md.
+            .input('CabezalesReal', sql.Int, cabezalesReal === '' || cabezalesReal === undefined ? null : cabezalesReal)
+            .input('VelocidadValorReal', sql.Decimal(18, 2), velocidadValorReal === '' || velocidadValorReal === undefined ? null : velocidadValorReal)
+            .input('MinutosPreparacionReal', sql.Int, minutosPreparacionReal === '' || minutosPreparacionReal === undefined ? null : minutosPreparacionReal);
 
         // Solo actualizar Activo si viene en el body explicitly (puede ser boolean o bit)
         let query = `
@@ -372,7 +404,10 @@ exports.updatePrinter = async (req, res) => {
                 Cabezales = @Cabezales,
                 VelocidadValor = @VelocidadValor,
                 VelocidadUnidad = @VelocidadUnidad,
-                MinutosPreparacion = @MinutosPreparacion
+                MinutosPreparacion = @MinutosPreparacion,
+                CabezalesReal = @CabezalesReal,
+                VelocidadValorReal = @VelocidadValorReal,
+                MinutosPreparacionReal = @MinutosPreparacionReal
         `;
 
         if (activo !== undefined) {

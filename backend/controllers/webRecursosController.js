@@ -115,9 +115,9 @@ exports.getMovimientosMiRecurso = async (req, res) => {
       return res.status(403).json({ success: false, error: 'Esa cuenta no pertenece a tu usuario.' });
 
     const top = parseInt(req.query.top, 10) || 500;
-    const { data, saldoArrastre } = await svc.getMovimientos(cueId, null, null, top);
+    const { data, saldoArrastre, totalMovimientos, recortado } = await svc.getMovimientos(cueId, null, null, top);
 
-    res.json({ success: true, data, saldoArrastre });
+    res.json({ success: true, data, saldoArrastre, totalMovimientos, recortado });
   } catch (err) {
     logger.error('[WEB-RECURSOS] getMovimientosMiRecurso:', err.message);
     res.status(500).json({ success: false, error: err.message });

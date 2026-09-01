@@ -22,7 +22,7 @@ import React, { useState, useCallback, useEffect, useMemo } from 'react';
 import {
   Search, RefreshCw, Users, CreditCard, DollarSign, FileText, Wallet,
   ShoppingCart, Tag, FilePlus, MoreHorizontal, Download, Printer,
-  ArrowLeft, Zap, CheckCircle2, Calendar, TrendingDown, PlusCircle, X, Layers, Ban, Scale,
+  ArrowLeft, Zap, CheckCircle2, Calendar, TrendingDown, PlusCircle, X, Layers, Ban, Scale, ChevronDown,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { useLocation, useNavigate } from 'react-router-dom';
@@ -31,11 +31,12 @@ import api from '../../services/api';
 import { generarPdfEstadoCuenta, generarPdfEstadoCuentaResumen } from '../../utils/pdfGenerator';
 import { exportarExcelEstadoCuenta } from '../../utils/excelGenerator';
 import ClienteBilletera from '../common/ClienteBilletera';
-import { fechaOrden, fmtFechaHora } from '../../utils/fechas';
+import { fechaOrden, fmtFechaHora, hoyInput, aInputLocal } from '../../utils/fechas';
+import { codigoCuenta } from '../../utils/cuentaCodigo';
 // Reuso directo de las piezas ya construidas y probadas de la vista de cuentas.
 import {
   fetchAPI, fmt, FilaCliente, MovimientosPanel, PlanesPanel, ModalSaldoInicial,
-  ModalConsumirRecurso,
+  ModalConsumirRecurso, ModalNuevaCuenta, ModalTransferirCuentas, ModalConfigCuenta, ModalConsumirSaldo, LibroCuentaDinero, ModalVentaSaldo, ModalCuentasCliente,
 } from './ContabilidadCuentasView';
 // Fase 2: cobro y saldos — se montan tal cual (mismos componentes que Caja).
 import CajaPagoDeudaTab from './CajaPagoDeudaTab';
@@ -72,9 +73,9 @@ const ModalAjusteSaldo = ({ cuentas, cuentaDefaultId, clienteNombre, onClose, on
   const [signo, setSigno]   = useState('favor'); // 'favor' (AJUSTE_POS) | 'contra' (AJUSTE_NEG)
   const [monto, setMonto]   = useState('');
   const [motivo, setMotivo] = useState('');
-  const [fecha, setFecha]   = useState(() => new Date().toISOString().split('T')[0]);
+  const [fecha, setFecha]   = useState(() => hoyInput()); // fecha LOCAL, no UTC
   const [saving, setSaving] = useState(false);
-  const hoy = new Date().toISOString().split('T')[0];
+  const hoy = hoyInput();
 
   const cuenta = cuentas.find(c => String(c.CueIdCuenta) === cueId);
   const simbolo = cuenta?.MonSimbolo || (cuenta?.CueTipo === 'DINERO_USD' ? 'US$' : '$');
@@ -260,7 +261,7 @@ const EstadoChip = ({ estado }) => (
   </span>
 );
 
-function ResumenDocumentosPanel({ CliIdCliente, desde, hasta, trigger, incluirAnulados, onIncluirAnulados, saldosPorMoneda, recursoCuentas = [], cuentas = [], cliente, recargarCuentas, onResumen }) {
+function ResumenDocumentosPanel({ CliIdCliente, desde, hasta, trigger, incluirAnulados, onIncluirAnulados, saldosPorMoneda, recursoCuentas = [], cuentas = [], cliente, recargarCuentas, onResumen, cuentaFocus = null }) {
   const [docs, setDocs]       = useState([]);
   const [pagos, setPagos]     = useState([]);
   // Pendiente REAL por moneda (foto de hoy, ignora el período): { 'US$': {total, fueraPeriodo}, ... }
@@ -275,6 +276,22 @@ function ResumenDocumentosPanel({ CliIdCliente, desde, hasta, trigger, incluirAn
   const [vista, setVista]     = useState('ESTADO'); // 'ESTADO' | 'DOCS' | 'PAGOS' | 'ORDENES'
   const [fTipoEC, setFTipoEC] = useState('TODOS');  // filtro de tipo en Estado de Cuenta
   const [fMonEC, setFMonEC]   = useState('TODAS');  // filtro de moneda en Estado de Cuenta (símbolo $ / US$)
+  // Billetera: filtro por CUENTA (principal / secundaria / restringida). 'TODAS' = como siempre.
+  const [fCuentaEC, setFCuentaEC] = useState('TODAS');
+  // Selector "Ver": recurso en metros elegido (CueIdCuenta) → muestra su libro en vez del estado de cuenta
+  const [recursoEC, setRecursoEC] = useState(null);
+  const [verOpen, setVerOpen]     = useState(false); // desplegable del selector "Ver"
+
+  // Atajo desde el header (ClienteBilletera): clic en una cuenta/recurso del
+  // desplegable de arriba lo abre acá abajo, en el mismo selector "Ver".
+  useEffect(() => {
+    if (!cuentaFocus?.id) return;
+    setVista('ESTADO');
+    if (cuentaFocus.tipo === 'R') { setRecursoEC(Number(cuentaFocus.id)); setFCuentaEC('TODAS'); }
+    else { setFCuentaEC(String(cuentaFocus.id)); setRecursoEC(null); setFMonEC('TODAS'); }
+  }, [cuentaFocus]);
+  const [saldoArrastreCta, setSaldoArrastreCta] = useState({}); // arrastre por CueIdCuenta (del backend)
+  const [cfgCuenta, setCfgCuenta] = useState(null);               // ⚙ cuenta secundaria a configurar
   const [fConceptoEC, setFConceptoEC] = useState(''); // búsqueda por concepto en Estado de Cuenta
   const [ordenesMov, setOrdenesMov]   = useState([]);
   const [loadingOrd, setLoadingOrd]   = useState(false);
@@ -287,6 +304,16 @@ function ResumenDocumentosPanel({ CliIdCliente, desde, hasta, trigger, incluirAn
   const [fSit, setFSit]     = useState('TODAS');   // TODAS | PAGADO | PENDIENTE | SIN_FACTURAR | ANULADO
   // Acciones sobre órdenes pendientes de facturar (reuso de ContabilidadCuentasView)
   const [modalConsumir, setModalConsumir] = useState(null); // orden a consumir desde recurso
+  const [modalSaldo, setModalSaldo]       = useState(null); // billetera: orden a pagar con saldo de una cuenta
+  const pagadaConSaldo = (o) => /^CUBIERTO_CUENTA_\d+.*Ref#\d+/.test(o.MovObservaciones || '');
+  const devolverSaldo = async (o) => {
+    if (!window.confirm(`Devolver el pago con saldo de ${o.orden || 'esta orden'}:\n\n• La plata vuelve a la cuenta que la pagó.\n• La orden vuelve a "pendiente de facturar".\n\n¿Confirmás?`)) return;
+    try {
+      const r = await fetchAPI(`/api/contabilidad/movimientos/${o.MovIdMovimiento}/devolver-consumo-saldo`, { method: 'POST', body: JSON.stringify({}) });
+      toast.success(r.message || 'Pago con saldo devuelto');
+      setOrdRefresh(v => v + 1); recargarCuentas?.();
+    } catch (e) { toast.error(e.message); }
+  };
   const [modalCancelar, setModalCancelar] = useState(null); // orden a cancelar/anular
   const [cancelWorking, setCancelWorking] = useState(false);
   const [ordRefresh, setOrdRefresh]       = useState(0);    // bump para recargar órdenes tras una acción
@@ -316,6 +343,9 @@ function ResumenDocumentosPanel({ CliIdCliente, desde, hasta, trigger, incluirAn
     rc => rc.ProIdProducto != null && rc.ProIdProducto === o.ProIdProducto && Number(rc.CueSaldoActual || 0) > 0.01
   );
 
+  // Firma de saldos de las cuentas: cambia cuando cualquier saldo cambia (ver deps del effect)
+  const cuentasKey = useMemo(() => (cuentas || []).map(c => `${c.CueIdCuenta}:${Number(c.CueSaldoActual || 0).toFixed(2)}`).join('|'), [cuentas]);
+
   useEffect(() => {
     let alive = true;
     setLoading(true); setError(null);
@@ -323,11 +353,14 @@ function ResumenDocumentosPanel({ CliIdCliente, desde, hasta, trigger, incluirAn
     if (desde) p.append('desde', desde);
     if (hasta) p.append('hasta', hasta);
     fetchAPI(`/api/contabilidad/clientes/${CliIdCliente}/resumen-documentos?${p}`)
-      .then(r => { if (alive) { setDocs(r.data?.documentos || []); setPagos(r.data?.pagos || []); setPendReal(r.data?.pendientePorMoneda || null); setSaldoArrastre(r.data?.saldoArrastrePorMoneda || {}); } })
+      .then(r => { if (alive) { setDocs(r.data?.documentos || []); setPagos(r.data?.pagos || []); setPendReal(r.data?.pendientePorMoneda || null); setSaldoArrastre(r.data?.saldoArrastrePorMoneda || {}); setSaldoArrastreCta(r.data?.saldoArrastrePorCuenta || {}); } })
       .catch(e => { if (alive) { setError(e.message); setDocs([]); setPagos([]); setPendReal(null); setSaldoArrastre({}); } })
       .finally(() => { if (alive) setLoading(false); });
     return () => { alive = false; };
-  }, [CliIdCliente, desde, hasta, trigger]);
+    // cuentasKey: cualquier acción que mueva un saldo (anticipo, transferencia, pago con
+    // saldo, consumo…) recarga `cuentas` en el 360 → acá vuelve a pedir el estado de cuenta.
+    // Antes la lista quedaba congelada hasta tocar "Aplicar" o recargar la página.
+  }, [CliIdCliente, desde, hasta, trigger, cuentasKey]);
 
   // Movimientos de órdenes — se cargan al abrir la pestaña Órdenes (y al cambiar período/anulados)
   useEffect(() => {
@@ -393,11 +426,24 @@ function ResumenDocumentosPanel({ CliIdCliente, desde, hasta, trigger, incluirAn
   // filas de Pagos son el MISMO dinero (verificado), así que el doc va SOLO como cargo y
   // el pago SOLO como abono, nunca los dos, o se contaría el cobro dos veces.
   const prefijoDoc = (d) => (d.documento || '').split('-')[0].toUpperCase() || 'OTRO';
+  // Billetera: cuentas de DINERO del cliente (para el filtro por cuenta) y la principal
+  // de cada moneda — los documentos (facturas/recibos) viven siempre en la principal.
+  const cuentasDineroEC = useMemo(() => (cuentas || [])
+    .filter(c => String(c.CueTipo || '').startsWith('DINERO'))
+    .sort((a, b) => Number(b.CueEsPrincipal || 0) - Number(a.CueEsPrincipal || 0) || a.CueIdCuenta - b.CueIdCuenta), [cuentas]);
+  const principalPorMoneda = useMemo(() => {
+    const m = {};
+    cuentasDineroEC.forEach(c => { if (c.CueEsPrincipal) m[c.CueTipo === 'DINERO_USD' ? 'US$' : '$'] = c.CueIdCuenta; });
+    return m;
+  }, [cuentasDineroEC]);
+  const nombreCuentaEC = (c) => (c.CueNombre || (c.CueEsPrincipal ? `Principal ${c.CueTipo === 'DINERO_USD' ? 'US$' : '$'}` : `Cuenta #${c.CueIdCuenta}`));
+
   const movimientos = useMemo(() => {
     const docsEC = docs.filter(d => incluirAnulados || d.estado !== 'ANULADO');
     const filas = [
       ...docsEC.map(d => ({
         clase: 'DOC', key: 'D' + d.DocIdDocumento, fecha: d.fecha, moneda: d.MonSimbolo,
+        cueId: principalPorMoneda[d.MonSimbolo] ?? null,
         tipoKey: prefijoDoc(d), tipoLabel: d.tipo, etiqueta: d.documento,
         descripcion: d.descripcion, factura: d.factura, cfeEstado: d.cfeEstado,
         cfeNumeroOficial: d.cfeNumeroOficial || null,
@@ -405,6 +451,7 @@ function ResumenDocumentosPanel({ CliIdCliente, desde, hasta, trigger, incluirAn
       })),
       ...pagos.map((p, i) => ({
         clase: 'PAGO', key: 'P' + i, fecha: p.fecha, moneda: p.MonSimbolo,
+        cueId: p.cueIdCuenta ?? null, cueNombre: p.cueNombre || null, cueEsPrincipal: !!p.cueEsPrincipal,
         tipoKey: 'PAGO', tipoLabel: p.tipo, etiqueta: p.aplicadoA || null, concepto: p.concepto || null,
         cfeEstado: p.cfeEstado || null, cfeNumeroOficial: p.cfeNumeroOficial || null,
         esFavor: !!p.esFavor, esConsumo: !!p.esConsumo, medioPago: p.medioPago, cheques: p.cheques, recibo: p.recibo,
@@ -421,6 +468,8 @@ function ResumenDocumentosPanel({ CliIdCliente, desde, hasta, trigger, incluirAn
     let filtradas = filas;
     if (fTipoEC !== 'TODOS') filtradas = filtradas.filter(f => f.tipoKey === fTipoEC);
     if (fMonEC !== 'TODAS')  filtradas = filtradas.filter(f => f.moneda === fMonEC);
+    // Billetera: una sola cuenta → solo SUS movimientos (los documentos cuentan como de la principal)
+    if (fCuentaEC !== 'TODAS') filtradas = filtradas.filter(f => f.cueId === Number(fCuentaEC));
     // Búsqueda por concepto: matchea documento, tipo, e-Ticket, descripción, medio de
     // pago o el recibo del cobro (ej. "RC-90") — así se encuentra un pago puntual sin
     // saber a qué factura se aplicó.
@@ -443,7 +492,16 @@ function ResumenDocumentosPanel({ CliIdCliente, desde, hasta, trigger, incluirAn
     });
     // Arranca del saldo REAL al inicio del período (no de 0): si el período recorta
     // una factura vieja cuyo pago sí entra, el corrido antes daba "a favor" falso.
-    const acums = { ...saldoArrastre };
+    // Billetera: con una cuenta elegida, el corrido arranca del arrastre de ESA cuenta
+    // (no del de toda la moneda, que mezclaría principal + secundarias).
+    let acums;
+    if (fCuentaEC !== 'TODAS') {
+      const cta = cuentasDineroEC.find(c => c.CueIdCuenta === Number(fCuentaEC));
+      const sim = cta ? (cta.CueTipo === 'DINERO_USD' ? 'US$' : '$') : null;
+      acums = sim ? { [sim]: Number(saldoArrastreCta[fCuentaEC] || 0) } : {};
+    } else {
+      acums = { ...saldoArrastre };
+    }
     for (const m of filtradas) {
       if (m.estado !== 'ANULADO') acums[m.moneda] = (acums[m.moneda] || 0) + m.cargo - m.abono;
       m.saldo = acums[m.moneda] || 0;
@@ -451,11 +509,24 @@ function ResumenDocumentosPanel({ CliIdCliente, desde, hasta, trigger, incluirAn
     // Display: más reciente arriba.
     filtradas.reverse();
     return filtradas;
-  }, [docs, pagos, incluirAnulados, fTipoEC, fMonEC, fConceptoEC, saldoArrastre]);
+  }, [docs, pagos, incluirAnulados, fTipoEC, fMonEC, fConceptoEC, fCuentaEC, saldoArrastre, saldoArrastreCta, principalPorMoneda, cuentasDineroEC]);
   // El saldo corriente solo es legible con TODOS los movimientos: un subconjunto (por tipo
   // o por búsqueda de concepto) daría un acumulado parcial sin sentido. La moneda no lo
   // afecta: el saldo es por moneda.
   const mostrarSaldo = fTipoEC === 'TODOS' && !fConceptoEC.trim();
+  // Billetera: si la cuenta elegida es secundaria (no principal), se muestra su LIBRO en vez de la tabla de documentos
+  const cuentaLibro = useMemo(() => {
+    if (fCuentaEC === 'TODAS') return null;
+    const c = cuentasDineroEC.find(x => x.CueIdCuenta === Number(fCuentaEC));
+    return c && !c.CueEsPrincipal ? c : null;
+  }, [fCuentaEC, cuentasDineroEC]);
+  // Arrastre a mostrar: el de la cuenta elegida (en su moneda) o el de todas las monedas
+  const arrastreVisible = useMemo(() => {
+    if (fCuentaEC === 'TODAS') return saldoArrastre || {};
+    const cta = cuentasDineroEC.find(c => c.CueIdCuenta === Number(fCuentaEC));
+    if (!cta) return {};
+    return { [cta.CueTipo === 'DINERO_USD' ? 'US$' : '$']: Number(saldoArrastreCta[fCuentaEC] || 0) };
+  }, [fCuentaEC, saldoArrastre, saldoArrastreCta, cuentasDineroEC]);
 
   // Opciones del filtro de tipo (las que existen en los datos, ambas monedas, + Pagos)
   const tiposDisponibles = useMemo(() => {
@@ -508,7 +579,9 @@ function ResumenDocumentosPanel({ CliIdCliente, desde, hasta, trigger, incluirAn
   // Órdenes filtradas (pestaña Órdenes) — filtros por orden, documento, facturación, moneda y situación de pago
   const ordenesFiltradas = ordenesMov.filter(o => {
     if (fFact === 'FACT' && !o.facturada) return false;
-    if (fFact === 'SINFACT' && o.facturada) return false;
+    // "Sin facturar" = de verdad pendiente: las cubiertas (billetera/recurso) tienen su filtro propio
+    if (fFact === 'SINFACT' && (o.facturada || estaCubierta(o))) return false;
+    if (fFact === 'CUBIERTA' && !estaCubierta(o)) return false;
     if (fMon !== 'TODAS' && o.MonSimbolo !== fMon) return false;
     if (fSit !== 'TODAS' && o.situacion !== fSit) return false;
     if (fOrden.trim() && !`${o.orden} ${o.trabajo || ''}`.toLowerCase().includes(fOrden.trim().toLowerCase())) return false;
@@ -533,6 +606,15 @@ function ResumenDocumentosPanel({ CliIdCliente, desde, hasta, trigger, incluirAn
     <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
       {/* Los saldos (pendiente / a favor) se muestran arriba en la barra de filtros (elevados vía onResumen) */}
 
+      {/* Billetera: ⚙ configurar cuenta secundaria (nombre, descuento automático, negativo, artículos) */}
+      {cfgCuenta && (
+        <ModalConfigCuenta
+          cuenta={cfgCuenta}
+          onClose={() => setCfgCuenta(null)}
+          onSuccess={() => { setCfgCuenta(null); recargarCuentas?.(); }}
+        />
+      )}
+
       {/* Sub-pestañas: Estado de cuenta / Órdenes / Recursos */}
       <div className="px-4 pt-3 flex items-center gap-4 border-b border-slate-100">
         {[['ESTADO', 'Estado de cuenta', movimientos.length], ['ORDENES', 'Órdenes', ordCargadas ? ordenesFiltradas.length : null], ['RECURSOS', 'Recursos', recursoCuentas.length || null]].map(([key, label, count]) => (
@@ -550,7 +632,78 @@ function ResumenDocumentosPanel({ CliIdCliente, desde, hasta, trigger, incluirAn
           {/* Filtros propios del estado de cuenta: moneda + tipo. Muestra AMBAS monedas
               juntas (no depende del toggle UYU/USD de arriba). */}
           <div className="px-4 py-3 flex flex-wrap items-center gap-2 border-b border-slate-100">
-            {monedasPresentes.length > 1 && (
+            {/* Selector "Ver": un solo desplegable agrupado para cuentas de plata Y recursos
+                en metros — reemplaza a la fila de chips por cuenta (se apilaba con muchas). */}
+            {(cuentasDineroEC.length > 1 || recursoCuentas.length > 0) && (() => {
+              const ctaSel = fCuentaEC !== 'TODAS' ? cuentasDineroEC.find(c => c.CueIdCuenta === Number(fCuentaEC)) : null;
+              const recSel = recursoEC != null ? recursoCuentas.find(r => r.CueIdCuenta === recursoEC) : null;
+              const labelSel = recSel
+                ? `${codigoCuenta(recSel)} · ${recSel.NombreArticulo || recSel.CueNombre || `Recurso #${recSel.CueIdCuenta}`} · ${Number(recSel.CueSaldoActual || 0).toLocaleString('es-UY', { minimumFractionDigits: 2 })} ${recSel.MonSimbolo || 'mts'}`
+                : ctaSel
+                  ? `${codigoCuenta(ctaSel)} · ${nombreCuentaEC(ctaSel)}${ctaSel.CueRestringida ? ' 🔒' : ''}${!ctaSel.CueEsPrincipal && ctaSel.CueAutoConsumo ? ' ⚡' : ''} · ${ctaSel.CueTipo === 'DINERO_USD' ? 'US$' : '$'} ${Number(ctaSel.CueSaldoActual || 0).toLocaleString('es-UY', { minimumFractionDigits: 2 })}`
+                  : 'Todo el cliente';
+              const elegirTodo = () => { setFCuentaEC('TODAS'); setRecursoEC(null); setVerOpen(false); };
+              const elegirCta  = (c) => { setFCuentaEC(String(c.CueIdCuenta)); setRecursoEC(null); setFMonEC('TODAS'); setVerOpen(false); };
+              const elegirRec  = (r) => { setRecursoEC(r.CueIdCuenta); setFCuentaEC('TODAS'); setVerOpen(false); };
+              const filaSel = (activo) => `w-full flex items-center justify-between gap-3 px-3 py-1.5 text-left text-[11px] font-bold transition-colors ${activo ? 'bg-violet-600 text-white' : 'text-slate-600 hover:bg-violet-50'}`;
+              return (
+                <div className="relative">
+                  <span className="text-[10px] font-black uppercase tracking-wider text-slate-400 mr-2">Ver</span>
+                  <button type="button" onClick={() => setVerOpen(v => !v)}
+                    title="Elegí qué mirar: todo el cliente, una cuenta de plata (su libro) o un recurso en metros (su libro)"
+                    className="inline-flex items-center gap-1.5 text-[11px] font-bold px-3 py-1.5 rounded-full border border-violet-300 bg-white text-violet-700 hover:border-violet-500 transition-colors">
+                    <Wallet size={12} /> {labelSel} <ChevronDown size={12} className={`transition-transform ${verOpen ? 'rotate-180' : ''}`} />
+                  </button>
+                  {verOpen && (
+                    <>
+                      <div className="fixed inset-0 z-30" onClick={() => setVerOpen(false)} />
+                      <div className="absolute left-0 top-full mt-1.5 z-40 w-80 bg-white border border-slate-200 rounded-xl shadow-xl overflow-hidden py-1">
+                        <button type="button" onClick={elegirTodo} className={filaSel(!ctaSel && !recSel)}>
+                          <span>Todo el cliente</span>
+                          <span className={`text-[10px] font-semibold ${!ctaSel && !recSel ? 'text-white/70' : 'text-slate-400'}`}>estado de cuenta combinado</span>
+                        </button>
+                        {cuentasDineroEC.length > 0 && (
+                          <div className="px-3 pt-2 pb-0.5 text-[9px] font-black uppercase tracking-widest text-slate-400 border-t border-slate-100 mt-1">Billetera</div>
+                        )}
+                        {cuentasDineroEC.map(c => (
+                          <div key={c.CueIdCuenta} className="flex items-stretch">
+                            <button type="button" onClick={() => elegirCta(c)}
+                              title={c.CueEsPrincipal ? 'Cuenta principal: facturas, cobros y cruces automáticos'
+                                : `${c.CueRestringida ? 'Restringida a sus artículos' : 'Cuenta libre'} · descuento automático ${c.CueAutoConsumo ? 'ON' : 'OFF'} · negativo ${c.CuePuedeNegativo ? 'ON' : 'OFF'} — abre su libro`}
+                              className={filaSel(fCuentaEC === String(c.CueIdCuenta))}>
+                              <span className="truncate"><span className="font-mono text-[9px] opacity-70 mr-1.5">{codigoCuenta(c)}</span>{nombreCuentaEC(c)}{c.CueRestringida ? ' 🔒' : ''}{!c.CueEsPrincipal && c.CueAutoConsumo ? ' ⚡' : ''}</span>
+                              <span className="font-mono font-black tabular-nums shrink-0">
+                                {c.CueTipo === 'DINERO_USD' ? 'US$' : '$'} {Number(c.CueSaldoActual || 0).toLocaleString('es-UY', { minimumFractionDigits: 2 })}
+                              </span>
+                            </button>
+                            {!c.CueEsPrincipal && (
+                              <button type="button" onClick={() => { setCfgCuenta(c); setVerOpen(false); }}
+                                title="Configurar esta cuenta (nombre, descuento automático, negativo, artículos)"
+                                className="px-2 text-[11px] text-slate-400 hover:text-violet-700 hover:bg-violet-50">⚙</button>
+                            )}
+                          </div>
+                        ))}
+                        {recursoCuentas.length > 0 && (
+                          <div className="px-3 pt-2 pb-0.5 text-[9px] font-black uppercase tracking-widest text-slate-400 border-t border-slate-100 mt-1">Recursos en metros</div>
+                        )}
+                        {recursoCuentas.map(r => (
+                          <button key={r.CueIdCuenta} type="button" onClick={() => elegirRec(r)}
+                            title="Ver el libro de este recurso (compras, consumos y saldo en metros)"
+                            className={filaSel(recursoEC === r.CueIdCuenta)}>
+                            <span className="truncate"><span className="font-mono text-[9px] opacity-70 mr-1.5">{codigoCuenta(r)}</span>{r.NombreArticulo || r.CueNombre || `Recurso #${r.CueIdCuenta}`}</span>
+                            <span className={`font-mono font-black tabular-nums shrink-0 ${Number(r.CueSaldoActual || 0) < 0 ? 'text-rose-500' : ''}`}>
+                              {Number(r.CueSaldoActual || 0).toLocaleString('es-UY', { minimumFractionDigits: 2 })} {r.MonSimbolo || 'mts'}
+                            </span>
+                          </button>
+                        ))}
+                      </div>
+                    </>
+                  )}
+                </div>
+              );
+            })()}
+            {(cuentasDineroEC.length > 1 || recursoCuentas.length > 0) && <span className="w-px h-4 bg-slate-200 mx-1" />}
+            {recursoEC == null && monedasPresentes.length > 1 && (
               <>
                 <span className="text-[10px] font-black uppercase tracking-wider text-slate-400 mr-1">Moneda</span>
                 {[{ key: 'TODAS', label: 'Todas' }, ...monedasPresentes.map(s => ({ key: s, label: s }))].map(t => (
@@ -562,6 +715,7 @@ function ResumenDocumentosPanel({ CliIdCliente, desde, hasta, trigger, incluirAn
                 <span className="w-px h-4 bg-slate-200 mx-1" />
               </>
             )}
+            {recursoEC == null && <>
             <span className="text-[10px] font-black uppercase tracking-wider text-slate-400 mr-1">Tipo</span>
             {[{ key: 'TODOS', label: 'Todos' }, ...tiposDisponibles].map(t => (
               <button key={t.key} type="button" onClick={() => setFTipoEC(t.key)}
@@ -598,19 +752,32 @@ function ResumenDocumentosPanel({ CliIdCliente, desde, hasta, trigger, incluirAn
               )}
             </div>
             <span className="text-[11px] font-semibold text-slate-400">{movimientos.length} movimiento{movimientos.length !== 1 ? 's' : ''}</span>
+            </>}
           </div>
-          {mostrarSaldo && desde && Object.values(saldoArrastre).some(v => Math.abs(v) > 0.01) && (
+          {recursoEC == null && mostrarSaldo && desde && Object.values(arrastreVisible).some(v => Math.abs(v) > 0.01) && (
             <div className="px-4 pb-2 -mt-1">
               <span className="text-[10px] text-amber-600 font-semibold">
-                Incluye el saldo real acumulado antes de {fmtFechaCorta(desde)}:{' '}
-                {Object.entries(saldoArrastre).filter(([, v]) => Math.abs(v) > 0.01)
+                Incluye el saldo real acumulado{fCuentaEC !== 'TODAS' ? ' de esta cuenta' : ''} antes de {fmtFechaCorta(desde)}:{' '}
+                {Object.entries(arrastreVisible).filter(([, v]) => Math.abs(v) > 0.01)
                   .map(([mon, v]) => `${mon} ${v > 0 ? '' : '-'}${fmtMoney(Math.abs(v))}${v > 0 ? ' (debía)' : ' (a favor)'}`)
                   .join(' · ')}.
               </span>
             </div>
           )}
 
-          {movimientos.length === 0 ? (
+          {/* Selector "Ver" → recurso en metros elegido: su libro (mismo panel que la pestaña Recursos) */}
+          {recursoEC != null && recursoCuentas.find(r => r.CueIdCuenta === recursoEC) ? (
+            <div className="p-4">
+              <PlanesPanel cuenta={recursoCuentas.find(r => r.CueIdCuenta === recursoEC)} CliIdCliente={CliIdCliente}
+                cliente={cliente} desde={desde} hasta={hasta} onClose={() => {}} onChanged={recargarCuentas} />
+            </div>
+          ) :
+          /* Billetera: cuenta secundaria elegida → libro propio (como el del rollo) con editar/revertir/eliminar */
+          cuentaLibro ? (
+            <div className="px-4 pb-4">
+              <LibroCuentaDinero cuenta={cuentaLibro} cliente={cliente} desde={desde} hasta={hasta} onChanged={recargarCuentas} />
+            </div>
+          ) : movimientos.length === 0 ? (
             <p className="text-center text-slate-400 text-sm py-10">Sin movimientos para el período.</p>
           ) : (
             <div className="overflow-x-auto">
@@ -756,6 +923,7 @@ function ResumenDocumentosPanel({ CliIdCliente, desde, hasta, trigger, incluirAn
               <option value="TODAS">Facturación: todas</option>
               <option value="FACT">Facturadas</option>
               <option value="SINFACT">Sin facturar</option>
+              <option value="CUBIERTA">Cubiertas (billetera / recurso)</option>
             </select>
             <select value={fMon} onChange={e => setFMon(e.target.value)} className="bg-slate-50 border border-slate-200 rounded-lg px-2 py-1.5 text-xs font-bold text-slate-700 outline-none">
               <option value="TODAS">Moneda: todas</option>
@@ -808,9 +976,30 @@ function ResumenDocumentosPanel({ CliIdCliente, desde, hasta, trigger, incluirAn
                           : <span className="text-slate-300">—</span>}
                       </td>
                       <td className="px-4 py-3 text-center align-top">
-                        <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold border ${o.facturada ? 'bg-cyan-50 text-cyan-700 border-cyan-200' : 'bg-amber-50 text-amber-700 border-amber-200'}`}>
-                          {o.facturada ? 'Facturada' : 'Sin facturar'}
-                        </span>
+                        {(() => {
+                          // Una orden cubierta NO es "sin facturar": ya está paga y a propósito
+                          // no lleva factura propia (billetera: la factura existió al cargar el
+                          // saldo; recurso: el plan se facturó al comprarse los metros).
+                          const obs = o.MovObservaciones || '';
+                          if (o.facturada) return (
+                            <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold border bg-cyan-50 text-cyan-700 border-cyan-200">Facturada</span>
+                          );
+                          if (obs.startsWith('CUBIERTO_CUENTA_')) return (
+                            <span title="Pagada con el saldo prepago de la billetera: no lleva factura propia (esa plata ya se facturó al cargarla). Se revierte con «Devolver saldo»."
+                              className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold border bg-emerald-50 text-emerald-700 border-emerald-200">🔋 Cubierta · billetera</span>
+                          );
+                          if (obs.startsWith('MATERIAL_CUBIERTO')) return (
+                            <span title="El material salió del recurso del cliente (plan de metros); los servicios de la orden se facturan aparte."
+                              className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold border bg-violet-50 text-violet-700 border-violet-200">Material por recurso</span>
+                          );
+                          if (obs.startsWith('CUBIERTO')) return (
+                            <span title="Cubierta por un recurso del cliente (plan de metros): no entra en la facturación."
+                              className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold border bg-violet-50 text-violet-700 border-violet-200">Cubierta · recurso</span>
+                          );
+                          return (
+                            <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold border bg-amber-50 text-amber-700 border-amber-200">Sin facturar</span>
+                          );
+                        })()}
                       </td>
                       <td className="px-4 py-3 text-center align-top text-slate-500 font-bold">{o.MonSimbolo}</td>
                       <td className="px-4 py-3 text-right tabular-nums font-bold text-slate-800 align-top">{o.MonSimbolo} {fmtMoney(o.importe)}</td>
@@ -820,10 +1009,24 @@ function ResumenDocumentosPanel({ CliIdCliente, desde, hasta, trigger, incluirAn
                       <td className="px-4 py-3 text-center align-top whitespace-nowrap">
                         {o.situacion === 'SIN_FACTURAR' ? (
                           <div className="flex items-center justify-center gap-1.5">
-                            {!estaCubierta(o) && tieneRecurso(o) && (
-                              <button onClick={() => setModalConsumir(o)} title="Consumir desde recurso (plan de metros)"
-                                className="inline-flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-bold text-violet-700 bg-violet-50 hover:bg-violet-100 border border-violet-200 transition-colors">
+                            {/* Recurso: siempre disponible sobre una orden sin cubrir (el modal avisa si no hay plan) */}
+                            {!estaCubierta(o) && (
+                              <button onClick={() => setModalConsumir(o)} title={tieneRecurso(o) ? 'Consumir desde recurso (plan de metros con saldo para este material)' : 'Consumir desde recurso (plan de metros) — el cliente no tiene plan con saldo para este material; el sistema lo va a indicar'}
+                                className={`inline-flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-bold border transition-colors ${tieneRecurso(o) ? 'text-violet-700 bg-violet-50 hover:bg-violet-100 border-violet-200' : 'text-violet-400 bg-white hover:bg-violet-50 border-violet-100'}`}>
                                 <Layers size={12} /> Recurso
+                              </button>
+                            )}
+                            {/* Billetera: pagar con el saldo de una cuenta de dinero (elección explícita) */}
+                            {!estaCubierta(o) && (
+                              <button onClick={() => setModalSaldo(o)} title="Pagar esta orden con el saldo de una cuenta del cliente (principal o secundaria)"
+                                className="inline-flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-bold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 transition-colors">
+                                <Wallet size={12} /> Saldo
+                              </button>
+                            )}
+                            {pagadaConSaldo(o) && (
+                              <button onClick={() => devolverSaldo(o)} title="Devolver el pago con saldo: la plata vuelve a la cuenta y la orden a pendiente de facturar"
+                                className="inline-flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-bold text-amber-700 bg-amber-50 hover:bg-amber-100 border border-amber-200 transition-colors">
+                                <RefreshCw size={12} /> Devolver saldo
                               </button>
                             )}
                             <button onClick={() => setModalCancelar(o)} title="Cancelar esta orden"
@@ -857,6 +1060,14 @@ function ResumenDocumentosPanel({ CliIdCliente, desde, hasta, trigger, incluirAn
               cliente={cliente}
               onClose={() => setModalConsumir(null)}
               onSuccess={() => { setModalConsumir(null); setOrdRefresh(v => v + 1); recargarCuentas?.(); }}
+            />
+          )}
+
+          {modalSaldo && (
+            <ModalConsumirSaldo
+              mov={{ MovIdMovimiento: modalSaldo.MovIdMovimiento, OrdCodigoOrden: modalSaldo.orden }}
+              onClose={() => setModalSaldo(null)}
+              onSuccess={() => { setModalSaldo(null); setOrdRefresh(v => v + 1); recargarCuentas?.(); }}
             />
           )}
 
@@ -895,9 +1106,11 @@ function ResumenDocumentosPanel({ CliIdCliente, desde, hasta, trigger, incluirAn
           <p className="text-center text-slate-400 text-sm py-10">Sin planes ni recursos para este cliente.</p>
         ) : (
           <div className="p-4 flex flex-col gap-4">
+            {/* Lista apilada → cada recurso arranca con el detalle PLEGADO (+ para abrirlo) */}
             {recursoCuentas.map(cuenta => (
               <PlanesPanel key={cuenta.CueIdCuenta} cuenta={cuenta} CliIdCliente={CliIdCliente}
-                cliente={cliente} desde={desde} hasta={hasta} onClose={() => {}} onChanged={recargarCuentas} />
+                cliente={cliente} desde={desde} hasta={hasta} onClose={() => {}} onChanged={recargarCuentas}
+                detalleInicialAbierto={false} />
             ))}
           </div>
         )
@@ -976,6 +1189,8 @@ export default function ClienteVista360() {
   const [tabCuentas, setTabCuentas]               = useState('UYU');
   const [resumenSaldos, setResumenSaldos]         = useState(null); // saldos reportados por el ResumenDocumentosPanel → se muestran en la barra de filtros
   const [refreshBilletera, setRefreshBilletera]   = useState(0);
+  // Clic en una cuenta/recurso del header (ClienteBilletera) → la abre en el selector "Ver" del panel
+  const [cuentaFocus, setCuentaFocus]             = useState(null); // { tipo: 'D'|'R', id, ts }
   const [hasAutoSelected, setHasAutoSelected]     = useState(false);
   const [generandoPdf, setGenerandoPdf]           = useState(false);
   const [generandoResumen, setGenerandoResumen]   = useState(false);
@@ -985,11 +1200,16 @@ export default function ClienteVista360() {
   const [showBandejaCFE, setShowBandejaCFE]       = useState(false);
   const [showFacturaManual, setShowFacturaManual] = useState(false);
   const [showSaldoInicial, setShowSaldoInicial]   = useState(false);
+  // Billetera: cuenta adicional (con nombre / restringida) + transferencia entre cuentas
+  const [showNuevaCuenta, setShowNuevaCuenta]     = useState(false);
+  const [showTransferir, setShowTransferir]       = useState(false);
+  const [showVentaSaldo, setShowVentaSaldo]       = useState(false); // carga de cuenta prepago con factura general
   const [showAjusteSaldo, setShowAjusteSaldo]     = useState(false);
   const [showElegirMonedaFact, setShowElegirMonedaFact] = useState(false); // elegir en qué moneda facturar las órdenes pendientes
 
-  const [globalDesde, setGlobalDesde] = useState(() => { const d = new Date(); d.setMonth(d.getMonth() - 1); return d.toISOString().split('T')[0]; });
-  const [globalHasta, setGlobalHasta] = useState(() => new Date().toISOString().split('T')[0]);
+  // Período por defecto en fecha LOCAL (toISOString es UTC: después de las 21:00 daba "mañana")
+  const [globalDesde, setGlobalDesde] = useState(() => { const d = new Date(); d.setMonth(d.getMonth() - 1); return aInputLocal(d); });
+  const [globalHasta, setGlobalHasta] = useState(() => hoyInput());
   const [globalFiltroTrigger, setGlobalFiltroTrigger] = useState(0);
 
   // Fase 2 — operación de dinero (Caja Administrativa, sin sesión de mostrador)
@@ -1373,9 +1593,27 @@ export default function ClienteVista360() {
                             <CheckCircle2 size={9} /> OK
                           </span>
                         </div>
-                        <p className="text-[10px] text-slate-400 font-bold uppercase tracking-wider font-mono mt-0.5">
-                          ID: {clienteSel.IDCliente || clienteSel.CodCliente || clienteSel.CliIdCliente}
-                        </p>
+                        <div className="flex items-center gap-2 mt-0.5">
+                          <p className="text-[10px] text-slate-400 font-bold uppercase tracking-wider font-mono">
+                            ID: {clienteSel.IDCliente || clienteSel.CodCliente || clienteSel.CliIdCliente}
+                          </p>
+                          {/* Tipo de cliente (Común / Semanal / Rollo adelantado) */}
+                          {(() => {
+                            const tipoId = Number(clienteSel.TClIdTipoCliente);
+                            const nombre = (clienteSel.TipoClienteDescripcion || '').trim()
+                              || ({ 1: 'Común', 2: 'Semanal', 3: 'Rollo adelantado' }[tipoId]);
+                            if (!nombre) return null;
+                            const cls = tipoId === 2 ? 'bg-indigo-50 text-indigo-600 border-indigo-200'
+                              : tipoId === 3 ? 'bg-amber-50 text-amber-700 border-amber-200'
+                                : tipoId === 4 ? 'bg-rose-50 text-rose-600 border-rose-200'
+                                  : 'bg-slate-50 text-slate-500 border-slate-200';
+                            return (
+                              <span title="Tipo de cliente" className={`text-[9px] font-black uppercase tracking-wider px-1.5 py-0.5 rounded-full border ${cls}`}>
+                                {nombre}
+                              </span>
+                            );
+                          })()}
+                        </div>
                         <div className="flex flex-col gap-0.5 text-[11px] text-slate-500 font-medium mt-2">
                           {clienteSel.CioRuc && <div>RUC/CI: <span className="font-mono font-bold text-slate-700">{clienteSel.CioRuc}</span></div>}
                           {clienteSel.Email && <div className="truncate" title={clienteSel.Email}>{clienteSel.Email}</div>}
@@ -1386,7 +1624,8 @@ export default function ClienteVista360() {
 
                     {/* Billetera organizada (saldos + recursos) — reemplaza a los KPIs */}
                     <div className="flex-1 min-w-0">
-                      <ClienteBilletera key={`${clienteSel.CliIdCliente}_${refreshBilletera}`} clienteId={clienteSel.CliIdCliente} clienteNombre={clienteSel.Nombre} agrupado />
+                      <ClienteBilletera key={`${clienteSel.CliIdCliente}_${refreshBilletera}`} clienteId={clienteSel.CliIdCliente} clienteNombre={clienteSel.Nombre} agrupado
+                        onElegirCuenta={(sel) => setCuentaFocus({ ...sel, ts: Date.now() })} />
                     </div>
                   </div>
 
@@ -1403,6 +1642,18 @@ export default function ClienteVista360() {
                     <button onClick={() => setShowSaldoInicial(true)}
                       className="flex items-center gap-1.5 px-3 py-2 bg-white border border-slate-200 hover:border-slate-300 text-slate-700 text-xs font-bold rounded-lg transition-colors">
                       <PlusCircle size={14} /> Saldo Inicial
+                    </button>
+                    <button onClick={() => setShowNuevaCuenta(true)} title="Cuentas del cliente: ver todas, crear una nueva o editar las existentes (modalidad, automático, negativo, artículos)"
+                      className="flex items-center gap-1.5 px-3 py-2 bg-white border border-violet-200 hover:border-violet-400 text-violet-700 text-xs font-bold rounded-lg transition-colors">
+                      <Wallet size={14} /> Cuentas
+                    </button>
+                    <button onClick={() => setShowTransferir(true)} title="Transferir dinero entre dos cuentas de este cliente"
+                      className="flex items-center gap-1.5 px-3 py-2 bg-white border border-cyan-200 hover:border-cyan-400 text-cyan-700 text-xs font-bold rounded-lg transition-colors">
+                      <RefreshCw size={14} /> Transferir
+                    </button>
+                    <button onClick={() => setShowVentaSaldo(true)} title="Cargar una cuenta prepago con una factura general (como la venta de rollo, pero en plata): cobrando ahora o desde el saldo a favor"
+                      className="flex items-center gap-1.5 px-3 py-2 bg-white border border-emerald-200 hover:border-emerald-400 text-emerald-700 text-xs font-bold rounded-lg transition-colors">
+                      <DollarSign size={14} /> Venta de saldo
                     </button>
                     <button onClick={() => setShowAjusteSaldo(true)} title="Corregir el saldo de una cuenta de dinero, con motivo obligatorio"
                       className="flex items-center gap-1.5 px-3 py-2 bg-white border border-slate-200 hover:border-slate-300 text-slate-700 text-xs font-bold rounded-lg transition-colors">
@@ -1515,6 +1766,7 @@ export default function ClienteVista360() {
                   cliente={clienteSel}
                   recargarCuentas={recargarCuentas}
                   onResumen={setResumenSaldos}
+                  cuentaFocus={cuentaFocus}
                 />
               </>
             )}
@@ -1635,6 +1887,30 @@ export default function ClienteVista360() {
           cliente={clienteSel}
           onClose={() => setShowSaldoInicial(false)}
           onSuccess={() => { setShowSaldoInicial(false); recargarCuentas(); setRefreshBilletera(v => v + 1); }}
+        />
+      )}
+
+      {/* Billetera: gestor de cuentas (lista + crear + editar) / transferencia entre cuentas */}
+      {showNuevaCuenta && clienteSel && (
+        <ModalCuentasCliente
+          cliente={clienteSel}
+          onClose={() => { setShowNuevaCuenta(false); recargarCuentas(); setRefreshBilletera(v => v + 1); }}
+          onChanged={() => { recargarCuentas(); setRefreshBilletera(v => v + 1); }}
+        />
+      )}
+      {showTransferir && clienteSel && (
+        <ModalTransferirCuentas
+          cliente={clienteSel}
+          cuentas={cuentas}
+          onClose={() => setShowTransferir(false)}
+          onSuccess={() => { setShowTransferir(false); recargarCuentas(); setRefreshBilletera(v => v + 1); }}
+        />
+      )}
+      {showVentaSaldo && clienteSel && (
+        <ModalVentaSaldo
+          cliente={clienteSel}
+          onClose={() => setShowVentaSaldo(false)}
+          onSuccess={() => { setShowVentaSaldo(false); recargarCuentas(); setRefreshBilletera(v => v + 1); }}
         />
       )}
 

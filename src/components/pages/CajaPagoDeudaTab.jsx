@@ -64,9 +64,12 @@ export default function CajaPagoDeudaTab({ sesion, metodosPago = [], cotizacion 
   // tcCobro se aplica a TODO el cobro: normalización de pagos, payload y panel.
   const [tcPactado, setTcPactado] = useState('');
   const tcCobro = parseFloat(tcPactado) > 0 ? parseFloat(tcPactado) : (cotizacion || 1);
-  const esTcPactado = parseFloat(tcPactado) > 0 && Math.abs(parseFloat(tcPactado) - (cotizacion || 1)) > 0.0001;
+  // Qué TC se está usando, elegido con el check: 'dia' = el del día (input bloqueado),
+  // 'pactado' = el cajero escribe otro para ESTE cobro.
+  const [tcModo, setTcModo] = useState('dia');
+  const esTcPactado = tcModo === 'pactado';
   // Al volver a la selección se descarta: cada cobro decide su TC.
-  useEffect(() => { if (paso === 'seleccion') setTcPactado(''); }, [paso]);
+  useEffect(() => { if (paso === 'seleccion') { setTcPactado(''); setTcModo('dia'); } }, [paso]);
   // Una diferencia dentro del tope se puede resolver como fluctuación del tipo de cambio.
   const esDifDeCambio = (dif) => Math.abs(dif) <= limiteDifCambio + 0.005;
 
@@ -248,6 +251,7 @@ export default function CajaPagoDeudaTab({ sesion, metodosPago = [], cotizacion 
   const aplicarTcImplicito = () => {
     if (!tcImplicito) return;
     setTcPactado(tcImplicito.toFixed(4));
+    setTcModo('pactado');   // que el check quede en "Pactado": es el TC con el que se cobra
     setPendienteParcial(null);
     setExcedentePago(null);
     toast.info(`Tipo de cambio del cobro fijado en $${fmt(tcImplicito)} (pactado): con lo pagado, la deuda se cancela completa. Tocá "Registrar pago" para confirmar.`);
@@ -263,6 +267,25 @@ export default function CajaPagoDeudaTab({ sesion, metodosPago = [], cotizacion 
   // El endpoint por-cliente (360) no trae CliIdCliente en cada deuda → respaldo con initialCliente.
   const clientesInvolucrados = Array.from(new Set(deudasSeleccionadas.map(d => d.CliIdCliente).filter(Boolean)));
   const clientePrincipalId = clientesInvolucrados[0] || initialCliente?.CliIdCliente || null;
+
+  // Billetera: cuentas SECUNDARIAS LIBRES del cliente para el medio "Saldo de cuenta"
+  const [cuentasBilletera, setCuentasBilletera] = useState([]);
+  useEffect(() => {
+    if (!clientePrincipalId) { setCuentasBilletera([]); return; }
+    let alive = true;
+    api.get(`/contabilidad/cuentas/${clientePrincipalId}`)
+      .then(r => {
+        if (!alive) return;
+        // Elegibles: secundarias LIBRES de ANTICIPO. Las prepago facturadas NO: su plata ya
+        // tiene factura propia — usarla para pagar otra factura duplicaría la venta y el IVA.
+        const lista = (r.data?.data || []).filter(c =>
+          String(c.CueTipo || '').startsWith('DINERO') && !c.CueEsPrincipal && !c.CueRestringida
+          && c.CueModalidadFiscal !== 'PREPAGO_FACTURADO');
+        setCuentasBilletera(lista);
+      })
+      .catch(() => { if (alive) setCuentasBilletera([]); });
+    return () => { alive = false; };
+  }, [clientePrincipalId]);
 
   // ── Determinar tipo de documento dinámicamente según las deudas seleccionadas ──
   // Si hay alguna orden SIN factura (DocIdDocumento = null) → PEDIDO CAJA
@@ -309,6 +332,24 @@ export default function CajaPagoDeudaTab({ sesion, metodosPago = [], cotizacion 
     }
     
     const pagosValidos = pagos.filter(p => parseFloat(p.monto) > 0 && p.metodoPagoId);
+    // Billetera: si un pago usa "Saldo de cuenta", tiene que tener la cuenta elegida
+    const pagoSaldoSinCuenta = pagosValidos.find(p =>
+      /saldo de cuenta/i.test(metodosPago.find(m => m.MPaIdMetodoPago === parseInt(p.metodoPagoId))?.MPaDescripcionMetodo || '') && !p.cueIdCuenta);
+    if (pagoSaldoSinCuenta) return toast.error('El medio "Saldo de cuenta" necesita que elijas DE QUÉ CUENTA sale la plata (debajo del medio). Si no aparece ninguna, el cliente no tiene cuentas secundarias libres.');
+    // Billetera: la línea NO puede superar el saldo de la cuenta. Como MEDIO DE PAGO el
+    // saldo NUNCA deja la cuenta en negativo, aunque la cuenta "acepte negativo" (eso es
+    // solo para los descuentos automáticos del motor). Sin este freno, el front calculaba
+    // un "pago en exceso a favor" con plata inexistente (caso Palmero, 31-ago-2026).
+    for (const p of pagosValidos) {
+      if (!p.cueIdCuenta) continue;
+      const cta = cuentasBilletera.find(c => c.CueIdCuenta === parseInt(p.cueIdCuenta));
+      if (!cta) continue;
+      const saldoCta = Number(cta.CueSaldoActual || 0);
+      if ((parseFloat(p.monto) || 0) > saldoCta + 0.001) {
+        const simCta = cta.CueTipo === 'DINERO_USD' ? 'US$' : '$';
+        return toast.error(`"${cta.CueNombre || 'La cuenta'}" solo tiene ${simCta} ${fmt(saldoCta)} y la línea intenta pagar ${simCta} ${fmt(parseFloat(p.monto))}: bajá el monto o cubrí el resto con otro medio (el saldo como medio de pago nunca deja la cuenta en negativo).`);
+      }
+    }
     // A crédito no se cobra: se genera el comprobante y la deuda queda viva → no se exige medio de pago.
     if (!esCreditoCobro && !pagosValidos.length)   return toast.warning('Ingrese al menos un método de pago.');
 
@@ -388,6 +429,8 @@ export default function CajaPagoDeudaTab({ sesion, metodosPago = [], cotizacion 
             // Cheque dado de alta desde el panel: sin esto el cheque queda huérfano y
             // el 360 no puede mostrar su número junto al cobro.
             idCheque:      p.idCheque || null,
+            // Billetera: medio "Saldo de cuenta" → cuenta secundaria elegida de donde sale la plata
+            cueIdCuenta:   p.cueIdCuenta || null,
           };
         }),
       });
@@ -475,21 +518,40 @@ export default function CajaPagoDeudaTab({ sesion, metodosPago = [], cotizacion 
             {paso === 'pago' && (<>
             {/* Tipo de cambio */}
             {cotizacion && cotizacion > 1 && (
-              <div className={`flex items-center gap-1 border rounded-lg px-2 py-1.5 ${esTcPactado ? 'bg-violet-50 border-violet-300' : 'bg-amber-50 border-amber-200'}`}
-                title={esTcPactado
-                  ? `Tipo de cambio PACTADO para este cobro (el del día es $${fmt(cotizacion)}). Con este TC se convierten los pagos en otra moneda. El botón ↺ vuelve al del día.`
-                  : 'Tipo de cambio del día. Editalo SOLO si este cobro se acordó a otro TC (pactado con el cliente o pago de días anteriores): se usa para convertir los pagos en otra moneda y queda registrado en el cobro.'}>
-                <span className={`text-[8px] font-black uppercase tracking-widest ${esTcPactado ? 'text-violet-600' : 'text-amber-600'}`}>
-                  TC {esTcPactado ? 'pactado' : 'del día'}
+              <div className={`flex items-center gap-2 border rounded-lg px-2.5 py-1.5 ${esTcPactado ? 'bg-violet-50 border-violet-300' : 'bg-amber-50 border-amber-200'}`}
+                title="Tipo de cambio con el que se convierten los pagos hechos en otra moneda. Queda registrado en el cobro.">
+
+                {/* Descripción — separada del valor */}
+                <span className="text-[8px] font-black uppercase tracking-widest text-slate-500 shrink-0">
+                  Tipo de cambio
                 </span>
-                <span className={`text-[11px] font-black font-mono ${esTcPactado ? 'text-violet-800' : 'text-amber-800'}`}>$</span>
-                <input type="number" step="0.01" min="0" value={tcPactado} placeholder={fmt(cotizacion)}
-                  onChange={e => setTcPactado(e.target.value)}
-                  className={`w-16 bg-transparent border-none outline-none text-[11px] font-black font-mono p-0 focus:ring-0 ${esTcPactado ? 'text-violet-800' : 'text-amber-800 placeholder-amber-800'}`} />
-                {esTcPactado && (
-                  <button type="button" onClick={() => setTcPactado('')} title="Volver al TC del día"
-                    className="text-violet-500 hover:text-violet-700 font-black text-sm leading-none px-0.5">↺</button>
-                )}
+
+                {/* Opciones con check: la marcada manda el valor del input */}
+                <button type="button"
+                  onClick={() => { setTcModo('dia'); setTcPactado(''); }}
+                  title={`Cobrar al tipo de cambio del día ($${fmt(cotizacion)})`}
+                  className={`flex items-center gap-1 text-[9px] font-black uppercase tracking-wide transition-colors ${!esTcPactado ? 'text-amber-700' : 'text-slate-400 hover:text-slate-600'}`}>
+                  {!esTcPactado ? <CheckSquare size={13} /> : <Square size={13} />} Del día
+                </button>
+
+                <button type="button"
+                  onClick={() => { setTcModo('pactado'); if (!parseFloat(tcPactado)) setTcPactado(String(cotizacion)); }}
+                  title="Este cobro se acordó a otro tipo de cambio (pactado con el cliente, o pago de días anteriores): escribí el valor"
+                  className={`flex items-center gap-1 text-[9px] font-black uppercase tracking-wide transition-colors ${esTcPactado ? 'text-violet-700' : 'text-slate-400 hover:text-slate-600'}`}>
+                  {esTcPactado ? <CheckSquare size={13} /> : <Square size={13} />} Pactado
+                </button>
+
+                {/* Valor — en su propia caja, sin las flechitas del navegador */}
+                <div className={`flex items-center gap-1 rounded-md border px-1.5 py-0.5 ${esTcPactado ? 'bg-white border-violet-300' : 'bg-white/60 border-amber-200'}`}>
+                  <span className={`text-[11px] font-black font-mono ${esTcPactado ? 'text-violet-800' : 'text-amber-700'}`}>$</span>
+                  <input type="number" step="0.01" min="0"
+                    value={esTcPactado ? tcPactado : Number(cotizacion || 0).toFixed(2)}
+                    placeholder={Number(cotizacion || 0).toFixed(2)}
+                    readOnly={!esTcPactado}
+                    onChange={e => setTcPactado(e.target.value)}
+                    title={esTcPactado ? 'Tipo de cambio pactado para este cobro' : 'Tipo de cambio del día — marcá "Pactado" para escribir otro'}
+                    className={`w-16 bg-transparent border-none outline-none text-[11px] font-black font-mono p-0 focus:ring-0 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none ${esTcPactado ? 'text-violet-800' : 'text-amber-700 cursor-not-allowed'}`} />
+                </div>
               </div>
             )}
             {/* Documento a generar + serie/número */}
@@ -628,6 +690,7 @@ export default function CajaPagoDeudaTab({ sesion, metodosPago = [], cotizacion 
         {/* PASO 2 — Panel de pago (medios) */}
         <div className="flex-1 min-h-0 overflow-y-auto px-4 py-3 bg-slate-100">
           <CajaPanelPago
+            cuentasBilletera={cuentasBilletera}
             onNumDocPredict={setNumDocFmt}
             hideDocTitle={true}
             hideTC={true}
@@ -945,6 +1008,7 @@ export default function CajaPagoDeudaTab({ sesion, metodosPago = [], cotizacion 
       <div className="flex-1 flex flex-col min-w-0 bg-slate-100 p-6 gap-4 overflow-y-auto">
         {fechaField}
         <CajaPanelPago
+          cuentasBilletera={cuentasBilletera}
           layout="horizontal"
           mode="VENTA"
           labelBoton="REGISTRAR PAGO"

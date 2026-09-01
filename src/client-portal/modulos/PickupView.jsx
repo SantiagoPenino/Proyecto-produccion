@@ -11,7 +11,7 @@ import Lottie from 'lottie-react';
 import loadingAnim from '../../assets/animations/Loading.json';
 import { useAuth } from '../auth/AuthContext';
 import { apiClient } from '../api/apiClient'; // Assuming user comes from here
-import { CheckCircle, AlertCircle, ChevronRight, Truck, CreditCard, Download, MapPin, MapPinCheck, Package, PackageCheck, PackageOpen, Trash2, Plus, ArrowLeft, X, ShieldX } from 'lucide-react';
+import { CheckCircle, AlertCircle, ChevronRight, Truck, CreditCard, Download, MapPin, MapPinCheck, Package, PackageCheck, PackageOpen, Trash2, Plus, ArrowLeft, X, ShieldX, Wallet } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
 
 import { CustomButton } from '../pautas/CustomButton';
@@ -407,6 +407,176 @@ export const PickupView = () => {
             }
         } catch (err) {
             Swal.fire({ icon: 'error', title: 'Error', text: 'Ocurrió un error al contactar MercadoPago.', background: '#212121', color: '#e4e4e7', confirmButtonColor: '#009ee3', customClass: { popup: 'rounded-xl border border-zinc-700' } });
+        } finally { setLoading(false); }
+    };
+
+    // BILLETERA: pagar el retiro con el saldo de las cuentas propias (sin pasarela).
+    // Cross-moneda permitido SIEMPRE a la cotización del día (el cliente no elige TC),
+    // y se pueden COMBINAR varias cuentas (misma moneda primero, después la otra).
+    const [miBilletera, setMiBilletera] = useState([]);
+    const [miPrepago, setMiPrepago] = useState([]);   // F5: cuentas prepago (cubren por consumo)
+    const [cotBilletera, setCotBilletera] = useState(40);
+    useEffect(() => {
+        apiClient.get('/web-orders/mi-billetera')
+            .then(r => { setMiBilletera(r?.data || []); setMiPrepago(r?.prepago || []); if (r?.cotizacion) setCotBilletera(Number(r.cotizacion)); })
+            .catch(() => { setMiBilletera([]); setMiPrepago([]); });
+    }, []);
+    // ¿Alcanza el saldo TOTAL de la billetera (sumando ambas monedas a la cot. del día)?
+    const totalCarrito = Number((totalAmount || 0).toFixed(2));
+    const saldoBilleteraUsable = miBilletera.reduce((s, c) => {
+        const saldo = Math.max(0, Number(c.saldo) || 0);
+        if (c.moneda === activeCurrency) return s + saldo;
+        return s + (c.moneda === 'USD' ? saldo * cotBilletera : saldo / cotBilletera);
+    }, 0);
+    const puedePagarConSaldo = totalCarrito > 0 && saldoBilleteraUsable >= totalCarrito - 0.009;
+
+    // F5: ¿el saldo PREPAGO (sumando monedas al cambio del día) alcanza para cubrir todo?
+    const saldoPrepagoUsable = miPrepago.reduce((s, c) => {
+        const saldo = Math.max(0, Number(c.saldo) || 0);
+        if (c.moneda === activeCurrency) return s + saldo;
+        return s + (c.moneda === 'USD' ? saldo * cotBilletera : saldo / cotBilletera);
+    }, 0);
+    const puedeCubrirConBilletera = totalCarrito > 0 && saldoPrepagoUsable >= totalCarrito - 0.009;
+
+    // F5: cubrir los pedidos con la billetera prepago (consumo, sin documento nuevo:
+    // la factura de esa plata ya existió al recargarla). El backend elige la cuenta
+    // por orden con la prioridad del motor y NUNCA deja una cuenta en negativo.
+    const handleCubrirConBilletera = async () => {
+        if (!puedeCubrirConBilletera) return;
+        const simDe = (m) => (m === 'USD' ? 'US$' : '$');
+        setLoading(true);
+        try {
+            const formaEnvioId = selectedFormaEnvio || shippingData?.defaultFormaEnvioID || 5;
+            const esEncomienda = shippingData?.formasEnvio?.find(f => f.ID === formaEnvioId)?.Nombre?.toLowerCase().includes('encomienda');
+            let dir = selectedDireccion || '';
+            let depto = '', loc = '';
+            const savedDir = shippingData?.direccionesGuardadas?.find(d => d.Direccion === selectedDireccion);
+            if (savedDir) { depto = savedDir.Ciudad || ''; loc = savedDir.Localidad || ''; }
+            else if (dir === shippingData?.defaultDireccion) { depto = defaultDepto || ''; loc = defaultLocalidad || ''; }
+            const ordersPayload = selectedOrders.map(selId => {
+                const order = readyOrders.find(o => o.id === selId);
+                if (!order) return null;
+                return { OrdIdOrden: order.rawId, orderNumber: order.id.replace('#', ''), desc: order.desc, amount: order.amount, currency: order.currency };
+            }).filter(Boolean);
+            const payloadBase = {
+                orders: ordersPayload,
+                lugarRetiro: esEncomienda ? 2 : 1,
+                direccion: esEncomienda ? dir : null,
+                departamento: esEncomienda ? depto : null,
+                localidad: esEncomienda ? loc : null,
+                agenciaId: esEncomienda ? (selectedAgencia === -1 ? null : selectedAgencia) : null,
+                customAgencia: esEncomienda && selectedAgencia === -1 ? customAgencia : null,
+                receptorNombre: esEncomienda ? (receiverFirstName.trim() + ' ' + receiverLastName.trim()) : null,
+            };
+
+            // 1) Vista previa: qué orden cubre cada cuenta (órdenes enteras, sin negativo)
+            const prev = await apiClient.post('/web-orders/pickup-orders/cubrir-con-billetera', { ...payloadBase, preview: true });
+            if (!prev?.success) throw new Error(prev?.error || 'No se pudo calcular la cobertura.');
+            setLoading(false);
+            const lineasHtml = (prev.plan || []).map(p =>
+                `• <b>${p.codigo}</b> ← <b>"${p.cuenta}"</b>: ${simDe(p.monedaCuenta)} ${Number(p.importeCta).toFixed(2)}${p.cruzada ? ` <span style="opacity:.7">(@ $${Number(prev.cotizacion).toFixed(2)})</span>` : ''}`
+            ).join('<br/>');
+            const conf = await Swal.fire({
+                icon: 'question', title: 'Cubrir con mi billetera',
+                html: `Cada pedido se descuenta ENTERO de tu saldo prepago:<br/><br/>`
+                    + `<div style="text-align:left;display:inline-block">${lineasHtml}</div><br/><br/>`
+                    + `${(prev.yaCubiertas || []).length ? `<span style="font-size:12px;opacity:.75">Ya estaban cubiertos: ${prev.yaCubiertas.join(', ')}.</span><br/>` : ''}`
+                    + `<span style="font-size:12px;opacity:.75">No se emite factura nueva: tu saldo ya fue facturado al recargarlo. El retiro queda pago al instante.</span>`,
+                showCancelButton: true, confirmButtonText: 'Sí, cubrir con mi billetera', cancelButtonText: 'Cancelar',
+                background: '#212121', color: '#e4e4e7', confirmButtonColor: '#0891b2',
+                customClass: { popup: 'rounded-xl border border-zinc-700' },
+            });
+            if (!conf.isConfirmed) return;
+
+            // 2) Ejecutar (el backend revalida saldos orden a orden)
+            setLoading(true);
+            const res = await apiClient.post('/web-orders/pickup-orders/cubrir-con-billetera', payloadBase);
+            if (res?.success) {
+                const usadoHtml = (res.plan || []).map(p => `${p.codigo} ← "${p.cuenta}" (${simDe(p.monedaCuenta)} ${Number(p.importeCta).toFixed(2)})`).join('<br/>');
+                await Swal.fire({
+                    icon: 'success', title: '¡Pedidos cubiertos!',
+                    html: `Tu retiro <b>${res.retiro}</b> quedó pago con tu billetera.<br/>${usadoHtml}`,
+                    background: '#212121', color: '#e4e4e7', confirmButtonColor: '#0891b2',
+                    customClass: { popup: 'rounded-xl border border-zinc-700' },
+                });
+                window.location.reload();
+            } else {
+                Swal.fire({ icon: 'error', title: 'No se pudo cubrir', text: res?.error || 'Intentá de nuevo o pagá con tarjeta.', background: '#212121', color: '#e4e4e7', confirmButtonColor: '#0891b2', customClass: { popup: 'rounded-xl border border-zinc-700' } });
+            }
+        } catch (err) {
+            Swal.fire({ icon: 'error', title: 'No se pudo cubrir', text: err?.response?.data?.error || err.message || 'Intentá de nuevo o pagá con tarjeta.', background: '#212121', color: '#e4e4e7', confirmButtonColor: '#0891b2', customClass: { popup: 'rounded-xl border border-zinc-700' } });
+        } finally { setLoading(false); }
+    };
+
+    const handlePagarConSaldo = async () => {
+        if (!puedePagarConSaldo) return;
+        const sim = activeCurrency === 'USD' ? 'US$' : '$';
+        const simDe = (m) => (m === 'USD' ? 'US$' : '$');
+        const total = totalCarrito;
+        setLoading(true);
+        try {
+            const formaEnvioId = selectedFormaEnvio || shippingData?.defaultFormaEnvioID || 5;
+            const esEncomienda = shippingData?.formasEnvio?.find(f => f.ID === formaEnvioId)?.Nombre?.toLowerCase().includes('encomienda');
+            let dir = selectedDireccion || '';
+            let depto = '', loc = '';
+            const savedDir = shippingData?.direccionesGuardadas?.find(d => d.Direccion === selectedDireccion);
+            if (savedDir) { depto = savedDir.Ciudad || ''; loc = savedDir.Localidad || ''; }
+            else if (dir === shippingData?.defaultDireccion) { depto = defaultDepto || ''; loc = defaultLocalidad || ''; }
+            const ordersPayload = selectedOrders.map(selId => {
+                const order = readyOrders.find(o => o.id === selId);
+                if (!order) return null;
+                return { OrdIdOrden: order.rawId, orderNumber: order.id.replace('#', ''), desc: order.desc, amount: order.amount, currency: order.currency };
+            }).filter(Boolean);
+            const payloadBase = {
+                orders: ordersPayload,
+                totalAmount: total,
+                activeCurrency,
+                lugarRetiro: esEncomienda ? 2 : 1,
+                direccion: esEncomienda ? dir : null,
+                departamento: esEncomienda ? depto : null,
+                localidad: esEncomienda ? loc : null,
+                agenciaId: esEncomienda ? (selectedAgencia === -1 ? null : selectedAgencia) : null,
+                customAgencia: esEncomienda && selectedAgencia === -1 ? customAgencia : null,
+                receptorNombre: esEncomienda ? (receiverFirstName.trim() + ' ' + receiverLastName.trim()) : null,
+            };
+
+            // 1) Vista previa: el backend decide de qué cuenta(s) sale la plata y a qué cotización
+            const prev = await apiClient.post('/web-orders/pickup-orders/pagar-con-saldo', { ...payloadBase, preview: true });
+            if (!prev?.success) throw new Error(prev?.error || 'No se pudo calcular el pago con saldo.');
+            setLoading(false);
+            const lineasHtml = (prev.plan || []).map(p => p.cruzada
+                ? `• <b>"${p.nombre}"</b>: ${simDe(p.moneda)} ${Number(p.monto).toFixed(2)} <span style="opacity:.7">(@ $${Number(prev.cotizacion).toFixed(2)} = ${sim} ${Number(p.aporte).toFixed(2)})</span>`
+                : `• <b>"${p.nombre}"</b>: ${simDe(p.moneda)} ${Number(p.monto).toFixed(2)}`
+            ).join('<br/>');
+            const conf = await Swal.fire({
+                icon: 'question', title: 'Pagar con mi saldo',
+                html: `El retiro es <b>${sim} ${total.toFixed(2)}</b> y sale de tu billetera así:<br/><br/>`
+                    + `<div style="text-align:left;display:inline-block">${lineasHtml}</div><br/><br/>`
+                    + `${(prev.plan || []).some(p => p.cruzada) ? `<span style="font-size:12px;opacity:.75">La conversión usa la cotización del día ($${Number(prev.cotizacion).toFixed(2)}).</span><br/>` : ''}`
+                    + `<span style="font-size:12px;opacity:.75">El retiro queda pago al instante, sin tarjeta.</span>`,
+                showCancelButton: true, confirmButtonText: 'Sí, pagar con mi saldo', cancelButtonText: 'Cancelar',
+                background: '#212121', color: '#e4e4e7', confirmButtonColor: '#006E97',
+                customClass: { popup: 'rounded-xl border border-zinc-700' },
+            });
+            if (!conf.isConfirmed) return;
+
+            // 2) Ejecutar (el backend recalcula y valida saldos de nuevo)
+            setLoading(true);
+            const res = await apiClient.post('/web-orders/pickup-orders/pagar-con-saldo', payloadBase);
+            if (res?.success) {
+                const usadoHtml = (res.plan || []).map(p => `"${p.nombre}": ${simDe(p.moneda)} ${Number(p.monto).toFixed(2)}`).join(' + ');
+                await Swal.fire({
+                    icon: 'success', title: '¡Retiro pago!',
+                    html: `Tu retiro <b>${res.retiro}</b> quedó pago con tu saldo.<br/>${usadoHtml}`,
+                    background: '#212121', color: '#e4e4e7', confirmButtonColor: '#006E97',
+                    customClass: { popup: 'rounded-xl border border-zinc-700' },
+                });
+                window.location.reload();
+            } else {
+                Swal.fire({ icon: 'error', title: 'No se pudo pagar', text: res?.error || 'Intentá de nuevo o pagá con tarjeta.', background: '#212121', color: '#e4e4e7', confirmButtonColor: '#006E97', customClass: { popup: 'rounded-xl border border-zinc-700' } });
+            }
+        } catch (err) {
+            Swal.fire({ icon: 'error', title: 'No se pudo pagar', text: err?.response?.data?.error || err.message || 'Intentá de nuevo o pagá con tarjeta.', background: '#212121', color: '#e4e4e7', confirmButtonColor: '#006E97', customClass: { popup: 'rounded-xl border border-zinc-700' } });
         } finally { setLoading(false); }
     };
 
@@ -1031,8 +1201,10 @@ export const PickupView = () => {
 
                 {/* Botones finales */}
                 <div className={`flex ${(user?.tipoClienteId === 1 && totalAmount > 0) ? 'justify-end' : 'justify-between'} items-stretch gap-3`}>
-                    {/* "Pagar después" — solo para cuentas corrientes (tipo 2 y 3) */}
-                    {(user?.tipoClienteId === 2 || user?.tipoClienteId === 3) && (
+                    {/* "Pagar después" — solo para cuentas corrientes (tipo 2 y 3) Y solo si hay
+                        algo que diferir: con total 0 (órdenes pagas/cubiertas por la billetera)
+                        el botón correcto es "Confirmar Retiro", para todos los tipos. */}
+                    {(user?.tipoClienteId === 2 || user?.tipoClienteId === 3) && totalAmount > 0 && (
                         <CustomButton
                             onClick={async () => {
                                 const code = await handleCreatePickup();
@@ -1058,8 +1230,9 @@ export const PickupView = () => {
                         </CustomButton>
                     )}
 
-                    {/* "Confirmar Retiro" — para tipo 1 cuando totalAmount === 0 (órdenes ya pagadas) */}
-                    {user?.tipoClienteId === 1 && totalAmount === 0 && (
+                    {/* "Confirmar Retiro" — cualquier tipo de cliente cuando totalAmount === 0
+                        (órdenes ya pagadas o cubiertas por la billetera: no hay nada que cobrar) */}
+                    {totalAmount === 0 && (
                         <CustomButton
                             onClick={async () => {
                                 const code = await handleCreatePickup();
@@ -1192,6 +1365,68 @@ export const PickupView = () => {
                                     </h2>
 
                                     <div className="pay-modal-btns">
+                                        {/* ── Botón Cubrir con mi billetera (prepago, F5) ── */}
+                                        {puedeCubrirConBilletera && (
+                                            <button
+                                                onClick={() => { setShowPayModal(false); handleCubrirConBilletera(); }}
+                                                disabled={loading}
+                                                style={{
+                                                    display: 'flex', flexDirection: 'column',
+                                                    alignItems: 'center', justifyContent: 'center',
+                                                    gap: 12, padding: '24px 16px',
+                                                    background: '#0e7490',
+                                                    border: '1px solid rgba(8,145,178,0.6)',
+                                                    borderRadius: 16, cursor: 'pointer',
+                                                    transition: 'background 0.2s, transform 0.15s',
+                                                }}
+                                                onMouseEnter={e => { e.currentTarget.style.background = '#0c657e'; e.currentTarget.style.transform = 'scale(1.02)'; }}
+                                                onMouseLeave={e => { e.currentTarget.style.background = '#0e7490'; e.currentTarget.style.transform = 'scale(1)'; }}
+                                            >
+                                                <Wallet size={36} color="#fff" />
+                                                <div style={{ textAlign: 'center' }}>
+                                                    <p style={{ color: '#fff', fontWeight: 700, fontSize: 14, margin: '0 0 2px' }}>Billetera</p>
+                                                    {/* Saldos por moneda, solo los mayores a cero */}
+                                                    {(() => {
+                                                        const sumUSD = miPrepago.filter(c => c.moneda === 'USD').reduce((s, c) => s + Math.max(0, Number(c.saldo) || 0), 0);
+                                                        const sumUYU = miPrepago.filter(c => c.moneda !== 'USD').reduce((s, c) => s + Math.max(0, Number(c.saldo) || 0), 0);
+                                                        return (
+                                                            <>
+                                                                {sumUSD > 0.009 && <p style={{ color: 'rgba(255,255,255,0.85)', fontSize: 12, fontWeight: 700, margin: 0, lineHeight: 1.4 }}>US$ {sumUSD.toFixed(2)}</p>}
+                                                                {sumUYU > 0.009 && <p style={{ color: 'rgba(255,255,255,0.85)', fontSize: 12, fontWeight: 700, margin: 0, lineHeight: 1.4 }}>$ {sumUYU.toFixed(2)}</p>}
+                                                            </>
+                                                        );
+                                                    })()}
+                                                </div>
+                                            </button>
+                                        )}
+
+                                        {/* ── Botón Pagar con mi saldo (billetera) ── */}
+                                        {puedePagarConSaldo && (
+                                            <button
+                                                onClick={() => { setShowPayModal(false); handlePagarConSaldo(); }}
+                                                disabled={loading}
+                                                style={{
+                                                    display: 'flex', flexDirection: 'column',
+                                                    alignItems: 'center', justifyContent: 'center',
+                                                    gap: 12, padding: '24px 16px',
+                                                    background: '#0b7a5c',
+                                                    border: '1px solid rgba(16,185,129,0.6)',
+                                                    borderRadius: 16, cursor: 'pointer',
+                                                    transition: 'background 0.2s, transform 0.15s',
+                                                }}
+                                                onMouseEnter={e => { e.currentTarget.style.background = '#096a50'; e.currentTarget.style.transform = 'scale(1.02)'; }}
+                                                onMouseLeave={e => { e.currentTarget.style.background = '#0b7a5c'; e.currentTarget.style.transform = 'scale(1)'; }}
+                                            >
+                                                <CreditCard size={36} color="#fff" />
+                                                <div style={{ textAlign: 'center' }}>
+                                                    <p style={{ color: '#fff', fontWeight: 700, fontSize: 14, margin: '0 0 2px' }}>Mi saldo</p>
+                                                    <p style={{ color: 'rgba(255,255,255,0.75)', fontSize: 11, margin: 0, lineHeight: 1.4 }}>
+                                                        Billetera · {activeCurrency === 'USD' ? 'US$' : '$'} {saldoBilleteraUsable.toFixed(2)} disponibles{miBilletera.some(c => c.moneda !== activeCurrency && Number(c.saldo) > 0) ? ' (incluye tu saldo en la otra moneda al cambio del día)' : ''}
+                                                    </p>
+                                                </div>
+                                            </button>
+                                        )}
+
                                         {/* ── Botón Handy ── */}
                                         <button
                                             onClick={() => { setShowPayModal(false); handleInitPayment(); }}

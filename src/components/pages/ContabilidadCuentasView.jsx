@@ -10,15 +10,17 @@ import {
   Calendar, PlayCircle, StopCircle, X,
   ArrowUpCircle, ArrowDownCircle, Info, Users, Zap,
   DollarSign, PlusCircle, Package, RotateCcw, Layers, Download, Printer, ChevronDown, FileMinus, Trash2,
-  Lock, Unlock, User, Edit2, Plus
+  Lock, Unlock, User, Edit2, Plus, Wallet, Minus, Globe
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { useLocation, useNavigate } from 'react-router-dom';
 
 import api from '../../services/api';
 import { generarPdfEstadoCuenta, generarPdfPrefactura, generarPdfFacturaDGI } from '../../utils/pdfGenerator';
+import { codigoCuenta } from '../../utils/cuentaCodigo';
 import { exportarExcelEstadoCuenta } from '../../utils/excelGenerator';
 import CierreCicloPreviewModal from './CierreCicloPreviewModal';
+import FacturacionManualModal from './FacturacionManualModal';
 
 const ORDEN_TYPES = ['ORDEN', 'ENTREGA', 'ORDEN_ANTICIPO'];
 import ClienteBilletera from '../common/ClienteBilletera';
@@ -584,7 +586,13 @@ const MenuAccionesDoc = ({ m, cuenta, cliente, onRefresh, onPrint, onCobrar, hid
   const yaConsumida = m.MovObservaciones && (m.MovObservaciones.startsWith('CUBIERTO') || m.MovObservaciones.startsWith('MATERIAL_CUBIERTO'));
   if (!anulado && !m.DocIdDocumento && ['ORDEN','ORDEN_ANTICIPO'].includes(m.MovTipo) && !yaConsumida) {
     acciones.push({id:'consumir-recurso', label:'Consumir desde Recurso', icon:<Layers size={13}/>, cls:'text-violet-700 hover:bg-violet-50 font-bold'});
+    // Billetera: pagar la orden con el saldo de una cuenta de dinero (elección explícita)
+    acciones.push({id:'consumir-saldo', label:'Pagar con saldo de cuenta', icon:<DollarSign size={13}/>, cls:'text-emerald-700 hover:bg-emerald-50 font-bold'});
   };
+  // Billetera: devolver un pago con saldo (la plata vuelve a la cuenta, la orden a pendiente)
+  if (!anulado && !m.DocIdDocumento && ['ORDEN','ORDEN_ANTICIPO'].includes(m.MovTipo) && /^CUBIERTO_CUENTA_\d+.*Ref#\d+/.test(m.MovObservaciones || '')) {
+    acciones.push({id:'devolver-saldo', label:'Devolver pago con saldo', icon:<RotateCcw size={13}/>, cls:'text-amber-700 hover:bg-amber-50 font-bold'});
+  }
 
   // ── Cobrar deuda pendiente ──────────────────────────────────────────────
   if (!anulado && m.EsPendientePago === 1) {
@@ -645,6 +653,12 @@ const MenuAccionesDoc = ({ m, cuenta, cliente, onRefresh, onPrint, onCobrar, hid
           }
         }
       });
+    } else if (id === 'devolver-saldo') {
+      // Billetera: reversa del pago con saldo — confirmación explícita de qué pasa
+      if (!window.confirm(`Devolver el pago con saldo de ${m.OrdCodigoOrden || m.MovConcepto || 'esta orden'}:\n\n• La plata vuelve a la cuenta que la pagó.\n• La orden vuelve a "pendiente de facturar".\n\n¿Confirmás?`)) return;
+      fetchAPI(`/api/contabilidad/movimientos/${m.MovIdMovimiento}/devolver-consumo-saldo`, { method: 'POST', body: JSON.stringify({}) })
+        .then(r => { toast.success(r.message || 'Pago con saldo devuelto'); onRefresh?.(); })
+        .catch(e => toast.error(e.message));
     } else {
       setModal(id);
     }
@@ -703,6 +717,7 @@ const MenuAccionesDoc = ({ m, cuenta, cliente, onRefresh, onPrint, onCobrar, hid
       {modal==='anticipo'          && <ModalAnticipo        conta={cuenta} cuenta={cuenta} cliente={cliente} onClose={()=>setModal(null)} onSuccess={onRefresh}/>}
       {modal==='imp-ant'           && <ModalImputarAnticipo mov={m} cuenta={cuenta} onClose={()=>setModal(null)} onSuccess={onRefresh}/>}
       {modal==='consumir-recurso'  && <ModalConsumirRecurso mov={m} cuenta={cuenta} cliente={cliente} onClose={()=>setModal(null)} onSuccess={onRefresh}/>}
+      {modal==='consumir-saldo'    && <ModalConsumirSaldo   mov={m} onClose={()=>setModal(null)} onSuccess={onRefresh}/>}
     </div>
   );
 };
@@ -1046,6 +1061,1348 @@ const ModalPago = ({ cuenta, onClose, onSuccess }) => {
 };
 
 // ── Modal Saldo Inicial (apertura por moneda: a favor o en contra) ───────────
+// ── Selector de MODALIDAD FISCAL de una cuenta (billetera) ─────────────────────
+export const MODALIDAD_FISCAL = {
+  ANTICIPO_A_FACTURAR: { label: 'Anticipo — se factura después', corto: 'Anticipo · se factura después', sel: 'border-sky-400 bg-sky-50', badge: 'bg-sky-50 text-sky-700 border-sky-200',
+    desc: 'Se carga con anticipo (recibo) o transferencia desde la principal. Lo que consume queda "sin facturar" y se factura después con el botón "Facturar consumos" (la factura nace paga). Es como funciona la cuenta principal.' },
+  PREPAGO_FACTURADO: { label: 'Prepago facturado — como el rollo', corto: 'Prepago facturado', sel: 'border-emerald-400 bg-emerald-50', badge: 'bg-emerald-50 text-emerald-700 border-emerald-200',
+    desc: 'Se carga SOLO con "Venta de saldo" (factura + pago en el momento). Lo que consume NO se vuelve a facturar: ya se facturó al cargar. No acepta anticipos ni transferencias desde cuentas sin factura.' },
+};
+export const ModalidadFiscalSelector = ({ value, onChange, disabled = false, nota = null }) => (
+  <div>
+    <label className="block text-xs font-semibold text-slate-600 mb-2">Modalidad fiscal (cómo se factura lo que paga esta cuenta)</label>
+    <div className="grid grid-cols-1 gap-2">
+      {Object.entries(MODALIDAD_FISCAL).map(([k, m]) => (
+        <label key={k} className={`flex items-start gap-3 rounded-xl border px-3 py-2.5 ${disabled ? 'opacity-70 cursor-not-allowed' : 'cursor-pointer'} ${value === k ? m.sel : 'border-slate-200 bg-white'}`}>
+          <input type="radio" name="modalidad" disabled={disabled} checked={value === k} onChange={() => onChange(k)} className="mt-1" />
+          <span className="flex flex-col">
+            <span className="text-sm font-bold text-slate-800">{m.label}</span>
+            <span className="text-[11px] text-slate-500 leading-snug">{m.desc}</span>
+          </span>
+        </label>
+      ))}
+    </div>
+    {nota && <p className="mt-1.5 text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-1.5">{nota}</p>}
+  </div>
+);
+
+// ── Switch de comportamiento de cuenta (billetera) — texto explícito de ON/OFF ──
+export const SwitchCuenta = ({ checked, onChange, titulo, on, off }) => (
+  <label className={`flex items-start gap-3 rounded-xl border px-3 py-2.5 cursor-pointer select-none transition-colors ${checked ? 'border-emerald-200 bg-emerald-50/50' : 'border-slate-200 bg-white'}`}>
+    <span className="relative inline-flex items-center mt-0.5 shrink-0">
+      <input type="checkbox" checked={!!checked} onChange={e => onChange(e.target.checked)} className="peer sr-only" />
+      <span className="w-9 h-5 rounded-full bg-slate-300 peer-checked:bg-emerald-500 transition-colors" />
+      <span className="absolute left-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform peer-checked:translate-x-4" />
+    </span>
+    <span className="flex flex-col">
+      <span className="text-xs font-bold text-slate-700">{titulo} <span className={`ml-1 text-[10px] font-black uppercase ${checked ? 'text-emerald-600' : 'text-slate-400'}`}>{checked ? 'ON' : 'OFF'}</span></span>
+      <span className="text-[11px] text-slate-500 leading-snug">{checked ? on : off}</span>
+    </span>
+  </label>
+);
+
+// ── Modal Configurar Cuenta (billetera: nombre, interruptores y artículos de una cuenta secundaria) ──
+export const ModalConfigCuenta = ({ cuenta, onClose, onSuccess }) => {
+  const esUSD = cuenta?.CueTipo === 'DINERO_USD';
+  const [nombre, setNombre] = useState(cuenta?.CueNombre || '');
+  const [auto, setAuto] = useState(!!cuenta?.CueAutoConsumo);
+  const [neg, setNeg] = useState(!!cuenta?.CuePuedeNegativo);
+  const [modalidad, setModalidad] = useState(cuenta?.CueModalidadFiscal || 'ANTICIPO_A_FACTURAR');
+  const [articulos, setArticulos] = useState([]);
+  const [busqueda, setBusqueda] = useState('');
+  const [resultados, setResultados] = useState([]);
+  const [saving, setSaving] = useState(false);
+  // Libre ↔ restringida se puede cambiar acá (la lista de artículos se guarda aparte)
+  const [restringida, setRestringida] = useState(!!cuenta?.CueRestringida);
+
+  useEffect(() => {
+    if (!cuenta?.CueIdCuenta) return;
+    fetchAPI(`/api/contabilidad/cuentas/${cuenta.CueIdCuenta}/articulos-permitidos`)
+      .then(r => setArticulos((r.data || []).map(a => ({ IDArticulo: a.ProIdProducto, NombreArticulo: a.Descripcion || `#${a.ProIdProducto}` }))))
+      .catch(() => {});
+  }, [cuenta?.CueIdCuenta]);
+
+  const buscar = async (q) => {
+    setBusqueda(q);
+    if (!q || q.trim().length < 2) { setResultados([]); return; }
+    try {
+      const res = await fetchAPI(`/api/contabilidad/articulos?q=${encodeURIComponent(q.trim())}`);
+      setResultados((res.data || []).slice(0, 15));
+    } catch { setResultados([]); }
+  };
+
+  const guardar = async (e) => {
+    e.preventDefault();
+    if (!nombre.trim()) { toast.error('La cuenta necesita un nombre'); return; }
+    if (restringida && articulos.length === 0) { toast.error('Una cuenta restringida necesita al menos un artículo permitido'); return; }
+    setSaving(true);
+    try {
+      await fetchAPI(`/api/contabilidad/cuentas/${cuenta.CueIdCuenta}/configuracion`, {
+        method: 'PATCH',
+        body: JSON.stringify({ CueNombre: nombre.trim(), CueAutoConsumo: auto, CuePuedeNegativo: neg, CueRestringida: restringida, ...(modalidad !== (cuenta?.CueModalidadFiscal || 'ANTICIPO_A_FACTURAR') ? { CueModalidadFiscal: modalidad } : {}) }),
+      });
+      if (restringida) {
+        await fetchAPI(`/api/contabilidad/cuentas/${cuenta.CueIdCuenta}/articulos-permitidos`, {
+          method: 'PUT',
+          body: JSON.stringify({ Articulos: articulos.map(a => a.IDArticulo) }),
+        });
+      }
+      toast.success(`✅ "${nombre.trim()}" guardada: ${restringida ? `restringida a ${articulos.length} artículo(s)` : 'libre (paga cualquier artículo)'}, descuento automático ${auto ? 'ON' : 'OFF'}, negativo ${neg ? 'ON' : 'OFF'}.`);
+      onSuccess?.();
+      onClose();
+    } catch (err) { toast.error(err.message); }
+    finally { setSaving(false); }
+  };
+
+  if (!cuenta) return null;
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
+      onClick={e => e.target === e.currentTarget && onClose()}>
+      <div className="bg-[#f1f5f9] rounded-2xl shadow-2xl w-full max-w-lg mx-4 overflow-hidden max-h-[90vh] overflow-y-auto">
+        <div className="px-6 py-4 flex items-center justify-between bg-gradient-to-r from-slate-700 to-slate-900 text-white sticky top-0">
+          <div>
+            <p className="text-xs uppercase tracking-widest opacity-80">Cuenta #{cuenta.CueIdCuenta} · {esUSD ? 'US$' : '$'}</p>
+            <h2 className="text-lg font-bold mt-0.5">Configurar Cuenta</h2>
+            <p className="text-[11px] mt-1 opacity-90">{restringida ? '🔒 RESTRINGIDA: solo paga los artículos de su lista' : '🔓 LIBRE: paga cualquier orden del cliente, de cualquier artículo'}</p>
+          </div>
+          <button onClick={onClose} className="p-1.5 hover:bg-white/20 rounded-lg"><X size={16} /></button>
+        </div>
+        <form onSubmit={guardar} className="px-6 py-5 space-y-4">
+          <div>
+            <label className="block text-xs font-semibold text-slate-600 mb-2">Nombre de la cuenta</label>
+            <input value={nombre} onChange={e => setNombre(e.target.value)}
+              className="w-full text-sm border border-slate-200 rounded-lg px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-slate-400/30" />
+          </div>
+          <ModalidadFiscalSelector value={modalidad} onChange={setModalidad}
+            nota="La modalidad solo se puede cambiar mientras la cuenta no tenga movimientos. Si ya los tiene, el sistema lo va a rechazar: creá otra cuenta." />
+          <SwitchCuenta checked={auto} onChange={setAuto}
+            titulo="Descuento automático"
+            on="ON: cuando entra una orden que esta cuenta puede pagar, se descuenta SOLA (como el rollo). No pasa por caja."
+            off="OFF: nunca se descuenta sola. Solo se usa si el cajero la elige como medio de pago al cobrar." />
+          <SwitchCuenta checked={neg} onChange={setNeg}
+            titulo="Acepta saldo negativo (solo clientes SEMANALES)"
+            on="ON: si no alcanza, descuenta igual y la cuenta queda en rojo (se compensa con la próxima carga). Solo tiene efecto en clientes semanales y en descuentos del sistema — como medio de pago, y para clientes comunes, el saldo nunca queda en negativo."
+            off="OFF: descuenta solo lo que hay; lo que falta sigue el camino normal y se cobra en caja." />
+          <SwitchCuenta checked={restringida} onChange={setRestringida}
+            titulo="Restringida a ciertos artículos"
+            on="ON: esta cuenta SOLO paga órdenes de los artículos de la lista de abajo. Cualquier otro artículo la ignora."
+            off="OFF (libre): paga cualquier orden del cliente, sea del artículo que sea. Con descuento automático ON, ninguna orden llega a caja." />
+          {restringida && (
+            <div className="border border-violet-200 rounded-xl p-3 bg-violet-50/40 space-y-2">
+              <label className="block text-xs font-semibold text-violet-700">Artículos que esta cuenta puede pagar ({articulos.length}) — mínimo 1</label>
+              <div className="flex flex-wrap gap-1.5">
+                {articulos.map(a => (
+                  <span key={a.IDArticulo} className="inline-flex items-center gap-1 text-[11px] font-semibold bg-white border border-violet-200 text-violet-700 rounded-full px-2 py-0.5">
+                    {a.NombreArticulo}
+                    <button type="button" onClick={() => setArticulos(prev => prev.filter(x => x.IDArticulo !== a.IDArticulo))} className="hover:text-rose-600"><X size={11} /></button>
+                  </span>
+                ))}
+              </div>
+              <input value={busqueda} onChange={e => buscar(e.target.value)} placeholder="Agregar artículo por nombre o código…"
+                className="w-full text-xs border border-violet-200 rounded-lg px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-violet-400/30" />
+              {resultados.length > 0 && (
+                <div className="max-h-40 overflow-y-auto divide-y divide-violet-100 border border-violet-100 rounded-lg bg-white">
+                  {resultados.map(r => (
+                    <button type="button" key={r.IDArticulo}
+                      onClick={() => { if (!articulos.some(a => a.IDArticulo === r.IDArticulo)) setArticulos(prev => [...prev, { IDArticulo: r.IDArticulo, NombreArticulo: r.NombreArticulo }]); setBusqueda(''); setResultados([]); }}
+                      className="w-full text-left px-3 py-1.5 text-xs hover:bg-violet-50 transition-colors">
+                      <span className="font-semibold text-slate-700">{r.NombreArticulo}</span>
+                      <span className="text-slate-400 ml-2 font-mono">{r.CodigoArticulo}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+          <div className="flex gap-2 pt-2">
+            <button type="button" onClick={onClose}
+              className="flex-1 px-4 py-2.5 text-xs font-bold uppercase tracking-widest bg-slate-100 text-slate-600 rounded-lg hover:bg-slate-200 transition-colors">Cancelar</button>
+            <button type="submit" disabled={saving}
+              className="flex-1 px-4 py-2.5 text-xs font-bold uppercase tracking-widest bg-slate-800 text-white rounded-lg hover:bg-slate-900 transition-colors disabled:opacity-50">
+              {saving ? 'Guardando…' : 'Guardar'}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+};
+
+// ── Gestor de CUENTAS del cliente (billetera): lista + crear + editar ────────
+export const ModalCuentasCliente = ({ cliente, onClose, onChanged }) => {
+  const [cuentas, setCuentas] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [nueva, setNueva] = useState(false);   // ModalNuevaCuenta
+  const [editar, setEditar] = useState(null);  // ModalConfigCuenta (cuenta)
+  // Visibilidad de la billetera en el PORTAL (Clientes.CliBilleteraPortal):
+  // null = cargando; true/false = estado real. Solo visibilidad web — el descuento
+  // automático interno no cambia con este switch.
+  const [portalHab, setPortalHab] = useState(null);
+  const [portalBusy, setPortalBusy] = useState(false);
+  const fmtN = (n) => Number(n || 0).toLocaleString('es-UY', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+  useEffect(() => {
+    if (!cliente?.CliIdCliente) return;
+    fetchAPI(`/api/contabilidad/clientes/${cliente.CliIdCliente}/billetera-portal`)
+      .then(r => setPortalHab(!!r.habilitada))
+      .catch(() => setPortalHab(null));
+  }, [cliente?.CliIdCliente]);
+
+  const togglePortal = async () => {
+    if (portalBusy || portalHab === null) return;
+    setPortalBusy(true);
+    try {
+      const r = await fetchAPI(`/api/contabilidad/clientes/${cliente.CliIdCliente}/billetera-portal`, {
+        method: 'POST', body: JSON.stringify({ habilitada: !portalHab }),
+      });
+      setPortalHab(!!r.habilitada);
+      toast.success(r.message || (r.habilitada ? 'Billetera visible en el portal.' : 'Billetera oculta en el portal.'));
+    } catch (e) { toast.error(e.message); }
+    finally { setPortalBusy(false); }
+  };
+
+  const cargar = useCallback(async () => {
+    if (!cliente?.CliIdCliente) return;
+    setLoading(true);
+    try {
+      // incluirCerradas=1: el gestor muestra también las cerradas (grisadas, con "Reabrir")
+      const r = await fetchAPI(`/api/contabilidad/cuentas/${cliente.CliIdCliente}?incluirCerradas=1`);
+      setCuentas((r.data || []).filter(c => String(c.CueTipo || '').startsWith('DINERO'))
+        .sort((a, b) => Number(b.CueEsPrincipal || 0) - Number(a.CueEsPrincipal || 0) || Number(b.CueActiva !== false) - Number(a.CueActiva !== false) || a.CueIdCuenta - b.CueIdCuenta));
+    } catch (e) { toast.error(e.message); }
+    finally { setLoading(false); }
+  }, [cliente?.CliIdCliente]);
+
+  // Cerrar (saldo 0 obligatorio) / reabrir una cuenta secundaria
+  const cerrarReabrir = async (c, cerrar) => {
+    const nom = c.CueNombre || `Cuenta #${c.CueIdCuenta}`;
+    if (cerrar) {
+      if (Math.abs(Number(c.CueSaldoActual || 0)) > 0.01) { toast.error(`"${nom}" tiene saldo: transferilo a otra cuenta antes de cerrarla.`); return; }
+      if (!window.confirm(`Cerrar la cuenta "${nom}":\n\n• Deja de aparecer en la billetera, los selectores y los descuentos automáticos.\n• Su historial se conserva y se puede reabrir desde este mismo gestor.\n\n¿Confirmás?`)) return;
+    }
+    try {
+      const r = await fetchAPI(`/api/contabilidad/cuentas/${c.CueIdCuenta}/configuracion`, {
+        method: 'PATCH', body: JSON.stringify({ CueActiva: !cerrar }),
+      });
+      toast.success(r.message || (cerrar ? `Cuenta "${nom}" cerrada.` : `Cuenta "${nom}" reabierta.`));
+      await cargar(); onChanged?.();
+    } catch (e) { toast.error(e.message); }
+  };
+  useEffect(() => { cargar(); }, [cargar]);
+
+  const refrescar = async () => { await cargar(); onChanged?.(); };
+
+  return (
+    <>
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={e => e.target === e.currentTarget && onClose()}>
+        <div className="bg-[#f1f5f9] rounded-2xl shadow-2xl w-full max-w-2xl mx-4 overflow-hidden max-h-[90vh] flex flex-col">
+          <div className="px-6 py-4 flex items-center justify-between bg-gradient-to-r from-violet-600 to-indigo-700 text-white">
+            <div>
+              <p className="text-xs uppercase tracking-widest opacity-80">{cliente?.Nombre}</p>
+              <h2 className="text-lg font-bold mt-0.5">Cuentas del cliente</h2>
+            </div>
+            <div className="flex items-center gap-2">
+              <button onClick={() => setNueva(true)}
+                className="flex items-center gap-1 px-3 py-1.5 text-xs font-bold bg-white/20 hover:bg-white/30 rounded-lg transition-colors">
+                <Plus size={13} /> Nueva cuenta
+              </button>
+              <button onClick={onClose} className="p-1.5 hover:bg-white/20 rounded-lg"><X size={16} /></button>
+            </div>
+          </div>
+          <div className="p-4 overflow-y-auto space-y-2">
+            {/* Visibilidad de la billetera en el portal del cliente (por cliente) */}
+            <div className="bg-white rounded-xl border border-slate-200 px-4 py-3 flex items-center gap-3">
+              <div className={`w-9 h-9 rounded-lg flex items-center justify-center shrink-0 ${portalHab ? 'bg-cyan-100 text-cyan-600' : 'bg-slate-100 text-slate-400'}`}>
+                <Globe size={16} />
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-black text-slate-800">Billetera visible en el portal</p>
+                <p className="text-[11px] text-slate-400 mt-0.5">
+                  {portalHab === null ? 'Cargando…'
+                    : portalHab
+                      ? 'El cliente VE "Mi billetera" en su portal: puede recargar (con factura automática), ver movimientos, bajar comprobantes y cubrir pedidos con su saldo.'
+                      : 'El cliente NO ve la billetera en su portal (ni recarga ni cobertura de pedidos desde la web). El descuento automático interno sigue funcionando igual.'}
+                </p>
+              </div>
+              <button onClick={togglePortal} disabled={portalBusy || portalHab === null}
+                title={portalHab ? 'Ocultar la billetera en el portal de este cliente' : 'Mostrar la billetera en el portal de este cliente'}
+                className={`relative w-11 h-6 rounded-full transition-colors shrink-0 disabled:opacity-50 ${portalHab ? 'bg-cyan-500' : 'bg-slate-300'}`}>
+                <span className={`absolute top-0.5 w-5 h-5 bg-white rounded-full shadow transition-all ${portalHab ? 'left-[22px]' : 'left-0.5'}`} />
+              </button>
+            </div>
+            {loading && <p className="text-sm text-slate-500 text-center py-6">Cargando…</p>}
+            {!loading && cuentas.map(c => {
+              const esUSD = c.CueTipo === 'DINERO_USD';
+              const mod = MODALIDAD_FISCAL[c.CueModalidadFiscal] || MODALIDAD_FISCAL.ANTICIPO_A_FACTURAR;
+              const cerrada = c.CueActiva === false;
+              return (
+                <div key={c.CueIdCuenta} className={`bg-white rounded-xl border border-slate-200 px-4 py-3 flex items-center gap-3 ${cerrada ? 'opacity-60' : ''}`}>
+                  <div className={`w-9 h-9 rounded-lg flex items-center justify-center shrink-0 ${c.CueEsPrincipal ? 'bg-indigo-100 text-indigo-600' : cerrada ? 'bg-slate-100 text-slate-400' : 'bg-violet-100 text-violet-600'}`}>
+                    <Wallet size={16} />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      {/* Código único de la cuenta: se forma solo (tipo + moneda + id), como PC-/SUB- */}
+                      <span className="text-[10px] font-mono font-black text-violet-600 bg-violet-50 border border-violet-100 px-1.5 py-0.5 rounded" title="Código único de la cuenta (tipo + moneda + id interno; no cambia nunca)">{codigoCuenta(c)}</span>
+                      <span className="text-sm font-black text-slate-800">{c.CueNombre || (c.CueEsPrincipal ? `Cuenta principal ${esUSD ? 'US$' : '$'}` : `Cuenta #${c.CueIdCuenta}`)}</span>
+                      <span className="text-[10px] font-bold text-slate-400">{esUSD ? 'US$' : '$'}</span>
+                      {!!c.CueEsPrincipal && <span className="text-[9px] font-black uppercase px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-600 border border-indigo-100">Principal</span>}
+                      {cerrada && <span className="text-[9px] font-black uppercase px-1.5 py-0.5 rounded bg-slate-100 text-slate-500 border border-slate-200">Cerrada</span>}
+                    </div>
+                    {c.CueEsPrincipal ? (
+                      <p className="text-[11px] text-slate-400 mt-0.5">La cuenta del sistema: facturas, cobros, cruces y saldo a favor. No se configura.</p>
+                    ) : (
+                      <div className="flex items-center gap-1.5 flex-wrap mt-1">
+                        <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded border ${mod.badge}`}>{mod.corto}</span>
+                        <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded border ${c.CueRestringida ? 'bg-violet-50 text-violet-700 border-violet-200' : 'bg-slate-50 text-slate-500 border-slate-200'}`}>{c.CueRestringida ? '🔒 restringida' : '🔓 libre'}</span>
+                        <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded border ${c.CueAutoConsumo ? 'bg-amber-50 text-amber-700 border-amber-200' : 'bg-slate-50 text-slate-400 border-slate-200'}`}>⚡ automático {c.CueAutoConsumo ? 'ON' : 'OFF'}</span>
+                        <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded border ${c.CuePuedeNegativo ? 'bg-rose-50 text-rose-600 border-rose-200' : 'bg-slate-50 text-slate-400 border-slate-200'}`}>negativo {c.CuePuedeNegativo ? 'ON' : 'OFF'}</span>
+                      </div>
+                    )}
+                  </div>
+                  <span className={`font-mono font-black text-sm ${Number(c.CueSaldoActual) < 0 ? 'text-rose-600' : 'text-slate-800'}`}>{esUSD ? 'US$' : '$'} {fmtN(c.CueSaldoActual)}</span>
+                  {!c.CueEsPrincipal && !cerrada && (
+                    <>
+                      <button onClick={() => setEditar(c)} title="Editar esta cuenta (nombre, modalidad, automático, negativo, artículos)"
+                        className="flex items-center gap-1 px-2.5 py-1.5 text-[11px] font-bold text-slate-600 bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors shrink-0">
+                        <Edit2 size={12} /> Editar
+                      </button>
+                      <button onClick={() => cerrarReabrir(c, true)}
+                        title={Math.abs(Number(c.CueSaldoActual || 0)) > 0.01 ? 'Para cerrarla primero transferí su saldo a otra cuenta' : 'Cerrar esta cuenta (deja de aparecer en la billetera; el historial se conserva y se puede reabrir)'}
+                        className="flex items-center gap-1 px-2.5 py-1.5 text-[11px] font-bold text-rose-600 bg-rose-50 hover:bg-rose-100 border border-rose-200 rounded-lg transition-colors shrink-0">
+                        <Lock size={12} /> Cerrar
+                      </button>
+                    </>
+                  )}
+                  {!c.CueEsPrincipal && cerrada && (
+                    <button onClick={() => cerrarReabrir(c, false)} title="Reabrir esta cuenta (vuelve a la billetera con su configuración anterior, salvo el descuento automático, que queda apagado)"
+                      className="flex items-center gap-1 px-2.5 py-1.5 text-[11px] font-bold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 rounded-lg transition-colors shrink-0">
+                      <Unlock size={12} /> Reabrir
+                    </button>
+                  )}
+                </div>
+              );
+            })}
+            {!loading && cuentas.length === 0 && <p className="text-sm text-slate-400 text-center py-6">Sin cuentas de dinero.</p>}
+          </div>
+        </div>
+      </div>
+      {nueva && <ModalNuevaCuenta cliente={cliente} onClose={() => setNueva(false)} onSuccess={refrescar} />}
+      {editar && <ModalConfigCuenta cuenta={editar} onClose={() => setEditar(null)} onSuccess={refrescar} />}
+    </>
+  );
+};
+
+// ── Modal VENTA DE SALDO (carga de una cuenta PREPAGO FACTURADO con factura general) ──
+// Paso 1 (acá): cuenta prepago destino, importe y de dónde sale la plata.
+// Paso 2: se abre la factura manual ya armada (1 línea "Crédito prepago", paga).
+// Paso 3: al emitirla, /carga-prepago anota CARGA_PREPAGO en la cuenta (y la salida de la
+//         principal si la plata venía del saldo a favor).
+export const ModalVentaSaldo = ({ cliente, cuentaPreset = null, onClose, onSuccess }) => {
+  const [cuentas, setCuentas] = useState([]);
+  const [metodoSaldoId, setMetodoSaldoId] = useState(null);
+  const [cueId, setCueId] = useState(cuentaPreset?.CueIdCuenta ? String(cuentaPreset.CueIdCuenta) : '');
+  const [importe, setImporte] = useState('');
+  const [origen, setOrigen] = useState('CAJA');
+  const [factModal, setFactModal] = useState(null);
+  // Crear la cuenta prepago acá mismo (sin salir a "Nueva Cuenta")
+  const [nuevaCta, setNuevaCta] = useState(null); // { nombre, moneda: '1'|'2' }
+  const [creando, setCreando] = useState(false);
+  const fmtN = (n) => Number(n || 0).toLocaleString('es-UY', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+  const cargarCuentas = () => fetchAPI(`/api/contabilidad/cuentas/${cliente.CliIdCliente}`).then(r => { setCuentas(r.data || []); return r.data || []; }).catch(() => []);
+  const crearCuentaPrepago = async () => {
+    if (!nuevaCta?.nombre?.trim()) { toast.error('Poné un nombre a la cuenta (ej: "Saldo prepago 2026")'); return; }
+    setCreando(true);
+    try {
+      const r = await fetchAPI('/api/contabilidad/cuentas', {
+        method: 'POST',
+        body: JSON.stringify({
+          CliIdCliente: cliente.CliIdCliente,
+          CueTipo: nuevaCta.moneda === '2' ? 'DINERO_USD' : 'DINERO_UYU', MonIdMoneda: Number(nuevaCta.moneda),
+          CueNombre: nuevaCta.nombre.trim(), CueRestringida: false,
+          CueModalidadFiscal: 'PREPAGO_FACTURADO', CueAutoConsumo: true, CuePuedeNegativo: true,
+        }),
+      });
+      const id = r.data?.CueIdCuenta;
+      await cargarCuentas();
+      if (id) setCueId(String(id));
+      setNuevaCta(null);
+      toast.success(`✅ Cuenta prepago "${nuevaCta.nombre.trim()}" creada (descuento automático ON, acepta negativo ON — como el rollo). Ya está seleccionada.`);
+    } catch (e) { toast.error(e.message); }
+    finally { setCreando(false); }
+  };
+
+  useEffect(() => {
+    if (!cliente?.CliIdCliente) return;
+    cargarCuentas();
+    fetchAPI('/api/contabilidad/metodos-pago').then(r => {
+      const lista = r.data || r || [];
+      const m = (Array.isArray(lista) ? lista : []).find(x => /saldo de cuenta/i.test(x.MPaDescripcionMetodo || ''));
+      setMetodoSaldoId(m?.MPaIdMetodoPago || null);
+    }).catch(() => {});
+  }, [cliente?.CliIdCliente]);
+
+  const prepagos = cuentas.filter(c => String(c.CueTipo || '').startsWith('DINERO') && !c.CueEsPrincipal && c.CueModalidadFiscal === 'PREPAGO_FACTURADO');
+  const cta = prepagos.find(c => String(c.CueIdCuenta) === String(cueId));
+  const esUSD = cta?.CueTipo === 'DINERO_USD';
+  const sim = esUSD ? 'US$' : '$';
+  const principal = cta ? cuentas.find(c => c.CueEsPrincipal && c.CueTipo === cta.CueTipo) : null;
+  const dispPrincipal = Number(principal?.CueSaldoActual || 0);
+  const imp = parseFloat(importe) || 0;
+  const faltaSaldo = origen === 'SALDO_PRINCIPAL' && imp > dispPrincipal + 0.001;
+
+  const continuar = () => {
+    if (!cta) { toast.error('Elegí la cuenta prepago a cargar'); return; }
+    if (!(imp > 0)) { toast.error('El importe debe ser mayor a 0'); return; }
+    if (faltaSaldo) { toast.error(`La principal tiene ${sim} ${fmtN(dispPrincipal)} a favor: no alcanza para ${sim} ${fmtN(imp)}`); return; }
+    if (origen === 'SALDO_PRINCIPAL' && !metodoSaldoId) { toast.error('Falta el medio de pago "Saldo de cuenta" (corré el script SQL de billetera).'); return; }
+    const monId = esUSD ? 2 : 1;
+    setFactModal({
+      initialData: {
+        CliIdCliente: cliente.CliIdCliente, DocCliNombre: cliente.Nombre || '', DocCliNombreFantasia: cliente.NombreFantasia || '',
+        DocCliDocumento: cliente.CioRuc || '', DocCliDireccion: cliente.DireccionTrabajo || '',
+        // Tipo por defecto: e-Factura contado si hay RUT, si no e-Ticket contado (se puede cambiar en el modal)
+        DocTipo: (cliente.CioRuc && String(cliente.CioRuc).replace(/\D/g, '').length === 12) ? '01' : '07',
+        MonIdMoneda: monId, lockMoneda: true, DocPagado: true,
+        ...(origen === 'SALDO_PRINCIPAL' ? { MetodoPagoId: String(metodoSaldoId), lockMedioPago: true, pagos: [{ metodoPagoId: metodoSaldoId, monedaId: monId, monto: imp.toFixed(2) }] } : {}),
+        lineas: [{ DcdNomItem: `Crédito prepago de servicios — carga de saldo "${cta.CueNombre || '#' + cta.CueIdCuenta}"`, DcdCantidad: 1, DcdTotal: imp, DcdSubtotal: imp / 1.22, DcdImpuestos: imp - imp / 1.22 }],
+      },
+    });
+  };
+  const cargar = async (resp) => {
+    const docId = resp?.docId;
+    if (!docId) { toast.warning('La factura se emitió pero no devolvió su número interno. NO la vuelvas a emitir: cargala desde el libro de la cuenta con "Vincular factura emitida".', { duration: 30000 }); setFactModal(null); onSuccess?.(); onClose(); return; }
+    try {
+      const r = await fetchAPI(`/api/contabilidad/cuentas/${cta.CueIdCuenta}/carga-prepago`, { method: 'POST', body: JSON.stringify({ DocIdDocumento: docId, origen }) });
+      toast.success(r.message || 'Saldo cargado');
+      onSuccess?.(); onClose();
+    } catch (e) {
+      // La factura YA existe: se cierra todo para que no se pueda volver a emitir desde acá.
+      // Aviso persistente con el camino de recuperación ("Vincular factura emitida" en el libro).
+      toast.error(`⚠ La factura se emitió, pero el saldo NO se cargó en la cuenta: ${e.message}\n\nNO la vuelvas a emitir. Para resolverlo: libro de la cuenta → "Vincular factura emitida" (si la factura está en la moneda de la cuenta) o anulá la factura desde la bandeja y repetí la Venta de saldo.`, { duration: 30000 });
+      setFactModal(null);
+      onSuccess?.(); onClose();
+    }
+  };
+
+  return (
+    <>
+      {!factModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={e => e.target === e.currentTarget && onClose()}>
+          <div className="bg-[#f1f5f9] rounded-2xl shadow-2xl w-full max-w-lg mx-4 overflow-hidden max-h-[90vh] overflow-y-auto">
+            <div className="px-6 py-4 flex items-center justify-between bg-gradient-to-r from-emerald-600 to-teal-700 text-white sticky top-0">
+              <div>
+                <p className="text-xs uppercase tracking-widest opacity-80">{cliente?.Nombre}</p>
+                <h2 className="text-lg font-bold mt-0.5">Venta de saldo (prepago facturado)</h2>
+              </div>
+              <button onClick={onClose} className="p-1.5 hover:bg-white/20 rounded-lg"><X size={16} /></button>
+            </div>
+            <div className="px-6 py-5 space-y-4">
+              <p className="text-[11px] text-slate-600 bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2">
+                Como la venta de rollo, pero en plata: se emite una <strong>factura general</strong> por el importe y ese saldo queda en la cuenta prepago. Lo que se consuma de esa cuenta <strong>no se vuelve a facturar</strong>.
+              </p>
+              <div>
+                <div className="flex items-center justify-between mb-2">
+                  <label className="block text-xs font-semibold text-slate-600">Cuenta prepago a cargar</label>
+                  {!nuevaCta && (
+                    <button type="button" onClick={() => setNuevaCta({ nombre: '', moneda: '2' })}
+                      className="text-[11px] font-bold text-emerald-700 hover:text-emerald-900 underline">+ Crear cuenta prepago acá</button>
+                  )}
+                </div>
+                {prepagos.length === 0 && !nuevaCta && (
+                  <p className="text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mb-2">
+                    El cliente todavía no tiene cuentas <strong>prepago facturadas</strong> (Hexagonal, milan saldo, etc. son de <em>anticipo</em>). Creala con el botón de arriba y seguí.
+                  </p>
+                )}
+                {nuevaCta && (
+                  <div className="border border-emerald-200 bg-emerald-50/50 rounded-xl p-3 space-y-2 mb-2">
+                    <p className="text-[11px] text-emerald-800 font-semibold">Nueva cuenta prepago facturada (descuento automático ON · acepta negativo ON — como el rollo)</p>
+                    <input value={nuevaCta.nombre} onChange={e => setNuevaCta(x => ({ ...x, nombre: e.target.value }))} placeholder='Nombre, ej: "Saldo prepago 2026"'
+                      className="w-full text-sm border border-emerald-200 rounded-lg px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-emerald-400/30" />
+                    <div className="grid grid-cols-2 gap-2">
+                      {[{ v: '1', l: 'UYU  $' }, { v: '2', l: 'USD  US$' }].map(op => (
+                        <button type="button" key={op.v} onClick={() => setNuevaCta(x => ({ ...x, moneda: op.v }))}
+                          className={`px-3 py-2 rounded-lg text-xs font-semibold border transition-all ${nuevaCta.moneda === op.v ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-white text-slate-600 border-slate-200 hover:border-emerald-300'}`}>
+                          {op.l}
+                        </button>
+                      ))}
+                    </div>
+                    <div className="flex gap-2 justify-end">
+                      <button type="button" onClick={() => setNuevaCta(null)} className="px-3 py-1.5 text-xs font-semibold text-slate-600 bg-slate-100 hover:bg-slate-200 rounded-lg">Cancelar</button>
+                      <button type="button" onClick={crearCuentaPrepago} disabled={creando || !nuevaCta.nombre.trim()} className="px-3 py-1.5 text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg disabled:opacity-50">{creando ? 'Creando…' : 'Crear y usar esta cuenta'}</button>
+                    </div>
+                  </div>
+                )}
+                {prepagos.length > 0 && (
+                  <select value={cueId} onChange={e => setCueId(e.target.value)} className="w-full text-sm border border-slate-200 rounded-lg px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-emerald-400/30">
+                    <option value="">— Elegir cuenta —</option>
+                    {prepagos.map(c => <option key={c.CueIdCuenta} value={c.CueIdCuenta}>{codigoCuenta(c)} · {c.CueNombre || `Cuenta #${c.CueIdCuenta}`} — {c.CueTipo === 'DINERO_USD' ? 'US$' : '$'} (saldo {fmtN(c.CueSaldoActual)}){c.CueRestringida ? ' 🔒' : ''}</option>)}
+                  </select>
+                )}
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-slate-600 mb-2">Importe a cargar {cta ? `(${sim})` : ''}</label>
+                <input type="number" step="0.01" min="0" value={importe} onChange={e => setImporte(e.target.value)}
+                  className="w-full text-sm border border-slate-200 rounded-lg px-3 py-2 bg-white font-mono focus:outline-none focus:ring-2 focus:ring-emerald-400/30" />
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-slate-600 mb-2">¿De dónde sale la plata?</label>
+                <div className="space-y-1.5">
+                  <label className={`flex items-start gap-3 rounded-xl border px-3 py-2.5 cursor-pointer ${origen === 'CAJA' ? 'border-emerald-400 bg-emerald-50' : 'border-slate-200 bg-white'}`}>
+                    <input type="radio" checked={origen === 'CAJA'} onChange={() => setOrigen('CAJA')} className="mt-1" />
+                    <span><span className="text-sm font-bold text-slate-800">Cobrar ahora</span><span className="block text-[11px] text-slate-500">El cliente paga en este momento (efectivo, transferencia, cheque…). Lo elegís en el panel de pago de la factura.</span></span>
+                  </label>
+                  <label className={`flex items-start gap-3 rounded-xl border px-3 py-2.5 cursor-pointer ${origen === 'SALDO_PRINCIPAL' ? 'border-emerald-400 bg-emerald-50' : 'border-slate-200 bg-white'}`}>
+                    <input type="radio" checked={origen === 'SALDO_PRINCIPAL'} onChange={() => setOrigen('SALDO_PRINCIPAL')} className="mt-1" />
+                    <span><span className="text-sm font-bold text-slate-800">Del saldo a favor de la principal</span>
+                      <span className="block text-[11px] text-slate-500">Ya pagó antes (anticipo con recibo). La factura se marca paga con "Saldo de cuenta" y ese anticipo pasa a la cuenta prepago.{cta ? ` Disponible: ${sim} ${fmtN(dispPrincipal)}.` : ''}</span>
+                      {faltaSaldo && <span className="block text-[11px] text-rose-600 font-semibold">No alcanza: la principal tiene {sim} {fmtN(dispPrincipal)}.</span>}
+                    </span>
+                  </label>
+                </div>
+              </div>
+              <div className="flex gap-2 pt-1">
+                <button type="button" onClick={onClose} className="flex-1 px-4 py-2.5 text-xs font-bold uppercase tracking-widest bg-slate-100 text-slate-600 rounded-lg hover:bg-slate-200">Cancelar</button>
+                <button type="button" onClick={continuar} disabled={!cta || !(imp > 0) || faltaSaldo}
+                  className="flex-1 px-4 py-2.5 text-xs font-bold uppercase tracking-widest bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 disabled:opacity-50">Armar la factura →</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+      {factModal && (
+        <FacturacionManualModal initialData={factModal.initialData} onClose={() => setFactModal(null)} onSuccess={cargar} />
+      )}
+    </>
+  );
+};
+
+// ── Libro de una cuenta de DINERO secundaria (billetera) — espejo del libro del rollo ──
+// Fecha · Tipo · Documento · Concepto · Saldo Ini. · Debe · Haber · Saldo Fn. y, sobre
+// cada CONSUMO de orden: ✏️ editar importe · 🔄 revertir (plata vuelve + orden pendiente)
+// · 🗑 eliminar (plata vuelve, la orden NO cambia).
+export const LibroCuentaDinero = ({ cuenta, cliente, desde, hasta, onChanged }) => {
+  const [movs, setMovs] = useState([]);
+  const [arrastre, setArrastre] = useState(0);
+  const [loading, setLoading] = useState(false);
+  // Facturar consumos (solo cuentas ANTICIPO_A_FACTURAR)
+  const [factSel, setFactSel] = useState(null);     // { consumos, metodoSaldoId, cuentaInfo, seleccion:Set }
+  const [factModal, setFactModal] = useState(null); // initialData para FacturacionManualModal
+  const [ventaSaldo, setVentaSaldo] = useState(false); // cuentas PREPAGO: cargar con factura general
+  const [vincFact, setVincFact] = useState(null);        // recuperación: facturas pagas sin carga prepago
+  const modalidad = cuenta?.CueModalidadFiscal || 'ANTICIPO_A_FACTURAR';
+  const abrirVincular = async () => {
+    try {
+      const r = await fetchAPI(`/api/contabilidad/cuentas/${cuenta.CueIdCuenta}/facturas-para-cargar`);
+      if (!r.data?.length) { toast.info(`No hay facturas pagas en ${cuenta.CueTipo === 'DINERO_USD' ? 'US$' : '$'} de este cliente sin carga prepago. Si la factura salió en otra moneda, anulala y emitila de nuevo en la moneda de la cuenta.`, { duration: 12000 }); return; }
+      setVincFact({ lista: r.data, working: null });
+    } catch (e) { toast.error(e.message); }
+  };
+  const vincularFactura = async (d) => {
+    if (!window.confirm(`Cargar ${cuenta.CueTipo === 'DINERO_USD' ? 'US$' : '$'} ${Number(d.DocTotal).toFixed(2)} en "${cuenta.CueNombre || '#' + cuenta.CueIdCuenta}" con la factura ${d.DocSerie}-${d.DocNumero}${d.origenSugerido === 'SALDO_PRINCIPAL' ? ' (pagada con Saldo de cuenta: se descuenta del saldo a favor de la principal)' : ' (cobrada en caja)'}?`)) return;
+    setVincFact(v => ({ ...v, working: d.DocIdDocumento }));
+    try {
+      const r = await fetchAPI(`/api/contabilidad/cuentas/${cuenta.CueIdCuenta}/carga-prepago`, { method: 'POST', body: JSON.stringify({ DocIdDocumento: d.DocIdDocumento, origen: d.origenSugerido }) });
+      toast.success(r.message || 'Saldo cargado');
+      setVincFact(null); await cargar(); onChanged?.();
+    } catch (e) { toast.error(e.message, { duration: 12000 }); setVincFact(v => ({ ...v, working: null })); }
+  };
+  const esPrepago = modalidad === 'PREPAGO_FACTURADO';
+  const abrirFacturar = async () => {
+    try {
+      const r = await fetchAPI(`/api/contabilidad/cuentas/${cuenta.CueIdCuenta}/consumos-pendientes-facturar`);
+      const d = r.data || {};
+      if (!d.consumos?.length) { toast.info(d.motivo || 'No hay consumos pendientes de facturar en esta cuenta.'); return; }
+      if (!d.metodoSaldoId) { toast.error('Falta el medio de pago "Saldo de cuenta" (corré el script SQL de billetera).'); return; }
+      setFactSel({ ...d, seleccion: new Set(d.consumos.map(c => c.MovIdMovimiento)) });
+    } catch (e) { toast.error(e.message); }
+  };
+  const emitirFactura = () => {
+    const elegidos = factSel.consumos.filter(c => factSel.seleccion.has(c.MovIdMovimiento));
+    if (!elegidos.length) { toast.error('Elegí al menos un consumo'); return; }
+    const ci = factSel.cuenta || {};
+    setFactModal({
+      consumoIds: elegidos.map(c => c.MovIdMovimiento),
+      initialData: {
+        CliIdCliente: cuenta.CliIdCliente || cliente?.CliIdCliente || ci.CliIdCliente,
+        DocCliNombre: cliente?.Nombre || ci.CliNombre || '', DocCliNombreFantasia: cliente?.NombreFantasia || ci.CliNombreFantasia || '',
+        DocCliDocumento: cliente?.CioRuc || ci.CliRuc || '', DocCliDireccion: cliente?.DireccionTrabajo || ci.CliDireccion || '',
+        MonIdMoneda: cuenta.CueTipo === 'DINERO_USD' ? 2 : 1, lockMoneda: true, lockMedioPago: true,
+        DocPagado: true, MetodoPagoId: String(factSel.metodoSaldoId),
+        // Panel de pago ya armado: medio "Saldo de cuenta" por el total (no mueve caja)
+        pagos: [{ metodoPagoId: factSel.metodoSaldoId, monedaId: cuenta.CueTipo === 'DINERO_USD' ? 2 : 1, monto: elegidos.reduce((s, c) => s + c.importe, 0).toFixed(2) }],
+        lineas: elegidos.map(c => ({
+          DcdNomItem: `${c.codigo || ''} ${c.trabajo || ''}`.trim() || c.concepto, DcdCantidad: 1,
+          DcdTotal: c.importe, DcdSubtotal: c.importe / 1.22, DcdImpuestos: c.importe - c.importe / 1.22, OrdCodigoOrden: c.codigo || null,
+        })),
+      },
+    });
+    setFactSel(null);
+  };
+  const vincular = async (resp) => {
+    const docId = resp?.docId;
+    if (!docId) { toast.warning('La factura se emitió pero no devolvió su número interno: vinculala a mano desde la bandeja CFE.'); setFactModal(null); await cargar(); return; }
+    try {
+      const r = await fetchAPI(`/api/contabilidad/cuentas/${cuenta.CueIdCuenta}/vincular-factura-consumos`, {
+        method: 'POST', body: JSON.stringify({ DocIdDocumento: docId, consumoIds: factModal.consumoIds }),
+      });
+      toast.success(r.message || 'Consumos facturados');
+    } catch (e) { toast.error(`La factura se emitió, pero no se pudo vincular a los consumos: ${e.message}`); }
+    setFactModal(null); await cargar(); onChanged?.();
+  };
+  const [editar, setEditar] = useState(null);       // { mov, importe }
+  const [confirmar, setConfirmar] = useState(null); // { mov, modo: 'REVERTIR' | 'ELIMINAR' }
+  const [nueva, setNueva] = useState(null);         // "+ Nueva orden": { codigoOrden, nombreTrabajo, importe }
+  const [working, setWorking] = useState(false);
+  const sim = cuenta?.CueTipo === 'DINERO_USD' ? 'US$' : '$';
+  const guardarNueva = async () => {
+    if (!nueva?.codigoOrden?.trim() || !(parseFloat(nueva.importe) > 0)) { toast.error('Código de orden e importe mayor a 0'); return; }
+    setWorking(true);
+    try {
+      const r = await fetchAPI(`/api/contabilidad/cuentas/${cuenta.CueIdCuenta}/consumo-manual`, {
+        method: 'POST', body: JSON.stringify({ codigoOrden: nueva.codigoOrden.trim(), nombreTrabajo: nueva.nombreTrabajo?.trim() || '', importe: parseFloat(nueva.importe) }),
+      });
+      toast.success(r.message || 'Consumo registrado');
+      setNueva(null); await cargar(); onChanged?.();
+    } catch (e) { toast.error(e.message); }
+    finally { setWorking(false); }
+  };
+  const fmtN = (n) => Number(n || 0).toLocaleString('es-UY', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+  const cargar = useCallback(async () => {
+    if (!cuenta?.CueIdCuenta) return;
+    setLoading(true);
+    try {
+      const p = new URLSearchParams({ top: '500' });
+      if (desde) p.append('desde', desde);
+      if (hasta) p.append('hasta', hasta);
+      const r = await fetchAPI(`/api/contabilidad/cuentas/${cuenta.CueIdCuenta}/movimientos?${p}`);
+      setMovs(r.data || []);
+      setArrastre(Number(r.saldoArrastre || 0));
+    } catch (e) { toast.error(e.message); }
+    finally { setLoading(false); }
+  }, [cuenta?.CueIdCuenta, desde, hasta]);
+  useEffect(() => { cargar(); }, [cargar]);
+
+  // Saldo corrido propio (cronológico, solo movimientos vivos, sin ORDEN)
+  const filas = useMemo(() => {
+    const orden = [...movs].sort((a, b) => new Date(a.MovFecha) - new Date(b.MovFecha) || a.MovIdMovimiento - b.MovIdMovimiento);
+    let saldo = arrastre;
+    return orden.map(m => {
+      const imp = Number(m.MovImporte || 0);
+      const vivo = !m.MovAnulado && !['ORDEN', 'ORDEN_ANTICIPO'].includes(m.MovTipo);
+      const ini = saldo;
+      if (vivo) saldo = Math.round((saldo + imp) * 100) / 100;
+      return { ...m, _ini: ini, _fn: saldo, _debe: imp < 0 ? -imp : 0, _haber: imp > 0 ? imp : 0, _vivo: vivo };
+    }).reverse();
+  }, [movs, arrastre]);
+
+  const TIPO = {
+    CONSUMO_CUENTA: ['CONSUMO', 'bg-violet-50 text-violet-700'], ANTICIPO: ['ENTRADA', 'bg-emerald-50 text-emerald-700'],
+    CARGA_PREPAGO: ['CARGA FACTURADA', 'bg-emerald-50 text-emerald-700'],
+    TRANSFERENCIA_ENTRADA: ['TRANSF. ENTRADA', 'bg-sky-50 text-sky-700'], TRANSFERENCIA_SALIDA: ['TRANSF. SALIDA', 'bg-amber-50 text-amber-700'],
+    PAGO_SALDO: ['PAGO CON SALDO', 'bg-amber-50 text-amber-700'],
+    AJUSTE_POS: ['AJUSTE +', 'bg-slate-100 text-slate-700'], AJUSTE_NEG: ['AJUSTE −', 'bg-slate-100 text-slate-700'], PAGO: ['PAGO', 'bg-emerald-50 text-emerald-700'],
+  };
+  // Documento de la fila: el vinculado (RC-400, PC-2849…) o, si no hay, el código de orden del concepto
+  const codigoDe = (m) => {
+    const serie = String(m.DocSerie || '').trim(), num = String(m.DocNumero || '').trim();
+    if (serie && num) return `${serie}-${num}`;
+    return (m.MovConcepto || '').match(/^([A-Z]{2,8}-\d+)/)?.[1] || '—';
+  };
+  const descDe = (m) => (m.MovConcepto || '').replace(/^([A-Z]{2,8}-\d+)\s*[—-]?\s*/, '') || m.MovConcepto || '—';
+
+  const ejecutar = async () => {
+    if (!confirmar) return;
+    setWorking(true);
+    try {
+      const r = await fetchAPI(`/api/contabilidad/cuentas/consumos/${confirmar.mov.MovIdMovimiento}/revertir`, {
+        method: 'POST', body: JSON.stringify({ reactivarOrden: confirmar.modo === 'REVERTIR' }),
+      });
+      toast.success(r.message || 'Listo');
+      setConfirmar(null); await cargar(); onChanged?.();
+    } catch (e) { toast.error(e.message); }
+    finally { setWorking(false); }
+  };
+  const guardarEdicion = async () => {
+    if (!editar) return;
+    setWorking(true);
+    try {
+      const r = await fetchAPI(`/api/contabilidad/cuentas/consumos/${editar.mov.MovIdMovimiento}/editar`, {
+        method: 'POST', body: JSON.stringify({ importe: parseFloat(editar.importe) }),
+      });
+      toast.success(r.message || 'Consumo actualizado');
+      setEditar(null); await cargar(); onChanged?.();
+    } catch (e) { toast.error(e.message); }
+    finally { setWorking(false); }
+  };
+
+  return (
+    <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+      <div className="flex items-center justify-between px-4 py-2.5 bg-violet-50/60 border-b border-violet-100">
+        <div className="flex items-center gap-2">
+          <Wallet size={14} className="text-violet-600" />
+          <span className="text-[10px] font-mono font-black text-violet-600 bg-white border border-violet-200 px-1.5 py-0.5 rounded" title="Código único de la cuenta (tipo + moneda + id interno)">{codigoCuenta(cuenta)}</span>
+          <span className="text-xs font-black text-slate-700">{cuenta.CueNombre || `Cuenta #${cuenta.CueIdCuenta}`}</span>
+          {!!cuenta.CueRestringida && <span className="text-[10px] font-bold text-violet-600">🔒 restringida</span>}
+          {!!cuenta.CueAutoConsumo && <span className="text-[10px] font-bold text-amber-600">⚡ descuento automático</span>}
+          {!!cuenta.CuePuedeNegativo && <span className="text-[10px] font-bold text-slate-500">acepta negativo</span>}
+          <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded border ${(MODALIDAD_FISCAL[modalidad] || MODALIDAD_FISCAL.ANTICIPO_A_FACTURAR).badge}`} title={(MODALIDAD_FISCAL[modalidad] || MODALIDAD_FISCAL.ANTICIPO_A_FACTURAR).desc}>
+            {(MODALIDAD_FISCAL[modalidad] || MODALIDAD_FISCAL.ANTICIPO_A_FACTURAR).corto}
+          </span>
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="text-xs text-slate-500">Saldo: <strong className={`font-mono ${(filas[0]?._fn ?? arrastre) < 0 ? 'text-rose-600' : 'text-violet-700'}`}>{sim} {fmtN(filas[0]?._fn ?? arrastre)}</strong></span>
+          {esPrepago && (
+            <>
+              <button type="button" onClick={() => setVentaSaldo(true)}
+                title="Cargar saldo a esta cuenta con una factura general (cobrando ahora o desde el saldo a favor de la principal)"
+                className="flex items-center gap-1 px-2 py-1 text-[11px] font-semibold bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg transition-colors">
+                <DollarSign size={11} /> Venta de saldo
+              </button>
+              <button type="button" onClick={abrirVincular}
+                title="Si una factura de carga ya se emitió pero el saldo no entró a la cuenta (ej. error al vincular), elegila acá para cargarla"
+                className="flex items-center gap-1 px-2 py-1 text-[11px] font-semibold bg-white border border-emerald-300 text-emerald-700 hover:bg-emerald-50 rounded-lg transition-colors">
+                <FileText size={11} /> Vincular factura emitida
+              </button>
+            </>
+          )}
+          {!esPrepago && (() => {
+            const pend = movs.filter(m => m.MovTipo === 'CONSUMO_CUENTA' && !m.MovAnulado && !m.DocIdDocumento).length;
+            return (
+              <button type="button" onClick={abrirFacturar}
+                title="Emitir la factura de los consumos que todavía no se facturaron. La factura nace PAGA con el saldo de esta cuenta (medio: Saldo de cuenta)."
+                className={`flex items-center gap-1 px-2 py-1 text-[11px] font-semibold rounded-lg transition-colors ${pend > 0 ? 'bg-emerald-600 hover:bg-emerald-700 text-white' : 'bg-slate-100 text-slate-400'}`}>
+                <FileText size={11} /> Facturar consumos{pend > 0 ? ` (${pend})` : ''}
+              </button>
+            );
+          })()}
+          <button type="button" onClick={() => setNueva({ codigoOrden: '', nombreTrabajo: '', importe: '' })}
+            title="Registrar a mano un consumo de esta cuenta por una orden (si la orden existe y está pendiente de facturar, queda paga)"
+            className="flex items-center gap-1 px-2 py-1 text-[11px] font-semibold bg-violet-600 hover:bg-violet-700 text-white rounded-lg transition-colors">
+            <Plus size={11} /> Nueva orden
+          </button>
+          {/* Imprimir SOLO esta cuenta — mismo PDF que el del rollo, con el período elegido */}
+          <button type="button"
+            title={`Imprimir el estado de cuenta SOLO de "${cuenta.CueNombre || `cuenta #${cuenta.CueIdCuenta}`}" (PDF del período elegido)`}
+            onClick={async () => {
+              const t = toast.loading('Generando PDF del estado de cuenta…');
+              try {
+                const p = new URLSearchParams({ top: 500 });
+                if (desde) p.append('desde', desde);
+                if (hasta) p.append('hasta', hasta);
+                const resp = await fetchAPI(`/api/contabilidad/cuentas/${cuenta.CueIdCuenta}/movimientos?${p}`);
+                const sec = { [cuenta.CueIdCuenta]: { cue: cuenta, movs: resp.data || [], saldoArrastre: Number(resp.saldoArrastre ?? 0) } };
+                generarPdfEstadoCuenta(cliente || { Nombre: 'Cliente', CliIdCliente: cuenta.CliIdCliente }, [cuenta], sec, [], desde, hasta);
+                toast.success('PDF descargado', { id: t });
+              } catch (err) { toast.error('Error al generar PDF: ' + err.message, { id: t }); }
+            }}
+            className="p-1.5 bg-white border border-slate-200 text-slate-500 hover:text-violet-700 hover:border-violet-300 rounded-lg transition-colors">
+            <Printer size={13} />
+          </button>
+        </div>
+      </div>
+
+      {/* Facturar consumos: elegir cuáles → factura manual prefijada (paga con "Saldo de cuenta") → vincular */}
+      {factSel && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={e => e.target === e.currentTarget && setFactSel(null)}>
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg mx-4 overflow-hidden max-h-[90vh] flex flex-col">
+            <div className="flex items-center justify-between px-5 py-4 bg-emerald-600 text-white">
+              <div className="flex items-center gap-2"><FileText size={16} /><span className="font-bold text-sm">Facturar consumos de {cuenta.CueNombre || `cuenta #${cuenta.CueIdCuenta}`}</span></div>
+              <button onClick={() => setFactSel(null)} className="p-1 hover:bg-emerald-500 rounded-lg"><X size={14} /></button>
+            </div>
+            <div className="px-5 py-4 overflow-y-auto space-y-2">
+              <p className="text-[11px] text-slate-600 bg-slate-50 rounded-lg px-3 py-2">
+                Elegí qué consumos van en la factura. Se abre la factura ya armada (una línea por orden) y marcada <strong>PAGA</strong> con el medio <strong>"Saldo de cuenta"</strong>: no mueve caja, la plata ya salió de esta cuenta al consumir. Al emitirla, los consumos pasan a <strong>Facturada</strong>.
+              </p>
+              {factSel.consumos.map(c => (
+                <label key={c.MovIdMovimiento} className="flex items-center gap-3 rounded-lg border border-slate-200 px-3 py-2 cursor-pointer hover:bg-slate-50">
+                  <input type="checkbox" checked={factSel.seleccion.has(c.MovIdMovimiento)}
+                    onChange={e => setFactSel(s => { const n = new Set(s.seleccion); e.target.checked ? n.add(c.MovIdMovimiento) : n.delete(c.MovIdMovimiento); return { ...s, seleccion: n }; })} />
+                  <span className="flex-1 min-w-0">
+                    <span className="text-sm font-bold text-slate-800">{c.codigo || '—'}</span>
+                    <span className="text-xs text-slate-500 ml-2 truncate">{c.trabajo}</span>
+                    <span className="block text-[10px] text-slate-400">{fmtFecha(c.fecha)}</span>
+                  </span>
+                  <span className="font-mono font-bold text-slate-800">{sim} {fmtN(c.importe)}</span>
+                </label>
+              ))}
+            </div>
+            <div className="px-5 py-4 border-t border-slate-100 flex items-center justify-between gap-3">
+              <span className="text-sm text-slate-600">Total a facturar: <strong className="font-mono text-slate-900">{sim} {fmtN(factSel.consumos.filter(c => factSel.seleccion.has(c.MovIdMovimiento)).reduce((s, c) => s + c.importe, 0))}</strong></span>
+              <div className="flex gap-2">
+                <button onClick={() => setFactSel(null)} className="px-4 py-2 text-xs font-semibold text-slate-600 bg-slate-100 hover:bg-slate-200 rounded-lg">Cancelar</button>
+                <button onClick={emitirFactura} disabled={factSel.seleccion.size === 0} className="px-4 py-2 text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg disabled:opacity-50">Armar la factura →</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+      {factModal && (
+        <FacturacionManualModal
+          initialData={factModal.initialData}
+          onClose={() => setFactModal(null)}
+          onSuccess={vincular}
+        />
+      )}
+      {ventaSaldo && (
+        <ModalVentaSaldo cliente={cliente} cuentaPreset={cuenta} onClose={() => setVentaSaldo(false)} onSuccess={async () => { await cargar(); onChanged?.(); }} />
+      )}
+      {vincFact && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={e => e.target === e.currentTarget && setVincFact(null)}>
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg mx-4 overflow-hidden max-h-[90vh] flex flex-col">
+            <div className="flex items-center justify-between px-5 py-4 bg-emerald-700 text-white">
+              <div className="flex items-center gap-2"><FileText size={16} /><span className="font-bold text-sm">Vincular factura emitida a {cuenta.CueNombre || `cuenta #${cuenta.CueIdCuenta}`}</span></div>
+              <button onClick={() => setVincFact(null)} className="p-1 hover:bg-emerald-600 rounded-lg"><X size={14} /></button>
+            </div>
+            <div className="px-5 py-4 overflow-y-auto space-y-2">
+              <p className="text-[11px] text-slate-600 bg-slate-50 rounded-lg px-3 py-2">Facturas <strong>pagas</strong> del cliente en {sim} que todavía no cargaron saldo prepago. Elegí la de la Venta de saldo: el total de la factura entra a esta cuenta.</p>
+              {vincFact.lista.map(d => (
+                <div key={d.DocIdDocumento} className="flex items-center gap-3 rounded-lg border border-slate-200 px-3 py-2">
+                  <span className="flex-1 min-w-0">
+                    <span className="text-sm font-bold text-slate-800">{d.DocSerie}-{d.DocNumero}</span>
+                    <span className="text-[11px] text-slate-500 ml-2">{d.DocTipo}{d.CfeEstado ? ` · ${d.CfeEstado}` : ''} · {fmtFecha(d.DocFechaEmision)}</span>
+                    <span className="block text-[11px] text-slate-500 truncate">{d.PrimeraLinea || '—'}{d.MedioPago ? ` · pagada con ${d.MedioPago}` : ''}</span>
+                  </span>
+                  <span className="font-mono font-bold text-slate-800">{sim} {fmtN(d.DocTotal)}</span>
+                  <button onClick={() => vincularFactura(d)} disabled={!!vincFact.working}
+                    className="px-3 py-1.5 text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg disabled:opacity-50">{vincFact.working === d.DocIdDocumento ? 'Cargando…' : 'Cargar'}</button>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {nueva && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={e => e.target === e.currentTarget && setNueva(null)}>
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm mx-4 overflow-hidden">
+            <div className="flex items-center justify-between px-5 py-4 bg-violet-600 text-white">
+              <div className="flex items-center gap-2"><Plus size={16} /><span className="font-bold text-sm">Nueva orden — consumo de {cuenta.CueNombre || `cuenta #${cuenta.CueIdCuenta}`}</span></div>
+              <button onClick={() => setNueva(null)} className="p-1 hover:bg-violet-500 rounded-lg"><X size={14} /></button>
+            </div>
+            <div className="px-5 py-5 space-y-3">
+              <div><label className="block text-xs font-semibold text-slate-600 mb-1">Código de Orden</label>
+                <input value={nueva.codigoOrden} onChange={e => setNueva(x => ({ ...x, codigoOrden: e.target.value }))} placeholder="Ej: SUB-11649"
+                  className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-violet-400" /></div>
+              <div><label className="block text-xs font-semibold text-slate-600 mb-1">Nombre / Trabajo</label>
+                <input value={nueva.nombreTrabajo} onChange={e => setNueva(x => ({ ...x, nombreTrabajo: e.target.value }))} placeholder="Ej: 8 camisetas"
+                  className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-violet-400" /></div>
+              <div><label className="block text-xs font-semibold text-slate-600 mb-1">Importe ({sim})</label>
+                <input type="number" step="0.01" min="0" value={nueva.importe} onChange={e => setNueva(x => ({ ...x, importe: e.target.value }))} placeholder="0.00"
+                  className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-violet-400" /></div>
+              <p className="text-[11px] text-slate-500 bg-slate-50 rounded-lg px-3 py-2">
+                Descuenta el importe de esta cuenta. Si el código es una orden del cliente <strong>pendiente de facturar</strong>, esa orden queda <strong>paga</strong>; si no existe, queda como consumo suelto (igual que en el rollo).
+              </p>
+            </div>
+            <div className="px-5 pb-5 flex gap-2 justify-end">
+              <button onClick={() => setNueva(null)} className="px-4 py-2 text-xs font-semibold text-slate-600 bg-slate-100 hover:bg-slate-200 rounded-lg">Cancelar</button>
+              <button disabled={working || !nueva.codigoOrden.trim() || !nueva.importe} onClick={guardarNueva}
+                className="px-4 py-2 text-xs font-bold text-white bg-violet-600 hover:bg-violet-700 rounded-lg disabled:opacity-50">{working ? 'Insertando…' : 'Insertar orden'}</button>
+            </div>
+          </div>
+        </div>
+      )}
+      <div className="overflow-x-auto">
+        <table className="w-full text-xs">
+          <thead>
+            <tr className="text-[10px] text-slate-500 uppercase bg-slate-50 border-b border-slate-200">
+              <th className="px-3 py-2 text-left font-semibold">Fecha</th>
+              <th className="px-3 py-2 text-left font-semibold">Tipo</th>
+              <th className="px-3 py-2 text-left font-semibold">Documento</th>
+              <th className="px-3 py-2 text-left font-semibold">Concepto</th>
+              <th className="px-3 py-2 text-right font-semibold">Saldo Ini.</th>
+              <th className="px-3 py-2 text-right font-semibold">Debe</th>
+              <th className="px-3 py-2 text-right font-semibold">Haber</th>
+              <th className="px-3 py-2 text-right font-semibold">Saldo Fn.</th>
+              <th className="px-3 py-2 w-16"></th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-slate-50">
+            {loading && <tr><td colSpan={9} className="px-3 py-6 text-center text-slate-400">Cargando…</td></tr>}
+            {!loading && filas.length === 0 && <tr><td colSpan={9} className="px-3 py-6 text-center text-slate-400">Sin movimientos para el período.</td></tr>}
+            {filas.map(m => {
+              // Billetera: una transferencia cuyo concepto empieza con "Pago" ES un pago
+              // (pago de factura/deuda con el saldo de esta cuenta) — el badge lo dice.
+              const esPagoConSaldo = /^pago\b/i.test(m.MovConcepto || '');
+              const [lbl, cls] = (esPagoConSaldo && m.MovTipo === 'TRANSFERENCIA_SALIDA') ? ['PAGO CON SALDO', 'bg-amber-50 text-amber-700']
+                : (esPagoConSaldo && m.MovTipo === 'TRANSFERENCIA_ENTRADA') ? ['PAGO RECIBIDO', 'bg-sky-50 text-sky-700']
+                : (TIPO[m.MovTipo] || [m.MovTipo, 'bg-slate-100 text-slate-600']);
+              const esConsumo = m.MovTipo === 'CONSUMO_CUENTA' && !m.MovAnulado;
+              return (
+                <tr key={m.MovIdMovimiento} className={`hover:bg-slate-50/50 transition-colors ${m.MovAnulado ? 'opacity-50 line-through' : ''}`}>
+                  <td className="px-3 py-2 text-slate-500 whitespace-nowrap">{fmtFecha(m.MovFecha)}</td>
+                  <td className="px-3 py-2"><span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded ${cls}`}>{lbl}{m.MovAnulado ? ' (anulado)' : ''}</span></td>
+                  <td className="px-3 py-2 font-bold text-slate-700 whitespace-nowrap">{codigoDe(m)}</td>
+                  <td className="px-3 py-2 text-slate-600 max-w-[260px]" title={`${m.MovConcepto || ''}${m.MovObservaciones ? ' · ' + m.MovObservaciones : ''}`}>
+                    <span className="truncate block">{descDe(m)}</span>
+                    {m.MovTipo === 'CONSUMO_CUENTA' && !m.MovAnulado && (
+                      m.DocIdDocumento
+                        ? <span className="text-[9px] font-bold text-cyan-700 bg-cyan-50 border border-cyan-200 rounded px-1" title="Este consumo ya está en una factura">Facturada</span>
+                        : esPrepago
+                          ? <span className="text-[9px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 rounded px-1" title="Prepago: se facturó al cargar la plata">Facturada al cargar</span>
+                          : <span className="text-[9px] font-bold text-amber-700 bg-amber-50 border border-amber-200 rounded px-1" title='Pendiente: usá "Facturar consumos"'>Sin facturar</span>
+                    )}
+                  </td>
+                  <td className="px-3 py-2 text-right text-slate-500 whitespace-nowrap">{sim} {fmtN(m._ini)}</td>
+                  <td className={`px-3 py-2 text-right whitespace-nowrap font-semibold ${m._debe > 0 ? 'text-rose-600' : 'text-slate-300'}`}>{m._debe > 0 ? `${sim} ${fmtN(m._debe)}` : '—'}</td>
+                  <td className={`px-3 py-2 text-right whitespace-nowrap font-semibold ${m._haber > 0 ? 'text-emerald-600' : 'text-slate-300'}`}>{m._haber > 0 ? `${sim} ${fmtN(m._haber)}` : '—'}</td>
+                  <td className={`px-3 py-2 text-right font-bold whitespace-nowrap ${m._fn < 0 ? 'text-rose-600' : 'text-violet-700'}`}>{sim} {fmtN(m._fn)}</td>
+                  <td className="px-3 py-2">
+                    {esConsumo ? (
+                      <div className="flex items-center justify-end gap-1">
+                        <button onClick={() => setEditar({ mov: m, importe: String(Math.abs(Number(m.MovImporte))) })} title="Editar importe del consumo (ajusta el saldo de la cuenta por la diferencia)"
+                          className="p-1 hover:bg-slate-200 rounded text-slate-400 hover:text-amber-600 transition-colors"><Edit2 size={12} /></button>
+                        <button onClick={() => setConfirmar({ mov: m, modo: 'REVERTIR' })} title="Revertir consumo: la plata vuelve a la cuenta Y la orden queda PENDIENTE DE FACTURAR"
+                          className="p-1 hover:bg-violet-100 rounded text-slate-400 hover:text-violet-600 transition-colors"><RotateCcw size={12} /></button>
+                        <button onClick={() => setConfirmar({ mov: m, modo: 'ELIMINAR' })} title="Eliminar movimiento: solo devuelve la plata a la cuenta (la orden NO cambia)"
+                          className="p-1 hover:bg-slate-200 rounded text-slate-400 hover:text-rose-600 transition-colors"><Trash2 size={12} /></button>
+                      </div>
+                    ) : <span className="text-slate-300 text-[10px] block text-right" title={m.MovTipo === 'ANTICIPO' ? 'Es dinero que entró por caja con recibo: se deshace anulando el recibo, no desde acá' : ''}>—</span>}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      {editar && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={e => e.target === e.currentTarget && setEditar(null)}>
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm mx-4 overflow-hidden">
+            <div className="flex items-center justify-between px-5 py-4 bg-amber-400">
+              <div className="flex items-center gap-2"><Edit2 size={16} className="text-amber-900" /><span className="font-bold text-amber-900 text-sm">Editar importe del consumo</span></div>
+              <button onClick={() => setEditar(null)} className="p-1 hover:bg-amber-300 rounded-lg"><X size={14} className="text-amber-900" /></button>
+            </div>
+            <div className="px-5 py-5 space-y-3">
+              <div><label className="block text-xs font-semibold text-slate-600 mb-1">Orden</label>
+                <input disabled value={editar.mov.MovConcepto || ''} className="w-full border border-slate-200 bg-slate-50 rounded-lg px-3 py-2 text-sm text-slate-500" /></div>
+              <div><label className="block text-xs font-semibold text-slate-600 mb-1">Nuevo importe ({sim})</label>
+                <input type="number" step="0.01" min="0" value={editar.importe} onChange={e => setEditar(x => ({ ...x, importe: e.target.value }))}
+                  className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-amber-400" /></div>
+              <p className="text-[11px] text-slate-400">Actualiza el consumo y ajusta el saldo de la cuenta por la diferencia. La orden no cambia.</p>
+            </div>
+            <div className="px-5 pb-5 flex gap-2 justify-end">
+              <button onClick={() => setEditar(null)} className="px-4 py-2 text-xs font-semibold text-slate-600 bg-slate-100 hover:bg-slate-200 rounded-lg">Cancelar</button>
+              <button disabled={working || editar.importe === ''} onClick={guardarEdicion} className="px-4 py-2 text-xs font-semibold text-white bg-amber-500 hover:bg-amber-600 rounded-lg disabled:opacity-50">{working ? 'Guardando…' : 'Guardar'}</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {confirmar && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={e => e.target === e.currentTarget && setConfirmar(null)}>
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm mx-4 overflow-hidden">
+            <div className={`flex items-center gap-2 px-5 py-4 ${confirmar.modo === 'REVERTIR' ? 'bg-violet-100' : 'bg-rose-100'}`}>
+              {confirmar.modo === 'REVERTIR' ? <RotateCcw size={18} className="text-violet-600" /> : <Trash2 size={18} className="text-rose-600" />}
+              <span className={`font-bold text-sm ${confirmar.modo === 'REVERTIR' ? 'text-violet-800' : 'text-rose-800'}`}>{confirmar.modo === 'REVERTIR' ? 'Revertir consumo' : 'Eliminar movimiento'}</span>
+            </div>
+            <div className="px-5 py-4 space-y-2 text-sm text-slate-700">
+              <p><strong>{confirmar.mov.MovConcepto}</strong> · {sim} {fmtN(Math.abs(confirmar.mov.MovImporte))}</p>
+              {confirmar.modo === 'REVERTIR' ? (
+                <p className="text-[12px] text-slate-600">La plata <strong>vuelve a la cuenta</strong> y la orden queda <strong>PENDIENTE DE FACTURAR</strong> (va a la cuenta principal, con deuda o dentro del ciclo según el cliente).</p>
+              ) : (
+                <p className="text-[12px] text-slate-600">La plata <strong>vuelve a la cuenta</strong>. La orden <strong>NO cambia</strong> (sigue paga). Usalo solo para corregir un consumo que no debió registrarse.</p>
+              )}
+            </div>
+            <div className="px-5 pb-5 flex gap-2 justify-end">
+              <button onClick={() => setConfirmar(null)} className="px-4 py-2 text-xs font-semibold text-slate-600 bg-slate-100 hover:bg-slate-200 rounded-lg">Cancelar</button>
+              <button disabled={working} onClick={ejecutar} className={`px-4 py-2 text-xs font-semibold text-white rounded-lg disabled:opacity-50 ${confirmar.modo === 'REVERTIR' ? 'bg-violet-600 hover:bg-violet-700' : 'bg-rose-600 hover:bg-rose-700'}`}>
+                {working ? 'Procesando…' : confirmar.modo === 'REVERTIR' ? 'Sí, revertir consumo' : 'Sí, eliminar'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+// ── Modal Pagar orden con SALDO de una cuenta (billetera, elección explícita) ──
+// Sobre una ORDEN pendiente de facturar: muestra las cuentas de dinero del cliente
+// con su saldo real y cuánto se descontaría (convertido si la moneda difiere).
+export const ModalConsumirSaldo = ({ mov, onClose, onSuccess }) => {
+  const [preview, setPreview] = useState(null);
+  const [error, setError] = useState(null);
+  const [cueSel, setCueSel] = useState(null);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    if (!mov?.MovIdMovimiento) return;
+    fetchAPI(`/api/contabilidad/movimientos/${mov.MovIdMovimiento}/consumir-desde-saldo?preview=1`, { method: 'POST', body: JSON.stringify({}) })
+      .then(r => {
+        setPreview(r.data);
+        const primera = (r.data?.cuentas || []).find(c => c.puede);
+        if (primera) setCueSel(primera.CueIdCuenta);
+      })
+      .catch(e => setError(e.message));
+  }, [mov?.MovIdMovimiento]);
+
+  const cta = preview?.cuentas?.find(c => c.CueIdCuenta === cueSel);
+  const nombre = (c) => `${codigoCuenta(c)} · ` + (c.CueNombre || (c.CueEsPrincipal ? `Cuenta principal ${c.MonSimbolo}` : `Cuenta #${c.CueIdCuenta}`));
+
+  const confirmar = async () => {
+    if (!cta) return;
+    setSaving(true);
+    try {
+      const r = await fetchAPI(`/api/contabilidad/movimientos/${mov.MovIdMovimiento}/consumir-desde-saldo`, {
+        method: 'POST', body: JSON.stringify({ CueIdCuenta: cta.CueIdCuenta }),
+      });
+      toast.success(r.message || 'Orden pagada con saldo');
+      onSuccess?.();
+      onClose();
+    } catch (e) { toast.error(e.message); }
+    finally { setSaving(false); }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={e => e.target === e.currentTarget && onClose()}>
+      <div className="bg-[#f1f5f9] rounded-2xl shadow-2xl w-full max-w-lg mx-4 overflow-hidden max-h-[90vh] overflow-y-auto">
+        <div className="px-6 py-4 flex items-center justify-between bg-gradient-to-r from-emerald-600 to-teal-600 text-white sticky top-0">
+          <div>
+            <p className="text-xs uppercase tracking-widest opacity-80">{preview?.orden?.codigo || mov?.OrdCodigoOrden || 'Orden'}</p>
+            <h2 className="text-lg font-bold mt-0.5">Pagar con saldo de una cuenta</h2>
+          </div>
+          <button onClick={onClose} className="p-1.5 hover:bg-white/20 rounded-lg"><X size={16} /></button>
+        </div>
+        <div className="px-6 py-5 space-y-4">
+          {error && <p className="text-sm text-rose-600 bg-rose-50 rounded-lg px-3 py-2">{error}</p>}
+          {!preview && !error && <p className="text-sm text-slate-500">Calculando…</p>}
+          {preview && (
+            <>
+              <div className="bg-white rounded-xl border border-slate-200 px-4 py-3 text-sm">
+                <div className="flex justify-between"><span className="text-slate-500">Orden</span><span className="font-bold text-slate-800">{preview.orden.codigo}{preview.orden.trabajo ? ` · ${preview.orden.trabajo}` : ''}</span></div>
+                {preview.orden.articulo && <div className="flex justify-between"><span className="text-slate-500">Artículo</span><span className="font-semibold text-slate-700">{preview.orden.articulo}</span></div>}
+                <div className="flex justify-between"><span className="text-slate-500">Importe</span><span className="font-black text-slate-900 font-mono">{preview.orden.MonSimbolo} {Number(preview.orden.importe).toFixed(2)}</span></div>
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-slate-600 mb-2">Descontar de</label>
+                <div className="space-y-1.5">
+                  {preview.cuentas.map(c => (
+                    <label key={c.CueIdCuenta} className={`flex items-start gap-3 rounded-xl border px-3 py-2.5 ${c.puede ? 'cursor-pointer' : 'opacity-60 cursor-not-allowed'} ${cueSel === c.CueIdCuenta ? 'border-emerald-400 bg-emerald-50' : 'border-slate-200 bg-white'}`}>
+                      <input type="radio" name="cta" disabled={!c.puede} checked={cueSel === c.CueIdCuenta} onChange={() => setCueSel(c.CueIdCuenta)} className="mt-1" />
+                      <span className="flex-1 min-w-0">
+                        <span className="text-sm font-bold text-slate-800">{nombre(c)}{c.CueRestringida ? ' 🔒' : ''}</span>
+                        <span className="block text-[11px] text-slate-500">
+                          Saldo {c.MonSimbolo} {Number(c.saldo).toLocaleString('es-UY', { minimumFractionDigits: 2 })}
+                          {' · '}se descuentan <strong>{c.MonSimbolo} {Number(c.aDescontar).toFixed(2)}</strong>{c.cotizacion ? ` (@ ${c.cotizacion})` : ''}
+                          {c.puede && c.saldo + 0.001 < c.aDescontar && <span className="text-amber-600"> · queda en negativo</span>}
+                        </span>
+                        {!c.puede && <span className="block text-[11px] text-rose-600">No se puede: {c.motivoNo}</span>}
+                      </span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+              <p className="text-[11px] text-slate-600 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                La orden queda <strong>PAGA</strong> con ese saldo y <strong>sale de "pendiente de facturar"</strong> (no se factura después, igual que cuando la cubre el rollo). Se puede devolver desde la misma orden.
+              </p>
+              <div className="flex gap-2 pt-1">
+                <button type="button" onClick={onClose} className="flex-1 px-4 py-2.5 text-xs font-bold uppercase tracking-widest bg-slate-100 text-slate-600 rounded-lg hover:bg-slate-200">Cancelar</button>
+                <button type="button" onClick={confirmar} disabled={!cta || saving}
+                  className="flex-1 px-4 py-2.5 text-xs font-bold uppercase tracking-widest bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 disabled:opacity-50">
+                  {saving ? 'Aplicando…' : cta ? `Pagar con ${nombre(cta)}` : 'Elegí una cuenta'}
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// ── Modal Nueva Cuenta (billetera: cuenta secundaria con nombre propio) ──────
+// Crea una cuenta ADICIONAL de dinero para el cliente. Nunca es la principal:
+// los flujos automáticos no la tocan, solo se usa eligiéndola explícitamente.
+export const ModalNuevaCuenta = ({ cliente, onClose, onSuccess }) => {
+  const [form, setForm] = useState({ CueNombre: '', MonIdMoneda: '1', CueRestringida: false, CueAutoConsumo: false, CuePuedeNegativo: false, CueModalidadFiscal: 'ANTICIPO_A_FACTURAR' });
+  const [articulos, setArticulos] = useState([]);       // elegidos [{IDArticulo, NombreArticulo}]
+  const [busqueda, setBusqueda] = useState('');
+  const [resultados, setResultados] = useState([]);
+  const [buscando, setBuscando] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  const buscar = async (q) => {
+    setBusqueda(q);
+    if (!q || q.trim().length < 2) { setResultados([]); return; }
+    setBuscando(true);
+    try {
+      const res = await fetchAPI(`/api/contabilidad/articulos?q=${encodeURIComponent(q.trim())}`);
+      setResultados((res.data || []).slice(0, 15));
+    } catch { setResultados([]); }
+    finally { setBuscando(false); }
+  };
+
+  const guardar = async (e) => {
+    e.preventDefault();
+    if (!form.CueNombre.trim()) { toast.error('Poné un nombre a la cuenta (ej: "Fondo rollos DTF")'); return; }
+    if (form.CueRestringida && articulos.length === 0) { toast.error('Una cuenta restringida necesita al menos un artículo permitido'); return; }
+    setSaving(true);
+    try {
+      await fetchAPI('/api/contabilidad/cuentas', {
+        method: 'POST',
+        body: JSON.stringify({
+          CliIdCliente:   cliente.CliIdCliente,
+          CueTipo:        form.MonIdMoneda === '2' ? 'DINERO_USD' : 'DINERO_UYU',
+          MonIdMoneda:    Number(form.MonIdMoneda),
+          CueNombre:      form.CueNombre.trim(),
+          CueRestringida: form.CueRestringida,
+          CueAutoConsumo:   form.CueAutoConsumo,
+          CuePuedeNegativo: form.CuePuedeNegativo,
+          CueModalidadFiscal: form.CueModalidadFiscal,
+          Articulos:      articulos.map(a => a.IDArticulo),
+        }),
+      });
+      toast.success(`✅ Cuenta "${form.CueNombre.trim()}" creada. El dinero que entre ahí solo se usa eligiendo esta cuenta al pagar.`);
+      onSuccess?.();
+      onClose();
+    } catch (err) { toast.error(err.message); }
+    finally { setSaving(false); }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
+      onClick={e => e.target === e.currentTarget && onClose()}>
+      <div className="bg-[#f1f5f9] rounded-2xl shadow-2xl w-full max-w-lg mx-4 overflow-hidden max-h-[90vh] overflow-y-auto">
+        <div className="px-6 py-4 flex items-center justify-between bg-gradient-to-r from-indigo-500 to-violet-500 text-white sticky top-0">
+          <div>
+            <p className="text-xs uppercase tracking-widest opacity-80">{cliente.Nombre}</p>
+            <h2 className="text-lg font-bold mt-0.5">Abrir Cuenta Adicional</h2>
+          </div>
+          <button onClick={onClose} className="p-1.5 hover:bg-white/20 rounded-lg"><X size={16} /></button>
+        </div>
+
+        <form onSubmit={guardar} className="px-6 py-5 space-y-4">
+          <div>
+            <label className="block text-xs font-semibold text-slate-600 mb-2">Nombre de la cuenta (lo que va a ver el cajero)</label>
+            <input value={form.CueNombre} onChange={e => setForm(f => ({ ...f, CueNombre: e.target.value }))}
+              placeholder='Ej: "Fondo rollos DTF", "Ahorro proyecto local"'
+              className="w-full text-sm border border-slate-200 rounded-lg px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-indigo-400/30" />
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold text-slate-600 mb-2">Moneda</label>
+            <div className="grid grid-cols-2 gap-2">
+              {[{ v: '1', l: 'UYU  $' }, { v: '2', l: 'USD  US$' }].map(op => (
+                <button type="button" key={op.v}
+                  onClick={() => setForm(f => ({ ...f, MonIdMoneda: op.v }))}
+                  className={`px-3 py-2 rounded-lg text-xs font-semibold border transition-all
+                    ${form.MonIdMoneda === op.v ? 'bg-indigo-600 text-white border-indigo-600 shadow-sm' : 'bg-slate-50/50 text-slate-600 border-slate-200 hover:border-indigo-300 hover:bg-indigo-50'}`}>
+                  {op.l}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div>
+            <label className="flex items-center gap-2 text-xs font-semibold text-slate-600 cursor-pointer select-none">
+              <input type="checkbox" checked={form.CueRestringida}
+                onChange={e => { const on = e.target.checked; setForm(f => ({ ...f, CueRestringida: on, CueAutoConsumo: on ? true : f.CueAutoConsumo, CuePuedeNegativo: on ? true : f.CuePuedeNegativo })); }}
+                className="rounded border-slate-300" />
+              Cuenta restringida: su dinero SOLO sirve para los artículos de la lista
+            </label>
+            <p className="mt-1.5 text-[11px] text-slate-500 bg-slate-50/50 rounded-lg px-3 py-2">
+              {form.CueRestringida
+                ? 'Como el rollo por adelantado pero en plata: las órdenes de esos artículos se pagan con esta cuenta; cualquier otro artículo la ignora.'
+                : 'Sin restricción: es una cuenta de dinero de uso libre para cualquier orden del cliente.'}
+            </p>
+          </div>
+
+          <ModalidadFiscalSelector value={form.CueModalidadFiscal} onChange={v => setForm(f => ({ ...f, CueModalidadFiscal: v }))} />
+
+          {/* Interruptores de comportamiento (configurables después desde ⚙ Configurar cuenta) */}
+          <SwitchCuenta checked={form.CueAutoConsumo} onChange={v => setForm(f => ({ ...f, CueAutoConsumo: v }))}
+            titulo="Descuento automático"
+            on="ON: cuando entra una orden que esta cuenta puede pagar, se descuenta SOLA (como el rollo). No pasa por caja."
+            off="OFF: nunca se descuenta sola. Solo se usa si el cajero la elige como medio de pago al cobrar." />
+          <SwitchCuenta checked={form.CuePuedeNegativo} onChange={v => setForm(f => ({ ...f, CuePuedeNegativo: v }))}
+            titulo="Acepta saldo negativo (solo clientes SEMANALES)"
+            on="ON: si no alcanza, descuenta igual y la cuenta queda en rojo (se compensa con la próxima carga). Solo tiene efecto en clientes semanales y en descuentos del sistema — como medio de pago, y para clientes comunes, el saldo nunca queda en negativo."
+            off="OFF: descuenta solo lo que hay; lo que falta sigue el camino normal y se cobra en caja." />
+
+          {form.CueRestringida && (
+            <div className="border border-violet-200 rounded-xl p-3 bg-violet-50/40 space-y-2">
+              <label className="block text-xs font-semibold text-violet-700">Artículos permitidos ({articulos.length})</label>
+              {articulos.length > 0 && (
+                <div className="flex flex-wrap gap-1.5">
+                  {articulos.map(a => (
+                    <span key={a.IDArticulo} className="inline-flex items-center gap-1 text-[11px] font-semibold bg-white border border-violet-200 text-violet-700 rounded-full px-2 py-0.5">
+                      {a.NombreArticulo}
+                      <button type="button" onClick={() => setArticulos(prev => prev.filter(x => x.IDArticulo !== a.IDArticulo))}
+                        className="hover:text-rose-600"><X size={11} /></button>
+                    </span>
+                  ))}
+                </div>
+              )}
+              <input value={busqueda} onChange={e => buscar(e.target.value)}
+                placeholder="Buscar artículo por nombre o código…"
+                className="w-full text-xs border border-violet-200 rounded-lg px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-violet-400/30" />
+              {buscando && <p className="text-[11px] text-slate-400">Buscando…</p>}
+              {resultados.length > 0 && (
+                <div className="max-h-40 overflow-y-auto divide-y divide-violet-100 border border-violet-100 rounded-lg bg-white">
+                  {resultados.map(r => (
+                    <button type="button" key={r.IDArticulo}
+                      onClick={() => {
+                        if (!articulos.some(a => a.IDArticulo === r.IDArticulo))
+                          setArticulos(prev => [...prev, { IDArticulo: r.IDArticulo, NombreArticulo: r.NombreArticulo }]);
+                        setBusqueda(''); setResultados([]);
+                      }}
+                      className="w-full text-left px-3 py-1.5 text-xs hover:bg-violet-50 transition-colors">
+                      <span className="font-semibold text-slate-700">{r.NombreArticulo}</span>
+                      <span className="text-slate-400 ml-2 font-mono">{r.CodigoArticulo}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          <div className="flex gap-2 pt-2">
+            <button type="button" onClick={onClose}
+              className="flex-1 px-4 py-2.5 text-xs font-bold uppercase tracking-widest bg-slate-100 text-slate-600 rounded-lg hover:bg-slate-200 transition-colors">
+              Cancelar
+            </button>
+            <button type="submit" disabled={saving}
+              className="flex-1 px-4 py-2.5 text-xs font-bold uppercase tracking-widest bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors disabled:opacity-50">
+              {saving ? 'Creando…' : 'Crear cuenta'}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+};
+
+// ── Modal Transferir entre cuentas del MISMO cliente ─────────────────────────
+export const ModalTransferirCuentas = ({ cliente, cuentas, onClose, onSuccess }) => {
+  const cuentasDinero = (cuentas || []).filter(c => String(c.CueTipo || '').startsWith('DINERO'));
+  const nombreCta = (c) => `${codigoCuenta(c)} · ${c.CueNombre || (c.CueEsPrincipal ? 'Cuenta principal' : `Cuenta #${c.CueIdCuenta}`)} — ${c.CueTipo === 'DINERO_USD' ? 'US$' : '$'} (saldo ${Number(c.CueSaldoActual || 0).toLocaleString('es-UY', { minimumFractionDigits: 2 })})`;
+
+  const [origenId, setOrigenId]   = useState('');
+  const [destinoId, setDestinoId] = useState('');
+  const [importe, setImporte]     = useState('');
+  const [cotizacion, setCotizacion] = useState('');
+  const [obs, setObs]             = useState('');
+  const [saving, setSaving]       = useState(false);
+
+  const origen  = cuentasDinero.find(c => String(c.CueIdCuenta) === String(origenId));
+  const destino = cuentasDinero.find(c => String(c.CueIdCuenta) === String(destinoId));
+  const cruzaMoneda = origen && destino && origen.CueTipo !== destino.CueTipo;
+  const simOrigen = origen?.CueTipo === 'DINERO_USD' ? 'US$' : '$';
+
+  useEffect(() => {
+    if (!cruzaMoneda || cotizacion) return;
+    fetchAPI('/api/contabilidad/cotizacion-hoy')
+      .then(r => { const v = r?.data?.CotDolar || r?.data?.cotizacion || r?.CotDolar; if (v) setCotizacion(String(v)); })
+      .catch(() => {});
+  }, [cruzaMoneda]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const guardar = async (e) => {
+    e.preventDefault();
+    if (!origen || !destino) { toast.error('Elegí cuenta de origen y de destino'); return; }
+    if (origen.CueIdCuenta === destino.CueIdCuenta) { toast.error('Origen y destino no pueden ser la misma cuenta'); return; }
+    if (!importe || Number(importe) <= 0) { toast.error('El importe debe ser mayor a 0'); return; }
+    if (cruzaMoneda && (!cotizacion || Number(cotizacion) <= 0)) { toast.error('Las cuentas son de distinta moneda: falta la cotización'); return; }
+    setSaving(true);
+    try {
+      const res = await fetchAPI('/api/contabilidad/cuentas/transferir', {
+        method: 'POST',
+        body: JSON.stringify({
+          CueOrigen:     origen.CueIdCuenta,
+          CueDestino:    destino.CueIdCuenta,
+          Importe:       Number(importe),
+          Cotizacion:    cruzaMoneda ? Number(cotizacion) : null,
+          Observaciones: obs || null,
+        }),
+      });
+      toast.success(res.message || '✅ Transferencia realizada');
+      onSuccess?.();
+      onClose();
+    } catch (err) { toast.error(err.message); }
+    finally { setSaving(false); }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
+      onClick={e => e.target === e.currentTarget && onClose()}>
+      <div className="bg-[#f1f5f9] rounded-2xl shadow-2xl w-full max-w-lg mx-4 overflow-hidden max-h-[90vh] overflow-y-auto">
+        <div className="px-6 py-4 flex items-center justify-between bg-gradient-to-r from-cyan-600 to-blue-600 text-white sticky top-0">
+          <div>
+            <p className="text-xs uppercase tracking-widest opacity-80">{cliente.Nombre}</p>
+            <h2 className="text-lg font-bold mt-0.5">Transferir Entre Cuentas</h2>
+          </div>
+          <button onClick={onClose} className="p-1.5 hover:bg-white/20 rounded-lg"><X size={16} /></button>
+        </div>
+
+        <form onSubmit={guardar} className="px-6 py-5 space-y-4">
+          {cuentasDinero.length < 2 ? (
+            <p className="text-sm text-slate-500 bg-slate-50 rounded-lg px-4 py-6 text-center">
+              El cliente necesita al menos 2 cuentas de dinero para transferir.<br />
+              Creá una con el botón <strong>"Nueva cuenta"</strong>.
+            </p>
+          ) : (
+            <>
+              <div>
+                <label className="block text-xs font-semibold text-slate-600 mb-2">Sale de (origen)</label>
+                <select value={origenId} onChange={e => setOrigenId(e.target.value)}
+                  className="w-full text-sm border border-slate-200 rounded-lg px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-cyan-400/30">
+                  <option value="">— Elegir cuenta —</option>
+                  {cuentasDinero.map(c => <option key={c.CueIdCuenta} value={c.CueIdCuenta}>{nombreCta(c)}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-slate-600 mb-2">Entra en (destino)</label>
+                <select value={destinoId} onChange={e => setDestinoId(e.target.value)}
+                  className="w-full text-sm border border-slate-200 rounded-lg px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-cyan-400/30">
+                  <option value="">— Elegir cuenta —</option>
+                  {cuentasDinero.filter(c => String(c.CueIdCuenta) !== String(origenId))
+                    .map(c => <option key={c.CueIdCuenta} value={c.CueIdCuenta}>{nombreCta(c)}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-slate-600 mb-2">
+                  Importe a transferir {origen ? `(en ${simOrigen}, moneda de la cuenta de origen)` : ''}
+                </label>
+                <input type="number" step="0.01" min="0" value={importe} onChange={e => setImporte(e.target.value)}
+                  className="w-full text-sm border border-slate-200 rounded-lg px-3 py-2 bg-white font-mono focus:outline-none focus:ring-2 focus:ring-cyan-400/30" />
+              </div>
+              {cruzaMoneda && (
+                <div>
+                  <label className="block text-xs font-semibold text-amber-700 mb-2">Cotización (pesos por dólar) — las cuentas son de distinta moneda</label>
+                  <input type="number" step="0.01" min="0" value={cotizacion} onChange={e => setCotizacion(e.target.value)}
+                    className="w-full text-sm border border-amber-300 rounded-lg px-3 py-2 bg-amber-50 font-mono focus:outline-none focus:ring-2 focus:ring-amber-400/30" />
+                  {importe > 0 && cotizacion > 0 && (
+                    <p className="mt-1.5 text-[11px] text-amber-700">
+                      Salen {simOrigen} {Number(importe).toFixed(2)} → entran {origen?.CueTipo === 'DINERO_USD' ? '$' : 'US$'} {(origen?.CueTipo === 'DINERO_USD' ? Number(importe) * Number(cotizacion) : Number(importe) / Number(cotizacion)).toFixed(2)}
+                    </p>
+                  )}
+                </div>
+              )}
+              <div>
+                <label className="block text-xs font-semibold text-slate-600 mb-2">Observaciones (opcional)</label>
+                <input value={obs} onChange={e => setObs(e.target.value)}
+                  className="w-full text-sm border border-slate-200 rounded-lg px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-cyan-400/30" />
+              </div>
+              <div className="flex gap-2 pt-2">
+                <button type="button" onClick={onClose}
+                  className="flex-1 px-4 py-2.5 text-xs font-bold uppercase tracking-widest bg-slate-100 text-slate-600 rounded-lg hover:bg-slate-200 transition-colors">
+                  Cancelar
+                </button>
+                <button type="submit" disabled={saving}
+                  className="flex-1 px-4 py-2.5 text-xs font-bold uppercase tracking-widest bg-cyan-600 text-white rounded-lg hover:bg-cyan-700 transition-colors disabled:opacity-50">
+                  {saving ? 'Transfiriendo…' : 'Transferir'}
+                </button>
+              </div>
+            </>
+          )}
+        </form>
+      </div>
+    </div>
+  );
+};
+
 export const ModalSaldoInicial = ({ cliente, onClose, onSuccess }) => {
   const [form, setForm] = useState({
     MonIdMoneda: '1',       // 1 = UYU, 2 = USD
@@ -1822,14 +3179,19 @@ const CiclosPanel = ({ cuenta, CliIdCliente, cliente, onClose, onCicloChanged })
   const confirmarCierre = async (cicId, payload) => {
     setWorking(true);
     try {
-      const res = await fetchAPI(`/api/contabilidad/ciclos/${cicId}/cerrar`, { 
+      const res = await fetchAPI(`/api/contabilidad/ciclos/${cicId}/cerrar`, {
         method: 'POST',
         body: JSON.stringify(payload)
       });
       toast.success(`✅ ${res.message}`);
       setCerrandoCiclo(null);
       await cargar(); onCicloChanged?.();
-    } catch (e) { toast.error(e.message); }
+      // El modal usa el resultado ({DocIdDocumento, docNumero}) para el cobro contado con medios
+      return res.data ?? res;
+    } catch (e) {
+      toast.error(e.message);
+      throw e; // el modal vuelve al paso 1 y NO intenta cobrar una factura que no salió
+    }
     finally { setWorking(false); }
   };
 
@@ -1910,11 +3272,19 @@ const CiclosPanel = ({ cuenta, CliIdCliente, cliente, onClose, onCicloChanged })
 };
 
 // ── Panel planes de recursos (Metros / KG) ─────────────────────────────
-export const PlanesPanel = ({ cuenta, CliIdCliente, cliente, desde, hasta, onClose, onChanged }) => {
+export const PlanesPanel = ({ cuenta, CliIdCliente, cliente, desde, hasta, onClose, onChanged, detalleInicialAbierto = true }) => {
   const [planes, setPlanes]       = useState([]);
   const [loading, setLoading]     = useState(false);
   const [working, setWorking]     = useState(false);
   const [movsPlan, setMovsPlan]   = useState({});  // { [planId]: [] }
+  const [todosMovsCta, setTodosMovsCta] = useState([]); // movimientos de la cuenta, sin filtrar por plan
+  const [saldoCta, setSaldoCta]       = useState(null); // saldo real de la cuenta de recursos
+  const [arrastreCta, setArrastreCta] = useState(0);
+  const [recorteCta, setRecorteCta]   = useState(null); // { mostrados, total }
+  // Detalle (estado de cuenta) por material: se abre/cierra con el botón +/− del
+  // encabezado. `detalleInicialAbierto=false` lo arranca plegado (el 360 apila
+  // varios recursos y el libro entero hacía interminable la lista).
+  const [detalleAbierto, setDetalleAbierto] = useState({}); // { [material]: bool }
 
   // Modales de acciones manuales
   const [modalEditarMetros, setModalEditarMetros] = useState(false);
@@ -1951,6 +3321,15 @@ export const PlanesPanel = ({ cuenta, CliIdCliente, cliente, desde, hasta, onClo
       // 2. Fetch all movements for the account
       const dataMovs = await fetchAPI(`/api/contabilidad/cuentas/${cuenta.CueIdCuenta}/movimientos?top=200`);
       const todosMovs = dataMovs.data || [];
+
+      // Saldo REAL de la cuenta = arrastre (lo que el top=200 dejó afuera) + todos
+      // los movimientos traídos. Es la única cifra que coincide con el chip de
+      // recursos; el saldo corrido de cada plan es solo el de SUS movimientos.
+      const arr = Number(dataMovs.saldoArrastre || 0);
+      setArrastreCta(arr);
+      setTodosMovsCta(todosMovs);
+      setSaldoCta(Math.round((todosMovs.reduce((a, m) => a + Number(m.MovImporte || 0), 0) + arr) * 10000) / 10000);
+      setRecorteCta(dataMovs.recortado ? { mostrados: todosMovs.length, total: dataMovs.totalMovimientos } : null);
 
       // 3. Group movements per plan
       const grouped = {};
@@ -2069,17 +3448,29 @@ export const PlanesPanel = ({ cuenta, CliIdCliente, cliente, desde, hasta, onClo
             });
 
             return Array.from(materialesMap.values()).map(({ nombre: nomMat, unidad: unidadMat, planes: planesDelMat }, matIdx) => {
-              // Juntar movimientos de todos los planes de este material (deduplicar por ID)
+              // Movimientos de este material. Cuando la cuenta tiene un solo material
+              // —lo normal: una cuenta de recursos es de un artículo— se muestran TODOS
+              // los movimientos de la cuenta, no solo los de los planes visibles. Si se
+              // filtra por plan, los planes cerrados (escondidos tras "+N cerrados")
+              // quedan afuera y el saldo del pie no es el del cliente: el caso de Támara
+              // flores, donde la tabla cerraba en 89,62 contra 34,98 reales.
+              const unSoloMaterial = materialesMap.size === 1;
               const allMovsMap = new Map();
-              planesDelMat.forEach(p => {
-                (movsPlan[p.PlaIdPlan] || []).forEach(m => allMovsMap.set(m.MovIdMovimiento, m));
-              });
+              if (unSoloMaterial) {
+                todosMovsCta.forEach(m => allMovsMap.set(m.MovIdMovimiento, m));
+              } else {
+                planesDelMat.forEach(p => {
+                  (movsPlan[p.PlaIdPlan] || []).forEach(m => allMovsMap.set(m.MovIdMovimiento, m));
+                });
+              }
               const todosOrdenados = [...allMovsMap.values()].sort(
                 (a, b) => new Date(a.MovFecha) - new Date(b.MovFecha)
               );
 
-              // Calcular saldo corrido para este material
-              let saldoRunning = 0;
+              // Saldo corrido. Con la cuenta completa arranca del arrastre (lo que el
+              // TOP dejó afuera) y cierra en el saldo real; filtrado por plan no se
+              // puede: sería un saldo que no es ni el del plan ni el de la cuenta.
+              let saldoRunning = unSoloMaterial ? arrastreCta : 0;
               const movsConSaldo = todosOrdenados.map(m => {
                 const importe  = Number(m.MovImporte);
                 const saldoAnt = saldoRunning;
@@ -2138,22 +3529,81 @@ export const PlanesPanel = ({ cuenta, CliIdCliente, cliente, desde, hasta, onClo
                     })}
                   </div>
 
-                  {/* Tabla unificada de movimientos de este material */}
+                  {/* Plan vs. cuenta: cuando una orden consumió más metros de los que le
+                      quedaban al plan, el movimiento entró completo en la cuenta pero el
+                      plan se cerró en "restante 0". La barra del plan queda mostrando
+                      metros que el cliente ya usó — el saldo bueno es el de la cuenta. */}
+                  {(() => {
+                    if (saldoCta === null) return null;
+                    const restanteActivos = planesDelMat
+                      .filter(p => p.PlaActivo)
+                      .reduce((acc, p) => acc + Number(p.PlaCantidadRestante ?? (p.PlaCantidadTotal - p.PlaCantidadUsada)), 0);
+                    const dif = Math.round((restanteActivos - saldoCta) * 10000) / 10000;
+                    if (Math.abs(dif) <= 0.01) return null;
+                    return (
+                      <div className="mx-4 mb-3 px-3 py-2 rounded-lg bg-amber-50 border border-amber-200 text-[11px] text-amber-900">
+                        <strong>El plan y la cuenta no coinciden.</strong> Los planes activos suman{' '}
+                        <strong>{fmtNum(restanteActivos)} {unidadMat}</strong> pero la cuenta tiene{' '}
+                        <strong>{fmtNum(saldoCta)} {unidadMat}</strong>.{' '}
+                        {dif > 0
+                          ? <>Son <strong>{fmtNum(dif)} {unidadMat}</strong> consumidos de más contra planes anteriores que el plan nunca reflejó.</>
+                          : <>Hay <strong>{fmtNum(Math.abs(dif))} {unidadMat}</strong> comprados que ningún plan activo está mostrando.</>}
+                        {' '}Para lo que el cliente puede usar, vale el saldo de la cuenta.
+                      </div>
+                    );
+                  })()}
+
+                  {recorteCta && (
+                    <div className="mx-4 mb-3 px-3 py-2 rounded-lg bg-slate-50 border border-slate-200 text-[11px] text-slate-600">
+                      Se traen los <strong>{recorteCta.mostrados}</strong> movimientos más recientes de{' '}
+                      <strong>{recorteCta.total}</strong>. El saldo real de la cuenta ya incluye el arrastre de los anteriores.
+                    </div>
+                  )}
+
+                  {/* Tabla unificada de movimientos de este material — plegable con +/− */}
                   {todosOrdenados.length === 0 ? (
                     <div className="text-center py-4 text-slate-400 text-xs border-t border-slate-100">
                       <Package size={18} className="mx-auto mb-1 opacity-30" />Sin movimientos registrados
                     </div>
-                  ) : (
+                  ) : (() => {
+                    const abierto = detalleAbierto[nomMat] ?? detalleInicialAbierto;
+                    const toggleDetalle = () => setDetalleAbierto(p => ({ ...p, [nomMat]: !abierto }));
+                    return (
                     <div className="border-t border-slate-200">
-                      <div className="px-4 py-2 flex items-center justify-between bg-slate-50/50">
-                        <span className="text-[11px] font-semibold text-slate-600">Estado de cuenta — {nomMat}</span>
-                        <span className="text-[10px] text-slate-400">
-                          {todosOrdenados.length} mov. · Saldo:{' '}
-                          <strong className={saldoRunning < 0 ? 'text-rose-600' : 'text-violet-700'}>
-                            {fmtNum(saldoRunning)} {unidadMat}
-                          </strong>
+                      <button type="button" onClick={toggleDetalle}
+                        title={abierto ? 'Cerrar el detalle de movimientos de este recurso' : 'Abrir el detalle de movimientos de este recurso'}
+                        className="w-full px-4 py-2 flex items-center justify-between bg-slate-50/50 hover:bg-violet-50/60 transition-colors text-left">
+                        <span className="flex items-center gap-2 text-[11px] font-semibold text-slate-600">
+                          <span className="w-4 h-4 rounded border border-violet-300 bg-white text-violet-700 flex items-center justify-center shrink-0">
+                            {abierto ? <Minus size={11} /> : <Plus size={11} />}
+                          </span>
+                          Estado de cuenta — {nomMat}
+                          {!abierto && <span className="text-[10px] font-normal text-slate-400">(clic para abrir el detalle)</span>}
                         </span>
-                      </div>
+                        <span className="text-[10px] text-slate-400">
+                          {todosOrdenados.length} mov. ·{' '}
+                          {saldoCta !== null && Math.abs(saldoCta - saldoRunning) > 0.01 ? (
+                            <>
+                              Saldo de estos movimientos:{' '}
+                              <strong className={saldoRunning < 0 ? 'text-rose-600' : 'text-violet-700'}>
+                                {fmtNum(saldoRunning)} {unidadMat}
+                              </strong>
+                              {' · '}Saldo real de la cuenta:{' '}
+                              <strong className={saldoCta < 0 ? 'text-rose-600' : 'text-emerald-700'}>
+                                {fmtNum(saldoCta)} {unidadMat}
+                              </strong>
+                            </>
+                          ) : (
+                            <>
+                              Saldo:{' '}
+                              <strong className={saldoRunning < 0 ? 'text-rose-600' : 'text-violet-700'}>
+                                {fmtNum(saldoCta !== null ? saldoCta : saldoRunning)} {unidadMat}
+                              </strong>
+                            </>
+                          )}
+                        </span>
+                      </button>
+                      {abierto && (
                       <div className="overflow-x-auto">
                         <table className="w-full text-xs">
                           <thead>
@@ -2198,6 +3648,15 @@ export const PlanesPanel = ({ cuenta, CliIdCliente, cliente, desde, hasta, onClo
                                   <div className="flex items-center justify-end gap-1">
                                     {m._tipo === 'RECARGO_URGENCIA' ? (
                                       <span className="text-slate-300 text-[10px]" title="Recargo automático — no editable manualmente">—</span>
+                                    ) : m._tipo === 'ENTRADA' ? (
+                                      /* Una ENTRADA es la COMPRA del rollo por adelantado, no un consumo.
+                                         Borrarla desde acá le SUMABA los metros al saldo, dejaba el plan
+                                         entero y hasta lo reactivaba (planes #135/#136, 18-ago-2026).
+                                         La compra se deshace anulando la venta de caja. */
+                                      <span
+                                        className="text-slate-300 text-[10px] cursor-help"
+                                        title="Es la COMPRA del recurso, no un consumo. Para deshacerla anulá la venta de caja que la generó (o emitile una Nota de Crédito): así se da de baja también el plan."
+                                      >—</span>
                                     ) : (
                                     <>
                                     <button
@@ -2260,8 +3719,10 @@ export const PlanesPanel = ({ cuenta, CliIdCliente, cliente, desde, hasta, onClo
                           </tbody>
                         </table>
                       </div>
+                      )}
                     </div>
-                  )}
+                    );
+                  })()}
                 </div>
               );
             });
@@ -3064,6 +4525,11 @@ export default function ContabilidadCuentasView() {
   const [paneles, setPaneles]                 = useState({});
   const [modalPago, setModalPago]             = useState(null);
   const [showSaldoInicial, setShowSaldoInicial] = useState(false);
+  // Billetera: cuentas secundarias + transferencias
+  const [showNuevaCuenta, setShowNuevaCuenta]   = useState(false);
+  const [showTransferir, setShowTransferir]     = useState(false);
+  const [cuentaSelId, setCuentaSelId]           = useState(null);
+  const [cfgCuenta, setCfgCuenta]               = useState(null);   // ⚙ cuenta secundaria a configurar
   const [tabCuentas, setTabCuentas]           = useState('SALDOS');
   const [refreshBilletera, setRefreshBilletera] = useState(0);
 
@@ -3259,19 +4725,24 @@ export default function ContabilidadCuentasView() {
     return clientesActivos;
   }, [clientesActivos]);
 
-  const cuentaActiva = useMemo(() => {
-    if (!cuentas || cuentas.length === 0) return null;
+  // Billetera: puede haber VARIAS cuentas de dinero por moneda (principal + secundarias).
+  // La lista del tab ordena la principal primero; cuentaSelId permite mirar una secundaria.
+  const cuentasMonetariasTab = useMemo(() => {
+    if (!cuentas || cuentas.length === 0) return [];
     const TIPOS_MONETARIOS = ['USD','UYU','ARS','EUR','PYG','BRL','CORRIENTE','CREDITO','DEBITO','CAJA','DINERO_USD','DINERO_UYU'];
-    
-    if (tabCuentas === 'RECURSOS') return null; // Recursos shows all resource accounts, no single 'cuentaActiva'
-
-    return cuentas.find(c => {
+    if (tabCuentas === 'RECURSOS') return [];
+    return cuentas.filter(c => {
       const esRecurso = c.ProIdProducto != null || !TIPOS_MONETARIOS.includes(c.CueTipo?.toUpperCase());
       if (esRecurso) return false;
       if (tabCuentas === 'USD') return c.MonSimbolo === 'US$' || c.CueTipo === 'DINERO_USD';
       return c.MonSimbolo !== 'US$' && c.CueTipo !== 'DINERO_USD'; // UYU default
-    });
+    }).sort((a, b) => Number(b.CueEsPrincipal || 0) - Number(a.CueEsPrincipal || 0) || a.CueIdCuenta - b.CueIdCuenta);
   }, [cuentas, tabCuentas]);
+
+  const cuentaActiva = useMemo(() => {
+    if (cuentasMonetariasTab.length === 0) return null;
+    return cuentasMonetariasTab.find(c => c.CueIdCuenta === cuentaSelId) || cuentasMonetariasTab[0];
+  }, [cuentasMonetariasTab, cuentaSelId]);
 
   const ordenesFiltradas = useMemo(() => {
     if (!cuentaActiva) return [];
@@ -3295,6 +4766,30 @@ export default function ContabilidadCuentasView() {
           cliente={clienteSel}
           onClose={() => setShowSaldoInicial(false)}
           onSuccess={recargarCuentas}
+        />
+      )}
+
+      {/* Billetera: gestor de cuentas (lista + crear + editar) */}
+      {showNuevaCuenta && clienteSel && (
+        <ModalCuentasCliente
+          cliente={clienteSel}
+          onClose={() => { setShowNuevaCuenta(false); recargarCuentas(); }}
+          onChanged={recargarCuentas}
+        />
+      )}
+      {showTransferir && clienteSel && (
+        <ModalTransferirCuentas
+          cliente={clienteSel}
+          cuentas={cuentas}
+          onClose={() => setShowTransferir(false)}
+          onSuccess={recargarCuentas}
+        />
+      )}
+      {cfgCuenta && (
+        <ModalConfigCuenta
+          cuenta={cfgCuenta}
+          onClose={() => setCfgCuenta(null)}
+          onSuccess={() => { setCfgCuenta(null); recargarCuentas(); }}
         />
       )}
 
@@ -3474,6 +4969,22 @@ export default function ContabilidadCuentasView() {
                         </button>
                         <button
                           type="button"
+                          onClick={() => setShowNuevaCuenta(true)}
+                          title="Cuentas del cliente: ver todas, crear una nueva o editar las existentes (modalidad, automático, negativo, artículos)"
+                          className="flex items-center gap-1.5 px-3 py-2.5 bg-violet-600 hover:bg-violet-700 text-white text-xs font-bold uppercase tracking-widest rounded-lg transition-colors shadow-sm"
+                        >
+                          <Wallet size={14} /> Cuentas
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setShowTransferir(true)}
+                          title="Transferir dinero entre dos cuentas de este cliente"
+                          className="flex items-center gap-1.5 px-3 py-2.5 bg-cyan-600 hover:bg-cyan-700 text-white text-xs font-bold uppercase tracking-widest rounded-lg transition-colors shadow-sm"
+                        >
+                          <RotateCcw size={14} /> Transferir
+                        </button>
+                        <button
+                          type="button"
                           onClick={handleImprimirEstadoCuenta}
                           title="Imprimir Estado de Cuenta"
                           disabled={cuentas.length === 0 || generandoPdf}
@@ -3609,11 +5120,46 @@ export default function ContabilidadCuentasView() {
                     </div>
                   )}
 
-                  {tabCuentas !== 'RECURSOS' && cuentaActiva && (
+                  {/* Billetera: si hay más de una cuenta de dinero en esta moneda, elegir cuál mirar */}
+                  {tabCuentas !== 'RECURSOS' && cuentasMonetariasTab.length > 1 && (
+                    <div className="flex flex-wrap items-center gap-1.5 mb-3">
+                      <span className="text-[10px] font-black uppercase tracking-widest text-slate-400 mr-1">Cuentas:</span>
+                      {cuentasMonetariasTab.map(c => (
+                        <span key={c.CueIdCuenta} className={`inline-flex items-stretch rounded-full border overflow-hidden transition-all
+                            ${cuentaActiva?.CueIdCuenta === c.CueIdCuenta
+                              ? 'bg-indigo-600 text-white border-indigo-600 shadow-sm'
+                              : 'bg-white text-slate-600 border-slate-200 hover:border-indigo-300'}`}>
+                          <button type="button"
+                            onClick={() => setCuentaSelId(c.CueIdCuenta)}
+                            title={c.CueEsPrincipal ? 'Cuenta principal: la que usan los flujos automáticos'
+                              : `${c.CueRestringida ? 'Restringida a sus artículos' : 'Cuenta libre'} · descuento automático ${c.CueAutoConsumo ? 'ON' : 'OFF'} · negativo ${c.CuePuedeNegativo ? 'ON' : 'OFF'}`}
+                            className="flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-bold">
+                            <span className="font-mono text-[9px] opacity-70">{codigoCuenta(c)}</span>
+                            {c.CueNombre || (c.CueEsPrincipal ? 'Cuenta principal' : `Cuenta #${c.CueIdCuenta}`)}
+                            {!!c.CueRestringida && <Lock size={10} className="opacity-70" />}
+                            {!c.CueEsPrincipal && !!c.CueAutoConsumo && <Zap size={10} className="opacity-70" />}
+                            <span className="font-mono font-black">{Number(c.CueSaldoActual || 0).toLocaleString('es-UY', { minimumFractionDigits: 2 })}</span>
+                          </button>
+                          {!c.CueEsPrincipal && (
+                            <button type="button" onClick={() => setCfgCuenta(c)} title="Configurar esta cuenta (nombre, descuento automático, negativo, artículos)"
+                              className="px-1.5 border-l border-current/20 text-[11px] hover:bg-black/10">⚙</button>
+                          )}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* Billetera: cuenta secundaria con nombre → libro propio (como el del rollo) */}
+                  {tabCuentas !== 'RECURSOS' && cuentaActiva && !cuentaActiva.CueEsPrincipal && cuentaActiva.CueNombre && (
                     <div className="animate-in fade-in duration-300">
-                      {/* CiclosPanel ocultado — el panel verde "Revisar y Facturar" ya gestiona 
+                      <LibroCuentaDinero cuenta={cuentaActiva} cliente={clienteSel} desde={globalDesde} hasta={globalHasta} onChanged={recargarCuentas} />
+                    </div>
+                  )}
+                  {tabCuentas !== 'RECURSOS' && cuentaActiva && (!!cuentaActiva.CueEsPrincipal || !cuentaActiva.CueNombre) && (
+                    <div className="animate-in fade-in duration-300">
+                      {/* CiclosPanel ocultado — el panel verde "Revisar y Facturar" ya gestiona
                           la creación/cierre del ciclo de forma transparente */}
-                      <MovimientosPanel 
+                      <MovimientosPanel
                         CueIdCuenta={cuentaActiva.CueIdCuenta} 
                         simbolo={cuentaActiva.MonSimbolo || '$'} 
                         onClose={() => setClienteSel(null)} 

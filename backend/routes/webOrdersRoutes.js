@@ -83,6 +83,20 @@ router.post('/pickup-orders/handy-payment', verifyToken, webOrdersController.cre
 
 // POST /api/web-orders/pickup-orders/init-payment (Nuevo flujo: generar link sin crear retiro)
 router.post('/pickup-orders/init-payment', verifyToken, webOrdersController.initHandyPayment);
+// Billetera del portal: pagar el retiro con el saldo de una cuenta propia (sin pasarela)
+router.get('/mi-billetera', verifyToken, webOrdersController.getMiBilletera);
+router.post('/pickup-orders/pagar-con-saldo', verifyToken, webOrdersController.pagarConSaldoBilletera);
+// F5: cubrir pedidos pendientes con el saldo PREPAGO (consumo, sin documento)
+router.post('/pickup-orders/cubrir-con-billetera', verifyToken, webOrdersController.cubrirConBilletera);
+// Autoservicio de cuentas (Mis Recursos): crear, ver, recargar por Handy/MercadoPago
+router.get('/mis-cuentas', verifyToken, webOrdersController.getMisCuentas);
+router.get('/mis-cuentas/:CueIdCuenta/movimientos', verifyToken, webOrdersController.getMisCuentaMovs);
+router.post('/mis-cuentas', verifyToken, webOrdersController.crearMiCuenta);
+router.post('/mis-cuentas/:CueIdCuenta/recargar', verifyToken, webOrdersController.iniciarRecargaCuenta);
+// F4: factura de una recarga prepago, para descargar el PDF desde "Mi billetera"
+router.get('/mis-cuentas/:CueIdCuenta/comprobantes/:DocIdDocumento', verifyToken, webOrdersController.getMiComprobante);
+router.post('/mis-cuentas/:CueIdCuenta/cerrar', verifyToken, webOrdersController.cerrarMiCuenta);
+router.post('/mis-cuentas/:CueIdCuenta/reabrir', verifyToken, webOrdersController.reabrirMiCuenta);
 
 // POST /api/web-orders/handy-webhook (Webhook Callback desde Handy)
 router.post('/handy-webhook', webOrdersController.handyWebhook);

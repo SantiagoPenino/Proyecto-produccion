@@ -22,29 +22,29 @@ export default function PreFacturaPage() {
 
   const { ciclo, cliente, cuenta, movsOriginales, returnTo } = state;
 
+  // La navegación se hace SOLO al cerrar: el modal, tras emitir, puede encadenar el
+  // cobro contado con medios de pago — si navegáramos acá, ese cobro nunca correría.
+  const emitidaRef = React.useRef(false);
+
   const handleClose = () => {
     navigate(returnTo || '/contabilidad/cuentas', {
       replace: true,
-      state: { selectedClienteId: cliente?.CliIdCliente },
+      state: {
+        selectedClienteId: cliente?.CliIdCliente,
+        ...(emitidaRef.current ? { facturaEmitida: true } : {}),
+      },
     });
   };
 
+  // Devuelve el resultado de la emisión ({ DocIdDocumento, docNumero, ... }) para que el
+  // modal pueda cobrar el contado contra el documento recién creado.
   const handleConfirm = async (cicloId, payload) => {
-    try {
-      await api.post(
-        `/contabilidad/clientes/${cliente.CliIdCliente}/emitir-factura-anticipo`,
-        payload,
-      );
-      navigate(returnTo || '/contabilidad/cuentas', {
-        replace: true,
-        state: {
-          selectedClienteId: cliente?.CliIdCliente,
-          facturaEmitida: true,
-        },
-      });
-    } catch (err) {
-      throw err;
-    }
+    const res = await api.post(
+      `/contabilidad/clientes/${cliente.CliIdCliente}/emitir-factura-anticipo`,
+      payload,
+    );
+    emitidaRef.current = true;
+    return res.data?.data ?? res.data;
   };
 
   return (

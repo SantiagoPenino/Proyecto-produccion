@@ -62,6 +62,7 @@ const contabilidadSvc  = require('./contabilidadService');
 const contabilidadCore = require('./contabilidadCore'); // ERP + resolverLineasDesdeMotor
 const motorContable    = require('./motorContable');     // Motor de Eventos: fuente de verdad
 const { estamparAreaLineas } = require('./areaLineaService');
+const { absorberSobregiroEnPlan } = require('./planSobregiroService');
 
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -330,6 +331,19 @@ async function procesarVentaDirecta(payload) {
                    GETDATE(), @Usr, 0, @TcaRef, @PlanRef);
               `);
 
+            // Los metros consumidos de más contra planes anteriores (que viven como
+            // negativo en la cuenta y que PlanesMetros nunca pudo reflejar) se
+            // descuentan de esta compra. Sin esto el plan queda mostrando metros que
+            // el cliente ya usó y el motor de cobertura se los vuelve a entregar.
+            // Va acá, después del UPDATE del plan y del movimiento de ENTRADA: el
+            // sobregiro se mide restando el saldo de la cuenta al restante de los
+            // planes, así que los dos lados tienen que estar ya actualizados.
+            await absorberSobregiroEnPlan({
+                PlaIdPlan:   referenciaId,
+                CueIdCuenta: cueMemoId,
+                Capacidad:   item.cantidad,
+            }, transaction);
+
         } else if (item.tipo === 'FACT_CREDITO') {
             item.codigo = 'FACT_CRED';
         }
@@ -355,9 +369,14 @@ async function procesarVentaDirecta(payload) {
     // El PagTipoMovimiento viene del Motor (evento PAGO o INGRESO_CAJA)
     const evtPago = await motorContable.getEvento('VTA_CAJA').catch(() => null);
     const movTipoPago = evtPago?.EvtCodigo || 'INGRESO';
+    // Billetera: "Saldo de cuenta" exige cuenta elegida (si no, el cobro queda sin respaldo)
+    const metodoSaldoVD = (await new sql.Request(transaction)
+      .query(`SELECT TOP 1 MPaIdMetodoPago FROM dbo.MetodosPagos WHERE MPaDescripcionMetodo = 'Saldo de cuenta'`)).recordset[0]?.MPaIdMetodoPago || null;
     for (const pg of pagosNorm) {
         if (pg.montoConvertido <= 0) continue;
-        await new sql.Request(transaction)
+        if (metodoSaldoVD && parseInt(pg.metodoPagoId, 10) === metodoSaldoVD && !pg.cueIdCuenta)
+          throw new Error('El medio "Saldo de cuenta" necesita que elijas DE QUÉ CUENTA sale la plata (el cliente debe tener una cuenta de anticipo libre). No se registró nada.');
+        const pagoVDRes = await new sql.Request(transaction)
           .input('TcaId', sql.Int, tcaId)
           .input('Metodo', sql.Int, pg.metodoPagoId)
           .input('RefNum', sql.VarChar(100), pg.referenciaNumero || '')
@@ -369,8 +388,39 @@ async function procesarVentaDirecta(payload) {
           .input('TipoMov', sql.VarChar(30), movTipoPago)
           .query(`
              INSERT INTO dbo.Pagos (PagTcaIdTransaccion, MPaIdMetodoPago, PagMontoPago, PagCotizacion, PagMontoConvertido, PagIdMonedaPago, PagTipoMovimiento, PagFechaPago, PagUsuarioAlta)
+             OUTPUT INSERTED.PagIdPago
              VALUES (@TcaId, @Metodo, @Monto, @Cotiz, @Conv, @Moneda, @TipoMov, GETDATE(), @Usr)
           `);
+        // Débito de la cuenta elegida (mismas reglas que el motor de caja)
+        if (pg.cueIdCuenta) {
+          const pagIdVD = pagoVDRes.recordset[0].PagIdPago;
+          const cbVD = (await new sql.Request(transaction).input('C', sql.Int, parseInt(pg.cueIdCuenta))
+            .query(`SELECT CliIdCliente, CueTipo, MonIdMoneda, CueNombre, CueActiva, CueEsPrincipal, CueRestringida, CuePuedeNegativo, CueModalidadFiscal
+                    FROM dbo.CuentasCliente WHERE CueIdCuenta = @C`)).recordset[0];
+          const nomVD = cbVD?.CueNombre || `cuenta #${pg.cueIdCuenta}`;
+          if (!cbVD || !cbVD.CueActiva || cbVD.CliIdCliente !== parseInt(header.clienteId) || !String(cbVD.CueTipo).startsWith('DINERO'))
+            throw new Error(`El pago con saldo apunta a la cuenta #${pg.cueIdCuenta}, que no es una cuenta de dinero activa de este cliente.`);
+          if (cbVD.CueEsPrincipal) throw new Error('Para pagar con el saldo a favor de la cuenta PRINCIPAL usá "Imputar anticipo".');
+          if (cbVD.CueRestringida) throw new Error(`"${nomVD}" es restringida: paga solo sus artículos, no sirve como medio de pago general.`);
+          if (cbVD.CueModalidadFiscal === 'PREPAGO_FACTURADO')
+            throw new Error(`"${nomVD}" es prepago FACTURADA: pagar otro documento con ella duplicaría la venta y el IVA. Ese saldo se gasta consumiendo órdenes.`);
+          const monCtaVD = Number(cbVD.MonIdMoneda) === 2 ? 'USD' : 'UYU';
+          const monLineaVD = (Number(pg.monedaId) === 2 || pg.moneda === 'USD') ? 'USD' : 'UYU';
+          if (monCtaVD !== monLineaVD)
+            throw new Error(`La línea de pago está en ${monLineaVD} pero "${nomVD}" es en ${monCtaVD}: poné la línea en la moneda de la cuenta.`);
+          const dispVD = await contabilidadSvc.getSaldoRealCuenta(parseInt(pg.cueIdCuenta), transaction);
+          // Como MEDIO DE PAGO el saldo nunca deja la cuenta en negativo (el negativo
+          // es SOLO para los descuentos automáticos del motor, regla 31-ago-2026).
+          if (dispVD + 0.001 < Number(pg.montoOriginal))
+            throw new Error(`Saldo insuficiente en "${nomVD}": disponible ${monCtaVD === 'USD' ? 'US$' : '$'} ${dispVD.toFixed(2)} y se intentó pagar ${Number(pg.montoOriginal).toFixed(2)}. El saldo como medio de pago nunca deja la cuenta en negativo.`);
+          await contabilidadSvc.registrarMovimiento({
+            CueIdCuenta: parseInt(pg.cueIdCuenta), MovTipo: 'PAGO_SALDO',
+            MovConcepto: 'Pago con saldo',
+            MovImporte: -Math.abs(Number(pg.montoOriginal)), MovUsuarioAlta: usuarioId,
+            PagIdPago: pagIdVD, MovRefExterna: `PAGO-SALDO-${pagIdVD}`,
+          }, transaction);
+          logger.info(`[BILLETERA] Venta directa, pago #${pagIdVD}: ${monLineaVD} ${pg.montoOriginal} salieron de "${nomVD}".`);
+        }
     }
 
     // 6. Submayor: Deuda documentada de la venta
@@ -757,6 +807,46 @@ async function procesarTransaccion(payload) {
   if (!header?.tipoDocumento)    throw new Error('tipoDocumento es obligatorio.');
   if (!aplicaciones?.length)     throw new Error('Debe incluir al menos una orden o ítem.');
 
+  // ── GUARD ANTI-DOBLE-FACTURACIÓN (caso SUB-12304: ET-4059 por cierre + ET-4060
+  // por cobro de retiro, 24-ago-2026). Una orden cuyo ORDEN ya tiene documento
+  // (facturada por cierre de ciclo o individualmente) NO puede volver a facturarse
+  // en el cobro del retiro: cada orden lleva UN solo comprobante. Si su deuda sigue
+  // pendiente, el camino es "Pago de Deudas" (recibo), no otra factura.
+  {
+    const retirosGuard = (aplicaciones || [])
+      .filter(a => a.tipo === 'ORDEN_RETIRO' && a.referenciaId)
+      .map(a => parseInt(String(a.referenciaId).replace(/\D/g, ''), 10))
+      .filter(n => !isNaN(n));
+    if (retirosGuard.length && header?.clienteId) {
+      const poolGuard = await getPool();
+      const factRes = await poolGuard.request()
+        .input('Cli', sql.Int, parseInt(header.clienteId))
+        .query(`
+          SELECT DISTINCT od.OrdCodigoOrden, LTRIM(RTRIM(dc.DocSerie)) DocSerie, LTRIM(RTRIM(CAST(dc.DocNumero AS VARCHAR(50)))) DocNumero,
+                 ISNULL((SELECT TOP 1 dd.DDeEstado FROM dbo.DeudaDocumento dd WITH(NOLOCK) WHERE dd.DocIdDocumento = dc.DocIdDocumento), 'PAGADO') AS DeudaEstado
+          FROM dbo.OrdenesDeposito od WITH(NOLOCK)
+          JOIN dbo.MovimientosCuenta m WITH(NOLOCK)
+            ON (m.OrdIdOrden = od.OrdIdOrden
+                OR m.OrdIdOrden IN (SELECT o2.OrdenID FROM dbo.Ordenes o2 WITH(NOLOCK) WHERE o2.CodigoOrden = od.OrdCodigoOrden))
+          JOIN dbo.CuentasCliente cc WITH(NOLOCK) ON cc.CueIdCuenta = m.CueIdCuenta AND cc.CliIdCliente = @Cli
+          JOIN dbo.DocumentosContables dc WITH(NOLOCK) ON dc.DocIdDocumento = m.DocIdDocumento
+          WHERE od.OReIdOrdenRetiro IN (${retirosGuard.join(',')})
+            AND ISNULL(od.OrdCostoFinal, 0) > 0.01
+            AND m.MovTipo IN ('ORDEN','ORDEN_ANTICIPO')
+            AND (m.MovAnulado IS NULL OR m.MovAnulado = 0)
+            AND ISNULL(dc.DocEstado, '') <> 'ANULADO'
+        `);
+      if (factRes.recordset.length) {
+        const det = factRes.recordset.map(f =>
+          `${f.OrdCodigoOrden} ya está facturada en ${f.DocSerie}-${f.DocNumero}` +
+          (['PENDIENTE', 'PARCIAL', 'VENCIDO'].includes(String(f.DeudaEstado).toUpperCase())
+            ? ' (deuda pendiente: cobrala por "Pago de Deudas")'
+            : ' (paga: entregá sin cobrar)'));
+        throw new Error(`No se cobró el retiro — ${det.join(' · ')}. Cada orden lleva UN solo comprobante; destildá esas órdenes del cobro.`);
+      }
+    }
+  }
+
   // ── Calcular totales ──────────────────────────────────────────────────
   const totalBruto  = aplicaciones.reduce((s, a) => s + (a.montoOriginal || 0), 0);
   const totalAjuste = aplicaciones.reduce((s, a) => s + (a.ajuste || 0), 0);
@@ -896,7 +986,14 @@ async function procesarTransaccion(payload) {
     // ── PASO 3: Insertar un registro en Pagos por cada método ──────────
     let primerPagIdPago = null;   // se linkea como FK principal en OrdenesRetiro
 
+    // Billetera: "Saldo de cuenta" exige cuenta elegida (sin cuenta = cobro sin respaldo)
+    const metodoSaldoRes = await new sql.Request(transaction)
+      .query(`SELECT TOP 1 MPaIdMetodoPago FROM dbo.MetodosPagos WHERE MPaDescripcionMetodo = 'Saldo de cuenta'`);
+    const metodoSaldoId = metodoSaldoRes.recordset[0]?.MPaIdMetodoPago || null;
+
     for (const pago of pagosNorm) {
+      if (metodoSaldoId && parseInt(pago.metodoPagoId, 10) === metodoSaldoId && !pago.cueIdCuenta)
+        throw new Error('El medio "Saldo de cuenta" necesita que elijas DE QUÉ CUENTA sale la plata (el cliente debe tener una cuenta secundaria libre). No se registró nada.');
       const pagoRes = await new sql.Request(transaction)
         .input('MetodoId',       sql.Int,           pago.metodoPagoId)
         .input('MonedaId',       sql.Int,           pago.monedaId)
@@ -923,6 +1020,49 @@ async function procesarTransaccion(payload) {
         `);
 
       const pagIdPago = pagoRes.recordset[0].PagIdPago;
+
+      // ── BILLETERA: medio "Saldo de cuenta" → la plata sale de la cuenta elegida ──
+      // Solo cuentas SECUNDARIAS LIBRES: la principal se usa con "Imputar anticipo"
+      // (acá su +PAGO/−SALIDA se netearía y el saldo a favor no bajaría) y las
+      // restringidas pagan sus artículos por su propio circuito.
+      if (pago.cueIdCuenta) {
+        const cueBilletera = parseInt(pago.cueIdCuenta);
+        const cbRes = await new sql.Request(transaction)
+          .input('C', sql.Int, cueBilletera)
+          .query(`SELECT CliIdCliente, CueTipo, MonIdMoneda, CueNombre, CueActiva, CueEsPrincipal, CueRestringida, CuePuedeNegativo, CueModalidadFiscal
+                  FROM dbo.CuentasCliente WHERE CueIdCuenta = @C`);
+        const cb = cbRes.recordset[0];
+        const nomCta = cb?.CueNombre || `cuenta #${cueBilletera}`;
+        if (!cb || !cb.CueActiva || cb.CliIdCliente !== parseInt(header.clienteId) || !String(cb.CueTipo).startsWith('DINERO'))
+          throw new Error(`El pago con saldo apunta a la cuenta #${cueBilletera}, que no es una cuenta de dinero activa de este cliente.`);
+        if (cb.CueEsPrincipal)
+          throw new Error('Para pagar con el saldo a favor de la cuenta PRINCIPAL usá "Imputar anticipo", no el medio "Saldo de cuenta".');
+        if (cb.CueRestringida)
+          throw new Error(`"${nomCta}" es una cuenta restringida: paga solo sus artículos (consumo automático o "Pagar con saldo" sobre la orden), no sirve como medio de pago general.`);
+        if (cb.CueModalidadFiscal === 'PREPAGO_FACTURADO')
+          throw new Error(`"${nomCta}" es prepago FACTURADA: su plata ya tiene factura propia — usarla para pagar otro documento duplicaría la venta y el IVA. Ese saldo se gasta consumiendo órdenes.`);
+        const monCta = Number(cb.MonIdMoneda) === 2 ? 'USD' : 'UYU';
+        // La moneda de la línea puede venir como string o solo como monedaId según el flujo
+        const monLinea = (Number(pago.monedaId) === 2 || pago.moneda === 'USD') ? 'USD' : 'UYU';
+        if (monCta !== monLinea)
+          throw new Error(`La línea de pago está en ${monLinea} pero "${nomCta}" es en ${monCta}: poné la línea en la moneda de la cuenta.`);
+        const dispBilletera = await contabilidadSvc.getSaldoRealCuenta(cueBilletera, transaction);
+        // Como MEDIO DE PAGO el saldo nunca deja la cuenta en negativo (el negativo
+        // es SOLO para los descuentos automáticos del motor, regla 31-ago-2026).
+        if (dispBilletera + 0.001 < pago.montoOriginal)
+          throw new Error(`Saldo insuficiente en "${nomCta}": disponible ${monCta === 'USD' ? 'US$' : '$'} ${dispBilletera.toFixed(2)} y se intentó pagar ${Number(pago.montoOriginal).toFixed(2)}. El saldo como medio de pago nunca deja la cuenta en negativo.`);
+        await contabilidadSvc.registrarMovimiento({
+          CueIdCuenta:      cueBilletera,
+          MovTipo:          'PAGO_SALDO',
+          MovConcepto:      'Pago con saldo',
+          MovImporte:       -Math.abs(pago.montoOriginal),
+          MovUsuarioAlta:   usuarioId,
+          PagIdPago:        pagIdPago,
+          MovRefExterna:    `PAGO-SALDO-${pagIdPago}`,
+          MovObservaciones: (header.observaciones || header.obs || '').toString().slice(0, 200) || null,
+        }, transaction);
+        logger.info(`[BILLETERA] Pago #${pagIdPago}: ${pago.moneda} ${pago.montoOriginal} salieron de "${nomCta}" (#${cueBilletera}), saldo previo ${dispBilletera.toFixed(2)}.`);
+      }
 
       if (!primerPagIdPago) primerPagIdPago = pagIdPago;  // primer pago real = FK principal
 
@@ -1677,10 +1817,10 @@ async function procesarTransaccion(payload) {
                  .query(`
                    SELECT TOP 1 CueIdCuenta, ISNULL(CueSaldoActual, 0) as Saldo
                    FROM dbo.CuentasCliente WITH(UPDLOCK)
-                   WHERE CliIdCliente = @cli 
-                     AND CueTipo IN ('DINERO_UYU', 'DINERO_USD') 
-                     AND CueActiva = 1 
-                   ORDER BY CASE CueTipo WHEN 'DINERO_UYU' THEN 1 ELSE 2 END
+                   WHERE CliIdCliente = @cli
+                     AND CueTipo IN ('DINERO_UYU', 'DINERO_USD')
+                     AND CueActiva = 1
+                   ORDER BY CueEsPrincipal DESC, CASE CueTipo WHEN 'DINERO_UYU' THEN 1 ELSE 2 END
                  `);
                if (cuentaDeudaRes.recordset.length > 0) {
                  const cueDeudaId = cuentaDeudaRes.recordset[0].CueIdCuenta;
@@ -2331,6 +2471,7 @@ async function generarCFEDesdeOrdenesDirectas({ orderIds, clienteId, monto, mone
       SELECT TOP 1 CueIdCuenta
       FROM dbo.CuentasCliente WITH(NOLOCK)
       WHERE CliIdCliente = @cli AND CueTipo = @tipo AND CueActiva = 1
+      ORDER BY CueEsPrincipal DESC, CueIdCuenta ASC
     `);
   // Fallback a cuentas genéricas si el cliente aún no tiene cuenta propia
   const cueIdCuenta = cueRes.recordset.length > 0

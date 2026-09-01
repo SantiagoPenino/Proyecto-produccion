@@ -1,11 +1,16 @@
 import React, { useState, useEffect } from 'react';
 import { X, CheckCircle2, RefreshCw, Edit3, DollarSign, Percent, ShoppingBag, Receipt, Building2, Pen } from 'lucide-react';
 import api from '../../services/api';
-import toast from 'react-hot-toast';
+// sonner: es el Toaster montado globalmente (MainAppContent). Con react-hot-toast los avisos
+// de esta pantalla (ej. "Error al facturar") NO se mostraban: no hay Toaster de esa librería.
+import { toast } from 'sonner';
 import { generarPdfFacturaDGI } from '../../utils/pdfGenerator';
 import { useEmpresas } from '../../hooks/useEmpresas';
 import { validarDocumentoUY } from '../../utils/documentoUY';
 import { fmtFecha, porFechaDesc } from '../../utils/fechas';
+// Paso 2 CONTADO: mismo panel de medios de pago que usa toda la caja
+import CajaPanelPago from './CajaPanelPago';
+import { codigoCuenta } from '../../utils/cuentaCodigo';
 
 // Input simple para precios — sin flechas, sin formateo automático
 const SimpleInput = ({ value, onChange, placeholder = '0' }) => {
@@ -108,6 +113,67 @@ export default function CierreCicloPreviewModal({
   const [guardando, setGuardando] = useState(false);
   const [guardadoOk, setGuardadoOk] = useState(false); // feedback visual tras guardar
   const [confirmGuardar, setConfirmGuardar] = useState(false); // modal de confirmación
+  // Dos pasos, como las otras ventanas: 1) DOCUMENTO (tipo, datos DGI, líneas, descuento)
+  // → 2) PAGO (contado/crédito y emisión). El paso 2 muestra el resumen de lo armado.
+  const [paso, setPaso] = useState('documento'); // 'documento' | 'pago'
+  // Paso 2 CONTADO: medios de pago (opcional — sin medios, la factura se cubre con el
+  // saldo a favor del cliente o queda pendiente de cobro). Tras emitir, el cobro se
+  // registra con el MISMO endpoint de Pago de Deudas de caja.
+  const [metodosPago, setMetodosPago] = useState([]);
+  const [pagosContado, setPagosContado] = useState([]);
+  const [cuentasBilletera, setCuentasBilletera] = useState([]);
+  // F2: simulación del consumo prepago del cierre (FIFO, órdenes enteras) —
+  // qué órdenes cubre la billetera y cuáles van a factura. Se muestra en el paso 2.
+  const [consumoPrev, setConsumoPrev] = useState(null);
+  const [saldoPrincipal, setSaldoPrincipal] = useState({}); // { UYU: x, USD: y } saldo real de las principales
+  // De qué cuenta sale el saldo a favor que cubre la factura: 'PRINCIPAL' (motor, como
+  // siempre) o el CueIdCuenta de una cuenta libre — en ese caso, al emitir se transfiere
+  // su saldo a la cuenta base del cierre y el cierre lo consume (la principal queda igual).
+  const [cuentaCobertura, setCuentaCobertura] = useState('PRINCIPAL');
+  useEffect(() => {
+    if (paso !== 'pago' || metodosPago.length) return;
+    api.get('/apipagos/metodos').then(r => {
+      const mets = Array.isArray(r.data) ? r.data : [];
+      setMetodosPago(mets);
+      setPagosContado(p => p.length ? p : [{ id: Date.now(), metodoPagoId: mets[0]?.MPaIdMetodoPago || '', moneda: monedaFactura === 'USD' ? 'USD' : 'UYU', monedaId: monedaFactura === 'USD' ? 2 : 1, monto: '' }]);
+    }).catch(() => {});
+    api.get(`/contabilidad/cuentas/${cliente?.CliIdCliente}`).then(r => {
+      const todas = (r.data?.data || []).filter(c => String(c.CueTipo || '').startsWith('DINERO'));
+      // Solo cuentas de ANTICIPO libres pueden pagar documentos (regla de la billetera)
+      setCuentasBilletera(todas.filter(c =>
+        !c.CueEsPrincipal && !c.CueRestringida
+        && (c.CueModalidadFiscal || 'ANTICIPO_A_FACTURAR') !== 'PREPAGO_FACTURADO' && c.CueActiva !== false));
+      // Saldo real de las principales: el cierre lo aplica SOLO a la factura antes que nada
+      const sp = {};
+      todas.filter(c => c.CueEsPrincipal).forEach(c => { sp[c.CueTipo === 'DINERO_USD' ? 'USD' : 'UYU'] = Number(c.CueSaldoActual || 0); });
+      setSaldoPrincipal(sp);
+    }).catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [paso]);
+
+  // F2: al entrar al paso 2, simular el consumo prepago del cierre (FIFO, órdenes
+  // ENTERAS) con los importes FINALES por orden — los mismos que irían a la factura.
+  useEffect(() => {
+    if (paso !== 'pago' || !cliente?.CliIdCliente) { setConsumoPrev(null); return; }
+    try {
+      const porOrden = new Map();
+      for (const d of getDetallesParaPDF()) {
+        const cod = String(d.OrdCodigoOrden || '').trim();
+        if (!cod) continue;
+        porOrden.set(cod, (porOrden.get(cod) || 0) + Number(d.DcdSubtotal || 0));
+      }
+      const ordenesSim = Array.from(porOrden.entries()).map(([codigo, importe]) => ({ codigo, importe }));
+      if (!ordenesSim.length) { setConsumoPrev(null); return; }
+      api.post(`/contabilidad/clientes/${cliente.CliIdCliente}/preview-consumo-prepago`, {
+        ordenes: ordenesSim,
+        monedaCicloId: monedaFactura === 'USD' ? 2 : 1,
+        cotDolar,
+      }).then(r => setConsumoPrev(r.data?.data || null)).catch(() => setConsumoPrev(null));
+    } catch { setConsumoPrev(null); }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [paso]);
+  const todoCubiertoPorPrepago = !!(consumoPrev && consumoPrev.cubiertas?.length && (consumoPrev.aFactura?.length || 0) === 0);
+
 
   useEffect(() => {
     let primeraMoneda = null;
@@ -240,6 +306,58 @@ export default function CierreCicloPreviewModal({
 
   const fmt = (val) => Number(val).toFixed(2);
 
+  // Cobertura estimada siguiendo el MOTOR: 1º el saldo a favor de la PRINCIPAL (lo aplica
+  // el cierre solo, antes que nada), 2º las cuentas de saldo libres en la prioridad del
+  // motor (⚡ automáticas primero, la más vieja primero), cada una hasta su saldo (sin negativo).
+  const principalAFavor = Math.max(0, Number(saldoPrincipal[monedaFactura] || 0));
+  const cubiertoPorPrincipal = Math.min(principalAFavor, granTotalNeto);
+  const restanteTrasPrincipal = Math.max(0, granTotalNeto - cubiertoPorPrincipal);
+  // Cobertura desde OTRA cuenta elegida (en vez de la principal): su saldo, convertido a
+  // la moneda de la factura, cubre primero; la principal solo el resto que falte.
+  const cuentaElegida = cuentaCobertura !== 'PRINCIPAL'
+    ? cuentasBilletera.find(c => String(c.CueIdCuenta) === String(cuentaCobertura)) || null
+    : null;
+  const saldoElegidaFactura = cuentaElegida
+    ? ((cuentaElegida.CueTipo === 'DINERO_USD') === (monedaFactura === 'USD')
+        ? Number(cuentaElegida.CueSaldoActual || 0)
+        : (cuentaElegida.CueTipo === 'DINERO_USD'
+            ? Number(cuentaElegida.CueSaldoActual || 0) * cotDolar
+            : Number(cuentaElegida.CueSaldoActual || 0) / cotDolar))
+    : 0;
+  const cubreElegida = cuentaElegida ? Math.min(Math.max(0, saldoElegidaFactura), granTotalNeto) : 0;
+  const cubrePrincipalFinal = cuentaElegida
+    ? Math.min(principalAFavor, Math.max(0, granTotalNeto - cubreElegida))
+    : cubiertoPorPrincipal;
+  const restaCobrarFinal = Math.max(0, granTotalNeto - cubreElegida - cubrePrincipalFinal);
+  const sugerirSaldosCuentas = () => {
+    const metodoSaldo = metodosPago.find(m => /saldo de cuenta/i.test(m.MPaDescripcionMetodo || ''));
+    if (!metodoSaldo) { toast.error('Falta el medio de pago "Saldo de cuenta" (corré el script SQL de billetera).'); return; }
+    let falta = restaCobrarFinal;
+    if (falta <= 0.01) { toast.info('El saldo a favor elegido ya cubre toda la factura: no hace falta cobrar nada.'); return; }
+    const lineas = [];
+    const orden = cuentasBilletera
+      .filter(c => Number(c.CueSaldoActual || 0) > 0.01 && String(c.CueIdCuenta) !== String(cuentaCobertura))
+      .sort((a, b) => Number(b.CueAutoConsumo || 0) - Number(a.CueAutoConsumo || 0) || a.CueIdCuenta - b.CueIdCuenta);
+    for (const c of orden) {
+      if (falta <= 0.01) break;
+      const monCta = c.CueTipo === 'DINERO_USD' ? 'USD' : 'UYU';
+      // "falta" está en la moneda de la factura → convertir a la moneda de la cuenta
+      const faltaEnCta = monCta === monedaFactura ? falta : (monCta === 'USD' ? falta / cotDolar : falta * cotDolar);
+      const usar = Math.min(Number(c.CueSaldoActual), faltaEnCta);
+      if (usar <= 0.01) continue;
+      lineas.push({
+        id: Date.now() + lineas.length,
+        metodoPagoId: metodoSaldo.MPaIdMetodoPago,
+        moneda: monCta, monedaId: monCta === 'USD' ? 2 : 1,
+        monto: usar.toFixed(2), cueIdCuenta: c.CueIdCuenta,
+      });
+      falta -= monCta === monedaFactura ? usar : (monCta === 'USD' ? usar * cotDolar : usar / cotDolar);
+    }
+    if (!lineas.length) { toast.info('Ninguna cuenta de saldo del cliente tiene plata disponible: cobrá el resto con otro medio.'); return; }
+    setPagosContado(lineas);
+    toast.success(`${lineas.length} cuenta(s) aplicadas siguiendo la prioridad del motor${falta > 0.01 ? ` — quedan ${simbolo} ${fmt(falta)} para cobrar con otro medio (agregalo en el panel)` : ''}.`, { duration: 8000 });
+  };
+
   const totalUYU = monedaFactura === 'UYU' ? granTotalNeto : granTotalNeto * cotDolar;
   // Pedido Caja es borrador interno (no fiscal) → nunca exige datos DGI
   const requiereDatosDGI = docType !== 'PEDIDO_CAJA' && tipoDocumento.includes('TICKET') && totalUYU > DGI_UMBRAL_UYU;
@@ -362,6 +480,32 @@ export default function CierreCicloPreviewModal({
       }
     }
 
+    // Medios del CONTADO (paso 2): validar ANTES de emitir — después no hay vuelta atrás.
+    // Factura cubierta entera por el saldo a favor → los medios se IGNORAN (el panel ya
+    // está bloqueado en pantalla; esto es el candado de atrás por si quedó algo cargado).
+    const pagosValidosContado = (docType !== 'FACTURA' && docCond === 'CONTADO' && restaCobrarFinal > 0.01)
+      ? pagosContado.filter(p => parseFloat(p.monto) > 0 && p.metodoPagoId)
+      : [];
+    const pagoSaldoSinCuenta = pagosValidosContado.find(p =>
+      /saldo de cuenta/i.test(metodosPago.find(m => m.MPaIdMetodoPago === parseInt(p.metodoPagoId))?.MPaDescripcionMetodo || '') && !p.cueIdCuenta);
+    if (pagoSaldoSinCuenta) {
+      toast.error('El medio "Saldo de cuenta" necesita que elijas DE QUÉ CUENTA sale la plata (debajo del medio).');
+      setWorking(false);
+      return;
+    }
+    // Billetera: ninguna línea puede superar el saldo de su cuenta — como medio de pago
+    // el saldo nunca deja la cuenta en negativo (el negativo es solo del motor automático)
+    for (const p of pagosValidosContado) {
+      if (!p.cueIdCuenta) continue;
+      const ctaLinea = cuentasBilletera.find(c => c.CueIdCuenta === parseInt(p.cueIdCuenta));
+      if (!ctaLinea) continue;
+      if ((parseFloat(p.monto) || 0) > Number(ctaLinea.CueSaldoActual || 0) + 0.001) {
+        toast.error(`"${ctaLinea.CueNombre || 'La cuenta'}" solo tiene ${ctaLinea.CueTipo === 'DINERO_USD' ? 'US$' : '$'} ${Number(ctaLinea.CueSaldoActual || 0).toFixed(2)}: bajá el monto de esa línea o usá otro medio. No se emitió nada.`);
+        setWorking(false);
+        return;
+      }
+    }
+
     const editPayload = Object.keys(detallesEditados).map(id => ({
       DetalleID: id,
       PrecioUnitario: detallesEditados[id].PrecioUnitario,
@@ -410,10 +554,128 @@ export default function CierreCicloPreviewModal({
         actualizarCliente: true
       };
 
-      await onConfirm(ciclo.CicIdCiclo, payload);
+      // ── PAGO desde OTRA cuenta (no la principal): el saldo de la elegida pasa a la
+      // cuenta del cierre ANTES de emitir y el motor lo consume como cobertura. Neto:
+      // la principal queda igual y la cuenta elegida baja. En su libro queda como
+      // "Pago con saldo — facturación de …" y, tras emitir, se vincula la factura.
+      // Si este paso falla, NO se emite nada.
+      let refPagoSaldo = null;
+      if (cuentaElegida && docType !== 'FACTURA' && docCond === 'CONTADO') {
+        const monCta = cuentaElegida.CueTipo === 'DINERO_USD' ? 'USD' : 'UYU';
+        const totalEnCta = monCta === monedaFactura ? granTotalNeto : (monCta === 'USD' ? granTotalNeto / cotDolar : granTotalNeto * cotDolar);
+        const importeOrigen = Math.round(Math.min(Number(cuentaElegida.CueSaldoActual || 0), totalEnCta) * 100) / 100;
+        if (importeOrigen <= 0.01) {
+          toast.error(`La cuenta ${codigoCuenta(cuentaElegida)} no tiene saldo disponible para pagar la factura. No se emitió nada.`);
+          setWorking(false);
+          return;
+        }
+        const monBase = Number(cuenta?.MonIdMoneda) === 2 ? 'USD' : 'UYU';
+        const codsInc = movs.filter(m => !excluidos.has(m.MovIdMovimiento)).map(m => m.OrdCodigoOrden).filter(Boolean);
+        const codsTxt = codsInc.slice(0, 3).join(', ') + (codsInc.length > 3 ? ` y ${codsInc.length - 3} más` : '');
+        try {
+          const trf = await api.post('/contabilidad/cuentas/transferir', {
+            CueOrigen: cuentaElegida.CueIdCuenta,
+            CueDestino: cuenta.CueIdCuenta,
+            Importe: importeOrigen,
+            Cotizacion: monCta === monBase ? null : cotDolar,
+            ConceptoOrigen: `Pago con saldo — facturación de ${codsTxt || 'órdenes'}`,
+            ConceptoDestino: `Pago recibido de ${codigoCuenta(cuentaElegida)} "${cuentaElegida.CueNombre || ''}" para facturación de ${codsTxt || 'órdenes'}`,
+            Observaciones: `Pago de pre-factura con el saldo de ${codigoCuenta(cuentaElegida)}: el importe cubre la factura al emitirse (la principal no se toca)`,
+          });
+          refPagoSaldo = trf.data?.data?.referencia || null;
+        } catch (trfErr) {
+          toast.error(`No se pudo usar el saldo de ${codigoCuenta(cuentaElegida)}: ${trfErr.response?.data?.error || trfErr.message}. NO se emitió nada.`, { duration: 15000 });
+          setWorking(false);
+          return;
+        }
+      }
+
+      const emision = await onConfirm(ciclo.CicIdCiclo, payload);
+
+      // F2: informar qué descontó la billetera prepaga en el cierre
+      if (emision?.consumoPrepago?.cubiertas?.length) {
+        const cp = emision.consumoPrepago;
+        toast.success(
+          `Billetera prepaga: ${cp.cubiertas.length} orden(es) descontadas por ${simbolo} ${fmt(cp.totalCubierto)}${
+            cp.aFactura?.length ? ` — la factura salió solo por el resto (${simbolo} ${fmt(cp.totalFactura)}).` : ' — ciclo cerrado SIN factura.'}`,
+          { duration: 12000 },
+        );
+      }
+
+      // Alerta clara cuando la factura salió pagada con el saldo a favor (sin medios)
+      if (docType !== 'FACTURA' && docCond === 'CONTADO' && restaCobrarFinal <= 0.01) {
+        toast.success(
+          `Factura ${emision?.docNumero || ''} emitida y PAGADA con el saldo a favor del cliente${cuentaElegida ? ` (desde ${codigoCuenta(cuentaElegida)} "${cuentaElegida.CueNombre || ''}")` : ' (cuenta principal)'} — no se cobró ningún medio de pago.`,
+          { duration: 12000 },
+        );
+      }
+
+      // Vincular la factura recién emitida al pago con saldo (best-effort: si falla,
+      // el movimiento queda igual de válido, solo sin el número de documento).
+      if (refPagoSaldo) {
+        const docIdEmit = emision?.DocIdDocumento || emision?.data?.DocIdDocumento || null;
+        if (docIdEmit) {
+          try { await api.post('/contabilidad/cuentas/transferencias/vincular-doc', { referencia: refPagoSaldo, DocIdDocumento: docIdEmit }); } catch { /* no bloquea */ }
+        }
+      }
+
+      // ── Cobro CONTADO con medios: reusa el MISMO flujo de Pago de Deudas de caja ──
+      // La factura YA salió: si el cobro falla, se avisa el camino manual (no se aborta).
+      if (pagosValidosContado.length) {
+        const docIdEmitido = emision?.DocIdDocumento || emision?.data?.DocIdDocumento || null;
+        try {
+          if (!docIdEmitido) throw new Error('la emisión no devolvió el número interno del documento');
+          const dv = await api.get(`/contabilidad/clientes/${cliente.CliIdCliente}/deudas-vivas`);
+          const deuda = (dv.data?.data || []).find(d => Number(d.DocIdDocumento) === Number(docIdEmitido));
+          if (!deuda) {
+            toast.info('La factura quedó cubierta con el saldo a favor del cliente: no había nada para cobrar, así que los medios de pago NO se usaron.', { duration: 12000 });
+          } else {
+            await api.post('/contabilidad/caja/pago-deuda', {
+              empresaId: empresaSeleccionada?.EmpIdEmpresa ?? empresaSeleccionada?.EmpId ?? null,
+              header: {
+                clienteId: cliente.CliIdCliente,
+                tipoDocumento: '05',
+                serieDoc: 'A',
+                moneda: monedaFactura,
+                monedaId: monedaFactura === 'USD' ? 2 : 1,
+                cotizacionTC: cotDolar,
+                permitirExcedente: true,
+                observaciones: `Cobro contado de ${emision?.docNumero || `doc #${docIdEmitido}`} (pre-factura)`,
+                admin: true,
+              },
+              aplicaciones: [{
+                tipo: 'PAGO_DEUDA',
+                codigoRef: emision?.docNumero || `Doc #${docIdEmitido}`,
+                descripcion: emision?.docNumero || 'Factura recién emitida',
+                montoOriginal: Number(deuda.DDeImportePendiente),
+                ddeId: deuda.DDeIdDocumento,
+                docIdDocumento: docIdEmitido,
+                ordIdOrden: null,
+              }],
+              pagos: pagosValidosContado.map(p => {
+                const monId = p.moneda === 'USD' ? 2 : (p.moneda === 'UYU' ? 1 : (parseInt(p.monedaId, 10) || 1));
+                return {
+                  metodoPagoId: parseInt(p.metodoPagoId, 10),
+                  monedaId: monId,
+                  montoOriginal: parseFloat(p.monto),
+                  cotizacion: monId === 2 ? cotDolar : 1,
+                  idCheque: p.idCheque || null,
+                  cueIdCuenta: p.cueIdCuenta || null,
+                };
+              }),
+            });
+            toast.success(`Factura ${emision?.docNumero || ''} emitida y cobrada al contado.`);
+          }
+        } catch (cobroErr) {
+          toast.error(`La factura SE EMITIÓ bien, pero el cobro contado NO se registró: ${cobroErr.response?.data?.error || cobroErr.message}. Cobrala desde caja por "Pago de Deudas" (la deuda quedó viva).`, { duration: 20000 });
+        }
+      }
+
       onClose();
     } catch (err) {
-      toast.error('Error al facturar: ' + err.message);
+      setPaso('documento'); // si el backend rechazó, volver al paso 1 para corregir
+      // Mostrar el motivo REAL del backend (err.message de axios es solo "status code 500")
+      toast.error('No se generó la factura: ' + (err.response?.data?.error || err.response?.data?.message || err.message), { duration: 15000 });
     } finally {
       setWorking(false);
     }
@@ -459,7 +721,7 @@ export default function CierreCicloPreviewModal({
       
       toast.success('Datos del cliente actualizados en la base de datos.');
     } catch (err) {
-      toast.error('Error al actualizar cliente: ' + err.message);
+      toast.error('Error al actualizar cliente: ' + (err.response?.data?.error || err.message));
     } finally {
       setWorking(false);
     }
@@ -717,6 +979,20 @@ export default function CierreCicloPreviewModal({
     generarPdfFacturaDGI(fakeDoc, detallesParaPDF);
   };
 
+  // Paso 1 → 2: validación liviana antes de elegir el pago (handleFacturar revalida
+  // TODO al emitir; esto solo evita llegar al paso 2 con el documento incompleto).
+  const irAlPago = () => {
+    if (movs.filter(m => !excluidos.has(m.MovIdMovimiento)).length === 0) {
+      toast.error('No hay órdenes incluidas en el documento: marcá al menos una.');
+      return;
+    }
+    if (requiereDatosComprobante && (!cliDgiNombre || !cliDgiDocumento || !cliDgiDireccion)) {
+      toast.error('Completá los Datos DGI del comprobante (nombre, documento y dirección) antes de continuar al pago.');
+      return;
+    }
+    setPaso('pago');
+  };
+
   // Contenedor exterior: en pageMode = full screen, en modal = overlay oscuro
   const outerClass = pageMode
     ? 'w-full h-full flex items-stretch'
@@ -752,10 +1028,24 @@ export default function CierreCicloPreviewModal({
                   : `${cliente?.Nombre || 'Cliente'} — revisá precios antes de facturar.`
                 }
               </p>
+              {/* Indicador de pasos: 1 Documento → 2 Pago */}
+              <div className="flex items-center gap-1.5 mt-1.5">
+                {[['documento', '1 · Documento'], ['pago', '2 · Pago']].map(([key, label], i) => (
+                  <React.Fragment key={key}>
+                    {i > 0 && <span className={pageMode ? 'text-indigo-300 text-[10px]' : 'text-slate-300 text-[10px]'}>→</span>}
+                    <span className={`text-[9px] font-black uppercase tracking-widest rounded px-2 py-0.5 border ${
+                      paso === key
+                        ? (pageMode ? 'bg-white text-indigo-700 border-white' : 'bg-indigo-600 text-white border-indigo-600')
+                        : (pageMode ? 'text-indigo-200 border-white/25' : 'text-slate-400 border-slate-200')
+                    }`}>{label}</span>
+                  </React.Fragment>
+                ))}
+              </div>
             </div>
           </div>
           <div className="flex items-center gap-4">
-            
+            {/* En el paso 2 el documento queda fijo: los controles se ocultan */}
+            {paso === 'documento' && (<>
             <div className="flex flex-col items-end gap-1.5">
               {/* FILA 1: Tipo de Documento */}
               <div className={`flex rounded-xl p-1 border gap-1 select-none ${pageMode ? 'bg-white/10 border-white/20' : 'bg-slate-100 border-slate-200'}`}>
@@ -782,33 +1072,7 @@ export default function CierreCicloPreviewModal({
                 })}
               </div>
 
-              {/* FILA 2: Condición de Venta (Oculto en Manual) */}
-              {docType !== 'FACTURA' && (
-                <div className={`flex rounded-xl p-1 border gap-1 select-none w-full ${pageMode ? 'bg-white/10 border-white/20' : 'bg-slate-100 border-slate-200'}`}>
-                  {[
-                    { val: 'CONTADO', label: 'Contado', activeClass: 'bg-emerald-500 text-white shadow-md' },
-                    { val: 'CREDITO', label: 'Crédito', activeClass: 'bg-amber-500 text-white shadow-md' }
-                  ].map(opt => {
-                    const isActive = docCond === opt.val;
-                    return (
-                      <button
-                        key={opt.val}
-                        disabled={opt.disabled}
-                        onClick={() => !opt.disabled && setDocCond(opt.val)}
-                        className={`flex-1 px-4 py-1.5 text-[10px] uppercase tracking-wider font-black rounded-lg transition-all whitespace-nowrap text-center ${
-                          isActive 
-                            ? opt.activeClass
-                            : opt.disabled
-                              ? 'opacity-30 cursor-not-allowed text-slate-400'
-                              : (pageMode ? 'text-indigo-100 hover:text-white hover:bg-white/10' : 'text-slate-500 hover:text-slate-700 hover:bg-slate-200/50')
-                        }`}
-                      >
-                        {opt.label}
-                      </button>
-                    );
-                  })}
-                </div>
-              )}
+              {/* La condición Contado/Crédito se elige en el PASO 2 (Pago) */}
             </div>
 
             <div className="flex items-center gap-2">
@@ -827,6 +1091,7 @@ export default function CierreCicloPreviewModal({
               <button onClick={() => setMonedaFactura('USD')} className={`px-4 py-1.5 text-xs font-bold rounded-md transition-all ${monedaFactura==='USD' ? 'bg-white text-indigo-600 shadow-sm border border-slate-200/50' : 'text-slate-500 hover:text-slate-700'}`}>USD</button>
               <button onClick={() => setMonedaFactura('UYU')} className={`px-4 py-1.5 text-xs font-bold rounded-md transition-all ${monedaFactura==='UYU' ? 'bg-white text-indigo-600 shadow-sm border border-slate-200/50' : 'text-slate-500 hover:text-slate-700'}`}>UYU</button>
             </div>
+            </>)}
             <button onClick={onClose} className={`p-2 rounded-full transition-colors ${pageMode ? 'hover:bg-white/20 text-white/80 hover:text-white' : 'hover:bg-slate-100 text-slate-400 hover:text-slate-600'}`}>
               <X size={20} />
             </button>
@@ -835,7 +1100,8 @@ export default function CierreCicloPreviewModal({
         
         {/* Body */}
         <div className="flex-1 overflow-y-auto p-6 bg-slate-50/50 flex flex-col gap-4">
-          
+          {paso === 'documento' ? (<>
+
           {/* Error de validación DGI */}
           {valError && (
             <div className="bg-red-50 border border-red-200 text-red-600 px-4 py-3 rounded-xl shadow-sm text-sm font-medium flex items-center gap-2">
@@ -926,7 +1192,18 @@ export default function CierreCicloPreviewModal({
             <table className="w-full text-left text-sm whitespace-nowrap">
               <thead className="bg-slate-50 text-[10px] uppercase font-black tracking-widest text-slate-500 border-b border-slate-200 sticky top-0 z-10 shadow-sm">
                 <tr>
-                  <th className="px-4 py-3 w-12 text-center">Inc</th>
+                  <th className="px-4 py-3 w-12 text-center">
+                    {/* Check maestro: marca/desmarca TODAS las órdenes de una */}
+                    <div className="flex flex-col items-center gap-1">
+                      <input type="checkbox"
+                        checked={movs.length > 0 && excluidos.size === 0}
+                        ref={el => { if (el) el.indeterminate = excluidos.size > 0 && excluidos.size < movs.length; }}
+                        onChange={e => setExcluidos(e.target.checked ? new Set() : new Set(movs.map(m => m.MovIdMovimiento)))}
+                        title={excluidos.size === 0 ? 'Desmarcar todas las órdenes' : 'Marcar todas las órdenes'}
+                        className="w-4 h-4 rounded border-slate-300 text-indigo-500 focus:ring-indigo-500 cursor-pointer" />
+                      <span>Inc</span>
+                    </div>
+                  </th>
                   <th className="px-4 py-3">Descripción del Item</th>
                   <th className="px-4 py-3 text-center">Cant.</th>
                   <th className="px-4 py-3 text-right">P. Unitario</th>
@@ -1075,9 +1352,176 @@ export default function CierreCicloPreviewModal({
               </tbody>
             </table>
           </div>
+          </>) : (
+          /* ══ PASO 2 — PAGO: resumen del documento + condición de venta ══ */
+          <div className="max-w-3xl w-full mx-auto flex flex-col gap-4 py-4">
+            <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-5">
+              <h4 className="text-xs font-black uppercase tracking-widest text-slate-500 mb-3">Documento a emitir (armado en el paso 1)</h4>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
+                <div><p className="text-[10px] uppercase font-bold text-slate-400">Tipo</p><p className="font-black text-slate-800">{tipoDocumento}</p></div>
+                <div><p className="text-[10px] uppercase font-bold text-slate-400">Cliente</p><p className="font-bold text-slate-700 truncate" title={cliDgiNombre || cliente?.Nombre}>{cliDgiNombre || cliente?.Nombre}</p></div>
+                <div><p className="text-[10px] uppercase font-bold text-slate-400">Órdenes incluidas</p><p className="font-bold text-slate-700">{movs.filter(m => !excluidos.has(m.MovIdMovimiento)).length}</p></div>
+                <div><p className="text-[10px] uppercase font-bold text-slate-400">Moneda</p><p className="font-bold text-slate-700">{monedaFactura === 'USD' ? 'Dólares (US$)' : 'Pesos ($U)'}{esMultimoneda ? ` · cot. ${cotDolar}` : ''}</p></div>
+              </div>
+              <div className="flex items-end justify-end gap-8 mt-4 pt-4 border-t border-slate-100">
+                <div className="text-right"><p className="text-slate-400 uppercase tracking-widest font-bold text-[10px]">Subtotal</p><p className="font-mono text-slate-600 text-lg">{simbolo} {fmt(granTotalBase)}</p></div>
+                {montoDescuento > 0 && (
+                  <div className="text-right"><p className="text-slate-400 uppercase tracking-widest font-bold text-[10px]">Descuento</p><p className="font-mono text-rose-500 text-lg">- {simbolo} {fmt(montoDescuento)}</p></div>
+                )}
+                <div className="text-right"><p className="text-indigo-500 uppercase tracking-widest font-black text-[11px]">Total a facturar</p><p className="font-mono font-black text-indigo-600 text-3xl tracking-tight">{simbolo} {fmt(granTotalNeto)}</p></div>
+              </div>
+              <p className="text-[11px] text-slate-400 mt-3">¿Algo no cierra? Volvé al paso 1 con el botón de abajo: nada se emite hasta apretar el botón final.</p>
+            </div>
+
+            {/* F2: desglose del consumo prepago (FIFO, órdenes enteras) antes de confirmar */}
+            {consumoPrev?.cubiertas?.length > 0 && (
+              <div className={`rounded-xl border-2 shadow-sm p-5 ${todoCubiertoPorPrepago ? 'border-emerald-300 bg-emerald-50' : 'border-violet-300 bg-violet-50/60'}`}>
+                <h4 className={`text-xs font-black uppercase tracking-widest mb-2 ${todoCubiertoPorPrepago ? 'text-emerald-700' : 'text-violet-700'}`}>
+                  🔋 Billetera prepaga del cliente
+                </h4>
+                <p className="text-[12px] text-slate-700 mb-2">
+                  <strong>{consumoPrev.cubiertas.length} orden(es) se descuentan del saldo</strong> (de la más vieja a la más nueva, órdenes enteras, <b>sin generar documento</b> — su factura existió al cargar la plata):
+                </p>
+                <div className="flex flex-wrap gap-1.5 mb-2">
+                  {consumoPrev.cubiertas.map(c => (
+                    <span key={c.codigo || c.movId} className="text-[10px] font-bold bg-white border border-slate-200 rounded-full px-2 py-0.5 text-slate-700"
+                      title={`Sale de "${c.cuenta}"${c.cruzada ? ` (${c.mon === 'USD' ? 'US$' : '$'} ${fmt(c.importeCta)} @ cot.)` : ''}`}>
+                      {c.codigo || `#${c.movId}`} · {simbolo} {fmt(c.importe)} ← {c.cuenta}
+                    </span>
+                  ))}
+                </div>
+                {todoCubiertoPorPrepago ? (
+                  <p className="text-sm font-black text-emerald-800">
+                    ✓ La billetera cubre TODAS las órdenes: el ciclo se cierra SIN emitir factura y sin cobrar nada.
+                  </p>
+                ) : (
+                  <p className="text-[12px] font-bold text-violet-800">
+                    A factura van {consumoPrev.aFactura.length} orden(es) por {simbolo} {fmt(consumoPrev.totalFactura)}
+                    <span className="font-normal text-slate-600"> ({consumoPrev.aFactura.map(a => a.codigo).filter(Boolean).join(', ')}) — el documento sale SOLO por ese resto.</span>
+                  </p>
+                )}
+                <p className="text-[10px] text-slate-500 mt-1.5">Vista previa: el cierre recalcula con los saldos del momento de confirmar.</p>
+              </div>
+            )}
+
+            {docType !== 'FACTURA' && !todoCubiertoPorPrepago && (
+              <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-5">
+                <h4 className="text-xs font-black uppercase tracking-widest text-slate-500 mb-3">¿Cómo se paga este documento?</h4>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <button type="button" onClick={() => setDocCond('CONTADO')}
+                    className={`text-left rounded-xl border-2 p-4 transition-all ${docCond === 'CONTADO' ? 'border-emerald-500 bg-emerald-50 shadow-sm' : 'border-slate-200 bg-white hover:border-emerald-300'}`}>
+                    <span className={`text-sm font-black uppercase ${docCond === 'CONTADO' ? 'text-emerald-700' : 'text-slate-700'}`}>Contado</span>
+                    <p className="text-[11px] text-slate-500 mt-1">Se cobra <strong>ahora</strong>: si el saldo a favor del cliente cubre el total, el documento nace pago; si no alcanza, queda pendiente de cobro inmediato.</p>
+                  </button>
+                  <button type="button" onClick={() => setDocCond('CREDITO')}
+                    className={`text-left rounded-xl border-2 p-4 transition-all ${docCond === 'CREDITO' ? 'border-amber-500 bg-amber-50 shadow-sm' : 'border-slate-200 bg-white hover:border-amber-300'}`}>
+                    <span className={`text-sm font-black uppercase ${docCond === 'CREDITO' ? 'text-amber-700' : 'text-slate-700'}`}>Crédito</span>
+                    <p className="text-[11px] text-slate-500 mt-1">El cliente paga <strong>después</strong>: el documento genera deuda en su estado de cuenta y se cobra por Pago de Deudas.</p>
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Forma de pago del CONTADO: mismos medios que la caja. Opcional: sin medios,
+                la factura se cancela con el saldo a favor del cliente (si alcanza) o queda
+                pendiente de cobro inmediato. */}
+            {docType !== 'FACTURA' && docCond === 'CONTADO' && !todoCubiertoPorPrepago && (
+              <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-5">
+                <h4 className="text-xs font-black uppercase tracking-widest text-slate-500 mb-1">Forma de pago</h4>
+                <p className="text-[11px] text-slate-400 mb-3">
+                  El saldo a favor de la <strong>cuenta principal</strong> se aplica solo, antes que nada; lo que cobres acá cancela el resto
+                  (si cobrás de más, el excedente queda como saldo a favor). Podés dejarlo vacío para que la factura
+                  se cubra solo con el saldo a favor.
+                </p>
+
+                {/* ¿De qué cuenta sale el saldo a favor que cubre la factura? */}
+                <div className="mb-2 flex flex-wrap items-center gap-2">
+                  <span className="text-[10px] font-black uppercase tracking-wider text-slate-500">El pago sale de:</span>
+                  <select value={cuentaCobertura} onChange={e => setCuentaCobertura(e.target.value)}
+                    className="text-[11px] font-bold border border-slate-300 rounded-lg px-2 py-1.5 bg-white focus:outline-none focus:border-violet-500">
+                    <option value="PRINCIPAL">Cuenta principal (como siempre)</option>
+                    {cuentasBilletera.filter(c => Number(c.CueSaldoActual || 0) > 0.01).map(c => (
+                      <option key={c.CueIdCuenta} value={String(c.CueIdCuenta)}>
+                        {codigoCuenta(c)} · {c.CueNombre || `Cuenta #${c.CueIdCuenta}`} — {c.CueTipo === 'DINERO_USD' ? 'US$' : '$'} {Number(c.CueSaldoActual).toFixed(2)}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                {cuentaElegida && (
+                  <p className="mb-3 text-[11px] text-violet-700 bg-violet-50 border border-violet-200 rounded-lg px-3 py-2">
+                    La factura se <strong>paga con el saldo de {codigoCuenta(cuentaElegida)} "{cuentaElegida.CueNombre || ''}"</strong>:
+                    <strong> la principal queda igual y esa cuenta baja</strong>. En su libro queda "Pago con saldo — facturación de …" con el número de la factura.
+                    Si su saldo no alcanza, el resto se cubre con el saldo propio de la principal o con los medios de abajo.
+                  </p>
+                )}
+
+                {/* Cobertura según las cuentas del cliente, con la prioridad del motor */}
+                <div className="mb-3 rounded-xl border border-indigo-100 bg-indigo-50/50 p-3 flex flex-wrap items-center gap-x-5 gap-y-2">
+                  {cuentaElegida && (
+                    <div className="text-[11px]">
+                      <span className="font-black uppercase tracking-wider text-violet-600 mr-1.5">{codigoCuenta(cuentaElegida)} paga:</span>
+                      <span className="font-mono font-black text-violet-700">{simbolo} {fmt(cubreElegida)}</span>
+                      <span className="text-slate-400"> (al emitir)</span>
+                    </div>
+                  )}
+                  <div className="text-[11px]">
+                    <span className="font-black uppercase tracking-wider text-indigo-500 mr-1.5">{cuentaElegida ? 'Principal cubre el resto:' : 'Principal cubre sola:'}</span>
+                    <span className={`font-mono font-black ${cubrePrincipalFinal > 0 ? 'text-emerald-700' : 'text-slate-500'}`}>{simbolo} {fmt(cubrePrincipalFinal)}</span>
+                    <span className="text-slate-400"> (saldo a favor {simbolo} {fmt(principalAFavor)}, estimado)</span>
+                  </div>
+                  <div className="text-[11px]">
+                    <span className="font-black uppercase tracking-wider text-indigo-500 mr-1.5">Resta cobrar:</span>
+                    <span className={`font-mono font-black ${restaCobrarFinal > 0.01 ? 'text-rose-600' : 'text-emerald-700'}`}>{simbolo} {fmt(restaCobrarFinal)}</span>
+                  </div>
+                  {cuentasBilletera.some(c => Number(c.CueSaldoActual || 0) > 0.01) && restaCobrarFinal > 0.01 && (
+                    <button type="button" onClick={sugerirSaldosCuentas}
+                      title="Arma los medios de pago con las cuentas de saldo del cliente en la prioridad del motor: ⚡ automáticas primero, la más vieja primero, cada una hasta su saldo (nunca en negativo). Después podés ajustar o agregar otros medios."
+                      className="ml-auto flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-black text-white bg-violet-600 hover:bg-violet-700 rounded-lg transition-colors">
+                      ⚡ Completar con saldos de cuentas
+                    </button>
+                  )}
+                </div>
+
+                {/* Factura TOTALMENTE cubierta por el saldo a favor → el panel de medios se
+                    BLOQUEA (no hay nada que cobrar; cargar medios acá sería doble cobro). */}
+                {restaCobrarFinal <= 0.01 ? (
+                  <div className="rounded-xl border-2 border-emerald-300 bg-emerald-50 px-4 py-3">
+                    <p className="text-sm font-black text-emerald-800">
+                      ✓ Esta factura se paga entera con el saldo a favor — no hay nada que cobrar.
+                    </p>
+                    <p className="text-[11px] text-emerald-700 mt-1">
+                      El panel de medios de pago queda deshabilitado para evitar un doble cobro.
+                      Si el cliente además trae plata nueva (cheque, transferencia, efectivo), <strong>no la cargues acá</strong>:
+                      registrala por <strong>"Saldo Anticipado"</strong> — entra como anticipo con su recibo, el cheque queda
+                      en tesorería y el saldo a favor se recompone.
+                    </p>
+                  </div>
+                ) : (
+                <CajaPanelPago
+                  layout="horizontal"
+                  seccion="pago"
+                  showSubmitButton={false}
+                  hideDocTitle hideTC hideDocType compactNotas
+                  mode="VENTA"
+                  metodosPago={metodosPago}
+                  pagos={pagosContado}
+                  onPagosChange={setPagosContado}
+                  totalACubrir={granTotalNeto}
+                  moneda={monedaFactura === 'USD' ? 'USD' : 'UYU'}
+                  cotizacion={cotDolar}
+                  procesando={working}
+                  cuentasBilletera={cuentasBilletera}
+                  containerClassName="w-full bg-white flex flex-col"
+                />
+                )}
+              </div>
+            )}
+          </div>
+          )}
         </div>
-        
-        {/* Footer */}
+
+        {/* Footer (solo PASO 1: descuento, observaciones y totales) */}
+        {paso === 'documento' && (<>
         <div className="bg-white px-6 py-5 border-t border-slate-100 flex items-start justify-between">
           {/* Bloque Descuento */}
           <div className="flex flex-col gap-2">
@@ -1172,13 +1616,35 @@ export default function CierreCicloPreviewModal({
               <i className="fa-regular fa-file-pdf text-red-500"></i>
               Ver Pre-factura
             </button>
-            <button onClick={handleFacturar} disabled={working}
+            <button onClick={irAlPago}
+              disabled={movs.filter(m => !excluidos.has(m.MovIdMovimiento)).length === 0}
+              title="El documento no se emite todavía: en el paso 2 elegís cómo se paga (contado o crédito) y ahí sí se genera"
               className="flex items-center gap-2 px-8 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-black rounded-xl transition-all shadow-md hover:shadow-lg disabled:opacity-50">
-              {working ? <RefreshCw size={18} className="animate-spin" /> : <CheckCircle2 size={18} />}
-              Generar Factura y Cerrar
+              Continuar al pago →
             </button>
           </div>
         </div>
+        </>)}
+
+        {/* Acciones del PASO 2: volver o emitir */}
+        {paso === 'pago' && (
+          <div className="bg-slate-50 px-6 py-4 flex justify-between items-center gap-3 border-t border-slate-200">
+            <button onClick={() => setPaso('documento')}
+              className="flex items-center gap-2 px-5 py-2.5 text-sm font-bold text-slate-600 bg-white border border-slate-300 hover:bg-slate-100 rounded-xl transition-colors">
+              ← Volver al documento
+            </button>
+            <button onClick={handleFacturar} disabled={working}
+              title={docType !== 'FACTURA'
+                ? (docCond === 'CONTADO' ? 'Emite el documento CONTADO: se cancela ahora (con saldo a favor si alcanza)' : 'Emite el documento a CRÉDITO: genera deuda para cobrar después')
+                : 'Emite el documento'}
+              className="flex items-center gap-2 px-8 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-black rounded-xl transition-all shadow-md hover:shadow-lg disabled:opacity-50">
+              {working ? <RefreshCw size={18} className="animate-spin" /> : <CheckCircle2 size={18} />}
+              {todoCubiertoPorPrepago
+                ? 'Cerrar ciclo descontando de la billetera (sin factura)'
+                : (docType !== 'FACTURA' ? `Generar Factura ${docCond === 'CONTADO' ? 'CONTADO' : 'a CRÉDITO'}` : 'Generar Factura')}
+            </button>
+          </div>
+        )}
       </div>
     </div>
 

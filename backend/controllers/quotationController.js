@@ -240,7 +240,14 @@ async function propagarCotizacionADeposito(pool, { pedidoId, monedaFinal, cotiza
                 .input('Moneda', sql.Int, nuevaMonedaId)
                 .query(`UPDATE dbo.OrdenesDeposito SET OrdCostoFinal=@Costo, OrdCantidad=@Cantidad, MonIdMoneda=@Moneda WHERE OrdIdOrden=@OrderId`);
 
-            const movRes = await new sql.Request(transaction)
+            // BILLETERA (F3): si la orden ya fue descontada de una cuenta de la billetera,
+            // el helper re-cuadra el consumo (la diferencia vuelve o sale de la cuenta y el
+            // resto sigue el camino normal). En ese caso el ajuste legacy de abajo NO corre.
+            const resyncBilletera = await require('../services/contabilidadService').resincronizarConsumosBilletera(
+                { OrdIdOrden: orderId, UsuarioAlta: 70, motivo: 'nueva cotización del pedido' }, transaction);
+            if (resyncBilletera?.mensaje) logger.info(`[Quotation] ${codigoOrden}: ${resyncBilletera.mensaje}`);
+
+            const movRes = resyncBilletera ? { recordset: [] } : await new sql.Request(transaction)
                 .input('OrdId', sql.Int, orderId)
                 .query(`
                     SELECT TOP 1 MovIdMovimiento, CueIdCuenta, CicIdCiclo FROM dbo.MovimientosCuenta

@@ -108,6 +108,11 @@ const TotalesPorMoneda = ({ totales, etiqueta }) => (
 function ModalConsumoPlan({ plan, planes, onClose }) {
   const [movs, setMovs]       = useState([]);
   const [loading, setLoading] = useState(true);
+  // arrastre = saldo de los movimientos que el TOP dejó afuera (lo calcula el
+  // backend). Sin esto el saldo corrido arrancaba en 0 y todas las columnas
+  // "Saldo Ini./Saldo Fn." quedaban desplazadas cuando la cuenta era larga.
+  const [arrastre, setArrastre]   = useState(0);
+  const [recorte, setRecorte]     = useState(null); // { mostrados, total }
 
   const unidad = plan.UniSimbolo || plan.PlaUnidad || plan.UnidadLabel || '';
 
@@ -125,8 +130,13 @@ function ModalConsumoPlan({ plan, planes, onClose }) {
     let alive = true;
     setLoading(true);
     fetchAPI(`/api/contabilidad/cuentas/${plan.CueIdCuenta}/movimientos?top=500`)
-      .then(r => { if (alive) setMovs(r.data || []); })
-      .catch(e => { if (alive) { toast.error(e.message); setMovs([]); } })
+      .then(r => {
+        if (!alive) return;
+        setMovs(r.data || []);
+        setArrastre(Number(r.saldoArrastre || 0));
+        setRecorte(r.recortado ? { mostrados: (r.data || []).length, total: r.totalMovimientos } : null);
+      })
+      .catch(e => { if (alive) { toast.error(e.message); setMovs([]); setArrastre(0); setRecorte(null); } })
       .finally(() => { if (alive) setLoading(false); });
     return () => { alive = false; };
   }, [plan.CueIdCuenta]);
@@ -144,9 +154,12 @@ function ModalConsumoPlan({ plan, planes, onClose }) {
       return planesDelMat.some(p => p.PlaActivo) || soloUno;
     });
 
-    // Saldo corrido: se acumula del más viejo al más nuevo.
+    // Saldo corrido: se acumula del más viejo al más nuevo, arrancando del
+    // arrastre. Si el filtro por plan dejó movimientos afuera no se puede
+    // arrancar del arrastre (daría un saldo que no es ni el del plan ni el de
+    // la cuenta): en ese caso arranca en 0 y es el saldo DE ESTOS movimientos.
     const ordenados = [...propios].sort((a, b) => new Date(a.MovFecha) - new Date(b.MovFecha));
-    let saldo = 0;
+    let saldo = propios.length === movs.length ? arrastre : 0;
     return ordenados.map(m => {
       const importe  = Number(m.MovImporte);
       const saldoIn  = saldo;
@@ -167,9 +180,19 @@ function ModalConsumoPlan({ plan, planes, onClose }) {
         _tipo:  m.MovTipo === 'RECARGO_URGENCIA' ? 'RECARGO_URGENCIA' : (importe >= 0 ? 'ENTRADA' : 'ENTREGA'),
       };
     });
-  }, [movs, planesDelMat, planes, plan]);
+  }, [movs, planesDelMat, planes, plan, arrastre]);
 
-  const saldoFinal = movsConSaldo.length ? movsConSaldo[movsConSaldo.length - 1]._saldoFn : 0;
+  // Saldo REAL de la cuenta del material: arrastre + TODOS los movimientos, sin
+  // filtrar por plan. Es lo que el cliente tiene de verdad y lo que muestra el
+  // chip de recursos; el "restante del plan" puede diferir cuando se consumieron
+  // metros de más contra planes anteriores.
+  const saldoCuenta = useMemo(() => (
+    Math.round((movs.reduce((acc, m) => acc + Number(m.MovImporte || 0), 0) + arrastre) * 10000) / 10000
+  ), [movs, arrastre]);
+
+  const restantePlan = Number(plan.PlaCantidadRestante ?? (plan.PlaCantidadTotal - plan.PlaCantidadUsada));
+  const difPlanCuenta = Math.round((restantePlan - saldoCuenta) * 10000) / 10000;
+  const hayDesfasaje = !loading && movs.length > 0 && Math.abs(difPlanCuenta) > 0.01;
 
   return (
     <div className="fixed inset-0 z-[60] bg-black/50 backdrop-blur-sm flex items-start justify-center px-2 sm:px-4 pt-10 pb-4"
@@ -212,11 +235,33 @@ function ModalConsumoPlan({ plan, planes, onClose }) {
             <span className="text-sm font-black text-emerald-600">{fmtNum(plan.PlaCantidadRestante)} {unidad}</span>
           </div>
           <div className="flex items-baseline gap-2 ml-auto">
-            <span className="text-[10px] font-black uppercase tracking-widest text-violet-400">Saldo del estado de cuenta</span>
-            <span className="text-sm font-black text-violet-700">{fmtNum(saldoFinal)} {unidad}</span>
+            <span className="text-[10px] font-black uppercase tracking-widest text-violet-400">Saldo real de la cuenta</span>
+            <span className={`text-sm font-black ${saldoCuenta < 0 ? 'text-rose-600' : 'text-violet-700'}`}>{fmtNum(saldoCuenta)} {unidad}</span>
             <span className="text-[11px] text-slate-400">{movsConSaldo.length} mov.</span>
           </div>
         </div>
+
+        {/* El plan y la cuenta pueden no coincidir: cuando una orden consumió más
+            metros de los que le quedaban al plan, el movimiento entró completo en
+            la cuenta pero el plan se cerró en "restante 0". Vale la cuenta. */}
+        {hayDesfasaje && (
+          <div className="px-5 py-2 bg-amber-50 border-b border-amber-200 text-[11px] text-amber-900 shrink-0">
+            <strong>El plan y la cuenta no coinciden.</strong> La barra del plan muestra{' '}
+            <strong>{fmtNum(restantePlan)} {unidad}</strong> pero en la cuenta hay{' '}
+            <strong>{fmtNum(saldoCuenta)} {unidad}</strong>.{' '}
+            {difPlanCuenta > 0
+              ? <>Son <strong>{fmtNum(difPlanCuenta)} {unidad}</strong> que ya se consumieron contra planes anteriores y el plan nunca reflejó.</>
+              : <>Hay <strong>{fmtNum(Math.abs(difPlanCuenta))} {unidad}</strong> comprados que ningún plan activo está mostrando.</>}
+            {' '}Para lo que el cliente puede usar, vale el saldo de la cuenta.
+          </div>
+        )}
+
+        {recorte && (
+          <div className="px-5 py-2 bg-slate-50 border-b border-slate-200 text-[11px] text-slate-600 shrink-0">
+            Se muestran los <strong>{recorte.mostrados}</strong> movimientos más recientes de{' '}
+            <strong>{recorte.total}</strong>. Los saldos ya incluyen el arrastre de los anteriores.
+          </div>
+        )}
 
         {/* Movimientos */}
         <div className="flex-1 min-h-0 overflow-auto">

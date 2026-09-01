@@ -115,6 +115,20 @@ exports.authorizeAdminOrArea = (req, res, next) => {
     next();
 };
 
+// =====================================================================
+// HELPER: ES ADMIN O ÁREA SERVICIO TÉCNICO
+// =====================================================================
+// Para la capacidad "de fábrica" (ficha técnica) de las máquinas en ConfigEquipos: solo
+// el rol Admin (Roles.NombreRol='Admin', IdRol 1) o los usuarios del área Servicio Técnico
+// (Usuarios.AreaUsuario='SERVICIO') pueden editarla — a pedido de administración, 25-ago-2026.
+// Nota: 'Administracion' (IdRol 8) es un rol DISTINTO de 'Admin' en este sistema y
+// deliberadamente NO entra acá (mismo criterio que ROLES_EDITAN_ESTADO).
+const esAdminOServicioTecnico = (u) => {
+    if (!u) return false;
+    return normalizaRol(u.role) === 'admin' || normalizaRol(u.areaKey) === 'servicio';
+};
+
 exports.soloInternoConRol = soloInternoConRol;
 exports.ROLES_EDITAN_ESTADO = ROLES_EDITAN_ESTADO;
+exports.esAdminOServicioTecnico = esAdminOServicioTecnico;
 exports.JWT_SECRET = JWT_SECRET;

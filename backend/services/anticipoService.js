@@ -87,9 +87,10 @@ async function calcularSaldoEfectivo(cliId, monedaId, pool) {
   const cueRes = await pool.request()
     .input('Cli',  sql.Int,        cliId)
     .input('Tipo', sql.VarChar(20), tipoCuenta)
-    .query(`SELECT CueIdCuenta, CueSaldoActual
+    .query(`SELECT TOP 1 CueIdCuenta, CueSaldoActual
             FROM   dbo.CuentasCliente WITH(NOLOCK)
-            WHERE  CliIdCliente = @Cli AND CueTipo = @Tipo`);
+            WHERE  CliIdCliente = @Cli AND CueTipo = @Tipo
+              AND  CueEsPrincipal = 1`);
 
   if (cueRes.recordset.length === 0) {
     return { cuentaId: null, saldoBruto: 0, comprometido: 0, saldoEfectivo: 0 };

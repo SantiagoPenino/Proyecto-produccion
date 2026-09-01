@@ -1,11 +1,21 @@
 import React, { useState, useEffect } from 'react';
 import { areasService } from '../../../services/api';
+import { useAuth } from '../../../context/AuthContext';
 
 const ConfigPrintersModal = ({ isOpen, onClose, areaCode, equipos }) => {
+    const { user } = useAuth();
+    // Capacidad "de fábrica" (ficha técnica): solo Admin o el área Servicio Técnico puede
+    // editarla — a pedido de administración. El backend re-valida esto igual (candado real);
+    // acá solo se deshabilitan los campos para que nadie sin permiso crea que guardó un cambio
+    // que en realidad el servidor va a ignorar.
+    const puedeEditarCapacidadFabrica =
+        String(user?.rol || user?.role || '').trim().toLowerCase() === 'admin' ||
+        String(user?.areaKey || user?.area || '').trim().toLowerCase() === 'servicio';
     // Estado para nuevo equipo
     const [newPrinter, setNewPrinter] = useState({
         nombre: '', cap: 100, vel: 10, estado: 'DISPONIBLE', estadoProceso: 'DETENIDO', separacionImpresion: false,
-        cabezales: '', velocidadValor: '', velocidadUnidad: '', minutosPreparacion: ''
+        cabezales: '', velocidadValor: '', velocidadUnidad: '', minutosPreparacion: '',
+        cabezalesReal: '', velocidadValorReal: '', minutosPreparacionReal: ''
     });
     const [loading, setLoading] = useState(false);
 
@@ -16,7 +26,8 @@ const ConfigPrintersModal = ({ isOpen, onClose, areaCode, equipos }) => {
     const [editingId, setEditingId] = useState(null);
     const [editForm, setEditForm] = useState({
         nombre: '', cap: 0, vel: 0, estado: 'DISPONIBLE', estadoProceso: 'DETENIDO', activo: true, separacionImpresion: false,
-        cabezales: '', velocidadValor: '', velocidadUnidad: '', minutosPreparacion: ''
+        cabezales: '', velocidadValor: '', velocidadUnidad: '', minutosPreparacion: '',
+        cabezalesReal: '', velocidadValorReal: '', minutosPreparacionReal: ''
     });
 
     useEffect(() => {
@@ -41,7 +52,10 @@ const ConfigPrintersModal = ({ isOpen, onClose, areaCode, equipos }) => {
                 cabezales: newPrinter.cabezales,
                 velocidadValor: newPrinter.velocidadValor,
                 velocidadUnidad: newPrinter.velocidadUnidad,
-                minutosPreparacion: newPrinter.minutosPreparacion
+                minutosPreparacion: newPrinter.minutosPreparacion,
+                cabezalesReal: newPrinter.cabezalesReal,
+                velocidadValorReal: newPrinter.velocidadValorReal,
+                minutosPreparacionReal: newPrinter.minutosPreparacionReal
             });
 
             alert('Equipo agregado. La lista se actualizará al cerrar.');
@@ -58,12 +72,16 @@ const ConfigPrintersModal = ({ isOpen, onClose, areaCode, equipos }) => {
                 VelocidadValor: newPrinter.velocidadValor,
                 VelocidadUnidad: newPrinter.velocidadUnidad,
                 MinutosPreparacion: newPrinter.minutosPreparacion,
+                CabezalesReal: newPrinter.cabezalesReal,
+                VelocidadValorReal: newPrinter.velocidadValorReal,
+                MinutosPreparacionReal: newPrinter.minutosPreparacionReal,
                 Activo: true,
                 Temp: true
             }]);
             setNewPrinter({
                 nombre: '', cap: 100, vel: 10, estado: 'DISPONIBLE', estadoProceso: 'DETENIDO', separacionImpresion: false,
-                cabezales: '', velocidadValor: '', velocidadUnidad: '', minutosPreparacion: ''
+                cabezales: '', velocidadValor: '', velocidadUnidad: '', minutosPreparacion: '',
+                cabezalesReal: '', velocidadValorReal: '', minutosPreparacionReal: ''
             });
         } catch (error) {
             alert('Error al agregar equipo');
@@ -91,7 +109,10 @@ const ConfigPrintersModal = ({ isOpen, onClose, areaCode, equipos }) => {
             cabezales: eq.Cabezales ?? '',
             velocidadValor: eq.VelocidadValor ?? '',
             velocidadUnidad: eq.VelocidadUnidad ?? '',
-            minutosPreparacion: eq.MinutosPreparacion ?? ''
+            minutosPreparacion: eq.MinutosPreparacion ?? '',
+            cabezalesReal: eq.CabezalesReal ?? '',
+            velocidadValorReal: eq.VelocidadValorReal ?? '',
+            minutosPreparacionReal: eq.MinutosPreparacionReal ?? ''
         });
     };
 
@@ -108,7 +129,10 @@ const ConfigPrintersModal = ({ isOpen, onClose, areaCode, equipos }) => {
                 cabezales: editForm.cabezales,
                 velocidadValor: editForm.velocidadValor,
                 velocidadUnidad: editForm.velocidadUnidad,
-                minutosPreparacion: editForm.minutosPreparacion
+                minutosPreparacion: editForm.minutosPreparacion,
+                cabezalesReal: editForm.cabezalesReal,
+                velocidadValorReal: editForm.velocidadValorReal,
+                minutosPreparacionReal: editForm.minutosPreparacionReal
             });
 
             // Actualizar lista local visualmente
@@ -126,7 +150,10 @@ const ConfigPrintersModal = ({ isOpen, onClose, areaCode, equipos }) => {
                         Cabezales: editForm.cabezales,
                         VelocidadValor: editForm.velocidadValor,
                         VelocidadUnidad: editForm.velocidadUnidad,
-                        MinutosPreparacion: editForm.minutosPreparacion
+                        MinutosPreparacion: editForm.minutosPreparacion,
+                        CabezalesReal: editForm.cabezalesReal,
+                        VelocidadValorReal: editForm.velocidadValorReal,
+                        MinutosPreparacionReal: editForm.minutosPreparacionReal
                     }
                     : eq
             ));
@@ -223,26 +250,34 @@ const ConfigPrintersModal = ({ isOpen, onClose, areaCode, equipos }) => {
                             <span className="text-xs font-semibold text-zinc-600">Es impresora (al finalizar, el lote pasa a una calandra)</span>
                         </label>
 
-                        {/* CAPACIDAD REAL — para el cálculo de fecha de entrega / carga de planta */}
+                        {/* CAPACIDAD ESTÁNDAR — de ficha técnica del fabricante (no medida en planta) */}
                         <div className="mt-4 pt-4 border-t border-zinc-100">
-                            <h5 className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider mb-2">Capacidad real (opcional)</h5>
+                            <h5 className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider mb-2">Capacidad estándar / ficha técnica (opcional)</h5>
+                            {!puedeEditarCapacidadFabrica && (
+                                <p className="text-[10px] text-zinc-400 italic mb-2">
+                                    <i className="fa-solid fa-lock mr-1"></i>
+                                    Solo Administración o Servicio Técnico puede cargar la capacidad de ficha técnica.
+                                </p>
+                            )}
                             <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
                                 <div>
                                     <label className="text-[10px] uppercase font-bold text-zinc-400 mb-1 block">Cabezales</label>
                                     <input
                                         type="number"
                                         placeholder="Ej: 6"
-                                        className="w-full px-3 py-2 bg-zinc-50 border border-zinc-200 rounded-lg text-sm font-semibold text-zinc-700 outline-none focus:border-blue-500"
+                                        disabled={!puedeEditarCapacidadFabrica}
+                                        className="w-full px-3 py-2 bg-zinc-50 border border-zinc-200 rounded-lg text-sm font-semibold text-zinc-700 outline-none focus:border-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
                                         value={newPrinter.cabezales}
                                         onChange={(e) => setNewPrinter({ ...newPrinter, cabezales: e.target.value })}
                                     />
                                 </div>
                                 <div>
-                                    <label className="text-[10px] uppercase font-bold text-zinc-400 mb-1 block">Velocidad real</label>
+                                    <label className="text-[10px] uppercase font-bold text-zinc-400 mb-1 block">Velocidad estándar</label>
                                     <input
                                         type="number"
                                         placeholder="Ej: 350"
-                                        className="w-full px-3 py-2 bg-zinc-50 border border-zinc-200 rounded-lg text-sm font-semibold text-zinc-700 outline-none focus:border-blue-500"
+                                        disabled={!puedeEditarCapacidadFabrica}
+                                        className="w-full px-3 py-2 bg-zinc-50 border border-zinc-200 rounded-lg text-sm font-semibold text-zinc-700 outline-none focus:border-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
                                         value={newPrinter.velocidadValor}
                                         onChange={(e) => setNewPrinter({ ...newPrinter, velocidadValor: e.target.value })}
                                     />
@@ -252,7 +287,8 @@ const ConfigPrintersModal = ({ isOpen, onClose, areaCode, equipos }) => {
                                     <input
                                         type="text"
                                         placeholder="Ej: puntadas/min, m²/h, m/min"
-                                        className="w-full px-3 py-2 bg-zinc-50 border border-zinc-200 rounded-lg text-sm font-semibold text-zinc-700 outline-none focus:border-blue-500"
+                                        disabled={!puedeEditarCapacidadFabrica}
+                                        className="w-full px-3 py-2 bg-zinc-50 border border-zinc-200 rounded-lg text-sm font-semibold text-zinc-700 outline-none focus:border-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
                                         value={newPrinter.velocidadUnidad}
                                         onChange={(e) => setNewPrinter({ ...newPrinter, velocidadUnidad: e.target.value })}
                                     />
@@ -262,9 +298,47 @@ const ConfigPrintersModal = ({ isOpen, onClose, areaCode, equipos }) => {
                                     <input
                                         type="number"
                                         placeholder="Ej: 15"
-                                        className="w-full px-3 py-2 bg-zinc-50 border border-zinc-200 rounded-lg text-sm font-semibold text-zinc-700 outline-none focus:border-blue-500"
+                                        disabled={!puedeEditarCapacidadFabrica}
+                                        className="w-full px-3 py-2 bg-zinc-50 border border-zinc-200 rounded-lg text-sm font-semibold text-zinc-700 outline-none focus:border-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
                                         value={newPrinter.minutosPreparacion}
                                         onChange={(e) => setNewPrinter({ ...newPrinter, minutosPreparacion: e.target.value })}
+                                    />
+                                </div>
+                            </div>
+                        </div>
+
+                        {/* CAPACIDAD REAL DE PLANTA — la que se usa para calcular fecha de entrega si está cargada */}
+                        <div className="mt-4 pt-4 border-t border-zinc-100">
+                            <h5 className="text-[10px] font-bold text-amber-600 uppercase tracking-wider mb-2">Capacidad real de planta (opcional — pisa a la estándar en el cálculo)</h5>
+                            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                                <div>
+                                    <label className="text-[10px] uppercase font-bold text-zinc-400 mb-1 block">Cabezales real</label>
+                                    <input
+                                        type="number"
+                                        placeholder="Ej: 6"
+                                        className="w-full px-3 py-2 bg-amber-50 border border-amber-200 rounded-lg text-sm font-semibold text-zinc-700 outline-none focus:border-amber-500"
+                                        value={newPrinter.cabezalesReal}
+                                        onChange={(e) => setNewPrinter({ ...newPrinter, cabezalesReal: e.target.value })}
+                                    />
+                                </div>
+                                <div>
+                                    <label className="text-[10px] uppercase font-bold text-zinc-400 mb-1 block">Velocidad real ({newPrinter.velocidadUnidad || 'misma unidad'})</label>
+                                    <input
+                                        type="number"
+                                        placeholder="Ej: 280"
+                                        className="w-full px-3 py-2 bg-amber-50 border border-amber-200 rounded-lg text-sm font-semibold text-zinc-700 outline-none focus:border-amber-500"
+                                        value={newPrinter.velocidadValorReal}
+                                        onChange={(e) => setNewPrinter({ ...newPrinter, velocidadValorReal: e.target.value })}
+                                    />
+                                </div>
+                                <div>
+                                    <label className="text-[10px] uppercase font-bold text-zinc-400 mb-1 block">Min. preparación real</label>
+                                    <input
+                                        type="number"
+                                        placeholder="Ej: 20"
+                                        className="w-full px-3 py-2 bg-amber-50 border border-amber-200 rounded-lg text-sm font-semibold text-zinc-700 outline-none focus:border-amber-500"
+                                        value={newPrinter.minutosPreparacionReal}
+                                        onChange={(e) => setNewPrinter({ ...newPrinter, minutosPreparacionReal: e.target.value })}
                                     />
                                 </div>
                             </div>
@@ -281,15 +355,18 @@ const ConfigPrintersModal = ({ isOpen, onClose, areaCode, equipos }) => {
                                     <th className="px-4 py-3 font-bold text-center w-32">Est. Config</th>
                                     <th className="px-4 py-3 font-bold text-center w-32">Est. Proceso</th>
                                     <th className="px-4 py-3 font-bold text-center w-28">Impresora</th>
-                                    <th className="px-4 py-3 font-bold text-center w-20">Cabezales</th>
-                                    <th className="px-4 py-3 font-bold text-center w-36">Velocidad real</th>
-                                    <th className="px-4 py-3 font-bold text-center w-24">Prep. <span className="normal-case text-[9px] text-zinc-400 block font-normal">(min)</span></th>
+                                    <th className="px-4 py-3 font-bold text-center w-20">Cabezales <span className="normal-case text-[9px] text-zinc-400 block font-normal">estándar</span></th>
+                                    <th className="px-4 py-3 font-bold text-center w-36">Velocidad <span className="normal-case text-[9px] text-zinc-400 block font-normal">estándar (ficha técnica)</span></th>
+                                    <th className="px-4 py-3 font-bold text-center w-24">Prep. <span className="normal-case text-[9px] text-zinc-400 block font-normal">estándar (min)</span></th>
+                                    <th className="px-4 py-3 font-bold text-center w-20 bg-amber-50/50">Cabezales <span className="normal-case text-[9px] text-amber-600 block font-normal">real</span></th>
+                                    <th className="px-4 py-3 font-bold text-center w-36 bg-amber-50/50">Velocidad <span className="normal-case text-[9px] text-amber-600 block font-normal">real (planta)</span></th>
+                                    <th className="px-4 py-3 font-bold text-center w-24 bg-amber-50/50">Prep. <span className="normal-case text-[9px] text-amber-600 block font-normal">real (min)</span></th>
                                     <th className="px-4 py-3 font-bold text-center w-28">Acción</th>
                                 </tr>
                             </thead>
                             <tbody className="divide-y divide-zinc-100">
                                 {localList.length === 0 ? (
-                                    <tr><td colSpan="9" className="py-8 text-center text-zinc-400 italic text-xs">No hay equipos configurados.</td></tr>
+                                    <tr><td colSpan="12" className="py-8 text-center text-zinc-400 italic text-xs">No hay equipos configurados.</td></tr>
                                 ) : (
                                     [...localList].sort((a, b) => (Number(a.EquipoID) || 0) - (Number(b.EquipoID) || 0)).map((eq) => {
                                         const isEditing = editingId === eq.EquipoID;
@@ -380,39 +457,52 @@ const ConfigPrintersModal = ({ isOpen, onClose, areaCode, equipos }) => {
                                                     )}
                                                 </td>
 
-                                                {/* CABEZALES */}
+                                                {/* CABEZALES (estándar/ficha técnica — solo Admin o Servicio Técnico) */}
                                                 <td className="px-4 py-3 align-middle text-center">
                                                     {isEditing ? (
-                                                        <input
-                                                            type="number"
-                                                            className="w-16 px-2 py-1 bg-white border border-blue-300 rounded text-sm text-center focus:outline-none"
-                                                            value={editForm.cabezales}
-                                                            onChange={e => setEditForm({ ...editForm, cabezales: e.target.value })}
-                                                        />
+                                                        puedeEditarCapacidadFabrica ? (
+                                                            <input
+                                                                type="number"
+                                                                className="w-16 px-2 py-1 bg-white border border-blue-300 rounded text-sm text-center focus:outline-none"
+                                                                value={editForm.cabezales}
+                                                                onChange={e => setEditForm({ ...editForm, cabezales: e.target.value })}
+                                                            />
+                                                        ) : (
+                                                            <span className="font-mono text-zinc-400 font-medium" title="Solo Administración o Servicio Técnico puede editar este campo">
+                                                                <i className="fa-solid fa-lock text-[10px] mr-1"></i>{eq.Cabezales ?? '—'}
+                                                            </span>
+                                                        )
                                                     ) : (
                                                         <span className="font-mono text-zinc-600 font-medium">{eq.Cabezales ?? '—'}</span>
                                                     )}
                                                 </td>
 
-                                                {/* VELOCIDAD REAL (valor + unidad) */}
+                                                {/* VELOCIDAD ESTÁNDAR (valor + unidad, ficha técnica — solo Admin o Servicio Técnico) */}
                                                 <td className="px-4 py-3 align-middle text-center">
                                                     {isEditing ? (
-                                                        <div className="flex gap-1 items-center justify-center">
-                                                            <input
-                                                                type="number"
-                                                                placeholder="Valor"
-                                                                className="w-16 px-2 py-1 bg-white border border-blue-300 rounded text-sm text-center focus:outline-none"
-                                                                value={editForm.velocidadValor}
-                                                                onChange={e => setEditForm({ ...editForm, velocidadValor: e.target.value })}
-                                                            />
-                                                            <input
-                                                                type="text"
-                                                                placeholder="Unidad"
-                                                                className="w-20 px-2 py-1 bg-white border border-blue-300 rounded text-sm text-center focus:outline-none"
-                                                                value={editForm.velocidadUnidad}
-                                                                onChange={e => setEditForm({ ...editForm, velocidadUnidad: e.target.value })}
-                                                            />
-                                                        </div>
+                                                        puedeEditarCapacidadFabrica ? (
+                                                            <div className="flex gap-1 items-center justify-center">
+                                                                <input
+                                                                    type="number"
+                                                                    placeholder="Valor"
+                                                                    className="w-16 px-2 py-1 bg-white border border-blue-300 rounded text-sm text-center focus:outline-none"
+                                                                    value={editForm.velocidadValor}
+                                                                    onChange={e => setEditForm({ ...editForm, velocidadValor: e.target.value })}
+                                                                />
+                                                                <input
+                                                                    type="text"
+                                                                    placeholder="Unidad"
+                                                                    className="w-20 px-2 py-1 bg-white border border-blue-300 rounded text-sm text-center focus:outline-none"
+                                                                    value={editForm.velocidadUnidad}
+                                                                    onChange={e => setEditForm({ ...editForm, velocidadUnidad: e.target.value })}
+                                                                />
+                                                            </div>
+                                                        ) : (
+                                                            <span className="font-mono text-zinc-400 font-medium text-xs" title="Solo Administración o Servicio Técnico puede editar este campo">
+                                                                <i className="fa-solid fa-lock text-[10px] mr-1"></i>
+                                                                {eq.VelocidadValor ? `${eq.VelocidadValor} ${eq.VelocidadUnidad || ''}`.trim() : '—'}
+                                                            </span>
+                                                        )
                                                     ) : (
                                                         <span className="font-mono text-zinc-600 font-medium text-xs">
                                                             {eq.VelocidadValor ? `${eq.VelocidadValor} ${eq.VelocidadUnidad || ''}`.trim() : '—'}
@@ -420,17 +510,68 @@ const ConfigPrintersModal = ({ isOpen, onClose, areaCode, equipos }) => {
                                                     )}
                                                 </td>
 
-                                                {/* MINUTOS DE PREPARACION */}
+                                                {/* MINUTOS DE PREPARACION (estándar/ficha técnica — solo Admin o Servicio Técnico) */}
                                                 <td className="px-4 py-3 align-middle text-center">
+                                                    {isEditing ? (
+                                                        puedeEditarCapacidadFabrica ? (
+                                                            <input
+                                                                type="number"
+                                                                className="w-16 px-2 py-1 bg-white border border-blue-300 rounded text-sm text-center focus:outline-none"
+                                                                value={editForm.minutosPreparacion}
+                                                                onChange={e => setEditForm({ ...editForm, minutosPreparacion: e.target.value })}
+                                                            />
+                                                        ) : (
+                                                            <span className="font-mono text-zinc-400 font-medium" title="Solo Administración o Servicio Técnico puede editar este campo">
+                                                                <i className="fa-solid fa-lock text-[10px] mr-1"></i>{eq.MinutosPreparacion ?? '—'}
+                                                            </span>
+                                                        )
+                                                    ) : (
+                                                        <span className="font-mono text-zinc-600 font-medium">{eq.MinutosPreparacion ?? '—'}</span>
+                                                    )}
+                                                </td>
+
+                                                {/* CABEZALES REAL */}
+                                                <td className="px-4 py-3 align-middle text-center bg-amber-50/30">
                                                     {isEditing ? (
                                                         <input
                                                             type="number"
-                                                            className="w-16 px-2 py-1 bg-white border border-blue-300 rounded text-sm text-center focus:outline-none"
-                                                            value={editForm.minutosPreparacion}
-                                                            onChange={e => setEditForm({ ...editForm, minutosPreparacion: e.target.value })}
+                                                            className="w-16 px-2 py-1 bg-white border border-amber-300 rounded text-sm text-center focus:outline-none"
+                                                            value={editForm.cabezalesReal}
+                                                            onChange={e => setEditForm({ ...editForm, cabezalesReal: e.target.value })}
                                                         />
                                                     ) : (
-                                                        <span className="font-mono text-zinc-600 font-medium">{eq.MinutosPreparacion ?? '—'}</span>
+                                                        <span className="font-mono text-amber-700 font-medium">{eq.CabezalesReal ?? '—'}</span>
+                                                    )}
+                                                </td>
+
+                                                {/* VELOCIDAD REAL DE PLANTA (usa la misma unidad que la estándar) */}
+                                                <td className="px-4 py-3 align-middle text-center bg-amber-50/30">
+                                                    {isEditing ? (
+                                                        <input
+                                                            type="number"
+                                                            placeholder="Valor"
+                                                            className="w-20 px-2 py-1 bg-white border border-amber-300 rounded text-sm text-center focus:outline-none"
+                                                            value={editForm.velocidadValorReal}
+                                                            onChange={e => setEditForm({ ...editForm, velocidadValorReal: e.target.value })}
+                                                        />
+                                                    ) : (
+                                                        <span className="font-mono text-amber-700 font-medium text-xs">
+                                                            {eq.VelocidadValorReal ? `${eq.VelocidadValorReal} ${eq.VelocidadUnidad || ''}`.trim() : '—'}
+                                                        </span>
+                                                    )}
+                                                </td>
+
+                                                {/* MINUTOS DE PREPARACION REAL */}
+                                                <td className="px-4 py-3 align-middle text-center bg-amber-50/30">
+                                                    {isEditing ? (
+                                                        <input
+                                                            type="number"
+                                                            className="w-16 px-2 py-1 bg-white border border-amber-300 rounded text-sm text-center focus:outline-none"
+                                                            value={editForm.minutosPreparacionReal}
+                                                            onChange={e => setEditForm({ ...editForm, minutosPreparacionReal: e.target.value })}
+                                                        />
+                                                    ) : (
+                                                        <span className="font-mono text-amber-700 font-medium">{eq.MinutosPreparacionReal ?? '—'}</span>
                                                     )}
                                                 </td>
 

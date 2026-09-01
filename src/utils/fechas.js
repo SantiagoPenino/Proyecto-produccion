@@ -76,3 +76,16 @@ export function toInputDate(v) {
   const p = (n) => String(n).padStart(2, '0');
   return `${d.getUTCFullYear()}-${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())}`;
 }
+
+/**
+ * hoyInput / aInputLocal — fecha LOCAL en formato yyyy-mm-dd para inputs type="date".
+ * NUNCA usar `new Date().toISOString().split('T')[0]`: toISOString es UTC y en UTC-3
+ * después de las 21:00 devuelve el día SIGUIENTE (un anticipo quedaba fechado mañana
+ * y caía fuera del período del estado de cuenta).
+ */
+export function aInputLocal(d = new Date()) {
+  const x = d instanceof Date ? d : new Date(d);
+  const p = (n) => String(n).padStart(2, '0');
+  return `${x.getFullYear()}-${p(x.getMonth() + 1)}-${p(x.getDate())}`;
+}
+export function hoyInput() { return aInputLocal(new Date()); }

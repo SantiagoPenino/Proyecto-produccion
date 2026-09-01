@@ -928,6 +928,33 @@ exports.crearFacturaManual = async (req, res) => {
             clienteId: CliIdCliente
         });
 
+        // Billetera (criterio contador 24/8): si la factura se pagó ENTERA con el medio
+        // "Saldo de cuenta" (Facturar consumos / Venta de saldo desde el saldo a favor),
+        // la plata NO entró a caja: el DEBE va a 2.3.1 Anticipos de Clientes (baja el
+        // pasivo del anticipo), no a Caja.
+        try {
+            const isPaidAsiento = DocPagado === true || DocPagado === 1 || DocPagado === 'true';
+            const metIds = [...new Set((Pagos || []).map(p => parseInt(p.metodoPagoId)).filter(Boolean))];
+            if (isPaidAsiento && metIds.length) {
+                const mNames = (await new sql.Request(transaction)
+                    .query(`SELECT MPaIdMetodoPago, MPaDescripcionMetodo FROM dbo.MetodosPagos WHERE MPaIdMetodoPago IN (${metIds.join(',')})`)).recordset;
+                const todosSaldo = metIds.length > 0 && metIds.every(id => /saldo de cuenta/i.test(mNames.find(m => m.MPaIdMetodoPago === id)?.MPaDescripcionMetodo || ''));
+                if (todosSaldo) {
+                    const CAJAS = ['1.1.1', '1.1.2'];
+                    for (const lin of lineasContables) {
+                        if (CAJAS.includes(lin.codigoCuenta) && Number(lin.debeBase) > 0) {
+                            lin.codigoCuenta = '2.3.1';   // Anticipos de Clientes
+                            lin.entidadId = CliIdCliente || null;
+                            lin.entidadTipo = 'CLIENTE';
+                        }
+                    }
+                    logger.info(`[FACT-MANUAL] Doc M-${docId}: pagada con "Saldo de cuenta" → DEBE a 2.3.1 Anticipos (no Caja).`);
+                }
+            }
+        } catch (eSaldo) {
+            logger.warn(`[FACT-MANUAL] No se pudo ajustar el asiento por Saldo de cuenta: ${eSaldo.message}`);
+        }
+
         if (lineasContables.length > 0) {
             const asiId = await generarAsientoCompleto({
                 fecha: fechaDoc || new Date(),
