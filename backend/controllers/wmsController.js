@@ -37,6 +37,7 @@ exports.syncCatalog = async (req, res) => {
         try {
             let insertedMasters = 0;
             let insertedVariants = 0;
+            const productosTocados = new Set(); // para completar ejes Talle/Color post-commit
 
             for (const item of items) {
                 // Try to map to local article
@@ -98,10 +99,21 @@ exports.syncCatalog = async (req, res) => {
                             END
                         `);
                     insertedVariants++;
+                    productosTocados.add(localId);
                 }
             }
 
             await transaction.commit();
+
+            // [VARIANTES 21/08] Auto-parse de ejes Talle/Color para las variantes nuevas del
+            // sync (solo las que quedaron NULL/NULL — nunca pisa una corrección manual).
+            try {
+                const { completarEjesFaltantes } = require('../utils/variantesEjes');
+                await completarEjesFaltantes(pool, [...productosTocados]);
+            } catch (eEjes) {
+                logger.warn('[syncCatalog] No se pudieron completar ejes de variantes: ' + eEjes.message);
+            }
+
             res.json({ success: true, message: `Sync completada. Masters: ${insertedMasters}, Variantes: ${insertedVariants}` });
         } catch (err) {
             await transaction.rollback();
@@ -137,11 +149,15 @@ exports.getCatalog = async (req, res) => {
         `);
 
         // 2. Fetch live stock from WMS — solo depósito configurado (WMS_DEPOSITO_LOCAL_ID)
-        const stockMap = {};
+        // [CUTOVER WMS PROPIO] WMS_INTERNO=true → sale de las tablas Wms_* (JOIN local).
+        let stockMap = {};
+        const wmsInterno = String(process.env.WMS_INTERNO || '').toLowerCase() === 'true';
         try {
             const wmsUrl = process.env.WMS_SQL_URL || 'http://3.85.26.173:5005';
             const depositoId = process.env.WMS_DEPOSITO_LOCAL_ID || 5; // depósito de Ventas
-            if (wmsUrl) {
+            if (wmsInterno) {
+                stockMap = await require('../services/wmsInternoService').getStockPorVariante();
+            } else if (wmsUrl) {
                 const wmsQuery = `
                     USE Ventas_Dev;
                     SELECT 
@@ -355,11 +371,13 @@ exports.printPedidoRemito = async (req, res) => {
     try {
         const { pedidoId } = req.params;
         const pool = await getPool();
+        // [MARCA TIENDA 18/08] Asegura Origen/ModoRetiro antes de leerlos (prod sin migrar).
+        await require('./logisticaWmsController').ensureMarcaTienda(pool);
         const result = await pool.request()
             .input('PedidoID', sql.Int, parseInt(pedidoId))
             .query(`
                 SELECT
-                    p.ID, p.NoDocERP, p.MontoTotal, p.Moneda, p.FechaGeneracion,
+                    p.ID, p.NoDocERP, p.MontoTotal, p.Moneda, p.FechaGeneracion, p.ModoRetiro,
                     c.Nombre AS ClienteNombre,
                     ISNULL(NULLIF(LTRIM(RTRIM(c.IDCliente)), ''), c.Nombre) AS IDCliente,
                     d.Cantidad,
@@ -384,6 +402,9 @@ exports.printPedidoRemito = async (req, res) => {
         const codigo = (cab.NoDocERP || '').trim();
         const cliente = cab.ClienteNombre || 'Consumidor Final';
         const fecha = new Date(cab.FechaGeneracion).toLocaleDateString('es-UY');
+        // [MARCA TIENDA 18/08] Pedido de la tienda con envío por encomienda: banner bien
+        // visible en el remito para que en depósito lo separen del resto de una.
+        const esEncomienda = String(cab.ModoRetiro || '').trim().toUpperCase() === 'ENCOMIENDA';
         const items = result.recordset.map(r => ({
             nombre: r.nombre_variante
                 ? `${(r.nombre_producto || '').trim()} - ${r.nombre_variante}`
@@ -413,6 +434,7 @@ exports.printPedidoRemito = async (req, res) => {
                     .band .lbl { font-size: 10px; font-weight: 800; color: #999; text-transform: uppercase; letter-spacing: 1px; }
                     .band .val { font-size: 20px; font-weight: 900; }
                     .band .arrow { font-size: 24px; color: #bbb; }
+                    .modo-banner { background: #111; color: #fff; text-align: center; font-size: 22px; font-weight: 900; letter-spacing: 8px; padding: 10px 0; border-radius: 8px; margin-bottom: 20px; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
                     .qr-zone { text-align: center; margin-bottom: 10px; }
                     #qr { display: inline-block; }
                     .codigo { text-align: center; font-family: monospace; font-size: 30px; font-weight: 900; letter-spacing: 6px; border-top: 1px solid #ddd; border-bottom: 1px solid #ddd; padding: 12px 0; margin: 14px 0 22px; }
@@ -443,6 +465,8 @@ exports.printPedidoRemito = async (req, res) => {
                             <div class="fecha-val">${fecha}</div>
                         </div>
                     </div>
+
+                    ${esEncomienda ? '<div class="modo-banner">ENCOMIENDA</div>' : ''}
 
                     <div class="band">
                         <div>

@@ -115,13 +115,44 @@ async function attachBultosCount(pool, orders) {
     return orders;
 }
 
+// [MARCA TIENDA 18/08] Asegura las columnas Origen/ModoRetiro de PedidosCobranza (las
+// crea también ensureTiendaSchema del lado de la tienda; acá de nuevo por si esta
+// pantalla corre en un prod donde la tienda todavía no se usó — idempotente).
+let marcaTiendaLista = false;
+async function ensureMarcaTienda(pool) {
+    if (marcaTiendaLista) return;
+    await pool.request().query(`
+        IF COL_LENGTH('dbo.PedidosCobranza', 'Origen') IS NULL
+            ALTER TABLE dbo.PedidosCobranza ADD Origen VARCHAR(20) NULL;
+        IF COL_LENGTH('dbo.PedidosCobranza', 'ModoRetiro') IS NULL
+            ALTER TABLE dbo.PedidosCobranza ADD ModoRetiro VARCHAR(20) NULL;
+        -- [PAGO ONLINE 21/08] Marca de pagado online (la estampa el webhook; la lee la
+        -- retención de la preparación y el retiro automático del ingreso a depósito).
+        IF COL_LENGTH('dbo.PedidosCobranza', 'FechaPagoOnline') IS NULL
+            ALTER TABLE dbo.PedidosCobranza ADD FechaPagoOnline DATETIME NULL;
+        IF COL_LENGTH('dbo.PedidosCobranza', 'PagoOnlineRef') IS NULL
+            ALTER TABLE dbo.PedidosCobranza ADD PagoOnlineRef VARCHAR(100) NULL;
+        IF COL_LENGTH('dbo.PedidosCobranza', 'MetodoPagoOnline') IS NULL
+            ALTER TABLE dbo.PedidosCobranza ADD MetodoPagoOnline VARCHAR(20) NULL;
+    `);
+    marcaTiendaLista = true;
+}
+// La usa también el remito A4 (wmsController.printPedidoRemito) para leer ModoRetiro.
+exports.ensureMarcaTienda = ensureMarcaTienda;
+
 exports.getPendingOrders = async (req, res) => {
     try {
         const pool = await getPool();
-        
+        await ensureMarcaTienda(pool);
+
         // Load pending and in prep orders
+        // [TIENDA 21/08] SIN RETENCIÓN por cobro: los pedidos de la tienda se preparan como
+        // cualquier VEN de mostrador. La retención anterior (tienda impaga fuera de la lista)
+        // dejaba a la ENCOMIENDA en un callejón sin salida: no se preparaba → no ingresaba a
+        // Depósito → nunca aparecía en /portal/pickup, que es justamente donde el cliente la
+        // paga y arma su retiro. El control de "no sale sin plata" vive en el retiro/caja.
         const result = await pool.request().query(`
-            SELECT 
+            SELECT
                 p.ID as PedidoID, p.NoDocERP, p.ClienteID, p.MontoTotal, p.Moneda, p.FechaGeneracion, p.EstadoCobro,
                 c.Nombre as ClienteNombre,
                 d.CodArticulo as wms_variante_id, d.Cantidad,
@@ -134,7 +165,7 @@ exports.getPendingOrders = async (req, res) => {
             LEFT JOIN Articulos a ON d.ProIdProducto = a.ProIdProducto
             LEFT JOIN Articulos_WMS_Variantes awv ON CAST(awv.wms_variante_id AS VARCHAR(100)) = CAST(d.CodArticulo AS VARCHAR(100))
             LEFT JOIN Articulos_UbicacionLocal loc ON a.ProIdProducto = loc.Idproid
-            WHERE p.NoDocERP LIKE 'VEN-%' 
+            WHERE p.NoDocERP LIKE 'VEN-%'
               AND p.EstadoCobro IN ('PENDIENTE', 'EN_PREPARACION')
             ORDER BY p.FechaGeneracion ASC
         `);
@@ -220,7 +251,9 @@ exports.confirmPreparation = async (req, res) => {
         // antes: la línea del combo no existe en el WMS — se descuentan sus componentes
         // (ProductoComboItems), p.ej. 3 combos → 3 gorros + 3 shorts.
         const itemsDescuento = await explotarCombos(pool, items);
-        const { wmsDisponible, wmsErrors } = await descontarStockWmsExterno(itemsDescuento);
+        // ref = idempotencia del WMS interno (con el externo no cambia nada)
+        const { wmsDisponible, wmsErrors } = await descontarStockWmsExterno(itemsDescuento,
+            { refTipo: 'PEDIDO_COBRANZA', refId: parseInt(pedidoId, 10) });
 
         // Bloquear solo si el WMS está completamente offline
         if (!wmsDisponible) {
@@ -418,7 +451,8 @@ exports.receivePreparedOrder = async (req, res) => {
     try {
         const { pedidoId } = req.params;
         const pool = await getPool();
-        const orderRes = await pool.request().input('PedidoID', sql.Int, pedidoId).query(`SELECT ID, NoDocERP, ClienteID, Moneda, MontoTotal, EstadoCobro FROM PedidosCobranza WHERE ID = @PedidoID`);
+        await ensureMarcaTienda(pool);
+        const orderRes = await pool.request().input('PedidoID', sql.Int, pedidoId).query(`SELECT ID, NoDocERP, ClienteID, Moneda, MontoTotal, EstadoCobro, Origen, ModoRetiro, FechaPagoOnline, MetodoPagoOnline, PagoOnlineRef FROM PedidosCobranza WHERE ID = @PedidoID`);
         if (orderRes.recordset.length === 0) throw new Error('Pedido no encontrado');
         const order = orderRes.recordset[0];
 
@@ -487,7 +521,61 @@ exports.receivePreparedOrder = async (req, res) => {
             MonIdMoneda: order.Moneda === 'USD' ? 2 : 1
         });
 
-        res.json({ success: true, message: 'Orden recibida en depósito, ingresada a deuda y aviso programado.' });
+        // [PAGO ONLINE 21/08] Tienda + RETIRO EN EL LOCAL ya pagado online: el retiro se
+        // crea SOLO y nace ABONADO (con su pago registrado — misma mecánica que el
+        // "pagar ahora" de pickup: la deuda del ingreso queda saldada por el pago). El
+        // cliente no pasa por caja: viene, empaque entrega, listo. Best-effort: si algo
+        // falla, la recepción ya está hecha y el retiro se puede crear a mano.
+        let retiroAuto = null;
+        if ((order.Origen || '') === 'TIENDA' && (order.ModoRetiro || '') === 'RETIRO' && order.FechaPagoOnline && insertedOrdId) {
+            const retiroTransaction = new sql.Transaction(pool);
+            try {
+                const codRes = await pool.request()
+                    .input('Cli', sql.Int, order.ClienteID)
+                    .query('SELECT CodCliente FROM Clientes WHERE CliIdCliente = @Cli');
+                const codClienteRet = codRes.recordset[0]?.CodCliente || null;
+
+                const { crearRetiro, registrarPago } = require('../services/retiroService');
+                await retiroTransaction.begin();
+                const OReIdOrdenRetiro = await crearRetiro(retiroTransaction, {
+                    ordIds: [insertedOrdId],
+                    totalCost: order.MontoTotal,
+                    lugarRetiro: 1,
+                    usuarioAlta: 70,
+                    formaRetiro: 'RW',
+                    codCliente: codClienteRet,
+                    moneda: order.Moneda === 'USD' ? 'USD' : 'UYU',
+                });
+                await registrarPago(retiroTransaction, {
+                    ordenRetiroId: OReIdOrdenRetiro,
+                    metodoPagoId: 9, // pago online (Handy); MP se mapeará cuando se sume
+                    monedaId: order.Moneda === 'USD' ? 2 : 1,
+                    monto: order.MontoTotal,
+                    orderNumbers: [insertedOrdId],
+                    usuarioId: 70,
+                    nuevoEstado: 3, // Abonado
+                });
+                await retiroTransaction.commit();
+                retiroAuto = `RW-${OReIdOrdenRetiro}`;
+                logger.info(`[PAGO ONLINE] ✅ Retiro automático abonado ${retiroAuto} para ${order.NoDocERP} (${order.MetodoPagoOnline || 'ONLINE'} ${order.PagoOnlineRef || ''})`);
+
+                const ioInst = req.app?.get('socketio');
+                if (ioInst) {
+                    ioInst.emit('actualizado', { type: 'actualizacion' });
+                    ioInst.emit('retiros:update', { type: 'nuevo_retiro', ordenId: OReIdOrdenRetiro, formaRetiro: 'RW' });
+                }
+            } catch (eRet) {
+                try { await retiroTransaction.rollback(); } catch (e2) { /* sin tx activa */ }
+                logger.error(`[PAGO ONLINE] No se pudo crear el retiro automático de ${order.NoDocERP}: ${eRet.message}`);
+            }
+        }
+
+        res.json({
+            success: true,
+            message: retiroAuto
+                ? `Orden recibida en depósito. Pedido PAGADO ONLINE: retiro ${retiroAuto} creado y abonado automáticamente.`
+                : 'Orden recibida en depósito, ingresada a deuda y aviso programado.'
+        });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }

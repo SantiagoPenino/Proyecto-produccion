@@ -335,6 +335,14 @@ const updateWmsMasterId = async (req, res) => {
                         .query(`INSERT INTO Articulos_WMS_Variantes (Idproid, wms_variante_id, sku, nombre_variante) VALUES (@Idproid, @WmsVarianteId, @Sku, @NombreVariante)`);
                 }
                 logger.info(`WMS Master sync: ProId ${id} → ${variants.length} variantes`);
+                // [VARIANTES 21/08] El re-link borra y reinserta las variantes (los ejes
+                // manuales se pierden con él) — se re-derivan Talle/Color del nombre acá.
+                try {
+                    const { completarEjesFaltantes } = require('../utils/variantesEjes');
+                    await completarEjesFaltantes(pool, [parseInt(id)]);
+                } catch (eEjes) {
+                    logger.warn('[updateWmsMasterId] ejes de variantes: ' + eEjes.message);
+                }
             } catch (err) {
                 logger.error('Error syncing WMS variants: ' + err.message);
             }
@@ -386,12 +394,75 @@ const uploadArticleImage = async (req, res) => {
             const sharp = require('sharp');
             const nombre512 = req.file.filename.replace(/\.[^.]*$/, '') + '-512.webp';
             const destino = path.join(path.dirname(req.file.path), nombre512);
-            await sharp(req.file.path)
-                .resize(512, 512, { fit: 'contain', background: '#ffffff' })
-                .flatten({ background: '#ffffff' })
-                .webp({ quality: 80 })
-                .toFile(destino);
+
+            // [QUITAR FONDO 21/08] Checkbox del editor de marketing ('quitarFondo' en el
+            // multipart): rembg remueve el fondo y el producto se compone sobre BLANCO PURO
+            // → catálogo 100% parejo. Es OPT-IN por foto: en fotos full-producto (telas que
+            // llenan el cuadro) el modelo puede alucinar una silueta, ahí va apagado.
+            // Best-effort: si rembg falla (no instalado, timeout), sigue con la original.
+            let srcPath = req.file.path;
+            let fondoQuitado = false;
+            if (String(req.body?.quitarFondo || '') === '1') {
+                try {
+                    const { quitarFondo } = require('../services/quitarFondoService');
+                    const sinFondo = req.file.path + '.nobg.png';
+                    await quitarFondo(req.file.path, sinFondo);
+                    srcPath = sinFondo;
+                    fondoQuitado = true;
+                } catch (eNbg) {
+                    logger.warn(`[uploadArticleImage] quitarFondo falló, se usa la original: ${eNbg.message}`);
+                }
+            }
+
+            if (fondoQuitado) {
+                // Composición de catálogo: producto recortado y centrado sobre BLANCO PURO,
+                // con una SOMBRA ELÍPTICA DE CONTACTO bajo la base (gradiente radial que se
+                // desvanece a transparente). Elipse y no "drop shadow de silueta": la silueta
+                // blureada se esparcía para todos lados y quedaba un halo negro alrededor.
+                const prod = await sharp(srcPath)
+                    .trim()                                   // recorta el aire transparente
+                    .resize(430, 400, { fit: 'inside' })      // aire a los lados y lugar abajo
+                    .png().toBuffer();
+                const pm = await sharp(prod).metadata();
+                const left = Math.round((512 - pm.width) / 2);
+                const top = Math.round((512 - pm.height) / 2) - 10; // producto apenas arriba del centro
+                const cy = top + pm.height + 4;                     // la elipse pisa apenas la base
+                const rx = Math.round(pm.width * 0.42);
+                const sombraSvg = Buffer.from(
+                    `<svg width="512" height="512" xmlns="http://www.w3.org/2000/svg">` +
+                    `<defs><radialGradient id="s"><stop offset="0%" stop-color="rgba(0,0,0,0.34)"/>` +
+                    `<stop offset="65%" stop-color="rgba(0,0,0,0.16)"/>` +
+                    `<stop offset="100%" stop-color="rgba(0,0,0,0)"/></radialGradient></defs>` +
+                    `<ellipse cx="256" cy="${cy}" rx="${rx}" ry="16" fill="url(#s)"/></svg>`
+                );
+                await sharp({ create: { width: 512, height: 512, channels: 3, background: '#ffffff' } })
+                    .composite([
+                        { input: sombraSvg, left: 0, top: 0 },
+                        { input: prod, left, top },
+                    ])
+                    .webp({ quality: 80 })
+                    .toFile(destino);
+            } else {
+                // PRODUCTO ENTERO ('contain'). Relleno: BLANCO si la foto trae transparencia;
+                // si no, el color DOMINANTE — en fotos de producto es el fondo, así el
+                // letterbox se funde y no se ve parche ni marco. ('cover' quedó descartado:
+                // recortaba el producto en fotos no cuadradas.)
+                let bgFoto = { r: 255, g: 255, b: 255 };
+                try {
+                    const metaImg = await sharp(srcPath).metadata();
+                    if (!metaImg.hasAlpha) {
+                        const statsImg = await sharp(srcPath).stats();
+                        if (statsImg.dominant) bgFoto = statsImg.dominant;
+                    }
+                } catch (eBg) { /* sin stats: queda blanco */ }
+                await sharp(srcPath)
+                    .resize(512, 512, { fit: 'contain', background: bgFoto })
+                    .flatten({ background: bgFoto })
+                    .webp({ quality: 80 })
+                    .toFile(destino);
+            }
             fs.unlink(req.file.path, () => {});
+            if (srcPath !== req.file.path) fs.unlink(srcPath, () => {});
             finalFilename = nombre512;
         } catch (eImg) {
             // Archivo que sharp no entiende (o sharp ausente): se guarda tal cual, como siempre.
@@ -555,6 +626,13 @@ const importWmsMaster = async (req, res) => {
                     .query(`INSERT INTO Articulos_WMS_Variantes (Idproid, wms_variante_id, sku, nombre_variante) VALUES (@Idproid, @WmsVarianteId, @Sku, @NombreVariante)`);
             }
             await transaction.commit();
+            // [VARIANTES 21/08] Ejes Talle/Color de las variantes recién importadas.
+            try {
+                const { completarEjesFaltantes } = require('../utils/variantesEjes');
+                await completarEjesFaltantes(pool, [localId]);
+            } catch (eEjes) {
+                logger.warn('[importWmsMaster] ejes de variantes: ' + eEjes.message);
+            }
             res.json({ success: true, message: 'Producto y variantes importados correctamente.', newId: localId });
         } catch (dbErr) {
             await transaction.rollback();

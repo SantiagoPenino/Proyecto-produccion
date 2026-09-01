@@ -9,7 +9,7 @@ const logger = require('../utils/logger');
  * @param {Array<{wms_variante_id: number|string, Cantidad: number}>} items
  * @returns {Promise<{wmsDisponible: boolean, wmsErrors: string[]}>}
  */
-async function descontarStockWmsExterno(items) {
+async function descontarStockWmsExterno(items, ref = {}) {
     // BYPASS LOCAL: evita pegarle a la API real del WMS (Johnson) mientras se prueba en
     // local — si no, cada "Confirmar Retiro"/"Confirmar Preparación" de prueba rebaja
     // stock FÍSICO real del depósito. Activar con WMS_DESCUENTO_SIMULADO=true en el
@@ -17,6 +17,14 @@ async function descontarStockWmsExterno(items) {
     if (String(process.env.WMS_DESCUENTO_SIMULADO || '').toLowerCase() === 'true') {
         logger.warn(`⚠️ [WMS SIMULADO] Descuento de stock BYPASSEADO (WMS_DESCUENTO_SIMULADO=true) — no se tocó el WMS real. Items: ${JSON.stringify(items)}`);
         return { wmsDisponible: true, wmsErrors: [] };
+    }
+
+    // [CUTOVER WMS PROPIO] WMS_INTERNO=true → el descuento corre contra NUESTRAS tablas
+    // Wms_* (transaccional, FIFO multi-etiqueta, idempotente por ref) en vez del WMS de
+    // Johnson. Ver docs/wms-propio-plan.md; el import previo es scripts/wmsImportSnapshot.js.
+    if (String(process.env.WMS_INTERNO || '').toLowerCase() === 'true') {
+        const interno = require('./wmsInternoService');
+        return interno.egresarVentaCompat(items, ref);
     }
 
     const wmsSqlUrl  = process.env.WMS_SQL_URL || 'http://3.85.26.173:5005';

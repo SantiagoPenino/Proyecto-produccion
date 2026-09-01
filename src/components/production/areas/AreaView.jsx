@@ -293,39 +293,11 @@ export default function AreaView({ areaKey: rawAreaKey, areaConfig, onSwitchTab 
             console.log(`📡 API: Pidiendo datos para área [${areaDatos}]`);
             // areaKey ya viene normalizado a MAYÚSCULA, así que una sola llamada alcanza
             // (antes se reintentaba con toUpperCase porque podía venir en minúscula).
-            let data = await ordersService.getByArea(areaDatos, 'active');
-
-            // --- CROSS-COMPATIBILITY PATCH ---
-            // El portal usa códigos diferentes ('DF', 'SB') que los de AreaView ('DTF', 'SUB').
-            // Buscamos ambos y combinamos los resultados para que no se pierdan pedidos.
-            let extraData = [];
-            const upperArea = areaDatos.toUpperCase();
-            
-            if (upperArea === 'DTF') {
-                extraData = await ordersService.getByArea('DF', 'active');
-            } else if (upperArea === 'DF') {
-                extraData = await ordersService.getByArea('DTF', 'active');
-            } else if (upperArea === 'SUB') {
-                extraData = await ordersService.getByArea('SB', 'active');
-            } else if (upperArea === 'SB') {
-                extraData = await ordersService.getByArea('SUB', 'active');
-            } else if (upperArea === 'DIRECTA' || upperArea === 'IMD') {
-                const imdData = await ordersService.getByArea('IMD', 'active') || [];
-                const xmdData = await ordersService.getByArea('XMD', 'active') || [];
-                extraData = [...imdData, ...xmdData];
-            }
-            
-            if (extraData && extraData.length > 0) {
-                // Merge and remove duplicates by id just in case
-                const combined = [...(data || []), ...extraData];
-                const uniqueIds = new Set();
-                data = combined.filter(o => {
-                    if (uniqueIds.has(o.id)) return false;
-                    uniqueIds.add(o.id);
-                    return true;
-                });
-            }
-
+            // [31/08] Los códigos equivalentes ('DF'/'DTF', 'SB'/'SUB', Directa/IMD/XMD)
+            // los resuelve AHORA EL BACKEND en una sola consulta. Antes acá se pedían las
+            // dos áreas por separado y se fusionaban con dedup por id: dos viajes completos
+            // al servidor en cada refresco (tres en Directa) para el tablero más usado.
+            const data = await ordersService.getByArea(areaDatos, 'active');
             return data || [];
         },
         enabled: !!areaKey && areaKey.toLowerCase() !== 'area',

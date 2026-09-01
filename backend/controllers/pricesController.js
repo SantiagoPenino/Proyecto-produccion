@@ -7,14 +7,25 @@ const logger = require('../utils/logger');
 const getBasePrices = async (req, res) => {
     try {
         const pool = await getPool();
+        // Los flags de listas viven en Articulos (26/08) — garantizar que existan las columnas
+        try { await require('./tiendaController').ensureTiendaSchema(pool); } catch (e) { /* best effort */ }
         // Usamos LEFT JOIN con Articulos para mostrar Descripción si existe
         // PRECIO MULTI-MONEDA: Si un artículo tiene 2 precios, aparecerá 2 veces (deseado)
         const result = await pool.request().query(`
-            SELECT LTRIM(RTRIM(A.CodArticulo)) as CodArticulo, A.Descripcion, A.SupFlia, A.Grupo, 
-                   LTRIM(RTRIM(SA.Articulo)) as GrupoNombre, 
+            SELECT LTRIM(RTRIM(A.CodArticulo)) as CodArticulo, A.Descripcion, A.SupFlia, A.Grupo,
+                   LTRIM(RTRIM(SA.Articulo)) as GrupoNombre,
                    MAP.NombreReferencia as NombreReferenciaGrupo,
                    PB.ID, PB.Precio, CASE WHEN PB.MonIdMoneda = 1 THEN 'UYU' ELSE 'USD' END AS Moneda, PB.MonIdMoneda,
-                   A.ProIdProducto, A.Mostrar
+                   A.ProIdProducto, A.Mostrar,
+                   -- [28/08] El portal descarta los borrados (ver /api/precios-publicos).
+                   -- Sin este dato la pantalla mostraba el toggle en verde para artículos
+                   -- que nunca iban a salir en la lista.
+                   ISNULL(A.borrar, 0) AS Borrado,
+                   ISNULL(A.EnListaPrecios, 1) AS EnListaPrecios,
+                   ISNULL(A.EnListaPublica, 1) AS EnListaPublica,
+                   -- [27/08] Texto de la columna "Descripción" de las listas de precios
+                   -- (portal y landing). Se edita acá mismo, en /marketing/precios.
+                   A.DescripcionLista
             FROM Articulos A
             LEFT JOIN StockArt SA ON A.CodStock = SA.CodStock
             LEFT JOIN ConfigMapeoERP MAP ON MAP.CodigoERP = A.Grupo COLLATE Database_Default
@@ -35,6 +46,50 @@ const saveBasePrice = async (req, res) => {
         await PricingService.setBasePrice(codArticulo, precio, moneda === 'USD' ? 2 : 1, proIdProducto);
         res.json({ success: true });
     } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+};
+
+// PUT /prices/lista-flags — visibilidad del PRODUCTO en las dos listas de precios
+// (Articulos.EnListaPrecios = portal de clientes / EnListaPublica = landing). Los usa
+// /marketing/precios; /marketing/productos escribe los mismos flags vía la vitrina.
+const saveListFlags = async (req, res) => {
+    const { proIdProducto, EnListaPrecios, EnListaPublica } = req.body || {};
+    const id = parseInt(proIdProducto, 10);
+    if (!id) return res.status(400).json({ error: 'Falta proIdProducto' });
+    try {
+        const pool = await getPool();
+        try { await require('./tiendaController').ensureTiendaSchema(pool); } catch (e) { /* best effort */ }
+        await pool.request()
+            .input('Id', sql.Int, id)
+            .input('Cli', sql.Bit, EnListaPrecios ? 1 : 0)
+            .input('Pub', sql.Bit, EnListaPublica ? 1 : 0)
+            .query('UPDATE dbo.Articulos SET EnListaPrecios = @Cli, EnListaPublica = @Pub WHERE ProIdProducto = @Id');
+        res.json({ success: true });
+    } catch (e) {
+        logger.error('Error saveListFlags:', e);
+        res.status(500).json({ error: e.message });
+    }
+};
+
+// PUT /prices/descripcion-lista — texto que acompaña al producto en las DOS listas de
+// precios (columna "Descripción" del portal y de la landing). Vive en Articulos, igual
+// criterio que los flags de arriba: es propiedad del producto. Vacío = NULL (guion).
+const saveDescripcionLista = async (req, res) => {
+    const { proIdProducto, descripcion } = req.body || {};
+    const id = parseInt(proIdProducto, 10);
+    if (!id) return res.status(400).json({ error: 'Falta proIdProducto' });
+    try {
+        const pool = await getPool();
+        try { await require('./tiendaController').ensureTiendaSchema(pool); } catch (e) { /* best effort */ }
+        const texto = String(descripcion || '').trim().substring(0, 500) || null;
+        await pool.request()
+            .input('Id', sql.Int, id)
+            .input('Desc', sql.NVarChar(500), texto)
+            .query('UPDATE dbo.Articulos SET DescripcionLista = @Desc WHERE ProIdProducto = @Id');
+        res.json({ success: true });
+    } catch (e) {
+        logger.error('Error saveDescripcionLista:', e);
         res.status(500).json({ error: e.message });
     }
 };
@@ -214,6 +269,8 @@ const saveTieredPricesBulk = async (req, res) => {
 module.exports = {
     getBasePrices,
     saveBasePrice,
+    saveListFlags,
+    saveDescripcionLista,
     saveBasePricesBulk,
     calculatePriceEndpoint,
     getTieredPrices,

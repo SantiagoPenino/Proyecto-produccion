@@ -1011,6 +1011,23 @@ async function procesarTransaccion(payload) {
               WHERE  DDeIdDocumento = @ID
             `);
 
+          // Rastro pago→deuda (misma convención que el resto: el primer pago es la FK).
+          // Sin esto la deuda quedaba COBRADO sin registro de qué pago la canceló
+          // (caso Curbelo FA-508, 26-ago: la auditoría arrancó a ciegas).
+          if (primerPagIdPago && aplicar > 0.001) {
+            await new sql.Request(transaction)
+              .input('pagId', sql.Int,           primerPagIdPago)
+              .input('ddeId', sql.Int,           dd.DDeIdDocumento)
+              .input('cueId', sql.Int,           dd.CueIdCuenta)
+              .input('monto', sql.Decimal(18,4), aplicar)
+              .input('usr',   sql.Int,           usuarioId)
+              .query(`
+                INSERT INTO dbo.ImputacionPago
+                  (PagIdPago, DDeIdDocumento, CueIdCuenta, ImpImporte, ImpFecha, ImpUsuarioAlta)
+                VALUES (@pagId, @ddeId, @cueId, @monto, GETDATE(), @usr)
+              `);
+          }
+
           logger.info(`[CAJA-DEUDA] DeudaDoc #${dd.DDeIdDocumento}: aplicado=${aplicar.toFixed(2)} nuevo_estado=${nuevoEstado}`);
         }
       }
@@ -1060,6 +1077,21 @@ async function procesarTransaccion(payload) {
                        DDeFechaCobro       = CASE WHEN @estado = 'COBRADO' THEN GETDATE() ELSE DDeFechaCobro END
                 WHERE  DDeIdDocumento = @ID
               `);
+
+            // Rastro pago→deuda, ídem cruce exacto de arriba.
+            if (primerPagIdPago && aplicar > 0.001) {
+              await new sql.Request(transaction)
+                .input('pagId', sql.Int,           primerPagIdPago)
+                .input('ddeId', sql.Int,           dd.DDeIdDocumento)
+                .input('cueId', sql.Int,           dd.CueIdCuenta)
+                .input('monto', sql.Decimal(18,4), aplicar)
+                .input('usr',   sql.Int,           usuarioId)
+                .query(`
+                  INSERT INTO dbo.ImputacionPago
+                    (PagIdPago, DDeIdDocumento, CueIdCuenta, ImpImporte, ImpFecha, ImpUsuarioAlta)
+                  VALUES (@pagId, @ddeId, @cueId, @monto, GETDATE(), @usr)
+                `);
+            }
 
             logger.info(`[CAJA-DEUDA] Fallback CueId DeudaDoc #${dd.DDeIdDocumento}: aplicado=${aplicar.toFixed(2)} estado=${nuevoEstado}`);
           }

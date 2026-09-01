@@ -40,6 +40,9 @@ class LabelGenerationService {
             const codOrdLocal = (o.CodigoOrden || '').trim().toUpperCase();
             const prioridadLocal = (o.Prioridad || '').trim().toUpperCase();
             const esRepoLocal = codOrdLocal.includes('-R') || prioridadLocal === 'REPOSICIÓN' || prioridadLocal === 'REPOSICION';
+            // Falla interna (-F#): mismo trato sin cargo que la reposición — su etiqueta
+            // nunca debe heredar el importe del pedido (en julio generó 2 débitos reales).
+            const esFallaLocal = /-F\d/.test(codOrdLocal) || prioridadLocal === 'FALLA';
             // Hermana de terminaciones (XEUV, área TERMINAC): NO tiene línea de cotización
             // a propósito (el precio viaja en la orden ECOUV). Sus etiquetas van con
             // importe 0 intencional — nunca el importe del pedido (duplicaría el retiro).
@@ -53,7 +56,7 @@ class LabelGenerationService {
                     .query("SELECT TOP 1 1 AS X FROM Ordenes WHERE NoDocERP = @Doc AND AreaID = 'PRO'")).recordset.length > 0
                 : false;
 
-            if (magnitudValor <= 0 && !esRepoLocal && !esTerminac && !esHermanaPrendaLbl) {
+            if (magnitudValor <= 0 && !esRepoLocal && !esFallaLocal && !esTerminac && !esHermanaPrendaLbl) {
                 return { success: false, error: `No se pueden generar etiquetas: La magnitud cotizada es 0 o inválida. Revise la cotización de los items para esta área en 'Cotizar Productos'.` };
             }
 
@@ -110,9 +113,10 @@ class LabelGenerationService {
             const codOrd = (o.CodigoOrden || '').trim().toUpperCase();
             const prioridad = (o.Prioridad || '').trim().toUpperCase();
             const esReposicion = codOrd.includes('-R') || prioridad === 'REPOSICIÓN' || prioridad === 'REPOSICION';
+            const esFalla = /-F\d/.test(codOrd) || prioridad === 'FALLA';
             const esPrepago = (dbPerfilesPrecio && dbPerfilesPrecio.toLowerCase().includes('prepago')) || (dbDetalleCostos && dbDetalleCostos.toLowerCase().includes('prepago'));
-            
-            if (!esReposicion && !esPrepago && !esTerminac && !esHermanaPrendaLbl && (importeTotalStr === '0.00' || importeTotalStr === '0' || Number(importeTotalStr) <= 0)) {
+
+            if (!esReposicion && !esFalla && !esPrepago && !esTerminac && !esHermanaPrendaLbl && (importeTotalStr === '0.00' || importeTotalStr === '0' || Number(importeTotalStr) <= 0)) {
                 return { success: false, error: 'Calculo Frio: La orden no cuenta con un costo válido (Es $0). Vaya a Edit Cotización e ingrese un valor, o asegúrese de aplicar prepago o código R para habilitar $0.' };
             }
 
@@ -150,7 +154,11 @@ class LabelGenerationService {
             // a depósito duplicaría el retiro).
             const _qrCantidad = esTerminac ? String(o.Magnitud || '1')
                 : ((magnitudValor > 0) ? String(magnitudValor) : (_pp[5] || String(o.Magnitud || '1')));
-            const _qrImporte  = esTerminac ? '0.00'
+            // Reposición cliente (-R): re-trabajo SIN CARGO — importe 0.00 FIJO. Sin esto,
+            // como la -R nunca tiene línea propia de cobranza (subtotalOrden 0), caía al
+            // fallback del QR/MontoTotal del PEDIDO (comparte NoDocERP con la madre) y el
+            // ingreso a depósito por escaneo la metía cobrable con el costo de la madre.
+            const _qrImporte  = (esTerminac || esRepoLocal || esFallaLocal) ? '0.00'
                 : ((subtotalOrden > 0) ? subtotalOrden.toFixed(2) : (_pp[6] || importeTotalStr));
 
             const SEP = '$*';

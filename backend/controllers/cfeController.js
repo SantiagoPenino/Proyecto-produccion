@@ -674,7 +674,13 @@ exports.previewDGI = async (req, res) => {
 };
 
 exports.crearFacturaManual = async (req, res) => {
-    const { DocTipo, MonIdMoneda, CliIdCliente, Lineas, Totales, DocCliNombre, DocCliDocumento, DocCliDireccion, DocCliCiudad, DocCliNombreFantasia, DocPagado, MetodoPagoId, Pagos, empresaId, DocFechaEmision } = req.body;
+    const { DocTipo, CliIdCliente, Lineas, Totales, DocCliNombre, DocCliDocumento, DocCliDireccion, DocCliCiudad, DocCliNombreFantasia, DocPagado, MetodoPagoId, Pagos, empresaId, DocFechaEmision } = req.body;
+    // Moneda SIEMPRE numérica: viene del body y acá abajo se compara con === 2 en seis
+    // lugares (cuenta genérica, cuenta del cliente, cotización...). Un "2" string mandaba
+    // el débito a la cuenta de PESOS mientras el documento se guardaba en USD — la deuda
+    // y el cobro iban a la cuenta correcta y el débito quedaba huérfano en la otra
+    // (split-brain del caso Curbelo FA-508, 26-ago).
+    const MonIdMoneda = parseInt(req.body.MonIdMoneda, 10) || 1;
     const pool = await getPool();
     const transaction = new sql.Transaction(pool);
 
@@ -1174,7 +1180,7 @@ exports.editarFactura = async (req, res) => {
     try {
         const { id } = req.params;
         const {
-            DocTipo, CliIdCliente, MonIdMoneda, DocSubtotal, DocImpuestos, DocTotal, DocObservaciones,
+            DocTipo, CliIdCliente, DocSubtotal, DocImpuestos, DocTotal, DocObservaciones,
             lineas, DocCliNombre, DocCliDocumento, DocCliDireccion, DocCliCiudad, DocCliNombreFantasia,
             DocPagado, MetodoPagoId, Pagos, empresaId, preservarPagos, DocFechaEmision,
             // Solo los manda la edición de una NC/ND (documento que corrige + motivo)
@@ -1186,6 +1192,9 @@ exports.editarFactura = async (req, res) => {
             // fue cobrada". Sin esto, una edición que la devuelva a pendientes se rechaza.
             confirmarRevertirCobro
         } = req.body;
+        // Ídem crearFacturaManual: la moneda del body SIEMPRE numérica — acá decide la
+        // migración de cuenta por cambio de moneda, un "2" string elegía la cuenta de pesos.
+        const MonIdMoneda = req.body.MonIdMoneda != null ? (parseInt(req.body.MonIdMoneda, 10) || 1) : req.body.MonIdMoneda;
 
         const pool = await getPool();
         const transaction = pool.transaction();
@@ -1839,7 +1848,15 @@ exports.editarFactura = async (req, res) => {
                             WHERE TcaIdTransaccion = @tcaId
                         `);
 
-                    // Eliminar pagos antiguos de esta transacción
+                    // Eliminar pagos antiguos de esta transacción.
+                    // OrdenesRetiro/OrdenesDeposito pueden apuntar a estos PagIdPago:
+                    // se capturan antes de borrar para re-vincularlos al pago nuevo
+                    // (si no, el retiro queda con FK rota, parece impago y caja lo
+                    // vuelve a cobrar — origen de dobles cobros Handy).
+                    const pagosViejosRes = await transaction.request()
+                        .input('tcaId', sql.Int, currentTcaId)
+                        .query("SELECT PagIdPago FROM dbo.Pagos WHERE PagTcaIdTransaccion = @tcaId");
+                    const pagosViejosIds = pagosViejosRes.recordset.map(r => r.PagIdPago);
                     await transaction.request()
                         .input('tcaId', sql.Int, currentTcaId)
                         .query("DELETE FROM dbo.Pagos WHERE PagTcaIdTransaccion = @tcaId");
@@ -1892,6 +1909,22 @@ exports.editarFactura = async (req, res) => {
                                      @monto, ISNULL(@pagFecha, GETDATE()), @usuario, @cot,
                                      @convert, 'COBRO')
                             `);
+                    }
+
+                    if (pagosViejosIds.length > 0) {
+                        const nuevoRes = await transaction.request()
+                            .input('tcaId', sql.Int, currentTcaId)
+                            .query("SELECT MIN(PagIdPago) AS Nuevo FROM dbo.Pagos WHERE PagTcaIdTransaccion = @tcaId");
+                        const pagoNuevo = nuevoRes.recordset[0]?.Nuevo;
+                        if (pagoNuevo) {
+                            const idsCsv = pagosViejosIds.join(',');
+                            await transaction.request()
+                                .input('Nuevo', sql.Int, pagoNuevo)
+                                .query(`
+                                    UPDATE dbo.OrdenesRetiro   SET PagIdPago = @Nuevo WHERE PagIdPago IN (${idsCsv});
+                                    UPDATE dbo.OrdenesDeposito SET PagIdPago = @Nuevo WHERE PagIdPago IN (${idsCsv});
+                                `);
+                        }
                     }
                 }
             }

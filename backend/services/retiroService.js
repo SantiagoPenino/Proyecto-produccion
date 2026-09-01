@@ -7,6 +7,52 @@ const { sql, getPool } = require('../config/db');
 const logger = require('../utils/logger');
 const { marcarCobranzaPagada } = require('./cobranzaService');
 
+/* ── IDS DE RETIRO ─────────────────────────────────────────────────────────
+ * Antes se generaban con `SELECT MAX(id)+1 ... WITH (UPDLOCK)`, que toma un
+ * lock de actualización y NO lo suelta hasta el commit: mientras dura toda la
+ * transacción del retiro, nadie más puede crear uno. En RelOrdenesRetiroOrdenes
+ * era peor porque es un heap: el MAX() recorre las 48 mil filas bloqueándolas.
+ * Medido en producción el 31/08: 2.357 ms de promedio con 2 lecturas lógicas
+ * — o sea, espera pura por lock.
+ *
+ * Una secuencia es un contador del motor: no toca la tabla ni toma locks suyos.
+ * Se auto-crea sembrada desde el MAX actual + margen, así no importa el orden
+ * entre correr el SQL del deploy y subir este código.
+ *
+ * OJO: la creación va por el POOL, nunca por la transacción del caller — si esa
+ * transacción hace rollback, el DDL se iría con ella y quedaríamos marcándola
+ * como creada en memoria.
+ */
+const SECUENCIAS = {
+    Seq_OrdenesRetiro: { tabla: 'OrdenesRetiro', columna: 'OReIdOrdenRetiro' },
+    Seq_RelOrdenesRetiroOrdenes: { tabla: 'RelOrdenesRetiroOrdenes', columna: 'RORIdOrdenRetiroOrden' },
+};
+const secuenciasListas = new Set();
+
+async function asegurarSecuencia(nombre) {
+    if (secuenciasListas.has(nombre)) return;
+    const def = SECUENCIAS[nombre];
+    const pool = await getPool();
+    await pool.request().query(`
+        IF OBJECT_ID('dbo.${nombre}', 'SO') IS NULL
+        BEGIN
+            DECLARE @Desde BIGINT = (SELECT ISNULL(MAX(${def.columna}), 0) + 100 FROM dbo.${def.tabla});
+            DECLARE @Sql NVARCHAR(500) = N'CREATE SEQUENCE dbo.${nombre} AS INT START WITH '
+                + CAST(@Desde AS NVARCHAR(20)) + N' INCREMENT BY 1 NO CACHE';
+            EXEC sp_executesql @Sql;
+        END
+    `);
+    secuenciasListas.add(nombre);
+    logger.info(`[RETIRO] Secuencia dbo.${nombre} disponible`);
+}
+
+/** Próximo id, sin bloquear la tabla. NO CACHE: sin huecos al reiniciar SQL Server. */
+async function proximoId(transaction, nombre) {
+    await asegurarSecuencia(nombre);
+    const r = await transaction.request().query(`SELECT NEXT VALUE FOR dbo.${nombre} AS Id`);
+    return r.recordset[0].Id;
+}
+
 /**
  * resolverEstadoPorTipoCliente
  * SOLO como fallback cuando no hay datos de contabilidad disponibles.
@@ -334,11 +380,9 @@ async function crearRetiro(transaction, { ordIds, totalCost, lugarRetiro, usuari
     // Los cubiertos dejan PagIdPago = 0 (centinela "cubierto sin efectivo"); estado 1 → NULL (aparece en caja).
     const retiroCubierto = [3, 4, 9].includes(estadoOrdenRetiro);
 
-    // 1. Generar ID para OrdenesRetiro con UPDLOCK (previene race condition)
-    const maxIdRes = await transaction.request().query(
-        'SELECT ISNULL(MAX(OReIdOrdenRetiro), 0) + 1 AS NextId FROM OrdenesRetiro WITH (UPDLOCK)'
-    );
-    const OReIdOrdenRetiro = maxIdRes.recordset[0].NextId;
+    // 1. Id del retiro, por secuencia (ver nota arriba: el MAX+1 con UPDLOCK
+    //    serializaba la creación de retiros durante toda la transacción)
+    const OReIdOrdenRetiro = await proximoId(transaction, 'Seq_OrdenesRetiro');
 
     // 2. INSERT OrdenesRetiro (con CodCliente, MonIdMoneda, FormaRetiro, PagIdPago si ya está pago)
     await transaction.request()
@@ -373,14 +417,9 @@ async function crearRetiro(transaction, { ordIds, totalCost, lugarRetiro, usuari
             VALUES (@OReId, @Estado, GETDATE(), @Usr)
         `);
 
-    // 4. Generar IDs para RelOrdenesRetiroOrdenes con UPDLOCK
-    const maxRelRes = await transaction.request().query(
-        'SELECT ISNULL(MAX(RORIdOrdenRetiroOrden), 0) AS MaxId FROM RelOrdenesRetiroOrdenes WITH (UPDLOCK)'
-    );
-    let nextRelId = maxRelRes.recordset[0].MaxId;
-
+    // 4. Ids de RelOrdenesRetiroOrdenes, uno por línea, también por secuencia
     for (const ordId of ordIds) {
-        nextRelId++;
+        const nextRelId = await proximoId(transaction, 'Seq_RelOrdenesRetiroOrdenes');
         await transaction.request()
             .input('RelId', sql.Int, nextRelId)
             .input('RetiroId', sql.Int, OReIdOrdenRetiro)

@@ -340,7 +340,8 @@ exports.confirmarRetiroWms = async (req, res) => {
         // logisticaWmsController.confirmPreparation (helper compartido).
         const { wmsDisponible, wmsErrors } = await descontarStockWmsExterno([
             { wms_variante_id: orden.WmsVarianteId, Cantidad: parseFloat(orden.Magnitud) || 1 }
-        ]);
+        ], { refTipo: 'ORDEN', refId: orden.OrdenID }); // idempotencia del WMS interno
+
         if (!wmsDisponible) {
             return res.status(503).json({
                 success: false,
@@ -2371,7 +2372,12 @@ exports.getClientOrders = async (req, res) => {
         let counts = null;
         if (page === 1) {
             const countsQuery = await pool.request()
-                .input('cod', sql.Int, codCliente)
+                // OJO con el tipo: Ordenes.CodCliente es nchar(10) y Clientes.CodCliente es int.
+                // Con un parámetro Int, SQL convierte la COLUMNA de Ordenes (el int tiene más
+                // precedencia) y la condición pasa a ser CONVERT(INT, o.CodCliente) = @cod:
+                // no puede usar IX_Ordenes_CodCliente y escanea la tabla entera. Como texto,
+                // Ordenes hace seek y Clientes convierte el parámetro (un solo valor, gratis).
+                .input('cod', sql.NVarChar(10), String(codCliente ?? ''))
                 .query(`
                     SELECT ISNULL(o.NoDocERP, o.CodigoOrden) AS DocID, o.Estado, 'WEB' AS Origen
                     FROM Ordenes o WITH(NOLOCK)
@@ -2435,7 +2441,9 @@ exports.getClientOrders = async (req, res) => {
         }
 
         const result = await pool.request()
-            .input('cod', sql.Int, codCliente)
+            // Texto, no Int: Ordenes.CodCliente es nchar(10) y un parámetro Int mata el índice
+            // (ver la nota de tipos unas líneas más arriba).
+            .input('cod', sql.NVarChar(10), String(codCliente ?? ''))
             .input('Offset', sql.Int, offset)
             .input('Limit', sql.Int, limit)
             .query(`
@@ -2944,7 +2952,8 @@ exports.deleteOrderBundle = async (req, res) => {
 
         const check = await pool.request()
             .input('Doc', sql.VarChar(50), docId)
-            .input('Cod', sql.Int, codCliente)
+            // Texto: Ordenes.CodCliente es nchar(10) (ver nota de tipos arriba).
+            .input('Cod', sql.NVarChar(10), String(codCliente ?? ''))
             .query(findQuery);
 
         if (check.recordset.length === 0) return res.status(404).json({ error: "Proyecto no encontrado." });

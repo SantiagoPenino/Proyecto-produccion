@@ -1008,12 +1008,59 @@ exports.deleteClient = async (req, res) => {
     try {
         const pool = await getPool();
 
+        const cliRes = await pool.request()
+            .input('CC', sql.Int, codCliente)
+            .query('SELECT CliIdCliente, LTRIM(RTRIM(Nombre)) AS Nombre FROM dbo.Clientes WHERE CodCliente = @CC');
+        if (cliRes.recordset.length === 0) {
+            return res.status(404).json({ error: 'Cliente no encontrado' });
+        }
+        const { CliIdCliente, Nombre } = cliRes.recordset[0];
+
+        // ── Candado (26-ago-2026, caso Carlos Benechi): borrar un cliente con vida
+        // operativa/contable deja huérfanos irrecuperables — órdenes en depósito que
+        // no se pueden retirar ni cobrar, deudas sin dueño. Si tiene algo vivo se
+        // rechaza con el detalle; la alternativa es desactivarlo (ESTADO Inactivo).
+        const chk = await pool.request()
+            .input('Cli', sql.Int, CliIdCliente)
+            // Texto, no Int: Ordenes.CodCliente es nchar(10) y con un parámetro Int
+            // SQL convierte la COLUMNA y pierde el índice IX_Ordenes_CodCliente.
+            .input('CCtxt', sql.NVarChar(10), String(codCliente))
+            .query(`
+                SELECT
+                  (SELECT COUNT(*) FROM dbo.OrdenesDeposito WITH(NOLOCK)
+                     WHERE CliIdCliente = @Cli AND OrdEstadoActual NOT IN (9, 10)) AS DepositoSinEntregar,
+                  (SELECT COUNT(*) FROM dbo.Ordenes WITH(NOLOCK)
+                     WHERE CodCliente = @CCtxt
+                       AND ISNULL(Estado, '') NOT IN ('Entregado', 'Cancelado', 'Finalizado')) AS OrdenesEnProduccion,
+                  (SELECT COUNT(*) FROM dbo.DeudaDocumento dd
+                     JOIN dbo.CuentasCliente cc ON cc.CueIdCuenta = dd.CueIdCuenta
+                     WHERE cc.CliIdCliente = @Cli
+                       AND dd.DDeEstado IN ('PENDIENTE', 'PARCIAL', 'VENCIDO')) AS DeudasVivas,
+                  (SELECT COUNT(*) FROM dbo.CuentasCliente WITH(NOLOCK)
+                     WHERE CliIdCliente = @Cli AND ABS(ISNULL(CueSaldoActual, 0)) > 0.01) AS CuentasConSaldo
+            `);
+        const c = chk.recordset[0];
+        const motivos = [];
+        if (c.DepositoSinEntregar > 0) motivos.push(`${c.DepositoSinEntregar} orden(es) en depósito sin entregar`);
+        if (c.OrdenesEnProduccion > 0) motivos.push(`${c.OrdenesEnProduccion} orden(es) activas en producción`);
+        if (c.DeudasVivas > 0)         motivos.push(`${c.DeudasVivas} deuda(s) pendientes de cobro`);
+        if (c.CuentasConSaldo > 0)     motivos.push(`${c.CuentasConSaldo} cuenta(s) con saldo distinto de cero`);
+
+        if (motivos.length > 0) {
+            return res.status(409).json({
+                error: `No se puede eliminar a ${Nombre}: tiene ${motivos.join(', ')}. ` +
+                       `Si no querés que aparezca más, desactivalo (Estado: Inactivo) en vez de eliminarlo.`
+            });
+        }
+
+        // Cliente limpio: se llevan también sus direcciones de envío (única FK real,
+        // sin cascada — dejarlas bloqueaba el DELETE con error críptico de FK).
+        await pool.request()
+            .input('Cli', sql.Int, CliIdCliente)
+            .query('DELETE FROM dbo.DireccionesEnvioCliente WHERE CliIdCliente = @Cli');
         await pool.request()
             .input('CC', sql.Int, codCliente)
-            .query(`
-                DELETE FROM dbo.Clientes
-                WHERE CodCliente = @CC
-            `);
+            .query('DELETE FROM dbo.Clientes WHERE CodCliente = @CC');
 
         res.json({ success: true, message: "Cliente eliminado correctamente" });
     } catch (err) {

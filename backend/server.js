@@ -85,6 +85,9 @@ app.use('/fallas', express.static(process.env.FALLAS_PATH || path.join(__dirname
 // Comprobantes de entrega de encomiendas (logística transporte)
 const encomiendasFolder = process.env.COMPROBANTES_ENCOMIENDAS_PATH || path.join(__dirname, 'comprobantesEncomiendas');
 app.use('/comprobantesEncomiendas', express.static(encomiendasFolder));
+// [WMS PROPIO] Adjuntos de compras (facturas, BL, despachos): una carpeta por compra.
+// Ruta configurable con STOCK_COMPRAS_PATH (default backend/stock/compras).
+app.use('/stock-compras', express.static(process.env.STOCK_COMPRAS_PATH || path.join(__dirname, 'stock', 'compras')));
 
 // --- REGISTRO DE RUTAS ---
 app.use('/api/areas', require('./routes/areasRoutes'));
@@ -92,6 +95,9 @@ app.use('/api/orders', require('./routes/ordersRoutes'));
 app.use('/api/stock', require('./routes/stockRoutes'));
 app.use('/api/failures', require('./routes/failuresRoutes'));
 app.use('/api/clients', require('./routes/clientsRoutes'));
+app.use('/api/presupuestos', require('./routes/presupuestosRoutes'));
+// [WMS PROPIO] Gestión del stock propio (sección /stock) — tablas Wms_*, ver docs/wms-propio-plan.md
+app.use('/api/wms-interno', require('./routes/wmsInternoRoutes'));
 app.use('/api/workflows', require('./routes/workflowsRoutes'));
 app.use('/api/logistics', require('./routes/logisticsRoutes'));
 app.use('/api/canastos', require('./routes/canastosRoutes'));
@@ -257,14 +263,46 @@ if (process.env.NODE_ENV !== 'test') {
 }
 
 // --- API: Lista de precios pública ---
+// 18/08: la fuente pasó a ser PreciosBase + Articulos (lo que se administra en
+// /admin/base-prices), en vez de PreciosListaPublica sincronizada desde la planilla de
+// Google (cron/priceListSync — sigue corriendo pero esta vista ya no lo consume).
+// Mismo shape de respuesta que antes para no tocar PricesView: Familia/Producto/
+// Descripcion/Moneda/Precio. Un artículo con precio en 2 monedas sale 2 veces (como
+// en el admin). Familia = nombre de referencia del grupo ERP, o el grupo de StockArt.
+// [LISTAS 26/08] ?lista=publica (landing para leads) o ?lista=clientes (portal logueado):
+// cada una respeta su flag por producto (Articulos.EnListaPublica / EnListaPrecios —
+// movidos de TiendaProductos el 26/08: son propiedad del producto, no de la tienda;
+// los administra marketing en /marketing/productos). DEFAULT 1 = visible (comportamiento
+// histórico). Sin query param se comporta como siempre: muestra todo.
 app.get('/api/precios-publicos', async (req, res) => {
     try {
         const { getPool } = require('./config/db');
         const pool = await getPool();
+        // Garantizar tabla/columnas de la vitrina antes de referenciarlas (auto-ALTER cacheado):
+        // la query siempre joinea TiendaProductos, exista o no la tienda en esta base.
+        try { await require('./controllers/tiendaController').ensureTiendaSchema(pool); } catch (e) { /* best effort */ }
+        const lista = String(req.query.lista || '').toLowerCase();
+        let filtroLista = '';
+        if (lista === 'publica') filtroLista = 'AND ISNULL(A.EnListaPublica, 1) = 1';
+        else if (lista === 'clientes') filtroLista = 'AND ISNULL(A.EnListaPrecios, 1) = 1';
         const result = await pool.request().query(`
-            SELECT Familia, Producto, Descripcion, Moneda, Precio, FiltroLanding 
-            FROM PreciosListaPublica 
-            WHERE Activo = 1 
+            SELECT
+                COALESCE(NULLIF(LTRIM(RTRIM(MAP.NombreReferencia)), ''), NULLIF(LTRIM(RTRIM(SA.Articulo)), ''), 'OTROS') AS Familia,
+                LTRIM(RTRIM(A.Descripcion)) AS Producto,
+                -- [27/08] Texto de la columna "Descripción" de ambas listas (antes fijo NULL,
+                -- por eso se veía un guion). Lo carga marketing en /marketing/precios.
+                NULLIF(LTRIM(RTRIM(A.DescripcionLista)), '') AS Descripcion,
+                CASE WHEN PB.MonIdMoneda = 2 THEN 'USD' ELSE 'UYU' END AS Moneda,
+                PB.Precio,
+                NULL AS FiltroLanding
+            FROM PreciosBase PB
+            INNER JOIN Articulos A ON A.ProIdProducto = PB.ProIdProducto
+            LEFT JOIN StockArt SA ON A.CodStock = SA.CodStock
+            LEFT JOIN ConfigMapeoERP MAP ON MAP.CodigoERP = A.Grupo COLLATE Database_Default
+            WHERE ISNULL(A.Mostrar, 1) = 1
+              AND ISNULL(A.borrar, 0) = 0
+              AND PB.Precio IS NOT NULL
+              ${filtroLista}
             ORDER BY Familia, Producto
         `);
         res.json(result.recordset);
@@ -372,6 +410,17 @@ app.get('/api/drive-callback', async (req, res) => {
     else res.status(500).send('❌ Error guardando token');
 });
 // --- FIN RUTAS TEMPORALES ---
+
+// --- CATÁLOGOS NO LISTADOS ---
+// Páginas autocontenidas fuera del SPA (ej. el catálogo FNC): sin links desde el sitio,
+// sin sitemap, y noindex por header + <meta> para que no aparezcan en buscadores.
+// Viven en backend/catalogos porque backend/public lo pisa entero cada build del frontend.
+// OJO: robots.txt NO las menciona a propósito — un Disallow publicaría la URL.
+app.get('/fnc', (req, res) => {
+    res.setHeader('X-Robots-Tag', 'noindex, nofollow');
+    res.setHeader('Cache-Control', 'public, max-age=3600, must-revalidate');
+    res.sendFile(path.join(__dirname, 'catalogos', 'fnc.html'));
+});
 
 // --- SERVIR FRONTEND EN PRODUCCIÓN ---
 const publicPath = path.join(__dirname, 'public');

@@ -22,7 +22,7 @@ export default function PreciosListModal({ isOpen, onClose }) {
                 // Note: The backend endpoint is relative or fully qualified if needed.
                 // Depending on Vite proxy, it usually works with '/api/precios-publicos'.
                 const API_URL = import.meta.env.VITE_API_URL || '';
-                const response = await fetch(`${API_URL}/api/precios-publicos`);
+                const response = await fetch(`${API_URL}/api/precios-publicos?lista=publica`);
                 if (!response.ok) throw new Error('Error al cargar precios');
                 const data = await response.json();
                 setPrices(data);

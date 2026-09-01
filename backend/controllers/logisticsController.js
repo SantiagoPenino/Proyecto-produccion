@@ -67,6 +67,25 @@ const resolverOrdenParaDeposito = async (pool, ordenId, codigoOrden) => {
     return null;
 };
 
+// El CliIdCliente REAL para depósito/contabilidad — NUNCA el CodCliente crudo.
+// El viejo fallback `CliIdCliente || CodCliente` metía el CÓDIGO del cliente en la
+// columna CliIdCliente cuando el id no venía resuelto (p.ej. cliente eliminado), y
+// nacían registros huérfanos incobrables con un id inexistente (caso Carlos Benechi,
+// 26-ago-2026: 2 órdenes en depósito con CliIdCliente=5714745 — su CodCliente).
+// Si el id directo no viene, se resuelve por CodCliente contra Clientes; si el
+// cliente no existe, devuelve null y el llamador OMITE el asiento/registro dejando
+// el error en el log (mejor un ingreso visiblemente incompleto que basura silenciosa).
+const resolverCliPK = async (pool, cliIdDirecto, codCliente) => {
+    const directo = parseInt(cliIdDirecto);
+    if (directo > 0) return directo;
+    const cod = parseInt(codCliente);
+    if (!(cod > 0)) return null;
+    const r = await pool.request()
+        .input('Cod', require('mssql').Int, cod)
+        .query('SELECT CliIdCliente FROM Clientes WITH(NOLOCK) WHERE CodCliente = @Cod');
+    return r.recordset[0]?.CliIdCliente ?? null;
+};
+
 /**
  * Valida la regla de pedido completo para un conjunto de órdenes a despachar/recibir:
  *  - destino DEPOSITO  → el pedido debe estar completo GLOBALMENTE (todas las áreas).
@@ -1498,12 +1517,19 @@ if (pcReq.recordset.length > 0) {
                             console.log(`${logPrefix} -> Reversa=${triggerReversal}, Adelante=${triggerForward}, totalMetros=${totalMetros}, currentMonto=${currentMonto}, mContado=${mContado}, metContado=${metContado}`);
 if (triggerReversal || triggerForward) {
                                 // oData is fetched above
-                                    const finalMonId = (pc.Moneda === 'USD') ? 2 : 1; 
+                                    const finalMonId = (pc.Moneda === 'USD') ? 2 : 1;
+
+                                    // Cliente REAL, una sola vez para reversa/cargo/planes de esta orden.
+                                    // null = el cliente no existe: los asientos se OMITEN (con error en log).
+                                    const cliPKReal = await resolverCliPK(poolLocal, oRow.CliIdCliente, oRow.CodCliente);
+                                    if (!cliPKReal) {
+                                        logger.error(`[DEPOSITO] ${oRow.CodigoOrden}: el cliente no existe (CodCliente ${String(oRow.CodCliente || '').trim()}) — se omiten los asientos contables. ¿Cliente eliminado?`);
+                                    }
 
                                     // Para la REVERSA vamos a simular el mismo cargo pero NEGATIVO
-                                    if (triggerReversal && mContado !== 0) {
+                                    if (triggerReversal && mContado !== 0 && cliPKReal) {
                                         console.log(`${logPrefix} -> Reversando orden por diferencia`); // por diferencia en Checking.`);
-                                        const cliPKRev = oRow.CliIdCliente || oRow.CodCliente;
+                                        const cliPKRev = cliPKReal;
                                           let revEvento = 'ORDEN';
                                           const prevPl = await poolLocal.request().input('Cli', require('mssql').Int, cliPKRev).query("SELECT TOP 1 PlaIdPlan FROM PlanesMetros WITH(NOLOCK) WHERE CliIdCliente = @Cli");
                                           if(prevPl.recordset.length > 0) revEvento = 'ENTREGA';
@@ -1587,7 +1613,11 @@ if (triggerReversal || triggerForward) {
                                                    ? Math.round(lineasDeLaOrden.reduce((s, d) => s + aMonedaFinal(d), 0) * 100) / 100
                                                    : currentMonto);
                                                const prodOrden  = (dOrden && dOrden.IDProdReact)        ? dOrden.IDProdReact           : (ordenDeposito.proIdProducto ?? oRow.ProIdProducto ?? null);
-                                               const cliPKForDep = ordenDeposito.cliIdCliente || ordenDeposito.codCliente || oRow.CliIdCliente || oRow.CodCliente;
+                                               // Prioriza la madre (si se redirigió) y resuelve por CodCliente si el id no vino.
+                                               const cliPKForDep = await resolverCliPK(poolLocal, ordenDeposito.cliIdCliente || oRow.CliIdCliente, ordenDeposito.codCliente || oRow.CodCliente);
+                                               if (!cliPKForDep) {
+                                                   logger.error(`[DEPOSITO] ${ordenDeposito.codigoOrden}: el cliente no existe — NO se crea el registro de depósito. ¿Cliente eliminado?`);
+                                               } else {
                                                const lugarReq = await poolLocal.request().input('CID', require('mssql').Int, cliPKForDep).query("SELECT FormaEnvioID FROM Clientes WITH(NOLOCK) WHERE CliIdCliente = @CID");
                                                const lugarRetiro = lugarReq.recordset[0]?.FormaEnvioID ? parseInt(lugarReq.recordset[0].FormaEnvioID) : null;
 
@@ -1620,6 +1650,7 @@ if (triggerReversal || triggerForward) {
                                                        .query("INSERT INTO HistoricoEstadosOrdenes (OrdIdOrden, EOrIdEstadoOrden, HEOFechaEstado, HEOUsuarioAlta) VALUES (@OID, 1, GETDATE(), @Usr)");
                                                }
                                                console.log(`[WMS-INTERNAL] Creado OrdenesDeposito para ${ordenDeposito.codigoOrden}${ordenDeposito.codigoOrden !== oRow.CodigoOrden ? ` (redirigido desde hermana ${oRow.CodigoOrden})` : ''}`);
+                                               }  // fin else cliente resuelto
                                                }
                                            }
                                            // ------------------------------------------------------------------------------------------------
@@ -1653,7 +1684,8 @@ if (triggerReversal || triggerForward) {
                                                }
 
                                               // Detectar si el cliente tiene un plan activo y cuántos metros disponibles
-                                              const cliPK = oRow.CliIdCliente || oRow.CodCliente;
+                                              // (cliPKReal resuelto arriba; con null el plan no matchea y no se asienta nada)
+                                              const cliPK = cliPKReal;
                                               let planMetrosDisp = 0;
                                               let planIdCtb = null;
                                               if (d.IDProdReact) {
@@ -1731,8 +1763,8 @@ if (triggerReversal || triggerForward) {
                                           }
 
                                           // Llamada única al motor contable por el TOTAL agrupado de la orden
-                                          if (importeTotalOrden > 0) {
-                                              const cliPK = oRow.CliIdCliente || oRow.CodCliente;
+                                          if (importeTotalOrden > 0 && cliPKReal) {
+                                              const cliPK = cliPKReal;
                                               console.log(`${logPrefix} -> ORDEN agrupada sin prepago ($${importeTotalOrden})`);
                                               await contabilidadService.procesarEventoContable('ORDEN', {
                                                   OrdIdOrden: L_OrdenID,
@@ -1780,7 +1812,10 @@ if (triggerReversal || triggerForward) {
                                              .query("SELECT OrdIdOrden FROM OrdenesDeposito WITH(NOLOCK) WHERE OrdCodigoOrden = @Cod");
 
                                          if (fallbackCheck.recordset.length === 0) {
-                                         const cliPKFb = ordenDepositoFb.cliIdCliente || ordenDepositoFb.codCliente || oRow.CliIdCliente || oRow.CodCliente;
+                                         const cliPKFb = await resolverCliPK(poolLocal, ordenDepositoFb.cliIdCliente || oRow.CliIdCliente, ordenDepositoFb.codCliente || oRow.CodCliente);
+                                         if (!cliPKFb) {
+                                             console.error(`[WMS-FALLBACK] ${ordenDepositoFb.codigoOrden}: el cliente no existe — NO se crea el registro de depósito. ¿Cliente eliminado?`);
+                                         } else {
                                          const lugarFbReq = await poolLocal.request()
                                              .input('CID', require('mssql').Int, cliPKFb)
                                              .query("SELECT FormaEnvioID FROM Clientes WITH(NOLOCK) WHERE CliIdCliente = @CID");
@@ -1825,6 +1860,7 @@ if (triggerReversal || triggerForward) {
                                                  .query("INSERT INTO HistoricoEstadosOrdenes (OrdIdOrden, EOrIdEstadoOrden, HEOFechaEstado, HEOUsuarioAlta) VALUES (@OID, 1, GETDATE(), @Usr)");
                                              console.log(`[WMS-FALLBACK] Creado OrdenesDeposito para repo/sin-PC: ${ordenDepositoFb.codigoOrden}${ordenDepositoFb.codigoOrden !== oRow.CodigoOrden ? ` (redirigido desde hermana ${oRow.CodigoOrden})` : ''}`);
                                          }
+                                         }  // fin else cliente resuelto
                                          }
                                      }
                                  } catch (eFb) {
@@ -1892,7 +1928,11 @@ if (triggerReversal || triggerForward) {
                                         .query(`SELECT TOP 1 Moneda FROM PedidosCobranza WITH(NOLOCK) WHERE LTRIM(RTRIM(CAST(NoDocERP AS VARCHAR(50)))) = @ND`);
                                     const upMoneda = (monR.recordset[0]?.Moneda === 'USD') ? 'USD' : 'UYU';
                                     const lin = await totalesCobranzaDeOrden(poolCnt, ordenDepositoUp.ordenId, upMoneda);
-                                    const cliPkUp = ordenDepositoUp.cliIdCliente || ordenDepositoUp.codCliente || oi.CliIdCliente || oi.CodCliente;
+                                    const cliPkUp = await resolverCliPK(poolCnt, ordenDepositoUp.cliIdCliente || oi.CliIdCliente, ordenDepositoUp.codCliente || oi.CodCliente);
+                                    if (!cliPkUp) {
+                                        console.error(`[REWORK-BULTOS] ${ordenDepositoUp.codigoOrden}: el cliente no existe — no se crea la fila en Esperando. ¿Cliente eliminado?`);
+                                        continue;
+                                    }
                                     const lugR = await poolCnt.request()
                                         .input('CID', require('mssql').Int, cliPkUp)
                                         .query("SELECT FormaEnvioID FROM Clientes WITH(NOLOCK) WHERE CliIdCliente=@CID");

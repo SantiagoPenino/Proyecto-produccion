@@ -2283,7 +2283,12 @@ exports.getClientOrders = async (req, res) => {
         let counts = null;
         if (page === 1) {
             const countsQuery = await pool.request()
-                .input('cod', sql.Int, codCliente)
+                // OJO con el tipo: Ordenes.CodCliente es nchar(10) y Clientes.CodCliente es int.
+                // Con un parámetro Int, SQL convierte la COLUMNA de Ordenes (el int tiene más
+                // precedencia) y la condición pasa a ser CONVERT(INT, o.CodCliente) = @cod:
+                // no puede usar IX_Ordenes_CodCliente y escanea la tabla entera. Como texto,
+                // Ordenes hace seek y Clientes convierte el parámetro (un solo valor, gratis).
+                .input('cod', sql.NVarChar(10), String(codCliente ?? ''))
                 .query(`
                     SELECT ISNULL(o.NoDocERP, o.CodigoOrden) AS DocID, o.Estado, 'WEB' AS Origen
                     FROM Ordenes o WITH(NOLOCK)
@@ -2348,7 +2353,9 @@ exports.getClientOrders = async (req, res) => {
         }
 
         const result = await pool.request()
-            .input('cod', sql.Int, codCliente)
+            // Texto, no Int: ver la nota de tipos en getMisPedidosResumen (Ordenes.CodCliente
+            // es nchar(10) y un parámetro Int mata el índice).
+            .input('cod', sql.NVarChar(10), String(codCliente ?? ''))
             .input('Offset', sql.Int, offset)
             .input('Limit', sql.Int, limit)
             .query(`
@@ -2690,7 +2697,8 @@ exports.getMisMatrices = async (req, res) => {
     try {
         const pool = await getPool();
         const result = await pool.request()
-            .input('cod', sql.Int, codCliente)
+            // Texto: Ordenes.CodCliente es nchar(10) (ver nota en getMisPedidosResumen).
+            .input('cod', sql.NVarChar(10), String(codCliente ?? ''))
             .query(`
                 SELECT o.OrdenID, o.CodigoOrden, o.DescripcionTrabajo, o.Material, o.FechaIngreso,
                        -- Vista previa de la matriz: el BOCETO de producción (el PDF que subió el
@@ -3484,7 +3492,8 @@ exports.deleteOrderBundle = async (req, res) => {
 
         const check = await pool.request()
             .input('Doc', sql.VarChar(50), docId)
-            .input('Cod', sql.Int, codCliente)
+            // Texto: Ordenes.CodCliente es nchar(10) (ver nota en getMisPedidosResumen).
+            .input('Cod', sql.NVarChar(10), String(codCliente ?? ''))
             .query(findQuery);
 
         if (check.recordset.length === 0) return res.status(404).json({ error: "Proyecto no encontrado." });
@@ -3573,9 +3582,10 @@ exports.getActiveSublimationOrders = async (req, res) => {
     try {
         const pool = await getPool();
         const result = await pool.request()
-            .input('cod', sql.Int, codCliente)
+            // Texto: Ordenes.CodCliente es nchar(10) (ver nota en getMisPedidosResumen).
+            .input('cod', sql.NVarChar(10), String(codCliente ?? ''))
             .query(`
-                SELECT 
+                SELECT
                     OrdenID,
                     CodigoOrden,
                     DescripcionTrabajo,
@@ -4283,6 +4293,40 @@ exports.createPickupOrder = async (req, res) => {
 
         if (rawOrderIds.length === 0) return res.status(400).json({ error: "Órdenes no encontradas." });
 
+        // [RETIRO OBLIGATORIO 21/08] Refuerzo backend de la regla del portal: los pedidos con
+        // más de 5 días (por fecha de ingreso) se retiran sí o sí — no se puede armar un retiro
+        // dejando afuera una orden vieja retirable DE LA MISMA MONEDA que las seleccionadas.
+        // El front ya lo impone; esto cierra la vía directa a la API (o un front cacheado).
+        try {
+            const DIAS_RETIRO_OBLIGATORIO = 5;
+            const idsParam = rawOrderIds.map(id => parseInt(id, 10)).filter(n => !isNaN(n)).join(',');
+            if (idsParam) {
+                const viejasRes = await pool.request()
+                    .input('dias', sql.Int, DIAS_RETIRO_OBLIGATORIO)
+                    .query(`
+                        SELECT vieja.OrdCodigoOrden
+                        FROM OrdenesDeposito vieja WITH(NOLOCK)
+                        LEFT JOIN EstadosOrdenes e WITH(NOLOCK) ON e.EOrIdEstadoOrden = vieja.OrdEstadoActual
+                        WHERE vieja.CliIdCliente IN (SELECT DISTINCT sel.CliIdCliente FROM OrdenesDeposito sel WHERE sel.OrdIdOrden IN (${idsParam}))
+                          AND vieja.MonIdMoneda IN (SELECT DISTINCT sel.MonIdMoneda FROM OrdenesDeposito sel WHERE sel.OrdIdOrden IN (${idsParam}))
+                          AND e.EOrNombreEstado IN ('Avisado', 'Ingresado', 'Para avisar', 'Pronto para entregar')
+                          AND vieja.OReIdOrdenRetiro IS NULL
+                          AND vieja.OrdFechaIngresoOrden < DATEADD(day, -@dias, GETDATE())
+                          AND vieja.OrdIdOrden NOT IN (${idsParam})
+                    `);
+                if (viejasRes.recordset.length > 0) {
+                    const codigos = viejasRes.recordset.map(r => (r.OrdCodigoOrden || '').trim()).filter(Boolean).join(', ');
+                    logger.warn(`⛔ [Retiro] Cliente ${codCliente} intentó retirar dejando afuera pedidos de +${DIAS_RETIRO_OBLIGATORIO} días: ${codigos}`);
+                    return res.status(400).json({
+                        error: `Los pedidos con más de ${DIAS_RETIRO_OBLIGATORIO} días tenés que retirarlos sí o sí. Agregá al retiro: ${codigos}.`
+                    });
+                }
+            }
+        } catch (eViejas) {
+            // Best-effort: si el chequeo falla por algo ajeno, no bloquea el retiro (el front ya lo impone).
+            logger.warn('[Retiro] No se pudo verificar retiro obligatorio de pedidos viejos:', eViejas.message);
+        }
+
         // Crear retiro usando servicio unificado (el service determina el estado por tipo de cliente)
         const { crearRetiro } = require('../services/retiroService');
         const transaction = new sql.Transaction(pool);
@@ -4667,6 +4711,31 @@ const performCheckoutRollback = async (pool, transactionId, ordenRetiroId, gatew
     }
 };
 
+// Ticket interno a Finanzas (DepId 2) para anomalías de cobros online.
+// Best-effort: nunca corta el flujo que lo invoca.
+const crearTicketFinanzas = async (pool, codCliente, asunto, texto) => {
+    try {
+        const tRes = await pool.request()
+            .input('CliId', sql.Int, codCliente || null)
+            .input('Asunto', sql.NVarChar(200), asunto.substring(0, 200))
+            .query(`
+                INSERT INTO Tickets (CliIdCliente, UsrIdCreador, DepIdDepartamento, TicAsunto, TicPrioridad, TicEstado, TicFechaAlta, TicFechaActualizacion)
+                OUTPUT INSERTED.TicIdTicket
+                VALUES (@CliId, 70, 2, @Asunto, 1, 1, GETDATE(), GETDATE())
+            `);
+        await pool.request()
+            .input('TicId', sql.Int, tRes.recordset[0].TicIdTicket)
+            .input('Txt', sql.NVarChar(sql.MAX), texto)
+            .query(`
+                INSERT INTO Tickets_Mensajes (TicIdTicket, UsrIdAutor, TMenEsNotaInterna, TMenTexto, TMenFecha)
+                VALUES (@TicId, 70, 1, @Txt, GETDATE())
+            `);
+        logger.info(`[HANDY ALERTA] Ticket a Finanzas creado: ${asunto}`);
+    } catch (e) {
+        logger.error('[HANDY ALERTA] No se pudo crear el ticket de alerta:', e.message);
+    }
+};
+
 // --- HANDY WEBHOOK ---
 // Recibe notificaciones automáticas de Handy cuando un cobro cambia de estado
 // Docs V2.0: PurchaseData.Status → 0=Iniciado, 1=Exitoso, 2=Fallido, 3=Pendiente
@@ -4696,6 +4765,9 @@ exports.handyWebhook = async (req, res) => {
         logger.info(`[HANDY WEBHOOK] TxID: ${transactionId}, Status: ${status}, Monto: ${totalAmount}, Moneda: ${currency}, Medio: ${issuerName}`);
 
         const pool = await getPool();
+        // Retiro sobre el que se está registrando el cobro: si el registro falla,
+        // el ticket de alerta a Finanzas lo referencia para ubicar el caso.
+        let retiroEnCurso = null;
 
         const statusMap = { 0: 'Iniciado', 1: 'Pagado', 2: 'Fallido', 3: 'Pendiente' };
         const statusLabel = statusMap[status] || `Desconocido(${status})`;
@@ -4728,6 +4800,31 @@ exports.handyWebhook = async (req, res) => {
                     const tx = txData.recordset[0];
                     const storedData = JSON.parse(tx.OrdersJson || '{}');
 
+                    // [TIENDA 21/08] Pago de una compra de la tienda con RETIRO EN EL LOCAL
+                    // (paga-primero): la venta no existía todavía — se crea acá, ya pagada.
+                    // No sigue el flujo de retiros de más abajo.
+                    if (storedData.type === 'tienda-checkout') {
+                        try {
+                            const tiendaCtrl = require('./tiendaController');
+                            if (storedData.ventaCreada) {
+                                logger.info(`[HANDY WEBHOOK] Venta de tienda ya creada (${storedData.ventaCreada}) — webhook repetido, sin acción.`);
+                            } else {
+                                const venta = await tiendaCtrl.crearVentaTiendaPagada(pool, storedData, {
+                                    ref: transactionId, metodo: 'HANDY', io: req.app?.get('socketio')
+                                });
+                                // Idempotencia ante reintentos del webhook: se persiste el código creado.
+                                await pool.request()
+                                    .input('txId4', sql.VarChar(100), transactionId)
+                                    .input('json4', sql.NVarChar(sql.MAX), JSON.stringify({ ...storedData, ventaCreada: venta.codigoVenta }))
+                                    .query('UPDATE HandyTransactions SET OrdersJson = @json4 WHERE TransactionId = @txId4');
+                            }
+                        } catch (eTienda) {
+                            logger.error('[HANDY WEBHOOK] Error procesando pago de tienda: ' + eTienda.message);
+                            return; // la respuesta 200 ya salió al principio del webhook
+                        }
+                        return; // pago de tienda procesado — no seguir con el flujo de retiros
+                    }
+
                     // Extraer datos: formato nuevo (con ordenRetiro) o legacy (array plano)
                     const storedOrdenRetiro = storedData.ordenRetiro;
                     const orders = storedData.orders || (Array.isArray(storedData) ? storedData : []);
@@ -4756,10 +4853,11 @@ exports.handyWebhook = async (req, res) => {
 
                     // NUEVO FLUJO: crear el retiro ahora si aún no existía
                     if (storedData.type === 'pickup-deferred' && !storedOrdenRetiro && storedData.ordIds?.length > 0) {
+                        let retiroTransaction = null;
                         try {
                             logger.info('[HANDY WEBHOOK] Creando retiro diferido...');
                             const { crearRetiro } = require('../services/retiroService');
-                            const retiroTransaction = new sql.Transaction(pool);
+                            retiroTransaction = new sql.Transaction(pool);
                             await retiroTransaction.begin();
                             const OReIdOrdenRetiro = await crearRetiro(retiroTransaction, {
                                 ordIds:        storedData.ordIds,
@@ -4821,13 +4919,17 @@ exports.handyWebhook = async (req, res) => {
                                 try { await retiroTransaction.rollback(); } catch (e) { /* ignore */ }
                             }
                             logger.error('[HANDY WEBHOOK] Error creando retiro diferido — se aborta el flujo de pago para evitar registrar un pago sin retiro confirmado:', retiroErr.message);
-                            return res.status(200).json({ received: true, warning: 'retiro_deferred_failed' });
+                            await crearTicketFinanzas(pool, tx.CodCliente,
+                                `ALERTA: pago Handy cobrado SIN retiro creado (Tx ${transactionId})`,
+                                `Handy capturó ${tx.TotalAmount} (${tx.Currency === 840 ? 'USD' : 'UYU'}) del cliente ${tx.CodCliente} pero falló la creación del retiro diferido:\n${retiroErr.message}\n\nTransactionId: ${transactionId}\nÓrdenes: ${(storedData.ordIds || []).join(', ')}\n\nEl cliente YA pagó con tarjeta. NO cobrar estas órdenes de nuevo: crear el retiro y registrar el pago a mano, o devolver la transacción en Handy.`);
+                            return; // la respuesta 200 ya salió al inicio del webhook
                         }
                     }
 
                     // --- FLUJO DE PAGO UNIFICADO (igual que Caja) ---
                     const ordenRetiroId = parseInt(String(payloadPago.ordenRetiro).replace(/^[A-Za-z]+-0*/, ''), 10);
                     if (!isNaN(ordenRetiroId)) {
+                        retiroEnCurso = ordenRetiroId;
                         const retiroState = await pool.request()
                             .input('RID', sql.Int, ordenRetiroId)
                             .query('SELECT OReEstadoActual, PagIdPago FROM OrdenesRetiro WITH(NOLOCK) WHERE OReIdOrdenRetiro = @RID');
@@ -4839,7 +4941,30 @@ exports.handyWebhook = async (req, res) => {
                                 .query('SELECT MPaIdMetodoPago FROM Pagos WITH(NOLOCK) WHERE PagIdPago = @PagId');
                             const metodoExistente = pagMetodRes.recordset[0]?.MPaIdMetodoPago;
                             if (metodoExistente === 9) {
-                                logger.info(`[HANDY WEBHOOK] La orden de retiro ${ordenRetiroId} ya tiene un pago Handy asignado (PagIdPago: ${existingPagId}). Ignorando webhook duplicado de pago exitoso.`);
+                                // ¿Reintento del mismo webhook o un SEGUNDO cobro real (el
+                                // cliente pagó dos links distintos)? El pago existente guarda
+                                // su TransactionId en las observaciones de la transacción de
+                                // caja: si es OTRO id, la tarjeta se cobró dos veces.
+                                let esOtroCobro = false;
+                                try {
+                                    const obsRes = await pool.request()
+                                        .input('PagObs', sql.Int, existingPagId)
+                                        .query(`
+                                            SELECT TC.TcaObservaciones
+                                            FROM Pagos P WITH(NOLOCK)
+                                            JOIN TransaccionesCaja TC WITH(NOLOCK) ON TC.TcaIdTransaccion = P.PagTcaIdTransaccion
+                                            WHERE P.PagIdPago = @PagObs
+                                        `);
+                                    const obs = obsRes.recordset[0]?.TcaObservaciones || '';
+                                    esOtroCobro = obs.includes('Tx:') && !obs.includes(transactionId);
+                                } catch (eObs) { /* sin dato → se trata como webhook duplicado */ }
+
+                                if (esOtroCobro) {
+                                    await crearTicketFinanzas(pool, tx.CodCliente,
+                                        `ALERTA: posible DOBLE COBRO Handy en retiro RW-${ordenRetiroId}`,
+                                        `El retiro RW-${ordenRetiroId} ya estaba pagado con Handy (PagIdPago ${existingPagId}) y llegó OTRO pago exitoso por un link distinto.\n\nTransacción nueva: ${transactionId}\nMonto: ${tx.TotalAmount} (${tx.Currency === 840 ? 'USD' : 'UYU'})\nCliente: ${tx.CodCliente}\n\nEl cliente pagó dos veces con tarjeta: corresponde DEVOLVER esta transacción en el panel de Handy.`);
+                                }
+                                logger.info(`[HANDY WEBHOOK] La orden de retiro ${ordenRetiroId} ya tiene un pago Handy asignado (PagIdPago: ${existingPagId}). ${esOtroCobro ? 'SEGUNDO COBRO detectado — ticket a Finanzas creado.' : 'Ignorando webhook duplicado de pago exitoso.'}`);
                                 return;
                             }
                             logger.warn(`[HANDY WEBHOOK] La orden de retiro ${ordenRetiroId} tiene PagIdPago ${existingPagId} de método ${metodoExistente} (no Handy). Se registra el pago Handy de todas formas.`);
@@ -4938,6 +5063,12 @@ exports.handyWebhook = async (req, res) => {
                 }
             } catch (reactErr) {
                 logger.error('[HANDY WEBHOOK] Error notificando a API React:', reactErr.response?.data || reactErr.message);
+                // La tarjeta YA se cobró pero el registro interno falló: sin esta
+                // alerta el retiro figura impago y caja lo vuelve a cobrar al
+                // entregar (doble cobro real, o factura del ciclo si es cta. cte.).
+                await crearTicketFinanzas(pool, null,
+                    `ALERTA: pago Handy cobrado SIN registrar (Tx ${transactionId})`,
+                    `Handy capturó ${totalAmount} (${currency === 840 ? 'USD' : 'UYU'}) pero el registro del pago falló:\n${reactErr.message}\n\nTransactionId: ${transactionId}${retiroEnCurso ? `\nRetiro: RW-${retiroEnCurso}` : ''}\n\nEl cliente YA pagó con tarjeta. NO volver a cobrar este retiro en caja: registrar el pago a mano o devolver la transacción en el panel de Handy.`);
             }
         } else if (status === 2 || status === 5) {
             // --- ROLLBACK DE OPERACIONES: ESTADO CAYÓ A FALLIDO (CONTRACARGO O RECHAZO TARDÍO) ---
@@ -4998,7 +5129,10 @@ exports.getPaymentStatus = async (req, res) => {
                 paymentMethod: tx.IssuerName || 'Handy',
                 gateway: 'handy',
                 createdAt: tx.CreatedAt,
-                paidAt: tx.PaidAt
+                paidAt: tx.PaidAt,
+                // [TIENDA 21/08] Para que la página de estado limpie el carrito y muestre el VEN creado
+                tienda: String(storedData.type || '').startsWith('tienda'),
+                codigoVenta: storedData.ventaCreada || storedData.codigoVenta || null
             });
         }
 
@@ -5312,6 +5446,10 @@ exports.mpWebhook = async (req, res) => {
     // Responder 200 inmediatamente (requisito de MP — tiene timeout de 22s)
     res.status(200).send('OK');
 
+    // Contexto para el ticket de alerta si el registro falla con el cobro ya
+    // capturado (se setean recién cuando el pago está aprobado y por registrarse).
+    let mpTxRef = null, mpRetiroEnCurso = null, mpCodCliente = null, mpMonto = null;
+
     logger.info('------------------------------------------');
     logger.info('🔔 [MP WEBHOOK] Evento recibido:');
     logger.info(JSON.stringify(body, null, 2));
@@ -5488,6 +5626,9 @@ exports.mpWebhook = async (req, res) => {
                 }
             } catch (retiroErr) {
                 logger.error('[MP WEBHOOK] Error creando retiro diferido:', retiroErr.message);
+                await crearTicketFinanzas(pool, tx.CodCliente,
+                    `ALERTA: pago MercadoPago cobrado SIN retiro creado (Tx ${externalRef})`,
+                    `MercadoPago aprobó el pago del cliente ${tx.CodCliente} pero falló la creación del retiro diferido:\n${retiroErr.message}\n\nTransactionId: ${externalRef}\nÓrdenes: ${(storedData.ordIds || []).join(', ')}\n\nEl cliente YA pagó. NO cobrar estas órdenes de nuevo: crear el retiro y registrar el pago a mano, o devolver el pago en MercadoPago.`);
                 return;
             }
         }
@@ -5504,9 +5645,32 @@ exports.mpWebhook = async (req, res) => {
             .input('RID', sql.Int, ordenRetiroId)
             .query('SELECT OReEstadoActual, PagIdPago FROM OrdenesRetiro WITH(NOLOCK) WHERE OReIdOrdenRetiro = @RID');
         if (retiroState.recordset[0]?.PagIdPago) {
-            logger.warn(`[MP WEBHOOK] Retiro ${ordenRetiroId} ya pagado. Ignorando duplicado.`);
+            // ¿Reintento del mismo pago o un SEGUNDO cobro real por otra vía/link?
+            const pagExistenteMp = retiroState.recordset[0].PagIdPago;
+            let esOtroCobroMp = false;
+            try {
+                const obsRes = await pool.request()
+                    .input('PagObs', sql.Int, pagExistenteMp)
+                    .query(`
+                        SELECT TC.TcaObservaciones
+                        FROM Pagos P WITH(NOLOCK)
+                        JOIN TransaccionesCaja TC WITH(NOLOCK) ON TC.TcaIdTransaccion = P.PagTcaIdTransaccion
+                        WHERE P.PagIdPago = @PagObs
+                    `);
+                const obs = obsRes.recordset[0]?.TcaObservaciones || '';
+                esOtroCobroMp = obs.includes('Tx:') && !obs.includes(externalRef);
+            } catch (eObs) { /* sin dato → se trata como duplicado */ }
+            if (esOtroCobroMp) {
+                await crearTicketFinanzas(pool, tx.CodCliente,
+                    `ALERTA: posible DOBLE COBRO MercadoPago en retiro RW-${ordenRetiroId}`,
+                    `El retiro RW-${ordenRetiroId} ya estaba pagado (PagIdPago ${pagExistenteMp}, de otra transacción) y llegó OTRO pago aprobado de MercadoPago.\n\nTransacción nueva: ${externalRef}\nCliente: ${tx.CodCliente}\n\nEl cliente pagó dos veces: corresponde DEVOLVER este pago en MercadoPago.`);
+            }
+            logger.warn(`[MP WEBHOOK] Retiro ${ordenRetiroId} ya pagado. ${esOtroCobroMp ? 'SEGUNDO COBRO detectado — ticket a Finanzas creado.' : 'Ignorando duplicado.'}`);
             return;
         }
+        mpTxRef = externalRef;
+        mpRetiroEnCurso = ordenRetiroId;
+        mpCodCliente = tx.CodCliente;
 
         const usuarioId = 70;
         const moneda    = paymentData.currency_id === 'USD' ? 'USD' : 'UYU';
@@ -5519,6 +5683,7 @@ exports.mpWebhook = async (req, res) => {
         const CliIdCliente = cliRes2.recordset[0]?.CliIdCliente;
 
         // ── Pago unificado a través de cajaService (Caja Administrativa online) ──
+        mpMonto = totalAmountPaid;
         const { procesarTransaccion } = require('../services/cajaService');
         const mpResult = await procesarTransaccion({
             usuarioId: 999,
@@ -5586,6 +5751,18 @@ exports.mpWebhook = async (req, res) => {
 
     } catch (e) {
         logger.error('[MP WEBHOOK] Error procesando evento:', e.message);
+        // mpTxRef solo se setea con el pago aprobado y a punto de registrarse:
+        // si llegamos acá con él seteado, hay plata cobrada sin registrar.
+        if (mpTxRef) {
+            try {
+                const poolAlerta = await getPool();
+                await crearTicketFinanzas(poolAlerta, mpCodCliente,
+                    `ALERTA: pago MercadoPago cobrado SIN registrar (Tx ${mpTxRef})`,
+                    `MercadoPago aprobó el cobro${mpMonto ? ` de ${mpMonto}` : ''} pero el registro del pago falló:\n${e.message}\n\nTransactionId: ${mpTxRef}${mpRetiroEnCurso ? `\nRetiro: RW-${mpRetiroEnCurso}` : ''}\n\nEl cliente YA pagó. NO volver a cobrar este retiro en caja: registrar el pago a mano o devolver el pago en MercadoPago.`);
+            } catch (e2) {
+                logger.error('[MP WEBHOOK] No se pudo crear ticket de alerta:', e2.message);
+            }
+        }
     }
 };
 

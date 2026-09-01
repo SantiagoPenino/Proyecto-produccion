@@ -983,6 +983,26 @@ exports.getOrdersByArea = async (req, res) => {
         if (area === 'SUBLIMACION') area = 'SUB';
         if (area === 'BORDADO') area = 'BORD';
 
+        // [ÁREAS EQUIVALENTES 31/08] El portal guarda las órdenes con un código y la
+        // vista de producción usa otro ('DF' vs 'DTF', 'SB' vs 'SUB'). Hasta hoy eso lo
+        // resolvía el navegador pidiendo las dos áreas por separado y fusionando las
+        // listas: DOS viajes completos al servidor por cada refresco del tablero más
+        // pedido del sistema (y TRES en Directa). Ahora se resuelve acá, en un solo
+        // viaje. El grupo es simétrico: da igual por cuál de los códigos se pregunte.
+        const EQUIVALENTES = {
+            DF: ['DF', 'DTF'], DTF: ['DTF', 'DF'],
+            SB: ['SB', 'SUB'], SUB: ['SUB', 'SB'],
+            DIRECTA: ['DIRECTA', 'IMD', 'XMD'], IMD: ['IMD', 'XMD'],
+        };
+        const areas = EQUIVALENTES[area] || [area];
+
+        // [PAYLOAD 31/08] El detalle de archivos (files_data, un FOR JSON PATH por orden)
+        // NO lo usa la grilla: la columna ARCHIVOS sale de `filesCount` (ArchivosCount), y el
+        // modal de detalle pide sus archivos aparte por /orders/details/:id. En las listas
+        // históricas eso son 11.496 subconsultas para nada — medido: 16,8 MB de JSON para
+        // mostrar 20 filas. Se pide solo en el tablero activo, que son decenas de órdenes.
+        const archivosDetalle = !['pronto', 'cancelled', 'history'].includes(mode);
+
         // DEBUG: Force print final area
         // logger.info(`🔎 [getOrdersByArea] Querying DB with AreaID = '${area}'`);
 
@@ -1039,8 +1059,8 @@ exports.getOrdersByArea = async (req, res) => {
                 
                 m.Nombre as NombreMaquina,
                 
-                (
-                    SELECT 
+                ${archivosDetalle ? `(
+                    SELECT
                         ArchivoID as id,
                         NombreArchivo as nombre,
                         RutaAlmacenamiento as link,
@@ -1055,17 +1075,17 @@ exports.getOrdersByArea = async (req, res) => {
                     FROM dbo.ArchivosOrden WITH(NOLOCK)
                     WHERE OrdenID = o.OrdenID
                     FOR JSON PATH
-                ) as files_data
+                )` : 'NULL'} as files_data
 
             FROM dbo.Ordenes o WITH(NOLOCK)
             LEFT JOIN dbo.ConfigEquipos m WITH(NOLOCK) ON o.MaquinaID = m.EquipoID
             LEFT JOIN dbo.Clientes c WITH(NOLOCK) ON o.IdClienteReact = c.IDReact
             LEFT JOIN dbo.InventarioBobinas ibt WITH(NOLOCK) ON ibt.BobinaID = o.BobinaTelaID
-            WHERE o.AreaID = @Area
+            WHERE o.AreaID IN (${areas.map((_, i) => `@Area${i}`).join(', ')})
         `;
 
         const request = pool.request();
-        request.input('Area', sql.VarChar(20), area);
+        areas.forEach((a, i) => request.input(`Area${i}`, sql.VarChar(20), a));
 
         const estadosFinales = "'Entregado', 'Finalizado', 'Cancelado'";
         if (mode === 'history') {

@@ -14,6 +14,11 @@ const THUMBNAILS_DIR = process.env.THUMBNAILS_PATH || path.join(__dirname, '..',
 // Carpeta de imágenes de fallas anotadas (recuadro dibujado en Control). Servida en /fallas.
 const FALLAS_DIR = process.env.FALLAS_PATH || path.join(__dirname, '..', 'fallas');
 
+// ¿Ya existe la miniatura en disco? Para que los reprocesos (fileProcessingService,
+// backfill) no regeneren lo que ya está.
+exports.thumbnailExists = (codigoOrden, archivoId) =>
+    fs.existsSync(path.join(THUMBNAILS_DIR, String(codigoOrden), `${archivoId}.jpg`));
+
 /**
  * Genera un thumbnail JPG de la primera página de un PDF.
  * Guarda en: backend/thumbnails/{codigoOrden}/{archivoId}.jpg
@@ -120,9 +125,9 @@ const detectarFormato = (buffer) => {
  * PDF → pdftoppm + Sharp · PNG/JPG/… → Sharp directo · resto → no se intenta.
  */
 exports.generateThumbnail = async (buffer, codigoOrden, archivoId, mimeOrExt = '') => {
-    // Las -F (fallas internas) no se muestran al cliente → no se genera su thumbnail.
-    if (String(codigoOrden || '').toUpperCase().includes('-F')) return null;
-
+    // OJO: las -F (fallas internas) SÍ llevan miniatura. No se muestran al cliente, pero
+    // planta las necesita en Control y en el modal de falla para señalar dónde está la
+    // falla. (Acá hubo un descarte por código -F que dejaba a Control sin vista previa.)
     const formato = detectarFormato(buffer);
     if (formato === 'pdf')   return exports.generatePdfThumbnail(buffer, codigoOrden, archivoId);
     if (formato === 'image') return exports.generateImageThumbnail(buffer, codigoOrden, archivoId);

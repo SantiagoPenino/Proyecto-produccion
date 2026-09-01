@@ -267,7 +267,11 @@ async function crearDeudaDocumento(params, transaction = null) {
             AND (MovAnulado IS NULL OR MovAnulado = 0)
             AND MovTipo NOT IN ('ORDEN', 'ORDEN_ANTICIPO')
         ), 0) AS SaldoActual,
-        ISNULL(cp.CPaDiasVencimiento, 0) AS DiasVencimiento
+        ISNULL(cp.CPaDiasVencimiento, 0) AS DiasVencimiento,
+        -- Sin esta columna, monId (más abajo) era SIEMPRE undefined → default 1:
+        -- los pagos sintéticos ANTICIPO_APLICADO de cuentas USD salían en pesos
+        -- (caso PC-3534 Nicolas Rodriguez, 26-ago-2026).
+        cc.MonIdMoneda
       FROM   dbo.CuentasCliente cc WITH(UPDLOCK)
       JOIN   dbo.CondicionesPago cp ON cp.CPaIdCondicion = cc.CPaIdCondicion
       WHERE  cc.CueIdCuenta = @CueIdCuenta
@@ -421,6 +425,16 @@ async function hookOrdenCreada(params, transaction = null) {
   const contabilidadCore = require('./contabilidadCore'); // Import CORE for Asientos
 
   logger.info(`[HOOK:ORDEN] Iniciando hookOrdenCreada — Orden=${CodigoOrden} CliId=${CliIdCliente} ProIdProducto=${ProIdProducto} Cantidad=${Cantidad} Importe=${Importe} MonIdMoneda=${MonIdMoneda}`);
+
+  // [REPOSICIONES 21/08] Re-trabajo sin cargo: una -R (reposición cliente) o -F (falla
+  // interna) no genera deuda monetaria ni debe llegar a consumo de recursos (pata
+  // contable del mismo bug del costo copiado de la madre; hubo 2 débitos por -F en
+  // julio). Guard acá porque este hook es el embudo de todos los callers (ingreso QR,
+  // logística, etc.).
+  if (/-[RF]\d+$/i.test(String(CodigoOrden || '').trim())) {
+    logger.info(`[HOOK:ORDEN] ${CodigoOrden} es reposición/falla interna — sin deuda ni consumo de recursos.`);
+    return;
+  }
 
   try {
     const pool = await getPool();
@@ -873,6 +887,14 @@ async function hookEntregaMetros(params) {
   const { OrdIdOrden, CliIdCliente, ProIdProducto, Cantidad, CodigoOrden, UsuarioAlta, NombreTrabajo } = params;
 
   logger.info(`[HOOK:METROS] Iniciando hookEntregaMetros — Orden=${CodigoOrden} CliId=${CliIdCliente} ProId=${ProIdProducto} Cantidad=${Cantidad} Importe=${params.Importe}`);
+
+  // [REPOSICIONES 21/08] Una -R (reposición cliente) o -F (falla interna) no consume
+  // metros de planes prepagos: es re-trabajo por falla propia. Guard propio además del
+  // de hookOrdenCreada porque este hook también tiene callers directos.
+  if (/-[RF]\d+$/i.test(String(CodigoOrden || '').trim())) {
+    logger.info(`[HOOK:METROS] ${CodigoOrden} es reposición/falla interna — no se descuentan metros del plan.`);
+    return;
+  }
 
   const pool = await getPool();
   const transaction = new sql.Transaction(pool);
@@ -2630,6 +2652,12 @@ async function cerrarCicloCompleto({
                                         -- inflaban el total 402,17 USD y se iban a re-facturar en el ciclo siguiente).
       AND  MovImporte  < 0
       AND  DocIdDocumento IS NULL       -- excluir órdenes ya facturadas individualmente
+      -- CUBIERTO_POR_ANTICIPO / CUBIERTO_NEG (plan de material): esas órdenes ya se
+      -- facturaron al ingresar el saldo/plan. El listado de la pre-factura las excluye
+      -- (getOrdenesAnticipo) pero el cierre las seguía SUMANDO: total del ciclo 533,73
+      -- vs líneas 389,91 y el guard frenaba la factura (cliente 4, 27-ago-2026) — y con
+      -- descuento aplicado el guard no corre y se facturaba de nuevo lo ya cobrado.
+      AND  (MovObservaciones IS NULL OR MovObservaciones NOT LIKE 'CUBIERTO%')
   `);
   
   const excluidosSet = new Set(excluidos || []);
@@ -2672,41 +2700,14 @@ async function cerrarCicloCompleto({
   }
   // ───────────────────────────────────────────────────────────────────────
 
-  // Consultar saldo de la cuenta.
-  // OJO: NO leer CueSaldoActual — esa columna está corrompida por el doble conteo de ORDEN
-  // (bug conocido, ver project_bug_saldoactual_duplica_orden.md): un positivo falso hacía
-  // nacer la DeudaDocumento del cierre como PAGADO/pendiente 0 y la factura desaparecía de
-  // "pendiente para cobrar" (caso Mrivero PC-2885/2886, 4-ago-2026). Se recalcula con la
-  // MISMA fórmula que el resto del sistema (getSaldoCliente, hookOrdenCreada): todo menos
-  // ORDEN/ORDEN_ANTICIPO. Como el cargo VTA_CAJA/CIERRE_CICLO de ESTA factura se registra
-  // más abajo y aún no está en la cuenta, se resta saldoFacturar para conservar la
-  // semántica original ("el saldo ya incorpora el ciclo"):
-  //   saldo < 0: el cliente aún debe → ImportePendiente = |saldo| (capeado por la factura bruta)
-  //   saldo >= 0: el cliente tiene a favor → ImportePendiente = 0
-  const saldoCuentaRes = await pool.request()
-    .input('CueIdCuenta', sql.Int, ciclo.CueIdCuenta)
-    .query(`
-      SELECT ISNULL(SUM(m.MovImporte), 0) AS SaldoReal
-      FROM dbo.MovimientosCuenta m
-      WHERE m.CueIdCuenta = @CueIdCuenta
-        AND (m.MovAnulado IS NULL OR m.MovAnulado = 0)
-        AND m.MovTipo NOT IN ('ORDEN', 'ORDEN_ANTICIPO')
-    `);
-  const saldoCuentaActual = (Number(saldoCuentaRes.recordset[0]?.SaldoReal) || 0) - saldoFacturar;
-
-  // El ImportePendiente es lo que realmente queda por cobrar de la factura que se genera.
-  // REGLA:
-  //   saldoCuentaActual >= 0 → el cliente pagó todo (o de más) → pendiente = 0
-  //   saldoCuentaActual < 0  → el cliente aún debe → pendiente = |saldo| (capeado por la factura)
-  //
-  // Ejemplo A: factura 50.98, pago parcial 15 → saldo -35.98 → pendiente = 35.98
-  // Ejemplo B: factura 9.53,  pago 15         → saldo +5.47  → pendiente = 0 (ya cubierta)
-  const importePendiente = saldoCuentaActual >= 0
-    ? 0
-    : Math.min(Math.abs(saldoCuentaActual), saldoFacturar);
-
-  // Para log legacy
-  const saldoAFavorPrevio = Math.max(0, saldoCuentaActual);
+  // La deuda del cierre nace SIEMPRE por el total de la factura. Antes se le restaba el
+  // saldo de la cuenta ("si la cuenta daba, la deuda nacía PAGADO/recortada, sin rastro").
+  // Eso ya mordió dos veces: caso Mrivero (4-ago, por CueSaldoActual corrupto) y caso
+  // Curbelo FA-766/FA-955 (26-ago): un débito asentado en la cuenta equivocada infló el
+  // saldo y la factura del ciclo nació PAGADO — invisible para "Registrar pago" — sin que
+  // ningún cobro existiera. El saldo a favor REAL lo aplica crearDeudaDocumento con su
+  // auto-consumo: pago sintético ANTICIPO_APLICADO + ImputacionPago, que deja rastro
+  // auditable y reversible. Nunca volver a descontar deuda por resta de saldo.
 
   // 2. Generar número de factura correlativo — UNIFICADO con la caja.
   //    Primero se resuelve el numerador vía Config_TiposDocumento (el MISMO que usa
@@ -2922,6 +2923,10 @@ async function cerrarCicloCompleto({
           -- PC-2523 Raul Rivero: el pago de una venta contado USD quedó vinculado al
           -- cierre PC-2583 en pesos) y el documento real quedaba sin su pago.
           AND MovTipo IN ('ORDEN','ORDEN_ANTICIPO')
+          -- Las CUBIERTO% quedaron fuera del total (ver la suma, más arriba): tampoco
+          -- se vinculan al documento — si no, el detalle de la factura arrastraría
+          -- órdenes que su total no incluye.
+          AND (MovObservaciones IS NULL OR MovObservaciones NOT LIKE 'CUBIERTO%')
           ${linkQueryAdd}
       `);
 
@@ -2930,14 +2935,14 @@ async function cerrarCicloCompleto({
     // Si es cross-moneda, la deuda va en la cuenta destino con el monto convertido
     const deudaCuentaId = esCrossMoneda ? cueIdFactura : ciclo.CueIdCuenta;
     const deudaImporte = esCrossMoneda ? docTotal : saldoFacturar;
-    const deudaPendiente = esCrossMoneda ? docTotal : importePendiente;
 
+    // Sin ImportePendiente: nace por el total (ver comentario en el cálculo del saldo,
+    // arriba). El saldo a favor real lo consume crearDeudaDocumento con imputación.
     await crearDeudaDocumento({
       CueIdCuenta: deudaCuentaId,
       OrdIdOrden: null,
       DocIdDocumento,
       Importe: deudaImporte,
-      ImportePendiente: deudaPendiente,
     });
 
     if (esCrossMoneda) {
@@ -2967,9 +2972,6 @@ async function cerrarCicloCompleto({
         CicIdCiclo,
       });
 
-      if (importePendiente !== saldoFacturar) {
-        logger.info(`[CICLO] Ciclo ${CicIdCiclo}: Factura ${saldoFacturar}. Saldo cuenta (${saldoCuentaActual}) → Pendiente real: ${importePendiente}`);
-      }
     }
   }
 

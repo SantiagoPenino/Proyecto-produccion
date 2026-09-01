@@ -3102,6 +3102,12 @@ exports.emitirFacturaAnticipo = async (req, res) => {
     const saldo = await pool.request().input('Cic', sql.Int, CicIdCiclo).query(`
       SELECT ISNULL(SUM(ABS(MovImporte)), 0) as Tot
       FROM dbo.MovimientosCuenta WHERE CicIdCiclo = @Cic AND MovTipo IN ('ORDEN', 'ORDEN_ANTICIPO') AND (MovAnulado IS NULL OR MovAnulado = 0)
+        -- Mismos filtros que la suma del cierre (cerrarCicloCompleto): sin las ya
+        -- facturadas y sin las cubiertas por plan/anticipo. Este número se muestra
+        -- en CuentasView (ciclo abierto) y Antigüedad — inflado, decía 555,67 cuando
+        -- lo facturable era 389,91 (ciclo 130, 27-ago-2026).
+        AND DocIdDocumento IS NULL
+        AND (MovObservaciones IS NULL OR MovObservaciones NOT LIKE 'CUBIERTO%')
     `);
     const totOrd = saldo.recordset[0].Tot;
 

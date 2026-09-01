@@ -609,8 +609,12 @@ const OrderForm = ({ serviceId: propServiceId }) => {
     const urgenciaBloqueadaEcouv = (serviceId === 'ecouv') && (
         isEcouvPT || items.some(it => (it.terminaciones || []).length > 0)
     );
+    // DTF textil DORADO: no admite urgencia (regla 28/08).
+    const urgenciaBloqueadaDorado = String(serviceId || '').toUpperCase() === 'DF'
+        && /dorado/i.test(String(globalMaterial || ''));
     const prioridadesVisibles = (prioritiesList || []).filter(
-        p => (areaConUrgencia && !urgenciaBloqueadaEcouv) || (p.Nombre || '').toLowerCase() !== 'urgente'
+        p => (areaConUrgencia && !urgenciaBloqueadaEcouv && !urgenciaBloqueadaDorado)
+            || (p.Nombre || '').toLowerCase() !== 'urgente'
     );
     // Si ya estaba marcada Urgente y el pedido dejó de admitirla (eligió producto
     // terminado o agregó una terminación): avisar con un modal y volver a Normal.
@@ -627,6 +631,14 @@ const OrderForm = ({ serviceId: propServiceId }) => {
             confirmButtonColor: '#06b6d4',
         });
     }, [urgenciaBloqueadaEcouv, urgency]);
+
+    // Ídem para el DORADO: si venía marcada Urgente y después eligió ese material,
+    // vuelve a Normal sola y se avisa (acá con toast, no con modal).
+    useEffect(() => {
+        if (!urgenciaBloqueadaDorado || (urgency || '').toLowerCase() !== 'urgente') return;
+        actions.setUrgency('Normal');
+        addToast('El DTF textil DORADO no se puede pedir con urgencia. El pedido queda como Normal.', 'warning');
+    }, [urgenciaBloqueadaDorado, urgency]);
 
     // Initial Config for Specific Services
     // Corte standalone (de cara al cliente): molde y origen van FIJOS — el form no

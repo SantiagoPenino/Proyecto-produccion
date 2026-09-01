@@ -918,6 +918,33 @@ const postControlArchivo = async (req, res) => {
                     END
                 `);
 
+                // Miniatura para planta: el clon de la -F apunta al MISMO archivo de Drive que el
+                // original — se copia su miniatura al ArchivoID nuevo (fs local, sin Drive), así
+                // Control y el modal de falla tienen vista previa cuando la -F se controla.
+                try {
+                    const thumbRes = await new sql.Request(transaction)
+                        .input('NewOrderIDT', sql.Int, newOrderId)
+                        .input('OldFileIDT', sql.Int, archivoId)
+                        .query(`
+                            SELECT TOP 1 ao.ArchivoID AS NuevoId,
+                                   (SELECT CodigoOrden FROM dbo.Ordenes WHERE OrdenID = @NewOrderIDT) AS CodFalla,
+                                   (SELECT o2.CodigoOrden FROM dbo.ArchivosOrden a2
+                                    JOIN dbo.Ordenes o2 ON o2.OrdenID = a2.OrdenID
+                                    WHERE a2.ArchivoID = @OldFileIDT) AS CodMadre
+                            FROM dbo.ArchivosOrden ao
+                            WHERE ao.OrdenID = @NewOrderIDT
+                              AND ao.NombreArchivo = (SELECT NombreArchivo FROM dbo.ArchivosOrden WHERE ArchivoID = @OldFileIDT)
+                            ORDER BY ao.ArchivoID DESC
+                        `);
+                    const t = thumbRes.recordset?.[0];
+                    if (t && t.NuevoId) {
+                        const { copyThumbnail } = require('../utils/thumbnailGenerator');
+                        copyThumbnail(t.CodMadre, archivoId, t.CodFalla, t.NuevoId);
+                    }
+                } catch (eThumb) {
+                    logger.warn(`[FALLA] No se pudo copiar la miniatura a la -F: ${eThumb.message}`);
+                }
+
                 // Actualizar ArchivosCount con el total real de archivos de la orden
                 await new sql.Request(transaction)
                     .input('FallaOrderID', sql.Int, newOrderId)
@@ -1871,8 +1898,12 @@ const getCompletedOrdersForReplacement = async (req, res) => {
             FROM Ordenes O WITH (NOLOCK)
             LEFT JOIN Clientes C WITH (NOLOCK) ON C.CliIdCliente = O.CliIdCliente
             WHERE O.Estado IN ('ENTREGADO', 'FINALIZADO', 'DESPACHADO', 'PRONTO')
+            -- Fallas internas (-F#) fuera: el reclamo del cliente es sobre SU pedido y la madre
+            -- tiene todos los archivos (la -F solo el subconjunto reimpreso). Elegirla por error
+            -- generaba reposiciones con límites acotados a la -F (y antes, códigos híbridos).
+            AND O.CodigoOrden NOT LIKE '%-F[0-9]%'
             AND (
-                O.CodigoOrden LIKE @Search 
+                O.CodigoOrden LIKE @Search
                 OR O.NoDocERP LIKE @Search
                 OR C.IDCliente LIKE @Search
             )
@@ -1960,10 +1991,12 @@ const createCustomerReplacementOrder = async (req, res) => {
         }
 
         // 2. Crear Nueva Orden de Reposición
-        // El código se construye sobre la RAÍZ (sin sufijos -R previos): la reposición de una
-        // reposición debe incrementar (-R2), no apilar (-R1-R1). Se strippean TODOS los -R\d+ del
-        // final, así también se normalizan casos legacy ya apilados ("-R1-R1" → raíz).
-        const stripRepoSuffix = (c) => (c || '').replace(/(-R\d+)+$/i, '');
+        // El código se construye sobre la RAÍZ (sin sufijos -R ni -F previos): la reposición de
+        // una reposición debe incrementar (-R2), no apilar (-R1-R1); y la registrada parado en
+        // una falla interna (-F#) debe salir SUB-X-R1, no SUB-X-F123-R1 — el híbrido contiene
+        // '-F' y todo el sistema (portal, miniaturas, conteos) lo trata como falla interna
+        // invisible para el cliente. Se strippean TODOS los -R\d+/-F\d+ del final.
+        const stripRepoSuffix = (c) => (c || '').replace(/(-[RF]\d+)+$/i, '');
         const rootCode = stripRepoSuffix(originalOrder.CodigoOrden);
         // Número secuencial: contar cuántas reposiciones existen para la RAÍZ
         const countRepRes = await new sql.Request(transaction)

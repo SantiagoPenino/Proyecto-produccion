@@ -62,6 +62,61 @@ exports.getCategorias = async (req, res) => {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
+// ÓRDENES VINCULABLES A UN TICKET (portal)
+// ─────────────────────────────────────────────────────────────────────────────
+// Órdenes del cliente ENTREGADAS en los últimos 30 días. La entrega vive en el
+// circuito de depósito: OrdenesDeposito.OrdEstadoActual = Entregado, con
+// OrdFechaEstadoActual como fecha de entrega. El OrdenID devuelto prioriza la
+// orden de producción (Ordenes) para que Tickets.OrdIdOrden apunte a la misma
+// tabla que resuelve getTickets; el id de depósito queda para pedidos de
+// mostrador que no existen en Ordenes.
+exports.getOrdenesRecientes = async (req, res) => {
+    try {
+        const isClient = req.user && req.user.role === 'WEB_CLIENT';
+        if (!isClient) return res.json({ success: true, data: [] });
+
+        const pool = await getPool();
+
+        // CodCliente aparte y como TEXTO: Ordenes.CodCliente es nchar(10) y con un
+        // parámetro Int SQL convierte la columna (no el parámetro) y pierde el índice.
+        const cli = await pool.request()
+            .input('cliId', sql.Int, parseInt(req.user.id))
+            .query('SELECT CodCliente FROM dbo.Clientes WITH(NOLOCK) WHERE CliIdCliente = @cliId');
+        const codCliente = cli.recordset[0]?.CodCliente;
+
+        const result = await pool.request()
+            .input('cliId', sql.Int, parseInt(req.user.id))
+            .input('cod', sql.NVarChar(10), String(codCliente ?? ''))
+            .query(`
+                SELECT
+                    COALESCE(prod.OrdenID, od.OrdIdOrden) AS OrdenID,
+                    LTRIM(RTRIM(od.OrdCodigoOrden))       AS CodigoOrden,
+                    LTRIM(RTRIM(ISNULL(od.OrdNombreTrabajo, ''))) AS Trabajo,
+                    od.OrdFechaEstadoActual               AS FechaEntrega
+                FROM OrdenesDeposito od WITH(NOLOCK)
+                INNER JOIN EstadosOrdenes e WITH(NOLOCK) ON e.EOrIdEstadoOrden = od.OrdEstadoActual
+                OUTER APPLY (
+                    SELECT TOP 1 o2.OrdenID
+                    FROM Ordenes o2 WITH(NOLOCK)
+                    WHERE o2.CodCliente = @cod
+                      AND LTRIM(RTRIM(o2.CodigoOrden)) = LTRIM(RTRIM(od.OrdCodigoOrden))
+                    ORDER BY o2.OrdenID ASC
+                ) prod
+                WHERE od.CliIdCliente = @cliId
+                  AND UPPER(LTRIM(RTRIM(e.EOrNombreEstado))) LIKE 'ENTREGADO%'
+                  AND od.OrdFechaEstadoActual >= DATEADD(DAY, -30, GETDATE())
+                  AND od.OrdCodigoOrden NOT LIKE '%-F%'   -- las fallas (-F) son internas
+                ORDER BY od.OrdFechaEstadoActual DESC
+            `);
+
+        res.json({ success: true, data: result.recordset });
+    } catch (err) {
+        logger.error('Error en getOrdenesRecientes Tickets:', err.message);
+        res.status(500).json({ error: 'Error al obtener órdenes recientes' });
+    }
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
 // CREACIÓN DE UN NUEVO TICKET
 // ─────────────────────────────────────────────────────────────────────────────
 exports.createTicket = async (req, res) => {

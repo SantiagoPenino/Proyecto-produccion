@@ -339,7 +339,7 @@ const WmsReceiveSalesView = () => {
 
             {/* Confirmation Dialog (Finalizar) */}
             {confirmDialog && (
-                <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+                <div className="fixed inset-0 bg-slate-900/60 z-50 flex items-center justify-center p-4">
                     <div className="bg-white rounded-2xl p-6 max-w-md w-full shadow-2xl">
                         <div className="flex items-center gap-4 mb-4 text-emerald-600">
                             <div className="bg-emerald-100 p-3 rounded-full">
@@ -384,7 +384,7 @@ const WmsReceiveSalesView = () => {
 
             {/* Cancel Dialog */}
             {cancelDialog && (
-                <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+                <div className="fixed inset-0 bg-slate-900/60 z-50 flex items-center justify-center p-4">
                     <div className="bg-white rounded-2xl p-6 max-w-md w-full shadow-2xl">
                         <div className="flex items-center gap-4 mb-4 text-red-600">
                             <div className="bg-red-100 p-3 rounded-full">

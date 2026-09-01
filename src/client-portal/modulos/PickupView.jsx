@@ -120,6 +120,10 @@ export const PickupView = () => {
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [step]);
 
+    // [TIENDA 21/08] Las compras de la tienda no tienen sección aparte: llegan a esta
+    // misma lista como cualquier orden (se preparan, ingresan a Depósito y se avisan), y
+    // se pagan acá al crear el retiro. Un pago previo aparte generaría un cobro doble.
+
     // Persist selected orders in sessionStorage
     useEffect(() => {
         sessionStorage.setItem('pickup_selected', JSON.stringify(selectedOrders));
@@ -148,10 +152,10 @@ export const PickupView = () => {
     // selecciona/deselecciona el pedido completo, para que se retire junto.
     const baseDe = (id) => String(id || '').replace(/\s*\(\d+\/\d+\)\s*$/, '').trim();
 
-    // Retiro OBLIGATORIO de pedidos viejos: los de más de 15 días (por fecha de ingreso) hay que
+    // Retiro OBLIGATORIO de pedidos viejos: los de más de 5 días (por fecha de ingreso) hay que
     // llevárselos sí o sí. Al seleccionar cualquier pedido se suman todas las viejas; si el cliente
     // intenta sacar una vieja, se limpia TODA la selección (no puede retirar lo nuevo sin lo viejo).
-    const DIAS_RETIRO_OBLIGATORIO = 15;
+    const DIAS_RETIRO_OBLIGATORIO = 5;
     const esOrdenVieja = (o) => {
         if (!o?.fechaIngreso) return false;
         const dias = (Date.now() - new Date(o.fechaIngreso).getTime()) / 86400000;
@@ -170,10 +174,10 @@ export const PickupView = () => {
         const grupoEsViejo = grupo.some(id => idsViejas.includes(id));
 
         if (todasSel) {
-            // DESMARCAR. Si es un pedido de +15 días (obligatorio en su moneda), se cae toda la selección.
+            // DESMARCAR. Si es un pedido de +5 días (obligatorio en su moneda), se cae toda la selección.
             if (grupoEsViejo) {
                 setSelectedOrders([]);
-                Swal.fire({ icon: 'info', title: 'Retiro obligatorio', text: 'Los pedidos con más de 15 días tenés que retirarlos sí o sí. Si no los querés llevar, tampoco podés retirar los demás — se limpió la selección.', background: '#212121', color: '#e4e4e7', confirmButtonColor: '#006E97', customClass: { popup: 'rounded-xl border border-zinc-700' } });
+                Swal.fire({ icon: 'info', title: 'Retiro obligatorio', text: 'Los pedidos con más de 5 días tenés que retirarlos sí o sí. Si no los querés llevar, tampoco podés retirar los demás — se limpió la selección.', background: '#212121', color: '#e4e4e7', confirmButtonColor: '#006E97', customClass: { popup: 'rounded-xl border border-zinc-700' } });
                 return;
             }
             setSelectedOrders(selectedOrders.filter(id => !grupo.includes(id)));
@@ -190,11 +194,11 @@ export const PickupView = () => {
             }
         }
 
-        // Al seleccionar, se suman las órdenes de +15 días de la MISMA moneda (retiro obligatorio).
+        // Al seleccionar, se suman las órdenes de +5 días de la MISMA moneda (retiro obligatorio).
         const viejasNuevas = idsViejas.filter(id => !selectedOrders.includes(id) && !grupo.includes(id));
         setSelectedOrders([...new Set([...selectedOrders, ...grupo, ...idsViejas])]);
         if (viejasNuevas.length > 0) {
-            Swal.fire({ toast: true, position: 'top-end', icon: 'info', title: `Se sumaron ${viejasNuevas.length} pedido(s) de +15 días en ${monedaGrupo} (retiro obligatorio)`, showConfirmButton: false, timer: 3500, timerProgressBar: true, background: '#212121', color: '#e4e4e7' });
+            Swal.fire({ toast: true, position: 'top-end', icon: 'info', title: `Se sumaron ${viejasNuevas.length} pedido(s) de +5 días en ${monedaGrupo} (retiro obligatorio)`, showConfirmButton: false, timer: 3500, timerProgressBar: true, background: '#212121', color: '#e4e4e7' });
         }
     };
 

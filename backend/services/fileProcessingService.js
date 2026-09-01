@@ -16,6 +16,7 @@ const getPdfUserUnit = (page) => {
 };
 const logger = require('../utils/logger');
 const driveService = require('./driveService');
+const { generateThumbnail, thumbnailExists } = require('../utils/thumbnailGenerator');
 const { construirNombreArchivo, materialParaNombre, usaNombreNuevo } = require('../utils/nombreArchivoOrden');
 
 
@@ -258,6 +259,20 @@ const processOrderListInternal = async (orderIds, io, targetFileIds = null, opts
                     // Read for Measurement
                     let tempBuffer = null;
                     try { tempBuffer = fs.readFileSync(destPath); } catch (e) { }
+
+                    // C2. Miniatura local, con el MISMO buffer recién descargado. Las órdenes del
+                    // sync ERP no pasan por UploadStream (el que genera para las subidas web),
+                    // así que este es su único punto de generación inmediata — sin esto, planta
+                    // las ve con el ícono genérico hasta que pase el cron de backfill.
+                    // Secuencial a propósito (un pdftoppm a la vez) y best-effort: si falla,
+                    // la medición sigue igual.
+                    if (tempBuffer && file.CodigoOrden && !thumbnailExists(file.CodigoOrden, file.ArchivoID)) {
+                        try {
+                            await generateThumbnail(tempBuffer, file.CodigoOrden, file.ArchivoID, file.NombreArchivo || destPath);
+                        } catch (eThumb) {
+                            logger.warn(`      ⚠️ Thumbnail ${file.ArchivoID}: ${eThumb.message}`);
+                        }
+                    }
 
                     // D. Medir
                     let widthM = 0;

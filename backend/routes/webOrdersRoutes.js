@@ -204,6 +204,11 @@ router.get('/tienda/catalogo', verifyToken, impersonarCliente, tiendaController.
 // (el body solo dice qué y cuánto), VEN- + ancla + remito automático. Se paga al retirar.
 router.post('/tienda/checkout', verifyToken, impersonarCliente, tiendaController.checkoutTienda);
 
+// [PAGO ONLINE 21/08] Tienda paga-primero (solo RETIRO EN EL LOCAL): link de pago SIN
+// crear la venta — la crea el webhook al confirmarse el pago. La ENCOMIENDA no paga acá:
+// su VEN sigue el circuito normal y se paga en /portal/pickup al armar el retiro.
+router.post('/tienda/init-pago', verifyToken, impersonarCliente, tiendaController.initPagoTienda);
+
 // TPU: "Mis matrices" — pedidos TPU finalizados del cliente con arte, para reusar.
 router.get('/mis-matrices', verifyToken, impersonarCliente, webOrdersController.getMisMatrices);
 // TPU: reusar una matriz — crea el pedido copiando el arte, directo a producción, sin cobrar la matriz.

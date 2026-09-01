@@ -44,6 +44,15 @@ const TIPOS_COMPONENTE = ['CUELLO', 'MANGA', 'PUNO', 'COSTADO'];
 // Mismo origen de datos que wmsController.getCatalog.
 // ─────────────────────────────────────────────────────────────────────────
 async function fetchStockLocalWms() {
+    // [CUTOVER WMS PROPIO] WMS_INTERNO=true → stock desde las tablas Wms_* (JOIN local).
+    if (String(process.env.WMS_INTERNO || '').toLowerCase() === 'true') {
+        try {
+            return await require('../services/wmsInternoService').getStockPorVariante();
+        } catch (e) {
+            logger.warn(`[Configurador] stock interno no disponible: ${e.message}`);
+            return null;
+        }
+    }
     try {
         const wmsUrl = process.env.WMS_SQL_URL || 'http://3.85.26.173:5005';
         const depositoId = process.env.WMS_DEPOSITO_LOCAL_ID || 5; // depósito de Ventas

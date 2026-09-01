@@ -1488,6 +1488,12 @@ const procesarPagoDeudaInterno = async (req, res) => {
 
     let totalImputado = 0;
     const movIdsPago = []; // movimientos 'PAGO' de este cobro → se les estampa el PagIdPago al final
+    // Rastro pago→deuda: se junta acá y se escribe en ImputacionPago cuando exista el
+    // PagIdPago (los Pagos se crean más abajo). Sin esto, el cobro descontaba la deuda
+    // sin dejar registro de QUÉ pago la canceló, y cada auditoría (caso Curbelo FA-508,
+    // 26-ago) arrancaba a ciegas: "deuda COBRADO sin imputación" no distinguía un cobro
+    // real de un bug.
+    const imputacionesPend = []; // { ddeId, cueIdCuenta, monto }
 
     try {
       // ─────────────────────────────────────────────
@@ -1615,6 +1621,9 @@ const procesarPagoDeudaInterno = async (req, res) => {
         }
 
         totalImputado += montoAplicar;
+        if (montoAplicar > 0.001) {
+          imputacionesPend.push({ ddeId, cueIdCuenta: dde.CueIdCuenta, monto: montoAplicar });
+        }
         logger.info(`[PAGO-DEUDA] Deuda #${ddeId}: aplicado=${montoAplicar.toFixed(2)} nuevo_pendiente=${nuevoPendiente.toFixed(2)} estado=${nuevoEstado}`);
       }
 
@@ -2072,6 +2081,28 @@ const procesarPagoDeudaInterno = async (req, res) => {
             WHERE MovIdMovimiento IN (${idsMov.join(',')})
               AND PagIdPago IS NULL
           `);
+      }
+
+      // ─────────────────────────────────────────────
+      // ImputacionPago: el rastro pago→deuda de este cobro. Misma convención que los
+      // movimientos: el PRIMER pago es la FK (con pago mixto, la transacción agrupa el
+      // resto). Es lo que ya escriben SP_ImputarPagoPEPS y el anticipo aplicado — el
+      // cobro de caja era el único camino que descontaba deuda sin dejarlo.
+      if (primerPagIdPago && imputacionesPend.length) {
+        for (const imp of imputacionesPend) {
+          await new sql.Request(transaction)
+            .input('pagId',  sql.Int,           primerPagIdPago)
+            .input('ddeId',  sql.Int,           imp.ddeId)
+            .input('cueId',  sql.Int,           imp.cueIdCuenta)
+            .input('monto',  sql.Decimal(18,4), imp.monto)
+            .input('usr',    sql.Int,           usuarioId)
+            .query(`
+              INSERT INTO dbo.ImputacionPago
+                (PagIdPago, DDeIdDocumento, CueIdCuenta, ImpImporte, ImpFecha, ImpUsuarioAlta)
+              VALUES (@pagId, @ddeId, @cueId, @monto, GETDATE(), @usr)
+            `);
+        }
+        logger.info(`[PAGO-DEUDA] ${imputacionesPend.length} imputación(es) registrada(s) para Pago #${primerPagIdPago}.`);
       }
 
       // ─────────────────────────────────────────────

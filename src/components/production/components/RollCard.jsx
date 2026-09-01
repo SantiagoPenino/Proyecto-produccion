@@ -1,5 +1,6 @@
 import React from 'react';
-import { Layers, Eye } from 'lucide-react';
+import { Layers, Eye, Printer } from 'lucide-react';
+import { printEtiquetaLote } from '../../../utils/printHelper';
 
 const RollCard = ({ roll, index, onViewDetails, isSelected, onToggleSelect, isMachineView, machineName }) => {
     if (!roll) return null;
@@ -76,17 +77,33 @@ const RollCard = ({ roll, index, onViewDetails, isSelected, onToggleSelect, isMa
                         )}
                     </div>
 
-                    {/* Botón Ojo */}
-                    <button
-                        onClick={(e) => {
-                            e.stopPropagation();
-                            if (onViewDetails) onViewDetails(roll);
-                        }}
-                        className="w-7 h-7 tablet:w-6 tablet:h-6 rounded-full bg-white border border-zinc-200 text-zinc-400 hover:bg-brand-cyan hover:text-white hover:border-brand-cyan flex items-center justify-center transition-all cursor-pointer shadow-sm"
-                        title="Ver Detalle del Lote"
-                    >
-                        <Eye size={13} />
-                    </button>
+                    <div className="flex items-center gap-1.5 tablet:gap-1">
+                        {/* Reimprimir la etiqueta del lote: la automática sale una sola vez al
+                            finalizar, y si el operario cancela el diálogo de impresión no había
+                            forma de recuperarla. */}
+                        <button
+                            onClick={(e) => {
+                                e.stopPropagation();
+                                printEtiquetaLote(roll.id);
+                            }}
+                            className="w-7 h-7 tablet:w-6 tablet:h-6 rounded-full bg-white border border-zinc-200 text-zinc-400 hover:bg-zinc-800 hover:text-white hover:border-zinc-800 flex items-center justify-center transition-all cursor-pointer shadow-sm"
+                            title="Reimprimir etiqueta del lote"
+                        >
+                            <Printer size={13} />
+                        </button>
+
+                        {/* Botón Ojo */}
+                        <button
+                            onClick={(e) => {
+                                e.stopPropagation();
+                                if (onViewDetails) onViewDetails(roll);
+                            }}
+                            className="w-7 h-7 tablet:w-6 tablet:h-6 rounded-full bg-white border border-zinc-200 text-zinc-400 hover:bg-brand-cyan hover:text-white hover:border-brand-cyan flex items-center justify-center transition-all cursor-pointer shadow-sm"
+                            title="Ver Detalle del Lote"
+                        >
+                            <Eye size={13} />
+                        </button>
+                    </div>
                 </div>
             </div>
         </div>

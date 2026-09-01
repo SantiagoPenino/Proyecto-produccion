@@ -34,10 +34,11 @@ export default function CreateTicketModal({ isOpen, onClose, onCreated, initialO
                 })
                 .catch(err => console.error(err));
                 
-            apiClient.get('/web-orders/my-orders')
+            // Órdenes entregadas en los últimos 30 días (endpoint propio del helpdesk)
+            apiClient.get('/tickets/ordenes-recientes')
                 .then(res => {
                     if (res.success && res.data) {
-                        let lista = res.data.slice(0, 10);
+                        let lista = res.data;
                         // Si venimos de "Iniciar reclamo", la orden va SIEMPRE en el select (aunque no
                         // esté entre las recientes) y queda preseleccionada. El value se setea acá,
                         // junto con las opciones, para que el option exista cuando se aplica.
@@ -70,7 +71,7 @@ export default function CreateTicketModal({ isOpen, onClose, onCreated, initialO
         e.preventDefault();
         setErrorMsg('');
         
-        if (!asunto.trim() || !descripcion.trim() || !departamentoId) {
+        if (!asunto.trim() || !descripcion.trim() || !departamentoId || !ordenId) {
             setErrorMsg('Por favor completá los campos obligatorios (*).');
             return;
         }
@@ -135,13 +136,13 @@ export default function CreateTicketModal({ isOpen, onClose, onCreated, initialO
                         </div>
                         
                         <div className="relative z-20">
-                            <label className="block text-xs font-semibold text-zinc-400 uppercase tracking-wider mb-2">Orden Asociada (Opcional)</label>
+                            <label className="block text-xs font-semibold text-zinc-400 uppercase tracking-wider mb-2">Orden Asociada *</label>
                             <CustomSelect
                                 value={ordenId}
                                 onChange={setOrdenId}
                                 placeholder="Selecciona Pedido"
                                 options={[
-                                    ...ordenes.map(o => ({ value: String(o.OrdenID), label: o.CodigoOrden || o.NoDocERP || String(o.OrdenID) })),
+                                    ...ordenes.map(o => ({ value: String(o.OrdenID), label: (o.CodigoOrden || o.NoDocERP || String(o.OrdenID)) + (o.Trabajo ? ` · ${o.Trabajo}` : '') })),
                                     { value: 'otra', label: 'Otra...' }
                                 ]}
                                 disabled={loading}

@@ -2,6 +2,63 @@ const { getPool, sql } = require('../config/db');
 const logger = require('../utils/logger');
 const contabilidadService = require('../services/contabilidadService');
 const ordenesExternasSvc = require('../services/ordenesExternasService');
+const { totalesCobranzaDeOrden } = require('../utils/montoTotalPedido');
+
+// ─────────────────────────────────────────────────────────────────────────────
+// COSTO CON QUE ENTRA UNA ORDEN A DEPÓSITO
+// ─────────────────────────────────────────────────────────────────────────────
+// El importe del QR es una FOTO del momento en que se imprimió la etiqueta: si
+// después se aplica el perfil de precios del cliente, un descuento o una
+// corrección, la etiqueta impresa nunca se entera y Depósito hereda el precio
+// viejo — que es contra el que cobra la cajera. Barrido del 28/08/2026: cientos
+// de órdenes desde julio con el precio de lista en depósito y el precio real en
+// el pedido (proporciones exactas de 10%, 20% y 30% de descuento).
+//
+// El resto del sistema ya calcula esto desde las líneas del pedido (las tres
+// altas de logisticsController y el generador de etiquetas): este camino —el
+// ingreso por escaneo— era el único que seguía confiando en el QR.
+//
+// El pedido MANDA, pero el QR queda de respaldo: hay órdenes que legítimamente
+// no tienen línea de cobranza (externas de Sheets, hermanas, legacy) y con un
+// reemplazo total entrarían en 0 — nadie las cobraría. Cobrar de menos en
+// silencio es peor que cobrar de más: nadie reclama.
+// monIdMoneda: la del registro de depósito (1 UYU / 2 USD). Si no se pasa, se lee
+// de la fila que ya existe — el importe SIEMPRE tiene que volver en la moneda en
+// la que se va a guardar, o se repite el bug de mezclar pesos y dólares.
+const costoParaDeposito = async (pool, codigoOrden, importeQR, monIdMoneda) => {
+    const qr = parseFloat(importeQR) || 0;
+    try {
+        const cod = String(codigoOrden || '').trim();
+        let mon = parseInt(monIdMoneda, 10);
+        if (!(mon === 1 || mon === 2)) {
+            const depRes = await pool.request()
+                .input('Cod', sql.VarChar(100), cod)
+                .query(`SELECT TOP 1 MonIdMoneda FROM OrdenesDeposito WITH(NOLOCK)
+                        WHERE LTRIM(RTRIM(OrdCodigoOrden)) = @Cod`);
+            mon = parseInt(depRes.recordset[0]?.MonIdMoneda, 10);
+            if (!(mon === 1 || mon === 2)) return qr;   // sin moneda cierta, no se toca
+        }
+
+        const ordRes = await pool.request()
+            .input('Cod', sql.VarChar(100), cod)
+            .query(`SELECT TOP 1 OrdenID FROM Ordenes WITH(NOLOCK)
+                    WHERE LTRIM(RTRIM(CodigoOrden)) = @Cod ORDER BY OrdenID DESC`);
+        const ordenId = ordRes.recordset[0]?.OrdenID;
+        if (!ordenId) return qr;
+
+        const lin = await totalesCobranzaDeOrden(pool, ordenId, mon === 2 ? 'USD' : 'UYU');
+        const delPedido = parseFloat(lin?.Imp);
+        if (!(delPedido > 0)) return qr;
+
+        if (Math.abs(delPedido - qr) > 0.01) {
+            logger.warn(`[INGRESO] ${codigoOrden}: el QR traía ${qr.toFixed(2)} y el pedido vale ${delPedido.toFixed(2)} — se ingresa con el del pedido (la etiqueta se imprimió antes del precio final).`);
+        }
+        return delPedido;
+    } catch (e) {
+        logger.error(`[INGRESO] ${codigoOrden}: no se pudo leer el precio del pedido (${e.message}) — se usa el del QR.`);
+        return qr;
+    }
+};
 
 // Controlador para obtener las órdenes
 const getOrdenesByFilter = async (req, res) => {
@@ -359,6 +416,9 @@ const createOrden = async (req, res) => {
         }
 
         // NO TIENE ORDEN DE RETIRO, SE ACTUALIZA
+        // Ídem el alta: el precio sale del pedido y el QR queda de respaldo. La moneda
+        // se resuelve sola desde la fila de depósito que ya existe.
+        const costoFinalUpdate = await costoParaDeposito(pool, CodigoOrden, costoOriginalQR);
         await pool.request()
           .input('CodigoOrden', sql.VarChar(100), CodigoOrden)
           .input('CodigoCliente', sql.Int, clienteMapeado.CliIdCliente)
@@ -366,7 +426,7 @@ const createOrden = async (req, res) => {
           .input('IdModo', sql.Int, parseInt(IdModo, 10) || null)
           .input('IdProducto', sql.Int, productoParaDBUpdate.ProIdProducto)  // ← Sheets para XSB
           .input('Cantidad', sql.Float, cantidadDecimal)
-          .input('CostoFinal', sql.Float, costoOriginalQR)
+          .input('CostoFinal', sql.Float, costoFinalUpdate)
           .input('UsuarioAlta', sql.Int, UsuarioAlta)
           .input('MaterialPlanilla', sql.NVarChar(255), materialPlanilla || null)
           .query(`
@@ -458,6 +518,19 @@ const createOrden = async (req, res) => {
       logger.info(`[EXTERNAS] ${CodigoOrden}: DB guardará producto Sheets (ProId=${productoParaDB.ProIdProducto} "${productoParaDB.ProductoNombre}") en lugar del QR (ProId=${productoMapeado.ProIdProducto}).`);
     }
 
+    // [REPOSICIONES 21/08] Re-trabajo sin cargo: para códigos -R# (reposición cliente) y
+    // -F# (falla interna) el costo NUNCA sale del QR — hay etiquetas viejas impresas con
+    // el importe de la madre adentro (fallback de LabelGenerationService, ya corregido en
+    // el origen). Defensa en el ingreso: costo 0.
+    const esRepoIngreso = /-[RF]\d+$/i.test(String(CodigoOrden || '').trim());
+    // El precio manda desde el pedido, no desde la foto del QR (ver costoParaDeposito)
+    const costoFinalIngreso = esRepoIngreso
+        ? 0
+        : await costoParaDeposito(pool, CodigoOrden, costoOriginalQR, monIdMoneda);
+    if (esRepoIngreso && Number(costoOriginalQR) > 0) {
+      logger.warn(`[REPOSICIONES] ${CodigoOrden}: el QR traía importe ${costoOriginalQR} — se ingresa con costo 0 (reposición/falla sin cargo).`);
+    }
+
     const result = await pool.request()
       .input('CodigoOrden', sql.VarChar(100), CodigoOrden)
       .input('Cantidad', sql.Float, cantidadDecimal)               // ← cantidad de Sheets (real)
@@ -466,7 +539,7 @@ const createOrden = async (req, res) => {
       .input('IdModo', sql.Int, parseInt(IdModo, 10) || null)
       .input('IdProducto', sql.Int, productoParaDB.ProIdProducto)  // ← Sheets para XSB, QR para normal
 
-      .input('CostoFinal', sql.Float, costoOriginalQR)
+      .input('CostoFinal', sql.Float, costoFinalIngreso)
       .input('FechaIngresoOrden', sql.DateTime, new Date())
       .input('UsuarioAlta', sql.Int, UsuarioAlta)
       .input('OrdEstadoActual', sql.Int, 1)

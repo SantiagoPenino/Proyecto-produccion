@@ -266,12 +266,21 @@ export default function PaymentResult() {
             return;
         }
 
+        // [TIENDA 21/08] Pago de la tienda confirmado: el carrito local ya es una venta —
+        // se vacía acá (no antes de pagar, para no perderlo si el cliente cancela el pago).
+        const limpiarCarritoSiTienda = (data) => {
+            if (data?.tienda && data?.status === 'Pagado') {
+                try { localStorage.removeItem('tienda_carrito'); } catch (e) { /* sin storage */ }
+            }
+        };
+
         const fetchStatus = async () => {
             try {
                 const res = await fetch(`${API_BASE}/web-orders/payment-status/${txId}`);
                 if (!res.ok) throw new Error('Transacción no encontrada');
                 const data = await res.json();
                 setTxData(data);
+                limpiarCarritoSiTienda(data);
             } catch (e) {
                 setError(e.message);
             } finally {
@@ -288,6 +297,7 @@ export default function PaymentResult() {
                 if (res.ok) {
                     const data = await res.json();
                     setTxData(data);
+                    limpiarCarritoSiTienda(data);
                     if (data.status === 'Pagado' || data.status === 'Fallido') {
                         clearInterval(interval);
                     }

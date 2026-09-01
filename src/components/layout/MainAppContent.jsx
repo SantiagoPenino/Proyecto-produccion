@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useRef, useCallback, Suspense, lazy } from 'react';
-import { LayoutDashboard, Warehouse, Printer, ClipboardList, Terminal, CircleUserRound, Tags, Headset, Calculator, Landmark, Shirt, Sun, Sparkles, Flame, Scissors, Pen, Shapes, PenLine, QrCode, ShieldBan, PrinterCheck, History, LayoutGrid, PackagePlus, PackageCheck, Truck, FileSearch, Boxes, Waypoints, Send, Package, Bus, ClipboardCheck, Menu, Users, Shield, Eye, Settings, Database, UserX, RefreshCw, BadgeDollarSign, Layers, BookOpen, Banknote, CreditCard, ShieldCheck, Calendar, CalendarCheck, MapPin, Store, LifeBuoy, Ticket, ScanLine, FileText, Cpu, FileDown, Inbox, Receipt, ShoppingCart, Palette } from 'lucide-react';
+import { LayoutDashboard, Warehouse, Printer, ClipboardList, Terminal, CircleUserRound, Tags, Headset, Calculator, Landmark, Shirt, Sun, Sparkles, Flame, Scissors, Pen, Shapes, PenLine, QrCode, ShieldBan, PrinterCheck, History, LayoutGrid, PackagePlus, PackageCheck, Truck, FileSearch, Boxes, Waypoints, Send, Package, Bus, ClipboardCheck, Menu, Users, Shield, Eye, Settings, Database, UserX, RefreshCw, BadgeDollarSign, Layers, BookOpen, Banknote, CreditCard, ShieldCheck, Calendar, CalendarCheck, MapPin, Store, LifeBuoy, Ticket, ScanLine, FileText, Cpu, FileDown, Inbox, Receipt, ShoppingCart, Palette, Megaphone, ScanEye, FileSignature } from 'lucide-react';
 import { Routes, Route, Navigate, useNavigate, useLocation } from 'react-router-dom';
 import { AnimatePresence, motion } from 'framer-motion';
 import { Toaster, toast } from 'sonner';
@@ -52,8 +52,12 @@ const ConfigurarProductosPage = lazyWithRetry(() => import('../pages/ConfigurarP
 const PlanificacionPage = lazyWithRetry(() => import('../pages/PlanificacionPage')); // Agenda/calendario de capacidad por área
 const WebRetirosPage = lazyWithRetry(() => import('../logistics/WebRetirosPage'));
 const ClientsIntegration = lazyWithRetry(() => import('../pages/ClientsIntegration'));
+const PresupuestosPage = lazyWithRetry(() => import('../pages/ventas/PresupuestosPage'));
 import ChatWidget from '../common/ChatWidget';
 const ProductsIntegration = lazyWithRetry(() => import('../pages/ProductsIntegration'));
+const MarketingProductosPage = lazyWithRetry(() => import('../pages/MarketingProductosPage'));
+const MarketingPreciosPage = lazyWithRetry(() => import('../pages/MarketingPreciosPage'));
+const StockGestionPage = lazyWithRetry(() => import('../pages/StockGestionPage'));
 const SpecialPrices = lazyWithRetry(() => import('../pages/SpecialPrices'));
 const BasePrices = lazyWithRetry(() => import('../pages/BasePrices'));
 const PriceProfiles = lazyWithRetry(() => import('../pages/PriceProfiles'));
@@ -284,6 +288,12 @@ const lucideIconMapRaw = {
     'helpdesk': LifeBuoy,
     'helpdesk / tickets': LifeBuoy,
     'tickets': Ticket,
+    // Stock propio (WMS interno)
+    'stock': Package,
+    // Marketing
+    'marketing': Megaphone,
+    'precios': BadgeDollarSign,
+    'productos': Store,
     // Ítems que quedaban sin ícono / con círculo (íconos Lucide agregados)
     'contabilidad': Landmark,
     'documentos': FileText,
@@ -305,6 +315,9 @@ const lucideIconMapRaw = {
     'venta de recursos adelantados': BadgeDollarSign,
     'venta recursos adelantados': BadgeDollarSign,
     'recursos adelantados': BadgeDollarSign,
+    'vista 360 del cliente': ScanEye,
+    'vista 360': ScanEye,
+    'presupuestos': FileSignature,
 };
 const getLucideIcon = (name) => lucideIconMapRaw[name?.toLowerCase?.()?.trim?.()?.replace(/\s+/g, ' ')];
 
@@ -670,13 +683,20 @@ const MainAppContent = ({ menuItems = [] }) => {
 <Route path="/atencion-cliente/inventario-tela" element={<TelaClienteInventarioPage />} />
                 <Route path="/logistica/pedidos-wms" element={<WmsLogisticsPage />} />
                 <Route path="/admin/clientes-integration" element={<ClientsIntegration />} />
+                <Route path="/ventas/presupuestos" element={<PresupuestosPage />} />
                 <Route path="/admin/duplicate-clients" element={<DuplicateClientsPage />} />
                 <Route path="/designers" element={<DesignersAdminPage />} />
                 <Route path="/admin/helpdesk" element={<HelpDeskAdminView />} />
                 <Route path="/atencion-cliente/helpdesk" element={<HelpDeskAdminView />} />
                 <Route path="/admin/products-integration" element={<ProductsIntegration />} />
                 <Route path="/admin/special-prices" element={<SpecialPrices />} />
+                {/* [MARKETING 21/08] Sección propia de marketing, con pantallas SIMPLES propias.
+                    Las de admin (/admin/base-prices, /admin/products-integration) quedan intactas. */}
                 <Route path="/admin/base-prices" element={<BasePrices hideGeneralRow hideAddCurrency />} />
+                <Route path="/marketing/precios" element={<MarketingPreciosPage />} />
+                {/* [WMS PROPIO] Gestión del stock propio (tablas Wms_*) */}
+                <Route path="/stock" element={<StockGestionPage />} />
+                <Route path="/marketing/productos" element={<MarketingProductosPage />} />
                 <Route path="/admin/price-profiles" element={<PriceProfiles />} />
                 <Route path="/admin/price-catalog" element={<CustomerPriceCatalogPage />} />
                 <Route path="/admin/nomencladores" element={<NomenclatorsABM />} />
@@ -872,7 +892,7 @@ const MainAppContent = ({ menuItems = [] }) => {
                 </aside>
 
                 <main className="flex-1 overflow-hidden relative bg-slate-100 w-full">
-                    <div className={`absolute inset-0 overflow-y-auto scroll-smooth ${['/caja/transaccion', '/contabilidad/caja-admin', '/admin/helpdesk', '/atencion-cliente/helpdesk', '/consultas/ordenes', '/admin/clientes-integration'].includes(location.pathname) || location.pathname.startsWith('/production/machine') ? 'p-0' : 'p-0 md:p-6'}`}>
+                    <div className={`absolute inset-0 overflow-y-auto scroll-smooth ${['/caja/transaccion', '/contabilidad/caja-admin', '/admin/helpdesk', '/atencion-cliente/helpdesk', '/consultas/ordenes', '/admin/clientes-integration', '/ventas/presupuestos'].includes(location.pathname) || location.pathname.startsWith('/production/machine') ? 'p-0' : 'p-0 md:p-6'}`}>
                         <AnimatePresence mode="wait">
                             <motion.div
                                 key={location.pathname}
@@ -913,6 +933,9 @@ const DynamicRouter = ({ menuItems }) => {
     // directo por path (mismo criterio que /area/ecouv/config) pero ANTES del fallback.
     // Cuando exista la fila de menú con esta Ruta, esta línea se puede borrar.
     if (normalizedPath === '/ventas/pedido-prenda') return <PedidoPrendaPage />;
+    // Presupuestos (26-ago): match directo por path — el ítem de menú puede no estar en la
+    // sesión (se carga al loguear) o no existir aún en prod; la ruta funciona igual.
+    if (normalizedPath === '/ventas/presupuestos') return <PresupuestosPage />;
     // Configuración ECOUV: vive DEBAJO de /area/ecouv — sin ítem de menú propio, el
     // matcher longest-match la mandaría a AreaView. Match directo por path.
     if (normalizedPath === '/area/ecouv/config') return <EcouvConfigPage />;
@@ -958,8 +981,14 @@ const DynamicRouter = ({ menuItems }) => {
     if (menuItem.Ruta === '/administracion/ordenes') return <AdminEditarOrdenView />;
     if (menuItem.Ruta === '/produccion/etiquetas') return <LabelGenerationPage />;
     if (menuItem.Ruta === '/admin/clientes-integration') return <ClientsIntegration />;
+    if (menuItem.Ruta === '/ventas/presupuestos') return <PresupuestosPage />;
     if (menuItem.Ruta === '/admin/nomencladores' || menuItem.Ruta === '/nomencladores') return <NomenclatorsABM />;
     if (menuItem.Ruta === '/admin/products-integration') return <ProductsIntegration />;
+    // [MARKETING 21/08] Rutas propias de marketing (menú por rol), con pantallas simples
+    // propias. Las de admin quedan intactas.
+    if (menuItem.Ruta === '/marketing/precios') return <MarketingPreciosPage />;
+    if (menuItem.Ruta === '/stock') return <StockGestionPage />;
+    if (menuItem.Ruta === '/marketing/productos') return <MarketingProductosPage />;
     if (menuItem.Ruta === '/admin/price-catalog') return <CustomerPriceCatalogPage />;
     // Terminaciones (pedido 29/07): la entrada del menú abre el ÁREA TERMINAC en su
     // planilla; la bandeja (checklist) es la pestaña Control del área.

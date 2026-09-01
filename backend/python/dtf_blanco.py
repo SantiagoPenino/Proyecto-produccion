@@ -9,10 +9,12 @@ UN PDF: el arte original intacto + un canal de tinta plana (Separation "Spot 1")
 con la plancha de blanco, en sobreimpresion, listo para PhotoPrint.
 
 Reglas (decodificadas del .atn + spec del usuario, 14/08/2026):
-  - Zonas de color: blanco al 100%, con CHOKE de 2 px @ 300 dpi (fisico: 0,169 mm).
+  - Zonas de color: blanco al 100%, con CHOKE de 1 px @ 300 dpi (fisico: 0,085 mm; era 2 hasta el 31/08).
   - Blancos del disenio (RGB >= tol, default 245): blanco al 100% SIN choke.
-  - Semitransparencias: rampa desde 25% de opacidad (debajo no hay tinta;
-    de 25% a 100% escala lineal 0->100). MEJORA sobre la accion (que era lineal desde 0).
+  - Semitransparencias: blanco = opacidad 1:1, lineal desde 0 (identico a la accion,
+    que rellena 100K a traves de la seleccion de transparencia).
+  - Corte de cola (--tail-cut, default 3%): bajo ese umbral de opacidad no se imprime
+    NADA — ni blanco ni color. Va MAS ALLA de la accion, que nunca toca el arte.
   - Spot "Spot 1" con alternate CMYK (0,0,0,0) — fix PhotoPrint: un alternate de
     preview distinto de 0 lo aplicaba como valor real de tinta.
 
@@ -21,14 +23,15 @@ parametros pisados con los valores confirmados).
 
 Uso:
     python dtf_blanco.py entrada.pdf salida.pdf [--preview salida.png]
-        [--dpi 300] [--choke-px 2] [--white-pct 100] [--ramp 25] [--tol 245]
-        [--spot "Spot 1"]
+        [--dpi 300] [--choke-px 1] [--white-pct 100] [--ramp 25] [--tail-cut 3]
+        [--tol 245] [--spot "Spot 1"]
 
 Salida (ultima linea, para el caller de Node): JSON {"ok":true,...} o {"ok":false,"error":...}
 """
 import argparse
 import io
 import json
+import os
 import sys
 import zlib
 
@@ -133,7 +136,23 @@ def _erosion(mascara, radio_px):
     return np.asarray(im) >= 128
 
 
-def plancha_blanco(rgba, dpi, choke_px300=2.0, white_pct=100.0, tol=245, ramp_pct=25.0):
+def mascara_conservar(rgba, tail_cut_pct):
+    """Mascara booleana del CORTE DE COLA: True = se imprime, False = no se imprime nada.
+
+    Un degrade que se esfuma "a cero" sigue tirando gotitas invisibles al 2-3% de
+    opacidad, y en DTF cada gotita ancla su poliamida: la pelicula termina bastante
+    mas afuera de donde el disenio se deja de ver (el halo lechoso alrededor de los
+    glows). Cortando color Y blanco en el MISMO borde, la estampa muere limpia.
+    Devuelve None si el corte esta desactivado (0), para no tocar el PDF de mas.
+    """
+    if tail_cut_pct <= 0:
+        return None
+    alpha = rgba[..., 3].astype(np.float32) / 255.0
+    return alpha >= (tail_cut_pct / 100.0)
+
+
+def plancha_blanco(rgba, dpi, choke_px300=2.0, white_pct=100.0, tol=245, ramp_pct=0.0,
+                   conservar=None, gamma=1.0):
     """Imagen L con la convencion negro(0) = 100% de tinta blanca."""
     H, W = rgba.shape[:2]
     r, g, b, a = rgba[..., 0], rgba[..., 1], rgba[..., 2], rgba[..., 3]
@@ -147,10 +166,20 @@ def plancha_blanco(rgba, dpi, choke_px300=2.0, white_pct=100.0, tol=245, ramp_pc
     blanco[es_color] = white_pct
     blanco[es_blanco] = 100.0
 
-    # Rampa de semitransparencias: bajo `ramp_pct` de opacidad no hay tinta; de ahi a 100%
-    # se reescala lineal. (La accion de Photoshop era lineal desde 0; esto es spec nueva.)
+    # Rampa de semitransparencias. Con ramp_pct=0 (default) el blanco copia la opacidad
+    # 1:1, que es exactamente lo que hace la accion de Photoshop.
     s = max(0.0, min(0.999, ramp_pct / 100.0))
-    blanco *= np.clip((alpha - s) / (1.0 - s), 0.0, 1.0)
+    factor = np.clip((alpha - s) / (1.0 - s), 0.0, 1.0)
+
+    # Gamma: curva el reparto SIN mover los extremos (0 sigue en 0, opaco sigue en 100).
+    # gamma > 1 adelgaza los medios y bajos → el blanco muere ANTES que el color, que es
+    # lo que se busca: un color al 10% casi no se ve, pero un blanco al 10% es tinta opaca
+    # y sobre la tela se lee como velo. Es la version SUAVE de lo que intentaba el ramp 25
+    # (que cortaba en seco y dejaba el escalon visible en el degrade).
+    if gamma != 1.0:
+        factor = np.power(factor, max(0.05, gamma))
+
+    blanco *= factor
 
     # Choke SOLO sobre el color: el blanco del disenio no se adelgaza. El parametro esta
     # definido "en px a 300 dpi" (la unidad de la accion original): se escala al dpi real.
@@ -160,8 +189,176 @@ def plancha_blanco(rgba, dpi, choke_px300=2.0, white_pct=100.0, tol=245, ramp_pc
         perdidos = es_color & (~color_erosionado)
         blanco[perdidos] = 0.0
 
+    # Corte de cola: el blanco muere en el mismo borde que el color (ver mascara_conservar).
+    if conservar is not None:
+        blanco[~conservar] = 0.0
+
     gris = (255.0 - (blanco / 100.0) * 255.0).clip(0, 255).astype(np.uint8)
     return Image.fromarray(gris, mode="L")
+
+
+# ── Arte en CMYK con perfil (pedido 31/08) ───────────────────────────────────
+
+ICC_DEFAULT = r"C:\Program Files (x86)\Common Files\Adobe\Color\Profiles\Recommended\USWebCoatedSWOP.icc"
+
+def _abrir_con_arte(pdf_bytes):
+    """Abre el PDF y devuelve (pdf, imagen_del_arte). El arte es la unica imagen
+    con SMask (su alpha); la plancha de blanco no lleva."""
+    import pikepdf
+    from pikepdf import Name
+    pdf = pikepdf.open(io.BytesIO(pdf_bytes))
+    for obj in pdf.objects:
+        try:
+            if obj.get(Name.Subtype, None) == Name.Image and Name.SMask in obj:
+                return pdf, obj
+        except Exception:
+            continue
+    raise RuntimeError("no encontre la imagen del arte")
+
+
+def incrustar_icc_rgb(pdf_bytes, icc_bytes):
+    """El arte TRAE su propio perfil (iCCP del PNG): se embebe ESE como ICCBased N=3,
+    sin convertir nada — regla 31/08: USWC es solo para los que vienen sin perfil."""
+    import pikepdf
+    from pikepdf import Name, Array
+    pdf, arte = _abrir_con_arte(pdf_bytes)
+    icc_stream = pdf.make_stream(bytes(icc_bytes))
+    icc_stream[Name.N] = 3
+    icc_stream[Name("/Alternate")] = Name.DeviceRGB
+    arte[Name.ColorSpace] = pdf.make_indirect(Array([Name.ICCBased, icc_stream]))
+    out = io.BytesIO()
+    pdf.save(out)
+    return out.getvalue()
+
+
+def arte_a_cmyk(pdf_bytes, rgba, icc_ruta):
+    """SOLO entrada PNG: reemplaza la imagen del arte (RGB) por su conversion a CMYK
+    con el perfil embebido (ICCBased N=4). Asi el RIP recibe el color ya separado,
+    como lo entregaba el flujo de Photoshop (doc CMYK U.S. Web Coated v2), en vez
+    de convertir el RGB con su default. La alpha (SMask) queda intacta.
+
+    Conversion sRGB -> perfil con intento colorimetrico relativo + compensacion de
+    punto negro (los defaults de Photoshop). OJO: SWOP tiene gamut chico — los
+    fluor/neon se apagan igual que se apagaban al pasar el arte a CMYK en PS.
+    """
+    from PIL import ImageCms
+    import pikepdf
+    from pikepdf import Name, Array
+
+    with open(icc_ruta, "rb") as f:
+        icc_bytes = f.read()
+
+    srgb = ImageCms.createProfile("sRGB")
+    destino = ImageCms.getOpenProfile(io.BytesIO(icc_bytes))
+    # Pillow nuevo expone enums (Intent/Flags); el viejo, constantes INTENT_*/FLAGS.
+    try:
+        intento = ImageCms.Intent.RELATIVE_COLORIMETRIC
+        flags = ImageCms.Flags.BLACKPOINTCOMPENSATION
+    except AttributeError:
+        intento = ImageCms.INTENT_RELATIVE_COLORIMETRIC
+        flags = ImageCms.FLAGS.get("BLACKPOINTCOMPENSATION", 0)
+    transform = ImageCms.buildTransform(
+        srgb, destino, "RGB", "CMYK",
+        renderingIntent=intento, flags=flags,
+    )
+    cmyk = ImageCms.applyTransform(Image.fromarray(rgba[..., :3], "RGB"), transform)
+    data = zlib.compress(cmyk.tobytes(), 6)
+
+    pdf, arte = _abrir_con_arte(pdf_bytes)
+
+    icc_stream = pdf.make_stream(icc_bytes)
+    icc_stream[Name.N] = 4
+    icc_stream[Name("/Alternate")] = Name.DeviceCMYK
+
+    arte.write(data, filter=Name.FlateDecode)
+    arte[Name.ColorSpace] = pdf.make_indirect(Array([Name.ICCBased, icc_stream]))
+    arte[Name.BitsPerComponent] = 8
+    if Name("/Decode") in arte:
+        del arte[Name("/Decode")]
+
+    out = io.BytesIO()
+    pdf.save(out)
+    return out.getvalue()
+
+
+# ── Corte de cola sobre el ARTE (mas alla de la accion de Photoshop) ─────────
+
+def enmascarar_cola(pdf_bytes, conservar):
+    """Recorta el arte del cliente donde `conservar` es False.
+
+    NO rasteriza: envuelve el contenido original en un Form XObject y le aplica un
+    soft mask de luminosidad. El vector sigue siendo vector (textos y curvas nitidos
+    al ripear), solo deja de pintar en la zona cortada.
+    """
+    import pikepdf
+    from pikepdf import Name, Dictionary, Array
+    import pikepdf as _pk
+
+    pdf = pikepdf.open(io.BytesIO(pdf_bytes))
+    page = pdf.pages[0]
+
+    mb = page.mediabox
+    x0, y0 = float(mb[0]), float(mb[1])
+    W = float(mb[2]) - x0
+    H = float(mb[3]) - y0
+
+    # Mascara: blanco(255) = se conserva, negro(0) = se corta. Como luminosidad, es el
+    # alfa que se le aplica al arte.
+    m = np.where(conservar, 255, 0).astype(np.uint8)
+    mh, mw = m.shape
+    mimg = pdf.make_stream(zlib.compress(m.tobytes(), 6))
+    mimg[Name.Type] = Name.XObject
+    mimg[Name.Subtype] = Name.Image
+    mimg[Name.Width] = mw
+    mimg[Name.Height] = mh
+    mimg[Name.BitsPerComponent] = 8
+    mimg[Name.ColorSpace] = Name.DeviceGray
+    mimg[Name.Filter] = Name.FlateDecode
+
+    mres = Dictionary()
+    mres[Name.XObject] = Dictionary()
+    mres[Name.XObject][Name("/MascaraIMG")] = mimg
+    mform = pdf.make_stream(
+        f"q {W:.4f} 0 0 {H:.4f} {x0:.4f} {y0:.4f} cm /MascaraIMG Do Q\n".encode())
+    mform[Name.Type] = Name.XObject
+    mform[Name.Subtype] = Name.Form
+    mform[Name.BBox] = Array([x0, y0, x0 + W, y0 + H])
+    mform[Name.Resources] = mres
+    mform[Name.Group] = Dictionary(Type=Name.Group, S=Name.Transparency, CS=Name.DeviceGray)
+
+    # Contenido original -> Form XObject, con SUS recursos (por eso la pagina estrena
+    # un diccionario de recursos limpio: nadie se referencia a si mismo).
+    contents = page.get(Name.Contents)
+    if isinstance(contents, _pk.Array):
+        raw = b"\n".join(bytes(c.read_bytes()) for c in contents)
+    else:
+        raw = bytes(contents.read_bytes())
+    oform = pdf.make_stream(raw)
+    oform[Name.Type] = Name.XObject
+    oform[Name.Subtype] = Name.Form
+    oform[Name.BBox] = Array([x0, y0, x0 + W, y0 + H])
+    oform[Name.Resources] = page.get(Name.Resources, Dictionary())
+    # Grupo de transparencia SIN CS: hereda el espacio de color de la pagina, asi un
+    # arte CMYK no se convierte a RGB de paso.
+    oform[Name.Group] = Dictionary(Type=Name.Group, S=Name.Transparency)
+
+    gs = Dictionary()
+    gs[Name.Type] = Name.ExtGState
+    gs[Name.SMask] = Dictionary(
+        Type=Name.Mask, S=Name.Luminosity, G=mform, BC=Array([0]))
+
+    nres = Dictionary()
+    nres[Name.XObject] = Dictionary()
+    nres[Name.XObject][Name("/ArteOriginal")] = oform
+    nres[Name.ExtGState] = Dictionary()
+    nres[Name.ExtGState][Name("/GSCorteCola")] = gs
+    page[Name.Resources] = nres
+    page[Name.Contents] = pdf.make_stream(b"q /GSCorteCola gs /ArteOriginal Do Q\n")
+
+    out = io.BytesIO()
+    pdf.save(out, object_stream_mode=_pk.ObjectStreamMode.disable)
+    pdf.close()
+    return out.getvalue()
 
 
 # ── Incrustado del spot (fiel a suite_user/pdf_merge_white.py) ───────────────
@@ -199,7 +396,11 @@ def incrustar_spot(pdf_bytes, plancha_L, spot="Spot 1"):
     img[Name.BitsPerComponent] = 8
     img[Name.ColorSpace] = sep
     img[Name.Filter] = Name.FlateDecode
-    img[Name.Mask] = Array([0, 0])                 # tinta 0 no pinta (PDF 1.3, max compat)
+    # SIN /Mask [0 0]. El color-key masking era el causante de las RAYAS NEGRAS
+    # (27-31/08): PhotoPrint lo decodifica con basura determinística — mismas
+    # posiciones en cada impresión; aislado con variantes A/A2/B el 31/08 (la
+    # única diferencia entre el archivo rayado y el limpio era esta línea).
+    # No hace falta: tinta 0 con overprint no pinta nada de todos modos.
 
     res = page.get(Name.Resources, None)
     if res is None:
@@ -280,24 +481,62 @@ def main():
     ap.add_argument("salida", help="PDF resultante (arte + spot de blanco)")
     ap.add_argument("--preview", help="PNG opcional con la plancha de blanco (para revision)")
     ap.add_argument("--dpi", type=int, default=300)
-    ap.add_argument("--choke-px", type=float, default=2.0, help="choke en px a 300 dpi (default 2)")
+    ap.add_argument("--choke-px", type=float, default=1.0, help="choke en px a 300 dpi (default 1, pedido 31/08)")
     ap.add_argument("--white-pct", type=float, default=100.0, help="blanco bajo el color (default 100)")
-    ap.add_argument("--ramp", type=float, default=25.0, help="opacidad donde arranca la tinta (default 25)")
+    # Default 25 (veredicto impreso 27/08 sobre tela oscura): el blanco arranca recién en el
+    # 25% de opacidad — abajo de eso el color queda sin respaldo y se funde con la tela, que
+    # es el efecto de semitransparencia buscado. La acción de Photoshop original es ramp 0
+    # (lineal 1:1): quedó disponible pasando --ramp 0 si algún arte lo pide.
+    # ramp 0 = blanco copia la opacidad 1:1, lineal desde cero — es lo que hace la acción de
+    # Photoshop (DTF Photoprint V5_25.3: rellena 100K a través de la selección de transparencia).
+    # El 25 anterior era un invento de la traducción: cortaba el blanco en las colas de los
+    # degradés y dejaba un anillo lechoso de adhesivo sin respaldo (prueba del 18/08).
+    ap.add_argument("--ramp", type=float, default=25.0, help="opacidad donde arranca el blanco (default 25; 0 = lineal 1:1 como la acción PS)")
+    # Corte de cola: bajo este % de opacidad no se imprime NADA (ni blanco ni color).
+    # A 3% la tinta ya es invisible, pero seguia anclando poliamida: es el halo lechoso
+    # alrededor de los glows. 0 lo desactiva y el arte sale intacto, como la accion.
+    ap.add_argument("--tail-cut", type=float, default=3.0,
+                    help="opacidad bajo la cual no se imprime nada, ni color (default 3; 0 = sin corte)")
+    # Gamma del reparto de blanco: 1 = lineal (como la accion). >1 = el blanco cae mas
+    # rapido que el color en los tonos bajos, sin escalon y sin tocar los solidos.
+    ap.add_argument("--gamma", type=float, default=1.0,
+                    help="curva del blanco: 1 lineal, >1 menos blanco en medios/bajos (default 1)")
     ap.add_argument("--tol", type=int, default=245, help="umbral RGB de blanco del disenio (default 245)")
     ap.add_argument("--spot", default="Spot 1")
+    # Perfil para separar el arte a CMYK — SOLO entrada PNG y SOLO si el arte no trae
+    # perfil propio (si trae, se respeta el suyo). El PDF del cliente va intacto siempre.
+    # "" = no convertir nunca.
+    ap.add_argument("--icc", default=ICC_DEFAULT,
+                    help="perfil CMYK para PNG sin perfil embebido (default USWC v2; '' = no convertir)")
     args = ap.parse_args()
 
     try:
+        icc_usado = None
         if args.entrada.lower().endswith(".png"):
             rgba, dpi, pdf_base = cargar_png(args.entrada, args.dpi)
+            # Regla 31/08: el USWC es SOLO para artes que vienen sin perfil. Si el PNG
+            # trae el suyo (iCCP), se respeta y se embebe ese, sin conversion.
+            perfil_propio = Image.open(args.entrada).info.get("icc_profile")
+            if perfil_propio:
+                pdf_base = incrustar_icc_rgb(pdf_base, perfil_propio)
+                icc_usado = "propio del archivo"
+            elif args.icc and os.path.isfile(args.icc):
+                pdf_base = arte_a_cmyk(pdf_base, rgba, args.icc)
+                icc_usado = os.path.basename(args.icc)
         else:
+            # El PDF del cliente va INTACTO por diseno: no se le toca el color.
             rgba, dpi, pdf_base = rasterizar_pdf(args.entrada, args.dpi)
+
+        conservar = mascara_conservar(rgba, args.tail_cut)
 
         plancha = plancha_blanco(
             rgba, dpi,
             choke_px300=args.choke_px, white_pct=args.white_pct,
-            tol=args.tol, ramp_pct=args.ramp,
+            tol=args.tol, ramp_pct=args.ramp, conservar=conservar, gamma=args.gamma,
         )
+
+        if conservar is not None:
+            pdf_base = enmascarar_cola(pdf_base, conservar)
 
         resultado = incrustar_spot(pdf_base, plancha, spot=args.spot)
         with open(args.salida, "wb") as f:
@@ -311,9 +550,11 @@ def main():
             prev.save(args.preview, "PNG")
 
         cubiertos = int((np.asarray(plancha) < 255).sum())
+        cortados = int((~conservar & (rgba[..., 3] > 0)).sum()) if conservar is not None else 0
         print(json.dumps({
             "ok": True, "px": list(plancha.size), "dpi": round(dpi, 2),
-            "pixelesConTinta": cubiertos, "scipy": _HAY_SCIPY, "bytes": len(resultado),
+            "pixelesConTinta": cubiertos, "pixelesCortados": cortados,
+            "tailCut": args.tail_cut, "icc": icc_usado, "scipy": _HAY_SCIPY, "bytes": len(resultado),
         }))
     except Exception as e:
         print(json.dumps({"ok": False, "error": str(e)}))

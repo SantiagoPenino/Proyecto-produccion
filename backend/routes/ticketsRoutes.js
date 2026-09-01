@@ -31,6 +31,10 @@ router.get('/adjunto/:ticketId/:filename', (req, res) => {
 // Obtener lista de departamentos habilitados (el controlador filtra según rol)
 router.get('/categorias', ticketsController.getCategorias);
 
+// Órdenes del cliente entregadas en los últimos 30 días (selector del modal de
+// creación). Antes de /:id, o la captura el matcher.
+router.get('/ordenes-recientes', ticketsController.getOrdenesRecientes);
+
 // Obtener detalles de un ticket específico
 router.get('/:id', ticketsController.getTicketDetails);
 

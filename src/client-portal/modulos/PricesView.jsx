@@ -10,7 +10,7 @@ export const PricesView = () => {
     const [collapsed, setCollapsed] = useState({});
 
     useEffect(() => {
-        apiClient.get('/precios-publicos')
+        apiClient.get('/precios-publicos?lista=clientes')
             .then(data => setPrices(data))
             .catch(err => console.error('Error cargando precios:', err))
             .finally(() => setLoading(false));

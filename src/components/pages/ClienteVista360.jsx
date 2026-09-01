@@ -1525,7 +1525,7 @@ export default function ClienteVista360() {
       {/* Fase 2 — operación de dinero (Cobrar / Anticipo) sobre el cliente activo.
           Monta los MISMOS componentes de Caja en modo administrativo (sin sesión). */}
       {opModal && clienteSel && (
-        <div className="fixed inset-0 z-[60] bg-black/50 backdrop-blur-sm flex items-start justify-center px-2 sm:px-4 pt-16 pb-4">
+        <div className="fixed inset-0 z-[60] bg-black/50 flex items-start justify-center px-2 sm:px-4 pt-16 pb-4">
           <div className="bg-white rounded-2xl shadow-2xl w-[97vw] max-w-6xl h-[calc(100vh-5rem)] flex flex-col overflow-hidden">
             <div className="flex items-center justify-between px-5 py-3 border-b border-slate-200 bg-slate-50 shrink-0">
               <div className="flex items-center gap-2.5">
@@ -1607,7 +1607,7 @@ export default function ClienteVista360() {
 
       {/* Menú "Más" → Bandeja CFE del cliente (reusa ContabilidadBandejaCFE, fijada al cliente) */}
       {showBandejaCFE && clienteSel && (
-        <div className="fixed inset-0 z-[60] bg-black/50 backdrop-blur-sm flex items-start justify-center px-2 sm:px-4 pt-10 pb-4">
+        <div className="fixed inset-0 z-[60] bg-black/50 flex items-start justify-center px-2 sm:px-4 pt-10 pb-4">
           <div className="bg-white rounded-2xl shadow-2xl w-[97vw] max-w-7xl h-[calc(100vh-4rem)] flex flex-col overflow-hidden">
             <div className="flex items-center justify-between px-5 py-3 border-b border-slate-200 bg-slate-50 shrink-0">
               <div className="flex items-center gap-2.5">

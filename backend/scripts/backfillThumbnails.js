@@ -5,6 +5,13 @@
  *      node scripts/backfillThumbnails.js --concurrency=2
  *      node scripts/backfillThumbnails.js --noDocERP=DTF-1072   (solo una orden)
  *      node scripts/backfillThumbnails.js --force               (REGENERA los que ya existen)
+ *
+ * Modo cron (las órdenes del sync ERP no generan miniatura al crearse — este script
+ * pasa cada tanto y tapa el hueco):
+ *      node scripts/backfillThumbnails.js --dias=3 --lock --quiet
+ *   --dias=N  solo archivos subidos en los últimos N días (incremental)
+ *   --lock    no arranca si ya hay otra corrida viva (lockfile con PID)
+ *   --quiet   no lista los que ya existen, solo lo que hace
  */
 
 const path = require('path');
@@ -24,6 +31,9 @@ const args = Object.fromEntries(
 const CONCURRENCY = parseInt(args.concurrency || '1', 10); // Puppeteer es pesado, default 1
 const FILTER_DOC  = args.noDocERP || null;
 const FORCE       = !!args.force;   // --force = regenerar aunque ya exista el thumbnail
+const DIAS        = args.dias ? parseInt(args.dias, 10) : null; // solo archivos de los últimos N días
+const LOCK        = !!args.lock;    // lockfile: no correr dos a la vez (para cron)
+const QUIET       = !!args.quiet;   // sin ruido de "ya existe" (para cron)
 
 // ── Helpers ───────────────────────────────────────────────
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -52,8 +62,27 @@ function thumbnailExists(codigoOrden, archivoId) {
     return fs.existsSync(path.join(THUMBNAILS_DIR, String(codigoOrden), `${archivoId}.jpg`));
 }
 
+// ── Lock (para cron): si otra corrida sigue viva, salir sin hacer nada ────
+const LOCK_FILE = path.join(require('os').tmpdir(), 'backfill-thumbnails.lock');
+function tomarLock() {
+    if (fs.existsSync(LOCK_FILE)) {
+        const pid = parseInt(fs.readFileSync(LOCK_FILE, 'utf8'), 10);
+        let viva = false;
+        if (pid) { try { process.kill(pid, 0); viva = true; } catch (e) { /* proceso muerto: lock huérfano */ } }
+        if (viva) {
+            console.log(`⏭️  Otra corrida en curso (PID ${pid}) — salgo.`);
+            process.exit(0);
+        }
+    }
+    fs.writeFileSync(LOCK_FILE, String(process.pid));
+    process.on('exit', () => { try { fs.unlinkSync(LOCK_FILE); } catch (e) { /* ya no está */ } });
+    process.on('SIGINT',  () => process.exit(1));
+    process.on('SIGTERM', () => process.exit(1));
+}
+
 // ── Main ──────────────────────────────────────────────────
 async function main() {
+    if (LOCK) tomarLock();
     const pool = await getPool();
 
     console.log('🔍 Consultando archivos PDF en ArchivosOrden...');
@@ -78,6 +107,7 @@ async function main() {
           )
     `;
     if (FILTER_DOC) query += `  AND o.CodigoOrden = '${FILTER_DOC}'\n`;
+    if (DIAS) query += `  AND ao.FechaSubida >= DATEADD(day, -${DIAS}, GETDATE())\n`;
     query += `  ORDER BY o.CodigoOrden, ao.ArchivoID`;
 
     const result = await pool.request().query(query);
@@ -96,6 +126,7 @@ async function main() {
     // Procesar en chunks de CONCURRENCY
     for (let i = 0; i < rows.length; i += CONCURRENCY) {
         const chunk = rows.slice(i, i + CONCURRENCY);
+        const trabajoAntes = ok + fail; // para saltear la pausa si el chunk fue puro skip
 
         await Promise.all(chunk.map(async row => {
             const { ArchivoID, NombreArchivo, RutaAlmacenamiento, CodigoOrden } = row;
@@ -104,20 +135,14 @@ async function main() {
 
             // Saltar si ya existe (salvo --force, que regenera)
             if (!FORCE && thumbnailExists(CodigoOrden, ArchivoID)) {
-                console.log(`  ⏭️  Ya existe: ${label}`);
+                if (!QUIET) console.log(`  ⏭️  Ya existe: ${label}`);
                 skip++;
                 return;
             }
 
-            // Las -F (fallas internas) no llevan miniatura: no se le muestran al cliente y el
-            // generador las descarta. Se saltean ACÁ, antes de bajarlas — así no se gastan ~440
-            // descargas de Drive por corrida para tirar el resultado, y dejan de contarse como
-            // "fallo" (que era lo que inflaba el resumen final).
-            if (String(CodigoOrden || '').toUpperCase().includes('-F')) {
-                console.log(`  ⏭️  Falla interna (sin miniatura): ${label}`);
-                skip++;
-                return;
-            }
+            // Las -F (fallas internas) también llevan miniatura: planta la necesita en Control
+            // y en el modal de falla. (Antes se salteaban acá y el generador las descartaba —
+            // eso dejaba a Control sin vista previa al reportar fallas sobre una -F.)
 
             if (!fileId) {
                 console.log(`  ⚠️  Sin Drive ID: ${label}`);
@@ -154,16 +179,23 @@ async function main() {
             }
         }));
 
-        // Pausa entre batches para no sobrecargar Puppeteer
-        if (i + CONCURRENCY < rows.length) await sleep(500);
+        // Pausa entre batches para no sobrecargar el rasterizado — SOLO si el batch hizo
+        // trabajo real (descargó/generó). Los salteos por "ya existe" son instantáneos:
+        // sin esta condición, una corrida sin nada que hacer dormía 500ms por archivo
+        // (~12 min para 3 días de archivos) y el cron vivía ocupado al pedo.
+        if (i + CONCURRENCY < rows.length && (ok + fail) > trabajoAntes) await sleep(500);
     }
 
-    console.log(`\n──────────────────────────────────────`);
-    console.log(`✅ OK:      ${ok}`);
-    console.log(`⏭️  Skip:   ${skip}`);
-    console.log(`❌ Fail:   ${fail}`);
-    console.log(`📦 Total:  ${total}`);
-    console.log(`──────────────────────────────────────`);
+    if (QUIET && ok === 0 && fail === 0) {
+        console.log(`✅ ${new Date().toISOString()} — nada nuevo (${skip} al día).`);
+    } else {
+        console.log(`\n──────────────────────────────────────`);
+        console.log(`✅ OK:      ${ok}`);
+        console.log(`⏭️  Skip:   ${skip}`);
+        console.log(`❌ Fail:   ${fail}`);
+        console.log(`📦 Total:  ${total}`);
+        console.log(`──────────────────────────────────────`);
+    }
     process.exit(0);
 }
 

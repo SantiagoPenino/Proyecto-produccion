@@ -48,7 +48,8 @@ backend/public/
 backend/scratch/
 backend/thumbnails/
 backend/docs
-
-
+backend/uploads
+*.md
 docs/multitela-costo-por-orden-plan.md
 nul
+docs

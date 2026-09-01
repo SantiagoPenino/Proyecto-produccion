@@ -48,4 +48,13 @@ router.delete('/article-image/:id', controller.deleteArticleImageColor);
 router.get('/article-variants/:id', controller.getArticleVariants);
 router.put('/article-variants/:id/price', controller.updateVariantPrice);
 
+// 10. [MARKETING] Admin de la vitrina de la tienda (/marketing/productos): lista de
+// productos vendibles con su estado de publicación + upsert de la ficha de venta.
+const tiendaCtrl = require('../controllers/tiendaController');
+router.get('/vitrina', tiendaCtrl.getVitrinaAdmin);
+router.put('/vitrina/:id', tiendaCtrl.saveVitrinaProducto);
+// Variantes con ejes Talle/Color (backfill incremental al leer + corrección manual)
+router.get('/vitrina/:id/variantes', tiendaCtrl.getVitrinaVariantes);
+router.put('/vitrina/:id/variantes-ejes', tiendaCtrl.saveVitrinaVariantesEjes);
+
 module.exports = router;
