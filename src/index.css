@@ -133,6 +133,63 @@ body {
   animation: fadeIn 0.2s ease-out;
 }
 
+/* Fade de salida para modales: forwards lo deja invisible hasta que React lo desmonta */
+@keyframes fadeOut {
+  from {
+    opacity: 1;
+  }
+
+  to {
+    opacity: 0;
+  }
+}
+
+.animate-fade-out {
+  animation: fadeOut 0.18s ease-in forwards;
+}
+
+/* Panel que se despliega debajo de un control (ej.: desglose de alertas del stock).
+   Anima la ALTURA con grid-rows (0fr ↔ 1fr) además de la opacidad: si solo se
+   desvaneciera, el hueco aparecería/se cerraría de golpe y el contenido de abajo
+   pegaría un salto. El margin-top participa por el space-y-* del contenedor.
+   Requiere hijo directo con overflow:hidden y min-height:0. */
+@keyframes desplegar {
+  from {
+    grid-template-rows: 0fr;
+    opacity: 0;
+    margin-top: 0;
+  }
+
+  to {
+    grid-template-rows: 1fr;
+    opacity: 1;
+  }
+}
+
+.animate-desplegar {
+  display: grid;
+  animation: desplegar 0.25s ease-out;
+}
+
+/* La inversa, para cerrar: forwards deja el panel colapsado hasta que React lo desmonta */
+@keyframes replegar {
+  from {
+    grid-template-rows: 1fr;
+    opacity: 1;
+  }
+
+  to {
+    grid-template-rows: 0fr;
+    opacity: 0;
+    margin-top: 0;
+  }
+}
+
+.animate-replegar {
+  display: grid;
+  animation: replegar 0.22s ease-in forwards;
+}
+
 /* Bell ring animation */
 @keyframes bell-ring {
   0% { transform: rotate(0); }

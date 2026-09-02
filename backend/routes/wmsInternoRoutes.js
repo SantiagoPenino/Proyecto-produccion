@@ -46,6 +46,8 @@ router.get('/gestion/plantillas', verifyToken, ctrl.getPlantillas);
 router.post('/gestion/plantillas', verifyToken, ctrl.guardarPlantilla);
 router.put('/gestion/plantillas/:id', verifyToken, ctrl.guardarPlantilla);
 router.get('/gestion/catalogo', verifyToken, ctrl.getCatalogo);
+router.get('/gestion/articulos', verifyToken, ctrl.getArticulosGestion);
+router.put('/gestion/articulos/:varId/costo', verifyToken, ctrl.guardarCostoVariante);
 router.get('/gestion/limites', verifyToken, ctrl.getLimites);
 router.get('/gestion/limites-agrupados', verifyToken, ctrl.getLimitesAgrupados);
 router.put('/gestion/limites-lote', verifyToken, ctrl.guardarLimitesLote);

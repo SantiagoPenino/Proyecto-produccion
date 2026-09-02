@@ -318,6 +318,14 @@ const lucideIconMapRaw = {
     'vista 360 del cliente': ScanEye,
     'vista 360': ScanEye,
     'presupuestos': FileSignature,
+    'cliente 360': ScanEye,
+    'configuraciones ecouv': Settings,
+    'configuracion ecouv': Settings,
+    'calibración de color': Palette,
+    'calibracion de color': Palette,
+    'imprimir cierres de caja': PrinterCheck,
+    'reportes administración': FileText,
+    'reportes administracion': FileText,
 };
 const getLucideIcon = (name) => lucideIconMapRaw[name?.toLowerCase?.()?.trim?.()?.replace(/\s+/g, ' ')];
 

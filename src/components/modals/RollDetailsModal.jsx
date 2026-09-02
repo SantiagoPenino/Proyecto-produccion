@@ -774,15 +774,40 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { }, lo
         orders.forEach(o => { if (!isNewOrder(o.id) && manualIdxOf[o.id] === undefined) { const m = matKey(o); matCount[m] = (matCount[m] || 0) + 1; } });
         const list = [];
         const byKey = {};
+        // Un bloque de tela se CIERRA cuando la impresora ya imprimió algo de OTRA tela: a partir
+        // de ahí, una orden que entra a la tela vieja no se funde con ese bloque (la máquina ya pasó
+        // por ahí) y abre bloque propio en su posición — que es el final, porque al moverla al lote
+        // el backend le da Secuencia = MAX+1.
+        // Se decide con Ordenes.Impreso + Secuencia, ambos persistidos: antes esto dependía del
+        // sessionStorage (placedIds/outSeqIds), que se evapora al asignarle máquina al lote — y el
+        // lote salía a calandra con las órdenes tardías fundidas en su bloque de tela, en un orden
+        // que la impresora nunca hizo. Se usa SIEMPRE 'printed' (no el campo de la 2ª estación):
+        // el agrupado representa el orden de IMPRESIÓN y la calandra lo muestra invertido.
+        const impresasSet = new Set(orders.filter(o => o.printed).map(o => o.id));
+        const bloqueDeMat = {};              // matKey → key del bloque abierto
+        const cerradoPorImpresion = new Set(); // matKeys cuyo bloque ya cerró
+        let nBloque = 0;
         orders.forEach(o => {
             let key, kind;
+            const mat = matKey(o);
             if (!isSB) { key = 'l:' + o.id; kind = 'loose'; }
             else if (isNewOrder(o.id)) { key = 'new:' + o.id; kind = 'new'; } // recién asignada/movida → bloque propio al final
             else if (manualIdxOf[o.id] !== undefined) { key = 'm' + manualIdxOf[o.id]; kind = 'manual'; }
-            else if (matCount[matKey(o)] === 1) { key = 'a:' + matKey(o); kind = 'auto'; }
-            else { key = 'lm:' + matKey(o); kind = 'loose'; } // sueltas del mismo material (fallas incluidas) = un bloque
+            else if (matCount[mat] === 1) { key = 'a:' + mat; kind = 'auto'; }
+            else { // sueltas del mismo material (fallas incluidas) = un bloque, mientras siga abierto
+                if (!bloqueDeMat[mat] || cerradoPorImpresion.has(mat)) {
+                    bloqueDeMat[mat] = 'lm:' + mat + ':' + (++nBloque);
+                    cerradoPorImpresion.delete(mat);
+                }
+                key = bloqueDeMat[mat];
+                kind = 'loose';
+            }
             if (!byKey[key]) { byKey[key] = { key, kind, material: matDisplay(o) || '—', orders: [] }; list.push(byKey[key]); }
             byKey[key].orders.push(o);
+            // Esta orden ya se imprimió → los bloques de las OTRAS telas quedan cerrados.
+            if (impresasSet.has(o.id)) {
+                Object.keys(bloqueDeMat).forEach(k => { if (k !== mat) cerradoPorImpresion.add(k); });
+            }
         });
         // Firma estable por unidad (ids ordenados) — la usan el drag y la marca de bloqueo.
         list.forEach(u => { u.sig = u.orders.map(o => o.id).slice().sort((a, b) => a - b).join(','); });

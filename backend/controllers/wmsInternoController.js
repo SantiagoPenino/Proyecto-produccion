@@ -150,7 +150,8 @@ exports.buscarEtiqueta = async (req, res) => {
             .query(`
                 SELECT TOP 1 e.EtiId, e.VarId, e.DepId, e.CantidadActual, e.CantidadInicial,
                        e.MedidaSecundaria, e.Peso, e.CodigoBarras, e.Estado,
-                       v.NombreVariante, v.Talle, v.Color, p.Nombre AS Producto, p.UnidadBase,
+                       v.NombreVariante, v.Talle, v.Color, v.GramajeGsm, v.AnchoMetros,
+                       p.Nombre AS Producto, p.UnidadBase,
                        d.Nombre AS Deposito
                 FROM dbo.Wms_Etiquetas e
                 JOIN dbo.Wms_Variantes v ON v.VarId = e.VarId
@@ -709,7 +710,8 @@ exports.getCompraDetalle = async (req, res) => {
             pool.request().input('C', sql.Int, id).query(`
                 SELECT d.CDetId, d.VarId, d.Cantidad, d.CantidadRecibida, d.PrecioUnitario, d.CostoPuestoLocal,
                        ISNULL(d.Bultos, 1) AS Bultos,
-                       v.NombreVariante, v.Talle, v.Color, p.Nombre AS Producto, p.UnidadBase
+                       v.NombreVariante, v.Talle, v.Color, v.GramajeGsm, v.AnchoMetros,
+                       p.Nombre AS Producto, p.UnidadBase
                 FROM dbo.Wms_ComprasDetalle d
                 LEFT JOIN dbo.Wms_Variantes v ON v.VarId = d.VarId
                 LEFT JOIN dbo.Wms_ProductosMaestros p ON p.PmaId = v.PmaId
@@ -952,6 +954,7 @@ exports.getLimites = async (req, res) => {
             .input('CC', sql.Decimal(18, 4), cC)
             .query(`
             SELECT TOP 200 v.VarId, v.NombreVariante, v.Talle, v.Color, p.Nombre AS Producto, p.UnidadBase,
+                   v.GramajeGsm, v.AnchoMetros,
                    ${dep ? `ISNULL(ad.CantidadCritica, 0) AS CantidadCritica,
                             ISNULL(ad.CantidadAlerta, 0) AS CantidadAlerta,
                             ISNULL(ad.CantidadIdeal, 0) AS CantidadIdeal,`
@@ -1101,6 +1104,72 @@ exports.guardarLimitesLote = async (req, res) => {
         const n = await aplicarLimites(pool, { varIds, depId: parseInt(req.body?.depId, 10) || 0, ...req.body });
         res.json({ success: true, aplicados: n });
     } catch (e) { res.status(400).json({ error: e.message }); }
+};
+
+// GET /gestion/articulos — el catálogo completo (variantes activas) con su costo de
+// referencia y el stock que valoriza. SinValorizar = unidades activas cuya etiqueta no
+// trae costo propio: son las que caen al costo de la variante en el Patrimonio, y las
+// que valen $0 si la variante tampoco tiene. Son ~400 filas: se devuelve todo y el
+// buscador/filtro "sin costo" viven en el front.
+exports.getArticulosGestion = async (req, res) => {
+    try {
+        const pool = await getPool();
+        const r = await pool.request().query(`
+            SELECT p.PmaId, p.Nombre AS Producto, p.UnidadBase, c.Nombre AS Categoria,
+                   v.VarId, v.NombreVariante, v.CodigoVariante, v.Talle, v.Color,
+                   ISNULL(v.Costo, 0) AS Costo, ISNULL(v.Moneda, 'UYU') AS Moneda,
+                   v.GramajeGsm, v.AnchoMetros,
+                   ISNULL(s.Stock, 0) AS Stock, ISNULL(s.SinValorizar, 0) AS SinValorizar
+            FROM dbo.Wms_Variantes v
+            JOIN dbo.Wms_ProductosMaestros p ON p.PmaId = v.PmaId
+            LEFT JOIN dbo.Wms_Categorias c ON c.CatId = p.CatId
+            OUTER APPLY (
+                SELECT SUM(e.CantidadActual) AS Stock,
+                       SUM(CASE WHEN ISNULL(NULLIF(e.CostoUnitarioReal, 0), 0) = 0 THEN e.CantidadActual ELSE 0 END) AS SinValorizar
+                FROM dbo.Wms_Etiquetas e
+                WHERE e.VarId = v.VarId AND e.Estado = 'activo'
+            ) s
+            WHERE v.Activa = 1
+            ORDER BY p.Nombre, v.NombreVariante
+        `);
+        res.json({ success: true, data: r.recordset });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+};
+
+// PUT /gestion/articulos/:varId/costo — la ficha editable de la variante: costo de
+// referencia (0 = "sin costo", mismo significado que traía la migración) y, para telas,
+// gramaje g/m² + ancho del rollo en metros (juntos dan la conversión kg <-> metros).
+exports.guardarCostoVariante = async (req, res) => {
+    try {
+        const varId = parseInt(req.params.varId, 10);
+        if (!varId) return res.status(400).json({ error: 'Artículo inválido' });
+        const costo = Number(req.body?.costo);
+        if (isNaN(costo) || costo < 0) return res.status(400).json({ error: 'El costo debe ser un número positivo' });
+        const moneda = String(req.body?.moneda || '').toUpperCase();
+        if (!['USD', 'UYU'].includes(moneda)) return res.status(400).json({ error: 'Moneda inválida' });
+        // Gramaje/ancho: opcionales — vacío o 0 los deja en NULL (artículo que no es tela).
+        const medida = (v, max) => {
+            if (v == null || v === '') return null;
+            const n = Number(v);
+            if (isNaN(n) || n < 0 || n > max) throw new Error('Gramaje o ancho inválido');
+            return n || null;
+        };
+        let gramaje, ancho;
+        try { gramaje = medida(req.body?.gramaje, 2000); ancho = medida(req.body?.ancho, 10); }
+        catch (e) { return res.status(400).json({ error: e.message }); }
+        const pool = await getPool();
+        const r = await pool.request()
+            .input('V', sql.Int, varId)
+            .input('C', sql.Decimal(18, 2), costo)
+            .input('M', sql.VarChar(10), moneda)
+            .input('G', sql.Decimal(8, 2), gramaje)
+            .input('A', sql.Decimal(6, 3), ancho)
+            .query(`UPDATE dbo.Wms_Variantes
+                    SET Costo = @C, Moneda = @M, GramajeGsm = @G, AnchoMetros = @A
+                    WHERE VarId = @V AND Activa = 1`);
+        if (!r.rowsAffected[0]) return res.status(404).json({ error: 'Artículo no encontrado' });
+        res.json({ success: true });
+    } catch (e) { res.status(500).json({ error: e.message }); }
 };
 
 // GET /compras-catalogos — proveedores, monedas, plantillas y motivos de pago (para los forms)

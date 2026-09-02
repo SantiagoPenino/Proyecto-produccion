@@ -158,10 +158,16 @@ async function main() {
             ['Descripcion', sql.NVarChar(255), f => f.descripcion],
         ], o.Stock_Categorias, { pk: 'CatId' });
 
+        // Unidades: el origen trae 'ud'/'uds'/'unidad' mezclados (texto libre de allá);
+        // acá se unifica a 'uni' (pedido 1/09). kg/lts/mts pasan tal cual.
+        const normUnidad = (u) => {
+            const v = String(u || '').trim().toLowerCase();
+            return (!v || ['ud', 'uds', 'u', 'unidad', 'unidades'].includes(v)) ? 'uni' : v;
+        };
         await upsert(pool, 'Wms_ProductosMaestros', [
             ['PmaId', sql.Int, f => f.id], ['Nombre', sql.NVarChar(255), f => f.nombre || 'Sin nombre'],
             ['Sku', sql.NVarChar(100), f => f.sku], ['CatId', sql.Int, f => f.categoria_id],
-            ['UnidadBase', sql.NVarChar(50), f => f.unidad_base || 'unidad'],
+            ['UnidadBase', sql.NVarChar(50), f => normUnidad(f.unidad_base)],
             ['TipoGestion', sql.VarChar(50), f => f.tipo_gestion || 'granel'],
             ['LlevaPeso', sql.Bit, f => f.lleva_peso ? 1 : 0],
             ['AtributosConfig', sql.NVarChar(sql.MAX), f => f.atributos_config],

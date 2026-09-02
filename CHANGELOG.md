@@ -7,6 +7,18 @@ Historial de cambios del sistema de producción. Formato basado en [Keep a Chang
 
 ---
 
+## [2026-09-01] — Sin deployar
+
+### Agregado
+- **WMS propio — Artículos en Gestión de Sistema**: quinta tarjeta de la solapa, con el catálogo completo (413 variantes) y el **costo de referencia + moneda editables** en la propia fila. El filtro **"Sin costo"** reemplaza a la pantalla dedicada del sistema anterior: muestra solo lo que falta valorizar, ordenado por urgencia — al momento del alta, 175 variantes sin costo, de las cuales 53 tienen 1.680 unidades físicas que suman $0 al patrimonio del inventario (la columna "Sin valorizar" las señala en rojo).
+- **WMS propio — ficha textil y conversión kg ↔ metros**: cada variante puede guardar su **gramaje (g/m²) y el ancho del rollo** — los dos datos con los que la industria convierte peso a metros (metros por kg = 1000 ÷ gramaje × ancho). Se cargan desde la misma vista de Artículos, que muestra el m/kg calculado. Con la ficha cargada, el dato aparece en todo el circuito: **Ingresar Stock** y **Registro de peso** muestran los metros teóricos del peso tipeado (un click los deja como medida secundaria), la **recepción de compra** los muestra bajo los kg a recibir de cada línea, y las **etiquetas impresas** (la del alta y las pre-impresas del cargamento) salen con "≈ X m teóricos" junto a los kg.
+
+### Cambiado
+- **WMS propio — unidades unificadas**: los maestros migrados traían la unidad como texto libre ("ud", "uds", "unidad" mezclados); quedaron todos como **uni** (43 corregidos) y el import normaliza cualquier variante de ahí en más, así el catálogo no vuelve a mezclarse.
+- **WMS propio — el calendario propio también en "Fecha estimada de arribo"** (alta y edición de la compra): era el último campo de fecha con el selector nativo del navegador en inglés (mm/dd/yyyy).
+- **WMS propio — el reporte gerencial imprime directo**: el botón del Panel abre el diálogo de impresión sobre la misma pantalla, sin la ventana intermedia con el reporte.
+- **WMS propio — pulido de interfaz**: el desglose de alertas del panel se abre y se cierra animado (desplegándose de verdad, sin saltos de layout) y el modal del detalle de compra hace fade al entrar y salir; en el historial la fecha va en una sola línea y la referencia del remito se lee más grande; los códigos REM- ya no se quiebran en dos líneas en las listas; y las pantallas de Ingresar Stock, Retirar stock y Registro de peso quedaron centradas en vez de perdidas contra el margen izquierdo.
+
 ## [2026-08-31] — Sin deployar
 
 ### Arreglado

@@ -36,9 +36,16 @@ const simMoneda = (cod) => String(cod || '').toUpperCase() === 'USD' ? 'US$' : '
 // Capital Case para textos que vienen con casing inconsistente ('JIAXING ZHEJIANG' → 'Jiaxing Zhejiang').
 // CSS capitalize no alcanza: solo sube la primera letra, no baja el resto.
 const capitalizar = (v) => String(v || '').toLowerCase().replace(/\S+/g, w => w.charAt(0).toUpperCase() + w.slice(1));
+// Ficha textil (1/09): metros teóricos de un peso en kg → 1000·kg / (g/m² × ancho).
+// null si falta cualquiera de los tres datos — el que llama decide no mostrar nada.
+const metrosTeoricos = (kg, gramaje, ancho) => {
+    const k = Number(kg), g = Number(gramaje), a = Number(ancho);
+    if (!(k > 0) || !(g > 0) || !(a > 0)) return null;
+    return Math.round(k * 100000 / (g * a)) / 100;
+};
 
 // Etiqueta física: ventana propia (como el resto de las impresiones del sistema), QR = EtiId.
-async function imprimirEtiqueta({ etiId, producto, variante, talle, color, cantidad, unidad, codigoBarras }) {
+async function imprimirEtiqueta({ etiId, producto, variante, talle, color, cantidad, unidad, codigoBarras, metros }) {
     let qr = '';
     try { qr = await QRCode.toDataURL(String(etiId), { margin: 1, width: 220 }); } catch (e) { /* sin QR igual sale */ }
     const w = window.open('', '_blank', 'width=420,height=520');
@@ -53,6 +60,7 @@ async function imprimirEtiqueta({ etiId, producto, variante, talle, color, canti
         .var { font-size: 12px; margin: 0 0 2px; }
         .ejes { font-size: 11px; color: #444; margin: 0 0 6px; }
         .cant { font-size: 20px; font-weight: bold; margin: 0; }
+        .mts { font-size: 12px; color: #444; margin: 1px 0 0; }
         .id { font-size: 26px; font-weight: 900; letter-spacing: 1px; margin: 4px 0 0; }
         .cb { font-size: 10px; color: #666; margin-top: 2px; }
     </style></head><body>
@@ -63,6 +71,7 @@ async function imprimirEtiqueta({ etiId, producto, variante, talle, color, canti
                 <p class="var">${(variante || '').substring(0, 40)}</p>
                 ${ejes ? `<p class="ejes">${ejes}</p>` : ''}
                 <p class="cant">${fmtCant(cantidad)} ${unidad || ''}</p>
+                ${metros ? `<p class="mts">≈ ${fmtCant(metros)} m teóricos</p>` : ''}
                 <p class="id">#${etiId}</p>
                 ${codigoBarras ? `<p class="cb">${codigoBarras}</p>` : ''}
             </div>
@@ -628,17 +637,21 @@ async function imprimirEtiquetasCompra(compra, lineas, simboloMoneda) {
     ));
     const w = window.open('', '_blank', 'width=760,height=800');
     if (!w) { toast.error('El navegador bloqueó la ventana de impresión'); return; }
-    const celdas = items.map((l, i) => `
+    const celdas = items.map((l, i) => {
+        const mts = String(l.UnidadBase || '').toLowerCase() === 'kg'
+            ? metrosTeoricos(l.Cantidad, l.GramajeGsm, l.AnchoMetros) : null;
+        return `
         <div class="eti">
             ${qrs[i] ? `<img src="${qrs[i]}">` : ''}
             <div class="txt">
                 <p class="prod">${(l.Producto || '').substring(0, 34)}</p>
                 <p class="var">${(l.NombreVariante || '').substring(0, 34)}</p>
-                <p class="cant">${Number(l.Cantidad).toLocaleString('es-UY')} <span>${l.UnidadBase || ''}</span></p>
+                <p class="cant">${Number(l.Cantidad).toLocaleString('es-UY')} <span>${l.UnidadBase || ''}${mts ? ` · ≈ ${mts.toLocaleString('es-UY')} m` : ''}</span></p>
                 <p class="ref">Compra #${compra.CompId} · ${compra.Proveedor || ''}</p>
                 <p class="ref">${compra.ReferenciaFactura ? 'Ref: ' + compra.ReferenciaFactura : ''}</p>
             </div>
-        </div>`).join('');
+        </div>`;
+    }).join('');
     w.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>Etiquetas compra ${compra.CompId}</title><style>
         @page { size: A4; margin: 8mm; }
         body { font-family: Arial, sans-serif; margin: 0; display: flex; flex-wrap: wrap; gap: 4mm; }
@@ -657,10 +670,14 @@ async function imprimirEtiquetasCompra(compra, lineas, simboloMoneda) {
     w.document.close();
 }
 
-// Reporte gerencial del panel: ventana propia + print (mismo patrón que las etiquetas).
+// Reporte gerencial del panel: iframe oculto que abre el diálogo de impresión directo,
+// sin ventana intermedia (pedido 1/09). Tamaño 0 y no display:none: algunos navegadores
+// no imprimen lo invisible. El iframe se borra al cerrar el diálogo.
 function imprimirReporteGerencial(d) {
-    const w = window.open('', '_blank', 'width=900,height=700');
-    if (!w) { toast.error('El navegador bloqueó la ventana de impresión'); return; }
+    const iframe = document.createElement('iframe');
+    iframe.style.cssText = 'position:fixed;right:0;bottom:0;width:0;height:0;border:0;';
+    document.body.appendChild(iframe);
+    const doc = iframe.contentDocument;
     const fecha = new Date().toLocaleString('es-UY');
     const num = (v, dec = 0) => Number(v || 0).toLocaleString('es-UY', { minimumFractionDigits: dec, maximumFractionDigits: dec });
     const val = (mon) => Number(d.valorizacion.find(v => (v.Moneda || 'UYU').toUpperCase().includes(mon))?.Total || 0);
@@ -671,7 +688,8 @@ function imprimirReporteGerencial(d) {
         <table><thead><tr>${cabeceras.map(c => `<th${c.r ? ' class="r"' : ''}>${c.t ?? c}</th>`).join('')}</tr></thead>
         <tbody>${cuerpo || '<tr><td colspan="9" class="vacio">Sin datos</td></tr>'}</tbody></table>`;
 
-    w.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>Reporte de stock</title><style>
+    doc.open();
+    doc.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>Reporte de stock</title><style>
         @page { size: A4; margin: 14mm; }
         body { font-family: Arial, Helvetica, sans-serif; color: #0f172a; font-size: 9pt; margin: 0; }
         h1 { font-size: 17pt; margin: 0 0 2px; }
@@ -725,9 +743,13 @@ function imprimirReporteGerencial(d) {
             filas(d.anomalias, r => `<tr><td>${r.Producto} — ${r.NombreVariante}</td><td class="r">${r.Hoy}</td><td class="r">${r.PromedioDia}</td></tr>`)) : ''}
 
         <div class="pie">Sistema de Gestión de Producción · Stock</div>
-        <script>window.onload = () => { window.print(); }<\/script>
     </body></html>`);
-    w.document.close();
+    doc.close();
+    const w = iframe.contentWindow;
+    w.onafterprint = () => iframe.remove();
+    setTimeout(() => iframe.remove(), 120000);   // respaldo: remove() repetido no falla
+    w.focus();
+    w.print();
 }
 
 /* Barra de anomalías del panel: solo existe si hay algo detectado (si no, no ocupa lugar).
@@ -1122,7 +1144,7 @@ function TabRetirar({ dep, nombreDep }) {
     };
 
     return (
-        <div className="max-w-3xl space-y-4">
+        <div className="max-w-3xl mx-auto space-y-4">
             <div>
                 <h3 className="text-lg font-black text-slate-800">Retirar stock</h3>
                 <p className="text-xs text-slate-500">Consumos internos, mermas o salidas definitivas en <b>{nombreDep(dep)}</b>.</p>
@@ -1208,7 +1230,7 @@ function TabPeso({ dep }) {
     };
 
     return (
-        <div className="max-w-2xl space-y-4">
+        <div className="max-w-2xl mx-auto space-y-4">
             <div>
                 <h3 className="text-lg font-black text-slate-800">Registro de peso</h3>
                 <p className="text-xs text-slate-500">Escaneá o escribí el número de etiqueta para cargarle el peso real del lote.</p>
@@ -1249,6 +1271,16 @@ function TabPeso({ dep }) {
                                     className="w-full px-3 py-2.5 rounded-xl border border-slate-200 text-sm text-right placeholder:text-left [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none outline-none focus:border-sky-400 focus:ring-2 focus:ring-sky-200" placeholder="0,00" />
                             </div>
                         </div>
+                        {/* Ficha textil: el peso cargado → metros teóricos, un click y queda como medida */}
+                        {(() => {
+                            const m = metrosTeoricos(peso, eti.GramajeGsm, eti.AnchoMetros);
+                            return m ? (
+                                <button type="button" onClick={() => setMedida(String(m))}
+                                    className="text-[11px] font-bold text-sky-600 hover:text-sky-700 hover:underline">
+                                    ≈ {fmtCant(m)} m teóricos según la ficha textil — usar como medida
+                                </button>
+                            ) : null;
+                        })()}
                         <button onClick={guardar}
                             className="w-full flex items-center justify-center gap-2 py-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-white font-black text-sm">
                             <Scale size={16} /> Guardar peso
@@ -1369,6 +1401,10 @@ function FichaAlerta({ c, critico }) {
 function ControlAlertas() {
     const [d, setD] = useState(null);
     const [abierto, setAbierto] = useState(false);
+    // El desglose no se desmonta seco: corre la animación de salida y recién ahí se va.
+    const [cerrando, setCerrando] = useState(false);
+    const cerrar = () => setCerrando(true);
+    const alternar = () => { if (abierto && !cerrando) cerrar(); else { setCerrando(false); setAbierto(true); } };
     useEffect(() => { api.get('/wms-interno/panel').then(r => setD(r.data?.data || null)).catch(() => {}); }, []);
     const todos = d?.criticos || [];
     const listaCrit = todos.filter(c => c.Estado === 'CRITICO');
@@ -1385,7 +1421,7 @@ function ControlAlertas() {
                     <span className="text-[10px] font-black bg-amber-100 text-amber-700 rounded-full px-2.5 py-1">{alertas} bajas</span>
                 </div>
                 {/* El bloque abre el desglose, igual que el sistema anterior */}
-                <button onClick={() => setAbierto(a => !a)} disabled={!todos.length}
+                <button onClick={alternar} disabled={!todos.length}
                     title={todos.length ? 'Ver el detalle de los artículos' : 'Sin artículos por debajo del límite'}
                     className={`rounded-2xl border p-3 flex gap-3 transition-all ${
                         abierto ? 'border-rose-300 bg-rose-50/40 ring-2 ring-rose-100' : 'border-slate-200 hover:border-rose-200'
@@ -1406,10 +1442,15 @@ function ControlAlertas() {
             </div>
 
             {abierto && (
-                <div className="bg-white rounded-2xl border border-slate-200 p-5">
+                /* Doble wrapper: el de afuera anima grid-rows (la ALTURA) — con solo
+                   opacity, el hueco se cerraba de golpe al desmontar y todo saltaba. */
+                <div className={cerrando ? 'animate-replegar' : 'animate-desplegar'}
+                    onAnimationEnd={(e) => { if (e.target === e.currentTarget && cerrando) { setAbierto(false); setCerrando(false); } }}>
+                    <div className="overflow-hidden min-h-0">
+                    <div className="bg-white rounded-2xl border border-slate-200 p-5">
                     <div className="flex items-start justify-between gap-3 mb-4">
                         <h3 className="text-lg font-black text-slate-800">Desglose de alertas: stock general</h3>
-                        <button onClick={() => setAbierto(false)}
+                        <button onClick={cerrar}
                             className="w-8 h-8 rounded-lg border border-slate-200 text-slate-400 hover:text-slate-600 hover:bg-slate-50 flex items-center justify-center shrink-0">
                             <X size={15} />
                         </button>
@@ -1436,6 +1477,8 @@ function ControlAlertas() {
                             </div>
                         </>
                     )}
+                    </div>
+                    </div>
                 </div>
             )}
         </div>
@@ -1759,7 +1802,7 @@ function TabMiSector({ depositos }) {
                             <button onClick={() => verRemito(r.RemId)} className="w-full flex items-center gap-3 px-4 py-3 hover:bg-slate-50 text-left">
                                 {abierto === r.RemId ? <ChevronDown size={16} className="text-slate-400" /> : <ChevronRight size={16} className="text-slate-400" />}
                                 <Inbox size={15} className="text-slate-300" />
-                                <span className="text-sm font-black text-slate-700 w-24">{r.Numeracion}</span>
+                                <span className="text-sm font-black text-slate-700 w-32 shrink-0 whitespace-nowrap">{r.Numeracion}</span>
                                 <span className="text-xs font-bold text-slate-500 flex-1">desde {r.DepOrigen || r.DepOrigenId}</span>
                                 <span className="text-[11px] text-slate-400">{fmtFecha(r.FechaCreacion)}</span>
                                 <span className={`text-[10px] font-black px-2 py-0.5 rounded-full ${r.Estado === 'RECIBIDO' ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}`}>
@@ -2174,6 +2217,7 @@ function TabIngreso({ dep, nombreDep }) {
             imprimirEtiqueta({
                 etiId: r.data.etiId, producto: variante.Producto, variante: variante.NombreVariante,
                 talle: variante.Talle, color: variante.Color, cantidad: n, unidad: variante.UnidadBase, codigoBarras: codigo || null,
+                metros: variante.UnidadBase === 'kg' ? metrosTeoricos(n, variante.GramajeGsm, variante.AnchoMetros) : null,
             });
             setCantidad(''); setMedida(''); setPeso(''); setCosto(''); setCodigo('');
         } catch (e) { toast.error(e.response?.data?.error || 'No se pudo crear el ingreso'); }
@@ -2181,8 +2225,8 @@ function TabIngreso({ dep, nombreDep }) {
     };
 
     return (
-        <div className="max-w-xl">
-            <div className="bg-white rounded-2xl border border-slate-200 p-5 space-y-4">
+        <div className="max-w-2xl mx-auto">
+            <div className="bg-white rounded-2xl border border-slate-200 p-6 space-y-4">
                 <p className="text-sm text-slate-500">Alta de una etiqueta física en <b>{nombreDep(dep)}</b>. Al guardar se imprime sola.</p>
                 {variante ? (
                     <div className="flex items-center justify-between gap-3 bg-sky-50 border border-sky-200 rounded-xl px-3 py-2.5">
@@ -2204,7 +2248,17 @@ function TabIngreso({ dep, nombreDep }) {
                     <div>
                         <label className="text-[10px] font-black uppercase tracking-wider text-slate-400 block mb-1">Medida secundaria <span className="normal-case font-semibold">(ej. metros)</span></label>
                         <input type="number" inputMode="decimal" min="0" step="1" value={medida} onChange={e => setMedida(e.target.value)}
-                            className="w-full px-3 py-2.5 rounded-xl border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-sky-200 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none" />
+                            className="w-full px-3 py-2.5 rounded-xl border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-sky-200 [&::-webkit-inner-spin-button]:appearance-none [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none" />
+                        {/* Ficha textil: kg de tela → metros teóricos, un click y queda en el campo */}
+                        {(() => {
+                            const m = variante?.UnidadBase === 'kg' ? metrosTeoricos(cantidad, variante?.GramajeGsm, variante?.AnchoMetros) : null;
+                            return m ? (
+                                <button type="button" onClick={() => setMedida(String(m))}
+                                    className="mt-1 text-[11px] font-bold text-sky-600 hover:text-sky-700 hover:underline">
+                                    ≈ {fmtCant(m)} m teóricos — usar
+                                </button>
+                            ) : null;
+                        })()}
                     </div>
                     <div>
                         <label className="text-[10px] font-black uppercase tracking-wider text-slate-400 block mb-1">Peso (kg)</label>
@@ -2370,7 +2424,7 @@ function TabRemitos({ depositos, depDefault }) {
                         <div key={r.RemId} className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
                             <button onClick={() => verDetalle(r.RemId)} className="w-full flex items-center gap-3 px-4 py-3 hover:bg-slate-50 text-left">
                                 {abierto === r.RemId ? <ChevronDown size={16} className="text-slate-400" /> : <ChevronRight size={16} className="text-slate-400" />}
-                                <span className="text-sm font-black text-slate-700 w-24">{r.Numeracion}</span>
+                                <span className="text-sm font-black text-slate-700 w-32 shrink-0 whitespace-nowrap">{r.Numeracion}</span>
                                 <span className="text-xs font-bold text-slate-500 flex-1">{r.DepOrigen || r.DepOrigenId} → {r.DepDestino || r.DepDestinoId}</span>
                                 <span className="text-[11px] text-slate-400">{fmtFecha(r.FechaCreacion)}</span>
                                 <span className="text-[11px] font-bold text-slate-500">{r.Items} item{r.Items !== 1 ? 's' : ''}</span>
@@ -2418,6 +2472,9 @@ function TabCompras({ depositos, depDefault }) {
     const [cat, setCat] = useState({ proveedores: [], monedas: [], plantillas: [], motivos: [], tiposFactura: [] });
     const [cargando, setCargando] = useState(true);
     const [abierta, setAbierta] = useState(null);
+    // El modal del detalle no se cierra seco: corre el fade de salida y recién ahí se desmonta.
+    const [cerrandoModal, setCerrandoModal] = useState(false);
+    const cerrarModal = () => setCerrandoModal(true);
     const [det, setDet] = useState({});
     const [creando, setCreando] = useState(false);
     const [recibiendo, setRecibiendo] = useState({});   // CDetId -> cantidad
@@ -2736,8 +2793,7 @@ function TabCompras({ depositos, depDefault }) {
                                 </p>
                                 <div className="grid md:grid-cols-2 xl:grid-cols-4 gap-4">
                                     <Campo label="Fecha estimada de arribo">
-                                        <input type="date" value={nEta} onChange={e => setNEta(e.target.value)}
-                                            className="w-full px-3 py-2 rounded-xl border border-slate-200 bg-white text-sm font-bold text-slate-700 outline-none focus:border-sky-400 focus:ring-2 focus:ring-sky-200" />
+                                        <SelectorFecha value={nEta} onChange={setNEta} ancho="w-full" />
                                     </Campo>
                                     <Campo label="Volumen (m³)">
                                         <input type="number" min="0" step="0.001" value={nVol} onChange={e => setNVol(e.target.value)} placeholder="0.000"
@@ -2967,8 +3023,9 @@ function TabCompras({ depositos, depDefault }) {
                 if (!c) return null;
                 const d = det[c.CompId];
                 return createPortal((
-                    <div className="fixed inset-0 z-[6000] flex items-center justify-center p-3 md:p-6 bg-slate-900/60 font-dmsans"
-                        onClick={e => { if (e.target === e.currentTarget) setAbierta(null); }}>
+                    <div className={`fixed inset-0 z-[6000] flex items-center justify-center p-3 md:p-6 bg-slate-900/60 font-dmsans ${cerrandoModal ? 'animate-fade-out' : 'animate-fade-in'}`}
+                        onClick={e => { if (e.target === e.currentTarget) cerrarModal(); }}
+                        onAnimationEnd={e => { if (e.target === e.currentTarget && cerrandoModal) { setAbierta(null); setCerrandoModal(false); } }}>
                         <div className="bg-white rounded-2xl w-full max-w-[1200px] max-h-[92vh] shadow-2xl flex flex-col overflow-hidden">
                             <div className="flex items-center gap-3 px-6 py-4 border-b border-slate-100 bg-white shrink-0">
                                 <div className="min-w-0 flex-1">
@@ -2979,7 +3036,7 @@ function TabCompras({ depositos, depDefault }) {
                                         {c.ReferenciaFactura ? `Ref: ${c.ReferenciaFactura} · ` : ''}{fmtFecha(c.FechaCreacion)}
                                     </p>
                                 </div>
-                                <button onClick={() => setAbierta(null)}
+                                <button onClick={cerrarModal}
                                     className="w-9 h-9 rounded-xl border border-slate-200 text-slate-400 hover:bg-slate-50 flex items-center justify-center shrink-0">
                                     <X size={17} />
                                 </button>
@@ -3044,9 +3101,8 @@ function TabCompras({ depositos, depDefault }) {
                                                             onChange={e => setEditando(x => ({ ...x, referenciaFactura: e.target.value }))}
                                                             placeholder="Referencia / factura"
                                                             className="flex-1 min-w-[180px] px-3 py-2 rounded-xl border border-slate-200 text-sm outline-none focus:border-sky-400 focus:ring-2 focus:ring-sky-200" />
-                                                        <input type="date" value={editando.fechaEstimadaArribo} title="Fecha estimada de arribo"
-                                                            onChange={e => setEditando(x => ({ ...x, fechaEstimadaArribo: e.target.value }))}
-                                                            className="px-3 py-2 rounded-xl border border-slate-200 text-sm font-bold text-slate-700 outline-none focus:border-sky-400 focus:ring-2 focus:ring-sky-200" />
+                                                        <SelectorFecha value={editando.fechaEstimadaArribo}
+                                                            onChange={(v) => setEditando(x => ({ ...x, fechaEstimadaArribo: v }))} />
                                                         <input type="number" min="0" step="0.001" value={editando.volumenM3} placeholder="m³"
                                                             onChange={e => setEditando(x => ({ ...x, volumenM3: e.target.value }))}
                                                             className="w-24 px-3 py-2 rounded-xl border border-slate-200 text-sm tabular-nums font-gsanscode text-right placeholder:text-left [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none outline-none focus:border-sky-400 focus:ring-2 focus:ring-sky-200" />
@@ -3109,18 +3165,26 @@ function TabCompras({ depositos, depDefault }) {
                                                                     <span className="text-xs text-right tabular-nums font-gsanscode font-black text-emerald-700">
                                                                         {simbolo(c)} {Number(Number(l.Cantidad) * local).toLocaleString('es-UY', { maximumFractionDigits: 2 })}
                                                                     </span>
-                                                                    <div className="flex justify-end items-center gap-1.5">
-                                                                        {pendiente > 0.001 ? (<>
-                                                                            {/* Bultos: cuántas etiquetas físicas se abren con lo que entra */}
-                                                                            <input type="number" min="1" step="1" title="Bultos: etiquetas a abrir"
-                                                                                value={bultosRec[l.CDetId] ?? String(l.Bultos || 1)}
-                                                                                onChange={e => setBultosRec(p => ({ ...p, [l.CDetId]: e.target.value }))}
-                                                                                className="w-14 px-2 py-1 rounded-lg border border-amber-200 bg-amber-50 text-amber-900 text-sm font-bold text-center [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none outline-none focus:border-sky-400 focus:ring-2 focus:ring-sky-200" />
-                                                                            <input type="number" min="0" step="1"
-                                                                                value={recibiendo[l.CDetId] ?? String(pendiente)}
-                                                                                onChange={e => setRecibiendo(p => ({ ...p, [l.CDetId]: e.target.value }))}
-                                                                                className="w-24 px-2 py-1 rounded-lg border border-slate-200 text-sm text-right [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none outline-none focus:border-sky-400 focus:ring-2 focus:ring-sky-200" />
-                                                                        </>) : <span className="text-[10px] font-black text-emerald-600">completa</span>}
+                                                                    <div className="flex flex-col items-end gap-0.5">
+                                                                        <div className="flex justify-end items-center gap-1.5">
+                                                                            {pendiente > 0.001 ? (<>
+                                                                                {/* Bultos: cuántas etiquetas físicas se abren con lo que entra */}
+                                                                                <input type="number" min="1" step="1" title="Bultos: etiquetas a abrir"
+                                                                                    value={bultosRec[l.CDetId] ?? String(l.Bultos || 1)}
+                                                                                    onChange={e => setBultosRec(p => ({ ...p, [l.CDetId]: e.target.value }))}
+                                                                                    className="w-14 px-2 py-1 rounded-lg border border-amber-200 bg-amber-50 text-amber-900 text-sm font-bold text-center [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none outline-none focus:border-sky-400 focus:ring-2 focus:ring-sky-200" />
+                                                                                <input type="number" min="0" step="1"
+                                                                                    value={recibiendo[l.CDetId] ?? String(pendiente)}
+                                                                                    onChange={e => setRecibiendo(p => ({ ...p, [l.CDetId]: e.target.value }))}
+                                                                                    className="w-24 px-2 py-1 rounded-lg border border-slate-200 text-sm text-right [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none outline-none focus:border-sky-400 focus:ring-2 focus:ring-sky-200" />
+                                                                            </>) : <span className="text-[10px] font-black text-emerald-600">completa</span>}
+                                                                        </div>
+                                                                        {/* Ficha textil: kg a recibir → metros teóricos del rollo */}
+                                                                        {(() => {
+                                                                            const mts = pendiente > 0.001 && String(l.UnidadBase || '').toLowerCase() === 'kg'
+                                                                                ? metrosTeoricos(recibiendo[l.CDetId] ?? pendiente, l.GramajeGsm, l.AnchoMetros) : null;
+                                                                            return mts ? <span className="text-[10px] font-bold text-sky-600 tabular-nums font-gsanscode">≈ {fmtCant(mts)} m</span> : null;
+                                                                        })()}
                                                                     </div>
                                                                 </div>
                                                             );
@@ -3578,7 +3642,7 @@ function TabHistorial() {
             ) : (
                 <>
                     <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
-                        <div className="hidden md:grid grid-cols-[110px_130px_1fr_90px_170px_120px] gap-2 px-4 py-2 bg-slate-50 text-[10px] font-black uppercase tracking-wider text-slate-400">
+                        <div className="hidden md:grid grid-cols-[150px_130px_1fr_90px_170px_130px] gap-2 px-4 py-2 bg-slate-50 text-[10px] font-black uppercase tracking-wider text-slate-400">
                             <span>Fecha</span><span>Tipo</span><span>Artículo</span><span className="text-right">Cantidad</span><span>Depósitos</span><span>Ref</span>
                         </div>
                         <div className="divide-y divide-slate-50">
@@ -3586,8 +3650,8 @@ function TabHistorial() {
                                 const [label, css] = ETIQUETA_TIPO[f.Tipo] || [f.Tipo, 'text-slate-500 bg-slate-50 border-slate-200'];
                                 const cant = Number(f.Cantidad || 0);
                                 return (
-                                    <div key={i} className="grid md:grid-cols-[110px_130px_1fr_90px_170px_120px] grid-cols-2 gap-2 px-4 py-2.5 items-center">
-                                        <span className="text-[11px] text-slate-500 font-semibold tabular-nums font-gsanscode">{fmtHora(f.Fecha)}</span>
+                                    <div key={i} className="grid md:grid-cols-[150px_130px_1fr_90px_170px_130px] grid-cols-2 gap-2 px-4 py-2.5 items-center">
+                                        <span className="text-[11px] text-slate-500 font-semibold tabular-nums font-gsanscode whitespace-nowrap">{fmtHora(f.Fecha)}</span>
                                         <span><span className={`text-[9px] font-black px-2 py-0.5 rounded-full border ${css}`}>{label}</span></span>
                                         <div className="min-w-0 col-span-2 md:col-span-1">
                                             <p className="text-sm font-bold text-slate-700 truncate">{f.Producto || '—'}{f.NombreVariante ? ` — ${f.NombreVariante}` : ''}</p>
@@ -3605,11 +3669,11 @@ function TabHistorial() {
                                         {/* El remito se muestra con su código y abre la hoja del envío */}
                                         {f.RefTipo === 'REMITO' && f.RefId ? (
                                             <button onClick={() => setVerRemito(f.RefId)} title="Ver la hoja del remito"
-                                                className="text-[10px] font-bold text-sky-600 hover:text-sky-700 hover:underline font-mono truncate text-left">
+                                                className="text-xs font-bold text-sky-600 hover:text-sky-700 hover:underline font-mono truncate text-left">
                                                 {f.RefNumero || `REMITO ${f.RefId}`}
                                             </button>
                                         ) : (
-                                            <span className="text-[10px] font-bold text-slate-400 font-mono truncate">
+                                            <span className="text-xs font-bold text-slate-400 font-mono truncate">
                                                 {f.RefTipo ? `${f.RefTipo} ${f.RefId ?? ''}` : ''}
                                             </span>
                                         )}
@@ -3715,6 +3779,7 @@ function TabDiferencias({ onCambio }) {
 function TabGestion({ depositos = [] }) {
     const [sub, setSub] = useState(null);
     const fichas = [
+        { id: 'articulos',  titulo: 'Artículos', desc: 'El catálogo completo con su costo de referencia. Acá se valorizan los que quedaron sin costo.', icono: Package, tono: 'emerald' },
         { id: 'limites',    titulo: 'Alertas de stock', desc: 'Los límites crítico, de alerta e ideal de cada artículo. Son los que encienden el panel.', icono: AlertTriangle, tono: 'rose' },
         { id: 'proveedores', titulo: 'Proveedores',     desc: 'Directorio de importadores y proveedores de plaza.', icono: Truck, tono: 'sky' },
         { id: 'depositos',   titulo: 'Almacenes y sectores', desc: 'Locaciones físicas o lógicas donde vive el stock.', icono: MapPin, tono: 'indigo' },
@@ -3723,6 +3788,7 @@ function TabGestion({ depositos = [] }) {
     const TONOS = {
         rose: 'bg-rose-50 text-rose-500', sky: 'bg-sky-50 text-sky-600',
         indigo: 'bg-indigo-50 text-indigo-600', amber: 'bg-amber-50 text-amber-600',
+        emerald: 'bg-emerald-50 text-emerald-600',
     };
 
     if (sub) {
@@ -3733,6 +3799,7 @@ function TabGestion({ depositos = [] }) {
                     <ChevronLeft size={14} /> Volver a Gestión de Sistema
                 </button>
                 <h3 className="text-xl font-black text-slate-800">{f.titulo}</h3>
+                {sub === 'articulos' && <GestionArticulos />}
                 {sub === 'limites' && <GestionLimites depositos={depositos} />}
                 {sub === 'proveedores' && <GestionProveedores />}
                 {sub === 'depositos' && <GestionDepositos />}
@@ -3753,6 +3820,165 @@ function TabGestion({ depositos = [] }) {
                     <p className="text-xs text-slate-500 mt-1.5 leading-snug">{f.desc}</p>
                 </button>
             ))}
+        </div>
+    );
+}
+
+/* Artículos — el catálogo (variantes activas) con su costo de referencia editable.
+ * La pantalla "Artículos sin costo" del sistema anterior quedó hecha filtro: mismos
+ * datos y misma edición que el resto del catálogo, una pantalla menos.
+ * "Sin valorizar" = unidades activas cuyo lote entró sin costo Y la variante tampoco
+ * tiene: hoy suman $0 al patrimonio. Al filtrar por sin costo se ordena por eso. */
+function GestionArticulos() {
+    const [filas, setFilas] = useState([]);
+    const [cargando, setCargando] = useState(true);
+    const [q, setQ] = useState('');
+    const [filtro, setFiltro] = useState('todos');   // todos | sincosto
+    const [edit, setEdit] = useState(null);          // VarId en edición
+    const [vals, setVals] = useState({ costo: '', moneda: 'UYU', gramaje: '', ancho: '' });
+    const [guardando, setGuardando] = useState(false);
+
+    const cargar = useCallback(async () => {
+        try { setFilas((await api.get('/wms-interno/gestion/articulos')).data?.data || []); }
+        catch (e) { toast.error('No se pudo cargar el catálogo'); }
+        finally { setCargando(false); }
+    }, []);
+    useEffect(() => { cargar(); }, [cargar]);
+
+    const fmtCosto = (n) => Number(n).toLocaleString('es-UY', { minimumFractionDigits: 0, maximumFractionDigits: 2 });
+    const sinCosto = filas.filter(f => !Number(f.Costo));
+    const t = q.trim().toLowerCase();
+    const visibles = (filtro === 'sincosto' ? [...sinCosto].sort((a, b) => b.SinValorizar - a.SinValorizar) : filas)
+        .filter(f => !t || [f.Producto, f.NombreVariante, f.CodigoVariante, f.Talle, f.Color, f.Categoria]
+            .some(x => String(x || '').toLowerCase().includes(t)));
+
+    const guardar = async (f) => {
+        const costo = Number(vals.costo);
+        if (vals.costo === '' || isNaN(costo) || costo < 0) return toast.error('Poné un costo válido');
+        setGuardando(true);
+        try {
+            await api.put(`/wms-interno/gestion/articulos/${f.VarId}/costo`,
+                { costo, moneda: vals.moneda, gramaje: vals.gramaje, ancho: vals.ancho });
+            toast.success(`Ficha de ${f.NombreVariante} guardada`);
+            setEdit(null); cargar();
+        } catch (e) { toast.error(e.response?.data?.error || 'No se pudo guardar'); }
+        finally { setGuardando(false); }
+    };
+
+    if (cargando) return (
+        <div className="flex items-center gap-2 text-slate-400 text-sm py-16 justify-center"><Loader2 size={18} className="animate-spin" /> Cargando...</div>
+    );
+
+    return (
+        <div className="space-y-4">
+            <div className="flex flex-wrap items-center gap-3">
+                <div className="relative flex-1 min-w-[220px] max-w-sm">
+                    <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-300" />
+                    <input value={q} onChange={e => setQ(e.target.value)} placeholder="Buscar por producto, variante, SKU..."
+                        className="w-full pl-9 pr-3 py-2 rounded-xl border border-slate-200 text-sm outline-none focus:border-sky-400 focus:ring-2 focus:ring-sky-200" />
+                </div>
+                <div className="flex gap-1.5">
+                    {[['todos', `Todos (${filas.length})`], ['sincosto', `Sin costo (${sinCosto.length})`]].map(([v, l]) => (
+                        <button key={v} onClick={() => setFiltro(v)}
+                            className={`px-3.5 py-2 rounded-xl text-xs font-black transition-colors ${
+                                filtro === v ? 'bg-brand-cyan text-white' : 'bg-white border border-slate-200 text-slate-500 hover:bg-slate-50'}`}>
+                            {l}
+                        </button>
+                    ))}
+                </div>
+            </div>
+
+            {visibles.length === 0 ? (
+                <div className="bg-white rounded-2xl border border-slate-200 text-center py-16 text-slate-400 text-sm">
+                    {filtro === 'sincosto' && !t ? 'Todo el catálogo tiene costo cargado.' : 'Nada para mostrar.'}
+                </div>
+            ) : (
+                <div className="rounded-2xl border border-slate-200 bg-white overflow-hidden">
+                    <div className="grid grid-cols-[1fr_80px_100px_160px_200px_90px] gap-3 px-4 py-2 bg-slate-50 text-[10px] font-black uppercase tracking-wider text-slate-400">
+                        <span>Artículo</span>
+                        <span className="text-right">Stock</span>
+                        <span className="text-right">Sin valorizar</span>
+                        <span className="text-right">Tela</span>
+                        <span className="text-right">Costo</span>
+                        <span />
+                    </div>
+                    <div className="divide-y divide-slate-50">
+                        {visibles.map(f => {
+                            const editando = edit === f.VarId;
+                            const sinC = !Number(f.Costo);
+                            return (
+                                <div key={f.VarId} className="grid grid-cols-[1fr_80px_100px_160px_200px_90px] gap-3 px-4 py-2.5 items-center">
+                                    <div className="min-w-0">
+                                        <p className="text-sm font-bold text-slate-700 truncate">{f.Producto}</p>
+                                        <p className="text-[11px] text-slate-400 font-semibold truncate">
+                                            {f.NombreVariante}{[f.Talle, f.Color].filter(Boolean).length > 0 && ` · ${[f.Talle, f.Color].filter(Boolean).join(' · ')}`}
+                                        </p>
+                                    </div>
+                                    <span className="text-sm font-black tabular-nums font-gsanscode text-right text-slate-700">{fmtCant(f.Stock)}</span>
+                                    <span className={`text-sm font-black tabular-nums font-gsanscode text-right ${sinC && f.SinValorizar > 0 ? 'text-rose-600' : 'text-slate-300'}`}>
+                                        {sinC && f.SinValorizar > 0 ? fmtCant(f.SinValorizar) : '—'}
+                                    </span>
+                                    <div className="text-right">
+                                        {editando ? (
+                                            <div className="flex items-center gap-1 justify-end">
+                                                <input type="number" inputMode="decimal" min="0" step="1" value={vals.gramaje} placeholder="g/m²"
+                                                    onChange={e => setVals(x => ({ ...x, gramaje: e.target.value }))}
+                                                    onKeyDown={e => { if (e.key === 'Enter') guardar(f); if (e.key === 'Escape') setEdit(null); }}
+                                                    className="w-16 px-1.5 py-1.5 rounded-lg border border-slate-200 text-xs text-right tabular-nums font-gsanscode [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none outline-none focus:border-sky-400 focus:ring-2 focus:ring-sky-200" />
+                                                <input type="number" inputMode="decimal" min="0" step="1" value={vals.ancho} placeholder="m"
+                                                    onChange={e => setVals(x => ({ ...x, ancho: e.target.value }))}
+                                                    onKeyDown={e => { if (e.key === 'Enter') guardar(f); if (e.key === 'Escape') setEdit(null); }}
+                                                    className="w-14 px-1.5 py-1.5 rounded-lg border border-slate-200 text-xs text-right tabular-nums font-gsanscode [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none outline-none focus:border-sky-400 focus:ring-2 focus:ring-sky-200" />
+                                            </div>
+                                        ) : f.GramajeGsm > 0 && f.AnchoMetros > 0 ? (
+                                            <div>
+                                                <p className="text-xs font-bold text-slate-600 tabular-nums font-gsanscode">{fmtCosto(f.GramajeGsm)} g/m² · {fmtCosto(f.AnchoMetros)} m</p>
+                                                <p className="text-[10px] text-slate-400 font-bold tabular-nums font-gsanscode">≈ {fmtCosto(1000 / (f.GramajeGsm * f.AnchoMetros))} m/kg</p>
+                                            </div>
+                                        ) : (
+                                            <span className="text-sm text-slate-300">—</span>
+                                        )}
+                                    </div>
+                                    <div className="text-right">
+                                        {editando ? (
+                                            <div className="flex items-center gap-1.5 justify-end">
+                                                <input type="number" inputMode="decimal" min="0" step="1" autoFocus value={vals.costo}
+                                                    onChange={e => setVals(x => ({ ...x, costo: e.target.value }))}
+                                                    onKeyDown={e => { if (e.key === 'Enter') guardar(f); if (e.key === 'Escape') setEdit(null); }}
+                                                    className="w-20 px-2 py-1.5 rounded-lg border border-sky-300 text-sm text-right tabular-nums font-gsanscode [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none outline-none focus:border-sky-400 focus:ring-2 focus:ring-sky-200" />
+                                                <select value={vals.moneda} onChange={e => setVals(x => ({ ...x, moneda: e.target.value }))}
+                                                    className="px-1.5 py-1.5 rounded-lg border border-slate-200 text-xs font-bold outline-none focus:border-sky-400 focus:ring-2 focus:ring-sky-200">
+                                                    <option value="USD">USD (US$)</option>
+                                                    <option value="UYU">UYU ($)</option>
+                                                </select>
+                                            </div>
+                                        ) : sinC ? (
+                                            <span className="text-[10px] font-black rounded-full px-2.5 py-1 bg-amber-50 text-amber-700">SIN COSTO</span>
+                                        ) : (
+                                            <span className="text-sm font-bold text-slate-700 tabular-nums font-gsanscode">{simMoneda(f.Moneda)} {fmtCosto(f.Costo)}</span>
+                                        )}
+                                    </div>
+                                    <div className="flex justify-end gap-1.5">
+                                        {editando ? (<>
+                                            <button onClick={() => guardar(f)} disabled={guardando}
+                                                className="px-3 py-1.5 rounded-lg bg-sky-600 hover:bg-sky-700 text-white text-[11px] font-black disabled:opacity-50">Guardar</button>
+                                            <button onClick={() => setEdit(null)} className="px-2 py-1.5 rounded-lg border border-slate-200 text-slate-400 text-[11px] font-black">✕</button>
+                                        </>) : (
+                                            <button onClick={() => { setEdit(f.VarId); setVals({ costo: Number(f.Costo) || '', moneda: f.Moneda || 'UYU', gramaje: f.GramajeGsm ?? '', ancho: f.AnchoMetros ?? '' }); }}
+                                                className="w-8 h-8 rounded-lg border border-slate-200 text-slate-400 hover:text-sky-600 hover:border-sky-300 flex items-center justify-center"><Pencil size={13} /></button>
+                                        )}
+                                    </div>
+                                </div>
+                            );
+                        })}
+                    </div>
+                </div>
+            )}
+            <p className="text-[11px] text-slate-400">
+                El <b>costo de referencia</b> valoriza el stock cuyos lotes entraron sin costo propio de compra.
+                <b> Sin valorizar</b> son las unidades que hoy suman $0 al patrimonio por no tener ni lo uno ni lo otro.
+                <b> Tela</b> es la ficha textil: gramaje (g/m²) y ancho del rollo — juntos dan los <b>metros por kg</b> (1000 ÷ gramaje × ancho) para los rollos que se compran por peso.
+            </p>
         </div>
     );
 }
