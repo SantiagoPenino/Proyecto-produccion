@@ -3476,9 +3476,20 @@ export const PlanesPanel = ({ cuenta, CliIdCliente, cliente, desde, hasta, onClo
                 const saldoAnt = saldoRunning;
                 saldoRunning   = Math.round((saldoRunning + importe) * 10000) / 10000;
                 const match    = m.MovConcepto?.match(/[A-Z]{2,5}-\d+/i);
-                const cod      = match ? match[0].toUpperCase() : '';
+                // La columna "Documento" salía de leer el código adentro del concepto, y las
+                // ENTREGA de cobertura retroactiva se guardan como "CR- <nombre del trabajo>",
+                // sin el código: quedaban en "—" aunque el movimiento SÍ tiene la orden colgada
+                // (OrdIdOrden). El backend ya resuelve ese código en CodigoOrdenStr, así que se
+                // usa primero y el regex del concepto queda de respaldo.
+                // Se le exige forma de orden (LETRAS-NÚMERO) porque CodigoOrdenStr cae a
+                // MovRefExterna, que en las ENTRADA es el id suelto de la transacción de caja
+                // (ej. "9194") y no una orden.
+                const codBD    = String(m.CodigoOrdenStr || m.OrdCodigoOrden || '').trim();
+                const cod      = /^[A-Z]{2,5}-\d+/i.test(codBD)
+                  ? codBD.toUpperCase()
+                  : (match ? match[0].toUpperCase() : '');
                 let   desc     = m.MovConcepto || '—';
-                if (cod) desc  = desc.replace(match[0], '').replace(/^[\s:\-.]+|[\s:\-.]+$/g, '').trim();
+                if (match) desc = desc.replace(match[0], '').replace(/^[\s:\-.]+|[\s:\-.]+$/g, '').trim();
                 if (m.MovTipo === 'RECARGO_URGENCIA' && m.MovObservaciones) desc = m.MovObservaciones;
                 return {
                   ...m,

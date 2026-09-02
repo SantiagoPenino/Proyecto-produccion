@@ -1589,7 +1589,7 @@ exports.editarFactura = async (req, res) => {
                 FROM dbo.MovimientosCuenta
                 WHERE DocIdDocumento = @docId AND CueIdCuenta <> @target
                   AND (MovAnulado IS NULL OR MovAnulado = 0)
-                  AND NOT (MovObservaciones LIKE 'Cross-moneda:%')
+                  AND (MovObservaciones IS NULL OR MovObservaciones NOT LIKE 'Cross-moneda:%')
               `);
 
             for (const { CueIdCuenta: oldCtaId } of wrongMovRes.recordset) {
@@ -1601,7 +1601,7 @@ exports.editarFactura = async (req, res) => {
                   FROM dbo.MovimientosCuenta
                   WHERE DocIdDocumento = @docId AND CueIdCuenta = @oldCta
                     AND (MovAnulado IS NULL OR MovAnulado = 0)
-                    AND NOT (MovObservaciones LIKE 'Cross-moneda:%')
+                    AND (MovObservaciones IS NULL OR MovObservaciones NOT LIKE 'Cross-moneda:%')
                 `);
               const totalMovido = Number(sumRes.recordset[0].Total) || 0;
 
@@ -1614,7 +1614,7 @@ exports.editarFactura = async (req, res) => {
                   SET CueIdCuenta = @newCta
                   WHERE DocIdDocumento = @docId AND CueIdCuenta = @oldCta
                     AND (MovAnulado IS NULL OR MovAnulado = 0)
-                    AND NOT (MovObservaciones LIKE 'Cross-moneda:%')
+                    AND (MovObservaciones IS NULL OR MovObservaciones NOT LIKE 'Cross-moneda:%')
                 `);
 
               if (Math.abs(totalMovido) > 0.001) {
@@ -1651,27 +1651,83 @@ exports.editarFactura = async (req, res) => {
           // nombre de cliente largo el texto pasaba de 200 y tedious rechazaba el request
           // ("@concepto ... invalid data length"). Se declara al largo real y se acota por las dudas.
           const nuevoConcepto = `Venta ${newConfig?.Detalle || DocTipo}: ${newSerie}-${newNumero}${DocCliNombre ? ' (' + DocCliNombre + ')' : ''}`.substring(0, 500);
+          // El cargo NO siempre está en la moneda del documento: una factura en pesos de
+          // un cliente con cuenta en dólares se asienta CONVERTIDA (1.568,64 $ → 38,40 US$),
+          // y un documento puede repartirse entre las dos cuentas. Estampar -DocTotal a
+          // ciegas metía el importe en pesos dentro de una cuenta en dólares (~41x, caso
+          // SABONIS). Reglas:
+          //   · un solo cargo y la cuenta es de la misma moneda que el documento → -DocTotal
+          //   · cualquier otro caso → se ESCALA por la proporción en que cambió el total
+          //     (cada movimiento conserva su moneda y su parte; si el total no cambió, no
+          //      se toca ningún importe).
+          const totalViejo = Number(doc.DocTotal) || 0;
+          const ratioMonto = totalViejo > 0.005 ? (Number(DocTotal) / totalViejo) : null;
           await transaction.request()
             .input('docId',    sql.Int,          parseInt(id))
             .input('imp',      sql.Decimal(18,4), -DocTotal)
+            .input('docMon',   sql.Int,          parseInt(MonIdMoneda) || 1)
+            .input('ratio',    sql.Decimal(18,8), ratioMonto)
             .input('concepto', sql.NVarChar(500), nuevoConcepto)
             .input('fechaEmis', sql.DateTime,     fechaEdit)
             .query(`
-              UPDATE dbo.MovimientosCuenta
-              SET MovImporte  = @imp,
+              ;WITH C AS (
+                SELECT m.MovIdMovimiento,
+                       Cargos      = COUNT(*) OVER (),
+                       MismaMoneda = CASE WHEN cc.MonIdMoneda = @docMon THEN 1 ELSE 0 END
+                FROM dbo.MovimientosCuenta m
+                JOIN dbo.CuentasCliente cc ON cc.CueIdCuenta = m.CueIdCuenta
+                WHERE m.DocIdDocumento = @docId
+                  AND m.MovTipo IN ('VTA_CAJA','VENTA','CARGO','CIERRE_CICLO')
+                  AND (m.MovAnulado IS NULL OR m.MovAnulado = 0)
+                  AND (m.MovObservaciones IS NULL OR m.MovObservaciones NOT LIKE 'Cross-moneda:%')
+              )
+              UPDATE m
+              SET MovImporte  = CASE
+                                  WHEN C.Cargos = 1 AND C.MismaMoneda = 1 THEN @imp
+                                  WHEN @ratio IS NULL THEN m.MovImporte
+                                  ELSE ROUND(m.MovImporte * @ratio, 2)
+                                END,
                   MovConcepto = @concepto,
                   MovFecha    = ISNULL(@fechaEmis, MovFecha)
-              WHERE DocIdDocumento = @docId
-                -- CIERRE_CICLO incluido: al editar un documento de cierre de ciclo, su movimiento
-                -- de facturación en el libro mayor DEBE seguir al DocTotal (= -@imp), o el saldo
-                -- queda desfasado de la factura (la factura manda).
-                AND MovTipo IN ('VTA_CAJA','VENTA','CARGO','CIERRE_CICLO')
-                AND (MovAnulado IS NULL OR MovAnulado = 0)
-                -- El marcador cross-moneda de la cuenta ORIGEN nace con importe 0 y debe
-                -- seguir en 0: estamparle el total acá creaba un cargo duplicado en la otra
-                -- moneda (caso Palmero PC-2515: billetera USD y UYU con la misma deuda).
-                AND NOT (MovObservaciones LIKE 'Cross-moneda:%')
+              FROM dbo.MovimientosCuenta m
+              JOIN C ON C.MovIdMovimiento = m.MovIdMovimiento;
+              -- Qué movimientos entran, en el CTE de arriba:
+              --  · CIERRE_CICLO incluido: al editar un documento de cierre de ciclo su
+              --    movimiento de facturación DEBE seguir al DocTotal (la factura manda).
+              --  · El marcador cross-moneda de la cuenta ORIGEN nace con importe 0 y debe
+              --    seguir en 0 (caso Palmero PC-2515: la misma deuda en las dos billeteras).
+              --    El IS NULL no es adorno: NOT (NULL LIKE 'x%') da UNKNOWN, así que sin él
+              --    el filtro dejaba afuera a TODO movimiento sin observaciones (el 88% de los
+              --    cargos) y este UPDATE no tocaba nada — editar el importe de una factura no
+              --    movía el libro mayor (caso SABONIS FA-598: cargo 14.999,95 contra una
+              --    factura editada a 20.000, 01-09-2026).
             `);
+
+          // Dónde quedó parado el cargo de este documento después del UPDATE de arriba.
+          // El pago y la deuda tienen que ir a LA MISMA cuenta y por EL MISMO importe, o
+          // las dos patas del documento quedan en billeteras distintas y ninguna netea
+          // (caso SABONIS FA-1150: cargo 80,16 en dólares y cobro 5.082,63 en pesos
+          // dentro de la cuenta en dólares). Si el documento no tiene cargo asentado se
+          // cae a la cuenta de la moneda del documento, como antes.
+          const cargosDocRes = await transaction.request()
+            .input('docId', sql.Int, parseInt(id))
+            .query(`
+              SELECT m.CueIdCuenta, cc.MonIdMoneda, Importe = ABS(SUM(m.MovImporte))
+              FROM dbo.MovimientosCuenta m
+              JOIN dbo.CuentasCliente cc ON cc.CueIdCuenta = m.CueIdCuenta
+              WHERE m.DocIdDocumento = @docId
+                AND m.MovTipo IN ('VTA_CAJA','VENTA','CARGO','CIERRE_CICLO')
+                AND (m.MovAnulado IS NULL OR m.MovAnulado = 0)
+                AND m.MovImporte < 0
+              GROUP BY m.CueIdCuenta, cc.MonIdMoneda
+              HAVING ABS(SUM(m.MovImporte)) > 0.005
+            `);
+          const patasDoc = cargosDocRes.recordset.length
+            ? cargosDocRes.recordset.map(r => ({ CueIdCuenta: r.CueIdCuenta, Importe: Number(r.Importe) || 0 }))
+            : [{ CueIdCuenta: ctaEditId, Importe: DocTotal }];
+          if (cargosDocRes.recordset.length > 1) {
+            logger.info(`[CFE-EDIT] Doc #${id}: el cargo vive en ${cargosDocRes.recordset.length} cuentas (${patasDoc.map(p => `${p.CueIdCuenta}:${p.Importe}`).join(', ')}); el pago/deuda se reparte igual.`);
+          }
 
           // 2. Transición de pago
           if (oldPaid && !newPaid) {
@@ -1701,32 +1757,46 @@ exports.editarFactura = async (req, res) => {
                   )
               `);
 
-            // 2b. Ajustar saldo de CuentasCliente: el cliente ahora debe el monto
-            await transaction.request()
-              .input('Dif', sql.Decimal(18,4), -DocTotal)
-              .input('C',   sql.Int,            ctaEditId)
-              .query(`UPDATE dbo.CuentasCliente SET CueSaldoActual = CueSaldoActual + @Dif WHERE CueIdCuenta = @C`);
+            // 2b. Ajustar saldo de CuentasCliente: el cliente ahora debe el monto.
+            //     Se ajusta CADA cuenta donde pesa el cargo, por SU importe.
+            for (const p of patasDoc) {
+              await transaction.request()
+                .input('Dif', sql.Decimal(18,4), -Math.abs(p.Importe))
+                .input('C',   sql.Int,            p.CueIdCuenta)
+                .query(`UPDATE dbo.CuentasCliente SET CueSaldoActual = CueSaldoActual + @Dif WHERE CueIdCuenta = @C`);
+            }
 
-            // 2c. Crear DeudaDocumento
-            await contabilidadService.crearDeudaDocumento({
-              CueIdCuenta:    ctaEditId,
-              DocIdDocumento: parseInt(id),
-              Importe:        DocTotal,
-            }, transaction);
+            // 2c. Crear DeudaDocumento en la cuenta del cargo y por el importe del cargo
+            //     (el de la cuenta, ya convertido): así la deuda dice lo mismo que el libro
+            //     y la caja cobra en la moneda en la que el documento realmente pesa.
+            for (const p of patasDoc) {
+              await contabilidadService.crearDeudaDocumento({
+                CueIdCuenta:    p.CueIdCuenta,
+                DocIdDocumento: parseInt(id),
+                Importe:        Math.abs(p.Importe),
+              }, transaction);
+            }
 
           } else if (!oldPaid && newPaid) {
             // ── Crédito → Contado ──────────────────────────────────────────────
             const conceptoPago = `Pago (${newConfig?.Detalle || DocTipo}): ${newSerie}-${newNumero}`;
-            await contabilidadService.registrarMovimiento({
-                CueIdCuenta: ctaEditId,
-                MovTipo: 'PAGO',
-                MovConcepto: conceptoPago,
-                MovImporte: DocTotal,
-                MovUsuarioAlta: req.user?.id || 1,
-                DocIdDocumento: parseInt(id),
-                CicIdCiclo: cicId,
-                MovFecha: fechaEfectiva
-            }, transaction);
+            // El pago va a la MISMA cuenta y por el MISMO importe que el cargo (ya
+            // convertido a la moneda de esa cuenta): cargo y cobro netean en cero donde
+            // corresponde. Antes se estampaba DocTotal en la cuenta de la moneda del
+            // documento y una factura en pesos dejaba +5.082,63 dentro de una cuenta en
+            // dólares (SABONIS FA-1150 / FA-1007, ~41x).
+            for (const p of patasDoc) {
+              await contabilidadService.registrarMovimiento({
+                  CueIdCuenta: p.CueIdCuenta,
+                  MovTipo: 'PAGO',
+                  MovConcepto: conceptoPago,
+                  MovImporte: Math.abs(p.Importe),
+                  MovUsuarioAlta: req.user?.id || 1,
+                  DocIdDocumento: parseInt(id),
+                  CicIdCiclo: cicId,
+                  MovFecha: fechaEfectiva
+              }, transaction);
+            }
 
 
 
@@ -1738,25 +1808,37 @@ exports.editarFactura = async (req, res) => {
           } else if (newPaid && montoChanged) {
             // ── Sigue Contado pero cambió el monto ────────────────────────────
             const conceptoPago = `Pago (${newConfig?.Detalle || DocTipo}): ${newSerie}-${newNumero}`.substring(0, 500);
-            await transaction.request()
-              .input('docId',    sql.Int,          parseInt(id))
-              .input('imp',      sql.Decimal(18,4), DocTotal)
-              .input('concepto', sql.NVarChar(500), conceptoPago)
-              .input('fechaEmis', sql.DateTime,     fechaEdit)
-              .query(`
-                UPDATE dbo.MovimientosCuenta
-                SET MovImporte  = @imp, MovConcepto = @concepto,
-                    MovFecha    = ISNULL(@fechaEmis, MovFecha)
-                WHERE DocIdDocumento = @docId
-                  AND MovTipo = 'PAGO'
-                  AND (MovAnulado IS NULL OR MovAnulado = 0)
-              `);
-            // Ajustar saldo por diferencia
-            const dif = DocTotal - (doc.DocTotal || 0);
-            await transaction.request()
-              .input('Dif', sql.Decimal(18,4), -dif) // cargo neto: cargo sube pero pago también
-              .input('C',   sql.Int,            ctaEditId)
-              .query(`UPDATE dbo.CuentasCliente SET CueSaldoActual = CueSaldoActual + @Dif WHERE CueIdCuenta = @C`);
+            // Mismo criterio que el cargo: el pago sigue al cargo de SU cuenta, no al
+            // DocTotal (que puede estar en otra moneda). Un solo pago en la cuenta → se
+            // iguala al cargo; si hay varios, se escalan en la misma proporción.
+            for (const p of patasDoc) {
+              await transaction.request()
+                .input('docId',    sql.Int,          parseInt(id))
+                .input('cue',      sql.Int,          p.CueIdCuenta)
+                .input('imp',      sql.Decimal(18,4), Math.abs(p.Importe))
+                .input('ratio',    sql.Decimal(18,8), ratioMonto)
+                .input('concepto', sql.NVarChar(500), conceptoPago)
+                .input('fechaEmis', sql.DateTime,     fechaEdit)
+                .query(`
+                  ;WITH P AS (
+                    SELECT MovIdMovimiento, Pagos = COUNT(*) OVER ()
+                    FROM dbo.MovimientosCuenta
+                    WHERE DocIdDocumento = @docId AND CueIdCuenta = @cue
+                      AND MovTipo = 'PAGO' AND (MovAnulado IS NULL OR MovAnulado = 0)
+                  )
+                  UPDATE m
+                  SET MovImporte  = CASE WHEN P.Pagos = 1 THEN @imp
+                                         WHEN @ratio IS NULL THEN m.MovImporte
+                                         ELSE ROUND(m.MovImporte * @ratio, 2) END,
+                      MovConcepto = @concepto,
+                      MovFecha    = ISNULL(@fechaEmis, MovFecha)
+                  FROM dbo.MovimientosCuenta m
+                  JOIN P ON P.MovIdMovimiento = m.MovIdMovimiento;
+                `);
+            }
+            // El saldo de la cuenta NO se mueve: en un contado el cargo y el pago cambian
+            // juntos y se cancelan. Antes se le restaba la diferencia, que ensuciaba el
+            // saldo guardado con el monto de la edición.
 
           } else if (!newPaid && montoChanged) {
             // ── Sigue Crédito pero cambió el monto ────────────────────────────

@@ -4811,9 +4811,34 @@ exports.setBilleteraPortal = async (req, res) => {
     const r = await pool.request().input('C', sql.Int, cliId).input('H', sql.Bit, habilitada ? 1 : 0)
       .query('UPDATE dbo.Clientes SET CliBilleteraPortal = @H WHERE CliIdCliente = @C');
     if (!r.rowsAffected[0]) return res.status(404).json({ success: false, error: 'Cliente no encontrado.' });
-    logger.info(`[BILLETERA] Cliente ${cliId}: billetera en el portal ${habilitada ? 'HABILITADA' : 'OCULTADA'} (usuario ${req.user?.id || '?'})`);
-    res.json({ success: true, habilitada, message: habilitada
-      ? 'El cliente ya ve "Mi billetera" en el portal (con recarga y cobertura de pedidos).'
+
+    // Al HABILITAR, las 2 billeteras estándar se crean solas si faltan (nacen ya
+    // correctas: secundarias libres, PREPAGO_FACTURADO, automático ON, sin negativo).
+    // El script masivo solo siembra a los clientes que ya operaron (con principal);
+    // este es el camino para el resto — nadie habilitado queda sin billetera.
+    let creadas = 0;
+    if (habilitada) {
+      const mk = (nombre, tipo, monId) => pool.request()
+        .input('C', sql.Int, cliId).input('Nom', sql.NVarChar(100), nombre)
+        .input('Tipo', sql.VarChar(20), tipo).input('Mon', sql.Int, monId)
+        .query(`
+          INSERT INTO dbo.CuentasCliente
+            (CliIdCliente, CueTipo, ProIdProducto, MonIdMoneda, CPaIdCondicion,
+             CueSaldoActual, CueLimiteCredito, CuePuedeNegativo, CueCicloActivo,
+             CueActiva, CueFechaAlta, CueUsuarioAlta,
+             CueNombre, CueEsPrincipal, CueRestringida, CueAutoConsumo, CueModalidadFiscal)
+          SELECT @C, @Tipo, NULL, @Mon, 1, 0, 0, 0, 0, 1, GETDATE(), 999,
+                 @Nom, 0, 0, 1, 'PREPAGO_FACTURADO'
+          WHERE NOT EXISTS (SELECT 1 FROM dbo.CuentasCliente cc
+                            WHERE cc.CliIdCliente = @C
+                              AND LTRIM(RTRIM(ISNULL(cc.CueNombre,''))) = @Nom)`);
+      creadas += (await mk('BILLETERA USD', 'DINERO_USD', 2)).rowsAffected[0] || 0;
+      creadas += (await mk('BILLETERA UY', 'DINERO_UYU', 1)).rowsAffected[0] || 0;
+    }
+
+    logger.info(`[BILLETERA] Cliente ${cliId}: billetera en el portal ${habilitada ? 'HABILITADA' : 'OCULTADA'}${creadas ? ` (+${creadas} billeteras creadas)` : ''} (usuario ${req.user?.id || '?'})`);
+    res.json({ success: true, habilitada, billeterasCreadas: creadas, message: habilitada
+      ? `El cliente ya ve "Mi billetera" en el portal (con recarga y cobertura de pedidos).${creadas ? ` Se le crearon ${creadas === 2 ? 'las billeteras USD y UY' : 'la billetera que le faltaba'} (prepago, descuento automático).` : ''}`
       : 'La billetera quedó oculta en el portal para este cliente (el descuento automático interno sigue igual).' });
   } catch (err) {
     logger.error('[BILLETERA] setBilleteraPortal:', err.message);

@@ -73,13 +73,8 @@ function resolverFechaCobro(fechaStr) {
 
 // ─────────────────────────────────────────────
 
-// Todo este controller cuelga de /caja, que en contabilidadRoutes pasa por
-// `soloInternoConRol()`: acá abajo req.user siempre es un usuario INTERNO. Por eso
-// `req.user.id` va sin fallback — el viejo `|| 70` apuntaba a un IdUsuario que no
-// existe en dbo.Usuarios, así que cuando se disparaba dejaba el movimiento sin
-// operador y la grilla lo mostraba como "Sistema" en vez de fallar a la vista.
 const procesarTransaccion = async (req, res) => {
-  const usuarioId = req.user.id;
+  const usuarioId = req.user?.id || 70;
   try {
     const { header, aplicaciones, pagos } = req.body;
     if (!header || !aplicaciones?.length)
@@ -116,7 +111,7 @@ const procesarTransaccion = async (req, res) => {
 };
 
 const procesarVentaDirecta = async (req, res) => {
-  const usuarioId = req.user.id;
+  const usuarioId = req.user?.id || 70;
   try {
     const data = req.body; // { header, items, pagos }
     if (!data.header || !data.items?.length)
@@ -151,7 +146,7 @@ const getProductosVenta = async (req, res) => {
 };
 
 const anularTransaccion = async (req, res) => {
-  const usuarioId = req.user.id;
+  const usuarioId = req.user?.id || 70;
   const id = parseInt(req.params.id, 10);
   if (isNaN(id)) return res.status(400).json({ success:false, error:'ID inválido.' });
   try {
@@ -210,7 +205,7 @@ const getSesionActual = async (req, res) => {
 
 /** POST /api/contabilidad/caja/sesion/abrir */
 const abrirSesion = async (req, res) => {
-  const usuarioId = req.user.id;
+  const usuarioId = req.user?.id || 70;
   const { montoInicial = 0 } = req.body;
   try {
     const pool = await getPool();
@@ -245,7 +240,7 @@ const abrirSesion = async (req, res) => {
 
 /** POST /api/contabilidad/caja/sesion/:id/cerrar */
 const cerrarSesion = async (req, res) => {
-  const usuarioId  = req.user.id;
+  const usuarioId  = req.user?.id || 70;
   const id         = parseInt(req.params.id, 10);
   const { montoFinal, montoFinalUSD = 0, observaciones } = req.body;
   if (isNaN(id))      return res.status(400).json({ success:false, error:'ID de sesión inválido.' });
@@ -320,7 +315,7 @@ const getResumenDiario = async (req, res) => {
 
 // ─────────────────────────────────────────────
 const getMovimientosTurno = async (req, res) => {
-  const usuarioId = req.user.id;
+  const usuarioId = req.user?.id || 70;
   const isAdmin = req.query.admin === 'true';
   try {
     const pool = await getPool();
@@ -596,7 +591,7 @@ const getTiposEgreso = async (req, res) => {
 
 /** POST /api/contabilidad/caja/egreso */
 const registrarEgreso = async (req, res) => {
-  const usuarioId = req.user.id;
+  const usuarioId = req.user?.id || 70;
   // ─────────────────────────────────────────────
   let { stuIdSesion, tipoEgreso, concepto, proveedor, monto, moneda='UYU', monedaId=1,
           cotizacion, metodoPagoId, tipoDocumento, serieDoc, numeroDoc, observaciones,
@@ -909,7 +904,7 @@ const getVoucherEgreso = async (req, res) => {
 // ─────────────────────────────────────────────
 
 const registrarIngresoGenerico = async (req, res) => {
-  const usuarioId = req.user.id;
+  const usuarioId = req.user?.id || 70;
   let { stuIdSesion, concepto, monto, moneda='UYU', monedaId=1,
           cotizacion, metodoPagoId, tipoDocumento, serieDoc, numeroDoc, observaciones, admin } = req.body;
   if (!concepto || !monto || !metodoPagoId) return res.status(400).json({ success:false, error:'Concepto, monto y método son obligatorios.' });
@@ -1066,7 +1061,7 @@ function _invocarHandler(handler, req) {
 /** POST /api/contabilidad/caja/documentos/anular
  *  Body: { tipoOperacion: 'INGRESO'|'EGRESO', docId, motivo } */
 const anularDocumentoInterno = async (req, res) => {
-  const usuarioId = req.user.id;
+  const usuarioId = req.user?.id || 70;
   const { tipoOperacion, docId, motivo } = req.body;
   const id = parseInt(docId, 10);
   if (!tipoOperacion || isNaN(id))
@@ -1089,7 +1084,7 @@ const anularDocumentoInterno = async (req, res) => {
  *  Estrategia segura: anula el documento original y crea uno nuevo con el monto
  *  corregido (nuevo N° de documento), reutilizando las funciones de creación probadas. */
 const modificarMontoDocumento = async (req, res) => {
-  const usuarioId = req.user.id;
+  const usuarioId = req.user?.id || 70;
   const { tipoOperacion, docId, nuevoMonto, motivo } = req.body;
   const id = parseInt(docId, 10);
   const monto = parseFloat(nuevoMonto);
@@ -1192,7 +1187,7 @@ const modificarMontoDocumento = async (req, res) => {
 
 /** POST /api/contabilidad/caja/autorizar */
 const autorizarSinPago = async (req, res) => {
-  const usuarioId = req.user.id;
+  const usuarioId = req.user?.id || 70;
   const { oreIdOrdenRetiro, motivo, montoDeuda=0, fechaVencimiento } = req.body;
   if (!oreIdOrdenRetiro || !motivo?.trim())
     return res.status(400).json({ success:false, error:'oreIdOrdenRetiro y motivo son obligatorios.' });
@@ -1260,7 +1255,7 @@ const autorizarSinPago = async (req, res) => {
 const motorContable = require('../services/motorContable');
 
 const registrarOperacionManual = async (req, res) => {
-  const usuarioId = req.user.id;
+  const usuarioId = req.user?.id || 70;
   const {
     evtCodigo, clienteId, importe, moneda = 'UYU', monedaId = 1,
     cotizacion, metodoPagoId, serieDoc = 'A', observaciones = '', admin
@@ -1429,7 +1424,7 @@ const registrarOperacionManual = async (req, res) => {
 // 2. Imputa contra cada DeudaDocumento seleccionada (actualiza DDeImportePendiente / DDeEstado)
 // 3. Registra movimientos en libro mayor (MovimientosCuenta)
 const procesarPagoDeudaInterno = async (req, res) => {
-  const usuarioId = req.user.id;
+  const usuarioId = req.user?.id || 70;
   // Multiempresa: empresa a la que se atribuye el pago (null => la BD aplica el DEFAULT)
   const empresaId = req.body?.empresaId || req.user?.empresaId || null;
   try {
@@ -2453,7 +2448,7 @@ const consultarCompraRecursoDocumento = async (req, res) => {
 // POST /contabilidad/caja/nota-credito
 // Body: { docIdOrigen, monto, motivo, clienteId, cuentaId, monedaId }
 const generarNotaCredito = async (req, res) => {
-  const usuarioId = req.user.id;
+  const usuarioId = req.user?.id || 70;
   try {
     const { docIdOrigen, monto, motivo, clienteId, cuentaId, monedaId, Lineas, Totales } = req.body;
     if (!docIdOrigen || !clienteId || !cuentaId)
@@ -2707,7 +2702,7 @@ const generarNotaCredito = async (req, res) => {
 // deuda viven exclusivamente en el sistema anterior.
 // Body: { clienteId, tipoOrigen ('FACTURA'|'TICKET'), serieOrigen, numeroOrigen, fechaOrigen, totalOrigen, monedaId, motivo, Lineas, Totales, empresaId }
 const generarNotaCreditoExterna = async (req, res) => {
-  const usuarioId = req.user.id;
+  const usuarioId = req.user?.id || 70;
   try {
     const {
       clienteId, tipoOrigen, serieOrigen, numeroOrigen, fechaOrigen, totalOrigen,
@@ -2856,7 +2851,7 @@ const generarNotaCreditoExterna = async (req, res) => {
 // POST /contabilidad/caja/nota-debito
 // Body: { docIdOrigen, monto, motivo, clienteId, cuentaId, monedaId, Lineas, Totales }
 const generarNotaDebito = async (req, res) => {
-  const usuarioId = req.user.id;
+  const usuarioId = req.user?.id || 70;
   try {
     const { docIdOrigen, monto, motivo, clienteId, cuentaId, monedaId, Lineas, Totales } = req.body;
     if (!docIdOrigen || !clienteId || !cuentaId)
@@ -3070,7 +3065,7 @@ const generarNotaDebito = async (req, res) => {
 // POST /contabilidad/caja/reversar-doc
 // ─────────────────────────────────────────────
 const reversarDocumento = async (req, res) => {
-  const usuarioId = req.user.id;
+  const usuarioId = req.user?.id || 70;
   try {
     const { docId, clienteId, cuentaId, motivo } = req.body;
     if (!docId || !clienteId || !cuentaId)
@@ -3151,7 +3146,7 @@ async function _metodosChequeIds(transaction = null) {
 // POST /contabilidad/caja/pago-anticipo
 // Body: { clienteId, cuentaId, importe, metodoPagoId, monedaId, concepto }
 const registrarPagoAnticipo = async (req, res) => {
-  const usuarioId = req.user.id;
+  const usuarioId = req.user?.id || 70;
   // Multiempresa: empresa a la que se atribuye el anticipo (null => la BD aplica el DEFAULT)
   const empresaId = req.body?.empresaId || req.user?.empresaId || null;
   try {
@@ -3484,7 +3479,7 @@ const registrarPagoAnticipo = async (req, res) => {
 // ─────────────────────────────────────────────
 // ─────────────────────────────────────────────
 const anularFactura = async (req, res) => {
-  const usuarioId = req.user.id;
+  const usuarioId = req.user?.id || 1;
   try {
     const { docId, clienteId, cuentaId, motivo } = req.body;
     if (!docId || !cuentaId)
@@ -3889,7 +3884,7 @@ const getAutorizacionesSinPago = async (req, res) => {
 const gestionarAutorizacionSinPago = async (req, res) => {
   const { id } = req.params;
   const { estado, nota } = req.body;
-  const usuarioId = req.user.id;
+  const usuarioId = req.user?.id || 70;
 
   const ESTADOS_VALIDOS = { Pendiente: 'ACTIVA', Cobrado: 'COBRADA', Condonado: 'CONDONADA' };
   if (!ESTADOS_VALIDOS[estado])
@@ -3952,7 +3947,7 @@ module.exports = {
  */
 async function imputarAnticipoADeuda(req, res) {
   const { cuentaId, ddeIdDocumento, monto, clienteId } = req.body;
-  const usuarioId = req.user.id;
+  const usuarioId = req.user?.id || req.user?.UsrIdUsuario || 1;
   if (!cuentaId || !ddeIdDocumento) return res.status(400).json({ error: 'cuentaId y ddeIdDocumento son requeridos.' });
   const pool = await getPool();
   const transaction = pool.transaction();
@@ -4161,7 +4156,7 @@ module.exports.subirComprobanteTransferencia = subirComprobanteTransferencia;
  *  - Admin  → Central:  EsCajaAdmin = 0, StuIdSesion = <sesión central abierta>
  */
 const reclasificarCajaMovimiento = async (req, res) => {
-  const usuarioId = req.user.id;
+  const usuarioId = req.user?.id || 70;
   const orig = String(req.body?.origen || '').toUpperCase();
   const dest = String(req.body?.destino || '').toUpperCase();
   const id   = parseInt(req.body?.refId, 10);

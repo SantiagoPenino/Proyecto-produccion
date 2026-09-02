@@ -75,10 +75,15 @@ export default function CierreCicloPreviewModal({
   const [docType, setDocType] = useState(tieneRUT ? 'E-FACTURA' : 'E-TICKET');
   const [docCond, setDocCond] = useState(isAnticipo ? 'CONTADO' : 'CREDITO');
 
-  const tipoDocumento = docType === 'FACTURA' 
-    ? 'FACTURA' 
-    : docType === 'PEDIDO_CAJA' 
-      ? 'E-TICKET CONTADO' 
+  // 'Pedidos Caja' es el MISMO texto que usa la caja (Config_TiposDocumento.Detalle del
+  // CodDocumento 40) y es el que el backend busca para numerar con la serie PC-.
+  // Antes acá decía 'E-TICKET CONTADO': elegir "Pedido Caja" emitía un e-Ticket con
+  // número ET- y, de paso, forzaba CONTADO ignorando lo elegido en el paso 2 (reporte
+  // Gerardo Mazzoni, 01-09-2026).
+  const tipoDocumento = docType === 'FACTURA'
+    ? 'FACTURA'
+    : docType === 'PEDIDO_CAJA'
+      ? 'Pedidos Caja'
       : `${docType} ${docCond}`;
   
   // Datos DGI Consumidor Final (si supera umbral)

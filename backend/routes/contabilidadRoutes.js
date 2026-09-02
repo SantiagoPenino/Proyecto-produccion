@@ -3,7 +3,7 @@ const express = require('express');
 const router = express.Router();
 const ctrl = require('../controllers/contabilidadController');
 const logger = require('../utils/logger');
-const { verifyToken } = require('../middleware/authMiddleware');
+const { verifyToken, soloInternoConRol } = require('../middleware/authMiddleware');
 const upload = require('../middleware/multerConfig');
 
 router.use(verifyToken);
@@ -134,6 +134,26 @@ router.get('/erp/cuentas/gastos', erp.getCuentasGastos);
 router.get('/erp/libro-mayor',               erp.getLibroMayor);         // paginado: cabeceras + totales
 router.get('/erp/libro-mayor/origenes',      erp.getLibroMayorOrigenes); // combo Origen
 router.get('/erp/libro-mayor/:asiId/lineas', erp.getLibroMayorLineas);   // detalle, al expandir el asiento
+
+// ─────────────────────────────────────────────────────────────────────────────
+// La caja es SOLO para usuarios internos.
+//
+// `verifyToken` (arriba) valida la FIRMA del JWT, no de quién es: acepta igual el
+// token de un cliente del portal o de un diseñador. Los controllers de caja leían
+// `req.user.id` sin mirar `userType`, así que cuando una empleada entraba con su
+// cuenta de CLIENTE se estampaba su CodCliente en TcaUsuarioId / EgrUsuarioId /
+// MovUsuarioAlta. Ese número no existe en dbo.Usuarios, el LEFT JOIN de la grilla
+// no lo resuelve y el movimiento aparece como "Sistema" (1/9/2026: 31 e-Tickets de
+// la sesión 54 quedaron con el CodCliente 282801 en vez de la usuaria MiaF).
+//
+// Con esto un token que no sea INTERNAL no llega al controller: corta en 403 y la
+// persona tiene que entrar con su usuario interno. Va acá y no en cada handler
+// porque TODAS las rutas de cajaController cuelgan del prefijo /caja.
+// OJO: `verifyToken` renueva los tokens conservando sus claims, así que una sesión
+// vieja emitida antes de que existiera `userType` no lo tiene y va a caer en el 403
+// hasta volver a loguearse una vez.
+// ─────────────────────────────────────────────────────────────────────────────
+router.use('/caja', soloInternoConRol());
 
 // Transacciones
 router.post('/caja/transaccion',              caja.procesarTransaccion);
