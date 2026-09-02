@@ -7,18 +7,40 @@ precios finales.
 
 ---
 
+## 0. Diagnóstico primero
+
+Correr `diag_billetera_prod.sql` (solo lectura) en prod: dice OK/FALTA por componente.
+Estado al 01/09/2026: **TODO FALTA — prod no tenía nada del proyecto** (los scripts 1,
+2 y 5 se estaban corriendo ese día).
+
 ## 1. SQL en PRODUCCIÓN — correr ANTES del deploy de código, EN ESTE ORDEN
 
-Los 4 son idempotentes (se pueden correr de nuevo sin romper nada). El código nuevo
+Los scripts son idempotentes (se pueden correr de nuevo sin romper nada). El código nuevo
 referencia las columnas/tipos que crean: si el código sube antes que el SQL, el backend
 rompe al tocar cualquier cuenta.
+
+**⚠️ CUÁNDO correr cada uno:**
+- **1, 2 y 5 pueden ir cualquier día** (solo agregan columnas/tipos/medio que el código viejo no mira).
+- **3 va PEGADO al deploy** (misma ventana: script → deploy → reinicio). Motivo: el
+  backend viejo, ante un cliente cuya única cuenta es la BILLETERA recién creada, usaría
+  LA BILLETERA como cuenta del sistema y las facturas le caerían adentro (mismo bug que
+  se corrigió en `obtenerOCrearCuenta` el 01/09 — el fix viene en este deploy).
+- **En la ventana del deploy, ANTES del script 3: repasar el script 1** (idempotente).
+  El backend viejo crea cuentas nuevas con `CueEsPrincipal = 0` (deriva diaria detectada
+  el 01/09: 1 par sin principal a horas del backfill); el re-run barre esa deriva.
+- **Cómo correr los SQL en prod**: SIEMPRE File → Open desde el disco en SSMS (o
+  `sqlcmd -i archivo`). NUNCA copiar/pegar el contenido desde el chat: la vista previa
+  corta el texto cerca de la línea 100 y el script llega truncado (pasó el 01/09:
+  mitad del script 1 aplicado y errores "Incorrect syntax" fantasma).
+- **4 NO hace falta en prod**: era para migrar las billeteras viejas de local; el script 3
+  actual ya las crea nacidas PREPAGO+automático. Correrlo igual no rompe (migra 0).
 
 | # | Script | Qué hace | Qué esperar (referencia local) |
 |---|--------|----------|-------------------------------|
 | 1 | `add_billetera_cuentas.sql` | Columnas `CueNombre`/`CueEsPrincipal`/`CueRestringida`/`CueAutoConsumo`/`CueModalidadFiscal` + backfill de LA principal por (cliente, moneda) + índice único + tabla `CuentasClienteArticulosPermitidos` + TiposMovimiento `TRANSFERENCIA_*`, `CONSUMO_CUENTA`, `CARGA_PREPAGO` + medio de pago **"Saldo de cuenta"** | Local: 2.194 principales marcadas, 0 clientes sin principal. La verificación final "SIN principal" debe dar **0** |
 | 2 | `add_tipo_pago_saldo.sql` | TipoMovimiento `PAGO_SALDO` (billetera usada como medio de pago) | "PAGO_SALDO listo." |
-| 3 | `crear_billeteras_clientes.sql` | Crea "BILLETERA USD" y "BILLETERA UY" para TODOS los clientes: secundarias libres, **PREPAGO_FACTURADO**, auto **ON**, negativo **NO**, usuario 999 | Local: 5.273 clientes × 2 cuentas |
-| 4 | `migrar_billeteras_prepago.sql` | Migra a PREPAGO+auto las BILLETERA que existan de la etapa anterior y NO tengan movimientos; **lista las que no puede migrar** (recibieron plata por recibo) | Local: 5.271/5.272 migradas; las listadas se resuelven a mano (facturar su saldo con "Facturar consumos" o dejarlas como anticipo hasta agotarse) |
+| 3 | `crear_billeteras_clientes.sql` | Crea "BILLETERA USD" y "BILLETERA UY" **solo para los clientes con alguna principal ACTIVA** (= los que operaron; en prod ≈2.700 pares): secundarias libres, **PREPAGO_FACTURADO**, auto **ON**, negativo **NO**, usuario 999. Los demás clientes las reciben **automáticamente al prenderles el switch** "Billetera visible en el portal" (setBilleteraPortal las crea si faltan — E2E validado 01/09) | El diag chequea: billeteras ≥ clientes con principal activa, y 0 habilitados sin sus 2 billeteras |
+| 4 | ~~`migrar_billeteras_prepago.sql`~~ | **OBSOLETO — no correr**: era para migrar las billeteras viejas de local; ahora nacen PREPAGO+auto. El diag solo avisa si apareciera alguna en otra modalidad | — |
 | 5 | `add_billetera_portal.sql` | Columna `Clientes.CliBilleteraPortal` (default **0**): la sección "Mi billetera" del portal solo la ven los clientes habilitados (switch en 360 → "Cuentas" → "Billetera visible en el portal") | Al principio NADIE la ve: habilitar cliente por cliente desde el 360 |
 
 > Recordatorio: correrlos **el usuario en prod** (yo no toco prod). Guardar el output

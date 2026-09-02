@@ -69,6 +69,11 @@ async function obtenerOCrearCuenta(CliIdCliente, CueTipo, opciones = {}, transac
         -- Billetera: las cuentas restringidas nunca son "la" cuenta de los flujos
         -- automáticos; solo se usan cuando alguien las elige explícitamente.
         AND  CueRestringida = 0
+        -- DINERO: "la" cuenta del sistema es SOLO la principal. Sin este filtro, un
+        -- cliente cuya única cuenta es la BILLETERA (secundaria prepago, creada en
+        -- masa para todos) recibiría acá sus facturas/deudas/pagos DENTRO de la
+        -- billetera. Si no hay principal, se crea abajo (el INSERT nace principal=1).
+        AND  (CueTipo NOT LIKE 'DINERO%' OR CueEsPrincipal = 1)
       ORDER BY CueEsPrincipal DESC, CueIdCuenta ASC
     `);
 
@@ -265,8 +270,16 @@ async function crearDeudaDocumento(params, transaction = null) {
   // cliente tuviera plata a favor real (caso Posse Gutierrez, 30-jul-2026).
   // Se recalcula acá con la MISMA fórmula que usa el resto del sistema
   // (getSaldoCliente, getMovimientos): todo menos ORDEN/ORDEN_ANTICIPO.
+  // El saldo se mide SIN los movimientos del documento que estamos endeudando: su cargo
+  // ya suele estar asentado cuando se llega acá (cierre de ciclo, y sobre todo el paso
+  // Contado→Crédito de editarFactura). Contándolo, un cliente con 2.957 a favor y una
+  // factura de 3.006 daba "saldo -49" → el auto-consumo no se disparaba y la deuda nacía
+  // por los 3.006 enteros con la plata a favor intacta al lado: deuda y saldo a favor
+  // conviviendo (caso Gerardo Mazzoni PC-3825, 01-09-2026). Lo que corresponde aplicar es
+  // el saldo PREVIO al documento.
   const ctaRes = await mkReq()
     .input('CueIdCuenta', sql.Int, CueIdCuenta)
+    .input('DocPropio',  sql.Int, DocIdDocumento)
     .query(`
       SELECT
         ISNULL((
@@ -274,6 +287,7 @@ async function crearDeudaDocumento(params, transaction = null) {
           WHERE CueIdCuenta = cc.CueIdCuenta
             AND (MovAnulado IS NULL OR MovAnulado = 0)
             AND MovTipo NOT IN ('ORDEN', 'ORDEN_ANTICIPO')
+            AND (@DocPropio IS NULL OR DocIdDocumento IS NULL OR DocIdDocumento <> @DocPropio)
         ), 0) AS SaldoActual,
         ISNULL(cp.CPaDiasVencimiento, 0) AS DiasVencimiento,
         -- Sin esta columna, monId (más abajo) era SIEMPRE undefined → default 1:
@@ -1925,7 +1939,13 @@ async function getResumenDocumentos(CliIdCliente, desde = null, hasta = null) {
         -- Billetera: cuenta dueña del movimiento (principal / secundaria / restringida)
         -- para poder filtrar el estado de cuenta POR CUENTA, no solo por moneda.
         m.CueIdCuenta, cc.CueNombre, cc.CueEsPrincipal, cc.CueRestringida,
-        ISNULL(mo.MonSimbolo,'$') AS MonSimbolo,
+        -- La moneda de la cuenta se deduce del TIPO cuando MonIdMoneda está en NULL
+        -- (hay 44 cuentas DINERO_USD y 277 DINERO_UYU sin moneda seteada). Tiene que
+        -- ser LA MISMA regla que usan el arrastre y los cargos: si una consulta dice
+        -- '$' y la otra 'US$' para la misma cuenta, los cargos de un documento caen en
+        -- una columna y sus cobros en la otra, y ninguna cierra (caso Pintos Falero
+        -- cuenta 266: ±20.238 espejados, 01-09-2026).
+        COALESCE(mo.MonSimbolo, CASE WHEN cc.CueTipo = 'DINERO_USD' THEN 'US$' ELSE '$' END) AS MonSimbolo,
         CAST(ABS(m.MovImporte) AS DECIMAL(18,2)) AS Importe,
         -- Signo real: un PAGO_CRUZADO negativo es la plata SALIENDO de esta cuenta
         -- (financia la otra moneda) — hay que mostrarlo como consumo, no como cobro,
@@ -2007,6 +2027,10 @@ async function getResumenDocumentos(CliIdCliente, desde = null, hasta = null) {
           AND ISNULL(p4.PagMontoConvertido, 0) > 0
       ) pagoReal
       WHERE cc.CliIdCliente = @cli
+        -- SOLO cuentas de dinero: las de recursos (MTS/KG) no tienen moneda y sus
+        -- movimientos (metros entregados) se colaban a la columna de PESOS como si
+        -- fueran plata (01-09-2026).
+        AND cc.CueTipo LIKE 'DINERO%'
         -- PAGO_CRUZADO incluido: es plata real (cobertura entre monedas del mismo
         -- cliente) que faltaba acá — sin esto, esos movimientos cuentan en la
         -- billetera pero jamás aparecen en el Estado de Cuenta (caso Favio
@@ -2026,8 +2050,14 @@ async function getResumenDocumentos(CliIdCliente, desde = null, hasta = null) {
         -- transferencia movía la billetera pero era invisible en el Estado de Cuenta.
         -- CONSUMO_CUENTA: orden descontada automáticamente de una cuenta restringida
         -- ("rollo en plata") — plata saliendo de esa cuenta (EsConsumo).
+        -- AJUSTE / CREDITO_PLAN / ENTREGA: tipos sueltos que igual mueven plata en una
+        -- cuenta de dinero y no los miraba nadie — ni acá ni como cargo. Un ajuste de
+        -- $ 104.615 (Palmero) era invisible en el Estado de Cuenta y por eso la columna
+        -- no cerraba contra el libro (01-09-2026). El signo decide si se muestra como
+        -- cobro o como consumo, igual que el resto.
         AND m.MovTipo IN ('PAGO','ANTICIPO','SALDO_A_FAVOR','COBRO','NOTA_CREDITO','PAGO_CRUZADO','AJUSTE_POS','AJUSTE_NEG',
-                          'TRANSFERENCIA_ENTRADA','TRANSFERENCIA_SALIDA','CONSUMO_CUENTA','CARGA_PREPAGO','PAGO_SALDO')
+                          'TRANSFERENCIA_ENTRADA','TRANSFERENCIA_SALIDA','CONSUMO_CUENTA','CARGA_PREPAGO','PAGO_SALDO',
+                          'AJUSTE','CREDITO_PLAN','ENTREGA')
         AND (m.MovAnulado IS NULL OR m.MovAnulado = 0)
         AND (@desde IS NULL OR CAST(m.MovFecha AS DATE) >= @desde)
         AND (@hasta IS NULL OR CAST(m.MovFecha AS DATE) <= @hasta)
@@ -2041,6 +2071,7 @@ async function getResumenDocumentos(CliIdCliente, desde = null, hasta = null) {
     TRANSFERENCIA_ENTRADA: 'Transferencia recibida', TRANSFERENCIA_SALIDA: 'Transferencia enviada',
     PAGO_SALDO: 'Pago con saldo de cuenta',
     CONSUMO_CUENTA: 'Consumo de orden',
+    AJUSTE: 'Ajuste manual', CREDITO_PLAN: 'Crédito de plan', ENTREGA: 'Entrega',
     CARGA_PREPAGO: 'Carga de saldo (Venta de saldo, facturada)',
   };
   // Etiqueta cuando el movimiento es un "consumo" (EsConsumo=1: importe negativo
@@ -2130,6 +2161,53 @@ async function getResumenDocumentos(CliIdCliente, desde = null, hasta = null) {
     for (const d of docsRes.recordset) acumular(d, false);
   }
 
+  // ── DÓNDE PESA CADA DOCUMENTO EN EL LIBRO MAYOR ───────────────────────────
+  // El cargo de un documento NO siempre vive en la cuenta de su moneda: una factura
+  // en pesos de un cliente con cuenta en dólares se asienta convertida en la cuenta
+  // USD, y un documento puede repartirse entre las dos (una línea en pesos y otra en
+  // dólares). El Estado de Cuenta tomaba el cargo del CABEZAL (DocTotal, en la moneda
+  // del documento) pero los cobros del LIBRO (en la cuenta donde entraron): las dos
+  // mitades de la misma factura caían en columnas distintas y ninguna cerraba
+  // (caso SABONIS: la columna en dólares terminaba 118,56 "a favor" — justo los dos
+  // cobros de sus facturas en pesos — y la de pesos debiendo 3.898,74).
+  // Acá se devuelve el cargo REAL por documento y cuenta para que la fila del
+  // documento se ubique donde la plata se movió de verdad.
+  const cargosRes = await pool.request()
+    .input('cli',   sql.Int,  parseInt(CliIdCliente))
+    .input('desde', sql.Date, desde || null)
+    .input('hasta', sql.Date, hasta || null)
+    .query(`
+      SELECT m.DocIdDocumento,
+             m.CueIdCuenta,
+             MonSimbolo = COALESCE(mo.MonSimbolo, CASE WHEN cc.CueTipo = 'DINERO_USD' THEN 'US$' ELSE '$' END),
+             Importe    = CAST(ABS(SUM(m.MovImporte)) AS DECIMAL(18,2))
+      FROM   dbo.MovimientosCuenta m WITH(NOLOCK)
+      JOIN   dbo.CuentasCliente cc WITH(NOLOCK) ON cc.CueIdCuenta = m.CueIdCuenta
+      LEFT JOIN dbo.Monedas mo WITH(NOLOCK) ON mo.MonIdMoneda = cc.MonIdMoneda
+      JOIN   dbo.DocumentosContables dc WITH(NOLOCK) ON dc.DocIdDocumento = m.DocIdDocumento
+      WHERE  cc.CliIdCliente = @cli
+        AND  cc.CueTipo LIKE 'DINERO%'
+        AND  (m.MovAnulado IS NULL OR m.MovAnulado = 0)
+        AND  m.MovTipo IN ('VTA_CAJA','VENTA','CARGO','CIERRE_CICLO')
+        -- El marcador cross-moneda nace en importe 0, así que el < 0 ya lo deja afuera:
+        -- NO se filtra por la observación. Hay marcadores que se pisaron con el importe
+        -- real (2 de Palmero) y ésos SÍ pesan en el libro — excluirlos dejaba la columna
+        -- 33.928,96 lejos del saldo real.
+        AND  m.MovImporte < 0
+        AND  dc.DocTipo NOT LIKE '%ecibo%'
+        AND  dc.DocTipo NOT LIKE '%greso%'
+        AND  (@desde IS NULL OR CAST(dc.DocFechaEmision AS DATE) >= @desde)
+        AND  (@hasta IS NULL OR CAST(dc.DocFechaEmision AS DATE) <= @hasta)
+      GROUP BY m.DocIdDocumento, m.CueIdCuenta, mo.MonSimbolo, cc.CueTipo
+      HAVING SUM(m.MovImporte) < -0.005
+    `);
+  const cargosPorCuenta = cargosRes.recordset.map(r => ({
+    DocIdDocumento: r.DocIdDocumento,
+    CueIdCuenta:    r.CueIdCuenta,
+    MonSimbolo:     r.MonSimbolo,
+    Importe:        Number(r.Importe) || 0,
+  }));
+
   // ── SALDO DE ARRASTRE (foto al inicio del período) ────────────────────────
   // El Estado de Cuenta asumía "arranca en cero" al inicio del período elegido
   // — pero si un pago DENTRO del período cancela una factura de ANTES del
@@ -2148,17 +2226,22 @@ async function getResumenDocumentos(CliIdCliente, desde = null, hasta = null) {
       .input('cli', sql.Int, parseInt(CliIdCliente))
       .input('desde', sql.Date, desde)
       .query(`
-        SELECT ISNULL(mo.MonSimbolo,'$') AS MonSimbolo,
+        SELECT MonSimbolo = COALESCE(mo.MonSimbolo, CASE WHEN cc.CueTipo = 'DINERO_USD' THEN 'US$' ELSE '$' END),
                m.CueIdCuenta,
                CAST(SUM(m.MovImporte) AS DECIMAL(18,2)) AS Billetera
         FROM   dbo.MovimientosCuenta m
         JOIN   dbo.CuentasCliente cc ON cc.CueIdCuenta = m.CueIdCuenta
         LEFT JOIN dbo.Monedas mo ON mo.MonIdMoneda = cc.MonIdMoneda
         WHERE  cc.CliIdCliente = @cli
+          -- SOLO cuentas de dinero. Las de recursos (MTS/KG) no tienen moneda, así que
+          -- el ISNULL las etiquetaba '$' y sus METROS entraban al arrastre como si fueran
+          -- pesos: la columna de pesos de SABONIS arrancaba en -952,53, que eran sus
+          -- metros de DTF, no plata (01-09-2026).
+          AND  cc.CueTipo LIKE 'DINERO%'
           AND  m.MovTipo NOT IN ('ORDEN','ORDEN_ANTICIPO')
           AND  (m.MovAnulado IS NULL OR m.MovAnulado = 0)
           AND  CAST(m.MovFecha AS DATE) < @desde
-        GROUP BY mo.MonSimbolo, m.CueIdCuenta
+        GROUP BY mo.MonSimbolo, cc.CueTipo, m.CueIdCuenta
       `);
     // acums (frontend) usa cargo-abono positivo=deuda; billetera usa el signo
     // contrario (negativo=deuda), de ahí el cambio de signo.
@@ -2169,7 +2252,7 @@ async function getResumenDocumentos(CliIdCliente, desde = null, hasta = null) {
     }
   }
 
-  return { documentos, pagos, pendientePorMoneda, saldoArrastrePorMoneda, saldoArrastrePorCuenta };
+  return { documentos, pagos, pendientePorMoneda, saldoArrastrePorMoneda, saldoArrastrePorCuenta, cargosPorCuenta };
 }
 
 /**
@@ -2819,6 +2902,38 @@ async function cerrarCicloCompleto({
   }
   // ───────────────────────────────────────────────────────────────────────
 
+  // Saldo REAL de la cuenta antes de esta factura (plata a favor del cliente).
+  // OJO: NO leer CueSaldoActual — esa columna está corrompida por el doble conteo de ORDEN
+  // (bug conocido, ver project_bug_saldoactual_duplica_orden.md). Se recalcula con la MISMA
+  // fórmula que el resto del sistema (getSaldoCliente, crearDeudaDocumento): todo menos
+  // ORDEN/ORDEN_ANTICIPO. Como el cargo VTA_CAJA/CIERRE_CICLO de ESTA factura se registra
+  // más abajo y aún no está en la cuenta, se resta saldoFacturar para conservar la
+  // semántica original ("el saldo ya incorpora el ciclo"):
+  //   saldo < 0: el cliente aún debe → ImportePendiente = |saldo| (capeado por la factura bruta)
+  //   saldo >= 0: el cliente tiene a favor → ImportePendiente = 0
+  // REPUESTO 01-09-2026: el merge 8b4389e se llevó este cálculo pero dejó vivos a sus tres
+  // consumidores (docPagado, el marcado de órdenes cubiertas y cubiertoPorSaldo) → el cierre
+  // reventaba con "importePendiente is not defined" y NINGÚN ciclo se podía facturar.
+  const saldoCuentaRes = await pool.request()
+    .input('CueIdCuenta', sql.Int, ciclo.CueIdCuenta)
+    .query(`
+      SELECT ISNULL(SUM(m.MovImporte), 0) AS SaldoReal
+      FROM dbo.MovimientosCuenta m
+      WHERE m.CueIdCuenta = @CueIdCuenta
+        AND (m.MovAnulado IS NULL OR m.MovAnulado = 0)
+        AND m.MovTipo NOT IN ('ORDEN', 'ORDEN_ANTICIPO')
+    `);
+  const saldoCuentaActual = (Number(saldoCuentaRes.recordset[0]?.SaldoReal) || 0) - saldoFacturar;
+
+  // Lo que realmente queda por cobrar de la factura que se genera:
+  //   saldoCuentaActual >= 0 → el saldo a favor la cubre entera → pendiente = 0
+  //   saldoCuentaActual < 0  → el cliente aún debe → pendiente = |saldo| (capeado por la factura)
+  // Ejemplo A: factura 50.98, pago parcial 15 → saldo -35.98 → pendiente = 35.98
+  // Ejemplo B: factura 9.53,  pago 15         → saldo +5.47  → pendiente = 0 (ya cubierta)
+  const importePendiente = saldoCuentaActual >= 0
+    ? 0
+    : Math.min(Math.abs(saldoCuentaActual), saldoFacturar);
+
   // La deuda del cierre nace SIEMPRE por el total de la factura. Antes se le restaba el
   // saldo de la cuenta ("si la cuenta daba, la deuda nacía PAGADO/recortada, sin rastro").
   // Eso ya mordió dos veces: caso Mrivero (4-ago, por CueSaldoActual corrupto) y caso
@@ -2995,7 +3110,10 @@ async function cerrarCicloCompleto({
           totalDescuentos: docDescuentos,
           total: docTotal,
           estado: 'EMITIDO',
-          cfeEstado: 'PENDIENTE',
+          // Pedido Caja no es un CFE (Config_TiposDocumento.Codigo_Efact = 0): nace
+          // BORRADOR igual que el que emite la caja, y se resuelve a e-Ticket/e-Factura
+          // desde la Bandeja CFE. Los CFE reales sí nacen PENDIENTE de envío a DGI.
+          cfeEstado: /pedido/i.test(String(tipoDocumento)) ? 'BORRADOR' : 'PENDIENTE',
           usuarioId: UsuarioAlta,
           observaciones: docObservaciones,
           // El cierre de ciclo no cobra en el acto: DocPagado lo estampa la caja al
@@ -3095,6 +3213,10 @@ async function cerrarCicloCompleto({
     // Si es cross-moneda, la deuda va en la cuenta destino con el monto convertido
     const deudaCuentaId = esCrossMoneda ? cueIdFactura : ciclo.CueIdCuenta;
     const deudaImporte = esCrossMoneda ? docTotal : saldoFacturar;
+    // Lo que queda por cobrar después de aplicarle el saldo a favor previo (abajo se
+    // asienta como pago VISIBLE). Cross-moneda: el saldo de la cuenta destino no es el
+    // que se midió arriba, así que la deuda queda entera y se cobra normal.
+    const deudaPendiente = esCrossMoneda ? docTotal : importePendiente;
 
     // La deuda nace SIEMPRE por el TOTAL de la factura (criterio unificado con producción,
     // reporte 26-ago-2026: nunca más "nace cobrada" por una resta invisible). La parte

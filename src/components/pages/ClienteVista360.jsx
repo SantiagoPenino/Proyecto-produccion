@@ -264,6 +264,11 @@ const EstadoChip = ({ estado }) => (
 function ResumenDocumentosPanel({ CliIdCliente, desde, hasta, trigger, incluirAnulados, onIncluirAnulados, saldosPorMoneda, recursoCuentas = [], cuentas = [], cliente, recargarCuentas, onResumen, cuentaFocus = null }) {
   const [docs, setDocs]       = useState([]);
   const [pagos, setPagos]     = useState([]);
+  // Cargo REAL de cada documento en el libro mayor, por cuenta: [{DocIdDocumento,
+  // CueIdCuenta, MonSimbolo, Importe}]. Una factura en pesos de un cliente con cuenta
+  // en dólares se asienta convertida en la cuenta USD, y puede repartirse entre las dos.
+  // La fila del documento se ubica con esto, no con el total del cabezal.
+  const [cargosLibro, setCargosLibro] = useState([]);
   // Pendiente REAL por moneda (foto de hoy, ignora el período): { 'US$': {total, fueraPeriodo}, ... }
   const [pendReal, setPendReal] = useState(null);
   // Saldo de arrastre por moneda: posición real de la cuenta AL INICIO del período
@@ -353,8 +358,8 @@ function ResumenDocumentosPanel({ CliIdCliente, desde, hasta, trigger, incluirAn
     if (desde) p.append('desde', desde);
     if (hasta) p.append('hasta', hasta);
     fetchAPI(`/api/contabilidad/clientes/${CliIdCliente}/resumen-documentos?${p}`)
-      .then(r => { if (alive) { setDocs(r.data?.documentos || []); setPagos(r.data?.pagos || []); setPendReal(r.data?.pendientePorMoneda || null); setSaldoArrastre(r.data?.saldoArrastrePorMoneda || {}); setSaldoArrastreCta(r.data?.saldoArrastrePorCuenta || {}); } })
-      .catch(e => { if (alive) { setError(e.message); setDocs([]); setPagos([]); setPendReal(null); setSaldoArrastre({}); } })
+      .then(r => { if (alive) { setDocs(r.data?.documentos || []); setPagos(r.data?.pagos || []); setPendReal(r.data?.pendientePorMoneda || null); setSaldoArrastre(r.data?.saldoArrastrePorMoneda || {}); setSaldoArrastreCta(r.data?.saldoArrastrePorCuenta || {}); setCargosLibro(r.data?.cargosPorCuenta || []); } })
+      .catch(e => { if (alive) { setError(e.message); setDocs([]); setPagos([]); setPendReal(null); setSaldoArrastre({}); setCargosLibro([]); } })
       .finally(() => { if (alive) setLoading(false); });
     return () => { alive = false; };
     // cuentasKey: cualquier acción que mueva un saldo (anticipo, transferencia, pago con
@@ -440,15 +445,41 @@ function ResumenDocumentosPanel({ CliIdCliente, desde, hasta, trigger, incluirAn
 
   const movimientos = useMemo(() => {
     const docsEC = docs.filter(d => incluirAnulados || d.estado !== 'ANULADO');
+    // Cargos del libro agrupados por documento. Si el documento tiene cargo asentado,
+    // la fila va DONDE SE MOVIÓ LA PLATA (cuenta y moneda del movimiento, importe
+    // convertido); si se repartió entre dos cuentas, sale una fila por cuenta y cada
+    // columna cierra contra su cuenta. Sin cargo en el libro (borradores, documentos
+    // viejos sin asiento) se mantiene el total del cabezal, como antes.
+    const cargosPorDoc = new Map();
+    for (const c of cargosLibro) {
+      if (!cargosPorDoc.has(c.DocIdDocumento)) cargosPorDoc.set(c.DocIdDocumento, []);
+      cargosPorDoc.get(c.DocIdDocumento).push(c);
+    }
+    const filaDoc = (d, extra) => ({
+      clase: 'DOC', key: 'D' + d.DocIdDocumento, fecha: d.fecha, moneda: d.MonSimbolo,
+      cueId: principalPorMoneda[d.MonSimbolo] ?? null,
+      tipoKey: prefijoDoc(d), tipoLabel: d.tipo, etiqueta: d.documento,
+      descripcion: d.descripcion, factura: d.factura, cfeEstado: d.cfeEstado,
+      cfeNumeroOficial: d.cfeNumeroOficial || null,
+      cargo: Number(d.total || 0), abono: 0, estado: d.estado,
+      ...extra,
+    });
     const filas = [
-      ...docsEC.map(d => ({
-        clase: 'DOC', key: 'D' + d.DocIdDocumento, fecha: d.fecha, moneda: d.MonSimbolo,
-        cueId: principalPorMoneda[d.MonSimbolo] ?? null,
-        tipoKey: prefijoDoc(d), tipoLabel: d.tipo, etiqueta: d.documento,
-        descripcion: d.descripcion, factura: d.factura, cfeEstado: d.cfeEstado,
-        cfeNumeroOficial: d.cfeNumeroOficial || null,
-        cargo: Number(d.total || 0), abono: 0, estado: d.estado,
-      })),
+      ...docsEC.flatMap(d => {
+        const cargos = cargosPorDoc.get(d.DocIdDocumento) || [];
+        if (!cargos.length) return [filaDoc(d)];
+        return cargos.map(c => filaDoc(d, {
+          key: 'D' + d.DocIdDocumento + '-' + c.CueIdCuenta,
+          moneda: c.MonSimbolo,
+          cueId: c.CueIdCuenta,
+          cargo: Number(c.Importe || 0),
+          // El documento tocó más de una moneda: cada fila es una parte, y el
+          // importe del comprobante completo se muestra aparte para no confundir.
+          partes: cargos.length,
+          totalDocumento: Number(d.total || 0),
+          monedaDocumento: d.MonSimbolo,
+        }));
+      }),
       ...pagos.map((p, i) => ({
         clase: 'PAGO', key: 'P' + i, fecha: p.fecha, moneda: p.MonSimbolo,
         cueId: p.cueIdCuenta ?? null, cueNombre: p.cueNombre || null, cueEsPrincipal: !!p.cueEsPrincipal,
@@ -509,7 +540,7 @@ function ResumenDocumentosPanel({ CliIdCliente, desde, hasta, trigger, incluirAn
     // Display: más reciente arriba.
     filtradas.reverse();
     return filtradas;
-  }, [docs, pagos, incluirAnulados, fTipoEC, fMonEC, fConceptoEC, fCuentaEC, saldoArrastre, saldoArrastreCta, principalPorMoneda, cuentasDineroEC]);
+  }, [docs, pagos, cargosLibro, incluirAnulados, fTipoEC, fMonEC, fConceptoEC, fCuentaEC, saldoArrastre, saldoArrastreCta, principalPorMoneda, cuentasDineroEC]);
   // El saldo corriente solo es legible con TODOS los movimientos: un subconjunto (por tipo
   // o por búsqueda de concepto) daría un acumulado parcial sin sentido. La moneda no lo
   // afecta: el saldo es por moneda.
@@ -542,8 +573,11 @@ function ResumenDocumentosPanel({ CliIdCliente, desde, hasta, trigger, incluirAn
     const s = new Set();
     docs.forEach(d => s.add(d.MonSimbolo));
     pagos.forEach(p => s.add(p.MonSimbolo));
+    // Un documento en pesos puede estar asentado en la cuenta en dólares: su moneda
+    // en la tabla es la de la cuenta, así que la pestaña tiene que existir.
+    cargosLibro.forEach(c => s.add(c.MonSimbolo));
     return [...s].filter(Boolean);
-  }, [docs, pagos]);
+  }, [docs, pagos, cargosLibro]);
 
   // Subtotales por moneda (una fila de totales por cada moneda visible)
   const resumenPorMoneda = useMemo(() => {
@@ -831,6 +865,13 @@ function ResumenDocumentosPanel({ CliIdCliente, desde, hasta, trigger, incluirAn
                             )}
                             {esDoc && m.cfeEstado && m.cfeEstado !== 'ACEPTADO_DGI' && (
                               <span className="text-[9px] font-black px-1.5 py-0.5 rounded bg-amber-50 text-amber-700 border border-amber-200 uppercase tracking-wide">Borrador</span>
+                            )}
+                            {/* El comprobante se asentó en las dos monedas: esta fila es
+                                solo la parte que pesó en ESTA cuenta. */}
+                            {esDoc && m.partes > 1 && (
+                              <span className="text-[10px] font-semibold text-indigo-600" title={`Este comprobante se asentó en ${m.partes} cuentas de distinta moneda; acá se muestra la parte de esta cuenta.`}>
+                                · parte en {m.moneda} (comprobante {m.monedaDocumento} {fmtMoney(m.totalDocumento)})
+                              </span>
                             )}
                             {/* Cobro: recibo · forma de pago · N° cheque, en la misma línea */}
                             {!esDoc && m.recibo && m.etiqueta && (
